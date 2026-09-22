@@ -2756,7 +2756,8 @@ fn contains_deferred_v1_qualifier(ty: &Type) -> bool {
     match ty {
         Type::Qualified(TypeQual::Frozen, inner) => contains_deferred_v1_qualifier(inner),
         Type::Qualified(TypeQual::View, inner)
-            if is_direct_shared_int(inner) || is_rooted_int_slice(inner) || is_rooted_string(inner) => false,
+            if is_direct_shared_int(inner) || is_rooted_int_slice(inner) || is_rooted_string(inner)
+                || is_rooted_user_record(inner) => false,
         Type::Qualified(TypeQual::View, _) => true,
         // The canonical direct-call ABI already transports an owned object
         // token.  For a named `&mut String` that token is the authenticated
@@ -3285,6 +3286,18 @@ fn is_rooted_int_slice(ty: &Type) -> bool {
 /// A whole immutable `&String` view.  Its carrier is the retained String
 /// object token itself (`CanonicalRootedViewCarrier::StringRoot`): the
 /// payload is immutable and shared by retain, so the token is the snapshot.
+/// A whole view of an argument-less user record or sum (`RecordRoot`): the
+/// retained aggregate object token is the snapshot, exactly as for String.
+/// Lowering still requires the root to be a heap `Ref` (not packed inline).
+fn is_rooted_user_record(ty: &Type) -> bool {
+    matches!(ty.unqualified(), Type::Named(name, arguments)
+        if arguments.is_empty()
+            && name.rsplit('.').next().and_then(|segment| segment.chars().next()).is_some_and(char::is_uppercase)
+            && !matches!(name.as_str(), "Int" | "Float" | "Duration" | "Bool" | "Nil" | "Unit"
+                | "String" | "Bytes" | "SecretStore")
+            && witchy_types::canonical_capabilities::representation(ty, &BTreeMap::new()).is_none())
+}
+
 fn is_rooted_string(ty: &Type) -> bool {
     matches!(ty.unqualified(), Type::Named(name, arguments) if name == "String" && arguments.is_empty())
 }
@@ -13890,7 +13903,12 @@ impl FunctionLowerer<'_> {
         operand: &Expr,
     ) -> Result<ValueId, CanonicalLoweringError> {
         let fact = self.checked_rooted_view_fact(expression)?;
-        if matches!(fact.payload(), Ty::String) {
+        let record_root = matches!(fact.payload(), Ty::Named(name, arguments)
+            if arguments.is_empty()
+                && self.definitions.contains_key(name.as_ref())
+                && scalar_aggregate_shape(&Type::Named(name.to_string(), Vec::new()), self.definitions)
+                    .is_some_and(|shape| !shape.packed));
+        if matches!(fact.payload(), Ty::String) || record_root {
             // A whole-String view retains the immutable root object; it has
             // no projection and never exposes a place.
             let root = *self.bindings.get(fact.place().root()).ok_or_else(|| {
@@ -13903,7 +13921,7 @@ impl FunctionLowerer<'_> {
                 || !matches!(self.values.get(&root), Some(ValueType::Ref(_)))
             {
                 return Err(CanonicalLoweringError::UnsupportedExpression(
-                    "rooted String view is only a whole-root carrier",
+                    "rooted String or record view is only a whole-root carrier",
                 ));
             }
             return self.clone_reference_token(root);
@@ -18776,6 +18794,13 @@ fn source_value_type(
     closure_layouts: &ClosureValueLayouts,
     definitions: &BTreeMap<String, TypeDef>,
 ) -> Result<ValueType, CanonicalLoweringError> {
+    // A whole record view (`RecordRoot`) is carried as the record's own
+    // retained object token.
+    if let Type::Qualified(TypeQual::View, inner) = source
+        && is_rooted_user_record(inner)
+    {
+        return source_value_type(inner, layout_bundle, layouts, closure_layouts, definitions);
+    }
     if let Some(owner) = closure_layouts.opaque_type(source, definitions) {
         return Ok(ValueType::Gc(owner));
     }
@@ -21811,9 +21836,10 @@ fn main() -> Int:
         assert!(access.call_contracts().next().is_some());
         assert!(facts.iter().next().is_some(), "the `&pair` formation has an authenticated root-plus-projection fact");
         let layouts = crate::canonical_layouts::derive_layout_bundle(source).expect("canonical layouts");
-        let error = lower_typed_module(source, layouts)
-            .expect_err("the partial ABI still rejects record-view transport after querying checked view facts");
-        assert!(matches!(error, CanonicalLoweringError::UnsupportedCanonicalObligation(_)));
+        // A whole-record view (`RecordRoot`) is now transported as the
+        // retained record token, so the facts-driven preparation lowers.
+        lower_typed_module(source, layouts)
+            .expect("a whole-record view lowers after querying checked view facts");
     }
 
     #[test]

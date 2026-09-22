@@ -207,6 +207,8 @@ mod rfc0167_unique_writeback_matrix;
 mod rfc0167_unit_discard_matrix;
 #[path = "misc/rfc0167_view_carrier_transport.rs"]
 mod rfc0167_view_carrier_transport;
+#[path = "misc/rfc0167_record_view.rs"]
+mod rfc0167_record_view;
 #[path = "misc/rfc0167_slice_index_read.rs"]
 mod rfc0167_slice_index_read;
 #[path = "misc/rfc0167_mixed_var_write_back.rs"]

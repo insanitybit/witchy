@@ -84,6 +84,11 @@ pub enum CanonicalRootedViewCarrier {
     /// projection, and the String representation is already immutable and
     /// shared by retain, so the view is a value-semantic snapshot of its root.
     StringRoot,
+    /// A whole immutable user record or sum (argument-less nominal).  Like
+    /// `StringRoot`, the carrier is the retained aggregate object itself: a
+    /// record is an immutable value shared by retain, so the token is the
+    /// snapshot.  The payload identity is the declaration's nominal ordinal.
+    RecordRoot,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -506,6 +511,12 @@ fn rooted_view_from_ty(
             payload: rooted_string_payload_key(),
             carrier: CanonicalRootedViewCarrier::StringRoot,
         }),
+        Ty::Named(name, arguments) if arguments.is_empty() && is_user_record_name(name) => {
+            Ok(CanonicalReferenceKind::RootedView {
+                payload: rooted_record_payload_key(_context.nominal(name)?),
+                carrier: CanonicalRootedViewCarrier::RecordRoot,
+            })
+        }
         _ => Err(CanonicalAbiError::Unsupported(
             "rooted view payload has no admitted authenticated carrier".into(),
         )),
@@ -544,6 +555,12 @@ fn rooted_view_from_ast(
             payload: rooted_string_payload_key(),
             carrier: CanonicalRootedViewCarrier::StringRoot,
         }),
+        Type::Named(name, arguments) if arguments.is_empty() && is_user_record_name(name) => {
+            Ok(CanonicalReferenceKind::RootedView {
+                payload: rooted_record_payload_key(_context.nominal(name)?),
+                carrier: CanonicalRootedViewCarrier::RecordRoot,
+            })
+        }
         _ => Err(CanonicalAbiError::Unsupported(
             "rooted view payload has no admitted authenticated carrier".into(),
         )),
@@ -558,6 +575,21 @@ fn rooted_view_from_ast(
 fn rooted_scalar_payload_key(kind: CanonicalScalarKind) -> CanonicalTypeKey {
     let mut bytes = b"witchy.canonical-rooted-view-payload.v1".to_vec();
     bytes.push(kind as u8);
+    CanonicalTypeKey(*blake3::hash(&bytes).as_bytes())
+}
+
+/// Builtin heads and capabilities are never record roots; only a declared
+/// user type (resolved through the nominal ordinal table) is.
+fn is_user_record_name(name: &str) -> bool {
+    !matches!(name, "Int" | "Float" | "Duration" | "Bool" | "Nil" | "Unit" | "String" | "Bytes"
+        | "List" | "Dict" | "Option" | "Result" | "Slice" | "SecretStore")
+        && !is_capability_name(name)
+        && crate::typeck::anon_union_synthetic_variants(name).is_none()
+}
+
+fn rooted_record_payload_key(ordinal: u32) -> CanonicalTypeKey {
+    let mut bytes = b"witchy.canonical-rooted-view-payload.v1/record".to_vec();
+    bytes.extend_from_slice(&ordinal.to_le_bytes());
     CanonicalTypeKey(*blake3::hash(&bytes).as_bytes())
 }
 

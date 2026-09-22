@@ -1472,7 +1472,7 @@ fn source_abi_qualifiers_supported(
     // recursive qualifier exception.
     let mut pending = (!(is_direct_shared_reference(result)
         || is_direct_rooted_view_int(result) || is_direct_rooted_view_int_slice(result)
-        || is_direct_rooted_view_string(result)
+        || is_direct_rooted_view_whole_root(result, records)
         || is_direct_exclusive_reference(result)
         || is_aggregate_reference_carrier(result)
         || is_direct_rooted_view_aggregate_carrier(result, records)
@@ -1484,7 +1484,7 @@ fn source_abi_qualifiers_supported(
         (!(
             is_direct_shared_reference(parameter)
             || is_direct_rooted_view_int(parameter) || is_direct_rooted_view_int_slice(parameter)
-            || is_direct_rooted_view_string(parameter)
+            || is_direct_rooted_view_whole_root(parameter, records)
             || is_direct_rooted_view_aggregate_carrier(parameter, records)
             || (matches!(conventions.get(index), Some(Convention::Let | Convention::Own))
                 && is_direct_exclusive_reference(parameter))
@@ -1577,6 +1577,20 @@ fn is_direct_rooted_view_int(source: &witchy_syntax::ast::Type) -> bool {
 
 /// A whole immutable `&String` view: carried as the retained String token
 /// itself (`StringRoot`), so it corresponds to the plain String layout.
+/// A whole-root view carried as the retained object token: `&String`
+/// (`StringRoot`) or a view of a declared, non-packed, argument-less user
+/// record or sum (`RecordRoot`).  Neither has a projection.
+fn is_direct_rooted_view_whole_root(source: &witchy_syntax::ast::Type, records: &ScalarRecordFields) -> bool {
+    is_direct_rooted_view_string(source)
+        || matches!(source,
+            witchy_syntax::ast::Type::Qualified(witchy_syntax::ast::TypeQual::View, inner)
+                if matches!(inner.unqualified(), witchy_syntax::ast::Type::Named(name, arguments)
+                    if arguments.is_empty()
+                        && records.contains_key(name)
+                        && witchy_types::canonical_aggregates::scalar_aggregate_shape(inner, records)
+                            .is_some_and(|shape| !shape.packed)))
+}
+
 fn is_direct_rooted_view_string(source: &witchy_syntax::ast::Type) -> bool {
     matches!(source,
         witchy_syntax::ast::Type::Qualified(witchy_syntax::ast::TypeQual::View, inner)
@@ -1725,7 +1739,7 @@ fn restore_source_abi_qualifiers(
         if let Some(ty) = &declared.ty
             && (is_direct_shared_reference(ty)
                 || is_direct_rooted_view_int(ty) || is_direct_rooted_view_int_slice(ty)
-                || is_direct_rooted_view_string(ty)
+                || is_direct_rooted_view_whole_root(ty, records)
                 || is_direct_rooted_view_aggregate_carrier(ty, records)
                 || (matches!(declared.convention,
                     witchy_syntax::ast::Convention::Let | witchy_syntax::ast::Convention::Own)
@@ -1746,7 +1760,7 @@ fn restore_source_abi_qualifiers(
     if let Some(declared) = &declaration.ret
         && (is_direct_shared_reference(declared)
             || is_direct_rooted_view_int(declared) || is_direct_rooted_view_int_slice(declared)
-            || is_direct_rooted_view_string(declared)
+            || is_direct_rooted_view_whole_root(declared, records)
             || is_direct_exclusive_reference(declared)
             || is_aggregate_reference_carrier(declared)
             || is_direct_rooted_view_aggregate_carrier(declared, records)
