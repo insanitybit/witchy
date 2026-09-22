@@ -211,6 +211,8 @@ mod rfc0167_view_carrier_transport;
 mod rfc0167_mixed_var_write_back;
 #[path = "misc/rfc0167_field_view.rs"]
 mod rfc0167_field_view;
+#[path = "misc/rfc0167_generic_view_instantiation.rs"]
+mod rfc0167_generic_view_instantiation;
 #[path = "misc/rfc0167_indirect_var_aggregate.rs"]
 mod rfc0167_indirect_var_aggregate;
 #[path = "misc/rfc0167_string_view_carrier.rs"]

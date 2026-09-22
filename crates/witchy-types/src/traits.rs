@@ -4054,13 +4054,31 @@ pub(crate) fn bind_ast_type_vars(
     }
 }
 
+fn without_ownership_qualifiers(ty: &Type) -> &Type {
+    match ty {
+        Type::Qualified(TypeQual::View, _) => ty,
+        Type::Qualified(_, inner) => without_ownership_qualifiers(inner),
+        _ => ty,
+    }
+}
+
 fn bind_ast_type_vars_inner(
     pattern: &Type,
     concrete: &Type,
     out: &mut HashMap<String, Type>,
 ) -> bool {
-    let pattern = pattern.unqualified();
-    let concrete = concrete.unqualified();
+    // Ownership qualifiers are not part of a type argument, but a view is:
+    // `id[a](x: a)` called with `&n` binds `a = &Int`, while `id[a](x: &a)`
+    // matches the view structurally and binds `a = Int`.
+    let pattern = without_ownership_qualifiers(pattern);
+    let concrete = without_ownership_qualifiers(concrete);
+    if let (
+        Type::Qualified(TypeQual::View, pattern_payload),
+        Type::Qualified(TypeQual::View, concrete_payload),
+    ) = (pattern, concrete)
+    {
+        return bind_ast_type_vars_inner(pattern_payload, concrete_payload, out);
+    }
     match (pattern, concrete) {
         (Type::Named(var, args), concrete)
             if args.is_empty()
@@ -4079,7 +4097,7 @@ fn bind_ast_type_vars_inner(
                 return true;
             }
             match out.get(var) {
-                Some(previous) => previous.unqualified() == concrete,
+                Some(previous) => without_ownership_qualifiers(previous) == concrete,
                 None => {
                     out.insert(var.clone(), concrete.clone());
                     true
