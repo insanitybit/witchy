@@ -132,7 +132,7 @@ pub(crate) fn derive_layout_bundle(
     source: &CanonicalCheckedSource,
 ) -> Result<LayoutBundle, CanonicalLayoutError> {
     source.access_facts().map_err(|error| CanonicalLayoutError::InvalidCheckedAccessFacts(error.to_string()))?;
-    project_layouts(source)?.finish_with_families().map(|(bundle, _, _, _, _)| bundle)
+    projected_layouts(source).map(|(bundle, _, _, _, _)| bundle)
 }
 
 /// The closure layout of every `fn` type the canonical functions reach: a
@@ -155,7 +155,7 @@ pub(crate) fn closure_layouts(
 pub(crate) fn closure_families(
     source: &CanonicalCheckedSource,
 ) -> Result<HashMap<Type, ClosureFamilyLayout>, CanonicalLayoutError> {
-    project_layouts(source)?.finish_with_families().map(|(_, families, _, _, _)| families)
+    projected_layouts(source).map(|(_, families, _, _, _)| families)
 }
 
 /// Derive every aggregate that must use the opaque-owner representation.
@@ -165,19 +165,19 @@ pub(crate) fn closure_families(
 pub(crate) fn opaque_aggregate_families(
     source: &CanonicalCheckedSource,
 ) -> Result<HashMap<Type, OpaqueAggregateFamilyLayout>, CanonicalLayoutError> {
-    project_layouts(source)?.finish_with_families().map(|(_, _, families, _, _)| families)
+    projected_layouts(source).map(|(_, _, families, _, _)| families)
 }
 
 pub(crate) fn shared_int_reference_layout(
     source: &CanonicalCheckedSource,
 ) -> Result<Option<SharedIntReferenceLayout>, CanonicalLayoutError> {
-    project_layouts(source)?.finish_with_families().map(|(_, _, _, shared, _)| shared)
+    projected_layouts(source).map(|(_, _, _, shared, _)| shared)
 }
 
 pub(crate) fn rooted_int_slice_layout(
     source: &CanonicalCheckedSource,
 ) -> Result<Option<RootedIntSliceLayout>, CanonicalLayoutError> {
-    project_layouts(source)?.finish_with_families().map(|(_, _, _, _, slice)| slice)
+    projected_layouts(source).map(|(_, _, _, _, slice)| slice)
 }
 
 /// The identity of a `fn` type for closure purposes: the declared
@@ -273,6 +273,69 @@ pub(crate) fn intern_closure_layout(
     interner
         .intern_packed_record(children)
         .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))
+}
+
+/// Everything a layout projection yields, in `finish_with_families` order.
+type ProjectedLayouts = (
+    LayoutBundle,
+    HashMap<Type, ClosureFamilyLayout>,
+    HashMap<Type, OpaqueAggregateFamilyLayout>,
+    Option<SharedIntReferenceLayout>,
+    Option<RootedIntSliceLayout>,
+);
+
+thread_local! {
+    /// One slot per open `with_layout_memo` scope: the source it was opened
+    /// for, and that source's projection once computed.
+    static LAYOUT_MEMO: std::cell::RefCell<Vec<(usize, Option<std::rc::Rc<ProjectedLayouts>>)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Project `source`'s layouts once for the duration of `body`.
+///
+/// `derive_layout_bundle`, `closure_families`, `opaque_aggregate_families`,
+/// `shared_int_reference_layout` and `rooted_int_slice_layout` each used to
+/// run the WHOLE projection and keep one element of its result: five full
+/// projections per compile of the same source (counted on
+/// examples/channels). Inside this scope they share one.
+///
+/// Keyed by the source's address, which is sound for the same reason the
+/// aggregate shape memo is: `body` holds `source` borrowed immutably, so it
+/// can be neither mutated nor freed (and its address reused) while the scope
+/// is open. Outside a scope every call projects afresh, exactly as before.
+pub(crate) fn with_layout_memo<R>(source: &CanonicalCheckedSource, body: impl FnOnce() -> R) -> R {
+    LAYOUT_MEMO.with(|memo| memo.borrow_mut().push((std::ptr::from_ref(source) as usize, None)));
+    struct Pop;
+    impl Drop for Pop {
+        fn drop(&mut self) {
+            LAYOUT_MEMO.with(|memo| {
+                memo.borrow_mut().pop();
+            });
+        }
+    }
+    let _pop = Pop;
+    body()
+}
+
+fn projected_layouts(source: &CanonicalCheckedSource) -> Result<ProjectedLayouts, CanonicalLayoutError> {
+    let address = std::ptr::from_ref(source) as usize;
+    let cached = LAYOUT_MEMO.with(|memo| {
+        memo.borrow().iter().rev().find(|(key, _)| *key == address).map(|(_, value)| value.clone())
+    });
+    match cached {
+        Some(Some(known)) => Ok((*known).clone()),
+        Some(None) => {
+            let projected = project_layouts(source)?.finish_with_families()?;
+            let shared = std::rc::Rc::new(projected.clone());
+            LAYOUT_MEMO.with(|memo| {
+                if let Some(slot) = memo.borrow_mut().iter_mut().rev().find(|(key, _)| *key == address) {
+                    slot.1 = Some(shared);
+                }
+            });
+            Ok(projected)
+        }
+        None => project_layouts(source)?.finish_with_families(),
+    }
 }
 
 fn project_layouts(

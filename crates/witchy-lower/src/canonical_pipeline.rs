@@ -75,6 +75,14 @@ pub(crate) fn validate_checked_module(
 pub(crate) fn validate_checked_source(
     source: &CanonicalCheckedSource,
 ) -> Result<ValidatedSafeWir, CanonicalPipelineError> {
+    // Layout derivation and lowering query the same source's projection five
+    // times; share one (see `canonical_layouts::with_layout_memo`).
+    crate::canonical_layouts::with_layout_memo(source, || validate_checked_source_inner(source))
+}
+
+fn validate_checked_source_inner(
+    source: &CanonicalCheckedSource,
+) -> Result<ValidatedSafeWir, CanonicalPipelineError> {
     let layouts = derive_layout_bundle(source).map_err(CanonicalPipelineError::Layout)?;
     let candidate = lower_typed_module(source, layouts)
         .map_err(CanonicalPipelineError::Lowering)?
