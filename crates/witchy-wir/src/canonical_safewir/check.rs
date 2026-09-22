@@ -2143,9 +2143,13 @@ fn tail_result_contracts_compatible(
                 ) if actual == declared
             ) || matches!(
                 (actual, declared),
+                // A reallocated parameter is fresh storage, so it may be
+                // forwarded wherever a unique or merely shared result of
+                // the same layout is declared: each claim is weaker.
                 (
                     super::ResultContract::ReallocatesParameter { layout: actual, .. },
-                    super::ResultContract::Unique { layout: declared },
+                    super::ResultContract::Unique { layout: declared }
+                        | super::ResultContract::Shared { layout: declared },
                 ) if actual == declared
             )
         })
