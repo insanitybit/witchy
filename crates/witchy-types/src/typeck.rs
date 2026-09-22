@@ -16465,8 +16465,15 @@ fn annotate_with_conversion_fns(
     module: Module,
     from_conversion_fns: Option<&HashSet<String>>,
 ) -> TypedModule {
-    let table = match run_check_selected(
-        &module,
+    let table = best_effort_table(&module, from_conversion_fns);
+    typed_module_best_effort(module, table)
+}
+
+/// The recorded type table of a whole-module check, or an empty table when
+/// the module does not check: best-effort annotation never reports an error.
+fn best_effort_table(module: &Module, from_conversion_fns: Option<&HashSet<String>>) -> TypeTable {
+    match run_check_selected(
+        module,
         true,
         None,
         None,
@@ -16482,18 +16489,30 @@ fn annotate_with_conversion_fns(
             TypeTable::default()
         }
         _ => TypeTable::default(),
-    };
-    typed_module_best_effort(module, table)
+    }
 }
 
-/// Annotate a trait-lowering intermediate while preserving the semantic
-/// identity of resolved `From.from` implementations. The ordinary public
-/// annotation path sees an already-lowered module and needs no such context.
-pub(crate) fn annotate_with_from_conversions(
+/// The checked type table of a trait-lowering intermediate, and nothing else.
+///
+/// `traits::lower_with` annotates the module once before trait lowering and
+/// again after every monomorphization round. It reads only the table (through
+/// `rewrite_preserving_nodes` / `rewrite_into_module`, which consumes the
+/// wrapper), never the loan, access or view facts `typed_module_best_effort`
+/// derives -- whole-module walks that were rebuilt every round and dropped
+/// unread. A wrapper built here carries none, so every fact accessor answers
+/// `Missing` rather than a stale or invented graph.
+pub(crate) fn annotate_types_with_from_conversions(
     module: Module,
     from_conversion_fns: &HashSet<String>,
 ) -> TypedModule {
-    annotate_with_conversion_fns(module, Some(from_conversion_fns))
+    let table = best_effort_table(&module, Some(from_conversion_fns));
+    TypedModule {
+        module: Box::new(module),
+        table,
+        loan_facts: None,
+        access_facts: None,
+        view_facts: None,
+    }
 }
 
 /// The entry module — the home of the unqualified `main` — for home-module

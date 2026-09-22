@@ -698,7 +698,7 @@ fn lower_with(
     }
 
     let __t = mono_timing_start();
-    let mut typed = crate::typeck::annotate_with_from_conversions(
+    let mut typed = crate::typeck::annotate_types_with_from_conversions(
         Module {
             modes: modes.clone(),
             imports: imports.clone(),
@@ -938,7 +938,7 @@ fn lower_with(
             }
             let __t = mono_timing_start();
             typed =
-                crate::typeck::annotate_with_from_conversions(module, &from_conversion_fns);
+                crate::typeck::annotate_types_with_from_conversions(module, &from_conversion_fns);
             if let Some(__t) = __t {
                 eprintln!(
                     "annotate round {round}: items={} took={:?}",
