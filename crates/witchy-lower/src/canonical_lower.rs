@@ -13982,6 +13982,13 @@ impl FunctionLowerer<'_> {
                 }
             } else if steps.iter().all(|step| matches!(step, CheckedPlaceStep::Field(_))) {
                 check_field_view_source(fact.place().root(), steps, operand)?;
+            } else if matches!(steps, [CheckedPlaceStep::Index(_) | CheckedPlaceStep::DynamicIndex])
+                && matches!(operand, Expr::Index { base, index }
+                    if matches!(base.as_ref(), Expr::Var(root) if root == fact.place().root())
+                        && !matches!(index.as_ref(), Expr::Range { .. }))
+            {
+                // An element view of a scalar list (`&xs[i]`) is the element
+                // read at formation, bounds-checked like any index read.
             } else {
                 return Err(CanonicalLoweringError::UnsupportedExpression(
                     "rooted scalar view projection is outside the canonical carrier",

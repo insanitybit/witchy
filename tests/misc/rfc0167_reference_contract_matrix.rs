@@ -74,13 +74,13 @@ fn main():
 
     // Callable capture is part of the finalized language contract. The
     // current checker intentionally keeps the region-root escape boundary
-    // fail-closed until the retained-root callable ABI is admitted. `&Int`
-    // and `&String` captures are admitted; `&Float` has no carrier.
+    // fail-closed until the retained-root callable ABI is admitted. `&Int`,
+    // `&String`, and scalar-value captures are admitted; a list of lists has none.
     rejects(
         "callable capture has an explicit current admission boundary",
         r#"mode opt
 
-fn make(owner: Float) -> fn() -> Float:
+fn make(owner: List(List(Int))) -> fn() -> List(List(Int)):
     let view = &owner
     fn():
         *view

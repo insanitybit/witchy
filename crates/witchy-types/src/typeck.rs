@@ -84,7 +84,7 @@ fn is_admitted_view_carrier(payload: &Ty) -> bool {
     // `&Int` is the scalar root carrier; `&String` is the retained String
     // token itself (RFC-0167 StringRoot), so it crosses a callable boundary
     // exactly as a captured String does.
-    matches!(payload, Ty::Int | Ty::String)
+    matches!(payload, Ty::Int | Ty::String | Ty::Float | Ty::Bool | Ty::Duration)
 }
 
 fn type_is_explicit_reference(ty: &ast::Type) -> bool {
@@ -12468,7 +12468,7 @@ impl Checker {
                         )
                     {
                         return terr(format!(
-                            "closure capture `{capture}` carries a view whose payload has no admitted carrier; only `&Int` and `&String` views cross a callable boundary"
+                            "closure capture `{capture}` carries a view whose payload has no admitted carrier; only `&Int`, `&String`, `&Float`, `&Bool`, and `&Duration` views cross a callable boundary"
                         ));
                     }
                     if let Some(borrowed) = self.borrowed_nominal_name(&captured_ty) {

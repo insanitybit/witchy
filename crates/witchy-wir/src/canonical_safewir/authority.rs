@@ -866,6 +866,14 @@ fn validate_candidate_abi_bindings<S: ModuleStage>(
                     matches!(actual, super::ValueType::Ref(_))
                         && matches!(capture.transfer(), witchy_types::canonical_closure::ClosureCaptureTransfer::RootedViewByValue)
                         && is_direct_rooted_view_string(capture.checked_type())
+                ) || (
+                    // A `&Float`/`&Bool`/`&Duration` view is its value
+                    // (`ScalarValue`), so its capture is a copied scalar slot.
+                    matches!(actual, super::ValueType::Int | super::ValueType::Float | super::ValueType::Bool)
+                        && matches!(capture.transfer(), witchy_types::canonical_closure::ClosureCaptureTransfer::RootedViewByValue)
+                        && matches!(capture.checked_type(),
+                            witchy_syntax::ast::Type::Qualified(witchy_syntax::ast::TypeQual::View, inner)
+                                if witchy_types::canonical_aggregates::is_scalar_value_view_payload(inner))
                 );
                 (transfer_matches && value_type_matches_source(
                     actual, capture.checked_type(), closure_layout_catalog, candidate.signatures(), &mut correspondence,

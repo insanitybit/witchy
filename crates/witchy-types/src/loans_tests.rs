@@ -1158,7 +1158,7 @@
     #[test]
     fn local_shared_reference_cannot_escape_through_a_closure() {
         let err = linked_main(
-            "mode opt\n\nfn main(console: Console):\n    let text = 1.5\n    let observed = &text\n    let action = fn() -> Float:\n        *observed\n    console.print(show(action()))\n",
+            "mode opt\n\nfn main(console: Console):\n    let text = [[1]]\n    let observed = &text\n    let action = fn() -> List(List(Int)):\n        *observed\n    console.print(show(action().length()))\n",
         )
         .expect_err("an escaping closure cannot retain a local shared reference");
         // The refusal reason changed with RFC-0167: capture is no longer a loan
@@ -1174,7 +1174,7 @@
     #[test]
     fn copied_local_shared_reference_cannot_escape_through_a_closure() {
         let err = linked_main(
-            "mode opt\n\nfn main(console: Console):\n    let text = 1.5\n    let observed = &text\n    let copied = observed\n    let action = fn() -> Float:\n        *copied\n    console.print(show(action()))\n",
+            "mode opt\n\nfn main(console: Console):\n    let text = [[1]]\n    let observed = &text\n    let copied = observed\n    let action = fn() -> List(List(Int)):\n        *copied\n    console.print(show(action().length()))\n",
         )
         .expect_err("a copied reference cannot escape through a closure");
         // The refusal reason changed with RFC-0167: capture is no longer a loan

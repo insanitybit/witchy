@@ -92,7 +92,7 @@ fn a_callable_captures_a_view_without_naming_a_lifetime() {
 #[test]
 fn a_capture_cannot_carry_an_unadmitted_payload() {
     let error = witchy::resolve_std_only_checked(
-        "mode opt\n\nfn escape(owner: Float) -> fn() -> &Float:\n    let view = &owner\n    fn():\n        view\n",
+        "mode opt\n\nfn escape(owner: List(List(Int))) -> fn() -> &List(List(Int)):\n    let view = &owner\n    fn():\n        view\n",
     )
     .err()
     .expect("an unadmitted view payload cannot cross a callable boundary")
