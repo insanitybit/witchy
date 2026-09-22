@@ -2223,3 +2223,25 @@ fn compiler_change_mixed_with_queue_scripts_names_no_foreign_target() {
         }
     }
 }
+
+#[test]
+fn a_compiler_crate_change_runs_its_downstream_compiler_crates_tests() {
+    // A change to an upstream pipeline crate is observed by the crates that
+    // consume it: witchy-lower's canonical_pipeline admission tests exercise
+    // the witchy-wir checker directly. bd239ce55 changed the checker, gated
+    // green on witchy-wir's own tests alone, and left master red on
+    // `canonical_pipeline::tests::mixed_var_list_write_back_origins_fail_closed`.
+    for (changed, downstream) in [
+        ("crates/witchy-syntax/src/lib.rs", &["witchy-types", "witchy-wir", "witchy-lower"][..]),
+        ("crates/witchy-types/src/lib.rs", &["witchy-wir", "witchy-lower"][..]),
+        ("crates/witchy-wir/src/canonical_safewir/check.rs", &["witchy-lower", "witchy-runtime"][..]),
+    ] {
+        let output = gate_nextest(&[changed]);
+        for crate_name in downstream {
+            assert!(
+                output.contains(&format!("package({crate_name})")),
+                "{changed} does not run {crate_name}'s tests: {output}",
+            );
+        }
+    }
+}

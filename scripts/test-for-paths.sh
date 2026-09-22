@@ -552,6 +552,13 @@ for p in "${paths[@]}"; do
             any_rust=1
             gate_need_conformance=1
             add_pkg witchy-types
+            # Downstream compiler crates consume this one, and their own tests
+            # (e.g. witchy-lower's canonical_pipeline admission tests) observe a
+            # change here that this crate's tests cannot. bd239ce55 changed the
+            # checker in witchy-wir, gated green without witchy-lower's tests,
+            # and left master red on one of them.
+            add_pkg witchy-wir
+            add_pkg witchy-lower
             add "cargo nextest run -p witchy-types"
             add "./scripts/nextest-admitted.sh witchy -- cargo nextest run -E 'test(/^example_tests::/)'" ;;
         crates/witchy-lower/*)
@@ -565,6 +572,13 @@ for p in "${paths[@]}"; do
             any_rust=1
             gate_need_conformance=1
             add_pkg witchy-wir
+            # Downstream compiler crates consume this one, and their own tests
+            # (e.g. witchy-lower's canonical_pipeline admission tests) observe a
+            # change here that this crate's tests cannot. bd239ce55 changed the
+            # checker in witchy-wir, gated green without witchy-lower's tests,
+            # and left master red on one of them.
+            add_pkg witchy-lower
+            add_pkg witchy-runtime
             add "cargo nextest run -p witchy-wir --features witchy-wir/native"
             add "./scripts/nextest-admitted.sh witchy -- cargo nextest run --features witchy-wir/native -E 'test(/^example_tests::/)'"
             ;;
@@ -579,6 +593,14 @@ for p in "${paths[@]}"; do
             any_rust=1
             gate_need_conformance=1
             add_pkg witchy-syntax
+            # Downstream compiler crates consume this one, and their own tests
+            # (e.g. witchy-lower's canonical_pipeline admission tests) observe a
+            # change here that this crate's tests cannot. bd239ce55 changed the
+            # checker in witchy-wir, gated green without witchy-lower's tests,
+            # and left master red on one of them.
+            add_pkg witchy-types
+            add_pkg witchy-wir
+            add_pkg witchy-lower
             add "cargo nextest run -p witchy-syntax"
             add "./scripts/nextest-admitted.sh witchy -- cargo nextest run -E 'test(/^example_tests::/)'" ;;
         crates/witchy-interp/* | crates/witchy-caps/*)
