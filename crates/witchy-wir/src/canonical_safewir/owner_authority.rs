@@ -102,16 +102,20 @@ pub(super) fn validate<S: ModuleStage>(
                 if capture.transfer != *transfer || capture.storage != expected_storage || !type_matches
                     // A view capture takes its carrier's own representation:
                     // the `&Int` opaque owner is retained into an owner field,
-                    // a token-carried view (`&String`, a record, a scalar
-                    // List) is retained into a managed environment field, and a
-                    // scalar-value view is copied. `type_matches` above has
-                    // already bound the exact source type to that value type.
+                    // and a token-carried whole-root view (`&String`, a record,
+                    // a scalar List) is retained into a managed environment
+                    // field. The token arm is bound to exactly those whole-root
+                    // payloads, as the plain closure check binds it.
                     // Legacy Borrow/BorrowMut types never reach this arm
                     // because the source witness is required to be View.
-                    || rooted_view && !matches!((capture.value_type, capture.storage, capture.transfer),
-                        (ValueType::Gc(_), CaptureStorage::OwnerField(_), CaptureTransfer::CloneManaged)
-                        | (ValueType::Ref(_), CaptureStorage::EnvironmentField(_), CaptureTransfer::CloneManaged)
-                        | (ValueType::Int | ValueType::Float | ValueType::Bool, CaptureStorage::EnvironmentField(_), _))
+                    || rooted_view && !(matches!((capture.value_type, capture.storage, capture.transfer),
+                        (ValueType::Gc(_), CaptureStorage::OwnerField(_), CaptureTransfer::CloneManaged))
+                        || matches!((capture.value_type, capture.storage, capture.transfer),
+                            (ValueType::Ref(_), CaptureStorage::EnvironmentField(_), CaptureTransfer::CloneManaged))
+                            && super::authority::is_direct_rooted_view_whole_root(original.checked_type(), &records)
+                            && !matches!(original.checked_type(),
+                                witchy_syntax::ast::Type::Qualified(witchy_syntax::ast::TypeQual::View, inner)
+                                    if witchy_types::canonical_aggregates::is_scalar_value_view_payload(inner)))
                 { return Err(refuse()); }
             }
         }

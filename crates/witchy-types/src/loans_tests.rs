@@ -1034,7 +1034,7 @@
         )
         .expect_err("a shared reference cannot cross an async function boundary");
         assert!(
-            err.to_string().contains("async fn `bad` may not expose a borrowed view"),
+            err.to_string().contains("async fn `bad` may not expose a retired borrow"),
             "{err}"
         );
     }

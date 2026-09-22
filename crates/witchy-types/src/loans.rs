@@ -5122,7 +5122,7 @@ fn push_shallow_children<'a>(e: &'a Expr, stack: &mut Vec<&'a Expr>) {
 
 /// Visit every expression in a statement (pre-order), including nested ones, so a
 /// callback can inspect uses without each caller re-implementing the walk.
-fn walk_stmt_exprs<'a>(stmt: &'a Stmt, f: &mut impl FnMut(&'a Expr)) {
+pub(crate) fn walk_stmt_exprs<'a>(stmt: &'a Stmt, f: &mut impl FnMut(&'a Expr)) {
     match stmt {
         Stmt::Let { value, .. }
         | Stmt::Assign { value, .. }

@@ -4353,6 +4353,45 @@ fn region_declared_local_names(block: &Block) -> HashSet<String> {
 /// &parent; h`); a region-local owner may not.  We deliberately accept only
 /// direct borrow/alias/ascription chains until the retained loan graph exports
 /// a richer projection witness.
+/// Whether a value of this type may hold a callable or a task recipe, either
+/// of which can capture a view without exposing it in the type.
+fn ty_carries_callable_or_task(ty: &Ty, checker: &Checker) -> bool {
+    match checker.resolve(ty) {
+        Ty::Fn(..) => true,
+        Ty::Named(name, arguments) => {
+            name.as_ref() == "Task"
+                || name.rsplit('.').next() == Some("Task")
+                || arguments.iter().any(|argument| ty_carries_callable_or_task(argument, checker))
+        }
+        Ty::List(item) => ty_carries_callable_or_task(&item, checker),
+        Ty::Tuple(items) => items.iter().any(|item| ty_carries_callable_or_task(item, checker)),
+        _ => false,
+    }
+}
+
+/// Whether a region body forms a view (`&place`) rooted in one of the
+/// region's own locals anywhere, including inside a lambda or a call argument.
+fn block_forms_view_of_local(block: &Block, locals: &HashSet<String>) -> bool {
+    fn root(expression: &Expr) -> Option<&str> {
+        match expression {
+            Expr::Var(name) => Some(name),
+            Expr::Field { base, .. } | Expr::Index { base, .. } => root(base),
+            _ => None,
+        }
+    }
+    let mut found = false;
+    for statement in &block.stmts {
+        crate::loans::walk_stmt_exprs(statement, &mut |expression| {
+            if let Expr::Unary { op: UnOp::Borrow, expr } = expression
+                && root(expr).is_some_and(|root| locals.contains(root))
+            {
+                found = true;
+            }
+        });
+    }
+    found
+}
+
 fn region_reference_root(block: &Block) -> Option<String> {
     fn root(expression: &Expr, aliases: &HashMap<String, String>) -> Option<String> {
         match expression {
@@ -9828,6 +9867,18 @@ impl Checker {
         if carries_view && !direct_view {
             return terr(
                 "cannot copy out a region aggregate carrying immutable views without per-field parent-root provenance"
+                    .to_string(),
+            );
+        }
+        // A callable or task recipe hides what it captured behind its type, so
+        // the type test above cannot see a region-born view inside it
+        // (BUG-646). Refuse the copy-out whenever such a value is formed in a
+        // region that also forms a view of one of its own locals.
+        if ty_carries_callable_or_task(&self.resolve(ty), self)
+            && block_forms_view_of_local(block, locals)
+        {
+            return terr(
+                "cannot copy out a callable or task from `region:` that may retain a view of a region-born root; its backing root is rewound at region exit"
                     .to_string(),
             );
         }

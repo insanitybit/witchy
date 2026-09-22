@@ -135,3 +135,49 @@ fn a_legacy_borrow_still_cannot_cross_an_async_boundary() {
     .expect_err("a lifetime-bearing reference is retired");
     assert!(error.to_string().contains("retired"), "{error}");
 }
+
+/// A task recipe or closure formed in a region cannot carry a view of a
+/// region-born root out of it (RFC-0167 section 8; BUG-646): the callable or
+/// recipe type hides the captured view, so the region refuses the copy-out.
+#[test]
+fn a_region_born_view_cannot_escape_in_a_task_recipe_or_closure() {
+    for (label, source) in [
+        ("task recipe", r#"
+import chan
+from task import Task
+
+async fn worker(console: Console, v: &List(Int)):
+    chan.yield_now().await
+    console.print("${(*v).length()}")
+
+async fn main(console: Console):
+    let recipe = region -> Task(()):
+        let local = [1, 2, 3]
+        worker(console, &local)
+    let h = chan.spawn(recipe).await
+    chan.join(h).await
+"#),
+        ("closure", r#"
+fn keep(v: &String) -> fn() -> Int:
+    fn() -> Int: (*v).length()
+
+fn main(console: Console):
+    let f = region -> fn() -> Int:
+        let local = "abc" + "def"
+        keep(&local)
+    console.print("${f()}")
+"#),
+    ] {
+        let error = witchy::resolve_std_only_checked(source)
+            .expect_err(label);
+        assert!(error.to_string().contains("region-born root"), "{label}: {error}");
+    }
+}
+
+/// A region that returns a closure with no view of its own locals still
+/// copies out as before.
+#[test]
+fn a_region_returning_a_view_free_closure_still_copies_out() {
+    let source = "fn main(console: Console):\n    let f = region -> fn() -> Int:\n        let local = [1, 2, 3]\n        let n = local.length()\n        fn() -> Int: n * 2\n    console.print(\"${f()}\")\n";
+    witchy::resolve_std_only_checked(source).expect("a view-free closure leaves the region");
+}

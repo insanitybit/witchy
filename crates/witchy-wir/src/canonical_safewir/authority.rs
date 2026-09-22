@@ -1670,7 +1670,7 @@ fn erase_record_string_views(records: &ScalarRecordFields) -> ScalarRecordFields
 /// A whole-root view carried as the retained object token: `&String`
 /// (`StringRoot`) or a view of a declared, non-packed, argument-less user
 /// record or sum (`RecordRoot`).  Neither has a projection.
-fn is_direct_rooted_view_whole_root(source: &witchy_syntax::ast::Type, records: &ScalarRecordFields) -> bool {
+pub(super) fn is_direct_rooted_view_whole_root(source: &witchy_syntax::ast::Type, records: &ScalarRecordFields) -> bool {
     is_direct_rooted_view_string(source)
         || matches!(source,
             witchy_syntax::ast::Type::Qualified(witchy_syntax::ast::TypeQual::View, inner)
