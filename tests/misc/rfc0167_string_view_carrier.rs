@@ -110,3 +110,33 @@ fn float_view_still_fails_closed_at_the_canonical_boundary() {
         "the boundary must reject the unauthenticated carrier: {refusal}",
     );
 }
+
+/// A heap-built String (not a static literal) is retained by its view token:
+/// growing the owner in a loop leaves the view on the original value.
+#[test]
+fn a_view_of_a_heap_string_keeps_its_snapshot_while_the_owner_grows() {
+    assert_canonical_and_wasm(r#"
+fn main() -> Int:
+    var s = "ab" + "c"
+    let v = &s
+    for i in 0..5:
+        s = s + "x"
+    (*v).length() * 10 + s.length()
+"#, 38);
+}
+
+/// A `var` parameter write-back of a heap String leaves the caller's earlier
+/// view on the value it was formed over.
+#[test]
+fn a_var_write_back_does_not_change_a_held_heap_string_view() {
+    assert_canonical_and_wasm(r#"
+fn grow(var s: String):
+    s = s + "yz"
+
+fn main() -> Int:
+    var s = "a" + "bc"
+    let v = &s
+    grow(s)
+    (*v).length() * 10 + s.length()
+"#, 35);
+}
