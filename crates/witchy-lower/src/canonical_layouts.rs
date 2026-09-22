@@ -1573,6 +1573,64 @@ fn is_v1_packed_scalar_record(definition: &TypeDef) -> bool {
 }
 
 #[cfg(test)]
+mod layout_memo_tests {
+    use super::*;
+
+    fn checked(source: &str) -> witchy_types::pipeline::CheckedModule {
+        witchy_types::pipeline::link_checked_from_source_bundle(
+            vec![("main".into(), source.as_bytes().to_vec())],
+            "main", |_, _, _| Ok(Default::default()),
+        ).expect("fixture checks")
+    }
+
+    const RECORD: &str = "type Pair:\n    a: Int\n    b: Int\n\nfn main() -> Int:\n    let p = Pair(1, 2)\n    p.a + p.b\n";
+    const OTHER: &str = "type Triple:\n    x: Int\n    y: Int\n    z: Int\n\nfn main() -> Int:\n    let t = Triple(1, 2, 3)\n    t.x\n";
+
+    #[test]
+    fn scoped_projection_equals_the_unscoped_one() {
+        let module = checked(RECORD);
+        let source = module.canonical_source().expect("canonical source");
+        let unscoped = derive_layout_bundle(source).expect("unscoped bundle");
+        let (first, second, families) = with_layout_memo(source, || (
+            derive_layout_bundle(source).expect("first scoped bundle"),
+            derive_layout_bundle(source).expect("second (cached) bundle"),
+            closure_families(source).expect("families from the same projection"),
+        ));
+        assert_eq!(first, unscoped, "a scoped projection must equal an unscoped one");
+        assert_eq!(second, unscoped, "a cache hit must return the same bundle");
+        assert_eq!(families, closure_families(source).expect("unscoped families"));
+    }
+
+    #[test]
+    fn nested_scopes_for_different_sources_never_cross() {
+        let outer_module = checked(RECORD);
+        let inner_module = checked(OTHER);
+        let outer = outer_module.canonical_source().expect("outer source");
+        let inner = inner_module.canonical_source().expect("inner source");
+        let (outer_before, inner_bundle, outer_after) = with_layout_memo(outer, || {
+            let outer_before = derive_layout_bundle(outer).expect("outer");
+            let inner_bundle = with_layout_memo(inner, || derive_layout_bundle(inner).expect("inner"));
+            (outer_before, inner_bundle, derive_layout_bundle(outer).expect("outer again"))
+        });
+        assert_eq!(outer_before, derive_layout_bundle(outer).expect("outer unscoped"));
+        assert_eq!(inner_bundle, derive_layout_bundle(inner).expect("inner unscoped"));
+        assert_eq!(outer_after, outer_before, "the inner scope leaked into the outer one");
+        assert_ne!(inner_bundle, outer_before, "fixtures must differ for this test to mean anything");
+    }
+
+    #[test]
+    fn a_panicking_body_still_pops_its_scope() {
+        let module = checked(RECORD);
+        let source = module.canonical_source().expect("canonical source");
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            with_layout_memo(source, || -> () { panic!("body fails") })
+        }));
+        assert!(result.is_err());
+        LAYOUT_MEMO.with(|memo| assert!(memo.borrow().is_empty(), "a panic left a stale scope behind"));
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
 
