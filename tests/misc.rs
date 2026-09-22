@@ -209,6 +209,8 @@ mod rfc0167_unit_discard_matrix;
 mod rfc0167_view_carrier_transport;
 #[path = "misc/rfc0167_list_view.rs"]
 mod rfc0167_list_view;
+#[path = "misc/bug643_var_list_loop.rs"]
+mod bug643_var_list_loop;
 #[path = "misc/rfc0167_record_view.rs"]
 mod rfc0167_record_view;
 #[path = "misc/rfc0167_slice_index_read.rs"]

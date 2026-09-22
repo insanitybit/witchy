@@ -7994,6 +7994,7 @@ impl FunctionLowerer<'_> {
         // does not carry.
         let rebound = self.loop_rebindings_with_write_backs(Some(scrutinee), body);
         let mut names = loop_lane_names(&outer, &rebound);
+        let outer = self.detach_shared_write_back_lanes(&names, outer)?;
         let list_names = names
             .iter()
             .filter_map(|name| {
@@ -8109,6 +8110,35 @@ impl FunctionLowerer<'_> {
         Ok(())
     }
 
+    /// A loop that carries a `var` List parameter still bound to the caller's
+    /// shared entry token would join that unowned token with the fresh
+    /// replacement a mutation leaves on the back edge (BUG-643). Enter the
+    /// loop with an owned copy instead, exactly the copy `var ys = xs` takes;
+    /// the write-back then returns the loop's final list as before.
+    fn detach_shared_write_back_lanes(
+        &mut self,
+        names: &[String],
+        mut outer: HashMap<String, ValueId>,
+    ) -> Result<HashMap<String, ValueId>, CanonicalLoweringError> {
+        for name in names {
+            if !self.write_back_parameters.contains(name) {
+                continue;
+            }
+            let Some(&value) = outer.get(name) else { continue };
+            if self.parameter_names.get(&value) != Some(name) {
+                continue;
+            }
+            let Some(ty) = self.write_back_parameter_types.get(name).cloned() else { continue };
+            if !matches!(ty.unqualified(), Type::Named(head, arguments) if head == "List" && arguments.len() == 1) {
+                continue;
+            }
+            let copy = self.clone_list_value_for_storage(value, &ty)?;
+            self.bindings.insert(name.clone(), copy);
+            outer.insert(name.clone(), copy);
+        }
+        Ok(outer)
+    }
+
     fn lower_while(
         &mut self,
         condition: &Expr,
@@ -8123,6 +8153,7 @@ impl FunctionLowerer<'_> {
         // The condition's `var` write-backs are loop-carried too (BUG-635).
         let rebound = self.loop_rebindings_with_write_backs(Some(condition), body);
         let mut names = loop_lane_names(&outer, &rebound);
+        let outer = self.detach_shared_write_back_lanes(&names, outer)?;
         // An immutable exact-extent object crosses the loop as one
         // reference/count/capacity tuple. Mutable-capacity objects remain on
         // the existing conservative path unless source semantics rebind them.
@@ -8389,6 +8420,7 @@ impl FunctionLowerer<'_> {
         let rebound = self.loop_rebindings_with_write_backs(None, body)
             .without_iteration_binding(variable);
         let names = loop_lane_names(&outer, &rebound);
+        let outer = self.detach_shared_write_back_lanes(&names, outer)?;
         let list_names = names
             .iter()
             .filter_map(|name| {
@@ -8567,6 +8599,7 @@ impl FunctionLowerer<'_> {
         let rebound = self.loop_rebindings_with_write_backs(None, body)
             .without_iteration_binding(variable);
         let mut names = loop_lane_names(&outer, &rebound);
+        let outer = self.detach_shared_write_back_lanes(&names, outer)?;
         // An immutable String used by the body keeps its dominating root.
         // Only its authenticated header lanes cross the loop, so a branch
         // cannot manufacture a fresh shared reference identity for it.
