@@ -14189,6 +14189,12 @@ impl FunctionLowerer<'_> {
         if operator == UnOp::Borrow {
             return self.lower_rooted_view(expression, operand);
         }
+        // Only a checked `&Float`/`&Bool`/`&Duration` view reads as its own
+        // value; any other scalar operand of `*` fails loudly below.
+        let scalar_value_view = operator == UnOp::Deref
+            && self.expression_type(operand).is_ok_and(|ty| matches!(&ty,
+                Type::Qualified(TypeQual::View, inner)
+                    if witchy_types::canonical_aggregates::is_scalar_value_view_payload(inner)));
         let direct_mut_root = operator == UnOp::BorrowMut && matches!(operand, Expr::Var(_));
         let direct_mut_projected_field = operator == UnOp::BorrowMut
             && self.authenticated_direct_projected_exclusive_handle_open(operand)?;
@@ -14313,7 +14319,7 @@ impl FunctionLowerer<'_> {
             (UnOp::Deref, ValueType::Ref(_)) => self.clone_reference_token(operand),
             // A `&Float`/`&Bool`/`&Duration` view is the scalar value itself
             // (`ScalarValue`); `&Int` is a GC cell handled above.
-            (UnOp::Deref, ValueType::Float | ValueType::Bool | ValueType::Int) => Ok(operand),
+            (UnOp::Deref, ValueType::Float | ValueType::Bool | ValueType::Int) if scalar_value_view => Ok(operand),
             (UnOp::Deref, _) => Err(CanonicalLoweringError::UnsupportedExpression("dereference operand")),
             // Checked source establishes consumption; SafeWIR forwards the same token,
             // and the affine checker rejects any duplicate use.
