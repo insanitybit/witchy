@@ -237,3 +237,28 @@ fn main() -> Int:
     (*v).value * 10 + b.value
 "#, 38);
 }
+
+/// The ABI admits a record-root view by the same rule lowering and authority
+/// apply, so a packed (inline) record's view has no record-root carrier and
+/// is refused at the boundary rather than mis-carried.
+#[test]
+fn a_packed_record_view_has_no_record_root_carrier() {
+    let source = r#"
+type Point packed:
+    x: Int
+    y: Int
+
+fn keep(p: &Point) -> &Point:
+    p
+
+fn main() -> Int:
+    let p = Point(x: 1, y: 2)
+    (*keep(&p)).x
+"#;
+    let Ok(checked) = witchy::resolve_std_only_checked(source) else { return };
+    assert!(
+        !matches!(witchy::codegen::compile_checked_module_artifact(&checked),
+            witchy::codegen::LoweringOutcome::Lowered(_)),
+        "a packed record has no record-root view carrier",
+    );
+}

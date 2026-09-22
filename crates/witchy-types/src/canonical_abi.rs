@@ -207,6 +207,9 @@ impl std::error::Error for CanonicalAbiError {}
 struct Context {
     nominal_ordinals: BTreeMap<String, u32>,
     type_declarations: std::collections::BTreeSet<String>,
+    /// The module's type definitions, so a record-root view is admitted by the
+    /// same rule lowering and authority apply (`is_record_root_payload`).
+    definitions: BTreeMap<String, ast::TypeDef>,
 }
 
 impl Context {
@@ -229,7 +232,8 @@ impl Context {
                 _ => None,
             })
             .collect();
-        Self { nominal_ordinals, type_declarations }
+        let definitions = crate::canonical_aggregates::type_definitions(module);
+        Self { nominal_ordinals, type_declarations, definitions }
     }
 
     /// A `type` declaration (not a `type X = ...` alias): only these can be
@@ -527,6 +531,13 @@ fn rooted_view_from_ty(
             carrier: CanonicalRootedViewCarrier::StringRoot,
         }),
         Ty::Named(..) => {
+            if !crate::typeck::ty_to_ast(payload).is_some_and(|payload| {
+                crate::canonical_aggregates::is_record_root_payload(&payload, &context.definitions)
+            }) {
+                return Err(CanonicalAbiError::Unsupported(
+                    "rooted view payload has no admitted authenticated carrier".into(),
+                ));
+            }
             let mut identity = Vec::new();
             record_identity_ty(payload, context, &mut identity)?;
             Ok(CanonicalReferenceKind::RootedView {
@@ -577,6 +588,11 @@ fn rooted_view_from_ast(
         {
             // A record root is a head; scalar and String leaves appear only as
             // its type arguments.
+            if !crate::canonical_aggregates::is_record_root_payload(payload.unqualified(), &context.definitions) {
+                return Err(CanonicalAbiError::Unsupported(
+                    "rooted view payload has no admitted authenticated carrier".into(),
+                ));
+            }
             let mut identity = Vec::new();
             record_identity_ast(payload.unqualified(), context, &mut identity)?;
             Ok(CanonicalReferenceKind::RootedView {
