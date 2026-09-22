@@ -4072,12 +4072,26 @@ fn bind_ast_type_vars_inner(
     // matches the view structurally and binds `a = Int`.
     let pattern = without_ownership_qualifiers(pattern);
     let concrete = without_ownership_qualifiers(concrete);
-    if let (
-        Type::Qualified(TypeQual::View, pattern_payload),
-        Type::Qualified(TypeQual::View, concrete_payload),
-    ) = (pattern, concrete)
-    {
-        return bind_ast_type_vars_inner(pattern_payload, concrete_payload, out);
+    match (pattern, concrete) {
+        (
+            Type::Qualified(TypeQual::View, pattern_payload),
+            Type::Qualified(TypeQual::View, concrete_payload),
+        ) => return bind_ast_type_vars_inner(pattern_payload, concrete_payload, out),
+        // Evidence that has already been read through (a table entry for
+        // `*call(..)`) carries no view; the pattern's payload still binds.
+        (Type::Qualified(TypeQual::View, pattern_payload), _) => {
+            return bind_ast_type_vars_inner(pattern_payload, concrete, out);
+        }
+        // Only a bare type variable takes the whole view as its binding; a
+        // structural pattern matches the viewed payload.
+        (Type::Named(name, args), Type::Qualified(TypeQual::View, concrete_payload))
+            if !(args.is_empty()
+                && name.chars().next().is_some_and(char::is_lowercase)
+                && !name.contains('.')) =>
+        {
+            return bind_ast_type_vars_inner(pattern, concrete_payload, out);
+        }
+        _ => {}
     }
     match (pattern, concrete) {
         (Type::Named(var, args), concrete)
