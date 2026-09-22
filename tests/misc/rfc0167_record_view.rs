@@ -262,3 +262,27 @@ fn main() -> Int:
         "a packed record has no record-root view carrier",
     );
 }
+
+/// A closure captures record and list views as their retained tokens and
+/// reads the values the views were formed over after the owners change.
+#[test]
+fn a_closure_captures_record_and_list_views() {
+    assert_canonical_and_wasm(r#"
+type Point:
+    x: Int
+    y: Int
+
+fn apply(f: fn(Int) -> Int, k: Int) -> Int:
+    f(k)
+
+fn main() -> Int:
+    var p = Point(x: 3, y: 4)
+    let pv = &p
+    var xs = [1, 2]
+    let xv = &xs
+    let f = fn(k: Int) -> Int: k + (*pv).x * 10 + (*xv).length()
+    p = Point(x: 9, y: 9)
+    xs.push(5)
+    apply(f, 100)
+"#, 132);
+}

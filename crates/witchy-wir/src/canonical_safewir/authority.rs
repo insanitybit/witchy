@@ -861,11 +861,15 @@ fn validate_candidate_abi_bindings<S: ModuleStage>(
                         | (super::ValueType::Int | super::ValueType::Float | super::ValueType::Bool | super::ValueType::Unit,
                            witchy_types::canonical_closure::ClosureCaptureTransfer::CopyScalar)
                 ) || (
-                    // A `&String` view is its retained String token (RFC-0167
-                    // StringRoot), so its capture is a managed reference slot.
+                    // A whole-root view (`&String`, a record or sum, a scalar
+                    // List) is its retained object token, so its capture is a
+                    // managed reference slot.
                     matches!(actual, super::ValueType::Ref(_))
                         && matches!(capture.transfer(), witchy_types::canonical_closure::ClosureCaptureTransfer::RootedViewByValue)
-                        && is_direct_rooted_view_string(capture.checked_type())
+                        && is_direct_rooted_view_whole_root(capture.checked_type(), &records)
+                        && !matches!(capture.checked_type(),
+                            witchy_syntax::ast::Type::Qualified(witchy_syntax::ast::TypeQual::View, inner)
+                                if witchy_types::canonical_aggregates::is_scalar_value_view_payload(inner))
                 ) || (
                     // A `&Float`/`&Bool`/`&Duration` view is its value
                     // (`ScalarValue`), so its capture is a copied scalar slot.

@@ -85,6 +85,13 @@ fn is_admitted_view_carrier(payload: &Ty) -> bool {
     // token itself (RFC-0167 StringRoot), so it crosses a callable boundary
     // exactly as a captured String does.
     matches!(payload, Ty::Int | Ty::String | Ty::Float | Ty::Bool | Ty::Duration)
+        // Whole-root views carried as retained tokens: a record, sum, `Option`,
+        // or `Result` (`RecordRoot`) and a List of scalars or Strings
+        // (`ListRoot`). The canonical carrier judgments in lowering and
+        // authority still decide the exact shape and refuse the rest loudly.
+        || matches!(payload, Ty::Named(name, _) if name.as_ref() != "Slice" && name.as_ref() != "SecretStore")
+        || matches!(payload, Ty::List(element)
+            if matches!(element.as_ref(), Ty::Int | Ty::Float | Ty::Duration | Ty::Bool | Ty::String))
 }
 
 fn type_is_explicit_reference(ty: &ast::Type) -> bool {
@@ -12468,7 +12475,7 @@ impl Checker {
                         )
                     {
                         return terr(format!(
-                            "closure capture `{capture}` carries a view whose payload has no admitted carrier; only `&Int`, `&String`, `&Float`, `&Bool`, and `&Duration` views cross a callable boundary"
+                            "closure capture `{capture}` carries a view whose payload has no admitted carrier; only scalar, `&String`, record, and scalar-List views cross a callable boundary"
                         ));
                     }
                     if let Some(borrowed) = self.borrowed_nominal_name(&captured_ty) {

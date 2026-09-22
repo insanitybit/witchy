@@ -53,6 +53,14 @@
     }
 
     #[test]
+    fn a_read_through_a_view_is_not_parenthesized_twice() {
+        // `(*s).length()` and `(*v) * 10` are already canonical: the deref is a
+        // primary, so a receiver or operand position adds no second pair.
+        let src = "fn f(s: &String) -> Int:\n    (*s).length()\n\nfn g(v: &Int) -> Int:\n    (*v) * 10 + (*v)\n";
+        assert_eq!(reformat(src).as_deref(), Some(src));
+    }
+
+    #[test]
     fn reading_through_a_view_formats_as_canonical_source() {
         // (RFC-0167) `(*value)` is how a view is read, and it is canonical source:
         // only a WRITE through a dereference is retired. The formatter used to
@@ -1196,3 +1204,4 @@ fn rfc0167_formatter_preserves_bracketed_function_type_params() {
     assert!(formatted.contains("fn choose[b](self, value: b) -> b"), "{formatted}");
     assert_eq!(reformat(&formatted).as_deref(), Some(formatted.as_str()));
 }
+

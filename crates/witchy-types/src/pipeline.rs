@@ -2562,14 +2562,14 @@ impl Reflect for Counter:
         let error = link_checked_from_source_bundle(
             vec![(
                 "main".to_string(),
-                b"mode opt\n\nfn make(xs: List(Int)):\n    let view = &xs\n    let f = fn(): view[0]\n\nfn main():\n    make([])\n".to_vec(),
+                b"mode opt\n\nfn make(xs: List(List(Int))):\n    let view = &xs\n    let f = fn(): view[0]\n\nfn main():\n    make([])\n".to_vec(),
             )],
             "main",
             no_expand,
         )
         .expect_err("borrowed closure capture must not enter the v1 witness");
         assert!(error.to_string().contains("closure capture"), "{error}");
-        // `&List(Int)` has no admitted carrier; that, not a loan escape, is why
+        // `&List(List(Int))` has no admitted carrier; that, not a loan escape, is why
         // this capture cannot enter the witness (RFC-0167).
         assert!(error.to_string().contains("no admitted carrier"), "{error}");
     }

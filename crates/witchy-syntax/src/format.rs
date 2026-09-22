@@ -1846,6 +1846,9 @@ fn expr_prec(e: &Expr) -> u8 {
         Expr::Binary { op, .. } => binop_prec(*op),
         Expr::Range { .. } => RANGE_PREC,
         Expr::Unary { op: UnOp::Await, .. } => POSTFIX_PREC,
+        // A read through a view always prints as `(*view)`, already a primary,
+        // so it never needs a second pair of parentheses as a receiver or operand.
+        Expr::Unary { op: UnOp::Deref, .. } => 100,
         Expr::Unary { .. } => UNARY_PREC,
         Expr::Field { .. } | Expr::Try(_) | Expr::Apply { .. } | Expr::As { .. } | Expr::Index { .. } | Expr::MethodCall { .. } => POSTFIX_PREC,
         _ => 100,
