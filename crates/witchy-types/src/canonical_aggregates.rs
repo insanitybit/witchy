@@ -653,6 +653,19 @@ pub fn canonical_owner_aggregate_identity(
     }
 }
 
+/// A whole view of this value is a `RecordRoot`: the retained aggregate
+/// object is the snapshot.  Admitted for a declared user record or sum, or
+/// builtin `Option`/`Result`, with a non-packed heap shape that holds no view
+/// (a view inside would need its own carrier).
+pub fn is_record_root_payload(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> bool {
+    let Type::Named(name, arguments) = ty.unqualified() else { return false };
+    let head = matches!((name.as_str(), arguments.len()), ("Option", 1) | ("Result", 2))
+        || definitions.contains_key(name);
+    head && crate::canonical_capabilities::representation(ty, definitions).is_none()
+        && scalar_aggregate_shape(ty, definitions).is_some_and(|shape| !shape.packed)
+        && !contains_view(ty, definitions, &mut BTreeSet::new())
+}
+
 /// Nesting bound for view carriers. A recursive nominal cannot make the
 /// carrier judgment diverge; anything deeper simply is not a carrier.
 const MAX_VIEW_CARRIER_DEPTH: usize = 8;

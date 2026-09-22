@@ -3287,9 +3287,9 @@ fn is_rooted_int_slice(ty: &Type) -> bool {
 /// retained aggregate object token is the snapshot, exactly as for String.
 /// Lowering still requires the root to be a heap `Ref` (not packed inline).
 fn is_rooted_user_record(ty: &Type) -> bool {
-    matches!(ty.unqualified(), Type::Named(name, arguments)
-        if arguments.is_empty()
-            && name.rsplit('.').next().and_then(|segment| segment.chars().next()).is_some_and(char::is_uppercase)
+    matches!(ty.unqualified(), Type::Named(name, _)
+        if name.rsplit('.').next().and_then(|segment| segment.chars().next()).is_some_and(char::is_uppercase)
+            && !matches!(name.as_str(), "List" | "Dict" | "Slice")
             && !matches!(name.as_str(), "Int" | "Float" | "Duration" | "Bool" | "Nil" | "Unit"
                 | "String" | "Bytes" | "SecretStore")
             && witchy_types::canonical_capabilities::representation(ty, &BTreeMap::new()).is_none())
@@ -13932,11 +13932,10 @@ impl FunctionLowerer<'_> {
         operand: &Expr,
     ) -> Result<ValueId, CanonicalLoweringError> {
         let fact = self.checked_rooted_view_fact(expression)?;
-        let record_root = matches!(fact.payload(), Ty::Named(name, arguments)
-            if arguments.is_empty()
-                && self.definitions.contains_key(name.as_ref())
-                && scalar_aggregate_shape(&Type::Named(name.to_string(), Vec::new()), self.definitions)
-                    .is_some_and(|shape| !shape.packed));
+        let record_root = matches!(fact.payload(), Ty::Named(..))
+            && witchy_types::typeck::ty_to_ast(fact.payload()).is_some_and(|payload| {
+                witchy_types::canonical_aggregates::is_record_root_payload(&payload, self.definitions)
+            });
         if (matches!(fact.payload(), Ty::String) || record_root)
             && !fact.place().steps().is_empty()
         {

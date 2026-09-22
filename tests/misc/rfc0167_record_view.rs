@@ -180,3 +180,60 @@ fn main() -> Int:
     (*v).x * 1000 + (*v).y * 100 + (*w).length() * 10 + o.tag.length()
 "#, 3412);
 }
+
+/// A generic record is a record root per instantiation: `&Box(Int)` and
+/// `&Box(String)` in one program each read their own payload.
+#[test]
+fn views_of_two_instantiations_of_one_generic_record() {
+    assert_canonical_and_wasm(r#"
+type Box(a):
+    value: a
+
+fn keep_int(b: &Box(Int)) -> &Box(Int):
+    b
+
+fn keep_text(b: &Box(String)) -> &Box(String):
+    b
+
+fn main() -> Int:
+    let n = Box(value: 7)
+    let t = Box(value: "four")
+    (*keep_int(&n)).value * 10 + (*keep_text(&t)).value.length()
+"#, 74);
+}
+
+/// Builtin `Option` and `Result` values are record roots too.
+#[test]
+fn views_of_option_and_result_values_match_through_a_read() {
+    assert_canonical_and_wasm(r#"
+fn opt(o: &Option(Int)) -> Int:
+    match (*o):
+        Some(n) -> n
+        None -> 0
+
+fn res(r: &Result(Int, String)) -> Int:
+    match (*r):
+        Ok(n) -> n
+        Err(e) -> e.length() * 100
+
+fn main() -> Int:
+    let a = Some(9)
+    let b: Result(Int, String) = Ok(4)
+    let c: Result(Int, String) = Err("xyz")
+    opt(&a) * 1000 + res(&b) * 10 + res(&c)
+"#, 9340);
+}
+
+#[test]
+fn a_generic_record_view_keeps_its_snapshot() {
+    assert_canonical_and_wasm(r#"
+type Box(a):
+    value: a
+
+fn main() -> Int:
+    var b = Box(value: 3)
+    let v = &b
+    b = Box(value: 8)
+    (*v).value * 10 + b.value
+"#, 38);
+}

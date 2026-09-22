@@ -526,9 +526,11 @@ fn rooted_view_from_ty(
             payload: rooted_string_payload_key(),
             carrier: CanonicalRootedViewCarrier::StringRoot,
         }),
-        Ty::Named(name, arguments) if arguments.is_empty() && is_user_record_name(name) && context.declares_type(name) => {
+        Ty::Named(..) => {
+            let mut identity = Vec::new();
+            record_identity_ty(payload, context, &mut identity)?;
             Ok(CanonicalReferenceKind::RootedView {
-                payload: rooted_record_payload_key(context.nominal(name)?),
+                payload: rooted_record_payload_key(&identity),
                 carrier: CanonicalRootedViewCarrier::RecordRoot,
             })
         }
@@ -570,9 +572,15 @@ fn rooted_view_from_ast(
             payload: rooted_string_payload_key(),
             carrier: CanonicalRootedViewCarrier::StringRoot,
         }),
-        Type::Named(name, arguments) if arguments.is_empty() && is_user_record_name(name) && context.declares_type(name) => {
+        Type::Named(name, arguments)
+            if !(arguments.is_empty() && matches!(name.as_str(), "Int" | "Float" | "Duration" | "Bool" | "String")) =>
+        {
+            // A record root is a head; scalar and String leaves appear only as
+            // its type arguments.
+            let mut identity = Vec::new();
+            record_identity_ast(payload.unqualified(), context, &mut identity)?;
             Ok(CanonicalReferenceKind::RootedView {
-                payload: rooted_record_payload_key(context.nominal(name)?),
+                payload: rooted_record_payload_key(&identity),
                 carrier: CanonicalRootedViewCarrier::RecordRoot,
             })
         }
@@ -602,10 +610,81 @@ fn is_user_record_name(name: &str) -> bool {
         && crate::typeck::anon_union_synthetic_variants(name).is_none()
 }
 
-fn rooted_record_payload_key(ordinal: u32) -> CanonicalTypeKey {
-    let mut bytes = b"witchy.canonical-rooted-view-payload.v1/record".to_vec();
-    bytes.extend_from_slice(&ordinal.to_le_bytes());
+fn rooted_record_payload_key(identity: &[u8]) -> CanonicalTypeKey {
+    let mut bytes = b"witchy.canonical-rooted-view-payload.v2/record".to_vec();
+    bytes.extend_from_slice(identity);
     CanonicalTypeKey(*blake3::hash(&bytes).as_bytes())
+}
+
+/// Record-root payload identity, written identically from a checked type and
+/// from a declaration annotation (the general encoders deliberately differ).
+/// A head is a declared user type (its nominal ordinal) or builtin `Option` /
+/// `Result`; an argument is a scalar, `String`, or another such head. Anything
+/// else has no admitted record-root identity.
+const RECORD_IDENTITY_USER: u8 = 1;
+const RECORD_IDENTITY_OPTION: u8 = 2;
+const RECORD_IDENTITY_RESULT: u8 = 3;
+const RECORD_IDENTITY_LEAF: u8 = 4;
+
+fn record_head(name: &str, arity: usize, context: &Context, bytes: &mut Vec<u8>) -> Result<(), CanonicalAbiError> {
+    match (name, arity) {
+        ("Option", 1) => bytes.push(RECORD_IDENTITY_OPTION),
+        ("Result", 2) => bytes.push(RECORD_IDENTITY_RESULT),
+        _ if is_user_record_name(name) && context.declares_type(name) => {
+            bytes.push(RECORD_IDENTITY_USER);
+            bytes.extend_from_slice(&context.nominal(name)?.to_le_bytes());
+        }
+        _ => return Err(CanonicalAbiError::Unsupported(
+            "rooted view payload has no admitted authenticated carrier".into(),
+        )),
+    }
+    bytes.extend_from_slice(&(arity as u32).to_le_bytes());
+    Ok(())
+}
+
+fn record_leaf(name: &str, bytes: &mut Vec<u8>) -> bool {
+    let tag = match name {
+        "Int" => 1, "Float" => 2, "Duration" => 3, "Bool" => 4, "String" => 5,
+        _ => return false,
+    };
+    bytes.extend_from_slice(&[RECORD_IDENTITY_LEAF, tag]);
+    true
+}
+
+fn record_identity_ty(ty: &Ty, context: &Context, bytes: &mut Vec<u8>) -> Result<(), CanonicalAbiError> {
+    match ty {
+        Ty::Int => { record_leaf("Int", bytes); }
+        Ty::Float => { record_leaf("Float", bytes); }
+        Ty::Duration => { record_leaf("Duration", bytes); }
+        Ty::Bool => { record_leaf("Bool", bytes); }
+        Ty::String => { record_leaf("String", bytes); }
+        Ty::Named(name, arguments) => {
+            record_head(name, arguments.len(), context, bytes)?;
+            for argument in arguments.iter() {
+                record_identity_ty(argument, context, bytes)?;
+            }
+        }
+        _ => return Err(CanonicalAbiError::Unsupported(
+            "rooted view payload has no admitted authenticated carrier".into(),
+        )),
+    }
+    Ok(())
+}
+
+fn record_identity_ast(ty: &Type, context: &Context, bytes: &mut Vec<u8>) -> Result<(), CanonicalAbiError> {
+    let Type::Named(name, arguments) = ty.unqualified() else {
+        return Err(CanonicalAbiError::Unsupported(
+            "rooted view payload has no admitted authenticated carrier".into(),
+        ));
+    };
+    if arguments.is_empty() && record_leaf(name, bytes) {
+        return Ok(());
+    }
+    record_head(name, arguments.len(), context, bytes)?;
+    for argument in arguments {
+        record_identity_ast(argument, context, bytes)?;
+    }
+    Ok(())
 }
 
 fn rooted_string_payload_key() -> CanonicalTypeKey {

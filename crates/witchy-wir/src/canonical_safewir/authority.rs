@@ -634,6 +634,9 @@ fn validate_candidate_abi_bindings<S: ModuleStage>(
         Some((target.function_ordinal, entry.key.as_bytes()))
     }).collect::<BTreeMap<_, _>>();
     let records = witchy_types::canonical_aggregates::type_definitions(source.typed_module().module());
+    // Signature correspondence reads a `&String` field as its String token;
+    // computed once, used only by the two layout-correspondence matches.
+    let string_view_records = erase_record_string_views(&records);
     let access_facts = source.access_facts()
         .map_err(|_| CandidateAbiBindingError::MissingCanonicalLayouts)?;
     // A direct exclusive ABI has no syntax-only fallback: a stale or absent
@@ -725,7 +728,6 @@ fn validate_candidate_abi_bindings<S: ModuleStage>(
             &records,
         );
         let source_signature = erase_nested_string_views(&source_signature);
-        let string_view_records = erase_record_string_views(&records);
         let source_matches = candidate_signature_matches_source_with_layouts(
             signature,
             &source_signature,
@@ -1636,11 +1638,7 @@ fn is_direct_rooted_view_whole_root(source: &witchy_syntax::ast::Type, records: 
     is_direct_rooted_view_string(source)
         || matches!(source,
             witchy_syntax::ast::Type::Qualified(witchy_syntax::ast::TypeQual::View, inner)
-                if matches!(inner.unqualified(), witchy_syntax::ast::Type::Named(name, arguments)
-                    if arguments.is_empty()
-                        && records.contains_key(name)
-                        && witchy_types::canonical_aggregates::scalar_aggregate_shape(inner, records)
-                            .is_some_and(|shape| !shape.packed)))
+                if witchy_types::canonical_aggregates::is_record_root_payload(inner, records))
 }
 
 /// A whole immutable `&String` view: carried as the retained String token
