@@ -3302,6 +3302,35 @@ fn is_rooted_string(ty: &Type) -> bool {
     matches!(ty.unqualified(), Type::Named(name, arguments) if name == "String" && arguments.is_empty())
 }
 
+/// The source form of a field view (`&root.a.b`) must name the checked field
+/// steps, in order, from the checked root binding.
+fn check_field_view_source(
+    root: &str,
+    steps: &[CheckedPlaceStep],
+    operand: &Expr,
+) -> Result<(), CanonicalLoweringError> {
+    let mut cursor = operand;
+    for step in steps.iter().rev() {
+        let (CheckedPlaceStep::Field(expected), Expr::Field { base, field }) = (step, cursor) else {
+            return Err(CanonicalLoweringError::InvalidCheckedViewFacts(
+                "immutable view fact field projection does not match its source form".to_string(),
+            ));
+        };
+        if expected != field {
+            return Err(CanonicalLoweringError::InvalidCheckedViewFacts(
+                "immutable view fact field does not match its retained source node".to_string(),
+            ));
+        }
+        cursor = base;
+    }
+    if !matches!(cursor, Expr::Var(name) if name == root) {
+        return Err(CanonicalLoweringError::InvalidCheckedViewFacts(
+            "immutable view fact field root does not match its source form".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 fn is_checked_rooted_int_slice_payload(ty: &Ty) -> bool {
     matches!(ty, Ty::Named(name, arguments)
         if name.as_ref() == "Slice"
@@ -13908,6 +13937,27 @@ impl FunctionLowerer<'_> {
                 && self.definitions.contains_key(name.as_ref())
                 && scalar_aggregate_shape(&Type::Named(name.to_string(), Vec::new()), self.definitions)
                     .is_some_and(|shape| !shape.packed));
+        if (matches!(fact.payload(), Ty::String) || record_root)
+            && !fact.place().steps().is_empty()
+        {
+            // A view of a String or record field (`&p.name`, `&o.inner`) is
+            // that field's retained token: records are immutable values, so
+            // the field read at formation is exactly what the view observes.
+            let steps = fact.place().steps();
+            if !steps.iter().all(|step| matches!(step, CheckedPlaceStep::Field(_))) {
+                return Err(CanonicalLoweringError::UnsupportedExpression(
+                    "rooted String or record view projection is outside the canonical carrier",
+                ));
+            }
+            check_field_view_source(fact.place().root(), steps, operand)?;
+            let value = self.lower_expr(operand)?;
+            if !matches!(self.values.get(&value), Some(ValueType::Ref(_))) {
+                return Err(CanonicalLoweringError::InvalidCheckedViewFacts(
+                    "immutable String or record field view does not read a heap value".to_string(),
+                ));
+            }
+            return Ok(value);
+        }
         if matches!(fact.payload(), Ty::String) || record_root {
             // A whole-String view retains the immutable root object; it has
             // no projection and never exposes a place.
@@ -14060,25 +14110,7 @@ impl FunctionLowerer<'_> {
             steps if matches!(fact.payload(), Ty::Int)
                 && steps.iter().all(|step| matches!(step, CheckedPlaceStep::Field(_))) =>
             {
-                let mut cursor = operand;
-                for step in steps.iter().rev() {
-                    let (CheckedPlaceStep::Field(expected), Expr::Field { base, field }) = (step, cursor) else {
-                        return Err(CanonicalLoweringError::InvalidCheckedViewFacts(
-                            "immutable view fact field projection does not match its source form".to_string(),
-                        ));
-                    };
-                    if expected != field {
-                        return Err(CanonicalLoweringError::InvalidCheckedViewFacts(
-                            "immutable view fact field does not match its retained source node".to_string(),
-                        ));
-                    }
-                    cursor = base;
-                }
-                if !matches!(cursor, Expr::Var(name) if name == fact.place().root()) {
-                    return Err(CanonicalLoweringError::InvalidCheckedViewFacts(
-                        "immutable view fact field root does not match its source form".to_string(),
-                    ));
-                }
+                check_field_view_source(fact.place().root(), steps, operand)?;
                 let value = self.lower_expr(operand)?;
                 if self.values.get(&value) != Some(&ValueType::Int) {
                     return Err(CanonicalLoweringError::InvalidCheckedViewFacts(

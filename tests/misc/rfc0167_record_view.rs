@@ -140,3 +140,43 @@ fn bad() -> &Point:
         .expect_err("a region-born record root must not escape through its view");
     assert!(error.to_string().contains("region"), "{error}");
 }
+
+/// A view of a String field is that field's retained token.
+#[test]
+fn a_view_of_a_string_field_reads_that_field() {
+    assert_canonical_and_wasm(r#"
+type Named:
+    label: String
+    size: Int
+
+fn main() -> Int:
+    let n = Named(label: "abcd", size: 2)
+    let v = &n.label
+    (*v).length() * 10 + n.size
+"#, 42);
+}
+
+/// Views of a record field and a String field keep the values they were
+/// formed over after the owning record is reassigned, including through a call.
+#[test]
+fn record_and_string_field_views_keep_their_snapshots() {
+    assert_canonical_and_wasm(r#"
+type In:
+    x: Int
+    y: Int
+
+type Out:
+    inner: In
+    tag: String
+
+fn keep(r: &In) -> &In:
+    r
+
+fn main() -> Int:
+    var o = Out(inner: In(x: 3, y: 4), tag: "t")
+    let v = keep(&o.inner)
+    let w = &o.tag
+    o = Out(inner: In(x: 8, y: 9), tag: "zz")
+    (*v).x * 1000 + (*v).y * 100 + (*w).length() * 10 + o.tag.length()
+"#, 3412);
+}
