@@ -286,3 +286,20 @@ fn main() -> Int:
     apply(f, 100)
 "#, 132);
 }
+
+/// Capture admission uses the same carrier rules as lowering and authority,
+/// so a view with no carrier is refused at the source with a named reason.
+#[test]
+fn a_view_capture_without_a_carrier_is_refused_at_the_source() {
+    let source = r#"
+fn main() -> Int:
+    var d = dict.new()
+    let _ = d.insert(1, 2)
+    let v = &d
+    let f = fn() -> Int: (*v).length()
+    f()
+"#;
+    let error = witchy::resolve_std_only_checked(source)
+        .expect_err("a Dict view has no carrier across a callable boundary");
+    assert!(error.to_string().contains("no admitted carrier"), "{error}");
+}

@@ -85,13 +85,6 @@ fn is_admitted_view_carrier(payload: &Ty) -> bool {
     // token itself (RFC-0167 StringRoot), so it crosses a callable boundary
     // exactly as a captured String does.
     matches!(payload, Ty::Int | Ty::String | Ty::Float | Ty::Bool | Ty::Duration)
-        // Whole-root views carried as retained tokens: a record, sum, `Option`,
-        // or `Result` (`RecordRoot`) and a List of scalars or Strings
-        // (`ListRoot`). The canonical carrier judgments in lowering and
-        // authority still decide the exact shape and refuse the rest loudly.
-        || matches!(payload, Ty::Named(name, _) if name.as_ref() != "Slice" && name.as_ref() != "SecretStore")
-        || matches!(payload, Ty::List(element)
-            if matches!(element.as_ref(), Ty::Int | Ty::Float | Ty::Duration | Ty::Bool | Ty::String))
 }
 
 fn type_is_explicit_reference(ty: &ast::Type) -> bool {
@@ -4552,6 +4545,10 @@ impl UniqueCallableContract {
 }
 
 struct Checker {
+    /// The module's type definitions in the canonical form, so a view capture
+    /// is admitted by exactly the record-root and list-root carrier rules that
+    /// lowering and authority apply, with the refusal reported here.
+    canonical_definitions: std::collections::BTreeMap<String, ast::TypeDef>,
     /// RFC-0164 Phase 3: memoizes `resolve`, invalidated by `bind_subst_var`/
     /// `restore_subst` (the only two ways `subst` changes) rather than on
     /// every read, so it survives across the many `resolve` calls between
@@ -4981,6 +4978,17 @@ fn bare_cap_op_error(name: &str, arity: usize) -> Option<String> {
 }
 
 impl Checker {
+    /// A view payload with a carrier that crosses a callable boundary: the
+    /// scalar and `&String` carriers, or a record/sum/`Option`/`Result` or
+    /// scalar List accepted by the canonical carrier rules.
+    fn admitted_view_capture(&self, payload: &Ty) -> bool {
+        is_admitted_view_carrier(payload)
+            || ty_to_ast(payload).is_some_and(|payload| {
+                crate::canonical_aggregates::is_record_root_payload(&payload, &self.canonical_definitions)
+                    || crate::canonical_aggregates::is_list_root_payload(&payload)
+            })
+    }
+
     fn fresh(&mut self) -> Ty {
         let v = self.next_var;
         self.next_var += 1;
@@ -12471,7 +12479,7 @@ impl Checker {
                         .any(|bindings| bindings.contains(&capture))
                         && !matches!(
                             self.resolve(&captured_ty),
-                            Ty::View(ref payload) if is_admitted_view_carrier(payload)
+                            Ty::View(ref payload) if self.admitted_view_capture(payload)
                         )
                     {
                         return terr(format!(
@@ -16733,6 +16741,7 @@ fn run_check_selected(
         })
         .collect();
     let mut c = Checker {
+        canonical_definitions: crate::canonical_aggregates::type_definitions(module),
         resolve_cache: std::cell::RefCell::new(HashMap::new()),
         type_record: if record { Some(HashMap::new()) } else { None },
         // Construction requests are also retained during ordinary checking so

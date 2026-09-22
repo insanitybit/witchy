@@ -1204,4 +1204,3 @@ fn rfc0167_formatter_preserves_bracketed_function_type_params() {
     assert!(formatted.contains("fn choose[b](self, value: b) -> b"), "{formatted}");
     assert_eq!(reformat(&formatted).as_deref(), Some(formatted.as_str()));
 }
-
