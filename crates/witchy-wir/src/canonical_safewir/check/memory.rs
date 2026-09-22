@@ -1324,13 +1324,16 @@ impl<'a> MemoryChecker<'a> {
             return Ok(());
         };
         let generation = self.current_generation(object)?;
-        for (operator, left, right) in self.state.guards.clone() {
-            if self.same_scalar(right, count) || self.same_scalar(right, capacity) {
-                self.state.guard_generations
-                    .entry((operator, left, right))
-                    .or_default()
-                    .insert(generation);
-            }
+        // Only `guard_generations` changes below, so the header-length pairs
+        // behind `same_scalar` are fixed: collect them once, not twice per
+        // guard (a sorted rebuild each time), and select before mutating.
+        let header_lengths = Self::header_length_pairs(&self.state);
+        let bound_guards = self.state.guards.iter().copied().filter(|(_, _, right)| {
+            Self::same_scalar_with(&self.state, &header_lengths, *right, count)
+                || Self::same_scalar_with(&self.state, &header_lengths, *right, capacity)
+        }).collect::<Vec<_>>();
+        for guard in bound_guards {
+            self.state.guard_generations.entry(guard).or_default().insert(generation);
         }
         Ok(())
     }
@@ -2758,6 +2761,21 @@ impl<'a> MemoryChecker<'a> {
         element: crate::layout::LayoutId,
         budget: usize,
     ) -> bool {
+        // The scan asks `less_equal` once per exact addition and recurses;
+        // `&self` fixes the state for all of it, so one index serves every
+        // query instead of one rebuild per query.
+        let steps = UpperSteps::new(&self.state, |_| true);
+        self.scalar_prefix_initialized_scan(&steps, object, count, element, budget)
+    }
+
+    fn scalar_prefix_initialized_scan(
+        &self,
+        steps: &UpperSteps,
+        object: ValueId,
+        count: ValueId,
+        element: crate::layout::LayoutId,
+        budget: usize,
+    ) -> bool {
         if budget == 0 {
             return false;
         }
@@ -2768,7 +2786,7 @@ impl<'a> MemoryChecker<'a> {
             Extent::FixedBytes(_) => None,
         };
         if (state.initialized_owned_slots || self.state.static_data_objects.contains(&object))
-            && complete_count.is_some_and(|current| self.less_equal(count, current))
+            && complete_count.is_some_and(|current| self.less_equal_with(steps, count, current))
         {
             return true;
         }
@@ -2778,7 +2796,7 @@ impl<'a> MemoryChecker<'a> {
         if self.state.range_states.iter().any(|(identity, range)| {
             self.same_allocation(object, identity.object) && range.initialized && range.zero_start
                 && (self.same_scalar(identity.length, count)
-                    || self.less_equal(count, identity.length))
+                    || self.less_equal_with(steps, count, identity.length))
                 && range.element == element
         }) {
             return true;
@@ -2821,7 +2839,7 @@ impl<'a> MemoryChecker<'a> {
             return true;
         }
         for (sum, (left, right)) in &self.state.exact_additions {
-            if !self.less_equal(count, *sum) {
+            if !self.less_equal_with(steps, count, *sum) {
                 continue;
             }
             for (prefix_length, suffix_length) in [(*left, *right), (*right, *left)] {
@@ -2856,7 +2874,8 @@ impl<'a> MemoryChecker<'a> {
                     && self.same_scalar(identity.length, suffix)
             });
             if initialized_suffix
-                && self.scalar_prefix_initialized_with_budget(
+                && self.scalar_prefix_initialized_scan(
+                    steps,
                     object,
                     prefix,
                     element,
@@ -2870,7 +2889,8 @@ impl<'a> MemoryChecker<'a> {
             }
             let slot = self.state.constants.get(&prefix).map_or(SlotIdentity::Dynamic(prefix), |n| SlotIdentity::Constant(*n));
             if self.checked_scalar_slot_stored(object, slot)
-                && self.scalar_prefix_initialized_with_budget(
+                && self.scalar_prefix_initialized_scan(
+                    steps,
                     object,
                     prefix,
                     element,
@@ -3560,13 +3580,19 @@ impl<'a> MemoryChecker<'a> {
         if !self.bound_is_current(object, count) {
             return false;
         }
-        let empty_at_or_before_end = self.is_zero(length)
-            && self.less_equal_for_owner(object, start, count);
+        // Up to three owner-scoped questions of one unchanged state: build
+        // their steps at most once.
+        let steps = std::cell::OnceCell::new();
+        let less_equal = |left: ValueId, right: ValueId| {
+            steps.get_or_init(|| self.owner_steps(object)).as_ref()
+                .is_some_and(|steps| self.less_equal_with(steps, left, right))
+        };
+        let empty_at_or_before_end = self.is_zero(length) && less_equal(start, count);
         let from_body_start = self.state.constants.get(&start) == Some(&0)
-            && self.less_equal_for_owner(object, length, count);
+            && less_equal(length, count);
         let guarded_exact_end = self.state.exact_additions.iter().any(|(end, (left, right))| {
             ((*left == start && *right == length) || (*left == length && *right == start))
-                && self.less_equal_for_owner(object, *end, count)
+                && less_equal(*end, count)
         });
         let constant_range = self
             .state
@@ -5950,81 +5976,35 @@ impl<'a> MemoryChecker<'a> {
     }
 
     fn less_equal_for_owner(&self, object: ValueId, left: ValueId, right: ValueId) -> bool {
-        let Ok(generation) = self.current_generation(object) else { return false };
-        // This owner-sensitive traversal asks scalar equivalence for every
-        // visited value, guard, and exact addition. Header lengths are fixed
-        // for the state, so collecting them per equivalence query is only
-        // repeated work; the cached set preserves the same fail-closed facts.
-        let header_lengths = Self::header_length_pairs(&self.state);
-        let mut pending = vec![left];
-        let mut visited = SortedSet::new();
-        while let Some(value) = pending.pop() {
-            if !visited.insert(value) {
-                continue;
-            }
-            if Self::same_scalar_with(&self.state, &header_lengths, value, right)
-                || self.constant_relation(value, right, |left, right| left <= right)
-                || self.state.constants.get(&value) == Some(&0)
-            {
-                return true;
-            }
-            for (operator, guarded_left, guarded_right) in &self.state.guards {
-                let guard = (*operator, *guarded_left, *guarded_right);
-                let generation_matches = self.state.guard_generations.get(&guard)
-                    .is_some_and(|facts| facts.contains(&generation));
-                if matches!(operator,
-                    ComparisonOperator::LessUnsigned | ComparisonOperator::LessEqualUnsigned)
-                    && generation_matches
-                    && Self::same_scalar_with(&self.state, &header_lengths, value, *guarded_left)
-                {
-                    pending.push(*guarded_right);
-                }
-            }
-            for (sum, (addend_left, addend_right)) in &self.state.exact_additions {
-                if Self::same_scalar_with(&self.state, &header_lengths, value, *addend_left)
-                    || Self::same_scalar_with(&self.state, &header_lengths, value, *addend_right)
-                {
-                    pending.push(*sum);
-                }
-            }
-        }
-        false
+        self.owner_steps(object).is_some_and(|steps| self.less_equal_with(&steps, left, right))
+    }
+
+    /// The upward steps usable for `object`: only guards established under
+    /// its current owner generation count. `None` when the owner is gone,
+    /// which answers every question false.
+    fn owner_steps(&self, object: ValueId) -> Option<UpperSteps> {
+        let generation = self.current_generation(object).ok()?;
+        Some(UpperSteps::new(&self.state, |guard| {
+            self.state.guard_generations.get(guard).is_some_and(|facts| facts.contains(&generation))
+        }))
     }
 
     fn less_equal_in(facts: &MemoryState, left: ValueId, right: ValueId) -> bool {
-        // One header scan per query, not one per (visited value x guard x
-        // exact addition): the worklist below asks `same_scalar` for every
-        // guard and addition it walks past.
-        let header_lengths = Self::header_length_pairs(facts);
-        let mut pending = vec![left];
-        let mut visited = SortedSet::new();
-        while let Some(value) = pending.pop() {
-            if !visited.insert(value) {
-                continue;
-            }
-            if Self::same_scalar_with(facts, &header_lengths, value, right)
+        Self::less_equal_in_with(facts, &UpperSteps::new(facts, |_| true), left, right)
+    }
+
+    /// `less_equal` against steps built from the current state, for callers
+    /// that ask many questions of one unchanged state.
+    fn less_equal_with(&self, steps: &UpperSteps, left: ValueId, right: ValueId) -> bool {
+        Self::less_equal_in_with(&self.state, steps, left, right)
+    }
+
+    fn less_equal_in_with(facts: &MemoryState, steps: &UpperSteps, left: ValueId, right: ValueId) -> bool {
+        steps.reaches(facts, left, |value| {
+            Self::same_scalar_with(facts, &steps.header_lengths, value, right)
                 || Self::constant_relation_in(facts, value, right, |left, right| left <= right)
                 || facts.constants.get(&value) == Some(&0)
-            {
-                return true;
-            }
-            for (operator, guarded_left, guarded_right) in &facts.guards {
-                if matches!(operator,
-                    ComparisonOperator::LessUnsigned | ComparisonOperator::LessEqualUnsigned)
-                    && Self::same_scalar_with(facts, &header_lengths, value, *guarded_left)
-                {
-                    pending.push(*guarded_right);
-                }
-            }
-            for (sum, (addend_left, addend_right)) in &facts.exact_additions {
-                if Self::same_scalar_with(facts, &header_lengths, value, *addend_left)
-                    || Self::same_scalar_with(facts, &header_lengths, value, *addend_right)
-                {
-                    pending.push(*sum);
-                }
-            }
-        }
-        false
+        })
     }
 
     /// A wrapping addition is exact only when the current path proves that its
@@ -11466,5 +11446,93 @@ mod tests {
             },
         );
         assert_eq!(checker.check(&operation), Ok(true));
+    }
+}
+
+/// The upward steps of a `value <= bound` search over one memory state: an
+/// unsigned guard `a < b` / `a <= b` steps from any scalar the same as `a` to
+/// `b`, and an exact addition `s = a + b` steps from any scalar the same as
+/// `a` or `b` to `s`.
+///
+/// "The same scalar" is `MemoryChecker::same_scalar_with`: the identical
+/// value, an equal constant, or a (length header load, count) pair. The first
+/// two are exactly equality of `ScalarKey`; a header pair names two exact
+/// values, so its partner's steps are looked up by exact value, never by
+/// key. The search used to rescan every guard and addition, answering
+/// `same_scalar_with` for each, at every visited value -- quadratic in the
+/// facts of a large straight-line function, and 33s to check one seven-line
+/// program full of string comparisons.
+struct UpperSteps {
+    header_lengths: SortedSet<(ValueId, ValueId)>,
+    by_key: foldhash::HashMap<ScalarKey, Vec<ValueId>>,
+    by_value: foldhash::HashMap<ValueId, Vec<ValueId>>,
+    header_partners: foldhash::HashMap<ValueId, Vec<ValueId>>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum ScalarKey {
+    Constant(u64),
+    Value(ValueId),
+}
+
+impl UpperSteps {
+    fn new(
+        facts: &MemoryState,
+        mut guard_counts: impl FnMut(&(ComparisonOperator, ValueId, ValueId)) -> bool,
+    ) -> Self {
+        let key = |value: ValueId| facts.constants.get(&value)
+            .map_or(ScalarKey::Value(value), |constant| ScalarKey::Constant(*constant));
+        let mut by_key: foldhash::HashMap<ScalarKey, Vec<ValueId>> = Default::default();
+        let mut by_value: foldhash::HashMap<ValueId, Vec<ValueId>> = Default::default();
+        let mut step = |from: ValueId, to: ValueId| {
+            by_key.entry(key(from)).or_default().push(to);
+            by_value.entry(from).or_default().push(to);
+        };
+        for guard in facts.guards.iter() {
+            let (operator, guarded_left, guarded_right) = *guard;
+            if matches!(operator, ComparisonOperator::LessUnsigned | ComparisonOperator::LessEqualUnsigned)
+                && guard_counts(guard)
+            {
+                step(guarded_left, guarded_right);
+            }
+        }
+        for (sum, (addend_left, addend_right)) in facts.exact_additions.iter() {
+            step(*addend_left, *sum);
+            step(*addend_right, *sum);
+        }
+        let header_lengths = MemoryChecker::header_length_pairs(facts);
+        let mut header_partners: foldhash::HashMap<ValueId, Vec<ValueId>> = Default::default();
+        for (loaded, count) in header_lengths.iter() {
+            header_partners.entry(*loaded).or_default().push(*count);
+            header_partners.entry(*count).or_default().push(*loaded);
+        }
+        Self { header_lengths, by_key, by_value, header_partners }
+    }
+
+    /// Whether any value reachable from `start` by upward steps satisfies
+    /// `done`. Exhaustive until the first success, so the order in which
+    /// steps are explored cannot change the answer.
+    fn reaches(&self, facts: &MemoryState, start: ValueId, mut done: impl FnMut(ValueId) -> bool) -> bool {
+        let mut pending = vec![start];
+        let mut visited = SortedSet::new();
+        while let Some(value) = pending.pop() {
+            if !visited.insert(value) {
+                continue;
+            }
+            if done(value) {
+                return true;
+            }
+            let key = facts.constants.get(&value)
+                .map_or(ScalarKey::Value(value), |constant| ScalarKey::Constant(*constant));
+            if let Some(next) = self.by_key.get(&key) {
+                pending.extend_from_slice(next);
+            }
+            for partner in self.header_partners.get(&value).into_iter().flatten() {
+                if let Some(next) = self.by_value.get(partner) {
+                    pending.extend_from_slice(next);
+                }
+            }
+        }
+        false
     }
 }
