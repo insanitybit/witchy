@@ -949,7 +949,11 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn mixed_var_list_write_back_origins_fail_closed() {
+    fn mixed_var_list_write_back_declares_a_shared_lane() {
+        // One branch tail-calls `push` (a fresh reallocation) and the other
+        // returns the entry list, so the callee's write-back lane is only
+        // `Shared`; the reallocated result forwards into it. Execution with
+        // both flag values is pinned in tests/misc/rfc0167_mixed_var_write_back.rs.
         let source = "fn maybe_push(flag: Bool, var xs: List(Int)):\n    if flag:\n        xs.push(42)\n\nfn main() -> Int:\n    var xs = [1]\n    maybe_push(false, xs)\n    xs[0]\n";
         let checked = witchy_types::pipeline::link_checked_from_source_bundle(
             vec![("main".to_string(), source.as_bytes().to_vec())],
@@ -958,8 +962,8 @@ pub(crate) mod tests {
         )
         .expect("checked mixed var List write-back source");
         assert!(
-            admit_checked_module(&checked).is_err(),
-            "a branch that can return either the entry token or a fresh replacement must not acquire a reallocation contract",
+            admit_checked_module(&checked).is_ok(),
+            "a branch that returns either the entry list or a fresh replacement admits with a shared write-back lane",
         );
     }
 
