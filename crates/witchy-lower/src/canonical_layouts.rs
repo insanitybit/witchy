@@ -735,7 +735,10 @@ impl LayoutProjection {
             )?;
             roots.insert(root);
         }
-        let shared_int_reference = if self.roots.iter().any(|ty| {
+        // A `&[Int]` carrier forms `&Int` element views (`&xs[i]`, and the
+        // by-value read `xs[i]` through one), so it needs the shared Int
+        // reference family even where no `&Int` is written.
+        let shared_int_reference = if self.rooted_int_slice_requested || self.roots.iter().any(|ty| {
             matches!(ty.unqualified(), Type::Named(name, arguments)
                 if name == "Int" && arguments.is_empty())
         }) {

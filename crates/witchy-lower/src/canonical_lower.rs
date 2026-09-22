@@ -13737,6 +13737,25 @@ impl FunctionLowerer<'_> {
     fn lower_index(&mut self, expression: &Expr, base: &Expr, index: &Expr) -> Result<ValueId, CanonicalLoweringError> {
         let site = self.diagnostic_site(expression)?;
         let logical_type = self.expression_type(base)?;
+        // Reading one element of a `&[Int]` view by value is the read through
+        // its checked element view: `xs[i]` is `*(&xs[i])`. The element view
+        // bounds-checks `i` against the slice's own length before the read.
+        if rooted_view_inner(&logical_type).is_some_and(is_rooted_int_slice)
+            && !matches!(index, Expr::Range { .. })
+        {
+            let slice = self.lower_expr(base)?;
+            if !self.is_rooted_int_slice_view(slice) {
+                return Err(CanonicalLoweringError::UnsupportedExpression("rooted slice index base"));
+            }
+            let index = self.lower_expr(index)?;
+            let element = self.materialize_checked_list_int_view(slice, index)?;
+            let destination = self.fresh(ValueType::Int)?;
+            let family = self.shared_int_reference_family()?.signature;
+            self.push_operation(Operation::ClosureOwner(OwnerOperation::ReadSharedPlace {
+                destination, owner: element, family,
+            }));
+            return Ok(destination);
+        }
         if self.closures.layouts.opaque_type(&logical_type, self.definitions).is_some() {
             let list = self.lower_expr(base)?;
             let family = self.owner_list_family(list).cloned()
