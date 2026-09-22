@@ -356,3 +356,32 @@ fn bad() -> Option(Inner):
         .expect_err("the record inside the Option retains its region-born root");
     assert!(error.to_string().contains("region"), "{error}");
 }
+
+/// A visible view beside the record still takes the exact ownership tree, and
+/// two shells around the record nest like any other carrier.
+#[test]
+fn a_record_beside_a_visible_view_and_two_shells_around_a_record() {
+    assert_canonical_and_wasm(r#"
+mode opt
+
+type Inner:
+    v: &Int
+
+fn both(a: &Int, b: &Int) -> Option((Inner, &Int)):
+    Some((Inner(v: a), b))
+
+fn deep(a: &Int) -> Option(Option(Inner)):
+    Some(Some(Inner(v: a)))
+
+fn main() -> Int:
+    let x = 3
+    let y = 4
+    let first = match both(&x, &y):
+        Some((i, w)) -> (*i.v) * 10 + (*w)
+        None -> 0
+    let second = match deep(&y):
+        Some(Some(i)) -> (*i.v)
+        _ -> 0
+    first * 10 + second
+"#, 344);
+}

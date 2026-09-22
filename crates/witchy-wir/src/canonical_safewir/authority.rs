@@ -2362,10 +2362,11 @@ fn aggregate_reference_result_relation_is_checked(
         // expanded field tree here; its exact source identity and each field
         // storage class are instead bound by the opaque-owner family.
         // A builtin or generic shell whose only views sit inside such a
-        // nominal (`Option(Inner)`) has no structural view for the checker
-        // to track, so it produces no ownership output; the same family
-        // binding covers it. A structurally visible view always requires
-        // the exact tree below.
+        // nominal (`Option(Inner)`) has no structural view, so the checker
+        // tracks no ownership state for it (its output is then necessarily
+        // absent; the second conjunct only restates that). The same family
+        // binding covers it. A structurally visible view always requires the
+        // exact tree below.
         return matches!(result.unqualified(), witchy_syntax::ast::Type::Named(_, arguments)
             if arguments.is_empty())
             || (!witchy_types::access::type_requires_ownership_state(result)
