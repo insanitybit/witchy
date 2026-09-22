@@ -135,3 +135,28 @@ rfc0081_same_spelled_traits_dispatch_independently_on_both_backends
 # census whose tool now crashes on benchmarks/select_fanin.witchy. Each is a
 # named row in rfcs/0167-acceptance-ledger.md ("Foundation landing debt") and
 # comes back to the default gate with the track that restores it.
+
+# 2026-09-21 -- package-management subprocess tests (shape 1: real subprocess
+# builds). Each spawns `witchy build` / `witchy pm` / a locked project run, and
+# every such invocation first compiles the EMBEDDED package manager from
+# source: `witchy pm --help` alone is 9-11s. No smaller fixture shrinks that;
+# it goes away when RFC-0168 ships grimoire as a prebuilt artifact. Package
+# management is deprioritized (CLAUDE.md "Work selection"): the compiler is
+# what the gate protects. Medians across the last 150 gates:
+#   60.9s locked_precompiled_project_refuses_tamper_missing_oversize_and_source_overlap
+#   40.6s ordinary_project_build_env_preserves_present_empty_and_unset
+#   14.1s verify_rune_checked_entry_preserves_usage_and_missing_provenance_errors
+#   13.0s / 11.1s the two build_read_project tests, 11.6s build_env denial
+#   10.0s ordinary_project_command_executes_owner_capture_with_resolved_dependency
+#    7.7s packaged_owner_rechecks_closed_source_and_rejects_substitution_before_effects
+#    4.1s / 3.6s the other two locked_precompiled_project tests
+source::tests::locked_precompiled_project_refuses_tamper_missing_oversize_and_source_overlap
+source::tests::locked_precompiled_project_resolves_and_launches_the_authenticated_external_library
+source::tests::locked_precompiled_project_rejects_vendor_artifact_symlinks
+rfc0165_build_env_project::ordinary_project_build_env_preserves_present_empty_and_unset
+rfc0165_build_env_project::ordinary_project_build_env_denies_unlisted_key_instead_of_returning_none
+rfc0165_build_read_project::ordinary_project_build_forwards_build_read_and_compiles_generated_source
+rfc0165_build_read_project::ordinary_project_build_read_cannot_escape_manifest_granted_root
+rfc0165_project_run::ordinary_project_command_executes_owner_capture_with_resolved_dependency
+rfc0165_packaged_source::packaged_owner_rechecks_closed_source_and_rejects_substitution_before_effects
+rfc0165_pm::verify_rune_checked_entry_preserves_usage_and_missing_provenance_errors
