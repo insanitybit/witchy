@@ -59,12 +59,12 @@ fn main() -> Int:
 #[test]
 fn local_function_value_rejects_an_unadmitted_rooted_payload() {
     let source = r#"
-fn relay(view: &Float) -> &Float:
+fn relay(view: &List(List(Int))) -> &List(List(Int)):
     view
 
 fn main() -> Int:
     let indirect = relay
-    let value = 7.0
+    let value = [[7]]
     let observed = indirect(&value)
     0
 "#;
