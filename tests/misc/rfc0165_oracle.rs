@@ -748,6 +748,16 @@ fn oracle_examples_shard(shard: usize, shards: usize) {
         // them in one shard bound the whole suite's wall time; the byte-sum
         // buckets put `for_await` with `channels` and `worker_pool` with
         // `async_tasks`, and those two are pinned to otherwise light shards.
+        // Examples whose DEDICATED three-leg test is strictly stronger than
+        // this sweep -- independent expected output plus leak audits on both
+        // the canonical interpreter and admitted Wasm -- are not run twice.
+        // `channels` alone was ~15s here, duplicating the 17s
+        // rfc0165_messages::canonical_channel_scheduler_three_legs.
+        // `sweep_skips_only_examples_with_a_dedicated_leak_audited_test` keeps
+        // this list honest.
+        if requested.is_none() && SUBSUMED_BY_DEDICATED_TESTS.contains(&name.as_str()) {
+            continue;
+        }
         const PINNED: &[(&str, usize)] = &[("for_await", 1), ("worker_pool", 2)];
         let bucket = PINNED
             .iter()
@@ -917,4 +927,29 @@ fn main(console: Console):
     log(" A")
     log(" B")
 "#, &["log: 7", "log: 7 A", "log: 7 B"]);
+}
+
+
+/// See the oracle sweep: each of these has a dedicated test that asserts an
+/// independent expected output and zero leaks on both canonical engines.
+const SUBSUMED_BY_DEDICATED_TESTS: &[&str] =
+    &["channels", "carried_state", "plugin_host", "dynamic_reflection"];
+
+#[test]
+fn sweep_skips_only_examples_with_a_dedicated_leak_audited_test() {
+    // Dropping an example from the sweep is only sound while a stronger test
+    // still runs it. Each must be embedded by a test file that audits leaks
+    // on both engines (`leaked_objects` for the SafeWIR interpreter,
+    // `canonical_heap_leaks` for admitted Wasm).
+    let misc = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/misc");
+    for name in SUBSUMED_BY_DEDICATED_TESTS {
+        let needle = format!("examples/{name}/src/{name}.witchy");
+        let covered = std::fs::read_dir(&misc).expect("tests/misc").any(|entry| {
+            let text = std::fs::read_to_string(entry.expect("entry").path()).unwrap_or_default();
+            text.contains(&needle)
+                && text.contains("leaked_objects")
+                && text.contains("canonical_heap_leaks")
+        });
+        assert!(covered, "{name} is skipped by the oracle sweep but no leak-audited test embeds it");
+    }
 }
