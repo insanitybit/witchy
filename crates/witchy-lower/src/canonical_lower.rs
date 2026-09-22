@@ -2757,7 +2757,7 @@ fn contains_deferred_v1_qualifier(ty: &Type) -> bool {
         Type::Qualified(TypeQual::Frozen, inner) => contains_deferred_v1_qualifier(inner),
         Type::Qualified(TypeQual::View, inner)
             if is_direct_shared_int(inner) || is_rooted_int_slice(inner) || is_rooted_string(inner)
-                || is_rooted_user_record(inner) => false,
+                || is_rooted_user_record(inner) || is_rooted_scalar_list(inner) => false,
         Type::Qualified(TypeQual::View, _) => true,
         // The canonical direct-call ABI already transports an owned object
         // token.  For a named `&mut String` that token is the authenticated
@@ -3298,6 +3298,16 @@ fn is_rooted_user_record(ty: &Type) -> bool {
 /// A whole immutable `&String` view.  Its carrier is the retained String
 /// object token itself (`CanonicalRootedViewCarrier::StringRoot`): the
 /// payload is immutable and shared by retain, so the token is the snapshot.
+/// A whole `&List(T)` view of scalars or Strings (`ListRoot`): the retained
+/// list token is the snapshot, since a later mutation finds it shared.
+fn is_rooted_scalar_list(ty: &Type) -> bool {
+    matches!(ty.unqualified(), Type::Named(name, arguments)
+        if name == "List" && matches!(arguments.as_slice(), [element]
+            if matches!(element.unqualified(), Type::Named(element, element_arguments)
+                if element_arguments.is_empty()
+                    && matches!(element.as_str(), "Int" | "Float" | "Duration" | "Bool" | "String"))))
+}
+
 fn is_rooted_string(ty: &Type) -> bool {
     matches!(ty.unqualified(), Type::Named(name, arguments) if name == "String" && arguments.is_empty())
 }
@@ -13936,6 +13946,9 @@ impl FunctionLowerer<'_> {
             && witchy_types::typeck::ty_to_ast(fact.payload()).is_some_and(|payload| {
                 witchy_types::canonical_aggregates::is_record_root_payload(&payload, self.definitions)
             });
+        let list_root = matches!(fact.payload(), Ty::List(element)
+            if matches!(element.as_ref(), Ty::Int | Ty::Float | Ty::Duration | Ty::Bool | Ty::String));
+        let record_root = record_root || list_root;
         if (matches!(fact.payload(), Ty::String) || record_root)
             && !fact.place().steps().is_empty()
         {

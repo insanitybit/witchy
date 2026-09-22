@@ -89,6 +89,10 @@ pub enum CanonicalRootedViewCarrier {
     /// record is an immutable value shared by retain, so the token is the
     /// snapshot.  The payload identity is the declaration's nominal ordinal.
     RecordRoot,
+    /// A whole immutable `List` of scalars or `String`s.  The carrier is the
+    /// retained list object: a later mutation of the owner finds it shared and
+    /// copies, so the view keeps its snapshot.
+    ListRoot,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -530,6 +534,16 @@ fn rooted_view_from_ty(
             payload: rooted_string_payload_key(),
             carrier: CanonicalRootedViewCarrier::StringRoot,
         }),
+        Ty::List(element) => {
+            let name = match element.as_ref() {
+                Ty::Int => "Int", Ty::Float => "Float", Ty::Duration => "Duration",
+                Ty::Bool => "Bool", Ty::String => "String",
+                _ => return Err(CanonicalAbiError::Unsupported(
+                    "rooted view payload has no admitted authenticated carrier".into(),
+                )),
+            };
+            rooted_list_view(name)
+        }
         Ty::Named(..) => {
             if !crate::typeck::ty_to_ast(payload).is_some_and(|payload| {
                 crate::canonical_aggregates::is_record_root_payload(&payload, &context.definitions)
@@ -583,6 +597,19 @@ fn rooted_view_from_ast(
             payload: rooted_string_payload_key(),
             carrier: CanonicalRootedViewCarrier::StringRoot,
         }),
+        Type::Named(name, arguments) if name == "List" && arguments.len() == 1 => {
+            let Type::Named(element, element_arguments) = arguments[0].unqualified() else {
+                return Err(CanonicalAbiError::Unsupported(
+                    "rooted view payload has no admitted authenticated carrier".into(),
+                ));
+            };
+            if !element_arguments.is_empty() {
+                return Err(CanonicalAbiError::Unsupported(
+                    "rooted view payload has no admitted authenticated carrier".into(),
+                ));
+            }
+            rooted_list_view(element)
+        }
         Type::Named(name, arguments)
             if !(arguments.is_empty() && matches!(name.as_str(), "Int" | "Float" | "Duration" | "Bool" | "String")) =>
         {
@@ -701,6 +728,20 @@ fn record_identity_ast(ty: &Type, context: &Context, bytes: &mut Vec<u8>) -> Res
         record_identity_ast(argument, context, bytes)?;
     }
     Ok(())
+}
+
+/// A `ListRoot` view of a list whose elements are one scalar kind or String.
+fn rooted_list_view(element: &str) -> Result<CanonicalReferenceKind, CanonicalAbiError> {
+    let mut bytes = b"witchy.canonical-rooted-view-payload.v1/list".to_vec();
+    if !record_leaf(element, &mut bytes) {
+        return Err(CanonicalAbiError::Unsupported(
+            "rooted view payload has no admitted authenticated carrier".into(),
+        ));
+    }
+    Ok(CanonicalReferenceKind::RootedView {
+        payload: CanonicalTypeKey(*blake3::hash(&bytes).as_bytes()),
+        carrier: CanonicalRootedViewCarrier::ListRoot,
+    })
 }
 
 fn rooted_string_payload_key() -> CanonicalTypeKey {
@@ -1078,8 +1119,13 @@ mod tests {
             .expect("admitted declaration rooted Int slice payload");
         assert_eq!(checked, declared, "&[Int] has one payload key at every source boundary");
 
-        assert!(rooted_view_from_ty(&Ty::List(std::rc::Rc::new(Ty::Int)), &context).is_err(),
-            "&List(Int) must not acquire slice projection authority");
+        // `&List(Int)` is a whole-list view (`ListRoot`), never the slice
+        // carrier: it acquires no projection authority.
+        let list = rooted_view_from_ty(&Ty::List(std::rc::Rc::new(Ty::Int)), &context)
+            .expect("&List(Int) is a whole-list view");
+        assert!(matches!(list, CanonicalReferenceKind::RootedView { carrier: CanonicalRootedViewCarrier::ListRoot, .. }),
+            "&List(Int) uses the ListRoot carrier: {list:?}");
+        assert_ne!(list, checked, "&List(Int) must not acquire slice projection authority");
     }
 
     #[test]
