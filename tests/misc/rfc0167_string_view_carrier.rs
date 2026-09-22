@@ -140,3 +140,33 @@ fn main() -> Int:
     (*v).length() * 10 + s.length()
 "#, 35);
 }
+
+/// A closure may capture a `&String`: the capture is the retained String
+/// token, so the closure reads the value the view was formed over.
+#[test]
+fn a_closure_captures_a_string_view() {
+    assert_canonical_and_wasm(r#"
+fn main() -> Int:
+    let s = "hello"
+    let v = &s
+    let f = fn(k: Int) -> Int: (*v).length() + k
+    f(10)
+"#, 15);
+}
+
+/// The captured view keeps its snapshot after the owner grows, read through
+/// an indirect call.
+#[test]
+fn a_captured_string_view_keeps_its_snapshot_through_an_indirect_call() {
+    assert_canonical_and_wasm(r#"
+fn apply(f: fn(Int) -> Int, k: Int) -> Int:
+    f(k)
+
+fn main() -> Int:
+    var s = "ab" + "c"
+    let v = &s
+    let f = fn(k: Int) -> Int: (*v).length() * k
+    s = s + "zzzz"
+    apply(f, 10) + s.length()
+"#, 37);
+}

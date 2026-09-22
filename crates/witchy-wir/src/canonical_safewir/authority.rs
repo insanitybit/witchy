@@ -856,6 +856,12 @@ fn validate_candidate_abi_bindings<S: ModuleStage>(
                     (super::ValueType::Ref(_), witchy_types::canonical_closure::ClosureCaptureTransfer::ManagedReferenceByValue)
                         | (super::ValueType::Int | super::ValueType::Float | super::ValueType::Bool | super::ValueType::Unit,
                            witchy_types::canonical_closure::ClosureCaptureTransfer::CopyScalar)
+                ) || (
+                    // A `&String` view is its retained String token (RFC-0167
+                    // StringRoot), so its capture is a managed reference slot.
+                    matches!(actual, super::ValueType::Ref(_))
+                        && matches!(capture.transfer(), witchy_types::canonical_closure::ClosureCaptureTransfer::RootedViewByValue)
+                        && is_direct_rooted_view_string(capture.checked_type())
                 );
                 (transfer_matches && value_type_matches_source(
                     actual, capture.checked_type(), closure_layout_catalog, candidate.signatures(), &mut correspondence,
