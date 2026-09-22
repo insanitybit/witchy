@@ -243,7 +243,7 @@ pub fn lower_typed_module(
             obligations.iter().map(ToString::to_string).collect::<Vec<_>>().join("; "),
         ));
     }
-    let definitions = witchy_types::canonical_aggregates::type_definitions(typed.module());
+    let definitions = source.type_definitions();
     for item in &typed.module().items {
         let Item::Function(function) = item else { continue };
         if !scope.contains(&function.name) {

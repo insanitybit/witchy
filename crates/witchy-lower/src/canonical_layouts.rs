@@ -354,7 +354,8 @@ fn project_layouts(
             .filter(|_| !definition.name.contains('.'))
             .map(|entry| (format!("{entry}.{}", definition.name), definition.clone()));
         std::iter::once((definition.name.clone(), definition.clone())).chain(qualified)
-    }).collect();
+    }).collect::<BTreeMap<_, _>>();
+    let definitions = std::rc::Rc::new(definitions);
     let capture_variants = closure_capture_variants(source, &definitions)?;
     let mut projection = LayoutProjection {
         roots: Vec::new(),
@@ -366,54 +367,59 @@ fn project_layouts(
         visited: HashSet::new(),
     };
 
-    for item in &typed.module().items {
-        let Item::Function(function) = item else { continue };
-        if !scope.contains(&function.name) {
-            continue;
-        }
+    let memo_definitions = std::rc::Rc::clone(&projection.definitions);
+    witchy_types::canonical_aggregates::with_shape_memo(&memo_definitions, || -> Result<(), CanonicalLayoutError> {
+        for item in &typed.module().items {
+            let Item::Function(function) = item else { continue };
+            if !scope.contains(&function.name) {
+                continue;
+            }
 
-        // Generic declarations are templates, not executable callables.  The
-        // checked linker emits a concrete, monomorphized function item for
-        // every resolved use site and records its finalized signature in the
-        // same authoritative table.  Do not try to invent a layout for the
-        // unresolved template (its `a`/`b` types have no physical layout).
-        let Some(signature) = source.callable_signature(&function.name).cloned() else {
-            continue;
-        };
-        // The declaration's own `fn` type is how it is called, not a value:
-        // its parameters and result are roots, the type itself is not a
-        // closure. A `fn` type nested in them is.
-        match &signature {
-            Type::Fn(parameters, result, _, _) => {
-                for parameter in parameters {
-                    projection.visit_type(parameter)?;
+            // Generic declarations are templates, not executable callables.  The
+            // checked linker emits a concrete, monomorphized function item for
+            // every resolved use site and records its finalized signature in the
+            // same authoritative table.  Do not try to invent a layout for the
+            // unresolved template (its `a`/`b` types have no physical layout).
+            let Some(signature) = source.callable_signature(&function.name).cloned() else {
+                continue;
+            };
+            // The declaration's own `fn` type is how it is called, not a value:
+            // its parameters and result are roots, the type itself is not a
+            // closure. A `fn` type nested in them is.
+            match &signature {
+                Type::Fn(parameters, result, _, _) => {
+                    for parameter in parameters {
+                        projection.visit_type(parameter)?;
+                    }
+                    projection.visit_type(result)?;
                 }
+                other => projection.visit_type(other)?,
+            }
+            // The checked callable table intentionally erases loan syntax from
+            // scalar carriers.  Preserve the independently checked source
+            // declaration long enough to project the addressable scalar root
+            // required by a direct `&Int` ABI.
+            for parameter in &function.params {
+                if let Some(ty) = &parameter.ty {
+                    projection.visit_type(ty)?;
+                }
+            }
+            if let Some(result) = &function.ret {
                 projection.visit_type(result)?;
             }
-            other => projection.visit_type(other)?,
-        }
-        // The checked callable table intentionally erases loan syntax from
-        // scalar carriers.  Preserve the independently checked source
-        // declaration long enough to project the addressable scalar root
-        // required by a direct `&Int` ABI.
-        for parameter in &function.params {
-            if let Some(ty) = &parameter.ty {
-                projection.visit_type(ty)?;
-            }
-        }
-        if let Some(result) = &function.ret {
-            projection.visit_type(result)?;
+
+            witchy_syntax::ast::visit::visit_block(&function.body, &mut |expression| {
+                projection.visit_expression(
+                    expression,
+                    typed.table().type_of(expression),
+                    typed.table().is_non_completing(expression),
+                )
+            })
+            .map_err(|error| error)?;
         }
 
-        witchy_syntax::ast::visit::visit_block(&function.body, &mut |expression| {
-            projection.visit_expression(
-                expression,
-                typed.table().type_of(expression),
-                typed.table().is_non_completing(expression),
-            )
-        })
-        .map_err(|error| error)?;
-    }
+        Ok(())
+    })?;
 
     Ok(projection)
 }
@@ -425,7 +431,9 @@ struct LayoutProjection {
     /// `List(Int)` layout. Only an explicit checked `&[Int]` source type may
     /// request it; observing a list alone must never mint the owner family.
     rooted_int_slice_requested: bool,
-    definitions: BTreeMap<String, TypeDef>,
+    // Shared so the walk can hold a shape-memo scope on the map while it
+    // mutates the rest of the projection (see `with_shape_memo`).
+    definitions: std::rc::Rc<BTreeMap<String, TypeDef>>,
     /// Every `fn` type reached, keyed by its rendering, with its exact
     /// source-witness environment variants.
     closures: BTreeMap<String, (Type, Vec<(u32, Vec<Type>)>)>,
@@ -640,6 +648,17 @@ impl LayoutProjection {
     }
 
     fn finish_with_families(self) -> Result<(
+        LayoutBundle,
+        HashMap<Type, ClosureFamilyLayout>,
+        HashMap<Type, OpaqueAggregateFamilyLayout>,
+        Option<SharedIntReferenceLayout>,
+        Option<RootedIntSliceLayout>,
+    ), CanonicalLayoutError> {
+        let memo_definitions = std::rc::Rc::clone(&self.definitions);
+        witchy_types::canonical_aggregates::with_shape_memo(&memo_definitions, move || self.finish_with_families_scoped())
+    }
+
+    fn finish_with_families_scoped(self) -> Result<(
         LayoutBundle,
         HashMap<Type, ClosureFamilyLayout>,
         HashMap<Type, OpaqueAggregateFamilyLayout>,
@@ -1757,7 +1776,7 @@ mod tests {
     ) -> (witchy_wir::layout::LayoutBundle, std::collections::HashMap<Type, super::OpaqueAggregateFamilyLayout>) {
         let mut projection = LayoutProjection::default();
         for definition in definitions {
-            projection.definitions.insert(definition.name.clone(), definition);
+            std::rc::Rc::make_mut(&mut projection.definitions).insert(definition.name.clone(), definition);
         }
         for root in roots {
             projection.visit_type(root).expect("opaque aggregate source projects");
@@ -1837,7 +1856,7 @@ mod tests {
             CallableQualifiers::default(),
         );
         let mut projection = LayoutProjection::default();
-        projection.definitions.insert(
+        std::rc::Rc::make_mut(&mut projection.definitions).insert(
             "Task".into(),
             sum_definition("Task", vec![("Ready", vec![callback.clone()]), ("Done", Vec::new())]),
         );
@@ -1942,7 +1961,7 @@ mod tests {
         let mut packed = heap_definition("Packed", vec![named("Console")]);
         packed.packed = true;
         let mut projection = LayoutProjection::default();
-        projection.definitions.insert("Packed".into(), packed);
+        std::rc::Rc::make_mut(&mut projection.definitions).insert("Packed".into(), packed);
         assert!(projection.visit_type(&named("Packed")).and_then(|_| projection.finish()).is_err(),
             "an inline packed record cannot hide a capability field");
     }
@@ -1999,7 +2018,7 @@ mod tests {
         fn bundle(list_first: bool) -> witchy_wir::layout::LayoutBundle {
             let list = Type::Named("List".into(), vec![named("Tree")]);
             let mut projection = LayoutProjection::default();
-            projection.definitions.insert("Tree".into(), heap_definition("Tree", vec![list.clone()]));
+            std::rc::Rc::make_mut(&mut projection.definitions).insert("Tree".into(), heap_definition("Tree", vec![list.clone()]));
             let order = if list_first { vec![list, named("Tree")] } else { vec![named("Tree"), list] };
             for ty in order {
                 projection.visit_type(&ty).expect("finite container source graph");
@@ -2026,8 +2045,8 @@ mod tests {
     fn recursive_container_layouts_bind_mutual_bodies_before_structural_roots() {
         let list_b = Type::Named("List".into(), vec![named("B")]);
         let mut projection = LayoutProjection::default();
-        projection.definitions.insert("A".into(), heap_definition("A", vec![list_b.clone()]));
-        projection.definitions.insert("B".into(), heap_definition("B", vec![named("A"), list_b]));
+        std::rc::Rc::make_mut(&mut projection.definitions).insert("A".into(), heap_definition("A", vec![list_b.clone()]));
+        std::rc::Rc::make_mut(&mut projection.definitions).insert("B".into(), heap_definition("B", vec![named("A"), list_b]));
         projection.visit_type(&named("A")).expect("mutual source graph");
         let bundle = projection.finish().expect("a body never descends into another nominal body");
         witchy_wir::layout::LayoutBundle::decode_canonical(&bundle.canonical_bytes())
@@ -2037,7 +2056,7 @@ mod tests {
     #[test]
     fn recursive_layout_projection_roundtrips_finite_nominal_binding() {
         let mut projection = LayoutProjection::default();
-        projection.definitions.insert("Tree".into(), heap_definition("Tree", vec![named("Int"), named("Tree")]));
+        std::rc::Rc::make_mut(&mut projection.definitions).insert("Tree".into(), heap_definition("Tree", vec![named("Int"), named("Tree")]));
         projection.visit_type(&named("Tree")).expect("source root graph is finite");
         assert_eq!(projection.roots, vec![named("Tree")]);
         let bundle = projection.finish().expect("recursive source layout is finite");
@@ -2063,8 +2082,8 @@ mod tests {
     fn mutual_recursive_nominals_are_stable_across_root_order() {
         fn bundle(order: &[&str]) -> witchy_wir::layout::LayoutBundle {
             let mut projection = LayoutProjection::default();
-            projection.definitions.insert("A".into(), heap_definition("A", vec![named("B")]));
-            projection.definitions.insert("B".into(), heap_definition("B", vec![named("A")]));
+            std::rc::Rc::make_mut(&mut projection.definitions).insert("A".into(), heap_definition("A", vec![named("B")]));
+            std::rc::Rc::make_mut(&mut projection.definitions).insert("B".into(), heap_definition("B", vec![named("A")]));
             for name in order {
                 projection.visit_type(&named(name)).expect("mutual root graph is finite");
             }
@@ -2097,9 +2116,9 @@ mod tests {
     fn recursive_nominal_scc_membership_is_stable_for_branching_cycles() {
         fn bundle(order: &[&str]) -> witchy_wir::layout::LayoutBundle {
             let mut projection = LayoutProjection::default();
-            projection.definitions.insert("A".into(), heap_definition("A", vec![named("B"), named("C")]));
-            projection.definitions.insert("B".into(), heap_definition("B", vec![named("A")]));
-            projection.definitions.insert("C".into(), heap_definition("C", vec![named("B")]));
+            std::rc::Rc::make_mut(&mut projection.definitions).insert("A".into(), heap_definition("A", vec![named("B"), named("C")]));
+            std::rc::Rc::make_mut(&mut projection.definitions).insert("B".into(), heap_definition("B", vec![named("A")]));
+            std::rc::Rc::make_mut(&mut projection.definitions).insert("C".into(), heap_definition("C", vec![named("B")]));
             for name in order {
                 projection.visit_type(&named(name)).expect("branching cycle is finite");
             }
@@ -2121,7 +2140,7 @@ mod tests {
     fn recursive_layout_projection_keeps_nonrecursive_nested_aggregates() {
         let mut projection = LayoutProjection::default();
         for (name, field) in [("A", "B"), ("B", "C"), ("C", "String")] {
-            projection.definitions.insert(name.into(), heap_definition(name, vec![named(field)]));
+            std::rc::Rc::make_mut(&mut projection.definitions).insert(name.into(), heap_definition(name, vec![named(field)]));
         }
         projection.visit_type(&named("A")).expect("nested source types are supported");
         projection.visit_type(&named("A")).expect("revisiting a root is harmless");
@@ -2284,8 +2303,8 @@ mod tests {
         fn bundle(order: &[Type]) -> witchy_wir::layout::LayoutBundle {
             let definition = stack();
             let mut projection = LayoutProjection::default();
-            projection.definitions.insert("Stack".into(), definition.clone());
-            projection.definitions.insert("main.Stack".into(), definition);
+            std::rc::Rc::make_mut(&mut projection.definitions).insert("Stack".into(), definition.clone());
+            std::rc::Rc::make_mut(&mut projection.definitions).insert("main.Stack".into(), definition);
             for ty in order {
                 projection.visit_type(ty).expect("concrete recursive generic root");
             }
@@ -2312,8 +2331,8 @@ mod tests {
 
         let definition = stack();
         let mut projection = LayoutProjection::default();
-        projection.definitions.insert("Stack".into(), definition.clone());
-        projection.definitions.insert("main.Stack".into(), definition);
+        std::rc::Rc::make_mut(&mut projection.definitions).insert("Stack".into(), definition.clone());
+        std::rc::Rc::make_mut(&mut projection.definitions).insert("main.Stack".into(), definition);
         assert!(projection.visit_type(&Type::Named("main.Stack".into(), vec![named("a")])).is_err(),
             "unresolved generic arguments must not acquire a layout");
     }

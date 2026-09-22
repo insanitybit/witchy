@@ -198,9 +198,19 @@ pub struct CanonicalCheckedSource {
     launch_contract_payload: Vec<u8>,
     obligations: BTreeSet<CanonicalObligation>,
     precompiled_declarations: PrecompiledDeclarationEnvironment,
+    // Derived from `typed`, which never changes after construction. Every
+    // canonical stage reads it; one shared map also lets the aggregate shape
+    // memo (keyed by the map's address) span all of them.
+    type_definitions: BTreeMap<String, witchy_syntax::ast::TypeDef>,
 }
 
 impl CanonicalCheckedSource {
+    /// The declared types of the typed module, keyed by bare and
+    /// entry-qualified name (see `canonical_aggregates::type_definitions`).
+    pub fn type_definitions(&self) -> &BTreeMap<String, witchy_syntax::ast::TypeDef> {
+        &self.type_definitions
+    }
+
     pub fn is_console_fixture(&self) -> bool { self.console_fixture }
 
     pub fn entry_declaration(&self) -> &str { self.build_entry.as_deref().unwrap_or("main") }
@@ -838,6 +848,7 @@ fn attach_canonical_source(
     let launch_contract_digest = launch_contract_digest(&launch_contract_payload);
     let optimization_readiness = OptimizationReadiness::from_typed(&typed, source_bundle_digest)
         .map_err(|error| PipelineError::Type(TypeError { message: error.to_string() }))?;
+    let type_definitions = crate::canonical_aggregates::type_definitions(typed.module());
     checked.canonical_source = Some(CanonicalCheckedSource {
         console_fixture: false,
         build_entry: None,
@@ -859,6 +870,7 @@ fn attach_canonical_source(
         launch_contract_payload,
         obligations,
         precompiled_declarations,
+        type_definitions,
     });
     Ok(checked)
 }

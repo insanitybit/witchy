@@ -43,16 +43,21 @@ pub(crate) fn admit_checked_module_with_observer<R>(
     let source = checked
         .canonical_source()
         .ok_or(CanonicalPipelineError::MissingCheckedSourceWitness)?;
-    let validated = validate_checked_source(source)?;
-    witchy_wir::admit_canonical_with_observer(validated, source, observe)
-        .map_err(CanonicalPipelineError::Admission)
+    // One shape memo spans validation and admission (see `with_shape_memo`).
+    witchy_types::canonical_aggregates::with_shape_memo(source.type_definitions(), || {
+        let validated = validate_checked_source(source)?;
+        witchy_wir::admit_canonical_with_observer(validated, source, observe)
+            .map_err(CanonicalPipelineError::Admission)
+    })
 }
 
 pub(crate) fn admit_checked_source(
     source: &CanonicalCheckedSource,
 ) -> Result<AdmittedCanonicalArtifact, CanonicalPipelineError> {
-    let validated = validate_checked_source(source)?;
-    admit_canonical(validated, source).map_err(CanonicalPipelineError::Admission)
+    witchy_types::canonical_aggregates::with_shape_memo(source.type_definitions(), || {
+        let validated = validate_checked_source(source)?;
+        admit_canonical(validated, source).map_err(CanonicalPipelineError::Admission)
+    })
 }
 
 impl fmt::Display for CanonicalPipelineError {
@@ -77,7 +82,11 @@ pub(crate) fn validate_checked_source(
 ) -> Result<ValidatedSafeWir, CanonicalPipelineError> {
     // Layout derivation and lowering query the same source's projection five
     // times; share one (see `canonical_layouts::with_layout_memo`).
-    crate::canonical_layouts::with_layout_memo(source, || validate_checked_source_inner(source))
+    crate::canonical_layouts::with_layout_memo(source, || {
+        witchy_types::canonical_aggregates::with_shape_memo(source.type_definitions(), || {
+            validate_checked_source_inner(source)
+        })
+    })
 }
 
 fn validate_checked_source_inner(

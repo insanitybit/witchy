@@ -633,7 +633,7 @@ fn validate_candidate_abi_bindings<S: ModuleStage>(
         let CanonicalTargetPolicy::ClosedLocal(target) = entry.target_policy else { return None };
         Some((target.function_ordinal, entry.key.as_bytes()))
     }).collect::<BTreeMap<_, _>>();
-    let records = witchy_types::canonical_aggregates::type_definitions(source.typed_module().module());
+    let records = source.type_definitions();
     // Signature correspondence reads a `&String` field as its String token;
     // computed once, used only by the two layout-correspondence matches.
     let string_view_records = erase_record_string_views(&records);

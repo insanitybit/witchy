@@ -61,7 +61,7 @@ impl<'a> SourceConstructor<'a> {
         use witchy_types::canonical_capabilities::{CapabilityKind, CapabilityRepresentation};
         let witness = source.closure_witness().entries().get(ordinal.0 as usize)
             .ok_or(ContractError::MissingWitness)?;
-        let definitions = witchy_types::canonical_aggregates::type_definitions(source.typed_module().module());
+        let definitions = source.type_definitions();
         let transfers = witness.captures().iter().map(|capture| match capture.transfer() {
             ClosureCaptureTransfer::CopyScalar => Ok(CaptureTransfer::CopyScalar),
             ClosureCaptureTransfer::ManagedReferenceByValue => Ok(CaptureTransfer::CloneManaged),

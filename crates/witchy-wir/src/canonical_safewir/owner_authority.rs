@@ -10,7 +10,7 @@ pub(super) fn validate<S: ModuleStage>(
     candidate: &CanonicalModule<S>,
     source: &witchy_types::pipeline::CanonicalCheckedSource,
 ) -> Result<(), CandidateAbiBindingError> {
-    let records = witchy_types::canonical_aggregates::type_definitions(source.typed_module().module());
+    let records = source.type_definitions();
     let (_, layouts) = crate::layout::LayoutBundle::decode_canonical(&candidate.layouts().canonical_bytes())
         .map_err(|_| CandidateAbiBindingError::MissingCanonicalLayouts)?;
     let witnesses = source.closure_witness().entries();

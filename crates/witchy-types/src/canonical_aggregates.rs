@@ -540,6 +540,7 @@ mod shape_memo {
         definitions: usize,
         shapes: HashMap<Type, Option<ScalarAggregateShape>>,
         identities: HashMap<Type, Option<Type>>,
+        owner_identities: HashMap<Type, Option<Type>>,
     }
 
     thread_local! {
@@ -563,11 +564,19 @@ mod shape_memo {
     }
 
     pub(super) fn scoped<R>(definitions: &BTreeMap<String, TypeDef>, body: impl FnOnce() -> R) -> R {
+        // A scope for this map is already open further up the stack: its
+        // borrow is still live, so it is the same map, and its entries stay
+        // valid. Share them rather than starting a cold nested scope.
+        let wanted = address(definitions);
+        if SCOPES.with(|scopes| scopes.borrow().iter().any(|scope| scope.definitions == wanted)) {
+            return body();
+        }
         SCOPES.with(|scopes| {
             scopes.borrow_mut().push(Scope {
-                definitions: address(definitions),
+                definitions: wanted,
                 shapes: HashMap::default(),
                 identities: HashMap::default(),
+                owner_identities: HashMap::default(),
             });
         });
         struct Pop;
@@ -610,6 +619,16 @@ mod shape_memo {
             scope.identities.insert(ty.clone(), identity.clone());
         });
     }
+
+    pub(super) fn owner_identity(definitions: &BTreeMap<String, TypeDef>, ty: &Type) -> Option<Option<Type>> {
+        with_scope(definitions, |scope| scope.owner_identities.get(ty).cloned()).flatten()
+    }
+
+    pub(super) fn remember_owner_identity(definitions: &BTreeMap<String, TypeDef>, ty: &Type, identity: &Option<Type>) {
+        with_scope(definitions, |scope| {
+            scope.owner_identities.insert(ty.clone(), identity.clone());
+        });
+    }
 }
 
 /// The aggregate identity that authorizes typed opaque owner fields.
@@ -623,6 +642,24 @@ mod shape_memo {
 /// opaque owner; other nested carriers remain outside this ABI until they
 /// have their own provenance contract.
 pub fn canonical_owner_aggregate_identity(
+    ty: &Type,
+    definitions: &BTreeMap<String, TypeDef>,
+) -> Option<Type> {
+    // Layout projection, lowering and both authority checks ask this for the
+    // same few types thousands of times; the view walk behind it is not
+    // itself memoized.
+    if !matches!(ty.unqualified(), Type::Named(..) | Type::Tuple(_)) {
+        return canonical_owner_aggregate_identity_uncached(ty, definitions);
+    }
+    if let Some(known) = shape_memo::owner_identity(definitions, ty) {
+        return known;
+    }
+    let identity = canonical_owner_aggregate_identity_uncached(ty, definitions);
+    shape_memo::remember_owner_identity(definitions, ty, &identity);
+    identity
+}
+
+fn canonical_owner_aggregate_identity_uncached(
     ty: &Type,
     definitions: &BTreeMap<String, TypeDef>,
 ) -> Option<Type> {

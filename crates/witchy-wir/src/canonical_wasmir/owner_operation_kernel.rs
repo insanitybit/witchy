@@ -25,7 +25,17 @@ fn context<'a>(function: &'a Function, local: &'a LocalLayout<'a>, op: &O) -> Re
     if !matches!(op, O::Construct { .. } | O::CloneEnvironment { .. } | O::ReadSharedPlace { .. } | O::ReadSharedSliceLength { .. }) {
         return Ok((Cow::Borrowed(function), Cow::Borrowed(local), bridge, scratch[2]));
     }
-    let mut function = function.clone();
+    // The recipes read only the function's identity and value types; its CFG
+    // is never consulted. Copying the blocks here cost one full copy of the
+    // function per environment operation, which is quadratic in the std
+    // executor (2k blocks, hundreds of constructs).
+    let mut function = Function {
+        id: function.id,
+        signature: function.signature,
+        entry: function.entry,
+        value_types: function.value_types.clone(),
+        blocks: Vec::new(),
+    };
     let owner_bridges = if matches!(op, O::ReadSharedPlace { .. } | O::ReadSharedSliceLength { .. }) {
         local.owner_bridges.clone()
     } else {

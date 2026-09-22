@@ -57,6 +57,7 @@ workloads=(
     "real:projects/grimoire/src/gm_core.witchy:1.8k-line real library (typeck-dominated)"
     "stdlib:std/json.witchy:mid-size stdlib module"
     "corpus:tests/rfc0165/corpus/025-aggregates_with_string_payloads_construct_match_and_propagate.witchy:small canonical corpus program"
+    "async:examples/channels/src/channels.witchy:23-line async program (std executor dominates)"
 )
 
 binary="target/debug/witchy"
