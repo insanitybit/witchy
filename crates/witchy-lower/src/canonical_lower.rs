@@ -2755,7 +2755,8 @@ fn contains_deferred_v1_qualifier(ty: &Type) -> bool {
     }
     match ty {
         Type::Qualified(TypeQual::Frozen, inner) => contains_deferred_v1_qualifier(inner),
-        Type::Qualified(TypeQual::View, inner) if is_direct_shared_int(inner) || is_rooted_int_slice(inner) => false,
+        Type::Qualified(TypeQual::View, inner)
+            if is_direct_shared_int(inner) || is_rooted_int_slice(inner) || is_rooted_string(inner) => false,
         Type::Qualified(TypeQual::View, _) => true,
         // The canonical direct-call ABI already transports an owned object
         // token.  For a named `&mut String` that token is the authenticated
@@ -3279,6 +3280,13 @@ fn is_rooted_int_slice(ty: &Type) -> bool {
         }
         _ => false,
     }
+}
+
+/// A whole immutable `&String` view.  Its carrier is the retained String
+/// object token itself (`CanonicalRootedViewCarrier::StringRoot`): the
+/// payload is immutable and shared by retain, so the token is the snapshot.
+fn is_rooted_string(ty: &Type) -> bool {
+    matches!(ty.unqualified(), Type::Named(name, arguments) if name == "String" && arguments.is_empty())
 }
 
 fn is_checked_rooted_int_slice_payload(ty: &Ty) -> bool {
@@ -13863,6 +13871,24 @@ impl FunctionLowerer<'_> {
         operand: &Expr,
     ) -> Result<ValueId, CanonicalLoweringError> {
         let fact = self.checked_rooted_view_fact(expression)?;
+        if matches!(fact.payload(), Ty::String) {
+            // A whole-String view retains the immutable root object; it has
+            // no projection and never exposes a place.
+            let root = *self.bindings.get(fact.place().root()).ok_or_else(|| {
+                CanonicalLoweringError::InvalidCheckedViewFacts(format!(
+                    "immutable view fact root `{}` is not a live lowering binding",
+                    fact.place().root(),
+                ))
+            })?;
+            if !fact.place().steps().is_empty() || !matches!(operand, Expr::Var(_))
+                || !matches!(self.values.get(&root), Some(ValueType::Ref(_)))
+            {
+                return Err(CanonicalLoweringError::UnsupportedExpression(
+                    "rooted String view is only a whole-root carrier",
+                ));
+            }
+            return self.clone_reference_token(root);
+        }
         let admitted_payload = matches!(fact.payload(), Ty::Int)
             || is_checked_rooted_int_slice_payload(fact.payload());
         if !admitted_payload {
@@ -21806,18 +21832,28 @@ fn main() -> Int:
     }
 
     #[test]
-    fn rooted_string_view_remains_fail_closed_until_its_carrier_is_implemented() {
-        let checked = checked(
+    fn rooted_string_view_uses_the_string_root_carrier_and_float_stays_closed() {
+        let module = checked(
             "mode opt\n\n\
              fn view(text: &String) -> &String:\n    text\n",
         );
-        let source = checked.canonical_source().expect("canonical source");
+        let source = module.canonical_source().expect("canonical source");
+        let lowered = lower_typed_module(
+            source,
+            crate::canonical_layouts::derive_layout_bundle(source).expect("derive reference layout"),
+        );
+        assert!(lowered.is_ok(), "&String lowers through the retained StringRoot carrier: {lowered:?}");
+        let module = checked(
+            "mode opt\n\n\
+             fn view(value: &Float) -> &Float:\n    value\n",
+        );
+        let source = module.canonical_source().expect("canonical source");
         let lowered = lower_typed_module(
             source,
             crate::canonical_layouts::derive_layout_bundle(source).expect("derive reference layout"),
         );
         assert!(matches!(lowered, Err(CanonicalLoweringError::UnsupportedCanonicalObligation(_))),
-            "the partial rooted-view ABI must reject &String rather than reuse the retired lifetime alias carrier: {lowered:?}");
+            "&Float has no admitted carrier and must stay fail-closed: {lowered:?}");
     }
 
     #[test]

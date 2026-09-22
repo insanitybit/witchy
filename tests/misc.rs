@@ -211,6 +211,8 @@ mod rfc0167_view_carrier_transport;
 mod rfc0167_mixed_var_write_back;
 #[path = "misc/rfc0167_indirect_var_aggregate.rs"]
 mod rfc0167_indirect_var_aggregate;
+#[path = "misc/rfc0167_string_view_carrier.rs"]
+mod rfc0167_string_view_carrier;
 #[path = "misc/rfc0167_nested_option_view.rs"]
 mod rfc0167_nested_option_view;
 #[path = "misc/rfc0167_own_view_consumption.rs"]

@@ -79,6 +79,11 @@ pub enum CanonicalRootedViewCarrier {
     /// This remains local-only: it is not an open List ABI and exposes no
     /// by-value element read.
     IntListSliceRoot,
+    /// A whole immutable `String` value.  The carrier is the retained
+    /// reference-counted String object itself: a whole-value view has no
+    /// projection, and the String representation is already immutable and
+    /// shared by retain, so the view is a value-semantic snapshot of its root.
+    StringRoot,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -497,6 +502,10 @@ fn rooted_view_from_ty(
             carrier: CanonicalRootedViewCarrier::IntListSliceRoot,
             })
         }
+        Ty::String => Ok(CanonicalReferenceKind::RootedView {
+            payload: rooted_string_payload_key(),
+            carrier: CanonicalRootedViewCarrier::StringRoot,
+        }),
         _ => Err(CanonicalAbiError::Unsupported(
             "rooted view payload has no admitted authenticated carrier".into(),
         )),
@@ -531,6 +540,10 @@ fn rooted_view_from_ast(
                 carrier: CanonicalRootedViewCarrier::IntListSliceRoot,
             })
         }
+        Type::Named(name, arguments) if name == "String" && arguments.is_empty() => Ok(CanonicalReferenceKind::RootedView {
+            payload: rooted_string_payload_key(),
+            carrier: CanonicalRootedViewCarrier::StringRoot,
+        }),
         _ => Err(CanonicalAbiError::Unsupported(
             "rooted view payload has no admitted authenticated carrier".into(),
         )),
@@ -546,6 +559,10 @@ fn rooted_scalar_payload_key(kind: CanonicalScalarKind) -> CanonicalTypeKey {
     let mut bytes = b"witchy.canonical-rooted-view-payload.v1".to_vec();
     bytes.push(kind as u8);
     CanonicalTypeKey(*blake3::hash(&bytes).as_bytes())
+}
+
+fn rooted_string_payload_key() -> CanonicalTypeKey {
+    CanonicalTypeKey(*blake3::hash(b"witchy.canonical-rooted-view-payload.v1/string").as_bytes())
 }
 
 fn rooted_slice_int_payload_key() -> CanonicalTypeKey {
