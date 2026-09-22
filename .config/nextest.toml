@@ -90,6 +90,11 @@ slow-timeout = { period = "900s", terminate-after = 2 }
 [profile.ci.junit]
 path = "junit.xml"
 
+# Per-test durations for scripts/slow-test-ratchet.py, which the merge gate
+# runs after the workspace test stage (the 2-second-per-test target).
+[profile.default.junit]
+path = "junit.xml"
+
 # The registry/coven e2e tests each bind a TCP port and spawn a `witchy` server
 # subprocess, then poll for readiness. Run concurrently across the whole suite,
 # many servers compile + start under heavy CPU contention and a few overrun
