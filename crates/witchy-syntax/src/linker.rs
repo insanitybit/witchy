@@ -2118,6 +2118,7 @@ where
         modules,
         entry,
         expand,
+        true,
         user_modules,
         mode,
         check_source,
@@ -2130,6 +2131,10 @@ pub(crate) fn link_with_user_modules_with_mode_and_origins_and_source_check_stag
     modules: Vec<(String, Module)>,
     entry: &str,
     expand: ComptimeExpander,
+    // Whether `expand` reads its sibling snapshots. Building them costs a
+    // whole-module clone per (module, sibling) pair; the source projections
+    // re-link already-expanded modules with an expander that ignores them.
+    expansion_uses_siblings: bool,
     user_modules: &std::collections::HashSet<String>,
     mode: LinkMode,
     check_source: F,
@@ -2202,7 +2207,7 @@ where
             let siblings: Vec<(String, Module)> = modules
                 .iter()
                 .enumerate()
-                .filter(|(j, _)| *j != i)
+                .filter(|(j, _)| expansion_uses_siblings && *j != i)
                 .map(|(j, (module_name, module))| {
                     (
                         module_name.clone(),
@@ -2295,7 +2300,7 @@ where
         let siblings: Vec<(String, Module)> = modules
             .iter()
             .enumerate()
-            .filter(|(j, _)| *j != k)
+            .filter(|(j, _)| expansion_uses_siblings && *j != k)
             .map(|(_, m)| m.clone())
             .collect();
         let imports_before =

@@ -2766,9 +2766,13 @@ struct CallTypeContext<'a> {
 struct AccessVerifier<'a> {
     module: &'a Module,
     table: &'a TypeTable,
-    functions: HashMap<String, Function>,
-    types: HashMap<String, TypeDef>,
-    variants: HashMap<String, Vec<(String, Variant)>>,
+    // Borrowed from `module`, which outlives the verifier: the verifier runs
+    // once per annotate pass, several times per compile, and copying every
+    // declaration of the linked program (std included) each time was a
+    // measurable share of every compile.
+    functions: HashMap<&'a str, &'a Function>,
+    types: HashMap<&'a str, &'a TypeDef>,
+    variants: HashMap<&'a str, Vec<(&'a str, &'a Variant)>>,
     borrow_catalog: BorrowRelationCatalog,
     facts: CheckedAccessFacts,
     return_frames: Vec<Vec<AccessFlow>>,
@@ -2782,7 +2786,7 @@ impl<'a> AccessVerifier<'a> {
             .items
             .iter()
             .filter_map(|item| match item {
-                Item::Function(function) => Some((function.name.clone(), function.clone())),
+                Item::Function(function) => Some((function.name.as_str(), function)),
                 _ => None,
             })
             .collect();
@@ -2790,17 +2794,17 @@ impl<'a> AccessVerifier<'a> {
             .items
             .iter()
             .filter_map(|item| match item {
-                Item::Type(definition) => Some((definition.name.clone(), definition.clone())),
+                Item::Type(definition) => Some((definition.name.as_str(), definition)),
                 _ => None,
             })
             .collect::<HashMap<_, _>>();
-        let mut variants = HashMap::<String, Vec<(String, Variant)>>::new();
+        let mut variants = HashMap::<&'a str, Vec<(&'a str, &'a Variant)>>::new();
         for definition in types.values() {
             for variant in &definition.variants {
                 variants
-                    .entry(variant.name.clone())
+                    .entry(variant.name.as_str())
                     .or_default()
-                    .push((definition.name.clone(), variant.clone()));
+                    .push((definition.name.as_str(), variant));
             }
         }
         Self {
@@ -3140,14 +3144,14 @@ impl<'a> AccessVerifier<'a> {
         actual.verify_directed(&expected, context)
     }
 
-    fn variant_for(&self, constructor: &str, value_type: &Type) -> Option<&(String, Variant)> {
+    fn variant_for(&self, constructor: &str, value_type: &Type) -> Option<&(&'a str, &'a Variant)> {
         let candidates = self.variants.get(constructor)?;
         let owner = match value_type.unqualified() {
             Type::Named(name, _) => Some(name),
             _ => None,
         };
         owner
-            .and_then(|owner| candidates.iter().find(|(name, _)| name == owner))
+            .and_then(|owner| candidates.iter().find(|(name, _)| *name == owner.as_str()))
             .or_else(|| (candidates.len() == 1).then(|| &candidates[0]))
     }
 
@@ -3233,7 +3237,7 @@ impl<'a> AccessVerifier<'a> {
             return self.flow_from_type(expression_type).map_err(Self::signature_error);
         };
         let substitutions = self.nominal_substitutions(type_name, expression_type);
-        let mut access_arguments = effective_type_def_params(&self.types[type_name])
+        let mut access_arguments = effective_type_def_params(self.types[type_name])
             .into_iter()
             .map(|name| (name, AccessFlow::Unknown))
             .collect::<HashMap<_, _>>();
@@ -3246,12 +3250,12 @@ impl<'a> AccessVerifier<'a> {
                 &format!("field {} of constructor `{constructor}`", index + 1),
             )?;
         }
-        let arguments = effective_type_def_params(&self.types[type_name])
+        let arguments = effective_type_def_params(self.types[type_name])
             .into_iter()
             .map(|name| access_arguments.remove(&name).unwrap_or(AccessFlow::Unknown))
             .collect();
         Ok(AccessFlow::Named {
-            name: type_name.clone(),
+            name: (*type_name).to_owned(),
             arguments,
             dynamic: false,
         })
@@ -3264,7 +3268,7 @@ impl<'a> AccessVerifier<'a> {
         field: &str,
     ) -> Result<AccessFlow, AccessFlowError> {
         let Type::Named(name, _) = base_type.unqualified() else { return Ok(AccessFlow::None) };
-        let Some(definition) = self.types.get(name) else { return Ok(AccessFlow::None) };
+        let Some(definition) = self.types.get(name.as_str()) else { return Ok(AccessFlow::None) };
         let Some((variant, index)) = definition
             .variants
             .iter()
@@ -3301,7 +3305,7 @@ impl<'a> AccessVerifier<'a> {
             }
             return self.flow_from_type(expression_type).map_err(Self::signature_error);
         };
-        let Some(definition) = self.types.get(type_name).cloned() else {
+        let Some(definition) = self.types.get(type_name.as_str()).copied() else {
             for (_, value) in fields {
                 self.eval_expr(value, environment, return_expected)?;
             }
@@ -4035,9 +4039,9 @@ impl<'a> AccessVerifier<'a> {
             Expr::Ctor { name, args } | Expr::AnonCtor { tag: name, args } => {
                 let expression_type = self.resolved_expression_type(expression).unwrap_or_else(|| {
                     self.variants
-                        .get(name)
+                        .get(name.as_str())
                         .and_then(|candidates| candidates.first())
-                        .map(|(type_name, _)| Type::Named(type_name.clone(), Vec::new()))
+                        .map(|(type_name, _)| Type::Named((*type_name).to_owned(), Vec::new()))
                         .unwrap_or_else(|| Type::Named(name.clone(), Vec::new()))
                 });
                 let field_hints = self
