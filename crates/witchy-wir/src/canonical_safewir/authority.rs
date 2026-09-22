@@ -4081,7 +4081,7 @@ mod tests {
     }
 
     #[test]
-    fn rooted_view_aggregate_authority_is_shallow_through_nominals_and_generics() {
+    fn rooted_view_aggregate_authority_nests_only_through_carrier_fields() {
         let carrier = |source: &str, name: &str| {
             let module = witchy_syntax::parser::parse_module(source).expect("parse aggregate fixture");
             let records = witchy_types::canonical_aggregates::type_definitions(&module);
@@ -4091,31 +4091,31 @@ mod tests {
             )
         };
 
-        assert!(carrier(
-            "type Holder:\n    view: &Int\n    count: Int\n",
-            "Holder",
-        ));
         for (name, source) in [
-            (
-                "OptionDecoy",
-                "type OptionDecoy:\n    direct: &Int\n    hidden: Option(&Int)\n",
-            ),
-            (
-                "NominalDecoy",
-                "type Inner:\n    view: &Int\n\ntype NominalDecoy:\n    direct: &Int\n    hidden: Inner\n",
-            ),
+            ("Holder", "type Holder:\n    view: &Int\n    count: Int\n"),
+            ("OptionField", "type OptionField:\n    direct: &Int\n    nested: Option(&Int)\n"),
+            ("NominalField", "type Inner:\n    view: &Int\n\ntype NominalField:\n    direct: &Int\n    nested: Inner\n"),
+            ("GenericField", "type Box(a):\n    value: a\n\ntype GenericField:\n    direct: &Int\n    nested: Box(&Int)\n"),
+        ] {
+            assert!(carrier(source, name), "every view-bearing field of {name} is itself a carrier owner");
+        }
+        for (name, source) in [
             (
                 "CallableDecoy",
                 "type CallableDecoy:\n    direct: &Int\n    hidden: fn() -> &Int\n",
             ),
             (
-                "GenericDecoy",
-                "type Box(a):\n    value: a\n\ntype GenericDecoy:\n    direct: &Int\n    hidden: Box(&Int)\n",
+                "ListDecoy",
+                "type ListDecoy:\n    direct: &Int\n    hidden: List(&Int)\n",
+            ),
+            (
+                "DeepDecoy",
+                "type Inner:\n    view: &Int\n    hidden: List(&Int)\n\ntype DeepDecoy:\n    direct: &Int\n    nested: Inner\n",
             ),
         ] {
             assert!(
                 !carrier(source, name),
-                "the authority predicate must reject the nested view descendant in {name}",
+                "the authority predicate must reject the uncarried view in {name}",
             );
         }
     }
