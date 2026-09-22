@@ -14016,6 +14016,40 @@ impl FunctionLowerer<'_> {
                 let end = self.push_const_size(end)?;
                 self.materialize_checked_list_int_slice(root, start, end)
             }
+            // A view of an `Int` field (`&p.y`, `&outer.inner.y`) is the same
+            // snapshot as a view of an `Int` local: records are values, so the
+            // field read at formation is exactly what the view observes. The
+            // source chain must name the checked field steps in order.
+            steps if matches!(fact.payload(), Ty::Int)
+                && steps.iter().all(|step| matches!(step, CheckedPlaceStep::Field(_))) =>
+            {
+                let mut cursor = operand;
+                for step in steps.iter().rev() {
+                    let (CheckedPlaceStep::Field(expected), Expr::Field { base, field }) = (step, cursor) else {
+                        return Err(CanonicalLoweringError::InvalidCheckedViewFacts(
+                            "immutable view fact field projection does not match its source form".to_string(),
+                        ));
+                    };
+                    if expected != field {
+                        return Err(CanonicalLoweringError::InvalidCheckedViewFacts(
+                            "immutable view fact field does not match its retained source node".to_string(),
+                        ));
+                    }
+                    cursor = base;
+                }
+                if !matches!(cursor, Expr::Var(name) if name == fact.place().root()) {
+                    return Err(CanonicalLoweringError::InvalidCheckedViewFacts(
+                        "immutable view fact field root does not match its source form".to_string(),
+                    ));
+                }
+                let value = self.lower_expr(operand)?;
+                if self.values.get(&value) != Some(&ValueType::Int) {
+                    return Err(CanonicalLoweringError::InvalidCheckedViewFacts(
+                        "immutable Int field view does not read an Int".to_string(),
+                    ));
+                }
+                self.materialize_scalar_reference(value)
+            }
             _ => Err(CanonicalLoweringError::UnsupportedExpression(
                 "rooted view projection is outside the canonical v1 carrier",
             )),

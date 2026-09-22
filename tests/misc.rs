@@ -209,6 +209,8 @@ mod rfc0167_unit_discard_matrix;
 mod rfc0167_view_carrier_transport;
 #[path = "misc/rfc0167_mixed_var_write_back.rs"]
 mod rfc0167_mixed_var_write_back;
+#[path = "misc/rfc0167_field_view.rs"]
+mod rfc0167_field_view;
 #[path = "misc/rfc0167_indirect_var_aggregate.rs"]
 mod rfc0167_indirect_var_aggregate;
 #[path = "misc/rfc0167_string_view_carrier.rs"]
