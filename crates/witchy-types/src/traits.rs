@@ -1895,18 +1895,37 @@ fn local_expr_type(
             })?;
             Some(Type::Fn(params, Box::new(ret), conventions, *qualifiers))
         }
+        // A branching expression has its branches' type when every branch
+        // agrees, exactly as a lambda has its body's tail type: the value of
+        // `if`/`match`/a block is its tail (BUG-644).
+        Expr::If { then_block, else_block: Some(else_block), .. } => {
+            let then_type = block_tail_type(then_block, type_of)?;
+            (block_tail_type(else_block, type_of)? == then_type).then_some(then_type)
+        }
+        Expr::Match { arms, .. } => {
+            let mut types = arms.iter().map(|arm| type_of(&arm.body));
+            let first = types.next()??;
+            types.all(|ty| ty.as_ref() == Some(&first)).then_some(first)
+        }
+        Expr::Block(block) => block_tail_type(block, type_of),
         Expr::AnonCtor { .. }
         | Expr::LabeledCall { .. }
         | Expr::MethodCall { .. }
         | Expr::LabeledMethodCall { .. }
         | Expr::If { .. }
-        | Expr::Match { .. }
-        | Expr::Block(_)
         | Expr::While { .. }
         | Expr::For { .. }
         | Expr::WhileLet { .. }
         | Expr::TaggedLit { .. } => None,
         Expr::ExistentialCall { result, .. } => Some(result.clone()),
+    }
+}
+
+/// The type of a block's value: its final expression statement.
+fn block_tail_type(block: &Block, type_of: &dyn Fn(&Expr) -> Option<Type>) -> Option<Type> {
+    match block.stmts.last() {
+        Some(Stmt::Expr(expr)) => type_of(expr),
+        _ => None,
     }
 }
 
