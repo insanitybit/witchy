@@ -2130,7 +2130,7 @@ fn apply_declared_contract(declared: &Type, resolved: &Type) -> Type {
 /// A canonical view is copyable, but every copied carrier still retains an
 /// authenticated root and therefore needs shared retain/drop state at ordinary
 /// input and output boundaries.
-fn type_requires_ownership_state(ty: &Type) -> bool {
+pub fn type_requires_ownership_state(ty: &Type) -> bool {
     match ty {
         Type::Qualified(
             TypeQual::Unique

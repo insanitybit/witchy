@@ -312,3 +312,47 @@ fn main() -> Int:
     (*p.direct) * 10 + (*p.boxed.value)
 "#, 34);
 }
+
+/// A builtin shell around a view-carrying record: `Option(Inner)` chooses the
+/// second view it is handed, and both arms are reachable.
+#[test]
+fn an_option_of_a_view_carrying_record_is_a_carrier() {
+    assert_canonical_and_wasm(r#"
+mode opt
+
+type Inner:
+    v: &Int
+
+fn pick(a: &Int, b: &Int, some: Bool) -> Option(Inner):
+    if some: Some(Inner(v: b)) else: None
+
+fn read(o: Option(Inner)) -> Int:
+    match o:
+        Some(i) -> (*i.v)
+        None -> 100
+
+fn main() -> Int:
+    let x = 1
+    let y = 2
+    read(pick(&x, &y, true)) + read(pick(&x, &y, false))
+"#, 102);
+}
+
+/// The record inside the shell does not launder a region-born root.
+#[test]
+fn a_region_born_root_cannot_escape_in_an_option_of_a_record() {
+    let source = r#"
+mode opt
+
+type Inner:
+    v: &Int
+
+fn bad() -> Option(Inner):
+    region -> Option(Inner):
+        let values = [10, 20]
+        Some(Inner(v: &values[0]))
+"#;
+    let error = witchy::resolve_std_only_checked(source)
+        .expect_err("the record inside the Option retains its region-born root");
+    assert!(error.to_string().contains("region"), "{error}");
+}
