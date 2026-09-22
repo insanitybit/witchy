@@ -108,3 +108,19 @@ fn main() -> Int:
     (*keep(&n))
 "#, 9);
 }
+
+/// The view and plain instantiations of one generic are distinct
+/// specializations: neither body is reused for the other.
+#[test]
+fn view_and_plain_instantiations_of_one_generic_stay_distinct() {
+    assert_canonical_and_wasm(r#"
+fn id[a](x: a) -> a:
+    x
+
+fn main() -> Int:
+    let n = 5
+    let v = id(&n)
+    let w = id(n)
+    (*v) * 10 + w
+"#, 55);
+}
