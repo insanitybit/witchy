@@ -170,3 +170,71 @@ fn main() -> Int:
     apply(f, 10) + s.length()
 "#, 37);
 }
+
+/// Inside an aggregate a `&String` is its retained String token, so records,
+/// tuples, and `Option`s of `&String` cross calls with the String layout.
+#[test]
+fn a_record_holds_a_string_view() {
+    assert_canonical_and_wasm(r#"
+type Holder:
+    v: &String
+    n: Int
+
+fn main() -> Int:
+    let s = "hello"
+    let h = Holder(v: &s, n: 2)
+    (*h.v).length() * 10 + h.n
+"#, 52);
+}
+
+#[test]
+fn tuple_and_option_string_views_cross_calls() {
+    assert_canonical_and_wasm(r#"
+fn pair(s: &String) -> (&String, Int):
+    (s, 3)
+
+fn pick(s: &String) -> Option(&String):
+    Some(s)
+
+fn main() -> Int:
+    let s = "abc"
+    let (v, n) = pair(&s)
+    let m = match pick(&s):
+        Some(w) -> (*w).length()
+        None -> 0
+    (*v).length() * 100 + n * 10 + m
+"#, 333);
+}
+
+#[test]
+fn an_aggregate_string_view_keeps_its_snapshot_across_a_call() {
+    assert_canonical_and_wasm(r#"
+mode opt
+
+type Holder:
+    v: &String
+    n: Int
+
+fn wrap(s: &String, n: Int) -> Holder:
+    Holder(v: s, n: n)
+
+fn main() -> Int:
+    var s = "ab" + "c"
+    let h = wrap(&s, 4)
+    s = s + "zzzz"
+    (*h.v).length() * 100 + h.n * 10 + s.length()
+"#, 347);
+}
+
+#[test]
+fn a_region_born_string_cannot_escape_inside_an_option_view() {
+    let source = r#"
+fn bad() -> Option(&String):
+    region -> Option(&String):
+        let local = "region-owned"
+        Some(&local)
+"#;
+    let error = witchy::resolve_std_only_checked(source)
+        .expect_err("a region-born String root must not escape inside an aggregate view");
+    assert!(error.to_string().contains("region"), "{error}");
+}

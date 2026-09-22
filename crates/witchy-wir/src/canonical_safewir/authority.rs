@@ -724,11 +724,13 @@ fn validate_candidate_abi_bindings<S: ModuleStage>(
             access_facts,
             &records,
         );
+        let source_signature = erase_nested_string_views(&source_signature);
+        let string_view_records = erase_record_string_views(&records);
         let source_matches = candidate_signature_matches_source_with_layouts(
             signature,
             &source_signature,
             candidate,
-            &records,
+            &string_view_records,
             &layouts,
         );
         let fresh_list_push_matches = !source_matches
@@ -750,7 +752,7 @@ fn validate_candidate_abi_bindings<S: ModuleStage>(
                     &source_shaped,
                     &source_signature,
                     candidate,
-                    &records,
+                    &string_view_records,
                     &layouts,
                 )
             };
@@ -1573,6 +1575,58 @@ fn is_direct_rooted_view_int(source: &witchy_syntax::ast::Type) -> bool {
         witchy_syntax::ast::Type::Qualified(witchy_syntax::ast::TypeQual::View, inner)
             if matches!(inner.unqualified(), witchy_syntax::ast::Type::Named(name, arguments)
                 if name == "Int" && arguments.is_empty()))
+}
+
+/// A `&String` view is its retained String token (`StringRoot`), so inside
+/// an aggregate (`Option(&String)`, `(&String, Int)`, a record field) it has
+/// exactly the String layout.  The callable's own direct `&String` lanes keep
+/// their dedicated whole-root correspondence and are left as written.
+fn erase_nested_string_views(signature: &witchy_syntax::ast::Type) -> witchy_syntax::ast::Type {
+    use witchy_syntax::ast::Type;
+    let lane = |ty: &Type| -> Type {
+        match ty {
+            Type::Named(name, arguments) => Type::Named(name.clone(), arguments.iter().map(erase_string_view).collect()),
+            Type::Tuple(items) => Type::Tuple(items.iter().map(erase_string_view).collect()),
+            other => other.clone(),
+        }
+    };
+    match signature {
+        Type::Fn(parameters, result, conventions, qualifiers) => Type::Fn(
+            parameters.iter().map(lane).collect(),
+            Box::new(lane(result)),
+            conventions.clone(),
+            *qualifiers,
+        ),
+        other => other.clone(),
+    }
+}
+
+/// Read every `&String` in `ty` as `String`: the view's carrier is the token.
+fn erase_string_view(ty: &witchy_syntax::ast::Type) -> witchy_syntax::ast::Type {
+    use witchy_syntax::ast::Type;
+    match ty {
+        Type::Qualified(witchy_syntax::ast::TypeQual::View, inner)
+            if matches!(inner.unqualified(), Type::Named(name, arguments) if name == "String" && arguments.is_empty()) =>
+        {
+            Type::Named("String".into(), Vec::new())
+        }
+        Type::Qualified(qualifier, inner) => Type::Qualified(qualifier.clone(), Box::new(erase_string_view(inner))),
+        Type::Named(name, arguments) => Type::Named(name.clone(), arguments.iter().map(erase_string_view).collect()),
+        Type::Tuple(items) => Type::Tuple(items.iter().map(erase_string_view).collect()),
+        other => other.clone(),
+    }
+}
+
+/// The same reading for record and sum fields, used only for signature
+/// correspondence: a `&String` field is laid out as a String field.
+fn erase_record_string_views(records: &ScalarRecordFields) -> ScalarRecordFields {
+    records.iter().map(|(name, definition)| {
+        let mut definition = definition.clone();
+        for variant in &mut definition.variants {
+            variant.fields = variant.fields.iter().map(erase_string_view).collect();
+        }
+        (name.clone(), definition)
+    }).collect()
 }
 
 /// A whole-root view carried as the retained object token: `&String`
