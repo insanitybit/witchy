@@ -3283,9 +3283,6 @@ fn is_rooted_int_slice(ty: &Type) -> bool {
     }
 }
 
-/// A whole immutable `&String` view.  Its carrier is the retained String
-/// object token itself (`CanonicalRootedViewCarrier::StringRoot`): the
-/// payload is immutable and shared by retain, so the token is the snapshot.
 /// A whole view of an argument-less user record or sum (`RecordRoot`): the
 /// retained aggregate object token is the snapshot, exactly as for String.
 /// Lowering still requires the root to be a heap `Ref` (not packed inline).
@@ -3298,6 +3295,9 @@ fn is_rooted_user_record(ty: &Type) -> bool {
             && witchy_types::canonical_capabilities::representation(ty, &BTreeMap::new()).is_none())
 }
 
+/// A whole immutable `&String` view.  Its carrier is the retained String
+/// object token itself (`CanonicalRootedViewCarrier::StringRoot`): the
+/// payload is immutable and shared by retain, so the token is the snapshot.
 fn is_rooted_string(ty: &Type) -> bool {
     matches!(ty.unqualified(), Type::Named(name, arguments) if name == "String" && arguments.is_empty())
 }

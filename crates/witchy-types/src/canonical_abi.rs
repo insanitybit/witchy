@@ -206,6 +206,7 @@ impl std::error::Error for CanonicalAbiError {}
 
 struct Context {
     nominal_ordinals: BTreeMap<String, u32>,
+    type_declarations: std::collections::BTreeSet<String>,
 }
 
 impl Context {
@@ -220,7 +221,21 @@ impl Context {
                 _ => None,
             })
             .collect();
-        Self { nominal_ordinals }
+        let type_declarations = module
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                Item::Type(definition) => Some(definition.name.clone()),
+                _ => None,
+            })
+            .collect();
+        Self { nominal_ordinals, type_declarations }
+    }
+
+    /// A `type` declaration (not a `type X = ...` alias): only these can be
+    /// whole-record view roots.
+    fn declares_type(&self, name: &str) -> bool {
+        self.type_declarations.contains(name)
     }
 
     fn nominal(&self, name: &str) -> Result<u32, CanonicalAbiError> {
@@ -490,7 +505,7 @@ fn value_from_ast(ty: &Type, context: &Context) -> Result<CanonicalValueKind, Ca
 
 fn rooted_view_from_ty(
     payload: &Ty,
-    _context: &Context,
+    context: &Context,
 ) -> Result<CanonicalReferenceKind, CanonicalAbiError> {
     match payload {
         Ty::Int => Ok(CanonicalReferenceKind::RootedView {
@@ -511,9 +526,9 @@ fn rooted_view_from_ty(
             payload: rooted_string_payload_key(),
             carrier: CanonicalRootedViewCarrier::StringRoot,
         }),
-        Ty::Named(name, arguments) if arguments.is_empty() && is_user_record_name(name) => {
+        Ty::Named(name, arguments) if arguments.is_empty() && is_user_record_name(name) && context.declares_type(name) => {
             Ok(CanonicalReferenceKind::RootedView {
-                payload: rooted_record_payload_key(_context.nominal(name)?),
+                payload: rooted_record_payload_key(context.nominal(name)?),
                 carrier: CanonicalRootedViewCarrier::RecordRoot,
             })
         }
@@ -525,7 +540,7 @@ fn rooted_view_from_ty(
 
 fn rooted_view_from_ast(
     payload: &Type,
-    _context: &Context,
+    context: &Context,
 ) -> Result<CanonicalReferenceKind, CanonicalAbiError> {
     match payload.unqualified() {
         Type::Named(name, arguments) if name == "Int" && arguments.is_empty() => Ok(CanonicalReferenceKind::RootedView {
@@ -555,9 +570,9 @@ fn rooted_view_from_ast(
             payload: rooted_string_payload_key(),
             carrier: CanonicalRootedViewCarrier::StringRoot,
         }),
-        Type::Named(name, arguments) if arguments.is_empty() && is_user_record_name(name) => {
+        Type::Named(name, arguments) if arguments.is_empty() && is_user_record_name(name) && context.declares_type(name) => {
             Ok(CanonicalReferenceKind::RootedView {
-                payload: rooted_record_payload_key(_context.nominal(name)?),
+                payload: rooted_record_payload_key(context.nominal(name)?),
                 carrier: CanonicalRootedViewCarrier::RecordRoot,
             })
         }

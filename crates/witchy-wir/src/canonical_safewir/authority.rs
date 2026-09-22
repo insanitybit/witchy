@@ -1575,8 +1575,6 @@ fn is_direct_rooted_view_int(source: &witchy_syntax::ast::Type) -> bool {
                 if name == "Int" && arguments.is_empty()))
 }
 
-/// A whole immutable `&String` view: carried as the retained String token
-/// itself (`StringRoot`), so it corresponds to the plain String layout.
 /// A whole-root view carried as the retained object token: `&String`
 /// (`StringRoot`) or a view of a declared, non-packed, argument-less user
 /// record or sum (`RecordRoot`).  Neither has a projection.
@@ -1591,6 +1589,8 @@ fn is_direct_rooted_view_whole_root(source: &witchy_syntax::ast::Type, records: 
                             .is_some_and(|shape| !shape.packed)))
 }
 
+/// A whole immutable `&String` view: carried as the retained String token
+/// itself (`StringRoot`), so it corresponds to the plain String layout.
 fn is_direct_rooted_view_string(source: &witchy_syntax::ast::Type) -> bool {
     matches!(source,
         witchy_syntax::ast::Type::Qualified(witchy_syntax::ast::TypeQual::View, inner)
