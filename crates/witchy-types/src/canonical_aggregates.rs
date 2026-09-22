@@ -653,6 +653,16 @@ pub fn canonical_owner_aggregate_identity(
     }
 }
 
+/// A whole `&List(T)` view (`ListRoot`): elements are one scalar kind or
+/// String, so the list holds no view, owner, or capability.
+pub fn is_list_root_payload(ty: &Type) -> bool {
+    matches!(ty.unqualified(), Type::Named(name, arguments)
+        if name == "List" && matches!(arguments.as_slice(), [element]
+            if matches!(element.unqualified(), Type::Named(element, element_arguments)
+                if element_arguments.is_empty()
+                    && matches!(element.as_str(), "Int" | "Float" | "Duration" | "Bool" | "String"))))
+}
+
 /// A whole view of this value is a `RecordRoot`: the retained aggregate
 /// object is the snapshot.  Admitted for a declared user record or sum, or
 /// builtin `Option`/`Result`, with a non-packed heap shape that holds no view

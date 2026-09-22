@@ -1639,16 +1639,7 @@ fn is_direct_rooted_view_whole_root(source: &witchy_syntax::ast::Type, records: 
         || matches!(source,
             witchy_syntax::ast::Type::Qualified(witchy_syntax::ast::TypeQual::View, inner)
                 if witchy_types::canonical_aggregates::is_record_root_payload(inner, records)
-                    || is_list_root_payload(inner))
-}
-
-/// `List` of one scalar kind or String: a `ListRoot` whole-root view.
-fn is_list_root_payload(ty: &witchy_syntax::ast::Type) -> bool {
-    matches!(ty.unqualified(), witchy_syntax::ast::Type::Named(name, arguments)
-        if name == "List" && matches!(arguments.as_slice(), [element]
-            if matches!(element.unqualified(), witchy_syntax::ast::Type::Named(element, element_arguments)
-                if element_arguments.is_empty()
-                    && matches!(element.as_str(), "Int" | "Float" | "Duration" | "Bool" | "String"))))
+                    || witchy_types::canonical_aggregates::is_list_root_payload(inner))
 }
 
 /// A whole immutable `&String` view: carried as the retained String token

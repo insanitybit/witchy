@@ -129,3 +129,36 @@ fn bad() -> &List(Int):
         .expect_err("a region-born list root must not escape through its view");
     assert!(error.to_string().contains("region"), "{error}");
 }
+
+/// Every list mutation keeps a held view on its snapshot: an indexed store,
+/// `pop`, a callee's `var` indexed store, and push plus store with the view
+/// copied. Stores and push write into fresh storage; `pop` is in place only
+/// on the sole live token, which a held view is not.
+#[test]
+fn list_mutations_never_reach_a_held_view() {
+    assert_canonical_and_wasm(r#"
+fn set_first(var xs: List(Int)):
+    xs[0] = 99
+
+fn main() -> Int:
+    var a = [1, 2, 3]
+    let va = &a
+    a[0] = 50
+    var b = [1, 2, 3]
+    let vb = &b
+    let _ = b.pop()
+    var c = [1, 2]
+    let vc = &c
+    set_first(c)
+    var d = [1, 2, 3]
+    let vd = &d
+    let wd = vd
+    d.push(4)
+    d[1] = 40
+    let first = (*va)[0] * 1000 + a[0]
+    let second = (*vb).length() * 10 + b.length()
+    let third = (*vc)[0] * 1000 + c[0]
+    let fourth = (*wd)[1] * 1000 + (*vd).length() * 100 + d[1]
+    first + second + third + fourth
+"#, 1050 + 32 + 1099 + 2340);
+}
