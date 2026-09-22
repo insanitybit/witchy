@@ -2340,6 +2340,23 @@ mod tests {
             std::slice::from_ref(&unique),
             std::slice::from_ref(&replacement),
         ));
+
+        // Fresh storage may also be forwarded as a merely shared result of
+        // the same layout, but never the reverse and never across layouts.
+        let shared = ResultContract::Shared { layout };
+        assert!(super::tail_result_contracts_compatible(
+            std::slice::from_ref(&replacement),
+            std::slice::from_ref(&shared),
+        ));
+        assert!(!super::tail_result_contracts_compatible(
+            std::slice::from_ref(&shared),
+            std::slice::from_ref(&replacement),
+        ));
+        let other = layouts.intern_scalar(ScalarKind::Bool).unwrap();
+        assert!(!super::tail_result_contracts_compatible(
+            std::slice::from_ref(&replacement),
+            &[ResultContract::Shared { layout: other }],
+        ));
     }
 
     #[test]
