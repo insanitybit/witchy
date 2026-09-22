@@ -93,6 +93,11 @@ pub enum CanonicalRootedViewCarrier {
     /// retained list object: a later mutation of the owner finds it shared and
     /// copies, so the view keeps its snapshot.
     ListRoot,
+    /// A view of an immutable `Float`, `Bool`, or `Duration` value is carried
+    /// as that value: an immutable scalar read at formation is exactly what the
+    /// view observes, the RFC's proven-equivalent representation.  `&Int`
+    /// keeps its `IntScalarRoot` cell, which also carries list element views.
+    ScalarValue,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -534,6 +539,14 @@ fn rooted_view_from_ty(
             payload: rooted_string_payload_key(),
             carrier: CanonicalRootedViewCarrier::StringRoot,
         }),
+        Ty::Float | Ty::Bool | Ty::Duration => Ok(CanonicalReferenceKind::RootedView {
+            payload: rooted_scalar_value_payload_key(match payload {
+                Ty::Float => CanonicalScalarKind::Float,
+                Ty::Bool => CanonicalScalarKind::Bool,
+                _ => CanonicalScalarKind::Duration,
+            }),
+            carrier: CanonicalRootedViewCarrier::ScalarValue,
+        }),
         Ty::List(element) => {
             let name = match element.as_ref() {
                 Ty::Int => "Int", Ty::Float => "Float", Ty::Duration => "Duration",
@@ -597,6 +610,18 @@ fn rooted_view_from_ast(
             payload: rooted_string_payload_key(),
             carrier: CanonicalRootedViewCarrier::StringRoot,
         }),
+        Type::Named(name, arguments)
+            if arguments.is_empty() && matches!(name.as_str(), "Float" | "Bool" | "Duration") =>
+        {
+            Ok(CanonicalReferenceKind::RootedView {
+                payload: rooted_scalar_value_payload_key(match name.as_str() {
+                    "Float" => CanonicalScalarKind::Float,
+                    "Bool" => CanonicalScalarKind::Bool,
+                    _ => CanonicalScalarKind::Duration,
+                }),
+                carrier: CanonicalRootedViewCarrier::ScalarValue,
+            })
+        }
         Type::Named(name, arguments) if name == "List" && arguments.len() == 1 => {
             let Type::Named(element, element_arguments) = arguments[0].unqualified() else {
                 return Err(CanonicalAbiError::Unsupported(
@@ -742,6 +767,12 @@ fn rooted_list_view(element: &str) -> Result<CanonicalReferenceKind, CanonicalAb
         payload: CanonicalTypeKey(*blake3::hash(&bytes).as_bytes()),
         carrier: CanonicalRootedViewCarrier::ListRoot,
     })
+}
+
+fn rooted_scalar_value_payload_key(kind: CanonicalScalarKind) -> CanonicalTypeKey {
+    let mut bytes = b"witchy.canonical-rooted-view-payload.v1/scalar-value".to_vec();
+    bytes.push(kind as u8);
+    CanonicalTypeKey(*blake3::hash(&bytes).as_bytes())
 }
 
 fn rooted_string_payload_key() -> CanonicalTypeKey {

@@ -690,6 +690,13 @@ fn canonical_owner_aggregate_identity_uncached(
     }
 }
 
+/// A `&Float`, `&Bool`, or `&Duration` view (`ScalarValue`): carried as the
+/// immutable scalar value itself.
+pub fn is_scalar_value_view_payload(ty: &Type) -> bool {
+    matches!(ty.unqualified(), Type::Named(name, arguments)
+        if arguments.is_empty() && matches!(name.as_str(), "Float" | "Bool" | "Duration"))
+}
+
 /// A whole `&List(T)` view (`ListRoot`): elements are one scalar kind or
 /// String, so the list holds no view, owner, or capability.
 pub fn is_list_root_payload(ty: &Type) -> bool {

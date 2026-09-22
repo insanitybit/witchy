@@ -727,7 +727,7 @@ fn validate_candidate_abi_bindings<S: ModuleStage>(
             access_facts,
             &records,
         );
-        let source_signature = erase_nested_string_views(&source_signature);
+        let source_signature = erase_scalar_value_views(&erase_nested_string_views(&source_signature));
         let source_matches = candidate_signature_matches_source_with_layouts(
             signature,
             &source_signature,
@@ -1603,6 +1603,30 @@ fn erase_nested_string_views(signature: &witchy_syntax::ast::Type) -> witchy_syn
     }
 }
 
+/// A `&Float`/`&Bool`/`&Duration` view is carried as the scalar value
+/// (`ScalarValue`), at every position, so correspondence reads it as the
+/// scalar.
+fn erase_scalar_value_views(ty: &witchy_syntax::ast::Type) -> witchy_syntax::ast::Type {
+    use witchy_syntax::ast::Type;
+    match ty {
+        Type::Qualified(witchy_syntax::ast::TypeQual::View, inner)
+            if witchy_types::canonical_aggregates::is_scalar_value_view_payload(inner) =>
+        {
+            inner.unqualified().clone()
+        }
+        Type::Qualified(qualifier, inner) => Type::Qualified(qualifier.clone(), Box::new(erase_scalar_value_views(inner))),
+        Type::Named(name, arguments) => Type::Named(name.clone(), arguments.iter().map(erase_scalar_value_views).collect()),
+        Type::Tuple(items) => Type::Tuple(items.iter().map(erase_scalar_value_views).collect()),
+        Type::Fn(parameters, result, conventions, qualifiers) => Type::Fn(
+            parameters.iter().map(erase_scalar_value_views).collect(),
+            Box::new(erase_scalar_value_views(result)),
+            conventions.clone(),
+            *qualifiers,
+        ),
+        other => other.clone(),
+    }
+}
+
 /// Read every `&String` in `ty` as `String`: the view's carrier is the token.
 fn erase_string_view(ty: &witchy_syntax::ast::Type) -> witchy_syntax::ast::Type {
     use witchy_syntax::ast::Type;
@@ -1639,7 +1663,8 @@ fn is_direct_rooted_view_whole_root(source: &witchy_syntax::ast::Type, records: 
         || matches!(source,
             witchy_syntax::ast::Type::Qualified(witchy_syntax::ast::TypeQual::View, inner)
                 if witchy_types::canonical_aggregates::is_record_root_payload(inner, records)
-                    || witchy_types::canonical_aggregates::is_list_root_payload(inner))
+                    || witchy_types::canonical_aggregates::is_list_root_payload(inner)
+                    || witchy_types::canonical_aggregates::is_scalar_value_view_payload(inner))
 }
 
 /// A whole immutable `&String` view: carried as the retained String token

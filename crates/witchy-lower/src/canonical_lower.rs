@@ -2757,7 +2757,8 @@ fn contains_deferred_v1_qualifier(ty: &Type) -> bool {
         Type::Qualified(TypeQual::Frozen, inner) => contains_deferred_v1_qualifier(inner),
         Type::Qualified(TypeQual::View, inner)
             if is_direct_shared_int(inner) || is_rooted_int_slice(inner) || is_rooted_string(inner)
-                || is_rooted_user_record(inner) || witchy_types::canonical_aggregates::is_list_root_payload(inner) => false,
+                || is_rooted_user_record(inner) || witchy_types::canonical_aggregates::is_list_root_payload(inner)
+                || witchy_types::canonical_aggregates::is_scalar_value_view_payload(inner) => false,
         Type::Qualified(TypeQual::View, _) => true,
         // The canonical direct-call ABI already transports an owned object
         // token.  For a named `&mut String` that token is the authenticated
@@ -13969,6 +13970,25 @@ impl FunctionLowerer<'_> {
             && witchy_types::typeck::ty_to_ast(fact.payload()).is_some_and(|payload| {
                 witchy_types::canonical_aggregates::is_record_root_payload(&payload, self.definitions)
             });
+        if matches!(fact.payload(), Ty::Float | Ty::Bool | Ty::Duration) {
+            // A scalar-value view is the value read at formation: a whole
+            // local, or a checked field chain from it.
+            let steps = fact.place().steps();
+            if steps.is_empty() {
+                if !matches!(operand, Expr::Var(_)) {
+                    return Err(CanonicalLoweringError::UnsupportedExpression(
+                        "rooted scalar view is only a whole-root or field carrier",
+                    ));
+                }
+            } else if steps.iter().all(|step| matches!(step, CheckedPlaceStep::Field(_))) {
+                check_field_view_source(fact.place().root(), steps, operand)?;
+            } else {
+                return Err(CanonicalLoweringError::UnsupportedExpression(
+                    "rooted scalar view projection is outside the canonical carrier",
+                ));
+            }
+            return self.lower_expr(operand);
+        }
         let list_root = matches!(fact.payload(), Ty::List(element)
             if matches!(element.as_ref(), Ty::Int | Ty::Float | Ty::Duration | Ty::Bool | Ty::String));
         let record_root = record_root || list_root;
@@ -14291,6 +14311,9 @@ impl FunctionLowerer<'_> {
                 Ok(destination)
             }
             (UnOp::Deref, ValueType::Ref(_)) => self.clone_reference_token(operand),
+            // A `&Float`/`&Bool`/`&Duration` view is the scalar value itself
+            // (`ScalarValue`); `&Int` is a GC cell handled above.
+            (UnOp::Deref, ValueType::Float | ValueType::Bool | ValueType::Int) => Ok(operand),
             (UnOp::Deref, _) => Err(CanonicalLoweringError::UnsupportedExpression("dereference operand")),
             // Checked source establishes consumption; SafeWIR forwards the same token,
             // and the affine checker rejects any duplicate use.
@@ -18864,7 +18887,8 @@ fn source_value_type(
     // A whole record view (`RecordRoot`) is carried as the record's own
     // retained object token.
     if let Type::Qualified(TypeQual::View, inner) = source
-        && is_rooted_user_record(inner)
+        && (is_rooted_user_record(inner)
+            || witchy_types::canonical_aggregates::is_scalar_value_view_payload(inner))
     {
         return source_value_type(inner, layout_bundle, layouts, closure_layouts, definitions);
     }
@@ -21978,7 +22002,7 @@ fn main() -> Int:
     }
 
     #[test]
-    fn rooted_string_view_uses_the_string_root_carrier_and_float_stays_closed() {
+    fn rooted_string_view_uses_the_string_root_carrier_and_nested_list_stays_closed() {
         let module = checked(
             "mode opt\n\n\
              fn view(text: &String) -> &String:\n    text\n",
@@ -21991,7 +22015,7 @@ fn main() -> Int:
         assert!(lowered.is_ok(), "&String lowers through the retained StringRoot carrier: {lowered:?}");
         let module = checked(
             "mode opt\n\n\
-             fn view(value: &Float) -> &Float:\n    value\n",
+             fn view(value: &List(List(Int))) -> &List(List(Int)):\n    value\n",
         );
         let source = module.canonical_source().expect("canonical source");
         let lowered = lower_typed_module(
@@ -21999,7 +22023,7 @@ fn main() -> Int:
             crate::canonical_layouts::derive_layout_bundle(source).expect("derive reference layout"),
         );
         assert!(matches!(lowered, Err(CanonicalLoweringError::UnsupportedCanonicalObligation(_))),
-            "&Float has no admitted carrier and must stay fail-closed: {lowered:?}");
+            "&List(List(Int)) has no admitted carrier and must stay fail-closed: {lowered:?}");
     }
 
     #[test]

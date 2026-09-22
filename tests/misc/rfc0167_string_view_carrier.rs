@@ -99,12 +99,12 @@ fn region_born_string_root_cannot_escape_through_a_view() {
 }
 
 #[test]
-fn float_view_still_fails_closed_at_the_canonical_boundary() {
-    let source = "fn relay(view: &Float) -> &Float:\n    view\n\nfn main() -> Int:\n    let value = 7.0\n    let observed = relay(&value)\n    0\n";
+fn a_view_without_a_carrier_still_fails_closed_at_the_canonical_boundary() {
+    let source = "fn relay(view: &List(List(Int))) -> &List(List(Int)):\n    view\n\nfn main() -> Int:\n    let value = [[7]]\n    let observed = relay(&value)\n    0\n";
     let checked = witchy::resolve_std_only_checked(source)
         .expect("unadmitted payload still type-checks before canonical admission");
     let refusal = codegen::compile_checked_module_artifact(&checked)
-        .expect_unsupported("&Float has no admitted carrier");
+        .expect_unsupported("&List(List(Int)) has no admitted carrier");
     assert!(
         refusal.to_string().contains("rooted view payload has no admitted authenticated carrier"),
         "the boundary must reject the unauthenticated carrier: {refusal}",

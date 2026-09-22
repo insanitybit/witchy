@@ -97,10 +97,10 @@ fn relay[a](left: &a, right: &a, choose_left: Bool) -> &a:
         right
 
 fn main():
-    // `&String` now has the retained-root StringRoot carrier, so either
-    // root is sound; `&Float` has no admitted carrier and must still refuse.
-    let left = 1.5
-    let right = 2.5
+    // `&String`, `&Float`, and `&List(Int)` now have carriers, so either root
+    // is sound for them; a list of lists has none and must still refuse.
+    let left = [[1]]
+    let right = [[2]]
     let _ = relay(&left, &right, true)
 "#,
     );
