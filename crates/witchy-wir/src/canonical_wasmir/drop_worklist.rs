@@ -407,6 +407,7 @@ mod tests {
             indices: BTreeMap::new(),
             extra_types: Vec::new(),
             scratch: (1..=SCRATCH as u32).collect(),
+            owner_context: Default::default(),
         };
         let mut body = WasmFunctionEncoder::new([(SCRATCH as u32, ValType::I32)]);
         code(&mut body, [I::LocalGet(0), I::LocalSet(local.scratch[OBJECT])]);

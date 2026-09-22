@@ -76,6 +76,7 @@ fn drop_locals() -> LocalLayout<'static> {
         indices: BTreeMap::new(),
         extra_types: vec![ValType::I32; drop_worklist::SCRATCH - 1],
         scratch: (0..drop_worklist::SCRATCH as u32).collect(),
+        owner_context: Default::default(),
     }
 }
 

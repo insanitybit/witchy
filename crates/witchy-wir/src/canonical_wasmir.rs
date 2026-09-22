@@ -2158,6 +2158,9 @@ struct LocalLayout<'a> {
     indices: BTreeMap<ValueId, u32>,
     extra_types: Vec<ValType>,
     scratch: Vec<u32>,
+    // This function's owner-kernel context, parked between environment
+    // operations (see `owner_operation_kernel::OwnerScratch`).
+    owner_context: owner_operation_kernel::ParkedContext,
 }
 
 fn local_layout<'a>(
@@ -2243,6 +2246,7 @@ let mut scratch = vec![0; drop_worklist::SCRATCH];
         indices,
         extra_types,
         scratch,
+        owner_context: Default::default(),
     })
 }
 
@@ -10902,6 +10906,7 @@ mod tests {
             indices: [(object, 0), (destination, 1)].into_iter().collect(),
             extra_types: vec![ValType::I32; usize::try_from(local_count).unwrap()],
             scratch: (2..2 + scratch_count).collect(),
+            owner_context: Default::default(),
         };
         let mut boundary = WasmFunctionEncoder::new(vec![(local_count, ValType::I32)]);
         if share {

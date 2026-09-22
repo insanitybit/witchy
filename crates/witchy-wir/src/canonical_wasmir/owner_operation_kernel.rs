@@ -13,50 +13,83 @@ const INDEX: ValueId = ValueId::new(u32::MAX - 2);
 const SLICE: ValueId = ValueId::new(u32::MAX - 3);
 const START: ValueId = ValueId::new(u32::MAX - 4);
 
+/// The lifetime-free parts of an owner-kernel context that are expensive to
+/// build: the function's value types and the layout's local tables. They are
+/// copied once per function into its `LocalLayout` and reused by every
+/// environment operation of that function, which previously copied them per
+/// operation (quadratic on the std executor's hundreds of constructs).
+pub(super) struct OwnerScratch {
+    function: Function,
+    indices: BTreeMap<ValueId, u32>,
+    extra_types: Vec<ValType>,
+    scratch: Vec<u32>,
+}
+
+/// A function's parked context. Cloning a layout does not clone it: a copy
+/// starts empty and builds its own on first use.
+#[derive(Default)]
+pub(super) struct ParkedContext(std::cell::RefCell<Option<Box<OwnerScratch>>>);
+
+impl Clone for ParkedContext {
+    fn clone(&self) -> Self { Self::default() }
+}
+
+const SYNTHETIC: [ValueId; 5] = [ENV, TEMP, INDEX, SLICE, START];
+
 fn context<'a>(function: &'a Function, local: &'a LocalLayout<'a>, op: &O) -> Result<(Cow<'a, Function>, Cow<'a, LocalLayout<'a>>, &'a AdmittedOwnerBridge, u32), EncodeError> {
     let error = || EncodeError::Lowering(LoweringError::UnsupportedOperation { function: function.id, operation: "owner kernel context" });
     let bridge = local.owner_bridges.iter().find(|b| b.recipe() == &OwnerBridgeRecipe::of(op)).ok_or_else(error)?;
     let scratch = local.owner_scratch.ok_or_else(error)?;
-    if function.value_types.contains_key(&ENV) || function.value_types.contains_key(&TEMP)
-        || function.value_types.contains_key(&SLICE) { return Err(error()); }
+    if SYNTHETIC.iter().any(|id| function.value_types.contains_key(id)) { return Err(error()); }
     // Only environment construction/extraction uses the synthetic locals.
-    // Ordinary owner calls must not copy the source CFG and the complete
-    // module-wide cleanup catalog once per instruction.
+    // Ordinary owner calls borrow the function and layout unchanged.
     if !matches!(op, O::Construct { .. } | O::CloneEnvironment { .. } | O::ReadSharedPlace { .. } | O::ReadSharedSliceLength { .. }) {
         return Ok((Cow::Borrowed(function), Cow::Borrowed(local), bridge, scratch[2]));
     }
-    // The recipes read only the function's identity and value types; its CFG
-    // is never consulted. Copying the blocks here cost one full copy of the
-    // function per environment operation, which is quadratic in the std
-    // executor (2k blocks, hundreds of constructs).
-    let mut function = Function {
-        id: function.id,
-        signature: function.signature,
-        entry: function.entry,
-        value_types: function.value_types.clone(),
-        blocks: Vec::new(),
+    // Reuse this function's parked copy when there is one; the base tables
+    // never change once emission starts, so only the synthetic entries a
+    // previous operation added need clearing. The recipes read only the
+    // function's identity and value types, never its CFG.
+    let parked = local.owner_context.0.borrow_mut().take()
+        .filter(|parked| parked.function.id == function.id
+            && parked.function.value_types.len() >= function.value_types.len()
+            && parked.indices.len() >= local.indices.len());
+    let OwnerScratch { function: mut function, mut indices, extra_types, scratch: local_scratch } = match parked {
+        Some(parked) => {
+            let mut parked = *parked;
+            for id in SYNTHETIC {
+                parked.function.value_types.remove(&id);
+                parked.indices.remove(&id);
+            }
+            parked
+        }
+        None => OwnerScratch {
+            function: Function {
+                id: function.id,
+                signature: function.signature,
+                entry: function.entry,
+                value_types: function.value_types.clone(),
+                blocks: Vec::new(),
+            },
+            indices: local.indices.clone(),
+            extra_types: local.extra_types.clone(),
+            scratch: local.scratch.clone(),
+        },
     };
     let owner_bridges = if matches!(op, O::ReadSharedPlace { .. } | O::ReadSharedSliceLength { .. }) {
         local.owner_bridges.clone()
     } else {
         Vec::new()
     };
-    let mut local = LocalLayout { memory_helpers: local.memory_helpers.clone(),
-        owner_scratch: local.owner_scratch,
-        owner_bridges,
-        indices: local.indices.clone(),
-        extra_types: local.extra_types.clone(),
-        scratch: local.scratch.clone(),
-    };
     function.value_types.insert(ENV, ValueType::Ref(bridge.family().environment));
-    local.indices.insert(ENV, scratch[0]);
-    local.indices.insert(TEMP, scratch[1]);
+    indices.insert(ENV, scratch[0]);
+    indices.insert(TEMP, scratch[1]);
     if matches!(op, O::ReadSharedPlace { .. }) {
         function.value_types.insert(INDEX, ValueType::Size);
         // DropRef uses the ordinary worklist scratch locals, including slot
         // zero. Keep a slice coordinate in the dedicated owner slot so an
         // outer environment release cannot replace it with an address.
-        local.indices.insert(INDEX, scratch[3]);
+        indices.insert(INDEX, scratch[3]);
         if let Some(ValueType::Gc(slice_type)) = bridge.family().constructors.iter()
             .find_map(|constructor| match constructor.shared_reference_constructor() {
                 Some(SharedReferenceConstructor::ListIntElementFromSlice { slice, .. }) =>
@@ -65,12 +98,34 @@ fn context<'a>(function: &'a Function, local: &'a LocalLayout<'a>, op: &O) -> Re
             })
         {
             function.value_types.insert(SLICE, ValueType::Gc(slice_type));
-            local.indices.insert(SLICE, scratch[2]);
+            indices.insert(SLICE, scratch[2]);
             function.value_types.insert(START, ValueType::Size);
-            local.indices.insert(START, local.scratch[1]);
+            indices.insert(START, local_scratch[1]);
         }
     }
+    let local = LocalLayout { memory_helpers: local.memory_helpers.clone(),
+        owner_scratch: local.owner_scratch,
+        owner_bridges,
+        indices,
+        extra_types,
+        scratch: local_scratch,
+        owner_context: Default::default(),
+    };
     Ok((Cow::Owned(function), Cow::Owned(local), bridge, scratch[2]))
+}
+
+/// Return an owned context to `original` for the next operation of the same
+/// function. An operation that failed part-way simply does not park; the
+/// next one rebuilds.
+fn park(original: &LocalLayout<'_>, function: Cow<'_, Function>, local: Cow<'_, LocalLayout<'_>>) {
+    if let (Cow::Owned(function), Cow::Owned(local)) = (function, local) {
+        *original.owner_context.0.borrow_mut() = Some(Box::new(OwnerScratch {
+            function,
+            indices: local.indices,
+            extra_types: local.extra_types,
+            scratch: local.scratch,
+        }));
+    }
 }
 
 fn shared_place_capture<'a>(
@@ -186,6 +241,7 @@ fn cleanup_helper_context(bridge: &AdmittedOwnerBridge) -> (Function, LocalLayou
         indices: [(environment, 1), (index, 2)].into_iter().collect(),
         extra_types: vec![ValType::I32; 2 + drop_worklist::SCRATCH],
         scratch: (scratch_start..scratch_start + drop_worklist::SCRATCH as u32).collect(),
+        owner_context: Default::default(),
     };
     (function, local)
 }
@@ -732,6 +788,7 @@ fn plan_read_shared_slice_length(
 
 pub(super) fn emit(body: &mut WasmFunctionEncoder, function: &Function, local: &LocalLayout, layouts: &LayoutInterner, op: &O, imports: &BTreeMap<ImportId, u32>, cleanup_function: Option<u32>) -> Result<(), EncodeError> {
     use wasm_encoder::Instruction as I;
+    let original = local;
     let (mut function, local, bridge, _payload) = context(function, local, op)?;
     let import = *imports.get(&bridge.id()).ok_or(EncodeError::Lowering(LoweringError::UnsupportedOperation { function: function.id, operation: "owner bridge import" }))?;
     match op {
@@ -812,10 +869,12 @@ O::DropList { list, .. } => {
 }
 
     }
+    park(original, function, local);
     Ok(())
 }
 
 pub(super) fn plan(plan: &mut Vec<PlanToken>, function: &Function, layouts: &LayoutInterner, local: &LocalLayout, op: &O, imports: &BTreeMap<ImportId, u32>, cleanup_function: Option<u32>) -> Result<(), CanonicalAdmissionError> {
+    let original = local;
     let (mut function, local, bridge, _payload) = context(function, local, op).map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
     let import = *imports.get(&bridge.id()).ok_or(CanonicalAdmissionError::UnsupportedPlan)?;
     match op {
@@ -888,5 +947,6 @@ O::DropList { list, .. } => {
 }
 
     }
+    park(original, function, local);
     Ok(())
 }
