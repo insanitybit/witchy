@@ -116,17 +116,17 @@ fn bad() -> Option(&Int):
 #[test]
 fn rooted_slice_rejects_unadmitted_element_payload_at_canonical_boundary() {
     let source = r#"
-fn relay(items: &[Float]) -> &[Float]:
+fn relay(items: &[List(Int)]) -> &[List(Int)]:
     items
 
 fn main() -> Int:
-    let values = [1.0, 2.0]
+    let values = [[1], [2]]
     let middle = relay(&values[0..1])
     middle.length()
 "#;
     let checked = witchy::resolve_std_only_checked(source)
         .expect("unadmitted slice payload still type-checks before canonical admission");
     let refusal = codegen::compile_checked_module_artifact(&checked)
-        .expect_unsupported("only authenticated &[Int] may cross canonical ABI");
+        .expect_unsupported("only a slice of scalars or Strings may cross canonical ABI");
     assert!(refusal.to_string().contains("rooted view payload has no admitted authenticated carrier"));
 }

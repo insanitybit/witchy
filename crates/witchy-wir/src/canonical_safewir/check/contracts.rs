@@ -847,11 +847,17 @@ fn propagate_operation_origins(
                             _ => return Err(InitialCheckError::UnsupportedMemoryOperation { function: function.id, operation: "CloneEnvironment contract" }),
                         }
                     }
+                    O::ReadSharedSlice {
+                        field: crate::canonical_safewir::closure_owner_contract::SharedSliceField::Root, ..
+                    } => match function.value_types.get(&destination) {
+                        Some(ValueType::Ref(layout)) => Origin::Shared(*layout),
+                        _ => return Err(InitialCheckError::UnsupportedMemoryOperation { function: function.id, operation: "ReadSharedSlice root contract" }),
+                    },
                     O::Construct { .. }
                     | O::ReadCapability { .. }
                     | O::ReadOwner { .. }
                     | O::ReadSharedPlace { .. }
-                    | O::ReadSharedSliceLength { .. }
+                    | O::ReadSharedSlice { .. }
                     | O::ReadTag { .. }
                     | O::ReadCallable { .. }
                     | O::Clone { .. }
@@ -1170,7 +1176,7 @@ fn derive_operation(
                     O::ReadCapability { .. }
                     | O::ReadOwner { .. }
                     | O::ReadSharedPlace { .. }
-                    | O::ReadSharedSliceLength { .. }
+                    | O::ReadSharedSlice { .. }
                     | O::ReadTag { .. }
                     | O::ReadCallable { .. }
                     | O::CloneEnvironment { .. }
@@ -1185,7 +1191,7 @@ fn derive_operation(
                     O::ReadCapability { .. }
                     | O::ReadOwner { .. }
                     | O::ReadSharedPlace { .. }
-                    | O::ReadSharedSliceLength { .. }
+                    | O::ReadSharedSlice { .. }
                     | O::ReadTag { .. }
                     | O::ReadCallable { .. }
                     | O::Clone { .. }
@@ -1206,11 +1212,17 @@ fn derive_operation(
                         Some(ValueType::Ref(layout)) => Origin::Shared(*layout),
                         _ => return Err(InitialCheckError::UnsupportedMemoryOperation { function: function.id, operation: "CloneEnvironment contract" }),
                     },
+                    O::ReadSharedSlice {
+                        field: crate::canonical_safewir::closure_owner_contract::SharedSliceField::Root, ..
+                    } => match function.value_types.get(&destination) {
+                        Some(ValueType::Ref(layout)) => Origin::Shared(*layout),
+                        _ => return Err(InitialCheckError::UnsupportedMemoryOperation { function: function.id, operation: "ReadSharedSlice root contract" }),
+                    },
                     O::Construct { .. }
                     | O::ReadCapability { .. }
                     | O::ReadOwner { .. }
                     | O::ReadSharedPlace { .. }
-                    | O::ReadSharedSliceLength { .. }
+                    | O::ReadSharedSlice { .. }
                     | O::ReadTag { .. }
                     | O::ReadCallable { .. }
                     | O::Clone { .. }

@@ -75,10 +75,10 @@ pub enum CanonicalReferenceKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum CanonicalRootedViewCarrier {
     IntScalarRoot,
-    /// Retained `List(Int)` root plus checked `{start, len}` projection.
-    /// This remains local-only: it is not an open List ABI and exposes no
-    /// by-value element read.
-    IntListSliceRoot,
+    /// Retained `List(T)` root plus checked `{start, len}` projection, for a
+    /// `&[T]` whose element is one scalar kind or String. It is not an open
+    /// List ABI: the element is read only through the checked projection.
+    ListSliceRoot,
     /// A whole immutable `String` value.  The carrier is the retained
     /// reference-counted String object itself: a whole-value view has no
     /// projection, and the String representation is already immutable and
@@ -528,11 +528,12 @@ fn rooted_view_from_ty(
         Ty::Named(name, arguments)
             if name.as_ref() == "Slice"
                 && arguments.len() == 1
-                && matches!(arguments.get(0), Some(Ty::Int)) =>
+                && arguments.first().and_then(slice_element_name_ty).is_some() =>
         {
+            let element = arguments.first().and_then(slice_element_name_ty).expect("matched above");
             Ok(CanonicalReferenceKind::RootedView {
-            payload: rooted_slice_int_payload_key(),
-            carrier: CanonicalRootedViewCarrier::IntListSliceRoot,
+                payload: rooted_slice_payload_key(element),
+                carrier: CanonicalRootedViewCarrier::ListSliceRoot,
             })
         }
         Ty::String => Ok(CanonicalReferenceKind::RootedView {
@@ -587,23 +588,19 @@ fn rooted_view_from_ast(
             payload: rooted_scalar_payload_key(CanonicalScalarKind::Int),
             carrier: CanonicalRootedViewCarrier::IntScalarRoot,
         }),
-        Type::Slice(element)
-            if matches!(element.unqualified(), Type::Named(name, arguments) if name == "Int" && arguments.is_empty()) =>
-        {
+        Type::Slice(element) if slice_element_name_ast(element).is_some() => {
             Ok(CanonicalReferenceKind::RootedView {
-                payload: rooted_slice_int_payload_key(),
-                carrier: CanonicalRootedViewCarrier::IntListSliceRoot,
+                payload: rooted_slice_payload_key(slice_element_name_ast(element).expect("matched above")),
+                carrier: CanonicalRootedViewCarrier::ListSliceRoot,
             })
         }
         Type::Named(name, arguments)
             if name == "Slice"
-                && matches!(arguments.as_slice(), [element]
-                    if matches!(element.unqualified(), Type::Named(name, arguments)
-                        if name == "Int" && arguments.is_empty())) =>
+                && matches!(arguments.as_slice(), [element] if slice_element_name_ast(element).is_some()) =>
         {
             Ok(CanonicalReferenceKind::RootedView {
-                payload: rooted_slice_int_payload_key(),
-                carrier: CanonicalRootedViewCarrier::IntListSliceRoot,
+                payload: rooted_slice_payload_key(slice_element_name_ast(&arguments[0]).expect("matched above")),
+                carrier: CanonicalRootedViewCarrier::ListSliceRoot,
             })
         }
         Type::Named(name, arguments) if name == "String" && arguments.is_empty() => Ok(CanonicalReferenceKind::RootedView {
@@ -779,8 +776,32 @@ fn rooted_string_payload_key() -> CanonicalTypeKey {
     CanonicalTypeKey(*blake3::hash(b"witchy.canonical-rooted-view-payload.v1/string").as_bytes())
 }
 
-fn rooted_slice_int_payload_key() -> CanonicalTypeKey {
-    CanonicalTypeKey(*blake3::hash(b"witchy.canonical-rooted-view-payload.v1/slice-int").as_bytes())
+/// The element of a `ListSliceRoot` carrier: one scalar kind carried inline,
+/// or an immutable String. An element that is itself an owner has none.
+fn slice_element_name_ty(element: &Ty) -> Option<&'static str> {
+    match element {
+        Ty::Int => Some("Int"),
+        Ty::Float => Some("Float"),
+        Ty::Bool => Some("Bool"),
+        Ty::Duration => Some("Duration"),
+        Ty::String => Some("String"),
+        _ => None,
+    }
+}
+
+fn slice_element_name_ast(element: &Type) -> Option<&'static str> {
+    let Type::Named(name, arguments) = element.unqualified() else { return None };
+    if !arguments.is_empty() {
+        return None;
+    }
+    ["Int", "Float", "Bool", "Duration", "String"].into_iter().find(|admitted| admitted == name)
+}
+
+/// One payload identity per slice element. `Int` keeps its original key.
+fn rooted_slice_payload_key(element: &str) -> CanonicalTypeKey {
+    let mut bytes = b"witchy.canonical-rooted-view-payload.v1/slice-".to_vec();
+    bytes.extend(element.to_ascii_lowercase().bytes());
+    CanonicalTypeKey(*blake3::hash(&bytes).as_bytes())
 }
 
 fn contains_rooted_view(ty: &Ty) -> bool {

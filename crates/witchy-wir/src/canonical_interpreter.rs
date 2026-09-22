@@ -1304,7 +1304,7 @@ impl<'a> Engine<'a> {
                             if constructor_family.signature != state.family {
                                 return Err(InterpretError::TypeMismatch("shared-slice element constructor family"));
                             }
-                            let SharedReferenceConstructor::ListIntSlice { root, start, length } =
+                            let SharedReferenceConstructor::ListSlice { root, start, length } =
                                 slice_constructor.shared_reference_constructor()
                                     .ok_or(InterpretError::UnsupportedOperation("shared-slice element constructor schema"))?
                             else { return Err(InterpretError::TypeMismatch("shared-slice element constructor")) };
@@ -1330,7 +1330,7 @@ impl<'a> Engine<'a> {
                             let absolute = start.checked_add(local_index).ok_or(InterpretError::ArithmeticTrap)?;
                             (InterpreterValue::ObjectRef(root), Some(absolute))
                         }
-                        SharedReferenceConstructor::ListIntSlice { .. } => {
+                        SharedReferenceConstructor::ListSlice { .. } => {
                             return Err(InterpretError::UnsupportedOperation("shared-place slice carrier"));
                         }
                     };
@@ -1360,10 +1360,12 @@ impl<'a> Engine<'a> {
                 release?;
                 values.insert(*destination, value);
             }
-            OwnerOperation::ReadSharedSliceLength { destination, owner, family } => {
+            OwnerOperation::ReadSharedSlice { destination, owner, family, field } => {
                 let family_info = self.owner_family(*family)?;
-                if !matches!(family_info.source, OwnerFamilySource::SharedReference(_)) {
-                    return Err(InterpretError::UnsupportedOperation("non-reference slice-length family"));
+                if !matches!(&family_info.source, OwnerFamilySource::SharedReference(source)
+                    if crate::canonical_safewir::closure_owner_contract::rooted_slice_element(source).is_some())
+                {
+                    return Err(InterpretError::UnsupportedOperation("non-slice shared-slice family"));
                 }
                 let owner = self.owner_value(*owner, values)?;
                 let (environment, constructor) = {
@@ -1378,24 +1380,42 @@ impl<'a> Engine<'a> {
                     }
                     (state.environment, constructor.clone())
                 };
-                let SharedReferenceConstructor::ListIntSlice { length, .. } = constructor.shared_reference_constructor()
+                let SharedReferenceConstructor::ListSlice { root, start, length } = constructor.shared_reference_constructor()
                     .ok_or(InterpretError::UnsupportedOperation("shared-slice constructor schema"))?
                 else {
                     return Err(InterpretError::UnsupportedOperation("non-slice shared carrier"));
                 };
-                let capture = constructor.captures.get(length.0 as usize)
-                    .ok_or(InterpretError::UnsupportedOperation("shared-slice length ordinal"))?;
-                let CaptureStorage::EnvironmentField(field) = capture.storage else {
-                    return Err(InterpretError::TypeMismatch("shared-slice length storage"));
+                use crate::canonical_safewir::closure_owner_contract::SharedSliceField;
+                let ordinal = match field {
+                    SharedSliceField::Root => root,
+                    SharedSliceField::Start => start,
+                    SharedSliceField::Length => length,
+                };
+                let capture = constructor.captures.get(ordinal.0 as usize)
+                    .ok_or(InterpretError::UnsupportedOperation("shared-slice capture ordinal"))?;
+                let CaptureStorage::EnvironmentField(cell) = capture.storage else {
+                    return Err(InterpretError::TypeMismatch("shared-slice capture storage"));
                 };
                 self.retain(environment)?;
-                let length = self.object(environment)?.cells.get(&CellKey::Field(field)).cloned()
+                let value = self.object(environment)?.cells.get(&CellKey::Field(cell)).cloned()
                     .ok_or(InterpretError::UninitializedPlace);
-                self.release(environment)?;
-                let InterpreterValue::Size(length) = length? else {
-                    return Err(InterpretError::TypeMismatch("shared-slice length"));
+                let value = match (field, value) {
+                    (SharedSliceField::Start | SharedSliceField::Length, Ok(InterpreterValue::Size(size))) => {
+                        Ok(InterpreterValue::Size(size))
+                    }
+                    // The retained root is one more strong token of the
+                    // backing list, released by its owner like any shared
+                    // reference; the environment's own token is untouched.
+                    (SharedSliceField::Root, Ok(InterpreterValue::ObjectRef(root))) => {
+                        self.retain(root).map(|()| InterpreterValue::ObjectRef(root))
+                    }
+                    (_, Ok(_)) => Err(InterpretError::TypeMismatch("shared-slice field")),
+                    (_, Err(error)) => Err(error),
                 };
-                values.insert(*destination, InterpreterValue::Size(length));
+                let release = self.release(environment);
+                let value = value?;
+                release?;
+                values.insert(*destination, value);
             }
             OwnerOperation::ReadTag { destination, owner, family } => {
                 self.owner_family(*family)?;

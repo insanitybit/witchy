@@ -3775,10 +3775,29 @@ impl<'a> MemoryChecker<'a> {
                             shared_immutable: true, initialized_owned_slots: true,
                         });
                     }
+                    // A slice's retained backing root is admitted exactly as a
+                    // shared `List` parameter: a shared, immutable RC object
+                    // with its parameter extent, so no store can reach it and
+                    // its header is authenticated before any element read.
+                    OwnerOperation::ReadSharedSlice {
+                        destination,
+                        field: crate::canonical_safewir::closure_owner_contract::SharedSliceField::Root,
+                        ..
+                    } => {
+                        let ValueType::Ref(layout) = value_type(self.function, *destination)? else {
+                            return self.unsupported("ReadSharedSlice(root non-reference)");
+                        };
+                        let extent = self.parameter_extent(layout)?;
+                        self.state.objects.insert(*destination, ObjectState {
+                            identity: *destination, owner_generation: 0, layout, extent, ownership: Ownership::Shared,
+                            allocation_class: Some(AllocationClass::ReferenceCounted),
+                            shared_immutable: true, initialized_owned_slots: true,
+                        });
+                    }
                     OwnerOperation::ReadCapability { .. }
                     | OwnerOperation::ReadOwner { .. }
                     | OwnerOperation::ReadSharedPlace { .. }
-                    | OwnerOperation::ReadSharedSliceLength { .. }
+                    | OwnerOperation::ReadSharedSlice { .. }
                     | OwnerOperation::ReadTag { .. }
                     | OwnerOperation::ReadCallable { .. }
                     | OwnerOperation::Clone { .. }

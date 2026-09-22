@@ -370,7 +370,7 @@ fn operation_flow(
                 | OwnerOperation::ReadCapability { .. }
                 | OwnerOperation::ReadOwner { .. }
                 | OwnerOperation::ReadSharedPlace { .. }
-                | OwnerOperation::ReadSharedSliceLength { .. }
+                | OwnerOperation::ReadSharedSlice { .. }
                 | OwnerOperation::ReadCallable { .. }
                 | OwnerOperation::ReadTag { .. }
                 | OwnerOperation::Clone { .. }

@@ -1487,7 +1487,7 @@ fn source_abi_qualifiers_supported(
     // the authenticated hidden write-back lane. It is deliberately not a
     // recursive qualifier exception.
     let mut pending = (!(is_direct_shared_reference(result)
-        || is_direct_rooted_view_int(result) || is_direct_rooted_view_int_slice(result)
+        || is_direct_rooted_view_int(result) || is_direct_rooted_view_slice(result)
         || is_direct_rooted_view_whole_root(result, records)
         || is_direct_exclusive_reference(result)
         || is_aggregate_reference_carrier(result)
@@ -1499,7 +1499,7 @@ fn source_abi_qualifiers_supported(
     pending.extend(parameters.iter().enumerate().filter_map(|(index, parameter)| {
         (!(
             is_direct_shared_reference(parameter)
-            || is_direct_rooted_view_int(parameter) || is_direct_rooted_view_int_slice(parameter)
+            || is_direct_rooted_view_int(parameter) || is_direct_rooted_view_slice(parameter)
             || is_direct_rooted_view_whole_root(parameter, records)
             || is_direct_rooted_view_aggregate_carrier(parameter, records)
             || (matches!(conventions.get(index), Some(Convention::Let | Convention::Own))
@@ -1688,12 +1688,9 @@ fn is_direct_rooted_view_string(source: &witchy_syntax::ast::Type) -> bool {
                 if name == "String" && arguments.is_empty()))
 }
 
-fn is_direct_rooted_view_int_slice(source: &witchy_syntax::ast::Type) -> bool {
-    matches!(source,
-        witchy_syntax::ast::Type::Qualified(witchy_syntax::ast::TypeQual::View, inner)
-            if matches!(inner.as_ref(), witchy_syntax::ast::Type::Slice(element)
-                if matches!(element.unqualified(), witchy_syntax::ast::Type::Named(name, arguments)
-                    if name == "Int" && arguments.is_empty())))
+/// A direct `&[T]` rooted slice view of an admitted element (`ListSlice`).
+fn is_direct_rooted_view_slice(source: &witchy_syntax::ast::Type) -> bool {
+    super::closure_owner_contract::rooted_slice_element(source).is_some()
 }
 
 /// The only non-scalar reference carriers the current canonical ABI can move
@@ -1828,7 +1825,7 @@ fn restore_source_abi_qualifiers(
     for (index, (parameter, declared)) in parameters.iter_mut().zip(&declaration.params).enumerate() {
         if let Some(ty) = &declared.ty
             && (is_direct_shared_reference(ty)
-                || is_direct_rooted_view_int(ty) || is_direct_rooted_view_int_slice(ty)
+                || is_direct_rooted_view_int(ty) || is_direct_rooted_view_slice(ty)
                 || is_direct_rooted_view_whole_root(ty, records)
                 || is_direct_rooted_view_aggregate_carrier(ty, records)
                 || (matches!(declared.convention,
@@ -1849,7 +1846,7 @@ fn restore_source_abi_qualifiers(
     }
     if let Some(declared) = &declaration.ret
         && (is_direct_shared_reference(declared)
-            || is_direct_rooted_view_int(declared) || is_direct_rooted_view_int_slice(declared)
+            || is_direct_rooted_view_int(declared) || is_direct_rooted_view_slice(declared)
             || is_direct_rooted_view_whole_root(declared, records)
             || is_direct_exclusive_reference(declared)
             || is_aggregate_reference_carrier(declared)
@@ -3016,7 +3013,9 @@ pub(super) fn value_type_matches_source(
         if let super::closure_owner_contract::OwnerFamilySource::SharedReference(expected) = &family.source {
             return id == family.owner_type
                 && ((is_direct_rooted_view_int(expected) && is_direct_rooted_view_int(source))
-                    || (is_direct_rooted_view_int_slice(expected) && is_direct_rooted_view_int_slice(source)));
+                    || (is_direct_rooted_view_slice(expected)
+                        && super::closure_owner_contract::rooted_slice_element(expected)
+                            == super::closure_owner_contract::rooted_slice_element(source)));
         }
         if let super::closure_owner_contract::OwnerFamilySource::Aggregate(expected) = &family.source {
             let aggregate = if id == family.list_type {

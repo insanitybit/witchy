@@ -817,7 +817,11 @@ impl CanonicalWriter {
             O::ReadOwner { constructor, capture, .. } => (12, Some(*constructor), Some(*capture), None),
             O::ReadTag { family, .. } => (13, None, None, Some(*family)),
             O::ReadSharedPlace { family, .. } => (15, None, None, Some(*family)),
-            O::ReadSharedSliceLength { family, .. } => (16, None, None, Some(*family)),
+            O::ReadSharedSlice { family, field, .. } => (match field {
+                super::closure_owner_contract::SharedSliceField::Length => 16,
+                super::closure_owner_contract::SharedSliceField::Start => 17,
+                super::closure_owner_contract::SharedSliceField::Root => 18,
+            }, None, None, Some(*family)),
             O::ReadCallable { family, .. } => (2, None, None, Some(*family)),
             O::Clone { family, .. } => (3, None, None, Some(*family)),
             O::Drop { family, .. } => (4, None, None, Some(*family)),

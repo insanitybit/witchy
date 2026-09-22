@@ -1,7 +1,7 @@
 //! Affine ownership of opaque GC values. These tokens have no linear-memory
 //! address, extent, allocation class, or pointer-slot authority.
 use super::*;
-use crate::canonical_safewir::closure_owner_contract::{CaptureStorage, CaptureTransfer, ConstructorId, OwnerCapture, OwnerFamily, OwnerFamilySource, OwnerOperation, SharedReferenceConstructor};
+use crate::canonical_safewir::closure_owner_contract::{CaptureStorage, CaptureTransfer, ConstructorId, OwnerCapture, OwnerFamily, OwnerFamilySource, OwnerOperation, SharedReferenceConstructor, SharedSliceField, rooted_slice_element, slice_element_layout_matches};
 use crate::canonical_safewir::{GcTypeId, Ownership, ResultContract};
 
 type Live = BTreeSet<ValueId>;
@@ -49,7 +49,7 @@ impl<'a> Registry<'a> {
                 return Err(InitialCheckError::CallableContractMismatch { signature: family.signature });
             }
             if let OwnerFamilySource::SharedReference(source_type) = &family.source {
-                if !shared_rooted_int_reference(source_type) {
+                if !shared_rooted_reference(source_type) {
                     return Err(InitialCheckError::UnsupportedMemorySignature { signature: family.signature });
                 }
                 let mut kinds = BTreeSet::new();
@@ -95,17 +95,19 @@ impl<'a> Registry<'a> {
                                             if rooted_int_slice_reference(source))
                                 })
                         }
-                        SharedReferenceConstructor::ListIntSlice { root, start, length } => {
+                        SharedReferenceConstructor::ListSlice { root, start, length } => {
                             let Some(OwnerCapture { value_type: ValueType::Ref(root_layout), .. }) = constructor.captures.first() else { return Err(InitialCheckError::CallableContractMismatch { signature: family.signature }) };
                             let physical = layouts.resolve_nominal(*root_layout).map_err(|_| InitialCheckError::CallableContractMismatch { signature: family.signature })?;
                             let element = match layouts.get(physical).map(|descriptor| descriptor.kind()) {
                                 Some(crate::layout::LayoutKind::PackedList { element, .. }) => Some(*element),
                                 _ => None,
                             };
-                            rooted_int_slice_reference(source_type)
+                            // The backing list's element representation must be
+                            // exactly the family's checked `&[T]` element.
+                            rooted_slice_element(source_type).is_some_and(|name| {
+                                element.is_some_and(|element| slice_element_layout_matches(&layouts, element, name))
+                            })
                                 && root.0 == 0 && start.0 == 1 && length.0 == 2 && kinds.insert(2_u8)
-                                && element.is_some_and(|element| matches!(layouts.get(element).map(|descriptor| descriptor.kind()),
-                                    Some(crate::layout::LayoutKind::Scalar(crate::layout::ScalarKind::Int))))
                         }
                     };
                     if !valid {
@@ -220,25 +222,47 @@ impl<'a> Registry<'a> {
                 require_type(function, *owner, ValueType::Gc(family.owner_type))?;
                 require_type(function, *destination, ValueType::Int)?;
             }
-            O::ReadSharedSliceLength { destination, owner, family } => {
+            O::ReadSharedSlice { destination, owner, family, field } => {
                 let family = self.family(*family)?;
                 let OwnerFamilySource::SharedReference(source) = &family.source else {
                     return Err(InitialCheckError::UnsupportedMemoryOperation {
-                        function: function.id, operation: "ReadSharedSliceLength non-slice family",
+                        function: function.id, operation: "ReadSharedSlice non-slice family",
                     });
                 };
-                if !rooted_int_slice_reference(source)
+                if rooted_slice_element(source).is_none()
                     || !family.constructors.iter().all(|constructor| matches!(
                         constructor.shared_reference_constructor(),
-                        Some(SharedReferenceConstructor::ListIntSlice { .. }),
+                        Some(SharedReferenceConstructor::ListSlice { .. }),
                     ))
                 {
                     return Err(InitialCheckError::UnsupportedMemoryOperation {
-                        function: function.id, operation: "ReadSharedSliceLength non-slice carrier",
+                        function: function.id, operation: "ReadSharedSlice non-slice carrier",
                     });
                 }
                 require_type(function, *owner, ValueType::Gc(family.owner_type))?;
-                require_type(function, *destination, ValueType::Size)?;
+                match field {
+                    SharedSliceField::Start | SharedSliceField::Length => {
+                        require_type(function, *destination, ValueType::Size)?;
+                    }
+                    // The retained root has exactly the registered root
+                    // capture's layout; every constructor of the family must
+                    // agree on it.
+                    SharedSliceField::Root => {
+                        let mut roots = family.constructors.iter().map(|constructor| constructor.captures.first()
+                            .map(|capture| capture.value_type));
+                        let Some(Some(root @ ValueType::Ref(_))) = roots.next() else {
+                            return Err(InitialCheckError::UnsupportedMemoryOperation {
+                                function: function.id, operation: "ReadSharedSlice root capture",
+                            });
+                        };
+                        if roots.any(|other| other != Some(root)) {
+                            return Err(InitialCheckError::UnsupportedMemoryOperation {
+                                function: function.id, operation: "ReadSharedSlice root capture",
+                            });
+                        }
+                        require_type(function, *destination, root)?;
+                    }
+                }
             }
             O::ReadTag { destination, owner, family } => {
                 let family = self.family(*family)?;
@@ -447,7 +471,7 @@ pub(super) fn check(function: &Function, registry: &Registry<'_>) -> Result<(), 
                         | OwnerOperation::ReadCapability { .. }
                         | OwnerOperation::ReadOwner { .. }
                         | OwnerOperation::ReadSharedPlace { .. }
-                        | OwnerOperation::ReadSharedSliceLength { .. }
+                        | OwnerOperation::ReadSharedSlice { .. }
                         | OwnerOperation::ReadTag { .. }
                         | OwnerOperation::ReadCallable { .. }
                         | OwnerOperation::Clone { .. }
@@ -545,8 +569,8 @@ pub(super) fn check(function: &Function, registry: &Registry<'_>) -> Result<(), 
     Ok(())
 }
 
-fn shared_rooted_int_reference(source_type: &witchy_syntax::ast::Type) -> bool {
-    shared_int_reference(source_type) || rooted_int_slice_reference(source_type)
+fn shared_rooted_reference(source_type: &witchy_syntax::ast::Type) -> bool {
+    shared_int_reference(source_type) || rooted_slice_element(source_type).is_some()
 }
 
 fn shared_int_reference(source_type: &witchy_syntax::ast::Type) -> bool {
@@ -558,12 +582,7 @@ fn shared_int_reference(source_type: &witchy_syntax::ast::Type) -> bool {
 }
 
 fn rooted_int_slice_reference(source_type: &witchy_syntax::ast::Type) -> bool {
-    matches!(source_type,
-        witchy_syntax::ast::Type::Qualified(
-            witchy_syntax::ast::TypeQual::View, inner,
-        ) if matches!(inner.as_ref(), witchy_syntax::ast::Type::Slice(element)
-                if matches!(element.unqualified(), witchy_syntax::ast::Type::Named(name, arguments)
-                    if name == "Int" && arguments.is_empty())))
+    rooted_slice_element(source_type) == Some("Int")
 }
 
 #[cfg(test)]

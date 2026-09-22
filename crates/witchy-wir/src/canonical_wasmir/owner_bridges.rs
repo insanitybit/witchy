@@ -32,7 +32,7 @@ impl OwnerBridgeRecipe {
             // The operation is implemented from this family-authenticated tag
             // bridge plus one admitted CloneEnvironment bridge per constructor.
             O::ReadSharedPlace { family, .. } => Self::ReadTag(*family),
-            O::ReadSharedSliceLength { family, .. } => Self::ReadTag(*family),
+            O::ReadSharedSlice { family, .. } => Self::ReadTag(*family),
             O::ReadTag { family, .. } => Self::ReadTag(*family),
             O::ReadCallable { family, .. } => Self::ReadCallable(*family),
             O::Clone { family, .. } => Self::Clone(*family),
@@ -210,7 +210,7 @@ pub(super) fn build<S: crate::canonical_safewir::ModuleStage>(source: &Canonical
                 result.push(bridge);
             }
 
-            if matches!(operation, OwnerOperation::ReadSharedPlace { .. } | OwnerOperation::ReadSharedSliceLength { .. }) {
+            if matches!(operation, OwnerOperation::ReadSharedPlace { .. } | OwnerOperation::ReadSharedSlice { .. }) {
                 for constructor in &family.constructors {
                     if constructor.shared_reference_constructor().is_none() {
                         return Err(error("shared-place constructor schema"));
@@ -285,7 +285,7 @@ pub(super) fn build<S: crate::canonical_safewir::ModuleStage>(source: &Canonical
                     }
                     for nested_constructor in &nested_family.constructors {
                         if !matches!(nested_constructor.shared_reference_constructor(),
-                            Some(SharedReferenceConstructor::ListIntSlice { .. }))
+                            Some(SharedReferenceConstructor::ListSlice { .. }))
                         {
                             return Err(error("shared-slice nested constructor schema"));
                         }
@@ -407,7 +407,7 @@ fn recipe_has_cleanup_result(recipe: &OwnerBridgeRecipe) -> bool {
 }
 
 fn recipe_results(recipe: &OwnerBridgeRecipe, results: Vec<ValueType>) -> Vec<ValueType> {
-    // ReadSharedPlace and ReadSharedSliceLength are implemented by composing
+    // ReadSharedPlace and ReadSharedSlice are implemented by composing
     // the same private family-tag bridge with constructor-specific environment
     // access. The bridge returns the intrinsic i64 tag, never the consuming
     // operation's public result lane (which is Size for a slice length).

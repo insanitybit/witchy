@@ -32,17 +32,46 @@ pub(crate) struct SharedIntReferenceLayout {
     pub list_root: Option<LayoutId>,
 }
 
-/// Canonical storage for an immutable `&[Int]`: a retained list root and its
+/// Canonical storage for an immutable `&[T]`: a retained list root and its
 /// checked slice projection.  It is deliberately distinct from `&Int` so a
-/// scalar-place reader can never reinterpret a slice carrier.
+/// scalar-place reader can never reinterpret a slice carrier.  One family per
+/// admitted element; they share the environment shape and differ in the
+/// backing list's layout.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct RootedIntSliceLayout {
+pub(crate) struct RootedSliceLayout {
+    /// One of `closure_owner_contract::ROOTED_SLICE_ELEMENTS`.
+    pub element: &'static str,
     pub environment: LayoutId,
     pub list_root: LayoutId,
 }
 
+/// The stable opaque identity of the `&[T]` family for an admitted element
+/// name; `&[Int]` keeps its original identity.  Each identity leaves its
+/// successor free, like every owner family's list type.
+pub(crate) fn rooted_slice_owner_type(element: &str) -> Option<GcTypeId> {
+    let offset = match element {
+        "Int" => 0x2,
+        "Float" => 0x4,
+        "Bool" => 0x6,
+        "Duration" => 0x8,
+        "String" => 0xa,
+        _ => return None,
+    };
+    Some(GcTypeId::new(0xc300_0000 + offset))
+}
+
 pub(crate) fn rooted_int_slice_owner_type() -> GcTypeId {
-    GcTypeId::new(0xc300_0002)
+    rooted_slice_owner_type("Int").expect("Int is an admitted slice element")
+}
+
+/// The admitted element name of a slice element type.
+pub(crate) fn rooted_slice_element_name(element: &Type) -> Option<&'static str> {
+    let Type::Named(name, arguments) = element.unqualified() else { return None };
+    if !arguments.is_empty() {
+        return None;
+    }
+    witchy_wir::canonical_safewir::closure_owner_contract::ROOTED_SLICE_ELEMENTS
+        .into_iter().find(|admitted| admitted == name)
 }
 
 /// The source-derived storage family for one `fn` signature.  The callable
@@ -174,9 +203,9 @@ pub(crate) fn shared_int_reference_layout(
     projected_layouts(source).map(|(_, _, _, shared, _)| shared)
 }
 
-pub(crate) fn rooted_int_slice_layout(
+pub(crate) fn rooted_slice_layouts(
     source: &CanonicalCheckedSource,
-) -> Result<Option<RootedIntSliceLayout>, CanonicalLayoutError> {
+) -> Result<Vec<RootedSliceLayout>, CanonicalLayoutError> {
     projected_layouts(source).map(|(_, _, _, _, slice)| slice)
 }
 
@@ -281,7 +310,7 @@ type ProjectedLayouts = (
     HashMap<Type, ClosureFamilyLayout>,
     HashMap<Type, OpaqueAggregateFamilyLayout>,
     Option<SharedIntReferenceLayout>,
-    Option<RootedIntSliceLayout>,
+    Vec<RootedSliceLayout>,
 );
 
 thread_local! {
@@ -294,7 +323,7 @@ thread_local! {
 /// Project `source`'s layouts once for the duration of `body`.
 ///
 /// `derive_layout_bundle`, `closure_families`, `opaque_aggregate_families`,
-/// `shared_int_reference_layout` and `rooted_int_slice_layout` each used to
+/// `shared_int_reference_layout` and `rooted_slice_layouts` each used to
 /// run the WHOLE projection and keep one element of its result: five full
 /// projections per compile of the same source (counted on
 /// examples/channels). Inside this scope they share one.
@@ -359,7 +388,7 @@ fn project_layouts(
     let capture_variants = closure_capture_variants(source, &definitions)?;
     let mut projection = LayoutProjection {
         roots: Vec::new(),
-        rooted_int_slice_requested: false,
+        rooted_slices_requested: BTreeSet::new(),
         definitions,
         closures: BTreeMap::new(),
         capture_variants,
@@ -428,9 +457,10 @@ fn project_layouts(
 struct LayoutProjection {
     roots: Vec<Type>,
     /// A rooted slice carrier is authority-bearing, unlike an ordinary
-    /// `List(Int)` layout. Only an explicit checked `&[Int]` source type may
-    /// request it; observing a list alone must never mint the owner family.
-    rooted_int_slice_requested: bool,
+    /// `List(T)` layout. Only an explicit checked `&[T]` source type may
+    /// request it, per admitted element; observing a list alone must never
+    /// mint the owner family.
+    rooted_slices_requested: BTreeSet<&'static str>,
     // Shared so the walk can hold a shape-memo scope on the map while it
     // mutates the rest of the projection (see `with_shape_memo`).
     definitions: std::rc::Rc<BTreeMap<String, TypeDef>>,
@@ -490,11 +520,9 @@ impl LayoutProjection {
         // expression may turn that internal identity into slice-carrier
         // authority; later variable/method uses merely reuse the layout.
         if matches!(expression, ast::Expr::Unary { op: ast::UnOp::Borrow, .. })
-            && rooted_slice_element(&source_type).is_some_and(|element| {
-                scalar_kind_of(element) == Some(ScalarKind::Int)
-            })
+            && let Some(element) = rooted_slice_element(&source_type).and_then(rooted_slice_element_name)
         {
-            self.rooted_int_slice_requested = true;
+            self.rooted_slices_requested.insert(element);
         }
         self.visit_type(&source_type)
     }
@@ -513,8 +541,8 @@ impl LayoutProjection {
         if let Type::Qualified(ast::TypeQual::View, inner) = ty
             && let Some(element) = rooted_slice_element(inner)
         {
-            if scalar_kind_of(element) == Some(ScalarKind::Int) {
-                self.rooted_int_slice_requested = true;
+            if let Some(element) = rooted_slice_element_name(element) {
+                self.rooted_slices_requested.insert(element);
             }
             return self.visit_type(&Type::Named("List".into(), vec![element.clone()]));
         }
@@ -652,7 +680,7 @@ impl LayoutProjection {
         HashMap<Type, ClosureFamilyLayout>,
         HashMap<Type, OpaqueAggregateFamilyLayout>,
         Option<SharedIntReferenceLayout>,
-        Option<RootedIntSliceLayout>,
+        Vec<RootedSliceLayout>,
     ), CanonicalLayoutError> {
         let memo_definitions = std::rc::Rc::clone(&self.definitions);
         witchy_types::canonical_aggregates::with_shape_memo(&memo_definitions, move || self.finish_with_families_scoped())
@@ -663,7 +691,7 @@ impl LayoutProjection {
         HashMap<Type, ClosureFamilyLayout>,
         HashMap<Type, OpaqueAggregateFamilyLayout>,
         Option<SharedIntReferenceLayout>,
-        Option<RootedIntSliceLayout>,
+        Vec<RootedSliceLayout>,
     ), CanonicalLayoutError> {
         let mut interner = LayoutInterner::new();
         let mut roots = BTreeSet::new();
@@ -820,7 +848,7 @@ impl LayoutProjection {
         // A `&[Int]` carrier forms `&Int` element views (`&xs[i]`, and the
         // by-value read `xs[i]` through one), so it needs the shared Int
         // reference family even where no `&Int` is written.
-        let shared_int_reference = if self.rooted_int_slice_requested || self.roots.iter().any(|ty| {
+        let shared_int_reference = if self.rooted_slices_requested.contains("Int") || self.roots.iter().any(|ty| {
             matches!(ty.unqualified(), Type::Named(name, arguments)
                 if name == "Int" && arguments.is_empty())
         }) {
@@ -854,31 +882,28 @@ impl LayoutProjection {
         } else {
             None
         };
-        let rooted_int_slice = if self.rooted_int_slice_requested {
-            let scalar_type = Type::Named("Int".into(), Vec::new());
-            let list_type = Type::Named("List".into(), vec![scalar_type]);
-            if self.roots.iter().any(|ty| canonical_layout_type(ty, &self.definitions) == list_type) {
-                let list_root = intern_v1_layout(
-                    &mut interner, &list_type, &self.definitions, &recursive_types, &closure_layouts,
-                )?;
-                let tag = interner.intern_scalar(ScalarKind::Int)
-                    .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?;
-                let root = interner.intern_runtime_pointer_value_slot(list_root, PointerSlot::OwnedNullable)
-                    .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?;
-                let start = interner.intern_scalar(ScalarKind::U32)
-                    .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?;
-                let length = interner.intern_scalar(ScalarKind::U32)
-                    .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?;
-                let environment = interner.intern_packed_record(vec![tag, root, start, length])
-                    .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?;
-                roots.insert(environment);
-                Some(RootedIntSliceLayout { environment, list_root })
-            } else {
-                None
+        let mut rooted_slices = Vec::new();
+        for element in &self.rooted_slices_requested {
+            let list_type = Type::Named("List".into(), vec![Type::Named((*element).into(), Vec::new())]);
+            if !self.roots.iter().any(|ty| canonical_layout_type(ty, &self.definitions) == list_type) {
+                continue;
             }
-        } else {
-            None
-        };
+            let list_root = intern_v1_layout(
+                &mut interner, &list_type, &self.definitions, &recursive_types, &closure_layouts,
+            )?;
+            let tag = interner.intern_scalar(ScalarKind::Int)
+                .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?;
+            let root = interner.intern_runtime_pointer_value_slot(list_root, PointerSlot::OwnedNullable)
+                .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?;
+            let start = interner.intern_scalar(ScalarKind::U32)
+                .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?;
+            let length = interner.intern_scalar(ScalarKind::U32)
+                .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?;
+            let environment = interner.intern_packed_record(vec![tag, root, start, length])
+                .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?;
+            roots.insert(environment);
+            rooted_slices.push(RootedSliceLayout { element, environment, list_root });
+        }
         let mut families = HashMap::new();
         for (signature, variants) in closure_specs {
             let environment = closure_environments[&signature];
@@ -924,7 +949,7 @@ impl LayoutProjection {
         }
         let bundle = LayoutBundle::from_interner(&interner, roots)
             .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?;
-        Ok((bundle, families, aggregate_families, shared_int_reference, rooted_int_slice))
+        Ok((bundle, families, aggregate_families, shared_int_reference, rooted_slices))
     }
 }
 
@@ -1713,25 +1738,38 @@ mod tests {
     }
 
     #[test]
-    fn rooted_int_slice_layout_requires_explicit_view_slice_request() {
+    fn rooted_slice_layout_requires_explicit_view_slice_request() {
         let list = Type::Named("List".into(), vec![named("Int")]);
         let mut ordinary = LayoutProjection::default();
         ordinary.visit_type(&list).expect("ordinary List(Int) projects");
         let (_, _, _, _, slice) = ordinary.finish_with_families()
             .expect("ordinary List(Int) catalog finishes");
-        assert!(slice.is_none(), "an owned List(Int) must not mint a rooted-slice family");
+        assert!(slice.is_empty(), "an owned List(Int) must not mint a rooted-slice family");
 
-        let view_slice = Type::Qualified(
+        for element in ["Int", "Float", "String"] {
+            let view_slice = Type::Qualified(
+                witchy_syntax::ast::TypeQual::View,
+                Box::new(Type::Slice(Box::new(named(element)))),
+            );
+            let mut explicit = LayoutProjection::default();
+            explicit.visit_type(&view_slice).expect("explicit &[T] projects");
+            let (bundle, _, _, _, slices) = explicit.finish_with_families()
+                .expect("explicit &[T] catalog finishes");
+            let [slice] = slices.as_slice() else { panic!("only explicit &[{element}] mints its rooted-slice layout") };
+            assert_eq!(slice.element, element);
+            assert!(bundle.roots().contains(&slice.environment));
+            assert!(bundle.roots().contains(&slice.list_root));
+        }
+
+        // A slice of owners has no carrier and mints no family.
+        let nested = Type::Qualified(
             witchy_syntax::ast::TypeQual::View,
-            Box::new(Type::Slice(Box::new(named("Int")))),
+            Box::new(Type::Slice(Box::new(Type::Named("List".into(), vec![named("Int")])))),
         );
-        let mut explicit = LayoutProjection::default();
-        explicit.visit_type(&view_slice).expect("explicit &[Int] projects");
-        let (bundle, _, _, _, slice) = explicit.finish_with_families()
-            .expect("explicit &[Int] catalog finishes");
-        let slice = slice.expect("only explicit &[Int] mints the rooted-slice layout");
-        assert!(bundle.roots().contains(&slice.environment));
-        assert!(bundle.roots().contains(&slice.list_root));
+        let mut refused = LayoutProjection::default();
+        refused.visit_type(&nested).expect("&[List(Int)] still projects its list layout");
+        let (_, _, _, _, slices) = refused.finish_with_families().expect("catalog finishes");
+        assert!(slices.is_empty(), "&[List(Int)] has no rooted-slice family");
     }
 
     fn heap_definition(name: &str, fields: Vec<Type>) -> witchy_syntax::ast::TypeDef {

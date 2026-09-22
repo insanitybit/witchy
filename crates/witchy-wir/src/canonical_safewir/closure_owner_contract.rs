@@ -189,11 +189,15 @@ owner_operations! {
     /// authenticated constructor metadata selects the root/projection; no
     /// guest operand can select a layout or reinterpret the carrier.
     ReadSharedPlace { destination: ValueId, owner: ValueId, family: FunctionSignatureId },
-    /// Reads the authenticated logical extent stored by an immutable rooted
-    /// slice carrier.  The result is the carrier's checked projection length,
-    /// never the backing list's current length and never a guest-selected
+    /// Reads one authenticated field of an immutable rooted slice carrier.
+    /// `Length` is the carrier's checked projection length, never the backing
+    /// list's current length; `Start` is its checked offset; `Root` is one
+    /// retained token of the backing list, admitted as a shared immutable
+    /// object exactly like a shared `List` parameter, so no write can reach it
+    /// and a later owner mutation copies. The field is static IR metadata
+    /// checked against the family's constructor schema, never a guest-selected
     /// environment field.
-    ReadSharedSliceLength { destination: ValueId, owner: ValueId, family: FunctionSignatureId },
+    ReadSharedSlice { destination: ValueId, owner: ValueId, family: FunctionSignatureId, field: SharedSliceField },
     /// Reads the authenticated constructor/environment tag without selecting
     /// or granting access to constructor-specific payload fields.
     ReadTag { destination: ValueId, owner: ValueId, family: FunctionSignatureId },
@@ -240,6 +244,61 @@ pub enum SharedPlaceBounds {
     CurrentLogicalLength,
 }
 
+/// The field of a rooted slice carrier that `ReadSharedSlice` reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum SharedSliceField {
+    Root,
+    Start,
+    Length,
+}
+
+/// The element names a rooted slice carrier admits: one scalar kind carried
+/// inline in the backing list, or an immutable String behind an owned
+/// pointer slot. An element that is itself an owner (a nested List, a
+/// record) has no slice carrier.
+pub const ROOTED_SLICE_ELEMENTS: [&str; 5] = ["Int", "Float", "Bool", "Duration", "String"];
+
+/// The element name of an exact `&[T]` rooted slice source type, if `T` is an
+/// admitted slice element.
+pub fn rooted_slice_element(source_type: &witchy_syntax::ast::Type) -> Option<&'static str> {
+    let witchy_syntax::ast::Type::Qualified(witchy_syntax::ast::TypeQual::View, inner) = source_type else {
+        return None;
+    };
+    let witchy_syntax::ast::Type::Slice(element) = inner.as_ref() else { return None };
+    let witchy_syntax::ast::Type::Named(name, arguments) = element.unqualified() else { return None };
+    if !arguments.is_empty() {
+        return None;
+    }
+    ROOTED_SLICE_ELEMENTS.iter().copied().find(|admitted| *admitted == name)
+}
+
+/// Whether `element` (the element layout of a slice's backing `PackedList`)
+/// is exactly the physical representation of the admitted source element.
+pub(crate) fn slice_element_layout_matches(
+    layouts: &crate::layout::LayoutInterner,
+    element: crate::layout::LayoutId,
+    name: &str,
+) -> bool {
+    use crate::layout::{LayoutKind, PointerSlot, ScalarKind};
+    let kind = layouts.get(element).map(|descriptor| descriptor.kind());
+    match name {
+        "Int" => matches!(kind, Some(LayoutKind::Scalar(ScalarKind::Int))),
+        "Float" => matches!(kind, Some(LayoutKind::Scalar(ScalarKind::Float))),
+        "Bool" => matches!(kind, Some(LayoutKind::Scalar(ScalarKind::Bool))),
+        "Duration" => matches!(kind, Some(LayoutKind::Scalar(ScalarKind::Duration))),
+        "String" => {
+            let Some(LayoutKind::RuntimePointerValueSlot { pointee, semantics: PointerSlot::Owned }) = kind else {
+                return false;
+            };
+            let Some(LayoutKind::RuntimeBuffer { element: byte }) = layouts.get(*pointee).map(|descriptor| descriptor.kind()) else {
+                return false;
+            };
+            matches!(layouts.get(*byte).map(|descriptor| descriptor.kind()), Some(LayoutKind::Scalar(ScalarKind::RawByte)))
+        }
+        _ => false,
+    }
+}
+
 /// Static interpretation of a shared-reference constructor. This is derived
 /// exclusively from the registered constructor schema; it is never encoded as
 /// a guest tag, pointer, layout ID, or projection selector.
@@ -259,10 +318,11 @@ pub enum SharedReferenceConstructor {
         index: CaptureOrdinal,
         bounds: SharedPlaceBounds,
     },
-    /// An immutable `[Int]` projection.  `start` and `length` are captured
-    /// checked `Size` values; only the registered length reader may expose
-    /// `length`, and no operation exposes a by-value element.
-    ListIntSlice {
+    /// An immutable `[T]` projection over a retained `List(T)` root, for
+    /// every admitted slice element.  `start` and `length` are captured
+    /// checked `Size` values; only `ReadSharedSlice` exposes them or the
+    /// retained root, and the root it exposes is shared and immutable.
+    ListSlice {
         root: CaptureOrdinal,
         start: CaptureOrdinal,
         length: CaptureOrdinal,
@@ -355,7 +415,7 @@ impl OwnerConstructor {
             }] if *root_field > 0 && *start_field > 0 && *length_field > 0
                 && root_field != start_field && root_field != length_field && start_field != length_field =>
             {
-                Some(SharedReferenceConstructor::ListIntSlice {
+                Some(SharedReferenceConstructor::ListSlice {
                     root: CaptureOrdinal(0), start: CaptureOrdinal(1), length: CaptureOrdinal(2),
                 })
             }
@@ -377,7 +437,7 @@ impl OwnerOperation {
         match self {
             Self::Construct { destination, .. } | Self::ReadCapability { destination, .. }
             | Self::ReadOwner { destination, .. } | Self::ReadSharedPlace { destination, .. }
-            | Self::ReadSharedSliceLength { destination, .. }
+            | Self::ReadSharedSlice { destination, .. }
             | Self::ReadTag { destination, .. }
             | Self::ReadCallable { destination, .. } | Self::Clone { destination, .. }
             | Self::CloneEnvironment { destination, .. } | Self::NewList { destination, .. }
@@ -394,7 +454,7 @@ impl OwnerOperation {
             Self::NewList { elements, .. } => elements.clone(),
             Self::ReadCapability { owner, .. } | Self::ReadOwner { owner, .. }
             | Self::ReadSharedPlace { owner, .. }
-            | Self::ReadSharedSliceLength { owner, .. }
+            | Self::ReadSharedSlice { owner, .. }
             | Self::ReadTag { owner, .. }
             | Self::ReadCallable { owner, .. }
             | Self::Clone { owner, .. } | Self::CloneEnvironment { owner, .. } | Self::Drop { owner, .. } => vec![*owner],
@@ -424,7 +484,7 @@ mod tests {
             (OwnerOperation::ReadCapability { destination, owner, constructor, capture }, vec![owner], vec![destination]),
             (OwnerOperation::ReadOwner { destination, owner, constructor, capture }, vec![owner], vec![destination]),
             (OwnerOperation::ReadSharedPlace { destination, owner, family }, vec![owner], vec![destination]),
-            (OwnerOperation::ReadSharedSliceLength { destination, owner, family }, vec![owner], vec![destination]),
+            (OwnerOperation::ReadSharedSlice { destination, owner, family, field: SharedSliceField::Length }, vec![owner], vec![destination]),
             (OwnerOperation::ReadTag { destination, owner, family }, vec![owner], vec![destination]),
             (OwnerOperation::ReadCallable { destination, owner, family }, vec![owner], vec![destination]),
             (OwnerOperation::Clone { destination, owner, family }, vec![owner], vec![destination]),

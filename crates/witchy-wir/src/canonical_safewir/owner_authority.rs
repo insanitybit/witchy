@@ -1,7 +1,7 @@
 //! Independent checked-source binding for opaque closure constructors.
 //! Candidate IDs and field maps are claims, never capability authority.
 use super::authority::*;
-use super::closure_owner_contract::{CaptureStorage, CaptureTransfer, OwnerConstructor, OwnerFamily, OwnerFamilySource, OwnerOperation, SharedReferenceConstructor, SourceConstructor};
+use super::closure_owner_contract::{CaptureStorage, CaptureTransfer, OwnerConstructor, OwnerFamily, OwnerFamilySource, OwnerOperation, SharedReferenceConstructor, SourceConstructor, rooted_slice_element, slice_element_layout_matches};
 use super::{CanonicalModule, ModuleStage, Operation, ValueId, ValueType};
 use std::collections::{BTreeMap, BTreeSet};
 use witchy_types::canonical_closure::ClosureBindingPathStep;
@@ -295,10 +295,10 @@ pub(super) fn validate<S: ModuleStage>(
                             return Err(CandidateAbiBindingError::MissingCanonicalLayouts);
                         }
                     }
-                    Operation::ClosureOwner(OwnerOperation::ReadSharedSliceLength { family, .. }) => {
+                    Operation::ClosureOwner(OwnerOperation::ReadSharedSlice { family, .. }) => {
                         if candidate.owner_families().iter().find(|entry| entry.signature == *family)
                             .is_none_or(|entry| !matches!(&entry.source,
-                                OwnerFamilySource::SharedReference(source) if is_rooted_int_slice_reference(source)))
+                                OwnerFamilySource::SharedReference(source) if rooted_slice_element(source).is_some()))
                         {
                             return Err(CandidateAbiBindingError::MissingCanonicalLayouts);
                         }
@@ -320,12 +320,7 @@ fn is_shared_int_reference(source_type: &witchy_syntax::ast::Type) -> bool {
 }
 
 fn is_rooted_int_slice_reference(source_type: &witchy_syntax::ast::Type) -> bool {
-    matches!(source_type,
-        witchy_syntax::ast::Type::Qualified(
-            witchy_syntax::ast::TypeQual::View, inner,
-        ) if matches!(inner.as_ref(), witchy_syntax::ast::Type::Slice(element)
-                if matches!(element.unqualified(), witchy_syntax::ast::Type::Named(name, arguments)
-                    if name == "Int" && arguments.is_empty())))
+    rooted_slice_element(source_type) == Some("Int")
 }
 
 fn insert_compatible_environment_field(
@@ -350,7 +345,7 @@ fn validate_shared_reference_family(
     layouts: &crate::layout::LayoutInterner,
 ) -> Result<(), CandidateAbiBindingError> {
     let refuse = || CandidateAbiBindingError::MissingCanonicalLayouts;
-    if !(is_shared_int_reference(source_type) || is_rooted_int_slice_reference(source_type))
+    if !(is_shared_int_reference(source_type) || rooted_slice_element(source_type).is_some())
         || family.constructors.is_empty()
     {
         return Err(refuse());
@@ -417,7 +412,7 @@ fn validate_shared_reference_family(
                 // root-layout path above; reaching it here is fail-closed.
                 return Err(refuse());
             }
-            SharedReferenceConstructor::ListIntSlice { root, start, length } => {
+            SharedReferenceConstructor::ListSlice { root, start, length } => {
                 let start_capture = constructor.captures.get(start.0 as usize).ok_or_else(refuse)?;
                 let length_capture = constructor.captures.get(length.0 as usize).ok_or_else(refuse)?;
                 let (CaptureStorage::EnvironmentField(start_field), CaptureStorage::EnvironmentField(length_field)) =
@@ -428,10 +423,11 @@ fn validate_shared_reference_family(
                 let Some(crate::layout::LayoutKind::PackedList { element, .. }) =
                     layouts.get(physical).map(|descriptor| descriptor.kind())
                 else { return Err(refuse()) };
-                if !is_rooted_int_slice_reference(source_type)
+                // The backing list's element representation must be exactly
+                // the family's checked `&[T]` element.
+                if !rooted_slice_element(source_type)
+                        .is_some_and(|name| slice_element_layout_matches(layouts, *element, name))
                     || root.0 != 0 || start.0 != 1 || length.0 != 2 || !kinds.insert(2_u8)
-                    || !matches!(layouts.get(*element).map(|descriptor| descriptor.kind()),
-                        Some(crate::layout::LayoutKind::Scalar(crate::layout::ScalarKind::Int)))
                 {
                     return Err(refuse());
                 }

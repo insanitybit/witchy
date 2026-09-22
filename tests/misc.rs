@@ -221,6 +221,8 @@ mod bug643_var_list_loop;
 mod rfc0167_record_view;
 #[path = "misc/rfc0167_slice_index_read.rs"]
 mod rfc0167_slice_index_read;
+#[path = "misc/rfc0167_generic_slice_view.rs"]
+mod rfc0167_generic_slice_view;
 #[path = "misc/rfc0167_mixed_var_write_back.rs"]
 mod rfc0167_mixed_var_write_back;
 #[path = "misc/rfc0167_field_view.rs"]
