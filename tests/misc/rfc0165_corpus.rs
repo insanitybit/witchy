@@ -74,12 +74,53 @@ fn corpus_digests_are_current() {
     }
 }
 
-#[test]
-fn corpus_programs_admit_and_agree_with_their_expected_output() {
+/// Admit every corpus program whose manifest index is `shard` modulo
+/// `CORPUS_SHARDS` and check it against its expected stdout on all three legs.
+///
+/// One test ran all 43 programs in sequence: the slowest test in the gate
+/// (55s with a cold verdict store), and a serial tail no amount of nextest
+/// parallelism could split. Sharding by index keeps the manifest the only
+/// list of programs -- a new entry lands in some shard automatically.
+fn assert_corpus_shard(shard: usize) {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    for entry in corpus().entries {
+    for (_, entry) in corpus().entries.into_iter().enumerate()
+        .filter(|(index, _)| index % CORPUS_SHARDS == shard)
+    {
         let source = std::fs::read_to_string(root.join(&entry.path)).expect("corpus program");
         let output = three_legs(&source, &entry.id);
         assert_eq!(output, entry.expected_stdout, "{}: output differs from the expected stdout", entry.id);
     }
+}
+
+/// Defines one test per shard and `CORPUS_SHARDS` as their count, so the two
+/// cannot drift apart and silently skip programs.
+macro_rules! corpus_shards {
+    ($($name:ident = $shard:literal),+ $(,)?) => {
+        const CORPUS_SHARDS: usize = [$($shard),+].len();
+
+        #[test]
+        fn corpus_shards_are_exactly_zero_through_count() {
+            let mut shards = vec![$($shard),+];
+            shards.sort_unstable();
+            assert_eq!(shards, (0..CORPUS_SHARDS).collect::<Vec<usize>>(),
+                "a missing or duplicated shard number would skip corpus programs");
+        }
+        $(
+            #[test]
+            fn $name() {
+                assert_corpus_shard($shard);
+            }
+        )+
+    };
+}
+
+corpus_shards! {
+    corpus_programs_agree_shard_00 = 0, corpus_programs_agree_shard_01 = 1,
+    corpus_programs_agree_shard_02 = 2, corpus_programs_agree_shard_03 = 3,
+    corpus_programs_agree_shard_04 = 4, corpus_programs_agree_shard_05 = 5,
+    corpus_programs_agree_shard_06 = 6, corpus_programs_agree_shard_07 = 7,
+    corpus_programs_agree_shard_08 = 8, corpus_programs_agree_shard_09 = 9,
+    corpus_programs_agree_shard_10 = 10, corpus_programs_agree_shard_11 = 11,
+    corpus_programs_agree_shard_12 = 12, corpus_programs_agree_shard_13 = 13,
+    corpus_programs_agree_shard_14 = 14, corpus_programs_agree_shard_15 = 15,
 }
