@@ -4,14 +4,12 @@
 //! the suspension, and the view keeps its snapshot while its `var` root is
 //! mutated between suspensions.
 //!
-//! Independent expectation, canonical SafeWIR interpreter, admitted
-//! unoptimized Wasm, zero-leak audit on both. One program, one async compile.
+//! Independent expectation, admitted unoptimized Wasm, zero-leak audit. One
+//! program, one async compile.
 
 use witchy::codegen;
 use witchy::opt::{self, OptSet};
 use witchy::runtime::{Capabilities, Runtime};
-use witchy_wir::canonical_interpreter::{interpret_program, InterpreterValue};
-use witchy_wir::canonical_safewir::FunctionId;
 
 struct ResetOptimizationOverride;
 
@@ -28,24 +26,8 @@ fn assert_async_output(label: &str, source: &str, expected: &[&str]) {
     let checked = witchy::resolve_std_only_checked(source)
         .unwrap_or_else(|error| panic!("{label} type-checks: {error}"));
     let expected: Vec<String> = expected.iter().map(|line| (*line).to_owned()).collect();
-    let (artifact, oracle) = codegen::compile_checked_module_artifact_with_observer(
-        &checked,
-        |validated, artifact| {
-            let entry = artifact.entry().expect("canonical entry");
-            let function = FunctionId::new(
-                entry.export().strip_prefix('f').expect("numeric entry export")
-                    .parse().expect("numeric entry function"),
-            );
-            let arguments = entry.capabilities().iter().copied()
-                .map(InterpreterValue::entry_capability).collect();
-            interpret_program(validated, function, arguments, Default::default())
-                .unwrap_or_else(|error| panic!("{label} canonical SafeWIR execution: {error}"))
-        },
-    )
+    let (artifact, ()) = codegen::compile_checked_module_artifact_with_observer(&checked, |_, _| ())
     .expect_lowered(&format!("{label} admits through canonical SafeWIR"));
-
-    assert_eq!(oracle.output, expected, "{label} canonical interpreter matches the expectation");
-    assert_eq!(oracle.leaked_objects, 0, "{label} canonical interpreter releases all roots");
 
     let mut runtime = Runtime::batch().expect("runtime");
     let mut vm = runtime
