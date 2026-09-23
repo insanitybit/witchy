@@ -1166,6 +1166,39 @@ else
     cmds=(${early_cmds[0]+"${early_cmds[@]}"} ${cmds[0]+"${cmds[@]}"})
 fi
 
+# A complete binary/package run strictly includes a filtered run with the same
+# command prefix. Combined paths can independently select both (for example, a
+# census generator selects all of `misc` while its snapshot test selects one
+# module), so keep only the broad command instead of compiling and executing
+# the same tests twice.
+full_queue_infra=0
+for c in ${cmds[0]+"${cmds[@]}"}; do
+    [ "$c" != "./scripts/check.sh --queue-infra" ] || full_queue_infra=1
+done
+subsumed_cmds=()
+for c in ${cmds[0]+"${cmds[@]}"}; do
+    # The full queue shard runs both merge-queue-tests binaries with
+    # --ignore-default-filter. Its smaller --queue-infra-edit counterpart does
+    # not, so edit-loop selections deliberately retain direct tooling probes.
+    if [ "$full_queue_infra" -eq 1 ]; then
+        case "$c" in
+            "cargo nextest run -p merge-queue-tests "*) continue ;;
+        esac
+    fi
+    unfiltered="${c%% -E *}"
+    subsumed=0
+    if [ "$unfiltered" != "$c" ]; then
+        for broad in ${cmds[0]+"${cmds[@]}"}; do
+            if [ "$broad" = "$unfiltered" ]; then
+                subsumed=1
+                break
+            fi
+        done
+    fi
+    [ "$subsumed" -eq 1 ] || subsumed_cmds+=("$c")
+done
+cmds=(${subsumed_cmds[0]+"${subsumed_cmds[@]}"})
+
 if [ "${#cmds[@]}" -eq 0 ]; then
     echo "test-for-paths: prose-only change — no focused checks needed (still submit through the queue)"
     exit 0

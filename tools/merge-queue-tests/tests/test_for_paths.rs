@@ -1237,6 +1237,20 @@ fn migration_census_edits_run_only_the_census_module() {
 }
 
 #[test]
+fn broad_misc_run_subsumes_the_same_filtered_binary_run() {
+    let commands = selected(&[
+        "--focused",
+        "src/bin/rfc0087-census.rs",
+        "tests/misc/rfc0087_migration_census.rs",
+    ]);
+    assert_eq!(
+        commands,
+        ["./scripts/nextest-admitted.sh witchy -- cargo nextest run --test misc"],
+        "the complete misc run should replace its redundant census-only subset"
+    );
+}
+
+#[test]
 fn async_region_edits_run_complete_rfc0152_modules() {
     for (path, module) in [
         (
@@ -1550,8 +1564,25 @@ fn complete_e2e_shard_subsumes_a_nested_module_probe() {
 fn router_changes_run_router_regressions() {
     let output = route(&["scripts/test-for-paths.sh"]);
     assert!(output.contains("for f in scripts/*.sh scripts/bin/*; do bash -n"));
-    assert!(output.contains("cargo nextest run -p merge-queue-tests --test test_for_paths"));
     assert!(output.contains("./scripts/check.sh --queue-infra"));
+    assert!(
+        !output.contains("cargo nextest run -p merge-queue-tests --test test_for_paths"),
+        "the full queue shard already runs the complete router test binary: {output}",
+    );
+
+    let edit_commands = selected(&["--edit-loop", "scripts/test-for-paths.sh"]);
+    assert!(
+        edit_commands
+            .iter()
+            .any(|command| command == "cargo nextest run -p merge-queue-tests --test test_for_paths"),
+        "the representative queue edit shard does not subsume router tests: {edit_commands:?}",
+    );
+    assert!(
+        edit_commands
+            .iter()
+            .any(|command| command == "./scripts/check.sh --queue-infra-edit"),
+        "missing queue edit shard: {edit_commands:?}",
+    );
 }
 
 #[test]

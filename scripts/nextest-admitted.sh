@@ -2,6 +2,8 @@
 # Run a focused nextest selection against the same admitted-test policy as the
 # landing gate. Exact security probes intentionally call nextest directly.
 set -euo pipefail
+root="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$root"
 
 if [ "$#" -lt 4 ] || [ "$2" != -- ] || [ "$3" != cargo ] || [ "$4" != nextest ]; then
     echo "usage: $0 <package> -- cargo nextest run [args...]" >&2
@@ -62,4 +64,8 @@ fi
 if [ -n "$selection" ]; then
     policy="($selection) and ($policy)"
 fi
+# Enter through the repository's cargo shim even when the caller has not
+# prepended scripts/bin to PATH. The shim owns the MBX policy and still finds
+# the caller's real cargo (or a hermetic test double) on PATH.
+filtered[0]="$root/scripts/bin/cargo"
 exec "${filtered[@]}" -E "$policy"

@@ -9,11 +9,16 @@ fail() { printf 'nextest-admitted: %s\n' "$*" >&2; exit 1; }
 mkdir "$tmp/bin"
 cat > "$tmp/bin/cargo" <<'EOF'
 #!/usr/bin/env bash
+printf '%s\n' "${WITCHY_CARGO_SHIM_ACTIVE:-}" > "$NEXTEST_ADMITTED_SHIM_LOG"
 printf '%s\n' "$@" > "$NEXTEST_ADMITTED_LOG"
 exit "${NEXTEST_ADMITTED_EXIT:-0}"
 EOF
 chmod +x "$tmp/bin/cargo"
 export NEXTEST_ADMITTED_LOG="$tmp/args"
+export NEXTEST_ADMITTED_SHIM_LOG="$tmp/shim-active"
+# Keep this test hermetic: the repository shim must be exercised, then delegate
+# to the fake cargo above instead of contacting the build-cache service.
+export WITCHY_BUILD_CACHE=off
 
 cd "$root"
 selection='test(/^example_tests::/)'
@@ -30,6 +35,7 @@ done < scripts/nightly-deferred-tests.txt
 policy="($policy) and not (test(/${nightly_names}/))"
 PATH="$tmp/bin:$PATH" ./scripts/nextest-admitted.sh witchy -- \
     cargo nextest run --features witchy-wir/native -E "$selection"
+[ "$(cat "$NEXTEST_ADMITTED_SHIM_LOG")" = 1 ] || fail 'repository cargo shim was bypassed'
 [ "$(sed -n '1p' "$NEXTEST_ADMITTED_LOG")" = nextest ] || fail 'cargo subcommand changed'
 [ "$(sed -n '2p' "$NEXTEST_ADMITTED_LOG")" = run ] || fail 'nextest action changed'
 [ "$(sed -n '3p' "$NEXTEST_ADMITTED_LOG")" = --features ] || fail 'feature flag changed'
