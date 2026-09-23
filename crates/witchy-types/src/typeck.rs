@@ -2563,6 +2563,17 @@ fn check_type_names(module: &Module) -> Result<(), TypeError> {
             // name (and any sibling type) is already in `known`, so recursive and
             // mutually-recursive types check out; lowercase fields are its params.
             Item::Type(t) => {
+                // `Slice` is the checker's private payload of a `&[T]` view;
+                // carrier recognition keys on that name, so no source type may
+                // take it.
+                if t.name.rsplit('.').next() == Some("Slice") {
+                    return Err(TypeError {
+                        message: format!(
+                            "type `{}`: the name `Slice` is reserved for the slice view `&[T]`",
+                            t.name
+                        ),
+                    });
+                }
                 for variant in &t.variants {
                     for field in &variant.fields {
                         validate_type_model(

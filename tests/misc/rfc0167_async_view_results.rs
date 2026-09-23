@@ -284,3 +284,16 @@ fn main(console: Console):
         assert!(error.to_string().contains("region-born root"), "{label}: {error}");
     }
 }
+
+/// Slice-carrier recognition keys on the checker's private `Slice` payload
+/// name, so a source type may not take that name.
+#[test]
+fn a_source_type_cannot_take_the_reserved_slice_name() {
+    let error = witchy::resolve_std_only_checked(
+        "type Slice(a):\n    items: List(a)\n\nfn main() -> Int:\n    let s = Slice(items: [1, 2])\n    s.items.length()\n",
+    )
+    .err()
+    .map(|error| error.to_string())
+    .expect("a type named Slice is refused");
+    assert!(error.contains("the name `Slice` is reserved"), "diagnostic names the rule: {error}");
+}
