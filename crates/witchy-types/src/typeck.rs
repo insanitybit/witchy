@@ -11192,12 +11192,8 @@ impl Checker {
                 | intrinsics::LIST_CONCAT
         ) || intrinsics::is_list_pop_extract(call_name)
             || call_name == "list.pop";
-        // `s[i]` over a `&[T]` view reads through the checked projection. The
-        // typed async projection lowers subscripts to `list.at` before it is
-        // annotated, so the element read accepts the view there as well.
         let rooted_slice_read_intrinsic = intrinsics::lookup(call_name)
-            .is_some_and(|spec| spec.signature.accepts_rooted_slice_view())
-            || intrinsics::canonical_operation_name(call_name) == intrinsics::LIST_AT;
+            .is_some_and(|spec| spec.signature.accepts_rooted_slice_view());
         let call_conventions = self.fn_conventions.get(name).cloned();
         for (index, (arg, param_ty)) in args.iter().zip(&params).enumerate() {
             let expects_opt_callable = self

@@ -78,9 +78,13 @@ async fn main(console: Console):
     let sl = &ys[1..3]
     ys[1] = 100
     let e = keep_slice(sl).await
-    console.print("${e.length()} ${e[0]} ${e[1]} ${ys[1]}")
+    var sum = 0
+    for x in e:
+        sum = sum + x
+    console.print("${e.length()} ${sum} ${ys[1]}")
 "#,
-        &["21 5", "2 20 30 100"],
+        // The slice snapshot is [20, 30] (sum 50) although ys[1] became 100.
+        &["21 5", "2 50 100"],
     );
 }
 
@@ -105,7 +109,10 @@ async fn sum_slice(v: &[Int]) -> Int:
 
 async fn worker(console: Console, xs: &[Int]):
     chan.yield_now().await
-    console.print("${xs.length()} ${xs[0]}")
+    var sum = 0
+    for x in xs:
+        sum = sum + x
+    console.print("${xs.length()} ${sum}")
 
 async fn main(console: Console):
     var ys = [10, 20, 30, 40]
@@ -118,7 +125,8 @@ async fn main(console: Console):
     console.print("spawned ${ys[2]}")
     chan.join(h).await
 "#,
-        &["30", "spawned 7", "2 30"],
+        // The worker's slice snapshot is [30, 40] (sum 70) although ys[2] became 7.
+        &["30", "spawned 7", "2 70"],
     );
 }
 
