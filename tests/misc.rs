@@ -215,6 +215,8 @@ mod rfc0167_installed_workflow;
 mod bug644_show_branch_value;
 #[path = "misc/bug645_var_across_await.rs"]
 mod bug645_var_across_await;
+#[path = "misc/bug647_view_snapshot_in_loop.rs"]
+mod bug647_view_snapshot_in_loop;
 #[path = "misc/rfc0167_scalar_value_view.rs"]
 mod rfc0167_scalar_value_view;
 #[path = "misc/rfc0167_list_view.rs"]

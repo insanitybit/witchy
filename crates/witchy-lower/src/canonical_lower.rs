@@ -9566,6 +9566,13 @@ impl FunctionLowerer<'_> {
                         }
                     }
                     Operation::HostCall { destinations, .. } => { direct.extend(destinations.iter().copied()); }
+                    // An owner construction retains each managed capture and
+                    // leaves the input live: a view or closure over a root
+                    // shares it, just as `CloneRef` does (BUG-647).
+                    Operation::ClosureOwner(OwnerOperation::Construct { captures, .. }) => {
+                        direct.extend(captures.iter().copied()
+                            .filter(|capture| matches!(self.values.get(capture), Some(ValueType::Ref(_)))));
+                    }
                     _ => {}
                 }
             }
