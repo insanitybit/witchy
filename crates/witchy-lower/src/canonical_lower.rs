@@ -11390,9 +11390,31 @@ impl FunctionLowerer<'_> {
         let failure_shape = scalar_aggregate_shape(&result_type, self.definitions)
             .filter(|failure| failure.name == shape.name)
             .ok_or(CanonicalLoweringError::UnsupportedExpression("try in a function without a matching result"))?;
+        let (success_name, failure_name) = if shape.name == "Result" { ("Ok", "Err") } else { ("Some", "None") };
+        let (success_index, success) = shape.variant(success_name)
+            .map(|(index, variant)| (index, variant.clone()))
+            .ok_or_else(|| CanonicalLoweringError::MissingBinding(success_name.to_owned()))?;
+        let (failure_index, failure) = shape.variant(failure_name)
+            .map(|(index, variant)| (index, variant.clone()))
+            .ok_or_else(|| CanonicalLoweringError::MissingBinding(failure_name.to_owned()))?;
+        let (destination_failure_index, destination_failure) = failure_shape.variant(failure_name)
+            .map(|(index, variant)| (index, variant.clone()))
+            .ok_or_else(|| CanonicalLoweringError::MissingBinding(failure_name.to_owned()))?;
+        if success.arity != 1 || failure.arity != destination_failure.arity {
+            return Err(CanonicalLoweringError::UnsupportedExpression("try operand variant arity"));
+        }
+        // The operand is either a plain tagged record or, when a payload is a
+        // reference carrier such as `&Int`, an opaque owner aggregate whose
+        // tag and payloads are read through its owner family. Both routes
+        // go through the source-aggregate readers, as `match` does, so a
+        // payload read from an owner carries its own releasable token.
         let object = self.lower_expr(inner)?;
-        let tag = self.load_record_field(object, 0, ValueType::Int)?;
-        let success_tag = self.push_const_int(0)?;
+        let tag = if matches!(self.values[&object], ValueType::Gc(_)) {
+            self.opaque_aggregate_tag(object, &inner_type)?
+        } else {
+            self.load_record_field(object, 0, ValueType::Int)?
+        };
+        let success_tag = self.push_const_int(i64::try_from(success_index).map_err(|_| CanonicalLoweringError::IdOverflow)?)?;
         let is_success = self.push_compare(ComparisonOperator::Equal, tag, success_tag)?;
         let proceed = self.new_block(&[])?;
         let fail = self.new_block(&[])?;
@@ -11404,26 +11426,30 @@ impl FunctionLowerer<'_> {
             else_arguments: Vec::new(),
         })?;
         self.current = fail;
-        let failure_payload = if shape.name == "Result" {
-            let source_error = &shape.fields[2];
-            let destination_error = &failure_shape.fields[2];
-            let error = self.load_record_field(object, 2, self.field_value_type(source_error)?)?;
+        let mut failure_payload = Vec::with_capacity(failure.arity);
+        for offset in 0..failure.arity {
+            let source_error = &shape.fields[failure.first_field + offset];
+            let destination_error = &failure_shape.fields[destination_failure.first_field + offset];
+            let error = self.load_source_aggregate_field(
+                object, &inner_type, failure_index, offset, failure.first_field + offset,
+                self.field_value_type(source_error)?,
+            )?;
             let error = if self.field_value_type(source_error)? == self.field_value_type(destination_error)? {
                 error
             } else {
                 self.rebox_anonymous_union_widening(error, source_error, destination_error)?
             };
-            vec![error]
-        } else {
-            Vec::new()
-        };
-        let failure = self.lower_aggregate(&failure_shape, 1, failure_payload)?;
+            failure_payload.push(error);
+        }
+        let failure = self.lower_aggregate_for_source(
+            &result_type, &failure_shape, destination_failure_index, failure_payload,
+        )?;
         let results = self.results.clone();
         let terminator = self.return_value(Some(failure), &results)?;
         self.finish_current(terminator)?;
         self.current = proceed;
-        let payload_type = self.field_value_type(&shape.fields[1])?;
-        self.load_record_field(object, 1, payload_type)
+        let payload_type = self.field_value_type(&shape.fields[success.first_field])?;
+        self.load_source_aggregate_field(object, &inner_type, success_index, 0, success.first_field, payload_type)
     }
 
     /// Convert a checked anonymous-union subset into its checked widening
