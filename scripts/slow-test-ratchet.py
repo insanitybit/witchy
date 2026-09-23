@@ -13,7 +13,9 @@ gate:
   2. CONFIRM the candidates by re-running them ALONE: one nextest run over all
      of them with --test-threads 1, using the gate's own selection and
      features (--nextest-args) so it builds and lists nothing new. Fail only
-     for a test that still exceeds --confirm seconds.
+     for a test that still exceeds --confirm seconds, and only when the host
+     load stayed under --max-load (default: the core count) meanwhile; on a
+     loaded host "alone" is not alone and the test is reported unjudged.
 
 The confirmation streams every result as it lands (a silent stage is killed
 by the queue's stall detector: that took down a green gate on 2026-09-23, when
@@ -89,6 +91,8 @@ def main():
                     help="the gate's nextest selection and features; default --workspace")
     ap.add_argument("--budget", type=float, default=300.0,
                     help="seconds for the whole confirmation run")
+    ap.add_argument("--max-load", type=float, default=float(os.cpu_count() or 1),
+                    help="above this 1-minute load average a confirmation is not 'alone'")
     ap.add_argument("--exempt", action="append",
                     default=["scripts/nightly-deferred-tests.txt", "scripts/slow-test-debt.txt"])
     a = ap.parse_args()
@@ -111,7 +115,14 @@ def main():
         print(f"slow-test-ratchet: no un-exempt test over {a.detect:g}s")
         return 0
     nextest_args = shlex.split(a.nextest_args) or ["--workspace", "--features", "witchy-wir/native"]
+    load_before = os.getloadavg()[0]
     alone, within = confirm_alone(sorted(candidates, reverse=True), nextest_args, a.budget)
+    # "Alone" is only alone on a quiet host. At load 30-40 on 10 cores the
+    # confirmation run itself is 3-4x slowed: on 2026-09-23 it redded a gate
+    # over five async tests already on master that measure ~2s quiet. Wall
+    # time under that load proves nothing, so the ratchet does not fail on it.
+    load = max(load_before, os.getloadavg()[0])
+    loaded = load > a.max_load
     new_slow = []
     for seconds, binary, name in sorted(candidates, reverse=True):
         if (binary, name) not in alone:
@@ -122,6 +133,10 @@ def main():
         verdict = "load spike, ok" if secs is not None and secs <= a.confirm else "SLOW"
         print(f"slow-test-ratchet: {name} ({binary}): {seconds:.1f}s in gate, "
               f"{'failed' if secs is None else f'{secs:.1f}s'} alone -> {verdict}")
+        if secs is not None and secs > a.confirm and loaded:
+            print(f"slow-test-ratchet:   not judged: host load {load:.0f} > {a.max_load:g} "
+                  "during the confirmation run")
+            continue
         if secs is None or secs > a.confirm:
             new_slow.append((name, binary, secs))
     if not within:
