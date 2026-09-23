@@ -605,13 +605,15 @@ fn production_encoding_requires_checked_wasm_ir_authority() {
         .expect("canonical backend must declare CheckedWasmIr");
     assert!(matches!(checked.vis, Visibility::Inherited));
 
-    let encoder = named(&file, "encode_checked");
-    assert!(matches!(encoder.vis, Visibility::Inherited));
-    assert!(takes(encoder, "CheckedWasmIr"));
-    assert!(
-        !takes(encoder, "ValidatedSafeWir"),
-        "production encoding must not accept SafeWIR authority directly"
-    );
+    for name in ["encode_checked", "encode_checked_unvalidated"] {
+        let encoder = named(&file, name);
+        assert!(matches!(encoder.vis, Visibility::Inherited), "{name} must stay private");
+        assert!(takes(encoder, "CheckedWasmIr"), "{name} must take checked WasmIR authority");
+        assert!(
+            !takes(encoder, "ValidatedSafeWir"),
+            "production encoding must not accept SafeWIR authority directly ({name})"
+        );
+    }
 
     let admission = named(&file, "admit_canonical");
     let mut wrapper_calls = CalledFunctions::default();
@@ -622,7 +624,7 @@ fn production_encoding_requires_checked_wasm_ir_authority() {
     let mut calls = CalledFunctions::default();
     calls.visit_item_fn(admission);
     assert!(
-        calls.0.contains("encode_checked"),
+        calls.0.contains("encode_checked_unvalidated"),
         "canonical admission must encode only checked WasmIR authority"
     );
     assert!(
@@ -639,7 +641,8 @@ fn production_encoding_requires_checked_wasm_ir_authority() {
             {
                 let name = segment.ident.to_string();
                 if matches!(name.as_str(), "derive_entry" | "authorize_wasm_ir" |
-                    "encode_checked" | "decode_and_match_plan" | "admit_parts" | "observe")
+                    "encode_checked" | "encode_checked_unvalidated" | "decode_and_match_plan"
+                    | "admit_parts" | "observe")
                 {
                     self.0.push(name);
                 }
@@ -649,9 +652,12 @@ fn production_encoding_requires_checked_wasm_ir_authority() {
     }
     let mut stages = AdmissionStages::default();
     stages.visit_block(&admission.block);
-    assert_eq!(stages.0, ["derive_entry", "authorize_wasm_ir", "encode_checked",
+    // Admission encodes without the encoder-side validation because
+    // `decode_and_match_plan` validates these exact bytes next; that ordering
+    // is what keeps every admitted module validated.
+    assert_eq!(stages.0, ["derive_entry", "authorize_wasm_ir", "encode_checked_unvalidated",
         "decode_and_match_plan", "admit_parts", "observe"],
-        "observation follows checked encoding, decoded-byte matching, and artifact admission");
+        "observation follows checked encoding, validated decoded-byte matching, and artifact admission");
 
     let direct_safe_wir_encoders = functions(&file)
         .filter(|function| function.sig.ident.to_string().contains("encode"))

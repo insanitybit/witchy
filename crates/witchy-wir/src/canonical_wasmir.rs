@@ -2110,7 +2110,9 @@ pub enum CanonicalAdmissionError {
     UnsupportedEntry(String),
     Correspondence,
     SourceWitnessMismatch,
-    WasmValidation,
+    /// The module failed structural validation or decoding; the payload is
+    /// the decoder's message, the diagnostic that pins down an encoder gap.
+    WasmValidation(String),
     UnsupportedPlan,
     PlanMismatch(&'static str),
     SectionOrderMismatch { expected: Vec<u8>, actual: Vec<u8> },
@@ -4833,7 +4835,20 @@ fn owner_cleanup_bridge(bridges: &[AdmittedOwnerBridge]) -> Option<&AdmittedOwne
     }
 }
 
+/// Encode and structurally validate the module.
 fn encode_checked(checked: &CheckedWasmIr) -> Result<Vec<u8>, EncodeError> {
+    let bytes = encode_checked_unvalidated(checked)?;
+    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::default() | wasmparser::WasmFeatures::TAIL_CALL)
+        .validate_all(&bytes)
+        .map_err(|error| EncodeError::WasmValidation(error.to_string()))?;
+    Ok(bytes)
+}
+
+/// Encode without validating, for admission, whose `decode_and_match_plan`
+/// validates these exact bytes with the same features before anything else.
+/// Validating here as well ran wasmparser over the whole module twice per
+/// admission: 13% of a warm async compile.
+fn encode_checked_unvalidated(checked: &CheckedWasmIr) -> Result<Vec<u8>, EncodeError> {
     let source = &checked.source;
     let target = &checked.target;
     let (_, layouts) = crate::layout::LayoutBundle::decode_canonical(&source.layouts().canonical_bytes())
@@ -5004,11 +5019,7 @@ fn encode_checked(checked: &CheckedWasmIr) -> Result<Vec<u8>, EncodeError> {
             data: Cow::Borrowed(entry_payload),
         });
     }
-    let bytes = module.finish();
-    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::default() | wasmparser::WasmFeatures::TAIL_CALL)
-        .validate_all(&bytes)
-        .map_err(|error| EncodeError::WasmValidation(error.to_string()))?;
-    Ok(bytes)
+    Ok(module.finish())
 }
 
 #[cfg(test)]
@@ -7550,7 +7561,7 @@ fn decode_and_match_plan(
         wasmparser::WasmFeatures::default() | wasmparser::WasmFeatures::TAIL_CALL,
     )
     .validate_all(bytes)
-    .map_err(|_| CanonicalAdmissionError::WasmValidation)?;
+    .map_err(|error| CanonicalAdmissionError::WasmValidation(error.to_string()))?;
     let metadata = expected_metadata_prefix(source, target)?;
     if bytes.len() < metadata.len() || bytes[..metadata.len()] != metadata[..] {
         return Err(CanonicalAdmissionError::PlanMismatch("module metadata"));
@@ -7615,7 +7626,7 @@ fn decode_and_match_plan(
     let mut actual_launch_contract = None;
     let mut actual_entry: Option<Vec<u8>> = None;
     for payload in wasmparser::Parser::new(0).parse_all(bytes) {
-        match payload.map_err(|_| CanonicalAdmissionError::WasmValidation)? {
+        match payload.map_err(|error| CanonicalAdmissionError::WasmValidation(error.to_string()))? {
             wasmparser::Payload::Version { .. } => {}
             wasmparser::Payload::TypeSection(_) => section_order.push(0),
             wasmparser::Payload::ImportSection(_) => section_order.push(1),
@@ -7624,7 +7635,7 @@ fn decode_and_match_plan(
                 if actual_table.is_some() {
                     return Err(CanonicalAdmissionError::PlanMismatch("duplicate table section"));
                 }
-                let tables = reader.into_iter().collect::<Result<Vec<_>, _>>().map_err(|_| CanonicalAdmissionError::WasmValidation)?;
+                let tables = reader.into_iter().collect::<Result<Vec<_>, _>>().map_err(|error| CanonicalAdmissionError::WasmValidation(error.to_string()))?;
                 if tables.len() != 1 {
                     return Err(CanonicalAdmissionError::PlanMismatch("table count"));
                 }
@@ -7645,7 +7656,7 @@ fn decode_and_match_plan(
                 if actual_elements.is_some() {
                     return Err(CanonicalAdmissionError::PlanMismatch("duplicate element section"));
                 }
-                let elements = reader.into_iter().collect::<Result<Vec<_>, _>>().map_err(|_| CanonicalAdmissionError::WasmValidation)?;
+                let elements = reader.into_iter().collect::<Result<Vec<_>, _>>().map_err(|error| CanonicalAdmissionError::WasmValidation(error.to_string()))?;
                 if elements.len() != 1 {
                     return Err(CanonicalAdmissionError::PlanMismatch("element count"));
                 }
@@ -7657,15 +7668,15 @@ fn decode_and_match_plan(
                     return Err(CanonicalAdmissionError::PlanMismatch("element table"));
                 }
                 let mut offset = offset_expr.get_operators_reader();
-                if !matches!(offset.read().map_err(|_| CanonicalAdmissionError::WasmValidation)?, wasmparser::Operator::I32Const { value: 0 })
-                    || !matches!(offset.read().map_err(|_| CanonicalAdmissionError::WasmValidation)?, wasmparser::Operator::End)
+                if !matches!(offset.read().map_err(|error| CanonicalAdmissionError::WasmValidation(error.to_string()))?, wasmparser::Operator::I32Const { value: 0 })
+                    || !matches!(offset.read().map_err(|error| CanonicalAdmissionError::WasmValidation(error.to_string()))?, wasmparser::Operator::End)
                 {
                     return Err(CanonicalAdmissionError::PlanMismatch("element offset"));
                 }
                 let wasmparser::ElementItems::Functions(reader) = &element.items else {
                     return Err(CanonicalAdmissionError::PlanMismatch("element expressions"));
                 };
-                actual_elements = Some(reader.clone().into_iter().collect::<Result<Vec<_>, _>>().map_err(|_| CanonicalAdmissionError::WasmValidation)?);
+                actual_elements = Some(reader.clone().into_iter().collect::<Result<Vec<_>, _>>().map_err(|error| CanonicalAdmissionError::WasmValidation(error.to_string()))?);
                 section_order.push(7);
             }
             wasmparser::Payload::CodeSectionStart { count, .. } => {
@@ -7679,23 +7690,23 @@ fn decode_and_match_plan(
                 if !code_started {
                     return Err(CanonicalAdmissionError::PlanMismatch("code body before section"));
                 }
-                let mut locals_reader = body.get_locals_reader().map_err(|_| CanonicalAdmissionError::WasmValidation)?;
+                let mut locals_reader = body.get_locals_reader().map_err(|error| CanonicalAdmissionError::WasmValidation(error.to_string()))?;
                 let mut locals = Vec::new();
                 for _ in 0..locals_reader.get_count() {
-                    let (count, ty) = locals_reader.read().map_err(|_| CanonicalAdmissionError::WasmValidation)?;
+                    let (count, ty) = locals_reader.read().map_err(|error| CanonicalAdmissionError::WasmValidation(error.to_string()))?;
                     locals.push((count, decoded_local_kind(ty)));
                 }
-                let mut operators = body.get_operators_reader().map_err(|_| CanonicalAdmissionError::WasmValidation)?;
+                let mut operators = body.get_operators_reader().map_err(|error| CanonicalAdmissionError::WasmValidation(error.to_string()))?;
                 let mut plan = Vec::new();
                 while !operators.eof() {
-                    plan.push(decode_plan_token(operators.read().map_err(|_| CanonicalAdmissionError::WasmValidation)?)?);
+                    plan.push(decode_plan_token(operators.read().map_err(|error| CanonicalAdmissionError::WasmValidation(error.to_string()))?)?);
                 }
                 actual.push((locals, plan));
             }
             wasmparser::Payload::DataSection(reader) => {
                 section_order.push(9);
                 for data in reader {
-                    let data = data.map_err(|_| CanonicalAdmissionError::WasmValidation)?;
+                    let data = data.map_err(|error| CanonicalAdmissionError::WasmValidation(error.to_string()))?;
                     let wasmparser::DataKind::Active { memory_index, offset_expr } = data.kind else {
                         return Err(CanonicalAdmissionError::PlanMismatch("passive data segment"));
                     };
@@ -7705,7 +7716,7 @@ fn decode_and_match_plan(
                     let mut operators = offset_expr.get_operators_reader();
                     let wasmparser::Operator::I32Const { value } = operators
                         .read()
-                        .map_err(|_| CanonicalAdmissionError::WasmValidation)?
+                        .map_err(|error| CanonicalAdmissionError::WasmValidation(error.to_string()))?
                     else {
                         return Err(CanonicalAdmissionError::PlanMismatch("dynamic data offset"));
                     };
@@ -8057,10 +8068,10 @@ pub fn admit_canonical_with_observer<R>(
         }
         EncodeError::Correspondence(_) => CanonicalAdmissionError::Correspondence,
         EncodeError::SourceWitness => CanonicalAdmissionError::SourceWitnessMismatch,
-        EncodeError::WasmValidation(_) => CanonicalAdmissionError::WasmValidation,
+        EncodeError::WasmValidation(message) => CanonicalAdmissionError::WasmValidation(message),
         _ => CanonicalAdmissionError::UnsupportedPlan,
     })?;
-    let bytes = encode_checked(&checked)
+    let bytes = encode_checked_unvalidated(&checked)
         .map_err(|error| CanonicalAdmissionError::Lowering(format!("{error:?}")))?;
     let CheckedWasmIr {
         source,
@@ -8086,11 +8097,11 @@ pub fn admit_canonical(
         }
         EncodeError::Correspondence(_) => CanonicalAdmissionError::Correspondence,
         EncodeError::SourceWitness => CanonicalAdmissionError::SourceWitnessMismatch,
-        EncodeError::WasmValidation(_) => CanonicalAdmissionError::WasmValidation,
+        EncodeError::WasmValidation(message) => CanonicalAdmissionError::WasmValidation(message),
         _ => CanonicalAdmissionError::UnsupportedPlan,
     })?;
-    let bytes = encode_checked(&checked).map_err(|error| match error {
-        EncodeError::WasmValidation(_) => CanonicalAdmissionError::WasmValidation,
+    let bytes = encode_checked_unvalidated(&checked).map_err(|error| match error {
+        EncodeError::WasmValidation(message) => CanonicalAdmissionError::WasmValidation(message),
         _ => CanonicalAdmissionError::UnsupportedPlan,
     })?;
     let CheckedWasmIr {
@@ -8904,7 +8915,7 @@ mod tests {
         bytes[block] = 0x03;
         assert!(matches!(
             admit_canonical_with_bytes_for_test(checked_loop(), bytes),
-            Err(CanonicalAdmissionError::PlanMismatch(_) | CanonicalAdmissionError::WasmValidation)
+            Err(CanonicalAdmissionError::PlanMismatch(_) | CanonicalAdmissionError::WasmValidation(_))
         ));
     }
 
@@ -9208,7 +9219,7 @@ mod tests {
         assert!(matches!(
             admit_canonical_with_bytes_for_test(checked_var_call(), bytes),
             Err(CanonicalAdmissionError::PlanMismatch("function body"))
-                | Err(CanonicalAdmissionError::WasmValidation)
+                | Err(CanonicalAdmissionError::WasmValidation(_))
         ));
     }
 
@@ -9872,7 +9883,7 @@ mod tests {
         assert!(matches!(
             admit_canonical_with_bytes_for_test(checked_parameterized_scalar_call(), bytes),
             Err(CanonicalAdmissionError::PlanMismatch(_))
-                | Err(CanonicalAdmissionError::WasmValidation)
+                | Err(CanonicalAdmissionError::WasmValidation(_))
         ));
     }
 
@@ -11289,7 +11300,7 @@ mod tests {
         bytes[body_start + 1] = 0x7e;
         assert!(matches!(
             admit_canonical_with_bytes_for_test(checked_scalar(), bytes),
-            Err(CanonicalAdmissionError::WasmValidation | CanonicalAdmissionError::PlanMismatch(_))
+            Err(CanonicalAdmissionError::WasmValidation(_) | CanonicalAdmissionError::PlanMismatch(_))
         ));
     }
 
