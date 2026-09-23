@@ -1474,6 +1474,13 @@ pub(super) fn candidate_signature_matches_source_with_layouts<S: ModuleStage>(
 /// ownership contract. The exact Result-Ok collection carrier is the one
 /// authenticated nested exception; all other nested qualifiers remain
 /// unsupported.
+/// `List(&Int)`: the `&Int` family's owner list. Each element is one retained,
+/// authenticated place carrier; the list itself is an ordinary owner list.
+fn is_list_of_direct_int_views(ty: &witchy_syntax::ast::Type) -> bool {
+    matches!(ty.unqualified(), witchy_syntax::ast::Type::Named(name, arguments)
+        if name == "List" && arguments.len() == 1 && is_direct_rooted_view_int(&arguments[0]))
+}
+
 fn source_abi_qualifiers_supported(
     source: &witchy_syntax::ast::Type,
     records: &ScalarRecordFields,
@@ -1488,6 +1495,7 @@ fn source_abi_qualifiers_supported(
     // recursive qualifier exception.
     let mut pending = (!(is_direct_shared_reference(result)
         || is_direct_rooted_view_int(result) || is_direct_rooted_view_slice(result)
+        || is_list_of_direct_int_views(result)
         || is_direct_rooted_view_whole_root(result, records)
         || is_direct_exclusive_reference(result)
         || is_aggregate_reference_carrier(result)
@@ -1500,6 +1508,7 @@ fn source_abi_qualifiers_supported(
         (!(
             is_direct_shared_reference(parameter)
             || is_direct_rooted_view_int(parameter) || is_direct_rooted_view_slice(parameter)
+            || is_list_of_direct_int_views(parameter)
             || is_direct_rooted_view_whole_root(parameter, records)
             || is_direct_rooted_view_aggregate_carrier(parameter, records)
             || (matches!(conventions.get(index), Some(Convention::Let | Convention::Own))
@@ -3011,6 +3020,12 @@ pub(super) fn value_type_matches_source(
     if let super::ValueType::Gc(id) = actual {
         let Some(family) = context.owner_families.iter().find(|f| f.owner_type == id || f.list_type == id).cloned() else { return false };
         if let super::closure_owner_contract::OwnerFamilySource::SharedReference(expected) = &family.source {
+            // `List(&Int)` is the `&Int` family's owner list.
+            if id == family.list_type {
+                return is_direct_rooted_view_int(expected)
+                    && matches!(source.unqualified(), witchy_syntax::ast::Type::Named(name, arguments)
+                        if name == "List" && arguments.len() == 1 && is_direct_rooted_view_int(&arguments[0]));
+            }
             return id == family.owner_type
                 && ((is_direct_rooted_view_int(expected) && is_direct_rooted_view_int(source))
                     || (is_direct_rooted_view_slice(expected)

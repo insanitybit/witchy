@@ -118,6 +118,11 @@ impl ClosureValueLayouts {
                 .get(&crate::canonical_layouts::canonical_closure_key(source, definitions))
                 .copied(),
             Type::Named(name, args) if name == "List" && args.len() == 1 => {
+                // A list of `&Int` views is an owner list of the shared place
+                // family: each element is one retained, authenticated carrier.
+                if rooted_view_inner(&args[0]).is_some_and(is_direct_shared_int) {
+                    return Some(GcTypeId::new(self.shared_int_reference.get() + 1));
+                }
                 if matches!(args[0].unqualified(), Type::Fn(..)) {
                     return self.owners
                         .get(&crate::canonical_layouts::canonical_closure_key(&args[0], definitions))

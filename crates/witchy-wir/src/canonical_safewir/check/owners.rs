@@ -161,7 +161,7 @@ impl<'a> Registry<'a> {
 
     fn registered(&self, id: GcTypeId) -> bool {
         self.families.iter().any(|family| family.owner_type == id
-            || !matches!(family.source, OwnerFamilySource::SharedReference(_)) && family.list_type == id)
+            || family.list_type == id)
     }
 
     fn family(&self, id: FunctionSignatureId) -> Result<&OwnerFamily, InitialCheckError> {
@@ -296,52 +296,34 @@ impl<'a> Registry<'a> {
             O::Drop { owner, family } => require_type(function, *owner, ValueType::Gc(self.family(*family)?.owner_type))?,
             O::NewList { destination, family, elements } => {
                 let family = self.family(*family)?;
-                if matches!(family.source, OwnerFamilySource::SharedReference(_)) {
-                    return Err(InitialCheckError::UnsupportedMemoryOperation { function: function.id, operation: "NewList shared-reference family" });
-                }
                 require_type(function, *destination, ValueType::Gc(family.list_type))?;
                 for element in elements { require_type(function, *element, ValueType::Gc(family.owner_type))?; }
             }
             O::ListGet { destination, list, index, family } => {
                 let family = self.family(*family)?;
-                if matches!(family.source, OwnerFamilySource::SharedReference(_)) {
-                    return Err(InitialCheckError::UnsupportedMemoryOperation { function: function.id, operation: "ListGet shared-reference family" });
-                }
                 require_type(function, *list, ValueType::Gc(family.list_type))?;
                 require_type(function, *index, ValueType::Size)?;
                 require_type(function, *destination, ValueType::Gc(family.owner_type))?;
             }
             O::ListLength { destination, list, family } => {
                 let family = self.family(*family)?;
-                if matches!(family.source, OwnerFamilySource::SharedReference(_)) {
-                    return Err(InitialCheckError::UnsupportedMemoryOperation { function: function.id, operation: "ListLength shared-reference family" });
-                }
                 require_type(function, *list, ValueType::Gc(family.list_type))?;
                 require_type(function, *destination, ValueType::Size)?;
             }
             O::CloneList { destination, list, family } => {
                 let family = self.family(*family)?;
-                if matches!(family.source, OwnerFamilySource::SharedReference(_)) {
-                    return Err(InitialCheckError::UnsupportedMemoryOperation { function: function.id, operation: "CloneList shared-reference family" });
-                }
                 let ty = ValueType::Gc(family.list_type);
                 require_type(function, *list, ty)?;
                 require_type(function, *destination, ty)?;
             }
             O::ListPush { destination, list, value, family } => {
                 let family = self.family(*family)?;
-                if matches!(family.source, OwnerFamilySource::SharedReference(_)) {
-                    return Err(InitialCheckError::UnsupportedMemoryOperation { function: function.id, operation: "ListPush shared-reference family" });
-                }
                 require_type(function, *list, ValueType::Gc(family.list_type))?;
                 require_type(function, *destination, ValueType::Gc(family.list_type))?;
                 require_type(function, *value, ValueType::Gc(family.owner_type))?;
             }
             O::ListSet { destination, list, index, value, family } => {
                 let family = self.family(*family)?;
-                if matches!(family.source, OwnerFamilySource::SharedReference(_)) {
-                    return Err(InitialCheckError::UnsupportedMemoryOperation { function: function.id, operation: "ListSet shared-reference family" });
-                }
                 require_type(function, *list, ValueType::Gc(family.list_type))?;
                 require_type(function, *destination, ValueType::Gc(family.list_type))?;
                 require_type(function, *index, ValueType::Size)?;
@@ -349,9 +331,6 @@ impl<'a> Registry<'a> {
             }
             O::DropList { list, family } => {
                 let family = self.family(*family)?;
-                if matches!(family.source, OwnerFamilySource::SharedReference(_)) {
-                    return Err(InitialCheckError::UnsupportedMemoryOperation { function: function.id, operation: "DropList shared-reference family" });
-                }
                 require_type(function, *list, ValueType::Gc(family.list_type))?;
             }
         }
