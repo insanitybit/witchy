@@ -2062,6 +2062,11 @@ fn candidate_signature_matches_source_inner(
             // here a `let value: &Int` parameter fell through to the `Value`
             // arm and its signature was refused as a mismatch.
             (super::ValueType::Gc(_), witchy_syntax::ast::Convention::Let | witchy_syntax::ast::Convention::Borrow | witchy_syntax::ast::Convention::Own) => matches!(actual.ownership, super::ParameterOwnership::Shared),
+            // `var view: &T` replaces the caller's immutable GC carrier by
+            // write-back; the viewed value is never mutated through it.
+            // The replacement lane is authenticated below as the exact same
+            // source type, so the lane cannot change the carrier's family.
+            (super::ValueType::Gc(_), witchy_syntax::ast::Convention::Var) => actual.ownership == super::ParameterOwnership::WriteBack,
             (super::ValueType::Gc(_), _) => false,
             (super::ValueType::Ref(_), witchy_syntax::ast::Convention::Own) => matches!(actual.ownership, super::ParameterOwnership::Shared),
             (super::ValueType::Ref(_), witchy_syntax::ast::Convention::Var)
@@ -2180,9 +2185,14 @@ fn candidate_signature_matches_source_inner(
                 )
         })
         && actual.contract.parameter_effects.iter().all(|(parameter, effects)| {
+            let read_only = effects.iter().all(|effect| matches!(effect, super::MemoryEffect::Read | super::MemoryEffect::Retain | super::MemoryEffect::Release));
+            // A source `var` GC carrier is replaced whole through its hidden
+            // lane; it is immutable, so nothing may be written through it.
+            let gc_var = matches!(actual.parameters.get(*parameter as usize), Some(super::ValueType::Gc(_)))
+                && convention_at(*parameter as usize) == witchy_syntax::ast::Convention::Var;
             matches!(actual.parameters.get(*parameter as usize), Some(super::ValueType::Ref(_) | super::ValueType::Gc(_)))
-                && (matches!(actual.contract.parameters.get(*parameter as usize).map(|parameter| parameter.ownership), Some(super::ParameterOwnership::WriteBack | super::ParameterOwnership::UniqueWriteBack))
-                    || effects.iter().all(|effect| matches!(effect, super::MemoryEffect::Read | super::MemoryEffect::Retain | super::MemoryEffect::Release)))
+                && (!gc_var && matches!(actual.contract.parameters.get(*parameter as usize).map(|parameter| parameter.ownership), Some(super::ParameterOwnership::WriteBack | super::ParameterOwnership::UniqueWriteBack))
+                    || read_only)
         });
     context.finish_callable(key, matched);
     matched

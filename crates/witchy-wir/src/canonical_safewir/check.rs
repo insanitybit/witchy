@@ -1152,7 +1152,7 @@ fn check_entry_parameters(
             }
             // A scalar `var` parameter is written back through a result lane
             // and carries no memory token.
-            ParameterOwnership::WriteBack if !matches!(parameter.value_type, ValueType::Ref(_)) => {
+            ParameterOwnership::WriteBack if !matches!(parameter.value_type, ValueType::Ref(_) | ValueType::Gc(_)) => {
                 if parameter.ownership.is_some() {
                     return Err(InitialCheckError::UnsupportedMemorySignature {
                         signature: signature.id,
@@ -1828,7 +1828,7 @@ fn check_call(
             // A scalar `var` parameter has no token: the argument is a value
             // and the write-back is a result lane.
             | (ParameterOwnership::WriteBack, ParameterOwnership::Value)
-                if !matches!(expected.value_type, ValueType::Ref(_)) => true,
+                if !matches!(expected.value_type, ValueType::Ref(_) | ValueType::Gc(_)) => true,
             (ParameterOwnership::Value, ParameterOwnership::Value)
             | (ParameterOwnership::Unique, ParameterOwnership::Unique)
             | (ParameterOwnership::WriteBack, ParameterOwnership::Unique)

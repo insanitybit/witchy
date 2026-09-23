@@ -142,7 +142,12 @@ impl<'a> Registry<'a> {
         for signature in module.signatures() {
             for parameter in &signature.contract.parameters {
                 if let ValueType::Gc(id) = parameter.value_type {
-                    if !registry.registered(id) || parameter.ownership != ParameterOwnership::Shared {
+                    // An opaque token is either lent (`Shared`) or replaced
+                    // through a source `var` lane (`WriteBack`); both move one
+                    // affine token in and the CFG judgment below tracks it.
+                    if !registry.registered(id)
+                        || !matches!(parameter.ownership, ParameterOwnership::Shared | ParameterOwnership::WriteBack)
+                    {
                         return Err(InitialCheckError::UnsupportedMemorySignature { signature: signature.id });
                     }
                 }

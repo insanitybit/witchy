@@ -11394,6 +11394,10 @@ impl Checker {
                                     }
                                 }
                                 self.reject_later_writeback_conflict(name, args, i, &place)?;
+                                self.reject_region_var_escape(
+                                    place.root(),
+                                    &format!("argument {} to {parameter}", i + 1),
+                                )?;
                                 var_places.push((i, place));
                             }
                             Some(place) => {
@@ -11580,6 +11584,10 @@ impl Checker {
                                 }
                             }
                             self.reject_later_writeback_conflict(name, args, index, &place)?;
+                            self.reject_region_var_escape(
+                                place.root(),
+                                &format!("argument {} to {parameter}", index + 1),
+                            )?;
                             var_places.push((index, place));
                         }
                         Some(place) => {
@@ -11709,6 +11717,10 @@ impl Checker {
                                 &operands,
                                 index,
                                 &place,
+                            )?;
+                            self.reject_region_var_escape(
+                                place.root(),
+                                &format!("operand {} to existential `{callee}`", index + 1),
                             )?;
                             var_places.push((index, place));
                         }
@@ -11978,6 +11990,27 @@ impl Checker {
                 Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
             }
         }
+    }
+
+    /// A `var` argument is a write-back sink: the callee's replacement lands
+    /// in the caller's binding.  Inside `region:` a binding declared outside
+    /// the region outlives it, so a write-back whose type can hold a view (or
+    /// a callable/task hiding one, BUG-646) could carry a view of a
+    /// region-born root past the region's exit (BUG-648).  Refuse it exactly
+    /// as direct assignment to such a binding is refused: a region's only
+    /// escape is its value.
+    fn reject_region_var_escape(&self, root: &str, context: &str) -> Result<(), TypeError> {
+        let Some(scope) = self.region_locals.last() else { return Ok(()) };
+        if scope.contains(root) {
+            return Ok(());
+        }
+        let Some(ty) = self.lookup(root) else { return Ok(()) };
+        if self.ty_carries_rooted_view(&ty) || ty_carries_callable_or_task(&self.resolve(&ty), self) {
+            return terr(format!(
+                "{context} cannot write back into `{root}` inside `region:`: it is declared outside the region and can hold a view — a region's only escape is its value"
+            ));
+        }
+        Ok(())
     }
 
     fn reject_later_writeback_conflict(

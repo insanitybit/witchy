@@ -2112,9 +2112,15 @@ fn checked_signature(
                 return Err(CanonicalLoweringError::UnsupportedType(source_type.clone()));
             };
             value_parameters[parameter_index] = value_type;
+            // A `var` carrier keeps the write-back lane `checked_signature`
+            // already appended; the replacement is a whole new carrier token.
             contract_parameters[parameter_index] = ParameterContract {
                 value_type,
-                ownership: ParameterOwnership::Shared,
+                ownership: if *convention == Convention::Var {
+                    ParameterOwnership::WriteBack
+                } else {
+                    ParameterOwnership::Shared
+                },
             };
             parameter_effects.insert(
                 parameter_index as u32,
@@ -2135,22 +2141,11 @@ fn checked_signature(
                     ParameterOwnership::Shared
                 },
             };
+            // The write-back replaces the carrier token; nothing is written
+            // through the view, so no `Write` effect is declared.
             parameter_effects.insert(
                 parameter_index as u32,
-                if write_back {
-                    vec![
-                        MemoryEffect::Read,
-                        MemoryEffect::Retain,
-                        MemoryEffect::Release,
-                        MemoryEffect::Write,
-                    ]
-                } else {
-                    vec![
-                        MemoryEffect::Read,
-                        MemoryEffect::Retain,
-                        MemoryEffect::Release,
-                    ]
-                },
+                vec![MemoryEffect::Read, MemoryEffect::Retain, MemoryEffect::Release],
             );
         }
         if source.ty.as_ref().is_some_and(|ty| {
@@ -2599,34 +2594,24 @@ fn signature_from_type(
             // A `var` parameter is written back as an extra result lane. For a
             // reference that lane is the replacement token; for a scalar it is
             // a plain value and the parameter carries no memory token at all.
-            // `var view: &Int` writes back a replacement *carrier* token.
-            // It never grants a write through the retained root/projection.
-            (ValueType::Gc(_), Convention::Var)
-                if is_admitted_rooted_gc_view(parameter) =>
-            {
-                ParameterOwnership::WriteBack
-            }
-            (ValueType::Gc(_), Convention::Var) => return Err(CanonicalLoweringError::UnsupportedExpression("opaque owner var parameter")),
+            // An opaque GC carrier (`var view: &Int`, `var s: &[T]`,
+            // `var o: Option(&Int)`) writes back a replacement *carrier*
+            // token. It never grants a write through the retained
+            // root/projection: GC carriers are immutable.
+            (ValueType::Gc(_), Convention::Var) => ParameterOwnership::WriteBack,
             (ValueType::Ref(_), Convention::Var) if matches!(parameter, Type::Qualified(TypeQual::Unique, _)) => ParameterOwnership::UniqueWriteBack,
             (_, Convention::Var) => ParameterOwnership::WriteBack,
             (_, Convention::Let | Convention::Borrow | Convention::Own) => ParameterOwnership::Value,
         };
         if matches!(value_type, ValueType::Ref(_) | ValueType::Gc(_)) {
-            let effects = if is_admitted_rooted_gc_view(parameter) {
-                if ownership == ParameterOwnership::WriteBack {
-                    vec![
-                        MemoryEffect::Read,
-                        MemoryEffect::Retain,
-                        MemoryEffect::Release,
-                        MemoryEffect::Write,
-                    ]
-                } else {
-                    vec![
-                        MemoryEffect::Read,
-                        MemoryEffect::Retain,
-                        MemoryEffect::Release,
-                    ]
-                }
+            // A GC carrier write-back replaces the token only; it declares
+            // no `Write` because nothing is written through the carrier.
+            let effects = if matches!(value_type, ValueType::Gc(_)) {
+                vec![
+                    MemoryEffect::Read,
+                    MemoryEffect::Retain,
+                    MemoryEffect::Release,
+                ]
             } else {
                 vec![
                     MemoryEffect::Read,
@@ -20402,15 +20387,23 @@ mod tests {
     }
 
     #[test]
-    fn option_of_rooted_int_view_var_parameter_fails_closed() {
-        let checked = checked("fn reject(var option: Option(&Int)) -> Int:\n    0\n");
+    fn option_of_rooted_int_view_var_parameter_keeps_its_write_back_lane() {
+        let checked = checked("fn replace(var option: Option(&Int)) -> Int:\n    0\n");
         let source = checked.canonical_source().expect("source authority");
         let layouts = crate::canonical_layouts::derive_layout_bundle(source).expect("source layouts");
-        let lowered = lower_typed_module(source, layouts);
-        assert!(matches!(
-            lowered,
-            Err(CanonicalLoweringError::UnsupportedExpression("opaque owner var parameter"))
-        ), "var Option(&Int) must not silently erase write-back: {lowered:?}");
+        let candidate = lower_typed_module(source, layouts).expect("var Option(&Int) lowers");
+        let replace = candidate.functions().first().expect("replace function");
+        let signature = candidate.signatures().iter().find(|signature| signature.id == replace.signature)
+            .expect("replace signature");
+        // The carrier write-back is never erased: one ordinary Int result
+        // followed by the replacement carrier of the parameter's exact type.
+        let [ValueType::Gc(parameter)] = signature.parameters.as_slice() else {
+            panic!("opaque Option carrier parameter: {signature:?}");
+        };
+        assert_eq!(signature.results.as_slice(), &[ValueType::Int, ValueType::Gc(*parameter)]);
+        assert!(matches!(signature.contract.parameters.as_slice(), [ParameterContract {
+            ownership: ParameterOwnership::WriteBack, ..
+        }]));
     }
 
     #[test]
@@ -20427,11 +20420,11 @@ mod tests {
             value_type: ValueType::Gc(_), ownership: ParameterOwnership::WriteBack
         }]));
         assert!(matches!(signature.contract.results.as_slice(), [ResultContract::Value(ValueType::Gc(_))]));
+        // Replacing the carrier writes nothing through the view.
         assert_eq!(signature.contract.parameter_effects.get(&0), Some(&vec![
             MemoryEffect::Read,
             MemoryEffect::Retain,
             MemoryEffect::Release,
-            MemoryEffect::Write,
         ]));
     }
 
