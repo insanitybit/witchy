@@ -33,14 +33,9 @@ fn run() -> Result<(), String> {
         // Representative set of files covering all migration categories across std, examples, projects, and benchmarks.
         let representative = [
             "benchmarks/dict_count.witchy",
-            "benchmarks/rfc0153_std_show_dict.witchy",
             "examples/dice/src/dice.witchy",
-            "examples/maze/src/maze.witchy",
-            "examples/wordcount/src/wordcount.witchy",
             "projects/glamour/src/glamour.witchy",
             "std/dict.witchy",
-            "std/list.witchy",
-            "std/prng.witchy",
         ];
         for rel in representative {
             let p = root.join(rel);

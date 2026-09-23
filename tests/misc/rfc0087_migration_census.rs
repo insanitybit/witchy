@@ -25,14 +25,44 @@ fn repository_census_matches_the_checked_in_type_resolved_snapshot() {
     } else {
         // In representative mode, verify that every detected migration finding in the representative
         // corpus matches the committed snapshot entry for that path and line.
-        for line in stdout.lines() {
-            if line.is_empty() || line.starts_with("witchy-files") || line.starts_with("checked") {
-                break;
-            }
+        let findings = stdout
+            .lines()
+            .take_while(|line| !line.is_empty())
+            .collect::<Vec<_>>();
+        for line in &findings {
             assert!(
-                committed.lines().any(|c| c == line),
+                committed.lines().any(|committed| committed == *line),
                 "representative census produced unexpected or altered finding: {line}"
             );
+        }
+        for prefix in ["benchmarks/", "examples/", "projects/", "std/"] {
+            assert!(
+                findings.iter().any(|line| line.starts_with(prefix)),
+                "representative census must retain a finding from {prefix}"
+            );
+        }
+        let categories = [
+            "mechanical-self-reassignment",
+            "expression-position-mutator",
+            "immutable-var-argument",
+            "temporary-var-argument",
+            "auxiliary-result-discard",
+        ];
+        for category in categories {
+            let summary_prefix = format!("{category}\t");
+            let committed_count = committed
+                .lines()
+                .find_map(|line| line.strip_prefix(&summary_prefix))
+                .expect("full census records every migration category")
+                .parse::<usize>()
+                .expect("full census category count is numeric");
+            if committed_count > 0 {
+                let finding_marker = format!("\t{category}\t");
+                assert!(
+                    findings.iter().any(|line| line.contains(&finding_marker)),
+                    "representative census must retain active category {category}"
+                );
+            }
         }
     }
     assert_eq!(

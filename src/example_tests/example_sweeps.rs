@@ -1,44 +1,6 @@
 use super::*;
 use crate::{codegen, interpreter, parser};
 
-    /// The bundled stdlib must stay on the in-place fast path: a performance cliff
-    /// (an accumulator that reverts to copy-per-iteration, i.e. O(n²)) anywhere in
-    /// std silently slows every program that touches it. This applies `mode opt`'s
-    /// cliff detection to ALL 42 std modules as a regression guard — the same check
-    /// that turned `string.chars`/`json.decode` from O(n²) into O(n). Adding a
-    /// growing-buffer loop to a std module without keeping it on the fast path fails
-    /// HERE, loudly, with the function and the offending accumulator.
-    #[test]
-    fn stdlib_has_no_performance_cliffs() {
-        // Link a synthetic entry that imports every std module, so cross-module call
-        // summaries resolve exactly as in real compilation (a per-module scan would
-        // false-positive on calls like `list.join` whose summary lives elsewhere).
-        let imports: String =
-            witchy_syntax::linker::STD_MODULES
-                .iter()
-                .map(|m| format!("import {m}\n"))
-                .collect();
-        let entry_src = format!("{imports}\npub fn perfcheck() -> Int:\n    0\n");
-        let entry = parser::parse_module(&entry_src).expect("parse synthetic std-import entry");
-        let linked = crate::pipeline::link(vec![("perfcheck".into(), entry)], "perfcheck")
-            .expect("link all std modules");
-        // The whole stdlib is cliff-free: every "build a sub-list, then collect it into a
-        // result list" shape (`out = push(out, move cur); cur = []`) transfers ownership with
-        // `move`, so the sub-list's per-element pushes stay in place (the `move`-resets-cap fix
-        // makes that sound). No allowlist — a new cliff is a hard failure.
-        let offenders: Vec<String> = witchy_lower::analysis::module_cliffs(&linked)
-            .into_iter()
-            .map(|(func, c)| {
-                format!("{func} (line {}): `{}` is rebuilt by copy each iteration — {}", c.line, c.var, c.reason)
-            })
-            .collect();
-        assert!(
-            offenders.is_empty(),
-            "stdlib performance cliffs (O(n²) accumulation) found:\n  {}",
-            offenders.join("\n  ")
-        );
-    }
-
     /// The committed `spec/stdlib.md` must match what `witchy doc` generates from
     /// the std sources — so a std module change that isn't re-documented fails
     /// loudly. Regenerate with: `witchy doc std/*.witchy > spec/stdlib.md`.
@@ -305,26 +267,57 @@ use crate::{codegen, interpreter, parser};
         assert!(ran > 0, "no example rune tests ran");
     }
 
-    /// Every bundled std module must type-check on its own (linked with its
-    /// imports). The interpreter doesn't type-check, so without this a latent
-    /// type error in a module no example imports would go unnoticed.
+    /// Every bundled std module must type-check in the authenticated complete
+    /// graph and stay free of O(n²) accumulation cliffs. Checking every module
+    /// as a separate root repeats the same prelude parse, link, and type-check
+    /// work, while a second cliff test would repeat the complete graph again.
     #[test]
     fn all_std_modules_type_check() {
-        let mut any = false;
-        for entry in std::fs::read_dir("std").expect("std directory") {
-            let path = entry.unwrap().path();
-            if path.extension().and_then(|s| s.to_str()) != Some("witchy") {
-                continue;
-            }
-            any = true;
-            let p = path.to_str().unwrap();
-            assert!(
-                crate::check_file(p).is_ok(),
-                "type-check failed for `{p}`: {:?}",
-                crate::check_file(p)
-            );
-        }
-        assert!(any, "no std modules found");
+        let mut files = std::fs::read_dir("std")
+            .expect("std directory")
+            .filter_map(|entry| {
+                let path = entry.expect("std directory entry").path();
+                (path.extension().and_then(|extension| extension.to_str()) == Some("witchy"))
+                    .then(|| {
+                        path.file_stem()
+                            .expect("std module stem")
+                            .to_string_lossy()
+                            .into_owned()
+                    })
+            })
+            .collect::<Vec<_>>();
+        files.sort();
+        let mut registry = witchy_syntax::linker::STD_MODULES
+            .iter()
+            .map(|module| (*module).to_owned())
+            .collect::<Vec<_>>();
+        registry.sort();
+        assert_eq!(
+            files, registry,
+            "bundled std registry must name every std source exactly once"
+        );
+
+        let source = registry
+            .iter()
+            .map(|module| format!("import {module}\n"))
+            .collect::<String>();
+        let checked = witchy::resolve_std_only_checked(&source)
+            .expect("the complete bundled std graph must type-check");
+
+        let offenders = witchy_lower::analysis::module_cliffs(checked.module())
+            .into_iter()
+            .map(|(function, cliff)| {
+                format!(
+                    "{function} (line {}): `{}` is rebuilt by copy each iteration — {}",
+                    cliff.line, cliff.var, cliff.reason
+                )
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            offenders.is_empty(),
+            "stdlib performance cliffs (O(n²) accumulation) found:\n  {}",
+            offenders.join("\n  ")
+        );
     }
 
     // The linker treats the bundled std as a built-in search path: a program can
