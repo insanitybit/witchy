@@ -215,6 +215,8 @@ mod rfc0167_view_carrier_transport;
 mod rfc0167_async_view;
 #[path = "misc/rfc0167_async_view_results.rs"]
 mod rfc0167_async_view_results;
+#[path = "misc/rfc0167_views_through_channels_and_generators.rs"]
+mod rfc0167_views_through_channels_and_generators;
 #[path = "misc/rfc0167_installed_workflow.rs"]
 mod rfc0167_installed_workflow;
 #[path = "misc/bug644_show_branch_value.rs"]

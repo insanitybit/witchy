@@ -981,7 +981,7 @@
         )
         .expect_err("a shared reference cannot cross a generator function boundary");
         assert!(
-            err.to_string().contains("gen fn `bad` may not expose a borrowed view"),
+            err.to_string().contains("gen fn `bad` may not take or yield a lifetime-bearing reference"),
             "{err}"
         );
     }
@@ -999,7 +999,7 @@
         )
         .expect_err("a shared reference cannot cross a generator function boundary");
         assert!(
-            err.to_string().contains("gen fn `bad` may not expose a borrowed view"),
+            err.to_string().contains("gen fn `bad` may not take or yield a lifetime-bearing reference"),
             "{err}"
         );
 
@@ -1014,7 +1014,7 @@
         )
         .expect_err("a generator cannot yield a shared reference");
         assert!(
-            err.to_string().contains("gen fn `bad` may not expose a borrowed view"),
+            err.to_string().contains("gen fn `bad` may not take or yield a lifetime-bearing reference"),
             "{err}"
         );
     }
@@ -1032,7 +1032,7 @@
         )
         .expect_err("an exclusive reference cannot cross a generator function boundary");
         assert!(
-            err.to_string().contains("gen fn `bad` may not expose a borrowed view"),
+            err.to_string().contains("gen fn `bad` may not take or yield a lifetime-bearing reference"),
             "{err}"
         );
     }
@@ -1050,7 +1050,7 @@
         )
         .expect_err("a generator cannot yield an exclusive reference");
         assert!(
-            err.to_string().contains("gen fn `bad` may not expose a borrowed view"),
+            err.to_string().contains("gen fn `bad` may not take or yield a lifetime-bearing reference"),
             "{err}"
         );
     }

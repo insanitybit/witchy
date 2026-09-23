@@ -4383,19 +4383,40 @@ fn region_declared_local_names(block: &Block) -> HashSet<String> {
 /// direct borrow/alias/ascription chains until the retained loan graph exports
 /// a richer projection witness.
 /// Whether a value of this type may hold a callable or a task recipe, either
-/// of which can capture a view without exposing it in the type.
+/// of which can capture a view without exposing it in the type. A nominal
+/// type is searched through its fields and variant payloads, so an `Iter`
+/// (a generator frame behind a thunk) counts as a callable.
 fn ty_carries_callable_or_task(ty: &Ty, checker: &Checker) -> bool {
-    match checker.resolve(ty) {
-        Ty::Fn(..) => true,
-        Ty::Named(name, arguments) => {
-            name.as_ref() == "Task"
-                || name.rsplit('.').next() == Some("Task")
-                || arguments.iter().any(|argument| ty_carries_callable_or_task(argument, checker))
+    fn go(ty: &Ty, checker: &Checker, seen: &mut HashSet<String>) -> bool {
+        match checker.resolve(ty) {
+            Ty::Fn(..) => true,
+            Ty::Named(name, arguments) => {
+                if name.as_ref() == "Task"
+                    || name.rsplit('.').next() == Some("Task")
+                    || arguments.iter().any(|argument| go(argument, checker, seen))
+                {
+                    return true;
+                }
+                if !seen.insert(name.to_string()) {
+                    return false;
+                }
+                let field_hit = checker.record_fields.get(name.as_ref()).is_some_and(|(_, fields)| {
+                    fields.iter().any(|(_, field)| go(field, checker, seen))
+                });
+                let variant_hit = checker.adt_variants.get(name.as_ref()).is_some_and(|variants| {
+                    variants.iter().any(|variant| checker.ctor_sigs.get(variant).is_some_and(
+                        |(payloads, _)| payloads.iter().any(|payload| go(payload, checker, seen)),
+                    ))
+                });
+                seen.remove(name.as_ref());
+                field_hit || variant_hit
+            }
+            Ty::List(item) => go(&item, checker, seen),
+            Ty::Tuple(items) => items.iter().any(|item| go(item, checker, seen)),
+            _ => false,
         }
-        Ty::List(item) => ty_carries_callable_or_task(&item, checker),
-        Ty::Tuple(items) => items.iter().any(|item| ty_carries_callable_or_task(item, checker)),
-        _ => false,
     }
+    go(ty, checker, &mut HashSet::new())
 }
 
 /// Whether a region body forms a view (`&place`) rooted in one of the

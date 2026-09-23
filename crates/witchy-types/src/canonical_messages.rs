@@ -2,7 +2,7 @@
 //! payload identity: recovery is an ordinary exhaustive tagged-sum match.
 use std::collections::{BTreeMap, BTreeSet};
 
-use witchy_syntax::ast::{Block, Expr, Item, MatchArm, Pattern, Stmt, Type, TypeDef, Variant};
+use witchy_syntax::ast::{Block, Expr, Item, MatchArm, Pattern, Stmt, Type, TypeDef, TypeQual, Variant};
 use witchy_syntax::ast::visit::{visit_block, visit_block_mut, visit_expr_mut};
 use witchy_syntax::intrinsics::{self, IntrinsicId};
 
@@ -66,7 +66,7 @@ pub(crate) fn prepare(
                 .map_err(|error| format!("canonical message payload {ty:?} is not yet supported: {error}"))?;
             if let Some(previous) = payloads.insert(identity.clone(), ty.clone()) {
                 if previous != ty {
-                    return Err("canonical message payload identities have inconsistent checked types".into());
+                    return Err(format!("canonical message payload identities have inconsistent checked types: {previous:?} and {ty:?}"));
                 }
             }
             sites.insert(expr as *const Expr as usize, (pack, identity));
@@ -186,6 +186,15 @@ fn recheck_function_dependencies(module: &witchy_syntax::ast::Module, roots: &BT
 
 fn reject_unowned(ty: &Type) -> Result<(), String> {
     match ty {
+        // An immutable rooted view is a value (RFC-0167 section 5): it
+        // retains its own root, so the message is a snapshot the receiving
+        // task reads without sharing memory with the sender. It becomes an
+        // ordinary field of the closed payload sum, where the carrier
+        // witness admits or refuses it like any other aggregate field.
+        Type::Qualified(TypeQual::View, inner) => match inner.as_ref() {
+            Type::Slice(element) => reject_unowned(element),
+            inner => reject_unowned(inner),
+        },
         Type::Qualified(_, _) | Type::Slice(_) | Type::Dyn(_, _) => {
             Err(format!("canonical message payload {ty:?} is not yet supported as an owned value"))
         }

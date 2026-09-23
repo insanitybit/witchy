@@ -139,15 +139,39 @@ impl BorrowedShellCatalog {
     }
 
     /// An async parameter or result that exposes a retired borrow or a
-    /// lifetime-bearing shell. A direct RFC-0167 view (`&T` over a payload that
-    /// holds no further borrow) is not one: it retains its own root, so a task
-    /// cannot outlive anything it depends on. Whether the view has an
-    /// authenticated carrier across suspension is decided downstream, where a
-    /// view with no carrier is refused rather than erased.
+    /// lifetime-bearing shell. An RFC-0167 view (`&T`) is not one, wherever it
+    /// sits in the type (`&Int`, `Receiver(&Int)`, `List(&String)`): it
+    /// retains its own root, so a task or a channel buffer holding it cannot
+    /// outlive anything it depends on. Whether the view has an authenticated
+    /// carrier across suspension is decided downstream, where a view with no
+    /// carrier is refused rather than erased.
     fn exposes_retired_borrow(&self, ty: &Type) -> bool {
         match ty {
-            Type::Qualified(TypeQual::View, inner) => self.type_is_borrowed(inner),
-            _ => self.type_is_borrowed(ty),
+            Type::Qualified(TypeQual::View, inner) => self.exposes_retired_borrow(inner),
+            Type::Qualified(
+                TypeQual::Borrow(_) | TypeQual::LegacyBorrow(_) | TypeQual::BorrowMut(_),
+                _,
+            ) => true,
+            Type::Qualified(_, inner) | Type::Slice(inner) => self.exposes_retired_borrow(inner),
+            Type::Named(name, arguments) => {
+                if is_lifetime_param(name) {
+                    return false;
+                }
+                self.types.contains(name)
+                    || arguments.iter().any(|argument| {
+                        matches!(argument, Type::Named(name, args)
+                            if args.is_empty() && is_lifetime_param(name))
+                            || self.exposes_retired_borrow(argument)
+                    })
+            }
+            Type::Tuple(items) | Type::Dyn(_, items) => {
+                items.iter().any(|item| self.exposes_retired_borrow(item))
+            }
+            Type::RecordCompose { base, fields } => {
+                self.exposes_retired_borrow(base)
+                    || fields.iter().any(|(_, field)| self.exposes_retired_borrow(field))
+            }
+            Type::Fn(..) => false,
         }
     }
 

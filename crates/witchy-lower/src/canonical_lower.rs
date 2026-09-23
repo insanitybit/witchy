@@ -12076,7 +12076,10 @@ impl FunctionLowerer<'_> {
                 .ok_or_else(|| CanonicalLoweringError::MissingBinding(field.to_owned()))?;
             let value_type = self.field_value_type(&items[index])?;
             let object = self.lower_expr(base)?;
-            return self.load_record_field(object, u32::try_from(index).map_err(|_| CanonicalLoweringError::IdOverflow)?, value_type);
+            // A tuple carrying a rooted view is an owner-family aggregate;
+            // read its slot exactly as a tuple pattern does, so `frame.0` of
+            // a generator frame holding `&Int` keeps the owner's token.
+            return self.load_source_aggregate_field(object, &base_type, 0, index, index, value_type);
         }
         let Type::Named(name, _) = base_type.unqualified() else {
             return Err(CanonicalLoweringError::UnsupportedExpression("field base"));

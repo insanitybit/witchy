@@ -185,42 +185,46 @@ fn validate_generator_return(function: &Function) -> Result<(), String> {
     ))
 }
 
-/// A generator frame can outlive the call that created it, so source references
-/// may not enter through parameters or the yielded element type.
+/// A generator frame outlives the call that created it, so a parameter or the
+/// yielded element may not carry a retired lifetime-bearing borrow. An
+/// RFC-0167 view (`&T`, `&[T]`, a view inside a list, tuple or record) is a
+/// value-semantic snapshot that retains its own root, so a frame holding one
+/// outlives nothing it depends on; whether its carrier is admitted is decided
+/// downstream, where a view with no carrier is refused rather than erased.
 fn validate_generator_reference_boundary(function: &Function) -> Result<(), String> {
     let parameter_reference = function
         .params
         .iter()
         .filter_map(|parameter| parameter.ty.as_ref())
-        .any(type_carries_reference);
+        .any(type_carries_retired_borrow);
     let result_reference = iter_elem(&function.ret)
         .as_ref()
-        .is_some_and(type_carries_reference);
+        .is_some_and(type_carries_retired_borrow);
     if parameter_reference || result_reference {
         return Err(format!(
-            "gen fn `{}` may not expose a borrowed view or explicit reference as a parameter or yielded element because its generator frame can outlive the caller's loan — pass or yield an owned value",
+            "gen fn `{}` may not take or yield a lifetime-bearing reference (`&'a T`, `&'a mut T`); explicit lifetimes are retired — use an immutable view `&T`, which retains its own root, or an owned value",
             function.name,
         ));
     }
     Ok(())
 }
 
-fn type_carries_reference(ty: &Type) -> bool {
+fn type_carries_retired_borrow(ty: &Type) -> bool {
     match ty {
         Type::Qualified(
-            TypeQual::View | TypeQual::Borrow(_) | TypeQual::LegacyBorrow(_) | TypeQual::BorrowMut(_),
+            TypeQual::Borrow(_) | TypeQual::LegacyBorrow(_) | TypeQual::BorrowMut(_),
             _,
         ) => true,
-        Type::Qualified(_, inner) => type_carries_reference(inner),
-        Type::Slice(inner) => type_carries_reference(inner),
-        Type::Named(_, args) | Type::Dyn(_, args) => args.iter().any(type_carries_reference),
-        Type::Tuple(items) => items.iter().any(type_carries_reference),
+        Type::Qualified(_, inner) => type_carries_retired_borrow(inner),
+        Type::Slice(inner) => type_carries_retired_borrow(inner),
+        Type::Named(_, args) | Type::Dyn(_, args) => args.iter().any(type_carries_retired_borrow),
+        Type::Tuple(items) => items.iter().any(type_carries_retired_borrow),
         Type::RecordCompose { base, fields } => {
-            type_carries_reference(base)
-                || fields.iter().any(|(_, field)| type_carries_reference(field))
+            type_carries_retired_borrow(base)
+                || fields.iter().any(|(_, field)| type_carries_retired_borrow(field))
         }
         Type::Fn(params, result, _, _) => {
-            params.iter().any(type_carries_reference) || type_carries_reference(result)
+            params.iter().any(type_carries_retired_borrow) || type_carries_retired_borrow(result)
         }
     }
 }

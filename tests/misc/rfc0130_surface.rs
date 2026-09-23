@@ -35,15 +35,9 @@ fn rfc0130_row_4_generator_failures_name_source_syntax() {
         "yield diagnostic lost the declared element types: {yielded}",
     );
 
-    let borrowed = checked_error(
-        "mode opt\n\nimport iter\n\ngen fn bad(input: &String) -> Iter(String):\n    yield input\n\nfn main(console: Console):\n    console.print(\"unreachable\")\n",
-    );
-    assert!(
-        borrowed.contains("gen fn `bad` may not expose a borrowed view or explicit reference")
-            && borrowed.contains("generator frame can outlive the caller's loan")
-            && borrowed.contains("owned value"),
-        "borrow diagnostic lost the source ownership boundary: {borrowed}",
-    );
+    // An immutable view parameter is admitted (RFC-0167: it retains its own
+    // root); `rfc0167_views_through_channels_and_generators` pins that, and
+    // `loans_tests` pins the retired lifetime-bearing refusal.
 
     let region = checked_error(
         "import iter\n\ngen fn bad() -> Iter(Int):\n    region:\n        yield 1\n        0\n\nfn main(console: Console):\n    console.print(\"unreachable\")\n",
