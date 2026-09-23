@@ -13394,10 +13394,24 @@ impl Checker {
             }
             Expr::For { var, iter, body } => {
                 let it = self.infer(iter)?;
-                let elem = self.fresh();
-                self.unify(&Ty::List(Box::new(elem.clone()).into()), &it).map_err(|e| TypeError {
-                    message: format!("`for` expects a List to iterate: {}", e.message),
-                })?;
+                // A `&[T]` view iterates its elements by value, as `xs[i]` reads them.
+                let slice_element = match self.resolve(&it) {
+                    Ty::View(payload) => match payload.as_ref() {
+                        Ty::Named(name, args) if name.as_ref() == "Slice" && args.len() == 1 => Some(args[0].clone()),
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                let elem = match slice_element {
+                    Some(element) => element,
+                    None => {
+                        let elem = self.fresh();
+                        self.unify(&Ty::List(Box::new(elem.clone()).into()), &it).map_err(|e| TypeError {
+                            message: format!("`for` expects a List or a `&[T]` view to iterate: {}", e.message),
+                        })?;
+                        elem
+                    }
+                };
                 self.reject_implicit_once_copy(iter, &it, "`for` iteration")?;
                 let consumed_before_body = self.consumed.clone();
                 self.push();

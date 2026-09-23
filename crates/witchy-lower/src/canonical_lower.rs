@@ -4813,6 +4813,24 @@ impl<'a> FunctionLowerer<'a> {
         self.load_list_element(root, absolute, element_type)
     }
 
+    /// `xs[i]` by value on any `&[T]` view carrier.
+    fn read_slice_element_by_value(
+        &mut self,
+        slice: ValueId,
+        index: ValueId,
+    ) -> Result<ValueId, CanonicalLoweringError> {
+        if !self.is_rooted_int_slice_view(slice) {
+            return self.read_rooted_slice_element(slice, index);
+        }
+        let element = self.materialize_checked_list_int_view(slice, index)?;
+        let destination = self.fresh(ValueType::Int)?;
+        let family = self.shared_int_reference_family()?.signature;
+        self.push_operation(Operation::ClosureOwner(OwnerOperation::ReadSharedPlace {
+            destination, owner: element, family,
+        }));
+        Ok(destination)
+    }
+
     fn materialize_scalar_reference(&mut self, value: ValueId) -> Result<ValueId, CanonicalLoweringError> {
         let layout = scalar_reference_layout(self.layout_bundle, self.layouts, ScalarKind::Int)?;
         let Some(LayoutSize::Fixed(bytes)) = self.physical_descriptor(layout).map(|descriptor| descriptor.size()) else {
@@ -8548,12 +8566,27 @@ impl FunctionLowerer<'_> {
         inclusive: bool,
         body: &witchy_syntax::ast::Block,
     ) -> Result<(), CanonicalLoweringError> {
-        let mut facts = self.snapshot_facts();
         let start = self.lower_expr(lo)?;
         let bound = self.lower_expr(hi)?;
         if self.values[&start] != ValueType::Int || self.values[&bound] != ValueType::Int {
             return Err(CanonicalLoweringError::UnsupportedExpression("non-integer range bounds"));
         }
+        self.lower_counted_for(variable, start, bound, inclusive, body, None)
+    }
+
+    /// A loop over an `Int` counter from `start` to `bound`. The iteration
+    /// binding is the counter itself, or with `slice`, that view's element at
+    /// the counter.
+    fn lower_counted_for(
+        &mut self,
+        variable: &str,
+        start: ValueId,
+        bound: ValueId,
+        inclusive: bool,
+        body: &witchy_syntax::ast::Block,
+        slice: Option<ValueId>,
+    ) -> Result<(), CanonicalLoweringError> {
+        let mut facts = self.snapshot_facts();
         let outer = self.bindings.clone();
         // Only a name the body rebinds is a header lane; every other outer
         // binding keeps its value (and its token) across the loop, as in
@@ -8672,7 +8705,11 @@ impl FunctionLowerer<'_> {
         // its own scope around the body, just like the checker/interpreter;
         // restoring it must preserve the hidden value and its mutability.
         let lowered = self.with_binding_scope(|lowerer| {
-            lowerer.bind_lexical(variable, body_counter, false)?;
+            let binding = match slice {
+                Some(slice) => lowerer.read_slice_element_by_value(slice, body_counter)?,
+                None => body_counter,
+            };
+            lowerer.bind_lexical(variable, binding, false)?;
             lowerer.lower_block_effect(body)
         });
         self.loop_contexts.pop();
@@ -8715,6 +8752,19 @@ impl FunctionLowerer<'_> {
             return self.lower_range_for(variable, lo, hi, *inclusive, body);
         }
         let logical_type = self.expression_type(iterable)?;
+        // A `&[T]` view iterates `0..length`, reading each element by value
+        // through the same checked projection as `xs[i]`. The carrier is
+        // immutable, so it dominates the loop without becoming loop state.
+        if rooted_view_inner(&logical_type).is_some_and(|inner| is_rooted_int_slice(inner) || is_rooted_slice(inner)) {
+            use witchy_wir::canonical_safewir::closure_owner_contract::SharedSliceField;
+            let slice = self.lower_expr(iterable)?;
+            let length = self.read_rooted_slice(slice, SharedSliceField::Length)?;
+            let bound = self.fresh(ValueType::Int)?;
+            self.push_operation(Operation::WidenSize { destination: bound, value: length });
+            let start = self.fresh(ValueType::Int)?;
+            self.push_operation(Operation::ConstInt { destination: start, value: 0 });
+            return self.lower_counted_for(variable, start, bound, false, body, Some(slice));
+        }
         let source = self.lower_expr(iterable)?;
         let opaque_family = self.owner_list_family(source).cloned();
         let (element_type, header_bytes, stride_bytes) = if let Some(family) = &opaque_family {
@@ -13963,20 +14013,14 @@ impl FunctionLowerer<'_> {
                 return Err(CanonicalLoweringError::UnsupportedExpression("rooted slice index base"));
             }
             let index = self.lower_expr(index)?;
-            let element = self.materialize_checked_list_int_view(slice, index)?;
-            let destination = self.fresh(ValueType::Int)?;
-            let family = self.shared_int_reference_family()?.signature;
-            self.push_operation(Operation::ClosureOwner(OwnerOperation::ReadSharedPlace {
-                destination, owner: element, family,
-            }));
-            return Ok(destination);
+            return self.read_slice_element_by_value(slice, index);
         }
         if rooted_view_inner(&logical_type).is_some_and(is_rooted_slice)
             && !matches!(index, Expr::Range { .. })
         {
             let slice = self.lower_expr(base)?;
             let index = self.lower_expr(index)?;
-            return self.read_rooted_slice_element(slice, index);
+            return self.read_slice_element_by_value(slice, index);
         }
         if self.closures.layouts.opaque_type(&logical_type, self.definitions).is_some() {
             let list = self.lower_expr(base)?;
