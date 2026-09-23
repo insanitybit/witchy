@@ -91,6 +91,22 @@ fn a_list_of_int_views_crosses_function_boundaries() {
 }
 
 #[test]
+fn replacing_an_element_view_and_leaving_early_release_every_root() {
+    // `vs[0] = &b` replaces one view; the earlier copy still reads a = 1.
+    // copy[0] + vs[0] * 10 + vs[1] * 100 = 1 + 20 + 100.
+    assert_wasm(
+        "fn main() -> Int:\n    let a = 1\n    let b = 2\n    var vs = [&a, &a]\n    let copy = vs\n    vs[0] = &b\n    (*(copy[0])) + (*(vs[0])) * 10 + (*(vs[1])) * 100\n",
+        121,
+    );
+    // An early return from inside a loop over a list of views: the first view
+    // above 4 is 7.
+    assert_wasm(
+        "fn first_big(vs: List(&Int)) -> Int:\n    for v in vs:\n        if (*v) > 4:\n            return *v\n    0\n\nfn main() -> Int:\n    let a = 3\n    let b = 7\n    let c = 9\n    first_big([&a, &b, &c])\n",
+        7,
+    );
+}
+
+#[test]
 fn a_region_born_view_cannot_escape_in_a_list() {
     assert_refused(
         "fn main() -> Int:\n    let vs = region -> List(&Int):\n        let local = 5\n        [&local]\n    *(vs[0])\n",

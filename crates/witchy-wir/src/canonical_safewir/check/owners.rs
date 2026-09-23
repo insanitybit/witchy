@@ -22,9 +22,8 @@ impl<'a> Registry<'a> {
         let mut signatures = BTreeSet::new();
         let mut constructors = BTreeSet::new();
         for family in registry.families {
-            let shared_reference = matches!(family.source, OwnerFamilySource::SharedReference(_));
             if !types.insert(family.owner_type)
-                || !shared_reference && !types.insert(family.list_type)
+                || has_owner_list(family) && !types.insert(family.list_type)
                 || !signatures.insert(family.signature)
             {
                 return Err(InitialCheckError::UnsupportedMemorySignature { signature: family.signature });
@@ -161,7 +160,17 @@ impl<'a> Registry<'a> {
 
     fn registered(&self, id: GcTypeId) -> bool {
         self.families.iter().any(|family| family.owner_type == id
-            || family.list_type == id)
+            || has_owner_list(family) && family.list_type == id)
+    }
+
+    /// The family of an owner-list operation. Only a family with an owner list
+    /// (see `has_owner_list`) admits one.
+    fn list_family(&self, function: &Function, id: FunctionSignatureId, operation: &'static str) -> Result<&OwnerFamily, InitialCheckError> {
+        let family = self.family(id)?;
+        if !has_owner_list(family) {
+            return Err(InitialCheckError::UnsupportedMemoryOperation { function: function.id, operation });
+        }
+        Ok(family)
     }
 
     fn family(&self, id: FunctionSignatureId) -> Result<&OwnerFamily, InitialCheckError> {
@@ -295,42 +304,42 @@ impl<'a> Registry<'a> {
             }
             O::Drop { owner, family } => require_type(function, *owner, ValueType::Gc(self.family(*family)?.owner_type))?,
             O::NewList { destination, family, elements } => {
-                let family = self.family(*family)?;
+                let family = self.list_family(function, *family, "NewList shared-reference family")?;
                 require_type(function, *destination, ValueType::Gc(family.list_type))?;
                 for element in elements { require_type(function, *element, ValueType::Gc(family.owner_type))?; }
             }
             O::ListGet { destination, list, index, family } => {
-                let family = self.family(*family)?;
+                let family = self.list_family(function, *family, "ListGet shared-reference family")?;
                 require_type(function, *list, ValueType::Gc(family.list_type))?;
                 require_type(function, *index, ValueType::Size)?;
                 require_type(function, *destination, ValueType::Gc(family.owner_type))?;
             }
             O::ListLength { destination, list, family } => {
-                let family = self.family(*family)?;
+                let family = self.list_family(function, *family, "ListLength shared-reference family")?;
                 require_type(function, *list, ValueType::Gc(family.list_type))?;
                 require_type(function, *destination, ValueType::Size)?;
             }
             O::CloneList { destination, list, family } => {
-                let family = self.family(*family)?;
+                let family = self.list_family(function, *family, "CloneList shared-reference family")?;
                 let ty = ValueType::Gc(family.list_type);
                 require_type(function, *list, ty)?;
                 require_type(function, *destination, ty)?;
             }
             O::ListPush { destination, list, value, family } => {
-                let family = self.family(*family)?;
+                let family = self.list_family(function, *family, "ListPush shared-reference family")?;
                 require_type(function, *list, ValueType::Gc(family.list_type))?;
                 require_type(function, *destination, ValueType::Gc(family.list_type))?;
                 require_type(function, *value, ValueType::Gc(family.owner_type))?;
             }
             O::ListSet { destination, list, index, value, family } => {
-                let family = self.family(*family)?;
+                let family = self.list_family(function, *family, "ListSet shared-reference family")?;
                 require_type(function, *list, ValueType::Gc(family.list_type))?;
                 require_type(function, *destination, ValueType::Gc(family.list_type))?;
                 require_type(function, *index, ValueType::Size)?;
                 require_type(function, *value, ValueType::Gc(family.owner_type))?;
             }
             O::DropList { list, family } => {
-                let family = self.family(*family)?;
+                let family = self.list_family(function, *family, "DropList shared-reference family")?;
                 require_type(function, *list, ValueType::Gc(family.list_type))?;
             }
         }
@@ -814,5 +823,15 @@ mod tests {
         let closure_family = OwnerFamily { source: OwnerFamilySource::Closure, ..family };
         assert!(matches!(Registry { families: std::slice::from_ref(&closure_family) }.operation(&function, &operation),
             Err(InitialCheckError::UnsupportedMemoryOperation { operation: "ReadSharedPlace non-reference family", .. })));
+    }
+}
+
+/// Whether a family has an owner list. Closure and aggregate families do. Of
+/// the shared-reference (view) families only `&Int` does: `List(&Int)` holds
+/// its retained place carriers. Slice families have none.
+fn has_owner_list(family: &OwnerFamily) -> bool {
+    match &family.source {
+        OwnerFamilySource::SharedReference(source) => shared_int_reference(source),
+        _ => true,
     }
 }

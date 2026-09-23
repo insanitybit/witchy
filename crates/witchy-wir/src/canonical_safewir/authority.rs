@@ -1469,11 +1469,6 @@ pub(super) fn candidate_signature_matches_source_with_layouts<S: ModuleStage>(
     candidate_signature_matches_source_inner(actual, source, parameters, result, conventions, layouts, candidate.signatures(), &mut CorrespondenceContext::with_owners(candidate), records, candidate.closure_layouts())
 }
 
-/// Check the original source graph before any ABI comparison erases wrappers.
-/// A root Unique on an own/var input or result is represented by the callable
-/// ownership contract. The exact Result-Ok collection carrier is the one
-/// authenticated nested exception; all other nested qualifiers remain
-/// unsupported.
 /// `List(&Int)`: the `&Int` family's owner list. Each element is one retained,
 /// authenticated place carrier; the list itself is an ordinary owner list.
 fn is_list_of_direct_int_views(ty: &witchy_syntax::ast::Type) -> bool {
@@ -1481,6 +1476,11 @@ fn is_list_of_direct_int_views(ty: &witchy_syntax::ast::Type) -> bool {
         if name == "List" && arguments.len() == 1 && is_direct_rooted_view_int(&arguments[0]))
 }
 
+/// Check the original source graph before any ABI comparison erases wrappers.
+/// A root Unique on an own/var input or result is represented by the callable
+/// ownership contract. The exact Result-Ok collection carrier and a
+/// `List(&Int)` parameter or result are the authenticated nested exceptions;
+/// all other nested qualifiers remain unsupported.
 fn source_abi_qualifiers_supported(
     source: &witchy_syntax::ast::Type,
     records: &ScalarRecordFields,
