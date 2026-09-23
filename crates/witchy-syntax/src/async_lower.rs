@@ -46,7 +46,7 @@
 use crate::ast::*;
 use crate::source_check::{AsyncLoweredModule, GeneratorsLoweredModule};
 // foldhash: compiler-internal keys only — see witchy-types/src/typeck.rs.
-use foldhash::{HashSet, HashSetExt as _};
+use foldhash::{HashMap, HashSet, HashSetExt as _};
 
 /// Nominal identities whose values carry a declared lifetime relation. Async
 /// lowering runs before typeck, so this deliberately records only declarations
@@ -57,12 +57,34 @@ use foldhash::{HashSet, HashSetExt as _};
 struct BorrowedShellCatalog {
     types: HashSet<String>,
     constructors: HashSet<String>,
+    /// Declared result types of this module's functions, so a carried local
+    /// bound from a call keeps its type across a suspension (BUG-645).
+    return_types: HashMap<String, Type>,
+    /// This module's non-generic record and sum constructors, by constructor
+    /// name, with the type they build.
+    constructor_types: HashMap<String, Type>,
 }
 
 impl BorrowedShellCatalog {
     fn from_module(module: &Module) -> Self {
         let mut catalog = Self::default();
         for item in &module.items {
+            match item {
+                Item::Function(function) => {
+                    if let Some(ret) = &function.ret {
+                        catalog.return_types.insert(function.name.clone(), ret.clone());
+                    }
+                }
+                Item::Type(definition) if definition.params.is_empty() => {
+                    for variant in &definition.variants {
+                        catalog.constructor_types.insert(
+                            variant.name.clone(),
+                            Type::Named(definition.name.clone(), Vec::new()),
+                        );
+                    }
+                }
+                _ => {}
+            }
             let Item::Type(definition) = item else {
                 continue;
             };
@@ -714,7 +736,11 @@ impl<'a> Ctx<'a> {
                     let bind = Local {
                         name: name.clone(),
                         source_binding: None,
-                        ty: ty.clone(),
+                        // `let x = f(..).await` binds `f`'s declared result.
+                        ty: ty.clone().or_else(|| match inner {
+                            Expr::Call { name, .. } => self.borrowed_shells.return_types.get(name).cloned(),
+                            _ => None,
+                        }),
                         mutable: *mutable,
                         borrowed_view: ty
                             .as_ref()
@@ -730,7 +756,7 @@ impl<'a> Ctx<'a> {
                     scope2.push(Local {
                         name: name.clone(),
                         source_binding: None,
-                        ty: ty.clone().or_else(|| derive_type(value)),
+                        ty: ty.clone().or_else(|| derive_type(value, scope, self.borrowed_shells)),
                         mutable: *mutable,
                         borrowed_view: ty
                             .as_ref()
@@ -1185,7 +1211,7 @@ impl<'a> Ctx<'a> {
             type_params: Vec::new(),
             params,
             ret: None,
-            body: tail_block_at(cont_expr, line),
+            body: rebind_mutable_carried(&carried, cont_expr, line),
             bounds: vec![],
             is_gen: false,
             is_async: false,
@@ -2195,13 +2221,39 @@ fn local_to_param(l: &Local) -> Param {
 /// A pre-typeck type guess for a `let x = <value>` binding, used to type a
 /// carried frame column so an operation like `i < n` does not fall on an
 /// un-annotated generic. Only the shapes the transform can be sure of.
-fn derive_type(value: &Expr) -> Option<Type> {
+/// The type of a local's initializer, when it is evident before type checking:
+/// literals, list and tuple literals, operators, a local already typed in
+/// scope, a call to this module's declared function, or a constructor of a
+/// non-generic nominal. A carried local keeps this type as its segment
+/// parameter annotation, so method calls on it still resolve after a
+/// suspension (BUG-645). `None` leaves the parameter to inference as before.
+fn derive_type(value: &Expr, scope: &[Local], catalog: &BorrowedShellCatalog) -> Option<Type> {
+    use crate::ast::BinOp;
     match value {
         Expr::Int(_) => Some(named("Int")),
         Expr::Float(_) => Some(named("Float")),
         Expr::Str(_) => Some(named("String")),
         Expr::Bool(_) => Some(named("Bool")),
         Expr::Duration(_) => Some(named("Duration")),
+        Expr::List(items) => items
+            .first()
+            .and_then(|item| derive_type(item, scope, catalog))
+            .map(|element| Type::Named("List".to_string(), vec![element])),
+        Expr::Tuple(items) if !items.is_empty() => items
+            .iter()
+            .map(|item| derive_type(item, scope, catalog))
+            .collect::<Option<Vec<_>>>()
+            .map(Type::Tuple),
+        Expr::Var(name) => scope.iter().rev().find(|local| &local.name == name).and_then(|local| local.ty.clone()),
+        Expr::Binary { op, lhs, .. } => match op {
+            BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq
+            | BinOp::And | BinOp::Or => Some(named("Bool")),
+            BinOp::Concat => Some(named("String")),
+            BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => derive_type(lhs, scope, catalog),
+            _ => None,
+        },
+        Expr::Call { name, .. } => catalog.return_types.get(name).cloned(),
+        Expr::Ctor { name, .. } | Expr::Record { name, .. } => catalog.constructor_types.get(name).cloned(),
         _ => None,
     }
 }
@@ -2991,6 +3043,23 @@ fn decode_lane(value: Expr, lane: &Local) -> Expr {
 /// exactly `e`).
 fn tail_block(e: Expr) -> Block {
     tail_block_at(e, 0)
+}
+
+/// The segment body for a continuation. A carried `var` local arrives as an
+/// `own` parameter; rebinding it as a fresh `var` local first keeps the
+/// parameter itself unassigned, so a later continuation closure that captures
+/// the local captures a statement binding holding its current value rather than
+/// claiming the parameter's entry value (BUG-645).
+fn rebind_mutable_carried(carried: &[Local], cont_expr: Expr, line: u32) -> Block {
+    let mut stmts: Vec<Stmt> = carried.iter().filter(|local| local.mutable).map(|local| Stmt::Let {
+        name: local.name.clone(),
+        ty: local.ty.clone(),
+        mutable: true,
+        value: Expr::Var(local.name.clone()),
+    }).collect();
+    let lines = vec![line; stmts.len() + 1];
+    stmts.push(Stmt::Expr(cont_expr));
+    Block { stmts, lines, region: None }
 }
 
 fn tail_block_at(e: Expr, line: u32) -> Block {
