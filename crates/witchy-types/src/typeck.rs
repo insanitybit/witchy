@@ -91,6 +91,15 @@ fn is_admitted_view_carrier(payload: &Ty) -> bool {
     matches!(payload, Ty::Int | Ty::String | Ty::Float | Ty::Bool | Ty::Duration)
 }
 
+/// `&[T]` over an admitted slice element (the checker spells the slice
+/// payload as the private `Slice(T)` nominal).  Its carrier is the
+/// rooted-slice owner family: an opaque owner retaining its backing list.
+fn is_admitted_slice_view(ty: &Ty) -> bool {
+    matches!(ty, Ty::Named(name, arguments)
+        if name.as_ref() == "Slice"
+            && matches!(&arguments[..], [Ty::Int | Ty::Float | Ty::Bool | Ty::Duration | Ty::String]))
+}
+
 fn type_is_explicit_reference(ty: &ast::Type) -> bool {
     match ty {
         ast::Type::Qualified(
@@ -1472,6 +1481,11 @@ fn validate_type(
             // matches the source.
             if witchy_cap_model::bears_rights_markers(n) {
                 return validate_cap_markers(n, args);
+            }
+            // A monomorphized instance spells a `&[T]` argument with the
+            // checker's private `Slice(T)` payload; it is the surface `[T]`.
+            if n == "Slice" && args.len() == 1 && !known.contains(n.as_str()) {
+                return validate_type(&args[0], known, arities, nominal_parameters);
             }
             if known.contains(n.as_str()) || is_synthetic_type_name(n) {
                 if let Some(expected) = arities
@@ -5028,6 +5042,10 @@ impl Checker {
     /// scalar List accepted by the canonical carrier rules.
     fn admitted_view_capture(&self, payload: &Ty) -> bool {
         is_admitted_view_carrier(payload)
+            // `&[T]` over an admitted slice element is the rooted-slice owner
+            // family: an opaque carrier retaining its backing list, captured
+            // into an owner field exactly like the `&Int` place owner.
+            || is_admitted_slice_view(payload)
             || ty_to_ast(payload).is_some_and(|payload| {
                 crate::canonical_aggregates::is_record_root_payload(&payload, &self.canonical_definitions)
                     || crate::canonical_aggregates::is_list_root_payload(&payload)
@@ -11163,8 +11181,12 @@ impl Checker {
                 | intrinsics::LIST_CONCAT
         ) || intrinsics::is_list_pop_extract(call_name)
             || call_name == "list.pop";
+        // `s[i]` over a `&[T]` view reads through the checked projection. The
+        // typed async projection lowers subscripts to `list.at` before it is
+        // annotated, so the element read accepts the view there as well.
         let rooted_slice_read_intrinsic = intrinsics::lookup(call_name)
-            .is_some_and(|spec| spec.signature.accepts_rooted_slice_view());
+            .is_some_and(|spec| spec.signature.accepts_rooted_slice_view())
+            || intrinsics::canonical_operation_name(call_name) == intrinsics::LIST_AT;
         let call_conventions = self.fn_conventions.get(name).cloned();
         for (index, (arg, param_ty)) in args.iter().zip(&params).enumerate() {
             let expects_opt_callable = self
@@ -12645,7 +12667,7 @@ impl Checker {
                         )
                     {
                         return terr(format!(
-                            "closure capture `{capture}` carries a view whose payload has no admitted carrier; only scalar, `&String`, record, and scalar-List views cross a callable boundary"
+                            "closure capture `{capture}` carries a view whose payload has no admitted carrier; only scalar, `&String`, record, scalar-List, and scalar/String slice views cross a callable boundary"
                         ));
                     }
                     if let Some(borrowed) = self.borrowed_nominal_name(&captured_ty) {

@@ -1338,6 +1338,9 @@ pub(super) fn source_closure_family_key(
 ) -> witchy_syntax::ast::Type {
     use witchy_syntax::ast::{CallableQualifiers, Convention, Type};
     fn normalize(source: &Type) -> Type {
+        if let Some(view) = witchy_types::canonical_aggregates::owner_carried_view_identity(source) {
+            return view;
+        }
         match source.unqualified() {
             Type::Fn(parameters, result, conventions, _) => Type::Fn(
                 parameters.iter().map(normalize).collect(),
@@ -1527,6 +1530,15 @@ fn source_abi_qualifiers_supported(
         match ty {
             Type::Qualified(TypeQual::Frozen, inner) => pending.push((inner, false)),
             Type::Qualified(TypeQual::Unique, inner) if var_parameter => pending.push((inner, false)),
+            // A direct RFC-0167 view nested in a callable or generic argument
+            // (`fn(&String) -> &String`, `Task(&Int)`) is a value-semantic
+            // snapshot carrier with an authenticated retained-root family.
+            // Its lanes are still bound by value correspondence; only the
+            // qualifier itself is not a nested loan to refuse here.
+            Type::Qualified(TypeQual::View, inner)
+                if !matches!(inner.as_ref(), Type::Qualified(qualifier, _) if *qualifier != TypeQual::Frozen)
+                    && (is_direct_rooted_view_int(ty) || is_direct_rooted_view_slice(ty)
+                        || is_direct_rooted_view_whole_root(ty, records)) => {}
             Type::Qualified(_, _) => return false,
             Type::Fn(parameters, result, conventions, _) => {
                 // A callable value can carry the one direct mutable String

@@ -120,10 +120,10 @@ fn make(owner: String) -> Holder:
 "#,
     );
 
-    // The source contract admits this spelling. Canonical lowering must refuse
-    // until its authenticated retained-root aggregate carrier is available.
-    canonical_refusal(
-        "callable immutable view carrier",
+    // A callable whose signature carries a direct view passes the view's own
+    // retained-root carrier through the indirect call, exactly as a direct
+    // call does (`rfc0167_async_view_results` runs one).
+    let admitted = witchy::resolve_std_only_checked(
         r#"mode opt
 
 fn apply(action: fn(&String) -> String, value: &String) -> String:
@@ -135,6 +135,26 @@ fn inspect(value: &String) -> String:
 fn main():
     let text = "value"
     let _ = apply(inspect, &text)
+"#,
+    )
+    .expect("callable immutable view carrier must pass checked-source admission");
+    let _ = codegen::compile_checked_module_artifact(&admitted)
+        .expect_lowered("callable immutable view carrier");
+
+    // A view payload with no carrier stays fail-closed inside a callable.
+    canonical_refusal(
+        "callable view without a carrier",
+        r#"mode opt
+
+fn apply(action: fn(&List(List(Int))) -> Int, value: &List(List(Int))) -> Int:
+    action(value)
+
+fn inspect(value: &List(List(Int))) -> Int:
+    (*value).length()
+
+fn main():
+    let rows = [[1]]
+    let _ = apply(inspect, &rows)
 "#,
     );
 }

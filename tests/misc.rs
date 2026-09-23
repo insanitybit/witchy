@@ -213,6 +213,8 @@ mod rfc0167_unit_discard_matrix;
 mod rfc0167_view_carrier_transport;
 #[path = "misc/rfc0167_async_view.rs"]
 mod rfc0167_async_view;
+#[path = "misc/rfc0167_async_view_results.rs"]
+mod rfc0167_async_view_results;
 #[path = "misc/rfc0167_installed_workflow.rs"]
 mod rfc0167_installed_workflow;
 #[path = "misc/bug644_show_branch_value.rs"]

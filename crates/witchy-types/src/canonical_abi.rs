@@ -892,6 +892,12 @@ fn encode_ty(ty: &Ty, context: &Context, bytes: &mut Vec<u8>) -> Result<(), Cano
         Ty::View(payload) => { bytes.push(32); encode_ty(payload, context, bytes)?; }
         Ty::Tuple(items) => { bytes.push(26); put_len(bytes, items.len()); for item in items.iter() { encode_ty(item, context, bytes)?; } }
         Ty::Named(name, args) if name.as_ref() == "SecretStore" && args.is_empty() => { bytes.push(30); }
+        // The checker's private `Slice(T)` payload of a `&[T]` view is a
+        // builtin structural type, never a declaration.
+        Ty::Named(name, args) if name.as_ref() == "Slice" && args.len() == 1 => {
+            bytes.push(33);
+            encode_ty(&args[0], context, bytes)?;
+        }
         Ty::Named(name, args) if crate::typeck::anon_union_synthetic_variants(name).is_some() => {
             encode_anonymous_union_ty(name, args, context, bytes)?;
         }
@@ -942,6 +948,11 @@ fn encode_ast(ty: &Type, context: &Context, bytes: &mut Vec<u8>) -> Result<(), C
         return Ok(());
     }
     match ty.unqualified() {
+        // The checker's private `Slice(T)` nominal is the surface `[T]`.
+        Type::Named(name, args) if name == "Slice" && args.len() == 1 => {
+            bytes.push(2);
+            encode_ast(&args[0], context, bytes)?;
+        }
         Type::Named(name, args) => {
             if crate::typeck::anon_union_synthetic_variants(name).is_some() {
                 return encode_anonymous_union_ast(name, args, context, bytes);

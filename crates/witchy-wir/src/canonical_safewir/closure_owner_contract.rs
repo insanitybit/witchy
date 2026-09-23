@@ -264,7 +264,13 @@ pub fn rooted_slice_element(source_type: &witchy_syntax::ast::Type) -> Option<&'
     let witchy_syntax::ast::Type::Qualified(witchy_syntax::ast::TypeQual::View, inner) = source_type else {
         return None;
     };
-    let witchy_syntax::ast::Type::Slice(element) = inner.as_ref() else { return None };
+    // The checker spells a finalized slice payload as its private `Slice(T)`
+    // nominal; it is the same checked payload as the surface `[T]`.
+    let element = match inner.as_ref() {
+        witchy_syntax::ast::Type::Slice(element) => element.as_ref(),
+        witchy_syntax::ast::Type::Named(name, arguments) if name == "Slice" && arguments.len() == 1 => &arguments[0],
+        _ => return None,
+    };
     let witchy_syntax::ast::Type::Named(name, arguments) = element.unqualified() else { return None };
     if !arguments.is_empty() {
         return None;

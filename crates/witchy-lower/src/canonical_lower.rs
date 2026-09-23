@@ -2745,10 +2745,7 @@ fn contains_deferred_v1_qualifier(ty: &Type) -> bool {
     }
     match ty {
         Type::Qualified(TypeQual::Frozen, inner) => contains_deferred_v1_qualifier(inner),
-        Type::Qualified(TypeQual::View, inner)
-            if is_direct_shared_int(inner) || is_rooted_slice(inner) || is_rooted_string(inner)
-                || is_rooted_user_record(inner) || witchy_types::canonical_aggregates::is_list_root_payload(inner)
-                || witchy_types::canonical_aggregates::is_scalar_value_view_payload(inner) => false,
+        Type::Qualified(TypeQual::View, inner) if is_direct_view_payload(inner) => false,
         Type::Qualified(TypeQual::View, _) => true,
         // The canonical direct-call ABI already transports an owned object
         // token.  For a named `&mut String` that token is the authenticated
@@ -2777,8 +2774,8 @@ fn contains_deferred_v1_qualifier(ty: &Type) -> bool {
         // Callable values and indirect calls require a separate authenticated
         // ABI rather than recursively inheriting direct-call authority.
         Type::Fn(parameters, result, conventions, _) => {
-            parameters.iter().any(contains_reference_qualifier)
-                || contains_reference_qualifier(result)
+            parameters.iter().any(contains_indirect_reference_qualifier)
+                || contains_indirect_reference_qualifier(result)
                 || parameters.iter().enumerate().any(|(index, parameter)| {
                     let convention = conventions.get(index).copied().unwrap_or_default();
                     contains_deferred_v1_qualifier(&parameter_physical_type(parameter, convention))
@@ -2898,20 +2895,39 @@ fn exclusive_reference_parts(ty: &Type) -> Option<(&str, &Type)> {
     Some((lifetime, inner))
 }
 
-fn contains_reference_qualifier(ty: &Type) -> bool {
+/// A direct RFC-0167 view payload with an authenticated retained-root
+/// carrier: the `&Int` place owner, a rooted slice owner, the retained String
+/// token, a record or scalar-List root token, or a scalar value view.
+fn is_direct_view_payload(inner: &Type) -> bool {
+    // `&frozen T` is the same immutable payload; any other qualifier nested
+    // under the view (`&(&mut T)`, `&unique T`) is not a direct view.
+    !matches!(inner, Type::Qualified(qualifier, _) if *qualifier != TypeQual::Frozen)
+        && (is_direct_shared_int(inner) || is_rooted_slice(inner) || is_rooted_string(inner)
+            || is_rooted_user_record(inner) || witchy_types::canonical_aggregates::is_list_root_payload(inner)
+            || witchy_types::canonical_aggregates::is_scalar_value_view_payload(inner))
+}
+
+/// A reference qualifier inside a callable signature other than a direct
+/// view.  A direct view is a value-semantic snapshot handle (RFC-0167 section
+/// 5): it retains its own root, so passing or returning one through an
+/// indirect call transfers a carrier value exactly as a direct call does, and
+/// no callee-selected provenance relation is involved.  Retired borrows,
+/// `&mut`, and views without a carrier stay behind the separate callable ABI.
+fn contains_indirect_reference_qualifier(ty: &Type) -> bool {
     match ty {
+        Type::Qualified(TypeQual::View, inner) if is_direct_view_payload(inner) => false,
         Type::Qualified(TypeQual::View | TypeQual::Borrow(_) | TypeQual::BorrowMut(_), _) => true,
-        Type::Qualified(_, inner) | Type::Slice(inner) => contains_reference_qualifier(inner),
+        Type::Qualified(_, inner) | Type::Slice(inner) => contains_indirect_reference_qualifier(inner),
         Type::Tuple(items) | Type::Named(_, items) | Type::Dyn(_, items) => {
-            items.iter().any(contains_reference_qualifier)
+            items.iter().any(contains_indirect_reference_qualifier)
         }
         Type::RecordCompose { base, fields } => {
-            contains_reference_qualifier(base)
-                || fields.iter().any(|(_, field)| contains_reference_qualifier(field))
+            contains_indirect_reference_qualifier(base)
+                || fields.iter().any(|(_, field)| contains_indirect_reference_qualifier(field))
         }
         Type::Fn(parameters, result, _, _) => {
-            parameters.iter().any(contains_reference_qualifier)
-                || contains_reference_qualifier(result)
+            parameters.iter().any(contains_indirect_reference_qualifier)
+                || contains_indirect_reference_qualifier(result)
         }
     }
 }

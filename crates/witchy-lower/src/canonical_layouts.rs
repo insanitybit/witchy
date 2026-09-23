@@ -214,6 +214,9 @@ pub(crate) fn rooted_slice_layouts(
 /// and the callable qualifiers dropped, so `fn(Int) -> Int` written at a
 /// parameter, a lambda, and a declaration share one closure layout.
 pub(crate) fn closure_key(ty: &Type) -> Type {
+    if let Some(view) = witchy_types::canonical_aggregates::owner_carried_view_identity(ty) {
+        return view;
+    }
     match ty.unqualified() {
         Type::Fn(parameters, result, conventions, _) => {
             let conventions = if conventions.is_empty() {
@@ -978,11 +981,13 @@ fn type_requires_opaque_owner(
     // A canonical rooted view is an authenticated GC owner for its backing
     // root plus projection.  It cannot occupy an ordinary aggregate's linear
     // field: doing so would erase the retained-root contract.  Keep this
-    // deliberately to the installed direct `&Int` carrier; other view
-    // payloads remain outside canonical v1.
+    // deliberately to the installed opaque carriers, the direct `&Int` place
+    // owner and the `&[T]` rooted-slice owners; token-carried whole-root
+    // views occupy an ordinary managed field.
     if matches!(ty, Type::Qualified(ast::TypeQual::View, inner)
         if matches!(inner.unqualified(), Type::Named(name, arguments)
             if name == "Int" && arguments.is_empty()))
+        || witchy_wir::canonical_safewir::closure_owner_contract::rooted_slice_element(ty).is_some()
     {
         return true;
     }
@@ -1103,6 +1108,11 @@ fn opaque_owner_type_for(
             if name == "Int" && arguments.is_empty()))
     {
         return Some(shared_int_reference_owner_type());
+    }
+    // A captured `&[T]` retains its rooted-slice owner, one family per
+    // admitted element; the carrier is never unpacked into its root.
+    if let Some(element) = witchy_wir::canonical_safewir::closure_owner_contract::rooted_slice_element(ty) {
+        return rooted_slice_owner_type(element);
     }
     if matches!(ty.unqualified(), Type::Fn(..)) {
         return closure_owner_types.get(&canonical_closure_key(ty, definitions)).copied();

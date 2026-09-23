@@ -60,19 +60,49 @@ struct BorrowedShellCatalog {
     /// Declared result types of this module's functions, so a carried local
     /// bound from a call keeps its type across a suspension (BUG-645).
     return_types: HashMap<String, Type>,
+    /// The value `f(..).await` produces, by function: an `async fn`'s
+    /// declared result, or `T` for a plain function declared `-> Task(T)`.
+    awaited_types: HashMap<String, Type>,
+    /// The linked entry module's name: a linked declaration is spelled
+    /// `entry.f` while a call inside that module still says `f`.
+    linked_entry: Option<String>,
     /// This module's non-generic record and sum constructors, by constructor
     /// name, with the type they build.
     constructor_types: HashMap<String, Type>,
 }
 
 impl BorrowedShellCatalog {
+    /// The value `name(..).await` completes with, for a call spelled as
+    /// written or as its linked entry-module declaration.
+    fn awaited_type(&self, name: &str) -> Option<Type> {
+        self.awaited_types.get(name).cloned().or_else(|| {
+            let entry = self.linked_entry.as_deref()?;
+            self.awaited_types.get(&format!("{entry}.{name}")).cloned()
+        })
+    }
+
     fn from_module(module: &Module) -> Self {
         let mut catalog = Self::default();
+        catalog.linked_entry = module.linked_entry.clone();
         for item in &module.items {
             match item {
                 Item::Function(function) => {
                     if let Some(ret) = &function.ret {
-                        catalog.return_types.insert(function.name.clone(), ret.clone());
+                        // Calling an `async fn` produces its task, not the
+                        // completed value its source signature declares.
+                        catalog.return_types.insert(function.name.clone(), if function.is_async {
+                            Type::Named("task.Task".to_string(), vec![ret.clone()])
+                        } else {
+                            ret.clone()
+                        });
+                        let awaited = if function.is_async {
+                            Some(ret.clone())
+                        } else {
+                            task_result_type(ret)
+                        };
+                        if let Some(awaited) = awaited {
+                            catalog.awaited_types.insert(function.name.clone(), awaited);
+                        }
                     }
                 }
                 Item::Type(definition) if definition.params.is_empty() => {
@@ -160,6 +190,9 @@ pub(crate) fn lower_with_item_mapping(
     checked: GeneratorsLoweredModule,
 ) -> Result<(AsyncLoweredModule, Vec<Vec<usize>>), String> {
     let borrowed_shells = BorrowedShellCatalog::from_module(checked.module());
+    // Callables whose call result is a borrowed view. An `async fn` is never
+    // one: calling it produces its `Task`, and the task carries a direct view
+    // result by value (RFC-0167 section 7).
     let view_fns: HashSet<String> = checked
         .module()
         .items
@@ -167,10 +200,11 @@ pub(crate) fn lower_with_item_mapping(
         .flat_map(|item| match item {
             Item::Function(function) => {
                 let mut names = Vec::new();
-                if function
-                    .ret
-                    .as_ref()
-                    .is_some_and(|ty| borrowed_shells.type_is_borrowed(ty))
+                if !function.is_async
+                    && function
+                        .ret
+                        .as_ref()
+                        .is_some_and(|ty| borrowed_shells.type_is_borrowed(ty))
                 {
                     names.push(function.name.clone());
                 }
@@ -188,10 +222,11 @@ pub(crate) fn lower_with_item_mapping(
                 .iter()
                 .flat_map(|method| {
                     let mut names = Vec::new();
-                    if method
-                        .ret
-                        .as_ref()
-                        .is_some_and(|ty| borrowed_shells.type_is_borrowed(ty))
+                    if !method.is_async
+                        && method
+                            .ret
+                            .as_ref()
+                            .is_some_and(|ty| borrowed_shells.type_is_borrowed(ty))
                     {
                         names.push(format!("@method:{}", method.name));
                     }
@@ -227,10 +262,11 @@ pub(crate) fn lower_with_view_fns_and_item_mapping(
     for item in &checked.module().items {
         match item {
             Item::Function(function) => {
-                if function
-                    .ret
-                    .as_ref()
-                    .is_some_and(|ty| borrowed_shells.type_is_borrowed(ty))
+                if !function.is_async
+                    && function
+                        .ret
+                        .as_ref()
+                        .is_some_and(|ty| borrowed_shells.type_is_borrowed(ty))
                 {
                     known_view_fns.insert(function.name.clone());
                 }
@@ -244,10 +280,11 @@ pub(crate) fn lower_with_view_fns_and_item_mapping(
             }
             Item::Impl(definition) => {
                 for method in &definition.methods {
-                    if method
-                        .ret
-                        .as_ref()
-                        .is_some_and(|ty| borrowed_shells.type_is_borrowed(ty))
+                    if !method.is_async
+                        && method
+                            .ret
+                            .as_ref()
+                            .is_some_and(|ty| borrowed_shells.type_is_borrowed(ty))
                     {
                         known_view_fns.insert(format!("@method:{}", method.name));
                     }
@@ -736,10 +773,26 @@ impl<'a> Ctx<'a> {
                     let bind = Local {
                         name: name.clone(),
                         source_binding: None,
-                        // `let x = f(..).await` binds `f`'s declared result.
-                        ty: ty.clone().or_else(|| match inner {
-                            Expr::Call { name, .. } => self.borrowed_shells.return_types.get(name).cloned(),
-                            _ => None,
+                        // `let x = f(..).await` binds the value `f`'s task completes with,
+                        // unless a local or parameter named `f` shadows the declaration.
+                        ty: ty.clone().or_else(|| {
+                            let local = |name: &str| scope.iter().rev().find(|local| local.name == name);
+                            match inner {
+                                // A local or parameter named `f` shadows the
+                                // declaration: its own `fn(..) -> Task(T)` type decides.
+                                Expr::Call { name, .. } => match local(name) {
+                                    Some(callee) => match callee.ty.as_ref().map(Type::unqualified) {
+                                        Some(Type::Fn(_, result, _, _)) => task_result_type(result),
+                                        _ => None,
+                                    },
+                                    None => self.borrowed_shells.awaited_type(name),
+                                },
+                                // `let x = t.await` on a task local of known type.
+                                Expr::Var(task) => local(task)
+                                    .and_then(|local| local.ty.as_ref())
+                                    .and_then(task_result_type),
+                                _ => None,
+                            }
                         }),
                         mutable: *mutable,
                         borrowed_view: ty
@@ -1189,9 +1242,13 @@ impl<'a> Ctx<'a> {
         let seg_name = self.fresh_seg();
         let mut params: Vec<Param> = carried.iter().map(local_to_param).collect();
         if let Some(b) = &bind {
+            // The resume value keeps the awaited callee's declared result
+            // type when it is concrete, exactly as a carried local keeps its
+            // initializer's type (BUG-645): a method on an awaited view
+            // (`(*r).length()`) cannot resolve on an untyped parameter.
             params.push(Param {
                 name: b.name.clone(),
-                ty: None,
+                ty: b.ty.clone().filter(|ty| !mentions_type_variable(ty)),
                 convention: Convention::Own,
                 default: None,
             });
@@ -2252,12 +2309,52 @@ fn derive_type(value: &Expr, scope: &[Local], catalog: &BorrowedShellCatalog) ->
             BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => derive_type(lhs, scope, catalog),
             _ => None,
         },
-        Expr::Call { name, .. } => catalog.return_types.get(name).cloned(),
+        Expr::Call { name, .. } if !scope.iter().any(|local| &local.name == name) => {
+            catalog.return_types.get(name).cloned()
+        }
+        // A lambda whose parameters and result are all declared.
+        Expr::Lambda { params, ret: Some(ret), qualifiers, .. } => Some(Type::Fn(
+            params.iter().map(|param| param.ty.clone()).collect::<Option<Vec<_>>>()?,
+            Box::new(ret.clone()),
+            params.iter().map(|param| param.convention).collect(),
+            *qualifiers,
+        )),
         Expr::Ctor { name, .. } | Expr::Record { name, .. } => catalog.constructor_types.get(name).cloned(),
         // `&place` is an immutable view of the place's type.
         Expr::Unary { op: crate::ast::UnOp::Borrow, expr } => derive_type(expr, scope, catalog)
             .map(|inner| Type::Qualified(crate::ast::TypeQual::View, Box::new(inner))),
         _ => None,
+    }
+}
+
+/// The value a `Task(T)` completes with.
+fn task_result_type(ty: &Type) -> Option<Type> {
+    match ty.unqualified() {
+        Type::Named(name, arguments) if matches!(name.as_str(), "Task" | "task.Task") && arguments.len() == 1 => {
+            Some(arguments[0].clone())
+        }
+        _ => None,
+    }
+}
+
+/// Whether a declared type names a generic parameter (a lowercase,
+/// argument-less, unqualified name; `main.Point` is a linked nominal). A segment is not generic, so such a type cannot
+/// annotate its parameter.
+fn mentions_type_variable(ty: &Type) -> bool {
+    match ty {
+        Type::Named(name, arguments) => {
+            (arguments.is_empty() && !name.contains('.')
+                && name.chars().next().is_some_and(char::is_lowercase))
+                || arguments.iter().any(mentions_type_variable)
+        }
+        Type::Qualified(_, inner) | Type::Slice(inner) => mentions_type_variable(inner),
+        Type::Tuple(items) | Type::Dyn(_, items) => items.iter().any(mentions_type_variable),
+        Type::Fn(parameters, result, _, _) => {
+            parameters.iter().any(mentions_type_variable) || mentions_type_variable(result)
+        }
+        Type::RecordCompose { base, fields } => {
+            mentions_type_variable(base) || fields.iter().any(|(_, field)| mentions_type_variable(field))
+        }
     }
 }
 

@@ -1233,8 +1233,11 @@ fn ast_fold_is_suppressed() -> bool {
     AST_FOLD_SUPPRESSION_DEPTH.with(|depth| depth.get() != 0)
 }
 
-fn returns_borrowed_view(ty: Option<&Type>) -> bool {
-    ty.is_some_and(|ty| {
+/// Whether calling `function` yields a borrowed view. An `async fn` never
+/// does: its call produces the `Task`, which carries a direct view result by
+/// value.
+fn returns_borrowed_view(function: &crate::ast::Function) -> bool {
+    !function.is_async && function.ret.as_ref().is_some_and(|ty| {
         matches!(ty, Type::Qualified(TypeQual::View | TypeQual::Borrow(_) | TypeQual::LegacyBorrow(_) | TypeQual::BorrowMut(_), _))
     })
 }
@@ -1290,7 +1293,7 @@ fn expanded_view_fns(
         for item in &module.items {
             match item {
                 Item::Function(function) => {
-                    if returns_borrowed_view(function.ret.as_ref()) {
+                    if returns_borrowed_view(function) {
                         known.insert(format!("{module_name}.{}", function.name));
                     }
                     if returns_view_callable(function.ret.as_ref()) {
@@ -1299,7 +1302,7 @@ fn expanded_view_fns(
                 }
                 Item::Impl(definition) => {
                     for method in &definition.methods {
-                        if returns_borrowed_view(method.ret.as_ref()) {
+                        if returns_borrowed_view(method) {
                             known.insert(format!("@method:{}", method.name));
                         }
                         if returns_view_callable(method.ret.as_ref()) {
@@ -1311,7 +1314,7 @@ fn expanded_view_fns(
             }
         }
         for (name, method) in published_inherent_aliases(module) {
-            if returns_borrowed_view(method.ret.as_ref()) {
+            if returns_borrowed_view(method) {
                 known.insert(format!("{module_name}.{name}"));
             }
             if returns_view_callable(method.ret.as_ref()) {
@@ -1322,7 +1325,7 @@ fn expanded_view_fns(
     for item in &current.items {
         match item {
             Item::Function(function) => {
-                if returns_borrowed_view(function.ret.as_ref()) {
+                if returns_borrowed_view(function) {
                     known.insert(function.name.clone());
                 }
                 if returns_view_callable(function.ret.as_ref()) {
@@ -1334,7 +1337,7 @@ fn expanded_view_fns(
         }
     }
     for (name, method) in published_inherent_aliases(current) {
-        if returns_borrowed_view(method.ret.as_ref()) {
+        if returns_borrowed_view(method) {
             known.insert(name.to_string());
         }
         if returns_view_callable(method.ret.as_ref()) {

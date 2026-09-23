@@ -176,8 +176,9 @@ fn field_type_ok_at_with_dependencies(
     // authenticated rooted-owner field selected by the canonical layout
     // catalog.  Admit only the installed `&Int` carrier here so an aggregate
     // can describe that field without granting a representation to arbitrary
-    // views (in particular, not `&mut`, region, or projected views).
-    if is_direct_rooted_int_view(ty) {
+    // views (in particular, not `&mut`, region, or projected views). A
+    // `&[T]` over an admitted element is the rooted-slice owner field.
+    if is_direct_rooted_int_view(ty) || owner_carried_view_identity(ty).is_some() {
         return true;
     }
     // This recognizes source fields, not linear-memory slots. Capability
@@ -453,6 +454,15 @@ fn render_into(ty: &Type, out: &mut String) -> bool {
         Type::Fn(..) => {
             use std::fmt::Write as _;
             let _ = write!(out, "{:?}", ty.unqualified());
+            true
+        }
+        // A `&[T]` argument (`Task(&[Int])`); the rooted-slice owner.
+        Type::Slice(element) => {
+            out.push('[');
+            if !render_into(element, out) {
+                return false;
+            }
+            out.push(']');
             true
         }
         _ => false,
@@ -869,6 +879,13 @@ fn concrete_identity_at(
         Some(crate::canonical_capabilities::CapabilityRepresentation::Direct(_))) {
         return Some(ty.unqualified().clone());
     }
+    // An owner-carried view (`&Int`, `&[T]`) has its own opaque GC family,
+    // never its payload's representation, so erasing it here would give
+    // `Task(&Int)` and `Task(Int)` (and their callables) one identity with two
+    // physical carriers. Token-carried views share their payload's layout.
+    if let Some(view) = owner_carried_view_identity(ty) {
+        return Some(view);
+    }
     match ty.unqualified() {
         ty if is_scalar_type(ty) => Some(ty.clone()),
         Type::Tuple(items) => Some(Type::Tuple(items.iter()
@@ -911,6 +928,34 @@ fn concrete_identity_at(
     }
 }
 
+/// The identity of a direct `&Int` or `&[T]` (admitted element) view, with
+/// the checker's private `Slice(T)` nominal spelled as the surface `[T]`.
+/// Every normalizer that erases qualifiers for a physical identity (aggregate
+/// identity, closure family keys in lowering and in authority) keeps exactly
+/// these views: each has its own opaque owner family, so erasing one would
+/// alias two distinct physical carriers under one identity.
+pub fn owner_carried_view_identity(ty: &Type) -> Option<Type> {
+    let Type::Qualified(witchy_syntax::ast::TypeQual::View, inner) = ty else { return None };
+    // Exactly the admitted slice elements (`ROOTED_SLICE_ELEMENTS`), matched
+    // through `frozen` (the same immutable payload) but through no other
+    // nested qualifier.
+    let payload_of = |ty: &Type| match ty {
+        Type::Qualified(witchy_syntax::ast::TypeQual::Frozen, inner) => inner.as_ref().clone(),
+        other => other.clone(),
+    };
+    let scalar = |ty: &Type| matches!(payload_of(ty), Type::Named(ref name, ref arguments)
+        if arguments.is_empty() && matches!(name.as_str(), "Int" | "Float" | "Bool" | "Duration" | "String"));
+    let payload = match &payload_of(inner) {
+        Type::Named(name, arguments) if name == "Int" && arguments.is_empty() => payload_of(inner),
+        Type::Slice(element) if scalar(element) => Type::Slice(Box::new(payload_of(element))),
+        Type::Named(name, arguments) if name == "Slice" && arguments.len() == 1 && scalar(&arguments[0]) => {
+            Type::Slice(Box::new(payload_of(&arguments[0])))
+        }
+        _ => return None,
+    };
+    Some(Type::Qualified(witchy_syntax::ast::TypeQual::View, Box::new(payload)))
+}
+
 fn concrete_callable_lane_identity_at(
     ty: &Type,
     definitions: &BTreeMap<String, TypeDef>,
@@ -919,6 +964,9 @@ fn concrete_callable_lane_identity_at(
 ) -> Option<Type> {
     if depth >= MAX_AGGREGATE_SHAPE_EXPANSION || !consume_shape_nodes(budget, 1) {
         return None;
+    }
+    if let Some(view) = owner_carried_view_identity(ty) {
+        return Some(view);
     }
     if let Type::Qualified(qualifier, inner) = ty {
         return Some(Type::Qualified(qualifier.clone(), Box::new(
