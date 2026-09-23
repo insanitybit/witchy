@@ -27,7 +27,7 @@
 # their binary and store.
 set -euo pipefail
 
-MBX_VERSION="1.14.0"
+MBX_VERSION="1.16.0"
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 # Install under the MAIN checkout's state/ so every worktree shares one binary
