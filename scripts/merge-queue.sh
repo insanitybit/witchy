@@ -3358,6 +3358,7 @@ prewarm_gate() {
             tc_bin="$(dirname "$(rustup which --toolchain stable rustc)")"
         fi
         unset CARGO_INCREMENTAL
+        [ ! -f scripts/feature-unification.sh ] || . scripts/feature-unification.sh
         export CARGO_TARGET_DIR="$inactive_target" CARGO_PROFILE_TEST_STRIP=symbols RUSTC_WRAPPER= CARGO_BUILD_RUSTC_WRAPPER=
         cargo build --workspace >/dev/null 2>&1
         cargo test --workspace --no-run >/dev/null 2>&1

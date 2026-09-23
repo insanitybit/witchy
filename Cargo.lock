@@ -2961,6 +2961,7 @@ dependencies = [
  "witchy-test-host",
  "witchy-testkit",
  "witchy-types",
+ "witchy-wir",
 ]
 
 [[package]]
@@ -3066,6 +3067,7 @@ dependencies = [
  "wasmtime",
  "witchy-syntax",
  "witchy-types",
+ "witchy-wir",
 ]
 
 [[package]]

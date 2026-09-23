@@ -29,3 +29,10 @@ wasmtime = { version = "45.0.0", default-features = false, features = ["anyhow",
 # Integration tests (tests/) compile the lib WITHOUT cfg(test); enable the
 # raw-module test surface for them via a self-dependency.
 witchy-lower = { path = ".", features = ["raw-module-test-api"] }
+# Every test build requests witchy-wir's full test feature set, so all
+# selections (-p witchy-wir, -p witchy-lower, --workspace, ...) share ONE
+# compiled witchy-wir and everything above it. Each distinct feature set was
+# a separate opt-level-2 build of witchy-wir plus every dependent crate in the
+# same target dir. Dev-dependency features never reach `cargo build`, so the
+# production boundary around the raw encoder is unchanged.
+witchy-wir = { path = "../witchy-wir", features = ["native", "legacy-encoder-bridge", "raw-encoder-test-api"] }

@@ -53,6 +53,10 @@ repeat the rules; consult it when you're working inside one of these areas.
   (strip, opt-level, debug) forks a second full build of every crate AND
   dependency in the same target dir. For symbolized backtraces, knowingly pay
   for that second build with `CARGO_PROFILE_DEV_STRIP=none CARGO_PROFILE_TEST_STRIP=none`.
+  The same goes for features: `scripts/bin/cargo` resolves every `-p`
+  selection with workspace feature unification, so `-p witchy-wir`,
+  `-p witchy-lower` and `--workspace` share one witchy-wir build instead of
+  compiling it once per selection. Plain `cargo -p ...` does not.
 - **`spec/stdlib.md` drift** is caught by the `stdlib_docs_are_current` test.
 - **`witchy-runtime`'s hidden modules** are `runtime.rs` +
   `runtime/{compiler.rs,host/**}`, behind the crate's non-default `native`

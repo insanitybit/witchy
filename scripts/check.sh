@@ -43,6 +43,9 @@
 # for its OWN internal pipes; the hazard is a caller's pipe, which it cannot control.)
 set -euo pipefail
 cd "$(dirname "$0")/.."
+# One feature resolution for the gate, agents and the build seed.
+# shellcheck source=feature-unification.sh
+. scripts/feature-unification.sh
 
 # The merge coordinator marks serialized gates with WITCHY_GATE_SCOPE. Clear
 # Cargo's configured wrapper there so a detached coordinator does not inherit

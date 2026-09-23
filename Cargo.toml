@@ -170,7 +170,13 @@ witchy-lower = { path = "crates/witchy-lower", features = ["raw-module-test-api"
 # Raw AST execution is deliberate oracle/test machinery, not a production API.
 witchy-interp = { path = "crates/witchy-interp", features = ["raw-module-test-api", "test-fixtures"] }
 # Raw WIR encoding is deliberate optimizer/oracle test machinery.
-witchy-wir = { path = "crates/witchy-wir", features = ["raw-encoder-test-api"] }
+# Every test build requests witchy-wir's full test feature set, so all
+# selections (-p witchy-wir, -p witchy-lower, --workspace, ...) share ONE
+# compiled witchy-wir and everything above it. Each distinct feature set was
+# a separate opt-level-2 build of witchy-wir plus every dependent crate in the
+# same target dir. Dev-dependency features never reach `cargo build`, so the
+# production boundary around the raw encoder is unchanged.
+witchy-wir = { path = "crates/witchy-wir", features = ["native", "legacy-encoder-bridge", "raw-encoder-test-api"] }
 # Enables only the concurrency-safe TLS fixture hook for root-package tests.
 # The ordinary runtime dependency does not expose it in production builds.
 witchy-runtime = { path = "crates/witchy-runtime", features = ["test-support"] }

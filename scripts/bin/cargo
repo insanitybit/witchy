@@ -89,6 +89,10 @@ if [ -n "$cross_target" ] && command -v rustup >/dev/null 2>&1; then
     fi
 fi
 
+# One feature resolution for every selection (see the sourced file).
+# shellcheck source=../feature-unification.sh
+. "$self_dir/../feature-unification.sh"
+
 passthrough() { exec "$real_cargo" "$@"; }
 
 # Re-entry guard. mbx runs cargo itself; if that resolved back to this shim we
@@ -146,6 +150,14 @@ case "${WITCHY_MBX_MODE:-learned}" in
         export MBX_LEARNED_INCREMENTAL="${MBX_LEARNED_INCREMENTAL:-1}"
         ;;
 esac
+
+# Do not wrap build scripts' C compiler. mbx's C cache hands every build
+# script HOST_CC=<store>/shims/native/<hash>/mbx-c, and wasmtime's build
+# script tracks HOST_CC: a target built through this shim and one built by
+# plain cargo (the gate, the build seed) then rerun it, rebuilding wasmtime
+# and everything above it (witchy-wir at opt-level 2), and every mbx upgrade
+# changes the path and does the same. The C it would cache is a few files.
+export MBX_CC="${MBX_CC:-off}"
 
 # Keep mbx's interactive display out of agent logs; plain cargo output.
 export CARGO_TERM_PROGRESS_WHEN="${CARGO_TERM_PROGRESS_WHEN:-never}"

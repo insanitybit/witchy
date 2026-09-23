@@ -57,7 +57,13 @@ cap-std-ext = "5.1.2"
 
 [dev-dependencies]
 # Combined checked-heap/UAF tests assemble the exact WIR allocator helpers.
-witchy-wir = { path = "../witchy-wir", features = ["raw-encoder-test-api", "legacy-encoder-bridge"] }
+witchy-wir = { path = "../witchy-wir", features = ["native", "legacy-encoder-bridge", "raw-encoder-test-api"] }
+# Every test build requests witchy-wir's full test feature set, so all
+# selections (-p witchy-wir, -p witchy-lower, --workspace, ...) share ONE
+# compiled witchy-wir and everything above it. Each distinct feature set was
+# a separate opt-level-2 build of witchy-wir plus every dependent crate in the
+# same target dir. Dev-dependency features never reach `cargo build`, so the
+# production boundary around the raw encoder is unchanged.
 wasm-encoder = "0.251"
 
 [features]

@@ -23,3 +23,7 @@ witchy-syntax = { path = "../witchy-syntax" }
 witchy-test-host = { path = "../witchy-test-host", optional = true }
 witchy-testkit = { path = "../witchy-testkit", optional = true }
 witchy-types = { path = "../witchy-types" }
+
+[dev-dependencies]
+# Share the one test build of witchy-wir (see crates/witchy-wir/Cargo.toml).
+witchy-wir = { path = "../witchy-wir", features = ["native", "legacy-encoder-bridge", "raw-encoder-test-api"] }
