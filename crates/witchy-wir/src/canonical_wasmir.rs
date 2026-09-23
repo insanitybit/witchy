@@ -7368,8 +7368,12 @@ fn expected_function_plan(
     owner_cleanup_function: Option<u32>,
     owner_bridges: &[AdmittedOwnerBridge],
     memory_helpers: &std::sync::Arc<outlined_memory::Helpers>,
-) -> Result<Vec<PlanToken>, CanonicalAdmissionError> {
+) -> Result<(Vec<(u32, String)>, Vec<PlanToken>), CanonicalAdmissionError> {
+    // The planned local declarations come from this same layout, read before
+    // planning, rather than from a second `local_layout` of the function by
+    // the caller (the layout's slot verification was ~7% of admission).
     let mut layout = local_layout(function, signature, layouts).map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
+    let locals = layout.extra_types.iter().map(|ty| (1, planned_local_kind(*ty))).collect();
     layout.owner_bridges = owner_bridges.iter().collect();
     layout.memory_helpers = Some(memory_helpers.clone());
     let successors_by_block: BTreeMap<_, _> = function
@@ -7438,7 +7442,7 @@ fn expected_function_plan(
         return Err(CanonicalAdmissionError::UnsupportedPlan);
     }
     emitter.plan.push(PlanToken::End);
-    Ok(emitter.plan)
+    Ok((locals, emitter.plan))
 }
 
 fn expected_metadata_prefix(
@@ -7603,9 +7607,7 @@ fn decode_and_match_plan(
         .map(|function| {
             let signature = *signatures_by_id.get(&function.signature)
                 .ok_or(CanonicalAdmissionError::UnsupportedPlan)?;
-            let local = local_layout(function, signature, &layouts).map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
-            let locals = local.extra_types.iter().map(|ty| (1, planned_local_kind(*ty))).collect();
-            Ok((locals, expected_function_plan(function, signature, &layouts, &function_indices, &signature_indices, &imports_by_id, &import_indices, &static_data_offsets, owner_cleanup_function, &target.owner_bridges, &memory_helpers)?))
+            expected_function_plan(function, signature, &layouts, &function_indices, &signature_indices, &imports_by_id, &import_indices, &static_data_offsets, owner_cleanup_function, &target.owner_bridges, &memory_helpers)
         })
         .collect::<Result<Vec<_>, _>>()?;
     if let Some(bridge) = owner_cleanup_bridge {
