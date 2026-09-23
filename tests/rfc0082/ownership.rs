@@ -14,7 +14,6 @@ fn materialized_borrows_and_owned_values_match_between_backends() {
     let source = r#"
 mode opt
 
-import borrow
 import dynamic
 
 fn view(text: &'a String) -> &'a String:

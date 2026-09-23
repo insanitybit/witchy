@@ -10,9 +10,9 @@
     use witchy_syntax::ast::{Convention, Expr, Item, Stmt, Type};
 
     use super::{
-        BorrowKind, BorrowRelationCatalog, BorrowSource, LoanEdgeKind, LoanProjection,
+        BorrowRelationCatalog, LoanEdgeKind, LoanProjection,
         LoanProjectionStep,
-        authenticated_borrow_escape_boundary, authenticated_generic_materializer,
+        authenticated_borrow_escape_boundary,
         projections_overlap,
     };
 
@@ -578,77 +578,6 @@
     }
 
     // --- non-lexical last use + .owned() (acceptance 3) ---------------------
-
-    #[test]
-    fn bundled_owned_authenticates_only_a_direct_view_projection() {
-        let generic = Type::Named("a".into(), Vec::new());
-        let access = AccessSignature::from_parts(
-            vec![generic.clone()],
-            generic,
-            vec![Convention::Let],
-        )
-        .expect("derive generic identity access");
-        let direct = BorrowSource {
-            owner: "owner".into(),
-            root_type: None,
-            projection: LoanProjection::default(),
-            borrower_projection: LoanProjection::default(),
-            origin: "view".into(),
-            kind: BorrowKind::Shared,
-            owner_type: Type::Named("String".into(), Vec::new()),
-            temporary: false,
-        };
-
-        assert!(authenticated_generic_materializer(
-            "borrow.Owned__a__owned",
-            0,
-            &access,
-            std::slice::from_ref(&direct),
-        ));
-        assert!(authenticated_generic_materializer(
-            "main.Owned__a__owned_companion",
-            0,
-            &access,
-            std::slice::from_ref(&direct),
-        ));
-        assert!(!authenticated_generic_materializer(
-            "main.Owned__b__owned_companion",
-            0,
-            &access,
-            std::slice::from_ref(&direct),
-        ));
-
-        let shell = BorrowSource {
-            borrower_projection: LoanProjection {
-                steps: vec![LoanProjectionStep::Field("value".into())],
-            },
-            ..direct.clone()
-        };
-        assert!(!authenticated_generic_materializer(
-            "borrow.Owned__a__owned",
-            0,
-            &access,
-            &[shell.clone()],
-        ));
-        assert!(!authenticated_generic_materializer(
-            "main.Owned__a__owned_companion",
-            0,
-            &access,
-            &[shell.clone()],
-        ));
-        assert!(!authenticated_generic_materializer(
-            "main.Owned__a__owned",
-            0,
-            &access,
-            std::slice::from_ref(&direct),
-        ));
-        assert!(!authenticated_generic_materializer(
-            "borrow.Owned__a__owned__suffix",
-            0,
-            &access,
-            &[direct],
-        ));
-    }
 
     // --- wrappers + multiple shared views (acceptance 4) --------------------
 

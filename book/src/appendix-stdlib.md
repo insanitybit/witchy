@@ -31,7 +31,6 @@ always current - is
 | `bytes` | the `Bytes` type - `from_string`/`to_string_lossy`, `from_list`, `length`, slicing; the binary counterpart to `String` |
 | `iter` | lazy iterator combinators (`take`, `collect`, …) |
 | `func` | function combinators - `identity`, `compose`, `flip`, `constant`, `on_key`, `first`/`second` |
-| `borrow` | `.owned()` explicitly materializes a lawful shared reference as an independent owned snapshot |
 | `option` / `result` *(prelude)* | helpers for `Option` / `Result` |
 
 Ordering-aware functions (`list.sort_by`, `list.min_by`, …) take a *less-than

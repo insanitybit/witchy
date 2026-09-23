@@ -24,22 +24,6 @@ The numeric value of a single decimal digit as `Some`, or `None` when `c` is not
 
 True when `s` is non-empty and every character is an ASCII digit - a safe guard before `string_to_int`, which traps on non-numeric input.
 
-## `borrow`
-
-Explicit view materialization. `value.owned()` copies a lawful immutable `&T` into an independent owned `T`, leaving the rooted view unchanged so the owner may subsequently be mutated or moved.
-
-`owned` is a checked typed operation, not a `View` representation conversion. It is available only where copying is lawful; `must` resources, authority, and view-bearing aggregates require their own checked conversion. On an already-owned copyable value it is identity. The method uses the ordinary typed dispatch path. The module is named `borrow` because `own` is the parameter-convention keyword and cannot be a module name.
-
-#### `trait Owned`
-
-- `fn owned(self) -> Self`
-
-### Trait implementations
-
-#### `impl Owned for a`
-
-- `fn owned(self) -> Self`
-
 ## `bytes`
 
 std/bytes - immutable byte buffers.

@@ -2696,6 +2696,38 @@ impl Ctx<'_> {
                     }
                 }
                 let receiver_ty = self.type_ast(receiver, scope);
+                // RFC-0167 §5 `.owned()` is compiler-known and needs no
+                // import. A type's own `owned` method, a bounding trait's
+                // `owned`, and a `dyn` receiver's trait surface all take
+                // precedence. The checker admits it on the surviving method
+                // call; once its judgment is in the table, a view lowers to
+                // exactly the view read `*view` and an owned value to itself.
+                // Never guess from the empty-table judgment: leave the call
+                // for the checker instead.
+                let declared_owned = || receiver_ty.as_ref().is_some_and(|ty| {
+                    matches!(ty.unqualified(), Type::Dyn(..))
+                        || self.lookup_impl(method, ty).is_some()
+                        || type_variable_name(ty).is_some_and(|var| {
+                            self.bound_traits.borrow().contains_key(var)
+                                && !self
+                                    .trait_method_infos_for_receiver(method, Some(ty))
+                                    .is_empty()
+                        })
+                });
+                if method == crate::typeck::OWNED_MATERIALIZATION
+                    && args.is_empty()
+                    && !declared_owned()
+                {
+                    if let Some(checked) = table_ast_type(self.table, receiver) {
+                        let operand = std::mem::replace(receiver.as_mut(), Expr::Bool(false));
+                        *e = if matches!(checked, Type::Qualified(TypeQual::View, _)) {
+                            Expr::Unary { op: UnOp::Deref, expr: Box::new(operand) }
+                        } else {
+                            operand
+                        };
+                    }
+                    return;
+                }
                 if let Some(ty) = &receiver_ty {
                     let tn = type_key(ty.unqualified());
                     // Host-capability intrinsics are authority-bearing methods,

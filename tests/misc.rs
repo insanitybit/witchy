@@ -259,3 +259,5 @@ mod rfc0167_own_view_consumption;
 mod rfc0167_frozen_view_matrix;
 #[path = "misc/rfc0167_view_witnesses.rs"]
 mod rfc0167_view_witnesses;
+#[path = "misc/rfc0167_owned_materialization.rs"]
+mod rfc0167_owned_materialization;

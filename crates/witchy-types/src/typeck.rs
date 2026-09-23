@@ -77,6 +77,10 @@ fn type_is_exclusive_reference(ty: &ast::Type) -> bool {
     }
 }
 
+/// RFC-0167 §5: the compiler-known method that explicitly materializes an
+/// independent owned value (`view.owned()`). It needs no import.
+pub(crate) const OWNED_MATERIALIZATION: &str = "owned";
+
 /// The one view payload with an admitted canonical carrier today. Row G of the
 /// RFC-0167 acceptance ledger records this boundary and the `&Float` refusal
 /// that shares it.
@@ -8070,6 +8074,67 @@ impl Checker {
         Ok(())
     }
 
+    /// RFC-0167 §5 `.owned()`: the result type of explicitly materializing a
+    /// value. A view `&T` materializes its referent `T`; an owned value is
+    /// its own materialization. Only lawfully copyable payloads qualify: no
+    /// authority, no `must` obligation, no once-callable, and no nested view
+    /// (an aggregate holding a view is not deeply owned). A slice has no
+    /// owned `[T]` form, so it is refused rather than guessed into a list.
+    fn owned_materialization_ty(&mut self, receiver: &Ty) -> Result<Ty, TypeError> {
+        let payload = match self.resolve(receiver) {
+            Ty::View(payload) => self.resolve(&payload),
+            // A `dyn` receiver resolves `.owned()` only through its trait
+            // surface (an existential call), never as a copy.
+            dyn_ty @ Ty::Dyn(_, _) => {
+                return terr(format!(
+                    "cannot resolve `.owned()` on `{dyn_ty}` — existential calls are limited to the trait's declared method surface"
+                ));
+            }
+            owned => owned,
+        };
+        // Lowering picks `*view` or identity from the receiver's checked
+        // type, so an inference variable (not a declared type parameter)
+        // must be pinned first rather than judged copyable by default.
+        if let Ty::Var(variable) = payload
+            && !self.current_typarams.values().any(|typaram| *typaram == variable)
+        {
+            return terr(
+                "`.owned()` needs the receiver's type to be known here; annotate the receiver",
+            );
+        }
+        if let Ty::Named(name, arguments) = &payload
+            && name.as_ref() == "Slice"
+            && arguments.len() == 1
+        {
+            return terr(format!(
+                "`.owned()` cannot materialize the slice view `{payload}`: a slice has no owned \
+                 form; copy its elements into a list explicitly"
+            ));
+        }
+        if let Some(capability) = self.ty_authority_taint(&payload, &mut HashSet::new()) {
+            return terr(format!(
+                "`.owned()` cannot copy authority `{capability}`; a capability has no lawful copy operation"
+            ));
+        }
+        if self.ty_carries_must_consume(&payload) {
+            return terr(format!(
+                "`.owned()` cannot copy must-consume `{payload}`; a copy would duplicate its obligation"
+            ));
+        }
+        if self.ty_carries_once_callable(&payload) {
+            return terr(format!(
+                "`.owned()` cannot copy once-callable `{payload}`; it may be invoked at most once"
+            ));
+        }
+        if self.ty_carries_rooted_view(&payload) {
+            return terr(format!(
+                "`.owned()` cannot materialize `{payload}`: it contains an immutable view, and \
+                 `.owned()` does not make nested views deeply owned; map the aggregate explicitly"
+            ));
+        }
+        Ok(payload)
+    }
+
     fn ty_carries_once_callable(&self, ty: &Ty) -> bool {
         fn go(checker: &Checker, ty: &Ty, seen: &mut HashSet<String>) -> bool {
             match checker.resolve(ty) {
@@ -12204,6 +12269,17 @@ impl Checker {
             // the ordinary function signature enforces index/key types and bounds.
             Expr::Index { base, index } => {
                 self.infer_index_parts(base, index).map(|(_, result)| result)
+            }
+            // RFC-0167 §5: `.owned()` is a compiler-known operation, not a
+            // library method. Trait lowering leaves it in place until the
+            // receiver's checked type is in the table, then lowers it to the
+            // view read `*view` (or identity on an owned value); this is the
+            // judgment that admits it.
+            Expr::MethodCall { receiver, method, args }
+                if method == OWNED_MATERIALIZATION && args.is_empty() =>
+            {
+                let receiver_ty = self.infer(receiver)?;
+                self.owned_materialization_ty(&receiver_ty)
             }
             Expr::MethodCall { receiver, method, .. } => {
                 // Trait lowering resolves every method call (impl, trait

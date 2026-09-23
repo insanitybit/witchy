@@ -32,7 +32,7 @@
 use foldhash::{HashMap, HashMapExt as _, HashSet, HashSetExt as _};
 
 use witchy_syntax::ast::{
-    is_lifetime_param, BinOp, Block, Convention, Expr, Function, Item, Module, Param, Pattern,
+    BinOp, Block, Convention, Expr, Function, Item, Module, Param, Pattern,
     Stmt, Type, TypeQual, UnOp,
 };
 use witchy_syntax::intrinsics;
@@ -1579,95 +1579,6 @@ fn authenticated_non_escaping_generic_write(
         && arguments.len() == 1
         && type_has_generic_leaf(element)
         && access.params()[element_index].ty().unqualified() == element.unqualified()
-}
-
-/// The bundled `borrow.Owned` blanket implementation is the one authenticated
-/// generic materializer: it returns the same logical value as an owned result,
-/// without retaining any relation to the borrowed argument. Authenticate the
-/// compiler-generated callable identity from its exact generic leaf so neither
-/// a user-defined `owned` method nor a lookalike mangled suffix is trusted.
-fn parse_generic_materializer_name(identity: &str) -> Option<(&str, bool)> {
-    let Some(core) = identity.strip_prefix("Owned__") else {
-        return None;
-    };
-    if core.ends_with("__owned_companion") {
-        let generic = core
-            .strip_suffix("__owned_companion")
-            .expect("suffix check ensures strip works");
-        return Some((generic, true));
-    }
-    core.strip_suffix("__owned").map(|generic| (generic, false))
-}
-
-fn generic_materializer_key(ty: &Type) -> Option<String> {
-    let ty = ty.unqualified();
-    let normalize = |name: &str| name.strip_prefix('\'').unwrap_or(name).to_owned();
-    match ty {
-        Type::Named(name, args) if args.is_empty() => Some(normalize(name)),
-        Type::Named(_, args) if args.len() == 1 => match args[0].unqualified() {
-            Type::Named(name, nested_args) if nested_args.is_empty() && is_lifetime_param(name) => {
-                Some(normalize(name))
-            }
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
-fn authenticated_generic_materializer(
-    callee: &str,
-    index: usize,
-    access: &AccessSignature,
-    sources: &[BorrowSource],
-) -> bool {
-    let Some((module, identity)) = callee.rsplit_once('.') else {
-        return false;
-    };
-    let Some((generic, companion)) = parse_generic_materializer_name(identity) else {
-        return false;
-    };
-    if !is_std_fn(callee) && !companion {
-        return false;
-    }
-    if !companion && module != "borrow" {
-        return false;
-    }
-    if index != 0 || access.params().len() != 1 || !access.borrow_relations().is_empty() {
-        return false;
-    }
-
-    let parameter = &access.params()[0];
-    let result = access.result();
-    let Some(materializer_generic) = generic_materializer_key(parameter.ty()) else {
-        return false;
-    };
-
-    if generic != materializer_generic {
-        return false;
-    }
-    if !companion && parameter.ty() != result.ty() {
-        return false;
-    }
-    if !companion && !matches!(parameter.ty().unqualified(), Type::Named(_, args) if args.is_empty()) {
-        return false;
-    }
-
-    let common = type_has_generic_leaf(parameter.ty())
-        && parameter.kind() == AccessKind::OwnedImmutable
-        && parameter.qualifiers().is_empty()
-        && result.qualifiers().is_empty()
-        && parameter.borrow_lifetimes().is_empty()
-        && result.borrow_lifetimes().is_empty()
-        && parameter.ownership().input().is_none()
-        && parameter.ownership().writeback().is_none()
-        && result.ownership_output().is_none()
-        && sources.iter().all(|source| source.borrower_projection.steps.is_empty());
-
-    if companion {
-        common
-    } else {
-        module == "borrow" && common && parameter.ty() == result.ty()
-    }
 }
 
 fn validate_nested_fn_borrows(ty: &Type, context: &str) -> Result<(), TypeError> {
@@ -4362,7 +4273,6 @@ impl LoanCtx<'_> {
                 && !sources.iter().any(source_is_direct_reference))
                 || authenticated_non_escaping_generic_read(callee, index, access)
                 || preserves_explicit_list_relation
-                || authenticated_generic_materializer(callee, index, access, &sources)
             {
                 continue;
             }
@@ -4841,8 +4751,8 @@ impl From<Loan> for LoanEvent {
 }
 
 /// Whether a statement mentions the variable `name` anywhere (read or write).
-/// Because `view.owned()` returns an OWNED value (its blanket `Owned` impl returns
-/// `Self`, so it opens no loan) and is a mention of `view`, a `let keep =
+/// Because `view.owned()` returns an OWNED value (the checker types it as the
+/// referent, so it opens no loan) and is a mention of `view`, a `let keep =
 /// view.owned()` is the view's last use — so last-use ending handles
 /// materialization with no name-based special case.
 fn stmt_mentions(stmt: &Stmt, name: &str) -> bool {
@@ -4954,20 +4864,17 @@ fn stmt_stores_view_in_dynamic(stmt: &Stmt, view: &str) -> bool {
     stores
 }
 
+/// RFC-0167 `.owned()` materializes an independent owned value: the
+/// compiler-known method before trait lowering, and after it the view read
+/// `*view` it lowers to. A type's own `owned` method is an ordinary call.
 fn expr_materializes_view(expr: &Expr, view: &str) -> bool {
-    let is_owned = |name: &str| {
-        let short = short_name(name);
-        short == "owned"
-            || name.ends_with("__owned")
-            || parse_generic_materializer_name(short).is_some()
-    };
     match expr {
-        Expr::MethodCall { receiver, method, .. } => {
-            is_owned(method) && expr_root(receiver) == Some(view)
+        Expr::MethodCall { receiver, method, args } => {
+            method == crate::typeck::OWNED_MATERIALIZATION
+                && args.is_empty()
+                && expr_root(receiver) == Some(view)
         }
-        Expr::Call { name, args } => {
-            is_owned(name) && args.first().and_then(expr_root) == Some(view)
-        }
+        Expr::Unary { op: UnOp::Deref, expr } => expr_root(expr) == Some(view),
         _ => false,
     }
 }

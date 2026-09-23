@@ -6,28 +6,9 @@
 use super::*;
 
 impl<'types> Codegen<'types> {
-    fn generated_owned_materializer_target(target: &str) -> bool {
-        let Some((module, identity)) = target.rsplit_once('.') else {
-            return false;
-        };
-        let Some(generic) = identity.strip_prefix("Owned__") else {
-            return false;
-        };
-        module == "borrow"
-            && (generic
-                .strip_suffix("__owned")
-                .is_some_and(|parameter| !parameter.is_empty())
-                || generic
-                    .split_once("__owned__")
-                    .is_some_and(|(parameter, specialization)| {
-                        !parameter.is_empty() && !specialization.is_empty()
-                    }))
-    }
-
-    /// Read the referent selected by an executable place carrier.  This is used
-    /// by both source `*reference` and the compiler-generated `borrow.Owned`
-    /// materializer, so the latter produces an owned snapshot rather than
-    /// leaking the carrier across its erased generic ABI.
+    /// Read the referent selected by an executable place carrier: the view
+    /// read `*view`, which is also what RFC-0167 `.owned()` on a view lowers
+    /// to, so both produce an owned snapshot.
     pub(crate) fn lower_place_reference_read(
         &mut self,
         expr: &Expr,
@@ -3398,22 +3379,6 @@ impl<'types> Codegen<'types> {
                 }
                 if let Some(w) = self.lower_call(e, name, args) {
                     return Some(w);
-                }
-                // `borrow.Owned` is authenticated during type checking and
-                // monomorphized to this reserved target.  Its source-generic
-                // ABI is erased, so never pass a PlaceReference through the
-                // ordinary user-call path: materialize the selected referent
-                // at the call site instead.
-                let materializer_target = self.generic_call_target(e, name).to_owned();
-                if args.len() == 1
-                    && Self::generated_owned_materializer_target(&materializer_target)
-                    && self.kind_of(&args[0]) == Kind::GcRef(PLACE_REFERENCE_ID)
-                {
-                    let result_kind = self
-                        .call_access_signature(e)
-                        .map(|access| self.kind_for_type(access.result().ty()))
-                        .unwrap_or_else(|| self.kind_of(e));
-                    return self.lower_place_reference_read(&args[0], result_kind, e);
                 }
                 // (RFC-0062 tier-1) An ELIDED closure local `f(x)`: no env exists — thread
                 // the captures (from their current locals) as leading i64 arg slots, then
