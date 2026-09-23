@@ -902,8 +902,16 @@ fn canonicalize_callable_instances<'catalog>(
             message: "canonical source projection contains an unprepared generator".into(),
         }));
     }
+    // Contextual try (`e ? "msg"`) reaches here as the `__try_ctx` intrinsic,
+    // which has no lowering: rewrite it by the operand's checked type into the
+    // std call it means (`option.ok_or` / `result.map_err`) BEFORE
+    // specialization, so those generic helpers are instantiated and the
+    // recheck below types the synthesized nodes.
+    let (module, _, _) = typed.rewrite_into_module(|table, module| {
+        crate::try_context::rewrite_try_ctx_module(module, table)
+    });
     let (module, generic_instances) =
-        crate::traits::lower_for_wasm_with_specializations(typed.into_module()).into_parts();
+        crate::traits::lower_for_wasm_with_specializations(module).into_parts();
     let typed = typeck::annotate_checked(module)?;
     let mut preparation = crate::canonical_equality::PreparationSession::new(
         &typed, dictionary_catalog, generic_instances,

@@ -102,7 +102,8 @@ pub use assembly::{
     assemble_optimized_wir_module, assemble_wir_module, compile_build_module,
     compile_module_binary,
 };
-use passes::{alpha_rename_module, flip_string_add_module, rewrite_try_ctx_module};
+use passes::{alpha_rename_module, flip_string_add_module};
+use witchy_types::try_context::rewrite_try_ctx_module;
 use loans::{collect_loan_event_keys, collect_loan_roots};
 use type_vars::*;
 

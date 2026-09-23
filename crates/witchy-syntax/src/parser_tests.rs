@@ -2182,6 +2182,21 @@ fn a_line_leading_view_or_deref_starts_a_new_expression() {
 }
 
 #[test]
+fn a_line_leading_minus_starts_a_new_expression() {
+    // `-a` at the start of a line is a negation, not a subtraction continuing
+    // the line above (`let a = 5 - a`).
+    let module = parse_module("fn f() -> Int:\n    let a = 5\n    -a\n")
+        .expect("line-leading negation parses");
+    let rendered = format!("{module:?}");
+    assert!(!rendered.contains("Sub"), "{rendered}");
+    assert!(rendered.contains("Neg"), "{rendered}");
+    // A `-` at the END of a line still continues the expression.
+    let trailing = parse_module("fn g(a: Int, b: Int) -> Int:\n    a -\n        b\n")
+        .expect("trailing infix continues");
+    assert!(format!("{trailing:?}").contains("Sub"));
+}
+
+#[test]
 fn a_line_leading_paren_does_not_become_method_call_arguments() {
     // `p.y` then a line `(*v)` is a field read followed by a new expression,
     // not the call `p.y(*v)`.
