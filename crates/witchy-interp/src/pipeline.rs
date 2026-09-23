@@ -38,9 +38,32 @@ impl ToolingLinkedModule {
 
 /// Link `modules` with the standard compile-time expander wired in (the common
 /// case). Equivalent to the old two-argument `linker::link`.
+///
+/// Test-only, and pruned: standard-library functions and inherent methods the
+/// program cannot name are dropped (witchy_types::std_pruning), the subset the
+/// production route compiles. A profile of the example tests put 48% of their
+/// time in type checking and 34% in mono over the WHOLE linked prelude, done
+/// again by the interpreter preparation and the test backend, and 3% in
+/// running the programs. A test that needs a pruned function fails loudly;
+/// WITCHY_PRUNE_STD=off links everything.
 #[cfg(any(test, feature = "raw-module-test-api"))]
 pub fn link(modules: Vec<(String, Module)>, entry: &str) -> Result<Module, LinkError> {
-    link_internal(modules, entry)
+    let std_impls = modules
+        .iter()
+        .filter(|(name, _)| witchy_syntax::linker::STD_MODULES.contains(&name.as_str()))
+        .flat_map(|(_, module)| module.items.iter())
+        .filter_map(|item| match item {
+            witchy_syntax::ast::Item::Impl(implementation) if implementation.trait_name.is_none() => {
+                Some((
+                    implementation.type_name.clone(),
+                    implementation.methods.iter().map(|method| method.name.clone()).collect(),
+                ))
+            }
+            _ => None,
+        })
+        .collect();
+    let linked = link_internal(modules, entry)?;
+    Ok(witchy_types::std_pruning::prune_detached(&linked, &std_impls).unwrap_or(linked))
 }
 
 pub(crate) fn link_internal(
@@ -247,7 +270,9 @@ mod tests {
             .expect("parse test module");
         let modules = vec![("main".to_string(), module)];
 
-        let old = link(modules.clone(), "main").expect("legacy link");
+        // The production route keeps the whole linked module (it prunes only
+        // inside its check), so it matches the unpruned legacy link.
+        let old = link_internal(modules.clone(), "main").expect("legacy link");
         witchy_types::typeck::check(&old).expect("legacy check");
         let checked = link_checked(modules, "main").expect("checked link");
 

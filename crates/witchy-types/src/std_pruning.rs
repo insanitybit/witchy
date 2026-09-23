@@ -89,6 +89,16 @@ pub fn removed(name: &str) -> bool {
     REMOVED.with_borrow(|removed| removed.contains(name))
 }
 
+/// Prune outside any checked route (the test-only raw link, whose module a
+/// caller then checks with no unpruned rerun). The removals stay recorded on
+/// this thread afterwards, so that later check still fails closed on a
+/// removed callee instead of accepting what the full std rejects.
+pub fn prune_detached(module: &Module, std_impls: &HashSet<(String, Vec<String>)>) -> Option<Module> {
+    let (pruned, removed) = with_pruning(true, || (prune(module, std_impls), REMOVED.take())).0;
+    REMOVED.with_borrow_mut(|recorded| recorded.extend(removed));
+    pruned
+}
+
 /// Held for the duration of one checked link. Only the OUTERMOST link on a
 /// thread may prune: a link nested inside the production route (comptime
 /// reaching the compiler) turns its errors into values, so the route would
