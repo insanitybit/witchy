@@ -48,6 +48,8 @@ use crate::source_check::{AsyncLoweredModule, GeneratorsLoweredModule};
 // foldhash: compiler-internal keys only — see witchy-types/src/typeck.rs.
 use foldhash::{HashMap, HashSet, HashSetExt as _};
 
+mod hoist;
+
 /// Nominal identities whose values carry a declared lifetime relation. Async
 /// lowering runs before typeck, so this deliberately records only declarations
 /// available in the current module. An imported shell remains detectable from
@@ -736,6 +738,28 @@ impl<'a> Ctx<'a> {
         format!("async fn `{}`: {msg}", self.fname)
     }
 
+    /// The value `inner.await` completes with, when evident before type
+    /// checking: `f(..).await` binds the value `f`'s task completes with,
+    /// unless a local or parameter named `f` shadows the declaration (then its
+    /// own `fn(..) -> Task(T)` type decides); `t.await` on a task local of
+    /// known type binds that task's result.
+    fn awaited_value_type(&self, inner: &Expr, scope: &[Local]) -> Option<Type> {
+        let local = |name: &str| scope.iter().rev().find(|local| local.name == name);
+        match inner {
+            Expr::Call { name, .. } => match local(name) {
+                Some(callee) => match callee.ty.as_ref().map(Type::unqualified) {
+                    Some(Type::Fn(_, result, _, _)) => task_result_type(result),
+                    _ => None,
+                },
+                None => self.borrowed_shells.awaited_type(name),
+            },
+            Expr::Var(task) => local(task)
+                .and_then(|local| local.ty.as_ref())
+                .and_then(task_result_type),
+            _ => None,
+        }
+    }
+
     /// Lower a statement sequence to a `Task`-valued expression, given the locals
     /// in scope. The tail of the sequence is the async fn's result (`task.done(V)`
     /// for a value, become-the-task for a tail `await`, `task.ready_unit()` on
@@ -760,6 +784,13 @@ impl<'a> Ctx<'a> {
             tail,
             line,
         };
+        // An `await` (or a `?`) nested inside the statement is hoisted into
+        // fresh temporaries bound just before it, in evaluation order, so every
+        // suspension below sees one of the supported whole-statement shapes.
+        if let Some((hoisted, stmt)) = self.hoist_stmt(head, scope)? {
+            let (stmts, lines) = hoist::assemble(hoisted, stmt, line, rest, rest_lines);
+            return self.go(&stmts, &lines, scope, tail);
+        }
         match head {
             Stmt::Let {
                 name,
@@ -773,27 +804,7 @@ impl<'a> Ctx<'a> {
                     let bind = Local {
                         name: name.clone(),
                         source_binding: None,
-                        // `let x = f(..).await` binds the value `f`'s task completes with,
-                        // unless a local or parameter named `f` shadows the declaration.
-                        ty: ty.clone().or_else(|| {
-                            let local = |name: &str| scope.iter().rev().find(|local| local.name == name);
-                            match inner {
-                                // A local or parameter named `f` shadows the
-                                // declaration: its own `fn(..) -> Task(T)` type decides.
-                                Expr::Call { name, .. } => match local(name) {
-                                    Some(callee) => match callee.ty.as_ref().map(Type::unqualified) {
-                                        Some(Type::Fn(_, result, _, _)) => task_result_type(result),
-                                        _ => None,
-                                    },
-                                    None => self.borrowed_shells.awaited_type(name),
-                                },
-                                // `let x = t.await` on a task local of known type.
-                                Expr::Var(task) => local(task)
-                                    .and_then(|local| local.ty.as_ref())
-                                    .and_then(task_result_type),
-                                _ => None,
-                            }
-                        }),
+                        ty: ty.clone().or_else(|| self.awaited_value_type(inner, scope)),
                         mutable: *mutable,
                         borrowed_view: ty
                             .as_ref()
@@ -1069,6 +1080,13 @@ impl<'a> Ctx<'a> {
                 Tail::Return => Ok(inner.clone()),
                 Tail::Loop { .. } => Ok(and_then(inner.clone(), self.fresh_tmp(), self.end(tail))),
             };
+        }
+        // A tail value (a match arm body, an `if` condition) with a nested
+        // `await`/`?`: hoist it exactly as a statement would be.
+        let tail_stmt = Stmt::Expr(e.clone());
+        if let Some((hoisted, stmt)) = self.hoist_stmt(&tail_stmt, scope)? {
+            let (stmts, lines) = hoist::assemble(hoisted, stmt, 0, &[], &[]);
+            return self.go(&stmts, &lines, scope, tail);
         }
         match e {
             Expr::If {
