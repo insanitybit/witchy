@@ -66,8 +66,9 @@ fn main() -> Int:
 }
 
 #[test]
-fn a_normal_var_parameter_of_a_view_bearing_record_fails_closed_in_lowering() {
-    // The link-time "reference-bearing opt type" refusal is gone: this checks.
+fn a_normal_var_parameter_writes_back_a_view_bearing_record() {
+    // `bump` replaces the caller's record with one viewing `b`; `a` itself is
+    // untouched. (*h.v) * 10 + a = 2 * 10 + 1.
     let checked = witchy::resolve_std_only_checked(r#"
 type H:
     v: &Int
@@ -80,12 +81,10 @@ fn main() -> Int:
     let b = 2
     var h = H(v: &a)
     bump(h, &b)
-    *h.v
+    (*h.v) * 10 + a
 "#)
     .expect("a normal `var` parameter may name a view-bearing record");
-    let reason = codegen::compile_checked_module_artifact(&checked)
-        .expect_unsupported("opaque-owner write-back is not implemented; it must not silently admit");
-    assert!(reason.message.contains("opaque owner var parameter"), "{}", reason.message);
+    assert_admitted_wasm(&checked, 21);
 }
 
 const FAST: &str = r#"mode opt
