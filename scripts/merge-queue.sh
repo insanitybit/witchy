@@ -1542,8 +1542,27 @@ run_gate() { # run_gate <log> [fuzz-mode] [gate-scope] [queue-infra] [queue-infr
     active_gate_pgid=""
     rm -f "$lock/gate_pgid" 2>/dev/null || true
     rm -f "$progress_file"
+    invalidate_workspace_fingerprints "$gate_wt/$cargo_target_dir"
     gate_result="timeout: $why"
     return 0
+}
+
+# A kill can land while rustc is writing a workspace crate's output. Cargo
+# names that output by package identity, not source content, and records a
+# fingerprint only after a successful build -- so the half-written file sits
+# under a fingerprint an EARLIER build left, and the next gate links it as
+# fresh: `ld: symbol(s) not found` naming a `.llvm.*` or another branch's
+# symbol, on a branch that did nothing wrong (twice on 2026-09-22/23). Drop
+# the fingerprints of this workspace's own crates -- every gate that changes
+# code rebuilds them anyway -- and keep every dependency's.
+invalidate_workspace_fingerprints() { # invalidate_workspace_fingerprints <target-dir>
+    local fingerprints="$1/debug/.fingerprint" entry
+    [ -d "$fingerprints" ] || return 0
+    for entry in "$fingerprints"/witchy-* "$fingerprints"/merge-queue-tests-*; do
+        [ -e "$entry" ] || continue
+        rm -rf "$entry"
+    done
+    note "invalidated workspace fingerprints in $1 after the kill"
 }
 
 cmd_submit() {

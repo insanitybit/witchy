@@ -49,7 +49,13 @@ fn workspace_test_budget_kills_a_chatty_progressing_stage() {
     let fixture = QueueFixture::stack(&["a.txt"]);
     fixture.mq_ok(&["submit", "a"], "true");
 
+    // The fake gate plants one workspace and one dependency fingerprint in
+    // its cargo target, and reports where, so the kill's cleanup can be seen.
+    let probe = fixture.state.join("fingerprint-probe");
     let gate = "\
+fp=\"$PWD/$CARGO_TARGET_DIR/debug/.fingerprint\"
+mkdir -p \"$fp/witchy-wir-0123456789abcdef\" \"$fp/serde-0123456789abcdef\"
+printf '%s' \"$fp\" > \"$FINGERPRINT_PROBE\"
 printf '==> [1] tests (workspace) (t+0s)\\n'
 i=0
 while :; do
@@ -67,6 +73,7 @@ done
         .env("MERGE_QUEUE_STALL_TIMEOUT", "600")
         .env("MERGE_QUEUE_BUSY_SILENCE_MAX", "1800")
         .env("MERGE_QUEUE_TEST_TERMINATE_GRACE", "0.05")
+        .env("FINGERPRINT_PROBE", &probe)
         .output()
         .expect("run gate past the workspace-test budget");
     let elapsed = started.elapsed();
@@ -101,6 +108,20 @@ done
             .iter()
             .all(|event| event["event"] != "merged"),
         "over-budget stage was still merged",
+    );
+
+    // A killed build may have half-written a workspace crate; its stale
+    // fingerprint must not survive, while dependencies stay warm.
+    let fingerprints = std::path::PathBuf::from(
+        std::fs::read_to_string(&probe).expect("fake gate reported its fingerprint dir"),
+    );
+    assert!(
+        !fingerprints.join("witchy-wir-0123456789abcdef").exists(),
+        "a workspace crate's fingerprint survived the kill",
+    );
+    assert!(
+        fingerprints.join("serde-0123456789abcdef").exists(),
+        "the kill invalidated a dependency's fingerprint",
     );
 
     let invalid = fixture
