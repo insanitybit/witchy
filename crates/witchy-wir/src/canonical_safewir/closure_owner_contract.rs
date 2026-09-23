@@ -67,6 +67,14 @@ impl<'a> SourceConstructor<'a> {
             ClosureCaptureTransfer::ManagedReferenceByValue => Ok(CaptureTransfer::CloneManaged),
             // The view witness is distinct source authority, while the only
             // executable transfer is a managed retain of that opaque carrier.
+            // A `&Float`/`&Bool`/`&Duration` view is carried as its immutable
+            // scalar value (`ScalarValue`): it has no carrier to retain.
+            ClosureCaptureTransfer::RootedViewByValue if matches!(capture.checked_type(),
+                witchy_syntax::ast::Type::Qualified(witchy_syntax::ast::TypeQual::View, inner)
+                    if witchy_types::canonical_aggregates::is_scalar_value_view_payload(inner)) =>
+            {
+                Ok(CaptureTransfer::CopyScalar)
+            }
             ClosureCaptureTransfer::RootedViewByValue => Ok(CaptureTransfer::CloneManaged),
             ClosureCaptureTransfer::ExplicitOwnedMove => Err(ContractError::UnsupportedCapture),
             ClosureCaptureTransfer::CopyCapability => {

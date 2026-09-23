@@ -115,6 +115,15 @@ pub(super) fn validate<S: ModuleStage>(
                             && super::authority::is_direct_rooted_view_whole_root(original.checked_type(), &records)
                             && !matches!(original.checked_type(),
                                 witchy_syntax::ast::Type::Qualified(witchy_syntax::ast::TypeQual::View, inner)
+                                    if witchy_types::canonical_aggregates::is_scalar_value_view_payload(inner))
+                        // A `&Float`/`&Bool`/`&Duration` view is its value
+                        // (`ScalarValue`), so its capture is a copied scalar
+                        // environment field, as in the plain closure check.
+                        || matches!((capture.value_type, capture.storage, capture.transfer),
+                            (ValueType::Int | ValueType::Float | ValueType::Bool,
+                             CaptureStorage::EnvironmentField(_), CaptureTransfer::CopyScalar))
+                            && matches!(original.checked_type(),
+                                witchy_syntax::ast::Type::Qualified(witchy_syntax::ast::TypeQual::View, inner)
                                     if witchy_types::canonical_aggregates::is_scalar_value_view_payload(inner)))
                 { return Err(refuse()); }
             }

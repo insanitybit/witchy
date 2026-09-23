@@ -245,6 +245,8 @@ mod rfc0167_generic_slice_view;
 mod rfc0167_for_over_slice;
 #[path = "misc/rfc0167_view_locals_across_await.rs"]
 mod rfc0167_view_locals_across_await;
+#[path = "misc/rfc0167_scalar_views_across_await.rs"]
+mod rfc0167_scalar_views_across_await;
 #[path = "misc/rfc0167_list_of_int_views.rs"]
 mod rfc0167_list_of_int_views;
 #[path = "misc/rfc0167_region_parent_view_results.rs"]

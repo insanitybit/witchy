@@ -3644,6 +3644,12 @@ fn ordinary_own_type_supported(ty: &Type) -> bool {
         // through nested `unique` would silently erase a future element-token
         // ABI, so list elements deliberately use the unqualified helper.
         Type::Qualified(TypeQual::Unique, inner) => inner.as_ref(),
+        // A `&Float`/`&Bool`/`&Duration` view is carried as the immutable
+        // scalar value itself (`ScalarValue`), so consuming one is a plain
+        // copy of that value. Async lowering carries live views into
+        // continuation segments as `own` parameters.
+        Type::Qualified(TypeQual::View, inner)
+            if witchy_types::canonical_aggregates::is_scalar_value_view_payload(inner) => return true,
         _ => ty,
     };
     ordinary_unqualified_own_type_supported(ty)
