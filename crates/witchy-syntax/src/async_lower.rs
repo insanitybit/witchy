@@ -2223,8 +2223,8 @@ fn local_to_param(l: &Local) -> Param {
 /// un-annotated generic. Only the shapes the transform can be sure of.
 /// The type of a local's initializer, when it is evident before type checking:
 /// literals, list and tuple literals, operators, a local already typed in
-/// scope, a call to this module's declared function, or a constructor of a
-/// non-generic nominal. A carried local keeps this type as its segment
+/// scope, a call to this module's declared function, a constructor of a
+/// non-generic nominal, or a view `&place` of one of those. A carried local keeps this type as its segment
 /// parameter annotation, so method calls on it still resolve after a
 /// suspension (BUG-645). `None` leaves the parameter to inference as before.
 fn derive_type(value: &Expr, scope: &[Local], catalog: &BorrowedShellCatalog) -> Option<Type> {
@@ -2254,6 +2254,9 @@ fn derive_type(value: &Expr, scope: &[Local], catalog: &BorrowedShellCatalog) ->
         },
         Expr::Call { name, .. } => catalog.return_types.get(name).cloned(),
         Expr::Ctor { name, .. } | Expr::Record { name, .. } => catalog.constructor_types.get(name).cloned(),
+        // `&place` is an immutable view of the place's type.
+        Expr::Unary { op: crate::ast::UnOp::Borrow, expr } => derive_type(expr, scope, catalog)
+            .map(|inner| Type::Qualified(crate::ast::TypeQual::View, Box::new(inner))),
         _ => None,
     }
 }
