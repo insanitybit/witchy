@@ -195,6 +195,25 @@ sha2 = "0.11.0"
 [profile.dev]
 debug = "line-tables-only"
 split-debuginfo = "unpacked"
+strip = "symbols"
+
+# Every test build uses ONE profile. The merge gate, check.sh and agent-check
+# have always built tests with `CARGO_PROFILE_TEST_STRIP=symbols`; a plain
+# `cargo test` / `cargo nextest` run did not. The strip setting is part of the
+# profile every unit's hash is computed from, so the two disagreed on every
+# crate AND every dependency: one target dir held two complete builds, a
+# worktree cloned warm for one rebuilt all 28 deps of witchy-syntax for the
+# other, and each edit compiled the compiler twice (measured 2026-09-23).
+# Declaring it here makes the env var redundant rather than load-bearing, and
+# `dev` strips too: with equal settings `cargo build` and `cargo test` share
+# every unit (verified: 29 of 29 fresh across the two), so an ad-hoc binary
+# build no longer compiles the compiler a second time. Symbols cost the gate
+# (nextest execs every test, and macOS pages the symbol table each time).
+# For symbolized panic backtraces while debugging, build with
+# `CARGO_PROFILE_DEV_STRIP=none CARGO_PROFILE_TEST_STRIP=none` -- knowing that
+# is a separate, full build.
+[profile.test]
+strip = "symbols"
 
 # Tests run these crates hard (tree-walking interpreter, witchy->WASM lowering,
 # wasmtime host glue); unoptimized they dominate suite time. Opt just the hot

@@ -53,9 +53,11 @@ if [ -n "${WITCHY_GATE_SCOPE+x}" ]; then
     export RUSTC_WRAPPER=
     export CARGO_BUILD_RUSTC_WRAPPER=
     # nextest discovers tests by executing every test binary. macOS otherwise
-    # pages large local-symbol tables into memory before any test runs. Strip
-    # only serialized-gate test artifacts; developer builds retain symbols and
-    # an explicit Cargo profile override remains authoritative.
+    # pages large local-symbol tables into memory before any test runs. The
+    # workspace Cargo.toml now strips `dev` and `test` for everyone (so every
+    # build flow shares one set of artifacts); this export stays so an older
+    # checkout gated by this coordinator still matches the prewarm, and an
+    # explicit Cargo profile override remains authoritative.
     if [ -z "${CARGO_PROFILE_TEST_STRIP+x}" ]; then
         export CARGO_PROFILE_TEST_STRIP=symbols
     fi
