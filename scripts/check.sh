@@ -608,6 +608,16 @@ if cargo nextest --version >/dev/null 2>&1; then
         *" grimoire "*) ;;
         *) nextest_cmd+=(--features coven-tests) ;;
     esac
+    # The slow-test ratchet confirms candidates with exactly this selection and
+    # feature set (minus --max-fail and -j), so its one confirmation run reuses
+    # the binaries this stage built instead of building a --workspace set.
+    ratchet_nextest_args=()
+    ratchet_skip_next=0
+    for ratchet_arg in "${nextest_cmd[@]:4}"; do
+        if [ "$ratchet_skip_next" -eq 1 ]; then ratchet_skip_next=0; continue; fi
+        if [ "$ratchet_arg" = "-j" ]; then ratchet_skip_next=1; continue; fi
+        ratchet_nextest_args+=("$ratchet_arg")
+    done
     # The workspace stage ALWAYS excludes `binary(merge_queue)` (see $excl
     # above) because those fixtures run in their own isolated shard. So a diff
     # whose entire selection IS merge_queue -- any change to the standalone
@@ -1382,6 +1392,7 @@ run_watched "tests (workspace)"        "${test_cmd[@]}"
 if [ -n "${WITCHY_GATE_SCOPE+x}" ] && [ "$gate_scope" = "all" ] && [ "$full" -eq 0 ]; then
     run_watched "slow-test ratchet" python3 scripts/slow-test-ratchet.py \
         --since "$ratchet_since" \
+        --nextest-args "${ratchet_nextest_args[*]:-}" \
         --junit "${CARGO_TARGET_DIR:-target}/nextest/default/junit.xml" \
         --junit target/nextest/default/junit.xml
 fi

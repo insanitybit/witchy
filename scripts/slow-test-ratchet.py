@@ -10,8 +10,16 @@ gate:
   1. DETECT in the gate's own parallel run: any test over --detect seconds
      that is not exempt. Under ~8x parallel load and a sometimes-cold SafeWIR
      verdict store a 0.3s test can spike to 37s, so this alone would flake.
-  2. CONFIRM each candidate by re-running it ALONE, warm and unloaded. Fail
-     only if it still exceeds --confirm seconds.
+  2. CONFIRM the candidates by re-running them ALONE: one nextest run over all
+     of them with --test-threads 1, using the gate's own selection and
+     features (--nextest-args) so it builds and lists nothing new. Fail only
+     for a test that still exceeds --confirm seconds.
+
+The confirmation streams every result as it lands (a silent stage is killed
+by the queue's stall detector: that took down a green gate on 2026-09-23, when
+each candidate got its own --workspace run) and stops at --budget seconds. A
+test the budget did not reach is reported and NOT failed: a measurement must
+never be what kills a gate whose tests passed.
 
 Exempt: scripts/nightly-deferred-tests.txt (not in the default gate at all)
 and scripts/slow-test-debt.txt (today's offenders, which may only SHRINK --
@@ -20,7 +28,7 @@ remove a line when you make that test fast; never add one).
 Usage (check.sh runs this after the workspace test stage in merge-gate mode):
     scripts/slow-test-ratchet.py --junit target/nextest/default/junit.xml
 """
-import argparse, os, re, subprocess, sys, time
+import argparse, os, re, shlex, subprocess, sys, time
 import xml.etree.ElementTree as ET
 
 def names(path):
@@ -29,13 +37,42 @@ def names(path):
     except FileNotFoundError:
         return set()
 
-def isolated_seconds(binary_id, test, features):
+PASS_LINE = re.compile(r"\b(PASS|FAIL|SLOW)\s*\[\s*([\d.]+)s\]\s+(?:\(\s*\d+/\d+\)\s+)?(\S+)\s+(\S+)")
+
+def confirm_alone(candidates, nextest_args, budget):
+    """Run every candidate once, one at a time, in a single nextest run.
+    Returns ({(binary, test): seconds or None}, finished_within_budget)."""
+    expr = " or ".join(f"(binary_id(={binary}) and test(={name}))" for _, binary, name in candidates)
+    cmd = ["cargo", "nextest", "run", *nextest_args, "--no-fail-fast",
+           "--test-threads", "1", "-E", expr]
     env = dict(os.environ, NEXTEST_STATUS_LEVEL="pass")
-    cmd = ["cargo", "nextest", "run", "--workspace", "--features", features,
-           "--no-fail-fast", "-E", f"binary_id(={binary_id}) and test(={test})"]
-    out = subprocess.run(cmd, env=env, capture_output=True, text=True)
-    m = re.findall(r"PASS \[\s*([\d.]+)s\]", out.stdout + out.stderr)
-    return (float(m[-1]) if m else None), out.returncode
+    print("slow-test-ratchet: confirming alone: " + " ".join(shlex.quote(c) for c in cmd), flush=True)
+    seconds = {}
+    started = time.monotonic()
+    process = subprocess.Popen(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                               text=True, bufsize=1)
+    # The deadline must hold even if one test runs silently past it.
+    expired = []
+    def stop():
+        expired.append(True)
+        process.kill()
+    import threading
+    timer = threading.Timer(budget, stop)
+    timer.start()
+    within = True
+    for line in process.stdout:
+        match = PASS_LINE.search(line)
+        if match:
+            status, secs, binary, name = match.groups()
+            seconds[(binary, name)] = float(secs) if status != "FAIL" else None
+            print(f"slow-test-ratchet:   {status} {float(secs):.1f}s alone {binary} {name}", flush=True)
+        if time.monotonic() - started > budget:
+            within = False
+            process.kill()
+            break
+    process.wait()
+    timer.cancel()
+    return seconds, within and not expired
 
 def main():
     ap = argparse.ArgumentParser()
@@ -48,7 +85,10 @@ def main():
                     help="epoch seconds; ignore JUnit files older than this")
     ap.add_argument("--detect", type=float, default=5.0)
     ap.add_argument("--confirm", type=float, default=3.0)
-    ap.add_argument("--features", default="witchy-wir/native")
+    ap.add_argument("--nextest-args", default="",
+                    help="the gate's nextest selection and features; default --workspace")
+    ap.add_argument("--budget", type=float, default=300.0,
+                    help="seconds for the whole confirmation run")
     ap.add_argument("--exempt", action="append",
                     default=["scripts/nightly-deferred-tests.txt", "scripts/slow-test-debt.txt"])
     a = ap.parse_args()
@@ -70,14 +110,23 @@ def main():
     if not candidates:
         print(f"slow-test-ratchet: no un-exempt test over {a.detect:g}s")
         return 0
+    nextest_args = shlex.split(a.nextest_args) or ["--workspace", "--features", "witchy-wir/native"]
+    alone, within = confirm_alone(sorted(candidates, reverse=True), nextest_args, a.budget)
     new_slow = []
     for seconds, binary, name in sorted(candidates, reverse=True):
-        alone, rc = isolated_seconds(binary, name, a.features)
-        verdict = "load spike, ok" if alone is not None and alone <= a.confirm else "SLOW"
+        if (binary, name) not in alone:
+            print(f"slow-test-ratchet: {name} ({binary}): {seconds:.1f}s in gate, "
+                  "not reached within the confirmation budget -> NOT failed")
+            continue
+        secs = alone[(binary, name)]
+        verdict = "load spike, ok" if secs is not None and secs <= a.confirm else "SLOW"
         print(f"slow-test-ratchet: {name} ({binary}): {seconds:.1f}s in gate, "
-              f"{'?' if alone is None else f'{alone:.1f}s'} alone -> {verdict}")
-        if alone is None or alone > a.confirm:
-            new_slow.append((name, binary, alone))
+              f"{'failed' if secs is None else f'{secs:.1f}s'} alone -> {verdict}")
+        if secs is None or secs > a.confirm:
+            new_slow.append((name, binary, secs))
+    if not within:
+        print(f"slow-test-ratchet: WARNING -- confirmation stopped at the {a.budget:g}s budget; "
+              "unreached candidates were not judged")
     if new_slow:
         print(f"\nslow-test-ratchet: {len(new_slow)} NEW test(s) over the budget "
               f"(>{a.confirm:g}s even run alone). The target is 2s per test.\n"
