@@ -241,9 +241,14 @@ pub(crate) fn canonical_closure_key(
     ty: &Type,
     definitions: &BTreeMap<String, TypeDef>,
 ) -> Type {
-    let identity = concrete_aggregate_identity(ty, definitions)
-        .unwrap_or_else(|| ty.unqualified().clone());
-    closure_key(&identity)
+    // Lowering asks this of the same few `fn` and aggregate types for every
+    // list update and record rebuild of the std executor; neither identity
+    // normalization nor the key rewrite is otherwise memoized for `fn` types.
+    witchy_types::canonical_aggregates::memoize_derived_type("canonical_closure_key", ty, definitions, || {
+        let identity = concrete_aggregate_identity(ty, definitions)
+            .unwrap_or_else(|| ty.unqualified().clone());
+        closure_key(&identity)
+    })
 }
 
 /// The exact capture variants of each `fn` family, ordered by the checked

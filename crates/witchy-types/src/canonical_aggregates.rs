@@ -541,6 +541,7 @@ mod shape_memo {
         shapes: HashMap<Type, Option<ScalarAggregateShape>>,
         identities: HashMap<Type, Option<Type>>,
         owner_identities: HashMap<Type, Option<Type>>,
+        derived: HashMap<&'static str, HashMap<Type, Type>>,
     }
 
     thread_local! {
@@ -577,6 +578,7 @@ mod shape_memo {
                 shapes: HashMap::default(),
                 identities: HashMap::default(),
                 owner_identities: HashMap::default(),
+                derived: HashMap::default(),
             });
         });
         struct Pop;
@@ -620,6 +622,16 @@ mod shape_memo {
         });
     }
 
+    pub(super) fn derived(definitions: &BTreeMap<String, TypeDef>, kind: &'static str, ty: &Type) -> Option<Type> {
+        with_scope(definitions, |scope| scope.derived.get(kind).and_then(|by_type| by_type.get(ty)).cloned()).flatten()
+    }
+
+    pub(super) fn remember_derived(definitions: &BTreeMap<String, TypeDef>, kind: &'static str, ty: &Type, derived: &Type) {
+        with_scope(definitions, |scope| {
+            scope.derived.entry(kind).or_default().insert(ty.clone(), derived.clone());
+        });
+    }
+
     pub(super) fn owner_identity(definitions: &BTreeMap<String, TypeDef>, ty: &Type) -> Option<Option<Type>> {
         with_scope(definitions, |scope| scope.owner_identities.get(ty).cloned()).flatten()
     }
@@ -629,6 +641,24 @@ mod shape_memo {
             scope.owner_identities.insert(ty.clone(), identity.clone());
         });
     }
+}
+
+/// Memoize `derive(ty)` in the open shape-memo scope for `definitions`,
+/// under a caller-chosen `kind` that names the derivation. `derive` must be
+/// a pure function of `ty` and `definitions`; outside a scope for this map
+/// it simply runs.
+pub fn memoize_derived_type(
+    kind: &'static str,
+    ty: &Type,
+    definitions: &BTreeMap<String, TypeDef>,
+    derive: impl FnOnce() -> Type,
+) -> Type {
+    if let Some(known) = shape_memo::derived(definitions, kind, ty) {
+        return known;
+    }
+    let derived = derive();
+    shape_memo::remember_derived(definitions, kind, ty, &derived);
+    derived
 }
 
 /// The aggregate identity that authorizes typed opaque owner fields.
