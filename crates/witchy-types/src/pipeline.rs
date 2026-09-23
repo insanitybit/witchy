@@ -724,6 +724,7 @@ fn link_checked_with(
     capture_canonical_typed_source: bool,
     module_owners: Option<AuthenticatedModuleOwners>,
 ) -> Result<(CheckedModule, Option<typeck::TypedModule>), PipelineError> {
+    let _link = crate::std_pruning::enter_link();
     let typed_async_source = RefCell::new(None);
     let canonical_typed_source = RefCell::new(None);
     let check_source = |source: &witchy_syntax::source_check::ResolvedSource| {
@@ -1254,6 +1255,48 @@ pub fn link_checked_from_source_bundle_with_precompiled_declarations(
 }
 
 fn link_checked_source_bundle_with(
+    sources: Vec<(String, Vec<u8>)>,
+    entry: &str,
+    expand: ComptimeExpander,
+    user_modules: Option<&HashSet<String>>,
+    module_owners: Option<AuthenticatedModuleOwners>,
+    precompiled_declarations: Option<PrecompiledDeclarationEnvironment>,
+) -> Result<CheckedModule, PipelineError> {
+    // Only reachable standard library is checked (crate::std_pruning). Any
+    // failure after a pruned check -- in type checking or in a canonical stage
+    // that synthesizes a std call by name -- reruns this route unpruned, so
+    // the reported outcome is always the unpruned compiler's.
+    let (pruned_result, pruned) = crate::std_pruning::with_pruning(true, || {
+        link_checked_source_bundle_route(
+            sources.clone(),
+            entry,
+            expand,
+            user_modules,
+            module_owners.clone(),
+            precompiled_declarations.clone(),
+        )
+    });
+    if pruned_result.is_ok() || !pruned {
+        crate::std_pruning::log(if pruned { "pruned-ok" } else { "not-pruned" }.to_string());
+        return pruned_result;
+    }
+    if let Err(error) = &pruned_result {
+        crate::std_pruning::log(format!("fallback: {}", error.to_string().lines().next().unwrap_or("")));
+    }
+    crate::std_pruning::with_pruning(false, || {
+        link_checked_source_bundle_route(
+            sources,
+            entry,
+            expand,
+            user_modules,
+            module_owners,
+            precompiled_declarations,
+        )
+    })
+    .0
+}
+
+fn link_checked_source_bundle_route(
     mut sources: Vec<(String, Vec<u8>)>,
     entry: &str,
     expand: ComptimeExpander,

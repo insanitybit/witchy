@@ -15185,6 +15185,25 @@ pub fn check_linked_source_semantics_typed(
         .runtime_projection()
         .map_err(witchy_syntax::linker::SourceLinkError::Link)?;
     check_source_async_contracts(&body_projection).map_err(source_error)?;
+    // Check only the standard library this program can reach (see
+    // std_pruning; a failure anywhere in the production route after pruning
+    // reruns the route unpruned, so a pruned error is never reported).
+    let std_impls = source
+        .modules()
+        .iter()
+        .filter(|(name, _)| witchy_syntax::linker::STD_MODULES.contains(&name.as_str()))
+        .flat_map(|(_, module)| module.items.iter())
+        .filter_map(|item| match item {
+            Item::Impl(implementation) if implementation.trait_name.is_none() => Some((
+                implementation.type_name.clone(),
+                implementation.methods.iter().map(|method| method.name.clone()).collect(),
+            )),
+            _ => None,
+        })
+        .collect();
+    if let Some(pruned) = crate::std_pruning::prune(&body_projection, &std_impls) {
+        return check_with_compiler_syntax(&pruned, false).map_err(source_error);
+    }
     check_with_compiler_syntax(&body_projection, false).map_err(source_error)
 }
 
