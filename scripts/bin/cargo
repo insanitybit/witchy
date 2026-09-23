@@ -18,12 +18,18 @@
 #   - The store lives in the repo (state/mbx/store-<version>): an agent
 #     sandbox that denies writes to ~/Library/Caches makes mbx silently run
 #     uncached, while an in-repo store hits normally.
-#   - Cargo incremental stays ON by default (MBX_INCREMENTAL=1): edits then
-#     cost what they cost under plain cargo, and only dependency crates are
-#     restored from the cache. Set WITCHY_MBX_MODE=restore for a build-only
-#     flow (a fresh worktree or target dir you will not edit in): workspace
-#     crates are then restored too, at the price of a ~2 minute private
-#     incremental warm-up on the first edit afterwards.
+#   - Workspace crates are cached and shared like dependencies, and mbx
+#     LEARNS which crate you are editing (MBX_LEARNED_INCREMENTAL): a crate
+#     that keeps missing with changed content compiles incrementally from
+#     then on. The old default (MBX_INCREMENTAL=1: every member incremental
+#     and private to its worktree) shared only third-party crates, so in
+#     2026-09-23's 3 hours mbx avoided 17.7 of 870 compiler-minutes while
+#     witchy_wir/syntax/types/lower (8.6k/4.9k/4.9k/4.5k s) were rebuilt in
+#     every worktree. Measured: an unchanged witchy-types in a second
+#     worktree 70s -> 3s; editing one crate 54s the first time (no
+#     incremental state yet, as before) and 2s per edit after.
+#     WITCHY_MBX_MODE=incremental restores the old policy; restore makes
+#     every crate a cache lookup and never incremental.
 #
 # Usage from a script: prepend "$repo/scripts/bin" to PATH, then call `cargo`
 # as usual. Ad hoc: ./scripts/bin/cargo build ...
@@ -129,12 +135,16 @@ if [ -z "${MBX_STATS_REPORT+x}" ]; then
     reports_dir="$state_root/state/mbx/reports"
     mkdir -p "$reports_dir" 2>/dev/null || true
     worktree_tag="$(basename "$repo_root" | tr -c 'A-Za-z0-9._-\n' '_')"
-    export MBX_STATS_REPORT="$reports_dir/$(date -u +%Y%m%dT%H%M%SZ)-$$-${WITCHY_MBX_MODE:-edit}-${1}-${worktree_tag}.json"
+    export MBX_STATS_REPORT="$reports_dir/$(date -u +%Y%m%dT%H%M%SZ)-$$-${WITCHY_MBX_MODE:-learned}-${1}-${worktree_tag}.json"
 fi
 
-case "${WITCHY_MBX_MODE:-edit}" in
+case "${WITCHY_MBX_MODE:-learned}" in
     restore) ;;
-    *) export MBX_INCREMENTAL="${MBX_INCREMENTAL:-1}" ;;
+    incremental) export MBX_INCREMENTAL="${MBX_INCREMENTAL:-1}" ;;
+    *)
+        export MBX_INCREMENTAL="${MBX_INCREMENTAL:-0}"
+        export MBX_LEARNED_INCREMENTAL="${MBX_LEARNED_INCREMENTAL:-1}"
+        ;;
 esac
 
 # Keep mbx's interactive display out of agent logs; plain cargo output.

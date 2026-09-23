@@ -158,9 +158,10 @@ worktree still hits in the others). `agent-check.sh` and the
 scripts it drives already use the shim; for ad hoc commands put
 `scripts/bin` first on `PATH` or call `./scripts/bin/cargo build ...`. The
 gate (`WITCHY_GATE_SCOPE`) always uses plain cargo. `WITCHY_BUILD_CACHE=off`
-is the kill switch; `WITCHY_MBX_MODE=restore` restores workspace crates too
-for a build-only flow (default keeps Cargo incremental on, so edits cost what
-they cost under plain cargo). Every shim build leaves a small JSON report
+is the kill switch. Workspace crates are cached and shared across worktrees
+too; mbx learns which crate you are editing and compiles that one
+incrementally (`WITCHY_MBX_MODE=incremental` restores the old
+every-member-incremental policy, which shared only third-party crates). Every shim build leaves a small JSON report
 under `state/mbx/reports/`; `scripts/mbx-report.py --since 24h --by worktree`
 turns them into hit rates and compiler time avoided, which is how to answer
 "is the cache helping" with numbers. Never run `mbx setup`: it rewrites machine-wide
