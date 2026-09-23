@@ -37,6 +37,17 @@
 //! this crate's sources (`build.rs`), so a changed checker never sees an older
 //! checker's verdicts, and each file carries its key and an integrity digest
 //! so a truncated or misnamed file is a miss, never a verdict.
+//!
+//! # One checker per verdict at a time
+//!
+//! With the store cold -- every gate after a change to this crate -- every
+//! test process that links the async executor used to check it at once:
+//! none had finished, so none could replay, and ten or twenty processes each
+//! spent tens of seconds on the identical function. A large function's check
+//! is therefore claimed under an exclusive lock file beside its verdict
+//! ([`claim`]); a process that waited re-reads the store before checking.
+//! The lock adds no trust: a waiter replays only what the store would have
+//! given it anyway, and a crashed holder's lock is released by the OS.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -57,6 +68,10 @@ const MAX_ENTRIES: usize = 1 << 16;
 /// Verdicts cheaper than this are not worth a file: re-checking them costs
 /// less than the open would.
 pub(super) const PERSIST_THRESHOLD: Duration = Duration::from_millis(10);
+
+/// Functions at least this many blocks long are checked under a [`claim`].
+/// Small functions check faster than a lock round trip.
+pub(super) const SINGLE_FLIGHT_BLOCKS: usize = 256;
 
 /// The digest of every input `check_function` reads for one function.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -325,6 +340,52 @@ impl Stopwatch {
     }
 }
 
+/// Exclusive right to check one large function across processes, held
+/// until dropped. `None` when the store is off, the function is small, or
+/// the lock cannot be taken (then the caller simply checks, as before).
+pub(super) struct Claim {
+    key: FunctionCheckKey,
+    /// Held only by the process that took the lock without waiting. A
+    /// process that waited has already released it (see `store::claim`).
+    #[cfg(not(target_arch = "wasm32"))]
+    _lock: Option<std::fs::File>,
+}
+
+/// Wait for any other process checking `key`, then hold the claim.
+pub(super) fn claim(key: &FunctionCheckKey, blocks: usize) -> Option<Claim> {
+    if blocks < SINGLE_FLIGHT_BLOCKS {
+        return None;
+    }
+    let dir = store::dir()?;
+    store::claim(dir, key).map(|_lock| Claim {
+        key: *key,
+        #[cfg(not(target_arch = "wasm32"))]
+        _lock,
+    })
+}
+
+impl Claim {
+    /// The verdict another process published while this one waited.
+    pub(super) fn published(&self) -> Option<Discharged> {
+        let discharged = Arc::new(store::read(store::dir()?, &self.key)?);
+        STORE_HITS.fetch_add(1, Ordering::Relaxed);
+        if debug() {
+            eprintln!("safewir-check-cache: replayed {} after waiting for its claim", self.key.hex());
+        }
+        remember(self.key, Arc::clone(&discharged));
+        Some(discharged)
+    }
+
+    /// Record the verdict this claim established, persisting it whatever it
+    /// cost: every waiter is about to look for it.
+    pub(super) fn record(self, discharged: Discharged) {
+        remember(self.key, Arc::clone(&discharged));
+        if let Some(dir) = store::dir() {
+            store::write(dir, self.key, &discharged);
+        }
+    }
+}
+
 /// Keep an admitted verdict that took `elapsed` to establish.
 pub(super) fn record(key: FunctionCheckKey, discharged: Discharged, elapsed: Duration) {
     remember(key, Arc::clone(&discharged));
@@ -426,6 +487,28 @@ mod store {
         }
     }
 
+    /// Claim the check of `key`. `Some(Some(lock))`: nobody else was checking
+    /// it, so this process checks and publishes under the lock. `Some(None)`:
+    /// another process held it; this one waited for that holder to finish and
+    /// has already released the lock again, so it only re-reads the store.
+    /// If the holder published nothing (a rejection, a failed write) the
+    /// waiters then check in parallel rather than one lock-holder at a time,
+    /// which bounds the wait at one holder's check.
+    pub(super) fn claim(dir: &Path, key: &FunctionCheckKey) -> Option<Option<fs::File>> {
+        fs::create_dir_all(dir).ok()?;
+        let lock = fs::OpenOptions::new().create(true).truncate(false).write(true)
+            .open(dir.join(format!("{}.lock", file_name(key)))).ok()?;
+        match lock.try_lock() {
+            Ok(()) => Some(Some(lock)),
+            Err(fs::TryLockError::WouldBlock) => {
+                lock.lock().ok()?;
+                drop(lock);
+                Some(None)
+            }
+            Err(fs::TryLockError::Error(_)) => None,
+        }
+    }
+
     fn file_name(key: &FunctionCheckKey) -> String {
         key.hex()
     }
@@ -501,7 +584,7 @@ mod store {
 
         use super::super::super::super::TailSiteId;
         use super::super::FunctionCheckKey;
-        use super::{read, stamp_dir, write};
+        use super::{claim, read, stamp_dir, write};
 
         fn scratch(name: &str) -> std::path::PathBuf {
             let dir = std::env::temp_dir()
@@ -546,6 +629,31 @@ mod store {
             assert_ne!(foreign, dir);
             let _ = fs::remove_dir_all(&root);
         }
+
+        /// A second claimant blocks until the first publishes and releases, so
+        /// it reads the verdict instead of checking again. Without the lock the
+        /// second thread reads before the first has written and sees nothing.
+        #[test]
+        fn a_claim_excludes_a_concurrent_claim_until_the_verdict_is_published() {
+            let root = scratch("claim");
+            let dir = stamp_dir(&root);
+            let key = FunctionCheckKey([9; 32]);
+            let sites = [[3; 32]].into_iter().map(TailSiteId::from_digest).collect::<BTreeSet<_>>();
+            let held = claim(&dir, &key).expect("first claim").expect("the first claimant holds the lock");
+            let waiter = {
+                let dir = dir.clone();
+                std::thread::spawn(move || {
+                    let second = claim(&dir, &key).expect("second claim");
+                    assert!(second.is_none(), "a claimant that waited must not keep the lock");
+                    read(&dir, &key)
+                })
+            };
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            write(&dir, key, &sites);
+            drop(held);
+            assert_eq!(waiter.join().expect("waiter"), Some(sites));
+            let _ = fs::remove_dir_all(&root);
+        }
     }
 }
 
@@ -566,4 +674,8 @@ mod store {
     }
 
     pub(super) fn write(_: &Path, _: FunctionCheckKey, _: &BTreeSet<TailSiteId>) {}
+
+    pub(super) fn claim(_: &Path, _: &FunctionCheckKey) -> Option<()> {
+        None
+    }
 }

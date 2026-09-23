@@ -315,7 +315,13 @@ fn check_candidate<S: ModuleStage>(
         );
         let discharged = match key.as_ref().and_then(cache::lookup) {
             Some(replayed) => replayed,
-            None => {
+            None => 'check: {
+                // A large function may be under check in another process
+                // right now; wait for it and replay its verdict if it lands.
+                let claim = key.as_ref().and_then(|key| cache::claim(key, function.blocks.len()));
+                if let Some(published) = claim.as_ref().and_then(cache::Claim::published) {
+                    break 'check published;
+                }
                 let stopwatch = cache::Stopwatch::start();
                 let mut discharged = BTreeSet::new();
                 check_function(
@@ -330,8 +336,12 @@ fn check_candidate<S: ModuleStage>(
                     closure_layouts,
                 )?;
                 let discharged = std::sync::Arc::new(discharged);
-                if let Some(key) = key {
-                    cache::record(key, std::sync::Arc::clone(&discharged), stopwatch.elapsed());
+                match (claim, key) {
+                    (Some(claim), _) => claim.record(std::sync::Arc::clone(&discharged)),
+                    (None, Some(key)) => {
+                        cache::record(key, std::sync::Arc::clone(&discharged), stopwatch.elapsed());
+                    }
+                    (None, None) => {}
                 }
                 discharged
             }
