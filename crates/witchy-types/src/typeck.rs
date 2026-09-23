@@ -4423,6 +4423,60 @@ fn block_forms_view_of_local(block: &Block, locals: &HashSet<String>) -> bool {
     found
 }
 
+/// SEC-096 per-field parent-root provenance for a region result aggregate.
+/// A record, list, tuple or constructor may leave `region:` carrying views
+/// only when every view it can hold is proven parent-rooted: formed directly
+/// as `&place` over a root declared outside the region, read from a binding
+/// declared outside the region, or read from a region-local immutable `let`
+/// whose own value carries the same proof. Any other leaf (a call result, a
+/// computed value, a pattern binding) has unknown provenance and refuses.
+/// Parent bindings are stable here: assigning or `var`-writing back a
+/// view-bearing parent binding inside a region is refused separately.
+fn region_aggregate_views_parent_rooted(block: &Block, locals: &HashSet<String>) -> bool {
+    fn place_root(expression: &Expr) -> Option<&str> {
+        match expression {
+            Expr::Var(name) => Some(name),
+            Expr::Field { base, .. } | Expr::Index { base, .. } => place_root(base),
+            _ => None,
+        }
+    }
+    fn proven(expression: &Expr, locals: &HashSet<String>, proven_locals: &HashSet<String>) -> bool {
+        match expression {
+            Expr::Int(_) | Expr::Float(_) | Expr::Duration(_) | Expr::Str(_) | Expr::Bool(_) => true,
+            Expr::Var(name) => !locals.contains(name) || proven_locals.contains(name),
+            Expr::Unary { op: UnOp::Borrow, expr } => {
+                place_root(expr).is_some_and(|root| !locals.contains(root))
+            }
+            Expr::List(items) | Expr::Tuple(items) => {
+                items.iter().all(|item| proven(item, locals, proven_locals))
+            }
+            Expr::Ctor { args, .. } | Expr::AnonCtor { args, .. } => {
+                args.iter().all(|argument| proven(argument, locals, proven_locals))
+            }
+            _ => false,
+        }
+    }
+    let Some((tail, leading)) = block.stmts.split_last() else { return false };
+    let mut proven_locals = HashSet::new();
+    for statement in leading {
+        match statement {
+            Stmt::Let { name, mutable: false, value, .. } if proven(value, locals, &proven_locals) => {
+                proven_locals.insert(name.clone());
+            }
+            Stmt::Let { name, .. } => {
+                proven_locals.remove(name);
+            }
+            // A destructuring binding may shadow a proven name; do not model it.
+            Stmt::LetPattern { .. } => return false,
+            _ => {}
+        }
+    }
+    match tail {
+        Stmt::Expr(value) | Stmt::Return(Some(value)) => proven(value, locals, &proven_locals),
+        _ => false,
+    }
+}
+
 fn region_reference_root(block: &Block) -> Option<String> {
     fn root(expression: &Expr, aliases: &HashMap<String, String>) -> Option<String> {
         match expression {
@@ -9891,7 +9945,11 @@ impl Checker {
             // We admit only a direct, checked reference carrier rooted in a
             // parent binding.  An aggregate reference needs a per-field owner
             // witness which this contract deliberately does not mint yet.
+            // A view-carrying aggregate whose every view is syntactically
+            // parent-rooted is proven again, against the region's complete
+            // local set, in `region_promotion_fact`.
             if region_annotation_has_reference
+                && !region_aggregate_views_parent_rooted(block, &region_declared_local_names(block))
                 && (!block
                     .region
                     .as_ref()
@@ -9960,7 +10018,9 @@ impl Checker {
         let direct_borrow = matches!(tail, Some(Expr::Unary { op: UnOp::Borrow | UnOp::BorrowMut, .. }));
         let direct_view = matches!(self.resolve(ty), Ty::View(_));
         let carries_view = self.ty_carries_rooted_view(ty);
-        if carries_view && !direct_view {
+        let parent_rooted_aggregate =
+            carries_view && !direct_view && region_aggregate_views_parent_rooted(block, locals);
+        if carries_view && !direct_view && !parent_rooted_aggregate {
             return terr(
                 "cannot copy out a region aggregate carrying immutable views without per-field parent-root provenance"
                     .to_string(),
@@ -9978,7 +10038,7 @@ impl Checker {
                     .to_string(),
             );
         }
-        if annotation_is_reference || direct_borrow || direct_view {
+        if (annotation_is_reference && !parent_rooted_aggregate) || direct_borrow || direct_view {
             let Some(root) = region_reference_root(block) else {
                 return terr(
                     "cannot copy out an immutable view from `region:` without a parent-root provenance proof".to_string(),
