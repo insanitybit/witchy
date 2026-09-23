@@ -529,6 +529,36 @@ if cargo nextest --version >/dev/null 2>&1; then
     if [ -n "$gate_nextest" ]; then
         # shellcheck disable=SC2206 — selectors are `-p crate` / `--test name`.
         nextest_sel=($gate_nextest)
+        # merge_queue and test_for_paths live in the standalone
+        # merge-queue-tests package, which root Cargo cannot resolve: a
+        # selection mixing them with product targets (`--test merge_queue
+        # --test worktree`, from a diff touching scripts/merge-queue.sh and a
+        # root integration test) redded at t+0s with "no test target named
+        # `merge_queue` in default-run package" (build/seed-from-gate,
+        # 2026-09-23). Run them in the isolated queue shard, which selects
+        # their package, and keep only the product targets here. A selection
+        # of queue binaries alone keeps the main_queue_only path below.
+        product_sel=()
+        queue_sel_seen=0
+        sel_index=0
+        while [ "$sel_index" -lt "${#nextest_sel[@]}" ]; do
+            if [ "${nextest_sel[$sel_index]}" = "--test" ]; then
+                case "${nextest_sel[$((sel_index + 1))]:-}" in
+                    merge_queue | test_for_paths)
+                        queue_sel_seen=1
+                        sel_index=$((sel_index + 2))
+                        continue
+                        ;;
+                esac
+            fi
+            product_sel+=("${nextest_sel[$sel_index]}")
+            sel_index=$((sel_index + 1))
+        done
+        if [ "$queue_sel_seen" -eq 1 ] && [ "${#product_sel[@]}" -gt 0 ]; then
+            nextest_sel=("${product_sel[@]}")
+            gate_nextest="${product_sel[*]}"
+            queue_infra=1
+        fi
         if [ -n "$gate_nextest_expr" ]; then
             excl="($gate_nextest_expr)${excl:+ and ($excl)}"
         fi

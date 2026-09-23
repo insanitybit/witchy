@@ -648,6 +648,46 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
             .any(|line| line.starts_with(override_queue_prefix)),
         "queue-only selection did not honor the configured bounded width: {queue_only_args}",
     );
+    fs::write(&cargo_args_file, "").expect("clear fake cargo arguments");
+    // A diff touching the queue scripts AND a root integration test maps to a
+    // mixed selector. Root Cargo cannot resolve the standalone queue binary,
+    // so it must go to the isolated shard (turned on even without the
+    // coordinator's flag) while the product target stays in the main run.
+    let mixed = check_sh(&root, &["--fast"])
+        .env("PATH", &path)
+        .env("CARGO_TARGET_DIR", temp.path().join("target-mixed"))
+        .env("WITCHY_GATE_SCOPE", "all")
+        .env_remove("WITCHY_GATE_QUEUE_INFRA")
+        .env_remove("WITCHY_QUEUE_INFRA_JOBS")
+        .env("WITCHY_GATE_NEXTEST", "--test merge_queue --test worktree")
+        .env("FAKE_CARGO_ARGS_FILE", &cargo_args_file)
+        .env("WITCHY_FAILFAST_POLL", "0.05")
+        .env("WITCHY_STAGE_HEARTBEAT_INTERVAL", "0")
+        .output()
+        .expect("run mixed queue/product gate");
+    assert!(
+        mixed.status.success(),
+        "mixed queue/product fake gate failed: {}",
+        String::from_utf8_lossy(&mixed.stderr)
+    );
+    let mixed_args = fs::read_to_string(&cargo_args_file).expect("read mixed fake cargo arguments");
+    assert!(
+        !mixed_args
+            .lines()
+            .any(|line| line.starts_with("nextest run") && line.contains("--test merge_queue")
+                && !line.contains("-p merge-queue-tests")),
+        "root Cargo was asked to resolve the standalone queue target: {mixed_args}",
+    );
+    assert!(
+        mixed_args
+            .lines()
+            .any(|line| line.starts_with("nextest run") && line.contains("--test worktree")),
+        "the product target left the main run: {mixed_args}",
+    );
+    assert!(
+        mixed_args.lines().any(|line| line.starts_with(default_queue_prefix)),
+        "the queue binary did not run in the isolated shard: {mixed_args}",
+    );
     let invalid_width = check_sh(&root, &["--queue-infra"])
         .env("PATH", &path)
         .env("WITCHY_QUEUE_INFRA_JOBS", "0")
