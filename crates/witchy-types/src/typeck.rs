@@ -12376,9 +12376,9 @@ impl Checker {
                 self.pop();
                 result
             }
-            // A subscript lowers to a type-directed read: `list.at(xs, i)` for
-            // lists, `dict.at(d, k)` for dicts. Keep the call-shaped transient so
-            // the ordinary function signature enforces index/key types and bounds.
+            // A retained subscript gets a type-directed read. Slice views use
+            // their checked element projection; other collection forms keep
+            // the existing transient call and its index/key constraints.
             Expr::Index { base, index } => {
                 self.infer_index_parts(base, index).map(|(_, result)| result)
             }
@@ -16712,7 +16712,7 @@ pub fn annotate_checked_source(module: Module) -> Result<TypedModule, TypeError>
         .into_module();
     let mut lowered = crate::traits::lower_checked(records)
         .map_err(|message| TypeError { message })?;
-    witchy_syntax::parser::lower_sugar_module(&mut lowered);
+    witchy_syntax::parser::lower_sugar_module_retaining_subscripts(&mut lowered);
     annotate_checked(lowered)
 }
 
@@ -16723,7 +16723,7 @@ pub fn annotate_checked_source(module: Module) -> Result<TypedModule, TypeError>
 pub fn annotate_typed_async_projection(module: Module) -> Result<TypedModule, TypeError> {
     let mut lowered = crate::traits::lower_checked(module)
         .map_err(|message| TypeError { message })?;
-    witchy_syntax::parser::lower_sugar_module(&mut lowered);
+    witchy_syntax::parser::lower_sugar_module_retaining_subscripts(&mut lowered);
     annotate_checked(lowered)
 }
 

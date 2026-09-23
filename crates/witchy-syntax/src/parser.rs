@@ -4472,21 +4472,33 @@ pub fn desugar_while_let(pattern: Pattern, scrutinee: Expr, body: Block) -> Expr
 /// loop-variable names and see subscripts as plain `at` calls; the formatter,
 /// which never lowers, keeps the nodes so it can print `lo..hi` and `base[i]`.
 pub fn lower_sugar_module(m: &mut Module) {
+    lower_sugar_items(m, false);
+}
+
+/// [`lower_sugar_module`] for the checker-only projections that keep a subscript
+/// as `Expr::Index`, exactly as the ordinary source check sees it. A subscript
+/// is not a call to `list.at`: on a `&[T]` slice view it is the checked element
+/// read, which the user-callable `list.at` deliberately refuses (RFC-0167 §5).
+pub fn lower_sugar_module_retaining_subscripts(m: &mut Module) {
+    lower_sugar_items(m, true);
+}
+
+fn lower_sugar_items(m: &mut Module, retain_subscripts: bool) {
     for item in &mut m.items {
         match item {
-            Item::Function(f) => lower_sugar_block(&mut f.body),
+            Item::Function(f) => lower_sugar_block(&mut f.body, retain_subscripts),
             Item::Impl(im) => {
                 for meth in &mut im.methods {
-                    lower_sugar_block(&mut meth.body);
+                    lower_sugar_block(&mut meth.body, retain_subscripts);
                 }
             }
-            Item::Const { value, .. } => lower_sugar_expr(value),
+            Item::Const { value, .. } => lower_sugar_expr(value, retain_subscripts),
             Item::Type(_) | Item::Trait(_) | Item::TypeAlias { .. } | Item::Comptime(_) => {}
         }
     }
 }
 
-fn lower_sugar_block(b: &mut Block) {
+fn lower_sugar_block(b: &mut Block, retain_subscripts: bool) {
     for stmt in &mut b.stmts {
         match stmt {
             Stmt::Let { value, .. }
@@ -4494,40 +4506,44 @@ fn lower_sugar_block(b: &mut Block) {
             | Stmt::Assign { value, .. }
             | Stmt::Expr(value)
             | Stmt::Yield(value)
-            | Stmt::Return(Some(value)) => lower_sugar_expr(value),
+            | Stmt::Return(Some(value)) => lower_sugar_expr(value, retain_subscripts),
             Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
         }
     }
 }
 
-fn lower_sugar_expr(e: &mut Expr) {
+fn lower_sugar_expr(e: &mut Expr, retain_subscripts: bool) {
     match e {
         Expr::Range { lo, hi, inclusive } => {
-            lower_sugar_expr(lo);
-            lower_sugar_expr(hi);
+            lower_sugar_expr(lo, retain_subscripts);
+            lower_sugar_expr(hi, retain_subscripts);
             *e = desugar_range((**lo).clone(), (**hi).clone(), *inclusive);
         }
+        Expr::Index { base, index } if retain_subscripts => {
+            lower_sugar_expr(base, retain_subscripts);
+            lower_sugar_rooted_view_projection(index, retain_subscripts);
+        }
         Expr::Index { base, index } => {
-            lower_sugar_expr(base);
-            lower_sugar_expr(index);
+            lower_sugar_expr(base, retain_subscripts);
+            lower_sugar_expr(index, retain_subscripts);
             *e = desugar_index((**base).clone(), (**index).clone());
         }
         Expr::WhileLet { pattern, scrutinee, body } => {
-            lower_sugar_expr(scrutinee);
-            lower_sugar_block(body);
+            lower_sugar_expr(scrutinee, retain_subscripts);
+            lower_sugar_block(body, retain_subscripts);
             *e = desugar_while_let(pattern.clone(), (**scrutinee).clone(), body.clone());
         }
         Expr::MethodCall { receiver, method, args } => {
-            lower_sugar_expr(receiver);
+            lower_sugar_expr(receiver, retain_subscripts);
             for a in args.iter_mut() {
-                lower_sugar_expr(a);
+                lower_sugar_expr(a, retain_subscripts);
             }
             *e = desugar_method((**receiver).clone(), method.clone(), std::mem::take(args));
         }
         Expr::LabeledMethodCall { receiver, args, .. } => {
-            lower_sugar_expr(receiver);
+            lower_sugar_expr(receiver, retain_subscripts);
             for (_, a) in args.iter_mut() {
-                lower_sugar_expr(a);
+                lower_sugar_expr(a, retain_subscripts);
             }
         }
         Expr::Int(_) | Expr::Float(_) | Expr::Duration(_) | Expr::Str(_) | Expr::Bool(_)
@@ -4538,20 +4554,20 @@ fn lower_sugar_expr(e: &mut Expr) {
         | Expr::Ctor { args: xs, .. }
         | Expr::AnonCtor { args: xs, .. } => {
             for x in xs {
-                lower_sugar_expr(x);
+                lower_sugar_expr(x, retain_subscripts);
             }
         }
         // Normally already lowered to `Call`/`Block` by `keyword_args::resolve`
         // during linking; recurse defensively over the argument values.
         Expr::LabeledCall { args, .. } => {
             for (_, x) in args {
-                lower_sugar_expr(x);
+                lower_sugar_expr(x, retain_subscripts);
             }
         }
         Expr::Apply { func, args } => {
-            lower_sugar_expr(func);
+            lower_sugar_expr(func, retain_subscripts);
             for a in args {
-                lower_sugar_expr(a);
+                lower_sugar_expr(a, retain_subscripts);
             }
         }
         // `&items[i]` and `&items[lo..hi]` are rooted-view formations, not
@@ -4559,69 +4575,69 @@ fn lower_sugar_expr(e: &mut Expr) {
         // checking authenticates the root and projection facts; lowering an
         // index here would turn it into `list.at`, whose by-value contract is
         // intentionally unavailable to immutable slice carriers.
-        Expr::Unary { op: UnOp::Borrow, expr } => lower_sugar_rooted_view_place(expr),
+        Expr::Unary { op: UnOp::Borrow, expr } => lower_sugar_rooted_view_place(expr, retain_subscripts),
         Expr::Unary { expr, .. }
         | Expr::Try(expr)
         | Expr::As { expr, .. }
         | Expr::ExistentialPack { expr, .. }
         | Expr::ExistentialUpcast { expr, .. }
-        | Expr::Field { base: expr, .. } => lower_sugar_expr(expr),
+        | Expr::Field { base: expr, .. } => lower_sugar_expr(expr, retain_subscripts),
         Expr::ExistentialCall { receiver, args, .. } => {
-            lower_sugar_expr(receiver);
-            for arg in args { lower_sugar_expr(arg); }
+            lower_sugar_expr(receiver, retain_subscripts);
+            for arg in args { lower_sugar_expr(arg, retain_subscripts); }
         }
         Expr::RecordUpdate { name: _, base, fields } => {
-            lower_sugar_expr(base);
+            lower_sugar_expr(base, retain_subscripts);
             for (_, v) in fields {
-                lower_sugar_expr(v);
+                lower_sugar_expr(v, retain_subscripts);
             }
         }
         Expr::Record { fields, spread, .. } => {
             for (_, v) in fields {
-                lower_sugar_expr(v);
+                lower_sugar_expr(v, retain_subscripts);
             }
             if let Some(s) = spread {
-                lower_sugar_expr(s);
+                lower_sugar_expr(s, retain_subscripts);
             }
         }
         Expr::Binary { lhs, rhs, .. } => {
-            lower_sugar_expr(lhs);
-            lower_sugar_expr(rhs);
+            lower_sugar_expr(lhs, retain_subscripts);
+            lower_sugar_expr(rhs, retain_subscripts);
         }
         Expr::If { cond, then_block, else_block } => {
-            lower_sugar_expr(cond);
-            lower_sugar_block(then_block);
+            lower_sugar_expr(cond, retain_subscripts);
+            lower_sugar_block(then_block, retain_subscripts);
             if let Some(b) = else_block {
-                lower_sugar_block(b);
+                lower_sugar_block(b, retain_subscripts);
             }
         }
         Expr::While { cond, body } => {
-            lower_sugar_expr(cond);
-            lower_sugar_block(body);
+            lower_sugar_expr(cond, retain_subscripts);
+            lower_sugar_block(body, retain_subscripts);
         }
         Expr::For { iter, body, .. } => {
             // A range iterator stays a `Range`: the backends iterate it by
             // counting (no list materialized), so lower the bounds in place but
             // keep the node. Any other iterator (a real list) lowers normally.
             if let Expr::Range { lo, hi, .. } = iter.as_mut() {
-                lower_sugar_expr(lo);
-                lower_sugar_expr(hi);
+                lower_sugar_expr(lo, retain_subscripts);
+                lower_sugar_expr(hi, retain_subscripts);
             } else {
-                lower_sugar_expr(iter);
+                lower_sugar_expr(iter, retain_subscripts);
             }
-            lower_sugar_block(body);
+            lower_sugar_block(body, retain_subscripts);
         }
         Expr::Match { scrutinee, arms } => {
-            lower_sugar_expr(scrutinee);
+            lower_sugar_expr(scrutinee, retain_subscripts);
             for arm in arms.iter_mut() {
                 if let Some(g) = &mut arm.guard {
-                    lower_sugar_expr(g);
+                    lower_sugar_expr(g, retain_subscripts);
                 }
-                lower_sugar_expr(&mut arm.body);
+                lower_sugar_expr(&mut arm.body, retain_subscripts);
             }
         }
-        Expr::Lambda { body, .. } => lower_sugar_block(body),
-        Expr::Block(b) => lower_sugar_block(b),
+        Expr::Lambda { body, .. } => lower_sugar_block(body, retain_subscripts),
+        Expr::Block(b) => lower_sugar_block(b, retain_subscripts),
     }
 }
 
@@ -4629,24 +4645,24 @@ fn lower_sugar_expr(e: &mut Expr) {
 /// view, while retaining the `Index`/`Range` nodes that checker-side view facts
 /// authenticate.  These nodes are not general runtime sugar in this position:
 /// they specify the retained root projection of `&place`.
-fn lower_sugar_rooted_view_place(e: &mut Expr) {
+fn lower_sugar_rooted_view_place(e: &mut Expr, retain_subscripts: bool) {
     match e {
         Expr::Index { base, index } => {
-            lower_sugar_rooted_view_place(base);
-            lower_sugar_rooted_view_projection(index);
+            lower_sugar_rooted_view_place(base, retain_subscripts);
+            lower_sugar_rooted_view_projection(index, retain_subscripts);
         }
-        Expr::Field { base, .. } => lower_sugar_rooted_view_place(base),
-        _ => lower_sugar_expr(e),
+        Expr::Field { base, .. } => lower_sugar_rooted_view_place(base, retain_subscripts),
+        _ => lower_sugar_expr(e, retain_subscripts),
     }
 }
 
-fn lower_sugar_rooted_view_projection(e: &mut Expr) {
+fn lower_sugar_rooted_view_projection(e: &mut Expr, retain_subscripts: bool) {
     match e {
         Expr::Range { lo, hi, .. } => {
-            lower_sugar_expr(lo);
-            lower_sugar_expr(hi);
+            lower_sugar_expr(lo, retain_subscripts);
+            lower_sugar_expr(hi, retain_subscripts);
         }
-        _ => lower_sugar_expr(e),
+        _ => lower_sugar_expr(e, retain_subscripts),
     }
 }
 

@@ -167,6 +167,8 @@ mod rfc0165_loop_shadowing;
 mod rfc0165_reference_list_patterns;
 #[path = "misc/rfc0167_mode_interop.rs"]
 mod rfc0167_mode_interop;
+#[path = "misc/rfc0167_slice_subscript_in_async.rs"]
+mod rfc0167_slice_subscript_in_async;
 #[path = "misc/rfc0167_result_reference_carriers.rs"]
 mod rfc0167_result_reference_carriers;
 #[path = "misc/rfc0167_try_context_and_leading_minus.rs"]

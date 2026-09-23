@@ -2362,6 +2362,19 @@ fn derive_type(value: &Expr, scope: &[Local], catalog: &BorrowedShellCatalog) ->
             *qualifiers,
         )),
         Expr::Ctor { name, .. } | Expr::Record { name, .. } => catalog.constructor_types.get(name).cloned(),
+        // `&xs[lo..hi]` of a `List(T)` place is the slice view `&[T]`.
+        Expr::Unary { op: crate::ast::UnOp::Borrow, expr }
+            if matches!(expr.as_ref(), Expr::Index { index, .. } if matches!(index.as_ref(), Expr::Range { .. })) =>
+        {
+            let Expr::Index { base, .. } = expr.as_ref() else { return None };
+            match derive_type(base, scope, catalog)?.unqualified() {
+                Type::Named(name, arguments) if name == "List" && arguments.len() == 1 => Some(Type::Qualified(
+                    crate::ast::TypeQual::View,
+                    Box::new(Type::Slice(Box::new(arguments[0].clone()))),
+                )),
+                _ => None,
+            }
+        }
         // `&place` is an immutable view of the place's type.
         Expr::Unary { op: crate::ast::UnOp::Borrow, expr } => derive_type(expr, scope, catalog)
             .map(|inner| Type::Qualified(crate::ast::TypeQual::View, Box::new(inner))),
