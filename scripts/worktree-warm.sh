@@ -83,11 +83,13 @@ case "$copy_mode" in
         ;;
 esac
 
+# Every mode keeps mtimes (APFS clones do anyway): cargo compares them, and a
+# seeded fingerprint stamped "now" would look newer than an edited source.
 copy_path() {
     case "$copy_mode" in
         apfs) cp -Rc "$@" ;;
-        reflink) cp -R --reflink=auto "$@" ;;
-        copy) cp -R "$@" ;;
+        reflink) cp -R --reflink=auto --preserve=timestamps "$@" ;;
+        copy) cp -Rp "$@" ;;
     esac
 }
 
@@ -105,8 +107,8 @@ clone_deps() { # clone_deps <src-deps> <dest-deps>
             # forcing the caller onto a cold target.
             case "$mode" in
                 apfs) cp -Rc "$@" "$dst/" 2>/dev/null || true ;;
-                reflink) cp -R --reflink=auto "$@" "$dst/" 2>/dev/null || true ;;
-                copy) cp -R "$@" "$dst/" 2>/dev/null || true ;;
+                reflink) cp -R --reflink=auto --preserve=timestamps "$@" "$dst/" 2>/dev/null || true ;;
+                copy) cp -Rp "$@" "$dst/" 2>/dev/null || true ;;
             esac
         ' sh "$copy_mode" "$dst" {} +
 }
@@ -235,6 +237,24 @@ clone_or_gate_fallback() { # clone_or_gate_fallback <preferred-source> <dest> <m
     echo "worktree-warm: seeded $dest from $source ($copy_description, $skipped)"
 }
 
+# The build seed (scripts/build-seed.py) is the gate's target for the latest
+# landed master plus the gate checkout's file mtimes. Applying those mtimes is
+# what lets cargo judge the workspace crates Fresh: a fresh checkout stamps
+# every file with the current time, which alone rebuilt all of them. The main
+# checkout's target/ is the fallback, but nobody builds there, so it trails
+# master by days. Returns 1 (caller falls back) when there is no usable seed.
+seed_from_build_seed() { # seed_from_build_seed <main> <dest-worktree>
+    local main="$1" dest="$2" seed
+    [[ "${WITCHY_BUILD_SEED:-on}" == off ]] && return 1
+    seed="$(cd "$main/state/build-seed/current" 2>/dev/null && pwd -P)" || return 1
+    [[ -f "$seed/manifest.json" && -d "$seed/target" ]] || return 1
+    clone_testcache=0
+    clone_target "$seed/target" "$dest/target" || { rm -rf "$dest/target"; return 1; }
+    echo "worktree-warm: seeded $dest/target from $seed ($copy_description, incremental/ and deps/*.rcgu.o skipped)"
+    python3 "$(dirname "$0")/build-seed.py" apply "$seed" "$dest" \
+        || echo "worktree-warm: could not apply seed mtimes; workspace crates will rebuild" >&2
+}
+
 if [[ "${1:-}" == "--target-dir" ]]; then
     dest="$2"
     root="$(git rev-parse --show-toplevel)"
@@ -264,5 +284,6 @@ if [[ -e "$dest/target" ]]; then
     exit 0
 fi
 clone_testcache=0
-clone_or_gate_fallback "$main/target" "$dest/target" "$main" "$@"
+seed_from_build_seed "$main" "$dest" \
+    || clone_or_gate_fallback "$main/target" "$dest/target" "$main" "$@"
 seed_verdict_cache_from_best_source "$main" "$dest"

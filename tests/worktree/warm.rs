@@ -159,3 +159,106 @@ fn worktree_warm_uses_the_active_gate_generation_when_main_target_is_absent() {
     );
     assert!(String::from_utf8_lossy(&output.stdout).contains("stale witchy-testcache skipped"));
 }
+
+fn mtime(path: &Path) -> std::time::SystemTime {
+    std::fs::metadata(path).expect("stat fixture").modified().expect("mtime")
+}
+
+#[test]
+fn worktree_warm_prefers_the_build_seed_and_restores_matching_mtimes() {
+    let repo = temp_repo();
+    let root = repo.path();
+    git(root, &["config", "user.email", "worktree-test@witchy.invalid"]);
+    git(root, &["config", "user.name", "Witchy Worktree Test"]);
+    write(root, "src/same.rs", "fn same() {}\n");
+    write(root, "src/changed.rs", "fn before() {}\n");
+    git(root, &["add", "src"]);
+    git(root, &["commit", "--quiet", "-m", "fixture"]);
+    // The "gate checkout" built its target long after these sources were
+    // written, which is what an old mtime stands for.
+    let status = Command::new("touch")
+        .args(["-t", "200001010000", "src/same.rs", "src/changed.rs", "src"])
+        .current_dir(root)
+        .status()
+        .expect("run touch");
+    assert!(status.success());
+    write(root, "target/debug/deps/seeded.rlib", "gate build\n");
+    // A source outside the crate's directory is recorded by absolute path in
+    // cargo's dep-info; the seeded copy must name the worktree's file.
+    let gate = std::fs::canonicalize(root).expect("canonical fixture root");
+    let outside = format!("{}/std/set.witchy", gate.display());
+    std::fs::create_dir_all(root.join("target/debug/.fingerprint/unit-1"))
+        .expect("create fingerprint dir");
+    std::fs::write(root.join("target/debug/.fingerprint/unit-1/dep-lib-unit"), dep_info(&[
+        (0, "src/lib.rs"),
+        (1, &outside),
+    ]))
+    .expect("write dep-info");
+    let scripts = Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts");
+    let published = Command::new("python3")
+        .arg(scripts.join("build-seed.py"))
+        .args(["publish", ".", "target", "state/build-seed"])
+        .current_dir(root)
+        .output()
+        .expect("run build-seed.py publish");
+    assert!(published.status.success(), "{}", String::from_utf8_lossy(&published.stderr));
+    let finished = Command::new("python3")
+        .arg(scripts.join("build-seed.py"))
+        .args(["finish", "state/build-seed"])
+        .current_dir(root)
+        .output()
+        .expect("run build-seed.py finish");
+    assert!(finished.status.success(), "{}", String::from_utf8_lossy(&finished.stderr));
+
+    git(root, &["worktree", "add", "--quiet", "-b", "topic", "wt"]);
+    let worktree = root.join("wt");
+    write(&worktree, "src/changed.rs", "fn after() {}\n");
+    git(&worktree, &["commit", "--quiet", "-am", "edit"]);
+    // Checked out long before the seed was published: a differing file must
+    // still come out newer than anything in the seed.
+    let backdated = Command::new("touch")
+        .args(["-t", "199901010000", "src/changed.rs"])
+        .current_dir(&worktree)
+        .status()
+        .expect("run touch");
+    assert!(backdated.success());
+
+    let output = run_warm(root, &["wt"], Some("copy"));
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("state/build-seed/seed-"), "{stdout}");
+    assert!(stdout.contains("1/2 files match seed"), "{stdout}");
+    assert!(worktree.join("target/debug/deps/seeded.rlib").is_file());
+    assert_eq!(mtime(&worktree.join("src/same.rs")), mtime(&root.join("src/same.rs")));
+    assert!(mtime(&worktree.join("src/changed.rs")) > mtime(&root.join("src/changed.rs")));
+    assert_eq!(mtime(&worktree.join("src")), mtime(&root.join("src")));
+    // Even a plain copy keeps target mtimes: a fingerprint stamped "now"
+    // would look newer than a source the branch edited.
+    assert_eq!(
+        mtime(&worktree.join("target/debug/deps/seeded.rlib")),
+        mtime(&root.join("target/debug/deps/seeded.rlib")),
+    );
+    let seeded_worktree = std::fs::canonicalize(&worktree).expect("canonical worktree");
+    assert_eq!(
+        std::fs::read(worktree.join("target/debug/.fingerprint/unit-1/dep-lib-unit"))
+            .expect("read seeded dep-info"),
+        dep_info(&[
+            (0, "src/lib.rs"),
+            (1, &format!("{}/std/set.witchy", seeded_worktree.display())),
+        ]),
+    );
+}
+
+/// Cargo's encoded fingerprint dep-info, as scripts/build-seed.py decodes it.
+fn dep_info(files: &[(u8, &str)]) -> Vec<u8> {
+    let mut out = vec![1, 0, 0, 0, 0xff, 1];
+    out.extend((files.len() as u32).to_le_bytes());
+    for (kind, path) in files {
+        out.push(*kind);
+        out.extend((path.len() as u32).to_le_bytes());
+        out.extend(path.as_bytes());
+        out.push(0);
+    }
+    out.extend(0u32.to_le_bytes());
+    out
+}

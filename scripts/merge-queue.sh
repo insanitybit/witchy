@@ -199,6 +199,34 @@ gate_target_generation() {
     printf '%s\n' "$selected"
 }
 
+# Snapshot a gate target that was just built from the landed master tip as
+# the seed for new agent worktrees (scripts/build-seed.py explains why the
+# main checkout's target/ is not good enough). `publish` runs under the gate
+# lock so the next attempt cannot write the target mid-clone, and copies only
+# what the gate wrote since the previous seed; call finish_build_seed after
+# releasing the lock to fill in the rest. A failure only leaves worktrees on
+# the older seed.
+publish_build_seed() { # publish_build_seed <generation>
+    [ "${MERGE_QUEUE_BUILD_SEED:-on}" != off ] || return 0
+    local target="$gate_wt/$1" started
+    [ -d "$target/debug" ] && [ -f "$root/scripts/build-seed.py" ] || return 0
+    started="$(date +%s)"
+    if python3 "$root/scripts/build-seed.py" publish "$gate_wt" "$target" \
+        "$root/state/build-seed" >>"$qdir/build-seed.log" 2>&1; then
+        note "staged build seed from $1 ($(( $(date +%s) - started ))s under the lock)"
+        build_seed_staged=1
+    else
+        note "build seed publish from $1 failed (see $qdir/build-seed.log)"
+    fi
+}
+
+finish_build_seed() {
+    [ "${build_seed_staged:-0}" = 1 ] || return 0
+    build_seed_staged=0
+    ( nice -n 10 python3 "$root/scripts/build-seed.py" finish "$root/state/build-seed" \
+        >>"$qdir/build-seed.log" 2>&1 & )
+}
+
 inactive_gate_target_generation() { # inactive_gate_target_generation <active>
     case "$1" in
         target) printf 'target-prewarm\n' ;;
@@ -3209,7 +3237,9 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
         consume_queue_entry "$bf" "${batch_ids[$i]}" "${batch_submitted_shas[$i]}" \
             "${batch_attempt_ids[$i]}" || true
     done
+    publish_build_seed "$(gate_target_generation)"
     release_lock
+    finish_build_seed
     # Reclaim the merged branches' worktrees (their multi-GB target/) right away.
     # (The branch refs themselves are NOT force-moved: under batching the merged
     # sha contains OTHER branches' commits, and pointing an agent's branch at it
