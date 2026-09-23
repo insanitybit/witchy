@@ -690,14 +690,20 @@ impl<'a> Engine<'a> {
         function_id: FunctionId,
         arguments: Vec<InterpreterValue>,
     ) -> Result<FunctionExit, InterpretError> {
-        let function = self.function(function_id)?.clone();
-        let entry = self.block(&function, function.entry)?;
+        // The module outlives the engine's mutable state (`&'a`), so the
+        // function and its blocks are borrowed from it directly. This used to
+        // clone the whole function per frame and every block per entry.
+        let module = self.module;
+        let function = module.functions().iter()
+            .find(|function| function.id == function_id)
+            .ok_or(InterpretError::FunctionNotFound(function_id))?;
+        let entry = self.block(function, function.entry)?;
         let mut values = BTreeMap::new();
         self.bind_parameters(entry, arguments, &mut values)?;
         let mut block_id = function.entry;
 
         loop {
-            let block = self.block(&function, block_id)?.clone();
+            let block = self.block(function, block_id)?;
             for operation in &block.operations {
                 self.bump_step()?;
                 self.execute_operation(operation, &mut values)?;
@@ -707,7 +713,7 @@ impl<'a> Engine<'a> {
             match &block.terminator {
                 Terminator::Branch { target, arguments } => {
                     let next = self.read_values(arguments, &values)?;
-                    self.bind_parameters(self.block(&function, *target)?, next, &mut values)?;
+                    self.bind_parameters(self.block(function, *target)?, next, &mut values)?;
                     block_id = *target;
                 }
                 Terminator::BranchIf {
@@ -724,7 +730,7 @@ impl<'a> Engine<'a> {
                         (*else_target, else_arguments)
                     };
                     let next = self.read_values(arguments, &values)?;
-                    self.bind_parameters(self.block(&function, target)?, next, &mut values)?;
+                    self.bind_parameters(self.block(function, target)?, next, &mut values)?;
                     block_id = target;
                 }
                 Terminator::Return { values: returned } => {
@@ -2219,15 +2225,32 @@ impl<'a> Engine<'a> {
         if self.object(destination_object)?.immutable {
             return Err(InterpretError::ImmutableObject(destination_object));
         }
-        let mut moved = Vec::with_capacity(length as usize);
-        for offset in 0..length {
-            let key = CellKey::Element(source_start.checked_add(offset).ok_or(InterpretError::ArithmeticTrap)?);
-            let cell = match transfer {
-                RangeTransfer::Copy => self.object(source_object)?.cells.get(&key).cloned(),
-                RangeTransfer::Move => self.object_mut(source_object)?.cells.remove(&key),
-            };
-            moved.push(cell.ok_or(InterpretError::UninitializedPlace)?);
-        }
+        // Element keys of one object are contiguous in `CellKey` order, so
+        // the source range is one `range` scan (copy) or one `split_off`
+        // detachment (move) rather than a lookup or removal per element: a
+        // long list copied per append was a B-tree search per cell.
+        let source_end = source_start.checked_add(length).ok_or(InterpretError::ArithmeticTrap)?;
+        let span = CellKey::Element(source_start)..CellKey::Element(source_end);
+        let moved: Vec<InterpreterValue> = match transfer {
+            RangeTransfer::Copy => {
+                let cells = &self.object(source_object)?.cells;
+                let run = cells.range(span).map(|(_, cell)| cell.clone()).collect::<Vec<_>>();
+                if run.len() as u64 != length {
+                    return Err(InterpretError::UninitializedPlace);
+                }
+                run
+            }
+            RangeTransfer::Move => {
+                let cells = &mut self.object_mut(source_object)?.cells;
+                if cells.range(span).count() as u64 != length {
+                    return Err(InterpretError::UninitializedPlace);
+                }
+                let mut detached = cells.split_off(&CellKey::Element(source_start));
+                let mut after = detached.split_off(&CellKey::Element(source_end));
+                cells.append(&mut after);
+                detached.into_values().collect()
+            }
+        };
         // A copied reference cell is a second owner of its object.
         if matches!(transfer, RangeTransfer::Copy) {
             for cell in &moved {
@@ -2236,17 +2259,22 @@ impl<'a> Engine<'a> {
                 }
             }
         }
+        let destination_end = destination_start.checked_add(length).ok_or(InterpretError::ArithmeticTrap)?;
         let cells = &mut self.object_mut(destination_object)?.cells;
-        for (offset, cell) in moved.into_iter().enumerate() {
-            let key = CellKey::Element(destination_start.checked_add(offset as u64).ok_or(InterpretError::ArithmeticTrap)?);
-            // The checker requires the destination range to be empty; the
-            // oracle states the same rule so an overwritten reference cell
-            // can never be silently dropped.
-            if matches!(cells.get(&key), Some(InterpreterValue::ObjectRef(_))) {
-                return Err(InterpretError::UnsupportedOperation("range copy over a stored reference"));
-            }
-            cells.insert(key, cell);
+        // The checker requires the destination range to be empty; the oracle
+        // states the same rule so an overwritten reference cell can never be
+        // silently dropped.
+        if cells.range(CellKey::Element(destination_start)..CellKey::Element(destination_end))
+            .any(|(_, cell)| matches!(cell, InterpreterValue::ObjectRef(_)))
+        {
+            return Err(InterpretError::UnsupportedOperation("range copy over a stored reference"));
         }
+        // Sorted input builds the run in bulk; `append` merges it, replacing
+        // any scalar cell already in the range exactly as `insert` did.
+        let mut run = moved.into_iter().zip(destination_start..)
+            .map(|(cell, index)| (CellKey::Element(index), cell))
+            .collect::<BTreeMap<_, _>>();
+        cells.append(&mut run);
         Ok(())
     }
 
@@ -3006,10 +3034,12 @@ impl<'a> Engine<'a> {
         function: &'b Function,
         id: BlockId,
     ) -> Result<&'b BasicBlock, InterpretError> {
-        function
-            .blocks
-            .iter()
-            .find(|block| block.id == id)
+        // Blocks are normally stored at their id; confirm before trusting it,
+        // and fall back to the search for any other order.
+        usize::try_from(id.get()).ok()
+            .and_then(|index| function.blocks.get(index))
+            .filter(|block| block.id == id)
+            .or_else(|| function.blocks.iter().find(|block| block.id == id))
             .ok_or(InterpretError::BlockNotFound(id))
     }
 
