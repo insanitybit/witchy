@@ -378,9 +378,10 @@ fn type_is_reference_bearing(ty: &Type, bearing: &HashSet<String>) -> bool {
 }
 
 /// Returns whether a type contains a reference that is not an immutable
-/// RFC-0167 rooted view. Direct structural view shapes continue to canonical
-/// ABI admission without erasure; named reference-bearing carriers remain
-/// closed at linking because their per-field root provenance is opaque here.
+/// RFC-0167 rooted view, directly or through a nominal type in `non_rooted`.
+/// View shapes, including nominal records whose fields carry only views,
+/// continue to canonical ABI admission without erasure; canonical lowering
+/// authenticates each field's root and projection.
 fn type_mentions_non_rooted_reference(ty: &Type, bearing: &HashSet<String>) -> bool {
     match ty {
         Type::Qualified(TypeQual::View, inner) => type_mentions_non_rooted_reference(inner, bearing),
@@ -417,9 +418,9 @@ fn function_has_only_rooted_views(function: &Function, bearing: &HashSet<String>
             .is_none_or(|ty| !type_mentions_non_rooted_reference(ty, bearing))
 }
 
-/// Compute the opt-only nominal interface transitively. A normal importer must
-/// not be able to hide a reference merely by naming an opt type whose fields
-/// (or nested nominal fields) contain one.
+/// Compute, transitively, the nominal types whose fields reach any reference.
+/// This feeds the `reference_bearing` signature bit; rooted-view admission is
+/// decided separately by [`non_rooted_reference_type_names`].
 fn reference_bearing_type_names(modules: &[(String, Module)]) -> HashSet<String> {
     let mut bearing = HashSet::new();
     loop {
@@ -439,6 +440,35 @@ fn reference_bearing_type_names(modules: &[(String, Module)]) -> HashSet<String>
         }
         if bearing.len() == before {
             return bearing;
+        }
+    }
+}
+
+/// Compute the opt-only nominal interface transitively: the types whose fields
+/// (or nested nominal fields) reach a reference that is NOT an RFC-0167
+/// immutable rooted view — the retired lifetime/`&mut` carriers only the
+/// migration grammar can still spell. A normal importer must not hide such a
+/// reference by naming the type. Types carrying only `&T` / `&[T]` views are
+/// ordinary values in both modes (RFC-0167 §5-§6) and stay nameable.
+fn non_rooted_reference_type_names(modules: &[(String, Module)]) -> HashSet<String> {
+    let mut non_rooted = HashSet::new();
+    loop {
+        let before = non_rooted.len();
+        for (_, module) in modules {
+            for item in &module.items {
+                let Item::Type(definition) = item else { continue };
+                if definition.variants.iter().any(|variant| {
+                    variant
+                        .fields
+                        .iter()
+                        .any(|field| type_mentions_non_rooted_reference(field, &non_rooted))
+                }) {
+                    non_rooted.insert(definition.name.clone());
+                }
+            }
+        }
+        if non_rooted.len() == before {
+            return non_rooted;
         }
     }
 }
@@ -488,8 +518,8 @@ fn named_reference_type<'a>(ty: &'a Type, bearing: &HashSet<String>) -> Option<&
 }
 
 fn check_normal_reference_type_interfaces(modules: &[(String, Module)]) -> Result<(), LinkError> {
-    let bearing = reference_bearing_type_names(modules);
-    let bearing_traits = reference_bearing_trait_names(modules, &bearing);
+    let bearing = non_rooted_reference_type_names(modules);
+    let bearing_traits = non_rooted_reference_trait_names(modules, &bearing);
     if bearing.is_empty() && bearing_traits.is_empty() {
         return Ok(());
     }
@@ -521,14 +551,14 @@ fn check_normal_reference_type_interfaces(modules: &[(String, Module)]) -> Resul
             for ty in types {
                 if let Some(name) = named_reference_type(ty, &bearing) {
                     return lerr(format!(
-                        "normal module `{module_name}` cannot name reference-bearing opt type `{name}`; \
-                         expose a conventional value type instead"
+                        "normal module `{module_name}` cannot name non-rooted-reference opt type `{name}`; \
+                         only immutable rooted views (`&T`, `&[T]`) cross this boundary"
                     ));
                 }
                 if let Some(name) = named_reference_trait(ty, &bearing_traits) {
                     return lerr(format!(
-                        "normal module `{module_name}` cannot name reference-bearing opt trait `{name}`; \
-                         expose a conventional value type instead"
+                        "normal module `{module_name}` cannot name non-rooted-reference opt trait `{name}`; \
+                         only immutable rooted views (`&T`, `&[T]`) cross this boundary"
                     ));
                 }
             }
@@ -537,9 +567,9 @@ fn check_normal_reference_type_interfaces(modules: &[(String, Module)]) -> Resul
     Ok(())
 }
 
-fn reference_bearing_trait_names(
+fn non_rooted_reference_trait_names(
     modules: &[(String, Module)],
-    bearing_types: &HashSet<String>,
+    non_rooted_types: &HashSet<String>,
 ) -> HashSet<String> {
     modules
         .iter()
@@ -551,7 +581,7 @@ fn reference_bearing_trait_names(
                     .iter()
                     .filter_map(|param| param.ty.as_ref())
                     .chain(method.ret.iter())
-                    .any(|ty| type_mentions_reference(ty) || type_mentions_named_reference(ty, bearing_types))
+                    .any(|ty| type_mentions_non_rooted_reference(ty, non_rooted_types))
             }) => Some(trait_def.name.clone()),
             _ => None,
         })
@@ -2385,6 +2415,7 @@ where
     check_sealing(&modules, &origin_tables, mode, entry)?;
 
     let reference_bearing = reference_bearing_type_names(&modules);
+    let non_rooted = non_rooted_reference_type_names(&modules);
     let mut fns: FnTable = HashMap::new();
     for (name, m) in &modules {
         let mut names: HashMap<String, EtaSig> = HashMap::new();
@@ -2412,7 +2443,7 @@ where
                             .ret
                             .as_ref()
                             .is_some_and(|ty| type_is_reference_bearing(ty, &reference_bearing)),
-                        rooted_view_only: function_has_only_rooted_views(f, &reference_bearing),
+                        rooted_view_only: function_has_only_rooted_views(f, &non_rooted),
                         method_alias: false,
                         alias_target: None,
                     },
@@ -2453,7 +2484,7 @@ where
                                 || method.ret.as_ref().is_some_and(|ty| {
                                     type_is_reference_bearing(ty, &reference_bearing)
                                 }),
-                            rooted_view_only: function_has_only_rooted_views(method, &reference_bearing),
+                            rooted_view_only: function_has_only_rooted_views(method, &non_rooted),
                             method_alias: true,
                             alias_target: Some(inherent_method_symbol(im, &method.name)),
                         },
@@ -3223,6 +3254,7 @@ pub fn mark_definition_site_expr(
     )?;
 
     let reference_bearing = reference_bearing_type_names(&available);
+    let non_rooted = non_rooted_reference_type_names(&available);
     let mut fns = FnTable::new();
     for (module_name, module) in &available {
         let mut names = HashMap::new();
@@ -3254,7 +3286,7 @@ pub fn mark_definition_site_expr(
                             .ret
                             .as_ref()
                             .is_some_and(|ty| type_is_reference_bearing(ty, &reference_bearing)),
-                        rooted_view_only: function_has_only_rooted_views(function, &reference_bearing),
+                        rooted_view_only: function_has_only_rooted_views(function, &non_rooted),
                         method_alias: false,
                         alias_target: None,
                     },
@@ -5935,7 +5967,7 @@ mod tests {
         )
         .expect_err("normal source must not name a reference-bearing opt type");
         assert!(
-            error.message.contains("reference-bearing opt type `api.Holder`"),
+            error.message.contains("non-rooted-reference opt type `api.Holder`"),
             "{}",
             error.message
         );
@@ -5959,7 +5991,7 @@ mod tests {
         )
         .expect_err("normal source must not name a reference-bearing opt trait");
         assert!(
-            error.message.contains("reference-bearing opt trait `api.Read`"),
+            error.message.contains("non-rooted-reference opt trait `api.Read`"),
             "{}",
             error.message
         );

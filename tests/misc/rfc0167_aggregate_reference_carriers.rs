@@ -71,8 +71,7 @@ fn bad() -> Held:
     let error = witchy::resolve_std_only_checked(source)
         .expect_err("an aggregate view may not smuggle a region-owned root");
     assert!(
-        error.to_string().contains("reference-bearing opt type")
-            || error.to_string().contains("per-field parent-root provenance")
+        error.to_string().contains("per-field parent-root provenance")
             || error.to_string().contains("region-born view"),
         "region-owned aggregate rejection should retain a fail-closed diagnostic: {error}"
     );

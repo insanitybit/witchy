@@ -61,8 +61,7 @@ fn bad() -> Result(&Int, String):
     let error = witchy::resolve_std_only_checked(source)
         .expect_err("a Result view may not smuggle a region-owned root");
     assert!(
-        error.to_string().contains("reference-bearing opt type")
-            || error.to_string().contains("region-born view")
+        error.to_string().contains("region-born view")
             || error.to_string().contains("per-field parent-root provenance")
             || error.to_string().contains("rooted"),
         "region-owned Result rejection should retain a fail-closed diagnostic: {error}"

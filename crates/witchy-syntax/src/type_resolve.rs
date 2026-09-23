@@ -276,11 +276,12 @@ struct World {
     fns: HashMap<String, HashSet<String>>,
     /// Public functions exported by a module. Used for cross-module imports.
     pub_fns: HashMap<String, HashSet<String>>,
-    /// Types whose declaration carries a first-class reference. A normal module
-    /// must not be able to spell these through an opt-mode interface.
-    reference_bearing_types: HashMap<String, HashSet<String>>,
-    /// Traits whose method surface carries a first-class reference.
-    reference_bearing_traits: HashMap<String, HashSet<String>>,
+    /// Types whose declaration carries a non-rooted (retired lifetime/`&mut`)
+    /// reference. A normal module must not spell these through an opt-mode
+    /// interface; immutable `&T` / `&[T]` view carriers are ordinary values.
+    non_rooted_reference_types: HashMap<String, HashSet<String>>,
+    /// Traits whose method surface carries a non-rooted reference.
+    non_rooted_reference_traits: HashMap<String, HashSet<String>>,
     /// Modules that opted into the explicit reference surface.
     opt_modules: HashSet<String>,
     /// module -> the ambient-named types it declares (`cmp.Ordering`, `set.Set`,
@@ -385,8 +386,8 @@ impl World {
         let mut traits: HashMap<String, HashSet<String>> = HashMap::new();
         let mut fns: HashMap<String, HashSet<String>> = HashMap::new();
         let mut pub_fns: HashMap<String, HashSet<String>> = HashMap::new();
-        let mut reference_bearing_types: HashMap<String, HashSet<String>> = HashMap::new();
-        let mut reference_bearing_traits: HashMap<String, HashSet<String>> = HashMap::new();
+        let mut non_rooted_reference_types: HashMap<String, HashSet<String>> = HashMap::new();
+        let mut non_rooted_reference_traits: HashMap<String, HashSet<String>> = HashMap::new();
         let mut opt_modules = HashSet::new();
         let mut ambient: HashMap<String, HashSet<String>> = HashMap::new();
         let mut ambient_traits: HashMap<String, HashSet<String>> = HashMap::new();
@@ -410,9 +411,9 @@ impl World {
                             .variants
                             .iter()
                             .flat_map(|variant| &variant.fields)
-                            .any(type_mentions_reference)
+                            .any(type_mentions_non_rooted_reference)
                         {
-                            reference_bearing_types.entry(name.clone()).or_default().insert(t.name.clone());
+                            non_rooted_reference_types.entry(name.clone()).or_default().insert(t.name.clone());
                         }
                         if t.sealed {
                             mt.sealed.insert(t.name.clone());
@@ -436,7 +437,7 @@ impl World {
                     Item::Trait(tr) => {
                         trset.insert(tr.name.clone());
                         if tr.methods.iter().any(method_mentions_reference) {
-                            reference_bearing_traits.entry(name.clone()).or_default().insert(tr.name.clone());
+                            non_rooted_reference_traits.entry(name.clone()).or_default().insert(tr.name.clone());
                         }
                     }
                     Item::TypeAlias { name: alias, .. } => {
@@ -459,8 +460,8 @@ impl World {
             traits,
             fns,
             pub_fns,
-            reference_bearing_types,
-            reference_bearing_traits,
+            non_rooted_reference_types,
+            non_rooted_reference_traits,
             opt_modules,
             ambient,
             ambient_traits,
@@ -490,20 +491,20 @@ impl World {
         self.traits.get(module).is_some_and(|traits| traits.contains(name))
     }
 
-    fn reference_bearing_type_is_hidden_from(&self, importer: &str, module: &str, ty: &str) -> bool {
+    fn non_rooted_reference_type_is_hidden_from(&self, importer: &str, module: &str, ty: &str) -> bool {
         !self.opt_modules.contains(importer)
             && self.opt_modules.contains(module)
             && self
-                .reference_bearing_types
+                .non_rooted_reference_types
                 .get(module)
                 .is_some_and(|types| types.contains(ty))
     }
 
-    fn reference_bearing_trait_is_hidden_from(&self, importer: &str, module: &str, tr: &str) -> bool {
+    fn non_rooted_reference_trait_is_hidden_from(&self, importer: &str, module: &str, tr: &str) -> bool {
         !self.opt_modules.contains(importer)
             && self.opt_modules.contains(module)
             && self
-                .reference_bearing_traits
+                .non_rooted_reference_traits
                 .get(module)
                 .is_some_and(|traits| traits.contains(tr))
     }
@@ -569,20 +570,25 @@ impl World {
     }
 }
 
-fn type_mentions_reference(ty: &Type) -> bool {
+/// Whether `ty` spells a reference that is not an RFC-0167 immutable rooted
+/// view: the retired lifetime/`&mut` carriers only the migration grammar still
+/// parses. `&T` / `&[T]` views are ordinary values in both modes, so a type or
+/// trait carrying only views is nameable from normal modules.
+fn type_mentions_non_rooted_reference(ty: &Type) -> bool {
     match ty {
-        Type::Qualified(TypeQual::View | TypeQual::Borrow(_) | TypeQual::LegacyBorrow(_) | TypeQual::BorrowMut(_), _) => true,
-        Type::Qualified(_, inner) => type_mentions_reference(inner),
-        Type::Slice(elem) => type_mentions_reference(elem),
+        Type::Qualified(TypeQual::Borrow(_) | TypeQual::LegacyBorrow(_) | TypeQual::BorrowMut(_), _) => true,
+        Type::Qualified(_, inner) => type_mentions_non_rooted_reference(inner),
+        Type::Slice(elem) => type_mentions_non_rooted_reference(elem),
         Type::Named(_, arguments) | Type::Tuple(arguments) | Type::Dyn(_, arguments) => {
-            arguments.iter().any(type_mentions_reference)
+            arguments.iter().any(type_mentions_non_rooted_reference)
         }
         Type::RecordCompose { base, fields } => {
-            type_mentions_reference(base)
-                || fields.iter().any(|(_, field)| type_mentions_reference(field))
+            type_mentions_non_rooted_reference(base)
+                || fields.iter().any(|(_, field)| type_mentions_non_rooted_reference(field))
         }
         Type::Fn(parameters, result, _, _) => {
-            parameters.iter().any(type_mentions_reference) || type_mentions_reference(result)
+            parameters.iter().any(type_mentions_non_rooted_reference)
+                || type_mentions_non_rooted_reference(result)
         }
     }
 }
@@ -592,8 +598,8 @@ fn method_mentions_reference(method: &MethodSig) -> bool {
         .params
         .iter()
         .filter_map(|parameter| parameter.ty.as_ref())
-        .any(type_mentions_reference)
-        || method.ret.as_ref().is_some_and(type_mentions_reference)
+        .any(type_mentions_non_rooted_reference)
+        || method.ret.as_ref().is_some_and(type_mentions_non_rooted_reference)
 }
 
 /// The per-module resolution maps: what each bare name canonicalizes to.
@@ -799,14 +805,14 @@ impl<'a> Scope<'a> {
                          function named `{name}`, and no trait named `{name}`"
                     ));
                 }
-                if brought_type && world.reference_bearing_type_is_hidden_from(home, srcmod, name) {
+                if brought_type && world.non_rooted_reference_type_is_hidden_from(home, srcmod, name) {
                     return lerr(format!(
-                        "normal module `{home}` cannot import reference-bearing opt type `{srcmod}.{name}`"
+                        "normal module `{home}` cannot import non-rooted-reference opt type `{srcmod}.{name}`"
                     ));
                 }
-                if brought_trait && world.reference_bearing_trait_is_hidden_from(home, srcmod, name) {
+                if brought_trait && world.non_rooted_reference_trait_is_hidden_from(home, srcmod, name) {
                     return lerr(format!(
-                        "normal module `{home}` cannot import reference-bearing opt trait `{srcmod}.{name}`"
+                        "normal module `{home}` cannot import non-rooted-reference opt trait `{srcmod}.{name}`"
                     ));
                 }
                 if let Some(prev) = unqual.get(name.as_str()) {
@@ -941,9 +947,9 @@ impl<'a> Scope<'a> {
                 }
                 return lerr(format!("module `{module}` has no type `{ty}`"));
             }
-            if self.world.reference_bearing_type_is_hidden_from(self.home, module, ty) {
+            if self.world.non_rooted_reference_type_is_hidden_from(self.home, module, ty) {
                 return lerr(format!(
-                    "normal module `{}` cannot name reference-bearing opt type `{name}`",
+                    "normal module `{}` cannot name non-rooted-reference opt type `{name}`",
                     self.home
                 ));
             }
@@ -1020,10 +1026,10 @@ impl<'a> Scope<'a> {
             }
             if self
                 .world
-                .reference_bearing_trait_is_hidden_from(self.home, module, trait_name)
+                .non_rooted_reference_trait_is_hidden_from(self.home, module, trait_name)
             {
                 return lerr(format!(
-                    "normal module `{}` cannot name reference-bearing opt trait `{name}`",
+                    "normal module `{}` cannot name non-rooted-reference opt trait `{name}`",
                     self.home
                 ));
             }
@@ -1036,10 +1042,10 @@ impl<'a> Scope<'a> {
             if let Some((module, trait_name)) = canonical.split_once('.')
                 && self
                     .world
-                    .reference_bearing_trait_is_hidden_from(self.home, module, trait_name)
+                    .non_rooted_reference_trait_is_hidden_from(self.home, module, trait_name)
             {
                 return lerr(format!(
-                    "normal module `{}` cannot name reference-bearing opt trait `{canonical}`",
+                    "normal module `{}` cannot name non-rooted-reference opt trait `{canonical}`",
                     self.home
                 ));
             }
@@ -1978,7 +1984,7 @@ mod tests {
         ];
         let err = resolve(&mut modules)
         .expect_err("normal source must not import a reference-bearing opt type");
-        assert!(err.message.contains("reference-bearing opt type `api.View`"), "{}", err.message);
+        assert!(err.message.contains("non-rooted-reference opt type `api.View`"), "{}", err.message);
 
         let mut modules = vec![
             ("api".into(), parse_reference_migration(api).expect("parse migration api")),
@@ -1986,7 +1992,7 @@ mod tests {
         ];
         let err = resolve(&mut modules)
         .expect_err("normal source must not name a reference-bearing opt type");
-        assert!(err.message.contains("reference-bearing opt type `api.View`"), "{}", err.message);
+        assert!(err.message.contains("non-rooted-reference opt type `api.View`"), "{}", err.message);
 
         let mut modules = vec![
             ("api".into(), parse_reference_migration(api).expect("parse migration api")),
@@ -1994,7 +2000,7 @@ mod tests {
         ];
         let err = resolve(&mut modules)
         .expect_err("normal source must not import a reference-bearing opt trait");
-        assert!(err.message.contains("reference-bearing opt trait `api.Inspect`"), "{}", err.message);
+        assert!(err.message.contains("non-rooted-reference opt trait `api.Inspect`"), "{}", err.message);
 
         let mut modules = vec![
             ("api".into(), parse_reference_migration(api).expect("parse migration api")),
@@ -2002,7 +2008,7 @@ mod tests {
         ];
         let err = resolve(&mut modules)
         .expect_err("plain imports must not put a reference-bearing opt trait in normal scope");
-        assert!(err.message.contains("reference-bearing opt trait `api.Inspect`"), "{}", err.message);
+        assert!(err.message.contains("non-rooted-reference opt trait `api.Inspect`"), "{}", err.message);
 
         resolve_src(&[
             ("api", "mode opt\n\ntype Token:\n    value: Int\n"),

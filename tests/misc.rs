@@ -227,6 +227,8 @@ mod rfc0167_list_view;
 mod bug643_var_list_loop;
 #[path = "misc/rfc0167_record_view.rs"]
 mod rfc0167_record_view;
+#[path = "misc/rfc0167_normal_view_bearing_types.rs"]
+mod rfc0167_normal_view_bearing_types;
 #[path = "misc/rfc0167_slice_index_read.rs"]
 mod rfc0167_slice_index_read;
 #[path = "misc/rfc0167_try_int_view_payload.rs"]
