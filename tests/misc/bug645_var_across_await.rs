@@ -61,35 +61,18 @@ fn assert_async_output(label: &str, source: &str, expected: &[&str]) {
         "{label} admitted Wasm releases all roots");
 }
 
+/// One program, one async compile: every case shares the module so the test
+/// stays within the gate's per-test time budget.
 #[test]
-fn a_var_reassigned_between_suspensions_is_read_after_them() {
+fn var_and_let_locals_compose_with_suspension() {
+    // Each worker prints its number when joined; main then prints its local.
+    // A String var reassigned between spawn and join (1, 6); an Int var
+    // reassigned the same way (7, 2); a String reassigned between two ticks
+    // (6); a List var pushed between spawn and join (9, 3); a let List read
+    // after an await (2).
     assert_async_output(
-        "String var reassigned between spawn and join",
-        "import chan\n\nasync fn worker(console: Console, n: Int):\n    chan.yield_now().await\n    console.print(\"${n}\")\n\nasync fn main(console: Console):\n    var name = \"abc\"\n    let h = chan.spawn(worker(console, 1)).await\n    name = \"zzzzzz\"\n    chan.join(h).await\n    let n = name.length()\n    console.print(\"${n}\")\n",
-        &["1", "6"],
-    );
-    assert_async_output(
-        "Int var reassigned between spawn and join",
-        "import chan\n\nasync fn worker(console: Console):\n    chan.yield_now().await\n    console.print(\"w\")\n\nasync fn main(console: Console):\n    var n = 1\n    let h = chan.spawn(worker(console)).await\n    n = n + 1\n    chan.join(h).await\n    console.print(\"${n}\")\n",
-        &["w", "2"],
-    );
-    assert_async_output(
-        "String var reassigned between two ticks",
-        "import chan\n\nasync fn tick():\n    chan.yield_now().await\n\nasync fn main(console: Console):\n    var s = \"abc\"\n    tick().await\n    s = s + \"def\"\n    tick().await\n    console.print(\"${s.length()}\")\n",
-        &["6"],
-    );
-}
-
-#[test]
-fn a_carried_list_keeps_its_type_for_method_calls() {
-    assert_async_output(
-        "List var pushed between spawn and join",
-        "import chan\n\nasync fn worker(console: Console):\n    chan.yield_now().await\n    console.print(\"w\")\n\nasync fn main(console: Console):\n    var xs = [1, 2]\n    let h = chan.spawn(worker(console)).await\n    xs.push(3)\n    chan.join(h).await\n    console.print(\"${xs.length()}\")\n",
-        &["w", "3"],
-    );
-    assert_async_output(
-        "let List read after an await",
-        "import chan\n\nasync fn main(console: Console):\n    let xs = [4, 5]\n    chan.yield_now().await\n    console.print(\"${xs.length()}\")\n",
-        &["2"],
+        "var and let locals across suspension",
+        "import chan\n\nasync fn worker(console: Console, n: Int):\n    chan.yield_now().await\n    console.print(\"${n}\")\n\nasync fn tick():\n    chan.yield_now().await\n\nasync fn main(console: Console):\n    var name = \"abc\"\n    let first = chan.spawn(worker(console, 1)).await\n    name = \"zzzzzz\"\n    chan.join(first).await\n    console.print(\"${name.length()}\")\n    var n = 1\n    let second = chan.spawn(worker(console, 7)).await\n    n = n + 1\n    chan.join(second).await\n    console.print(\"${n}\")\n    var s = \"abc\"\n    tick().await\n    s = s + \"def\"\n    tick().await\n    console.print(\"${s.length()}\")\n    var xs = [1, 2]\n    let third = chan.spawn(worker(console, 9)).await\n    xs.push(3)\n    chan.join(third).await\n    console.print(\"${xs.length()}\")\n    let ys = [4, 5]\n    tick().await\n    console.print(\"${ys.length()}\")\n",
+        &["1", "6", "7", "2", "6", "9", "3", "2"],
     );
 }
