@@ -1547,6 +1547,28 @@ run_gate() { # run_gate <log> [fuzz-mode] [gate-scope] [queue-infra] [queue-infr
     return 0
 }
 
+# `ld: symbol(s) not found` naming a `.llvm.<n>` symbol: an optimized crate's
+# codegen units disagree about the hash suffix ThinLTO gave a promoted symbol,
+# because an incremental build reused some units and regenerated others. It
+# is the build cache's fault, not the candidate's (perf/interp-range-copy and
+# perf/verdict-single-flight both went red this way on 2026-09-23 with no code
+# that could cause it).
+stale_incremental_link_failure() { # stale_incremental_link_failure <log>
+    grep -aq 'symbol(s) not found' "$1" 2>/dev/null \
+        && grep -aqE '\.llvm\.[0-9]+' "$1" 2>/dev/null
+}
+
+# Drop the incremental caches and fingerprints of this workspace's own crates
+# so their next build starts clean; dependencies stay warm.
+purge_workspace_incremental() { # purge_workspace_incremental <target-dir>
+    local entry
+    for entry in "$1"/debug/incremental/witchy*-* "$1"/debug/incremental/merge_queue_tests*-*; do
+        [ -e "$entry" ] || continue
+        rm -rf "$entry"
+    done
+    invalidate_workspace_fingerprints "$1"
+}
+
 # A kill can land while rustc is writing a workspace crate's output. Cargo
 # names that output by package identity, not source content, and records a
 # fingerprint only after a successful build -- so the half-written file sits
@@ -2945,6 +2967,27 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
             # Red candidates cannot land. Release immediately so diagnosis and
             # journal finalization do not delay the next heavyweight user.
             release_lock
+            # A stale incremental link failure is the cache's fault: purge the
+            # workspace crates' incremental state and re-gate the same commit
+            # once. The marker makes it once per SHA, so a genuine link error
+            # still goes red on the second attempt.
+            local link_marker="$qdir/link-retried/$sha"
+            if [ "$gate_result" = "red" ] && [ ! -e "$link_marker" ] \
+                && stale_incremental_link_failure "$log"; then
+                mkdir -p "$qdir/link-retried" && : >"$link_marker"
+                purge_workspace_incremental "$gate_wt/$cargo_target_dir"
+                note "stale incremental link state in $cargo_target_dir; purged it and requeueing $branch once; log: $log"
+                local link_requeued; link_requeued="$(date +%s)"
+                record_attempt requeued "$branch" "$attempt_start" "$prepare_finished" \
+                    "$lock_acquired" "$gate_started" "$gate_finished" "$link_requeued" sha "$sha" log "$log" \
+                    change_id "$change_id" attempt_id "$attempt_id" submitted_sha "$submitted_sha" \
+                    reason "stale incremental link state purged" stages "$(stage_summary "$log")"
+                local li; for li in "${!batch_ids[@]}"; do
+                    set_change_state "${batch_ids[$li]}" queued "${batch_submitted_shas[$li]}" \
+                        "${batch_attempt_ids[$li]}" || true
+                done
+                return 1
+            fi
             local why="red" extra=""
             [ "$gate_result" != "red" ] && { why="timeout"; extra="${gate_result#timeout: }"; }
             # So the next attempt for the responsible change does not pay full

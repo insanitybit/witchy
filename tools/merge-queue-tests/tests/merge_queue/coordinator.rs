@@ -2593,3 +2593,80 @@ fn with_lock_fails_open_on_a_live_pid_whose_intent_stopped_refreshing() {
         started.elapsed()
     );
 }
+
+/// Fake gate: fails with a stale-incremental link error (`.llvm.<n>` symbol)
+/// while `$LINK_FAILURES` runs remain, then passes. Each run plants a
+/// workspace crate's incremental cache so the purge can be observed.
+const STALE_LINK_GATE: &str = "\
+inc=\"$PWD/$CARGO_TARGET_DIR/debug/incremental\"
+mkdir -p \"$inc/witchy_lower-0123456789abcdef\"
+printf '%s' \"$inc\" > \"$INCREMENTAL_PROBE\"
+runs=$(cat \"$RUN_COUNT\" 2>/dev/null || echo 0)
+runs=$((runs + 1)); printf '%s' \"$runs\" > \"$RUN_COUNT\"
+printf '==> [1] tests (workspace) (t+0s)\\n'
+if [ \"$runs\" -le \"$LINK_FAILURES\" ]; then
+  printf 'error: linking with `cc` failed: exit status: 1\\n'
+  printf '  = note: Undefined symbols for architecture arm64:\\n'
+  printf '            \"__RINvNtCs0_4core3ptr9drop_glue.llvm.13568411306068324051\", referenced from:\\n'
+  printf '          ld: symbol(s) not found for architecture arm64\\n'
+  exit 1
+fi
+exit 0
+";
+
+fn run_stale_link_gate(fixture: &QueueFixture, link_failures: &str, runs: usize) {
+    for _ in 0..runs {
+        let _ = fixture
+            .mq_command(&["run", "--once"], STALE_LINK_GATE)
+            .env("LINK_FAILURES", link_failures)
+            .env("RUN_COUNT", fixture.state.join("run-count"))
+            .env("INCREMENTAL_PROBE", fixture.state.join("incremental-probe"))
+            .output()
+            .expect("run the stale-link gate");
+    }
+}
+
+/// A `.llvm.*` link failure is the incremental cache's fault, not the
+/// candidate's: the coordinator purges the workspace crates' incremental
+/// state and re-gates the same commit once, which then lands.
+#[test]
+fn a_stale_incremental_link_failure_is_purged_and_regated_once() {
+    let fixture = QueueFixture::stack(&["a.txt"]);
+    fixture.mq_ok(&["submit", "a"], "true");
+    run_stale_link_gate(&fixture, "1", 2);
+
+    let journal = fixture.journal();
+    assert!(
+        journal.iter().any(|event| event["event"] == "requeued"
+            && event["reason"] == "stale incremental link state purged"),
+        "the stale link failure was not requeued: {journal:?}",
+    );
+    assert!(
+        journal.iter().any(|event| event["event"] == "merged" && event["branch"] == "a"),
+        "the re-gated commit did not land: {journal:?}",
+    );
+    assert!(journal.iter().all(|event| event["event"] != "red"), "a stale link failure went red: {journal:?}");
+}
+
+/// The retry is once per commit: a link failure that persists after the
+/// purge is a real one and goes red.
+#[test]
+fn a_persistent_link_failure_goes_red_after_one_purge() {
+    let fixture = QueueFixture::stack(&["a.txt"]);
+    fixture.mq_ok(&["submit", "a"], "true");
+    run_stale_link_gate(&fixture, "99", 3);
+
+    let journal = fixture.journal();
+    let requeues = journal.iter()
+        .filter(|event| event["event"] == "requeued" && event["reason"] == "stale incremental link state purged")
+        .count();
+    assert_eq!(requeues, 1, "expected exactly one purge-and-retry: {journal:?}");
+    assert!(
+        journal.iter().any(|event| event["event"] == "red" && event["branch"] == "a"),
+        "a persistent link failure never went red: {journal:?}",
+    );
+    let incremental = std::path::PathBuf::from(
+        std::fs::read_to_string(fixture.state.join("incremental-probe")).expect("gate reported its incremental dir"),
+    );
+    assert!(incremental.exists(), "the gate target's incremental dir itself must survive");
+}
