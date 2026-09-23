@@ -3856,27 +3856,35 @@ impl StructuredEmitter<'_> {
         avoid: crate::canonical_safewir::BlockId,
     ) -> Result<bool, EncodeError> {
         let slots = self.block_slots();
-        let mut other_side = vec![false; slots];
-        let mut pending = VecDeque::from([other]);
-        while let Some(id) = pending.pop_front() {
-            if id == avoid || std::mem::replace(&mut other_side[id.get() as usize], true) {
-                continue;
-            }
-            pending.extend(self.successors(id)?);
-        }
         let mut visited = vec![false; slots];
-        let mut shared = false;
-        pending.push_back(start);
+        let mut side = Vec::new();
+        let mut pending = VecDeque::from([start]);
         while let Some(id) = pending.pop_front() {
             if std::mem::replace(&mut visited[id.get() as usize], true) {
                 continue;
             }
             self.block(id)?;
-            shared |= other_side[id.get() as usize];
+            side.push(id);
             pending.extend(self.successors(id)?);
         }
-        if shared {
-            return Ok(false);
+        // The sides share a block exactly when `other` reaches one of this
+        // side's blocks without passing through `avoid`: walk that path
+        // backwards from the side. The side is small (a terminating arm);
+        // the forward sweep from `other` this replaces covered the rest of
+        // the function on every call -- 13.5M block visits in one async
+        // compile, against 47k for the side itself.
+        if other != avoid {
+            let mut reached = vec![false; slots];
+            let mut backward = VecDeque::from(side);
+            while let Some(id) = backward.pop_front() {
+                if id == avoid || std::mem::replace(&mut reached[id.get() as usize], true) {
+                    continue;
+                }
+                if id == other {
+                    return Ok(false);
+                }
+                backward.extend(self.predecessors_by_block.get(&id).into_iter().flatten().copied());
+            }
         }
         self.all_paths_reach_or_terminate(start, &[], &mut BTreeSet::new())
     }
@@ -6583,27 +6591,35 @@ impl<'a> PlanEmitter<'a> {
         avoid: crate::canonical_safewir::BlockId,
     ) -> Result<bool, CanonicalAdmissionError> {
         let slots = self.block_slots();
-        let mut other_side = vec![false; slots];
-        let mut pending = VecDeque::from([other]);
-        while let Some(id) = pending.pop_front() {
-            if id == avoid || std::mem::replace(&mut other_side[id.get() as usize], true) {
-                continue;
-            }
-            pending.extend(self.successors(id)?);
-        }
         let mut visited = vec![false; slots];
-        let mut shared = false;
-        pending.push_back(start);
+        let mut side = Vec::new();
+        let mut pending = VecDeque::from([start]);
         while let Some(id) = pending.pop_front() {
             if std::mem::replace(&mut visited[id.get() as usize], true) {
                 continue;
             }
             self.block(id)?;
-            shared |= other_side[id.get() as usize];
+            side.push(id);
             pending.extend(self.successors(id)?);
         }
-        if shared {
-            return Ok(false);
+        // The sides share a block exactly when `other` reaches one of this
+        // side's blocks without passing through `avoid`: walk that path
+        // backwards from the side. The side is small (a terminating arm);
+        // the forward sweep from `other` this replaces covered the rest of
+        // the function on every call -- 13.5M block visits in one async
+        // compile, against 47k for the side itself.
+        if other != avoid {
+            let mut reached = vec![false; slots];
+            let mut backward = VecDeque::from(side);
+            while let Some(id) = backward.pop_front() {
+                if id == avoid || std::mem::replace(&mut reached[id.get() as usize], true) {
+                    continue;
+                }
+                if id == other {
+                    return Ok(false);
+                }
+                backward.extend(self.predecessors_by_block.get(&id).into_iter().flatten().copied());
+            }
         }
         self.all_paths_reach_or_terminate(start, &[], &mut BTreeSet::new())
     }
