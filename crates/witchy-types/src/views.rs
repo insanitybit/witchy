@@ -9,7 +9,7 @@
 
 use witchy_syntax::ast::{Expr, Function, Item, Module, Type, TypeQual};
 
-use crate::access::{checked_place, CheckedPlace};
+use crate::access::{checked_view_place, CheckedPlace};
 use crate::typeck::{Ty, TypeError, TypeTable};
 
 fn terr(message: impl Into<String>) -> TypeError {
@@ -20,6 +20,7 @@ fn terr(message: impl Into<String>) -> TypeError {
 pub struct CheckedViewFact {
     expression: *const Expr,
     place: CheckedPlace,
+    through_view: bool,
     payload: Ty,
     dynamic_element: Option<CheckedDynamicElement>,
     dynamic_range: Option<CheckedDynamicRange>,
@@ -58,6 +59,14 @@ impl CheckedDynamicRange {
 impl CheckedViewFact {
     pub fn place(&self) -> &CheckedPlace {
         &self.place
+    }
+
+    /// Whether the projection is formed through a dereferenced rooted view
+    /// (`&(*b).f`, `&(*v)[i]`).  The place root then names that view
+    /// binding: its carrier retains the original root, and the steps compose
+    /// onto the projection it already carries.
+    pub fn formed_through_view(&self) -> bool {
+        self.through_view
     }
 
     pub fn payload(&self) -> &Ty {
@@ -196,9 +205,23 @@ pub(crate) fn checked_facts(module: &Module, table: &TypeTable) -> Result<Checke
         let Expr::Unary { op: witchy_syntax::ast::UnOp::Borrow, expr } = expression else {
             return Ok(());
         };
-        let place = checked_place(expr).ok_or_else(|| {
-            terr("immutable view formation requires a checked local, field, element, or literal slice projection")
+        let (place, through_view) = checked_view_place(expr).ok_or_else(|| {
+            terr("immutable view formation requires a checked local, field, element, or literal slice projection, optionally through one dereferenced view")
         })?;
+        if through_view {
+            // The dereferenced base must itself be a checked rooted view; a
+            // view is never formed through any other dereference.
+            let mut base = expr.as_ref();
+            while let Expr::Field { base: next, .. } | Expr::Index { base: next, .. } = base {
+                base = next;
+            }
+            let Expr::Unary { expr: viewed, .. } = base else {
+                return Err(terr("immutable view formed through a view has no dereferenced view base"));
+            };
+            if !matches!(table.type_of(viewed), Some(Ty::View(_))) {
+                return Err(terr("immutable view formation dereferences a value that is not a checked rooted view"));
+            }
+        }
         let (dynamic_element, dynamic_range) = match expr.as_ref() {
             Expr::Index { index, .. } => match index.as_ref() {
                 Expr::Range { lo, hi, inclusive }
@@ -229,6 +252,7 @@ pub(crate) fn checked_facts(module: &Module, table: &TypeTable) -> Result<Checke
         facts.facts.push(CheckedViewFact {
             expression: std::ptr::from_ref(expression),
             place,
+            through_view,
             payload: payload.as_ref().clone(),
             dynamic_element,
             dynamic_range,

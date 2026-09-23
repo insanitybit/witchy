@@ -4379,7 +4379,9 @@ fn block_forms_view_of_local(block: &Block, locals: &HashSet<String>) -> bool {
     fn root(expression: &Expr) -> Option<&str> {
         match expression {
             Expr::Var(name) => Some(name),
-            Expr::Field { base, .. } | Expr::Index { base, .. } => root(base),
+            // A view formed through a view (`&(*b).f`) roots in `b`.
+            Expr::Field { base, .. } | Expr::Index { base, .. }
+            | Expr::Unary { op: UnOp::Deref, expr: base } => root(base),
             _ => None,
         }
     }
@@ -4400,7 +4402,7 @@ fn region_reference_root(block: &Block) -> Option<String> {
     fn root(expression: &Expr, aliases: &HashMap<String, String>) -> Option<String> {
         match expression {
             Expr::Var(name) => aliases.get(name).cloned().or_else(|| Some(name.clone())),
-            Expr::Unary { op: UnOp::Borrow | UnOp::BorrowMut, expr } => root(expr, aliases),
+            Expr::Unary { op: UnOp::Borrow | UnOp::BorrowMut | UnOp::Deref, expr } => root(expr, aliases),
             Expr::Field { base, .. } | Expr::Index { base, .. } => root(base, aliases),
             Expr::As { expr, .. } => root(expr, aliases),
             _ => None,

@@ -156,16 +156,42 @@ impl CheckedPlace {
 /// Consumers outside type checking query the finalized [`CheckedAccessFacts`]
 /// table instead of rediscovering this path from the AST.
 pub(crate) fn checked_place(expression: &Expr) -> Option<CheckedPlace> {
-    fn walk(expression: &Expr, steps: &mut Vec<CheckedPlaceStep>) -> Option<String> {
+    checked_place_from(expression, None)
+}
+
+/// RFC-0167 view formation through a view: the place's base may be exactly
+/// one dereference of a named binding (`&(*b).f`, `&(*v)[i]`).  The returned
+/// root is that binding, whose rooted carrier retains the original root; the
+/// flag says the base was dereferenced.  This is never an assignable place,
+/// so write-back consumers keep using [`checked_place`].
+pub(crate) fn checked_view_place(expression: &Expr) -> Option<(CheckedPlace, bool)> {
+    let mut through_view = false;
+    let place = checked_place_from(expression, Some(&mut through_view))?;
+    Some((place, through_view))
+}
+
+fn checked_place_from(expression: &Expr, mut view_base: Option<&mut bool>) -> Option<CheckedPlace> {
+    fn walk(
+        expression: &Expr,
+        steps: &mut Vec<CheckedPlaceStep>,
+        view_base: &mut Option<&mut bool>,
+    ) -> Option<String> {
         match expression {
             Expr::Var(root) => Some(root.clone()),
+            Expr::Unary { op: witchy_syntax::ast::UnOp::Deref, expr } if view_base.is_some() => {
+                let Expr::Var(root) = expr.as_ref() else { return None };
+                if let Some(through) = view_base.as_deref_mut() {
+                    *through = true;
+                }
+                Some(root.clone())
+            }
             Expr::Field { base, field } => {
-                let root = walk(base, steps)?;
+                let root = walk(base, steps, view_base)?;
                 steps.push(CheckedPlaceStep::Field(field.clone()));
                 Some(root)
             }
             Expr::Index { base, index } => {
-                let root = walk(base, steps)?;
+                let root = walk(base, steps, view_base)?;
                 steps.push(match index.as_ref() {
                     Expr::Int(value) => CheckedPlaceStep::Index(*value),
                     Expr::Range { lo, hi, inclusive }
@@ -183,7 +209,7 @@ pub(crate) fn checked_place(expression: &Expr) -> Option<CheckedPlace> {
                 if matches!(name.as_str(), intrinsics::LIST_AT | intrinsics::DICT_AT)
                     && args.len() == 2 =>
             {
-                let root = walk(&args[0], steps)?;
+                let root = walk(&args[0], steps, view_base)?;
                 steps.push(match &args[1] {
                     Expr::Int(value) => CheckedPlaceStep::Index(*value),
                     _ => CheckedPlaceStep::DynamicIndex,
@@ -195,7 +221,7 @@ pub(crate) fn checked_place(expression: &Expr) -> Option<CheckedPlace> {
     }
 
     let mut steps = Vec::new();
-    let root = walk(expression, &mut steps)?;
+    let root = walk(expression, &mut steps, &mut view_base)?;
     Some(CheckedPlace { root, steps })
 }
 

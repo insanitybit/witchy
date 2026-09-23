@@ -3303,13 +3303,67 @@ fn is_rooted_string(ty: &Type) -> bool {
     matches!(ty.unqualified(), Type::Named(name, arguments) if name == "String" && arguments.is_empty())
 }
 
-/// The source form of a field view (`&root.a.b`) must name the checked field
-/// steps, in order, from the checked root binding.
+/// The base of a checked view source: the fact's root binding, dereferenced
+/// exactly when the fact says the view is formed through a view.
+fn is_view_source_root(expression: &Expr, root: &str, through_view: bool) -> bool {
+    match expression {
+        Expr::Var(name) => !through_view && name == root,
+        Expr::Unary { op: UnOp::Deref, expr } => {
+            through_view && matches!(expr.as_ref(), Expr::Var(name) if name == root)
+        }
+        _ => false,
+    }
+}
+
+/// The source form of an element view (`&xs[i]`, `&root.a.xs[i]`, or the same
+/// through a view) must be a checked field chain from the root followed by
+/// exactly one element step whose index is the authenticated source node.
+/// Returns the list-valued base and the index expression.
+fn check_element_view_source<'a>(
+    fact: &CheckedViewFact,
+    operand: &'a Expr,
+) -> Result<(&'a Expr, &'a Expr), CanonicalLoweringError> {
+    let Some((last, fields)) = fact.place().steps().split_last() else {
+        return Err(CanonicalLoweringError::InvalidCheckedViewFacts(
+            "immutable element view fact has no element projection".to_string(),
+        ));
+    };
+    let Expr::Index { base, index } = operand else {
+        return Err(CanonicalLoweringError::InvalidCheckedViewFacts(
+            "immutable element view fact does not match its source form".to_string(),
+        ));
+    };
+    let authenticated = match last {
+        CheckedPlaceStep::Index(expected) => matches!(index.as_ref(), Expr::Int(value) if value == expected),
+        CheckedPlaceStep::DynamicIndex => !matches!(index.as_ref(), Expr::Range { .. })
+            && fact.dynamic_element().is_some_and(|dynamic| dynamic.matches(index)),
+        _ => false,
+    };
+    if !authenticated {
+        return Err(CanonicalLoweringError::InvalidCheckedViewFacts(
+            "immutable element view index does not match its retained source node".to_string(),
+        ));
+    }
+    check_field_view_source(fact, fields, base)?;
+    Ok((base, index))
+}
+
+/// Whether a checked projection is a field chain ending in one element step.
+fn is_field_chain_element(steps: &[CheckedPlaceStep]) -> bool {
+    steps.split_last().is_some_and(|(last, fields)| {
+        matches!(last, CheckedPlaceStep::Index(_) | CheckedPlaceStep::DynamicIndex)
+            && fields.iter().all(|step| matches!(step, CheckedPlaceStep::Field(_)))
+    })
+}
+
+/// The source form of a field view (`&root.a.b`, or `&(*view).a.b` through a
+/// view) must name the checked field steps, in order, from the checked root.
 fn check_field_view_source(
-    root: &str,
+    fact: &CheckedViewFact,
     steps: &[CheckedPlaceStep],
     operand: &Expr,
 ) -> Result<(), CanonicalLoweringError> {
+    let root = fact.place().root();
     let mut cursor = operand;
     for step in steps.iter().rev() {
         let (CheckedPlaceStep::Field(expected), Expr::Field { base, field }) = (step, cursor) else {
@@ -3324,7 +3378,7 @@ fn check_field_view_source(
         }
         cursor = base;
     }
-    if !matches!(cursor, Expr::Var(name) if name == root) {
+    if !is_view_source_root(cursor, root, fact.formed_through_view()) {
         return Err(CanonicalLoweringError::InvalidCheckedViewFacts(
             "immutable view fact field root does not match its source form".to_string(),
         ));
@@ -14185,23 +14239,16 @@ impl FunctionLowerer<'_> {
             });
         if matches!(fact.payload(), Ty::Float | Ty::Bool | Ty::Duration) {
             // A scalar-value view is the value read at formation: a whole
-            // local, or a checked field chain from it.
+            // local, or a checked field chain from it, directly or through a
+            // dereferenced view (whose carrier retains the original root).
             let steps = fact.place().steps();
-            if steps.is_empty() {
-                if !matches!(operand, Expr::Var(_)) {
-                    return Err(CanonicalLoweringError::UnsupportedExpression(
-                        "rooted scalar view is only a whole-root or field carrier",
-                    ));
-                }
-            } else if steps.iter().all(|step| matches!(step, CheckedPlaceStep::Field(_))) {
-                check_field_view_source(fact.place().root(), steps, operand)?;
-            } else if matches!(steps, [CheckedPlaceStep::Index(_) | CheckedPlaceStep::DynamicIndex])
-                && matches!(operand, Expr::Index { base, index }
-                    if matches!(base.as_ref(), Expr::Var(root) if root == fact.place().root())
-                        && !matches!(index.as_ref(), Expr::Range { .. }))
-            {
-                // An element view of a scalar list (`&xs[i]`) is the element
-                // read at formation, bounds-checked like any index read.
+            if steps.iter().all(|step| matches!(step, CheckedPlaceStep::Field(_))) {
+                check_field_view_source(&fact, steps, operand)?;
+            } else if is_field_chain_element(steps) {
+                // An element view of a scalar list (`&xs[i]`, `&r.xs[i]`) is
+                // the element read at formation, bounds-checked like any
+                // index read.
+                let _ = check_element_view_source(&fact, operand)?;
             } else {
                 return Err(CanonicalLoweringError::UnsupportedExpression(
                     "rooted scalar view projection is outside the canonical carrier",
@@ -14209,16 +14256,13 @@ impl FunctionLowerer<'_> {
             }
             return self.lower_expr(operand);
         }
-        if matches!(fact.payload(), Ty::String)
-            && matches!(fact.place().steps(), [CheckedPlaceStep::Index(_) | CheckedPlaceStep::DynamicIndex])
-            && matches!(operand, Expr::Index { base, index }
-                if matches!(base.as_ref(), Expr::Var(root) if root == fact.place().root())
-                    && !matches!(index.as_ref(), Expr::Range { .. }))
-        {
-            // An element view of a String list or slice (`&xs[i]`) is the
-            // element's retained token read at formation, bounds-checked like
-            // any index read: the String is immutable, so the token is the
-            // snapshot, exactly as for a whole `&String`.
+        if matches!(fact.payload(), Ty::String) && is_field_chain_element(fact.place().steps()) {
+            // An element view of a String list or slice (`&xs[i]`,
+            // `&(*v)[i]`, `&r.names[i]`) is the element's retained token read
+            // at formation, bounds-checked like any index read: the String is
+            // immutable, so the token is the snapshot, exactly as for a whole
+            // `&String`.
+            let _ = check_element_view_source(&fact, operand)?;
             let value = self.lower_expr(operand)?;
             if !matches!(self.values.get(&value), Some(ValueType::Ref(_))) {
                 return Err(CanonicalLoweringError::InvalidCheckedViewFacts(
@@ -14242,11 +14286,23 @@ impl FunctionLowerer<'_> {
                     "rooted String or record view projection is outside the canonical carrier",
                 ));
             }
-            check_field_view_source(fact.place().root(), steps, operand)?;
+            check_field_view_source(&fact, steps, operand)?;
             let value = self.lower_expr(operand)?;
             if !matches!(self.values.get(&value), Some(ValueType::Ref(_))) {
                 return Err(CanonicalLoweringError::InvalidCheckedViewFacts(
                     "immutable String or record field view does not read a heap value".to_string(),
+                ));
+            }
+            return Ok(value);
+        }
+        if (matches!(fact.payload(), Ty::String) || record_root) && fact.formed_through_view() {
+            // `&*view` re-forms the whole view: the dereference reads the
+            // view's retained root token, which is exactly its snapshot.
+            check_field_view_source(&fact, &[], operand)?;
+            let value = self.lower_expr(operand)?;
+            if !matches!(self.values.get(&value), Some(ValueType::Ref(_))) {
+                return Err(CanonicalLoweringError::InvalidCheckedViewFacts(
+                    "immutable whole view through a view does not read a heap value".to_string(),
                 ));
             }
             return Ok(value);
@@ -14292,25 +14348,24 @@ impl FunctionLowerer<'_> {
                 self.materialize_scalar_reference(root)
             }
             [CheckedPlaceStep::Index(index)] => {
-                let Expr::Index { index: source_index, .. } = operand else {
-                    return Err(CanonicalLoweringError::InvalidCheckedViewFacts(
-                        "immutable view fact static projection does not match its source form".to_string(),
-                    ));
-                };
-                if !matches!(source_index.as_ref(), Expr::Int(value) if value == index) {
-                    return Err(CanonicalLoweringError::InvalidCheckedViewFacts(
-                        "immutable view fact static index does not match its retained source node".to_string(),
-                    ));
-                }
+                // The root is an owned list, a `&[Int]` slice carrier, or a
+                // `&List(Int)` view dereferenced in the source (`&(*v)[1]`):
+                // each binding value is the retained backing root.
+                let _ = check_element_view_source(&fact, operand)?;
                 let index = self.push_const_int(*index)?;
                 self.materialize_checked_list_int_view(root, index)
             }
             [CheckedPlaceStep::DynamicIndex] => {
-                let Expr::Index { index, .. } = operand else {
+                let Expr::Index { base, index } = operand else {
                     return Err(CanonicalLoweringError::InvalidCheckedViewFacts(
                         "immutable view fact dynamic projection does not match its source form".to_string(),
                     ));
                 };
+                if !is_view_source_root(base, fact.place().root(), fact.formed_through_view()) {
+                    return Err(CanonicalLoweringError::InvalidCheckedViewFacts(
+                        "immutable view fact dynamic projection root does not match its source form".to_string(),
+                    ));
+                }
                 if let Expr::Range { lo, hi, inclusive } = index.as_ref() {
                     let dynamic = fact.dynamic_range().ok_or_else(|| {
                         CanonicalLoweringError::InvalidCheckedViewFacts(
@@ -14345,25 +14400,21 @@ impl FunctionLowerer<'_> {
                     self.push_operation(Operation::NarrowSize { destination: end, value: end_int });
                     return self.materialize_checked_list_slice(root, start, end, element);
                 }
-                let dynamic = fact.dynamic_element().ok_or_else(|| {
-                    CanonicalLoweringError::InvalidCheckedViewFacts(
-                        "immutable view fact dynamic projection lacks its exact index identity".to_string(),
-                    )
-                })?;
-                if !dynamic.matches(index) {
-                    return Err(CanonicalLoweringError::InvalidCheckedViewFacts(
-                        "immutable view fact dynamic index does not match its retained source node".to_string(),
-                    ));
-                }
+                let (_, index) = check_element_view_source(&fact, operand)?;
                 let index = self.lower_expr(index)?;
                 self.materialize_checked_list_int_view(root, index)
             }
             [CheckedPlaceStep::Range { lo, hi, inclusive }] => {
-                let Expr::Index { index, .. } = operand else {
+                let Expr::Index { base, index } = operand else {
                     return Err(CanonicalLoweringError::InvalidCheckedViewFacts(
                         "immutable slice fact static projection does not match its source form".to_string(),
                     ));
                 };
+                if !is_view_source_root(base, fact.place().root(), fact.formed_through_view()) {
+                    return Err(CanonicalLoweringError::InvalidCheckedViewFacts(
+                        "immutable slice fact root does not match its source form".to_string(),
+                    ));
+                }
                 let Expr::Range { lo: source_lo, hi: source_hi, inclusive: source_inclusive } = index.as_ref() else {
                     return Err(CanonicalLoweringError::InvalidCheckedViewFacts(
                         "immutable slice fact static projection is not a range".to_string(),
@@ -14403,7 +14454,7 @@ impl FunctionLowerer<'_> {
             steps if matches!(fact.payload(), Ty::Int)
                 && steps.iter().all(|step| matches!(step, CheckedPlaceStep::Field(_))) =>
             {
-                check_field_view_source(fact.place().root(), steps, operand)?;
+                check_field_view_source(&fact, steps, operand)?;
                 let value = self.lower_expr(operand)?;
                 if self.values.get(&value) != Some(&ValueType::Int) {
                     return Err(CanonicalLoweringError::InvalidCheckedViewFacts(
@@ -14411,6 +14462,24 @@ impl FunctionLowerer<'_> {
                     ));
                 }
                 self.materialize_scalar_reference(value)
+            }
+            // An element of a list field (`&r.xs[i]`, `&(*b).xs[i]`) composes
+            // the field chain with a checked element projection.  The field
+            // read is the list's retained token (records are values, so it
+            // is the formation-time snapshot); the element carrier retains
+            // that list and bounds-checks the index against it.
+            steps if matches!(fact.payload(), Ty::Int) && is_field_chain_element(steps) => {
+                let (base, index) = check_element_view_source(&fact, operand)?;
+                let list = self.lower_expr(base)?;
+                if !matches!(self.values.get(&list), Some(ValueType::Ref(_))) {
+                    return Err(CanonicalLoweringError::InvalidCheckedViewFacts(
+                        "immutable element view of a field does not read a list value".to_string(),
+                    ));
+                }
+                let index = self.lower_expr(index)?;
+                let view = self.materialize_checked_list_int_view(list, index)?;
+                self.push_operation(Operation::DropRef { object: list });
+                Ok(view)
             }
             _ => Err(CanonicalLoweringError::UnsupportedExpression(
                 "rooted view projection is outside the canonical v1 carrier",

@@ -115,6 +115,24 @@ fn dynamic_slice_view_records_exact_endpoints() {
 }
 
 #[test]
+fn view_formed_through_a_view_roots_in_the_view_binding() {
+    let typed = checked(
+        "type Rec:\n    label: String\n\nfn label(r: &Rec) -> &String:\n    &(*r).label\n",
+    );
+    let Item::Function(function) = &typed.module().items[1] else { panic!("function") };
+    let Stmt::Expr(view @ Expr::Unary { .. }) = &function.body.stmts[0] else { panic!("view") };
+    let fact = typed.view_facts().expect("view facts").view_for(view).expect("exact view fact");
+    assert!(fact.formed_through_view(), "the dereferenced base is recorded");
+    assert_eq!(fact.place().root(), "r");
+
+    let through_call = witchy_syntax::parser::parse_module(
+        "type Rec:\n    n: Int\n\nfn make() -> &Rec:\n    let r = Rec(1)\n    &r\n\nfn invalid() -> &Int:\n    &(*make()).n\n",
+    )
+    .expect("source parses");
+    assert!(annotate_checked(through_call).is_err(), "only a dereferenced view binding is a view base");
+}
+
+#[test]
 fn dynamic_element_view_records_exact_index() {
     let typed = checked(
         "fn element(items: List(Int), index: Int) -> &Int:\n    &items[index]\n",

@@ -179,6 +179,8 @@ mod rfc0167_opt_callable_provenance;
 mod rfc0167_precompiled_run_source;
 #[path = "misc/rfc0167_unit_results.rs"]
 mod rfc0167_unit_results;
+#[path = "misc/rfc0167_views_through_views.rs"]
+mod rfc0167_views_through_views;
 #[path = "misc/rfc0165_nested_patterns.rs"]
 mod rfc0165_nested_patterns;
 #[path = "misc/rfc0165_owner_adapters.rs"]
