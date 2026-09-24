@@ -1394,6 +1394,17 @@ if [ "$gate_scope" = "docs" ]; then
     exit 0
 fi
 
+# The compiler's literal std calls must be rooted before any product test can
+# trust pruning. A stale generated list otherwise fails one type-library test
+# late in a multi-thousand-test workspace run. This exact generator check needs
+# no Cargo build and fails the serialized gate before it starts compiler jobs.
+if [ -n "${WITCHY_GATE_SCOPE+x}" ]; then
+    if ! python3 scripts/gen-std-pruning-roots.py --check; then
+        echo "check.sh: compiler std roots are stale; run scripts/gen-std-pruning-roots.py" >&2
+        exit 1
+    fi
+fi
+
 # The full gate runs four independent legs CONCURRENTLY and collects the
 # background three after the foreground one finishes:
 #   [fg] tests  — nextest builds the workspace itself, including a fresh `witchy`
