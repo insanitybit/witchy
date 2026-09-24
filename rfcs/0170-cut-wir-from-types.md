@@ -1,7 +1,7 @@
 ---
 rfc: 0170
 title: Cut `witchy-wir` loose from `witchy-types`
-status: proposed
+status: implemented
 created: 2026-09-24
 tracking:
 ---
@@ -251,6 +251,90 @@ Each phase lands separately through the queue.
   not after `witchy-types`.
 - Existing SafeWIR authority tests pass unchanged, apart from import paths,
   and the new construction-surface test pins the view's single minting site.
+
+## Implementation and evidence
+
+All four phases landed on 2026-09-24:
+
+| Phase | Commits on `master` |
+|---|---|
+| P1 | `885d71a62`, `bbb6c6972`, `29fdcab78`, `5c9d28ca0`, `78d225650` |
+| P2 | `7e328dcfc` |
+| P3 | `bce978dd9` |
+| P4 | `e71dd59b1` |
+
+The implementation differs from the design above in these places:
+
+- **Where P1's steps landed.** P1 put the contract types in the new crate.
+  The dev-dependency move it listed happened in P3.
+- **Constructor names.** The witness is minted by
+  `CheckedSourceWitness::mint_for_checked_frontend` and the view by
+  `CanonicalSourceView::from_checked_frontend`. The build-recipe path rebinds
+  the launch digest with `rebind_launch_contract_for_build_recipe`. All three
+  are `#[doc(hidden)] pub`.
+  `crates/witchy-canonical-source/tests/checked_frontend_minting.rs` pins each
+  one to its single call site in `witchy-types/src/pipeline{,/build_recipe}.rs`.
+  It scans every tracked `.rs` file, including identifiers inside macro token
+  streams, and asserts that both types keep private fields.
+- **Access facts stay in `witchy-types`.** The access *vocabulary*
+  (`AccessSignature` and its parts) moved down. `CheckedAccessFacts` itself
+  stays with its builder. wir queries it through `CheckedAccessQuery`, whose
+  two methods are `declaration` and `call_at`. That is a trait the checker
+  implements, which the alternatives below reject as a way to *mint* source
+  authority. Here it grants none: the only way to obtain one is
+  `CanonicalSourceView::access_facts()`, from a view the frontend minted.
+- **Closure witnesses carry an AST signature.** `ClosureWitness::signature`
+  is an `Option<Type>` converted from `Ty` when the witness is built, so the
+  view borrows the whole `ClosureWitnessManifest` rather than a projection.
+  Service sites are computed from the view by
+  `witchy_canonical_source::service::service_sites`, not stored.
+- **The P3 metadata assertion is `check-stage-dependencies.py`.** It
+  compares every workspace crate's dependencies against
+  `spec/stage-dependencies.json`. Since P4, a `witchy-wir -> witchy-types`
+  edge of any kind, including a dev-dependency, fails it.
+- **The P4 test surface.** Of the tests that compiled source, 19 keep their
+  bodies in wir as `pub fn <name>(checker: &dyn SourceChecker)`. They live in
+  `canonical_safewir/{authority,owner_authority,closure_owner_contract}/checked_source_cases.rs`
+  behind the `checked-source-test-api` feature, and only dev-dependency
+  entries enable that feature. `crates/witchy-lower/tests/safewir_checked_source.rs`
+  runs them against the real checker under their original names, together
+  with three tests that moved whole. The wir route-gate test rejects the
+  feature anywhere outside a dev-dependency table. The move preserved the
+  test count (49 `#[test]` markers before and after), and no assertion was
+  weakened. A fresh-context adversarial review accepted both P2 and P4.
+
+Measured on `master` at `e71dd59b1` in a warmed worktree, through the `mbx`
+cargo shim, at load 35-42 on 10 cores:
+
+- **The edge is gone.** In plain `cargo tree -p witchy-wir`, neither
+  `-e normal` nor `-e dev` lists `witchy-types`, and neither does the
+  `-e normal` tree of `witchy-runtime --features native`. (The repo's cargo
+  shim unifies `-p` across the workspace, so it prints every member's tree and
+  would show `witchy-types` misleadingly.)
+- **A checker edit no longer rebuilds wir or runtime.** After appending one
+  line to `witchy-types/src/typeck.rs`:
+  - `cargo build --workspace` recompiled `witchy-types`, `witchy-lower`,
+    `witchy-interp` and `witchy`, in 118.6s.
+  - `cargo test --workspace --no-run --features witchy-wir/native` recompiled
+    the same four crates' targets, in 330.5s.
+
+  Neither run recompiled `witchy-wir` or `witchy-runtime`. Before the cut, the
+  same edit also rebuilt those two, and wir alone cost 82s (lib) plus 73s
+  (unit tests). That run was at load 60-80, so its wall time does not compare
+  directly with these.
+- **wir now builds alongside the checker.** After a one-line edit to
+  `witchy-syntax`, which invalidates every stage above it,
+  `cargo build --workspace --timings` shows:
+  - `witchy-canonical-source` starting at 3.4s, on syntax's metadata;
+  - `witchy-wir` at 10.8–75.0s and `witchy-types` at 36.2–109.6s, so the two
+    largest crates now compile concurrently;
+  - `witchy-runtime` finishing at 88.2s, before `witchy-types` does.
+
+  wir starts before types does, not after it. The whole build took 136s.
+
+  The clean-build criterion was measured with this syntax-edit build, which
+  invalidates every crate above syntax. A cold target is 30-60 GB on this
+  machine.
 
 ## Alternatives
 
