@@ -2695,7 +2695,6 @@ Hole-free `quote type:` values retain a compiler-owned type AST. The internal co
 
 Hole-free `quote expr:` values retain a compiler-owned expression AST.
 
-- `ExprSyntax(String)`
 - `CompilerExprSyntax(String, String)`
 
 #### `sealed type PatternSyntax`

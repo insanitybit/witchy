@@ -72,9 +72,8 @@ pub(super) fn compiler_stmt_leaf(kind: &str) -> Result<Stmt, RuntimeError> {
 }
 
 /// Decode one `meta.ExprSyntax` value for compiler-owned structural builders.
-/// A compatibility payload is parsed in isolation; an owned payload transfers
-/// its AST directly so definition-site and call-site markers cannot be erased
-/// by an intermediate source projection.
+/// Only an interpreter-issued handle transfers its AST. Source-backed syntax
+/// cannot erase definition-site or call-site markers through reparsing.
 pub(super) fn compiler_expr_syntax_value(
     value: &Value,
     compiler_expr_syntax: &HashMap<String, Expr>,
@@ -93,11 +92,10 @@ pub(super) fn compiler_expr_syntax_value(
             .ok_or_else(|| RuntimeError {
                 message: "CompilerExprSyntax carried an invalid syntax handle".into(),
             }),
-        ("ExprSyntax", [Value::Str(source)]) => {
-            witchy_syntax::syntax_holes::parse_expr_payload(source).map_err(|message| RuntimeError { message })
-        }
         ("CompilerExprSyntax", _) => err("CompilerExprSyntax carried an invalid payload"),
-        ("ExprSyntax", _) => err("ExprSyntax carried an invalid source payload"),
+        ("ExprSyntax", _) => {
+            err("source-backed ExprSyntax is retired; a compiler-owned syntax handle is required")
+        }
         (other, _) => err(format!("meta.expr_call expected ExprSyntax, got `{other}`")),
     }
 }
@@ -413,7 +411,7 @@ pub(super) fn compiler_item_holes(
     compiler_type_syntax: &HashMap<String, Type>,
     compiler_pattern_syntax: &HashMap<String, Pattern>,
 ) -> Result<Vec<witchy_syntax::syntax_holes::ItemSyntaxHole>, RuntimeError> {
-    use witchy_syntax::syntax_holes::{ItemSyntaxHole, parse_expr_payload};
+    use witchy_syntax::syntax_holes::ItemSyntaxHole;
 
     fn tail(name: &str) -> &str {
         name.rsplit_once('.').map_or(name, |(_, tail)| tail)
@@ -442,24 +440,10 @@ pub(super) fn compiler_item_holes(
                 return err("compiler-owned item hole carried an invalid payload");
             };
             match tail(name) {
-                "ExprHole" => match syntax {
-                    Value::Ctor { name, fields } if tail(name) == "CompilerExprSyntax" => {
-                        let [Value::Str(handle), Value::Str(_source)] = fields.as_slice() else {
-                            return err("CompilerExprSyntax carried an invalid payload");
-                        };
-                        compiler_expr_syntax
-                            .get(handle.as_str())
-                            .cloned()
-                            .map(ItemSyntaxHole::Expr)
-                            .ok_or_else(|| RuntimeError {
-                                message: "compiler-owned expression referenced an invalid syntax handle"
-                                    .into(),
-                            })
-                    }
-                    _ => parse_expr_payload(source(syntax, "ExprSyntax")?)
+                "ExprHole" => {
+                    compiler_owned_expr_syntax_value(syntax, compiler_expr_syntax, "meta.expr_hole")
                         .map(ItemSyntaxHole::Expr)
-                        .map_err(|message| RuntimeError { message }),
-                },
+                }
                 "TypeHole" => match syntax {
                     Value::Ctor { name, fields } if tail(name) == "CompilerTypeSyntax" => {
                         let [Value::Str(handle), Value::Str(_source)] = fields.as_slice() else {
@@ -794,7 +778,7 @@ mod tests {
     }
 
     #[test]
-    fn type_builders_and_item_holes_reject_source_backed_syntax() {
+    fn type_and_expr_builders_and_item_holes_reject_source_backed_syntax() {
         let type_source = Value::Ctor {
             name: "meta.TypeSyntax".into(),
             fields: Rc::new(vec![Value::str("Int")]),
@@ -812,6 +796,24 @@ mod tests {
         let error = compiler_item_holes(&[hole], &HashMap::new(), &HashMap::new(), &HashMap::new())
             .expect_err("source-backed type cannot enter an item quote");
         assert!(error.message.contains("compiler-owned TypeSyntax"), "{error}");
+
+        let source_backed = Value::Ctor {
+            name: "meta.ExprSyntax".into(),
+            fields: Rc::new(vec![Value::str("not parsed")]),
+        };
+        let error = compiler_expr_syntax_value(&source_backed, &HashMap::new())
+            .expect_err("structural builders must not reparse expression source");
+        assert!(error.message.contains("source-backed ExprSyntax is retired"), "{error}");
+        let error = compiler_owned_expr_syntax_value(&source_backed, &HashMap::new(), "meta.expr_tagged")
+            .expect_err("structural tagged holes must not parse expression source");
+        assert!(error.message.contains("compiler-owned ExprSyntax holes"), "{error}");
+        let hole = Value::Ctor {
+            name: "meta.ExprHole".into(),
+            fields: Rc::new(vec![source_backed]),
+        };
+        let error = compiler_item_holes(&[hole], &HashMap::new(), &HashMap::new(), &HashMap::new())
+            .expect_err("quoted item holes must not reparse expression source");
+        assert!(error.message.contains("compiler-owned ExprSyntax holes"), "{error}");
     }
 
     #[test]

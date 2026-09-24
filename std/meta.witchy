@@ -34,7 +34,6 @@ sealed type TypeSyntax:
 
 // Hole-free `quote expr:` values retain a compiler-owned expression AST.
 sealed type ExprSyntax:
-    ExprSyntax(String)
     CompilerExprSyntax(String, String)
 
 // Hole-free `quote pattern:` values retain compiler-owned pattern AST. Existing
@@ -442,7 +441,6 @@ fn __meta_expr_match(scrutinee: ExprSyntax, arms: List(MatchArmSyntax)) -> ExprS
 
 fn expr_source(expr: ExprSyntax) -> String:
     match expr:
-        ExprSyntax(source) -> source
         CompilerExprSyntax(_, source) -> source
 
 // Compiler-owned pattern syntax. Validated identifiers and structural pattern
