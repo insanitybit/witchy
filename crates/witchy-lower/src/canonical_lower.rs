@@ -2843,15 +2843,15 @@ fn is_aggregate_reference_carrier(ty: &Type) -> bool {
     }
 }
 
-/// `&Int` or exact `&[Int]`, or an aggregate whose carrier fields nest one; see
-/// `canonical_aggregates::is_rooted_int_view_carrier`. Definition-free: used
-/// only where a builtin shell (`Option`) names its payload directly.
+/// An established `&Int` Option payload or nested carrier. A bare `&[Int]`
+/// needs a separate authenticated Option projection and is refused here.
+/// Definition-free: used only where a builtin shell names its payload directly.
 fn is_view_or_option_view_carrier(ty: &Type) -> bool {
-    witchy_types::canonical_aggregates::is_rooted_int_view_carrier(ty, &BTreeMap::new())
+    witchy_types::canonical_aggregates::is_rooted_int_option_payload_carrier(ty, &BTreeMap::new())
 }
 
-/// An aggregate that carries `&Int` or exact `&[Int]` views is represented by its
-/// source-derived opaque owner family, one owner per shell. The checked
+/// An admitted aggregate of `&Int` views, or a named record with one direct
+/// exact `&[Int]` field, uses a source-derived opaque owner family. The checked
 /// callable ABI erases view fields to their scalar payloads, so declaration
 /// sites must recover this exact source shape before accepting the aggregate
 /// as a `Gc` value. A field holding a view outside that recursive carrier

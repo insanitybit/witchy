@@ -1767,14 +1767,14 @@ fn is_aggregate_reference_carrier(source: &witchy_syntax::ast::Type) -> bool {
         witchy_syntax::ast::Type::Named(name, arguments)
             if name == "Option" && arguments.len() == 1 =>
         {
-            witchy_types::canonical_aggregates::is_rooted_int_view_carrier(&arguments[0], &BTreeMap::new())
+            witchy_types::canonical_aggregates::is_rooted_int_option_payload_carrier(&arguments[0], &BTreeMap::new())
         }
         _ => false,
     }
 }
 
-/// A non-packed aggregate that carries `&Int` views as nested opaque owners
-/// (see `canonical_aggregates::is_rooted_int_view_aggregate`). The opaque
+/// A non-packed aggregate of `&Int` views, or a named record with one direct
+/// exact `&[Int]` field (see `canonical_aggregates::is_rooted_int_view_aggregate`). The opaque
 /// aggregate family and constructor are revalidated independently; this
 /// predicate only prevents source correspondence from erasing the exact
 /// checked aggregate identity.

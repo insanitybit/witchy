@@ -764,14 +764,19 @@ pub fn is_record_root_payload(ty: &Type, definitions: &BTreeMap<String, TypeDef>
 /// carrier judgment diverge; anything deeper simply is not a carrier.
 const MAX_VIEW_CARRIER_DEPTH: usize = 8;
 
-/// A value that carries authenticated `&Int` or exact `&[Int]` views as opaque owners: the
-/// direct view itself, or a non-packed aggregate (tuple, record, sum,
-/// `Option`, `Result`) each of whose fields is either such a carrier or holds
-/// no view at all, with at least one carrier field. Every shell on the path is
-/// its own opaque owner whose carrier fields are the next owner inward, so a
-/// view is never stored in linear memory.
+/// A direct authenticated `&Int` or exact `&[Int]` owner, or an admitted
+/// non-packed aggregate of view owners. The existing `&Int` path covers tuple,
+/// record, sum, `Option`, and `Result` shells. An exact `&[Int]` extends only a
+/// direct named record field; other slice-bearing shells remain unsupported.
+/// Every admitted shell is an opaque owner, so a view never enters linear memory.
 pub fn is_rooted_int_view_carrier(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> bool {
     may_carry_view(ty, definitions) && view_carrier_at(ty, definitions, 0)
+}
+
+/// An Option shell may reuse the established aggregate-view path, but a bare
+/// slice payload has no authenticated Option projection yet.
+pub fn is_rooted_int_option_payload_carrier(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> bool {
+    !is_direct_rooted_int_slice_view(ty) && is_rooted_int_view_carrier(ty, definitions)
 }
 
 /// [`is_rooted_int_view_carrier`] minus the bare view: an aggregate owner.
@@ -798,6 +803,27 @@ fn view_aggregate_at(ty: &Type, definitions: &BTreeMap<String, TypeDef>, depth: 
     }
     let Some(shape) = scalar_aggregate_shape(ty, definitions) else { return false };
     if shape.packed { return false; }
+    // The proven slice extension is an exact direct field of a declared
+    // untagged record. A tuple, sum, builtin shell, or another record around
+    // that field needs its own checked projection/owner witness. In
+    // particular, treating compiler-generated Option<&[Int]> async state as
+    // an ordinary aggregate owner fails canonical ABI authentication.
+    let direct_slice_count = shape.fields.iter().filter(|field| is_direct_rooted_int_slice_view(field)).count();
+    let nested_slice = shape.fields.iter().any(|field| {
+        !is_direct_rooted_int_slice_view(field)
+            && contains_rooted_slice_view_at(field, definitions, depth + 1)
+    });
+    if (direct_slice_count != 0 || nested_slice)
+        && !(direct_slice_count == 1 && !nested_slice && !shape.tagged
+            && matches!(ty.unqualified(), Type::Named(name, arguments)
+                if arguments.is_empty() && definitions.get(name).is_some_and(|definition| {
+                    matches!(definition.variants.as_slice(), [variant]
+                        if !variant.fields.is_empty()
+                            && variant.field_names.len() == variant.fields.len())
+                })))
+    {
+        return false;
+    }
     let mut carriers = 0usize;
     let admitted = shape.fields.iter().all(|field| {
         if !may_carry_view(field, definitions) {
@@ -810,6 +836,20 @@ fn view_aggregate_at(ty: &Type, definitions: &BTreeMap<String, TypeDef>, depth: 
         }
     });
     admitted && carriers > 0
+}
+
+fn contains_rooted_slice_view_at(
+    ty: &Type,
+    definitions: &BTreeMap<String, TypeDef>,
+    depth: usize,
+) -> bool {
+    if is_direct_rooted_int_slice_view(ty) { return true; }
+    // Unresolved depth is treated as a possible nested slice, so the narrow
+    // record extension cannot authorize a recursive or over-deep carrier.
+    if depth >= MAX_VIEW_CARRIER_DEPTH { return true; }
+    scalar_aggregate_shape(ty, definitions).is_some_and(|shape| {
+        shape.fields.iter().any(|field| contains_rooted_slice_view_at(field, definitions, depth + 1))
+    })
 }
 
 /// Whether any view hides in `ty`, through generic arguments, tuples, named
@@ -1143,6 +1183,31 @@ mod recursive_shape_tests {
             Box::new(Type::Named("Slice".into(), vec![named("Int")])),
         );
         assert!(is_rooted_int_view_carrier(&normalized_int_slice, &definitions));
+        assert!(!is_rooted_int_view_aggregate(
+            &Type::Named("Option".into(), vec![int_slice.clone()]),
+            &definitions,
+        ));
+        let tuple = Type::Tuple(vec![int_slice.clone()]);
+        for shell in [
+            tuple.clone(),
+            Type::Named("Option".into(), vec![tuple]),
+            Type::Named("Result".into(), vec![int_slice.clone(), named("String")]),
+        ] {
+            assert!(!is_rooted_int_view_aggregate(&shell, &definitions));
+        }
+        let mut nested = definitions.clone();
+        nested.insert("Outer".into(), definition("Outer", vec![packet.clone()], false));
+        assert!(!is_rooted_int_view_aggregate(&named("Outer"), &nested));
+        let mut sum = definition("Choice", vec![int_slice.clone()], false);
+        let mut other = sum.variants[0].clone();
+        other.name = "Other".into();
+        sum.variants.push(other);
+        let sum_definitions = BTreeMap::from([("Choice".into(), sum)]);
+        assert!(!is_rooted_int_view_aggregate(&named("Choice"), &sum_definitions));
+        let mut positional = definition("Positional", vec![int_slice.clone()], false);
+        positional.variants[0].field_names.clear();
+        let positional_definitions = BTreeMap::from([("Positional".into(), positional)]);
+        assert!(!is_rooted_int_view_aggregate(&named("Positional"), &positional_definitions));
 
         for element in [
             named("Float"),
