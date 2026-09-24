@@ -190,3 +190,43 @@ fn main(console: Console):
     let message = error.to_string();
     assert!(message.contains("mode opt") || message.contains("unique"), "{message}");
 }
+
+#[test]
+fn normal_unique_call_copies_before_a_live_element_view() {
+    opt::set_for_tests(Some(OptSet::none()));
+    let _reset = ResetOptimizationOverride;
+    assert_both_backends(
+        r#"
+fn update(var xs: unique List(Int)):
+    xs[0] = 9
+
+fn main(console: Console):
+    var xs: unique List(Int) = [1, 2]
+    let old = &xs[0]
+    update(xs)
+    console.print("${*old}:${xs[0]}")
+"#,
+        // The view holds the pre-call root [1, 2]; write-back replaces xs.
+        &["1:9"],
+    );
+}
+
+#[test]
+fn mode_opt_refuses_hidden_copy_for_live_element_view_at_unique_call() {
+    let source = r#"
+mode opt
+
+fn update(var xs: unique List(Int)):
+    xs[0] = 9
+
+fn main(console: Console):
+    var xs: unique List(Int) = [1, 2]
+    let old = &xs[0]
+    update(xs)
+    console.print("${*old}:${xs[0]}")
+"#;
+    let error = witchy::resolve_std_only_checked(source)
+        .expect_err("opt must refuse a hidden copy before the unique call");
+    let message = error.to_string();
+    assert!(message.contains("unique") || message.contains("mode opt"), "{message}");
+}
