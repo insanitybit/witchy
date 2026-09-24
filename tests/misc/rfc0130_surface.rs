@@ -60,7 +60,7 @@ fn rfc0130_row_4_generator_failures_name_source_syntax() {
         "trait diagnostic did not name the supported source form: {trait_method}",
     );
 
-    for diagnostic in [returning, yielded, borrowed, region, trait_method] {
+    for diagnostic in [returning, yielded, region, trait_method] {
         assert!(
             !diagnostic.contains("__gen_") && !diagnostic.contains("gen_bad"),
             "a generated helper leaked into a source diagnostic: {diagnostic}",

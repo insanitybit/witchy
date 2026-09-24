@@ -54,22 +54,76 @@ fn assert_refused(label: &str, source: &str, needle: &str) {
     assert!(error.contains(needle), "{label} refusal names the rule: {error}");
 }
 
-const GENERATORS: &str = "GEN_SOURCE";
+const GENERATORS: &str = r#"
+import iter
 
-const CHANNELS: &str = "CHAN_SOURCE";
+gen fn values(v: &Int) -> Iter(&Int):
+    yield v
+
+fn main(console: Console):
+    var n = 21
+    let sequence = values(&n)
+    n = 5
+    match iter.next(sequence):
+        Item(value, _) -> console.print("${*value} ${n}")
+        Empty -> console.print("unexpected empty")
+"#;
+
+const CHANNELS: &str = r#"
+from chan import Sender
+
+async fn producer(tx: Sender(&Int), v: &Int):
+    chan.send(tx, v).await
+
+async fn main(console: Console):
+    var n = 21
+    let (tx, rx) = chan.channel(1).await
+    let child = chan.spawn(producer(tx, &n)).await
+    n = 5
+    let received: Option(&Int) = chan.recv(rx).await
+    match received:
+        Some(value) -> console.print("${*value} ${n}")
+        None -> console.print("unexpected closed")
+    chan.join(child).await
+"#;
 
 #[test]
 fn generators_take_and_yield_views() {
-    assert_output("generator views", GENERATORS, &[]);
+    assert_output("generator views", GENERATORS, &["21 5"]);
 }
 
 #[test]
 fn channels_carry_views_between_tasks() {
-    assert_output("channel views", CHANNELS, &[]);
+    assert_output("channel views", CHANNELS, &["21 5"]);
 }
 
 #[test]
 fn a_region_born_view_cannot_leave_in_a_generator_or_a_send() {
-    assert_refused("generator", "REGION1", "region-born root");
-    assert_refused("send", "REGION2", "region-born root");
+    assert_refused("generator", r#"
+import iter
+
+gen fn values(v: &List(Int)) -> Iter(&List(Int)):
+    yield v
+
+fn main(console: Console):
+    let sequence = region -> Iter(&List(Int)):
+        let local = [1, 2]
+        values(&local)
+    let _ = iter.next(sequence)
+"#, "region-born root");
+    assert_refused("send", r#"
+from chan import Sender
+from task import Task
+
+async fn producer(tx: Sender(&List(Int)), v: &List(Int)):
+    chan.send(tx, v).await
+
+async fn main(console: Console):
+    let (tx, _rx) = chan.channel(1).await
+    let recipe = region -> Task(()):
+        let local = [1, 2]
+        producer(tx, &local)
+    let child = chan.spawn(recipe).await
+    chan.join(child).await
+"#, "region-born root");
 }

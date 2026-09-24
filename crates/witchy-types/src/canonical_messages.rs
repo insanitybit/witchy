@@ -37,7 +37,12 @@ pub(crate) fn prepare(
     // dependencies only: `runtime_functions` remains the concrete canonical
     // execution inventory used for payload discovery and downstream ABI facts.
     let recheck_functions = recheck_function_dependencies(typed.module(), &runtime_functions);
-    let mut payloads = BTreeMap::<RuntimeTypeIdentity, Type>::new();
+    // Runtime reflection identity describes the referent of a view, so
+    // `Int` and `&Int` deliberately share it. A closed message sum must also
+    // distinguish their checked carrier types: the former is an integer and
+    // the latter owns an authenticated retained root. Keep the exact source
+    // type as part of the local tag key.
+    let mut payloads = BTreeMap::<(RuntimeTypeIdentity, String), Type>::new();
     let mut sites = BTreeMap::new();
     for item in &typed.module().items {
         let Item::Function(function) = item else { continue };
@@ -64,12 +69,13 @@ pub(crate) fn prepare(
             let catalog = catalog.ok_or("canonical messages require retained authenticated loader ownership")?;
             let identity = catalog.type_identity(&ty)
                 .map_err(|error| format!("canonical message payload {ty:?} is not yet supported: {error}"))?;
-            if let Some(previous) = payloads.insert(identity.clone(), ty.clone()) {
+            let key = (identity, format!("{ty:?}"));
+            if let Some(previous) = payloads.insert(key.clone(), ty.clone()) {
                 if previous != ty {
                     return Err(format!("canonical message payload identities have inconsistent checked types: {previous:?} and {ty:?}"));
                 }
             }
-            sites.insert(expr as *const Expr as usize, (pack, identity));
+            sites.insert(expr as *const Expr as usize, (pack, key));
             Ok(())
         })?;
     }

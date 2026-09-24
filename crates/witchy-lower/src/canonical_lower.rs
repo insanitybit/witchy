@@ -4139,6 +4139,10 @@ fn lower_function(
         }
         }
     }
+    let closure_prefix = environment.and_then(|_| {
+        let operations = &lowerer.blocks[entry.get() as usize].operations;
+        Some((operations.first()?.clone(), operations.last()?.clone()))
+    });
 
     let selector_lanes = signature.contract.results.iter()
         .filter(|result| matches!(result, ResultContract::DisjunctiveWriteBackSelector { .. }))
@@ -4177,6 +4181,30 @@ fn lower_function(
     }
     owned::insert_releases_with_owner_families(&mut lowered, signature, signatures, functions, &closures.owners)
         .map_err(|error| CanonicalLoweringError::OwnedReleasePlacement(format!("{error:?}")))?;
+    // Release placement may prepend the drop of an unused managed parameter.
+    // A lambda's entry must first authenticate its closure tag and read its
+    // checked capture fields. Keep that complete prologue at the start, then
+    // release unused parameters before evaluating the body.
+    if let Some((first, last)) = closure_prefix {
+        let entry_block = lowered.blocks.iter_mut().find(|block| block.id == entry)
+            .ok_or_else(|| CanonicalLoweringError::MissingReturn(function.name.clone()))?;
+        let first_index = entry_block.operations.iter().position(|operation| *operation == first)
+            .ok_or(CanonicalLoweringError::UnsupportedExpression("closure entry prefix changed during release placement"))?;
+        if first_index > 0 {
+            let parameters = entry_block.parameters.iter().skip(1).map(|parameter| parameter.value)
+                .collect::<BTreeSet<_>>();
+            if entry_block.operations[..first_index].iter().all(|operation| match operation {
+                Operation::DropRef { object } => parameters.contains(object),
+                Operation::ClosureOwner(OwnerOperation::Drop { owner, .. }) => parameters.contains(owner),
+                _ => false,
+            }) {
+                let delayed = entry_block.operations.drain(..first_index).collect::<Vec<_>>();
+                let after_prefix = entry_block.operations.iter().position(|operation| *operation == last)
+                    .ok_or(CanonicalLoweringError::UnsupportedExpression("closure entry guard changed during release placement"))? + 1;
+                entry_block.operations.splice(after_prefix..after_prefix, delayed);
+            }
+        }
+    }
     if debug {
         eprintln!("canonical lowered `{}`:\n{lowered:#?}", function.name);
     }
