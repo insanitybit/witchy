@@ -321,13 +321,8 @@ pub(super) fn compiler_pattern_syntax_value(
                 message: "CompilerPatternSyntax carried an invalid syntax handle".into(),
             })
         }
-        ("PatternSyntax", [Value::Str(source)]) => {
-            witchy_syntax::syntax_holes::parse_pattern_payload(source)
-                .map_err(|message| RuntimeError { message })
-        }
         ("CompilerPatternSyntax", _) => err("CompilerPatternSyntax carried an invalid payload"),
-        ("PatternSyntax", _) => err("PatternSyntax carried an invalid source payload"),
-        (other, _) => err(format!("meta.match_arm expected PatternSyntax, got `{other}`")),
+        _ => err("meta.match_arm expected compiler-owned PatternSyntax"),
     }
 }
 
@@ -418,7 +413,7 @@ pub(super) fn compiler_item_holes(
     compiler_type_syntax: &HashMap<String, Type>,
     compiler_pattern_syntax: &HashMap<String, Pattern>,
 ) -> Result<Vec<witchy_syntax::syntax_holes::ItemSyntaxHole>, RuntimeError> {
-    use witchy_syntax::syntax_holes::{ItemSyntaxHole, parse_expr_payload, parse_pattern_payload};
+    use witchy_syntax::syntax_holes::{ItemSyntaxHole, parse_expr_payload};
 
     fn tail(name: &str) -> &str {
         name.rsplit_once('.').map_or(name, |(_, tail)| tail)
@@ -495,9 +490,7 @@ pub(super) fn compiler_item_holes(
                                     .into(),
                             })
                     }
-                    _ => parse_pattern_payload(source(syntax, "PatternSyntax")?)
-                        .map(ItemSyntaxHole::Pattern)
-                        .map_err(|message| RuntimeError { message }),
+                    _ => err("compiler-owned item hole expected compiler-owned PatternSyntax"),
                 },
                 other => err(format!("compiler-owned item hole had unknown category `{other}`")),
             }
@@ -730,16 +723,7 @@ pub(super) fn compiler_pattern_holes(
                                 .into(),
                         })
                 }
-                "PatternSyntax" => {
-                    let [Value::Str(source)] = fields.as_slice() else {
-                        return err("PatternSyntax carried an invalid source payload");
-                    };
-                    witchy_syntax::syntax_holes::parse_pattern_payload(source)
-                        .map_err(|message| RuntimeError { message })
-                }
-                other => err(format!(
-                    "compiler-owned pattern hole carried `{other}`, expected PatternSyntax"
-                )),
+                _ => err("compiler-owned pattern hole expected compiler-owned PatternSyntax"),
             }
         })
         .collect()
@@ -982,5 +966,26 @@ mod tests {
         let error = compiler_item_holes(&[hole], &HashMap::new(), &HashMap::new(), &HashMap::new())
             .expect_err("source-backed type cannot enter an item quote");
         assert!(error.message.contains("compiler-owned TypeSyntax"), "{error}");
+    }
+
+    #[test]
+    fn pattern_builders_and_item_holes_reject_source_backed_syntax() {
+        let pattern_source = Value::Ctor {
+            name: "meta.PatternSyntax".into(),
+            fields: Rc::new(vec![Value::str("Some(42)")]),
+        };
+        let error = compiler_pattern_syntax_value(&pattern_source, &HashMap::new())
+            .expect_err("source-backed pattern cannot enter a match arm");
+        assert!(error.message.contains("compiler-owned PatternSyntax"), "{error}");
+        let error = compiler_pattern_holes(&[pattern_source.clone()], &HashMap::new())
+            .expect_err("source-backed pattern cannot enter a builder");
+        assert!(error.message.contains("compiler-owned PatternSyntax"), "{error}");
+        let hole = Value::Ctor {
+            name: "meta.PatternHole".into(),
+            fields: Rc::new(vec![pattern_source]),
+        };
+        let error = compiler_item_holes(&[hole], &HashMap::new(), &HashMap::new(), &HashMap::new())
+            .expect_err("source-backed pattern cannot enter an item quote");
+        assert!(error.message.contains("compiler-owned PatternSyntax"), "{error}");
     }
 }

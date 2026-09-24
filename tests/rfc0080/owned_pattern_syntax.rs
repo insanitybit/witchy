@@ -1,4 +1,4 @@
-//! RFC-0080 compiler-owned pattern payloads with source-backed builder compatibility.
+//! RFC-0080 compiler-owned pattern payloads through builders and quote holes.
 
 use witchy::{ast, comptime, format, interpreter, parser, pipeline, typeck};
 
@@ -21,6 +21,51 @@ fn main(console: Console):
     console.print("${generated([2, 3, 4])}")
     console.print("${generated([9])}")
 "#;
+
+#[test]
+fn compiler_owned_anonymous_pattern_builds_admitted_wasm_without_source_reparse() {
+    use witchy::opt::{self, OptSet};
+    use witchy::runtime::{Capabilities, Runtime};
+
+    struct ResetOptimizationOverride;
+    impl Drop for ResetOptimizationOverride {
+        fn drop(&mut self) { opt::set_for_tests(None); }
+    }
+
+    // `.Some(42)` matches the generated `.Some(42)` arm, yielding 42.
+    let source = r#"
+import meta
+
+type Choice = .[Some(Int) | None]
+
+comptime:
+    let p = meta.pattern_anon_ctor(meta.ident("Some"), [meta.pattern_int(42)])
+    let item = quote item:
+        pub fn generated(value: Choice) -> Int:
+            match value:
+                ${p} -> 42
+                _ -> 0
+    emit_item(item)
+
+fn main() -> Int:
+    generated(.Some(42))
+"#;
+    opt::set_for_tests(Some(OptSet::none()));
+    let _reset = ResetOptimizationOverride;
+    let checked = witchy::resolve_std_only_checked(source)
+        .expect("compiler-owned anonymous pattern type-checks");
+    let artifact = witchy::codegen::compile_checked_module_artifact(&checked)
+        .expect_lowered("compiler-owned anonymous pattern admits SafeWIR");
+    let mut runtime = Runtime::batch().expect("runtime");
+    let mut actor = runtime.spawn_admitted(
+        &artifact,
+        Capabilities { print_int: true, quiet: true, ..Capabilities::none() },
+        128,
+    ).expect("admitted Wasm instance");
+    actor.run().expect("admitted unoptimized Wasm execution");
+    assert_eq!(actor.output(), vec!["42".to_string()]);
+    assert_eq!(actor.canonical_heap_leaks().expect("canonical heap audit"), Some(0));
+}
 
 #[test]
 fn owned_patterns_survive_direct_holes_and_run_on_both_backends() {

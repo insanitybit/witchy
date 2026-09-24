@@ -40,7 +40,6 @@ sealed type ExprSyntax:
 // Hole-free `quote pattern:` values retain compiler-owned pattern AST. Existing
 // builders project canonical source when composing compatibility values.
 sealed type PatternSyntax:
-    PatternSyntax(String)
     CompilerPatternSyntax(String, String)
 
 sealed type SyntaxHole:
@@ -436,8 +435,8 @@ fn expr_source(expr: ExprSyntax) -> String:
         ExprSyntax(source) -> source
         CompilerExprSyntax(_, source) -> source
 
-// Source-backed pattern syntax. Patterns share validated identifiers with
-// expressions, so generated matches cannot accidentally mint a reserved binding.
+// Compiler-owned pattern syntax. Validated identifiers and structural pattern
+// children retain their origin through generated matches.
 pub fn pattern_var(name: Ident) -> PatternSyntax:
     match name:
         Ident(source) -> __meta_pattern_leaf("var", source, "", false)
@@ -492,7 +491,9 @@ pub fn pattern_qualified_ctor(module: Ident, name: Ident, args: List(PatternSynt
         CallSiteIdent(source) -> __meta_call_site_pattern(source + "." + member, args)
 
 pub fn pattern_anon_ctor(tag: Ident, args: List(PatternSyntax)) -> PatternSyntax:
-    pattern_with_head("." + ident_source(tag), args)
+    match tag:
+        Ident(source) -> __meta_pattern_ctor("." + source, args)
+        CallSiteIdent(source) -> __meta_call_site_pattern("." + source, args)
 
 // A tuple pattern.
 pub fn pattern_tuple(patterns: List(PatternSyntax)) -> PatternSyntax:
@@ -524,22 +525,9 @@ pub fn pattern_or(patterns: List(PatternSyntax)) -> PatternSyntax:
 fn __meta_pattern_or(patterns: List(PatternSyntax)) -> PatternSyntax:
     __meta_pattern_or(patterns)
 
-fn pattern_with_head(head: String, args: List(PatternSyntax)) -> PatternSyntax:
-    if list.is_empty(args):
-        PatternSyntax(head)
-    else:
-        PatternSyntax(head + "(" + list.join(pattern_sources(args), ", ") + ")")
-
 fn pattern_source(pattern: PatternSyntax) -> String:
     match pattern:
-        PatternSyntax(source) -> source
         CompilerPatternSyntax(_, source) -> source
-
-fn pattern_sources(patterns: List(PatternSyntax)) -> List(String):
-    var out = []
-    for pattern in patterns:
-        list.push(out, pattern_source(pattern))
-    out
 
 pub fn expr_hole(expr: ExprSyntax) -> SyntaxHole:
     ExprHole(expr)

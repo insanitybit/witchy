@@ -2702,7 +2702,6 @@ Hole-free `quote expr:` values retain a compiler-owned expression AST.
 
 Hole-free `quote pattern:` values retain compiler-owned pattern AST. Existing builders project canonical source when composing compatibility values.
 
-- `PatternSyntax(String)`
 - `CompilerPatternSyntax(String, String)`
 
 #### `sealed type SyntaxHole`
@@ -2892,7 +2891,7 @@ Compiler-owned construction of an explicitly named record. The record head and l
 
 #### `fn pattern_var(name: Ident) -> PatternSyntax`
 
-Source-backed pattern syntax. Patterns share validated identifiers with expressions, so generated matches cannot accidentally mint a reserved binding.
+Compiler-owned pattern syntax. Validated identifiers and structural pattern children retain their origin through generated matches.
 
 #### `fn pattern_wildcard() -> PatternSyntax`
 
