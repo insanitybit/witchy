@@ -38,7 +38,7 @@ fn run_node_driver(relative_path: &str, success_marker: &str, label: &str) {
         eprintln!("skipping: `node` is not available on PATH");
         return;
     }
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let manifest = super::manifest_dir();
     let driver = manifest.join(relative_path);
     assert!(driver.exists(), "the committed {label} driver must exist at {}", driver.display());
 
@@ -209,7 +209,7 @@ fn glamour_optimized_wasm_dispatch_has_no_model_or_vnode_json() {
 /// inserts/moves so every `before` key is already live.
 #[test]
 fn glamour_keyed_plan_is_minimal_and_backends_agree() {
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let manifest = super::manifest_dir();
     let work = std::env::temp_dir().join(format!("glamour-keyed-plan-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&work);
     std::fs::create_dir_all(&work).unwrap();
@@ -265,7 +265,7 @@ fn main(console: Console):
 /// templates with tags 7/12, then apply changed scalar slots.
 #[test]
 fn glamour_structural_patch_frames_agree_on_both_backends() {
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let manifest = super::manifest_dir();
     let work =
         std::env::temp_dir().join(format!("glamour-structural-patch-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&work);
@@ -333,7 +333,7 @@ fn main(console: Console):
 /// ordering before JavaScript observes any effect or subscription request.
 #[test]
 fn glamour_island_host_work_frames_agree_on_both_backends() {
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let manifest = super::manifest_dir();
     let work =
         std::env::temp_dir().join(format!("glamour-host-work-frame-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&work);
@@ -375,7 +375,7 @@ fn main(console: Console):
 /// backends before a generated adapter may turn the result into a typed message.
 #[test]
 fn glamour_island_completion_frames_agree_on_both_backends() {
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let manifest = super::manifest_dir();
     let work =
         std::env::temp_dir().join(format!("glamour-completion-frame-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&work);
@@ -428,7 +428,7 @@ fn glamour_island_completion_frames_agree_on_both_backends() {
 /// backends.
 #[test]
 fn glamour_custom_property_patch_agrees_on_both_backends() {
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let manifest = super::manifest_dir();
     let work =
         std::env::temp_dir().join(format!("glamour-custom-property-patch-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&work);
@@ -472,7 +472,7 @@ fn main(console: Console):
 /// This is the evidence required before proposing framework-specific syntax.
 #[test]
 fn glamour_next_api_shape_needs_no_language_keyword() {
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let manifest = super::manifest_dir();
     let work = std::env::temp_dir().join(format!("glamour-next-api-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&work);
     std::fs::create_dir_all(&work).unwrap();
@@ -507,7 +507,7 @@ fn glamour_next_api_shape_needs_no_language_keyword() {
 /// data. A Program cannot pass its authorization record into the view function.
 #[test]
 fn glamour_program_view_cannot_receive_authority() {
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let manifest = super::manifest_dir();
     let work = std::env::temp_dir().join(format!(
         "glamour-capability-free-view-{}",
         std::process::id()
@@ -580,7 +580,7 @@ fn glamour_reference_baseline_has_checked_transport_and_dom_counts() {
         eprintln!("skipping: `node` is not available on PATH");
         return;
     }
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let manifest = super::manifest_dir();
     let driver = manifest.join("web/witchy-runtime/glamour-baseline.mjs");
     let out = Command::new("node")
         .arg(driver)
@@ -629,7 +629,7 @@ fn glamour_program_typed_events_and_subscriptions_are_deterministic() {
 /// effect is unrepresentable, not merely rejected by a host at runtime.
 #[test]
 fn glamour_http_effect_requires_a_uifetch_token() {
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let manifest = super::manifest_dir();
     let work = std::env::temp_dir().join(format!("glamour-gate-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&work);
     std::fs::create_dir_all(&work).unwrap();
@@ -670,7 +670,7 @@ fn glamour_http_effect_requires_a_uifetch_token() {
 /// made unrepresentable rather than merely denied by host policy at runtime.
 #[test]
 fn glamour_port_effect_requires_a_credential_token() {
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let manifest = super::manifest_dir();
     let work = std::env::temp_dir().join(format!("glamour-port-gate-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&work);
     std::fs::create_dir_all(&work).unwrap();
@@ -713,7 +713,7 @@ fn glamour_port_effect_requires_a_credential_token() {
 /// sibling cannot observe another component's secret, by construction.
 #[test]
 fn glamour_password_is_unreadable_by_a_sibling_component() {
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let manifest = super::manifest_dir();
     let work = std::env::temp_dir().join(format!("glamour-secret-seal-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&work);
     std::fs::create_dir_all(&work).unwrap();
@@ -810,7 +810,7 @@ fn user_cap_export_mints_uiroot_in_the_browser_host() {
 /// and only `main` carries `Console`.)
 #[test]
 fn glamour_autocounter_footprint_is_empty() {
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let manifest = super::manifest_dir();
     let app = manifest.join("projects/glamour/examples/autocounter/src/autocounter.witchy");
     assert!(app.exists(), "the autocounter demo must exist at {}", app.display());
 
@@ -930,7 +930,7 @@ fn glamour_catalog_view_filters_by_name_and_capability() {
 /// data from the registry; this gates the templates' rendering + parity.
 #[test]
 fn glamour_version_and_trust_views_render_security_fields() {
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let manifest = super::manifest_dir();
     let work = std::env::temp_dir().join(format!("glamour-views-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&work);
     std::fs::create_dir_all(&work).unwrap();
@@ -1084,7 +1084,7 @@ fn glamour_compartment_isolates_foreign_code() {
 /// bold, inline code, a sanitized link, and a list, then runs `witchy parity`.
 #[test]
 fn glamour_markdown_renders_identically_on_both_backends() {
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let manifest = super::manifest_dir();
     let work = std::env::temp_dir().join(format!("glamour-md-parity-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&work);
     std::fs::create_dir_all(&work).unwrap();
@@ -1153,7 +1153,7 @@ fn glamour_highlighter_renders_classed_spans_and_escapes_xss() {
 /// `export_render` is `(none)`.)
 #[test]
 fn glamour_highlighter_footprint_is_empty() {
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let manifest = super::manifest_dir();
     let app = manifest.join("projects/glamour/examples/highlighter/src/highlighter.witchy");
     assert!(app.exists(), "the highlighter demo must exist at {}", app.display());
 
@@ -1190,7 +1190,7 @@ fn glamour_highlighter_footprint_is_empty() {
 /// fails HERE with the missing filename.
 #[test]
 fn every_node_test_driver_is_wired_to_a_rust_test() {
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let manifest = super::manifest_dir();
     let this_file = std::fs::read_to_string(manifest.join("tests/glamour/dom.rs"))
         .expect("read tests/glamour/dom.rs");
     let mut wired_elsewhere = String::new();

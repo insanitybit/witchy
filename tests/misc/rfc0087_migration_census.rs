@@ -8,7 +8,7 @@ fn repository_census_matches_the_checked_in_type_resolved_snapshot() {
         || std::env::var_os("WITCHY_NIGHTLY").is_some_and(|v| v == "1");
 
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_rfc0087-census"));
-    cmd.arg(env!("CARGO_MANIFEST_DIR"));
+    cmd.arg(super::manifest_dir());
     if full_census {
         cmd.arg("--full");
     }

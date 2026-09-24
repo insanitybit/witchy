@@ -5020,7 +5020,10 @@ mod tests {
 
     #[test]
     fn std_registry_matches_bundled_source_files() {
-        let std_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../std");
+        let std_dir = std::path::PathBuf::from(
+            std::env::var_os("CARGO_MANIFEST_DIR").expect("Cargo sets CARGO_MANIFEST_DIR for tests"),
+        )
+        .join("../../std");
         let files: std::collections::BTreeSet<String> = std::fs::read_dir(std_dir)
             .expect("std directory")
             .filter_map(|entry| {

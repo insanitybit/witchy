@@ -25,7 +25,9 @@ fn main(console: Console, root: Dir):
                 console.print(flag)
         Err(error) -> fail(error.show())
 "#).unwrap();
-    let repository = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let repository = PathBuf::from(
+        std::env::var_os("CARGO_MANIFEST_DIR").expect("Cargo sets CARGO_MANIFEST_DIR for tests"),
+    );
     let mut dependencies = HashMap::from([("gm_engine".into(),
         repository.join("projects/grimoire/src/gm_engine.witchy"))]);
     for name in ["coven_proto", "coven_json", "coven_validate", "coven_artifact"] {

@@ -4,7 +4,10 @@ use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub fn workspace_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+    PathBuf::from(
+        std::env::var_os("CARGO_MANIFEST_DIR").expect("Cargo sets CARGO_MANIFEST_DIR for tests"),
+    )
+    .join("../..")
 }
 
 pub(crate) struct TempRepo(pub(crate) PathBuf);

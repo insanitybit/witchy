@@ -1266,7 +1266,10 @@ mod tests {
 
     #[test]
     fn manifest_document_is_current() {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../rfcs/0165-rule-manifest.md");
+        let path = std::path::PathBuf::from(
+            std::env::var_os("CARGO_MANIFEST_DIR").expect("Cargo sets CARGO_MANIFEST_DIR for tests"),
+        )
+        .join("../../rfcs/0165-rule-manifest.md");
         let expected = render_markdown();
         if std::env::var_os("WITCHY_BLESS_RULE_MANIFEST").is_some() {
             std::fs::write(&path, &expected).expect("write the rule manifest document");

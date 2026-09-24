@@ -126,7 +126,10 @@ mod tests {
     fn checked(source: &str) -> witchy_types::pipeline::CheckedModule {
         // Test inputs are the actual std sources, not synthetic intrinsic
         // declarations or copied witnesses. No host execution occurs here.
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../std");
+        let root = std::path::PathBuf::from(
+            std::env::var_os("CARGO_MANIFEST_DIR").expect("Cargo sets CARGO_MANIFEST_DIR for tests"),
+        )
+        .join("../../std");
         let mut pending = vec![("registry_probe".to_owned(), source.to_owned())];
         let mut seen = BTreeSet::new();
         let mut sources = Vec::new();

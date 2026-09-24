@@ -234,7 +234,7 @@ fn seeded_divergence_is_inert_on_run_but_fails_parity() {
 /// in the compiler/runtime/interpreter crates that back the program-run path.
 #[test]
 fn seeded_divergence_var_is_absent_from_release_crates() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let root = super::manifest_dir();
     let mut hits = Vec::new();
     find_str_in_rs(&root.join("crates"), "WITCHY_SEEDED_DIVERGENCE", &mut hits);
     assert!(

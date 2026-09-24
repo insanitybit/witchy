@@ -1349,11 +1349,11 @@ fn main(console: Console, net: Net, root: Dir):
     server.serve_n(net, "{addr}", app, 2)
 "#
         );
-        let server = spawn_loopback_program(
-            src,
-            concat!(env!("CARGO_MANIFEST_DIR"), "/../.."),
-            &addr,
-        );
+        let workspace = std::path::PathBuf::from(
+            std::env::var_os("CARGO_MANIFEST_DIR").expect("Cargo sets CARGO_MANIFEST_DIR for tests"),
+        )
+        .join("../..");
+        let server = spawn_loopback_program(src, workspace.to_str().expect("UTF-8 workspace path"), &addr);
         let r1 = http_request(&addr, "GET /files/greeting.txt HTTP/1.1\r\nHost: x\r\n\r\n");
         assert!(r1.contains("200 OK") && r1.contains("sandboxed Dir"), "r1: {r1}");
         let r2 = http_request(&addr, "GET /files/nope.txt HTTP/1.1\r\nHost: x\r\n\r\n");

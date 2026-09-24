@@ -312,9 +312,15 @@ fn publish_rejects_underdeclared_capabilities() {
 /// recomputation (an under-declared rune is refused 400), and source fetch.
 #[test]
 fn witchy_coven_full_lifecycle_self_hosted() {
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let coven_src = format!("{manifest_dir}/projects/coven/src/coven.witchy");
-    let client_src = format!("{manifest_dir}/projects/coven/src/coven_client.witchy");
+    let manifest_dir = super::manifest_dir();
+    let coven_src = manifest_dir
+        .join("projects/coven/src/coven.witchy")
+        .to_string_lossy()
+        .into_owned();
+    let client_src = manifest_dir
+        .join("projects/coven/src/coven_client.witchy")
+        .to_string_lossy()
+        .into_owned();
 
     // Pre-pick a free port (the server must bind the same addr we pass to --net).
     let port = std::net::TcpListener::bind("127.0.0.1:0")
@@ -420,8 +426,10 @@ fn witchy_coven_full_lifecycle_self_hosted() {
 /// and a publish with no token is refused 401.
 #[test]
 fn witchy_coven_trusted_publishing_verifies_a_rust_minted_token() {
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let coven_src = format!("{manifest_dir}/projects/coven/src/coven.witchy");
+    let coven_src = super::manifest_dir()
+        .join("projects/coven/src/coven.witchy")
+        .to_string_lossy()
+        .into_owned();
 
     // Mint a trusted issuer + a publish token (the Rust IdP CLI).
     let idp = unique("witchy-coven-idp");
@@ -881,7 +889,7 @@ fn glamour_publishes_to_coven_empty_footprint_and_renders_through_html() {
     // recomputes it from source regardless (asserted below).
     let lib = base.join("glamour");
     std::fs::create_dir_all(lib.join("src")).unwrap();
-    let glamour_src = Path::new(env!("CARGO_MANIFEST_DIR")).join("projects/glamour/src/glamour.witchy");
+    let glamour_src = super::manifest_dir().join("projects/glamour/src/glamour.witchy");
     std::fs::copy(&glamour_src, lib.join("src/glamour.witchy")).expect("copy committed glamour source");
     std::fs::write(
         lib.join("witchy.toml"),
@@ -1311,13 +1319,13 @@ fn install_and_run_a_trusted_application_end_to_end() {
 
     let server = RegistryServer::start();
     let fe = FrontEnd::new(&server, "cut6");
-    let repo = env!("CARGO_MANIFEST_DIR");
+    let repo = super::manifest_dir();
 
     // 1. Assemble a publishable, NAMESPACED minigrep rune from the committed example,
     //    keeping its `[targets.trusted-publisher]` binding (cwd Dir[Read] + IGNORE_CASE env).
     let app = fe.base.join("minigrep");
     std::fs::create_dir_all(app.join("src")).unwrap();
-    let toml = std::fs::read_to_string(Path::new(repo).join("examples/minigrep/witchy.toml"))
+    let toml = std::fs::read_to_string(repo.join("examples/minigrep/witchy.toml"))
         .unwrap()
         .replace(
             "name = \"minigrep\"\nversion = \"0.1.0\"",
@@ -1325,7 +1333,7 @@ fn install_and_run_a_trusted_application_end_to_end() {
         );
     std::fs::write(app.join("witchy.toml"), toml).unwrap();
     for f in ["src/minigrep.witchy", "src/minigrep_test.witchy"] {
-        std::fs::copy(Path::new(repo).join("examples/minigrep").join(f), app.join(f)).unwrap();
+        std::fs::copy(repo.join("examples/minigrep").join(f), app.join(f)).unwrap();
     }
 
     // 2. Build the real trusted-publisher: one self-contained host launcher bundling the

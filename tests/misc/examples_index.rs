@@ -56,7 +56,7 @@ fn inventory_section(readme: &str) -> &str {
 
 #[test]
 fn runnable_examples_are_exhaustively_indexed() {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let root = super::manifest_dir();
     let examples = root.join("examples");
     let readme = fs::read_to_string(examples.join("README.md"))
         .expect("read examples/README.md");
@@ -87,7 +87,7 @@ fn runnable_examples_are_exhaustively_indexed() {
 
 #[test]
 fn committed_project_locks_match_their_path_dependencies() {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let root = super::manifest_dir();
     let locks = project_locks(&root.join("examples/projects"));
     assert!(!locks.is_empty(), "no committed example project locks discovered");
 

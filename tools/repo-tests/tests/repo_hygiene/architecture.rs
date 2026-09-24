@@ -125,6 +125,42 @@ fn root_integration_test_binaries_stay_within_budget() {
     );
 }
 
+/// Cargo does not fingerprint its own `CARGO_MANIFEST_DIR` value. Compiling it
+/// into a test executable therefore binds that executable to one checkout even
+/// after the build seed rebases every source dependency onto a new worktree.
+/// Runtime lookup keeps linked test artifacts portable; build-seed.py retains
+/// a conservative invalidation fallback for any future regression.
+#[test]
+fn rust_tests_do_not_compile_checkout_specific_manifest_paths() {
+    let root = super::workspace_root();
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(&root)
+        .args(["ls-files", "-z", "--", "*.rs"])
+        .output()
+        .expect("list tracked Rust sources");
+    assert!(output.status.success(), "git ls-files failed");
+
+    let forbidden = [
+        ["env", "!(\"", "CARGO_MANIFEST_DIR", "\")"].concat(),
+        ["option_env", "!(\"", "CARGO_MANIFEST_DIR", "\")"].concat(),
+    ];
+    let mut offenders = Vec::new();
+    for relative in output.stdout.split(|byte| *byte == 0).filter(|path| !path.is_empty()) {
+        let relative = String::from_utf8_lossy(relative);
+        let source = std::fs::read_to_string(root.join(relative.as_ref()))
+            .unwrap_or_else(|error| panic!("read {relative}: {error}"));
+        if forbidden.iter().any(|needle| source.contains(needle)) {
+            offenders.push(relative.into_owned());
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "compile-time CARGO_MANIFEST_DIR makes seeded tests read the publisher checkout; use std::env::var_os at runtime instead: {offenders:#?}",
+    );
+}
+
 /// The merge coordinator runs the whole glamour family (150 tests, ~1699s of
 /// gate CPU) only when a glamour surface changes. A `book/`-only batch runs
 /// the `glamour-nonbook` family instead: everything EXCEPT the single test

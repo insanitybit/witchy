@@ -19,8 +19,14 @@ const FRONTEND_ONLY: [(&str, &str); 3] = [
     ("from_checked_frontend", "crates/witchy-types/src/pipeline.rs"),
 ];
 
+fn manifest_dir() -> PathBuf {
+    PathBuf::from(
+        std::env::var_os("CARGO_MANIFEST_DIR").expect("Cargo sets CARGO_MANIFEST_DIR for tests"),
+    )
+}
+
 fn workspace_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().expect("workspace root")
+    manifest_dir().join("../..").canonicalize().expect("workspace root")
 }
 
 /// Every tracked Rust file: crates, the root package, benches, tools and
@@ -105,7 +111,7 @@ fn checked_source_authority_has_one_frontend_minting_site() {
 
 #[test]
 fn checked_source_authority_types_keep_private_fields() {
-    let source = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/source.rs")).expect("source.rs");
+    let source = fs::read_to_string(manifest_dir().join("src/source.rs")).expect("source.rs");
     let file = syn::parse_file(&source).expect("source.rs parses");
     let mut seen = BTreeSet::new();
     for item in &file.items {

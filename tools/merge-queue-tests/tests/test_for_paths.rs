@@ -43,7 +43,10 @@ fn wasm_abi_doc_uses_catalog_contracts_without_deferred_docs_sweep() {
 }
 
 fn workspace_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
+    let manifest_dir = PathBuf::from(
+        std::env::var_os("CARGO_MANIFEST_DIR").expect("Cargo sets CARGO_MANIFEST_DIR for tests"),
+    );
+    manifest_dir
         .parent()
         .and_then(Path::parent)
         .expect("merge-queue-tests lives under tools/")
@@ -858,8 +861,7 @@ fn canonical_wasmir_landing_keeps_the_deferred_mutation_tests() {
     let selection = output.lines().next().unwrap_or_default();
     if selection.contains("--lib") || selection.contains("--test ") {
         assert!(selection.contains("--lib"), "WIR unit tests dropped: {output}");
-        let tests = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../crates/witchy-wir/tests");
+        let tests = workspace_root().join("crates/witchy-wir/tests");
         for entry in std::fs::read_dir(tests).expect("list witchy-wir tests") {
             let path = entry.expect("dir entry").path();
             if path.extension().is_some_and(|extension| extension == "rs") {
@@ -1271,6 +1273,28 @@ fn broad_misc_run_subsumes_the_same_filtered_binary_run() {
         ["./scripts/nextest-admitted.sh witchy -- cargo nextest run --test misc"],
         "the complete misc run should replace its redundant census-only subset"
     );
+}
+
+#[test]
+fn exact_filters_for_the_same_test_target_share_one_build() {
+    let commands = selected(&[
+        "--edit-loop",
+        "src/commands/project_resolver_tests.rs",
+        "tests/cli_subcommands.rs",
+    ]);
+    let cli_probes: Vec<_> = commands
+        .iter()
+        .filter(|command| command.starts_with("cargo nextest run --test cli_subcommands -E"))
+        .collect();
+    assert_eq!(cli_probes.len(), 1, "duplicate CLI target builds: {commands:?}");
+    for probe in [
+        "compile_accepts_complete_authenticated_package_owners",
+        "source_nil_main_int_output_is_not_eaten_as_exit_code",
+        "sandbox_wasm_requires_explicit_dir_grant",
+        "fetch_root_requires_an_explicit_valid_origin_and_admitted_artifact",
+    ] {
+        assert!(cli_probes[0].contains(probe), "missing {probe}: {commands:?}");
+    }
 }
 
 #[test]
@@ -2173,7 +2197,7 @@ fn the_gate_never_selects_glamour_or_coven_tests() {
             assert!(!output.contains(module), "{path} selects {module}: {output}");
         }
     }
-    let repo = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let repo = workspace_root();
     let read = |relative: &str| std::fs::read_to_string(repo.join(relative)).expect(relative);
     let queue = read("scripts/merge-queue.sh");
     assert!(
@@ -2200,7 +2224,7 @@ fn every_e2e_consumer_enables_the_feature_that_compiles_it() {
     // they do not: naming the target with the feature unmet is a hard cargo
     // error, but a workspace-wide run just drops the binary and reports green.
     // So this pins each site by name rather than trusting one general rule.
-    let repo = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let repo = workspace_root();
     let read = |relative: &str| {
         std::fs::read_to_string(repo.join(relative)).unwrap_or_else(|_| panic!("read {relative}"))
     };
@@ -2259,7 +2283,7 @@ fn gate_names_every_target_of_every_selected_package() {
     let words: Vec<&str> = selection.split_whitespace().collect();
     let named = |target: &str| words.windows(2).any(|pair| pair == ["--test", target]);
     assert!(words.contains(&"--lib"), "unit tests dropped: {output}");
-    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let root = workspace_root();
     for (dir, keep) in [("crates/witchy-types/tests", "" ), ("tests", "rfc0")] {
         for entry in std::fs::read_dir(root.join(dir)).expect("list tests") {
             let path = entry.expect("dir entry").path();
@@ -2279,7 +2303,7 @@ fn a_crate_with_a_binary_keeps_the_whole_package_form() {
     // EVERY crate that has one (or explicit targets) rather than one path that
     // happens to route elsewhere: whatever route the mapper takes for it, it
     // must never emit the narrowed `--lib` form.
-    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let root = workspace_root();
     let mut checked = 0;
     for entry in std::fs::read_dir(root.join("crates")).expect("list crates") {
         let dir = entry.expect("dir entry").path();

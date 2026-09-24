@@ -1261,6 +1261,49 @@ for c in ${cmds[0]+"${cmds[@]}"}; do
 done
 cmds=(${subsumed_cmds[0]+"${subsumed_cmds[@]}"})
 
+# Cargo builds a complete selected test target before nextest applies `-E`.
+# Combined paths can select several exact probes from that same target (for
+# example project-resolver and CLI edits both select `cli_subcommands`). Running
+# those commands separately paid the identical optimized compiler graph twice:
+# on 2026-09-24 the first one-test build took 32m26s under host contention and
+# the immediately following three-test command started rebuilding `witchy`.
+# Coalesce only commands whose entire prefix before `-E` is byte-identical.
+# This deliberately keeps direct security probes separate from
+# nextest-admitted.sh, and keeps distinct features, packages, targets and
+# environment assignments in separate builds.
+coalesced_cmds=()
+coalesced_prefixes=()
+coalesced_exprs=()
+for c in ${cmds[0]+"${cmds[@]}"}; do
+    prefix="${c%% -E *}"
+    case "$c" in
+        *" -E '"*"'") ;;
+        *) coalesced_cmds+=("$c"); coalesced_prefixes+=(""); coalesced_exprs+=(""); continue ;;
+    esac
+    # A compound shell command owns more than one execution policy. Leave it
+    # intact rather than treating text after its first expression as a filter.
+    case "$c" in
+        *"' && "*) coalesced_cmds+=("$c"); coalesced_prefixes+=(""); coalesced_exprs+=(""); continue ;;
+    esac
+    expr="${c#* -E \'}"
+    expr="${expr%\'}"
+    merged=0
+    for i in "${!coalesced_cmds[@]}"; do
+        if [ "${coalesced_prefixes[$i]}" = "$prefix" ]; then
+            coalesced_exprs[$i]="(${coalesced_exprs[$i]}) or ($expr)"
+            coalesced_cmds[$i]="$prefix -E '${coalesced_exprs[$i]}'"
+            merged=1
+            break
+        fi
+    done
+    if [ "$merged" -eq 0 ]; then
+        coalesced_cmds+=("$c")
+        coalesced_prefixes+=("$prefix")
+        coalesced_exprs+=("$expr")
+    fi
+done
+cmds=(${coalesced_cmds[0]+"${coalesced_cmds[@]}"})
+
 if [ "${#cmds[@]}" -eq 0 ]; then
     echo "test-for-paths: prose-only change — no focused checks needed (still submit through the queue)"
     exit 0

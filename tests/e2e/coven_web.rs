@@ -88,7 +88,10 @@ fn coven_web_proxy_reencodes_decoded_query_values() {
     let web_port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
     let web_addr = format!("127.0.0.1:{web_port}");
     let assets = unique("cw-proxy-assets");
-    let cw_src = format!("{}/projects/coven-web/src/coven_web.witchy", env!("CARGO_MANIFEST_DIR"));
+    let cw_src = super::manifest_dir()
+        .join("projects/coven-web/src/coven_web.witchy")
+        .to_string_lossy()
+        .into_owned();
     let mut child = Command::new(BIN)
         .args([
             "--net",
@@ -185,7 +188,10 @@ fn coven_web_publish_passthrough_reaches_upstream_and_keeps_browser_csrf() {
     let web_port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
     let web_addr = format!("127.0.0.1:{web_port}");
     let assets = unique("cw-publish-assets");
-    let cw_src = format!("{}/projects/coven-web/src/coven_web.witchy", env!("CARGO_MANIFEST_DIR"));
+    let cw_src = super::manifest_dir()
+        .join("projects/coven-web/src/coven_web.witchy")
+        .to_string_lossy()
+        .into_owned();
     let mut child = Command::new(BIN)
         .args([
             "--net",
@@ -309,7 +315,10 @@ fn coven_web_github_login_completes_a_session() {
     let mock = format!("https://localhost:{gh_port}");
     let assets = unique("cw-assets");
     std::fs::create_dir_all(&assets).unwrap();
-    let cw_src = format!("{}/projects/coven-web/src/coven_web.witchy", env!("CARGO_MANIFEST_DIR"));
+    let cw_src = super::manifest_dir()
+        .join("projects/coven-web/src/coven_web.witchy")
+        .to_string_lossy()
+        .into_owned();
     let mut child = Command::new(BIN)
         .args([
             "--net",
@@ -528,7 +537,10 @@ fn coven_web_google_login_verifies_id_token_and_completes_a_session() {
     let mock = format!("https://localhost:{g_port}");
     let assets = unique("cw-g-assets");
     std::fs::create_dir_all(&assets).unwrap();
-    let cw_src = format!("{}/projects/coven-web/src/coven_web.witchy", env!("CARGO_MANIFEST_DIR"));
+    let cw_src = super::manifest_dir()
+        .join("projects/coven-web/src/coven_web.witchy")
+        .to_string_lossy()
+        .into_owned();
     let mut child = Command::new(BIN)
         .args([
             "--net",

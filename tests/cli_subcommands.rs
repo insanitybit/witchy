@@ -540,7 +540,10 @@ pub fn web() -> Site:
 #[test]
 fn glamour_server_adapter_enforces_progressive_form_boundary() {
     let out = Command::new(BIN)
-        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .current_dir(
+            std::env::var_os("CARGO_MANIFEST_DIR")
+                .expect("Cargo sets CARGO_MANIFEST_DIR for tests"),
+        )
         .args(["run", "projects/glamour-server/examples/basic"])
         .output()
         .expect("run Glamour server example");

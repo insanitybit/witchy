@@ -10,6 +10,12 @@ use syn::{
     Member, Meta, Token,
 };
 
+fn manifest_dir() -> PathBuf {
+    PathBuf::from(
+        std::env::var_os("CARGO_MANIFEST_DIR").expect("Cargo sets CARGO_MANIFEST_DIR for tests"),
+    )
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum RawKind {
     Load,
@@ -254,7 +260,7 @@ fn is_test_source_path(path: &Path) -> bool {
 }
 
 fn current_census() -> BTreeMap<String, FileCensus> {
-    let crate_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let crate_root = manifest_dir();
     let workspace = crate_root.parent().and_then(Path::parent).expect("workspace root");
     let mut files = Vec::new();
     for entry in fs::read_dir(workspace.join("crates")).expect("read workspace crates") {
@@ -596,7 +602,7 @@ fn every_test_attribute_attaches_exactly_once_and_no_test_is_unrun() {
     let mut duplicated = Vec::new();
     let mut unrun = Vec::new();
     let mut sources = Vec::new();
-    rust_files(&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src"), &mut sources);
+    rust_files(&manifest_dir().join("src"), &mut sources);
     sources.sort();
     for path in sources {
         let source = fs::read_to_string(&path)

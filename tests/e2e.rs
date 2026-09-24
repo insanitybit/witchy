@@ -4,6 +4,12 @@
 //! build, run, audit. Each test is hermetic — its own temp `WITCHY_HOME` and
 //! working tree — so they can run in parallel.
 
+fn manifest_dir() -> std::path::PathBuf {
+    std::path::PathBuf::from(
+        std::env::var_os("CARGO_MANIFEST_DIR").expect("Cargo sets CARGO_MANIFEST_DIR for tests"),
+    )
+}
+
 mod support;
 #[path = "support/registry.rs"]
 mod registry;

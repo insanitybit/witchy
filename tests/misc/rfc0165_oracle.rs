@@ -731,7 +731,7 @@ oracle_example_shards! {
 }
 
 fn oracle_examples_shard(shard: usize, shards: usize) {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let root = super::manifest_dir();
     let requested = std::env::var("WITCHY_ORACLE_EXAMPLE").ok();
     let emit_timing = std::env::var_os("WITCHY_ORACLE_TIMING").is_some();
     let mut checked_any = false;
@@ -941,7 +941,7 @@ fn sweep_skips_only_examples_with_a_dedicated_leak_audited_test() {
     // still runs it. Each must be embedded by a test file that audits leaks
     // on both engines (`leaked_objects` for the SafeWIR interpreter,
     // `canonical_heap_leaks` for admitted Wasm).
-    let misc = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/misc");
+    let misc = super::manifest_dir().join("tests/misc");
     for name in SUBSUMED_BY_DEDICATED_TESTS {
         let needle = format!("examples/{name}/src/{name}.witchy");
         let covered = std::fs::read_dir(&misc).expect("tests/misc").any(|entry| {

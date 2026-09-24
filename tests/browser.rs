@@ -4,10 +4,16 @@
 //! Files live in `tests/browser/` (a subdir is not auto-compiled as its own
 //! binary) and are attached here via `#[path]` since a test crate root
 //! resolves bare `mod` names against `tests/`, not the subdir.
-use std::path::Path;
+use std::path::PathBuf;
 use std::process::Command;
 
 const BIN: &str = env!("CARGO_BIN_EXE_witchy");
+
+fn manifest_dir() -> PathBuf {
+    PathBuf::from(
+        std::env::var_os("CARGO_MANIFEST_DIR").expect("Cargo sets CARGO_MANIFEST_DIR for tests"),
+    )
+}
 
 pub fn run_node_driver(driver: &str, args: &[&str], marker: &str, label: &str) {
     run_node_driver_inner(driver, args, marker, label, false);
@@ -26,7 +32,7 @@ fn run_node_driver_inner(driver: &str, args: &[&str], marker: &str, label: &str,
         eprintln!("skipping: `node` is not available on PATH");
         return;
     }
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let manifest = manifest_dir();
     let driver = manifest.join(driver);
     assert!(driver.exists(), "the committed {label} driver must exist at {}", driver.display());
     let has_jspi_flag = requires_jspi

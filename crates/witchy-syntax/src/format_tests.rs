@@ -634,7 +634,10 @@ comptime:
         // The printer must faithfully round-trip every shipped source file and
         // parseable book/README `witchy` fence. The shipped trees live at the
         // workspace root (two levels up from this crate's manifest dir).
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let root = std::path::PathBuf::from(
+            std::env::var_os("CARGO_MANIFEST_DIR").expect("Cargo sets CARGO_MANIFEST_DIR for tests"),
+        )
+        .join("../..");
         let dirs = ["std", "examples", "projects/glamour"];
         let mut failures = Vec::new();
         for dir in dirs {
@@ -822,7 +825,10 @@ comptime:
         // Formatting already-formatted code must be a no-op: `fmt(fmt(x)) == fmt(x)`.
         // The shipped std/ + examples/ trees live at the workspace root (two
         // levels up from this crate's manifest dir).
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let root = std::path::PathBuf::from(
+            std::env::var_os("CARGO_MANIFEST_DIR").expect("Cargo sets CARGO_MANIFEST_DIR for tests"),
+        )
+        .join("../..");
         let dirs = ["std", "examples"];
         let mut failures = Vec::new();
         for dir in dirs {

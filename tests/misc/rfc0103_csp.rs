@@ -2,7 +2,7 @@
 fn emitted_browser_csp_matches_concrete_capability_surfaces() {
     let output = std::process::Command::new("node")
         .arg("web/csp.test.mjs")
-        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .current_dir(super::manifest_dir())
         .output()
         .expect("run RFC-0103 CSP parity probe");
     assert!(

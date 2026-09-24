@@ -24,7 +24,7 @@ struct Entry {
 }
 
 fn corpus() -> Corpus {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let root = super::manifest_dir();
     let text = std::fs::read_to_string(root.join("rfcs/0165-safewir-corpus.json")).expect("corpus manifest");
     serde_json::from_str(&text).expect("corpus manifest parses")
 }
@@ -62,7 +62,7 @@ fn three_legs(source: &str, label: &str) -> Vec<String> {
 
 #[test]
 fn corpus_digests_are_current() {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let root = super::manifest_dir();
     let corpus = corpus();
     assert!(!corpus.entries.is_empty());
     let mut ids = std::collections::BTreeSet::new();
@@ -82,7 +82,7 @@ fn corpus_digests_are_current() {
 /// parallelism could split. Sharding by index keeps the manifest the only
 /// list of programs -- a new entry lands in some shard automatically.
 fn assert_corpus_shard(shard: usize) {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let root = super::manifest_dir();
     for (_, entry) in corpus().entries.into_iter().enumerate()
         .filter(|(index, _)| index % CORPUS_SHARDS == shard)
     {

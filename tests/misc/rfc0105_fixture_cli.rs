@@ -251,7 +251,7 @@ fn seed_override_is_reproducible_and_duplicate_json_keys_fail_closed() {
 
 #[test]
 fn flagship_fixture_example_runs_with_backend_parity_and_checked_output() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let root = super::manifest_dir();
     let plan = root.join("projects/fixture-showcase/release.fixture.json");
     let example = root.join("projects/fixture-showcase");
     let output = run(&[

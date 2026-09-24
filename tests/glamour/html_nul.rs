@@ -11,7 +11,7 @@ use super::temp_dir::TempDir;
 fn workdir() -> TempDir {
     let dir = TempDir::new("glamour-html-nul");
     std::fs::copy(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("projects/glamour/src/glamour.witchy"),
+        super::manifest_dir().join("projects/glamour/src/glamour.witchy"),
         dir.join("glamour.witchy"),
     )
     .expect("copy glamour module");

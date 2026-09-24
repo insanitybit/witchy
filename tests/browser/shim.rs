@@ -97,7 +97,7 @@ fn wasm_asset_fetch_fails_loudly_on_an_html_response() {
 /// Requires `web/witchy.wasm` (built by `scripts/build-playground.sh`); SKIPS cleanly if absent.
 #[test]
 fn witchy_runnable_cell_compiles_and_runs_in_page() {
-    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let manifest = super::manifest_dir();
     if !manifest.join("web/witchy.wasm").exists() {
         eprintln!("skipping: web/witchy.wasm not built (run scripts/build-playground.sh)");
         return;

@@ -2,10 +2,8 @@
 //! copy the one-file artifact away from its source tree, and run it without a
 //! Witchy installation or launch-time grant flags.
 
-use std::path::Path;
+use std::path::PathBuf;
 use std::process::Command;
-
-const REPO: &str = env!("CARGO_MANIFEST_DIR");
 
 use super::support::{run, stderr, stdout, Scratch, BIN};
 
@@ -15,8 +13,11 @@ fn committed_minigrep_builds_and_runs_as_an_installed_trusted_app() {
     let scratch = Scratch::new("witchy-rfc0092-minigrep");
     let project = scratch.join("project");
     std::fs::create_dir_all(project.join("src")).unwrap();
+    let repo = std::env::var_os("CARGO_MANIFEST_DIR")
+        .map(PathBuf::from)
+        .expect("Cargo sets CARGO_MANIFEST_DIR for tests");
     for file in ["witchy.toml", "src/minigrep.witchy", "src/minigrep_test.witchy"] {
-        std::fs::copy(Path::new(REPO).join("examples/minigrep").join(file), project.join(file)).unwrap();
+        std::fs::copy(repo.join("examples/minigrep").join(file), project.join(file)).unwrap();
     }
 
     let built = run(

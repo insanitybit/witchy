@@ -3,9 +3,15 @@ use std::{collections::BTreeSet, fs, path::{Path, PathBuf}};
 use syn::visit::Visit;
 use syn::{ExprStruct, Fields, FnArg, Item, ItemFn, ItemStruct, Path as SynPath, Type, Visibility};
 
+fn manifest_dir() -> PathBuf {
+    PathBuf::from(
+        std::env::var_os("CARGO_MANIFEST_DIR").expect("Cargo sets CARGO_MANIFEST_DIR for tests"),
+    )
+}
+
 fn read_source(relative: &str) -> String {
-    let path = format!("{}/{}", env!("CARGO_MANIFEST_DIR"), relative);
-    fs::read_to_string(&path).unwrap_or_else(|error| panic!("read {path}: {error}"))
+    let path = manifest_dir().join(relative);
+    fs::read_to_string(&path).unwrap_or_else(|error| panic!("read {}: {error}", path.display()))
 }
 
 fn functions<'a>(file: &'a syn::File) -> impl Iterator<Item = &'a ItemFn> {
@@ -196,7 +202,7 @@ impl<'ast> Visit<'ast> for WasmIrSurface {
 
 #[test]
 fn canonical_wasmir_has_one_private_validated_construction_surface() {
-    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let manifest_dir = manifest_dir();
     let source_root = manifest_dir.join("src");
     let canonical = source_root.join("canonical_wasmir.rs");
     let mut canonical_surface = WasmIrSurface::default();
@@ -240,7 +246,7 @@ fn canonical_wasmir_has_one_private_validated_construction_surface() {
 
 #[test]
 fn validated_safewir_has_one_checker_owned_construction_surface() {
-    let source_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let source_root = manifest_dir().join("src");
     let authority = source_root.join("canonical_safewir/authority.rs");
     let mut declarations = Vec::new();
     let mut constructions = Vec::new();
@@ -282,7 +288,7 @@ fn validated_safewir_has_one_checker_owned_construction_surface() {
 
 #[test]
 fn a3_witness_and_digest_types_have_no_public_minting_surface() {
-    let source_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let source_root = manifest_dir().join("src");
     let mut declarations = BTreeSet::new();
     let protected_public_types = [
         "CheckedLoweringWitness",
@@ -350,7 +356,7 @@ fn a3_witness_and_digest_types_have_no_public_minting_surface() {
 }
 
 fn workspace_manifests() -> Vec<PathBuf> {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let root = manifest_dir().join("../..");
     let mut manifests = vec![root.join("Cargo.toml")];
     let crates = root.join("crates");
     for entry in fs::read_dir(&crates).unwrap_or_else(|error| panic!("read {}: {error}", crates.display())) {
@@ -460,8 +466,7 @@ fn production_test_feature_violations(source: &str, lowerer: bool) -> Vec<usize>
 
 #[test]
 fn production_features_do_not_activate_legacy_encoding() {
-    let lowerer = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../witchy-lower/Cargo.toml").canonicalize().unwrap();
+    let lowerer = manifest_dir().join("../witchy-lower/Cargo.toml").canonicalize().unwrap();
     for manifest in workspace_manifests() {
         let source = fs::read_to_string(&manifest).expect("read manifest");
         let violations = production_test_feature_violations(

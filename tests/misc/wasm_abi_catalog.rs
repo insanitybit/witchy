@@ -1,7 +1,6 @@
 //! Native and browser host conformance to the compiler-owned WASM ABI catalog.
 #![cfg(feature = "native")]
 
-use std::path::Path;
 use std::process::Command;
 
 use wasm_encoder::{
@@ -237,7 +236,7 @@ fn browser_host_implements_exactly_the_catalogued_browser_surface() {
         return;
     }
 
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let manifest = super::manifest_dir();
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()

@@ -441,7 +441,10 @@ mod tests {
     /// with scripts/gen-std-pruning-roots.py when this fails.
     #[test]
     fn pruning_roots_cover_every_compiler_std_literal() {
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let root = std::path::PathBuf::from(
+            std::env::var_os("CARGO_MANIFEST_DIR").expect("Cargo sets CARGO_MANIFEST_DIR for tests"),
+        )
+        .join("../..");
         let modules = witchy_syntax::linker::STD_MODULES;
         let mut found = std::collections::BTreeSet::new();
         let mut stack: Vec<std::path::PathBuf> = [

@@ -611,7 +611,7 @@ fn copy_tree(src: &Path, dst: &Path) {
 /// front-end's handle 0) reaches both the app and its `../sibling` path deps,
 /// while the program's own runtime `Dir` is rooted at the app subdir.
 pub(crate) fn lift_example(name: &str) -> PathBuf {
-    let srcroot = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/projects").join(name);
+    let srcroot = super::super::manifest_dir().join("examples/projects").join(name);
     let work = unique(&format!("ex-{name}"));
     copy_tree(&srcroot, &work);
     work
