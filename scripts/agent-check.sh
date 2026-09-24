@@ -24,11 +24,27 @@ usage() {
     exit "${1:-0}"
 }
 
-agent_priority=()
-if command -v taskpolicy >/dev/null 2>&1; then
-    agent_priority=(taskpolicy -c utility)
-elif command -v nice >/dev/null 2>&1; then
-    agent_priority=(nice -n 10)
+gate_is_live() {
+    local main_worktree queue_state
+    main_worktree="$(git worktree list --porcelain 2>/dev/null | sed -n '1s/^worktree //p')"
+    [ -n "$main_worktree" ] || return 1
+    # shellcheck source=state-paths.sh
+    . ./scripts/state-paths.sh
+    queue_state="$(witchy_merge_queue_state_dir "$main_worktree")" || return 1
+    [ -d "$queue_state/gate.lock" ]
+}
+
+# A live merge gate owns foreground CPU, so exact checks yield while its lock
+# exists. At every other time they are latency-sensitive foreground work. The
+# old unconditional utility QoS made healthy warm presubmits take hours when a
+# loaded macOS host starved utility processes even though no gate was running.
+agent_priority=(env)
+if gate_is_live; then
+    if command -v taskpolicy >/dev/null 2>&1; then
+        agent_priority=(taskpolicy -c utility)
+    elif command -v nice >/dev/null 2>&1; then
+        agent_priority=(nice -n 10)
+    fi
 fi
 
 # Focused validation is latency-sensitive. The repo cargo shim gives ordinary

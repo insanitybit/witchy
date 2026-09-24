@@ -19,7 +19,19 @@ exec "$@"
 EOF
 chmod +x "$tmp/bin/taskpolicy"
 
+queue_state="$tmp/queue"
+mkdir -p "$queue_state"
+
 PATH="$tmp/bin:$PATH" AGENT_CHECK_QOS_LOG="$tmp/taskpolicy.log" \
+    MERGE_QUEUE_STATE_DIR="$queue_state" \
+    CARGO_TARGET_DIR="$tmp/target" \
+    "$root/scripts/agent-check.sh" paths docs/agent-check-qos-probe.md >/dev/null
+
+test ! -e "$tmp/taskpolicy.log"
+
+mkdir "$queue_state/gate.lock"
+PATH="$tmp/bin:$PATH" AGENT_CHECK_QOS_LOG="$tmp/taskpolicy.log" \
+    MERGE_QUEUE_STATE_DIR="$queue_state" \
     CARGO_TARGET_DIR="$tmp/target" \
     "$root/scripts/agent-check.sh" paths docs/agent-check-qos-probe.md >/dev/null
 
@@ -99,6 +111,7 @@ main_fixture="$tmp/main-repo"
 linked_fixture="$tmp/linked-repo"
 mkdir -p "$main_fixture/scripts"
 cp "$root/scripts/agent-check.sh" "$main_fixture/scripts/agent-check.sh"
+cp "$root/scripts/state-paths.sh" "$main_fixture/scripts/state-paths.sh"
 cp "$fixture/scripts/test-for-paths.sh" "$main_fixture/scripts/test-for-paths.sh"
 cp "$fixture/scripts/worktree-warm.sh" "$main_fixture/scripts/worktree-warm.sh"
 git -C "$main_fixture" init -q
@@ -117,7 +130,7 @@ env -u CARGO_TARGET_DIR AGENT_CHECK_ENV_LOG="$tmp/linked-codex-env.log" \
 grep -F 'strip=unset priority=normal nextest=2 target=target-codex args=--edit-loop --run docs/probe.md' \
     "$tmp/linked-codex-env.log" >/dev/null
 
-echo "agent-check focused commands inherit utility QoS"
+echo "agent-check focused commands use utility QoS only while the gate is live"
 echo "agent-check focused commands use normal MBX priority and preserve overrides"
 echo "agent-check focused nextest uses bounded concurrency and preserves overrides"
 echo "agent-check matches gate-seeded test profiles and preserves explicit symbols"
