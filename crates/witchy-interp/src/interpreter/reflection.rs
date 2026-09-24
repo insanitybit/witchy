@@ -417,19 +417,6 @@ pub(super) fn compiler_item_holes(
         name.rsplit_once('.').map_or(name, |(_, tail)| tail)
     }
 
-    fn source<'a>(value: &'a Value, expected: &str) -> Result<&'a str, RuntimeError> {
-        let Value::Ctor { name, fields } = value else {
-            return err(format!("{expected} hole carried a non-syntax value"));
-        };
-        if tail(name) != expected {
-            return err(format!("{expected} hole carried `{}`", tail(name)));
-        }
-        let [Value::Str(source)] = fields.as_slice() else {
-            return err(format!("{expected} carried an invalid source payload"));
-        };
-        Ok(source)
-    }
-
     values
         .iter()
         .map(|value| {
