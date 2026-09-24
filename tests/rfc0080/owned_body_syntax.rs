@@ -294,7 +294,7 @@ comptime:
         .expect_err("ordinary type checking must reject the emitted lifetime argument")
         .to_string();
     assert!(
-        error.contains("lifetime argument `'a` cannot be used for ordinary type parameter `a` of `View`"),
+        error.contains("callable `bad` uses lifetime argument `'a`, but no parameter binds that lifetime"),
         "{error}"
     );
 }
