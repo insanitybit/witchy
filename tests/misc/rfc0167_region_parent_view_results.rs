@@ -58,6 +58,24 @@ fn a_region_record_of_a_parent_view_copies_out() {
 }
 
 #[test]
+fn a_parent_rooted_slice_view_leaves_a_region() {
+    // The region retains the parent list but exposes only elements 2 and 3:
+    // 2 + 3 = 5, independently of either execution engine.
+    assert_wasm(
+        "fn main() -> Int:\n    let xs = [1, 2, 3, 4]\n    let s = region -> &[Int]:\n        &xs[1..3]\n    var total = 0\n    for x in s:\n        total = total + x\n    total\n",
+        5,
+    );
+}
+
+#[test]
+fn a_region_born_slice_view_cannot_leave_the_region() {
+    assert_refused(
+        "fn main() -> Int:\n    let s = region -> &[Int]:\n        let local = [1, 2, 3, 4]\n        &local[1..3]\n    s.length()\n",
+        "region-born",
+    );
+}
+
+#[test]
 fn region_lists_options_and_tuples_of_parent_views_copy_out() {
     // [&a, &b] reads 3 and 4: 3 * 10 + 4.
     assert_wasm(
