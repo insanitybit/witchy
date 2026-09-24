@@ -200,6 +200,7 @@ pub const COMPILER_STD_NAMES: &[&str] = &[
     "meta.CompilerPatternSyntax",
     "meta.CompilerStmtSyntax",
     "meta.CompilerTypeSyntax",
+    "meta.ExprHole",
     "meta.ExprSyntax",
     "meta.FieldInfo",
     "meta.Ident",
