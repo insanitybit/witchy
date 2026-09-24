@@ -21,10 +21,6 @@ witchy-syntax = { path = "../witchy-syntax" }
 # The checked-source contract (RFC-0170): aggregate shapes and capability
 # representations shared with the checker without depending on it.
 witchy-canonical-source = { path = "../witchy-canonical-source" }
-# The canonical source facade is the only production input that can mint
-# initial SafeWIR authority. witchy-types depends only on frontend crates, so
-# this dependency does not form a cycle.
-witchy-types = { path = "../witchy-types" }
 # Compiler-internal encoder tables (function/local names). foldhash, not SipHash:
 # same choice as typeck / the interpreter. See [profile.dev.package.foldhash].
 foldhash = "0.2.0"
@@ -63,3 +59,9 @@ raw-encoder-test-api = []
 # production boundary around the raw encoder is unchanged.
 witchy-wir = { path = ".", features = ["native", "legacy-encoder-bridge", "raw-encoder-test-api"] }
 syn = { version = "2", features = ["full", "visit"] }
+# Tests compile witchy source through the checker to obtain real checked
+# products. Production code reads them only through witchy-canonical-source
+# (RFC-0170), so a checker edit does not rebuild witchy-wir or its dependents
+# under `cargo build`. check-stage-dependencies.py pins that this stays a
+# dev-dependency.
+witchy-types = { path = "../witchy-types" }

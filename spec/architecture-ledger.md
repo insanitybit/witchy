@@ -18,11 +18,11 @@ allowed library edges. The focused metadata probe and the landing test both
 consume it and reject new stage edges. Removing an allowed edge is always
 legal. Adding one requires changing the contract and this ledger together, so
 architecture growth is explicit and reviewable. `witchy-types` may depend on
-`witchy-caps` to bind the launch contract before admission, and `witchy-wir`
-may depend on `witchy-types` to authenticate lowered candidates against checked
-source; neither edge points back up the stage graph. RFC-0170 retires the
-`witchy-wir -> witchy-types` edge by moving the checked-source contract SafeWIR
-consumes into `witchy-canonical-source`, beneath both.
+`witchy-caps` to bind the launch contract before admission; that edge does not
+point back up the stage graph. `witchy-wir` authenticates lowered candidates
+against checked source through `witchy-canonical-source` (RFC-0170), which sits
+beneath both it and the checker. `witchy-types` is only a dev-dependency of
+`witchy-wir`, so its tests can compile real checked products.
 
 ## Semantic-surface baseline
 

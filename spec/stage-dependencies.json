@@ -6,7 +6,7 @@
   "witchy-syntax": ["witchy-cap-model"],
   "witchy-canonical-source": ["witchy-cap-model", "witchy-syntax"],
   "witchy-types": ["witchy-canonical-source", "witchy-cap-model", "witchy-caps", "witchy-syntax"],
-  "witchy-wir": ["witchy-canonical-source", "witchy-syntax", "witchy-types"],
+  "witchy-wir": ["witchy-canonical-source", "witchy-syntax"],
   "witchy-caps": ["witchy-cap-model", "witchy-syntax"],
   "witchy-confinement": [],
   "witchy-compiler-worker": ["witchy-confinement", "witchy-worker-protocol"],
