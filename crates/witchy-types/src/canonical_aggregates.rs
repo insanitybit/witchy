@@ -705,7 +705,7 @@ fn canonical_owner_aggregate_identity_uncached(
 ) -> Option<Type> {
     let identity = concrete_aggregate_identity(ty, definitions)?;
     let carries_direct_rooted_view = scalar_aggregate_shape(ty, definitions).is_some_and(|shape| {
-        !shape.packed && shape.fields.iter().any(|field| is_rooted_int_view_carrier(field, definitions))
+        !shape.packed && shape.fields.iter().any(|field| preserves_owner_view_identity(ty, field, definitions))
     });
     if !carries_direct_rooted_view {
         return Some(identity);
@@ -715,12 +715,12 @@ fn canonical_owner_aggregate_identity_uncached(
             if source_arguments.len() == arguments.len() =>
         {
             Some(Type::Named(name, source_arguments.iter().zip(arguments).map(|(source, identity)| {
-                if is_rooted_int_view_carrier(source, definitions) { source.clone() } else { identity }
+                if preserves_owner_view_identity(ty, source, definitions) { source.clone() } else { identity }
             }).collect()))
         }
         (Type::Tuple(source_items), Type::Tuple(items)) if source_items.len() == items.len() => {
             Some(Type::Tuple(source_items.iter().zip(items).map(|(source, identity)| {
-                if is_rooted_int_view_carrier(source, definitions) { source.clone() } else { identity }
+                if preserves_owner_view_identity(ty, source, definitions) { source.clone() } else { identity }
             }).collect()))
         }
         // A nominal declaration can carry a direct rooted view in one of its
@@ -728,6 +728,23 @@ fn canonical_owner_aggregate_identity_uncached(
         // normalized declaration identity is already exact in that case.
         (_, identity) => Some(identity),
     }
+}
+
+fn preserves_owner_view_identity(
+    aggregate: &Type,
+    candidate: &Type,
+    definitions: &BTreeMap<String, TypeDef>,
+) -> bool {
+    if !is_rooted_int_view_carrier(candidate, definitions) { return false; }
+    if !contains_rooted_slice_view_at(candidate, definitions, 0) { return true; }
+    // A slice argument is part of this owner only when it is the actual
+    // authenticated direct field, not merely an unused generic argument of
+    // an aggregate that happens to carry some other view.
+    is_direct_rooted_int_slice_view(candidate)
+        && is_rooted_int_view_aggregate(aggregate, definitions)
+        && scalar_aggregate_shape(aggregate, definitions).is_some_and(|shape| {
+            shape.fields.iter().any(|field| field == candidate)
+        })
 }
 
 /// A `&Float`, `&Bool`, or `&Duration` view (`ScalarValue`): carried as the
@@ -1187,6 +1204,25 @@ mod recursive_shape_tests {
             &Type::Named("Option".into(), vec![int_slice.clone()]),
             &definitions,
         ));
+        let option_slice = Type::Named("Option".into(), vec![int_slice.clone()]);
+        assert_eq!(
+            canonical_owner_aggregate_identity(&option_slice, &definitions),
+            concrete_aggregate_identity(&option_slice, &definitions),
+            "an unsupported slice shell must keep its concrete identity",
+        );
+        let int_view = Type::Qualified(
+            witchy_syntax::ast::TypeQual::View, Box::new(named("Int")),
+        );
+        let mut mixed = definitions.clone();
+        mixed.insert("Mixed".into(), generic_definition(
+            "Mixed", &["a"], vec![int_view, named("Int")], false,
+        ));
+        let mixed_slice = Type::Named("Mixed".into(), vec![int_slice.clone()]);
+        assert_eq!(
+            canonical_owner_aggregate_identity(&mixed_slice, &mixed),
+            concrete_aggregate_identity(&mixed_slice, &mixed),
+            "an unrelated fixed view field cannot authorize a slice generic argument",
+        );
         let tuple = Type::Tuple(vec![int_slice.clone()]);
         for shell in [
             tuple.clone(),
