@@ -32,7 +32,7 @@ measurement, not a claim that import count predicts elapsed time.
 ```sh
 witchy run                                          # from this directory
 witchy examples/channels/src/channels.witchy        # or by file, from the repo root
-witchy parity examples/channels/src/channels.witchy # interpret vs. compile
+witchy parity examples/channels/src/channels.witchy # canonical SafeWIR vs. admitted Wasm
 witchy parity examples/channels/src/cooperative_map.witchy
 witchy parity examples/channels/src/worker_vm_map.witchy
 ```

@@ -25,14 +25,14 @@ capability boundary, and an ungranted host function is absent from the instance.
 
 The two executors consume *one admitted program* under a single rule:
 
-> Every supported program matches its independent expectation in the canonical
-> interpreter and in admitted unoptimized Wasm.
+> Every supported semantic claim needs an independent expected result,
+> admitted unoptimized Wasm, and a zero-leak audit.
 > A construct that can't meet that contract is rejected loudly.
 
-Independent expected results adjudicate semantics. Acceptance tests lower the
-same checked source once, execute canonical SafeWIR, encode and admit
-unoptimized Wasm, and require both executions to match the expectation.
-Property tests generate additional programs, and `witchy parity` exposes the
+Independent expected results adjudicate semantics. Acceptance tests encode and
+admit unoptimized Wasm, compare its result with the hand-computed expectation,
+and audit that no managed objects leak. The canonical interpreter can check the
+same admitted SafeWIR as an additional oracle; `witchy parity` exposes that
 canonical-interpreter/Wasm comparison for diagnosis. Backend agreement alone
 is never treated as semantic proof. Ordinary `run` executes admitted Wasm only.
 
@@ -144,9 +144,11 @@ The loud boundaries are part of the current language state:
   closures, `Option`, `Result`, and typed lists. Capability-bearing `Dict`
   entries, open generic call boundaries, `region:` copy-out, and isolated-worker
   callbacks remain rejected until they have fixed typed representations.
-- `await` works in loop bodies and may carry mutable locals, but not in branch or
-  loop conditions or in match scrutinees. Spawned tasks return `()`; structured
-  combinators and channels carry results.
+- `await` works in loop bodies, `if` conditions, and `match` scrutinees, and may
+  carry mutable locals. It remains unsupported in loop conditions, the right
+  operand of `&&` or `||`, and branches of `if` or `match` nested inside a larger
+  expression. Spawned tasks return `()`; structured combinators and channels
+  carry results.
 - The compiled async executor is intended for bounded task graphs and streams.
   Long-lived producer/consumer loops eventually exhaust the linear arena; the
   [async chapter](tour-async.md) gives the operational ceiling.
@@ -160,10 +162,10 @@ maintains the full list.
 
 ## A note on memory
 
-The compiled tier has no garbage collector; it uses explicit ownership and
-reclamation. Memory is a
-bump arena reclaimed at *structural* lifetimes: the program's exit,
-compiler-proven escape-free loop iterations (watermark resets), and
+The compiled tier uses typed GC references for managed aggregates and rooted
+view carriers alongside explicit ownership and reclamation. Linear-memory
+allocations can use a bump arena reclaimed at *structural* lifetimes: program
+exit, compiler-proven escape-free loop iterations (watermark resets), and
 user-declared [`region:` blocks](appendix-performance.md) whose value escapes
 by copy-out. Hot paths
 avoid allocating at all: an ownership analysis proves where accumulation

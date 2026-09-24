@@ -316,7 +316,7 @@ the next section's `var` is the tool.
 
 ## Mutating a caller's variable: `var`
 
-Most functions take their arguments as read-only views (the default). When you
+Most functions take their arguments as read-only values (the default). When you
 genuinely want a function to mutate the caller's variable, mark the parameter
 `var`; the final value is written back:
 
@@ -409,11 +409,13 @@ ownership contract about a value:
 | `unique T` | the sole reference to the value |
 | `&T` / `&[T]` | an immutable value-semantic view that retains its backing root and projection |
 
-The qualifiers have no runtime representation and can't change a program's
-answer. They let `mode opt` turn a missed ownership proof into a compile error
-instead of taking a copy-correct fallback. Shared references, the `own unique`
-recursive-kernel contract, and the operations that use `unique` are covered in
-[Appendix: Performance](appendix-performance.md).
+`frozen` and `unique` are static ownership promises. Explicit `&T` and `&[T]`
+views use authenticated retained-root carriers or a proven equivalent value
+representation; a slice carrier also preserves its checked projection. These
+contracts preserve the program's answer while letting `mode opt` turn a missed
+ownership proof into a compile error instead of taking a copy-correct fallback.
+Rooted views, the `own unique` recursive-kernel contract, and the operations
+that use `unique` are covered in [Appendix: Performance](appendix-performance.md).
 
 These conventions are also witchy's **performance knobs** (what may alias
 determines what the compiler may mutate in place): see
