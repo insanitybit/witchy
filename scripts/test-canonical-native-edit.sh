@@ -101,7 +101,10 @@ assert rows[1]["args"][:2] == ["nextest", "list"]
 assert rows[1]["args"].count("-p") == 3
 assert all(p in rows[1]["args"] for p in ["witchy-wir", "witchy-lower", "witchy", "misc", "cli_subcommands", "rfc0165_route_gate"])
 for row in rows:
-    assert row["utility"] == "1", row
+    # This fixture has no live gate lock, so the focused compiler workflow is
+    # foreground work. The dedicated agent-check QoS fixture separately pins
+    # utility priority while a gate owns the lock.
+    assert row["utility"] is None, row
     assert row["target"] == os.environ["CARGO_TARGET_DIR"], row
     assert row["strip"] == "none", row
 assert [r["oracle"] for r in rows] == [None, None, None, None, "calc", None]
