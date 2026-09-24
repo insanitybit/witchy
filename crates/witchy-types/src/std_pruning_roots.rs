@@ -218,6 +218,7 @@ pub const COMPILER_STD_NAMES: &[&str] = &[
     "meta.TReference",
     "meta.TTuple",
     "meta.TView",
+    "meta.TypeHole",
     "meta.TypeInfo",
     "meta.TypeRecord",
     "meta.TypeSum",
