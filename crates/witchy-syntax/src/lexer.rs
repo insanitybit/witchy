@@ -273,7 +273,7 @@ impl fmt::Display for LexError {
 
 impl std::error::Error for LexError {}
 
-fn rebase_inner_position(
+pub(crate) fn rebase_inner_position(
     start_line: u32,
     start_col: u32,
     inner_line: u32,

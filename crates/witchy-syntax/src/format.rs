@@ -1353,8 +1353,8 @@ fn expr(e: &Expr) -> String {
             }
         }
         Expr::Str(v) => string_lit(v),
-        // `tag"a${x}b"` — reconstruct from static parts and either parser-owned
-        // source holes or compiler-owned structural hole ASTs. `parts` has one
+        // `tag"a${x}b"` — reconstruct from static parts and structural hole
+        // ASTs. `parts` has one
         // more element than `holes`.
         Expr::TaggedLit { tag, parts, holes, .. } => {
             let mut s = format!("{tag}\"");
@@ -1362,10 +1362,8 @@ fn expr(e: &Expr) -> String {
                 s.push_str(&tagged_part(part));
                 if let Some(hole) = holes.get(i) {
                     s.push_str("${");
-                    match hole {
-                        TaggedHole::Source(source) => s.push_str(source),
-                        TaggedHole::Owned(expr) => s.push_str(&self::expr(expr)),
-                    }
+                    let TaggedHole::Owned(expr) = hole;
+                    s.push_str(&self::expr(expr));
                     s.push('}');
                 }
             }
@@ -3013,9 +3011,9 @@ fn expr_has_unary_legacy_mutation(expression: &Expr) -> bool {
             expr_has_unary_legacy_mutation(iter) || block_has_unary_legacy_mutation(body)
         }
         Expr::Index { base, index } => expr_has_unary_legacy_mutation(base) || expr_has_unary_legacy_mutation(index),
-        Expr::TaggedLit { holes, .. } => holes.iter().any(|hole| match hole {
-            TaggedHole::Source(_) => false,
-            TaggedHole::Owned(expression) => expr_has_unary_legacy_mutation(expression),
+        Expr::TaggedLit { holes, .. } => holes.iter().any(|hole| {
+            let TaggedHole::Owned(expression) = hole;
+            expr_has_unary_legacy_mutation(expression)
         }),
         Expr::Int(_) | Expr::Float(_) | Expr::Duration(_) | Expr::Str(_) | Expr::Bool(_) | Expr::Var(_) => false,
     }

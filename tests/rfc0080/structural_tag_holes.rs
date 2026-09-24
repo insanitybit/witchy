@@ -1,6 +1,58 @@
 //! RFC-0167 structural tagged-literal hole construction.
 
 use witchy::{interpreter, parser, pipeline, typeck};
+use witchy::opt::{self, OptSet};
+
+struct ResetOptimizationOverride;
+
+impl Drop for ResetOptimizationOverride {
+    fn drop(&mut self) {
+        opt::set_for_tests(None);
+    }
+}
+
+#[test]
+fn parser_owned_tag_hole_reaches_admitted_wasm_without_reparse() {
+    opt::set_for_tests(Some(OptSet::none()));
+    let _reset = ResetOptimizationOverride;
+    // Hand calculation: base = 40, identity(40 + 2) = 42. The tag places the
+    // parser-owned expression once and the program prints its decimal value.
+    let source = r#"
+import meta
+
+comptime fn splice(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
+    meta.expr_tag_hole(holes.at(0))
+
+fn identity(value: Int) -> Int:
+    value
+
+fn main(console: Console):
+    let base = 40
+    console.print("${splice"${identity(base + 2)}"}")
+"#;
+    let checked = witchy::resolve_std_only_checked(source)
+        .expect("parser-owned tagged hole type-checks");
+    let (artifact, ()) = witchy::codegen::compile_checked_module_artifact_with_observer(
+        &checked,
+        |_, _| (),
+    )
+    .expect_lowered("parser-owned tagged hole admits through canonical SafeWIR");
+    let mut runtime = witchy::runtime::Runtime::batch().expect("compiled runtime");
+    let mut actor = runtime
+        .spawn_admitted(
+            &artifact,
+            witchy::runtime::Capabilities {
+                print: true,
+                quiet: true,
+                ..witchy::runtime::Capabilities::none()
+            },
+            64,
+        )
+        .expect("admitted unoptimized Wasm instance");
+    actor.run().expect("admitted unoptimized Wasm execution");
+    assert_eq!(actor.output(), vec!["42".to_string()]);
+    assert_eq!(actor.canonical_heap_leaks().expect("canonical heap audit"), Some(0));
+}
 
 fn glamour() -> witchy::ast::Module {
     parser::parse_module(include_str!("../../projects/glamour/src/glamour.witchy"))

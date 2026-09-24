@@ -5,7 +5,7 @@ use std::fmt;
 use foldhash::HashSet;
 
 use crate::ast::*;
-use crate::lexer::{tokenize, Tok, Token};
+use crate::lexer::{rebase_inner_position, tokenize, Tok, Token};
 use crate::origin::SourcePosition;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -2256,15 +2256,26 @@ impl Parser {
                 Ok(Expr::Str(s))
             }
             // `tag"a${x}b"` — a compile-time tagged literal (RFC-0006). The lexer
-            // already split it into static parts and per-hole source; expansion
-            // (`crate::tagged`) replaces it before type-checking.
+            // already split it into static parts and per-hole source. Parse each
+            // hole in this call-site context now; expansion receives only AST.
             Tok::TagLit { tag, parts, holes, hole_spans } => {
                 let line = self.cur().line;
+                if holes.len() != hole_spans.len() {
+                    return Err(self.error("tagged literal hole spans do not match its holes"));
+                }
                 self.advance();
+                let holes = holes
+                    .iter()
+                    .zip(&hole_spans)
+                    .map(|(source, &span)| {
+                        self.tagged_hole_expr(source, span)
+                            .map(|expr| TaggedHole::Owned(Box::new(expr)))
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
                 Ok(Expr::TaggedLit {
                     tag,
                     parts,
-                    holes: holes.into_iter().map(TaggedHole::Source).collect(),
+                    holes,
                     hole_spans,
                     line,
                 })
@@ -2438,6 +2449,44 @@ impl Parser {
             }
             other => Err(self.error(format!("expected an expression, found `{other}`"))),
         }
+    }
+
+    /// Parse an interpolation exactly once, while the invocation's imports and
+    /// async/generator context are active. Swap only the token cursor: quote
+    /// tables and anonymous records produced inside the hole belong to the same
+    /// module as the enclosing tagged literal.
+    fn tagged_hole_expr(
+        &mut self,
+        source: &str,
+        (line, col): (u32, u32),
+    ) -> Result<Expr, ParseError> {
+        let tokens = tokenize(source).map_err(|error| {
+            let (line, col) = rebase_inner_position(line, col, error.line, error.col);
+            ParseError { message: format!("tagged literal hole: {}", error.message), line, col }
+        })?;
+        let mut tokens = crate::lexer::apply_layout(tokens);
+        for token in &mut tokens {
+            if let Tok::TagLit { hole_spans, .. } = &mut token.kind {
+                for span in hole_spans {
+                    *span = rebase_inner_position(line, col, span.0, span.1);
+                }
+            }
+            (token.line, token.col) = rebase_inner_position(line, col, token.line, token.col);
+            (token.end_line, token.end_col) =
+                rebase_inner_position(line, col, token.end_line, token.end_col);
+        }
+        let outer_tokens = std::mem::replace(&mut self.toks, tokens);
+        let outer_pos = std::mem::replace(&mut self.pos, 0);
+        let result = (|| {
+            let expr = self.expr(0)?;
+            if !self.at(&Tok::Eof) {
+                return Err(self.error("tagged literal hole must contain exactly one expression"));
+            }
+            Ok(expr)
+        })();
+        self.toks = outer_tokens;
+        self.pos = outer_pos;
+        result
     }
 
     fn lambda_after_fn(

@@ -17,7 +17,7 @@
 //! belongs (an `html` text hole emits `glamour.text(__witchy_hole_0)`). After the
 //! tag returns `ExprSyntax`, `expand` walks that AST and
 //! REPLACES each `__witchy_hole_N` leaf with a CLONE of the hole's ACTUAL
-//! expression — parsed ONCE from the original hole source and STAMPED with the
+//! expression — parsed ONCE in its original call-site context and STAMPED with the
 //! hole's captured `(line, col)` (via a one-statement `Expr::Block` whose `lines`
 //! carry the hole line, which typeck reads as `cur_line`). A marker may appear any
 //! number of times (a tag may drop a hole or use it more than once, e.g. an
@@ -123,7 +123,6 @@ pub fn expand(
     }
     let ctx = Context {
         name: name.to_string(),
-        invocation_qualifiers: module.imports.clone(),
         tag_origins,
         ambiguous_tags,
         definition_modules: std::iter::once((name.to_string(), module.clone()))
@@ -172,10 +171,6 @@ fn expand_tag_program(
 /// The per-module context a tag runs against.
 struct Context {
     name: String,
-    /// Module names a tag's generated source may qualify against (the consumer +
-    /// its transitive imports). Seeded as `import` lines in the throwaway parse so
-    /// `glamour.text(…)` parses as a qualified call, not a method call.
-    invocation_qualifiers: Vec<String>,
     tag_origins: HashMap<String, TagOrigin>,
     ambiguous_tags: HashMap<String, Vec<String>>,
     definition_modules: Vec<(String, Module)>,
@@ -924,20 +919,14 @@ fn expand_one(
         }
     };
 
-    // Parser-created holes parse their ORIGINAL source once at the call site;
-    // compiler-owned structural holes transfer their AST directly. Both are
-    // wrapped with the tag-local origin marker before substitution. In particular,
-    // `Owned` never re-enters a source parser and retains active outer-hole
-    // sentinels for a later expansion step.
+    // All holes carry call-site-owned AST. Stamp their original source line,
+    // then wrap them with the tag-local origin marker before substitution.
+    // Nested tags retain active outer-hole sentinels for later expansion.
     let mut hole_exprs: Vec<Expr> = Vec::with_capacity(holes.len());
     for (i, hole) in holes.iter().enumerate() {
         let span = hole_spans.get(i).copied().unwrap_or((0, 0));
-        let hole_expr = match hole {
-            TaggedHole::Source(source) => {
-                parse_hole(source, span, &ctx.invocation_qualifiers, &where_)?
-            }
-            TaggedHole::Owned(expr) => *expr.clone(),
-        };
+        let TaggedHole::Owned(expr) = hole;
+        let hole_expr = stamp_hole(*expr.clone(), span);
         hole_exprs.push(wrap_hole_origin(hole_expr, i, span));
     }
 
@@ -1043,29 +1032,22 @@ fn parse_splice_expr(src: &str, qualifiers: &[String]) -> Result<Expr, String> {
     Ok(e)
 }
 
-/// Parse a single hole's source `hole` as an expression and stamp it with the
-/// hole's source position `(line, _col)` so type errors point INTO the literal.
+/// Stamp a structural hole with its source position `(line, _col)` so type
+/// errors point INTO the literal.
 /// The stamping is a one-statement `Expr::Block` whose `lines` carry the hole line,
 /// which `typeck` reads as `cur_line` while inferring the hole — backends treat the
 /// block transparently, so parity is preserved.
-fn parse_hole(
-    hole: &str,
-    (line, _col): (u32, u32),
-    qualifiers: &[String],
-    where_: &impl Fn() -> String,
-) -> Result<Expr, String> {
-    let inner = parse_splice_expr(hole, qualifiers)
-        .map_err(|e| format!("{}: hole `{hole}` {e}", where_()))?;
+fn stamp_hole(inner: Expr, (line, _col): (u32, u32)) -> Expr {
     // Stamp the hole line via a one-statement block; line 0 (no span) leaves the
     // statement's own line in effect, exactly as before.
     if line == 0 {
-        Ok(inner)
+        inner
     } else {
-        Ok(Expr::Block(Block {
+        Expr::Block(Block {
             stmts: vec![Stmt::Expr(inner)],
             lines: vec![line],
             region: None,
-        }))
+        })
     }
 }
 
@@ -1265,13 +1247,11 @@ fn substitute_holes_children(
         }
         // A typed tag can construct a nested literal structurally. Its owned
         // payloads may contain active OUTER sentinels, so substitute those before
-        // the nested tag re-expands. Parser-source payload strings remain opaque:
-        // traversing them would reintroduce source interpretation here.
+        // the nested tag re-expands. All payloads are structural AST.
         Expr::TaggedLit { holes: nested_holes, .. } => {
             for hole in nested_holes {
-                if let TaggedHole::Owned(expr) = hole {
-                    substitute_holes(expr, holes, where_)?;
-                }
+                let TaggedHole::Owned(expr) = hole;
+                substitute_holes(expr, holes, where_)?;
             }
         }
     }
@@ -1325,18 +1305,18 @@ mod tests {
     }
 
     #[test]
-    fn substitution_never_traverses_parser_source_tag_holes() {
+    fn substitution_traverses_nested_structural_tag_holes() {
         let mut nested = Expr::TaggedLit {
             tag: "inner".into(),
             parts: vec!["".into(), "".into()],
-            holes: vec![TaggedHole::Source("__witchy_hole_0".into())],
+            holes: vec![TaggedHole::Owned(Box::new(Expr::Var("__witchy_hole_0".into())))],
             hole_spans: vec![(0, 0)],
             line: 0,
         };
         substitute_holes(&mut nested, &[Expr::Int(42)], &|| "test".into())
-            .expect("source hole remains opaque to structural substitution");
+            .expect("nested hole is structurally substituted");
         let Expr::TaggedLit { holes, .. } = nested else { unreachable!() };
-        assert!(matches!(holes.as_slice(), [TaggedHole::Source(source)] if source == "__witchy_hole_0"));
+        assert!(matches!(holes.as_slice(), [TaggedHole::Owned(expr)] if **expr == Expr::Int(42)));
     }
 
 }

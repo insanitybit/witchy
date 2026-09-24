@@ -241,7 +241,7 @@ comptime:
     }
 
     #[test]
-    fn tagged_literal_formatter_covers_source_and_owned_holes() {
+    fn tagged_literal_formatter_covers_parsed_and_constructed_owned_holes() {
         let source = crate::parser::parse_module("fn main():\n    tag\"a${value}b\"\n")
             .expect("source tagged literal parses");
         let crate::ast::Item::Function(main) = &source.items[0] else {
@@ -523,7 +523,7 @@ comptime:
     #[test]
     fn tagged_literals_survive_layout_changes() {
         // Tagged literals carry source positions for diagnostics. Formatting
-        // can move the literal without changing its tag, parts, or hole source,
+        // can move the literal without changing its tag, parts, or owned hole AST,
         // so the semantic guard must ignore those positions like other layout
         // metadata while still comparing the semantic fields.
         let src = "fn view(x: String) -> String:\n\n\n    html\"<p>${x}</p>\"\n";

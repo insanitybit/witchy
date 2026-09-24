@@ -1111,14 +1111,13 @@ pub enum Expr {
     /// `tag"a${x}b"` — a compile-time tagged literal (RFC-0006). `tag` is an
     /// `comptime fn(parts: List(String), holes: List(String)) -> meta.ExprSyntax`.
     /// `parts` are the static
-    /// fragments (`["a", "b"]`); source-spelled holes retain their SOURCE TEXT
-    /// (`["x"]`), while compiler-owned structural tags carry owned expression
-    /// nodes. `hole_spans` is each hole's `(line, col)` start position in the
+    /// fragments (`["a", "b"]`); holes carry owned expression nodes parsed in
+    /// their call-site context. `hole_spans` is each hole's `(line, col)` start position in the
     /// ORIGINAL source. `crate::tagged::expand` passes the tag an OPAQUE MARKER
     /// (`__witchy_hole_N`) per hole — the tag places markers where the hole's value
     /// goes — runs `tag(parts, markers)` at compile time, receives one typed
-    /// expression AST, then SUBSTITUTES the real hole expression (parsed
-    /// once from `holes[N]` and STAMPED with `hole_spans[N]`) at each marker. This
+    /// expression AST, then SUBSTITUTES the already parsed hole expression
+    /// (stamped with `hole_spans[N]`) at each marker. This
     /// is RFC-0006's hygiene split: tag-emitted nodes carry the tag's scope (the
     /// tag emits qualified `glamour.text(…)` etc.), hole nodes carry the call site.
     /// The result is spliced in place of this node before type-checking and codegen,
@@ -1133,16 +1132,14 @@ pub enum Expr {
     },
 }
 
-/// An interpolation carried by a tagged literal. Parser-created tags preserve
-/// their original source until call-site expansion; compiler-owned tags carry
-/// an already-authenticated AST and must never re-enter a source parser.
+/// An interpolation carried by a tagged literal. Both parser-created and
+/// compiler-created tags carry expression AST, never source to reparse.
 #[cfg_attr(
     not(target_arch = "wasm32"),
     derive(serde::Serialize, serde::Deserialize)
 )]
 #[derive(Debug, Clone, PartialEq)]
 pub enum TaggedHole {
-    Source(String),
     Owned(Box<Expr>),
 }
 

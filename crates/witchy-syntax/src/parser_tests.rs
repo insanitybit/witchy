@@ -1,5 +1,37 @@
 use super::*;
 
+#[test]
+fn tagged_holes_are_owned_call_site_expressions() {
+    let module = parse_module("import helper\nfn f():\n    tag\"x${helper.answer(40 + 2)}\"\n")
+        .expect("tagged hole parses with the active import set");
+    let Item::Function(function) = &module.items[0] else { panic!("expected function") };
+    let Stmt::Expr(Expr::TaggedLit { holes, hole_spans, .. }) = &function.body.stmts[0] else {
+        panic!("expected tagged literal")
+    };
+    assert_eq!(hole_spans.len(), 1);
+    let [TaggedHole::Owned(hole)] = holes.as_slice() else { panic!("expected owned hole") };
+    assert!(matches!(&**hole, Expr::Call { name, .. } if name == "helper.answer"));
+
+    let nested = parse_module("fn f():\n    outer\"${inner\"${value}\"}\"\n")
+        .expect("nested tagged holes parse structurally");
+    let Item::Function(function) = &nested.items[0] else { panic!("expected function") };
+    let Stmt::Expr(Expr::TaggedLit { holes, hole_spans, .. }) = &function.body.stmts[0] else {
+        panic!("expected outer tag")
+    };
+    assert_eq!(hole_spans[0].0, 2);
+    let [TaggedHole::Owned(outer_hole)] = holes.as_slice() else { panic!("expected outer hole") };
+    let Expr::TaggedLit { holes: inner_holes, hole_spans: inner_spans, .. } = &**outer_hole else {
+        panic!("expected nested tag")
+    };
+    assert_eq!(inner_spans[0].0, 2, "nested hole span is rebased to the original source");
+    assert!(matches!(inner_holes.as_slice(), [TaggedHole::Owned(expr)] if **expr == Expr::Var("value".into())));
+
+    let malformed = parse_module("fn f():\n    tag\"x${1, 2}\"\n")
+        .expect_err("a second expression must not be ignored");
+    assert!(malformed.message.contains("tagged literal hole must contain exactly one expression"), "{malformed}");
+    assert_eq!(malformed.line, 2, "error points into the original tagged literal");
+}
+
 fn fn_body(src: &str) -> Vec<Stmt> {
     let m = parse_module(src).expect("should parse");
     match &m.items[0] {
