@@ -18,28 +18,23 @@ Zed editor extension providing language support for Witchy:
 
 ## Grammar Synchronization Workflow
 
-The Tree-sitter grammar lives in the local repository `/Users/cobrien/workspace/tree-sitter-witchy` and is pinned by commit SHA in `extension.toml`:
+The Tree-sitter grammar lives in `editors/tree-sitter-witchy` in this repository.
+Zed checks out the pinned Witchy commit and loads the grammar from that path:
 
 ```toml
 [grammars.witchy]
-repository = "file:///Users/cobrien/workspace/tree-sitter-witchy"
+repository = "file:///Users/cobrien/workspace/witchy"
 rev = "<commit-sha>"
+path = "editors/tree-sitter-witchy"
 ```
 
 When updating the grammar or highlight queries:
 
-1. **Update grammar**: edit `grammar.js` in `/Users/cobrien/workspace/tree-sitter-witchy`.
-2. **Regenerate parser**: run `npx tree-sitter generate`.
-3. **Verify corpus**: verify that standard library and projects parse cleanly:
-   ```sh
-   for f in /Users/cobrien/workspace/witchy/std/*.witchy; do
-     npx tree-sitter parse "$f" > /dev/null || echo "Failed: $f"
-   done
-   ```
-4. **Commit in tree-sitter-witchy**: `git commit -am "..."`.
-5. **Update pin in extension.toml**: update `rev` to the new commit SHA.
-6. **Sync queries**: ensure `editors/zed/languages/witchy/highlights.scm` matches `tree-sitter-witchy/queries/highlights.scm`.
-7. **Rebuild in Zed**: In Zed, open `zed: extensions` and click **Rebuild** on the Witchy extension (or re-run `zed: install dev extension`).
+1. **Update grammar**: edit `editors/tree-sitter-witchy/grammar.js` in this repository.
+2. **Regenerate and test**: run `npm test` in `editors/tree-sitter-witchy` and commit the grammar with its generated parser artifacts.
+3. **Update pin in extension.toml**: set `rev` to a commit containing those artifacts.
+4. **Sync queries**: keep `editors/zed/languages/witchy/highlights.scm` identical to `editors/tree-sitter-witchy/queries/highlights.scm`.
+5. **Rebuild in Zed**: In Zed, open `zed: extensions` and click **Rebuild** on the Witchy extension (or re-run `zed: install dev extension`).
 
 > **Warning: Stale Compiled Grammar Trap**
 > In Zed, if `highlights.scm` references a node type or keyword token not present in the compiled `grammars/witchy.wasm`, Tree-sitter query compilation aborts with `Invalid node type "..."`.
