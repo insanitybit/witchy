@@ -71,11 +71,16 @@ fn worktree_warm_help_and_usage_errors_are_stable() {
     let stdout = String::from_utf8_lossy(&help.stdout);
     assert!(stdout.contains("worktree-warm.sh <path>"));
     assert!(stdout.contains("worktree-warm.sh --target-dir <dir>"));
+    assert!(stdout.contains("worktree-warm.sh --clone-target <source> <dest>"));
     assert!(stdout.contains("worktree-warm.sh --help"));
     assert!(!stdout.contains("set -euo pipefail"));
 
     for (args, expected) in [
         (vec!["--target-dir"], "usage: worktree-warm.sh --target-dir <dir>"),
+        (
+            vec!["--clone-target", "source"],
+            "usage: worktree-warm.sh --clone-target <source> <dest>",
+        ),
         (vec!["--unknown"], "unknown option '--unknown'"),
         (vec!["one", "two"], "usage: worktree-warm.sh [<worktree-path>"),
     ] {
@@ -83,6 +88,29 @@ fn worktree_warm_help_and_usage_errors_are_stable() {
         assert_eq!(output.status.code(), Some(2), "args {args:?}");
         assert!(String::from_utf8_lossy(&output.stderr).contains(expected), "args {args:?}");
     }
+}
+
+#[test]
+fn worktree_warm_clones_an_explicit_cargo_generation_without_dead_artifacts() {
+    let repo = temp_repo();
+    let root = repo.path();
+    write(root, "active/debug/.fingerprint/aws-lc-sys/marker", "warm\n");
+    write(root, "active/debug/deps/libwasmtime.rlib", "warm\n");
+    write(root, "active/debug/deps/wasmtime.rcgu.o", "dead\n");
+    write(root, "active/debug/incremental/witchy/stale", "dead\n");
+    write(root, "active/witchy-testcache/v1/stale/std.wstd", "dead\n");
+
+    let output = run_warm(root, &["--clone-target", "active", "inactive"], Some("copy"));
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(root.join("inactive/debug/.fingerprint/aws-lc-sys/marker").is_file());
+    assert!(root.join("inactive/debug/deps/libwasmtime.rlib").is_file());
+    assert!(!root.join("inactive/debug/deps/wasmtime.rcgu.o").exists());
+    assert!(!root.join("inactive/debug/incremental").exists());
+    assert!(!root.join("inactive/witchy-testcache").exists());
+
+    let second = run_warm(root, &["--clone-target", "active", "inactive"], Some("copy"));
+    assert!(!second.status.success(), "an existing generation must not be overwritten");
+    assert!(String::from_utf8_lossy(&second.stderr).contains("destination already exists"));
 }
 
 #[test]

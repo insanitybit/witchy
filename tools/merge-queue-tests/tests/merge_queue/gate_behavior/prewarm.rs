@@ -648,6 +648,19 @@ fn successful_prewarm_promotes_inactive_generation_for_next_gate() {
         "old-active\n",
     )
     .expect("write old active generation sentinel");
+    fs::create_dir_all(
+        fixture
+            .gate_worktree
+            .join("target/debug/.fingerprint/seed-sentinel"),
+    )
+    .expect("create active Cargo fingerprint sentinel");
+    fs::write(
+        fixture
+            .gate_worktree
+            .join("target/debug/.fingerprint/seed-sentinel/marker"),
+        "warm-dependency\n",
+    )
+    .expect("write active Cargo fingerprint sentinel");
     fs::write(fixture.state.join("gate-target"), "target\n")
         .expect("select initial gate target");
 
@@ -656,6 +669,7 @@ fn successful_prewarm_promotes_inactive_generation_for_next_gate() {
     let started = fixture._temp.path().join("promoting-prewarm-started");
     let prewarm_release = fixture._temp.path().join("promoting-prewarm-release");
     let cargo_targets = fixture._temp.path().join("promoting-prewarm-targets");
+    let seeded_sentinel = fixture._temp.path().join("promoting-prewarm-seeded-sentinel");
     let gate_ran = fixture._temp.path().join("promoted-gate-ran");
     let gate_release = fixture._temp.path().join("promoted-gate-release");
     let gate_target = fixture._temp.path().join("promoted-gate-target");
@@ -664,9 +678,10 @@ fn successful_prewarm_promotes_inactive_generation_for_next_gate() {
     fs::write(
         &cargo,
         format!(
-            "#!/bin/sh\ntarget_dir=\"${{CARGO_TARGET_DIR:-target}}\"\nprintf '%s\\n' \"$target_dir\" >>\"{}\"\nif [ ! -e \"{}\" ]; then\n  mkdir -p \"$target_dir\"\n  printf promoted >\"$target_dir/generation-sentinel\"\n  printf started >\"{}\"\n  while [ ! -e \"{}\" ]; do /bin/sleep 0.05; done\nfi\nexit 0\n",
+            "#!/bin/sh\ntarget_dir=\"${{CARGO_TARGET_DIR:-target}}\"\nprintf '%s\\n' \"$target_dir\" >>\"{}\"\nif [ ! -e \"{}\" ]; then\n  cat \"$target_dir/debug/.fingerprint/seed-sentinel/marker\" >\"{}\"\n  printf promoted >\"$target_dir/generation-sentinel\"\n  printf started >\"{}\"\n  while [ ! -e \"{}\" ]; do /bin/sleep 0.05; done\nfi\nexit 0\n",
             cargo_targets.display(),
             started.display(),
+            seeded_sentinel.display(),
             started.display(),
             prewarm_release.display(),
         ),
@@ -726,6 +741,11 @@ fn successful_prewarm_promotes_inactive_generation_for_next_gate() {
         thread::sleep(Duration::from_millis(25));
     }
     assert!(started.exists(), "coordinator never started inactive prewarm");
+    assert_eq!(
+        fs::read_to_string(&seeded_sentinel).expect("read cloned active sentinel"),
+        "warm-dependency\n",
+        "inactive prewarm started without cloning the validated active generation",
+    );
     assert_eq!(
         fs::read_to_string(fixture.state.join("gate-target")).expect("read initial pointer"),
         "target\n",

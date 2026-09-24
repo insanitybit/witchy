@@ -3401,11 +3401,29 @@ prewarm_gate() {
         gate_wt="$1"
         reset_inactive="$2"
         inactive_target="$3"
+        active_target="$4"
+        target_cloner="$5"
         cd "$gate_wt"
         if [ "$reset_inactive" -eq 1 ]; then
             rm -rf -- "$inactive_target" "${inactive_target}-check" "${inactive_target}-clippy"
-            mkdir -p "$inactive_target" "${inactive_target}-check" "${inactive_target}-clippy"
         fi
+        # A reclaimed or cancelled inactive generation used to restart from
+        # empty directories here. That cold path recompiles Wasmtime and
+        # AWS-LC before it reaches any Witchy crate. Seed every gate profile
+        # from the validated active generation first; the filtered CoW clone
+        # drops path-bound incremental state and loose rcgu objects while
+        # retaining dependency fingerprints, build-script outputs and rlibs.
+        for suffix in "" -check -clippy; do
+            source_dir="${active_target}${suffix}"
+            dest_dir="${inactive_target}${suffix}"
+            if [ ! -d "$dest_dir" ]; then
+                if [ -d "$source_dir" ]; then
+                    "$target_cloner" --clone-target "$source_dir" "$dest_dir"
+                else
+                    mkdir -p "$dest_dir"
+                fi
+            fi
+        done
         tc_bin=""
         if command -v rustup >/dev/null 2>&1; then
             rustup target add wasm32-unknown-unknown >/dev/null 2>&1 || true
@@ -3425,7 +3443,8 @@ prewarm_gate() {
         CARGO_TARGET_DIR="${inactive_target}-clippy" cargo clippy --workspace --all-targets -- -D clippy::correctness -D clippy::suspicious -D unused_must_use >/dev/null 2>&1
         CARGO_TARGET_DIR="${inactive_target}-check" cargo check --workspace --all-targets >/dev/null 2>&1
         [ ! -x scripts/warm-witchy-caches.sh ] || ./scripts/warm-witchy-caches.sh >/dev/null 2>&1
-    ' prewarm "$gate_wt" "$reset_inactive" "$inactive_target" ) &
+    ' prewarm "$gate_wt" "$reset_inactive" "$inactive_target" "$active_target" \
+        "$here/scripts/worktree-warm.sh" ) &
     local prewarm_pid=$!
     # `setsid` runs in the new background child, so there is a small window
     # where `$!` still belongs to the coordinator's process group.  Do not

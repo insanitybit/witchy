@@ -22,6 +22,9 @@
 #   ./scripts/worktree-warm.sh --target-dir <dir>  # seed a per-agent
 #                                                  # CARGO_TARGET_DIR (e.g.
 #                                                  # target-codex) from ./target
+#   ./scripts/worktree-warm.sh --clone-target <source> <dest>
+#                                                  # clone one Cargo generation
+#                                                  # into another (coordinator)
 #   ./scripts/worktree-warm.sh --help               # show this help
 #
 # The --target-dir form also works in a secondary worktree. It uses the
@@ -53,6 +56,12 @@ case "${1:-}" in
     --target-dir)
         if [[ "$#" -ne 2 || -z "${2:-}" ]]; then
             echo "usage: worktree-warm.sh --target-dir <dir>" >&2
+            exit 2
+        fi
+        ;;
+    --clone-target)
+        if [[ "$#" -ne 3 || -z "${2:-}" || -z "${3:-}" ]]; then
+            echo "usage: worktree-warm.sh --clone-target <source> <dest>" >&2
             exit 2
         fi
         ;;
@@ -166,6 +175,28 @@ clone_target() { # clone_target <src-target> <dest-target>
         fi
     done
 }
+
+if [[ "${1:-}" == "--clone-target" ]]; then
+    source_target="$2"
+    dest_target="$3"
+    case "$source_target" in /*) ;; *) source_target="$PWD/$source_target" ;; esac
+    case "$dest_target" in /*) ;; *) dest_target="$PWD/$dest_target" ;; esac
+    if [[ ! -d "$source_target" ]]; then
+        echo "worktree-warm: no source target at $source_target" >&2
+        exit 1
+    fi
+    if [[ -e "$dest_target" ]]; then
+        echo "worktree-warm: destination already exists at $dest_target" >&2
+        exit 1
+    fi
+    # Test-result caches are keyed by the linked executable identity. Cargo
+    # will relink workspace tests in the new generation, so these entries are
+    # metadata overhead rather than reusable build artifacts.
+    clone_testcache=0
+    clone_target "$source_target" "$dest_target"
+    echo "worktree-warm: cloned $dest_target from $source_target ($copy_description, incremental/, deps/*.rcgu.o and stale witchy-testcache skipped)"
+    exit 0
+fi
 
 mark_incremental_seed() { # mark_incremental_seed <target-dir>
     printf 'gate build seed\n' >"$1/$incremental_seed_marker"
