@@ -69,6 +69,13 @@ if [ -n "${WITCHY_GATE_SCOPE+x}" ]; then
     # Measured (test profile, 1-line change): incremental rebuild 13s vs
     # CARGO_INCREMENTAL=0 rebuild 72s. (Cost: incremental/ grows on disk.)
     unset CARGO_INCREMENTAL
+    # The machine-wide ~/.cargo/config.toml caps every build at `jobs = 2` so
+    # a dozen concurrent agents do not oversubscribe the cores. The serialized
+    # gate is the one build everyone waits on, and under that cap its cold
+    # compiles ran strictly two crates at a time: the RFC-0170 P2+P3 gate spent
+    # 20m53s compiling. The gate takes eight build jobs, matching its eight
+    # test jobs, while agents keep the cap. `WITCHY_GATE_BUILD_JOBS` retunes it.
+    export CARGO_BUILD_JOBS="${WITCHY_GATE_BUILD_JOBS:-8}"
 fi
 
 # macOS test discovery in the serialized gate is bounded to two cold binaries
