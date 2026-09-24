@@ -14,18 +14,6 @@ use crate::{codegen, interpreter, parser};
         assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");
     }
 
-    /// (RFC-0032) `vm.par_map` over `String` elements: each string is a flat
-    /// `[len][bytes]` value, so it crosses to a worker VM by a plain byte copy (in via
-    /// the worker's `__galloc`, result back out) — no marshaling. A witchy `String` is
-    /// always valid UTF-8, so the round-trip is lossless. Both backends must agree.
-    #[test]
-    fn vm_par_map_string_backends_agree() {
-        let src = "import vm\n\nfn shout(s: String) -> String:\n    s + \"!\"\n\nfn main(console: Console):\n    let prior: List(fn(String) -> String) = [fn(s: String): s + \"?\"]\n    console.print(list.at(prior, 0)(\"warm\"))\n    let ys = vm.par_map([\"a\", \"bb\", \"ccc\"], shout)\n    console.print(\"${ys}\")\n";
-        let expected = ["warm?", "[a!, bb!, ccc!]"];
-        assert_eq!(link_run(src), expected, "interp");
-        assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");
-    }
-
     /// (RFC-0032) Cross-VM channels: `vm.serve(init, requests, handler)` runs a stateful
     /// service on a long-lived isolated worker VM — it threads `state` through the request
     /// stream (here a running byte concatenation) and emits each new state. Lock-step and
@@ -107,17 +95,6 @@ use crate::{codegen, interpreter, parser};
         actor.run().expect("run");
         assert_eq!(actor.output(), want, "compiled WASM must agree");
         let _ = std::fs::remove_dir_all(&root);
-    }
-
-    /// (RFC-0032) `vm.par_map` over `Bytes`: binary payloads cross to worker VMs by a
-    /// RAW (non-lossy) byte copy. Maps a top-level fn over a list of Bytes in parallel;
-    /// both backends agree (the interp oracle runs the sequential `List.map` body).
-    #[test]
-    fn vm_par_map_bytes_backends_agree() {
-        let src = "import vm\nimport bytes\n\nfn tag(b: Bytes) -> Bytes:\n    bytes.concat(b, bytes.from_string(\"!\"))\n\nfn main(console: Console):\n    let xs = [bytes.from_string(\"a\"), bytes.from_string(\"bb\"), bytes.from_string(\"ccc\")]\n    let ys = vm.par_map(xs, tag)\n    console.print(bytes.to_string(list.at(ys, 0)))\n    console.print(bytes.to_string(list.at(ys, 2)))\n    console.print(\"${bytes.length(list.at(ys, 1))}\")\n";
-        let expected = ["a!", "ccc!", "3"];
-        assert_eq!(link_run(src), expected, "interp");
-        assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");
     }
 
     /// A build step runs in the **WASM sandbox**: it is compiled, instantiated

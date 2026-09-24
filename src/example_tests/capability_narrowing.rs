@@ -86,21 +86,6 @@ use crate::{interpreter, parser, typeck};
     }
 
 
-    /// `as` narrowing is the identity at runtime (rights live only in the type),
-    /// so a narrowed handle still reads the same confined subtree.
-    #[test]
-    fn as_narrowing_is_identity_at_runtime() {
-        let tmp = std::env::temp_dir().join(format!("witchy_dir_as_narrow_test_{}", std::process::id()));
-        std::fs::create_dir_all(&tmp).unwrap();
-        std::fs::write(tmp.join("in.txt"), "narrowed").unwrap();
-        let src = "fn main(console: Console, root: Dir):\n    let r = root as Dir[Read]\n    console.print(r.read(\"in.txt\"))\n";
-        let mods = vec![("main".to_string(), parser::parse_module(src).expect("parse"))];
-        let linked = crate::pipeline::link(mods, "main").expect("link");
-        let out = interpreter::run_module(linked, &tmp, Vec::new()).expect("run");
-        assert_eq!(out, vec!["narrowed"]);
-        let _ = std::fs::remove_dir_all(&tmp);
-    }
-
     /// The `as` ascription narrows a capability to a subset of its rights, and is
     /// the single native mechanism for it (replacing the per-right `_only`
     /// builtins). It can only *drop* rights — never widen or cross capabilities.

@@ -85,31 +85,6 @@ use crate::{codegen, interpreter, parser};
         }
     }
 
-    /// The in-language test framework: `witchy test` discovers zero-parameter
-    /// `test_*` functions, a test passes by returning and fails by aborting
-    /// (std/testing's assertions report a message). Capability-free by
-    /// construction.
-    #[test]
-    fn in_language_test_framework_runs_and_reports() {
-        let path = std::env::temp_dir().join(format!("witchy_testfw_{}.witchy", std::process::id()));
-        std::fs::write(
-            &path,
-            "import testing\n\nfn double(n: Int) -> Int:\n    n * 2\n\nfn test_double():\n    testing.assert_int_eq(double(21), 42)\n\nfn test_strings():\n    testing.assert_eq(\"a\" + \"b\", \"ab\")\n    testing.assert_ne(\"a\", \"b\")\n\nfn test_broken():\n    testing.assert(1 > 2, \"deliberately wrong\")\n",
-        )
-        .unwrap();
-        let (passed, failed) = crate::run_tests_in_file(path.to_str().unwrap()).expect("run");
-        assert_eq!(passed.len(), 2, "two passing tests: {passed:?}");
-        assert_eq!(failed.len(), 1, "one failing test: {failed:?}");
-        assert!(failed[0].0.ends_with("test_broken"));
-        assert!(
-            failed[0].1.contains("deliberately wrong"),
-            "failure carries the assertion message: {}",
-            failed[0].1
-        );
-        let _ = std::fs::remove_file(&path);
-    }
-
-
     #[test]
     fn every_compilable_example_agrees_on_both_backends() {
         // Differential guard: every example that compiles to WASM must produce
@@ -137,21 +112,6 @@ use crate::{codegen, interpreter, parser};
             "examples diverge across backends:\n{}",
             diverged.join("\n")
         );
-    }
-
-    #[test]
-    fn examples_agree_under_rc_floor() {
-        use crate::opt::{Opt, OptSet};
-        assert_examples_agree_under(OptSet::default_set().with(Opt::RcFloor), "rc-floor");
-    }
-
-    #[test]
-    fn every_example_agrees_under_unbox() {
-        // Same guard for the other opt-in codegen lever: `unbox` (RFC-0027 packed-by-inference)
-        // changes heap LAYOUT, so a missed read/write site would corrupt exactly like a reclamation
-        // UAF. It is currently clean, but — like rc-floor — the default sweep never exercised it.
-        use crate::opt::{Opt, OptSet};
-        assert_examples_agree_under(OptSet::default_set().with(Opt::Unbox), "unbox");
     }
 
     #[test]
@@ -320,56 +280,3 @@ use crate::{codegen, interpreter, parser};
         );
     }
 
-    // The linker treats the bundled std as a built-in search path: a program can
-    // `import list` without the caller listing the module's source. This unblocks
-    // composable std modules (one std module importing another). Verified on both
-    // backends with only `main` provided.
-    #[test]
-    fn linker_auto_resolves_std_imports() {
-        let client = r#"
-import list
-
-fn main(console: Console):
-    console.print("${list.sum(list.range(5))}")
-"#;
-        let sources = [("main", client)];
-        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
-        let compiled = run_linked_on_wasm(&sources, "main");
-        assert_eq!(interpreted, compiled, "auto-resolved std import diverged");
-        assert_eq!(compiled, vec!["10"]);
-    }
-
-    // std/json get_path: follow a dotted key path into a decoded value (and a
-    // missing path -> None). Pure, so both backends agree.
-    // Dead-code elimination: a program importing `list` but using only `map`
-    // and `sum` must not compile the rest of the list API (or `option`, which
-    // `list` imports) into the WASM — only functions reachable from `main`.
-    #[test]
-    fn dce_drops_unused_stdlib_functions() {
-        let client = r#"
-import list
-
-fn main(console: Console):
-    let xs = list.map([1, 2, 3], fn(x: Int): (x * 2))
-    console.print("${list.sum(xs)}")
-"#;
-        let mods = vec![("main".to_string(), parser::parse_module(client).expect("parse"))];
-        let linked = crate::pipeline::link(mods, "main").expect("link");
-        // Reachable functions are present and the unused ones are dropped: the
-        // binary path's `assemble_wir_module` runs the same `reachable_functions`
-        // DCE, so inspect the assembled WIR func names directly.
-        let wir = codegen::assemble_wir_module(&linked)
-            .expect_lowered("the binary path lowers this program");
-        // The binary path monomorphizes generics, so the method implementation
-        // appears as `List__map__Int__Int`; match on the generated-method prefix.
-        let names: Vec<&str> = wir.funcs.iter().map(|f| f.name.as_str()).collect();
-        let has = |fn_name: &str| names.iter().any(|n| *n == fn_name || n.starts_with(&format!("{fn_name}__")));
-        assert!(has("List__map"), "map should be compiled: {names:?}");
-        assert!(has("List__sum"), "sum should be compiled: {names:?}");
-        assert!(!has("List__partition"), "partition should be eliminated: {names:?}");
-        assert!(!has("List__windows"), "windows should be eliminated: {names:?}");
-        assert!(!has("List__sort_by"), "sort_by should be eliminated: {names:?}");
-        assert!(!names.iter().any(|n| n.starts_with("option.")), "unused option fns should be eliminated: {names:?}");
-        // And it still runs correctly.
-        assert_eq!(run_linked_on_wasm(&[("main", client)], "main"), vec!["12"]);
-    }

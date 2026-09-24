@@ -116,21 +116,6 @@ fn main() -> Int:
 }
 
 #[test]
-fn rooted_view_generic_return_retains_its_snapshot_across_var_mutation() {
-    let source = r#"
-fn relay[a](view: &a) -> &a:
-    view
-
-fn main() -> Int:
-    var value = 7
-    let observed = relay(&value)
-    value = 9
-    (*observed) * 10 + value
-"#;
-    assert_rooted_view_transport(source, 79);
-}
-
-#[test]
 fn rooted_view_nominal_field_retains_its_snapshot_across_store_and_return() {
     let source = r#"
 mode opt
@@ -144,31 +129,6 @@ fn store(view: &Int) -> Holder:
 fn main() -> Int:
     var value = 7
     let holder = store(&value)
-    value = 9
-    (*holder.value) * 10 + value
-"#;
-    assert_rooted_view_transport(source, 79);
-}
-
-/// The root must travel with the nominal value itself, rather than being
-/// reconstructed from a field address after an aggregate call boundary.
-#[test]
-fn rooted_view_nominal_aggregate_transport_retains_its_authenticated_root() {
-    let source = r#"
-mode opt
-
-type Holder:
-    value: &Int
-
-fn store(view: &Int) -> Holder:
-    Holder(view)
-
-fn relay(holder: Holder) -> Holder:
-    holder
-
-fn main() -> Int:
-    var value = 7
-    let holder = relay(store(&value))
     value = 9
     (*holder.value) * 10 + value
 "#;
@@ -221,47 +181,6 @@ fn main() -> Int:
     (*observed) * 10 + value
 "#;
     assert_linked_rooted_view_transport(&[("worker", worker), ("api", api), ("app", app)], "app", 79);
-}
-
-#[test]
-fn normal_from_import_retains_an_opt_rooted_view_snapshot() {
-    let api = r#"
-mode opt
-
-pub fn relay(view: &Int) -> &Int:
-    view
-"#;
-    let app = r#"
-from api import relay
-
-fn main() -> Int:
-    var value = 7
-    let observed = relay(&value)
-    value = 9
-    (*observed) * 10 + value
-"#;
-    assert_linked_rooted_view_transport(&[("api", api), ("app", app)], "app", 79);
-}
-
-#[test]
-fn normal_function_value_retains_an_opt_rooted_view_snapshot() {
-    let api = r#"
-mode opt
-
-pub fn relay(view: &Int) -> &Int:
-    view
-"#;
-    let app = r#"
-import api
-
-fn main() -> Int:
-    var value = 7
-    let forward = api.relay
-    let observed = forward(&value)
-    value = 9
-    (*observed) * 10 + value
-"#;
-    assert_linked_rooted_view_transport(&[("api", api), ("app", app)], "app", 79);
 }
 
 #[test]

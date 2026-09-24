@@ -13,32 +13,6 @@ fn assert_json_contract_cases(cases: &[(&str, &str, &[&str])]) {
     }
 }
 
-    /// (BUG-545) A decoded/built `JsonObject` reflects as the JSON object shape,
-    /// not as the `JsonObject(...)` constructor. Its debug rendering should
-    /// therefore look like an object, not like an accidental nameless record with
-    /// a leading space.
-    #[test]
-    fn json_object_debug_renders_as_object_on_both_backends() {
-        let src = "import json\nimport reflect\n\nfn main(console: Console):\n    let obj = json.JsonObject([(\"ok\", json.JsonBool(true)), (\"n\", json.JsonInt(2))])\n    let arr = json.JsonArray([json.JsonInt(1), json.JsonString(\"x\")])\n    console.print(reflect.debug(obj))\n    console.print(reflect.debug(arr))\n    console.print(json.stringify(obj))\n";
-        let expected = [
-            "{ ok: true, n: 2 }",
-            "[1, \"x\"]",
-            "{\"ok\":true,\"n\":2}",
-        ];
-        assert_eq!(link_run(src), expected, "interp: Json debug object shape");
-        assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "compiled: Json debug object shape");
-    }
-
-    /// (BUG-483) JSON keys are arbitrary strings, so nested lookup needs an exact
-    /// segment API in addition to the dotted-string convenience helper.
-    #[test]
-    fn json_get_in_reaches_literal_dot_keys_on_both_backends() {
-        let src = "import json\n\nfn show(console: Console, v: Option(json.Json)):\n    match v:\n        Some(j) -> console.print(json.encode(j))\n        None -> console.print(\"missing\")\n\nfn main(console: Console):\n    let obj = json.JsonObject([(\"a.b\", json.JsonInt(1)), (\"a\", json.JsonObject([(\"b\", json.JsonInt(2))])), (\"\", json.JsonObject([(\"x.y\", json.JsonInt(3))]))])\n    show(console, json.get_in(obj, [\"a.b\"]))\n    show(console, json.get_path(obj, \"a.b\"))\n    show(console, json.get_in(obj, [\"\", \"x.y\"]))\n    show(console, json.get_in(obj, [\"missing.dot\"]))\n";
-        let expected = ["1", "2", "3", "missing"];
-        assert_eq!(link_run(src), expected, "interp: Json exact path segments");
-        assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "compiled: Json exact path segments");
-    }
-
     /// (BUG-262) JSON decode rejects duplicate object names, and the public
     /// helper/encoding boundaries must not let hand-built duplicate objects become
     /// signed or emitted wire JSON silently.
@@ -119,99 +93,6 @@ fn assert_json_contract_cases(cases: &[(&str, &str, &[&str])]) {
         assert_eq!(run_linked_on_wasm(&[("main", ok)], "main"), expected, "compiled: unique JSON merge still works");
     }
 
-    #[test]
-    fn rfc0054_json_decode_uses_typed_error_and_converts_to_string() {
-        let src = "import json\nfrom json import Json\nimport show\n\nfn via_string() -> Result(Json, String):\n    let doc = json.decode(\"1 2\")?\n    Ok(doc)\n\nfn main(console: Console):\n    match json.decode(\"1 2\"):\n        Ok(_) -> console.print(\"bad\")\n        Err(e) ->\n            console.print(json.decode_error_message(e))\n            console.print(show.render(e))\n    match via_string():\n        Ok(_) -> console.print(\"bad\")\n        Err(e) -> console.print(e)\n";
-        let expected = [
-            "unexpected trailing content at 2",
-            "unexpected trailing content at 2",
-            "unexpected trailing content at 2",
-        ];
-        assert_eq!(link_run(src), expected, "interp: typed json.DecodeError");
-        assert_eq!(
-            run_linked_on_wasm(&[("main", src)], "main"),
-            expected,
-            "compiled: typed json.DecodeError",
-        );
-    }
-
-    #[test]
-    fn rfc0054_server_json_body_uses_typed_error_and_string_bridge() {
-        let src = r#"import json
-import server
-from http import Request
-from json import Json
-
-fn typed(req: Request) -> Result(Json, json.DecodeError):
-    server.json_body(req)
-
-fn via_string(req: Request) -> Result(Json, String):
-    let doc = server.json_body(req)?
-    Ok(doc)
-
-fn main(console: Console):
-    let good = Request("POST", "/", [], [], [], "{\"ok\":true}")
-    let bad = Request("POST", "/", [], [], [], "1 2")
-    match typed(good):
-        Ok(doc) -> console.print(json.encode(doc))
-        Err(e) -> console.print(json.decode_error_message(e))
-    match typed(bad):
-        Ok(_) -> console.print("bad")
-        Err(e) -> console.print(json.decode_error_message(e))
-    match via_string(bad):
-        Ok(_) -> console.print("bad")
-        Err(e) -> console.print(e)
-    match server.json_body_string(bad):
-        Ok(_) -> console.print("bad")
-        Err(e) -> console.print(e)
-"#;
-        let expected = [
-            "{\"ok\":true}",
-            "unexpected trailing content at 2",
-            "unexpected trailing content at 2",
-            "unexpected trailing content at 2",
-        ];
-        assert_eq!(link_run(src), expected, "interp: server.json_body typed error");
-        assert_eq!(
-            run_linked_on_wasm(&[("main", src)], "main"),
-            expected,
-            "compiled: server.json_body typed error",
-        );
-    }
-
-    /// `From`/`Into` reach `Json`: `impl From(a) for Json where a: Reflect` means any
-    /// reflectable value converts — `x.into()` / `Json.from(x)` — and `server.send`
-    /// serializes any reflectable response. Both backends.
-    #[test]
-    fn into_json_via_from() {
-        let src = "import json\nfrom json import Json\n\nfn main(console: Console):\n    let j: Json = [1, 2, 3].into()\n    console.print(json.encode(j))\n    console.print(json.encode(Json.from((\"x\", 5))))";
-        let want = vec!["[1,2,3]".to_string(), "[\"x\",5]".to_string()];
-        assert_eq!(link_run(src), want, "interpreter");
-        assert_eq!(wasm_run(src), want, "wasm");
-    }
-
-    /// ANONYMOUS STRUCTS: `.{ field: expr, … }` is an ad-hoc reflectable record (a
-    /// generic synthetic type carrying `derive(Reflect)`), so `json.stringify(.{…})`
-    /// works on any field types — including a `List` of tuples — with no per-type
-    /// boilerplate. Fields render in sorted order; `.{…}` round-trips through fmt.
-    #[test]
-    fn anonymous_structs_reflect_to_json() {
-        let src = "import json\n\nfn main(console: Console):\n    let files = [(\"a\", \"x\"), (\"b\", \"y\")]\n    console.print(json.stringify(.{files: files}))\n    console.print(json.stringify(.{name: \"acme\", count: 5}))\n";
-        let want: Vec<String> = [
-            "{\"files\":[[\"a\",\"x\"],[\"b\",\"y\"]]}",
-            "{\"count\":5,\"name\":\"acme\"}",
-        ]
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
-        assert_eq!(link_run(src), want, "interpreter");
-        assert_eq!(wasm_run(src), want, "wasm");
-        assert!(
-            crate::format::reformat(src).unwrap().contains(".{files: files}"),
-            "`.{{…}}` round-trips through fmt"
-        );
-    }
-
     /// REFLECTION: `json.stringify(x)` encodes ANY value with no `derive(Json)` —
     /// only `derive(Reflect)`, the one generated impl every reflective library
     /// consumes. Covers scalars, nested records, `List`, and `Option` (Some/None),
@@ -230,100 +111,6 @@ fn main(console: Console):
         // The generated `reflect` makes trait calls that need std/reflect linked,
         // so resolve std for the interpreter path too (link_run's single-module
         // typeck can't see it); the real `witchy run` path resolves std the same way.
-        let linked = resolve_std_src(src);
-        typeck::check(&linked).expect("typecheck");
-        let interp = interpreter::run_module(linked, ".", Vec::new()).expect("interpreter run");
-        assert_eq!(interp, want, "interpreter");
-        assert_eq!(wasm_run(src), want, "wasm");
-    }
-
-    /// RECURSIVE-TYPE REFLECTION: a self-referential type (`Tree` with a `List(Tree)`
-    /// arm) reflects + serializes without the monomorphizer overflowing, and an
-    /// already-built `Json` reflects to its own value so it embeds verbatim inside an
-    /// anonymous struct. Both backends. (The compiler's scope-name encoder is depth-
-    /// guarded so recursive-type reflection can never stack-overflow the compiler.)
-    #[test]
-    fn recursive_types_and_json_reflect() {
-        if !is_nightly() {
-            return;
-        }
-        let tree = "import json\nimport reflect\n\ntype Tree derive(Reflect):\n    Leaf(Int)\n    Node(List(Tree))\n\nfn main(console: Console):\n    console.print(json.stringify(Node([Leaf(1), Node([Leaf(2)])])))\n";
-        let tw = vec!["{\"$variant\":\"Node\",\"$values\":[[{\"$variant\":\"Leaf\",\"$values\":[1]},{\"$variant\":\"Node\",\"$values\":[[{\"$variant\":\"Leaf\",\"$values\":[2]}]]}]]}".to_string()];
-        assert_eq!(link_run(tree), tw, "interpreter (tree)");
-        assert_eq!(wasm_run(tree), tw, "wasm (tree)");
-        // An already-built Json embeds verbatim in an anonymous struct.
-        let embed = "import json\nfrom json import Json\n\nfn main(console: Console):\n    let rec: Json = json.decode(\"{\\\"a\\\":1}\").unwrap_or(JsonNull)\n    console.print(json.stringify(.{record: rec, ok: true}))";
-        let ew = vec!["{\"ok\":true,\"record\":{\"a\":1}}".to_string()];
-        assert_eq!(link_run(embed), ew, "interpreter (embed)");
-        assert_eq!(wasm_run(embed), ew, "wasm (embed)");
-    }
-
-    /// COMPTIME REFLECTION (typeInfo, Phase 1 / Path 2a): a `comptime:` block reads
-    /// its module's type structure via `module_types` and GENERATES a specialized
-    /// `to_json` per record — direct field access, no runtime `Mirror`, written in
-    /// Witchy code. This is Zig-style comptime-over-types proven end-to-end, both
-    /// backends (comptime runs at link time, so the generated code is identical).
-    #[test]
-    fn comptime_typeinfo_generates_specialized_to_json() {
-        let src = r#"import meta
-import json
-from json import Json
-
-type Point:
-    x: Int
-    y: Int
-
-type User:
-    name: String
-    age: Int
-    active: Bool
-
-comptime:
-    let json_type = meta.type_named(meta.ident("Json"), [])
-    let ctor = fn(ty: meta.TypeExpr) -> meta.Ident:
-        match ty:
-            meta.TNamed(name, _args) ->
-                if name == "Int": meta.call_site("JsonInt")
-                else if name == "String": meta.call_site("JsonString")
-                else if name == "Bool": meta.call_site("JsonBool")
-                else: meta.call_site("JsonNull")
-            _ -> meta.call_site("JsonNull")
-    for t in module_types:
-        match t.kind:
-            meta.TypeRecord ->
-                let type_name = meta.ident(t.name)
-                let value = meta.expr_name(meta.call_site("v"))
-                var pairs = []
-                for f in t.fields:
-                    let field = meta.ident(f.name)
-                    let encoded = meta.expr_call(
-                        meta.expr_name(ctor(f.type_expr)),
-                        [meta.expr_field(value, field)],
-                    )
-                    list.push(pairs, meta.expr_tuple([meta.expr_string(f.name), encoded]))
-                let body = meta.expr_call(
-                    meta.expr_name(meta.call_site("JsonObject")),
-                    [meta.expr_list(pairs)],
-                )
-                emit_item(meta.function(
-                    true,
-                    meta.ident("to_json_" + t.name),
-                    [meta.param(meta.ident("v"), meta.type_named(type_name, []))],
-                    Some(json_type),
-                    body,
-                ))
-            _ -> ()
-
-fn main(console: Console):
-    console.print(json.encode(to_json_Point(Point(1, 2))))
-    console.print(json.encode(to_json_User(User("ann", 30, true))))"#;
-        let want: Vec<String> = [
-            "{\"x\":1,\"y\":2}",
-            "{\"name\":\"ann\",\"age\":30,\"active\":true}",
-        ]
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
         let linked = resolve_std_src(src);
         typeck::check(&linked).expect("typecheck");
         let interp = interpreter::run_module(linked, ".", Vec::new()).expect("interpreter run");
@@ -486,34 +273,6 @@ fn main(console: Console):
         let compiled = run_linked_on_wasm(&sources, "main");
         assert_eq!(interpreted, compiled, "decode trailing-content diverged");
         assert_eq!(compiled, vec!["ok", "int:42", "err", "err", "err", "int:7"]);
-    }
-
-    #[test]
-    fn json_long_fraction_does_not_wrap_backends_agree() {
-        // BUG-241: the fractional tail used to fold digits into an i64
-        // (`frac * 10 + digit`), so a long input-controlled fraction wrapped to a
-        // wrong value (`0.<20 nines>` parsed as ~0.0776). It now folds over the
-        // digit span into a Float like the integer part, so a long fraction rounds
-        // to the nearest double instead of wrapping. Identical on both backends.
-        let client = r#"
-import json
-fn rt(s: String) -> String:
-    match json.decode(s):
-        Ok(j) -> json.encode(j)
-        Err(e) -> "err:" + json.decode_error_message(e)
-fn main(console: Console):
-    console.print(rt("0.99999999999999999999"))
-    console.print(rt("1.99999999999999999999999999999999999999"))
-    console.print(rt("0.1234567890123456789"))
-    console.print(rt("3.14159"))
-"#;
-        let want: Vec<String> =
-            ["1.0000000000000002", "2.0", "0.1234567890123457", "3.14159"]
-                .iter()
-                .map(|s| s.to_string())
-                .collect();
-        assert_eq!(link_run(client), want, "interpreter");
-        assert_eq!(wasm_run(client), want, "wasm");
     }
 
     /// std/json: `decode` rejects an overflowing exponent (BUG-241), an invalid

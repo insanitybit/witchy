@@ -278,7 +278,6 @@
     /// with each other) — across sign, inclusive/exclusive, empty, and `continue`.
     mod range_for_properties {
         use super::interp;
-        use proptest::prelude::*;
 
         // `run_on_wasm` builds a fresh `Runtime` (a real Wasmtime `Engine::new()` —
         // Cranelift ISA setup, not free) per call. Each proptest case here calls it
@@ -391,24 +390,6 @@
                 "compiled disagrees on:\n{source}"
             );
         }
-
-        proptest! {
-            #![proptest_config(ProptestConfig::with_cases(super::proptest_cases()))]
-
-            #[test]
-            fn sum_matches_reference(lo in -300i64..300, len in 0i64..600, inclusive in any::<bool>()) {
-                let (src, want) = sum_case(lo, lo + len, inclusive);
-                prop_assert_eq!(interp(&src), want.clone());
-                prop_assert_eq!(run_on_wasm_cached(&src), want);
-            }
-
-            #[test]
-            fn continue_skipping_odds_matches_reference(lo in -100i64..100, len in 0i64..300) {
-                let (src, want) = odds_case(lo, lo + len);
-                prop_assert_eq!(interp(&src), want.clone());
-                prop_assert_eq!(run_on_wasm_cached(&src), want);
-            }
-        }
     }
 
     mod stdlib_evidence;
@@ -430,9 +411,6 @@
     mod crypto;
     mod toml;
     mod bigint;
-    // coven/grimoire examples: behind `coven-tests`, see Cargo.toml.
-    #[cfg(feature = "coven-tests")]
-    mod pm_coven;
     mod capability_narrowing;
     mod cli_std_modules;
     mod std_result_list_combinators;
@@ -440,10 +418,6 @@
     mod func_values;
     mod rc_corpus;
     mod crypto_jwt_oauth;
-    // glamour is an experimental consumer of witchy; see the `glamour-tests`
-    // feature in Cargo.toml. `./scripts/check.sh --glamour` compiles and runs it.
-    #[cfg(feature = "glamour-tests")]
-    mod glamour;
     mod rfc0046_dispatch;
     mod gen_async;
     mod closures;

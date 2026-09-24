@@ -268,7 +268,7 @@ priority = 80
 # remedy: widen the period so one uninterrupted run clears the real runtime
 # with headroom.
 [[profile.default.overrides]]
-filter = 'test(/^dom::(glamour_island_completion_frames_agree_on_both_backends|glamour_island_host_work_frames_agree_on_both_backends|glamour_structural_patch_frames_agree_on_both_backends|glamour_version_and_trust_views_render_security_fields)$|^html_nul::html_rejects_static_nul_without_affecting_real_holes_or_strings$|^example_tests::glamour::glamour_media_policy_css_and_loader_share_one_query_corpus$/)'
+filter = 'test(/^dom::(glamour_island_completion_frames_agree_on_both_backends|glamour_island_host_work_frames_agree_on_both_backends|glamour_structural_patch_frames_agree_on_both_backends|glamour_version_and_trust_views_render_security_fields)$|^html_nul::html_rejects_static_nul_without_affecting_real_holes_or_strings$/)'
 test-group = 'gate-cold-heavy'
 retries = 0
 slow-timeout = { period = "240s", terminate-after = 2 }

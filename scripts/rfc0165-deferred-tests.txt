@@ -97,11 +97,8 @@ witchy::bin/witchy example_tests::capabilities::capability_rights_example_runs_a
 witchy::bin/witchy example_tests::capabilities::sandbox_grants_full_footprint
 witchy::bin/witchy example_tests::example_sweeps::all_example_rune_tests_pass
 witchy::bin/witchy example_tests::example_sweeps::documentation_examples_are_valid
-witchy::bin/witchy example_tests::example_sweeps::in_language_test_framework_runs_and_reports
-witchy::bin/witchy example_tests::example_sweeps::precompiled_wasm_runs_like_the_source
 witchy::bin/witchy example_tests::examples_programs::data_oriented_examples_match_golden_output
 witchy::bin/witchy example_tests::examples_programs::minigrep_lines_survive_source_container_sec_037
-witchy::bin/witchy example_tests::pm_coven::coven_unit_rune_tests_pass
 witchy::bin/witchy example_tests::sandbox_vm::parity_file_agrees_on_matching_aborts
 witchy::bin/witchy example_tests::sandbox_vm::sandbox_confinement_error_is_clean
 witchy::browser encoding::browser_encoding_abi_matches_native

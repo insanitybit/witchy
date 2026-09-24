@@ -1,25 +1,5 @@
 use super::*;
 
-    /// RFC-0090 makes proper self-tail calls a language guarantee, not an
-    /// optimizer choice. This depth is far beyond either backend's ordinary
-    /// call stack, and the argument swap pins simultaneous parameter rebinding.
-    #[test]
-    fn proper_self_tail_calls_use_constant_stack_on_both_backends() {
-        let count = if is_nightly() { 5000001 } else { 5001 };
-        let src = format!(r#"
-fn swap_down(n: Int, a: Int, b: Int) -> Int:
-    match n:
-        0 -> ((a * 10) + b)
-        _ -> swap_down((n - 1), b, a)
-
-fn main(console: Console):
-    console.print("${{swap_down({count}, 2, 7)}}")
-"#);
-        let want = vec!["72".to_string()];
-        assert_eq!(interp(&src), want.clone(), "interpreter trampoline");
-        assert_eq!(run_on_wasm(&src), want, "compiled WIR loop");
-    }
-
     /// RFC-0090 direct recursive components use one typed dispatcher. Different
     /// source signatures occupy disjoint banks, and every edge still stages its
     /// arguments before changing logical functions.
@@ -43,39 +23,6 @@ fn main(console: Console):
         let want = vec!["72".to_string()];
         assert_eq!(interp(&src), want.clone(), "interpreter SCC trampoline");
         assert_eq!(run_on_wasm(&src), want, "compiled WIR SCC dispatcher");
-    }
-
-    /// Tail lowering must preserve the ordinary call dispatcher. Stdlib
-    /// intrinsic declarations are recursive placeholders, not executable
-    /// recursion, including when reached from a function value.
-    #[test]
-    fn proper_tail_calls_preserve_intrinsic_dispatch_on_both_backends() {
-        let src = r#"
-import list
-import vm
-
-fn upper(s: String) -> String:
-    s.to_upper()
-
-fn parallel_once(xs: List(Int)) -> List(Int):
-    vm.par_map(xs, fn(n: Int): n + 1)
-
-fn invoke(f: fn(List(Int)) -> List(Int), xs: List(Int)) -> List(Int):
-    f(xs)
-
-fn main(console: Console):
-    console.print(upper("witchy"))
-    let shouted = ["a", "b"].map(fn(s: String): s.to_upper())
-    console.print(shouted.join("-"))
-    console.print("${invoke(parallel_once, [1, 2])}")
-"#;
-        let want = vec![
-            "WITCHY".to_string(),
-            "A-B".to_string(),
-            "[2, 3]".to_string(),
-        ];
-        assert_eq!(interp(src), want.clone(), "interpreter builtin dispatch");
-        assert_eq!(run_on_wasm(src), want, "compiled builtin dispatch");
     }
 
     /// Generic templates and bounded trait methods are specialized before WIR

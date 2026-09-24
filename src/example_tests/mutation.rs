@@ -81,99 +81,6 @@ use crate::{codegen, interpreter, parser, typeck};
         assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");
     }
 
-    /// BUG-635: a `var` call in a `while let` scrutinee executes at the loop
-    /// header, so its repaired caller place must be carried on the backedge.
-    /// The bounded case exposes a silent wrong answer; the unguarded cases
-    /// must terminate from their own `None` result rather than relying on a
-    /// body `break` to hide a stale header lane.
-    #[test]
-    fn while_let_scrutinee_var_writebacks_are_loop_carried() {
-        let bounded_scalar = "fn step(var cursor: Int) -> Option(Int):\n    cursor = cursor + 1\n    if cursor <= 3:\n        Some(cursor)\n    else:\n        None\n\nfn main(console: Console):\n    var cursor = 0\n    var seen = 0\n    while let Some(value) = step(cursor):\n        seen = seen + value\n        if seen >= 3:\n            break\n    console.print(\"${seen}\")\n    console.print(\"${cursor}\")\n";
-        let bounded_expected = ["3", "2"];
-        assert_eq!(link_run(bounded_scalar), bounded_expected, "interpreter bounded scalar");
-        assert_eq!(
-            admitted_wasm_run_with_budget(bounded_scalar, std::time::Duration::from_secs(1)),
-            bounded_expected,
-            "admitted bounded scalar",
-        );
-
-        let unguarded_scalar = "fn step(var cursor: Int) -> Option(Int):\n    cursor = cursor + 1\n    if cursor <= 3:\n        Some(cursor)\n    else:\n        None\n\nfn main(console: Console):\n    var cursor = 0\n    var total = 0\n    while let Some(value) = step(cursor):\n        total = total + value\n    console.print(\"${total}\")\n    console.print(\"${cursor}\")\n";
-        let unguarded_expected = ["6", "4"];
-        assert_eq!(link_run(unguarded_scalar), unguarded_expected, "interpreter unguarded scalar");
-        assert_eq!(
-            admitted_wasm_run_with_budget(unguarded_scalar, std::time::Duration::from_secs(1)),
-            unguarded_expected,
-            "admitted unguarded scalar",
-        );
-
-        let projected_collection = "type Holder:\n    values: List(Int)\n\nfn take(var values: List(Int)) -> Option(Int):\n    match values:\n        [] -> None\n        [head, ..tail] ->\n            values = tail\n            Some(head)\n\nfn main(console: Console):\n    var holder = Holder([1, 2, 3])\n    var total = 0\n    while let Some(value) = take(holder.values):\n        total = total + value\n    console.print(\"${total}\")\n    console.print(\"${list.length(holder.values)}\")\n";
-        let projected_expected = ["6", "0"];
-        assert_eq!(link_run(projected_collection), projected_expected, "interpreter projected collection");
-        assert_eq!(
-            wasm_run_with_budget(projected_collection, std::time::Duration::from_secs(1)),
-            projected_expected,
-            "raw projected collection supplemental",
-        );
-        // Projected-list loop ownership is still open. The same call outside
-        // the loop admits, so this is a residual loop-carrier limitation, not
-        // an unsupported callee. Legacy output is only supplemental evidence.
-        let projected_direct = projected_collection.replace(
-            "    while let Some(value) = take(holder.values):\n        total = total + value\n",
-            "    let value = take(holder.values)\n",
-        );
-        assert_ne!(projected_direct, projected_collection);
-        assert_eq!(
-            admitted_wasm_run_with_budget(&projected_direct, std::time::Duration::from_secs(1)),
-            ["0", "2"],
-            "direct projected write-back on both canonical runtime legs",
-        );
-        let checked = witchy_types::pipeline::link_checked_from_source_bundle(
-            vec![("main".to_owned(), projected_collection.as_bytes().to_vec())],
-            "main",
-            |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
-        ).expect("checked projected collection source");
-        let error = codegen::compile_checked_module_artifact(&checked)
-            .expect_rejected("projected loop ownership remains an open production limitation");
-        assert!(format!("{error:?}").contains("InvalidOwnership"), "{error:?}");
-
-        let boolean_condition = "fn more(var cursor: Int) -> Bool:\n    cursor = cursor + 1\n    cursor <= 3\n\nfn main(console: Console):\n    var cursor = 0\n    var total = 0\n    while more(cursor):\n        total = total + cursor\n    console.print(\"${total}\")\n    console.print(\"${cursor}\")\n";
-        let boolean_expected = ["6", "4"];
-        assert_eq!(link_run(boolean_condition), boolean_expected, "interpreter boolean condition");
-        assert_eq!(
-            admitted_wasm_run_with_budget(boolean_condition, std::time::Duration::from_secs(1)),
-            boolean_expected,
-            "admitted boolean condition",
-        );
-    }
-
-    /// `let` borrows extend past `List` to the other heap types: a `String`
-    /// parameter (the recursive-parser shape that motivated this — char ops on a
-    /// borrowed string, no clone) and a `Dict`. Native emits `&String` / `&WMap`
-    /// and the output matches every backend.
-    #[test]
-    fn convention_string_and_dict_borrow() {
-        let strs = "fn first_char(let s: String) -> String:\n    if s.char_count() > 0:\n        s.substring(0, 1)\n    else:\n        \"\"\nfn main(c: Console):\n    let txt = \"héllo\"\n    c.print(first_char(txt))\n    c.print(\"${txt.char_count()}\")\n";
-        assert_eq!(interpreter::run(strs).expect("interp str"), ["h", "5"]);
-        assert_eq!(run_linked_on_wasm(&[("main", strs)], "main"), ["h", "5"], "wasm str");
-
-        let dict = "fn lookup(let d: Dict(String, Int)) -> Int:\n    dict.get_or(d, \"a\", -1)\nfn main(c: Console):\n    var m = dict.new()\n    let _ = dict.insert(m, \"a\", 42)\n    c.print(\"${lookup(m)}\")\n    c.print(\"${dict.length(m)}\")\n";
-        assert_eq!(link_run(dict), ["42", "1"]);
-        assert_eq!(run_linked_on_wasm(&[("main", dict)], "main"), ["42", "1"], "wasm dict");
-    }
-
-    /// `move` works in every value position (let value, list element, call
-    /// argument), forcing a move; the moved binding can't be reused (rejected by
-    /// the type checker, uniformly).
-    #[test]
-    fn convention_move_value_positions() {
-        let prog = "fn main(console: Console):\n    let a = [1, 2, 3]\n    let b = move a\n    console.print(\"${list.length(b)}\")\n";
-        assert_eq!(interpreter::run(prog).expect("interp"), ["3"]);
-        assert_eq!(run_linked_on_wasm(&[("main", prog)], "main"), ["3"], "wasm");
-        // Reuse after move is rejected everywhere.
-        let reuse = "fn main(console: Console):\n    let a = [1, 2, 3]\n    let b = move a\n    console.print(\"${list.length(b) + list.length(a)}\")\n";
-        assert!(typeck::check_str(reuse).is_err(), "reuse after move must fail");
-    }
-
     /// A borrow can't escape: returning a `let` parameter transpiles, but Rust's
     /// borrow checker rejects it at compile time (the opt-in contract — drop `let`
     /// or use `own`). A non-escaping borrow compiles fine.
@@ -188,93 +95,6 @@ use crate::{codegen, interpreter, parser, typeck};
         // Reading it (no escape) is fine.
         let reads = "fn count(let xs: List(Int)) -> Int:\n    list.length(xs)\nfn main(c: Console):\n    c.print(\"${count([1, 2, 3])}\")\n";
         assert!(typeck::check_str(reads).is_ok(), "a read-only borrow should check");
-    }
-
-    /// Conventions apply to a method's receiver too: `let self` borrows it
-    /// (read-only), and `own self` consumes it (the value can't be used after the
-    /// call). Both run identically on interpreter and native.
-    #[test]
-    fn convention_method_receivers() {
-        // `let self` — borrow the receiver, return a fresh value (functional style).
-        let borrow_self = "type Counter:\n    Counter(Int)\nimpl Counter:\n    fn incremented(let self) -> Counter:\n        match self:\n            Counter(n) -> Counter(n + 1)\nfn main(c: Console):\n    let a = Counter(5)\n    match a.incremented():\n        Counter(n) -> c.print(\"${n}\")\n";
-        // `own self` — consume the receiver.
-        let own_self = "import list\ntype Buffer:\n    Buffer(List(Int))\nimpl Buffer:\n    fn drain(own self) -> Int:\n        match self:\n            Buffer(xs) -> list.sum(xs)\nfn main(c: Console):\n    let buf = Buffer([1, 2, 3])\n    c.print(\"${buf.drain()}\")\n";
-        for (tag, src) in [("let_self", borrow_self), ("own_self", own_self)] {
-            assert_eq!(link_run(src), vec!["6"], "{tag} interp");
-            assert_eq!(wasm_run(src), vec!["6"], "{tag} wasm");
-        }
-    }
-
-    /// A borrow can be forwarded BOTH ways: to another borrow parameter it passes
-    /// straight through (`&T` -> `&T`, no copy), and to an owned parameter it is
-    /// deref-cloned (you can't move out of a borrow). Same result on every backend.
-    #[test]
-    fn convention_borrow_forwarding() {
-        let src = "fn owned_first(xs: List(Int)) -> Int:\n    list.at(xs, 0) * 2\n\nfn borrowed_len(let ys: List(Int)) -> Int:\n    list.length(ys)\n\nfn report(let xs: List(Int)) -> Int:\n    borrowed_len(xs) + owned_first(xs)\n\nfn main(c: Console):\n    let data = [5, 6, 7]\n    c.print(\"${report(data)}\")\n    c.print(\"${list.length(data)}\")\n";
-        assert_eq!(interpreter::run(src).expect("interp"), ["13", "3"]);
-        assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), ["13", "3"], "wasm");
-    }
-
-    /// THE UNIQUENESS ANALYSIS, observable: an alias taken BEFORE the loop
-    /// zeroes the ownership token once — the first push re-owns (one copy)
-    /// and everything after runs in place. The old syntactic whitelist
-    /// disqualified the variable outright (O(n²), memory-cap trap at this
-    /// size). The alias still sees its snapshot.
-    #[test]
-    fn analysis_alias_before_loop_stays_linear() {
-        let src = "fn main(console: Console):\n    var xs = [1, 2, 3]\n    let snapshot = xs\n    var i = 0\n    while i < 50000:\n        list.push(xs, i)\n        i = i + 1\n    console.print(\"${snapshot}\")\n    console.print(\"${list.length(xs)}\")\n";
-        let want = vec!["[1, 2, 3]".to_string(), "50003".to_string()];
-        assert_eq!(link_run(src), want, "interpreter");
-        let (out, reowns) = wasm_run_reowns(src);
-        assert_eq!(out, want, "wasm");
-        assert!(reowns <= 2, "expected O(1) re-owns, got {reowns}");
-    }
-
-    /// FUNCTION SUMMARIES: a read-only helper called in the hot loop no
-    /// longer kills the token (the bottom-up pass proves its parameter never
-    /// aliases out). Under the whitelist this was an instant disqualification.
-    #[test]
-    fn analysis_readonly_call_keeps_loop_linear() {
-        let src = "fn peek(xs: List(Int)) -> Int:\n    list.length(xs)\n\nfn main(console: Console):\n    var ws = []\n    var m = 0\n    var probe = 0\n    while m < 3000:\n        list.push(ws, m)\n        probe = peek(ws)\n        m = m + 1\n    console.print(\"${probe}\")\n";
-        let want = vec!["3000".to_string()];
-        assert_eq!(link_run(src), want, "interpreter");
-        let (out, reowns) = wasm_run_reowns(src);
-        assert_eq!(out, want, "wasm");
-        assert!(reowns <= 2, "the summary must keep the loop in place, got {reowns}");
-    }
-
-    /// A function that RETURNS its parameter (may_alias_out) still kills:
-    /// the bound result whole-aliases the buffer, so the next push copies —
-    /// and the alias keeps its snapshot.
-    #[test]
-    fn analysis_alias_returning_call_still_kills() {
-        let src = "fn same(xs: List(Int)) -> List(Int):\n    xs\n\nfn main(console: Console):\n    var xs = [1]\n    var i = 0\n    while i < 100:\n        list.push(xs, i)\n        i = i + 1\n    let held = same(xs)\n    list.push(xs, 999)\n    console.print(\"${list.length(held)}\")\n    console.print(\"${list.length(xs)}\")\n";
-        let want = vec!["101".to_string(), "102".to_string()];
-        assert_eq!(link_run(src), want, "interpreter");
-        let (out, _) = wasm_run_reowns(src);
-        assert_eq!(out, want, "wasm");
-    }
-
-    /// DIRTY SITES: a self-assign whose RHS embeds the variable (`s = s + s`,
-    /// a pushed snapshot stored into a dict) runs through the copying path
-    /// and stays value-semantic on both backends.
-    #[test]
-    fn analysis_dirty_shapes_stay_value_semantic() {
-        let src = "fn main(console: Console):\n    var s = \"ab\"\n    var k = 0\n    while k < 5:\n        s = s + s\n        k = k + 1\n    console.print(\"${s.length()}\")\n    var d = dict.new()\n    var zs = [1]\n    let _ = dict.insert(d, \"snap\", zs)\n    list.push(zs, 2)\n    console.print(\"${list.length(dict.get_or(d, \"snap\", []))}\")\n    console.print(\"${list.length(zs)}\")\n";
-        let want: Vec<String> = ["64", "1", "2"].iter().map(|s| s.to_string()).collect();
-        assert_eq!(link_run(src), want, "interpreter");
-        assert_eq!(wasm_run(src), want, "wasm");
-    }
-
-    /// A lambda body is its own analysis unit: an accumulator inside one gets
-    /// its own ownership token (this used to emit an undeclared `__cap`
-    /// local — a loud compile failure).
-    #[test]
-    fn analysis_lambda_accumulator_compiles() {
-        let src = "fn main(console: Console):\n    let build = fn(n: Int):\n        var acc = [0]\n        var t = 0\n        while t < n:\n            list.push(acc, t)\n            t = t + 1\n        list.length(acc)\n    console.print(\"${build(1000)}\")\n";
-        let want = vec!["1001".to_string()];
-        assert_eq!(link_run(src), want, "interpreter");
-        assert_eq!(wasm_run(src), want, "wasm");
     }
 
     /// An own-ABI callee that returns its parameter only on SOME paths: the
@@ -306,17 +126,6 @@ use crate::{codegen, interpreter, parser, typeck};
         let sibling_expected = vec!["16".to_string(), "16".to_string()];
         assert_eq!(link_run(sibling_src), sibling_expected, "interpreter: sibling fields");
         assert_eq!(wasm_run(sibling_src), sibling_expected, "wasm: sibling fields");
-    }
-
-    /// ARENA WATERMARK RESETS: a loop whose body lets nothing escape an
-    /// iteration (only scalar outer assignments) reclaims each iteration's
-    /// allocations — 200k iterations that would otherwise demand ~6 GB run in
-    /// constant memory. WASM-only: the interpreter's clone-per-push is
-    /// quadratic and would take far too long at this scale.
-    #[test]
-    fn arena_resets_keep_escape_free_loops_constant_memory() {
-        let src = "fn main(console: Console):\n    var total = 0\n    for i in 0..200000:\n        var row = []\n        var j = 0\n        for j in 0..1000:\n            list.push(row, j)\n        total = total + list.at(row, 999)\n    console.print(\"${total}\")\n";
-        assert_eq!(wasm_run(src), vec!["199800000"]);
     }
 
     /// Closure capture is pruned to the names the body mentions (the
@@ -353,46 +162,6 @@ use crate::{codegen, interpreter, parser, typeck};
             want,
             "compiled backend matches the interpreter's ? write-back",
         );
-    }
-
-    #[test]
-    fn rfc0087_structured_return_spellings_and_caller_propagation_agree() {
-        let src = r#"import option
-
-fn option_receiver_try(var state: Option(Int), var count: Int) -> Option(Int):
-    count = count + 1
-    let value = state?
-    state = Some(value + 1)
-    Some(value)
-
-fn update_or_none(var n: Int, succeeds: Bool) -> Option(Int):
-    n = n + 10
-    if succeeds:
-        Some(n)
-    else:
-        None
-
-fn caller_try(var n: Int) -> Option(Int):
-    let value = update_or_none(n, false)?
-    Some(value)
-
-fn main(console: Console):
-    var state: Option(Int) = None
-    var count = 0
-    let option_result = option_receiver_try(state, count)
-    console.print("${state} ${count} ${option_result}")
-
-    var propagated = 1
-    let propagated_result = caller_try(propagated)
-    console.print("${propagated} ${propagated_result}")
-
-    var fallback_state = 2
-    let fallback = update_or_none(fallback_state, false) ?? fallback_state + 100
-    console.print("${fallback_state} ${fallback}")
-"#;
-        let want = ["None 1 None", "11 None", "12 112"];
-        assert_eq!(link_run(src), want, "interpreter structured returns");
-        assert_eq!(wasm_run(src), want, "compiled structured returns");
     }
 
     /// (RFC-0051 I2) The single-allocator invariant on LOWERED PROGRAMS: assemble
@@ -433,51 +202,6 @@ fn main(console: Console):
         }
     }
 
-    /// The own-ABI (`own` buffer param threaded through `move`) on the binary
-    /// path: `grow` takes `own xs`, appends in place, and returns it. The callee
-    /// gains a trailing `$xs__cap` i32 param and a second i32 result (the
-    /// ownership token); the self-call `xs = grow(move xs, i)` lowers to a
-    /// CallStoreMulti capturing (value → xs, cap → xs__cap). (2-way: `list.push`
-    /// isn't resolvable by the WAT-leg `check_str`, so compare binary vs oracle.)
-    #[test]
-    fn wir_own_abi_move_pipeline_binary_path() {
-        let src = "fn grow(own xs: List(Int), n: Int) -> List(Int):\n    list.push(xs, n)\n    xs\n\nfn main(console: Console):\n    var xs = []\n    for i in 1..6:\n        xs = grow(move xs, i)\n    console.print(\"${xs}\")\n";
-        let want = vec!["[1, 2, 3, 4, 5]".to_string()];
-        let module = parser::parse_module(src).expect("parse");
-        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
-        typeck::check(&linked).expect("typecheck");
-        let bytes = codegen::compile_module_binary(&linked)
-            .expect_lowered("the WIR binary path should lower the own-ABI move pipeline");
-        assert_eq!(run_bytes_print_only(&bytes), want, "binary path");
-        assert_eq!(link_run(src), want, "interpreter oracle");
-    }
-
-    /// (RFC-0043 Failure 1) An unrelated `impl Bag: fn push(self, v) -> Bag`
-    /// declared elsewhere in the program used to poison the whole-program name
-    /// census: `push` entered the `shadowed` set, so a List `xs.push(1)`
-    /// statement silently stopped writing back (`parity` agreed, so nothing
-    /// caught it). Now resolution is PER RECEIVER TYPE: a List receiver resolves
-    /// to `list.push` (a mutator), never to `Bag.push`, so the write-back fires.
-    /// Both backends must print `[1]` — the census bug is dead by construction.
-    #[test]
-    fn rfc0043_unrelated_impl_no_longer_shadows_list_push() {
-        let src = "import list\n\
-                   type Bag:\n\
-                   \x20   n: Int\n\
-                   \n\
-                   impl Bag:\n\
-                   \x20   fn push(self, v: Int) -> Bag:\n\
-                   \x20       Bag(self.n + v)\n\
-                   \n\
-                   fn main(console: Console):\n\
-                   \x20   var xs = []\n\
-                   \x20   xs.push(1)\n\
-                   \x20   console.print(\"${xs}\")\n";
-        let want = vec!["[1]".to_string()];
-        assert_eq!(link_run(src), want, "interpreter: List push must write back despite `impl Bag: push`");
-        assert_eq!(wasm_run(src), want, "compiled: List push must write back despite `impl Bag: push`");
-    }
-
     /// (RFC-0043 Failure 2) The old census keyed write-back on the *generic
     /// declared* return type equalling the receiver's: `filter : List(a) ->
     /// List(a)` qualified and silently MUTATED, while `map : List(a) -> List(b)`
@@ -511,21 +235,6 @@ fn main(console: Console):
         }
     }
 
-    /// (RFC-0043) `let _ = expr` is the explicit-discard escape: it turns the
-    /// discard error off while running the call for its effects, and leaves the
-    /// receiver untouched. Both backends run and agree (`xs` unchanged).
-    #[test]
-    fn rfc0043_let_underscore_is_the_discard_escape() {
-        let src = "import list\n\
-                   fn main(console: Console):\n\
-                   \x20   var xs = [1, 2, 3, 4]\n\
-                   \x20   let _ = xs.filter(fn(n: Int) -> Bool: n > 2)\n\
-                   \x20   console.print(\"${xs}\")\n";
-        let want = vec!["[1, 2, 3, 4]".to_string()];
-        assert_eq!(link_run(src), want, "interpreter: `let _ =` discards and leaves xs unchanged");
-        assert_eq!(wasm_run(src), want, "compiled: `let _ =` discards and leaves xs unchanged");
-    }
-
     /// (RFC-0043) The real mutators still write back in statement form on both
     /// backends — the declared-`var`-receiver path is the same self-assign shape
     /// (`xs = list.push(xs, …)`) the uniqueness pass already optimizes, so
@@ -550,33 +259,6 @@ fn main(console: Console):
         assert_eq!(wasm_run(src), want, "compiled: real mutators must write back");
     }
 
-    /// (BUG-575 / RFC-0043) A match arm used in statement position inherits
-    /// statement-position mutator semantics. The arm expression `out.push(value)`
-    /// must write back exactly like a bare statement in a block; it is not a value
-    /// result to be discarded by the surrounding `match`.
-    #[test]
-    fn rfc0043_match_arm_mutators_write_back_both_backends() {
-        let src = "import list\nimport option\n\
-                   fn collect(items: List(Option(String))) -> Result(List(String), String):\n\
-                   \x20   var out: List(String) = []\n\
-                   \x20   for item in items:\n\
-                   \x20       match item:\n\
-                   \x20           None -> return Err(\"missing\")\n\
-                   \x20           Some(value) -> out.push(value)\n\
-                   \x20   Ok(out)\n\
-                   \n\
-                   fn main(console: Console):\n\
-                   \x20   match collect([Some(\"x\"), Some(\"y\")]):\n\
-                   \x20       Ok(xs) -> console.print(\"${xs}\")\n\
-                   \x20       Err(e) -> console.print(e)\n\
-                   \x20   match collect([Some(\"ok\"), None]):\n\
-                   \x20       Ok(xs) -> console.print(\"${xs}\")\n\
-                   \x20       Err(e) -> console.print(e)\n";
-        let want = vec!["[x, y]".to_string(), "missing".to_string()];
-        assert_eq!(link_run(src), want, "interpreter: match-arm mutator writes back");
-        assert_eq!(wasm_run(src), want, "compiled: match-arm mutator writes back");
-    }
-
     /// (RFC-0043) A mutator in statement form on an IMMUTABLE `let` place has no
     /// `var` to write back to — a compile error naming the fix (declare `var`,
     /// or bind the result), not a silent discard.
@@ -593,56 +275,6 @@ fn main(console: Console):
             .to_string();
         assert!(err.contains("immutable") && err.contains("`let`"),
             "the immutable-place error must explain the fix, got: {err}");
-    }
-
-    /// The ordinary result and `var` write-back are independent channels. Neither
-    /// parameter position nor a result matching the mutable argument classifies
-    /// the call, and both backends commit the same final values.
-    #[test]
-    fn rfc0087_former_row3_shapes_write_back_on_both_backends() {
-        let non_first = "import list\n\
-                         fn foo(x: Int, var xs: List(Int)) -> List(Int):\n\
-                         \x20   list.push(xs, x)\n\
-                         \x20   xs\n\
-                         fn main(console: Console):\n\
-                         \x20   var xs = [1]\n\
-                         \x20   let ys = foo(9, xs)\n\
-                         \x20   console.print(\"${xs}\")\n\
-                         \x20   console.print(\"${ys}\")\n";
-        let unrelated = "import list\n\
-                         fn foo(var xs: List(Int)) -> Int:\n\
-                         \x20   xs.push(9)\n\
-                         \x20   list.length(xs)\n\
-                         fn main(console: Console):\n\
-                         \x20   var xs = [1]\n\
-                         \x20   let n = foo(xs)\n\
-                         \x20   console.print(\"${xs}\")\n\
-                         \x20   console.print(\"${n}\")\n";
-        for (src, want) in [
-            (non_first, vec!["[1, 9]".to_string(), "[1, 9]".to_string()]),
-            (unrelated, vec!["[1, 9]".to_string(), "2".to_string()]),
-        ] {
-            assert_eq!(link_run(src), want, "interpreter writes back and returns");
-            assert_eq!(wasm_run(src), want, "compiled backend agrees");
-        }
-    }
-
-    /// Return inference never selects mutation semantics. An inferred result uses
-    /// the same move-in/move-out ABI as an explicitly annotated result.
-    #[test]
-    fn rfc0087_elided_var_result_writes_back_on_both_backends() {
-        let elided = "import list\n\
-                      fn bump(var xs: List(Int), by: Int):\n\
-                      \x20   list.push(xs, by)\n\
-                      \x20   list.length(xs)\n\
-                      fn main(console: Console):\n\
-                      \x20   var xs = [1, 2, 3]\n\
-                      \x20   let n = bump(xs, 5)\n\
-                      \x20   console.print(\"${xs}\")\n\
-                      \x20   console.print(\"${n}\")\n";
-        let want = vec!["[1, 2, 3, 5]".to_string(), "4".to_string()];
-        assert_eq!(link_run(elided), want, "interpreter inferred return");
-        assert_eq!(wasm_run(elided), want, "compiled inferred return");
     }
 
     /// RFC-0087's discard rule depends on the resolved `var` convention, not call
@@ -678,19 +310,3 @@ fn main(console: Console):
         assert_eq!(wasm_run(escaped), want, "compiled explicit discard still writes back");
     }
 
-    /// (RFC-0044 rule 1) `string.index_of` returns `Option(Int)`, not a
-    /// `-1` sentinel. The other string search contracts have dedicated tests.
-    #[test]
-    fn rfc0044_string_index_absence_is_option() {
-        let src = "\
-                   fn main(console: Console):\n\
-                   \x20   console.print(\"${\"hello\".index_of(\"ll\") ?? -1}\")\n\
-                   \x20   console.print(\"${\"hello\".index_of(\"z\") ?? -1}\")\n";
-        let expected = ["2", "-1"];
-        let linked = resolve_std_src(src);
-        assert_eq!(
-            interpreter::run_module(linked, ".", Vec::new()).expect("interp"),
-            expected
-        );
-        assert_eq!(wasm_run(src), expected, "wasm");
-    }

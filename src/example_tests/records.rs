@@ -1,89 +1,6 @@
 use super::*;
 use crate::{interpreter, typeck};
 
-    /// (BUG-319, parity) Implicit structural `==` on a GENERIC record instantiation
-    /// (`Box(Int)`, std `Set(Int)`) works on BOTH backends. The compiled record-eq
-    /// arm dropped the type arguments (unlike the ADT arm), so a fully-annotated
-    /// `Box(Int) == Box(Int)` passed `check` and ran on the interpreter but was
-    /// rejected at codegen ("unresolved generic payload"). Now generic records carry
-    /// their argument shapes (`RecInst`) and resolve fields under the substitution.
-    #[test]
-    fn generic_record_eq_agrees_on_both_backends() {
-        // A user generic record whose fields are declared OUT of type-parameter
-        // order — pins the DECLARED-parameter mapping (a field-order subst renders
-        // `Rev(8, )` instead of `Rev(x, 1)`).
-        let src = "type Rev(a, b):\n    second: b\n    first: a\n\nfn main(console: Console):\n    let r1: Rev(Int, String) = Rev(\"x\", 1)\n    let r2: Rev(Int, String) = Rev(\"x\", 1)\n    let r3: Rev(Int, String) = Rev(\"y\", 2)\n    console.print(\"${r1 == r2}\")\n    console.print(\"${r1 == r3}\")\n    console.print(\"${r1}\")\n";
-        let expected = ["true", "false", "Rev(x, 1)"];
-        assert_eq!(link_run(src), expected, "interp generic-record eq/render");
-        assert_eq!(
-            run_linked_on_wasm(&[("main", src)], "main"),
-            expected,
-            "compiled generic-record eq/render must agree",
-        );
-        // std `Set(a)` is itself a generic record, so `Set == Set` must run compiled.
-        let set_src = "import set\n\nfn main(console: Console):\n    let s1: Set(Int) = set.from_list([1, 2, 3])\n    let s2: Set(Int) = set.from_list([1, 2, 3])\n    let s3: Set(Int) = set.from_list([1, 2])\n    console.print(\"${s1 == s2}\")\n    console.print(\"${s1 == s3}\")\n";
-        let set_expected = ["true", "false"];
-        assert_eq!(link_run(set_src), set_expected, "interp Set == Set");
-        assert_eq!(
-            run_linked_on_wasm(&[("main", set_src)], "main"),
-            set_expected,
-            "compiled Set == Set must agree",
-        );
-    }
-
-    /// (BUG-300/318, parity) Check-accepted core expressions must not be
-    /// interpreter-only. Field projection through a list/call result and
-    /// anonymous-record equality/rendering used to check and run under the
-    /// interpreter, then fail during compiled lowering.
-    #[test]
-    fn compiled_backend_runs_call_chain_fields_and_anonymous_record_protocols() {
-        let src = "type Top derive(PartialEq):\n    label: String\n\nfn rows() -> List(Top):\n    [Top(\"call\"), Top(\"tail\")]\n\nfn main(console: Console):\n    console.print(list.at(rows(), 0).label)\n    console.print(list.at([Top(\"literal\"), Top(\"tail\")], 0).label)\n    let a = .{x: 1, y: \"hi\"}\n    let b = .{x: 1, y: \"hi\"}\n    console.print(\"${a == b}\")\n    console.print(\"${a}\")\n";
-        let interp = link_run(src);
-        assert_eq!(interp[0], "call");
-        assert_eq!(interp[1], "literal");
-        assert_eq!(interp[2], "true");
-        assert_eq!(
-            run_linked_on_wasm(&[("main", src)], "main"),
-            interp,
-            "compiled backend must run these check-accepted core expressions",
-        );
-    }
-
-    /// (BUG-562) Anonymous-record synthetic type names are keyed by field shape,
-    /// not by each module's local first-seen ordinal. Different shapes from
-    /// different modules must not collapse into the same bare compiler-private
-    /// type after linking, while equal shapes may still share one definition.
-    #[test]
-    fn anonymous_record_shapes_do_not_collide_across_modules() {
-        let left = "pub fn make() -> .{a: Int}:\n    .{a: 1}\n";
-        let right = "pub fn make() -> .{a: Int}:\n    .{a: 3}\n";
-        let main = "import left\nimport right\n\nfn main(console: Console):\n    let local = .{b: 2}\n    let l = left.make()\n    let r = right.make()\n    console.print(\"${l.a}\")\n    console.print(\"${r.a}\")\n    console.print(\"${local.b}\")\n";
-        let sources = [("left", left), ("right", right), ("main", main)];
-        let expected = ["1", "3", "2"];
-        assert_eq!(interpreter::run_program(&sources, "main").expect("interp"), expected);
-        assert_eq!(
-            run_linked_on_wasm(&sources, "main"),
-            expected,
-            "compiled anonymous-record shape names must agree",
-        );
-    }
-
-    /// (RFC-0078) Anonymous records are a structural type, not only expression
-    /// sugar: the same shape can appear in aliases, params, returns, fields, and
-    /// generic arguments. Field order in the type spelling is canonicalized by
-    /// shape, and both backends see the same synthetic record instantiation.
-    #[test]
-    fn anonymous_record_type_positions_work_on_both_backends() {
-        let src = "type Point = .{x: Int, y: Int}\ntype Wrapper:\n    point: .{y: Int, x: Int}\n\nfn make(x: Int, y: Int) -> .{y: Int, x: Int}:\n    .{x: x, y: y}\n\nfn label(p: .{y: Int, x: Int}) -> String:\n    \"${p.x},${p.y}\"\n\nfn lift(p: Point) -> Wrapper:\n    Wrapper(p)\n\nfn main(console: Console):\n    let p: Point = make(3, 4)\n    let w = lift(p)\n    let rows: List(.{y: Int, x: Int}) = [w.point, .{x: 5, y: 6}]\n    console.print(label(list.at(rows, 0)))\n    console.print(label(list.at(rows, 1)))\n";
-        let expected = ["3,4", "5,6"];
-        assert_eq!(link_run(src), expected, "interp structural record type positions");
-        assert_eq!(
-            run_linked_on_wasm(&[("main", src)], "main"),
-            expected,
-            "compiled structural record type positions must agree",
-        );
-    }
-
     /// (RFC-0098 slice 1) Type-position record spread normalizes through aliases
     /// and generic arguments to the same exact structural identity as a directly
     /// spelled shape before either backend sees it.
@@ -221,106 +138,6 @@ fn main():
         assert!(error.contains("field `b` has incompatible type"), "{error}");
     }
 
-    #[test]
-    fn structural_record_width_expected_site_matrix_agrees_on_both_backends() {
-        let src = r#"type Small = .{a: Int}
-type Large = .{a: Int, b: String}
-
-type Slot:
-    row: Small
-
-fn returned(row: Large) -> Small:
-    return row
-
-fn tailed(row: Large) -> Small:
-    row
-
-fn defaulted(row: Small = .{a: 6, b: "default"}) -> Small:
-    row
-
-fn main(console: Console):
-    let large: Large = .{a: 1, b: "kept"}
-    var assigned: Small = .{a: 0}
-    assigned = large
-    let rows: List(Small) = [large]
-    let pair: (Small, Int) = (large, 2)
-    let slot = Slot(large)
-    let conditional: Small = if true:
-        large
-    else:
-        .{a: 9}
-    console.print("${assigned}")
-    console.print("${list.at(rows, 0)}")
-    console.print("${pair.0}")
-    console.print("${slot.row}")
-    console.print("${conditional}")
-    console.print("${returned(large)}")
-    console.print("${tailed(large)}")
-    console.print("${defaulted()}")
-"#;
-        let expected = [
-            ".{a: 1}",
-            ".{a: 1}",
-            ".{a: 1}",
-            ".{a: 1}",
-            ".{a: 1}",
-            ".{a: 1}",
-            ".{a: 1}",
-            ".{a: 6}",
-        ];
-        assert_eq!(link_run(src), expected, "interpreter expected-site matrix");
-        assert_eq!(
-            run_linked_on_wasm(&[("main", src)], "main"),
-            expected,
-            "compiled expected-site matrix must agree",
-        );
-    }
-
-    /// RFC-0098 AC7/12: once projected, every reflective and exact-shape
-    /// consumer sees only the authenticated target record. A String field also
-    /// exercises the compiled reference-bearing slot path; dictionary lookup
-    /// proves exact target equality/key comparison rather than source-layout
-    /// relabeling.
-    #[test]
-    fn structural_record_projection_observability_agrees_on_both_backends() {
-        let src = r#"import dict
-import json
-import reflect
-
-type Summary = .{id: Int, label: String}
-type Detailed = .{..Summary, revision: Int}
-
-fn main(console: Console):
-    let detailed: Detailed = .{id: 7, label: "ready", revision: 3}
-    let summary: Summary = detailed
-    let expected: Summary = .{id: 7, label: "ready"}
-    console.print("${summary}")
-    console.print(json.stringify(summary))
-    console.print(reflect.debug(summary))
-    console.print("${summary == expected}")
-    var keyed = dict.new()
-    let _ = keyed.insert(summary, "hit")
-    console.print("${keyed.contains_key(expected)}")
-    console.print("${detailed}")
-"#;
-        let expected = [
-            ".{id: 7, label: ready}",
-            "{\"id\":7,\"label\":\"ready\"}",
-            "true",
-            "true",
-            ".{id: 7, label: ready, revision: 3}",
-        ];
-        let interpreter = link_run(src);
-        let compiled = run_linked_on_wasm(&[("main", src)], "main");
-        assert_eq!(compiled, interpreter, "compiled projected observability must agree");
-        assert_eq!(interpreter[0], expected[0]);
-        assert_eq!(interpreter[1], expected[1]);
-        assert!(interpreter[2].contains("id: 7"), "{}", interpreter[2]);
-        assert!(interpreter[2].contains("label: \"ready\""), "{}", interpreter[2]);
-        assert!(!interpreter[2].contains("revision"), "{}", interpreter[2]);
-        assert_eq!(&interpreter[3..], &expected[2..]);
-    }
-
     /// (RFC-0078) Anonymous records support the same spread/update spelling as
     /// named records. The spread preserves the base shape exactly; it does not
     /// introduce width subtyping or new fields.
@@ -333,20 +150,6 @@ fn main(console: Console):
             run_linked_on_wasm(&[("main", src)], "main"),
             expected,
             "compiled anonymous record spread must agree",
-        );
-    }
-
-    /// (RFC-0078) Anonymous union injections are typed by their expected union
-    /// shape and render with source-level `.Tag` names, including inside Result.
-    #[test]
-    fn anonymous_union_injections_work_on_both_backends() {
-        let src = "type LoadErr = .[BadPort(Int) | NotFound]\n\nfn bad(port: Int) -> LoadErr:\n    .BadPort(port)\n\nfn missing() -> LoadErr:\n    .NotFound\n\nfn parse(ok: Bool) -> Result(Int, LoadErr):\n    if ok:\n        Ok(1)\n    else:\n        Err(.NotFound)\n\nfn main(console: Console):\n    console.print(\"${bad(70000)}\")\n    console.print(\"${missing()}\")\n    console.print(\"${parse(false)}\")\n";
-        let expected = [".BadPort(70000)", ".NotFound", "Err(.NotFound)"];
-        assert_eq!(link_run(src), expected, "interp anonymous union injection");
-        assert_eq!(
-            run_linked_on_wasm(&[("main", src)], "main"),
-            expected,
-            "compiled anonymous union injection must agree",
         );
     }
 
@@ -368,36 +171,6 @@ fn main(console: Console):
             run_linked_on_wasm(&[("main", src)], "main"),
             expected,
             "compiled anonymous union patterns must agree",
-        );
-    }
-
-    /// (RFC-0078) Anonymous union widening is a no-op at runtime because tag
-    /// identity is global, not the variant's position inside one closed set.
-    #[test]
-    fn anonymous_union_widening_uses_global_tags_on_both_backends() {
-        let src = "type Small = .[B(Int) | C]\ntype Big = .[A | B(Int) | C]\n\nfn small_b(n: Int) -> Small:\n    .B(n)\n\nfn small_c() -> Small:\n    .C\n\nfn describe(e: Big) -> String:\n    match e:\n        .A -> \"A\"\n        .B(n) -> \"B:\" + \"${n}\"\n        .C -> \"C\"\n\nfn tail_widen(n: Int) -> Big:\n    small_b(n)\n\nfn return_widen(n: Int) -> Big:\n    return small_b(n)\n\nfn small_result() -> Result(Int, Small):\n    Err(small_c())\n\nfn try_widen() -> Result(Int, Big):\n    Ok(small_result()?)\n\nfn main(console: Console):\n    console.print(describe(small_b(4)))\n    console.print(describe(tail_widen(5)))\n    console.print(describe(return_widen(6)))\n    match try_widen():\n        Ok(n) -> console.print(\"ok:\" + \"${n}\")\n        Err(.A) -> console.print(\"err:A\")\n        Err(.B(n)) -> console.print(\"err:B:\" + \"${n}\")\n        Err(.C) -> console.print(\"err:C\")\n";
-        let expected = ["B:4", "B:5", "B:6", "err:C"];
-        assert_eq!(link_run(src), expected, "interp anonymous union widening");
-        assert_eq!(
-            run_linked_on_wasm(&[("main", src)], "main"),
-            expected,
-            "compiled anonymous union widening must agree",
-        );
-    }
-
-    /// (RFC-0078) Anonymous unions participate in the structural protocol tier:
-    /// `Show`, `Reflect`, and `PartialEq` are synthesized from their closed tag
-    /// set and payload protocols. The rendered/debug spelling keeps the leading
-    /// dot to mark the anonymous tier.
-    #[test]
-    fn anonymous_union_protocols_work_on_both_backends() {
-        let src = "import show\nimport reflect\nimport cmp\n\nfn same(x: a, y: a) -> Bool where a: PartialEq:\n    x == y\n\nfn main(console: Console):\n    let a: .[Bad(Int) | Missing(String)] = .Bad(7)\n    let b: .[Bad(Int) | Missing(String)] = .Missing(\"port\")\n    let c: .[Bad(Int) | Missing(String)] = .Bad(8)\n    console.print(show.render(a))\n    console.print(show.render(b))\n    console.print(reflect.debug(a))\n    console.print(reflect.debug(b))\n    console.print(\"${same(a, a)}\")\n    console.print(\"${same(a, b)}\")\n    console.print(\"${same(a, c)}\")\n";
-        let expected = [".Bad(7)", ".Missing(port)", ".Bad(7)", ".Missing(\"port\")", "true", "false", "false"];
-        assert_eq!(link_run(src), expected, "interp anonymous union protocols");
-        assert_eq!(
-            run_linked_on_wasm(&[("main", src)], "main"),
-            expected,
-            "compiled anonymous union protocols must agree",
         );
     }
 

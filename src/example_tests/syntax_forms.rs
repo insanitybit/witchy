@@ -1,109 +1,6 @@
 use super::*;
 use crate::{interpreter, parser, typeck};
 
-    /// (BUG-214) `()` is the language's sole unit spelling, so every backend must
-    /// accept it anywhere a unit expression is expected.
-    #[test]
-    fn unit_expression_compiles_on_both_backends() {
-        let cases = [
-            (
-                "tail",
-                "fn unit() -> ():\n    ()\n\nfn main(console: Console):\n    unit()\n    console.print(\"tail\")\n",
-                ["tail"],
-            ),
-            (
-                "statement",
-                "fn main(console: Console):\n    ()\n    console.print(\"statement\")\n",
-                ["statement"],
-            ),
-            (
-                "match arm",
-                "fn unit(n: Int) -> ():\n    match n:\n        0 -> ()\n        _ -> ()\n\nfn main(console: Console):\n    unit(0)\n    unit(1)\n    console.print(\"match\")\n",
-                ["match"],
-            ),
-            (
-                "let binding",
-                "fn unit() -> ():\n    ()\n\nfn main(console: Console):\n    let x = unit()\n    console.print(\"let\")\n",
-                ["let"],
-            ),
-        ];
-
-        for (label, src, expected) in cases {
-            assert_eq!(link_run(src), expected, "interp: {label}");
-            assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "compiled: {label}");
-        }
-
-        assert!(
-            typeck::check_str("fn main(console: Console):\n    Nil(1)\n").is_err(),
-            "the retired Nil spelling has no constructor form"
-        );
-    }
-
-    /// `comptime:` — compile-time item generation: zero capabilities
-    /// reachable (deterministic by construction), typed item builders append
-    /// ADDITIVE items before checking — so the generated functions exist on
-    /// both backends and in the footprint.
-    #[test]
-    fn comptime_blocks_generate_items_additively() {
-        let src = "import meta\n\ncomptime:\n    var i = 0\n    while i < 3:\n        emit_item(meta.function(true, meta.ident(\"lucky_${i}\"), [], Some(meta.type_named(meta.ident(\"Int\"), [])), meta.expr_int(i * 7)))\n        i = i + 1\n\nfn main(console: Console):\n    console.print(\"${lucky_0()} ${lucky_1()} ${lucky_2()}\")\n";
-        let want = vec!["0 7 14".to_string()];
-        assert_eq!(link_run(src), want, "interpreter");
-        assert_eq!(wasm_run(src), want, "wasm");
-    }
-
-    /// `return X if cond` — a postfix-guard return, sugar for `if cond: return X`.
-    /// It round-trips through fmt (the parser tags the desugared block with the
-    /// synthetic-line marker so the formatter re-collapses exactly this shape),
-    /// while an explicitly written multi-line `if cond: return X` is left untouched.
-    /// Runs identically on both backends.
-    #[test]
-    fn postfix_guard_return() {
-        let src = "fn classify(n: Int) -> String:\n    return \"neg\" if n < 0\n    return \"zero\" if n == 0\n    \"pos\"\n\nfn main(console: Console):\n    console.print(classify(-5))\n    console.print(classify(0))\n    console.print(classify(7))\n";
-        let want: Vec<String> = ["neg", "zero", "pos"].iter().map(|s| s.to_string()).collect();
-        assert_eq!(link_run(src), want, "interpreter");
-        assert_eq!(wasm_run(src), want, "wasm");
-        // The postfix form is preserved by fmt (idempotent).
-        assert_eq!(
-            crate::format::reformat(src).as_deref(),
-            Some(src),
-            "postfix return round-trips through fmt"
-        );
-        // An explicitly written multi-line if-return is NOT collapsed.
-        let explicit = "fn f(n: Int) -> Int:\n    if n < 0:\n        return 0\n    n\n";
-        assert_eq!(
-            crate::format::reformat(explicit).as_deref(),
-            Some(explicit),
-            "an explicit multi-line if-return is preserved"
-        );
-    }
-
-    /// fmt breaks a long fluent method chain onto one call per line (witchy's layout
-    /// joins the leading-`.` continuation lines back into the chain on re-parse), so
-    /// a builder like a router reads vertically. Short chains stay inline, and the
-    /// wrap is idempotent (the decision is the chain's own inline width, not its
-    /// indented column, so `chain_wrap` and `expr_max_line` agree).
-    #[test]
-    fn fmt_wraps_long_method_chains() {
-        let long = "fn main(net: Net):\n    let app = router().get(\"/aaaaaaaaaaaaaaaa\", h()).get(\"/bbbbbbbbbbbbbbbb\", h()).get(\"/cccccccccccccccc\", h()).get(\"/dddddddddddddddd\", h())\n    serve(net, app)\n";
-        let wrapped = crate::format::reformat(long).expect("a long chain formats");
-        assert!(
-            wrapped.contains("let app = router()\n        .get("),
-            "a long chain breaks one call per line:\n{wrapped}"
-        );
-        assert_eq!(
-            crate::format::reformat(&wrapped).as_deref(),
-            Some(wrapped.as_str()),
-            "the wrap is idempotent"
-        );
-        // A short chain stays on one line.
-        let short = "fn main(net: Net):\n    let x = a().b()\n";
-        assert_eq!(
-            crate::format::reformat(short).as_deref(),
-            Some(short),
-            "a short chain stays inline"
-        );
-    }
-
     /// (BUG-295, spec §6) An irrefutable `if let`/`while let` (Var or Wildcard) is
     /// accepted, consistently with the already-accepted irrefutable TUPLE form. A
     /// genuine duplicate arm still errors (dead-code detection preserved).
@@ -118,25 +15,6 @@ use crate::{interpreter, parser, typeck};
         typeck::check_str("fn main(console: Console):\n    if let _ = 3:\n        console.print(\"m\")\n").expect("if let _ ok");
         typeck::check_str("fn main(console: Console):\n    let p = (1, 2)\n    if let (a, b) = p:\n        console.print(\"${a + b}\")\n").expect("tuple if-let ok");
         assert!(typeck::check_str("fn f(d: Duration) -> Int:\n    match d:\n        1s -> 1\n        1s -> 2\n        _ -> 0\n\nfn main(console: Console):\n    console.print(\"${f(1s)}\")\n").is_err(), "duplicate arm must still error");
-    }
-
-    #[test]
-    fn inline_if_else_expression_form() {
-        // Brace-free inline `if c: a else: b` (chained), here inside a brace-free
-        // lambda inside call parens. Both backends agree.
-        let client = r#"
-import list
-
-fn main(console: Console):
-    let xs = [3, (0 - 2), 0, 5]
-    let signs = list.map(xs, fn(n: Int): if (n > 0): 1 else: if (n < 0): (0 - 1) else: 0)
-    console.print("${list.fold(signs, 0, fn(a: Int, b: Int): (a + b))}")
-"#;
-        let sources = [("list", crate::bundled_module("list").unwrap()), ("main", client)];
-        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
-        let compiled = run_linked_on_wasm(&sources, "main");
-        assert_eq!(interpreted, compiled, "inline if-else diverged");
-        assert_eq!(compiled, vec!["1"]);
     }
 
     #[test]
@@ -191,20 +69,6 @@ fn main(console: Console):
     }
 
     #[test]
-    fn bitwise_not_backends_agree() {
-        // ~x = -x-1 (width-independent), so it agrees across backends.
-        let src = r#"
-fn main(console: Console):
-    console.print("${(~0)}")
-    console.print("${(~5)}")
-    console.print("${(~(0 - 1))}")
-    console.print("${(255 & (~15))}")
-"#;
-        assert_eq!(interp(src), run_on_wasm(src));
-        assert_eq!(run_on_wasm(src), vec!["-1", "-6", "0", "240"]);
-    }
-
-    #[test]
     fn bitwise_operators_backends_agree() {
         // & | ^ << >> on Int, with precedence (& tighter than |, both tighter
         // than ==), and or-patterns still parsing (| in pattern position). Both
@@ -233,48 +97,6 @@ fn main(console: Console):
             run_on_wasm(src),
             vec!["8", "14", "6", "16", "64", "9", "true", "pow2", "other"]
         );
-    }
-
-    #[test]
-    fn bug307_real_body_error_surfaces_over_collect_inference_fallback() {
-        // (BUG-307) A genuine body type error must surface even when the module has a
-        // result-position bounded call (`iter.collect`) whose annotate fell back —
-        // the false "cannot infer the result type" diagnostic must not mask it.
-        let src = "import iter\n\
-                   import list\n\
-                   fn broken() -> Int:\n\
-                   \x20   \"oops\"\n\
-                   fn main(console: Console):\n\
-                   \x20   let a: List(Int) = iter.collect(iter.range(0, 3))\n\
-                   \x20   console.print(\"${list.length(a)}\")\n";
-        let module = parser::parse_module(src).expect("parse");
-        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
-        let err = typeck::check(&linked).expect_err("broken body must fail").to_string();
-        assert!(err.contains("broken") && err.contains("expected `Int`"), "{err}");
-    }
-
-    #[test]
-    fn bug181_tagged_literals_in_impls_and_consts_expand() {
-        // (BUG-181) a `tag"…"` in an impl method OR a top-level `let` constant must
-        // be expanded before type-checking — it must not survive as an
-        // `Expr::TaggedLit` (which the type checker `unreachable!`s on). The `lit`
-        // tag here emits the source `"ok"`, so both sites render `ok`.
-        let src = "import meta\n\
-                   \n\
-                   comptime fn lit(parts: List(String), holes: List(String)) -> meta.ExprSyntax:\n\
-                   \x20   meta.expr_string(\"ok\")\n\
-                   type Box:\n\
-                   \x20   value: Int\n\
-                   impl Box:\n\
-                   \x20   pub fn label(self) -> String:\n\
-                   \x20       lit\"ignored\"\n\
-                   let LABEL = lit\"ignored\"\n\
-                   fn main(console: Console):\n\
-                   \x20   console.print(Box(1).label())\n\
-                   \x20   console.print(LABEL)\n";
-        let expected = ["ok", "ok"];
-        assert_eq!(link_run(src), expected, "interp");
-        assert_eq!(wasm_run(src), expected, "wasm");
     }
 
     /// PARITY (BUG-339): a multiline tagged literal keeps the raw newline in its

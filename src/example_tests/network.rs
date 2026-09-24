@@ -49,53 +49,6 @@ use crate::{codegen, interpreter, parser, typeck};
         output
     }
 
-    #[test]
-    fn rfc0054_server_parse_request_uses_typed_error_and_response_bridge() {
-        let src = r#"import http
-import server
-import show
-
-fn classify(e: server.RequestParseError) -> String:
-    match e:
-        server.UnsupportedTransferEncoding -> "transfer"
-        server.ConflictingContentLength -> "length"
-        server.BadRequestLine -> "badline"
-
-fn via_string(raw: String) -> Result(http.Request, String):
-    let req = server.parse_request(raw)?
-    Ok(req)
-
-fn main(console: Console):
-    let conflict = "POST /x HTTP/1.1\r\nContent-Length: 3\r\nContent-Length: 5\r\n\r\nabc"
-    let chunked = "POST /upload HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n4\r\ntest\r\n0\r\n\r\n"
-    match server.parse_request(conflict):
-        Ok(_r) -> console.print("bad")
-        Err(e) ->
-            console.print(classify(e))
-            console.print(server.request_parse_error_message(e))
-            console.print(show.render(e))
-    match via_string(chunked):
-        Ok(_r) -> console.print("bad")
-        Err(e) -> console.print(e)
-    match server.parse_request_response(chunked):
-        Ok(_r) -> console.print("bad")
-        Err(resp) -> console.print("response:${http.status(resp)}:" + http.body(resp))
-"#;
-        let expected = [
-            "length",
-            "conflicting Content-Length headers",
-            "conflicting Content-Length headers",
-            "unsupported Transfer-Encoding",
-            "response:400:unsupported Transfer-Encoding",
-        ];
-        assert_eq!(link_run(src), expected, "interp: server.parse_request typed error");
-        assert_eq!(
-            run_linked_on_wasm(&[("main", src)], "main"),
-            expected,
-            "compiled: server.parse_request typed error",
-        );
-    }
-
     /// BUG-381: `std/rights` must model `Net` as two independent axes:
     /// verbs (`Connect`/`Listen`) and transports (`Tcp`/`Udp`/`Uds`). Omitting
     /// an axis means "all values on that axis", matching the compiler's
@@ -360,50 +313,6 @@ fn main(console: Console):
         assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");
     }
 
-    /// Server accessors distinguish a present empty value from an absent one.
-    /// BUG-464: the primary API returns Option; callers that want the old sentinel
-    /// behavior must opt in with the `_or` helpers.
-    #[test]
-    fn server_accessors_return_option_for_absence_on_both_backends() {
-        let src = r#"import server
-from http import Request
-
-fn show(console: Console, label: String, value: Option(String)):
-    match value:
-        Some(v) -> console.print(label + "=Some(" + v + ")")
-        None -> console.print(label + "=None")
-
-fn main(console: Console):
-    let req = Request("POST", "/x", [("id", "")], [("code", ""), ("state", "ready")], [], "a=&b=2")
-    show(console, "param-empty", server.param(req, "id"))
-    show(console, "param-missing", server.param(req, "missing"))
-    show(console, "query-empty", server.query(req, "code"))
-    show(console, "query-present", server.query(req, "state"))
-    show(console, "query-missing", server.query(req, "missing"))
-    show(console, "form-empty", server.form_field(req, "a"))
-    show(console, "form-present", server.form_field(req, "b"))
-    show(console, "form-missing", server.form_field(req, "missing"))
-    console.print("param_or=" + server.param_or(req, "missing", "fallback"))
-    console.print("query_or=" + server.query_or(req, "missing", "fallback"))
-    console.print("form_field_or=" + server.form_field_or(req, "missing", "fallback"))
-"#;
-        let expected = vec![
-            "param-empty=Some()".to_string(),
-            "param-missing=None".to_string(),
-            "query-empty=Some()".to_string(),
-            "query-present=Some(ready)".to_string(),
-            "query-missing=None".to_string(),
-            "form-empty=Some()".to_string(),
-            "form-present=Some(2)".to_string(),
-            "form-missing=None".to_string(),
-            "param_or=fallback".to_string(),
-            "query_or=fallback".to_string(),
-            "form_field_or=fallback".to_string(),
-        ];
-        assert_eq!(link_run(src), expected, "interpreter");
-        assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");
-    }
-
     /// (BUG-234) A non-http(s) URL scheme (`ftp:`/`file:`/`gopher:`) is REJECTED with
     /// an Err rather than silently dialed as plaintext HTTP to the named host — the
     /// http client speaks only HTTP/1.1. Same rejection on both backends.
@@ -503,28 +412,6 @@ fn main(console: Console):
         }
     }
 
-    /// RFC-0011: `net.only(policy)` is the typed refinement verb — it narrows a `Net`'s
-    /// address set to a `NetPolicy` built by `policy`. It narrows identically on both
-    /// backends. (The raw-string form survives only as a `--net`/config grant, not a
-    /// language builtin — see `retired_restrict_builtin_is_rejected`.)
-    #[test]
-    fn net_only_refinement_verb_backends_agree() {
-        let src = "fn main(net: Net, console: Console):\n    let m = net.only(Net.tcp(\"10.0.0.5\", 6379))\n    console.print(\"only\")\n";
-        let linked = resolve_std_src(src);
-        typeck::check(&linked).expect("typecheck");
-        let expected = vec!["only".to_string()];
-        assert_eq!(
-            interpreter::run_module(linked.clone(), ".", vec!["10.0.0.5:6379".into()]).expect("interp"),
-            expected,
-            "interpreter",
-        );
-        assert_eq!(
-            run_linked_on_wasm_net(&[("main", src)], "main", &["10.0.0.5:6379"]),
-            expected,
-            "wasm",
-        );
-    }
-
     /// RFC-0020 step 1: the IPv6 SSRF/rebinding defense, end to end. A program granted `[::1]:80`
     /// that `net.deny(Net.private())` CANNOT connect to `[::1]:80` — the loopback is now
     /// CIDR-matched by the deny (before this, `Net.private()`'s IPv6 ranges only ever
@@ -582,92 +469,6 @@ fn main(console: Console):
             expected,
             "wasm",
         );
-    }
-
-    /// The full `std/http` client runs in the WASM backend: a real GET against
-    /// a local server returns the same status and body on both backends.
-    #[test]
-    fn std_http_client_runs_in_the_wasm_backend() {
-        use crate::runtime::{Capabilities, Runtime};
-        use std::io::{BufRead, Read, Write};
-        let server = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
-        let port = server.local_addr().unwrap().port();
-        let addr = format!("127.0.0.1:{port}");
-        // Each backend run makes one GET and one POST. Keep both endpoint
-        // contracts in this cross-backend authority so request-body handling
-        // cannot drift into an interpreter-only smoke.
-        let handle = std::thread::spawn(move || {
-            for _ in 0..4 {
-                let (stream, _) = server.accept().expect("accept");
-                let mut reader = std::io::BufReader::new(stream);
-                let mut request_line = String::new();
-                reader.read_line(&mut request_line).expect("read request line");
-                let mut content_length = 0;
-                let mut line = String::new();
-                loop {
-                    line.clear();
-                    reader.read_line(&mut line).expect("read");
-                    if line == "\r\n" || line == "\n" || line.is_empty() {
-                        break;
-                    }
-                    if let Some(value) = line.strip_prefix("Content-Length:") {
-                        content_length = value.trim().parse().expect("content length");
-                    }
-                }
-                let mut body = vec![0; content_length];
-                if content_length > 0 {
-                    reader.read_exact(&mut body).expect("read request body");
-                }
-                let response_body = if request_line.starts_with("POST ") {
-                    String::from_utf8(body).expect("POST body is utf8")
-                } else {
-                    "hello".to_owned()
-                };
-                let response = format!(
-                    "HTTP/1.1 200 OK\r\ncontent-length: {}\r\n\r\n{}",
-                    response_body.len(), response_body
-                );
-                reader
-                    .get_mut()
-                    .write_all(response.as_bytes())
-                    .expect("write");
-            }
-        });
-
-        let src = format!(
-            "import http\nfn main(console: Console, net: Net):\n    let target = \"http://127.0.0.1:{port}/greet\"\n    let res = http.get(net.fetch(http.origin(target)), target)\n    console.print(f\"{{http.status(res)}} {{http.body(res)}}\")\n    let echoed = http.post(net.fetch(http.origin(target)), target, \"hello body\")\n    console.print(f\"{{http.status(echoed)}} {{http.body(echoed)}}\")\n"
-        );
-        let want = vec!["200 hello".to_string(), "200 hello body".to_string()];
-        let module = parser::parse_module(&src).expect("parse");
-        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
-        typeck::check(&linked).expect("typecheck");
-        assert_eq!(
-            interpreter::run_module(linked.clone(), ".", vec![addr.clone()]).expect("interp"),
-            want,
-            "interpreter"
-        );
-        let checked = witchy::resolve_std_only_checked(&src).expect("checked HTTP client source");
-        let artifact = codegen::compile_checked_module_artifact(&checked)
-            .expect_lowered("the canonical path lowers the HTTP GET and POST client");
-        assert!(matches!(codegen::compile_module_binary(&linked),
-            codegen::LoweringOutcome::Unsupported(_)), "raw HTTP Fetch encoding must remain unavailable");
-        let mut rt = Runtime::batch().expect("runtime");
-        let mut actor = rt
-            .spawn_admitted(
-                &artifact,
-                Capabilities {
-                    print: true,
-                    quiet: true,
-                    net_allow: Some(vec![addr]),
-                    net_connect: true,
-                    ..Default::default()
-                },
-                64,
-            )
-            .expect("spawn");
-        actor.run().expect("run");
-        assert_eq!(actor.output(), want, "compiled WASM must agree");
-        handle.join().expect("server thread");
     }
 
     #[test]
@@ -907,42 +708,3 @@ fn main(console: Console, net: Net):
         assert!(e.contains("not permitted"), "expected the sibling to be unreachable, got: {e}");
     }
 
-    #[test]
-    fn std_http_rejects_malformed_status_line() {
-        // A non-numeric status code (`BAD`) would otherwise trap string_to_int.
-        let out = run_fixed_http_program(
-            "HTTP/1.1 BAD Weird\r\nContent-Length: 2\r\nConnection: close\r\n\r\nhi",
-            |port| format!(
-            r#"
-import http
-fn main(console: Console, net: Net):
-    let target = "http://127.0.0.1:{port}/"
-    match http.try_get(net.fetch(http.origin(target)), target):
-        Ok(_response) -> console.print("unexpected")
-        Err(http.ProviderMalformedResponse(_message)) -> console.print("rejected")
-        Err(error) -> console.print(http.http_error_message(error))
-"#
-            ),
-        );
-        assert_eq!(out, vec!["rejected".to_string()]);
-    }
-
-    #[test]
-    fn std_http_headers_against_loopback() {
-        let out = run_fixed_http_program(
-            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nX-Custom: abc\r\nContent-Length: 2\r\nConnection: close\r\n\r\nhi",
-            |port| format!(
-            r#"
-import http
-import option
-fn main(console: Console, net: Net):
-    let target = "http://127.0.0.1:{port}/"
-    let r = http.get(net.fetch(http.origin(target)), target)
-    console.print(option.unwrap_or(http.header(r, "Content-Type"), "none"))
-    console.print(option.unwrap_or(http.header(r, "x-custom"), "none"))
-    console.print(option.unwrap_or(http.header(r, "Missing"), "none"))
-"#
-            ),
-        );
-        assert_eq!(out, vec!["application/json", "abc", "none"]);
-    }

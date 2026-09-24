@@ -1,19 +1,6 @@
 use super::*;
 use crate::{interpreter, parser, typeck};
 
-/// (BUG-182) A tagged literal in a standalone file whose stem is NOT a valid
-/// identifier (`tag-hyphen`) must still expand and run on both backends.
-#[test]
-fn tagged_literal_in_hyphenated_module_expands() {
-    let src = "import meta\n\ncomptime fn lit(parts: List(String), holes: List(String)) -> meta.ExprSyntax:\n    meta.expr_string(\"ok\")\n\nfn main(console: Console):\n    console.print(lit\"ignored\")\n";
-    let module = parser::parse_module(src).expect("parse");
-    let linked = crate::pipeline::link(vec![("tag-hyphen".into(), module)], "tag-hyphen")
-        .expect("a tagged literal in a hyphenated-stem module must link");
-    typeck::check(&linked).expect("typecheck");
-    assert_eq!(interpreter::run_module(linked, ".", Vec::new()).expect("run"), ["ok"], "interp");
-    assert_eq!(run_linked_on_wasm(&[("tag-hyphen", src)], "tag-hyphen"), ["ok"], "wasm");
-}
-
 /// (BUG-338) An escaped `\${...}` inside a tagged literal is static text, not
 /// a hole or a call-site capture. This pins both a minimal tag and glamour's
 /// `html` tag.

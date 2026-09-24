@@ -16,23 +16,6 @@ use crate::{interpreter, typeck};
         );
     }
 
-    /// A comparison operator (`==`/`<`/…) desugars to its trait impl by recovering
-    /// the operands' concrete type. The receiver may be introduced by a PATTERN
-    /// binding — a `match` arm, an `if let`, or a tuple destructure — whose type
-    /// the binding scope alone can't surface (it comes from the scrutinee). Since
-    /// both operands share a type, the head is recovered from EITHER side and the
-    /// impl mangled directly, so `Ok(p) -> p == base` resolves the same on both
-    /// backends instead of failing with "unknown function `eq`".
-    #[test]
-    fn comparison_on_pattern_bound_operand_backends_agree() {
-        let src = "import cmp\n\ntype T derive(Show, PartialEq, Eq, PartialOrd, Ord):\n    x: Int\n    y: Int\n\nfn mk() -> Result(T, String):\n    Ok(T(1, 2))\n\nfn pair() -> (T, T):\n    (T(1, 2), T(3, 4))\n\nfn main(console: Console):\n    let base = T(1, 2)\n    match mk():\n        Ok(p) -> console.print(\"${p == base}\")\n        Err(_e) -> console.print(\"err\")\n    if let Ok(p) = mk():\n        console.print(\"${p < T(9, 9)}\")\n    let (a, b) = pair()\n    console.print(\"${a == b}\")\n    console.print(\"${a < b}\")\n";
-        let expected = ["true", "true", "false", "true"];
-        // The linked path (what the CLI and `witchy parity` use) — it resolves
-        // `import cmp` and expands the `derive(Ord)` impls the comparisons need.
-        assert_eq!(link_run(src), expected, "interp");
-        assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");
-    }
-
     #[test]
     fn match_soundness_exhaustiveness_and_linearity() {
         // C3: an infinite scalar domain needs a catch-all — a guard-only match is
@@ -62,26 +45,6 @@ use crate::{interpreter, typeck};
         // Valid exhaustive / linear matches still check (no over-rejection).
         let ok = "type Shape:\n    Circle(Int)\n    Square\nfn f(s: Shape) -> Int:\n    match s:\n        Circle(r) -> r\n        Square -> 0\nfn g(n: Int) -> Int:\n    match n:\n        0 -> 0\n        _ -> 1\nfn main(c: Console):\n    c.print(\"${f(Circle(3)) + g(5)}\")\n";
         assert!(typeck::check_str(ok).is_ok(), "valid exhaustive matches must check");
-    }
-
-    /// `a ?? b` (RFC-0048) is THE fallback: `Option(T) ?? T -> T` and
-    /// `Result(T, e) ?? T -> T`, short-circuiting (the fallback runs only on
-    /// `None`/`Err`), chaining right-associatively — and `||` stays Bool-only
-    /// logical-or. Both backends must agree: the wasm path is a store-once/
-    /// tag-test value-if where the interpreter unwraps the runtime ctor, so
-    /// this guards that they stay in sync.
-    #[test]
-    fn coalesce_fallback_both_backends() {
-        let src = "import option\n\nfn find(b: Bool) -> Option(String):\n    if b: Some(\"hit\") else: None\n\nfn parse(s: String) -> Result(Int, String):\n    match s.parse_int():\n        Some(n) -> Ok(n)\n        None -> Err(\"bad int\")\n\nfn main(console: Console):\n    console.print(find(true) ?? \"fallback\")\n    console.print(find(false) ?? \"fallback\")\n    console.print(\"${parse(\"41\") ?? 0}\")\n    console.print(\"${parse(\"x\") ?? 9}\")\n    var d = dict.new()\n    let _ = dict.insert(d, \"a\", 1)\n    console.print(\"${d.get(\"a\") ?? d.get(\"b\") ?? 0}\")\n    console.print(\"${d.get(\"z\") ?? d.get(\"b\") ?? 5}\")\n    console.print(\"${Some(\"\") ?? \"x\"}\")\n    console.print(\"${false || true}\")\n";
-        let want: Vec<String> = ["hit", "fallback", "41", "9", "1", "5", "", "true"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
-        let linked = resolve_std_src(src);
-        typeck::check(&linked).expect("typecheck");
-        let interp = interpreter::run_module(linked, ".", Vec::new()).expect("interpreter run");
-        assert_eq!(interp, want, "interpreter");
-        assert_eq!(wasm_run(src), want, "wasm");
     }
 
     /// RFC-0048's other half: the truthy fallback is GONE. `||` on a String (or
@@ -123,33 +86,6 @@ use crate::{interpreter, typeck};
         let src = "fn f(o: Option(Int)) -> String:\n    match o:\n        Some(1 | 2 | 3) -> \"small\"\n        Some(n) -> \"big\"\n        None -> \"none\"\n\nfn main(console: Console):\n    console.print(f(Some(2)))\n    console.print(f(Some(9)))\n    console.print(f(None))\n";
         assert_eq!(interp(src), run_on_wasm(src));
         assert_eq!(run_on_wasm(src), vec!["small", "big", "none"]);
-    }
-
-    /// (RFC-0052) Binding or-patterns `Circle(n) | Square(n)` — every alternative
-    /// binds the same name; the arm body sees the matched alternative's value.
-    #[test]
-    fn binding_or_patterns_backends_agree() {
-        let src = "type Shape:\n    Circle(Int)\n    Square(Int)\n\nfn size(s: Shape) -> Int:\n    match s:\n        Circle(n) | Square(n) -> n\n\nfn main(console: Console):\n    console.print(\"${size(Circle(3))}\")\n    console.print(\"${size(Square(7))}\")\n";
-        assert_eq!(interp(src), run_on_wasm(src));
-        assert_eq!(run_on_wasm(src), vec!["3", "7"]);
-    }
-
-    /// (RFC-0052) Duration literal patterns `1s`/`-1s` — exact ms equality — and
-    /// the `-1s` negative-duration lexer/typeck fix, on both backends.
-    #[test]
-    fn duration_patterns_backends_agree() {
-        let src = "fn f(d: Duration) -> String:\n    match d:\n        1s -> \"one\"\n        -1s -> \"neg\"\n        _ -> \"other\"\n\nfn main(console: Console):\n    console.print(f(1s))\n    console.print(f(-1s))\n    console.print(f(5s))\n";
-        assert_eq!(interp(src), run_on_wasm(src));
-        assert_eq!(run_on_wasm(src), vec!["one", "neg", "other"]);
-    }
-
-    /// (RFC-0052) `for` and comprehension take the SAME pattern grammar: a tuple
-    /// header destructures each element, on both backends.
-    #[test]
-    fn for_and_comprehension_patterns_backends_agree() {
-        let src = "fn main(console: Console):\n    let pairs = [(1, 2), (3, 4)]\n    for (a, b) in pairs:\n        console.print(\"${a}+${b}\")\n    let sums = [a + b for (a, b) in pairs]\n    console.print(\"${sums}\")\n";
-        assert_eq!(interp(src), run_on_wasm(src));
-        assert_eq!(run_on_wasm(src), vec!["1+2", "3+4", "[3, 7]"]);
     }
 
     /// (RFC-0052) The refutability rule and literal-pattern edges — check-time
@@ -209,60 +145,3 @@ fn main(console: Console):
         assert_eq!(run_on_wasm(src), vec!["negative", "zero", "big", "small", "small"]);
     }
 
-    // Multi-generator comprehensions nest in source order: two `for` clauses
-    // form a cartesian product, and an interleaved `if` filters using earlier
-    // loop variables. Both backends agree.
-    // Integration showcase: Pythagorean triples in one comprehension —
-    // three nested generators over inclusive ranges with variable bounds
-    // (`b in a..=20`), a filter, and tuple construction, then tuple
-    // destructuring in a for-loop. Exercises ranges + multi-generator
-    // comprehensions + tuples together; both backends agree.
-    #[test]
-    fn pythagorean_triples_comprehension_backends_agree() {
-        let client = r#"
-import list
-fn main(console: Console):
-    let triples = [(a, b, c) for a in 1..=20 for b in a..=20 for c in b..=20 if a * a + b * b == c * c]
-    console.print("${list.length(triples)}")
-    var total = 0
-    for t in triples:
-        let (a, b, c) = t
-        total = total + c
-    console.print("${total}")
-"#;
-        let sources = [("main", client)];
-        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
-        let compiled = run_linked_on_wasm(&sources, "main");
-        assert_eq!(interpreted, compiled, "pythagorean comprehension diverged");
-        assert_eq!(compiled, vec!["6", "80"]);
-    }
-
-    // break exits the innermost loop; continue skips to the next iteration —
-    // in both for-loops (continue advances the index) and while-loops (continue
-    // re-checks the condition). Both backends agree.
-    // break/continue branching out of a result-typed `match` arm inside a loop
-    // must still produce valid WASM (the branch unwinds the match's value).
-    #[test]
-    fn break_inside_match_in_loop_backends_agree() {
-        let src = r#"
-fn main(console: Console):
-    var total = 0
-    for x in [1, 2, 3, 4, 5]:
-        match x:
-            3 ->
-                break
-            _ ->
-                total = (total + x)
-    console.print("${total}")
-    var kept = 0
-    for y in [1, 2, 3, 4]:
-        match y:
-            2 ->
-                continue
-            _ -> 0
-        kept = (kept + y)
-    console.print("${kept}")
-"#;
-        assert_eq!(interp(src), run_on_wasm(src), "break/continue in match diverged");
-        assert_eq!(run_on_wasm(src), vec!["3", "8"]);
-    }

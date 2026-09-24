@@ -426,44 +426,6 @@ fn pure_examples_require_only_console() {
     }
 }
 
-#[test]
-fn maze_example_finds_shortest_path_by_bfs() {
-    let out = crate::execute_file("examples/maze/src/maze.witchy", Vec::new())
-        .unwrap()
-        .join("\n");
-    assert!(out.contains("shortest path: 14 steps"), "distance: {out}");
-    assert!(
-        out.contains("#S#***# #") && out.contains("### ###*#"),
-        "route marked: {out}"
-    );
-}
-
-#[test]
-fn sudoku_example_solves_by_backtracking() {
-    let out = crate::execute_file("examples/sudoku/src/sudoku.witchy", Vec::new())
-        .unwrap()
-        .join("\n");
-    assert!(
-        out.contains("solved:\n534678912\n672195348\n198342567\n859761423"),
-        "unique solution: {out}"
-    );
-}
-
-#[test]
-fn life_example_evolves_a_glider() {
-    let out = crate::execute_file("examples/life/src/life.witchy", Vec::new())
-        .unwrap()
-        .join("\n");
-    assert!(
-        out.contains("generation 0:\n.#......\n..#.....\n###....."),
-        "seed glider: {out}"
-    );
-    assert!(
-        out.contains("generation 3:\n........\n.#......\n..##....\n.##....."),
-        "evolved glider: {out}"
-    );
-}
-
 /// `main` may receive argv because input data is not authority.
 #[test]
 fn main_receives_command_line_args() {

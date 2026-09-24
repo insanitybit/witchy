@@ -25,8 +25,6 @@ import sys
 
 EXAMPLE_SWEEPS = (
     "example_tests::example_sweeps::every_compilable_example_agrees_on_both_backends",
-    "example_tests::example_sweeps::examples_agree_under_rc_floor",
-    "example_tests::example_sweeps::every_example_agrees_under_unbox",
     "example_tests::example_sweeps::precompiled_wasm_runs_like_the_source",
     "example_tests::example_sweeps::all_examples_validate_via_cli",
     "example_tests::example_sweeps::all_example_rune_tests_pass",

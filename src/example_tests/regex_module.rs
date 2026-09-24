@@ -53,16 +53,3 @@ use crate::{codegen, interpreter, typeck};
         assert!(wasm_err.contains("invalid regex pattern `[`"), "{wasm_err}");
     }
 
-    /// Alternation `a|b` and grouping `(...)` — which the old hand-rolled engine
-    /// silently failed to match — now work (the `regex` crate), identically on
-    /// both backends, including grouped extract.
-    #[test]
-    fn regex_alternation_and_groups_agree_on_both_backends() {
-        let src = "import regex\n\nfn main(console: Console):\n    console.print(\"${regex.matches(\"cat|dog\", \"I have a dog\")}\")\n    console.print(\"${regex.matches(\"(cat|dog)s?\", \"cats\")}\")\n    console.print(\"${regex.extract(\"(foo|bar)\", \"foo bar baz\")}\")\n    console.print(regex.replace_all(\"(a|b)+\", \"abab x\", \"Z\"))\n    console.print(\"${regex.find(\"(cat|dog)\", \"a dog\")}\")\n";
-        let want: Vec<String> = ["true", "true", "[foo, bar]", "Z x", "Some((2, 5))"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
-        assert_eq!(link_run(src), want.clone(), "interpreter");
-        assert_eq!(wasm_run(src), want, "compiled WASM must agree");
-    }

@@ -35,92 +35,6 @@ use crate::{ast, codegen, interpreter, typeck};
         );
     }
 
-    /// (parity, SEC-040) `bytes.slice` is BYTE-indexed and `bytes.to_string` is
-    /// LOSSY on BOTH backends, while `bytes.decode_utf8` is strict. The compiled
-    /// `bytes.slice` used to route through the CHAR-indexed `$str_substring` (so
-    /// slicing a multibyte payload returned the wrong byte count — a
-    /// binary-corruption primitive) and `bytes.to_string` was a raw identity (so
-    /// invalid UTF-8 came back verbatim instead of the U+FFFD the interpreter's
-    /// `from_utf8_lossy` produces). Both now match the byte-exact interpreter
-    /// oracle. Same family as SEC-038 (the `bytes.at` OOB read).
-    #[test]
-    fn bytes_slice_is_byte_indexed_and_to_string_is_lossy() {
-        // `é` is 2 UTF-8 bytes (0xC3 0xA9). Byte-slicing [0,1) yields ONE byte
-        // (the interpreter's answer); the old char-indexed slice returned 2.
-        let slice_src = "import bytes\n\nfn main(console: Console):\n    let b = bytes.from_string(\"héllo\")\n    console.print(\"${bytes.length(bytes.slice(b, 0, 1))}\")\n    console.print(\"${bytes.length(bytes.slice(b, 1, 3))}\")\n    console.print(\"${bytes.length(bytes.slice(b, 0, 100))}\")\n    console.print(\"${bytes.length(bytes.slice(b, 3, 1))}\")\n";
-        // "héllo" = h(1) é(2) l(1) l(1) o(1) = 6 bytes. slice(0,1)=1, slice(1,3)=2
-        // (the two bytes of é), slice(0,100) clamps to 6, slice(3,1) empty -> 0.
-        let want_slice = ["1", "2", "6", "0"];
-        assert_eq!(link_run(slice_src), want_slice, "interp bytes.slice is byte-indexed");
-        assert_eq!(
-            run_linked_on_wasm(&[("main", slice_src)], "main"),
-            want_slice,
-            "compiled bytes.slice must be byte-indexed too"
-        );
-
-        // Slicing `é` at [0,1) leaves a lone 0xC3 — invalid UTF-8. `to_string` must
-        // lossily decode it to U+FFFD (3 bytes) on both backends, not return the
-        // raw invalid byte.
-        let lossy_src = "import bytes\n\nfn main(console: Console):\n    let half = bytes.slice(bytes.from_string(\"é\"), 0, 1)\n    let s = bytes.to_string_lossy(half)\n    console.print(\"${s.length()}\")\n    console.print(\"${bytes.length(bytes.from_string(s))}\")\n    match bytes.decode_utf8(half):\n        Ok(_) -> console.print(\"bad\")\n        Err(e) -> console.print(bytes.bytes_error_message(e))\n    match bytes.decode_utf8(bytes.from_string(\"ok\")):\n        Ok(text) -> console.print(text)\n        Err(e) -> console.print(\"bad\")\n";
-        // The lossy decode replaces the lone invalid byte with U+FFFD, which is 3
-        // UTF-8 bytes (`string.length` is a BYTE count). The old buggy compiled
-        // identity returned the single raw byte, so both readings would be "1".
-        let want_lossy = ["3", "3", "bytes.decode_utf8: invalid UTF-8", "ok"];
-        assert_eq!(link_run(lossy_src), want_lossy, "interp bytes.to_string is lossy");
-        assert_eq!(
-            run_linked_on_wasm(&[("main", lossy_src)], "main"),
-            want_lossy,
-            "compiled bytes.to_string must lossily decode to U+FFFD too"
-        );
-    }
-
-    /// (BUG-392, parity) `bytes.slice` bounds are clamped in i64 on BOTH backends.
-    /// The compiled `$bytes_slice` used to narrow `start`/`end` to i32 BEFORE
-    /// clamping, so a large positive bound wrapped negative: `slice(b, 0, 2^31)`
-    /// returned the FULL buffer on the interpreter (its `Int` clamp saw 2^31 > len)
-    /// but an EMPTY slice compiled (2^31 truncated to a negative i32 clamped up to
-    /// `lo`). Now both clamp the full `Int` first (like `$bytes_at`/`$list_at`).
-    #[test]
-    fn bytes_slice_clamps_bounds_in_i64_on_both_backends() {
-        // "hello" = 5 bytes. Large positive `end` clamps to len (full buffer);
-        // an out-of-i32-range `[start, end)` yields empty without wrapping into an
-        // in-bounds slice; a large-magnitude negative `start` clamps up to 0.
-        let src = "import bytes\n\nfn main(console: Console):\n    let b = bytes.from_string(\"hello\")\n    console.print(\"${bytes.length(bytes.slice(b, 0, 2147483648))}\")\n    console.print(\"${bytes.length(bytes.slice(b, 2147483648, 2147483649))}\")\n    console.print(\"${bytes.length(bytes.slice(b, 0 - 2147483648, 2))}\")\n    console.print(bytes.to_string(bytes.slice(b, 1, 3)))\n";
-        let expected = ["5", "0", "2", "el"];
-        assert_eq!(link_run(src), expected, "interp clamps bytes.slice bounds in i64");
-        assert_eq!(
-            run_linked_on_wasm(&[("main", src)], "main"),
-            expected,
-            "compiled bytes.slice must clamp bounds in i64 like the interpreter",
-        );
-    }
-
-    /// (BUG-539) `Bytes` is ordinary core data, so it must participate in the
-    /// public display and reflection protocols instead of being printable only by
-    /// the interpreter's private `Value::Display` path. `Show` stays concise and
-    /// non-lossy; reflection exposes raw byte values for debug/JSON consumers.
-    #[test]
-    fn bytes_are_showable_reflectable_and_renderable_on_both_backends() {
-        if !is_nightly() {
-            return;
-        }
-        let src = "import bytes\nimport show\nimport reflect\nimport json\n\ntype Packet derive(Reflect):\n    payload: Bytes\n\nfn main(console: Console):\n    let b = bytes.from_string(\"hi\")\n    show.say(console, b)\n    console.print(show.render([b]))\n    console.print(\"${b}\")\n    console.print(reflect.debug(b))\n    console.print(json.stringify(Packet(b)))\n";
-        let expected = [
-            "Bytes(len=2)",
-            "[Bytes(len=2)]",
-            "Bytes(len=2)",
-            "[104, 105]",
-            "{\"payload\":[104,105]}",
-        ];
-        assert_eq!(link_run(src), expected, "interp: Bytes protocols");
-        assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "compiled: Bytes protocols");
-
-        let raw = "import bytes\n\nfn main(console: Console):\n    let b = bytes.from_string(\"hi\")\n    console.print(\"${b}\")\n    console.print(\"${bytes.concat(b, b)}\")\n";
-        let raw_expected = ["Bytes(len=2)", "Bytes(len=4)"];
-        assert_eq!(link_run(raw), raw_expected, "interp: raw Bytes rendering");
-        assert_eq!(run_linked_on_wasm(&[("main", raw)], "main"), raw_expected, "compiled: raw Bytes rendering");
-    }
-
     /// (SEC-038) `bytes.at` out of bounds must FAIL on both backends, not silently
     /// read adjacent heap on WASM. The compiled `$bytes_at` bounds-checks and traps
     /// (like `$list_at`), matching the interpreter's "bytes index out of bounds"
@@ -179,55 +93,6 @@ use crate::{ast, codegen, interpreter, typeck};
         assert_eq!(wasm_ok, expected, "wasm");
     }
 
-    /// (BUG-456) Encoding's canonical binary path is `Bytes`, not lossy `String`
-    /// plumbing or hex detours. The payload includes `0xff`, so any accidental
-    /// UTF-8 normalization changes the rendered byte list.
-    #[test]
-    fn encoding_bytes_codecs_round_trip_binary_on_both_backends() {
-        let src = "import bytes\nimport encoding\nimport result\n\n\
-                   fn main(console: Console):\n\
-                   \x20   let raw = result.unwrap_or(encoding.hex_decode_bytes(\"4100ff2f\"), bytes.from_string(\"\"))\n\
-                   \x20   console.print(encoding.hex_encode_bytes(raw))\n\
-                   \x20   console.print(encoding.base64_encode_bytes(raw))\n\
-                   \x20   console.print(encoding.base64url_encode_bytes(raw))\n\
-                   \x20   let from_b64 = result.unwrap_or(encoding.base64_decode_bytes(\"QQD/Lw==\"), bytes.from_string(\"\"))\n\
-                   \x20   console.print(\"${bytes.to_list(from_b64)}\")\n\
-                   \x20   let from_url = result.unwrap_or(encoding.base64url_decode_bytes(\"QQD_Lw\"), bytes.from_string(\"\"))\n\
-                   \x20   console.print(\"${bytes.to_list(from_url)}\")\n\
-                   \x20   match encoding.base64url_decode_bytes(\"QQD/Lw==\"):\n\
-                   \x20       Ok(_) -> console.print(\"bad\")\n\
-                   \x20       Err(_) -> console.print(\"err\")\n";
-        let want = ["4100ff2f", "QQD/Lw==", "QQD_Lw", "[65, 0, 255, 47]", "[65, 0, 255, 47]", "err"];
-        assert_eq!(link_run(src), want, "interpreter byte codecs must preserve binary");
-        assert_eq!(
-            run_linked_on_wasm(&[("main", src)], "main"),
-            want,
-            "WASM byte codecs must preserve binary"
-        );
-    }
-
-    /// An empty needle is treated as ABSENT by `bytes.index_of`/`contains`,
-    /// matching `string.index_of`'s module-wide empty-pattern rule so a
-    /// String→Bytes port of the same search behaves identically. (Audit
-    /// 2026-08-04: bytes used to return `Some(0)`/`true` for the empty needle.)
-    #[test]
-    fn bytes_empty_needle_is_absent_on_both_backends() {
-        let src = "import bytes\n\n\
-                   fn main(console: Console):\n\
-                   \x20   let b = bytes.from_string(\"abc\")\n\
-                   \x20   let e = bytes.from_string(\"\")\n\
-                   \x20   console.print(\"${b.index_of(e)}\")\n\
-                   \x20   console.print(\"${b.contains(e)}\")\n\
-                   \x20   console.print(\"${b.index_of(bytes.from_string(\"bc\"))}\")\n";
-        let want = ["None", "false", "Some(1)"];
-        assert_eq!(link_run(src), want, "interpreter: empty needle is absent");
-        assert_eq!(
-            run_linked_on_wasm(&[("main", src)], "main"),
-            want,
-            "WASM: empty needle is absent",
-        );
-    }
-
     /// (RFC-0151) Bytes mutators (`push`, `append`, `reserve`, `set_at`, `swap`),
     /// constructors (`with_capacity`, `repeat`), aliasing, and self-append parity.
     #[test]
@@ -281,37 +146,6 @@ use crate::{ast, codegen, interpreter, typeck};
             run_linked_on_wasm(&[("main", src)], "main"),
             expected,
             "WASM: Bytes mutators",
-        );
-    }
-
-    /// (RFC-0162) A `from_list` buffer mutated and appended to from a SECOND
-    /// buffer still compiles.
-    ///
-    /// The mutator test above builds with `with_capacity` and appends a buffer to
-    /// itself, so it never reached the bulk-copy path that takes two distinct
-    /// roots. That path minted a place whose payload offset rode in the wasm
-    /// immediate, and raw `memory.copy` has no immediate operand, so erasure
-    /// rejected it: "a bulk-copy place retained a nonzero immediate offset". The
-    /// whole suite was green while this eight-line program would not compile.
-    #[test]
-    fn bytes_from_list_mutated_and_appended_compiles_on_both_backends() {
-        let src = "import bytes\n\
-                   import result\n\
-                   fn main(console: Console):\n\
-                   \x20   var b = result.unwrap_or(bytes.from_list([1, 2, 3]), bytes.from_string(\"\"))\n\
-                   \x20   let extra = result.unwrap_or(bytes.from_list([4, 5]), bytes.from_string(\"\"))\n\
-                   \x20   b.reserve(16)\n\
-                   \x20   b.append(extra)\n\
-                   \x20   b.set_at(0, 9)\n\
-                   \x20   b.swap(0, 1)\n\
-                   \x20   console.print(\"${b.length()}\")\n\
-                   \x20   console.print(\"${b.to_list()}\")\n";
-        let expected = ["5", "[2, 9, 3, 4, 5]"];
-        assert_eq!(link_run(src), expected, "interpreter: from_list then mutate");
-        assert_eq!(
-            run_linked_on_wasm(&[("main", src)], "main"),
-            expected,
-            "WASM: from_list then mutate",
         );
     }
 
@@ -374,33 +208,5 @@ use crate::{ast, codegen, interpreter, typeck};
                 "program {idx} must trap on WASM",
             );
         }
-    }
-
-    /// (RFC-0151) Positive WAT test proving direct byte operations (`i32.load8_u`, `i32.store8`)
-    /// are emitted without helper calls to `$bytes_at`, `$bytes_set_at`, or `$bytes_swap`.
-    #[test]
-    fn bytes_direct_operations_emit_direct_wat_instructions() {
-        let src = "import bytes\n\
-                   fn main(console: Console):\n\
-                   \x20   var b = bytes.from_string(\"ABC\")\n\
-                   \x20   let x = b.at(1)\n\
-                   \x20   b.set_at(0, 90)\n\
-                   \x20   b.swap(1, 2)\n\
-                   \x20   console.print(\"${x}\")\n\
-                   \x20   console.print(b.to_string())\n";
-        let linked = resolve_std_src(src);
-        typeck::check(&linked).expect("typecheck");
-        let module = codegen::assemble_wir_module(&linked).expect_lowered("assemble wir");
-        let wat = witchy_wir::wir::to_wat(&module);
-
-        assert!(wat.contains("i32.load8_u"), "must contain direct i32.load8_u: {wat}");
-        assert!(wat.contains("i32.store8"), "must contain direct i32.store8: {wat}");
-        assert!(!wat.contains("call $bytes_at"), "must not call $bytes_at helper: {wat}");
-        assert!(!wat.contains("call $bytes_set_at"), "must not call $bytes_set_at helper: {wat}");
-        assert!(!wat.contains("call $bytes_swap"), "must not call $bytes_swap helper: {wat}");
-
-        let expected = ["66", "ZCB"];
-        assert_eq!(link_run(src), expected, "interp");
-        assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");
     }
 

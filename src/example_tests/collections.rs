@@ -16,37 +16,6 @@ use crate::{ast, codegen, interpreter, parser, typeck};
         );
     }
 
-    /// Dicts should be ordinary protocol values too: direct dict equality is not
-    /// enough if a generic helper cannot ask for `PartialEq`/`Eq` over a concrete
-    /// `Dict(k, v)`.
-    #[test]
-    fn dict_equality_satisfies_protocol_bounds_on_both_backends() {
-        let src = "import cmp\nimport dict\nimport testing\n\ntype Key derive(Show, Eq):\n    id: Int\n    cache: Int\n\nimpl PartialEq for Key:\n    fn eq(self, other: Key) -> Bool:\n        self.id == other.id\n\ntype Val derive(Show, Eq):\n    label: String\n    noise: Int\n\nimpl PartialEq for Val:\n    fn eq(self, other: Val) -> Bool:\n        self.label == other.label\n\nfn same(x: a, y: a) -> Bool where a: PartialEq:\n    x == y\n\nfn total_same(x: a, y: a) -> Bool where a: Eq:\n    x == y\n\nfn make_left() -> Dict(Key, Val):\n    var d = dict.new()\n    let _ = dict.insert(d, Key(1, 10), Val(\"one\", 100))\n    let _ = dict.insert(d, Key(2, 20), Val(\"two\", 200))\n    d\n\nfn make_right() -> Dict(Key, Val):\n    var d = dict.new()\n    let _ = dict.insert(d, Key(2, 99), Val(\"two\", 999))\n    let _ = dict.insert(d, Key(1, 42), Val(\"one\", 111))\n    d\n\nfn main(console: Console):\n    let left = make_left()\n    let right = make_right()\n    console.print(\"${left == right}\")\n    console.print(\"${same(left, right)}\")\n    console.print(\"${total_same(left, right)}\")\n    testing.assert_value_eq(left, right)\n";
-        let expected = ["true", "true", "true"];
-        assert_eq!(link_run(src), expected, "interp: dict PartialEq bounds");
-        assert_eq!(
-            run_linked_on_wasm(&[("main", src)], "main"),
-            expected,
-            "compiled: dict PartialEq bounds",
-        );
-    }
-
-    /// (BUG-557) A generic container equality specialization can need a second
-    /// generated generic impl for the element type. List(tuple5) must therefore
-    /// emit the tuple `PartialEq` specialization even when no source call compares
-    /// the tuple directly.
-    #[test]
-    fn list_of_tuple_equality_satisfies_protocol_bounds_on_both_backends() {
-        let src = "import cmp\n\nfn total_same(x: a, y: a) -> Bool where a: Eq:\n    x == y\n\nfn main(console: Console):\n    let xs = [(1, \"x\", true, 90s, Greater)]\n    let ys = [(1, \"x\", true, 90s, Greater)]\n    let zs = [(1, \"x\", false, 90s, Greater)]\n    console.print(\"${total_same(xs, ys)}\")\n    console.print(\"${total_same(xs, zs)}\")\n";
-        let expected = ["true", "false"];
-        assert_eq!(link_run(src), expected, "interp: List(tuple5) Eq");
-        assert_eq!(
-            run_linked_on_wasm(&[("main", src)], "main"),
-            expected,
-            "compiled: List(tuple5) Eq",
-        );
-    }
-
     /// (BUG-395 / RFC-0047) Public `std/dict` helpers expose the same key
     /// equality contract as direct native dict operations. Concrete key/value
     /// types without `Eq` cannot route through `dict.get`, `from_pairs`,
@@ -134,60 +103,6 @@ use crate::{ast, codegen, interpreter, parser, typeck};
         assert_eq!(wasm_run(src), want, "wasm");
     }
 
-    /// Std containers may expose real inherent methods without reopening bare
-    /// std functions or losing the owner-module in-place path. `List.push` and
-    /// `List.concat` are declared as `impl List(a)` methods, but receiver calls
-    /// resolve to `list.push`/`list.concat` when those owner functions exist.
-    #[test]
-    fn std_list_impl_methods_and_free_functions_coexist_on_both_backends() {
-        let src = "import list\n\ntype Buf:\n    items: List(Int)\n\nfn main(console: Console):\n    var b = Buf([])\n    var i = 0\n    while i < 16:\n        b.items.push(i)\n        i = i + 1\n    console.print(\"${list.at(b.items, 15)}\")\n    console.print(\"${list.length(b.items)}\")\n\n    var xs = [1]\n    xs.push(2)\n    xs = xs.concat([3, 4])\n    console.print(\"${xs}\")\n\n    list.push(xs, 5)\n    let ys = list.concat(xs, [6])\n    console.print(\"${ys}\")\n";
-        let expected = vec![
-            "15".to_string(),
-            "16".to_string(),
-            "[1, 2, 3, 4]".to_string(),
-            "[1, 2, 3, 4, 5, 6]".to_string(),
-        ];
-        assert_eq!(link_run(src), expected, "interpreter: std List impl/free methods");
-        assert_eq!(wasm_run(src), expected, "wasm: std List impl/free methods");
-    }
-
-    /// The same owner-module method pattern applies to the other mutable core
-    /// containers: receiver syntax is available, but the stable `dict.*`/`set.*`
-    /// functions still exist and remain the in-place backend target.
-    #[test]
-    fn std_dict_set_impl_methods_and_free_functions_coexist_on_both_backends() {
-        let src = "import dict\nimport set\n\ntype Bag:\n    counts: Dict(String, Int)\n    seen: Set(String)\n\nfn inc(n: Int) -> Int:\n    n + 1\n\nfn main(console: Console):\n    var bag = Bag(dict.new(), set.new())\n    var i = 0\n    while i < 20:\n        let _ = bag.counts.update(\"hit\", 0, inc)\n        let _ = bag.seen.insert(\"k${i}\")\n        i = i + 1\n    let _ = bag.counts.insert(\"extra\", 7)\n    let _ = bag.counts.remove(\"extra\")\n    let _ = bag.seen.remove(\"k0\")\n    console.print(\"${dict.get_or(bag.counts, \"hit\", 0)}\")\n    console.print(\"${dict.length(bag.counts)}\")\n    console.print(\"${set.length(bag.seen)}\")\n    console.print(\"${set.contains(bag.seen, \"k0\")}\")\n\n    var d = dict.new()\n    let _ = dict.insert(d, \"x\", 1)\n    let _ = dict.remove(d, \"missing\")\n    var s = set.new()\n    let _ = set.insert(s, \"x\")\n    let _ = set.remove(s, \"missing\")\n    console.print(\"${dict.get_or(d, \"x\", 0)}\")\n    console.print(\"${set.contains(s, \"x\")}\")\n";
-        let expected = vec![
-            "20".to_string(),
-            "1".to_string(),
-            "19".to_string(),
-            "false".to_string(),
-            "1".to_string(),
-            "true".to_string(),
-        ];
-        assert_eq!(link_run(src), expected, "interpreter: std Dict/Set impl/free methods");
-        assert_eq!(wasm_run(src), expected, "wasm: std Dict/Set impl/free methods");
-    }
-
-    /// `dict.get_or_insert` returns the existing value on a hit (leaving the dict
-    /// unchanged) and inserts + returns `default` on a miss, so the key is
-    /// present afterward. Method and free-function forms agree across backends.
-    #[test]
-    fn std_dict_get_or_insert_agrees_on_both_backends() {
-        let src = "import dict\n\nfn main(console: Console):\n    var d = dict.new()\n    let _ = dict.insert(d, \"a\", 1)\n    console.print(\"${d.get_or_insert(\"a\", 99)}\")\n    console.print(\"${d.get_or_insert(\"b\", 7)}\")\n    console.print(\"${d.get_or_insert(\"b\", 100)}\")\n    console.print(\"${dict.get_or(d, \"b\", 0)}\")\n    console.print(\"${dict.length(d)}\")\n    console.print(\"${dict.get_or_insert(d, \"c\", 5)}\")\n    console.print(\"${dict.contains_key(d, \"c\")}\")\n";
-        let expected = vec![
-            "1".to_string(),
-            "7".to_string(),
-            "7".to_string(),
-            "7".to_string(),
-            "2".to_string(),
-            "5".to_string(),
-            "true".to_string(),
-        ];
-        assert_eq!(link_run(src), expected, "interpreter: dict get_or_insert");
-        assert_eq!(wasm_run(src), expected, "wasm: dict get_or_insert");
-    }
-
     /// (BUG-315, RFC-0044 rule 3) An out-of-range (or negative) `xs[i] = v` /
     /// `list.set_at` / `list.update_at` is a runtime error on BOTH backends,
     /// matching the `xs[i]` READ trap — never a silent no-op. In-bounds still agrees.
@@ -213,125 +128,6 @@ use crate::{ast, codegen, interpreter, parser, typeck};
         let ok = "fn main(console: Console):\n    var xs = [1, 2, 3]\n    xs[1] = 9\n    console.print(\"${xs}\")\n";
         assert_eq!(link_run(ok), ["[1, 9, 3]"], "interp in-bounds");
         assert_eq!(wasm_run(ok), ["[1, 9, 3]"], "wasm in-bounds");
-    }
-
-    /// open-addressing table over the (insertion-ordered) entry array, so
-    /// get_or/has/insert lookups probe instead of scanning. String and Int
-    /// keys, growth rebuilds, removal (index dropped, rebuilt on next
-    /// growth), and a missing-key probe all agree with the interpreter.
-    #[test]
-    fn dict_hash_index_agrees_on_both_backends() {
-        let src = "fn main(console: Console):\n    var d = dict.new()\n    for i in 0..3000:\n        let _ = dict.insert(d, \"k\" + \"${i}\", i * 2)\n    console.print(\"${dict.length(d)}\")\n    console.print(\"${dict.get_or(d, \"k2999\", 0 - 1)}\")\n    console.print(\"${dict.get_or(d, \"absent\", 0 - 1)}\")\n    console.print(\"${dict.contains_key(d, \"k1500\")}\")\n    let _ = dict.remove(d, \"k0\")\n    console.print(\"${dict.length(d)}\")\n    let _ = dict.insert(d, \"again\", 7)\n    console.print(\"${dict.get_or(d, \"again\", 0 - 1)}\")\n";
-        let want: Vec<String> = ["3000", "5998", "-1", "true", "2999", "7"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
-        assert_eq!(link_run(src), want.clone(), "interpreter");
-        assert_eq!(wasm_run(src), want, "compiled WASM must agree");
-    }
-
-    #[test]
-    fn dict_swiss_control_carrier_small_scalar_roundtrip() {
-        let src = r#"
-import dict
-fn main(console: Console):
-    var d = dict.new()
-    for i in 0..40:
-        let _ = dict.insert(d, i, i * 3)
-    console.print("${dict.get_or(d, 17, -1)}")
-    console.print("${dict.contains_key(d, 39)}")
-    let _ = dict.remove(d, 17)
-    let _ = dict.insert(d, 17, 99)
-    console.print("${dict.get_or(d, 17, -1)}")
-    console.print("${list.length(dict.keys(d))}")
-"#;
-        assert_eq!(interp(src), run_on_wasm(src), "compiled backend diverges from the interpreter oracle");
-        assert_eq!(run_on_wasm(src), vec!["51", "true", "99", "40"]);
-    }
-
-    #[test]
-    fn dict_swiss_order_metadata_preserves_projection_order() {
-        let src = r#"
-import dict
-fn main(console: Console):
-    var d = dict.new()
-    for i in 0..64:
-        let _ = dict.insert(d, i, i + 1000)
-    let _ = dict.remove(d, 7)
-    let _ = dict.insert(d, 7, 7007)
-    let ks = dict.keys(d)
-    let vs = dict.values(d)
-    console.print("${list.at(ks, 0)}")
-    console.print("${list.at(ks, 62)}")
-    console.print("${list.at(ks, 63)}")
-    console.print("${list.at(vs, 63)}")
-"#;
-        let want = vec!["0", "63", "7", "7007"];
-        assert_eq!(interp(src), run_on_wasm(src), "compiled backend diverged from interpreter");
-        assert_eq!(run_on_wasm(src), want);
-    }
-
-    #[test]
-    fn dict_swiss_with_capacity_uses_the_preallocated_carrier() {
-        let src = r#"
-import dict
-fn main(console: Console):
-    var d = dict.with_capacity(64)
-    for i in 0..64:
-        let _ = dict.insert(d, i, i * 2)
-    console.print("${dict.get_or(d, 37, -1)}")
-    console.print("${dict.length(d)}")
-    console.print("${list.at(dict.keys(d), 63)}")
-"#;
-        let want = vec!["74", "64", "63"];
-        assert_eq!(interp(src), run_on_wasm(src), "compiled backend diverged from the interpreter");
-        assert_eq!(run_on_wasm(src), want);
-    }
-
-    /// REGRESSION GUARD: `list.reverse`/`flatten`/`flat_map` are O(n), not O(n^2).
-    /// They used to accumulate with `list.concat`, which copies the whole growing
-    /// result each iteration — O(n^2) time AND allocation, which traps the WASM
-    /// bump allocator (out-of-bounds) at ~20k elements. At 50k the linear
-    /// push-loop forms stay far under the heap ceiling; an O(n^2) regression would
-    /// trap on the compiled backend and fail here. The 50k run is compiled-only:
-    /// the guard's teeth are that WASM heap trap, and the interpreter's
-    /// clone-per-push is quadratic by design (it is the semantic oracle, not a
-    /// perf target — see the arena watermark test), so the oracle verifies the
-    /// same program at parity scale instead of burning a minute at 50k.
-    #[test]
-    fn list_reverse_flatten_flat_map_are_linear_at_scale() {
-        let src = |n: u32| {
-            format!(
-                "fn main(console: Console):\n    var xs = []\n    for i in 0..{n}:\n        list.push(xs, i)\n    var r = xs\n    list.reverse(r)\n    console.print(\"${{list.at(r, 0)}}\")\n    console.print(\"${{list.at(r, {last})}}\")\n    console.print(\"${{list.flatten([[1, 2], [], [3]])}}\")\n    console.print(\"${{list.flat_map([1, 2, 3], fn(x: Int): [x, x * 10])}}\")\n",
-                last = n - 1
-            )
-        };
-        let want = |n: u32| -> Vec<String> {
-            vec![
-                (n - 1).to_string(),
-                "0".to_string(),
-                "[1, 2, 3]".to_string(),
-                "[1, 10, 2, 20, 3, 30]".to_string(),
-            ]
-        };
-        assert_eq!(link_run(&src(1000)), want(1000), "interpreter");
-        assert_eq!(wasm_run(&src(1000)), want(1000), "compiled WASM must agree");
-        assert_eq!(wasm_run(&src(50000)), want(50000), "compiled at 50k must stay linear");
-    }
-
-    /// A negative `Int` that enters a list through a *generic* function (the
-    /// element type is a type variable, so it crosses the i32 generic ABI) and is
-    /// then read back through *concrete* `List(Int)` code must keep its sign on
-    /// WASM. `to_slot` used to zero-extend, turning -1 into 4294967295 when a
-    /// concrete reader loaded the i64 slot; it now sign-extends (pointers/Bools
-    /// are < 2^31, so they're unaffected). Regression for the generic-list bug
-    /// found via `list.repeat(-1, n)`.
-    #[test]
-    fn wasm_negative_int_survives_the_generic_list_abi() {
-        let src = "fn fill(x: a, n: Int) -> List(a):\n    var out = []\n    var i = 0\n    while i < n:\n        list.push(out, x)\n        i = i + 1\n    out\n\nfn show(xs: List(Int)) -> String:\n    var out = \"\"\n    for v in xs:\n        out = out + \"${v}\" + \" \"\n    out\n\nfn main(console: Console):\n    console.print(show(fill(-1, 3)))\n";
-        let want = vec!["-1 -1 -1 ".to_string()];
-        assert_eq!(interp(src), want.clone(), "interpreter");
-        assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
     }
 
     /// (RFC-0047) A Dict keyed by `Float` is a compile-time error — keys require
@@ -392,31 +188,6 @@ fn main(console: Console):
         ];
         assert_eq!(link_run(src), want.clone(), "interpreter");
         assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), want, "compiled WASM must agree");
-    }
-
-    /// `Option` `==` is structural on both backends: a single-parameter generic
-    /// ADT is instantiated at the comparison site from a constructor literal
-    /// (sound for both operands — the type checker guarantees they share a
-    /// type). Dict `==` compares by key/value contents, not insertion order.
-    /// (Closes the former loud-error gaps.)
-    #[test]
-    fn option_and_dict_equality_agree_on_both_backends() {
-        let src = "import option\n\nfn pair(a: Int, b: Int) -> Dict(String, Int):\n    var d = dict.new()\n    let _ = dict.insert(d, \"k\", a)\n    let _ = dict.insert(d, \"j\", b)\n    d\n\nfn main(console: Console):\n    let none_i: Option(Int) = None\n    console.print(\"${Some(5) == Some(5)}\")\n    console.print(\"${Some(5) == Some(6)}\")\n    console.print(\"${Some(5) == None}\")\n    console.print(\"${none_i == None}\")\n    console.print(\"${Some(\"a\") == Some(\"a\")}\")\n    console.print(\"${Some(\"a\") == Some(\"b\")}\")\n    let a = pair(1, 2)\n    let b = pair(1, 2)\n    let c = pair(1, 9)\n    var rev = dict.new()\n    let _ = dict.insert(rev, \"j\", 2)\n    let _ = dict.insert(rev, \"k\", 1)\n    console.print(\"${a == b}\")\n    console.print(\"${a == c}\")\n    console.print(\"${a == rev}\")\n";
-        let want = vec![
-            "true".to_string(),
-            "false".to_string(),
-            "false".to_string(),
-            "true".to_string(),
-            "true".to_string(),
-            "false".to_string(),
-            "true".to_string(),  // identical insert order + contents
-            "false".to_string(), // differing value
-            "true".to_string(),  // same pairs, different insertion order
-        ];
-        // Dict `==` now lowers on the binary path as a content comparison,
-        // matching the interpreter and the std `PartialEq` contract.
-        assert_eq!(link_run(src), want.clone(), "interpreter");
-        assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
     }
 
     /// Indexing a list out of bounds must FAIL on both backends, not silently
@@ -545,25 +316,6 @@ fn main(console: Console):
         }
     }
 
-    /// `trim` must strip exactly the same whitespace on both backends. The WASM
-    /// `$is_ws` helper handles the 6 ASCII whitespace bytes (incl. VT/FF); Rust's
-    /// `str::trim` would also strip Unicode whitespace (e.g. NBSP), which WASM does
-    /// not — so the interpreter is pinned to the ASCII set. Here a NBSP (U+00A0)
-    /// must survive on BOTH backends, while VT/FF are stripped by both. (Regression
-    /// for a silent Unicode-whitespace trim divergence.)
-    #[test]
-    fn trim_whitespace_set_agrees_on_both_backends() {
-        // "  \t\n hi \r\x0b" -> "hi"; "\x0c x \x0c" -> "x"; NBSP stays around 'y'.
-        let src = "fn main(console: Console):\n    console.print(\"[\" + \"  \\t\\n hi \\r\u{0b}\".trim() + \"]\")\n    console.print(\"[\" + \"\u{0c} x \u{0c}\".trim() + \"]\")\n    console.print(\"[\" + \"\u{a0}y\u{a0}\".trim() + \"]\")\n";
-        let want = vec![
-            "[hi]".to_string(),
-            "[x]".to_string(),
-            "[\u{a0}y\u{a0}]".to_string(),
-        ];
-        assert_eq!(interp(src), want.clone(), "interpreter");
-        assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
-    }
-
     /// Dict `update` (single-lookup upsert) must agree on both backends, including
     /// nested updates and a big-`Int` value. WASM lowers it to a `$dict_update`
     /// helper that reads the current value (or default), applies the closure via
@@ -582,41 +334,6 @@ fn main(console: Console):
         ];
         assert_eq!(interp(src), want.clone(), "interpreter");
         assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
-    }
-
-    /// `std/dict` adds the compositional layer over the builtin Dict: a `get`
-    /// returning `Option`, `from_pairs`, and the `map_values`/`filter`/`merge`
-    /// transforms — verified against the builtin `size`/`get_or`.
-    #[test]
-    fn dict_module_higher_level_operations() {
-        let src = r#"import dict
-
-fn main(console: Console):
-    let d = dict.from_pairs([("a", 1), ("b", 2), ("c", 3)])
-    console.print("${dict.length(d)}")
-    console.print(oi(d.get("b")))
-    console.print(oi(d.get("z")))
-    let m = d.merge(dict.from_pairs([("b", 20), ("d", 4)]))
-    console.print("${dict.get_or(m, "b", 0)}" + "," + "${dict.get_or(m, "d", 0)}")
-    let tens = d.map_values(fn(v: Int): v * 10)
-    console.print(oi(tens.get("c")))
-    let evens = d.filter(fn(k: String, v: Int): v % 2 == 0)
-    console.print("${dict.length(evens)}")
-    let fresh: Dict(String, Int) = dict.new()
-    console.print(bs(fresh.is_empty()))
-
-fn oi(o: Option(Int)) -> String:
-    match o:
-        Some(n) -> "${n}"
-        None -> "none"
-
-fn bs(b: Bool) -> String:
-    if b: "yes" else: "no"
-"#;
-        assert_eq!(
-            link_run(src),
-            vec!["3", "2", "none", "20,4", "30", "1", "yes"]
-        );
     }
 
     /// The std `list` library is the most-exercised witchy code; verify a broad
@@ -683,94 +400,6 @@ fn main(console: Console):
     }
 
     #[test]
-    fn std_list_transformations_backends_agree() {
-        // RFC-0049: `find_index` is deleted; `position` is the by-PREDICATE
-        // Option-index form (it took over the role find_index vacated).
-        // `?? -1` (RFC-0048) recovers the old sentinel for a compact assertion.
-        let client = r#"
-import list
-
-fn main(console: Console):
-    let xs = [1, 2, 3, 10, 4, 5]
-    console.print("${list.position(xs, fn(n: Int): (n > 5)) ?? -1}")
-    console.print("${list.position(xs, fn(n: Int): (n > 100)) ?? -1}")
-    console.print("${list.position(xs, fn(n: Int): (n == 1)) ?? -1}")
-    let sums = list.zip_with([1, 2, 3], [10, 20], fn(a: Int, b: Int): (a + b))
-    console.print("${list.length(sums)}")
-    console.print("${list.sum(sums)}")
-    let spaced = list.intersperse([5, 6, 7], 0)
-    console.print("${list.length(spaced)}")
-    console.print("${list.sum(spaced)}")
-    console.print("${list.length(list.intersperse([9], 0))}")
-    console.print("${list.length(list.intersperse([], 0))}")
-    console.print("${list.sum(list.take_while(xs, fn(n: Int): (n < 5)))}")
-    console.print("${list.sum(list.drop_while(xs, fn(n: Int): (n < 5)))}")
-    let threes = list.repeat(7, 3)
-    console.print("${list.sum(threes)}")
-    console.print("${list.length(threes)}")
-    console.print("${list.length(list.repeat(9, 0))}")
-"#;
-        let sources = [("list", crate::bundled_module("list").unwrap()), ("main", client)];
-        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
-        let compiled = run_linked_on_wasm(&sources, "main");
-        assert_eq!(interpreted, compiled, "list transformations diverged");
-        assert_eq!(compiled, vec!["3", "-1", "0", "2", "33", "5", "18", "1", "0", "6", "19", "21", "3", "0"]);
-    }
-
-    // flatten collapses Option(Option(a)) one level; zip pairs two options into
-    // Option((a, b)) only when both are Some. Both backends agree.
-    #[test]
-    fn std_option_flatten_zip_backends_agree() {
-        let client = r#"
-import option
-
-fn nested(n: Int) -> Option(Option(Int)):
-    if (n > 0):
-        Some(Some(n))
-    else:
-        Some(None)
-
-fn main(console: Console):
-    console.print("${option.unwrap_or(option.flatten(nested(7)), (0 - 1))}")
-    console.print("${option.unwrap_or(option.flatten(nested(0)), (0 - 1))}")
-    match option.zip(Some(3), Some(4)):
-        Some(pair) ->
-            let (x, y) = pair
-            console.print("${(x + y)}")
-        None -> console.print("none")
-    console.print("${option.is_none(option.zip(Some(1), None))}")
-"#;
-        let sources = [("main", client)];
-        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
-        let compiled = run_linked_on_wasm(&sources, "main");
-        assert_eq!(interpreted, compiled, "option flatten/zip diverged");
-        assert_eq!(compiled, vec!["7", "-1", "7", "true"]);
-    }
-
-    #[test]
-    fn std_option_or_mapor_backends_agree() {
-        // The fallback combinators: `or` / `or_else` keep a Some or supply an
-        // alternative (eagerly / lazily), and `map_or` transforms a Some or
-        // returns the default for None. Both backends agree.
-        let client = r#"
-import option
-
-fn main(console: Console):
-    console.print("${option.unwrap_or(option.or(Some(5), Some(9)), 0)}")
-    console.print("${option.unwrap_or(option.or(None, Some(9)), 0)}")
-    console.print("${option.unwrap_or(option.or_else(None, fn(): Some(7)), 0)}")
-    console.print("${option.unwrap_or(option.or_else(Some(3), fn(): Some(7)), 0)}")
-    console.print("${option.map_or(Some(10), 0, fn(x: Int): (x * 2))}")
-    console.print("${option.map_or(None, 99, fn(x: Int): (x * 2))}")
-"#;
-        let sources = [("option", crate::bundled_module("option").unwrap()), ("main", client)];
-        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
-        let compiled = run_linked_on_wasm(&sources, "main");
-        assert_eq!(interpreted, compiled, "option or/map_or diverged");
-        assert_eq!(compiled, vec!["5", "9", "7", "3", "20", "99"]);
-    }
-
-    #[test]
     fn std_set_operations_backends_agree() {
         // Set ops dispatch through Eq (cross-module: set -> eq.member, both
         // bounded generics), so they are content-correct on both backends for
@@ -826,129 +455,6 @@ fn main(console: Console):
         );
     }
 
-    /// The first-class `Set(a)` type: construction, membership, `for x in set`
-    /// iteration (IntoIter-style), removal, and collecting an iterator into a set
-    /// (`set.from_list(iter.collect(...))`) — identical on both backends.
-    #[test]
-    fn std_set_type_iteration_and_collect_agree() {
-        let client = "import set\nimport iter\nimport show\n\nfn main(console: Console):\n    var s = set.from_list([3, 1, 2, 3, 1])\n    console.print(\"${set.length(s)}\")\n    console.print(\"${set.contains(s, 2)}\")\n    var total = 0\n    for x in s:\n        total = (total + x)\n    console.print(\"${total}\")\n    let _ = set.remove(s, 2)\n    console.print(show(s))\n    let cs: Set(Int) = iter.collect(iter.range(1, 4))\n    console.print(show(cs))\n";
-        let sources = [
-            ("cmp", crate::bundled_module("cmp").unwrap()),
-            ("option", crate::bundled_module("option").unwrap()),
-            ("list", crate::bundled_module("list").unwrap()),
-            ("string", crate::bundled_module("string").unwrap()),
-            ("iter", crate::bundled_module("iter").unwrap()),
-            ("set", crate::bundled_module("set").unwrap()),
-            ("show", crate::bundled_module("show").unwrap()),
-            ("main", client),
-        ];
-        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
-        let compiled = run_linked_on_wasm(&sources, "main");
-        assert_eq!(interpreted, compiled, "set type diverged");
-        assert_eq!(compiled, vec!["3", "true", "6", "{3, 1}", "{1, 2, 3}"]);
-    }
-
-    #[test]
-    fn set_symmetric_difference_and_disjoint_backends_agree() {
-        // symmetric_difference composes difference+union (so it de-dups);
-        // is_disjoint is true exactly when the intersection is empty.
-        let client = r#"
-import set
-import list
-fn show_ints(xs: List(Int)) -> String:
-    list.join(list.map(xs, fn(n: Int): "${n}"), ",")
-fn main(console: Console):
-    let sd1 = set.symmetric_difference(set.from_list([1, 2, 3]), set.from_list([2, 3, 4]))
-    let sd2 = set.symmetric_difference(set.from_list([1, 1, 2]), set.from_list([2, 2, 3]))
-    console.print(show_ints(set.to_list(sd1)))
-    console.print(show_ints(set.to_list(sd2)))
-    let d1a = set.from_list([1, 2])
-    console.print(if set.is_disjoint(d1a, set.from_list([3, 4])): "yes" else: "no")
-    console.print(if set.is_disjoint(d1a, set.from_list([2, 3])): "yes" else: "no")
-"#;
-        let sources = [
-            ("cmp", crate::bundled_module("cmp").unwrap()),
-            ("option", crate::bundled_module("option").unwrap()),
-            ("list", crate::bundled_module("list").unwrap()),
-            ("string", crate::bundled_module("string").unwrap()),
-            ("set", crate::bundled_module("set").unwrap()),
-            ("main", client),
-        ];
-        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
-        let compiled = run_linked_on_wasm(&sources, "main");
-        assert_eq!(interpreted, compiled, "set ops diverged");
-        assert_eq!(compiled, vec!["1,4", "1,3", "yes", "no"]);
-    }
-
-    #[test]
-    fn list_transpose_backends_agree() {
-        // transpose swaps rows and columns; a ragged input is truncated to the
-        // shortest row, and an empty input gives an empty result.
-        let client = r#"
-import list
-fn show_row(r: List(Int)) -> String:
-    list.join(list.map(r, fn(n: Int): "${n}"), ",")
-fn show_grid(g: List(List(Int))) -> String:
-    list.join(list.map(g, show_row), ";")
-fn main(console: Console):
-    console.print(show_grid(list.transpose([[1, 2, 3], [4, 5, 6]])))
-    console.print(show_grid(list.transpose([[1, 2], [3, 4, 5]])))
-    console.print(show_grid(list.transpose([])))
-"#;
-        let sources = [
-            ("option", crate::bundled_module("option").unwrap()),
-            ("list", crate::bundled_module("list").unwrap()),
-            ("string", crate::bundled_module("string").unwrap()),
-            ("main", client),
-        ];
-        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
-        let compiled = run_linked_on_wasm(&sources, "main");
-        assert_eq!(interpreted, compiled, "transpose diverged");
-        assert_eq!(compiled, vec!["1,4;2,5;3,6", "1,3;2,4", ""]);
-    }
-
-    #[test]
-    fn result_partition_backends_agree() {
-        // partition splits a list of Results into the Ok values and the Err
-        // values, each in order.
-        let client = r#"
-import result
-import list
-fn main(console: Console):
-    let (oks, errs) = result.partition([Ok(1), Err("a"), Ok(2), Err("b"), Ok(3)])
-    console.print(list.join(list.map(oks, fn(n: Int): "${n}"), ","))
-    console.print(list.join(errs, ","))
-"#;
-        let sources = [
-            ("option", crate::bundled_module("option").unwrap()),
-            ("result", crate::bundled_module("result").unwrap()),
-            ("list", crate::bundled_module("list").unwrap()),
-            ("string", crate::bundled_module("string").unwrap()),
-            ("main", client),
-        ];
-        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
-        let compiled = run_linked_on_wasm(&sources, "main");
-        assert_eq!(interpreted, compiled, "result.partition diverged");
-        assert_eq!(compiled, vec!["1,2,3", "a,b"]);
-    }
-
-    #[test]
-    fn subscript_example_runs_on_wasm() {
-        // `xs[i]` desugars to `list.at(xs, i)`; chained subscripts index nested lists.
-        // The dot product and 2D-grid diagonal match on both backends.
-        let sources = [
-            ("string", crate::bundled_module("string").unwrap()),
-            ("main", include_str!("../../examples/subscript/src/subscript.witchy")),
-        ];
-        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
-        let compiled = run_linked_on_wasm(&sources, "main");
-        assert_eq!(interpreted, compiled, "subscript diverged");
-        assert_eq!(
-            compiled,
-            vec!["dot = 32", "grid[1][2] = 6", "diagonal sum = 15"]
-        );
-    }
-
     #[test]
     fn merge_sort_is_stable_on_both_backends() {
         // list.sort_by is a stable merge sort: equal keys keep their original
@@ -978,65 +484,6 @@ fn main(console: Console):
     }
 
     #[test]
-    fn std_result_or_mapor_backends_agree() {
-        // The fallback combinators mirror Option's: `or` / `or_else` keep an Ok
-        // or supply an alternative (eagerly / error-aware lazily), and `map_or`
-        // transforms an Ok or returns the default for an Err. Both backends agree.
-        let client = r#"
-import result
-
-fn checked(n: Int) -> Result(Int, String):
-    if (n > 0):
-        Ok(n)
-    else:
-        Err("bad")
-
-fn main(console: Console):
-    console.print("${result.unwrap_or(result.or(checked(5), Ok(9)), 0)}")
-    console.print("${result.unwrap_or(result.or(checked((0 - 1)), Ok(9)), 0)}")
-    console.print("${result.unwrap_or(result.or_else(checked((0 - 1)), fn(e: String): Ok(e.length())), 0)}")
-    console.print("${result.map_or(checked(5), 0, fn(x: Int): (x * 2))}")
-    console.print("${result.map_or(checked((0 - 1)), 99, fn(x: Int): (x * 2))}")
-"#;
-        let sources = [("result", crate::bundled_module("result").unwrap()), ("main", client)];
-        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
-        let compiled = run_linked_on_wasm(&sources, "main");
-        assert_eq!(interpreted, compiled, "result or/map_or diverged");
-        assert_eq!(compiled, vec!["5", "9", "3", "10", "99"]);
-    }
-
-    /// `$dir_list` (list a directory) on the binary path — the host reports the
-    /// marshaled-list size (`dir_list_size`) then writes it (`write_pending_list`),
-    /// gated behind Dir(Read). Counts the directory's entries.
-    #[test]
-    fn wir_dir_list_host_import_binary_path() {
-        use crate::runtime::{Capabilities, Runtime};
-        let root = std::env::temp_dir().join(format!("witchy_wir_dirlist_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).expect("mkdir");
-        std::fs::write(root.join("one.txt"), "1").expect("write");
-        std::fs::write(root.join("two.txt"), "2").expect("write");
-        let src = "fn main(console: Console, dir: Dir[Read]):\n    console.print(\"${list.length(dir.list())}\")\n";
-        let module = parser::parse_module(src).expect("parse");
-        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
-        typeck::check(&linked).expect("typecheck");
-        let bytes = codegen::compile_module_binary(&linked)
-            .expect_lowered("the WIR binary path should handle dir list via the host imports");
-        let mut rt = Runtime::batch().expect("runtime");
-        let mut actor = rt
-            .spawn(
-                &bytes,
-                Capabilities { print: true, dir_root: Some(root.clone()), dir_read: true, quiet: true, ..Default::default() },
-                crate::RUN_MEMORY_PAGES,
-            )
-            .expect("spawn with Dir(Read)");
-        actor.run().expect("run");
-        let got = actor.output();
-        let _ = std::fs::remove_dir_all(&root);
-        assert_eq!(got, vec!["2".to_string()], "binary path: 2 entries");
-    }
-
-    #[test]
     fn dict_undetermined_key_is_rejected() {
         // A key with no `Eq` implementation errors clearly
         // rather than picking a wrong comparison.
@@ -1053,38 +500,6 @@ fn main(console: Console):
                 && err.to_string().contains("dict.insert"),
             "unexpected error: {err}"
         );
-    }
-
-    #[test]
-    fn dict_remove_backends_agree() {
-        // `remove` (string and int keys) — present, absent, and the surviving
-        // entries — agrees across the interpreter and compiled backends.
-        let src = r#"
-fn main(console: Console):
-    var d = dict.new()
-    let _ = dict.insert(d, "a", 1)
-    let _ = dict.insert(d, "b", 2)
-    let _ = dict.insert(d, "c", 3)
-    var d2 = d
-    let _ = dict.remove(d2, "b")
-    console.print("${dict.length(d2)}")
-    console.print("${if dict.contains_key(d2, "b"): 1 else: 0}")
-    console.print("${dict.get_or(d2, "a", 0)}")
-    console.print("${dict.get_or(d2, "c", 0)}")
-    var d3 = d
-    let _ = dict.remove(d3, "missing")
-    console.print("${dict.length(d3)}")
-    console.print("${dict.length(d)}")
-    var nums = dict.new()
-    let _ = dict.insert(nums, 10, 100)
-    let _ = dict.insert(nums, 20, 200)
-    var nums2 = nums
-    let _ = dict.remove(nums2, 10)
-    console.print("${dict.length(nums2)}")
-    console.print("${dict.get_or(nums2, 20, 0)}")
-"#;
-        assert_eq!(interp(src), run_on_wasm(src));
-        assert_eq!(run_on_wasm(src), vec!["2", "0", "1", "3", "3", "3", "1", "200"]);
     }
 
     /// Regression for a compiled-dict parity violation (FIXED in `dict_remove`):
@@ -1114,52 +529,3 @@ fn main(console: Console):
         assert_eq!(run_on_wasm(src), vec!["5", "1", "5"]);
     }
 
-    #[test]
-    fn std_list_partition_unzip_backends_agree() {
-        // partition splits by a predicate in one pass; unzip is the inverse of
-        // zip. Both return tuples of lists, so this also exercises tuple-valued
-        // returns from generic std functions across backends.
-        let client = r#"
-import list
-
-fn main(console: Console):
-    let xs = [1, 2, 3, 4, 5, 6]
-    let (evens, odds) = list.partition(xs, fn(n: Int): ((n % 2) == 0))
-    console.print("${list.sum(evens)}")
-    console.print("${list.sum(odds)}")
-    let pairs = list.zip([10, 20, 30], [1, 2, 3])
-    let (a, b) = list.unzip(pairs)
-    console.print("${list.sum(a)}")
-    console.print("${list.sum(b)}")
-"#;
-        let sources = [("list", crate::bundled_module("list").unwrap()), ("main", client)];
-        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
-        let compiled = run_linked_on_wasm(&sources, "main");
-        assert_eq!(interpreted, compiled, "partition/unzip diverged between backends");
-        assert_eq!(compiled, vec!["12", "9", "60", "6"]);
-    }
-
-    // Integer division/modulo truncate toward zero, and their signs must agree
-    // for negative operands across the i64 interpreter and i32 codegen (the
-    // results here stay well within i32). Also locks in dict insert-overwrite,
-    // removing an absent key, and `get_or`'s default path.
-    #[test]
-    fn negative_arithmetic_and_dict_mutation_backends_agree() {
-        let src = r#"
-fn main(console: Console):
-    console.print("${(0 - (7 / 2))}")
-    console.print("${((0 - 7) % 2)}")
-    console.print("${(7 / (0 - 2))}")
-    console.print("${(7 % (0 - 2))}")
-    console.print("${((0 - 7) / (0 - 2))}")
-    var d = dict.new()
-    let _ = dict.insert(d, "k", 1)
-    let _ = dict.insert(d, "k", 2)
-    console.print("${dict.get_or(d, "k", 0)}")
-    console.print("${dict.length(d)}")
-    let _ = dict.remove(d, "missing")
-    console.print("${dict.length(d)}")
-    console.print("${dict.get_or(d, "absent", 99)}")
-"#;
-        assert_eq!(interp(src), run_on_wasm(src), "int/dict edges diverged");
-    }

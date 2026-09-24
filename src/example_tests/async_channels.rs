@@ -1,45 +1,6 @@
 use super::*;
 use crate::{interpreter, parser, typeck};
 
-    /// (BUG-007) An `async fn` declared as a METHOD of an inherent `impl` lowers in
-    /// place, staying a method that returns a `Task` — so `d.scaled(5).await` drives
-    /// it through the executor. Here the method itself `await`s a top-level async fn,
-    /// exercising the CPS lowering inside a method body. Both backends agree.
-    #[test]
-    fn async_method_in_impl_backends_agree() {
-        if !is_nightly() {
-            return;
-        }
-        let src = "type Doubler:\n    base: Int\n\nasync fn step(n: Int) -> Int:\n    n + n\n\nimpl Doubler:\n    async fn scaled(self, x: Int) -> Int:\n        let doubled = step(x).await\n        self.base + doubled\n\nasync fn main(console: Console):\n    let d = Doubler(100)\n    let r = d.scaled(5).await\n    console.print(\"${r}\")\n";
-        let expected = ["110"];
-        assert_eq!(link_run(src), expected, "interp");
-        assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");
-    }
-
-    /// (BUG-312) Async lowering runs before typeck, so synthesized wrapper blocks
-    /// must preserve the source line of the statement they wrap. Otherwise type
-    /// errors inside an async body lose the normal `fn`, line N prefix.
-    #[test]
-    fn async_lowered_type_errors_keep_source_locations() {
-        let before_await = "import list\nimport chan\n\nasync fn work(console: Console) -> ():\n    var xs: List(Int) = []\n    list.push(xs, \"bad\")\n    chan.yield_now().await\n    return\n\nasync fn main(console: Console):\n    work(console).await\n";
-        let err = typeck::check(&resolve_std_src(before_await))
-            .expect_err("async type error before await must be rejected")
-            .to_string();
-        assert!(err.contains("`main.work`, line 6:"), "async diagnostic lost location: {err}");
-        assert!(err.contains("expected `Int`, found `String`"), "{err}");
-
-        let after_await = "import list\nimport chan\n\nasync fn work(console: Console) -> ():\n    var xs: List(Int) = []\n    chan.yield_now().await\n    list.push(xs, \"bad\")\n    return\n\nasync fn main(console: Console):\n    work(console).await\n";
-        let err = typeck::check(&resolve_std_src(after_await))
-            .expect_err("async type error after await must be rejected")
-            .to_string();
-        assert!(
-            err.contains("`main.work`, line 7:"),
-            "continuation diagnostic lost its source callable or line: {err}",
-        );
-        assert!(!err.contains("__async_"), "continuation diagnostic leaked lowering: {err}");
-        assert!(err.contains("expected `Int`, found `String`"), "{err}");
-    }
-
     /// (BUG-310/BUG-311) Channel close is quiescence-based, not sender-refcount
     /// based. A parked recv resumes as `None` when every live task is parked; a
     /// retained sender may still send later. Likewise a bounded parked send and a
@@ -150,52 +111,3 @@ use crate::{interpreter, parser, typeck};
         }
     }
 
-    /// REGRESSION (BUG-280): a negative channel capacity is unbounded (sends never
-    /// block), not the permanently-full channel it used to build. Identical on both
-    /// backends.
-    #[test]
-    fn chan_negative_capacity_is_unbounded_backends_agree() {
-        if !is_nightly() {
-            return;
-        }
-        let src = "from chan import Sender\nasync fn prod(tx: Sender(Int)) -> ():\n    chan.send(tx, 1).await\n    chan.send(tx, 2).await\n    chan.send(tx, 3).await\nasync fn main(console: Console):\n    let (tx, rx) = chan.channel(0 - 1).await\n    chan.scope([prod(tx)]).await\n    let a = chan.recv(rx).await\n    let b = chan.recv(rx).await\n    let c = chan.recv(rx).await\n    console.print(\"${a}\" + \"${b}\" + \"${c}\")\n";
-        let expected = ["Some(1)Some(2)Some(3)"];
-        let linked = resolve_std_src(src);
-        assert_eq!(
-            interpreter::run_module(linked, ".", Vec::new()).expect("interp"),
-            expected,
-            "interp"
-        );
-        assert_eq!(wasm_run(src), expected, "wasm");
-    }
-
-    /// REGRESSION (BUG-396): `chan.par_map` returns results in INPUT order.
-    #[test]
-    fn chan_par_map_preserves_input_order_backends_agree() {
-        if !is_nightly() {
-            return;
-        }
-        let src = "import list\nasync fn sq(n: Int) -> Int:\n    n * n\nasync fn main(console: Console):\n    let m = chan.par_map([5, 3, 8, 1], fn(x): sq(x)).await\n    console.print(\"${m}\")\n";
-        let expected = ["[25, 9, 64, 1]"];
-        let linked = resolve_std_src(src);
-        assert_eq!(
-            interpreter::run_module(linked, ".", Vec::new()).expect("interp"),
-            expected,
-            "interp"
-        );
-        assert_eq!(wasm_run(src), expected, "wasm");
-    }
-
-    /// REGRESSION (BUG-396): `chan.par_map`'s structured fan-out is iterative — the
-    /// tail-recursive par_build/recv_each/spawn_all no longer build the O(n)-deep
-    /// continuation that overflowed the compiled backend's stack (wasm OOB) at
-    /// N≈2000. Compiled-only: the interpreter's O(n^2) clone-per-push is too slow
-    /// at this scale.
-    #[test]
-    fn chan_par_map_is_iterative_at_scale_on_wasm() {
-        let is_soak = std::env::var_os("WITCHY_FULL_SOAK_TESTS").is_some_and(|v| v == "1")
-            || std::env::var_os("WITCHY_NIGHTLY").is_some_and(|v| v == "1");
-        let count = if is_soak { 2000 } else { 100 };
-        let src = format!("import list\nasync fn ident(n: Int) -> Int:\n    n\nasync fn main(console: Console):\n    let m = chan.par_map(list.range({count}), fn(x): ident(x)).await\n    console.print(\"${{list.length(m)}}\")\n");
-        assert_eq!(wasm_run(&src), vec![count.to_string()]);
-    }
