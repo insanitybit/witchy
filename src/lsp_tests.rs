@@ -181,8 +181,24 @@ fn main(console: Console):
             "{ticker_contents}"
         );
 
-        assert_eq!(fn_decl_line(generators, "fibs"), Some(12));
-        assert_eq!(fn_decl_line(async_tasks, "ticker"), Some(14));
+        // Keep the line oracle tied to the declaration text: example header
+        // comments may change without changing the LSP location contract.
+        let fibs_decl = fn_decl_line(generators, "fibs").expect("fibs declaration line");
+        assert!(
+            generators
+                .lines()
+                .nth(fibs_decl as usize)
+                .is_some_and(|line| line.starts_with("gen fn fibs(")),
+            "fibs declaration line {fibs_decl}"
+        );
+        let ticker_decl = fn_decl_line(async_tasks, "ticker").expect("ticker declaration line");
+        assert!(
+            async_tasks
+                .lines()
+                .nth(ticker_decl as usize)
+                .is_some_and(|line| line.starts_with("async fn ticker(")),
+            "ticker declaration line {ticker_decl}"
+        );
     }
 
     #[test]
