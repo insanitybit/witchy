@@ -109,10 +109,6 @@
             "named": true
           },
           {
-            "type": "lifetime",
-            "named": true
-          },
-          {
             "type": "qualified_type",
             "named": true
           },
@@ -242,10 +238,6 @@
           },
           {
             "type": "impl_trait_type",
-            "named": true
-          },
-          {
-            "type": "lifetime",
             "named": true
           },
           {
@@ -1921,10 +1913,6 @@
           },
           {
             "type": "impl_trait_type",
-            "named": true
-          },
-          {
-            "type": "lifetime",
             "named": true
           },
           {
@@ -3844,10 +3832,6 @@
             "named": true
           },
           {
-            "type": "lifetime",
-            "named": true
-          },
-          {
             "type": "qualified_type",
             "named": true
           },
@@ -3941,10 +3925,6 @@
           },
           {
             "type": "impl_trait_type",
-            "named": true
-          },
-          {
-            "type": "lifetime",
             "named": true
           },
           {
@@ -4120,10 +4100,6 @@
             "named": true
           },
           {
-            "type": "lifetime",
-            "named": true
-          },
-          {
             "type": "qualified_type",
             "named": true
           },
@@ -4214,10 +4190,6 @@
         },
         {
           "type": "impl_trait_type",
-          "named": true
-        },
-        {
-          "type": "lifetime",
           "named": true
         },
         {
@@ -5004,10 +4976,6 @@
           },
           {
             "type": "impl_trait_type",
-            "named": true
-          },
-          {
-            "type": "lifetime",
             "named": true
           },
           {
@@ -5826,10 +5794,6 @@
             "named": true
           },
           {
-            "type": "lifetime",
-            "named": true
-          },
-          {
             "type": "qualified_type",
             "named": true
           },
@@ -6003,10 +5967,6 @@
           },
           {
             "type": "impl_trait_type",
-            "named": true
-          },
-          {
-            "type": "lifetime",
             "named": true
           },
           {
@@ -7167,10 +7127,6 @@
             "named": true
           },
           {
-            "type": "lifetime",
-            "named": true
-          },
-          {
             "type": "qualified_type",
             "named": true
           },
@@ -7792,10 +7748,6 @@
             "named": true
           },
           {
-            "type": "lifetime",
-            "named": true
-          },
-          {
             "type": "qualified_type",
             "named": true
           },
@@ -8137,10 +8089,6 @@
           },
           {
             "type": "lambda",
-            "named": true
-          },
-          {
-            "type": "lifetime",
             "named": true
           },
           {
@@ -8555,10 +8503,6 @@
             "named": true
           },
           {
-            "type": "lifetime",
-            "named": true
-          },
-          {
             "type": "qualified_type",
             "named": true
           },
@@ -8594,16 +8538,6 @@
     "type": "reference_type",
     "named": true,
     "fields": {
-      "lifetime": {
-        "multiple": false,
-        "required": true,
-        "types": [
-          {
-            "type": "lifetime",
-            "named": true
-          }
-        ]
-      },
       "qualifier": {
         "multiple": false,
         "required": false,
@@ -8648,10 +8582,6 @@
           },
           {
             "type": "impl_trait_type",
-            "named": true
-          },
-          {
-            "type": "lifetime",
             "named": true
           },
           {
@@ -8744,10 +8674,6 @@
           },
           {
             "type": "impl_trait_type",
-            "named": true
-          },
-          {
-            "type": "lifetime",
             "named": true
           },
           {
@@ -9207,10 +9133,6 @@
           },
           {
             "type": "impl_trait_type",
-            "named": true
-          },
-          {
-            "type": "lifetime",
             "named": true
           },
           {
@@ -9732,10 +9654,6 @@
           },
           {
             "type": "impl_trait_type",
-            "named": true
-          },
-          {
-            "type": "lifetime",
             "named": true
           },
           {
@@ -10382,7 +10300,7 @@
     },
     "children": {
       "multiple": true,
-      "required": true,
+      "required": false,
       "types": [
         {
           "type": "anon_union_type",
@@ -10406,10 +10324,6 @@
         },
         {
           "type": "impl_trait_type",
-          "named": true
-        },
-        {
-          "type": "lifetime",
           "named": true
         },
         {
@@ -10507,10 +10421,6 @@
           },
           {
             "type": "impl_trait_type",
-            "named": true
-          },
-          {
-            "type": "lifetime",
             "named": true
           },
           {
@@ -10621,10 +10531,6 @@
         {
           "type": "identifier",
           "named": true
-        },
-        {
-          "type": "lifetime",
-          "named": true
         }
       ]
     }
@@ -10633,16 +10539,6 @@
     "type": "unary_expression",
     "named": true,
     "fields": {
-      "mutable": {
-        "multiple": false,
-        "required": false,
-        "types": [
-          {
-            "type": "mutable",
-            "named": true
-          }
-        ]
-      },
       "operand": {
         "multiple": false,
         "required": true,
@@ -11141,10 +11037,6 @@
             "named": true
           },
           {
-            "type": "lifetime",
-            "named": true
-          },
-          {
             "type": "qualified_type",
             "named": true
           },
@@ -11405,10 +11297,6 @@
         },
         {
           "type": "impl_trait_type",
-          "named": true
-        },
-        {
-          "type": "lifetime",
           "named": true
         },
         {
@@ -12219,10 +12107,6 @@
     "named": false
   },
   {
-    "type": "lifetime",
-    "named": true
-  },
-  {
     "type": "match",
     "named": false
   },
@@ -12237,14 +12121,6 @@
   {
     "type": "must",
     "named": false
-  },
-  {
-    "type": "mut",
-    "named": false
-  },
-  {
-    "type": "mutable",
-    "named": true
   },
   {
     "type": "on",

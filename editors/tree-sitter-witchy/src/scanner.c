@@ -16,7 +16,7 @@
 // (same line) never opens a block. Blank lines and `//`-comment-only lines never
 // affect indentation.
 
-enum TokenType { INDENT, DEDENT, STATEMENT_BREAK };
+enum TokenType { INDENT, DEDENT, STATEMENT_BREAK, VIEW_AMP };
 
 typedef struct {
     uint32_t len;
@@ -80,9 +80,43 @@ void tree_sitter_witchy_external_scanner_deserialize(void *payload, const char *
 
 static void skip(TSLexer *lexer) { lexer->advance(lexer, true); }
 
+static bool identifier_continuation(int32_t c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+        || (c >= '0' && c <= '9') || c == '_';
+}
+
+// The compiler retires `&mut` but keeps `mut` as a normal identifier. The
+// ordinary lexer cannot make that distinction after a bare `&` token.
+static bool scan_view_amp(TSLexer *lexer) {
+    if (lexer->lookahead != '&') return false;
+    lexer->advance(lexer, false);
+    lexer->mark_end(lexer);
+    if (lexer->lookahead == '&' || lexer->lookahead == '=') return false;
+
+    // Look through trivia without including it in the emitted `&` token.
+    for (;;) {
+        while (lexer->lookahead == ' ' || lexer->lookahead == '\t'
+               || lexer->lookahead == '\r' || lexer->lookahead == '\n'
+               || lexer->lookahead == '\f') skip(lexer);
+        if (lexer->lookahead != '/') break;
+        lexer->advance(lexer, true);
+        if (lexer->lookahead != '/') return true;
+        while (lexer->lookahead != '\n' && lexer->lookahead != 0) skip(lexer);
+    }
+
+    if (lexer->lookahead != 'm') return true;
+    lexer->advance(lexer, true);
+    if (lexer->lookahead != 'u') return true;
+    lexer->advance(lexer, true);
+    if (lexer->lookahead != 't') return true;
+    lexer->advance(lexer, true);
+    return identifier_continuation(lexer->lookahead);
+}
+
 bool tree_sitter_witchy_external_scanner_scan(void *payload, TSLexer *lexer, const bool *valid_symbols) {
     Scanner *s = payload;
-    if (!valid_symbols[INDENT] && !valid_symbols[DEDENT] && !valid_symbols[STATEMENT_BREAK]) return false;
+    if (!valid_symbols[INDENT] && !valid_symbols[DEDENT] && !valid_symbols[STATEMENT_BREAK]
+        && !valid_symbols[VIEW_AMP]) return false;
 
     // Continue a multi-level outdent that began on a previous (zero-width) call.
     if (s->target >= 0) {
@@ -137,7 +171,13 @@ bool tree_sitter_witchy_external_scanner_scan(void *payload, TSLexer *lexer, con
 
     // Only a real line break can change block structure; an inline `: expr`
     // (same line) must not open a block.
-    if (!saw_newline) return false;
+    if (!saw_newline) {
+        if (valid_symbols[VIEW_AMP] && scan_view_amp(lexer)) {
+            lexer->result_symbol = VIEW_AMP;
+            return true;
+        }
+        return false;
+    }
 
     uint16_t current = top(s);
     if (indent == current && valid_symbols[STATEMENT_BREAK]
@@ -167,6 +207,10 @@ bool tree_sitter_witchy_external_scanner_scan(void *payload, TSLexer *lexer, con
             lexer->result_symbol = DEDENT;
             return true;
         }
+    }
+    if (valid_symbols[VIEW_AMP] && scan_view_amp(lexer)) {
+        lexer->result_symbol = VIEW_AMP;
+        return true;
     }
     return false;
 }

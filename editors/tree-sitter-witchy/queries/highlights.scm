@@ -42,7 +42,7 @@
   "inout" "sink" "own" "move"
   "as" "retain" "without" "region"
   "comptime" "derive"
-  "mode" "mut"
+  "mode"
   "sealed" "must" "grantable" "capability"
   "dyn"
   "unique" "frozen"
@@ -50,8 +50,6 @@
 ] @keyword
 
 (attribute) @attribute
-
-(lifetime) @type
 
 ; `break`/`continue` are whole-rule tokens, so capture the statement nodes.
 [

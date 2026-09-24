@@ -35,7 +35,7 @@ module.exports = grammar({
 
   extras: $ => [/[ \t\r\f\n]/, $.comment],
 
-  externals: $ => [$._indent, $._dedent, $._statement_break],
+  externals: $ => [$._indent, $._dedent, $._statement_break, $._view_amp],
 
   conflicts: $ => [
     [$.lambda, $._var_identifier],
@@ -107,8 +107,7 @@ module.exports = grammar({
       field('type', $._type),
     ),
 
-    // `type Parser(a, 'input):` — ordinary and lifetime parameters share one
-    // list and keep source order (RFC-0112 / RFC-0122).
+    // Ordinary type parameters only; lifetime parameters are migration syntax.
     type_definition: $ => seq(
       optional(choice('sealed', 'must', seq('must', 'sealed'))),
       'type',
@@ -118,7 +117,7 @@ module.exports = grammar({
       ':',
       field('body', $.type_body),
     ),
-    type_parameters: $ => seq('(', commaSep1(choice($.lifetime, $.identifier)), ')'),
+    type_parameters: $ => seq('(', commaSep1($.identifier), ')'),
     derive_clause: $ => seq('derive', '(', commaSep1($.identifier), ')'),
 
     type_body: $ => seq($._indent, repeat($._type_member), $._dedent),
@@ -209,7 +208,7 @@ module.exports = grammar({
 
     // ---- Types -----------------------------------------------------------
 
-    _type: $ => choice($.lifetime, $._value_type),
+    _type: $ => $._value_type,
     _value_type: $ => seq(
       optional(field('qualifier', choice('unique', 'frozen'))),
       choice(
@@ -230,33 +229,20 @@ module.exports = grammar({
     dyn_type: $ => seq('dyn', field('trait', choice($.generic_type, $.identifier))),
     slice_type: $ => seq('[', field('element', $._type), ']'),
     qualified_type: $ => seq(field('module', $.identifier), '.', field('name', $.identifier)),
-    // RFC-0122: `&'a T` / `&'a mut T`. The lifetime is required on a written
-    // reference type; `mut` is contextual after that lifetime.
+    // RFC-0167: immutable rooted views are the only reference spelling.
+    // `&[T]` is a view of the slice type, not a distinct legacy loan.
     reference_type: $ => prec.right(seq(
-      '&',
-      field('lifetime', $.lifetime),
-      optional('mut'),
+      $._view_amp,
       field('type', $._type),
     )),
     // `x: impl Show` — a fresh type variable bounded by the trait.
     impl_trait_type: $ => seq('impl', field('trait', choice($.generic_type, $.identifier))),
-    generic_type: $ => prec(1, choice(seq(
+    generic_type: $ => prec(1, seq(
       field('name', choice(seq($.identifier, '.', $.identifier), $.identifier)),
       token.immediate('('),
       commaSep1($._type),
       ')',
-    ), seq(
-      // `View` is still a legal nominal name, but the retired two-argument
-      // builtin View(T, 'a) is not a type. Keep nominal lifetime arguments.
-      field('name', alias('View', $.identifier)),
-      token.immediate('('),
-      $._type,
-      optional(choice(
-        seq(',', $._value_type),
-        seq(',', $._type, ',', commaSep1($._type)),
-      )),
-      ')',
-    ))),
+    )),
     // Capability rights: `Dir[Read]`, `Net[Connect, Tcp]`.
     rights_type: $ => prec(1, seq(
       field('name', $.identifier),
@@ -527,10 +513,9 @@ module.exports = grammar({
         field('operator', choice('-', '!', '~', '*')),
         field('operand', $._expression),
       ),
-      // RFC-0122 borrow expressions do not write a lifetime: `&place`, `&mut place`.
+      // RFC-0167 forms a rooted immutable view of a place.
       seq(
-        '&',
-        optional(field('mutable', alias('mut', $.mutable))),
+        $._view_amp,
         field('operand', $._expression),
       ),
     )),
@@ -603,8 +588,6 @@ module.exports = grammar({
     ),
 
     identifier: _ => /[a-zA-Z_][a-zA-Z0-9_]*/,
-    // RFC-0083 / RFC-0112 / RFC-0122: `'a`, `'input`. Distinct kind from `a`.
-    lifetime: _ => /'[a-zA-Z_][a-zA-Z0-9_]*/,
     boolean: _ => choice('true', 'false'),
     integer: _ => token(choice(
       /0[xX][0-9a-fA-F_]+/,
