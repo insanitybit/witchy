@@ -87,6 +87,18 @@ immediate-field program still produces 494 in the canonical interpreter and
 admitted Wasm with zero leaks. This is evidence for row G's current partial
 boundary, not completion of nested aggregate carriers.
 
+**Exact whole tuple root (row G, 2026-09-24):** The direct `&(Int, String)`
+carrier retains the tuple and its String child across a relay, call, return,
+and owner replacement. The hand-computed result is
+`2 + length("abc") + 9 = 14`;
+`rfc0167_tuple_root_view::exact_tuple_view_keeps_both_old_fields_after_owner_replacement`
+produces `14` in admitted unoptimized Wasm with `Some(0)` canonical heap leaks.
+The same focused target passes 4/4 cases: `&(Int, Bool)` and
+`&(Int, &String)` have no authenticated whole-tuple carrier, a region-born
+tuple root cannot escape, and closure capture of this tuple view remains
+refused. Broader tuple roots and tuple-view captures still need separate
+carrier evidence.
+
 ## Optimization-readiness carrier audit
 
 This inventory identifies production carriers already capable of preserving the
