@@ -102,6 +102,7 @@ corpus_impact=0
 gate_example_mods=()
 gate_witchy_tests=()
 gate_need_conformance=0
+gate_need_std_roots=0
 broad_e2e=0
 add_pkg() {
     local p="$1" x
@@ -205,6 +206,16 @@ emit_gate_nextest() {
     if [ "$gate_need_stdlib_docs" -eq 1 ]; then
         need_witchy=1
         expr="${expr:+$expr or }test(stdlib_docs_are_current)"
+    fi
+    # One 0.2s test. Its binary is witchy-types' lib test, which the gate's
+    # warm target already holds unless witchy-types itself changed, and then
+    # the crate is selected anyway.
+    if [ "$gate_need_std_roots" -eq 1 ]; then
+        case " $args " in
+            *" -p witchy-types "*) ;;
+            *) args="${args:+$args }-p witchy-types" ;;
+        esac
+        expr="${expr:+$expr or }test(=std_pruning::tests::pruning_roots_cover_every_compiler_std_literal)"
     fi
     for m in ${gate_witchy_tests[0]+"${gate_witchy_tests[@]}"}; do
         need_witchy=1
@@ -407,6 +418,16 @@ for p in "${paths[@]}"; do
         scratch/* | \
         security-eval/*) ;;
         *) canonical_rewrite_paths_only=0 ;;
+    esac
+    # witchy-types' std-pruning root census scans the Rust sources of these
+    # crates for std name literals ("meta.TypeHole"). Any edit to them can add
+    # one, and a crate-scoped selection never reaches witchy-types: d92c12c45
+    # added a literal in witchy-interp, gated green, and left master red on it.
+    case "$p" in
+        crates/witchy-interp/*.rs | crates/witchy-lower/*.rs | \
+        crates/witchy-runtime/*.rs | crates/witchy-syntax/*.rs | \
+        crates/witchy-types/*.rs | crates/witchy-wir/*.rs | src/*.rs)
+            gate_need_std_roots=1 ;;
     esac
     case "$p" in
         src/source/package_inputs/registry.rs | \

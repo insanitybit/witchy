@@ -379,6 +379,28 @@ fn gate_nextest_crate_only_interp_does_not_attach_example_tests_matrix() {
 }
 
 #[test]
+fn gate_nextest_compiler_crate_edits_run_the_std_pruning_root_census() {
+    // d92c12c45 added a std name literal in witchy-interp; the crate-scoped
+    // gate never reached witchy-types' census of those literals and master
+    // went red on it.
+    let census = "test(=std_pruning::tests::pruning_roots_cover_every_compiler_std_literal)";
+    for path in [
+        "crates/witchy-interp/src/interpreter/reflection.rs",
+        "crates/witchy-lower/src/codegen/expr_lower.rs",
+        "crates/witchy-wir/src/lib.rs",
+        "src/lib.rs",
+    ] {
+        let output = gate_nextest(&[path]);
+        assert!(
+            output.contains("-p witchy-types") && output.contains(census),
+            "{path} did not select the std-pruning root census: {output}",
+        );
+    }
+    let output = gate_nextest(&["std/meta.witchy"]);
+    assert!(!output.contains(census), "a std-only edit selected the census: {output}");
+}
+
+#[test]
 fn gate_nextest_lower_only_does_not_attach_wir_or_runtime() {
     let output = gate_nextest(&["crates/witchy-lower/src/codegen/expr_lower.rs"]);
     assert!(
