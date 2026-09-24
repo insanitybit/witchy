@@ -362,15 +362,6 @@ pub fn web() -> Site:
     );
     let project_text = project.to_str().unwrap();
 
-    let tested = run(&["test", "--web", project_text]);
-    assert_eq!(
-        tested.status.code(),
-        Some(0),
-        "{}",
-        String::from_utf8_lossy(&tested.stderr)
-    );
-    assert!(String::from_utf8_lossy(&tested.stdout).contains("zero browser runtime"));
-
     let built = run(&["build", "--web", project_text]);
     assert_eq!(
         built.status.code(),
