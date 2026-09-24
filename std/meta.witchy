@@ -64,7 +64,6 @@ sealed type MatchArmSyntax:
     CompilerMatchArmSyntax(String, String)
 
 sealed type ParamSyntax:
-    ParamSyntax(String)
     CompilerParamSyntax(String, String)
 
 sealed type Ident:
@@ -630,7 +629,7 @@ pub fn function_block(public: Bool, name: Ident, params: List(ParamSyntax), ret:
     __meta_function_block(public, name, params, ret, body)
 
 // Compiler-owned function construction. Name, parameters, return type, and body
-// transfer as typed nodes; compatibility ParamSyntax values remain accepted.
+// transfer as typed nodes.
 fn __meta_function_block(public: Bool, name: Ident, params: List(ParamSyntax), ret: Option(TypeSyntax), body: BlockSyntax) -> ItemSyntax:
     __meta_function_block(public, name, params, ret, body)
 

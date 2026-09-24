@@ -2733,7 +2733,6 @@ Hole-free `quote block:` values retain compiler-owned block AST.
 
 #### `sealed type ParamSyntax`
 
-- `ParamSyntax(String)`
 - `CompilerParamSyntax(String, String)`
 
 #### `sealed type Ident`

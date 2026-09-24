@@ -425,25 +425,7 @@ pub(super) fn compiler_params(
                     }
                 })
             }
-            Value::Ctor { name, fields }
-                if tail(name) == "ParamSyntax" && matches!(fields.as_slice(), [Value::Str(_)]) =>
-            {
-                let Value::Str(source) = &fields[0] else { unreachable!() };
-                let module = parse_module(&format!(
-                    "fn __witchy_meta_param_payload({source}):\n    ()\n"
-                ))
-                .map_err(|error| RuntimeError {
-                    message: format!("invalid ParamSyntax payload: {error}"),
-                })?;
-                let [Item::Function(function)] = module.items.as_slice() else {
-                    return err("invalid ParamSyntax payload: expected one function wrapper");
-                };
-                let [param] = function.params.as_slice() else {
-                    return err("invalid ParamSyntax payload: expected exactly one parameter");
-                };
-                Ok(param.clone())
-            }
-            _ => err("meta.function_block expected ParamSyntax values"),
+            _ => err("meta.function_block expected compiler-owned ParamSyntax values"),
         })
         .collect()
 }
@@ -994,5 +976,29 @@ mod tests {
             "{}",
             error.message,
         );
+    }
+
+    #[test]
+    fn function_parameters_accept_only_compiler_owned_ast_handles() {
+        let parameter = Param {
+            name: "value".into(),
+            ty: Some(Type::Named("Int".into(), Vec::new())),
+            convention: Convention::Let,
+            default: None,
+        };
+        let handles = HashMap::from([("parameter-1".into(), parameter.clone())]);
+        let owned = Value::List(Rc::new(vec![Value::Ctor {
+            name: "meta.CompilerParamSyntax".into(),
+            fields: Rc::new(vec![Value::str("parameter-1"), Value::str("value: Int")]),
+        }]));
+        assert_eq!(compiler_params(&owned, &handles).expect("authenticated parameter"), vec![parameter]);
+
+        let source_backed = Value::List(Rc::new(vec![Value::Ctor {
+            name: "meta.ParamSyntax".into(),
+            fields: Rc::new(vec![Value::str("value: Int")]),
+        }]));
+        let error = compiler_params(&source_backed, &handles)
+            .expect_err("source-backed parameters cannot be reparsed");
+        assert!(error.message.contains("compiler-owned ParamSyntax"), "{error}");
     }
 }

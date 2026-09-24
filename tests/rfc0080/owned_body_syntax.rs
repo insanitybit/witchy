@@ -87,6 +87,44 @@ fn main(console: Console):
 "#;
 
 #[test]
+fn compiler_owned_parameter_builds_admitted_wasm_without_source_reparse() {
+    use witchy::opt::{self, OptSet};
+    struct ResetOptimizationOverride;
+    impl Drop for ResetOptimizationOverride {
+        fn drop(&mut self) { opt::set_for_tests(None); }
+    }
+
+    // The generated function returns its one Int argument, so the result is 42.
+    let source = r#"
+import meta
+
+comptime:
+    let int = meta.type_named(meta.ident("Int"), [])
+    let value = meta.ident("value")
+    let parameter = meta.param(value, int)
+    let body = meta.block([], Some(meta.expr_name(value)))
+    emit_item(meta.function_block(true, meta.ident("generated"), [parameter], Some(int), body))
+
+fn main() -> Int:
+    generated(42)
+"#;
+    opt::set_for_tests(Some(OptSet::none()));
+    let _reset = ResetOptimizationOverride;
+    let checked = witchy::resolve_std_only_checked(source).expect("typed parameter checks");
+    let artifact = witchy::codegen::compile_checked_module_artifact(&checked)
+        .expect_lowered("compiler-owned parameter admits SafeWIR");
+    let mut runtime = witchy::runtime::Runtime::batch().expect("runtime");
+    let mut actor = runtime.spawn_admitted(
+        &artifact,
+        witchy::runtime::Capabilities { print_int: true, quiet: true, ..Default::default() },
+        128,
+    ).expect("admitted Wasm instance");
+    actor.run().expect("admitted Wasm execution");
+    assert_eq!(actor.output(), vec!["42".to_string()]);
+    assert_eq!(actor.canonical_heap_leaks().expect("canonical heap audit"), Some(0));
+}
+
+#[test]
 fn owned_body_syntax_survives_function_builders_on_both_backends() {
     let parsed = parser::parse_module(SOURCE).expect("parse compiler-owned body program");
     assert_eq!(parsed.compiler_stmt_syntax.len(), 1);
