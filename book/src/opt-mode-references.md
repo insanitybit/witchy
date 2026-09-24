@@ -70,7 +70,7 @@ values[0] = 9
 observed by a live view, the implementation uses copy-on-write (CoW). The
 mutation may therefore detach the `var` value; it never retargets, invalidates,
 or mutates an existing view. A view formed from a later value observes that
-later snapshot.
+later snapshot. In `mode opt`, a direct or function-value `var unique List(Int)` call is refused after a view of that argument root has been formed: preserving the view would require a hidden copy. The current check conservatively remembers viewed roots for the function, so it can also refuse a call after a view is no longer used. Without a preceding view, the unique call writes back to its original root.
 
 `var` is the sole mutation and write-back syntax in this model:
 

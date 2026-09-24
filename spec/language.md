@@ -1034,8 +1034,7 @@ fn main(console: Console):
 The qualifiers don't change values or representation, but they can strengthen
 the performance contract. For a `var` parameter typed `unique`, `mode opt`
 rejects a missing ownership proof and names the alias, move, or loan that
-invalidated it. Normal mode repairs a missing proof with copy-on-write so the
-call remains value-correct while preserving existing snapshots. `List.pop`,
+invalidated it. A direct or function-value `var unique List(Int)` call also fails in opt mode after forming a view of its argument root, because retaining that view would require a hidden copy. The current source check conservatively retains viewed roots for the function and may reject a call after the view has become dead. Normal mode repairs a missing proof with copy-on-write so the call remains value-correct while preserving existing snapshots. `List.pop`,
 `Dict.insert`, and `Dict.remove` use this rule for their no-container-copy guarantee. See
 [performance.md](performance.md).
 
@@ -1092,9 +1091,7 @@ authenticated range. Dereference rechecks any dynamic bounds against that
 retained root. No source construct can forge a root, projection, or range.
 
 A view is a snapshot value. Taking a view from a `var` does not freeze that
-binding and does not create a mutable alias. A later assignment, field/index
-update, or `var` call uses copy-on-write when necessary, preserving the root
-held by existing views:
+binding and does not create a mutable alias. In normal mode a later assignment, field/index update, or `var` call uses copy-on-write when necessary, preserving the root held by existing views. In opt mode a `var unique List(Int)` call after a view of the argument root is refused if preserving the view would need a hidden copy:
 
 ```witchy
 fn main() -> Int:
