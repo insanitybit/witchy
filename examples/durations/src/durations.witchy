@@ -2,7 +2,8 @@
 // type, so the compiler stops you adding a Duration to a bare number, yet they
 // combine and compare with the ordinary operators (`d * 2`, `a < b`, `a + b`).
 // The std `duration` module formats and parses them. Everything here is data-only, so
-// it runs identically on the interpreter and compiled to WASM.
+// the ordinary command runs it as admitted Wasm. `witchy parity` can compare
+// that run with canonical SafeWIR.
 // Run: witchy examples/durations/src/durations.witchy
 
 import duration

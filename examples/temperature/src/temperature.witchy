@@ -1,8 +1,7 @@
 // A Fahrenheit-to-Celsius conversion table — the first real program in K&R's
 // *The C Programming Language* and a staple of the Go tour, reproduced in
-// witchy. It needs real float output: `math.format_float` formats a Float on
-// both the interpreter and the compiled WASM backend, where the `to_string`
-// builtin can't (no float formatting in codegen yet).
+// witchy. `math.format_float` renders each Float with one decimal place in the
+// ordinary admitted Wasm run.
 
 import math
 

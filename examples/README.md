@@ -5,7 +5,7 @@ Each example is its own **rune** (a witchy package): `<name>/witchy.toml` plus
 testing — `src/<name>_test.witchy`. From the repo root:
 
 ```sh
-witchy examples/hello/src/hello.witchy          # run
+witchy examples/hello/src/hello.witchy          # run admitted Wasm
 witchy check   examples/hello/src/hello.witchy  # type-check (capabilities included)
 witchy caps    examples/hello/src/hello.witchy  # show its capability footprint
 witchy sandbox examples/hello/src/hello.witchy  # run confined in the WASM VM
@@ -34,8 +34,9 @@ for the promise and trust boundaries behind that label.
 | 6 | [fixture_showcase](../projects/fixture-showcase/) | Data-only unit tests plus deterministic capability fixtures with canonical-interpreter/admitted-Wasm parity and checked effect counts. |
 
 From the repository root, the following sequence checks the source, runs its
-tests, compares both backends, emits and executes portable WASM, inspects
-authority, and exercises a real file-reading application:
+tests, optionally compares canonical SafeWIR with admitted Wasm, emits and
+executes portable Wasm, inspects authority, and exercises a real file-reading
+application:
 
 ```sh
 witchy check examples/hello/src/hello.witchy

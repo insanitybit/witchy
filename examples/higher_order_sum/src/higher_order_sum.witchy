@@ -2,7 +2,8 @@
 // functions example from Rust by Example, reproduced in witchy two ways: an
 // imperative loop over a range, and a functional pipeline over std/list (the
 // witchy analogue of Rust's iterator adapters: map / take_while / filter / sum).
-// Both compile to WASM and run on the interpreter, and they agree.
+// The ordinary command runs both as admitted Wasm; `witchy parity` can compare
+// their results with canonical SafeWIR.
 
 import list
 

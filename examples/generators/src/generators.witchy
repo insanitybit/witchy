@@ -4,7 +4,8 @@
 // what's demanded, so an infinite generator is fine when something bounds it.
 // Informed by the Rust retrospectives: because witchy values are "data" (no
 // borrowing), generators need none of the lending-iterator complexity Rust
-// regrets. Runs on both the interpreter and the compiled WASM backend.
+// regrets. The ordinary command runs admitted Wasm; `witchy parity` can compare
+// it with canonical SafeWIR.
 
 import iter
 

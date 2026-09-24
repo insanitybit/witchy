@@ -2,7 +2,8 @@
 // declares `area` and `name`; three types implement it; and the `describe` /
 // `total_area` functions work for *any* Shape via a `where s: Shape` bound. Witchy
 // monomorphizes such a generic per concrete type, so trait code stays fast and
-// compiles to WASM identically to the interpreter. Data-only apart from `main` (root footprint: `Console`). Run:
+// runs as admitted Wasm through the ordinary command. `witchy parity` can compare
+// that run with canonical SafeWIR. Data-only apart from `main` (root footprint: `Console`). Run:
 //   witchy examples/traits/src/traits.witchy
 trait Shape:
     fn area(self) -> Int

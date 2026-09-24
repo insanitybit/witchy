@@ -1,7 +1,7 @@
 // Deterministic pseudo-randomness with the std `prng` module: a seed replays
-// the same sequence, so this prints the same rolls every run — and identically on
-// the interpreter and compiled to WASM. `var Rng` write-back advances the
-// explicit state (no hidden global and no capability needed).
+// the same sequence, so this prints the same rolls on each admitted Wasm run.
+// `witchy parity` can compare that result with canonical SafeWIR. `var Rng`
+// write-back advances the explicit state (no hidden global and no capability needed).
 // Run: witchy examples/dice/src/dice.witchy
 
 import prng
