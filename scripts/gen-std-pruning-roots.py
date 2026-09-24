@@ -31,6 +31,15 @@ out += ["];", ""]
 target = root / "crates/witchy-types/src/std_pruning_roots.rs"
 text = "\n".join(out)
 if "--check" in sys.argv:
-    sys.exit(0 if target.exists() and target.read_text() == text else 1)
+    # Only a MISSING root is unsafe: pruning would remove a std function the
+    # compiler reaches. An extra root just keeps one more function, so deleting
+    # the last literal (often in a test) must not red the gate until someone
+    # regenerates -- parallel test-deletion branches each left a different
+    # stale subset on 2026-09-24.
+    listed = set(re.findall(r'^    "([^"]+)",$', target.read_text(), re.M)) if target.exists() else set()
+    missing = sorted(names - listed)
+    if missing:
+        print("missing roots: " + ", ".join(missing), file=sys.stderr)
+    sys.exit(1 if missing else 0)
 target.write_text(text)
 print(f"{len(names)} names -> {target.relative_to(root)}")
