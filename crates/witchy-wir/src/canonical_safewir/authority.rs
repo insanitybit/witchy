@@ -3293,6 +3293,49 @@ fn match_layout_graph(
     true
 }
 
+/// A plain packed List layout has no authority to erase a nested view or
+/// unique contract, including one hidden in a tuple or nominal field.
+/// Frozen is representation-neutral and remains allowed by the source ABI.
+/// Authenticated owner-list families are checked before this layout path.
+fn list_element_needs_owner_carrier(
+    source: &witchy_syntax::ast::Type,
+    records: &ScalarRecordFields,
+) -> bool {
+    use witchy_syntax::ast::{Type, TypeQual};
+    // Keep this judgment iterative and bounded: candidate source and nominal
+    // definitions are untrusted inputs to the SafeWIR authority checker.
+    const MAX_LIST_ELEMENT_SCAN_NODES: usize = 1_024;
+    let mut pending = vec![source];
+    let mut visited_definitions = BTreeSet::new();
+    let mut visited_nodes = 0;
+    while let Some(node) = pending.pop() {
+        visited_nodes += 1;
+        if visited_nodes > MAX_LIST_ELEMENT_SCAN_NODES { return true; }
+        match node {
+            Type::Qualified(TypeQual::Frozen, inner) | Type::Slice(inner) => pending.push(inner),
+            Type::Qualified(..) => return true,
+            Type::Tuple(items) => pending.extend(items),
+            Type::RecordCompose { base, fields } => {
+                pending.push(base);
+                pending.extend(fields.iter().map(|(_, field)| field));
+            }
+            Type::Fn(parameters, result, _, _) => {
+                pending.extend(parameters);
+                pending.push(result);
+            }
+            Type::Named(name, arguments) | Type::Dyn(name, arguments) => {
+                pending.extend(arguments);
+                if visited_definitions.insert(name) {
+                    if let Some(definition) = records.get(name) {
+                        pending.extend(definition.variants.iter().flat_map(|variant| &variant.fields));
+                    }
+                }
+            }
+        }
+    }
+    false
+}
+
 fn enqueue_layout_children(
     layout: crate::layout::LayoutId,
     source: &witchy_syntax::ast::Type,
@@ -3319,6 +3362,13 @@ fn enqueue_layout_children(
         witchy_syntax::ast::Type::Named(name, arguments) if name == "List" && arguments.len() == 1 => {
             let LayoutKind::PackedList { element, .. } = descriptor.kind() else { return false };
             let Some(element) = layouts.get(*element) else { return false };
+            // A nested qualifier changes the source carrier. In particular,
+            // List(&Int) uses its authenticated GC owner-list family; a plain
+            // packed List(Int) layout cannot stand in for it. Preserve this
+            // boundary for pointer elements such as String too.
+            if list_element_needs_owner_carrier(&arguments[0], records) {
+                return false;
+            }
             if is_unit_source_type(&arguments[0]) {
                 return matches!(element.kind(), LayoutKind::Scalar(ScalarKind::Unit));
             }
@@ -4106,6 +4156,58 @@ mod tests {
                 &BTreeMap::new(), &[], &mut CorrespondenceContext::default(),
             ), "a qualified Duration source cannot claim the plain scalar layout");
         }
+    }
+
+    #[test]
+    fn plain_list_layout_cannot_authenticate_a_view_element_carrier() {
+        use crate::layout::{PointerSlot, RcHeader, ScalarKind};
+        use witchy_syntax::ast::{Type, TypeQual};
+
+        let mut layouts = LayoutInterner::new();
+        let integer = layouts.intern_scalar(ScalarKind::Int).unwrap();
+        let raw_byte = layouts.intern_scalar(ScalarKind::RawByte).unwrap();
+        let string = layouts.intern_runtime_buffer(raw_byte).unwrap();
+        let string_slot = layouts.intern_runtime_pointer_value_slot(string, PointerSlot::Owned).unwrap();
+        let cases = [
+            ("Int", layouts.intern_packed_list(integer, RcHeader::Required).unwrap()),
+            ("String", layouts.intern_packed_list(string_slot, RcHeader::Required).unwrap()),
+        ];
+        for (element, layout) in cases {
+            let plain = Type::Named("List".into(), vec![Type::Named(element.into(), vec![])]);
+            assert!(layout_matches_source(layout, &plain, &layouts, &BTreeMap::new()),
+                "the ordinary List({element}) layout still corresponds");
+            let frozen = Type::Named("List".into(), vec![Type::Qualified(
+                TypeQual::Frozen, Box::new(Type::Named(element.into(), vec![])),
+            )]);
+            assert!(layout_matches_source(layout, &frozen, &layouts, &BTreeMap::new()),
+                "frozen is representation-neutral for List({element})");
+            for qualifier in [TypeQual::View, TypeQual::Unique] {
+                let qualified = Type::Named("List".into(), vec![Type::Qualified(
+                    qualifier, Box::new(Type::Named(element.into(), vec![])),
+                )]);
+                assert!(!layout_matches_source(layout, &qualified, &layouts, &BTreeMap::new()),
+                    "a plain List({element}) layout must not erase its element qualifier");
+                assert!(!value_type_matches_source(
+                    ValueType::Ref(layout), &qualified, &layouts, &[],
+                    &mut CorrespondenceContext::default(), &BTreeMap::new(), &BTreeMap::new(),
+                ), "a forged plain Ref must not satisfy List(qualified {element})");
+            }
+        }
+
+        let tuple = layouts.intern_packed_record(vec![integer]).unwrap();
+        let tuple_slot = layouts.intern_runtime_pointer_value_slot(tuple, PointerSlot::Owned).unwrap();
+        let tuple_list = layouts.intern_packed_list(tuple_slot, RcHeader::Required).unwrap();
+        let plain_tuple = Type::Named("List".into(), vec![Type::Tuple(vec![Type::Named("Int".into(), vec![])])]);
+        assert!(layout_matches_source(tuple_list, &plain_tuple, &layouts, &BTreeMap::new()));
+        let viewed_tuple = Type::Named("List".into(), vec![Type::Tuple(vec![Type::Qualified(
+            TypeQual::View, Box::new(Type::Named("Int".into(), vec![])),
+        )])]);
+        assert!(!layout_matches_source(tuple_list, &viewed_tuple, &layouts, &BTreeMap::new()),
+            "a tuple cannot hide a rooted view inside an ordinary List layout");
+        assert!(!value_type_matches_source(
+            ValueType::Ref(tuple_list), &viewed_tuple, &layouts, &[],
+            &mut CorrespondenceContext::default(), &BTreeMap::new(), &BTreeMap::new(),
+        ));
     }
 
     #[test]
