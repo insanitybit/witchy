@@ -5,58 +5,13 @@
 //! nodes, so the enclosing declaration is never rendered and reparsed.
 
 use crate::ast::{Block, Expr, Function, Item, Param, Pattern, Stmt, Type};
-use crate::parser::{
-    QUOTE_EXPR_HOLE_PREFIX, QUOTE_PATTERN_HOLE_PREFIX, QUOTE_TYPE_HOLE_PREFIX, parse_module,
-};
+use crate::parser::{QUOTE_EXPR_HOLE_PREFIX, QUOTE_PATTERN_HOLE_PREFIX, QUOTE_TYPE_HOLE_PREFIX};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ItemSyntaxHole {
     Expr(Expr),
     Type(Type),
     Pattern(Pattern),
-}
-
-pub fn parse_expr_payload(source: &str) -> Result<Expr, String> {
-    let body = indent(source, 4);
-    let module = parse_module(&format!("fn __witchy_syntax_payload():\n{body}\n"))
-        .map_err(|error| format!("invalid ExprSyntax payload: {error}"))?;
-    let [Item::Function(function)] = module.items.as_slice() else {
-        return Err("invalid ExprSyntax payload: expected exactly one expression".into());
-    };
-    let [Stmt::Expr(expr)] = function.body.stmts.as_slice() else {
-        return Err("invalid ExprSyntax payload: expected one expression".into());
-    };
-    Ok(expr.clone())
-}
-
-pub fn parse_type_payload(source: &str) -> Result<Type, String> {
-    let module = parse_module(&format!("type __WitchySyntaxPayload = {source}\n"))
-        .map_err(|error| format!("invalid TypeSyntax payload: {error}"))?;
-    let [Item::TypeAlias { name, ty, .. }] = module.items.as_slice() else {
-        return Err("invalid TypeSyntax payload: expected exactly one type".into());
-    };
-    if name != "__WitchySyntaxPayload" {
-        return Err("invalid TypeSyntax payload: parser lost the wrapper alias".into());
-    }
-    Ok(ty.clone())
-}
-
-pub fn parse_pattern_payload(source: &str) -> Result<Pattern, String> {
-    let pattern = indent(source, 8);
-    let module = parse_module(&format!(
-        "fn __witchy_syntax_payload(value):\n    match value:\n{pattern} -> 0\n"
-    ))
-    .map_err(|error| format!("invalid PatternSyntax payload: {error}"))?;
-    let [Item::Function(function)] = module.items.as_slice() else {
-        return Err("invalid PatternSyntax payload: expected exactly one pattern".into());
-    };
-    let [Stmt::Expr(Expr::Match { arms, .. })] = function.body.stmts.as_slice() else {
-        return Err("invalid PatternSyntax payload: parser lost the wrapper match".into());
-    };
-    let [arm] = arms.as_slice() else {
-        return Err("invalid PatternSyntax payload: expected one pattern".into());
-    };
-    Ok(arm.pattern.clone())
 }
 
 pub fn instantiate_item(template: &Item, holes: Vec<ItemSyntaxHole>) -> Result<Item, String> {
@@ -141,15 +96,6 @@ fn hole_slots(holes: Vec<ItemSyntaxHole>) -> HoleSlots {
         }
     }
     (exprs, types, patterns)
-}
-
-fn indent(source: &str, spaces: usize) -> String {
-    let prefix = " ".repeat(spaces);
-    source
-        .lines()
-        .map(|line| format!("{prefix}{line}"))
-        .collect::<Vec<_>>()
-        .join("\n")
 }
 
 fn ensure_consumed<T>(category: &str, slots: &[Option<T>]) -> Result<(), String> {
@@ -496,17 +442,4 @@ fn substitute_expr(
         }
     }
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn syntax_payloads_reject_category_escape() {
-        assert!(parse_expr_payload("1\n2").is_err());
-        assert!(parse_type_payload("Int\nfn injected():\n    0").is_err());
-        assert!(parse_pattern_payload("_ -> 1\n        _").is_err());
-    }
-
 }

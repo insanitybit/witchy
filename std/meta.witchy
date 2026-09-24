@@ -288,10 +288,6 @@ pub fn type_expr(ty: TypeExpr) -> TypeSyntax:
 fn __meta_type_expr(ty: TypeExpr) -> TypeSyntax:
     __meta_type_expr(ty)
 
-fn type_syntax_source(ty: TypeSyntax) -> String:
-    match ty:
-        CompilerTypeSyntax(_, source) -> source
-
 // Expression syntax builders. Ordinary names retain the compatibility payload;
 // call-site names become compiler-owned nodes so their origin cannot be forged
 // or lost before linking.
@@ -439,10 +435,6 @@ fn __meta_expr_block(body: BlockSyntax) -> ExprSyntax:
 fn __meta_expr_match(scrutinee: ExprSyntax, arms: List(MatchArmSyntax)) -> ExprSyntax:
     __meta_expr_match(scrutinee, arms)
 
-fn expr_source(expr: ExprSyntax) -> String:
-    match expr:
-        CompilerExprSyntax(_, source) -> source
-
 // Compiler-owned pattern syntax. Validated identifiers and structural pattern
 // children retain their origin through generated matches.
 pub fn pattern_var(name: Ident) -> PatternSyntax:
@@ -533,10 +525,6 @@ pub fn pattern_or(patterns: List(PatternSyntax)) -> PatternSyntax:
 fn __meta_pattern_or(patterns: List(PatternSyntax)) -> PatternSyntax:
     __meta_pattern_or(patterns)
 
-fn pattern_source(pattern: PatternSyntax) -> String:
-    match pattern:
-        CompilerPatternSyntax(_, source) -> source
-
 pub fn expr_hole(expr: ExprSyntax) -> SyntaxHole:
     ExprHole(expr)
 
@@ -545,12 +533,6 @@ pub fn type_hole(ty: TypeSyntax) -> SyntaxHole:
 
 pub fn pattern_hole(pattern: PatternSyntax) -> SyntaxHole:
     PatternHole(pattern)
-
-fn syntax_hole_source(hole: SyntaxHole) -> String:
-    match hole:
-        ExprHole(expr) -> expr_source(expr)
-        TypeHole(ty) -> type_syntax_source(ty)
-        PatternHole(pattern) -> pattern_source(pattern)
 
 pub fn match_arm(pattern: PatternSyntax, body: ExprSyntax) -> MatchArmSyntax:
     __meta_match_arm(pattern, body)
