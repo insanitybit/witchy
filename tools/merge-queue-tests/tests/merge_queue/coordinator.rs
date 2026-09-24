@@ -2017,7 +2017,7 @@ fn a_code_submission_without_a_receipt_still_warns() {
 }
 
 #[test]
-fn a_clean_linked_submission_runs_the_automatic_focused_shard() {
+fn a_clean_linked_submission_only_runs_the_focused_shard_when_opted_in() {
     let fixture = QueueFixture::stack(&["a.txt"]);
     let linked = fixture._temp.path().join("linked-a");
     run_git(
@@ -2053,8 +2053,34 @@ fn a_clean_linked_submission_runs_the_automatic_focused_shard() {
     run_git(&linked, &["add", "scripts"]);
     run_git(&linked, &["commit", "--quiet", "-m", "fixture focused check"]);
 
-    let mut command = Command::new("bash");
-    command
+    let mut default_command = Command::new("bash");
+    default_command
+        .arg(linked_scripts.join("merge-queue.sh"))
+        .args(["submit", "a"])
+        .env("MERGE_QUEUE_TEST_ROOT", &fixture.root)
+        .env("MERGE_QUEUE_ALLOW_TEST_ROOT", "1")
+        .env("MERGE_QUEUE_STATE_DIR", &fixture.state)
+        .env("MERGE_QUEUE_AUTOSTART", "0")
+        .env("MERGE_QUEUE_ALLOW_MERGE", "1");
+    let default_output = default_command.output().expect("run default linked submit");
+    assert!(
+        default_output.status.success(),
+        "default linked submit failed:\n{}",
+        String::from_utf8_lossy(&default_output.stderr)
+    );
+    assert!(
+        !marker.exists(),
+        "default submission unexpectedly blocked on the focused shard"
+    );
+    let submitted = fixture
+        .journal()
+        .into_iter()
+        .find(|event| event["event"] == "submitted")
+        .expect("default submission was journaled");
+    assert_eq!(submitted["presubmit_sha_match"], "false");
+
+    let mut opted_in_command = Command::new("bash");
+    opted_in_command
         .arg(linked_scripts.join("merge-queue.sh"))
         .args(["submit", "a"])
         .env("MERGE_QUEUE_TEST_ROOT", &fixture.root)
@@ -2063,28 +2089,30 @@ fn a_clean_linked_submission_runs_the_automatic_focused_shard() {
         .env("MERGE_QUEUE_AUTOSTART", "0")
         .env("MERGE_QUEUE_AUTO_PRESUBMIT", "1")
         .env("MERGE_QUEUE_ALLOW_MERGE", "1");
-    let output = command.output().expect("run linked automatic submit");
+    let output = opted_in_command
+        .output()
+        .expect("run opted-in linked automatic submit");
     assert!(
         output.status.success(),
         "automatic linked submit failed:\n{}",
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(marker.exists(), "automatic focused shard was not invoked");
-    let submitted = fixture
+    let resubmitted = fixture
         .journal()
         .into_iter()
-        .find(|event| event["event"] == "submitted")
-        .expect("automatic submission was journaled");
+        .find(|event| event["event"] == "resubmitted")
+        .expect("opted-in submission was journaled");
     assert_eq!(
-        submitted["presubmit_sha_match"],
+        resubmitted["presubmit_sha_match"],
         "true",
         "automatic submit did not mint a receipt; stderr={} stdout={} marker_exists={}",
         String::from_utf8_lossy(&output.stderr),
         String::from_utf8_lossy(&output.stdout),
         marker.exists()
     );
-    assert_eq!(submitted["presubmit_shard"], "edit");
-    assert_eq!(submitted["presubmit_edit_elapsed_s"], "1");
+    assert_eq!(resubmitted["presubmit_shard"], "edit");
+    assert_eq!(resubmitted["presubmit_edit_elapsed_s"], "1");
 }
 
 #[test]

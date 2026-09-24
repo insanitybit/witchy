@@ -1741,15 +1741,16 @@ cmd_submit() {
             fi
         fi
     fi
-    # Clean linked worktrees can run the focused edit shard before admission,
-    # removing the most common path to a full-gate rediscovery. Never run this
-    # from a dirty checkout: the shared master checkout may contain another
-    # agent's compiler rewrite, and a dirty tree cannot mint an exact receipt.
-    # The ordinary warning remains for branch submissions made elsewhere or
-    # when the focused checks fail.
+    # Submission must stay cheap: the authoritative gate is already serialized,
+    # while a surprise feature-graph rebuild here can keep a ready branch out of
+    # the queue for hours. Clean linked worktrees may explicitly opt in to the
+    # focused edit shard with MERGE_QUEUE_AUTO_PRESUBMIT=1. Never run it from a
+    # dirty checkout: the shared master checkout may contain another agent's
+    # compiler rewrite, and a dirty tree cannot mint an exact receipt. The
+    # ordinary warning remains when the shard is not requested or fails.
     if [ -n "$tip_sha" ] && [ "$presubmit_sha_match" = "false" ] \
         && [ "$submit_docs_safe" -eq 0 ] \
-        && [ "${MERGE_QUEUE_AUTO_PRESUBMIT:-1}" != "0" ]; then
+        && [ "${MERGE_QUEUE_AUTO_PRESUBMIT:-0}" != "0" ]; then
         local submit_current_branch=""
         submit_current_branch="$(git -C "$here" branch --show-current 2>/dev/null || true)"
         if [ "$submit_current_branch" = "$branch" ] \
