@@ -408,6 +408,54 @@ fn cargo_shim_preserves_incremental_mode_for_a_warm_seed_unless_overridden() {
 }
 
 #[test]
+fn cargo_shim_neutralizes_an_ambient_rustc_wrapper_for_plain_and_mbx_routes() {
+    let repo = temp_repo();
+    let root = repo.path();
+    write(root, "scripts/bin/cargo", include_str!("../../../../scripts/bin/cargo"));
+    write(
+        root,
+        "scripts/feature-unification.sh",
+        include_str!("../../../../scripts/feature-unification.sh"),
+    );
+    let print_wrappers = "#!/bin/sh\nprintf '%s|%s\\n' \"${RUSTC_WRAPPER-unset}\" \"${CARGO_BUILD_RUSTC_WRAPPER-unset}\"\n";
+    write(root, "fake-bin/cargo", print_wrappers);
+    write(root, "state/mbx/bin/mbx", print_wrappers);
+    for executable in ["scripts/bin/cargo", "fake-bin/cargo", "state/mbx/bin/mbx"] {
+        let status = Command::new("chmod")
+            .args(["+x", executable])
+            .current_dir(root)
+            .status()
+            .expect("mark fixture executable");
+        assert!(status.success());
+    }
+    let path = std::env::join_paths(
+        std::iter::once(root.join("fake-bin"))
+            .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())),
+    )
+    .expect("fixture PATH");
+    let run = |cache: &str| {
+        Command::new(root.join("scripts/bin/cargo"))
+            .args(["build", "-p", "witchy"])
+            .current_dir(root)
+            .env("PATH", &path)
+            .env("WITCHY_BUILD_CACHE", cache)
+            .env("RUSTC_WRAPPER", "ambient-sccache")
+            .env("CARGO_BUILD_RUSTC_WRAPPER", "ambient-sccache")
+            .env("MBX_STATS_REPORT", root.join("mbx-report.json"))
+            .env_remove("WITCHY_CARGO_SHIM_ACTIVE")
+            .env_remove("WITCHY_GATE_SCOPE")
+            .output()
+            .expect("run cargo shim fixture")
+    };
+
+    for cache in ["off", "mbx"] {
+        let output = run(cache);
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        assert_eq!(String::from_utf8_lossy(&output.stdout), "unset|\n");
+    }
+}
+
+#[test]
 fn cargo_shim_keeps_queue_tooling_out_of_the_shared_mbx_pool() {
     let repo = temp_repo();
     let root = repo.path();

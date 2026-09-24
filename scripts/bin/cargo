@@ -66,6 +66,16 @@ for dir in "${path_entries[@]}"; do
 done
 [ -n "$real_cargo" ] || { echo "scripts/bin/cargo: no real cargo found on PATH" >&2; exit 127; }
 
+# Keep every route through this shim compatible with the serialized gate's
+# target artifacts. This host has a global Cargo rustc-wrapper (sccache), while
+# the gate deliberately builds with no Rust wrapper. Cargo includes the wrapper
+# in its unit fingerprints, so inheriting the global setting makes a warm seed
+# look cold and recompiles dependencies as deep as aws-lc and wasmtime. mbx
+# installs its own wrapper around the Cargo process when selected; clearing the
+# ambient one here only removes the accidental second build identity.
+unset RUSTC_WRAPPER
+export CARGO_BUILD_RUSTC_WRAPPER=
+
 # A cross build needs the target's standard library in the compiler's own
 # sysroot; PATH cannot supply it. When the resolved cargo's toolchain lacks
 # the requested target (Homebrew's rust ships none) but rustup's stable has
