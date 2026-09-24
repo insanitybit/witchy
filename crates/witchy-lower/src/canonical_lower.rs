@@ -2843,14 +2843,14 @@ fn is_aggregate_reference_carrier(ty: &Type) -> bool {
     }
 }
 
-/// `&Int`, or an aggregate whose carrier fields nest it; see
+/// `&Int` or exact `&[Int]`, or an aggregate whose carrier fields nest one; see
 /// `canonical_aggregates::is_rooted_int_view_carrier`. Definition-free: used
 /// only where a builtin shell (`Option`) names its payload directly.
 fn is_view_or_option_view_carrier(ty: &Type) -> bool {
     witchy_types::canonical_aggregates::is_rooted_int_view_carrier(ty, &BTreeMap::new())
 }
 
-/// An aggregate that carries `&Int` views is represented by its
+/// An aggregate that carries `&Int` or exact `&[Int]` views is represented by its
 /// source-derived opaque owner family, one owner per shell. The checked
 /// callable ABI erases view fields to their scalar payloads, so declaration
 /// sites must recover this exact source shape before accepting the aggregate
@@ -20403,6 +20403,7 @@ mod tests {
             ("OptionField", "type OptionField:\n    direct: &Int\n    nested: Option(&Int)\n"),
             ("NominalField", "type Inner:\n    value: &Int\n\ntype NominalField:\n    direct: &Int\n    nested: Inner\n"),
             ("GenericField", "type Box(a):\n    value: a\n\ntype GenericField:\n    direct: &Int\n    nested: Box(&Int)\n"),
+            ("SliceField", "type SliceField:\n    direct: &Int\n    slice: &[Int]\n"),
         ] {
             assert!(
                 rooted_view_aggregate_carrier(source, name),
@@ -20420,8 +20421,8 @@ mod tests {
                 "type ListDecoy:\n    direct: &Int\n    hidden: List(&Int)\n",
             ),
             (
-                "SliceDecoy",
-                "type SliceDecoy:\n    direct: &Int\n    hidden: &[Int]\n",
+                "FloatSliceDecoy",
+                "type FloatSliceDecoy:\n    direct: &Int\n    hidden: &[Float]\n",
             ),
             (
                 "DeepDecoy",

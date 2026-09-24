@@ -696,6 +696,86 @@ mod tests {
     }
 
     #[test]
+    fn exact_int_slice_record_field_rejects_erased_and_wrong_owner_carriers() {
+        let checked = witchy_types::pipeline::link_checked_from_source_bundle(
+            vec![("main".into(), b"type Packet:\n    data: &[Int]\n\nfn main():\n    ()\n".to_vec())],
+            "main",
+            |_, _, _| Ok(Default::default()),
+        ).expect("checked record source");
+        let source = checked.canonical_source().expect("canonical source");
+        let records = witchy_types::canonical_aggregates::type_definitions(source.typed_module().module());
+        let packet = witchy_types::canonical_aggregates::canonical_owner_aggregate_identity(
+            &Type::Named("Packet".into(), Vec::new()), &records,
+        ).expect("exact aggregate identity");
+        let slice_view = |element: &str| Type::Qualified(
+            witchy_syntax::ast::TypeQual::View,
+            Box::new(Type::Slice(Box::new(Type::Named(element.into(), Vec::new())))),
+        );
+        let mut layouts = LayoutInterner::new();
+        let tag = layouts.intern_scalar(ScalarKind::Int).expect("tag layout");
+        let environment = layouts.intern_packed_record(vec![tag]).expect("record environment");
+        let bundle = LayoutBundle::from_interner(&layouts, [environment]).expect("layout bundle");
+        let family = OwnerFamily {
+            source: OwnerFamilySource::Aggregate(packet.clone()),
+            owner_type: GcTypeId::new(700),
+            list_type: GcTypeId::new(701),
+            signature: FunctionSignatureId::new(702),
+            declaration_signature: FunctionSignatureId::new(703),
+            environment,
+            constructors: vec![OwnerConstructor {
+                id: ConstructorId(704),
+                function: super::super::FunctionId::new(0),
+                witness: None,
+                environment_tag: 0,
+                captures: vec![OwnerCapture {
+                    value_type: ValueType::Gc(GcTypeId::new(710)),
+                    storage: CaptureStorage::OwnerField(2),
+                    transfer: CaptureTransfer::CloneManaged,
+                }],
+            }],
+        };
+        let slice_family = |element: &str, id| OwnerFamily {
+            source: OwnerFamilySource::SharedReference(slice_view(element)),
+            owner_type: GcTypeId::new(id),
+            list_type: GcTypeId::new(id + 1),
+            signature: FunctionSignatureId::new(id + 2),
+            declaration_signature: FunctionSignatureId::new(id + 3),
+            environment,
+            constructors: Vec::new(),
+        };
+        let candidate = CanonicalModule::from_lowering(LoweredModuleParts {
+            revision: Revision::new(1),
+            checked_source: CheckedSourceIdentity::from_digest([8; 32]),
+            layouts: bundle,
+            signatures: Vec::new(),
+            imports: Vec::new(),
+            functions: Vec::new(),
+            proper_tail_sites: Vec::new(),
+        }).with_owner_families(vec![family.clone(), slice_family("Int", 710), slice_family("Float", 720)]);
+
+        validate_aggregate_family(&candidate, &family, &packet, &records, &layouts)
+            .expect("exact rooted Int slice occupies an owner field");
+
+        let mut erased = family.clone();
+        erased.constructors[0].captures[0].value_type = ValueType::Ref(environment);
+        assert!(matches!(validate_aggregate_family(&candidate, &erased, &packet, &records, &layouts),
+            Err(CandidateAbiBindingError::MissingCanonicalLayouts)),
+            "an erased linear reference cannot claim the slice field");
+
+        let mut wrong_storage = family.clone();
+        wrong_storage.constructors[0].captures[0].storage = CaptureStorage::EnvironmentField(1);
+        assert!(matches!(validate_aggregate_family(&candidate, &wrong_storage, &packet, &records, &layouts),
+            Err(CandidateAbiBindingError::MissingCanonicalLayouts)),
+            "a slice owner must remain in the authenticated owner field");
+
+        let mut wrong_family = family;
+        wrong_family.constructors[0].captures[0].value_type = ValueType::Gc(GcTypeId::new(720));
+        assert!(matches!(validate_aggregate_family(&candidate, &wrong_family, &packet, &records, &layouts),
+            Err(CandidateAbiBindingError::MissingCanonicalLayouts)),
+            "the Float slice owner cannot claim an Int slice field");
+    }
+
+    #[test]
     fn aggregate_tuple_owner_binds_exact_fields_and_storage() {
         let (candidate, mut family, records, layouts) = aggregate_fixture();
         let tuple = Type::Tuple(vec![Type::Named("Int".into(), Vec::new())]);
