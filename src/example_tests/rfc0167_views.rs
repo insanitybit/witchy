@@ -188,16 +188,16 @@ fn normal_source_does_not_erase_an_unadmitted_opt_aggregate_view_carrier() {
     let api = r#"
 mode opt
 
-pub fn relay(view: &List(List(Int))) -> &List(List(Int)):
+pub fn relay(view: &List(List(List(Int)))) -> &List(List(List(Int))):
     view
 "#;
     let app = r#"
 import api
 
 fn main() -> Int:
-    var values = [[7]]
+    var values = [[[7]]]
     let observed = api.relay(&values)
-    values = [[9]]
+    values = [[[9]]]
     (*observed).length()
 "#;
     let modules = [("api", api), ("app", app)]
