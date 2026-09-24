@@ -567,7 +567,7 @@ for p in "${paths[@]}"; do
             path_has_early=1 ;;
         crates/witchy-lower/src/canonical_list_update.rs | \
         crates/witchy-lower/src/canonical_pipeline.rs)
-            add_early "cargo nextest run -p witchy-lower --features witchy-wir/native --lib -E 'test(canonical_pipeline::tests::list_string_)'"
+            add_early "cargo nextest run -p witchy-lower --features witchy-wir/native --lib -E 'test(canonical_pipeline::tests::list_)'"
             add_early "cargo nextest run -p witchy --features witchy-wir/native --test misc --ignore-default-filter -E 'test(rfc0165_admitted_launch::admitted_aggregates_render_structurally_as_the_interpreter_prints_them)'"
             path_has_early=1 ;;
         crates/witchy-lower/tests/codegen.rs)

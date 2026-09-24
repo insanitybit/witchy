@@ -810,11 +810,6 @@ impl Interpreter {
         }
     }
 
-    #[cfg(test)]
-    fn new(module: Module) -> Self {
-        Self::new_with_witnesses(module, WitnessPlan::default())
-    }
-
     fn new_with_witnesses(module: Module, witnesses: WitnessPlan) -> Self {
         Self::new_with_witnesses_and_seed(module, witnesses, witchy_runtime::rand::seed_from_env())
     }

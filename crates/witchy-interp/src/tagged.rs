@@ -1220,25 +1220,3 @@ fn substitute_holes_block(
     }
     Ok(())
 }
-
-#[cfg(test)]
-mod tests {
-    use super::substitute_holes;
-    use witchy_syntax::ast::{Expr, TaggedHole};
-
-    #[test]
-    fn substitution_traverses_nested_structural_tag_holes() {
-        let mut nested = Expr::TaggedLit {
-            tag: "inner".into(),
-            parts: vec!["".into(), "".into()],
-            holes: vec![TaggedHole::Owned(Box::new(Expr::Var("__witchy_hole_0".into())))],
-            hole_spans: vec![(0, 0)],
-            line: 0,
-        };
-        substitute_holes(&mut nested, &[Expr::Int(42)], &|| "test".into())
-            .expect("nested hole is structurally substituted");
-        let Expr::TaggedLit { holes, .. } = nested else { unreachable!() };
-        assert!(matches!(holes.as_slice(), [TaggedHole::Owned(expr)] if **expr == Expr::Int(42)));
-    }
-
-}

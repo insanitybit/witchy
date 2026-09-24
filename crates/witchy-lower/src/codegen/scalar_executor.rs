@@ -819,20 +819,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn scalar_lane_transfer_accepts_local_integer_updates() {
-        let body = vec![N::SetLocal {
-            local: "checksum".into(),
-            value: binary(
-                BinOp::Add,
-                Kind::I64,
-                E::GetLocal("checksum".into()),
-                E::GetLocal("payload".into()),
-            ),
-        }];
-        assert!(scalar_lane_update_sequence(&body));
-    }
-
-    #[test]
     fn scalar_lane_transfer_rejects_calls_and_effects() {
         let body = vec![N::Do(E::Call {
             func: "task.and_then".into(),

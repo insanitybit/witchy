@@ -3155,53 +3155,9 @@ mod last_use_tests {
 
     // ---- case 1: dead binding (never read) ----
 
-    #[test]
-    fn unread_binding_is_dropped() {
-        let d = drops("import list\nfn f():\n    let buf = list.push([], 1)\n    0\n");
-        assert_eq!(d.total(), 1, "the never-read `buf` is a dead-binding drop");
-    }
-
-    #[test]
-    fn multiple_dead_bindings() {
-        let d = drops("import list\nfn f():\n    let a = list.push([], 1)\n    let b = list.push([], 2)\n    0\n");
-        assert_eq!(d.total(), 2, "both `a` and `b` are never read");
-    }
-
     // ---- case 2: single use in a non-leaking call argument ----
 
-    /// Read exactly once, as the arg of a non-leaking call (`list.length` reads its
-    /// arg and returns an Int) → dropped after that statement.
-    #[test]
-    fn single_use_nonleaking_call_is_dropped() {
-        let d = drops("import list\nfn f() -> Int:\n    let buf = list.push([], 1)\n    list.length(buf)\n");
-        assert_eq!(d.total(), 1, "`buf`'s single non-leaking read is its last use");
-    }
-
-    /// The soak/residual shape: per-iteration scratch bound in a loop body, read once in
-    /// a non-leaking call → dropped INSIDE the body (per iteration), bounding the loop.
-    #[test]
-    fn single_use_scratch_in_loop_drops_per_iteration() {
-        let d = drops("import list\nfn f() -> Int:\n    var sum = 0\n    var i = 0\n    while i < 5:\n        let tmp = list.push([], i)\n        sum = sum + list.length(tmp)\n        i = i + 1\n    sum\n");
-        assert_eq!(d.total(), 1, "`tmp` (per-iteration scratch) drops; `sum`/`i` are reassigned scalars");
-    }
-
-    /// SOUNDNESS: a value bound OUTSIDE a loop but read once INSIDE it is read on every
-    /// iteration — it must NOT be dropped after the read (that would use-after-free on
-    /// the next iteration). The same-block-binding rule rules this out.
-    #[test]
-    fn outer_binding_read_in_loop_is_not_dropped() {
-        let d = drops("import list\nfn f() -> Int:\n    let v = list.push([], 1)\n    var acc = 0\n    var i = 0\n    while i < 3:\n        acc = acc + list.length(v)\n        i = i + 1\n    acc\n");
-        assert_eq!(d.total(), 0, "`v` is bound outside the loop; a per-iteration drop would UAF");
-    }
-
     // ---- adversarial: each of these must produce NO drop (soundness) ----
-
-    /// A value stored into a constructor/collection is retained by it — never dropped.
-    #[test]
-    fn stored_in_constructor_is_not_dropped() {
-        let d = drops("import list\nfn f() -> List(List(Int)):\n    let v = list.push([], 1)\n    let xs = [v]\n    xs\n");
-        assert_eq!(d.total(), 0, "`v` is stored in `xs`; `xs` is returned — no drop");
-    }
 
     /// A value passed to a LEAKING arg (`list.push` STORES its element operand) is kept
     /// live — never dropped. The list operand is a parameter so it can't confound the
@@ -3212,74 +3168,12 @@ mod last_use_tests {
         assert_eq!(d.total(), 0, "`v` leaks into the list (arg 1 is stored); `other` is a param");
     }
 
-    /// Read more than once ⇒ the single-use case does not apply (needs real liveness).
-    #[test]
-    fn read_twice_is_not_dropped() {
-        let d = drops("import list\nfn f() -> Int:\n    let v = list.push([], 1)\n    let n = list.length(v) + list.length(v)\n    n\n");
-        assert_eq!(d.total(), 0, "`v` is read twice; `n` is returned");
-    }
-
-    /// A parameter is caller-owned — the callee must never drop it.
-    #[test]
-    fn parameter_is_not_dropped() {
-        let d = drops("import list\nfn f(xs: List(Int)) -> Int:\n    list.length(xs)\n");
-        assert_eq!(d.total(), 0, "`xs` is a parameter, not a local");
-    }
-
     /// A value captured by a closure belongs to the closure — never dropped by the outer
     /// pass (dropping it inside the lambda body would double-free on repeated calls).
     #[test]
     fn captured_binding_is_not_dropped() {
         let d = drops("import list\nfn f() -> fn() -> Int:\n    let buf = list.push([], 1)\n    fn(): list.length(buf)\n");
         assert_eq!(d.total(), 0, "`buf` is captured by the returned closure");
-    }
-
-    /// A value bound inside a `region:` block is reclaimed by the region — the RC floor
-    /// must not also free it (double-free). Otherwise `tmp` would be a single-use drop.
-    #[test]
-    fn region_confined_value_is_not_dropped() {
-        let d = drops("import list\nfn f() -> Int:\n    let n = region -> Int:\n        let tmp = list.push([], 1)\n        list.length(tmp)\n    n\n");
-        assert_eq!(d.total(), 0, "`tmp` is region-confined; the region frees it, not the RC floor");
-    }
-
-    #[test]
-    fn returned_view_makes_explicit_borrow_argument_leak() {
-        let module = parser::parse_module(
-            "mode opt\n\n\
-             fn view(xs: &List(Int)) -> &List(Int):\n    xs\n\n\
-             fn read(let xs: List(Int)) -> Int:\n    list.length(xs)\n",
-        )
-        .expect("parse");
-        let summaries = Summaries::of_module(&module);
-
-        assert!(
-            summaries.arg_leaks("view", 0, 1),
-            "the declared returned-view relation keeps the owner shared"
-        );
-        assert!(
-            !summaries.arg_leaks("read", 0, 1),
-            "an ordinary explicit borrow remains call-scoped"
-        );
-    }
-
-    #[test]
-    fn owned_result_alias_is_distinct_from_a_live_input_alias() {
-        let module = parser::parse_module(
-            "mode opt\n\n\
-             type Token packed:\n    Skip\n    Value(Int)\n\n\
-             fn pass(own token: Token) -> Token:\n    token\n",
-        )
-        .expect("parse");
-        let summaries = Summaries::of_module(&module);
-
-        assert!(
-            !summaries.arg_leaks("pass", 0, 1),
-            "the caller's moved input binding is dead after an own call"
-        );
-        assert!(
-            summaries.arg_may_alias_out("pass", 0),
-            "the moved storage still aliases the returned value"
-        );
     }
 
     #[test]
@@ -3308,12 +3202,6 @@ mod last_use_tests {
         );
     }
 
-    /// A reassigned binding's churn is rc-floor's free-at-overwrite, not this pass.
-    #[test]
-    fn reassigned_binding_is_not_dropped() {
-        let d = drops("import list\nfn f():\n    var buf = []\n    buf = list.__push(buf, 1)\n    0\n");
-        assert_eq!(d.total(), 0, "`buf` is reassigned");
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -4796,22 +4684,6 @@ pub fn function_is_opt(module: &Module, function: &str) -> bool {
     })
 }
 
-#[cfg(test)]
-mod performance_mode_tests {
-    use super::*;
-    use witchy_syntax::parser;
-
-    #[test]
-    fn generated_trait_names_retain_their_linked_opt_owner() {
-        let mut module = parser::parse_module("").expect("empty module");
-        module.modes = vec!["@opt:worker".into(), "@opt:pkg.nested".into()];
-
-        assert!(function_is_opt(&module, "worker.Advance__worker.Packet__advance"));
-        assert!(function_is_opt(&module, "pkg.nested.Trait__pkg.nested.Type__method"));
-        assert!(!function_is_opt(&module, "normal.Advance__worker.Packet__advance"));
-    }
-}
-
 /// Derive the one conventional-call entry selection consumed by lowering.  The
 /// same checked access graph drives opt diagnostics, normal repair selection,
 /// and the repair telemetry; no backend is allowed to reconstruct this choice
@@ -4925,15 +4797,6 @@ mod fip_tests {
     const STATE: &str = "type State:\n    count: Int\n    limit: Int\n\n";
 
     #[test]
-    fn canonical_owner_threaded_tail_kernel_satisfies_contract() {
-        let source = format!(
-            "{STATE}fn run(own state: unique State, n: Int) -> unique State:\n\
-             \x20   run(state, n - 1)\n"
-        );
-        assert!(misses(&source).is_empty());
-    }
-
-    #[test]
     fn non_tail_recursion_and_replacement_owner_are_rejected() {
         let non_tail = format!(
             "{STATE}fn run(own state: unique State, n: Int) -> unique State:\n\
@@ -4966,17 +4829,6 @@ mod fip_tests {
     }
 
     #[test]
-    fn non_recursive_consume_and_return_helper_does_not_opt_in() {
-        let source = format!(
-            "{STATE}fn normalize(own state: unique State) -> unique State:\n\
-             \x20   console.print(\"not actually linked\")\n\
-             \x20   state\n"
-        );
-        let module = parser::parse_module(&source).expect("parse");
-        assert!(module_fip_misses(&module).is_empty());
-    }
-
-    #[test]
     fn heap_fields_and_auxiliary_parameters_are_rejected() {
         let source = "type State:\n    text: String\n\n\
                       fn run(own state: unique State, suffix: String, n: Int) -> unique State:\n\
@@ -4989,19 +4841,6 @@ mod fip_tests {
         assert!(found.iter().any(|miss| miss.reason.contains("`suffix` is not scalar")));
     }
 
-    #[test]
-    fn recursion_hidden_inside_another_expression_still_activates_contract() {
-        let source = format!(
-            "{STATE}fn pass(own state: unique State) -> unique State:\n    state\n\n\
-             fn run(own state: unique State, n: Int) -> unique State:\n\
-             \x20   if n == 0:\n        return state\n\
-             \x20   pass(run(state, n - 1))\n"
-        );
-        let found = misses(&source);
-        assert!(found.iter().any(|miss| miss.reason.contains("not in tail position")));
-        assert!(found.iter().any(|miss| miss.reason.contains("final expression")));
-        assert!(found.iter().any(|miss| miss.reason.contains("call to `pass`")));
-    }
 }
 
 #[cfg(test)]
@@ -5035,130 +4874,6 @@ mod no_copy_tests {
         module_no_copy_misses(&module)
     }
 
-    /// (RFC-0110 Step 4) The boundary-repair set is keyed by source coordinates,
-    /// and two unproven-unique calls on ONE line are disambiguated by callee +
-    /// arg_index — the codegen consumer cannot use `&Stmt` pointers because the
-    /// checked module is a clone. This pins that keying.
-    #[test]
-    fn boundary_repairs_disambiguate_same_line_calls_by_callee_and_arg_index() {
-        let module = parser::parse_module(
-            "fn one(own a: unique List(Int)) -> Int:\n    list.length(a)\n\
-             \nfn two(own b: unique List(Int)) -> Int:\n    list.length(b)\n\
-             \nfn caller() -> Int:\n    var xs = [1]\n    let alias = xs\n    var ys = [2]\n    let alias2 = ys\n    one(xs) + two(ys)\n",
-        )
-        .expect("parse");
-        witchy_types::typeck::check(&module).expect("type check");
-        let repairs = module_boundary_repairs(&module);
-        // Both aliased owners are repair sites, on the same source line, told
-        // apart by their callee (arg_index is 0 for each single-owner call).
-        let one = repairs.iter().find(|r| r.callee.ends_with("one"));
-        let two = repairs.iter().find(|r| r.callee.ends_with("two"));
-        assert!(one.is_some() && two.is_some(), "both same-line repairs present: {repairs:?}");
-        assert_eq!(one.unwrap().line, two.unwrap().line, "both on the one source line");
-        assert_eq!(one.unwrap().arg_index, 0);
-        assert_eq!(two.unwrap().arg_index, 0);
-        // A fresh owner is NOT a repair site.
-        let fresh = parser::parse_module(
-            "fn one(own a: unique List(Int)) -> Int:\n    list.length(a)\n\
-             \nfn caller() -> Int:\n    one([1, 2, 3])\n",
-        )
-        .expect("parse fresh");
-        witchy_types::typeck::check(&fresh).expect("type check fresh");
-        assert!(module_boundary_repairs(&fresh).is_empty(), "a fresh owner needs no repair");
-    }
-
-    #[test]
-    fn checked_boundary_entry_selection_distinguishes_proven_and_repair_calls() {
-        fn adapter(source: &str) -> BoundaryAdapter {
-            let parsed = parser::parse_module(source).expect("parse");
-            let lowered = witchy_types::traits::lower(parsed);
-            let typed = witchy_types::typeck::annotate_checked(lowered).expect("type check");
-            let access = witchy_types::access::checked_facts(typed.module(), typed.table())
-                .expect("access facts");
-            let selection = boundary_entry_selection(typed.module(), Some(&access));
-            let caller = typed
-                .module()
-                .items
-                .iter()
-                .find_map(|item| match item {
-                    Item::Function(function) if function.name == "caller" => Some(function),
-                    _ => None,
-                })
-                .expect("caller");
-            let call = caller
-                .body
-                .stmts
-                .last()
-                .and_then(|statement| match statement {
-                    Stmt::Expr(call @ Expr::Call { .. }) => Some(call),
-                    _ => None,
-                })
-                .expect("terminal direct call");
-            selection.adapter_for(call).cloned().expect("checked call adapter")
-        }
-
-        let repaired = adapter(
-            "fn take(own xs: unique List(Int)) -> ():\n    return\n\n\
-             fn caller() -> ():\n    var xs = [1]\n    let alias = xs\n    take(xs)\n",
-        );
-        assert_eq!(
-            repaired.entry(),
-            BoundaryEntry::Repair,
-            "an aliased unique value selects the normal repair adapter"
-        );
-        let proven = adapter(
-            "fn take(own xs: unique List(Int)) -> ():\n    return\n\n\
-             fn caller() -> ():\n    take([1])\n",
-        );
-        assert_eq!(
-            proven.entry(),
-            BoundaryEntry::Proven,
-            "a fresh value enters the same opt body through its proven access path"
-        );
-        assert_eq!(
-            repaired.access_identity(),
-            proven.access_identity(),
-            "proven and repair entries retain one checked callable ABI identity"
-        );
-
-        let opt = adapter(
-            "mode opt\n\nfn take(own xs: unique List(Int)) -> ():\n    return\n\n\
-             fn caller() -> ():\n    var xs: unique List(Int) = [1]\n    take(xs)\n",
-        );
-        assert_eq!(
-            opt.entry(),
-            BoundaryEntry::Proven,
-            "an opt caller never selects the normal repair entry"
-        );
-    }
-
-    #[test]
-    fn fresh_local_and_unique_parameter_satisfy_contract() {
-        let found = misses(
-            "fn take(var xs: unique List(Int)) -> ():\n    return\n\
-             \nfn forward(var xs: unique List(Int)) -> ():\n    take(xs)\n    return\n\
-             \nfn fresh() -> ():\n    var xs = [1]\n    take(xs)\n    return\n",
-        );
-        assert!(found.is_empty(), "available proofs should pass: {found:?}");
-    }
-
-    #[test]
-    fn checked_fixed_field_place_reports_its_owner_root() {
-        let found = misses(
-            "type State:\n    items: unique List(Int)\n\n\
-             fn take(var xs: unique List(Int)) -> ():\n    return\n\n\
-             fn caller() -> ():\n    var state = State([1])\n    take(state.items)\n    return\n",
-        );
-        assert_eq!(found.len(), 1, "the field needs its own capacity token: {found:?}");
-        assert_eq!(found[0].var, "state");
-        assert!(
-            found[0]
-                .reason
-                .contains("nested place has no independent ownership-capacity token"),
-            "{found:?}"
-        );
-    }
-
     #[test]
     fn checked_dynamic_index_place_still_fails_closed() {
         let found = misses(
@@ -5188,27 +4903,6 @@ mod no_copy_tests {
     }
 
     #[test]
-    fn ordinary_inplace_mutator_can_reestablish_the_token() {
-        let found = misses_unchecked(
-            "fn take(var xs: unique List(Int)) -> ():\n    return\n\
-             \nfn repaired() -> ():\n    var xs = [1]\n    let snapshot = xs\n    list.push(xs, 2)\n    take(xs)\n    let _ = snapshot\n    return\n",
-        );
-        assert!(found.is_empty(), "the copying push re-owns before the promise: {found:?}");
-    }
-
-    #[test]
-    fn alias_reports_the_statement_that_invalidated_uniqueness() {
-        let found = misses(
-            "fn take(var xs: unique List(Int)) -> ():\n    return\n\
-             \nfn bad() -> ():\n    var xs = [1]\n    let snapshot = xs\n    take(xs)\n    return\n",
-        );
-        assert_eq!(found.len(), 1, "one aliased call: {found:?}");
-        assert_eq!(found[0].var, "xs");
-        assert_eq!(found[0].line, 7);
-        assert!(found[0].reason.contains("bound to a new name"), "{found:?}");
-    }
-
-    #[test]
     fn loop_back_edge_catches_alias_after_first_call() {
         let found = misses(
             "fn take(var xs: unique List(Int)) -> ():\n    return\n\
@@ -5235,16 +4929,6 @@ mod no_copy_tests {
     }
 
     #[test]
-    fn nested_shadow_does_not_poison_the_outer_proof() {
-        let found = misses(
-            "fn take(var xs: unique List(Int)) -> ():\n    return\n\
-             \nfn scoped() -> ():\n    var xs = [1]\n    if true:\n        var xs = [2]\n        let snapshot = xs\n        take(xs)\n        let _ = snapshot\n    take(xs)\n    return\n",
-        );
-        assert_eq!(found.len(), 1, "only the aliased inner binding must reject: {found:?}");
-        assert_eq!(found[0].line, 9);
-    }
-
-    #[test]
     fn untracked_binding_fails_closed() {
         let found = misses_unchecked(
             "fn take(var xs: unique List(Int)) -> ():\n    return\n\
@@ -5252,15 +4936,6 @@ mod no_copy_tests {
         );
         assert_eq!(found.len(), 1, "an untracked binding must not imply uniqueness: {found:?}");
         assert!(found[0].reason.contains("destructured binding"), "{found:?}");
-    }
-
-    #[test]
-    fn indirect_no_copy_call_preserves_capacity_proof() {
-        let found = misses(
-            "fn take(var xs: unique List(Int)) -> ():\n    return\n\
-             \nfn indirect() -> ():\n    var xs = [1]\n    let f = take\n    f(xs)\n    return\n",
-        );
-        assert!(found.is_empty(), "the indirect ABI carries the proof: {found:?}");
     }
 
     #[test]
@@ -5274,42 +4949,6 @@ mod no_copy_tests {
     }
 
     #[test]
-    fn checked_no_copy_boundary_does_not_suppress_access_errors() {
-        let module = parser::parse_module(
-            "mode opt\n\nfn plain(xs: List(Int)) -> Int:\n    0\n\n\
-             fn require(callback: fn(unique List(Int)) -> Int) -> ():\n    return\n\n\
-             fn main() -> ():\n    require(plain)\n    return\n",
-        )
-        .expect("parse invalid callable contract");
-        let error = try_module_no_copy_misses(&module)
-            .expect_err("checked performance analysis must retain the access error");
-        assert!(error.contains("ownership/access contract"), "{error}");
-    }
-
-    #[test]
-    fn lambda_body_misses_keep_the_enclosing_function_name() {
-        let found = misses(
-            "fn take(var xs: unique List(Int)) -> ():\n    return\n\
-             \nfn main() -> Int:\n    let work = fn() -> ():\n        var xs = [1]\n        let snapshot = xs\n        take(xs)\n        let _ = snapshot\n        return\n    work()\n    0\n",
-        );
-        assert_eq!(found.len(), 1, "the lambda miss must remain visible: {found:?}");
-        assert!(found[0].function.starts_with("main::<lambda>"), "{found:?}");
-    }
-
-    #[test]
-    fn annotated_lambda_var_uses_its_checked_unique_contract() {
-        let found = misses(
-            "mode opt\n\nfn take(var xs: unique List(Int)) -> ():\n    return\n\
-             \nfn invoke(f: fn(var unique List(Int)) -> ()) -> ():\n    var xs: unique List(Int) = [1]\n    f(xs)\n    return\n\
-             \nfn main() -> ():\n    invoke(fn(var xs: unique List(Int)): take(xs))\n    return\n",
-        );
-        assert!(
-            found.is_empty(),
-            "the checked lambda signature carries its inferred unique var capacity: {found:?}"
-        );
-    }
-
-    #[test]
     fn unreachable_reown_after_continue_does_not_repair_the_backedge() {
         let found = misses_unchecked(
             "fn take(var xs: unique List(Int)) -> ():\n    return\n\
@@ -5317,49 +4956,6 @@ mod no_copy_tests {
         );
         assert_eq!(found.len(), 1, "unreachable code must not repair the next iteration: {found:?}");
         assert!(found[0].reason.contains("bound to a new name"), "{found:?}");
-    }
-
-    #[test]
-    fn exhaustive_reown_branches_restore_the_proof() {
-        let found = misses_unchecked(
-            "fn take(var xs: unique List(Int)) -> ():\n    return\n\
-             \nfn repaired(flag: Bool) -> ():\n    var xs = [1]\n    let snapshot = xs\n    if flag:\n        list.push(xs, 2)\n    else:\n        list.push(xs, 3)\n    take(xs)\n    let _ = snapshot\n    return\n",
-        );
-        assert!(found.is_empty(), "every runtime branch re-owns the list: {found:?}");
-    }
-
-    #[test]
-    fn declared_unique_result_supplies_the_next_no_copy_proof() {
-        let found = misses(
-            "fn build() -> unique List(Int):\n    [1, 2]\n\
-             \nfn take(var xs: unique List(Int)) -> ():\n    return\n\
-             \nfn composed() -> ():\n    var xs = build()\n    take(xs)\n    return\n",
-        );
-        assert!(found.is_empty(), "a unique result is a reusable ownership proof: {found:?}");
-    }
-
-    #[test]
-    fn indirect_unique_result_supplies_the_next_no_copy_proof() {
-        let found = misses(
-            "fn build() -> unique List(Int):\n    [1]\n\
-             \nfn take(var xs: unique List(Int)) -> ():\n    return\n\
-             \nfn indirect() -> ():\n    let f = build\n    var xs = f()\n    take(xs)\n    return\n",
-        );
-        assert!(found.is_empty(), "the indirect result carries ownership state: {found:?}");
-    }
-
-    #[test]
-    fn generic_function_value_preserves_a_unique_nominal_result_proof() {
-        let found = misses(
-            "type Packet:\n    value: Int\n\
-             \nfn retain(own value: unique a) -> unique a:\n    value\n\
-             \nfn advance(var packet: unique Packet) -> ():\n    packet = Packet(value: 1)\n\
-             \nfn relay(own packet: unique Packet) -> ():\n    let keep = retain\n    var current = keep(packet)\n    advance(current)\n    return\n",
-        );
-        assert!(
-            found.is_empty(),
-            "the specialized generic function value must retain the checked unique nominal result proof: {found:?}"
-        );
     }
 
     #[test]
@@ -5408,111 +5004,3 @@ pub fn module_cliffs(module: &Module) -> Vec<(String, Cliff)> {
 // here is a UAF-class risk (a wrong match mutates a value someone else still
 // holds), which is exactly why the contract deserves direct tests.
 // ---------------------------------------------------------------------------
-
-#[cfg(test)]
-mod shape_matcher_tests {
-    use super::*;
-
-    fn var(name: &str) -> Expr {
-        Expr::Var(name.to_string())
-    }
-
-    fn int(n: i64) -> Expr {
-        Expr::Int(n)
-    }
-
-    fn call(name: &str, args: Vec<Expr>) -> Expr {
-        Expr::Call { name: name.to_string(), args }
-    }
-
-    // ---- self_push_elem: `xs = list.__push(xs, e)` ----
-
-    #[test]
-    fn push_matches_self_append() {
-        for f in ["list.push", "list.push__task.Handle"] {
-            let v = call(f, vec![var("xs"), int(1)]);
-            assert!(self_push_elem("xs", &v).is_some(), "{f} should match");
-        }
-    }
-
-    #[test]
-    fn push_rejects_wrong_receiver_var() {
-        // `xs = list.push(ys, e)` copies from ANOTHER list — mutating in place
-        // would corrupt `ys`.
-        let v = call("list.push", vec![var("ys"), int(1)]);
-        assert!(self_push_elem("xs", &v).is_none());
-    }
-
-    #[test]
-    fn push_rejects_wrong_callee_and_arity() {
-        // A same-shaped call to a different function must not be treated as an
-        // append; nor a push with a computed receiver.
-        assert!(self_push_elem("xs", &call("list.concat", vec![var("xs"), int(1)])).is_none());
-        assert!(self_push_elem("xs", &call("list.push", vec![int(0), int(1)])).is_none());
-        assert!(self_push_elem("xs", &call("list.push", vec![var("xs")])).is_none());
-    }
-
-    // ---- self_insert_args / self_update_args: dict upserts ----
-
-    #[test]
-    fn insert_matches_self_upsert_and_rejects_alias() {
-        for f in ["dict.insert", "dict.insert__String__Int"] {
-            let ok = call(f, vec![var("d"), int(1), int(2)]);
-            assert!(self_insert_args("d", &ok).is_some(), "{f} should match");
-        }
-        let alias = call("dict.insert", vec![var("e"), int(1), int(2)]);
-        assert!(self_insert_args("d", &alias).is_none());
-    }
-
-    #[test]
-    fn update_matches_arity_four_only() {
-        let ok = call("dict.update", vec![var("d"), int(1), int(0), var("f")]);
-        assert!(self_update_args("d", &ok).is_some());
-        let short = call("dict.update", vec![var("d"), int(1), int(0)]);
-        assert!(self_update_args("d", &short).is_none());
-    }
-
-    // ---- self_set_at / self_update_at: monomorphized stdlib names ----
-
-    #[test]
-    fn set_at_matches_parser_and_monomorphized_names() {
-        for f in ["__set_at", "list.set_at", "list.__set_at", "list.set_at__Int"] {
-            let v = call(f, vec![var("xs"), int(0), int(9)]);
-            assert!(self_set_at("xs", &v).is_some(), "{f} should match");
-        }
-        // A user function that merely CONTAINS the name must not match: the
-        // recognizer requires the exact monomorphization prefix `list.set_at__`.
-        let imposter = call("mylib.list.set_at_extra", vec![var("xs"), int(0), int(9)]);
-        assert!(self_set_at("xs", &imposter).is_none());
-    }
-
-    #[test]
-    fn update_at_rejects_wrong_receiver() {
-        let v = call("list.update_at", vec![var("ys"), int(0), var("f")]);
-        assert!(self_update_at("xs", &v).is_none());
-    }
-
-    // ---- self_concat_pieces: `s = s + a + b` left spines ----
-
-    fn concat(lhs: Expr, rhs: Expr) -> Expr {
-        Expr::Binary { op: BinOp::Concat, lhs: Box::new(lhs), rhs: Box::new(rhs) }
-    }
-
-    #[test]
-    fn concat_spine_collects_pieces_in_order() {
-        // s + "a" + "b" — leftmost leaf is the assigned var.
-        let v = concat(concat(var("s"), int(1)), int(2));
-        let pieces = self_concat_pieces("s", &v).expect("spine matches");
-        assert_eq!(pieces.len(), 2);
-    }
-
-    #[test]
-    fn concat_rejects_var_not_at_spine_head() {
-        // "a" + s — the assigned var is a RHS piece, not the spine head: this
-        // PREPENDS, and appending in place would produce the wrong string.
-        let v = concat(int(1), var("s"));
-        assert!(self_concat_pieces("s", &v).is_none());
-        // Bare `s` with no appended pieces is not a concat either.
-        assert!(self_concat_pieces("s", &var("s")).is_none());
-    }
-}

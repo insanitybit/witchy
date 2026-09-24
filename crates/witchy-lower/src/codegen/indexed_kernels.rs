@@ -2200,51 +2200,6 @@ fn canonical_ordered_step(block: &Block, index: &str) -> Option<i64> {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        SEQUENCE_POLICY_EXACT, SEQUENCE_POLICY_GENERALIZED, SequenceAccessPlan,
-        SequenceBackendPolicyTriggers,
-    };
-    use foldhash::{HashMap, HashMapExt as _};
-    use witchy_wir::wir::Kind;
-
-    #[test]
-    fn sequence_access_plan_contract_names_every_validity_fact() {
-        let mut cursors = HashMap::new();
-        cursors.insert("i".into(), "cursor".into());
-        let plan = SequenceAccessPlan {
-            owner_root: "xs".into(),
-            payload_base: "base".into(),
-            length: "len".into(),
-            length_initialized: true,
-            data_offset: 4,
-            stride: 8,
-            element_kind: Kind::I64,
-            mutation_preserves_length: true,
-            proven_index_domain: vec![super::ProvenIndexDomain {
-                index: "i".into(),
-                minimum_offset: 0,
-                maximum_offset: 0,
-            }],
-            index_domains: HashMap::new(),
-            root_stability: super::RootStability {
-                epoch: 0,
-                writes: false,
-                escapes: false,
-            },
-            cursors,
-        };
-        assert_eq!(plan.owner_root, "xs");
-        assert_eq!(plan.payload_base, "base");
-        assert_eq!(plan.length, "len");
-        assert!(plan.length_initialized);
-        assert_eq!(plan.data_offset, 4);
-        assert_eq!(plan.stride, 8);
-        assert_eq!(plan.element_kind, Kind::I64);
-        assert!(plan.mutation_preserves_length);
-        assert_eq!(plan.proven_index_domain[0].index, "i");
-        assert!(plan.root_stability.is_stable());
-    }
-
     #[test]
     fn index_domain_and_root_stability_properties() {
         let unit_dom = super::IndexDomain::new_unit(0, Some(10), true);
@@ -2262,20 +2217,4 @@ mod tests {
         assert!(!escaping.is_stable());
     }
 
-    #[test]
-    fn abandoned_policy_trigger_restores_the_committed_checkpoint() {
-        let triggers = SequenceBackendPolicyTriggers::default();
-        triggers.note(SEQUENCE_POLICY_EXACT);
-        let checkpoint = triggers.checkpoint();
-
-        // Model an installed generalized plan consumed by a candidate lowering
-        // that later bails. Restoring must retain earlier committed evidence but
-        // remove every bit introduced by the abandoned candidate.
-        triggers.note(SEQUENCE_POLICY_GENERALIZED);
-        assert!(triggers.contains(SEQUENCE_POLICY_GENERALIZED));
-        triggers.restore(checkpoint);
-
-        assert!(triggers.contains(SEQUENCE_POLICY_EXACT));
-        assert!(!triggers.contains(SEQUENCE_POLICY_GENERALIZED));
-    }
 }

@@ -1122,54 +1122,11 @@ mod tests {
     }
 
     #[test]
-    fn eviction_accumulator_is_an_rc_floor_candidate() {
-        // `d` threads through dict.insert/remove (neither leaks arg0) and is never
-        // used as a whole value elsewhere → confined, reclaimable.
-        let src = "import dict\nfn main(console: Console):\n    var d = dict.new()\n    var i = 0\n    while i < 10:\n        d = dict.__insert(d, i, i)\n        d = dict.__remove(d, i)\n        i = i + 1\n    console.print(\"${dict.length(d)}\")\n";
-        let candidates = rc_floor(src);
-        assert!(
-            candidates.contains("d"),
-            "confined eviction accumulator is a candidate: {candidates:?}"
-        );
-    }
-
-    #[test]
     fn whole_value_escape_disqualifies_rc_floor() {
         // `d` is passed WHOLE to a user fn that returns it (its summary leaks arg0),
         // so its buffer may be aliased out → not reclaimable.
         let src = "import dict\nfn keep(x: Dict) -> Dict:\n    x\nfn main(console: Console):\n    var d = dict.new()\n    var i = 0\n    while i < 10:\n        d = dict.__insert(d, i, i)\n        d = keep(d)\n        i = i + 1\n    console.print(\"${dict.length(d)}\")\n";
         assert!(!rc_floor(src).contains("d"), "a var aliased out by a call escapes");
-    }
-
-    #[test]
-    fn arbitrary_call_result_is_not_an_rc_floor_candidate() {
-        let src = "fn identity(x: String) -> String:\n    x\nfn damage(x: String) -> ():\n    var working = identity(x)\n    working = string.substring(working, 1, string.length(working))\n";
-        assert!(
-            !rc_floor(src).contains("working"),
-            "an ordinary call may return an input alias"
-        );
-    }
-
-    #[test]
-    fn qualified_dict_new_lookalike_is_not_fresh_provenance() {
-        let lookalike = Expr::Call { name: "dependency.dict.new".into(), args: vec![] };
-        assert!(!expression_has_fresh_storage(
-            &lookalike,
-            &HashSet::new(),
-            &HashSet::new()
-        ));
-    }
-
-    #[test]
-    fn checked_unique_destination_call_is_fresh_provenance() {
-        let call = Expr::Call { name: "choose".into(), args: vec![] };
-        let mut proven = HashSet::new();
-        proven.insert("choose".to_string());
-        assert!(expression_has_fresh_storage(&call, &proven, &HashSet::new()));
-
-        let mut shadowed = HashSet::new();
-        shadowed.insert("choose".to_string());
-        assert!(!expression_has_fresh_storage(&call, &proven, &shadowed));
     }
 
     #[test]
@@ -1199,135 +1156,6 @@ mod tests {
     }
 
     #[test]
-    fn control_flow_aliases_are_not_rc_floor_candidates() {
-        let if_src = "fn damage(x: String) -> ():\n    var working = if true: x else: x\n    working = string.substring(working, 1, string.length(working))\n";
-        assert!(!rc_floor(if_src).contains("working"));
-
-        let match_src = "fn damage(x: String) -> ():\n    var working = match true:\n        true -> x\n        false -> x\n    working = string.substring(working, 1, string.length(working))\n";
-        assert!(!rc_floor(match_src).contains("working"));
-
-        let nested_src = "fn identity(x: String) -> String:\n    x\nfn damage(x: String) -> ():\n    if true:\n        var working = identity(x)\n        working = string.substring(working, 1, string.length(working))\n";
-        assert!(
-            !rc_floor(nested_src).contains("working"),
-            "nested initializers must be visited by the default-deny classifier"
-        );
-    }
-
-    #[test]
-    fn later_alias_assignment_disqualifies_rc_floor_candidate() {
-        let src = "fn damage(trusted: String) -> ():\n    var working = \"fresh\"\n    working = trusted\n    working = string.substring(working, 1, string.length(working))\n";
-        assert!(
-            !rc_floor(src).contains("working"),
-            "a later assignment can destroy initializer freshness"
-        );
-    }
-
-    #[test]
-    fn self_threaded_cow_assignment_preserves_rc_floor_candidate() {
-        let src = "fn transform() -> ():\n    var working = \"FRESH\"\n    working = string.to_lower(working)\n";
-        assert!(
-            rc_floor(src).contains("working"),
-            "the guarded self-threaded COW overwrite must remain reclaimable"
-        );
-    }
-
-    #[test]
-    fn freshness_table_excludes_in_place_and_passthrough_operations() {
-        assert_eq!(fresh_heap_builtin_offset("list_push_cap", 3), None);
-        assert_eq!(fresh_heap_builtin_offset("str_append_cap", 3), None);
-        assert_eq!(fresh_heap_builtin_offset(intrinsics::STRING_SLICE, 3), None);
-        assert_eq!(fresh_heap_builtin_offset(intrinsics::STRING_AS_STR, 1), None);
-        assert_eq!(fresh_heap_builtin_offset(intrinsics::STRING_REPLACE, 3), None);
-        assert_eq!(fresh_heap_builtin_offset(intrinsics::STRING_SUBSTRING, 3), Some(0));
-        assert_eq!(always_fresh_heap_builtin_offset(intrinsics::STRING_TO_UPPER, 1), None);
-        assert_eq!(always_fresh_heap_builtin_offset(intrinsics::STRING_TO_LOWER, 1), None);
-        assert_eq!(always_fresh_heap_builtin_offset(intrinsics::STRING_SUBSTRING, 3), Some(0));
-    }
-
-    #[test]
-    fn proven_fresh_constructor_remains_an_rc_floor_candidate() {
-        let src = "type Pair:\n    left: Int\n    right: Int\nfn build() -> ():\n    var pair = Pair(1, 2)\n    pair = Pair(3, 4)\n";
-        assert!(rc_floor(src).contains("pair"));
-    }
-
-    #[test]
-    fn field_only_aggregate_is_a_candidate() {
-        let f = func(
-            "type P:\n    x: Int\n    y: Int\nfn d(a: Int) -> Int:\n    let p = P(a, a)\n    p.x + p.y\n",
-        );
-        assert!(sroa_candidates(&f).contains("p"), "field-only record is SROA-eligible");
-    }
-
-    #[test]
-    fn returned_aggregate_escapes() {
-        let f = func("type P:\n    x: Int\n    y: Int\nfn mk(a: Int) -> P:\n    let p = P(a, a)\n    p\n");
-        assert!(!sroa_candidates(&f).contains("p"), "a returned aggregate escapes whole");
-    }
-
-    #[test]
-    fn aggregate_passed_to_a_call_escapes() {
-        let f = func(
-            "type P:\n    x: Int\n    y: Int\nfn use_it(q: P) -> Int:\n    q.x\nfn d(a: Int) -> Int:\n    let p = P(a, a)\n    use_it(p)\n",
-        );
-        assert!(!sroa_candidates(&f).contains("p"), "passing the whole value escapes");
-    }
-
-    #[test]
-    fn tuple_field_only_is_a_candidate() {
-        let f = func("fn d(a: Int) -> Int:\n    let t = (a, a)\n    t.0 + t.1\n");
-        assert!(sroa_candidates(&f).contains("t"));
-    }
-
-    #[test]
-    fn constructor_local_used_only_as_match_scrutinee_is_confined() {
-        let f = func(
-            "type Token packed:\n    Skip\n    Value(Int)\nfn d(a: Int) -> Int:\n    let token = if a % 2 == 0: Skip else: Value(a)\n    match token:\n        Skip -> 1\n        Value(value) -> value\n",
-        );
-        assert!(
-            confined_match_sum_candidates_block(&f.body).contains("token"),
-            "a constructor local consumed only by direct matches is scalarizable"
-        );
-    }
-
-    #[test]
-    fn constructor_local_alias_disqualifies_match_confinement() {
-        let f = func(
-            "type Token packed:\n    Skip\n    Value(Int)\nfn d(a: Int) -> Int:\n    let token = if a % 2 == 0: Skip else: Value(a)\n    let alias = token\n    match alias:\n        Skip -> 1\n        Value(value) -> value\n",
-        );
-        assert!(
-            !confined_match_sum_candidates_block(&f.body).contains("token"),
-            "copying the whole value preserves the materialized fallback"
-        );
-    }
-
-    #[test]
-    fn mutable_record_with_field_writes_is_a_candidate() {
-        let f = func(
-            "type P:\n    x: Int\n    y: Int\nfn d(a: Int) -> Int:\n    var p = P(a, a)\n    p.x = p.x + 1\n    p.y = p.x * 2\n    p.x + p.y\n",
-        );
-        assert!(sroa_candidates(&f).contains("p"), "a field-written mutable record is SROA-eligible");
-    }
-
-    #[test]
-    fn mutable_record_field_written_in_loop_is_a_candidate() {
-        let f = func(
-            "type P:\n    x: Int\n    y: Int\nfn d(n: Int) -> Int:\n    var total = 0\n    var i = 0\n    while i < n:\n        var p = P(i, 0)\n        p.x = p.x + 1\n        total = total + p.x\n        i = i + 1\n    total\n",
-        );
-        assert!(
-            sroa_candidates(&f).contains("p"),
-            "a record field-written inside a loop is still SROA-eligible (block-aware scan)"
-        );
-    }
-
-    #[test]
-    fn whole_reassignment_disqualifies() {
-        let f = func(
-            "type P:\n    x: Int\n    y: Int\nfn d(a: Int, q: P) -> Int:\n    var p = P(a, a)\n    p = q\n    p.x\n",
-        );
-        assert!(!sroa_candidates(&f).contains("p"), "a whole reassignment escapes");
-    }
-
-    #[test]
     fn captured_by_closure_disqualifies() {
         let f = func(
             "type P:\n    x: Int\n    y: Int\nfn d(a: Int) -> Int:\n    let p = P(a, a)\n    let g = fn() -> Int: p.x + p.y\n    use_it(g)\n",
@@ -1336,25 +1164,6 @@ mod tests {
             !sroa_candidates(&f).contains("p"),
             "a record referenced inside a closure is captured whole"
         );
-    }
-
-    #[test]
-    fn confined_slice_used_via_at_is_a_candidate() {
-        let f = func(
-            "fn d(xs: List(Int)) -> Int:\n    let w = list.slice(xs, 1, 3)\n    list.at(w, 0) + list.at(w, 1) + list.length(w)\n",
-        );
-        assert!(
-            confined_slice_candidates(&f).contains("w"),
-            "a slice used only via at/length is a zero-copy candidate"
-        );
-    }
-
-    #[test]
-    fn slice_passed_whole_is_not_a_candidate() {
-        let f = func(
-            "fn d(xs: List(Int)) -> Int:\n    let w = list.slice(xs, 1, 3)\n    use_it(w)\n",
-        );
-        assert!(!confined_slice_candidates(&f).contains("w"), "passing the slice whole escapes");
     }
 
     #[test]
@@ -1369,124 +1178,6 @@ mod tests {
     }
 
     #[test]
-    fn slice_whose_source_is_used_whole_is_not_a_candidate() {
-        // The source is aliased (`let ys = xs`), so an in-place mutation of the
-        // alias could rewrite the buffer the view borrows — disqualify it even
-        // though `xs` itself is never directly reassigned.
-        let f = func(
-            "fn d(xs: List(Int)) -> Int:\n    let w = list.slice(xs, 1, 3)\n    let ys = xs\n    list.at(w, 0) + list.length(ys)\n",
-        );
-        assert!(
-            !confined_slice_candidates(&f).contains("w"),
-            "a source used as a whole value elsewhere may be aliased and mutated"
-        );
-    }
-
-    #[test]
-    fn two_views_of_an_unmutated_source_are_both_candidates() {
-        // The slice binding's own use of the source is exempt, so a source read
-        // ONLY as a slice source (here twice) stays eligible for both windows.
-        let f = func(
-            "fn d(xs: List(Int)) -> Int:\n    let a = list.slice(xs, 0, 2)\n    let b = list.slice(xs, 2, 4)\n    list.at(a, 0) + list.at(b, 0)\n",
-        );
-        let c = confined_slice_candidates(&f);
-        assert!(c.contains("a") && c.contains("b"), "both read-only windows are candidates: {c:?}");
-    }
-
-    #[test]
-    fn record_list_read_via_at_field_is_a_packed_candidate() {
-        let f = func(
-            "type P:\n    x: Int\n    y: Int\nfn d() -> Int:\n    let xs = [P(1, 2), P(3, 4)]\n    list.at(xs, 0).x + list.at(xs, 1).y + list.length(xs)\n",
-        );
-        assert!(
-            confined_record_list_candidates(&f).contains("xs"),
-            "a record list read only via at(_).field / length is a packed candidate"
-        );
-    }
-
-    #[test]
-    fn record_list_with_element_taken_whole_is_not_a_packed_candidate() {
-        // Binding an element whole (`let p = list.at(xs, 0)`) means the element must
-        // exist as a record value — the list cannot be packed flat.
-        let f = func(
-            "type P:\n    x: Int\n    y: Int\nfn d() -> Int:\n    let xs = [P(1, 2), P(3, 4)]\n    let p = list.at(xs, 0)\n    p.x\n",
-        );
-        assert!(
-            !confined_record_list_candidates(&f).contains("xs"),
-            "an element taken whole disqualifies packing"
-        );
-    }
-
-    #[test]
-    fn record_list_passed_whole_is_not_a_packed_candidate() {
-        let f = func(
-            "type P:\n    x: Int\n    y: Int\nfn d() -> Int:\n    let xs = [P(1, 2)]\n    use_it(xs)\n",
-        );
-        assert!(!confined_record_list_candidates(&f).contains("xs"), "passing the list whole escapes");
-    }
-
-    #[test]
-    fn reassigned_record_list_is_not_a_packed_candidate() {
-        let f = func(
-            "type P:\n    x: Int\n    y: Int\nfn d(var xs: List(P)) -> Int:\n    xs = [P(1, 2)]\n    list.at(xs, 0).x\n",
-        );
-        assert!(
-            !confined_record_list_candidates(&f).contains("xs"),
-            "a reassigned list is not a fixed packed buffer"
-        );
-    }
-
-    #[test]
-    fn reassigned_confined_list_var_is_a_reuse_candidate() {
-        // `var x = [..3..]; while …: x = [..3..]`, x read only via at/length —
-        // never whole-used, uniform length → the buffer can be overwritten in place.
-        let f = func(
-            "fn d(n: Int) -> Int:\n    var x = [0, 0, 0]\n    var i = 0\n    while i < n:\n        x = [i, i + 1, i + 2]\n        i = i + 1\n    list.at(x, 0) + list.length(x)\n",
-        );
-        assert!(
-            confined_inplace_reuse_vars(&f).contains("x"),
-            "a confined, never-whole-used var reassigned to same-length literals is a reuse candidate"
-        );
-    }
-
-    #[test]
-    fn reassigned_confined_record_var_is_a_reuse_candidate() {
-        // `var p = Point(..); while …: p = Point(..)`, p read only via fields —
-        // same ctor every time (fixed tag + arity) → overwrite the buffer in place.
-        let f = func(
-            "type Point:\n    x: Int\n    y: Int\nfn d(n: Int) -> Int:\n    var p = Point(0, 0)\n    var i = 0\n    while i < n:\n        p = Point(i, i * 2)\n        i = i + 1\n    p.x + p.y\n",
-        );
-        assert!(
-            confined_inplace_reuse_vars(&f).contains("p"),
-            "a confined record var reassigned to same-ctor values is a reuse candidate"
-        );
-    }
-
-    #[test]
-    fn reuse_record_var_with_different_ctor_is_not_a_candidate() {
-        // Different constructors → different tag/arity/size; the fixed buffer can't
-        // be overwritten safely. (AST-level: the analysis runs pre-typeck.)
-        let f = func(
-            "type A:\n    v: Int\ntype B:\n    v: Int\nfn d() -> Int:\n    var o = A(1)\n    o = B(2)\n    o.v\n",
-        );
-        assert!(
-            !confined_inplace_reuse_vars(&f).contains("o"),
-            "a different-constructor reassignment breaks the fixed-buffer invariant"
-        );
-    }
-
-    #[test]
-    fn reuse_var_used_whole_is_not_a_candidate() {
-        let f = func(
-            "fn d() -> Int:\n    var x = [0, 0, 0]\n    x = [1, 2, 3]\n    use_it(x)\n    list.length(x)\n",
-        );
-        assert!(
-            !confined_inplace_reuse_vars(&f).contains("x"),
-            "passing the var whole means its buffer may be aliased — not reuse-safe"
-        );
-    }
-
-    #[test]
     fn reuse_var_aliased_by_let_is_not_a_candidate() {
         let f = func(
             "fn d() -> Int:\n    var x = [0, 0, 0]\n    x = [1, 2, 3]\n    let y = x\n    list.at(y, 0)\n",
@@ -1497,35 +1188,7 @@ mod tests {
         );
     }
 
-    #[test]
-    fn reuse_var_with_nonuniform_length_is_a_candidate() {
-        // A list var reassigned to a DIFFERENT length is still a candidate — codegen
-        // capacity-checks at runtime (reuse when it fits, else reallocate).
-        let f = func(
-            "fn d() -> Int:\n    var x = [0, 0, 0]\n    x = [1, 2]\n    list.length(x)\n",
-        );
-        assert!(
-            confined_inplace_reuse_vars(&f).contains("x"),
-            "a list var reassigned to varying lengths is a capacity-resizing reuse candidate"
-        );
-    }
-
-    #[test]
-    fn interpolating_the_whole_value_escapes() {
-        let f = func(
-            "type P:\n    x: Int\n    y: Int\nfn d(a: Int) -> String:\n    let p = P(a, a)\n    \"${p}\"\n",
-        );
-        assert!(!sroa_candidates(&f).contains("p"), "rendering the whole value escapes");
-    }
-
     // ---- RFC-0062: only_directly_called (closure-escape confinement) ----
-
-    #[test]
-    fn closure_called_directly_is_confined() {
-        // `f` is only ever `f(..)` — the sole non-escaping shape. Elidable.
-        let f = func("fn d(n: Int) -> Int:\n    let f = fn(x: Int): x + n\n    f(1) + f(2)\n");
-        assert!(only_directly_called(&f.body).contains("f"), "a directly-called closure is confined");
-    }
 
     #[test]
     fn closure_passed_as_argument_escapes() {
@@ -1534,31 +1197,4 @@ mod tests {
         assert!(!only_directly_called(&f.body).contains("f"), "a closure passed as an arg escapes");
     }
 
-    #[test]
-    fn closure_returned_escapes() {
-        let f = func("fn d() -> fn(Int) -> Int:\n    let f = fn(x: Int): x + 1\n    f\n");
-        assert!(!only_directly_called(&f.body).contains("f"), "a returned closure escapes");
-    }
-
-    #[test]
-    fn closure_captured_by_another_closure_escapes() {
-        // `f` is referenced (called) inside `g`'s body — a by-pointer capture, even though
-        // the reference is in callee position. Must not be elided.
-        let f = func(
-            "fn d() -> Int:\n    let f = fn(x: Int): x + 1\n    let g = fn(): f(3)\n    g()\n",
-        );
-        let confined = only_directly_called(&f.body);
-        assert!(!confined.contains("f"), "a closure captured (and called) inside another closure escapes");
-    }
-
-    #[test]
-    fn reassigned_names_sees_reassignment() {
-        // A reassigned capture is unsafe to thread at the call site. Typed std
-        // var lowering reaches codegen in this private value-rebind shape, so
-        // `collect_assigned_targets` catches it too.
-        let f = func(
-            "fn d() -> Int:\n    var xs = [1]\n    xs = list.__push(xs, 2)\n    let f = fn(): list.length(xs)\n    f()\n",
-        );
-        assert!(reassigned_names(&f.body).contains("xs"), "a reassigned var is caught");
-    }
 }

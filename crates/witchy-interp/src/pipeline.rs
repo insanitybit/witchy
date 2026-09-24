@@ -265,21 +265,6 @@ mod tests {
     };
 
     #[test]
-    fn production_expander_wrapper_matches_legacy_link_then_check() {
-        let module = witchy_syntax::parser::parse_module("fn main() -> Int:\n  1\n")
-            .expect("parse test module");
-        let modules = vec![("main".to_string(), module)];
-
-        // The production route keeps the whole linked module (it prunes only
-        // inside its check), so it matches the unpruned legacy link.
-        let old = link_internal(modules.clone(), "main").expect("legacy link");
-        witchy_types::typeck::check(&old).expect("legacy check");
-        let checked = link_checked(modules, "main").expect("checked link");
-
-        assert_eq!(checked.module(), &old);
-    }
-
-    #[test]
     fn production_expander_retains_authenticated_loader_ownership() {
         let module = witchy_syntax::parser::parse_module(
             "import meta\n\

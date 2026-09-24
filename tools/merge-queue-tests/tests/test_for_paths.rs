@@ -1410,7 +1410,7 @@ fn canonical_type_edit_uses_the_bounded_semantic_sentinels() {
     assert_eq!(commands.len(), 3, "canonical type edit expanded past its sentinels: {commands:?}");
     assert!(commands[0].contains("constant_prefix_publication_rejects_gaps_and_missing_children"), "{commands:?}");
     assert!(commands[0].contains("scalar_move_range_is_bounds_checked_and_admitted"), "{commands:?}");
-    assert!(commands[1].contains("canonical_pipeline::tests::list_string_"), "{commands:?}");
+    assert!(commands[1].contains("canonical_pipeline::tests::list_"), "{commands:?}");
     assert!(commands[2].contains("admitted_aggregates_render_structurally_as_the_interpreter_prints_them"), "{commands:?}");
 }
 
