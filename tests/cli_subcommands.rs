@@ -459,6 +459,17 @@ pub fn web() -> Site:
             "enforcement": "required",
             "contentSecurityPolicy": "default-src 'self'",
             "permissionsPolicy": "camera=()",
+        },
+        {
+            "route": "/portable",
+            "hosting": {
+                "profile": "portable",
+                "responseHeadersRequired": false,
+                "enforcement": "degraded",
+            },
+            "enforcement": "degraded",
+            "contentSecurityPolicy": "default-src 'self'",
+            "permissionsPolicy": "camera=()",
         }
     ]);
     std::fs::write(
@@ -468,10 +479,13 @@ pub fn web() -> Site:
     .unwrap();
 
     {
-        let server = spawn_header_probe_server(vec![(
-            "/",
-            vec![("Content-Security-Policy", "default-src 'self'"), ("Permissions-Policy", "camera=()")],
-        )]);
+        let server = spawn_header_probe_server(vec![
+            (
+                "/",
+                vec![("Content-Security-Policy", "default-src 'self'"), ("Permissions-Policy", "camera=()")],
+            ),
+            ("/portable", vec![]),
+        ]);
         let good_deployment = format!("http://127.0.0.1:{}", server.port);
         let doctor = run(&[
             "doctor",
@@ -496,10 +510,16 @@ pub fn web() -> Site:
             .find(|check| check["id"] == "deployed-headers")
             .unwrap();
         assert_eq!(deployed["status"], "pass");
+        assert!(
+            String::from_utf8_lossy(&doctor.stdout).contains("skipping strict deployed-header enforcement")
+        );
     }
 
     {
-        let server = spawn_header_probe_server(vec![("/", vec![("Permissions-Policy", "camera=()")])]);
+        let server = spawn_header_probe_server(vec![
+            ("/", vec![("Permissions-Policy", "camera=()")]),
+            ("/portable", vec![]),
+        ]);
         let bad_deployment = format!("http://127.0.0.1:{}", server.port);
         let bad_doctor = run(&[
             "doctor",
@@ -523,56 +543,6 @@ pub fn web() -> Site:
         );
         assert!(output.contains("deployed-headers"));
         assert!(output.contains("missing required Content-Security-Policy"));
-    }
-
-    {
-        manifest["browserPolicy"] = serde_json::json!([
-            {
-                "route": "/",
-                "hosting": {
-                    "profile": "portable",
-                    "responseHeadersRequired": false,
-                    "enforcement": "degraded",
-                },
-                "enforcement": "degraded",
-                "contentSecurityPolicy": "default-src 'self'",
-                "permissionsPolicy": "camera=()",
-            }
-        ]);
-        std::fs::write(
-            &manifest_path,
-            serde_json::to_vec_pretty(&manifest).unwrap(),
-        )
-        .unwrap();
-
-        let server = spawn_header_probe_server(vec![("/", vec![])]);
-        let portable_deployment = format!("http://127.0.0.1:{}", server.port);
-        let doctor = run(&[
-            "doctor",
-            "--web",
-            "--format",
-            "json",
-            "--deployment",
-            &portable_deployment,
-            project_text,
-        ]);
-        assert_eq!(
-            doctor.status.code(),
-            Some(0),
-            "portable profile should skip strict deployed-header enforcement: {}",
-            String::from_utf8_lossy(&doctor.stderr)
-        );
-        let report: serde_json::Value = serde_json::from_slice(&doctor.stdout).unwrap();
-        let deployed = report["checks"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|check| check["id"] == "deployed-headers")
-            .unwrap();
-        assert_eq!(deployed["status"], "pass");
-        assert!(
-            String::from_utf8_lossy(&doctor.stdout).contains("skipping strict deployed-header enforcement")
-        );
     }
 }
 
