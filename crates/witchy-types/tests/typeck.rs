@@ -606,7 +606,7 @@ mod tests {
     #[test]
     fn borrowed_nominal_cannot_escape_through_an_inferred_closure() {
         let capture = check_str(
-            "mode opt\n\nfn escape(owner: List(List(Int))) -> fn() -> &List(List(Int)):\n    let view = &owner\n    fn():\n        view\n",
+            "mode opt\n\nfn escape(owner: List(List(List(Int)))) -> fn() -> &List(List(List(Int))):\n    let view = &owner\n    fn():\n        view\n",
         )
         .expect_err("an inferred closure must not capture an unadmitted rooted view");
         assert!(

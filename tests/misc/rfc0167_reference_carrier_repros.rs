@@ -146,14 +146,14 @@ fn main():
         "callable view without a carrier",
         r#"mode opt
 
-fn apply(action: fn(&List(List(Int))) -> Int, value: &List(List(Int))) -> Int:
+fn apply(action: fn(&List(List(List(Int)))) -> Int, value: &List(List(List(Int)))) -> Int:
     action(value)
 
-fn inspect(value: &List(List(Int))) -> Int:
+fn inspect(value: &List(List(List(Int)))) -> Int:
     (*value).length()
 
 fn main():
-    let rows = [[1]]
+    let rows = [[[1]]]
     let _ = apply(inspect, &rows)
 "#,
     );

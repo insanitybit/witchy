@@ -362,6 +362,9 @@ fn rooted_view_from_ty(
             carrier: CanonicalRootedViewCarrier::ScalarValue,
         }),
         Ty::List(element) => {
+            if matches!(element.as_ref(), Ty::List(inner) if matches!(inner.as_ref(), Ty::Int)) {
+                return Ok(rooted_nested_int_list_view());
+            }
             let name = match element.as_ref() {
                 Ty::Int => "Int", Ty::Float => "Float", Ty::Duration => "Duration",
                 Ty::Bool => "Bool", Ty::String => "String",
@@ -449,6 +452,13 @@ fn rooted_view_from_ast(
             })
         }
         Type::Named(name, arguments) if name == "List" && arguments.len() == 1 => {
+            if matches!(&arguments[0], Type::Named(nested, nested_arguments)
+                if nested == "List" && matches!(nested_arguments.as_slice(), [inner]
+                    if matches!(inner, Type::Named(name, arguments)
+                        if name == "Int" && arguments.is_empty())))
+            {
+                return Ok(rooted_nested_int_list_view());
+            }
             let Type::Named(element, element_arguments) = arguments[0].unqualified() else {
                 return Err(CanonicalAbiError::Unsupported(
                     "rooted view payload has no admitted authenticated carrier".into(),
@@ -605,6 +615,17 @@ fn rooted_list_view(element: &str) -> Result<CanonicalReferenceKind, CanonicalAb
         payload: CanonicalTypeKey::from_digest(*blake3::hash(&bytes).as_bytes()),
         carrier: CanonicalRootedViewCarrier::ListRoot,
     })
+}
+
+/// Distinct from every scalar-element `ListRoot` key and from deeper lists.
+/// Checked HM types and source annotations call this same constructor.
+fn rooted_nested_int_list_view() -> CanonicalReferenceKind {
+    CanonicalReferenceKind::RootedView {
+        payload: CanonicalTypeKey(*blake3::hash(
+            b"witchy.canonical-rooted-view-payload.v2/list-of-list-int",
+        ).as_bytes()),
+        carrier: CanonicalRootedViewCarrier::ListRoot,
+    }
 }
 
 fn rooted_scalar_value_payload_key(kind: CanonicalScalarKind) -> CanonicalTypeKey {
