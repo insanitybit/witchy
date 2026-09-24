@@ -444,6 +444,39 @@ record() { # record <event> <branch> [key value]...
     jq -cn "${args[@]}" "{ts: \$ts, event: \$event, branch: \$branch${extra}}" >>"$journal"
 }
 
+# Low-disk guard. Agents' per-worktree build caches filled this volume to
+# 13 GB and then 8 GB free on 2026-09-24 while every candidate cache sat idle
+# for hours, and a full disk corrupts the gate's own prewarm. Below
+# MERGE_QUEUE_DISK_LOW_GB free, reclaim idle build caches in the background,
+# oldest first, until MERGE_QUEUE_DISK_TARGET_GB is free. The reclaim script
+# skips the merge-gate worktree, any cache with an open handle, and anything
+# touched within six hours; deleting a cache costs a rebuild, never source.
+disk_guard() {
+    [ -z "${MERGE_QUEUE_TEST_ROOT:-}" ] || return 0
+    local low="${MERGE_QUEUE_DISK_LOW_GB:-40}" target="${MERGE_QUEUE_DISK_TARGET_GB:-60}"
+    [ "$low" -gt 0 ] 2>/dev/null || return 0
+    local reclaim="$root/scripts/reclaim-build-caches.sh"
+    [ -x "$reclaim" ] || return 0
+    local free_mb; free_mb="$(df -m "$root" 2>/dev/null | awk 'NR==2 {print $4}')"
+    case "$free_mb" in '' | *[!0-9]*) return 0 ;; esac
+    [ "$free_mb" -lt $((low * 1024)) ] || return 0
+    local lock="$qdir/disk-guard.lock"
+    if ! mkdir "$lock" 2>/dev/null; then
+        local holder; holder="$(cat "$lock/pid" 2>/dev/null || true)"
+        case "$holder" in
+            '' | *[!0-9]*) ;;
+            *) kill -0 "$holder" 2>/dev/null && return 0 ;;
+        esac
+        rm -rf "$lock"; mkdir "$lock" 2>/dev/null || return 0
+    fi
+    record disk_low "" free_mb "$free_mb" low_gb "$low" target_gb "$target"
+    note "disk low (${free_mb} MB free); reclaiming idle build caches in the background"
+    nohup sh -c '"$1" --include-unlanded --include-clones --min-age-hours 6 \
+        --keep-free-gb "$2" --apply; rm -rf "$3"' sh "$reclaim" "$target" "$lock" \
+        >"$qdir/disk-guard.log" 2>&1 </dev/null &
+    printf '%s\n' "$!" >"$lock/pid"
+}
+
 # Record one coordinator attempt with phase boundaries captured by process_one.
 # Keep elapsed_s as the actual gate duration for existing journal consumers;
 # attempt_elapsed_s covers dequeue through the final validation decision. All
@@ -3595,6 +3628,7 @@ cmd_run() {
         local heartbeat_now; heartbeat_now="$(date +%s)"
         if [ "$((heartbeat_now - last_heartbeat))" -ge "$heartbeat_interval" ]; then
             last_heartbeat="$heartbeat_now"
+            disk_guard
             record heartbeat "" pid "$$" \
                 queued "$(find "$queue_dir" -maxdepth 1 -name '*.json' -print 2>/dev/null | grep -c . || echo 0)"
         fi

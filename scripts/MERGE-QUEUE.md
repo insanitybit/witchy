@@ -227,6 +227,13 @@ merge-queue.sh sweep                             remove worktrees whose branch t
                                                  every merge.
 ```
 
+**Low-disk guard.** On each heartbeat (5 min) the coordinator checks free space.
+Below `MERGE_QUEUE_DISK_LOW_GB` (40) it journals `disk_low` and runs
+`scripts/reclaim-build-caches.sh --include-unlanded --include-clones
+--min-age-hours 6 --apply` in the background until `MERGE_QUEUE_DISK_TARGET_GB`
+(60) is free; output goes to `state/merge-queue/disk-guard.log`. Only one reclaim
+runs at a time. Set `MERGE_QUEUE_DISK_LOW_GB=0` to disable it.
+
 Environment knobs: `MERGE_QUEUE_GATE_CMD` (default `./scripts/check.sh`),
 `MERGE_QUEUE_GATE_TIMEOUT` (optional emergency whole-gate ceiling; `0`, the
 default, disables it), `MERGE_QUEUE_STALL_TIMEOUT` (600s of no log
