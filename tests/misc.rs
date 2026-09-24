@@ -257,6 +257,8 @@ mod rfc0167_scalar_views_across_await;
 mod rfc0167_await_in_nested_expressions;
 #[path = "misc/rfc0167_list_of_int_views.rs"]
 mod rfc0167_list_of_int_views;
+#[path = "misc/rfc0167_indirect_list_view.rs"]
+mod rfc0167_indirect_list_view;
 #[path = "misc/rfc0167_region_parent_view_results.rs"]
 mod rfc0167_region_parent_view_results;
 #[path = "misc/rfc0167_mixed_var_write_back.rs"]
