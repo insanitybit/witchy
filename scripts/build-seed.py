@@ -35,18 +35,23 @@ interrupted apply leaves every source at its checkout time):
     checkout prefix to the worktree. A unit whose dep-info it cannot decode
     exactly, or that would still name an absolute path outside the worktree,
     the cargo home and the toolchain, loses its fingerprint and rebuilds.
+  * Rust test code can embed Cargo's checkout-specific CARGO_MANIFEST_DIR
+    without recording it as an environment dependency. `publish` records the
+    test units whose tracked sources use that compile-time macro; `apply`
+    drops only those fingerprints so a test can never read the gate checkout.
 
     build-seed.py publish <gate-checkout> <gate-target> <seed-root>  # locked
     build-seed.py finish <seed-root>                                 # unlocked
     build-seed.py apply <seed-dir> <worktree> [<target-dir>]
 """
 
-import fcntl, hashlib, json, os, shutil, struct, subprocess, sys, time
+import fcntl, hashlib, json, os, re, shutil, struct, subprocess, sys, time
 
 MANIFEST = "manifest.json"
 # A worktree-warm clone (about a minute) may still be reading a seed after it
 # stops being current; any older seed only pins artifacts the gate replaced.
 KEEP_OLD_SECONDS = 10 * 60
+MANIFEST_DIR_MACRO = re.compile(rb'(?:option_)?env\s*!\s*\(\s*"CARGO_MANIFEST_DIR"')
 
 
 def tracked(checkout):
@@ -121,6 +126,89 @@ def load_manifest(seed):
         return json.load(f)
 
 
+def workspace_package_roots(checkout):
+    """{package name: source root} without compiling the workspace."""
+    metadata = subprocess.run(
+        ["cargo", "metadata", "--format-version", "1", "--no-deps"],
+        cwd=checkout, check=True, capture_output=True, text=True,
+    )
+    return {
+        package["name"]: os.path.dirname(os.path.realpath(package["manifest_path"]))
+        for package in json.loads(metadata.stdout)["packages"]
+    }
+
+
+def path_bound_fingerprint_units(checkout, target, files):
+    """Fingerprint units whose sources compile the publisher checkout path.
+
+    Cargo does not record CARGO_MANIFEST_DIR as an env dependency because it
+    supplies that value itself. Reusing such a unit in another worktree can
+    therefore run an executable that still reads the gate checkout. Record
+    only those units so apply can invalidate them without discarding the rest
+    of the warm workspace build.
+    """
+    sensitive = set()
+    for rel in files:
+        if not rel.endswith(".rs"):
+            continue
+        path = os.path.join(checkout, rel)
+        try:
+            with open(path, "rb") as source:
+                if MANIFEST_DIR_MACRO.search(source.read()):
+                    sensitive.add(os.path.normpath(path))
+        except FileNotFoundError:
+            pass
+    if not sensitive:
+        return []
+
+    packages = workspace_package_roots(checkout)
+    package_names = sorted(packages, key=len, reverse=True)
+    bound = []
+    for top, dirs, _ in os.walk(target):
+        if os.path.basename(top) != ".fingerprint":
+            continue
+        units, dirs[:] = list(dirs), []
+        for unit in units:
+            package = next(
+                (name for name in package_names if unit.startswith(name + "-")),
+                None,
+            )
+            if package is None:
+                continue
+            unit_dir = os.path.join(top, unit)
+            # Non-test libraries can list cfg(test) source files in dep-info
+            # without compiling their contents. Only executable test units
+            # can observe the checkout-specific value at runtime.
+            if not any(
+                name.startswith("test-") and not name.endswith(".json")
+                for name in os.listdir(unit_dir)
+            ):
+                continue
+            is_bound = False
+            for name in os.listdir(unit_dir):
+                if not name.startswith("dep-"):
+                    continue
+                try:
+                    with open(os.path.join(unit_dir, name), "rb") as dep:
+                        decoded = decode_dep_info(dep.read())
+                except FileNotFoundError:
+                    continue
+                if decoded is None:
+                    continue
+                for _, encoded in decoded[0]:
+                    path = os.fsdecode(encoded)
+                    if not os.path.isabs(path):
+                        path = os.path.join(packages[package], path)
+                    if os.path.normpath(path) in sensitive:
+                        is_bound = True
+                        break
+                if is_bound:
+                    break
+            if is_bound:
+                bound.append(os.path.relpath(unit_dir, target))
+    return sorted(bound)
+
+
 def publish(checkout, target, seed_root):
     """The part that must run under the gate lock: the manifest, and a clone
     of every target file the gate wrote since the previous seed's snapshot.
@@ -156,7 +244,8 @@ def publish(checkout, target, seed_root):
     manifest = {"head": subprocess.run(["git", "-C", checkout, "rev-parse", "HEAD"],
                                        check=True, capture_output=True, text=True).stdout.strip(),
                 "checkout": checkout, "target": target, "snapshot_ns": snapshot_ns,
-                "fill_from": prev, "files": {}, "dirs": {}, "paths": []}
+                "fill_from": prev, "files": {}, "dirs": {}, "paths": [],
+                "path_bound_units": path_bound_fingerprint_units(checkout, target, files)}
     for path, blob in files.items():
         try:
             manifest["files"][path] = [blob, os.lstat(os.path.join(checkout, path)).st_mtime_ns]
@@ -184,7 +273,8 @@ def publish(checkout, target, seed_root):
     with open(os.path.join(staging, MANIFEST), "w") as out:
         json.dump(manifest, out)
     print(f"build-seed: staged {copied} of {len(manifest['paths'])} file(s) of "
-          f"{manifest['head'][:9]} at {staging}")
+          f"{manifest['head'][:9]} with {len(manifest['path_bound_units'])} "
+          f"path-bound test unit(s) at {staging}")
     return 0
 
 
@@ -377,6 +467,22 @@ def rebase_dep_info(target, old_root, new_root):
     return rewritten, dropped
 
 
+def drop_path_bound_units(target, units):
+    """Invalidate checkout-bound units recorded by the seed publisher."""
+    dropped = 0
+    target = os.path.realpath(target)
+    for rel in units:
+        path = os.path.realpath(os.path.join(target, rel))
+        if path == target or not path.startswith(target + os.sep):
+            continue
+        if os.path.basename(os.path.dirname(path)) != ".fingerprint":
+            continue
+        if os.path.isdir(path):
+            shutil.rmtree(path)
+            dropped += 1
+    return dropped
+
+
 def apply(seed, worktree, target_dir=None):
     """Rebase the seeded dep-info onto this worktree, THEN give identical
     files the gate's mtimes. The order is the safety property: until every
@@ -384,8 +490,9 @@ def apply(seed, worktree, target_dir=None):
     cargo rebuilds; an interrupted apply only costs rebuilds."""
     manifest = load_manifest(seed)
     worktree = os.path.realpath(worktree)
-    rewritten, dropped = rebase_dep_info(target_dir or os.path.join(worktree, "target"),
-                                         manifest["checkout"], worktree)
+    target = target_dir or os.path.join(worktree, "target")
+    path_dropped = drop_path_bound_units(target, manifest.get("path_bound_units", []))
+    rewritten, dropped = rebase_dep_info(target, manifest["checkout"], worktree)
     files = tracked(worktree)
     dirty = modified(worktree)
     # Everything that does NOT match the gate checkout is stamped now, which
@@ -419,7 +526,8 @@ def apply(seed, worktree, target_dir=None):
         entry = manifest["dirs"].get(d)
         stamp(d, entry[1] if entry and entry[0] == digest else now)
     print(f"build-seed: {matched}/{len(files)} files match seed {manifest['head'][:9]}; "
-          f"{rewritten} dep-info file(s) rebased onto this worktree, {dropped} unit(s) dropped")
+          f"{rewritten} dep-info file(s) rebased onto this worktree, "
+          f"{dropped} unsafe and {path_dropped} path-bound unit(s) dropped")
     return 0
 
 

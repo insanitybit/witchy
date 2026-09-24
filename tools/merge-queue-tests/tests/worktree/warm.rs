@@ -268,6 +268,68 @@ fn worktree_warm_prefers_the_build_seed_and_restores_matching_mtimes() {
 }
 
 #[test]
+fn build_seed_drops_only_units_with_compile_time_manifest_paths() {
+    let repo = temp_repo();
+    let root = repo.path();
+    git(root, &["config", "user.email", "worktree-test@witchy.invalid"]);
+    git(root, &["config", "user.name", "Witchy Worktree Test"]);
+    write(
+        root,
+        "Cargo.toml",
+        "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+    );
+    write(root, "src/lib.rs", "const ROOT: &str = env!(\"CARGO_MANIFEST_DIR\");\n");
+    write(root, "src/portable.rs", "pub fn portable() {}\n");
+    git(root, &["add", "Cargo.toml", "src"]);
+    git(root, &["commit", "--quiet", "-m", "fixture"]);
+
+    let bound = "target/debug/.fingerprint/fixture-0123456789abcdef";
+    let portable = "target/debug/.fingerprint/fixture-fedcba9876543210";
+    write(root, &format!("{bound}/dep-lib-fixture"), "");
+    std::fs::write(
+        root.join(format!("{bound}/dep-lib-fixture")),
+        dep_info(&[(0, "src/lib.rs")]),
+    )
+    .expect("write path-bound dep-info");
+    write(root, &format!("{bound}/test-lib-fixture"), "fingerprint\n");
+    write(root, &format!("{portable}/dep-lib-fixture"), "");
+    std::fs::write(
+        root.join(format!("{portable}/dep-lib-fixture")),
+        dep_info(&[(0, "src/portable.rs")]),
+    )
+    .expect("write portable dep-info");
+    write(root, &format!("{portable}/test-lib-fixture"), "fingerprint\n");
+
+    let scripts = workspace_root().join("scripts");
+    let published = Command::new("python3")
+        .arg(scripts.join("build-seed.py"))
+        .args(["publish", ".", "target", "state/build-seed"])
+        .current_dir(root)
+        .output()
+        .expect("publish build seed");
+    assert!(published.status.success(), "{}", String::from_utf8_lossy(&published.stderr));
+    let finished = Command::new("python3")
+        .arg(scripts.join("build-seed.py"))
+        .args(["finish", "state/build-seed"])
+        .current_dir(root)
+        .output()
+        .expect("finish build seed");
+    assert!(finished.status.success(), "{}", String::from_utf8_lossy(&finished.stderr));
+
+    git(root, &["worktree", "add", "--quiet", "-b", "topic", "wt"]);
+    let output = run_warm(root, &["wt"], Some("copy"));
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let worktree = root.join("wt");
+    assert!(!worktree.join(bound).exists(), "checkout-bound fingerprint survived");
+    assert!(worktree.join(portable).is_dir(), "portable fingerprint was discarded");
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("1 path-bound unit(s) dropped"),
+        "{}",
+        String::from_utf8_lossy(&output.stdout),
+    );
+}
+
+#[test]
 fn cargo_shim_preserves_incremental_mode_for_a_warm_seed_unless_overridden() {
     let repo = temp_repo();
     let root = repo.path();
