@@ -647,12 +647,19 @@ fn slice_element_name_ty(element: &Ty) -> Option<&'static str> {
         Ty::Bool => Some("Bool"),
         Ty::Duration => Some("Duration"),
         Ty::String => Some("String"),
+        Ty::List(inner) if matches!(inner.as_ref(), Ty::Int) => Some("List(Int)"),
         _ => None,
     }
 }
 
 fn slice_element_name_ast(element: &Type) -> Option<&'static str> {
-    let Type::Named(name, arguments) = element.unqualified() else { return None };
+    if matches!(element, Type::Named(name, arguments)
+        if name == "List" && matches!(arguments.as_slice(), [Type::Named(inner, inner_arguments)]
+            if inner == "Int" && inner_arguments.is_empty()))
+    {
+        return Some("List(Int)");
+    }
+    let Type::Named(name, arguments) = element else { return None };
     if !arguments.is_empty() {
         return None;
     }
@@ -906,5 +913,34 @@ mod tests {
         assert_ne!(store.digest(), secret.digest());
         assert_ne!(store.digest(), clock.digest());
         assert_ne!(secret.digest(), clock.digest());
+    }
+
+    #[test]
+    fn nested_int_list_slice_has_exact_checked_and_declared_identity() {
+        let typed = typed("fn relay(view: &[List(Int)]) -> &[List(Int)]:\n    view\n");
+        let context = Context::from_module(typed.module());
+        let element = Ty::List(std::rc::Rc::new(Ty::Int));
+        let checked = rooted_view_from_ty(&Ty::Named("Slice".into(), vec![element].into()), &context)
+            .expect("exact nested-list slice has a checked carrier");
+        let signature = checked_declaration_signature(&typed, "relay")
+            .expect("checked declaration signature");
+        let Type::Fn(parameters, _, _, _) = signature else { panic!("callable signature") };
+        let Type::Qualified(ast::TypeQual::View, declared_payload) = &parameters[0] else {
+            panic!("rooted nested-list slice parameter")
+        };
+        let declared = rooted_view_from_ast(declared_payload, &context)
+            .expect("exact declared carrier");
+        assert_eq!(checked, declared);
+        let whole = rooted_view_from_ty(
+            &Ty::List(std::rc::Rc::new(Ty::List(std::rc::Rc::new(Ty::Int)))), &context,
+        ).expect("whole nested-list root");
+        assert_ne!(checked, whole, "slice projection and whole root cannot share an ABI key");
+
+        let raw = Type::Named("List".into(), vec![Type::Named("Int".into(), Vec::new())]);
+        for qualifier in [ast::TypeQual::Unique, ast::TypeQual::Frozen] {
+            let near_miss = Type::Slice(Box::new(Type::Qualified(qualifier, Box::new(raw.clone()))));
+            assert!(rooted_view_from_ast(&near_miss, &context).is_err(),
+                "qualified child cannot inherit the exact nested-list slice key");
+        }
     }
 }

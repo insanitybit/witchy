@@ -876,13 +876,15 @@ pub fn lower_typed_module(
     for slice_layout in rooted_slice_layouts {
         let owner_type = crate::canonical_layouts::rooted_slice_owner_type(slice_layout.element)
             .ok_or(CanonicalLoweringError::UnsupportedExpression("rooted slice element"))?;
+        let element_type = crate::canonical_layouts::rooted_slice_element_type(slice_layout.element)
+            .ok_or(CanonicalLoweringError::UnsupportedExpression("rooted slice element"))?;
         let signature = FunctionSignatureId::new(owner_type.get());
         let constructor = ConstructorId(next_constructor);
         next_constructor = next_constructor.checked_add(1).ok_or(CanonicalLoweringError::IdOverflow)?;
         closure_context.owners.push(OwnerFamily {
             source: OwnerFamilySource::SharedReference(Type::Qualified(
                 TypeQual::View,
-                Box::new(Type::Slice(Box::new(Type::Named(slice_layout.element.into(), Vec::new())))),
+                Box::new(Type::Slice(Box::new(element_type))),
             )),
             owner_type,
             list_type: GcTypeId::new(owner_type.get() + 1),
@@ -3417,6 +3419,7 @@ fn checked_rooted_slice_element(ty: &Ty) -> Option<&'static str> {
         Ty::Bool => Some("Bool"),
         Ty::Duration => Some("Duration"),
         Ty::String => Some("String"),
+        Ty::List(inner) if matches!(inner.as_ref(), Ty::Int) => Some("List(Int)"),
         _ => None,
     }
 }
@@ -4815,8 +4818,8 @@ impl<'a> FunctionLowerer<'a> {
     /// `xs[i]` on a `&[T]` view for a non-`Int` element: the index is checked
     /// against the slice's own length, offset by its checked start, and read
     /// from the retained backing root behind that root's own live bounds
-    /// check. A scalar element is the value; a String element is a retained
-    /// token of the immutable String.
+    /// check. A scalar element is the value; a String or List(Int) element is
+    /// a retained child reference.
     fn read_rooted_slice_element(
         &mut self,
         slice: ValueId,
@@ -4828,7 +4831,9 @@ impl<'a> FunctionLowerer<'a> {
         if self.values[&index] != ValueType::Int {
             return Err(CanonicalLoweringError::UnsupportedExpression("rooted slice index type"));
         }
-        let list_type = Type::Named("List".into(), vec![Type::Named(element.into(), Vec::new())]);
+        let element_type = crate::canonical_layouts::rooted_slice_element_type(element)
+            .ok_or(CanonicalLoweringError::UnsupportedExpression("rooted slice element"))?;
+        let list_type = Type::Named("List".into(), vec![element_type]);
         let (layout, element_type, _, _) =
             list_layout(&list_type, self.layout_bundle, self.layouts, &self.closures.layouts, self.definitions)?;
         let index_size = self.fresh(ValueType::Size)?;

@@ -73,3 +73,22 @@ fn main() -> Int:
 "#);
 }
 
+/// A third List shell has no admitted rooted-slice carrier.
+#[test]
+fn a_slice_of_deeper_nested_lists_stays_fail_closed() {
+    opt::set_for_tests(Some(OptSet::none()));
+    let _reset = ResetOptimizationOverride;
+    let checked = witchy::resolve_std_only_checked(r#"
+fn relay(items: &[List(List(Int))]) -> &[List(List(Int))]:
+    items
+
+fn main() -> Int:
+    let values = [[[1]], [[2, 3]]]
+    let middle = relay(&values[0..1])
+    middle.length()
+"#).expect("the slice type-checks before canonical admission");
+    let refusal = codegen::compile_checked_module_artifact(&checked)
+        .expect_unsupported("&[List(List(Int))] has no admitted carrier");
+    assert!(refusal.to_string().contains("rooted view payload has no admitted authenticated carrier"),
+        "refused at the canonical boundary: {refusal}");
+}

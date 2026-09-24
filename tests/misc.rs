@@ -257,3 +257,5 @@ mod rfc0167_slice_index_read;
 mod rfc0167_slice_owned_materialization;
 #[path = "misc/rfc0167_slice_subscript_in_async.rs"]
 mod rfc0167_slice_subscript_in_async;
+#[path = "misc/rfc0167_slice_list_int_root_view.rs"]
+mod rfc0167_slice_list_int_root_view;

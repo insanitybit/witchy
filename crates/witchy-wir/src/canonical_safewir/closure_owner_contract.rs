@@ -261,11 +261,9 @@ pub enum SharedSliceField {
     Length,
 }
 
-/// The element names a rooted slice carrier admits: one scalar kind carried
-/// inline in the backing list, or an immutable String behind an owned
-/// pointer slot. An element that is itself an owner (a nested List, a
-/// record) has no slice carrier.
-pub const ROOTED_SLICE_ELEMENTS: [&str; 5] = ["Int", "Float", "Bool", "Duration", "String"];
+/// The exact element names a rooted slice carrier admits: scalar kinds carried
+/// inline, or String and List(Int) behind owned pointer slots.
+pub const ROOTED_SLICE_ELEMENTS: [&str; 6] = ["Int", "Float", "Bool", "Duration", "String", "List(Int)"];
 
 /// The element name of an exact `&[T]` rooted slice source type, if `T` is an
 /// admitted slice element.
@@ -280,7 +278,13 @@ pub fn rooted_slice_element(source_type: &witchy_syntax::ast::Type) -> Option<&'
         witchy_syntax::ast::Type::Named(name, arguments) if name == "Slice" && arguments.len() == 1 => &arguments[0],
         _ => return None,
     };
-    let witchy_syntax::ast::Type::Named(name, arguments) = element.unqualified() else { return None };
+    if matches!(element, witchy_syntax::ast::Type::Named(name, arguments)
+        if name == "List" && matches!(arguments.as_slice(), [witchy_syntax::ast::Type::Named(inner, inner_arguments)]
+            if inner == "Int" && inner_arguments.is_empty()))
+    {
+        return Some("List(Int)");
+    }
+    let witchy_syntax::ast::Type::Named(name, arguments) = element else { return None };
     if !arguments.is_empty() {
         return None;
     }
@@ -294,7 +298,7 @@ pub(crate) fn slice_element_layout_matches(
     element: crate::layout::LayoutId,
     name: &str,
 ) -> bool {
-    use crate::layout::{LayoutKind, PointerSlot, ScalarKind};
+    use crate::layout::{LayoutKind, PointerSlot, RcHeader, ScalarKind};
     let kind = layouts.get(element).map(|descriptor| descriptor.kind());
     match name {
         "Int" => matches!(kind, Some(LayoutKind::Scalar(ScalarKind::Int))),
@@ -309,6 +313,16 @@ pub(crate) fn slice_element_layout_matches(
                 return false;
             };
             matches!(layouts.get(*byte).map(|descriptor| descriptor.kind()), Some(LayoutKind::Scalar(ScalarKind::RawByte)))
+        }
+        "List(Int)" => {
+            let Some(LayoutKind::RuntimePointerValueSlot { pointee, semantics: PointerSlot::Owned }) = kind else {
+                return false;
+            };
+            let Ok(physical) = layouts.resolve_nominal(*pointee) else { return false };
+            let Some(LayoutKind::PackedList { element: inner, rc: RcHeader::Required }) = layouts.get(physical).map(|descriptor| descriptor.kind()) else {
+                return false;
+            };
+            matches!(layouts.get(*inner).map(|descriptor| descriptor.kind()), Some(LayoutKind::Scalar(ScalarKind::Int)))
         }
         _ => false,
     }
@@ -485,3 +499,41 @@ impl OwnerOperation {
 #[cfg(feature = "checked-source-test-api")]
 #[doc(hidden)]
 pub mod checked_source_cases;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn nested_int_list_slice_requires_exact_source_and_owned_child_layout() {
+        use crate::layout::{LayoutInterner, PointerSlot, RcHeader, ScalarKind};
+        use witchy_syntax::ast::{Type, TypeQual};
+
+        let nested = Type::Named("List".into(), vec![Type::Named("Int".into(), Vec::new())]);
+        let slice = |child| Type::Qualified(TypeQual::View, Box::new(Type::Slice(Box::new(child))));
+        assert_eq!(rooted_slice_element(&slice(nested.clone())), Some("List(Int)"));
+        for qualifier in [TypeQual::Unique, TypeQual::Frozen] {
+            assert_eq!(rooted_slice_element(&slice(Type::Qualified(qualifier, Box::new(nested.clone())))), None);
+            assert_eq!(
+                rooted_slice_element(&slice(Type::Qualified(qualifier, Box::new(Type::Named("Int".into(), Vec::new()))))),
+                None,
+            );
+        }
+        assert_eq!(rooted_slice_element(&slice(Type::Named("List".into(), vec![nested]))), None);
+
+        let mut layouts = LayoutInterner::new();
+        let int = layouts.intern_scalar(ScalarKind::Int).unwrap();
+        let float = layouts.intern_scalar(ScalarKind::Float).unwrap();
+        let inner = layouts.intern_packed_list(int, RcHeader::Required).unwrap();
+        let wrong_inner = layouts.intern_packed_list(float, RcHeader::Required).unwrap();
+        let wrong_header = layouts.intern_packed_list(int, RcHeader::Elided).unwrap();
+        let owned = layouts.intern_runtime_pointer_value_slot(inner, PointerSlot::Owned).unwrap();
+        let nullable = layouts.intern_runtime_pointer_value_slot(inner, PointerSlot::OwnedNullable).unwrap();
+        let wrong = layouts.intern_runtime_pointer_value_slot(wrong_inner, PointerSlot::Owned).unwrap();
+        let headerless = layouts.intern_runtime_pointer_value_slot(wrong_header, PointerSlot::Owned).unwrap();
+        assert!(slice_element_layout_matches(&layouts, owned, "List(Int)"));
+        for rejected in [nullable, wrong, headerless, inner, int] {
+            assert!(!slice_element_layout_matches(&layouts, rejected, "List(Int)"));
+        }
+    }
+}

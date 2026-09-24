@@ -114,19 +114,19 @@ fn bad() -> Option(&Int):
 }
 
 #[test]
-fn rooted_slice_rejects_unadmitted_element_payload_at_canonical_boundary() {
+fn rooted_slice_rejects_deeper_list_element_at_canonical_boundary() {
     let source = r#"
-fn relay(items: &[List(Int)]) -> &[List(Int)]:
+fn relay(items: &[List(List(Int))]) -> &[List(List(Int))]:
     items
 
 fn main() -> Int:
-    let values = [[1], [2]]
+    let values = [[[1]], [[2]]]
     let middle = relay(&values[0..1])
     middle.length()
 "#;
     let checked = witchy::resolve_std_only_checked(source)
-        .expect("unadmitted slice payload still type-checks before canonical admission");
+        .expect("deeper slice payload still type-checks before canonical admission");
     let refusal = codegen::compile_checked_module_artifact(&checked)
-        .expect_unsupported("only a slice of scalars or Strings may cross canonical ABI");
+        .expect_unsupported("a third List shell has no slice carrier");
     assert!(refusal.to_string().contains("rooted view payload has no admitted authenticated carrier"));
 }

@@ -1045,20 +1045,29 @@ fn concrete_identity_at(
 /// alias two distinct physical carriers under one identity.
 pub fn owner_carried_view_identity(ty: &Type) -> Option<Type> {
     let Type::Qualified(witchy_syntax::ast::TypeQual::View, inner) = ty else { return None };
-    // Exactly the admitted slice elements (`ROOTED_SLICE_ELEMENTS`), matched
-    // through `frozen` (the same immutable payload) but through no other
-    // nested qualifier.
+    // An outer frozen payload preserves the view identity. Slice elements
+    // themselves must have one of the exact admitted, unqualified shapes.
     let payload_of = |ty: &Type| match ty {
         Type::Qualified(witchy_syntax::ast::TypeQual::Frozen, inner) => inner.as_ref().clone(),
         other => other.clone(),
     };
-    let scalar = |ty: &Type| matches!(payload_of(ty), Type::Named(ref name, ref arguments)
-        if arguments.is_empty() && matches!(name.as_str(), "Int" | "Float" | "Bool" | "Duration" | "String"));
+    let slice_element = |ty: &Type| {
+        if matches!(ty, Type::Named(name, arguments)
+            if arguments.is_empty() && matches!(name.as_str(), "Int" | "Float" | "Bool" | "Duration" | "String")) {
+            return Some(ty.clone());
+        }
+        matches!(ty, Type::Named(name, arguments)
+            if name == "List" && matches!(arguments.as_slice(), [Type::Named(inner, inner_arguments)]
+                if inner == "Int" && inner_arguments.is_empty()))
+            .then(|| ty.clone())
+    };
     let payload = match &payload_of(inner) {
         Type::Named(name, arguments) if name == "Int" && arguments.is_empty() => payload_of(inner),
-        Type::Slice(element) if scalar(element) => Type::Slice(Box::new(payload_of(element))),
-        Type::Named(name, arguments) if name == "Slice" && arguments.len() == 1 && scalar(&arguments[0]) => {
-            Type::Slice(Box::new(payload_of(&arguments[0])))
+        Type::Slice(element) if slice_element(element).is_some() => {
+            Type::Slice(Box::new(slice_element(element).expect("matched above")))
+        }
+        Type::Named(name, arguments) if name == "Slice" && arguments.len() == 1 && slice_element(&arguments[0]).is_some() => {
+            Type::Slice(Box::new(slice_element(&arguments[0]).expect("matched above")))
         }
         _ => return None,
     };
@@ -1217,6 +1226,21 @@ mod recursive_shape_tests {
         let mut definition = definition(name, fields, packed);
         definition.params = parameters.iter().map(|parameter| (*parameter).to_owned()).collect();
         definition
+    }
+
+    #[test]
+    fn nested_int_list_slice_owner_identity_preserves_exact_child_qualifiers() {
+        let child = Type::Named("List".into(), vec![named("Int")]);
+        let view = |element| Type::Qualified(
+            witchy_syntax::ast::TypeQual::View,
+            Box::new(Type::Slice(Box::new(element))),
+        );
+        let exact = view(child.clone());
+        assert_eq!(owner_carried_view_identity(&exact), Some(exact));
+        for qualifier in [witchy_syntax::ast::TypeQual::Unique, witchy_syntax::ast::TypeQual::Frozen] {
+            assert!(owner_carried_view_identity(&view(Type::Qualified(qualifier, Box::new(child.clone())))).is_none());
+        }
+        assert!(owner_carried_view_identity(&view(Type::Named("List".into(), vec![child]))).is_none());
     }
 
     #[test]

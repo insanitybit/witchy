@@ -59,6 +59,7 @@ pub(crate) fn rooted_slice_owner_type(element: &str) -> Option<GcTypeId> {
         "Bool" => 0x6,
         "Duration" => 0x8,
         "String" => 0xa,
+        "List(Int)" => 0xc,
         _ => return None,
     };
     Some(GcTypeId::new(0xc300_0000 + offset))
@@ -70,12 +71,28 @@ pub(crate) fn rooted_int_slice_owner_type() -> GcTypeId {
 
 /// The admitted element name of a slice element type.
 pub(crate) fn rooted_slice_element_name(element: &Type) -> Option<&'static str> {
-    let Type::Named(name, arguments) = element.unqualified() else { return None };
+    if matches!(element, Type::Named(name, arguments)
+        if name == "List" && matches!(arguments.as_slice(), [Type::Named(inner, inner_arguments)]
+            if inner == "Int" && inner_arguments.is_empty()))
+    {
+        return Some("List(Int)");
+    }
+    let Type::Named(name, arguments) = element else { return None };
     if !arguments.is_empty() {
         return None;
     }
     witchy_wir::canonical_safewir::closure_owner_contract::ROOTED_SLICE_ELEMENTS
         .into_iter().find(|admitted| admitted == name)
+}
+
+pub(crate) fn rooted_slice_element_type(element: &str) -> Option<Type> {
+    match element {
+        "Int" | "Float" | "Bool" | "Duration" | "String" => {
+            Some(Type::Named(element.into(), Vec::new()))
+        }
+        "List(Int)" => Some(Type::Named("List".into(), vec![Type::Named("Int".into(), Vec::new())])),
+        _ => None,
+    }
 }
 
 /// The source-derived storage family for one `fn` signature.  The callable
@@ -901,7 +918,9 @@ impl LayoutProjection {
         };
         let mut rooted_slices = Vec::new();
         for element in &self.rooted_slices_requested {
-            let list_type = Type::Named("List".into(), vec![Type::Named((*element).into(), Vec::new())]);
+            let element_type = rooted_slice_element_type(element)
+                .ok_or(CanonicalLayoutError::InvalidLayout("unsupported rooted slice element".into()))?;
+            let list_type = Type::Named("List".into(), vec![element_type]);
             if !self.roots.iter().any(|ty| canonical_layout_type(ty, &self.definitions) == list_type) {
                 continue;
             }
@@ -1707,15 +1726,15 @@ mod tests {
             assert!(bundle.roots().contains(&slice.list_root));
         }
 
-        // A slice of owners has no carrier and mints no family.
+        // A third List shell has no carrier and mints no family.
         let nested = Type::Qualified(
             witchy_syntax::ast::TypeQual::View,
-            Box::new(Type::Slice(Box::new(Type::Named("List".into(), vec![named("Int")])))),
+            Box::new(Type::Slice(Box::new(Type::Named("List".into(), vec![Type::Named("List".into(), vec![named("Int")])])))),
         );
         let mut refused = LayoutProjection::default();
-        refused.visit_type(&nested).expect("&[List(Int)] still projects its list layout");
+        refused.visit_type(&nested).expect("deeper list slice still projects its list layout");
         let (_, _, _, _, slices) = refused.finish_with_families().expect("catalog finishes");
-        assert!(slices.is_empty(), "&[List(Int)] has no rooted-slice family");
+        assert!(slices.is_empty(), "&[List(List(Int))] has no rooted-slice family");
     }
 
     fn heap_definition(name: &str, fields: Vec<Type>) -> witchy_syntax::ast::TypeDef {
