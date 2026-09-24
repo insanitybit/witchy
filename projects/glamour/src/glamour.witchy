@@ -5145,15 +5145,15 @@ pub fn program_step_with(input: String, root: UiRoot, app: Program(auth, model, 
 // values and only as the complete value of an image-valued declaration. Other
 // dynamic values use typed custom-property APIs rather than entering stylesheet
 // syntax. The emitted sheet is deterministic and already scoped.
-pub comptime fn css(parts: List(String), holes: List(String), origin: String) -> meta.ExprSyntax:
+pub comptime fn css(parts: List(String), holes: List(meta.TagHole), origin: String) -> meta.ExprSyntax:
     css_literal_expression(parts, holes, origin, meta.ident("css_sheet_from_source"))
 
-pub comptime fn global_css(parts: List(String), holes: List(String), origin: String) -> meta.ExprSyntax:
+pub comptime fn global_css(parts: List(String), holes: List(meta.TagHole), origin: String) -> meta.ExprSyntax:
     css_literal_expression(parts, holes, origin, meta.ident("global_css_sheet_from_source"))
 
 // Media conditions share one static parser with delivery-policy publication.
 // Dynamic strings cannot construct the sealed MediaQuery boundary.
-pub comptime fn media(parts: List(String), holes: List(String), _origin: String) -> meta.ExprSyntax:
+pub comptime fn media(parts: List(String), holes: List(meta.TagHole), _origin: String) -> meta.ExprSyntax:
     if !holes.is_empty() || parts.length() != 1:
         fail("glamour media: interpolations are not allowed")
     let query = parts.at(0).trim()
@@ -5161,7 +5161,7 @@ pub comptime fn media(parts: List(String), holes: List(String), _origin: String)
         fail("glamour media: expected a bounded static CSS media condition")
     meta.expr_call(meta.expr_name(meta.ident("media_query_literal")), [meta.expr_string(query)])
 
-comptime fn css_literal_expression(parts: List(String), holes: List(String), origin: String, builder: meta.Ident) -> meta.ExprSyntax:
+comptime fn css_literal_expression(parts: List(String), holes: List(meta.TagHole), origin: String, builder: meta.Ident) -> meta.ExprSyntax:
     for part in parts:
         if part.to_lower().contains("url("):
             fail("glamour css: write asset URLs with a typed glamour.css_asset interpolation")
@@ -5175,7 +5175,7 @@ comptime fn css_literal_expression(parts: List(String), holes: List(String), ori
         let renderer = css_hole_renderer(before, after)
         // The whitelist below returns source data only; `meta.ident` validates
         // it as one identifier before it becomes an AST callee.
-        let rendered = generated_call(meta.ident(renderer), [meta.expr_tag_hole(holes.at(index))])
+        let rendered = generated_call(meta.ident(renderer), [meta.expr_tag_hole_typed(holes.at(index))])
         expression = meta.expr_binary("+", expression, rendered)
         expression = meta.expr_binary("+", expression, meta.expr_string(after))
         index = index + 1
@@ -5334,9 +5334,9 @@ fn render_css_blocks(source: String, scope: String, scoped: Bool, allow_media: B
 // ===========================================================================
 // The `html` tag — a COMPILE-TIME tagged literal (RFC-0006). `html"<div…>"`
 // expands DURING COMPILATION: this function runs once in the compiler, receives
-// the static fragments (`parts`) and an OPAQUE MARKER per hole (`holes` — each
-// element is a `__witchy_hole_N` token, NOT the hole's source), and returns typed
-// expression syntax constructing a `VNode`. The tag PLACES each marker where the
+// the static fragments (`parts`) and a sealed `meta.TagHole` per hole (`holes`,
+// never the hole's source), and returns typed expression syntax constructing a
+// `VNode`. The tag PLACES each compiler-issued hole where the
 // hole's value belongs; `tagged::expand` substitutes the real hole expression
 // (parsed once at the call site, carrying its source position) at each marker. The
 // emitted constructors receive definition-site identity, so they resolve in this
@@ -5360,17 +5360,17 @@ fn render_css_blocks(source: String, scope: String, scoped: Bool, allow_media: B
 // HTML comments, entities beyond the escape set, boolean attributes without a
 // value, and namespaced/SVG tags.
 // ===========================================================================
-pub comptime fn html(parts: List(String), holes: List(String), origin: String) -> meta.ExprSyntax:
+pub comptime fn html(parts: List(String), holes: List(meta.TagHole), origin: String) -> meta.ExprSyntax:
     template_literal_expression(parts, holes, origin)
 
-comptime fn template_literal_expression(parts: List(String), holes: List(String), origin: String) -> meta.ExprSyntax:
+comptime fn template_literal_expression(parts: List(String), holes: List(meta.TagHole), origin: String) -> meta.ExprSyntax:
     // A source `\0` escape is legal in a tagged literal's static parts, but NUL
     // is the private hole-marker delimiter below. Reject it before weaving so
     // static text can never be parsed as a synthetic hole (BUG-439).
     let _safe_parts = reject_static_nul(parts)
     // Reconstruct the full template, replacing each hole with a sentinel marker
     // `<NUL>N<NUL>`, so the parser can walk a single char stream and recover
-    // hole `N`'s source when it meets a marker.
+    // hole `N`'s compiler-issued handle when it meets a marker.
     let template = weave(parts)
     let toks = lex_html(template)
     let _accessible = check_template_accessibility(toks)
@@ -5390,7 +5390,7 @@ comptime fn template_literal_expression(parts: List(String), holes: List(String)
 // JSX-shaped authoring through Witchy's existing general tagged-literal
 // mechanism. This is a library tag, not a lexer mode: it deliberately shares
 // html's parser, hygiene, positional typing, and XSS guarantees.
-pub comptime fn jsx(parts: List(String), holes: List(String), origin: String) -> meta.ExprSyntax:
+pub comptime fn jsx(parts: List(String), holes: List(meta.TagHole), origin: String) -> meta.ExprSyntax:
     template_literal_expression(parts, holes, origin)
 
 fn reject_static_nul(parts: List(String)) -> Bool:
@@ -5416,8 +5416,8 @@ fn no_trailing_tokens(toks: List(HtmlTok), from: Int) -> Bool:
         i = i + 1
     true
 
-// Static accessibility facts are checked while the tag still has source-hole
-// positions. Dynamic labels/alt text are accepted as typed String holes; missing
+// Static accessibility facts are checked while the tag still has hole slots.
+// Dynamic labels/alt text are accepted as typed String holes; missing
 // relationships fail during expansion rather than becoming browser warnings.
 fn check_template_accessibility(toks: List(HtmlTok)) -> Bool:
     var ids: List(String) = []
@@ -5767,7 +5767,7 @@ comptime fn generated_call(callee: meta.Ident, args: List(meta.ExprSyntax)) -> m
     meta.expr_named_call(callee, args)
 
 // Parse the node starting at token `at`. Returns (expression, index after the node).
-comptime fn parse_node(toks: List(HtmlTok), at: Int, holes: List(String)) -> (meta.ExprSyntax, Int):
+comptime fn parse_node(toks: List(HtmlTok), at: Int, holes: List(meta.TagHole)) -> (meta.ExprSyntax, Int):
     let n = toks.length()
     if at >= n:
         fail("glamour html: empty template — expected a single root element")
@@ -5781,7 +5781,7 @@ comptime fn parse_node(toks: List(HtmlTok), at: Int, holes: List(String)) -> (me
                 (meta.expr_string(""), at + 1)
             Open(name, attrs, self_close) -> parse_element(toks, at, name, attrs, self_close, holes)
 
-comptime fn parse_element(toks: List(HtmlTok), at: Int, name: String, attrs: List(HAttr), self_close: Bool, holes: List(String)) -> (meta.ExprSyntax, Int):
+comptime fn parse_element(toks: List(HtmlTok), at: Int, name: String, attrs: List(HAttr), self_close: Bool, holes: List(meta.TagHole)) -> (meta.ExprSyntax, Int):
     if name.length() == 0:
         let _bad = fail("glamour html: a tag NAME may not be a \${hole} — the element name must be static")
         (meta.expr_string(""), at + 1)
@@ -5798,7 +5798,7 @@ comptime fn parse_element(toks: List(HtmlTok), at: Int, name: String, attrs: Lis
 
 // Parse children until the matching `</name>`. Returns (comma-joined child
 // expressions, index after the close tag).
-comptime fn parse_children(toks: List(HtmlTok), at: Int, name: String, holes: List(String)) -> (List(meta.ExprSyntax), Int):
+comptime fn parse_children(toks: List(HtmlTok), at: Int, name: String, holes: List(meta.TagHole)) -> (List(meta.ExprSyntax), Int):
     let n = toks.length()
     var i = at
     var kids: List(meta.ExprSyntax) = []
@@ -5832,8 +5832,8 @@ comptime fn emit_text_literal(s: String) -> meta.ExprSyntax:
 // only inert String text, a checked VNode, or a checked Ui; arbitrary values
 // cannot stringify themselves into markup. `holes.at(idx)` is the opaque
 // compiler expression token substituted without a source round trip.
-comptime fn emit_text_hole(idx: Int, holes: List(String)) -> meta.ExprSyntax:
-    generated_call(meta.ident("template_child_region"), [meta.expr_string("template-child-${idx}"), generated_call(meta.ident("template_child_value"), [meta.expr_tag_hole(holes.at(idx))])])
+comptime fn emit_text_hole(idx: Int, holes: List(meta.TagHole)) -> meta.ExprSyntax:
+    generated_call(meta.ident("template_child_region"), [meta.expr_string("template-child-${idx}"), generated_call(meta.ident("template_child_value"), [meta.expr_tag_hole_typed(holes.at(idx))])])
 
 // Build the compile-time dynamic-slot table in lexical order. Hole indices are
 // assigned by Witchy's tagged-literal parser and remain stable when application
@@ -5902,13 +5902,13 @@ fn template_attr_kind(name: String) -> String:
     else:
         "attribute"
 
-comptime fn emit_attrs(attrs: List(HAttr), holes: List(String)) -> List(meta.ExprSyntax):
+comptime fn emit_attrs(attrs: List(HAttr), holes: List(meta.TagHole)) -> List(meta.ExprSyntax):
     var nodes: List(meta.ExprSyntax) = []
     for a in attrs:
         nodes.push(emit_attr(a, holes))
     nodes
 
-comptime fn emit_attr(a: HAttr, holes: List(String)) -> meta.ExprSyntax:
+comptime fn emit_attr(a: HAttr, holes: List(meta.TagHole)) -> meta.ExprSyntax:
     match a:
         SProp(name, value) ->
             let _name_ok = check_template_attr(name)
@@ -5918,10 +5918,10 @@ comptime fn emit_attr(a: HAttr, holes: List(String)) -> meta.ExprSyntax:
             generated_call(meta.ident("boolean_attribute"), [meta.expr_string(name), meta.expr_bool(enabled)])
         HProp(name, idx) ->
             let _name_ok = check_template_attr(name)
-            emit_dynamic_attr(name, meta.expr_tag_hole(holes.at(idx)))
+            emit_dynamic_attr(name, meta.expr_tag_hole_typed(holes.at(idx)))
         HOn(event, idx) ->
             let _event_ok = check_template_event(event)
-            generated_call(meta.ident("on"), [meta.expr_string(event), meta.expr_tag_hole(holes.at(idx))])
+            generated_call(meta.ident("on"), [meta.expr_string(event), meta.expr_tag_hole_typed(holes.at(idx))])
         Bad(msg) ->
             let _bad = fail("glamour html: ${msg}")
             meta.expr_string("")
