@@ -661,7 +661,7 @@ for p in "${paths[@]}"; do
         src/example_tests.rs)
             any_rust=1
             gate_need_examples=1
-            add "./scripts/nextest-admitted.sh witchy -- cargo nextest run -E 'test(/^example_tests::/)'" ;;
+            add "./scripts/nextest-admitted.sh witchy -- cargo nextest run --bin witchy -E 'test(/^example_tests::/)'" ;;
         src/example_tests/network.rs)
             any_rust=1
             add_early "./scripts/nextest-admitted.sh witchy -- cargo nextest run --bin witchy -E 'test(/^example_tests::network::/)'"

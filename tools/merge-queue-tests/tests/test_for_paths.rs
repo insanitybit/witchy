@@ -166,6 +166,17 @@ fn gate_nextest_example_tests_only_is_not_workspace() {
 }
 
 #[test]
+fn root_example_tests_edit_builds_only_the_main_bin() {
+    let commands = selected(&["--edit-loop", "src/example_tests.rs"]);
+    assert_eq!(commands.len(), 1, "{commands:?}");
+    assert!(
+        commands[0].contains("--bin witchy")
+            && commands[0].contains("test(/^example_tests::/)"),
+        "root example-test edit rebuilt unrelated package targets: {commands:?}",
+    );
+}
+
+#[test]
 fn network_example_edits_run_only_the_network_module() {
     let commands = selected(&["--edit-loop", "src/example_tests/network.rs"]);
     assert_eq!(commands.len(), 1, "{commands:?}");
