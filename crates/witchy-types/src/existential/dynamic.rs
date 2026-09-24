@@ -105,13 +105,15 @@ pub(super) fn collect_dynamic_method_definitions(
             })
             .collect::<Result<Vec<_>, _>>()?;
         let result = function.ret.clone().unwrap_or_else(|| Type::Tuple(Vec::new()));
+        // A view result remains visible to static reflection. Dynamic calls
+        // refuse it before decoding or invoking, so only inputs need a
+        // payload-carrier restriction here.
         if std::iter::once(&receiver)
             .chain(parameter_types.iter())
-            .chain(std::iter::once(&result))
             .any(contains_rooted_view)
         {
             return Err(format!(
-                "@dynamic function `{}` cannot admit an immutable rooted-view carrier until dynamic has authenticated root retention support",
+                "@dynamic function `{}` cannot receive an immutable rooted-view carrier through Dynamic",
                 function.name
             ));
         }
@@ -1519,7 +1521,7 @@ fn runtime_method_invocation(
     // Dynamic is an owned payload boundary. Retain borrowed-result contracts in
     // reflection, but do not decode or invoke a method whose result would need
     // to carry a loan through `Dynamic`.
-    if !method.access.borrow_relations().is_empty() {
+    if contains_rooted_view(&method.result_type) || !method.access.borrow_relations().is_empty() {
         return dynamic_error("BorrowedResult", vec![Expr::Str(method.name.clone())]);
     }
     let receiver = "$dynamic_call_receiver";

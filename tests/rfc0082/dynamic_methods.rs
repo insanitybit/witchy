@@ -2,6 +2,7 @@
 
 use witchy::runtime::{Capabilities, Runtime};
 use witchy::{codegen, interpreter};
+use witchy::opt::{self, OptSet};
 
 use super::authenticated::checked_source_result;
 
@@ -381,6 +382,56 @@ fn main(console: Console):
         .expect("spawn borrow storage reflection fixture");
     actor.run().expect("run borrow storage reflection fixture");
     assert_eq!(actor.output(), expected);
+}
+
+#[test]
+fn rooted_view_result_is_reflected_but_dynamic_call_returns_borrowed_result() {
+    struct ResetOptimizationOverride;
+    impl Drop for ResetOptimizationOverride {
+        fn drop(&mut self) { opt::set_for_tests(None); }
+    }
+    opt::set_for_tests(Some(OptSet::none()));
+    let _reset = ResetOptimizationOverride;
+    let source = r#"
+import dynamic
+import list
+import reflect
+
+type Widget:
+    value: Int
+
+impl Reflect for Widget:
+    fn reflect(self) -> reflect.Mirror:
+        reflect.MNil
+
+@dynamic
+pub fn view(self: Widget) -> &Int:
+    &self.value
+
+fn main(console: Console):
+    let method = list.at(dynamic.methods(dynamic.type_of(dynamic.dynamic(Widget(7)))), 0)
+    console.print("relations-${list.length(dynamic.access_borrow_relations(dynamic.method_access(method)))}")
+    match dynamic.call(dynamic.dynamic(Widget(7)), "view", [dynamic.dynamic("wrong")]):
+        Err(dynamic.BorrowedResult(name)) -> console.print("borrowed-result-${name}")
+        _ -> console.print("wrong-result")
+"#;
+    let checked = checked_source(source);
+    let artifact = codegen::compile_checked_module_artifact(&checked)
+        .expect_lowered("admit reflected rooted-view method");
+    let mut runtime = Runtime::batch().expect("runtime");
+    let mut actor = runtime
+        .spawn_admitted(
+            &artifact,
+            Capabilities { print: true, quiet: true, ..Default::default() },
+            256,
+        )
+        .expect("spawn rooted-view method fixture");
+    actor.run().expect("run rooted-view method fixture");
+    // Hand expectation: this rooted result has zero lexical loan relations.
+    // The erased call refuses its view result before decoding the deliberately
+    // wrong argument, naming the reflected method `view`.
+    assert_eq!(actor.output(), ["relations-0", "borrowed-result-view"]);
+    assert_eq!(actor.canonical_heap_leaks().expect("canonical heap audit"), Some(0));
 }
 
 #[test]
