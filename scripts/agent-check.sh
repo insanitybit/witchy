@@ -36,6 +36,14 @@ fi
 # caller deliberately selected another priority.
 export MBX_SCHEDULER_PRIORITY="${MBX_SCHEDULER_PRIORITY:-normal}"
 
+# Several focused presubmits commonly overlap on this 10-core host. Letting
+# every nextest process claim the CPU-count default turns four useful shards
+# into forty competing test processes; observed load exceeded 200 and healthy
+# tests stretched into timeout territory. Two-wide keeps aggregate agent work
+# near host capacity while the serialized merge gate retains its normal width.
+# A caller measuring an isolated shard can still choose an explicit width.
+export NEXTEST_TEST_THREADS="${NEXTEST_TEST_THREADS:-2}"
+
 # `cargo` inside the agent env resolves to scripts/bin/cargo, which routes
 # build subcommands through the mbx build cache when it is installed and not
 # disabled (WITCHY_BUILD_CACHE=off). The wrapper clears below stay: they

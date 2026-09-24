@@ -2,8 +2,8 @@
 set -euo pipefail
 
 # The script is itself selected by agent-check, whose warm-target profile and
-# scheduler priority must not leak into the fixture cases below.
-unset CARGO_PROFILE_TEST_STRIP MBX_SCHEDULER_PRIORITY
+# scheduler priority and nextest width must not leak into the fixture cases.
+unset CARGO_PROFILE_TEST_STRIP MBX_SCHEDULER_PRIORITY NEXTEST_TEST_THREADS
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/witchy-agent-check-qos.XXXXXX")"
@@ -50,8 +50,9 @@ case " $* " in
         exit 0
         ;;
 esac
-printf 'strip=%s priority=%s target=%s args=%s\n' \
+printf 'strip=%s priority=%s nextest=%s target=%s args=%s\n' \
     "${CARGO_PROFILE_TEST_STRIP-unset}" "${MBX_SCHEDULER_PRIORITY-unset}" \
+    "${NEXTEST_TEST_THREADS-unset}" \
     "${CARGO_TARGET_DIR-unset}" "$*" \
     >>"$AGENT_CHECK_ENV_LOG"
 EOF
@@ -70,23 +71,23 @@ run_fixture() {
 }
 
 run_fixture gate-seed env
-grep -F 'strip=symbols priority=normal target=target-codex args=--edit-loop --run docs/probe.md' \
+grep -F 'strip=symbols priority=normal nextest=2 target=target-codex args=--edit-loop --run docs/probe.md' \
     "$tmp/env.log" >/dev/null
 
 rm -rf "$fixture/target-codex"
 mkdir -p "$fixture/target"
 run_fixture local-seed env
-grep -F 'strip=unset priority=normal target=target-codex args=--edit-loop --run docs/probe.md' \
+grep -F 'strip=unset priority=normal nextest=2 target=target-codex args=--edit-loop --run docs/probe.md' \
     "$tmp/env.log" >/dev/null
 
 rm -rf "$fixture/target" "$fixture/target-codex"
-run_fixture explicit-symbols env CARGO_PROFILE_TEST_STRIP=none MBX_SCHEDULER_PRIORITY=low
-grep -F 'strip=none priority=low target=target-codex args=--edit-loop --run docs/probe.md' \
+run_fixture explicit-symbols env CARGO_PROFILE_TEST_STRIP=none MBX_SCHEDULER_PRIORITY=low NEXTEST_TEST_THREADS=7
+grep -F 'strip=none priority=low nextest=7 target=target-codex args=--edit-loop --run docs/probe.md' \
     "$tmp/env.log" >/dev/null
 
 rm -rf "$fixture/target-codex"
 run_fixture shell-only env FAKE_AGENT_PLAN=shell
-grep -F 'strip=unset priority=normal target=target-codex args=--edit-loop --run docs/probe.md' \
+grep -F 'strip=unset priority=normal nextest=2 target=target-codex args=--edit-loop --run docs/probe.md' \
     "$tmp/env.log" >/dev/null
 
 test "$(wc -l <"$tmp/warm.log" | tr -d ' ')" = 3
@@ -108,16 +109,17 @@ git -C "$main_fixture" commit -qm initial
 git -C "$main_fixture" worktree add -qb linked "$linked_fixture"
 env -u CARGO_TARGET_DIR AGENT_CHECK_ENV_LOG="$tmp/linked-env.log" FAKE_AGENT_PLAN=shell \
     "$linked_fixture/scripts/agent-check.sh" edit docs/probe.md >/dev/null
-grep -F 'strip=unset priority=normal target=target args=--edit-loop --run docs/probe.md' \
+grep -F 'strip=unset priority=normal nextest=2 target=target args=--edit-loop --run docs/probe.md' \
     "$tmp/linked-env.log" >/dev/null
 mkdir -p "$linked_fixture/target-codex"
 env -u CARGO_TARGET_DIR AGENT_CHECK_ENV_LOG="$tmp/linked-codex-env.log" \
     "$linked_fixture/scripts/agent-check.sh" edit docs/probe.md >/dev/null
-grep -F 'strip=unset priority=normal target=target-codex args=--edit-loop --run docs/probe.md' \
+grep -F 'strip=unset priority=normal nextest=2 target=target-codex args=--edit-loop --run docs/probe.md' \
     "$tmp/linked-codex-env.log" >/dev/null
 
 echo "agent-check focused commands inherit utility QoS"
 echo "agent-check focused commands use normal MBX priority and preserve overrides"
+echo "agent-check focused nextest uses bounded concurrency and preserves overrides"
 echo "agent-check matches gate-seeded test profiles and preserves explicit symbols"
 echo "agent-check skips target seeding for shell-only edit plans"
 echo "agent-check reuses the seeded private target of a linked worktree"
