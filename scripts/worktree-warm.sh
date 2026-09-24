@@ -31,7 +31,15 @@
 # Do NOT share one CARGO_TARGET_DIR across worktrees instead: cargo's build lock
 # would serialize concurrent agents, and the local gates assume ./target
 # (BUG-020). Per-worktree target + CoW seed keeps builds parallel AND warm.
+#
+# A target cloned from the merge gate is a Cargo-incremental target. Mark that
+# provenance so scripts/bin/cargo preserves its profile instead of asking mbx
+# to replace every warm workspace unit with a non-incremental, shareable one.
+# The marker is target-local: deleting the target deletes the preference, and
+# an explicit WITCHY_MBX_MODE still overrides it.
 set -euo pipefail
+
+incremental_seed_marker=".witchy-mbx-incremental-seed"
 
 print_help() {
     sed -n '2,/^set -euo pipefail$/{ /^set -euo pipefail$/d; s/^# \{0,1\}//; p; }' "$0"
@@ -159,6 +167,10 @@ clone_target() { # clone_target <src-target> <dest-target>
     done
 }
 
+mark_incremental_seed() { # mark_incremental_seed <target-dir>
+    printf 'gate build seed\n' >"$1/$incremental_seed_marker"
+}
+
 # The checker's persistent verdict store (see
 # crates/witchy-wir/src/canonical_safewir/check/cache.rs). A fresh worktree
 # starts with an empty one, so every test process in it re-establishes the
@@ -207,7 +219,7 @@ gate_seed_source() { # gate_seed_source <main-worktree>
 }
 
 clone_or_gate_fallback() { # clone_or_gate_fallback <preferred-source> <dest> <main> <original-args...>
-    local source="$1" dest="$2" main="$3"
+    local source="$1" dest="$2" main="$3" gate_seed=0
     shift 3
     if [[ ! -d "$source" ]]; then
         if [[ "${WITCHY_WORKTREE_WARM_GATE_LOCKED:-}" == 1 ]]; then
@@ -215,6 +227,7 @@ clone_or_gate_fallback() { # clone_or_gate_fallback <preferred-source> <dest> <m
                 echo "worktree-warm: no safe warm target to clone" >&2
                 return 1
             }
+            gate_seed=1
             # The persistent stdlib cache is keyed by the test executable's
             # identity. A gate-worktree binary is relinked in this checkout,
             # so copying its thousands of cache entries only adds metadata work.
@@ -231,6 +244,7 @@ clone_or_gate_fallback() { # clone_or_gate_fallback <preferred-source> <dest> <m
         fi
     fi
     clone_target "$source" "$dest"
+    [[ "$gate_seed" == 0 ]] || mark_incremental_seed "$dest"
     local skipped="incremental/ and deps/*.rcgu.o skipped"
     [[ "$clone_testcache" == 1 ]] || skipped="$skipped, stale witchy-testcache skipped"
     echo "worktree-warm: seeded $dest from $source ($copy_description, $skipped)"
@@ -249,6 +263,7 @@ seed_from_build_seed() { # seed_from_build_seed <main> <dest-worktree> <target-d
     [[ -f "$seed/manifest.json" && -d "$seed/target" ]] || return 1
     clone_testcache=0
     clone_target "$seed/target" "$target_dir" || { rm -rf "$target_dir"; return 1; }
+    mark_incremental_seed "$target_dir"
     echo "worktree-warm: seeded $target_dir from $seed ($copy_description, incremental/ and deps/*.rcgu.o skipped)"
     python3 "$(dirname "$0")/build-seed.py" apply "$seed" "$dest" "$target_dir" \
         || echo "worktree-warm: could not apply seed mtimes; workspace crates will rebuild" >&2

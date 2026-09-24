@@ -230,6 +230,19 @@ def finish(seed_root):
         finished = final
     if finished is None:
         return 0
+    # `publish` runs under the gate lock, but `finish` deliberately runs after
+    # releasing it. A slow older finalizer can therefore acquire this lock
+    # after a newer seed is already current. Never move the pointer backward:
+    # directory names include wall time but snapshot_ns is the authoritative
+    # publication order (and also handles two publishes in one second).
+    try:
+        current = os.path.realpath(link)
+        current_snapshot = load_manifest(current).get("snapshot_ns", 0)
+        finished_snapshot = load_manifest(finished).get("snapshot_ns", 0)
+        if current_snapshot > finished_snapshot:
+            finished = current
+    except (OSError, ValueError, TypeError, AttributeError):
+        pass
     try:
         os.utime(os.path.realpath(link))  # its KEEP_OLD_SECONDS window starts now
     except OSError:

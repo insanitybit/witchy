@@ -18,7 +18,11 @@
 #   - The store lives in the repo (state/mbx/store-<version>): an agent
 #     sandbox that denies writes to ~/Library/Caches makes mbx silently run
 #     uncached, while an in-repo store hits normally.
-#   - Workspace crates are cached and shared like dependencies, and mbx
+#   - An exact target created by worktree-warm stays Cargo-incremental: the
+#     cloned gate artifacts are already the cross-worktree baseline. Replacing
+#     those warm units with mbx's non-incremental shareable profile made an
+#     identical web test build take 2,247s instead of 76s (2026-09-24).
+#   - Cold targets cache and share workspace crates like dependencies, and mbx
 #     LEARNS which crate you are editing (MBX_LEARNED_INCREMENTAL): a crate
 #     that keeps missing with changed content compiles incrementally from
 #     then on. The old default (MBX_INCREMENTAL=1: every member incremental
@@ -130,6 +134,29 @@ esac
 mbx_version="$(basename "$(dirname "$(readlink "$mbx" 2>/dev/null || echo "$mbx")")")"
 export MBX_CACHE_DIR="${MBX_CACHE_DIR:-$state_root/state/mbx/store-$mbx_version}"
 
+# worktree-warm clones the merge gate's Cargo-incremental target. Preserve that
+# exact profile unless the caller chose a mode explicitly; learned/shareable
+# mode intentionally uses a different profile and otherwise recompiles every
+# optimized workspace crate before it can cache them. CARGO_TARGET_DIR is
+# relative to the caller's current directory, while Cargo's default target is
+# rooted at the workspace.
+mbx_mode="${WITCHY_MBX_MODE:-}"
+if [ -z "$mbx_mode" ]; then
+    if [ -n "${CARGO_TARGET_DIR:-}" ]; then
+        case "$CARGO_TARGET_DIR" in
+            /*) effective_target="$CARGO_TARGET_DIR" ;;
+            *) effective_target="$PWD/$CARGO_TARGET_DIR" ;;
+        esac
+    else
+        effective_target="$repo_root/target"
+    fi
+    if [ -f "$effective_target/.witchy-mbx-incremental-seed" ]; then
+        mbx_mode="incremental"
+    else
+        mbx_mode="learned"
+    fi
+fi
+
 # One small versioned JSON report per build (mbx's MBX_STATS_REPORT), named
 # so the summarizer can group by mode, subcommand, and worktree without the
 # report itself carrying that context: <utc-time>-<pid>-<mode>-<subcommand>-<worktree>.json
@@ -139,10 +166,10 @@ if [ -z "${MBX_STATS_REPORT+x}" ]; then
     reports_dir="$state_root/state/mbx/reports"
     mkdir -p "$reports_dir" 2>/dev/null || true
     worktree_tag="$(basename "$repo_root" | tr -c 'A-Za-z0-9._-\n' '_')"
-    export MBX_STATS_REPORT="$reports_dir/$(date -u +%Y%m%dT%H%M%SZ)-$$-${WITCHY_MBX_MODE:-learned}-${1}-${worktree_tag}.json"
+    export MBX_STATS_REPORT="$reports_dir/$(date -u +%Y%m%dT%H%M%SZ)-$$-${mbx_mode}-${1}-${worktree_tag}.json"
 fi
 
-case "${WITCHY_MBX_MODE:-learned}" in
+case "$mbx_mode" in
     restore) ;;
     incremental) export MBX_INCREMENTAL="${MBX_INCREMENTAL:-1}" ;;
     *)

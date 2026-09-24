@@ -149,6 +149,7 @@ fn worktree_warm_uses_the_active_gate_generation_when_main_target_is_absent() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(root.join("seed-gate/debug/deps/keep.rlib").is_file());
+    assert!(root.join("seed-gate/.witchy-mbx-incremental-seed").is_file());
     assert!(
         !root.join("seed-gate/witchy-testcache").exists(),
         "gate-worktree executable cache cannot match a relinked checkout",
@@ -229,6 +230,7 @@ fn worktree_warm_prefers_the_build_seed_and_restores_matching_mtimes() {
     assert!(stdout.contains("state/build-seed/seed-"), "{stdout}");
     assert!(stdout.contains("1/2 files match seed"), "{stdout}");
     assert!(worktree.join("target/debug/deps/seeded.rlib").is_file());
+    assert!(worktree.join("target/.witchy-mbx-incremental-seed").is_file());
     assert_eq!(mtime(&worktree.join("src/same.rs")), mtime(&root.join("src/same.rs")));
     assert!(mtime(&worktree.join("src/changed.rs")) > mtime(&root.join("src/changed.rs")));
     assert_eq!(mtime(&worktree.join("src")), mtime(&root.join("src")));
@@ -254,6 +256,7 @@ fn worktree_warm_prefers_the_build_seed_and_restores_matching_mtimes() {
     let isolated = run_warm(&worktree, &["--target-dir", "target-agent"], Some("copy"));
     assert!(isolated.status.success(), "{}", String::from_utf8_lossy(&isolated.stderr));
     assert!(worktree.join("target-agent/debug/deps/seeded.rlib").is_file());
+    assert!(worktree.join("target-agent/.witchy-mbx-incremental-seed").is_file());
     assert_eq!(
         std::fs::read(worktree.join("target-agent/debug/.fingerprint/unit-1/dep-lib-unit"))
             .expect("read isolated target dep-info"),
@@ -262,6 +265,105 @@ fn worktree_warm_prefers_the_build_seed_and_restores_matching_mtimes() {
             (1, &format!("{}/std/set.witchy", seeded_worktree.display())),
         ]),
     );
+}
+
+#[test]
+fn cargo_shim_preserves_incremental_mode_for_a_warm_seed_unless_overridden() {
+    let repo = temp_repo();
+    let root = repo.path();
+    write(root, "scripts/bin/cargo", include_str!("../../scripts/bin/cargo"));
+    write(
+        root,
+        "scripts/feature-unification.sh",
+        include_str!("../../scripts/feature-unification.sh"),
+    );
+    write(root, "fake-bin/cargo", "#!/bin/sh\nexit 0\n");
+    write(
+        root,
+        "state/mbx/bin/mbx",
+        "#!/bin/sh\nprintf 'incremental=%s learned=%s\\n' \"${MBX_INCREMENTAL-unset}\" \"${MBX_LEARNED_INCREMENTAL-unset}\"\n",
+    );
+    for executable in ["scripts/bin/cargo", "fake-bin/cargo", "state/mbx/bin/mbx"] {
+        let status = Command::new("chmod")
+            .args(["+x", executable])
+            .current_dir(root)
+            .status()
+            .expect("mark fixture executable");
+        assert!(status.success());
+    }
+    write(root, "seeded/.witchy-mbx-incremental-seed", "gate build seed\n");
+
+    let run = |target: &str, mode: Option<&str>| {
+        let path = std::env::join_paths(
+            std::iter::once(root.join("fake-bin"))
+                .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())),
+        )
+        .expect("fixture PATH");
+        let mut command = Command::new(root.join("scripts/bin/cargo"));
+        command
+            .arg("build")
+            .current_dir(root)
+            .env("PATH", path)
+            .env("CARGO_TARGET_DIR", target)
+            .env("MBX_STATS_REPORT", root.join("mbx-report.json"))
+            .env_remove("MBX_INCREMENTAL")
+            .env_remove("MBX_LEARNED_INCREMENTAL")
+            .env_remove("WITCHY_BUILD_CACHE")
+            .env_remove("WITCHY_CARGO_SHIM_ACTIVE")
+            .env_remove("WITCHY_GATE_SCOPE");
+        if let Some(mode) = mode {
+            command.env("WITCHY_MBX_MODE", mode);
+        } else {
+            command.env_remove("WITCHY_MBX_MODE");
+        }
+        command.output().expect("run cargo shim fixture")
+    };
+
+    let seeded = run("seeded", None);
+    assert!(seeded.status.success(), "{}", String::from_utf8_lossy(&seeded.stderr));
+    assert_eq!(String::from_utf8_lossy(&seeded.stdout), "incremental=1 learned=unset\n");
+
+    let cold = run("cold", None);
+    assert!(cold.status.success(), "{}", String::from_utf8_lossy(&cold.stderr));
+    assert_eq!(String::from_utf8_lossy(&cold.stdout), "incremental=0 learned=1\n");
+
+    let explicit = run("seeded", Some("restore"));
+    assert!(explicit.status.success(), "{}", String::from_utf8_lossy(&explicit.stderr));
+    assert_eq!(String::from_utf8_lossy(&explicit.stdout), "incremental=unset learned=unset\n");
+}
+
+#[test]
+fn build_seed_finish_never_moves_current_back_to_an_older_snapshot() {
+    let repo = temp_repo();
+    let root = repo.path();
+    let seed_root = root.join("state/build-seed");
+    write(
+        root,
+        "state/build-seed/seed-newer/manifest.json",
+        r#"{"snapshot_ns":2,"fill_from":null,"paths":[]}"#,
+    );
+    write(
+        root,
+        "state/build-seed/.seed-older/manifest.json",
+        r#"{"snapshot_ns":1,"fill_from":null,"paths":[]}"#,
+    );
+    let linked = Command::new("ln")
+        .args(["-s", "seed-newer", "current"])
+        .current_dir(&seed_root)
+        .status()
+        .expect("create current seed link");
+    assert!(linked.success());
+
+    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/build-seed.py");
+    let finished = Command::new("python3")
+        .arg(script)
+        .args(["finish", "state/build-seed"])
+        .current_dir(root)
+        .output()
+        .expect("finish staged seed");
+    assert!(finished.status.success(), "{}", String::from_utf8_lossy(&finished.stderr));
+    assert_eq!(std::fs::read_link(seed_root.join("current")).unwrap(), Path::new("seed-newer"));
+    assert!(seed_root.join("seed-older").is_dir(), "older staging seed should still finish");
 }
 
 /// Cargo's encoded fingerprint dep-info, as scripts/build-seed.py decodes it.
