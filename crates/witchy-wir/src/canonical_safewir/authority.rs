@@ -3037,6 +3037,14 @@ pub(super) fn value_type_matches_source(
     if is_unit_source_type(source) {
         return actual == super::ValueType::Unit;
     }
+    // A rooted scalar or slice view aggregate is an opaque owner family, including when it
+    // enters as a parameter. Its ordinary record fields may happen to look
+    // like the erased referents, but that linear layout cannot authenticate
+    // the retained roots. The Gc arm below binds the exact source identity.
+    if is_direct_rooted_view_aggregate_carrier(source, records)
+        && !matches!(actual, super::ValueType::Gc(_)) {
+        return false;
+    }
     if let super::ValueType::Gc(id) = actual {
         let Some(family) = context.owner_families.iter().find(|f| f.owner_type == id || f.list_type == id).cloned() else { return false };
         if let super::closure_owner_contract::OwnerFamilySource::SharedReference(expected) = &family.source {
@@ -4208,6 +4216,33 @@ mod tests {
             ValueType::Ref(tuple_list), &viewed_tuple, &layouts, &[],
             &mut CorrespondenceContext::default(), &BTreeMap::new(), &BTreeMap::new(),
         ));
+    }
+
+    #[test]
+    fn plain_record_parameter_cannot_impersonate_an_aggregate_view_owner() {
+        use crate::layout::ScalarKind;
+        use witchy_syntax::ast::{CallableQualifiers, Type, TypeQual};
+
+        let mut layouts = LayoutInterner::new();
+        let integer = layouts.intern_scalar(ScalarKind::Int).unwrap();
+        let record = layouts.intern_packed_record(vec![integer]).unwrap();
+        let plain = Type::Tuple(vec![Type::Named("Int".into(), vec![])]);
+        let viewed = Type::Tuple(vec![Type::Qualified(
+            TypeQual::View, Box::new(Type::Named("Int".into(), vec![])),
+        )]);
+        let records = BTreeMap::new();
+        assert!(is_direct_rooted_view_aggregate_carrier(&viewed, &records));
+        let source = Type::Fn(vec![viewed.clone()], Box::new(Type::Tuple(vec![])),
+            vec![], CallableQualifiers::default());
+        assert!(source_abi_qualifiers_supported(&source, &records));
+        assert!(value_type_matches_source(
+            ValueType::Ref(record), &plain, &layouts, &[],
+            &mut CorrespondenceContext::default(), &records, &BTreeMap::new(),
+        ));
+        assert!(!value_type_matches_source(
+            ValueType::Ref(record), &viewed, &layouts, &[],
+            &mut CorrespondenceContext::default(), &records, &BTreeMap::new(),
+        ), "an erased Int slot cannot prove the retained view owner");
     }
 
     #[test]
