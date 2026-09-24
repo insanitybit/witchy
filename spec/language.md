@@ -1066,6 +1066,10 @@ a public record boundary. Ordinary `Dict(String, String)` remains admitted.
 The exact whole-root view `&Dict(String, Int)` is admitted. It retains the
 dictionary root, so a later update of the owner does not change the view's
 snapshot. Other dictionary-root view shapes remain outside this carrier.
+The exact whole-root view `&(Int, String)` also retains its tuple root. A
+later replacement of the owning tuple leaves both fields of the view at their
+earlier values. Other whole tuple-root shapes have no carrier here. This exact
+tuple view cannot escape a region-born root or be captured by a closure.
 
 ```witchy
 fn first[a](items: &[a]) -> Option(&a):

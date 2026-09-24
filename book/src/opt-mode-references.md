@@ -253,6 +253,11 @@ dictionary snapshot: inserting into the owner after the view forms does not
 change what `(*view).length()` reads. This exact key and value shape has a
 carrier; views of other dictionary shapes need their own admission evidence.
 
+An exact whole `&(Int, String)` view keeps the old tuple after its owner is
+replaced, including the String field. This carrier covers direct calls and
+returns. Other tuple shapes, region-born root escape, and closure capture of
+this tuple view remain unsupported.
+
 Normal source may use the same view syntax and call view-bearing exports. When
 a separately compiled boundary lacks authenticated carrier metadata, it fails
 closed at that boundary rather than changing the signature or silently
