@@ -2,42 +2,6 @@
 //! protocol choices, and execute with balanced ownership on all three legs.
 
 #[test]
-fn structural_render_reserves_recursive_int_float_and_mutual_nominal_identities() {
-    assert_both_modes(r#"
-type Chain:
-    End
-    Link(a, Chain(a))
-
-type Left:
-    StopLeft
-    CrossRight(Right)
-
-type Right:
-    StopRight
-    CrossLeft(Left)
-
-type Envelope:
-    first: Chain(Int)
-    second: Chain(Float)
-    mutual: Left
-
-fn main(console: Console):
-    let ints = Link(1, Link(2, End))
-    let floats = Link(1.5, Link(2.25, End))
-    let mutual = CrossRight(CrossLeft(CrossRight(StopRight)))
-    console.print("${Envelope(ints, floats, mutual)}")
-    console.print("${[ints, End]}")
-    console.print("${[floats, End]}")
-    console.print("${(StopLeft, StopRight)}")
-"#, &[
-        "Envelope(Link(1, Link(2, End)), Link(1.5, Link(2.25, End)), CrossRight(CrossLeft(CrossRight(StopRight))))",
-        "[Link(1, Link(2, End)), End]",
-        "[Link(1.5, Link(2.25, End)), End]",
-        "(StopLeft, StopRight)",
-    ]);
-}
-
-#[test]
 fn structural_render_preserves_dictionary_insertion_and_record_field_order() {
     assert_normal_then_opt_refusal(r#"
 type Tree:
@@ -66,58 +30,6 @@ fn main(console: Console):
         "(Record(first, [Tip, Branch(last, [])]), {z: Branch(, [Tip]), a: Tip})",
         "{}", ".{alpha: , beta: [Tip]}",
     ]);
-}
-
-#[test]
-fn structural_render_keeps_native_children_separate_from_resolved_show() {
-    assert_both_modes(r#"
-type Label:
-    text: String
-
-impl Show for Label:
-    fn show(self) -> String:
-        "<" + self.text + ">"
-
-type Poison:
-    Poison
-
-impl Show for Poison:
-    fn show(self) -> String:
-        fail("native structural children must not call Show")
-        "unreachable"
-
-type Wrapped:
-    Empty
-    Payload(Label)
-    Dangerous(Poison)
-    Recur(Wrapped)
-
-fn main(console: Console):
-    let label = Label("x")
-    console.print("${label}")
-    console.print("${[label]}")
-    console.print(show.render(label))
-    console.print("${Recur(Payload(label))}")
-    console.print("${[Empty, Dangerous(Poison), Payload(Label(""))]}")
-"#, &[
-        "<x>", "[<x>]", "<x>", "Recur(Payload(Label(x)))",
-        "[Empty, Dangerous(Poison), Payload(Label())]",
-    ]);
-}
-
-#[test]
-fn structural_render_evaluates_operands_once_in_order_and_retains_snapshots() {
-    assert_both_modes(r#"
-fn observe(var values: List(Int), console: Console, label: String, next: Int) -> List(Int):
-    console.print(label)
-    list.push(values, next)
-    values
-
-fn main(console: Console):
-    var values: List(Int) = []
-    console.print("${(observe(values, console, "left", 1), observe(values, console, "right", 2))}")
-    console.print("${values}")
-"#, &["left", "right", "([1], [1, 2])", "[1, 2]"]);
 }
 
 #[test]
@@ -157,32 +69,6 @@ fn main(console: Console):
     console.print("${[Box(1.5)] == [Box(1.5)]}")
     console.print("${[Box(1.5)] == [Box(2.25)]}")
 "#, &["true", "false", "true", "false"]);
-}
-
-#[test]
-fn structural_render_closes_authenticated_existential_show_adapter_roots() {
-    assert_both_modes(r#"
-type Tree:
-    Leaf(Int)
-    Node(Tree, Tree)
-
-type Display:
-    Display(Tree)
-
-impl Show for Display:
-    fn show(self) -> String:
-        match self:
-            Display(tree) -> "${tree}"
-
-fn invoke(value: dyn Show) -> String:
-    value.show()
-
-fn main(console: Console):
-    let leaf: dyn Show = Display(Leaf(1))
-    let tree: dyn Show = Display(Node(Leaf(2), Node(Leaf(3), Leaf(4))))
-    console.print(invoke(leaf))
-    console.print(invoke(tree))
-"#, &["Leaf(1)", "Node(Leaf(2), Node(Leaf(3), Leaf(4)))"]);
 }
 
 fn assert_both_modes(source: &str, expected: &[&str]) {

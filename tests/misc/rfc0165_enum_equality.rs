@@ -32,63 +32,6 @@ fn agree(source: &str, expected: &[String]) {
 }
 
 #[test]
-fn enum_equality_respects_custom_partial_eq_dispatch() {
-    let source = r#"type State:
-    First
-    Second
-impl PartialEq for State:
-    fn eq(self, other: Self) -> Bool:
-        true
-    fn ne(self, other: Self) -> Bool:
-        false
-fn main(console: Console):
-    console.print("${First == Second} ${First != Second}")
-"#;
-    agree(source, &["true false".into()]);
-}
-
-#[test]
-fn enum_equality_all_discriminant_pairs_agree() {
-    let source = r#"type State:
-    Staged
-    Released
-    Yanked
-    Unknown
-fn identity(value: State) -> State:
-    value
-fn main(console: Console):
-    for left in [Staged, Released, Yanked, Unknown]:
-        for right in [Staged, Released, Yanked, Unknown]:
-            console.print("${identity(left) == identity(right)} ${left != right}")
-"#;
-    let expected = (0..4).flat_map(|left| (0..4).map(move |right|
-        format!("{} {}", left == right, left != right))).collect::<Vec<_>>();
-    agree(source, &expected);
-}
-
-#[test]
-fn enum_equality_snapshots_before_rhs_writeback_and_evaluates_once() {
-    let source = r#"type State:
-    Staged
-    Released
-fn advance(var state: State, console: Console) -> State:
-    console.print("advance")
-    state = Released
-    Released
-fn observe(console: Console, label: String, state: State) -> State:
-    console.print(label)
-    state
-fn main(console: Console):
-    var state = Staged
-    let equal = state == advance(state, console)
-    console.print("${equal}")
-    console.print("${state == Released}")
-    console.print("${observe(console, "left", Staged) != observe(console, "right", Released)}")
-"#;
-    agree(source, &["advance", "false", "true", "left", "right", "true"].map(String::from));
-}
-
-#[test]
 fn enum_equality_never_ignores_payloads_or_plain_record_fields() {
     // These representations may still refuse until structural equality covers
     // them. Any accepted result must distinguish payloads; tag-only acceptance

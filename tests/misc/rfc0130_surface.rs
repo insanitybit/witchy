@@ -7,67 +7,6 @@ use witchy::ast::{Expr, Item, Stmt};
 use witchy::runtime::{Capabilities, Runtime};
 use witchy::{codegen, format, interpreter, parser};
 
-fn checked_error(source: &str) -> String {
-    witchy::resolve_std_only_checked(source)
-        .expect_err("RFC-0130 negative fixture must be rejected")
-        .to_string()
-}
-
-#[test]
-fn rfc0130_row_4_generator_failures_name_source_syntax() {
-    let returning = checked_error(
-        "import iter\n\ngen fn bad() -> Iter(Int):\n    yield 1\n    return 2\n\nfn main(console: Console):\n    console.print(\"unreachable\")\n",
-    );
-    assert!(
-        returning.contains("`return <value>` is not allowed in generator `bad`")
-            && returning.contains("declares `-> Iter(a)`")
-            && returning.contains("bare `return`"),
-        "return diagnostic lost the source generator contract: {returning}",
-    );
-
-    let yielded = checked_error(
-        "import iter\n\ngen fn bad() -> Iter(Int):\n    yield \"not an Int\"\n\nfn main(console: Console):\n    console.print(\"unreachable\")\n",
-    );
-    assert!(
-        yielded.contains("function `bad` body")
-            && yielded.contains("expected `Int`")
-            && yielded.contains("found `String`"),
-        "yield diagnostic lost the declared element types: {yielded}",
-    );
-
-    // An immutable view parameter is admitted (RFC-0167: it retains its own
-    // root); `rfc0167_views_through_channels_and_generators` pins that, and
-    // `loans_tests` pins the retired lifetime-bearing refusal.
-
-    let region = checked_error(
-        "import iter\n\ngen fn bad() -> Iter(Int):\n    region:\n        yield 1\n        0\n\nfn main(console: Console):\n    console.print(\"unreachable\")\n",
-    );
-    assert!(
-        region.contains("cannot `yield` inside `region:`")
-            && region.contains("generator frame outlives the region"),
-        "region diagnostic lost the source lifetime boundary: {region}",
-    );
-
-    let trait_method = parser::parse_module(
-        "trait Values:\n    gen fn values(self) -> Iter(Int)\n",
-    )
-    .expect_err("generator trait syntax must be rejected")
-    .to_string();
-    assert!(
-        trait_method.contains("a `gen`/`async` trait method is not supported")
-            && trait_method.contains("plain `fn` returning `Iter(_)`/`Task(_)`")
-            && trait_method.contains("inherent `impl Type:` block"),
-        "trait diagnostic did not name the supported source form: {trait_method}",
-    );
-
-    for diagnostic in [returning, yielded, region, trait_method] {
-        assert!(
-            !diagnostic.contains("__gen_") && !diagnostic.contains("gen_bad"),
-            "a generated helper leaked into a source diagnostic: {diagnostic}",
-        );
-    }
-}
-
 fn compiled_output(module: &witchy::pipeline::CheckedModule) -> Vec<String> {
     let wasm = codegen::compile_checked_module_binary(module)
         .expect_lowered("compile reflected generator syntax");

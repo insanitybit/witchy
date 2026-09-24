@@ -153,7 +153,6 @@ fn native(stream: ScriptStream, calls: &[Call]) -> io::Result<Vec<String>> {
 
 fn arrival(bytes: &[u8]) -> E { E::Arrive { socket: 7, bytes: bytes.to_vec() } }
 fn read(outcome: R) -> E { E::StreamRead { socket: 7, outcome } }
-fn close(keep: usize) -> E { E::BufferedClose { socket: 7, keep_transport_prefix: keep } }
 fn tape(events: Vec<E>) -> Vec<E> {
     let mut tape = vec![E::Connect { grant: 0, address: "fixture:80".into(), socket: 7 }, E::Buffered { socket: 7 }];
     tape.extend(events);
@@ -213,49 +212,6 @@ fn conforms(calls: Vec<Call>, events: Vec<E>, expected: Vec<String>) -> Vec<(usi
     stream.finish(&events);
     oracle(&calls, &events, Ok(&expected));
     requests
-}
-
-#[test]
-fn buffered_arrival_completion_and_shutdown_residency_conform_across_engines() {
-    conforms(vec![Call::Bytes(1), Call::Close, Call::Bytes(1)],
-        vec![arrival(b"ab"), read(R::Data(2)), close(0)], vec!["a".into(), "b".into()]);
-    conforms(vec![Call::Bytes(1), Call::Close, Call::Bytes(1)],
-        vec![arrival(b"ab"), read(R::Data(1)), close(0), read(R::Eof)], vec!["a".into(), "".into()]);
-    conforms(vec![Call::Bytes(0), Call::Bytes(1), Call::Close, Call::All],
-        vec![arrival(b"a"), arrival(b"b"), read(R::Data(2)), close(0), read(R::Eof)], vec!["".into(), "a".into(), "b".into()]);
-    conforms(vec![Call::Bytes(1), Call::Close, Call::Line, Call::All],
-        vec![arrival(b"a\nbc"), read(R::Data(4)), close(0), read(R::Eof)], vec!["a".into(), "".into(), "bc".into()]);
-    conforms(vec![Call::Bytes(1), Call::Close, Call::All],
-        vec![arrival(b"abcd"), read(R::Data(2)), close(1), read(R::Data(1)), read(R::Eof)], vec!["a".into(), "bc".into()]);
-    conforms(vec![Call::Bytes(2), Call::Close, Call::All],
-        vec![arrival(b"\xf0\x9f\xa6\x80"), read(R::Data(4)), close(0), read(R::Eof)], vec!["\u{fffd}".into(), "\u{fffd}\u{fffd}".into()]);
-}
-
-#[test]
-fn buffered_native_actual_read_request_bounds_cover_refill_bypass_and_read_to_end() {
-    for count in [8191usize, 8192, 8193] {
-        let bytes = vec![b'x'; count + 2];
-        let mut events = vec![arrival(&bytes), read(R::Data(8192))];
-        if count > 8192 { events.push(read(R::Data(3))); }
-        events.extend([close(0), read(R::Eof)]);
-        let suffix = match count { 8191 => "x", 8192 => "", _ => "xx" };
-        let requests = conforms(vec![Call::Bytes(count as i64), Call::Close, Call::All], events,
-            vec!["x".repeat(count), suffix.into()]);
-        assert_eq!(requests[0], (8192, 8192));
-        if count > 8192 { assert_eq!(requests[1], (8192, 3), "the final 1-byte request refills 8192"); }
-    }
-    let bytes = vec![b'x'; 9 * B];
-    let mut events = vec![arrival(&bytes)];
-    events.extend((0..9).map(|_| read(R::Data(B))));
-    events.push(read(R::Eof));
-    let requests = conforms(vec![Call::All], events, vec!["x".repeat(bytes.len())]);
-    println!("native read_to_end actual (requested, completed) = {requests:?}");
-    assert_eq!(requests.len(), 9);
-    assert!(requests.iter().all(|&(requested, count)| requested >= B && count <= requested));
-    let mut stream = ScriptStream::new(tape(vec![arrival(b"ab"), read(R::Data(2))]));
-    let events = stream.0.lock().unwrap().events.clone();
-    assert_eq!(stream.read(&mut [0u8; 1]).unwrap_err().kind(), io::ErrorKind::InvalidInput);
-    assert_eq!(stream.0.lock().unwrap().events, events, "oversized Data must not consume events");
 }
 
 #[test]

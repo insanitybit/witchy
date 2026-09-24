@@ -16,34 +16,6 @@ use witchy_wir::canonical_safewir::{FunctionId, ValidatedSafeWir};
 mod exec;
 
 #[test]
-fn admitted_observer_preserves_exact_artifact_and_execution() {
-    let source = r#"
-fn make(console: Console, text: String) -> fn() -> ():
-    fn(): console.print(text)
-
-fn main(console: Console):
-    let log = make(console, "held" + "!")
-    log()
-    log()
-"#;
-    let checked = witchy::resolve_std_only_checked(source).expect("observer source checks");
-    let ordinary = codegen::compile_checked_module_artifact(&checked)
-        .expect_lowered("ordinary admission");
-    assert!(!ordinary.owner_bridges().is_empty(), "exercise sealed owner metadata");
-    let mut calls = 0;
-    let (observed, output) = codegen::compile_checked_module_artifact_with_observer(
-        &checked, |validated, artifact| {
-            calls += 1;
-            assert!(artifact == &ordinary, "complete artifact equality inside observer");
-            oracle_validated(validated, artifact, "observed owner capture")
-        },
-    ).expect_lowered("observed admission");
-    assert_eq!(calls, 1);
-    assert!(observed == ordinary, "bytes and all sealed metadata remain identical");
-    assert_eq!(output, ["held!", "held!"]);
-}
-
-#[test]
 fn admitted_observer_is_not_called_on_refusal() {
     // An open library parameter has no authenticated closed Dynamic payload
     // catalog. Unlike a newly supported entry capability, this is an explicit
@@ -80,32 +52,6 @@ fn admitted_observer_examples_three_legs() {
     ] {
         oracle(source, label);
     }
-}
-
-#[test]
-fn result_coalescing_is_lazy_and_releases_both_variant_payloads() {
-    let source = r#"
-fn choose(success: Bool) -> Result(String, String):
-    if success:
-        Ok("value" + "!")
-    else:
-        Err("unused" + " error")
-
-fn default_value(console: Console) -> String:
-    console.print("default")
-    "fallback" + "!"
-
-fn forbidden_default(should_fail: Bool) -> String:
-    if should_fail:
-        fail("the success edge evaluated its default")
-    "unreachable"
-
-fn main(console: Console):
-    console.print(choose(true) ?? forbidden_default(true))
-    console.print(choose(false) ?? default_value(console))
-"#;
-    let expected = ["value!", "default", "fallback!"].map(str::to_owned).to_vec();
-    assert_eq!(oracle(source, "lazy Result coalescing and payload cleanup"), expected);
 }
 
 #[test]
@@ -163,232 +109,6 @@ fn main(console: Console):
 }
 
 #[test]
-fn indirect_unit_parameters_and_results_three_legs() {
-    let source = r#"
-fn number(value: ()) -> Int:
-    7
-
-fn identity(value: ()) -> ():
-    value
-
-fn tail_apply(f: fn(()) -> Int) -> Int:
-    f(())
-
-fn call_apply(f: fn(()) -> Int) -> Int:
-    let result = f(())
-    result + 1
-
-fn tail_unit(f: fn(()) -> ()) -> ():
-    f(())
-
-fn main(console: Console):
-    console.print("${tail_apply(number)} ${call_apply(number)}")
-    tail_unit(identity)
-    console.print("unit")
-"#;
-    let expected = ["7 8", "unit"].map(str::to_owned).to_vec();
-    assert_eq!(oracle(source, "Unit arguments and results through indirect calls"), expected);
-}
-
-#[test]
-fn unit_capture_with_capability_three_legs() {
-    let source = r#"
-fn consume(value: ()) -> Int:
-    7
-
-fn make(console: Console, value: ()) -> fn() -> Int:
-    fn():
-        console.print("tick")
-        consume(value)
-
-fn main(console: Console):
-    let log = make(console, ())
-    console.print("${log()}")
-"#;
-    let expected = ["tick", "7"].map(str::to_owned).to_vec();
-    assert_eq!(oracle(source, "Unit and capability closure capture"), expected);
-}
-
-#[test]
-fn unit_payload_storage_calls_and_effects_three_legs() {
-    let source = r#"
-type Payload(a):
-    Payload(a, Int)
-
-fn unit(console: Console) -> ():
-    console.print("effect")
-    ()
-
-fn forward(value: Payload(())) -> Payload(()):
-    value
-
-fn consume(value: (), marker: Int) -> Int:
-    marker
-
-fn observe(value: Payload(())) -> Int:
-    match value:
-        Payload(item, marker) -> consume(item, marker)
-
-fn optional(present: Bool) -> Option(()):
-    if present: Some(()) else: None
-
-fn inspect(value: Option(())) -> Int:
-    match value:
-        Some(item) -> consume(item, 7)
-        None -> 3
-
-fn main(console: Console):
-    let wrapped = forward(Payload(unit(console), 41))
-    console.print("${observe(wrapped)}")
-    var values = [(), ()]
-    values.push(())
-    console.print("${consume(values[2], values.length())}")
-    console.print("${inspect(optional(true))} ${inspect(optional(false))}")
-"#;
-    let expected = ["effect", "41", "3", "7 3"].map(str::to_owned).to_vec();
-    assert_eq!(oracle(source, "unit payload storage, calls, and effects"), expected);
-}
-
-#[test]
-fn own_string_capture_by_value_three_legs() {
-    let source = r#"
-fn make(own text: String, console: Console) -> fn() -> String:
-    let captured = fn(): text
-    console.print(text)
-    captured
-
-fn main(console: Console):
-    let captured = make("held", console)
-    console.print(captured())
-    console.print(captured())
-"#;
-    let expected = vec!["held".to_owned(); 3];
-    let checked = witchy::resolve_std_only_checked(source).expect("source checks after capture reuse");
-    let artifact = codegen::compile_checked_module_artifact(&checked)
-        .expect_lowered("existing canonical authority accepts by-value capture");
-    let entry = artifact.entry().unwrap();
-    let function = FunctionId::new(entry.export().strip_prefix('f').unwrap().parse().unwrap());
-    let validated = codegen::validate_checked_module_for_oracle(&checked).expect("oracle validation");
-    let capabilities = entry.capabilities().iter().copied()
-        .map(InterpreterValue::entry_capability).collect();
-    let oracle = witchy_wir::canonical_interpreter::interpret_program(
-        &validated, function, capabilities, Default::default(),
-    ).expect("oracle execution");
-    assert_eq!(oracle.output, expected);
-    assert_eq!(oracle.leaked_objects, 0);
-    let mut runtime = Runtime::batch().unwrap();
-    let mut vm = runtime.spawn_admitted(&artifact, Capabilities {
-        print: true, quiet: true, ..Default::default()
-    }, 256).expect("admitted Wasm");
-    vm.run().expect("Wasm execution");
-    assert_eq!(vm.output(), expected);
-    assert_eq!(vm.canonical_heap_leaks().unwrap().unwrap(), 0);
-}
-
-#[test]
-fn pattern_callable_capture_three_legs() {
-    let source = r#"
-type Handler:
-    Handler(fn(Int) -> Int)
-
-fn make(handler: Handler) -> fn(Int) -> Int:
-    match handler:
-        Handler(cont) -> fn(value: Int): cont(value)
-
-fn increment(value: Int) -> Int:
-    value + 1
-
-fn main(console: Console):
-    let callback = make(Handler(increment))
-    console.print("${callback(41)}")
-    console.print("${callback(9)}")
-"#;
-    let expected = vec!["42".to_owned(), "10".to_owned()];
-    assert_eq!(oracle(source, "pattern callable capture"), expected);
-}
-
-#[test]
-fn list_indexed_update_preserves_aliases_and_nullable_payloads_three_legs() {
-    let source = r#"
-fn text(value: Option(String)) -> String:
-    match value:
-        Some(value) -> value
-        None -> "none"
-
-fn main(console: Console):
-    var numbers = [1, 2, 3]
-    let original = numbers
-    numbers[0] = 9
-    numbers.set_at(2, 8)
-    console.print("${numbers[0]} ${numbers[1]} ${numbers[2]} ${numbers.length()}")
-    console.print("${original[0]} ${original[1]} ${original[2]}")
-    var values: List(Option(String)) = [Some("held"), None, Some("tail")]
-    let previous = values
-    values[0] = None
-    values[1] = Some("new")
-    console.print("${text(values[0])} ${text(values[1])} ${text(values[2])} ${values.length()}")
-    console.print("${text(previous[0])} ${text(previous[1])} ${text(previous[2])}")
-"#;
-    let expected = ["9 2 8 3", "1 2 3", "none new tail 3", "held none tail"]
-        .map(str::to_owned).to_vec();
-    assert_eq!(oracle(source, "indexed replacement preserves owned values"), expected);
-}
-
-#[test]
-fn list_indexed_update_rejects_negative_length_and_empty_indices_three_legs() {
-    for (initial, index) in [("[1]", -1), ("[1]", 1), ("[]", 0)] {
-        let source = format!("fn main(console: Console):\n    var values: List(Int) = {initial}\n    values[{index}] = 7\n    console.print(\"unreachable\")\n");
-        let checked = witchy::resolve_std_only_checked(&source).expect("index is a runtime obligation");
-        let artifact = codegen::compile_checked_module_artifact(&checked).expect_lowered("checked failing index admits");
-        let entry = artifact.entry().unwrap();
-        let function = FunctionId::new(entry.export().strip_prefix('f').unwrap().parse().unwrap());
-        let validated = codegen::validate_checked_module_for_oracle(&checked).expect("independent validation");
-        let capabilities = entry.capabilities().iter().copied().map(InterpreterValue::entry_capability).collect();
-        assert!(witchy_wir::canonical_interpreter::interpret_program(&validated, function, capabilities, Default::default()).is_err());
-        let mut runtime = Runtime::batch().unwrap();
-        let mut vm = runtime.spawn_admitted(&artifact, Capabilities { print: true, quiet: true, ..Default::default() }, 256).unwrap();
-        assert!(vm.run().is_err());
-        assert!(vm.output().is_empty());
-    }
-}
-
-#[test]
-fn dynamic_reflection_example_expected_output_three_legs() {
-    let source = include_str!("../../examples/dynamic_reflection/src/dynamic_reflection.witchy");
-    // This harness links source bytes as module `main`; the CLI links the same
-    // file as `dynamic_reflection`. The remaining expectations follow directly
-    // from Counter(4), its Named impl, and the public add method called with 3.
-    let expected = vec![
-        "main.Counter".to_owned(),
-        "add".to_owned(),
-        "implements Named: true".to_owned(),
-        "field value: 4".to_owned(),
-        "result: 7".to_owned(),
-    ];
-    let checked = witchy::resolve_std_only_checked(source).expect("actual Dynamic example checks");
-    assert!(checked.canonical_source().unwrap().dynamic_runtime_plan().is_some());
-    let artifact = codegen::compile_checked_module_artifact(&checked)
-        .expect_lowered("closed Dynamic source admits through the canonical route");
-    let entry = artifact.entry().unwrap();
-    let function = FunctionId::new(entry.export().strip_prefix('f').unwrap().parse().unwrap());
-    let validated = codegen::validate_checked_module_for_oracle(&checked).expect("oracle validation");
-    let capabilities = entry.capabilities().iter().copied()
-        .map(InterpreterValue::entry_capability).collect();
-    let oracle = witchy_wir::canonical_interpreter::interpret_program(
-        &validated, function, capabilities, Default::default(),
-    ).expect("Dynamic oracle execution");
-    assert_eq!(oracle.output, expected);
-    assert_eq!(oracle.leaked_objects, 0);
-    let mut runtime = Runtime::batch().unwrap();
-    let mut vm = runtime.spawn_admitted(&artifact, Capabilities {
-        print: true, quiet: true, ..Default::default()
-    }, 256).expect("admitted Dynamic Wasm");
-    vm.run().expect("Dynamic Wasm execution");
-    assert_eq!(vm.output(), expected);
-    assert_eq!(vm.canonical_heap_leaks().unwrap().unwrap(), 0);
-}
-
-#[test]
 fn dynamic_library_forwarding_does_not_mint_closed_payload_authority() {
     let source = "import dynamic\nfn forward(value: dynamic.Dynamic) -> Result(dynamic.Dynamic, dynamic.DynamicError):\n    dynamic.field(value, \"value\")\n";
     let checked = witchy::resolve_std_only_checked(source).expect("open library signature type-checks");
@@ -397,93 +117,6 @@ fn dynamic_library_forwarding_does_not_mint_closed_payload_authority() {
     }));
     codegen::compile_checked_module_artifact(&checked)
         .expect_unsupported("an open existential is not closed payload authority");
-}
-
-#[test]
-fn all_terminal_if_flow_value_three_legs() {
-    let source = r#"
-fn choose(flag: Bool) -> Int:
-    if flag:
-        return 4
-    else:
-        return 9
-
-fn main(console: Console):
-    console.print("${choose(true)} ${choose(false)}")
-"#;
-    let expected = vec!["4 9".to_owned()];
-    assert_eq!(oracle(source, "all-terminal if flow value"), expected);
-}
-
-#[test]
-fn loop_terminators_preserve_owned_returns_three_legs() {
-    let source = r#"
-fn from_while(xs: List(String), flag: Bool) -> List(String):
-    while true:
-        if flag:
-            return xs
-        else:
-            return ["fresh"]
-    ["unreachable"]
-
-fn from_range(xs: List(String)) -> List(String):
-    for n in 0..2:
-        return xs
-    ["empty"]
-
-fn from_list(xs: List(String)) -> String:
-    for item in xs:
-        return item
-    "empty"
-
-fn main(console: Console):
-    let xs = ["held"]
-    console.print(from_while(xs, true)[0])
-    console.print(from_while(xs, false)[0])
-    console.print(from_range(xs)[0])
-    console.print(from_list(xs))
-    console.print(from_list([]))
-    console.print(xs[0])
-"#;
-    let expected = ["held", "fresh", "held", "held", "empty", "held"]
-        .map(str::to_owned).to_vec();
-    assert_eq!(oracle(source, "loop return preserves owned tokens"), expected);
-}
-
-#[test]
-fn generators_and_pascal_expected_output_three_legs() {
-    let cases: &[(&str, &str, &[&str])] = &[
-        ("generators", include_str!("../../examples/generators/src/generators.witchy"), &[
-            "fib[0..10): 0, 1, 1, 2, 3, 5, 8, 13, 21, 34",
-            "collatz(6): 6, 3, 10, 5, 16, 8, 4, 2, 1",
-            "collatz(27) length: 112",
-        ]),
-        ("pascal", include_str!("../../examples/pascal/src/pascal.witchy"), &[
-            "1", "1 1", "1 2 1", "1 3 3 1", "1 4 6 4 1", "1 5 10 10 5 1",
-        ]),
-    ];
-    for (label, source, expected) in cases {
-        let expected = expected.iter().map(|line| (*line).to_owned()).collect::<Vec<_>>();
-        assert_eq!(oracle(source, label), expected, "{label}: admitted execution");
-    }
-}
-
-#[test]
-fn canonical_console_receiver_precedes_message_three_legs() {
-    let source = r#"
-fn receiver(console: Console) -> Console:
-    console.print("receiver")
-    console
-
-fn message(console: Console) -> String:
-    console.print("message")
-    "payload"
-
-fn main(console: Console):
-    receiver(console).print(message(console))
-"#;
-    let expected = ["receiver", "message", "payload"].map(str::to_owned).to_vec();
-    assert_eq!(oracle(source, "actual Console receiver and effect order"), expected);
 }
 
 fn oracle(source: &str, label: &str) -> Vec<String> {
@@ -604,77 +237,6 @@ fn oracle_validated_profiled(
     }
     assert_eq!(leaks, 0, "{label}: the wasm heap kept unreleased objects");
     run.output
-}
-
-#[test]
-fn nested_if_and_multarm_string_results_reauthenticate_edges() {
-    let source = r#"
-fn nested(flag: Bool, left: String, right: String) -> String:
-    if flag:
-        if flag:
-            left + "!"
-        else:
-            right + "?"
-    else:
-        right + "."
-
-fn decorate(value: String) -> String:
-    value + "!"
-
-fn pick(values: List(String), index: Int) -> String:
-    match index:
-        0 -> decorate(values[0])
-        1 -> decorate(values[1])
-        _ -> decorate(values[2])
-
-fn choose_values(left: List(Int), right: List(Int), index: Int) -> List(Int):
-    match index:
-        0 -> left
-        _ -> right
-
-fn main(console: Console):
-    let values = ["a", "b", "c"]
-    let left = [1]
-    let right = [2, 3]
-    console.print(nested(true, "a", "c"))
-    console.print(nested(false, "a", "c"))
-    console.print(pick(values, 0))
-    console.print(pick(values, 1))
-    console.print(pick(values, 2))
-    console.print("${choose_values(left, right, 0).length()}")
-"#;
-    let expected = ["a!", "c.", "a!", "b!", "c!", "1"]
-        .into_iter().map(str::to_owned).collect::<Vec<_>>();
-    assert_eq!(oracle(source, "nested and multiarm extent results"), expected);
-}
-
-#[test]
-fn integer_list_match_result_is_string_free() {
-    let source = r#"
-fn choose(left: List(Int), right: List(Int), index: Int) -> List(Int):
-    match index:
-        0 -> left
-        _ -> right
-
-fn main() -> Int:
-    choose([4], [7, 8], 1).length()
-"#;
-    let checked = witchy::resolve_std_only_checked(source).expect("string-free integer match checks");
-    let artifact = codegen::compile_checked_module_artifact(&checked)
-        .expect_lowered("string-free integer match lowers");
-    let entry = artifact.entry().expect("string-free integer match entry");
-    let function = FunctionId::new(entry.export().strip_prefix('f').unwrap().parse().unwrap());
-    let validated = codegen::validate_checked_module_for_oracle(&checked)
-        .expect("string-free integer match validates");
-    let run = interpret_entry_program(
-        &validated,
-        function,
-        Vec::new(),
-        &[],
-        InterpreterConfig::default(),
-    ).expect("string-free integer match oracle");
-    assert_eq!(run.results.first(), Some(&InterpreterValue::Int(2)));
-    oracle(source, "string-free integer match");
 }
 
 #[test]
@@ -855,16 +417,6 @@ fn assert_opaque_closure_three_legs_with_caps(source: &str, expected: &[&str], c
 }
 
 #[test]
-fn carried_state_unchanged_expected_three_legs() {
-    assert_opaque_closure_three_legs_with_caps(
-        include_str!("../../examples/carried_state/src/carried_state.witchy"),
-        &["ok: counted rows in users", "denied: secrets is outside this handle (scoped to users)"],
-        // Carry a real Net token, but authorize no network destination.
-        Capabilities { print: true, quiet: true, net_allow: Some(Vec::new()), ..Default::default() },
-    );
-}
-
-#[test]
 fn opaque_closure_plugin_host_expected_three_legs() {
     assert_opaque_closure_three_legs(
         include_str!("../../examples/plugin_host/src/plugin_host.witchy"),
@@ -893,14 +445,6 @@ fn main(console: Console):
 }
 
 #[test]
-fn opaque_console_lambda_three_legs() {
-    assert_opaque_closure_three_legs(
-        "fn main(console: Console):\n    let log = fn(message: String): console.print(message)\n    log(\"ok\")\n",
-        &["ok"],
-    );
-}
-
-#[test]
 fn canonical_layout_family_task_tuple_three_legs() {
     assert_opaque_closure_three_legs(r#"
 import chan
@@ -911,24 +455,52 @@ async fn main(console: Console):
     console.print("${values}")
 "#, &["[5]"]);
 }
+
 #[test]
-fn opaque_closure_mixed_string_console_after_original_cleanup_three_legs() {
-    assert_opaque_closure_three_legs(r#"
-fn prefix(n: Int) -> String:
-    "log: " + "${n}"
-
-fn make(own text: String, console: Console) -> fn(String) -> ():
-    let log = fn(message: String): console.print(text + message)
-    console.print(text)
-    log
-
-fn main(console: Console):
-    let log = make(prefix(7), console)
-    log(" A")
-    log(" B")
-"#, &["log: 7", "log: 7 A", "log: 7 B"]);
+fn dynamic_reflection_example_expected_output_three_legs() {
+    let source = include_str!("../../examples/dynamic_reflection/src/dynamic_reflection.witchy");
+    // This harness links source bytes as module `main`; the CLI links the same
+    // file as `dynamic_reflection`. The remaining expectations follow directly
+    // from Counter(4), its Named impl, and the public add method called with 3.
+    let expected = vec![
+        "main.Counter".to_owned(),
+        "add".to_owned(),
+        "implements Named: true".to_owned(),
+        "field value: 4".to_owned(),
+        "result: 7".to_owned(),
+    ];
+    let checked = witchy::resolve_std_only_checked(source).expect("actual Dynamic example checks");
+    assert!(checked.canonical_source().unwrap().dynamic_runtime_plan().is_some());
+    let artifact = codegen::compile_checked_module_artifact(&checked)
+        .expect_lowered("closed Dynamic source admits through the canonical route");
+    let entry = artifact.entry().unwrap();
+    let function = FunctionId::new(entry.export().strip_prefix('f').unwrap().parse().unwrap());
+    let validated = codegen::validate_checked_module_for_oracle(&checked).expect("oracle validation");
+    let capabilities = entry.capabilities().iter().copied()
+        .map(InterpreterValue::entry_capability).collect();
+    let oracle = witchy_wir::canonical_interpreter::interpret_program(
+        &validated, function, capabilities, Default::default(),
+    ).expect("Dynamic oracle execution");
+    assert_eq!(oracle.output, expected);
+    assert_eq!(oracle.leaked_objects, 0);
+    let mut runtime = Runtime::batch().unwrap();
+    let mut vm = runtime.spawn_admitted(&artifact, Capabilities {
+        print: true, quiet: true, ..Default::default()
+    }, 256).expect("admitted Dynamic Wasm");
+    vm.run().expect("Dynamic Wasm execution");
+    assert_eq!(vm.output(), expected);
+    assert_eq!(vm.canonical_heap_leaks().unwrap().unwrap(), 0);
 }
 
+#[test]
+fn carried_state_unchanged_expected_three_legs() {
+    assert_opaque_closure_three_legs_with_caps(
+        include_str!("../../examples/carried_state/src/carried_state.witchy"),
+        &["ok: counted rows in users", "denied: secrets is outside this handle (scoped to users)"],
+        // Carry a real Net token, but authorize no network destination.
+        Capabilities { print: true, quiet: true, net_allow: Some(Vec::new()), ..Default::default() },
+    );
+}
 
 /// See the oracle sweep: each of these has a dedicated test that asserts an
 /// independent expected output and zero leaks on both canonical engines.

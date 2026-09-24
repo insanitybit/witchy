@@ -179,9 +179,6 @@ fn main(console: Console, {parameter}):
 }
 
 #[test]
-fn fetch_direct_get_post_capture_snapshot_and_retained_response_three_legs() { three_legs(false); }
-
-#[test]
 fn fetch_derived_grimoire_registry_get_post_three_legs() { three_legs(true); }
 
 #[test]

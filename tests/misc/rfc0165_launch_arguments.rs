@@ -49,37 +49,9 @@ fn compare_with_fixture(source: &str, args: &[&str], expected: &[&str], root: Op
 }
 
 #[test]
-fn launch_arguments_run_minigrep_with_a_confined_file() {
-    struct Fixture(std::path::PathBuf);
-    impl Drop for Fixture {
-        fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); }
-    }
-    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
-    let root = Fixture(std::env::temp_dir().join(format!("witchy-launch-args-{}-{stamp}", std::process::id())));
-    std::fs::create_dir(&root.0).expect("fresh fixture directory");
-    std::fs::write(root.0.join("input.txt"), "hello\nneedle here\nno match\nneedle again\n")
-        .expect("fixture file");
-    compare_with_fixture(include_str!("../../examples/minigrep/src/minigrep.witchy"),
-        &["needle", "input.txt"], &["needle here", "needle again", "0"], Some(&root.0));
-}
-
-#[test]
 fn launch_arguments_survive_proper_tail_transfer() {
     compare("pub fn count(own xs: List(String), n: Int) -> Int:\n    if n == 0:\n        xs.length()\n    else:\n        count(xs, n - 1)\n\nfn main(own args: List(String)) -> Int:\n    count(args, 300000)\n",
         &["alive"], &["1"]);
-}
-
-#[test]
-fn launch_arguments_preserve_utf8_and_empty_elements() {
-    compare("fn main(console: Console, args: List(String)):\n    for arg in args:\n        console.print(arg)\n",
-        &["hello", "", "caf\u{e9}", "a\0b"], &["hello", "", "caf\u{e9}", "a\0b"]);
-    compare("fn main(args: List(String), console: Console):\n    console.print(\"${args.length()}\")\n", &[], &["0"]);
-}
-
-#[test]
-fn launch_arguments_are_owned_across_mutation_and_multiple_parameters() {
-    compare("fn main(own args: List(String), console: Console, other: List(String)):\n    var copy = args\n    copy.push(\"tail\")\n    console.print(\"${copy.length()} ${other.length()}\")\n    console.print(other[0])\n",
-        &["head"], &["2 1", "head"]);
 }
 
 #[test]

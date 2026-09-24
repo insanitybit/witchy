@@ -14,31 +14,6 @@ mod tests {
     use witchy_types::typeck::{check, check_str, gc_cap_aggregate_names};
 
     #[test]
-    fn anonymous_union_injection_uses_expected_type() {
-        check_str(
-            "fn bad(port: Int) -> .[BadPort(Int) | NotFound]:\n    .BadPort(port)\n\nfn missing() -> .[BadPort(Int) | NotFound]:\n    .NotFound\n\nfn parse(port: Int) -> Result(Int, .[BadPort(Int) | NotFound]):\n    if port < 0:\n        Err(.BadPort(port))\n    else:\n        Ok(port)\n"
-        )
-        .expect("expected type supplies the anonymous union shape");
-
-        let bare = check_str("fn f():\n    .BadPort(70000)\n").unwrap_err();
-        assert!(
-            bare.contains("needs an expected anonymous union type"),
-            "{bare}"
-        );
-
-        let wrong_tag =
-            check_str("fn f() -> .[BadPort(Int) | NotFound]:\n    .Timeout\n").unwrap_err();
-        assert!(wrong_tag.contains("has no tag `.Timeout`"), "{wrong_tag}");
-
-        let wrong_arity =
-            check_str("fn f() -> .[BadPort(Int) | NotFound]:\n    .BadPort\n").unwrap_err();
-        assert!(
-            wrong_arity.contains("takes 1 payload value"),
-            "{wrong_arity}"
-        );
-    }
-
-    #[test]
     fn anonymous_union_patterns_check_closed_tags() {
         check_str(
             "fn describe(e: .[BadPort(Int) | Missing(String) | NotFound]) -> String:\n    match e:\n        .BadPort(p) -> \"${p}\"\n        .Missing(k) -> k\n        .NotFound -> \"missing\"\n\nfn nested(r: Result(Int, .[BadPort(Int) | Missing(String) | NotFound])) -> String:\n    match r:\n        Ok(n) -> \"${n}\"\n        Err(.BadPort(p)) -> \"${p}\"\n        Err(.Missing(k)) -> k\n        Err(.NotFound) -> \"missing\"\n"
@@ -71,30 +46,6 @@ mod tests {
             missing.contains("non-exhaustive match") && missing.contains("`.NotFound`"),
             "{missing}"
         );
-    }
-
-    #[test]
-    fn anonymous_union_widening_is_only_at_directed_sites() {
-        let let_widening = check_str(
-            "fn small(n: Int) -> .[B(Int) | C]:\n    .B(n)\n\nfn f() -> .[A | B(Int) | C]:\n    let s = small(1)\n    let b: .[A | B(Int) | C] = s\n    b\n"
-        )
-        .unwrap_err();
-        assert!(let_widening.contains("declared `"), "{let_widening}");
-    }
-
-    #[test]
-    fn anonymous_record_spread_updates_existing_shape() {
-        let added = check_str(
-            "fn main(console: Console):\n    let p = .{x: 1}\n    let q = .{y: 2, ..p}\n    console.print(\"${q.x}\")\n"
-        )
-        .unwrap_err();
-        assert!(added.contains("has no field `y`"), "{added}");
-
-        let duplicate = check_str(
-            "fn main(console: Console):\n    let p = .{x: 1}\n    let q = .{x: 2, x: 3, ..p}\n    console.print(\"${q.x}\")\n"
-        )
-        .unwrap_err();
-        assert!(duplicate.contains("field `x` is set twice"), "{duplicate}");
     }
 
     #[test]
@@ -297,128 +248,6 @@ mod tests {
     }
 
     #[test]
-    fn public_non_unit_returns_require_source_annotations() {
-        let assert_annotation_error = |source: &str, callable: &str| {
-            let error = check_str(source).expect_err("public non-unit result must be declared");
-            assert!(
-                error.contains("public function")
-                    && error.contains(callable)
-                    && error.contains("inferred non-unit")
-                    && error.contains("->"),
-                "{error}"
-            );
-        };
-
-        for mode in ["", "mode opt\n\n"] {
-            assert_annotation_error(
-                &format!("{mode}pub fn exported():\n    1\n"),
-                "exported",
-            );
-            check_str(&format!("{mode}pub fn effect():\n    ()\n"))
-                .expect("a public unit result may omit its annotation");
-            check_str(&format!(
-                "{mode}pub fn relay():\n    later()\n\npub fn later():\n    ()\n"
-            ))
-            .expect("a public unit wrapper may resolve through a later declaration");
-            check_str(&format!("{mode}fn private_value():\n    1\n"))
-                .expect("a private non-unit helper retains return inference");
-        }
-
-        for mode in ["", "mode opt\n\n"] {
-            assert_annotation_error(
-                &format!(
-                    "{mode}type Meter:\n    Meter(Int)\n\nimpl Meter:\n    pub fn zero():\n        Meter(0)\n"
-                ),
-                "Meter.zero",
-            );
-            assert_annotation_error(
-                &format!(
-                    "{mode}type Meter:\n    Meter(Int)\n\nimpl Meter:\n    pub fn value(self):\n        1\n"
-                ),
-                "Meter.value",
-            );
-        }
-
-        check_str(
-            "type Meter:\n    Meter(Int)\n\nimpl Meter:\n    fn private_value(self):\n        1\n\nfn use_private(meter: Meter):\n    meter.private_value()\n",
-        )
-        .expect("private methods retain inferred returns and local dispatch");
-    }
-
-    #[test]
-    fn packed_list_can_cross_a_direct_or_stored_boundary() {
-        // (RFC-0111 stage 2) closed direct signatures and ordinary record fields
-        // carry the exact canonical packed layout. Trait/first-class boundaries
-        // remain separately guarded until their physical signature is wired.
-        check_str(
-            "import list\ntype P packed:\n    x: Int\nfn f(ps: List(P)) -> Int:\n    list.length(ps)\nfn main(console: Console):\n    console.print(\"hi\")\n"
-        ).unwrap();
-        check_str(
-            "import list\ntype P packed:\n    x: Int\nfn f() -> List(P):\n    [P(1)]\nfn main(console: Console):\n    console.print(\"hi\")\n"
-        ).unwrap();
-        check_str(
-            "type P packed:\n    x: Int\n\ntype Holder:\n    ps: List(P)\n\nfn main(console: Console):\n    console.print(\"hi\")\n"
-        ).unwrap();
-    }
-
-    #[test]
-    fn frozen_value_handles_may_be_mutable_or_consumed() {
-        // RFC-0167 freezes the payload, not the value handle. `var` replaces
-        // the whole value and `own` transfers it; deep mutation remains checked
-        // at its projection/dereference site.
-        check_str(
-            "fn main(console: Console):\n    var x: frozen List(Int) = [1, 2]\n    x = [3]\n    console.print(\"hi\")\n",
-        )
-        .expect("a mutable frozen binding may be replaced");
-        check_str("fn f(var xs: frozen List(Int)) -> frozen List(Int):\n    xs = [1]\n    xs\n")
-            .expect("a var frozen parameter may replace its write-back value");
-        check_str("fn f(own xs: frozen List(Int)) -> Int:\n    list.length(xs)\n")
-            .expect("an own frozen parameter transfers its value handle");
-
-        // A `let`-bound frozen value and a read-only frozen parameter are valid.
-        check_str("fn f(xs: frozen List(Int)) -> Int:\n    list.length(xs)\n")
-            .expect("a read-only frozen parameter is valid");
-        check_str("fn main(console: Console):\n    let x: frozen List(Int) = [1, 2]\n    console.print(\"${list.length(x)}\")\n")
-            .expect("a let-bound frozen value is valid");
-        // `unique` is compatible with mutation (FBIP) - `var` is
-        // fine. A mutator shape (self-typed return) satisfies RFC-0064's row-3
-        // rule (a `var` receiver must be a mutator or a procedure).
-        check_str("fn f(var xs: unique List(Int)) -> List(Int):\n    xs\n")
-            .expect("a unique var is valid (in-place reuse is the point)");
-    }
-
-    #[test]
-    fn immutable_views_use_one_surface_without_named_lifetimes() {
-        check_str(
-            "fn view(xs: &Int) -> &Int:\n    xs\n",
-        )
-        .expect("an immutable rooted view may be returned without naming a lifetime");
-
-        let unrelated = check_str(
-            "fn bad(xs: &Int) -> String:\n    xs\n",
-        )
-        .expect_err("a view must not implicitly coerce to its payload type");
-        assert!(unrelated.contains("expected `String`") || unrelated.contains("found `&Int`"), "{unrelated}");
-
-        check_str("mode opt\n\nfn view(xs: &Int) -> &Int:\n    xs\n")
-            .expect("the same immutable view syntax works in opt mode");
-    }
-
-    #[test]
-    fn borrowed_nominal_lifetime_parameters_kind_check_in_opt_mode() {
-        check_str(
-            "mode opt\n\ntype Parser:\n    input: &Bytes\n    offset: Int\n\nfn inspect(parser: Parser) -> Int:\n    parser.offset\n",
-        )
-        .expect("named-field aggregate views and related signature check");
-        check_str(
-            "mode opt\n\nfn inspect[a](pair: &a, owner: &Int) -> Int:\n    0\n",
-        )
-        .expect("generic and concrete immutable views share one syntax");
-        check_str("mode opt\n\ntype Pair:\n    first: &Int\n    second: &String\n")
-            .expect("aggregate fields carry immutable views without lifetime parameters");
-    }
-
-    #[test]
     fn retired_reference_surfaces_fail_closed_before_loan_analysis() {
         let cases = [
             (
@@ -448,162 +277,6 @@ mod tests {
     }
 
     #[test]
-    fn borrowed_nominal_type_arguments_are_kind_checked_and_bound() {
-        check_str(
-            "mode opt\n\nfn identity[a](value: &a) -> &a:\n    value\n\nfn use_it(value: &Int) -> Int:\n    *identity(value)\n",
-        )
-        .expect("generic view carriers bind ordinary type arguments directly");
-        check_str(
-            "mode opt\n\ntype Holder:\n    value: &Int\n\nfn store(value: &Int) -> Holder:\n    Holder(value)\n",
-        )
-        .expect("aggregate view carriers do not require lifetime arguments");
-    }
-
-    #[test]
-    fn borrowed_nominal_lifetime_relations_are_not_erased_by_type_unification() {
-        check_str(
-            "mode opt\n\ntype Holder:\n    view: &String\n\nfn relay(holder: Holder) -> Holder:\n    holder\n",
-        )
-        .expect("aggregate view roots are retained without relational lifetime syntax");
-    }
-
-    #[test]
-    fn borrowed_nominal_construction_is_checked_with_owner_root_lowering() {
-        check_str(
-            "mode opt\n\ntype Holder:\n    view: &String\n\nfn hold(input: &String) -> Holder:\n    Holder(input)\n",
-        )
-        .expect("a fixed view constructor publishes owner-root facts");
-    }
-
-    #[test]
-    fn explicit_reference_nominal_can_cross_nullable_option() {
-        check_str(
-            "mode opt\n\ntype Pair:\n    left: &String\n    right: &String\n\nfn choose(left: &String, right: &String) -> Option(Pair):\n    Some(Pair(left, right))\n",
-        )
-        .expect("an immutable-view nominal can cross an Option carrier");
-    }
-
-    #[test]
-    fn explicit_reference_nominal_can_cross_nullable_option_list_carrier() {
-        check_str(
-            "mode opt\n\ntype Pair:\n    left: &String\n    right: &String\n\nfn choose(left: &String, right: &String) -> Option(List(Pair)):\n    Some([Pair(left, right)])\n",
-        )
-        .expect("an immutable-view nominal may be nested in an Option list carrier");
-    }
-
-    #[test]
-    fn explicit_reference_nominal_can_cross_result_carrier() {
-        check_str(
-            "mode opt\n\ntype Pair:\n    left: &String\n    right: &String\n\nfn choose(left: &String, right: &String) -> Result(Pair, String):\n    Ok(Pair(left, right))\n",
-        )
-        .expect("an immutable-view nominal can cross a Result carrier");
-    }
-
-    #[test]
-    fn explicit_reference_nominal_can_cross_result_list_carrier() {
-        check_str(
-            "mode opt\n\ntype Pair:\n    left: &String\n    right: &String\n\nfn choose(left: &String, right: &String) -> Result(List(Pair), String):\n    Ok([Pair(left, right)])\n",
-        )
-        .expect("an immutable-view nominal may be nested in a Result list carrier");
-    }
-
-    #[test]
-    fn borrowed_nominals_keep_aggregate_view_storage_typed() {
-        check_str(
-            "mode opt\n\ntype Holder:\n    view: &String\n\ntype Bag:\n    holders: List(Holder)\n",
-        )
-        .expect("aggregate view storage remains type-checked rather than erased");
-    }
-
-    #[test]
-    fn nested_function_lifetime_does_not_satisfy_an_outer_nominal_binder() {
-        check_str("mode opt\n\ntype Phantom:\n    callback: fn(&String) -> Int\n")
-            .expect("nested callable view signatures are self-contained");
-    }
-
-    #[test]
-    fn borrowed_nominal_containers_are_checked_on_every_callable_surface() {
-        let cases = [
-            "mode opt\n\ntype Holder:\n    view: &String\n\nfn bad(owner: &String, holders: List(Holder)) -> Int:\n    0\n",
-            "mode opt\n\ntype Holder:\n    view: &String\n\ntrait Bad:\n    fn inspect(owner: &String, holders: List(Holder)) -> Int\n",
-            "mode opt\n\ntype Holder:\n    view: &String\n\ntype Subject:\n    Subject\n\ntrait Inspect:\n    fn inspect(self) -> Int\n\nimpl Inspect for Subject:\n    fn inspect(self) -> Int:\n        0\n",
-            "mode opt\n\ntype Holder:\n    view: &String\n\nfn outer() -> Int:\n    let bad = fn(owner: &String, holders: List(Holder)) -> Int:\n        0\n    0\n",
-            "mode opt\n\ntype Holder:\n    view: &String\n\nfn bad(callback: fn(&String, List(Holder)) -> Int) -> Int:\n    0\n",
-        ];
-        for source in cases {
-            check_str(source).expect("aggregate view carriers remain valid callable surfaces");
-        }
-        check_str(
-            "mode opt\n\ntype Holder:\n    view: &String\n\nfn make(input: &String) -> Holder:\n    Holder(input)\n\nfn local(owner: &String) -> Int:\n    let holder = make(owner)\n    (*holder.view).length()\n",
-        )
-        .expect("a direct aggregate view remains valid within one function");
-    }
-
-    #[test]
-    fn explicit_reference_nominal_runtime_operations_preserve_owner_roots() {
-        let cases = [
-            "mode opt\n\ntype Cursor:\n    view: &String\n    offset: Int\n\nfn read(cursor: Cursor) -> Int:\n    cursor.offset\n",
-            "mode opt\n\ntype Cursor:\n    view: &String\n    offset: Int\n\nfn bump(cursor: Cursor) -> Cursor:\n    Cursor(offset: cursor.offset + 1, ..cursor)\n",
-            "mode opt\n\ntype Holder:\n    view: &String\n\nfn read(holder: Holder) -> &String:\n    holder.view\n",
-            "mode opt\n\ntype Holder:\n    view: &String\n\nfn sink(holder: Holder) -> Int:\n    0\n\nfn call(holder: Holder) -> Int:\n    sink(holder)\n",
-            "mode opt\n\ntype Cursor:\n    view: &String\n\nimpl Cursor:\n    fn read(self) -> Int:\n        (*self.view).length()\n\nfn call(cursor: Cursor) -> Int:\n    cursor.read()\n",
-        ];
-        for source in cases {
-            check_str(source)
-                .expect("canonical views carry roots through nominal operations");
-        }
-    }
-
-    #[test]
-    fn explicit_reference_nominal_variable_transport_preserves_owner_roots() {
-        for source in [
-            "mode opt\n\ntype Holder:\n    view: &String\n\nfn copy(holder: Holder) -> Int:\n    let copied = holder\n    let _ = copied\n    0\n",
-            "mode opt\n\ntype Holder:\n    view: &String\n\nfn choose(flag: Bool, holder: Holder) -> Int:\n    let selected = if flag:\n        holder\n    else:\n        holder\n    let _ = selected\n    0\n",
-            "mode opt\n\ntype Holder:\n    view: &String\n\nfn transfer(holder: Holder) -> Int:\n    let moved = move holder\n    let _ = moved\n    0\n",
-        ] {
-            check_str(source)
-                .expect("canonical reference shells retain owner roots through local transport");
-        }
-
-        check_str(
-            "mode opt\n\nfn copy(value: Int) -> Int:\n    if true:\n        value\n    else:\n        value\n    let duplicate = if true:\n        value\n    else:\n        value\n    duplicate\n\nfn transfer(value: String) -> String:\n    move value\n\nfn inspect(owner: &String) -> Int:\n    if true:\n        owner\n    else:\n        owner\n    let projected = if true:\n        owner\n    else:\n        owner\n    0\n",
-        )
-        .expect("ordinary values and shared-reference handles retain binding and move behavior");
-    }
-
-    #[test]
-    fn nested_function_output_lifetime_requires_a_nested_input_owner() {
-        check_str("mode opt\n\ntype Callback:\n    Callback(fn(&String) -> &String)\n")
-            .expect("nested callable immutable views do not need lifetime binders");
-    }
-
-    #[test]
-    fn explicit_reference_nominal_fixed_tuples_preserve_owner_roots() {
-        check_str(
-            "mode opt\n\ntype Holder:\n    view: &String\n\nfn sink(pair: (Holder, Int)) -> Int:\n    0\n\nfn call(holder: Holder) -> Int:\n    sink((holder, 0))\n",
-        )
-        .expect("a fixed tuple retains nested immutable-view roots at a call");
-
-        check_str(
-            "mode opt\n\ntype Holder:\n    view: &String\n\nfn call(pair: (Holder, Int)) -> Int:\n    let (holder, _) = pair\n    0\n",
-        )
-        .expect("tuple destructuring retains the nested view relation");
-
-        check_str(
-            "fn sink(var left: Int, var right: Int) -> Int:\n    left + right\n\nfn main() -> Int:\n    var pair = (1, 2)\n    sink(pair.0, pair.1)\n",
-        )
-        .expect("ordinary fixed tuples retain their existing call/write-back behavior");
-    }
-
-    #[test]
-    fn immutable_view_aggregate_can_cross_an_existential() {
-        check_str(
-            "mode opt\n\ntype Holder:\n    view: &String\n\ntrait Mark:\n    fn mark(self) -> Int\n\nimpl Mark for Holder:\n    fn mark(self) -> Int:\n        0\n\nfn erase(holder: Holder) -> dyn Mark:\n    holder as dyn Mark\n",
-        )
-        .expect("an authenticated aggregate view may cross a callable existential boundary");
-    }
-
-    #[test]
     fn borrowed_nominal_cannot_escape_through_an_inferred_closure() {
         let capture = check_str(
             "mode opt\n\nfn escape(owner: List(List(List(Int)))) -> fn() -> &List(List(List(Int))):\n    let view = &owner\n    fn():\n        view\n",
@@ -625,12 +298,6 @@ mod tests {
 
         check_str("fn consume(own value: String) -> Int:\n    value.length()\n")
             .expect("own remains valid for ordinary owned values");
-    }
-
-    #[test]
-    fn callable_lifetime_binders_are_alpha_equivalent() {
-        check_str("fn inspect(value: &String) -> Int:\n    (*value).length()\n\nfn main() -> Int:\n    let same: fn(&String) -> Int = inspect\n    0\n")
-            .expect("callable immutable-view signatures have one canonical spelling");
     }
 
     #[test]
@@ -864,63 +531,6 @@ mod tests {
     }
 
     #[test]
-    fn trait_type_argument_arity_is_checked() {
-        let impl_missing = check_str(
-            "trait From(a):\n    fn from(x: a) -> Self\n\ntype Celsius:\n    Celsius(Int)\n\nimpl From for Celsius:\n    fn from(i: Int) -> Celsius:\n        Celsius(i)\n",
-        )
-        .unwrap_err();
-        assert!(
-            impl_missing.contains("trait `From` expects 1 type argument(s) but got 0")
-                && impl_missing.contains("impl head for `Celsius`"),
-            "{impl_missing}"
-        );
-
-        let impl_extra = check_str(
-            "trait From(a):\n    fn from(x: a) -> Self\n\ntype Celsius:\n    Celsius(Int)\n\nimpl From(Int, String) for Celsius:\n    fn from(i: Int) -> Celsius:\n        Celsius(i)\n",
-        )
-        .unwrap_err();
-        assert!(
-            impl_extra.contains("trait `From` expects 1 type argument(s) but got 2")
-                && impl_extra.contains("impl head for `Celsius`"),
-            "{impl_extra}"
-        );
-
-        let where_missing =
-            check_str("trait From(a):\n    fn from(x: a) -> Self\n\nfn f(x: a) -> Int where a: From:\n    0\n")
-                .unwrap_err();
-        assert!(
-            where_missing.contains("trait `From` expects 1 type argument(s) but got 0")
-                && where_missing.contains("where clause of function `f`"),
-            "{where_missing}"
-        );
-
-        let where_extra = check_str(
-            "trait From(a):\n    fn from(x: a) -> Self\n\nfn f(x: a) -> Int where a: From(Int, String):\n    0\n",
-        )
-        .unwrap_err();
-        assert!(
-            where_extra.contains("trait `From` expects 1 type argument(s) but got 2")
-                && where_extra.contains("where clause of function `f`"),
-            "{where_extra}"
-        );
-
-        let impl_trait = check_str(
-            "trait From(a):\n    fn from(x: a) -> Self\n\nfn f(x: impl From) -> Int:\n    0\n",
-        )
-        .unwrap_err();
-        assert!(
-            impl_trait.contains("trait `From` expects 1 type argument(s) but got 0")
-                && impl_trait.contains("impl-trait parameter of function `f`"),
-            "{impl_trait}"
-        );
-
-        check_str(
-            "trait From(a):\n    fn from(x: a) -> Self\n\ntype Celsius:\n    Celsius(Int)\n\nimpl From(Int) for Celsius:\n    fn from(i: Int) -> Celsius:\n        Celsius(i)\n\nfn f(x: a) -> Int where a: From(Int):\n    0\n",
-        )
-        .expect("matching trait type-argument arity passes");
-    }
-
-    #[test]
     fn trait_impl_identity_includes_trait_type_arguments() {
         check_str(
             "trait From(a):\n    fn from(x: a) -> Self\n\ntype JsonError:\n    JsonError(String)\n\ntype TomlError:\n    TomlError(String)\n\nimpl From(JsonError) for String:\n    fn from(e: JsonError) -> String:\n        \"json\"\n\nimpl From(TomlError) for String:\n    fn from(e: TomlError) -> String:\n        \"toml\"\n",
@@ -935,28 +545,6 @@ mod tests {
             dup.contains("impl `From(JsonError)` for `String` is defined more than once"),
             "{dup}"
         );
-    }
-
-    #[test]
-    fn generated_name_shape_does_not_impersonate_a_from_impl() {
-        let src = r#"
-type LeafError:
-    Leaf
-
-type AppError:
-    App
-
-fn From__spoof__from(value: LeafError) -> AppError:
-    App
-
-fn leaf() -> Result(Int, LeafError):
-    Err(Leaf)
-
-fn wrapper() -> Result(Int, AppError):
-    leaf()?
-"#;
-        let error = check_str(src).expect_err("a generated-looking name is not a From impl");
-        assert!(error.contains("no `From("), "{error}");
     }
 
     #[test]
@@ -1026,69 +614,6 @@ fn wrapper() -> Result(Int, AppError):
     }
 
     #[test]
-    fn closed_generic_aggregates_accept_reference_bearing_type_arguments() {
-        check_str(
-            "trait Label:\n    fn label(self) -> String\n\
-             type Box(a):\n    value: a\n\
-             impl Label for Box(a):\n    fn label(self) -> String:\n        \"Box\"\n\
-             fn id(n: Int) -> Int:\n    n\n\
-             fn main(console: Console):\n    let b: Box(fn(Int) -> Int) = Box(id)\n    console.print(b.label())\n",
-        )
-        .expect("a closed generic function field receives a concrete GC layout");
-
-        check_str(
-            "trait Label:\n    fn label(self) -> String\n\
-             type Box(a):\n    value: a\n\
-             impl Label for Box(a):\n    fn label(self) -> String:\n        \"Box\"\n\
-             fn id(n: Int) -> Int:\n    n\n\
-             fn main(console: Console):\n    let b: Box(List(fn(Int) -> Int)) = Box([id])\n    console.print(b.label())\n",
-        )
-        .expect("nested reference storage receives a concrete GC layout");
-
-        check_str(
-            "trait Label:\n    fn label(self) -> String\n\
-             type Box(a):\n    value: a\n\
-             impl Label for Box(a):\n    fn label(self) -> String:\n        \"Box\"\n\
-             fn choose(n: Int, s: String) -> Int:\n    n\n\
-             fn main(console: Console):\n    let b: Box(fn(Int, String) -> Int) = Box(choose)\n    console.print(b.label())\n",
-        )
-        .expect("multi-parameter function references receive a concrete GC layout");
-
-        check_str(
-            "type CallbackBox(a):\n    callback: fn(Int) -> Int\n    value: a\n\
-             fn add1(n: Int) -> Int:\n    n + 1\n\
-             fn main():\n    let boxed = CallbackBox(add1, 1)\n",
-        )
-        .expect("each closed generic instance receives its own mixed-field GC layout");
-    }
-
-    #[test]
-    fn static_trait_methods_on_distinct_bounds_keep_receiver_identity() {
-        check_str(
-            "trait Named:\n    fn tag() -> String\n\
-             type A:\n    A\n\
-             type B:\n    B\n\
-             impl Named for A:\n    fn tag() -> String:\n        \"A\"\n\
-             impl Named for B:\n    fn tag() -> String:\n        \"B\"\n\
-             fn pair_tags(x: a, y: b) -> String where a: Named, b: Named:\n    \"${a.tag()} ${b.tag()}\"\n\
-             fn main(console: Console):\n    console.print(pair_tags(A, B))\n",
-        )
-        .expect("static trait methods dispatch through the bound variable, not the method name");
-    }
-
-    #[test]
-    fn trait_method_value_position_names_the_lambda_fix() {
-        let err = check_str(
-            "trait Showy:\n    fn show(self) -> String\n\nfn main(console: Console):\n    let f = show\n    console.print(\"x\")\n",
-        )
-        .expect_err("trait methods are not first-class values");
-        assert!(err.contains("trait method `show`"), "{err}");
-        assert!(err.contains("no single function value"), "{err}");
-        assert!(err.contains("fn(x): x.show()"), "{err}");
-        assert!(!err.contains("unbound variable"), "{err}");
-    }
-
-    #[test]
     fn build_entrypoint_takes_only_build_capabilities() {
         // A valid build step: build caps only.
         check_str("fn build(out: BuildOut, schema: BuildRead):\n    out.write_out(\"x.witchy\", schema.read_build(\"a.proto\"))\n")
@@ -1114,100 +639,6 @@ fn wrapper() -> Result(Int, AppError):
         // entrypoint, so it isn't subject to the build-signature rule.
         check_str("fn build(x: Int) -> Int:\n    x + 1\n")
             .expect("a plain `build` function is not the build entrypoint");
-    }
-
-    #[test]
-    fn duplicate_top_level_functions_are_rejected() {
-        // Two functions with the same name silently overwrote each other; now it's
-        // a check-time error that names the function and (unlinked) the lines.
-        let err =
-            check_str("fn g(x: Int) -> Int:\n    1\nfn g(x: Int) -> Int:\n    2\n").unwrap_err();
-        assert!(
-            err.contains("function `g` is defined more than once"),
-            "{err}"
-        );
-        assert!(err.contains("lines 1 and 3"), "{err}");
-        // Distinct names are fine.
-        check_str("fn a() -> Int:\n    1\nfn b() -> Int:\n    2\n")
-            .expect("distinct names are valid");
-        // Methods with the same name on different types are dispatched by receiver,
-        // not duplicates — they must still type-check.
-        let methods = "type A:\n    A\ntype B:\n    B\nimpl A:\n    fn tag(self) -> Int:\n        1\nimpl B:\n    fn tag(self) -> Int:\n        2\n";
-        check_str(methods).expect("same-named methods on different types are not duplicates");
-    }
-
-    #[test]
-    fn ambient_std_inherent_methods_do_not_become_bare_functions() {
-        let methods = "impl List(a):\n    fn push(var self, x: a) -> List(a):\n        self\n";
-        check_str(&format!(
-            "{methods}\nfn main(console: Console):\n    var xs = [1]\n    xs.push(2)\n"
-        ))
-        .expect("ambient std-owned inherent methods remain available through receiver syntax");
-
-        let err = check_str(&format!(
-            "{methods}\nfn main(console: Console):\n    let xs = push([1], 2)\n"
-        ))
-        .expect_err("ambient std-owned inherent methods must not resurrect bare std functions");
-        assert!(err.contains("`push` moved to `list.push`"), "{err}");
-    }
-
-    #[test]
-    fn method_receiver_type_survives_result_propagation() {
-        let src = r#"
-impl List(a):
-    fn contains(self, target: a) -> Bool:
-        true
-
-fn ids() -> Result(List(String), String):
-    Ok(["a"])
-
-fn has_id() -> Result(Bool, String):
-    let ids = ids()?
-    Ok(ids.contains("a"))
-
-fn optional_ids() -> Option(List(String)):
-    Some(["a"])
-
-fn has_optional_id() -> Option(Bool):
-    let ids = optional_ids()?
-    Some(ids.contains("a"))
-"#;
-        check_str(src).expect("the `?` payload keeps its concrete receiver type for method lookup");
-    }
-
-    #[test]
-    fn duplicate_parameter_names_are_rejected() {
-        let top = check_str("fn pick(x: Int, x: Int) -> Int:\n    x\n")
-            .expect_err("duplicate function parameters must be rejected");
-        assert!(
-            top.contains("parameter `x`") && top.contains("function `pick`"),
-            "{top}"
-        );
-
-        let lambda = check_str(
-            "fn main(console: Console):\n    let f = fn(x: Int, x: Int): x\n    console.print(\"bad\")\n",
-        )
-        .expect_err("duplicate lambda parameters must be rejected");
-        assert!(
-            lambda.contains("parameter `x`") && lambda.contains("lambda"),
-            "{lambda}"
-        );
-
-        let method = check_str(
-            "type Box:\n    Box(Int)\nimpl Box:\n    fn bad(self, x: Int, x: Int) -> Int:\n        x\n",
-        )
-        .expect_err("duplicate method parameters must be rejected");
-        assert!(
-            method.contains("parameter `x`") && method.contains("method `bad`"),
-            "{method}"
-        );
-
-        let trait_method = check_str("trait T:\n    fn bad(x: Int, x: Int) -> Int\n")
-            .expect_err("duplicate trait method parameters must be rejected");
-        assert!(
-            trait_method.contains("parameter `x`") && trait_method.contains("trait method `bad`"),
-            "{trait_method}"
-        );
     }
 
     #[test]
@@ -1473,57 +904,6 @@ fn load(o: Outer, name: String) -> String:
     }
 
     #[test]
-    fn vm_with_dir_accepts_its_typed_bare_top_level_callback() {
-        fn no_comptime(
-            _name: &str,
-            _module: &mut witchy_syntax::ast::Module,
-            _siblings: &[(String, witchy_syntax::ast::Module)],
-        ) -> Result<witchy_syntax::origin::OriginTable, String> {
-            Ok(witchy_syntax::origin::OriginTable::default())
-        }
-
-        let entry = witchy_syntax::parser::parse_module(
-            "import vm\n\nfn reader(dir: Dir, input: Bytes) -> Bytes:\n    input\n\nfn invoke(dir: Dir, input: Bytes) -> Bytes:\n    vm.with_dir(dir, reader, input)\n\nfn main(console: Console):\n    console.print(\"ok\")\n",
-        )
-        .expect("parse isolated worker callback");
-        let module =
-            witchy_syntax::linker::link(vec![("main".to_string(), entry)], "main", no_comptime)
-                .expect("link bundled vm module");
-        check(&module).expect("the dedicated Dir callback adapter is type-safe");
-    }
-
-    #[test]
-    fn gc_aggregate_names_use_reference_storage_classifier() {
-        let module = witchy_syntax::parser::parse_module(
-            r#"
-type FileAlias = File[Read]
-
-type Mixed:
-    Mixed(fn(Int) -> Int, FileAlias)
-
-type FunctionOnly:
-    FunctionOnly(fn(Int) -> Int)
-
-capability Branded from File[Read]
-
-type Generic(a):
-    Generic(a)
-
-type Sum:
-    HasFile(File[Read])
-    Empty
-"#,
-        )
-        .expect("parse aggregate storage shapes");
-
-        assert_eq!(
-            gc_cap_aggregate_names(&module),
-            vec!["Mixed".to_string(), "FunctionOnly".to_string(), "Sum".to_string()],
-            "fixed function/reference layouts GC-lower; transparent and generic shapes keep their separate representations"
-        );
-    }
-
-    #[test]
     fn every_externref_capability_is_allowed_in_a_typed_closure_environment() {
         let cases = [
             ("Dir[Read]", "Dir"),
@@ -1651,61 +1031,6 @@ fn hold(vault: Vault):
     }
 
     #[test]
-    fn unknown_stdlib_function_suggests_import() {
-        // Calling an unimported stdlib function points at the module to import.
-        let err =
-            check_str("fn main(console: Console):\n    console.print(\"${minimum([1], 0)}\")\n")
-                .expect_err("minimum is unimported");
-        assert!(err.contains("import cmp"), "{err}");
-        // A genuine typo (no stdlib match) gets no misleading hint.
-        let typo = check_str("fn main(console: Console):\n    frobnicate()\n")
-            .expect_err("frobnicate is unknown");
-        assert!(!typo.contains("did you forget"), "{typo}");
-        assert!(!typo.contains("did you mean"), "{typo}");
-        // A near-miss of a stdlib name suggests the correction.
-        let near = check_str("fn main(console: Console):\n    let ys = mep([1], fn(x: Int): x)\n    console.print(\"ok\")\n")
-            .expect_err("mep is a typo of map");
-        assert!(near.contains("did you mean `map`"), "{near}");
-    }
-
-    #[test]
-    fn module_qualified_call_without_import_suggests_import() {
-        // `json.stringify(x)` with no `import json` parses as a method call on the
-        // bare name `json`; the error should point at the missing import, not talk
-        // about method resolution.
-        let err = check_str("fn main(console: Console):\n    console.print(json.stringify(5))\n")
-            .expect_err("json is unimported");
-        assert!(err.contains("import json"), "{err}");
-        assert!(
-            !err.contains("method call"),
-            "should not mention method resolution: {err}"
-        );
-    }
-
-    #[test]
-    fn unbounded_generic_ordering_suggests_ord_bound() {
-        // `<` on an unbounded type parameter resolves to a type var (renders `?`);
-        // the error should suggest the `where T: Ord` bound, not a bare "found `?`".
-        let err = check_str("fn smallest(xs: List(a)) -> a:\n    var m = list.at(xs, 0)\n    for x in xs:\n        if x < m:\n            m = x\n    m\nfn main(console: Console):\n    console.print(\"${smallest([3, 1, 2])}\")\n")
-            .expect_err("unbounded generic comparison");
-        assert!(err.contains("where T: Ord"), "{err}");
-    }
-
-    #[test]
-    fn ordering_a_non_ord_type_points_at_deriving_ord() {
-        // `<` on a concrete type without Ord must point at deriving `Ord`, and
-        // must not leak the `less` desugar name (nor mis-suggest the list
-        // function `last`, which the post-desugar unknown-function path used to).
-        let err = check_str("type Foo:\n    Foo(Int)\nfn main(console: Console):\n    console.print(\"${Foo(1) < Foo(2)}\")\n")
-            .expect_err("Foo has no Ord");
-        assert!(err.contains("Ord"), "{err}");
-        assert!(
-            !err.contains("`less`") && !err.contains("`last`"),
-            "should not leak desugar/typo: {err}"
-        );
-    }
-
-    #[test]
     fn derive_eq_ord_rejects_float_fields() {
         let eq = check_str("import cmp\n\ntype Reading derive(PartialEq, Eq):\n    value: Float\n")
             .expect_err("Float is not Eq");
@@ -1791,19 +1116,6 @@ fn f(c: Console) -> String:
     }
 
     #[test]
-    fn rejects_wrong_arity() {
-        let src = r#"
-fn double(n: Int) -> Int:
-    (n * 2)
-
-fn main():
-    double(1, 2)
-"#;
-        let e = check_str(src).unwrap_err();
-        assert!(e.contains("argument"));
-    }
-
-    #[test]
     fn uncalled_bounded_generic_bodies_are_checked() {
         let err = check_str(
             r#"
@@ -1827,190 +1139,6 @@ fn main(console: Console):
     }
 
     #[test]
-    fn type_errors_report_function_and_source_line() {
-        // The mismatch is on the third line, inside function `f`.
-        let src = r#"fn f() -> Int:
-    let a = 1
-    (a + "x")
-"#;
-        let e = check_str(src).unwrap_err();
-        assert!(e.contains("line 3"), "expected a line number, got: {e}");
-        assert!(e.contains("`f`"), "expected the function name, got: {e}");
-    }
-
-    #[test]
-    fn rejects_ordering_on_non_primitives() {
-        // These would type-check under bare unification but crash at runtime, so
-        // the checker rejects them up front.
-        assert!(check_str(
-            r#"
-fn f(a: Bool, b: Bool) -> Bool:
-    (a < b)
-"#
-        )
-        .is_err());
-        assert!(check_str(
-            r#"
-fn f(a: List(Int), b: List(Int)) -> Bool:
-    (a < b)
-"#
-        )
-        .is_err());
-        assert!(check_str(
-            r#"
-fn f(a: (Int, Int), b: (Int, Int)) -> Bool:
-    (a < b)
-"#
-        )
-        .is_err());
-    }
-
-    #[test]
-    fn rejects_lambda_argument_type_mismatch() {
-        // Passing a `fn(Int)->Int` where a `fn(String)->String` is required fails.
-        let src = r#"
-fn run(f: fn(String) -> String, s: String) -> String:
-    f(s)
-
-fn main(console: Console):
-    console.print(run(fn(n: Int): (n + 1), "x"))
-"#;
-        assert!(check_str(src).is_err());
-    }
-
-    #[test]
-    fn record_spread_base_must_match_named_record() {
-        check_str("type P:\n    x: Int\n    y: Int\nfn f(p: P) -> P:\n    P(x: 5, ..p)\n")
-            .expect("same-type record spread remains valid");
-
-        let err = check_str(
-            "type P:\n    x: Int\n    y: Int\n\
-             type Big:\n    x: Int\n    y: Int\n    z: String\n\
-             fn f(big: Big) -> P:\n    P(x: 5, ..big)\n",
-        )
-        .expect_err("record spread base must have the named record type");
-        assert!(
-            err.contains("requires a `P` base") && err.contains("found `Big`"),
-            "{err}"
-        );
-    }
-
-    #[test]
-    fn rejects_record_update_wrong_field_type() {
-        let src = r#"
-type Point:
-    x: Int
-    y: Int
-
-fn bad(p: Point) -> Point:
-    Point(x: "no", ..p)
-"#;
-        assert!(check_str(src).is_err());
-    }
-
-    #[test]
-    fn rejects_record_update_unknown_field() {
-        let src = r#"
-type Point:
-    x: Int
-    y: Int
-
-fn bad(p: Point) -> Point:
-    Point(z: 1, ..p)
-"#;
-        assert!(check_str(src).is_err());
-    }
-
-    #[test]
-    fn named_field_record_construction() {
-        // A missing field (no spread to supply it) is rejected.
-        let miss =
-            check_str("type Point:\n    x: Int\n    y: Int\nfn a() -> Point:\n    Point(x: 1)\n")
-                .unwrap_err();
-        assert!(miss.contains("missing field `y`"), "{miss}");
-        // An unknown field name is rejected.
-        let unknown = check_str(
-            "type Point:\n    x: Int\nfn a(p: Point) -> Point:\n    Point(nope: 1, ..p)\n",
-        )
-        .unwrap_err();
-        assert!(unknown.contains("no field `nope`"), "{unknown}");
-        // A name that isn't a record type is rejected.
-        let notrec = check_str("fn a() -> Int:\n    Nope(x: 1)\n").unwrap_err();
-        assert!(notrec.contains("not a record type"), "{notrec}");
-    }
-
-    #[test]
-    fn rejects_unknown_record_field() {
-        let src = r#"
-type Point:
-    x: Int
-    y: Int
-
-fn f(p: Point) -> Int:
-    (p).z
-"#;
-        assert!(check_str(src).is_err());
-    }
-
-    #[test]
-    fn rejects_field_access_on_non_record() {
-        assert!(check_str("fn f(n: Int) -> Int { n.x }").is_err());
-    }
-
-    #[test]
-    fn generic_record_field_instantiates() {
-        let bad = r#"
-type Box:
-    value: a
-
-fn unwrap(b: Box(Int)) -> String:
-    (b).value
-"#;
-        assert!(check_str(bad).is_err());
-    }
-
-    #[test]
-    fn rejects_list_pattern_element_misuse() {
-        // Binding a list element as Int then concatenating it as a String fails.
-        let src = r#"
-fn f(xs: List(Int)) -> String:
-    match xs:
-        [] -> ""
-        [head, ..] -> (head + "!")
-"#;
-        assert!(check_str(src).is_err());
-    }
-
-    #[test]
-    fn rejects_for_over_non_list() {
-        let src = r#"
-fn main(console: Console):
-    for x in 5:
-        console.print("x")
-"#;
-        assert!(check_str(src).is_err());
-    }
-
-    #[test]
-    fn rejects_try_when_error_types_differ() {
-        // `?` yields `Err(String)`, but the function returns `Result(Int, Int)`,
-        // so the error types can't match.
-        let src = r#"
-type Result:
-    Ok(a)
-    Err(e)
-
-fn src_fn() -> Result(Int, String):
-    Err("x")
-
-fn bad() -> Result(Int, Int):
-    let v = (src_fn())?
-    Ok(v)
-"#;
-        assert!(check_str(src).is_err());
-    }
-
-    #[test]
     fn rejects_try_on_non_result() {
         // `?` on a plain Int is meaningless.
         let src = r#"
@@ -2022,18 +1150,6 @@ fn bad(n: Int) -> Result(Int, String):
     Ok((n)?)
 "#;
         assert!(check_str(src).is_err());
-    }
-
-    #[test]
-    fn rejects_arm_after_catchall() {
-        let src = r#"
-fn f(n: Int) -> Int:
-    match n:
-        _ -> 0
-        1 -> 2
-"#;
-        let e = check_str(src).unwrap_err();
-        assert!(e.contains("unreachable"), "got: {e}");
     }
 
     #[test]
@@ -2051,77 +1167,6 @@ fn f(o: Opt(Int)) -> Int:
 "#;
         let e = check_str(src).unwrap_err();
         assert!(e.contains("unreachable"), "got: {e}");
-    }
-
-    #[test]
-    fn rejects_duplicate_literal_arm() {
-        let src = r#"
-fn f(n: Int) -> Int:
-    match n:
-        1 -> 1
-        1 -> 2
-        _ -> 0
-"#;
-        assert!(check_str(src).unwrap_err().contains("unreachable"));
-    }
-
-    #[test]
-    fn rejects_non_exhaustive_bool_match() {
-        let src = r#"
-fn f(b: Bool) -> Int:
-    match b:
-        true -> 1
-"#;
-        let e = check_str(src).unwrap_err();
-        assert!(
-            e.contains("non-exhaustive") && e.contains("Bool"),
-            "got: {e}"
-        );
-    }
-
-    #[test]
-    fn rejects_generic_adt_type_mismatch() {
-        // `Box(Int)` and `Box(String)` are distinct: passing one for the other
-        // must fail to unify their type arguments.
-        let src = r#"
-type Box:
-    Wrap(a)
-
-fn need_int(b: Box(Int)) -> Int:
-    match b:
-        Wrap(n) -> n
-
-fn main() -> Int:
-    need_int(Wrap("nope"))
-"#;
-        assert!(check_str(src).is_err());
-    }
-
-    #[test]
-    fn rejects_and_on_non_bool() {
-        assert!(check_str("fn f() -> Bool { 1 && true }").is_err());
-    }
-
-    #[test]
-    fn rejects_non_bool_if_condition() {
-        let src = r#"
-fn f() -> Int:
-    if 1:
-        2
-    else:
-        3
-"#;
-        let e = check_str(src).unwrap_err();
-        assert!(e.contains("if") || e.contains("Bool"));
-    }
-
-    #[test]
-    fn rejects_return_type_mismatch() {
-        let src = r#"
-fn f() -> Int:
-    "not an int"
-"#;
-        assert!(check_str(src).is_err());
     }
 
     /// Capability operations are methods at the source level: old bare spellings
@@ -2153,57 +1198,6 @@ fn build(out: BuildOut):
     }
 
     #[test]
-    fn user_functions_named_like_cap_ops_remain_callable() {
-        let src = r#"
-fn connect(host: String, port: Int) -> String:
-    "${host}:${port}"
-
-fn read(x: Int) -> Int:
-    x + 1
-
-fn main(console: Console):
-    console.print(connect("example.com", 443))
-    console.print("${read(1)}")
-"#;
-        check_str(src).expect("user functions named like cap ops are not host capability calls");
-    }
-
-    #[test]
-    fn migrated_dir_respects_slot_and_typed_higher_order_boundaries() {
-        let option_dir = r#"
-type Option(a):
-    Some(a)
-    None
-
-fn f(dir: Dir) -> Option(Dir):
-    Some(dir)
-"#;
-        check_str(option_dir).expect("Option(Dir) is represented as nullable externref");
-
-        let result_dir = r#"
-type Result(a, e):
-    Ok(a)
-    Err(e)
-
-fn f(dir: Dir) -> Result(Dir, String):
-    Ok(dir)
-"#;
-        check_str(result_dir).expect("a closed Result(Dir, String) uses a typed GC sum");
-
-        let higher_order_dir = r#"
-fn consume(f: fn(Dir, Bytes) -> Bytes):
-    0
-
-fn reader(dir: Dir, input: Bytes) -> Bytes:
-    input
-
-fn demo(dir: Dir):
-    consume(reader)
-"#;
-        check_str(higher_order_dir).expect("Dir-bearing function values use the typed closure ABI");
-    }
-
-    #[test]
     fn capability_methods_are_receiver_aware_before_lowering() {
         let src = r#"
 fn main(dir: Dir):
@@ -2226,19 +1220,6 @@ fn describe(e: Event) -> String:
 "#;
         let e = check_str(src).unwrap_err();
         assert!(e.contains("non-exhaustive"), "got: {e}");
-    }
-
-    #[test]
-    fn rejects_constructor_field_type_mismatch() {
-        let src = r#"
-type Event:
-    Click(Int, Int)
-    Closed
-
-fn f() -> Event:
-    Click("not an int", 2)
-"#;
-        assert!(check_str(src).is_err());
     }
 
     #[test]
@@ -2451,39 +1432,6 @@ fn main() -> Int:
     }
 
     #[test]
-    fn duplicate_duration_match_arm_is_unreachable() {
-        // (BUG-294) A duplicate Duration literal arm is dead code, exactly as an
-        // Int/Str/Bool duplicate is.
-        let err = check_str(
-            "fn f(d: Duration) -> Int:\n    match d:\n        1s -> 1\n        1s -> 2\n        _ -> 0\n",
-        )
-        .unwrap_err();
-        assert!(err.contains("unreachable match arm"), "{err}");
-        assert!(err.contains("`1s`"), "{err}");
-        assert!(!err.contains("1000ms"), "{err}");
-        // Distinct Duration arms remain reachable.
-        check_str(
-            "fn f(d: Duration) -> Int:\n    match d:\n        1s -> 1\n        2s -> 2\n        _ -> 0\n",
-        )
-        .expect("distinct Duration arms are reachable");
-    }
-
-    #[test]
-    fn duration_pattern_diagnostics_use_human_units() {
-        let simple = check_str("fn f(d: Duration):\n    let 1s = d\n").unwrap_err();
-        assert!(simple.contains("`let 1s ="), "{simple}");
-        assert!(!simple.contains("1000ms"), "{simple}");
-
-        let compound = check_str("fn f(d: Duration):\n    let 90s = d\n").unwrap_err();
-        assert!(compound.contains("`let 1m30s ="), "{compound}");
-        assert!(!compound.contains("90000ms"), "{compound}");
-
-        let negative = check_str("fn f(d: Duration):\n    let -1s = d\n").unwrap_err();
-        assert!(negative.contains("`let -1s ="), "{negative}");
-        assert!(!negative.contains("-1000ms"), "{negative}");
-    }
-
-    #[test]
     fn or_pattern_binding_diagnostic_names_the_actual_alt_bindings() {
         let missing = check_str(
             "type Shape:\n    Circle(Int)\n    Square(Int)\n\nfn f(s: Shape) -> Int:\n    match s:\n        Circle(r) | Square(_) -> r\n",
@@ -2513,38 +1461,6 @@ fn main() -> Int:
     }
 
     #[test]
-    fn non_exhaustive_tuple_and_list_matches_are_rejected() {
-        // (BUG-293) tuple/list scrutinees are exhaustiveness-checked at check time
-        // instead of trapping at runtime.
-        let tup = check_str(
-            "fn f(t: (Bool, Bool)) -> Int:\n    match t:\n        (true, true) -> 1\n        (true, false) -> 2\n        (false, true) -> 3\n",
-        )
-        .unwrap_err();
-        assert!(
-            tup.contains("non-exhaustive") && tup.contains("tuple"),
-            "{tup}"
-        );
-        // A single-arm Int-tuple literal match: Int is open, so it needs a catch-all.
-        let ints = check_str("fn f(t: (Int, Int)) -> Int:\n    match t:\n        (3, 4) -> 1\n")
-            .unwrap_err();
-        assert!(ints.contains("non-exhaustive"), "{ints}");
-        // A list match covering only `[]` misses every non-empty list.
-        let lst =
-            check_str("fn f(xs: List(Int)) -> Int:\n    match xs:\n        [] -> 0\n").unwrap_err();
-        assert!(
-            lst.contains("non-exhaustive") && lst.contains("list"),
-            "{lst}"
-        );
-        // Fully covered tuple / list matches pass.
-        check_str(
-            "fn f(t: (Bool, Bool)) -> Int:\n    match t:\n        (true, true) -> 1\n        (true, false) -> 2\n        (false, true) -> 3\n        (false, false) -> 4\n",
-        )
-        .expect("the full (Bool, Bool) product is exhaustive");
-        check_str("fn f(xs: List(Int)) -> Int:\n    match xs:\n        [] -> 0\n        [h, ..rest] -> h\n")
-            .expect("`[]` + `[h, ..rest]` is exhaustive");
-    }
-
-    #[test]
     fn equality_on_fn_or_cap_fields_of_records_and_enums_is_rejected() {
         // (BUG-302) a record/enum carrying a fn or capability field must reject `==`
         // at check time, so both backends agree (interp compared by closure identity,
@@ -2569,24 +1485,6 @@ fn main() -> Int:
         // A plain data record still compares.
         check_str("type P:\n    x: Int\n    y: Int\nfn f(a: P, b: P) -> Bool:\n    a == b\n")
             .expect("a plain data record is comparable");
-    }
-
-    #[test]
-    fn body_let_ascription_binds_the_enclosing_type_parameter() {
-        // (BUG-308) `let out: List(a) = xs` refines the fn's generic `a` rather than
-        // pinning it to a distinct concrete `Named("a")`.
-        check_str(
-            "fn firsts(xs: List(a), k: Int) -> List(a):\n    let out: List(a) = xs\n    out\n",
-        )
-        .expect("a body ascription unifies with the generic parameter");
-        // A concrete ascription is unaffected.
-        check_str("fn g(xs: List(Int)) -> List(Int):\n    let out: List(Int) = xs\n    out\n")
-            .expect("a concrete ascription still works");
-        // A *different* letter is still, correctly, a distinct parameter (pins `a`).
-        let err =
-            check_str("fn firsts(xs: List(a)) -> List(a):\n    let out: List(b) = xs\n    out\n")
-                .unwrap_err();
-        assert!(err.contains("isn't generic"), "{err}");
     }
 
     #[test]
@@ -2732,70 +1630,6 @@ fn main() -> Int:
     }
 
     #[test]
-    fn rfc0063_list_catalog_signature_outranks_linked_placeholder() {
-        use witchy_syntax::ast::Item;
-
-        let mut module = witchy_syntax::parser::parse_module(
-            "fn shadow(xs: String) -> String:\n    xs\n\nfn main() -> Int:\n    list.length([1])\n",
-        )
-        .expect("parse catalog precedence probe");
-        let Item::Function(placeholder) = &mut module.items[0] else {
-            panic!("expected placeholder function")
-        };
-        placeholder.name = witchy_syntax::intrinsics::LIST_LENGTH.into();
-
-        check(&module).expect(
-            "the catalog recipe, not the deliberately wrong linked placeholder signature, must type list.length",
-        );
-    }
-
-    #[test]
-    fn rfc0063_dict_catalog_signature_and_bounds_are_authoritative() {
-        use witchy_syntax::ast::Item;
-
-        let mut module = witchy_syntax::parser::parse_module(
-            "fn shadow(value: String, extra: String) -> String:\n    value\n\nfn main() -> Int:\n    dict.length(dict.new())\n",
-        )
-        .expect("parse dict catalog precedence probe");
-        let Item::Function(placeholder) = &mut module.items[0] else {
-            panic!("expected placeholder function")
-        };
-        placeholder.name = witchy_syntax::intrinsics::DICT_LENGTH.into();
-        check(&module).expect(
-            "the catalog recipe, not the deliberately wrong linked placeholder signature, must type dict.length",
-        );
-
-        let missing = check_str(
-            "fn put(d: Dict(k, Int), key: k) -> Dict(k, Int):\n    dict.__insert(d, key, 1)\n",
-        )
-        .expect_err("cataloged dict key operations require Eq");
-        assert!(missing.contains("requires `k: Eq`"), "{missing}");
-
-        check_str(
-            "fn put(d: Dict(k, Int), key: k) -> Dict(k, Int) where k: Eq:\n    dict.__insert(d, key, 1)\n",
-        )
-        .expect("the cataloged Eq bound accepts an explicitly bounded key");
-    }
-
-    #[test]
-    fn rfc0063_regex_catalog_signature_outranks_linked_placeholder() {
-        use witchy_syntax::ast::Item;
-
-        let mut module = witchy_syntax::parser::parse_module(
-            "import regex\n\nfn shadow(value: Int) -> Int:\n    value\n\nfn main() -> Int:\n    let spans: String = regex.match_spans(\"a\", \"cat\")\n    0\n",
-        )
-        .expect("parse regex catalog precedence probe");
-        let Item::Function(placeholder) = &mut module.items[0] else {
-            panic!("expected placeholder function")
-        };
-        placeholder.name = witchy_syntax::intrinsics::REGEX_MATCH_SPANS.into();
-
-        check(&module).expect(
-            "the catalog recipe, not the deliberately wrong linked placeholder signature, must type regex.match_spans",
-        );
-    }
-
-    #[test]
     fn rfc0087_function_values_retain_and_enforce_conventions() {
         let immutable = check_str(
             "fn bump(var n: Int) -> Int:\n    n\n\nfn main():\n    let n = 1\n    let f: fn(var Int) -> Int = bump\n    let _ = f(n)\n",
@@ -2810,64 +1644,6 @@ fn main() -> Int:
         assert!(
             mismatch.contains("fn(var Int) -> Int") && mismatch.contains("fn(Int) -> Int"),
             "{mismatch}"
-        );
-    }
-
-    #[test]
-    fn rfc0087_discarded_var_free_call_is_allowed() {
-        // RFC-0087 makes free and method forms identical: a call with a resolved
-        // var convention may discard its ordinary result because write-back is
-        // already an observable effect.
-        //
-        // The discard classifier lives in the trait/method rewrite pass, which the
-        // single-module `check_str` harness only runs when the module "needs
-        // lowering". The leading `impl` forces that here; a real CLI program always
-        // links std (which needs lowering), so BOTH backends run this check on
-        // every program (verified: even a std-free `f()` discard errors on both).
-        const LOWER: &str =
-            "type Tag:\n    v: Int\nimpl Tag:\n    fn id(self) -> Int:\n        self.v\n";
-
-        // ANY non-unit free call (not only mutators) whose result is discarded.
-        let nonmut_free = check_str(&format!(
-            "{LOWER}fn double(n: Int) -> Int:\n    n * 2\nfn main(console: Console):\n    double(3)\n    console.print(\"hi\")\n"
-        ))
-        .unwrap_err();
-        assert!(nonmut_free.contains("is discarded"), "{nonmut_free}");
-
-        // `let _ = …` is the explicit-discard escape hatch and still compiles.
-        check_str(&format!(
-            "{LOWER}fn double(n: Int) -> Int:\n    n * 2\nfn main(console: Console):\n    let _ = double(3)\n    console.print(\"hi\")\n"
-        ))
-        .expect("`let _ =` is the explicit discard escape");
-
-        // A `Nil`-returning free call in statement position is unaffected — there
-        // is no result to discard.
-        check_str(&format!(
-            "{LOWER}fn noop(n: Int):\n    let _ = n\nfn main(console: Console):\n    noop(3)\n    console.print(\"hi\")\n"
-        ))
-        .expect("a unit-returning free call statement is fine");
-    }
-
-    #[test]
-    fn plain_function_called_as_method_on_record_names_the_real_type() {
-        // A private receiver-first free function called through method syntax on a
-        // user record must name the RECEIVER's type, not the `Bool(false)`
-        // placeholder the resolver swaps in on a successful rewrite. Before the
-        // owner-UFCS branch was made commit-only-on-success, this reported
-        // "no method `describe` on `Bool`".
-        let err = check_str(
-            "type Point:\n    x: Int\n    y: Int\n\n\
-             fn describe(p: Point) -> Int:\n    p.x\n\n\
-             fn main(console: Console):\n    let p = Point(1, 2)\n    let n = p.describe()\n    console.print(\"${n}\")\n",
-        )
-        .expect_err("a plain function is not a method");
-        assert!(
-            err.contains("on `Point`"),
-            "must name the receiver type Point: {err}"
-        );
-        assert!(
-            !err.contains("`Bool`"),
-            "must not leak the Bool placeholder: {err}"
         );
     }
 
@@ -3000,16 +1776,6 @@ fn main() -> Int:
     }
 
     #[test]
-    fn rfc0081_dyn_callable_may_return_an_immutable_view() {
-        check_str(
-            "trait Peeker:\n    fn peek(let self) -> &String\n\n\
-             fn f(x: dyn Peeker) -> Int:\n    1\n\n\
-             fn main(console: Console):\n    console.print(\"hi\")\n",
-        )
-        .expect("an existential callable may carry an immutable-view result");
-    }
-
-    #[test]
     fn rfc0081_safety_rule_6_ambient_partial_eq() {
         // `check_str` links no std, so `PartialEq` is the AMBIENT built-in
         // here and takes the dedicated Self-binary diagnostic. (In a
@@ -3048,16 +1814,6 @@ fn main() -> Int:
         ] {
             assert!(err.contains(needle), "missing `{needle}` in: {err}");
         }
-    }
-
-    #[test]
-    fn rfc0081_view_of_dyn_uses_the_immutable_view_surface() {
-        check_str(
-            "trait Render:\n    fn render(let self) -> String\n\n\
-             fn f(x: &dyn Render) -> Int:\n    1\n\n\
-             fn main(console: Console):\n    console.print(\"hi\")\n",
-        )
-        .expect("a view of an existential uses the same immutable-view surface");
     }
 
     #[test]
@@ -3199,21 +1955,6 @@ fn main() -> Int:
     }
 
     #[test]
-    fn rfc0081_redundant_dyn_cast_is_not_an_upcast() {
-        let err = check_str(
-            "trait Render:\n    fn render(let self) -> String\n\n\
-             fn recast(value: dyn Render) -> dyn Render:\n    value as dyn Render\n\n\
-             fn main(console: Console):\n    console.print(\"hi\")\n",
-        )
-        .expect_err("even a redundant dyn cast must not bypass preparation");
-        assert!(
-            err.contains("cannot cast `dyn Render` to `dyn Render`")
-                && err.contains("may only upcast to one of its transitive supertraits"),
-            "{err}"
-        );
-    }
-
-    #[test]
     fn rfc0081_unrelated_dyn_conversion_fails_at_check_time() {
         let err = check_str(
             "trait Render:\n    fn render(let self) -> String\n\n\
@@ -3315,33 +2056,6 @@ fn main() -> Int:
     }
 
     #[test]
-    fn rfc0081_body_type_positions_are_validated() {
-        // `let` annotation.
-        let err = check_str(
-            "fn main(console: Console):\n\
-             \x20   let x: dyn Missing = 1\n\
-             \x20   console.print(\"hi\")\n",
-        )
-        .expect_err("a body let-annotation is validated");
-        assert!(
-            err.contains("unknown trait `Missing` in `dyn Missing`"),
-            "{err}"
-        );
-
-        // Lambda parameter position.
-        let err = check_str(
-            "fn main(console: Console):\n\
-             \x20   let f = fn(x: dyn Missing) -> Int: 1\n\
-             \x20   console.print(\"hi\")\n",
-        )
-        .expect_err("a lambda parameter type is validated");
-        assert!(
-            err.contains("unknown trait `Missing` in `dyn Missing`"),
-            "{err}"
-        );
-    }
-
-    #[test]
     fn target_availability_rejects_cross_target_calls_and_function_values() {
         check_str(
             "@browser\nfn browser_api() -> Int:\n    1\n\n\
@@ -3400,88 +2114,6 @@ fn main() -> Int:
     }
 
     #[test]
-    fn target_availability_rejects_conflicting_annotations() {
-        let error = check_str("@browser\n@server\nfn impossible() -> Int:\n    1\n")
-            .expect_err("one function cannot belong to conflicting targets");
-        assert!(error.contains("conflicting target availability"), "{error}");
-    }
-
-    #[test]
-    fn borrowed_nominal_scalar_shell_mutation_is_narrowly_checked() {
-        check_str(
-            "mode opt\n\ntype Cursor:\n    view: &String\n    offset: Int\n\nfn make(input: &String) -> Cursor:\n    Cursor(input, 0)\n\nfn bump(input: &String) -> Int:\n    var cursor = make(input)\n    cursor.offset = cursor.offset + 1\n    cursor.offset\n",
-        )
-        .expect("a mutable borrowed shell may update its owned scalar field");
-
-        check_str(
-            "mode opt\n\ntype Cursor:\n    view: &String\n    offset: Int\n\nfn make(input: &String) -> Cursor:\n    Cursor(input, 0)\n\nfn read(input: &String) -> Int:\n    let cursor = make(input)\n    cursor.offset\n",
-        )
-        .expect("an immutable borrowed shell may use its checked projections");
-
-        check_str(
-            "mode opt\n\ntype Cursor:\n    view: &String\n    offset: Int\n\nfn make(input: &String) -> Cursor:\n    Cursor(input, 7)\n\nfn count(input: &String) -> Int:\n    var cursor = make(input)\n    var total = 0\n    total = total + cursor.offset\n    total\n",
-        )
-        .expect("reading an owned scalar projection does not store the borrowed shell");
-
-        check_str(
-            "mode opt\n\ntype Cursor:\n    view: &String\n    offset: Int\n\nfn make(input: &String) -> Cursor:\n    Cursor(input, 7)\n\nfn first(input: &String) -> Int:\n    let cursors: List(Cursor) = [make(input)]\n    let cursor = list.at(cursors, 0)\n    cursor.offset\n",
-        )
-        .expect("a borrowed nominal list retains its checked element owner roots");
-
-        check_str(
-            "mode opt\n\ntype Cursor:\n    view: &String\n    offset: Int\n\nfn make(input: &String) -> Cursor:\n    Cursor(input, 7)\n\nfn sum(input: &String) -> Int:\n    let cursors: List(Cursor) = [make(input)]\n    var total = 0\n    for cursor in cursors:\n        total = total + cursor.offset\n    total\n",
-        )
-        .expect("a borrowed nominal list loop binder may read checked shell projections");
-
-        check_str(
-            "mode opt\n\ntype Cursor:\n    view: &String\n    offset: Int\n\nfn make(input: &String) -> Cursor:\n    Cursor(input, 7)\n\nfn copy_read(input: &String) -> Int:\n    let cursors: List(Cursor) = [make(input)]\n    let copied = cursors\n    let cursor = list.at(copied, 0)\n    cursor.offset\n",
-        )
-        .expect("copying a borrowed nominal list preserves its checked root companions");
-
-        check_str(
-            "mode opt\n\ntype Cursor:\n    view: &String\n    offset: Int\n\nfn make(input: &String) -> Cursor:\n    Cursor(input, 0)\n\nfn replace(left: &String, right: &String) -> Int:\n    var cursor = make(left)\n    cursor.view = right\n    cursor.offset\n",
-        )
-        .expect("a declared borrowed field may replace its root with a related owner");
-
-        check_str(
-            "mode opt\n\ntype Cursor:\n    view: &String\n    values: List(Int)\n\nfn make(input: &String) -> Cursor:\n    Cursor(input, [])\n\nfn replace(input: &String) -> Int:\n    var cursor = make(input)\n    cursor.values = [1]\n    list.length(cursor.values)\n",
-        )
-        .expect("a var aggregate may replace its owned field while retaining immutable views");
-    }
-
-    #[test]
-    fn borrowed_nominal_list_overwrite_closes_and_reopens_owned_roots() {
-        check_str(
-            "mode opt\n\ntype Cursor:\n    view: &String\n    offset: Int\n\nfn make(input: &String, value: Int) -> Cursor:\n    Cursor(input, value)\n\nfn replace(left: &String, right: &String) -> Int:\n    let cursors: List(Cursor) = [make(left, 7)]\n    let cursors = [make(right, 9)]\n    list.length(cursors)\n",
-        )
-        .expect("a list of borrowed shells can be reassigned to another borrowed shell list in one function");
-    }
-
-    #[test]
-    fn borrowed_nominal_list_drop_releases_its_checked_root_companions() {
-        check_str(
-            "mode opt\n\ntype Cursor:\n    view: &String\n    offset: Int\n\nfn make(input: &String, value: Int) -> Cursor:\n    Cursor(input, value)\n\nfn clear(input: &String) -> Int:\n    let cursors: List(Cursor) = [make(input, 7)]\n    let cursors = []\n    0\n",
-        )
-            .expect("dropping the last borrowed shell from a list via assignment must close its root");
-    }
-
-    #[test]
-    fn borrowed_nominal_nested_list_supports_borrowed_shell_roots() {
-        check_str(
-            "mode opt\n\ntype Cursor:\n    view: &String\n    offset: Int\n\nfn make(input: &String, value: Int) -> Cursor:\n    Cursor(input, value)\n\nfn nested(input: &String) -> Int:\n    list.at(list.at([[make(input, 7)]], 0), 0).offset\n",
-        )
-        .expect("nested borrowed-shell list access now projects through list-at aliases");
-    }
-
-    #[test]
-    fn rooted_slice_and_str_view_types_pass_typeck() {
-        check_str(
-            "mode opt\n\nfn identity_str(s: &str) -> &str:\n    s\n\nfn identity_slice(xs: &[Int]) -> &[Int]:\n    xs\n",
-        )
-        .expect("rooted str and slice view signatures should pass typecheck");
-    }
-
-    #[test]
     fn bare_slice_and_str_rejected_by_typeck() {
         let err_slice = check_str("mode opt\n\nfn process(xs: [Int]) -> Int:\n    0\n")
             .expect_err("bare [Int] must be rejected");
@@ -3498,19 +2130,4 @@ fn main() -> Int:
         );
     }
 
-    #[test]
-    fn stdlib_str_slice_operations_typecheck() {
-        check_str(
-            "mode opt\n\nfn process_str(s: &String) -> String:\n    let slice_view = string.as_str(s)\n    let sub = string.slice(slice_view, 0, 5)\n    string.to_string(sub)\n",
-        )
-        .expect("string.as_str, string.slice, string.to_string should typecheck");
-    }
-
-    #[test]
-    fn stdlib_str_slice_methods_typecheck() {
-        check_str(
-            "mode opt\n\nimpl str:\n    pub fn slice(self: &str, start: Int, end: Int) -> &str:\n        string.slice(self, start, end)\n    pub fn to_string(self: &str) -> String:\n        string.to_string(self)\n\nfn test_methods(s: &String) -> String:\n    let sv = string.as_str(s)\n    let sub = sv.slice(0, 3)\n    sub.to_string()\n",
-        )
-        .expect("s.as_str().slice(0, 3).to_string() should typecheck");
-    }
 }

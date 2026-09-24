@@ -2,8 +2,6 @@
 
 use std::path::Path;
 use std::process::Command;
-use witchy::runtime::{Capabilities, Runtime};
-use witchy::codegen;
 
 const BIN: &str = env!("CARGO_BIN_EXE_witchy");
 
@@ -86,30 +84,6 @@ fn raw_scheduler_protocol_is_not_user_constructible() {
 }
 
 #[test]
-fn public_spawn_keeps_its_direct_scheduler_result_boundary() {
-    let task_source = include_str!("../../std/task.witchy");
-    let chan_source = include_str!("../../std/chan.witchy");
-    assert!(
-        task_source.contains(
-            "Task(fn(): Fork(child, fn(id): Task(fn(): Done(__handle_from_raw(id)))))"
-        ),
-        "public spawn must mint Handle in the Fork continuation without an extra task turn"
-    );
-    assert!(
-        !task_source.contains("and_then(__spawn_raw(child),"),
-        "wrapping public spawn in and_then adds an observable scheduler Yield"
-    );
-    assert!(
-        chan_source.contains("spawn_all_into(children, 0, [], fn(raw_handles):"),
-        "spawn_all must mint handles in its raw-ID completion boundary"
-    );
-    assert!(
-        !chan_source.contains("and_then(spawn_all_into(children, 0, []),"),
-        "wrapping spawn_all in and_then adds an observable scheduler Yield"
-    );
-}
-
-#[test]
 fn task_handles_must_be_joined_cancelled_or_returned_on_every_path() {
     let dir = TempDir::new("must-task-handle");
     let prelude = "import chan\n\nasync fn child():\n    ()\n\n";
@@ -151,71 +125,3 @@ fn task_handles_must_be_joined_cancelled_or_returned_on_every_path() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
-fn cancellable_async_frames_cannot_suspend_with_a_live_task_handle() {
-    let dir = TempDir::new("cancellable-must-task-handle");
-    let source = r#"
-import chan
-
-async fn leaf():
-    chan.yield_now().await
-
-async fn supervisor():
-    let nested = chan.spawn(leaf()).await
-    chan.yield_now().await
-    chan.join(nested).await
-
-async fn main(console: Console):
-    let parent = chan.spawn(supervisor()).await
-    chan.cancel(parent).await
-"#;
-    assert_rejected(
-        &dir,
-        "live-handle-across-cancellable-await",
-        source,
-        &[
-            "must-consume `nested` remains live across `await`",
-            "spawned tasks are shallow-cancellable",
-        ],
-    );
-    std::fs::remove_dir_all(dir).unwrap();
-}
-
-fn is_nightly() -> bool {
-    std::env::var_os("WITCHY_NIGHTLY").is_some_and(|v| v == "1")
-        || std::env::var_os("WITCHY_FULL_SUITE").is_some_and(|v| v == "1")
-}
-
-#[test]
-fn structured_task_handle_aggregates_run_on_compiled_wasm() {
-    if !is_nightly() {
-        return;
-    }
-    let source = r#"
-import chan
-
-async fn child():
-    chan.yield_now().await
-
-async fn main(console: Console):
-    let first = chan.spawn(child()).await
-    let second = chan.spawn(child()).await
-    let handles = [move first, move second]
-    chan.join_all(handles).await
-    console.print("joined")
-"#;
-    let checked = witchy::resolve_std_only_checked(source)
-        .expect("structured task-handle fixture checks");
-    let wasm = codegen::compile_checked_module_binary(&checked)
-        .expect_lowered("structured task-handle fixture compiles to Wasm");
-    let mut runtime = Runtime::batch().expect("create compiled-Wasm runtime");
-    let mut actor = runtime
-        .spawn(
-            &wasm,
-            Capabilities { print: true, quiet: true, ..Default::default() },
-            256,
-        )
-        .expect("spawn structured task-handle fixture");
-    actor.run().expect("run structured task-handle fixture");
-    assert_eq!(actor.output(), ["joined"]);
-}

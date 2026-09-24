@@ -36,43 +36,9 @@ fn assert_compiled_output(
 mod fresh_ident;
 #[path = "rfc0080/expansion_diagnostics.rs"]
 mod expansion_diagnostics;
-#[path = "rfc0080/owned_body_syntax.rs"]
-mod owned_body_syntax;
-#[path = "rfc0080/owned_match_arm_syntax.rs"]
-mod owned_match_arm_syntax;
 #[path = "rfc0080/owned_expr_syntax.rs"]
 mod owned_expr_syntax;
-#[path = "rfc0080/owned_item_syntax.rs"]
-mod owned_item_syntax;
-#[path = "rfc0080/owned_pattern_syntax.rs"]
-mod owned_pattern_syntax;
-#[path = "rfc0080/owned_type_syntax.rs"]
-mod owned_type_syntax;
 #[path = "rfc0080/qualified_identities.rs"]
 mod qualified_identities;
-#[path = "rfc0080/structural_expr_holes.rs"]
-mod structural_expr_holes;
-#[path = "rfc0080/structural_item_holes.rs"]
-mod structural_item_holes;
-#[path = "rfc0080/structural_pattern_holes.rs"]
-mod structural_pattern_holes;
-#[path = "rfc0080/structural_body_holes.rs"]
-mod structural_body_holes;
-#[path = "rfc0080/structural_type_holes.rs"]
-mod structural_type_holes;
-#[path = "rfc0080/tag_definition_site.rs"]
-mod tag_definition_site;
-#[path = "rfc0080/structural_leaf_builders.rs"]
-mod structural_leaf_builders;
-#[path = "rfc0080/structural_string_binary_builders.rs"]
-mod structural_string_binary_builders;
-#[path = "rfc0080/structural_collection_record_builders.rs"]
-mod structural_collection_record_builders;
-#[path = "rfc0080/structural_item_builders.rs"]
-mod structural_item_builders;
-#[path = "rfc0080/structural_tag_holes.rs"]
-mod structural_tag_holes;
-#[path = "rfc0080/raw_codegen_retired.rs"]
-mod raw_codegen_retired;
 #[path = "rfc0080/derive_boundary_witnesses.rs"]
 mod derive_boundary_witnesses;

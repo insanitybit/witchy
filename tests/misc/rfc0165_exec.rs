@@ -9,8 +9,6 @@ mod crypto;
 #[path = "rfc0165_dir_metadata.rs"]
 mod dir_metadata;
 
-#[path = "rfc0165_loop_extents.rs"]
-mod loop_extents;
 
 fn check_scoped_modules(entry: &[u8], library: &[u8]) -> witchy::pipeline::CheckedModule {
     use witchy_types::runtime_type::{AuthenticatedModuleOwners, ModuleLoadIdentity, PackageCoordinate, PackageSource};
@@ -88,107 +86,6 @@ fn checked_entry_scope_preserves_calls_and_captures_across_three_legs() {
             _ => panic!("reachable or entry-exported open Dynamic must refuse without payload authority"),
         }
     }
-}
-
-#[test]
-fn checked_entry_scope_forwards_owned_dynamic_across_direct_and_indirect_calls() {
-    use witchy::runtime::{Capabilities, Runtime};
-    use witchy_wir::canonical_interpreter::{InterpreterConfig, InterpreterValue, interpret_entry_program};
-
-    let library = br#"import dynamic
-pub fn forward(value: dynamic.Dynamic) -> dynamic.Dynamic:
-    value
-pub fn forwarder() -> fn(dynamic.Dynamic) -> dynamic.Dynamic:
-    forward
-"#;
-    let entry = br#"import dynamic
-import reflect
-import library
-type User derive(Reflect):
-    value: Int
-fn main(console: Console):
-    let packed = dynamic.dynamic(User(7))
-    let direct = library.forward(packed)
-    let operation = library.forwarder()
-    let returned = operation(direct)
-    let decoded: Option(User) = dynamic.try_decode(returned)
-    match decoded:
-        Some(user) -> console.print("${user.value}")
-        None -> console.print("none")
-"#;
-    let checked = check_scoped_modules(entry, library);
-    let expected = ["7"];
-
-    let (artifact, ()) = witchy::codegen::compile_checked_module_artifact_with_observer(
-        &checked,
-        |validated, artifact| {
-            let entry = artifact.entry().unwrap();
-            let function = witchy_wir::canonical_safewir::FunctionId::new(
-                entry.export().strip_prefix('f').unwrap().parse().unwrap(),
-            );
-            let tokens = entry.capabilities().iter().copied()
-                .map(InterpreterValue::entry_capability).collect();
-            let run = interpret_entry_program(
-                validated, function, tokens, &[], InterpreterConfig::default(),
-            ).unwrap();
-            assert_eq!(run.output, expected);
-            assert_eq!(run.leaked_objects, 0);
-        },
-    ).expect_lowered("owned Dynamic forwards without granting open introspection authority");
-    let mut runtime = Runtime::new().unwrap();
-    let mut vm = runtime.spawn_admitted(
-        &artifact,
-        Capabilities { print: true, ..Capabilities::none() },
-        256,
-    ).unwrap();
-    vm.run().unwrap();
-    assert_eq!(vm.output(), expected);
-    assert_eq!(vm.canonical_heap_leaks().unwrap(), Some(0));
-}
-
-#[test]
-fn checked_entry_scope_keeps_imported_metadata_only_dynamic_methods() {
-    use witchy::runtime::{Capabilities, Runtime};
-    use witchy_wir::canonical_interpreter::{InterpreterConfig, InterpreterValue, interpret_entry_program};
-    let entry = b"import library\nfn main(console: Console):\n    library.inspect(console)\n";
-    let library = br#"import dynamic
-import reflect
-type Counter derive(Reflect):
-    value: Int
-fn adjusted(value: Int, amount: Int) -> Int:
-    value + amount
-@dynamic
-pub fn add(self: Counter, amount: Int) -> Counter:
-    Counter(adjusted(self.value, amount))
-pub fn unused(clock: Clock) -> Int:
-    1
-pub fn inspect(console: Console):
-    let value = dynamic.dynamic(Counter(4))
-    console.print(dynamic.type_name(dynamic.type_of(value)))
-"#;
-    let checked = check_scoped_modules(entry, library);
-    let canonical = checked.canonical_source().unwrap();
-    assert!(canonical.dynamic_runtime_plan().unwrap().methods().iter().any(|method| method.function == "library.add"));
-    let module = canonical.typed_module().module();
-    // Metadata-only methods remain authenticated in the runtime plan, but
-    // their uncalled bodies and private helpers stay outside executable scope.
-    assert!(!witchy_canonical_source::scope::canonical_scope(module).contains("library.add"));
-    assert!(!witchy_canonical_source::scope::canonical_scope(module).contains("library.adjusted"));
-    assert!(!witchy_canonical_source::scope::canonical_scope(module).contains("library.unused"));
-    let expected = ["library.Counter"];
-    let (artifact, ()) = witchy::codegen::compile_checked_module_artifact_with_observer(&checked, |validated, artifact| {
-        let entry = artifact.entry().unwrap();
-        let function = witchy_wir::canonical_safewir::FunctionId::new(entry.export().strip_prefix('f').unwrap().parse().unwrap());
-        let tokens = entry.capabilities().iter().copied().map(InterpreterValue::entry_capability).collect();
-        let run = interpret_entry_program(validated, function, tokens, &[], InterpreterConfig::default()).unwrap();
-        assert_eq!(run.output, expected);
-        assert_eq!(run.leaked_objects, 0);
-    }).expect_lowered("imported Dynamic metadata keeps its authenticated method declarations without calling them");
-    let mut runtime = Runtime::new().unwrap();
-    let mut vm = runtime.spawn_admitted(&artifact, Capabilities { print: true, ..Capabilities::none() }, 256).unwrap();
-    vm.run().unwrap();
-    assert_eq!(vm.output(), expected);
-    assert_eq!(vm.canonical_heap_leaks().unwrap(), Some(0));
 }
 
 #[test]

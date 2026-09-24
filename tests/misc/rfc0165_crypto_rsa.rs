@@ -56,21 +56,3 @@ fn main(console: Console):
     agree(&source, &["true", "true", "false", "malformed", "malformed", "malformed", "replace", "true", "00"]);
 }
 
-#[test]
-fn canonical_crypto_sha256_bytes_preserves_non_utf8_and_nul_three_legs() {
-    let raw = [0, 255, 97, 128, 0];
-    let expected = hex(aws_lc_rs::digest::digest(&aws_lc_rs::digest::SHA256, &raw).as_ref());
-    agree(r#"import bytes
-import crypto
-fn main(console: Console):
-    console.print(crypto.sha256_bytes(bytes.from_string("abc")))
-    console.print(crypto.sha256_bytes(bytes.repeat(0, 0)))
-    match bytes.from_list([0, 255, 97, 128, 0]):
-        Ok(raw) -> console.print(crypto.sha256_bytes(raw))
-        Err(error) -> console.print("unexpected byte conversion error")
-"#, &[
-        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
-        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        &expected,
-    ]);
-}

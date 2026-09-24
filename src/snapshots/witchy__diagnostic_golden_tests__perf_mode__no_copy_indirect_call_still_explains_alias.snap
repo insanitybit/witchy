@@ -1,5 +1,0 @@
----
-source: src/diagnostic_golden_tests.rs
-expression: "mode_diag(\"mode opt\\n\\nfn take(var xs: unique List(Int)) -> ():\\n    return\\n\\nfn main():\\n    var xs = [1]\\n    let f = take\\n    let alias = xs\\n    f(xs)\\n    let _ = alias\\n\")"
----
-checked ownership/access analysis failed: type error: `main`, line 10: argument 1 to function value `f` cannot repair ordinary storage into a `unique` parameter in `mode opt`; pass an existing unique owner

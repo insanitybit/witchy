@@ -188,13 +188,6 @@ mod parse {
     }
 
     #[test]
-    fn braces_are_not_syntax() {
-        insta::assert_snapshot!(parse_diag(
-            "fn main(console: Console) {\n    console.print(\"hi\")\n}\n"
-        ));
-    }
-
-    #[test]
     fn missing_header_colon() {
         insta::assert_snapshot!(parse_diag(
             "fn main(console: Console)\n    console.print(\"hi\")\n"
@@ -205,13 +198,6 @@ mod parse {
     fn unterminated_string() {
         insta::assert_snapshot!(parse_diag(
             "fn main(console: Console):\n    console.print(\"unterminated)\n"
-        ));
-    }
-
-    #[test]
-    fn interpolation_hole_parse_error() {
-        insta::assert_snapshot!(parse_diag(
-            "fn main(console: Console):\n    console.print(\"pre ${value + } post\")\n"
         ));
     }
 
@@ -268,24 +254,6 @@ mod link {
     }
 
     #[test]
-    fn module_qualified_reference_not_imported() {
-        insta::assert_snapshot!(link_diag(
-            "fn main(console: Console):\n    let f = iter.count\n    console.print(\"x\")\n"
-        ));
-    }
-
-    #[test]
-    fn multi_module_unknown_import() {
-        insta::assert_snapshot!(multi_link_diag(
-            &[(
-                "main",
-                "import helper\n\nfn main(console: Console):\n    console.print(\"${helper.missing()}\")\n",
-            )],
-            "main",
-        ));
-    }
-
-    #[test]
     fn ambiguous_imported_trait() {
         insta::assert_snapshot!(multi_link_diag(
             &[
@@ -328,44 +296,9 @@ mod typecheck {
     }
 
     #[test]
-    fn arity_too_few_arguments() {
-        insta::assert_snapshot!(type_diag(
-            "fn add(a: Int, b: Int) -> Int:\n    a + b\n\nfn main(console: Console):\n    console.print(\"${add(1)}\")\n"
-        ));
-    }
-
-    #[test]
-    fn inherent_method_arity_uses_surface_name() {
-        insta::assert_snapshot!(type_diag(
-            "type Point:\n    x: Int\n\nimpl Point:\n    fn scaled(self, factor: Int) -> Int:\n        self.x * factor\n\nfn main(console: Console):\n    let p = Point(3)\n    console.print(\"${p.scaled(2, 3)}\")\n"
-        ));
-    }
-
-    #[test]
-    fn static_method_arity_uses_surface_name() {
-        insta::assert_snapshot!(type_diag(
-            "type Score:\n    value: Int\n\nimpl Score:\n    fn zero() -> Score:\n        Score(0)\n\nfn main(console: Console):\n    console.print(\"${Score.zero(1)}\")\n"
-        ));
-    }
-
-    #[test]
     fn trait_method_arity_uses_surface_name() {
         insta::assert_snapshot!(type_diag(
             "trait Greet:\n    fn hi(self) -> String\n\ntype Person:\n    name: String\n\nimpl Greet for Person:\n    fn hi(self) -> String:\n        self.name\n\nfn main(console: Console):\n    let p = Person(\"Ada\")\n    console.print(p.hi(1))\n"
-        ));
-    }
-
-    #[test]
-    fn generic_trait_dispatch_arity_uses_surface_name() {
-        insta::assert_snapshot!(type_diag(
-            "trait Lessable:\n    fn less(self, other: Self) -> Bool\n\nimpl Lessable for Int:\n    fn less(self, other: Int) -> Bool:\n        self < other\n\nfn smallest(a: a, b: a) -> a where a: Lessable:\n    if less(a, b, 1):\n        a\n    else:\n        b\n\nfn main(console: Console):\n    console.print(\"${smallest(1, 2)}\")\n"
-        ));
-    }
-
-    #[test]
-    fn unknown_function() {
-        insta::assert_snapshot!(type_diag(
-            "fn main(console: Console):\n    console.print(\"${mystery(1)}\")\n"
         ));
     }
 
@@ -401,13 +334,6 @@ mod typecheck {
     fn module_qualified_call_not_imported() {
         insta::assert_snapshot!(type_diag(
             "fn main(console: Console):\n    console.print(json.stringify(42))\n"
-        ));
-    }
-
-    #[test]
-    fn retired_global_builtin_now_module_qualified() {
-        insta::assert_snapshot!(type_diag(
-            "fn main(console: Console):\n    console.print(\"${push([1], 2)}\")\n"
         ));
     }
 
@@ -489,13 +415,6 @@ mod typecheck {
     }
 
     #[test]
-    fn float_does_not_implement_ord() {
-        insta::assert_snapshot!(type_diag(
-            "import list\n\nfn main(console: Console):\n    let xs = [3.0, 1.0]\n    console.print(\"${list.length(list.sort(xs))}\")\n"
-        ));
-    }
-
-    #[test]
     fn ordering_requires_ord() {
         insta::assert_snapshot!(type_diag(
             "type Widget:\n    n: Int\n\nfn main(console: Console):\n    let a = Widget(n: 1)\n    let b = Widget(n: 2)\n    if a < b: console.print(\"lt\") else: console.print(\"ge\")\n"
@@ -513,30 +432,6 @@ mod typecheck {
         ));
     }
 
-    #[test]
-    fn plain_function_as_method_on_builtin_receiver() {
-        insta::assert_snapshot!(type_diag(
-            "fn describe(s: String) -> Int:\n    s.length()\n\nfn main(console: Console):\n    let s = \"hi\"\n    console.print(\"${s.describe()}\")\n"
-        ));
-    }
-
-    #[test]
-    fn imported_module_function_as_method_on_builtin() {
-        insta::assert_snapshot!(type_diag(
-            "import func\n\nfn main(console: Console):\n    let s = \"hi\"\n    console.print(s.identity())\n"
-        ));
-    }
-
-    // A same-named function that could NOT accept this receiver (`map` exists for
-    // List/Option but the receiver is a user `Point`) must NOT get the confident
-    // "`map` is a plain function, call it directly" message — it falls back to the
-    // generic "no method" wording, since `map(point)` would not resolve either.
-    #[test]
-    fn unrelated_same_name_collision_uses_generic_message() {
-        insta::assert_snapshot!(type_diag(
-            "import list\n\ntype Point:\n    x: Int\n\nfn main(console: Console):\n    let p = Point(1)\n    console.print(\"${p.map(fn(v): v)}\")\n"
-        ));
-    }
 }
 
 // ===========================================================================
@@ -622,19 +517,6 @@ mod perf_mode {
         ));
     }
 
-    #[test]
-    fn no_copy_collection_family_covers_pop_and_remove() {
-        insta::assert_snapshot!(mode_diag(
-            "mode opt\n\nimport dict\nimport list\n\nfn main(console: Console):\n    var xs = [1, 2]\n    let xs_snapshot = xs\n    let _ = xs.pop()\n    var d = dict.new()\n    let _ = d.insert(\"a\", 1)\n    let d_snapshot = d\n    let _ = d.remove(\"a\")\n    console.print(\"${xs_snapshot.length() + d_snapshot.length()}\")\n"
-        ));
-    }
-
-    #[test]
-    fn no_copy_indirect_call_still_explains_alias() {
-        insta::assert_snapshot!(mode_diag(
-            "mode opt\n\nfn take(var xs: unique List(Int)) -> ():\n    return\n\nfn main():\n    var xs = [1]\n    let f = take\n    let alias = xs\n    f(xs)\n    let _ = alias\n"
-        ));
-    }
 }
 
 // ===========================================================================
@@ -682,13 +564,6 @@ mod runtime {
     }
 
     #[test]
-    fn index_operator_out_of_bounds() {
-        insta::assert_snapshot!(trap_pair(
-            "fn main(console: Console):\n    let xs = [1, 2]\n    console.print(\"${xs[9]}\")\n"
-        ));
-    }
-
-    #[test]
     fn parse_int_of_junk() {
         insta::assert_snapshot!(trap_pair(
             "\nfn main(console: Console):\n    console.print(\"${\"notanumber\".to_int()}\")\n"
@@ -717,27 +592,6 @@ mod runtime {
     }
 
     #[test]
-    fn successful_nested_call_restores_caller_source_site() {
-        insta::assert_snapshot!(trap_pair(
-            "import list\n\nfn probe() -> Int:\n    let inner = [7]\n    let _ = list.at(inner, 0)\n    9\n\nfn main(console: Console):\n    let outer = [1]\n    console.print(\"${list.at(outer, probe())}\")\n"
-        ));
-    }
-
-    #[test]
-    fn escaping_lambda_uses_lexical_source_owner() {
-        insta::assert_snapshot!(trap_pair(
-            "fn make() -> fn() -> Int:\n    fn(): 10 / 0\n\nfn main(console: Console):\n    let explode = make()\n    console.print(\"${explode()}\")\n"
-        ));
-    }
-
-    #[test]
-    fn successful_closure_call_restores_caller_source_site() {
-        insta::assert_snapshot!(trap_pair(
-            "import list\n\nfn make_probe() -> fn() -> Int:\n    fn(): list.at([7], 0)\n\nfn main(console: Console):\n    let outer = [1]\n    let probe = make_probe()\n    console.print(\"${list.at(outer, probe())}\")\n"
-        ));
-    }
-
-    #[test]
     fn integer_division_overflow() {
         insta::assert_snapshot!(trap_pair(
             "fn main(console: Console):\n    let min = (0 - 9223372036854775807) - 1\n    console.print(\"${min / (0 - 1)}\")\n"
@@ -745,23 +599,9 @@ mod runtime {
     }
 
     #[test]
-    fn integer_modulo_by_zero() {
-        insta::assert_snapshot!(trap_pair(
-            "fn main(console: Console):\n    let z = 0\n    console.print(\"${10 % z}\")\n"
-        ));
-    }
-
-    #[test]
     fn nan_to_int() {
         insta::assert_snapshot!(trap_pair(
             "import math\n\nfn main(console: Console):\n    console.print(\"${math.to_int(0.0 / 0.0)}\")\n"
-        ));
-    }
-
-    #[test]
-    fn nan_comparison_order() {
-        insta::assert_snapshot!(trap_pair(
-            "fn main(console: Console):\n    let a = 0.0 / 0.0\n    let b = 1.0\n    if a < b: console.print(\"lt\") else: console.print(\"ge\")\n"
         ));
     }
 

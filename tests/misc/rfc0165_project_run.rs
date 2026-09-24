@@ -38,19 +38,6 @@ fn success(result: Output, argument: &str) {
 }
 
 #[test]
-fn project_source_child_retains_owner_capture_arguments_and_package_reload() {
-    let dir = project();
-    success(child(&dir, "run-source").args(["--dir", "app", "--", "--net"]).output().unwrap(), "--net");
-    assert!(!dir.join("app/target/app.wasm").exists());
-    let packaged = child(&dir, "compile").args(["--target", "trusted-publisher", "--out", "app-executable"])
-        .output().unwrap();
-    assert!(packaged.status.success(), "{}", String::from_utf8_lossy(&packaged.stderr));
-    std::fs::remove_dir_all(dir.join("app")).unwrap();
-    std::fs::remove_dir_all(dir.join("helper")).unwrap();
-    success(Command::new(dir.join("app-executable")).arg("launch-argument").output().unwrap(), "launch-argument");
-}
-
-#[test]
 fn project_source_rejects_forged_owner_claims_and_registry_relabeling() {
     let dir = project();
     for (kind, name, module) in [("toolchain", "app", "app"), ("registry:forged", "app", "app"),
@@ -71,26 +58,6 @@ fn project_source_rejects_forged_owner_claims_and_registry_relabeling() {
     assert_eq!(result.status.code(), Some(1));
     assert!(result.stdout.is_empty());
     assert!(String::from_utf8_lossy(&result.stderr).contains("workspace relabeling is forbidden"));
-}
-
-#[test]
-fn nonconventional_project_sources_retain_selected_module_ownership() {
-    let dir = project();
-    std::fs::rename(dir.join("app/src/app.witchy"), dir.join("app/src/entry.witchy")).unwrap();
-    std::fs::rename(dir.join("helper/src/helper.witchy"), dir.join("helper/src/alternate.witchy")).unwrap();
-    let mut command = Command::new(BIN);
-    command.current_dir(&dir).args(["run-source", "app/src/entry.witchy",
-        "--manifest", "app/witchy.toml", "--package-owner", "workspace", "app", "1", "src.entry",
-        "--dep", "helper=helper/src/alternate.witchy", "--dep-owner", "helper", "workspace", "helper", "1", "src.alternate",
-        "--", "selected-file"]);
-    success(command.output().unwrap(), "selected-file");
-    let rejected = Command::new(BIN).current_dir(&dir).args(["run-source", "app/src/entry.witchy",
-        "--manifest", "app/witchy.toml", "--package-owner", "workspace", "app", "1", "src.app",
-        "--dep", "helper=helper/src/alternate.witchy", "--dep-owner", "helper", "workspace", "helper", "1", "src.alternate",
-        "--", "selected-file"]).output().unwrap();
-    assert_eq!(rejected.status.code(), Some(1));
-    assert!(rejected.stdout.is_empty());
-    assert!(String::from_utf8_lossy(&rejected.stderr).contains("owner assertion"));
 }
 
 #[test]

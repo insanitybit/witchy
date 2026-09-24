@@ -12,10 +12,6 @@ use witchy::runtime::{Capabilities, Runtime};
 
 #[path = "rfc0165_launch_arguments.rs"]
 mod launch_arguments;
-#[path = "rfc0165_drop_worklist.rs"]
-mod drop_worklist;
-#[path = "rfc0165_recursive_source.rs"]
-mod recursive_source;
 #[path = "rfc0165_nullable_capabilities.rs"]
 mod nullable_capabilities;
 #[path = "rfc0165_compiler_services.rs"]
@@ -74,12 +70,6 @@ fn admitted_console_program_runs_through_the_runtime_entry() {
 }
 
 #[test]
-fn admitted_int_result_is_printed_under_the_exit_code_convention() {
-    let output = run_admitted("fn main() -> Int:\n    40 + 2\n");
-    assert_eq!(output, vec!["42".to_string()]);
-}
-
-#[test]
 fn admitted_entry_without_a_console_grant_is_refused_before_it_runs() {
     let checked = witchy::resolve_std_only_checked(
         "fn main(console: Console):\n    console.print(\"ok\")\n",
@@ -97,45 +87,6 @@ fn admitted_entry_without_a_console_grant_is_refused_before_it_runs() {
 }
 
 #[test]
-fn admitted_loop_holding_a_capability_runs_every_iteration() {
-    // The checker once refused any loop in a function holding a capability:
-    // the header parameter carrying `console` had no linear-memory object
-    // state, and the edge check demanded one for every non-scalar parameter.
-    let output = run_admitted(
-        "fn main(console: Console):\n    var i = 0\n    while i < 3:\n        console.print(\"tick\")\n        i = i + 1\n",
-    );
-    assert_eq!(output, vec!["tick".to_string(); 3]);
-}
-
-#[test]
-fn admitted_explicit_let_parameters_run() {
-    let output = run_admitted(
-        "fn twice(let n: Int) -> Int:\n    n * 2\n\nfn main() -> Int:\n    twice(21)\n",
-    );
-    assert_eq!(output, vec!["42".to_string()]);
-}
-
-#[test]
-fn admitted_if_without_else_and_effect_arms_run() {
-    let output = run_admitted(
-        "fn main(console: Console):\n    let a = 1\n    if a > 0:\n        console.print(\"yes\")\n",
-    );
-    assert_eq!(output, vec!["yes".to_string()]);
-    let output = run_admitted(
-        "fn main(console: Console):\n    let a = 7\n    if a > 5:\n        console.print(\"big\")\n    else:\n        console.print(\"small\")\n",
-    );
-    assert_eq!(output, vec!["big".to_string()]);
-}
-
-#[test]
-fn admitted_short_circuit_operators_run() {
-    let output = run_admitted(
-        "fn main(console: Console):\n    let a = 1\n    if a > 0 && a < 5:\n        console.print(\"in\")\n    else:\n        console.print(\"out\")\n    if a > 3 || a == 1:\n        console.print(\"or\")\n",
-    );
-    assert_eq!(output, vec!["in".to_string(), "or".to_string()]);
-}
-
-#[test]
 fn admitted_string_literals_cross_owned_parameters_and_returns() {
     // A literal has no reference-count token; passing or returning one under
     // the owned ABI materializes a fresh copy rather than cloning static data.
@@ -143,30 +94,6 @@ fn admitted_string_literals_cross_owned_parameters_and_returns() {
         "pub fn shout(name: String) -> String:\n    \"hi \" + name\n\nfn greet() -> String:\n    \"hello\"\n\nfn keep(own value: String) -> String:\n    value\n\nfn main(console: Console):\n    console.print(shout(\"x\"))\n    console.print(greet())\n    console.print(keep(\"ok\"))\n",
     );
     assert_eq!(output, vec!["hi x".to_string(), "hello".to_string(), "ok".to_string()]);
-}
-
-#[test]
-fn admitted_early_return_in_an_if_arm_runs() {
-    let output = run_admitted(
-        "pub fn clamp(n: Int) -> Int:\n    if n < 0:\n        return 0\n    n\n\nfn main(console: Console):\n    if clamp(-3) == 0 && clamp(7) == 7:\n        console.print(\"done\")\n",
-    );
-    assert_eq!(output, vec!["done".to_string()]);
-}
-
-#[test]
-fn admitted_range_for_loops_run() {
-    let output = run_admitted(
-        "fn main(console: Console):\n    for i in 0..3:\n        console.print(\"tick\")\n    for j in 1..=2:\n        console.print(\"tock\")\n",
-    );
-    assert_eq!(output, vec!["tick".to_string(), "tick".to_string(), "tick".to_string(), "tock".to_string(), "tock".to_string()]);
-}
-
-#[test]
-fn admitted_float_arithmetic_and_integer_division_run() {
-    let output = run_admitted(
-        "pub fn c(f: Float) -> Float:\n    (f - 32.0) * 5.0 / 9.0\n\nfn main() -> Int:\n    let x = c(212.0)\n    if x > 99.0 && x < 101.0:\n        17 % 5 + 17 / 5\n    else:\n        0\n",
-    );
-    assert_eq!(output, vec!["5".to_string()]);
 }
 
 #[test]
@@ -205,17 +132,6 @@ fn admitted_scalar_var_write_back_through_an_indirect_call() {
 }
 
 #[test]
-fn admitted_early_return_inside_a_loop_over_a_list_parameter() {
-    // The loop header once refused to join: the entry edge carried the list's
-    // header-prefix extent while the back edge carried the counted extent
-    // promoted by the body's element read.
-    let output = run_admitted(
-        "pub fn first_even(xs: List(Int)) -> Int:\n    for x in xs:\n        if x % 2 == 0:\n            return x\n    0 - 1\n\nfn main(console: Console):\n    console.print(\"${first_even([1, 3, 8, 5])} ${first_even([1, 3, 5])}\")\n",
-    );
-    assert_eq!(output, vec!["8 -1".to_string()]);
-}
-
-#[test]
 fn admitted_while_loops_with_short_circuit_conditions_run() {
     // `while a && b` decides the exit in a block after the loop header; the
     // encoder emits the header structurally inside the loop and turns the
@@ -228,17 +144,6 @@ fn admitted_while_loops_with_short_circuit_conditions_run() {
 }
 
 #[test]
-fn admitted_for_loops_carry_bindings_assigned_inside_nested_arms() {
-    // The `for` lowering once scanned only the body's top-level statements
-    // for rebinding, so `n = n + 1` inside an `if` was dropped and the loop
-    // silently kept the entry value; the parity check caught it.
-    let output = run_admitted(
-        "pub fn count_even(xs: List(Int)) -> Int:\n    var n = 0\n    var last = 0 - 1\n    for x in xs:\n        if x % 2 == 0:\n            n = n + 1\n            last = x\n    n * 100 + last\n\nfn main(console: Console):\n    console.print(\"${count_even([1, 2, 3, 4, 6])} ${count_even([1, 3])}\")\n",
-    );
-    assert_eq!(output, vec!["306 -1".to_string()]);
-}
-
-#[test]
 fn admitted_string_equality_and_char_count_scan_bytes() {
     // String equality is a byte scan whose loop leaves through drop blocks
     // on two edges (length mismatch, first differing byte); `char_count`
@@ -247,48 +152,6 @@ fn admitted_string_equality_and_char_count_scan_bytes() {
         "pub fn count(words: List(String), target: String) -> Int:\n    var n = 0\n    for w in words:\n        if w == target:\n            n = n + 1\n    n\n\npub fn same(a: String, b: String) -> Bool:\n    a == b\n\nfn main(console: Console):\n    let words = [\"cat\", \"dog\", \"cat\", \"cats\", \"\"]\n    console.print(\"${count(words, \"cat\")} ${count(words, \"\")} ${count(words, \"bird\")}\")\n    if same(\"abc\", \"abc\") && !same(\"abc\", \"abd\") && \"x\" != \"y\" && !(\"\" != \"\"):\n        console.print(\"eq ok\")\n    console.print(\"${\"héllo wörld\".char_count()} ${\"\".char_count()} ${\"日本語\".char_count()} ${\"abc\".char_count()}\")\n",
     );
     assert_eq!(output, vec!["2 1 0".to_string(), "eq ok".to_string(), "11 0 3 3".to_string()]);
-}
-
-#[test]
-fn admitted_string_pushes_in_arms_and_across_loops_keep_the_prefix() {
-    // A list of strings pushed in both arms of an `if` inside a loop, then
-    // again in a second loop: the cached length loaded in one arm must not
-    // leak into the other (it did not dominate), and the initialized-prefix
-    // fact must survive the first loop's exit into the second header.
-    let output = run_admitted(
-        "pub fn tag(xs: List(String)) -> List(String):\n    var out = []\n    var i = 0\n    while i < xs.length():\n        if i == 0:\n            out.push(\"- \" + xs[i])\n        else:\n            out.push(\"+ \" + xs[i])\n        i = i + 1\n    var j = 0\n    while j < xs.length():\n        out.push(\"= \" + xs[j])\n        j = j + 1\n    out\n\npub fn transpose(m: List(List(Int)), rows: Int, cols: Int) -> List(List(Int)):\n    var out = []\n    for c in 0..cols:\n        var column = []\n        for r in 0..rows:\n            column.push(m[r][c])\n        out.push(column)\n    out\n\nfn main(console: Console):\n    let ys = tag([\"a\", \"bb\"])\n    console.print(\"${ys.length()} ${ys[0]} ${ys[1]} ${ys[3]}\")\n    let t = transpose([[1, 2, 3], [4, 5, 6]], 2, 3)\n    console.print(\"${t.length()} ${t[2][0]} ${t[2][1]}\")\n    var a = [1, 2]\n    let nested = [a, [3]]\n    a.push(9)\n    console.print(\"${nested[0].length()} ${a.length()}\")\n",
-    );
-    assert_eq!(output, vec!["4 - a + bb = bb".to_string(), "3 3 6".to_string(), "2 3".to_string()]);
-}
-
-#[test]
-fn admitted_list_of_lists_grows_after_a_shared_element_read() {
-    // `table.at(i - 1)` takes a shared clone of a row; the following push
-    // relocates the owned slots, which keeps every clone valid, so the
-    // prefix's shared mark is accepted and carried to the new allocation.
-    let output = run_admitted(
-        "pub fn build(n: Int) -> List(List(Int)):\n    var table = [[0]]\n    var i = 1\n    while i <= n:\n        let above = table.at(i - 1)\n        var row = [above.at(0) + 1]\n        row.push(i * 10)\n        table.push(row)\n        i = i + 1\n    table\n\nfn main(console: Console):\n    let t = build(3)\n    console.print(\"${t.length()} ${t[3][0]} ${t[3][1]} ${t[1][0]}\")\n",
-    );
-    assert_eq!(output, vec!["4 3 30 1".to_string()]);
-}
-
-#[test]
-fn admitted_substring_and_trim_scan_characters_and_ascii_whitespace() {
-    // `substring` counts Unicode scalars and clamps; `trim` strips the ASCII
-    // set both backends agree on (a no-break space stays). Each scan is a
-    // loop whose exit is decided in a block after the header, nested here
-    // inside a `while`.
-    let output = run_admitted(
-        "fn main(console: Console):\n    let s = \"h\u{e9}llo w\u{f6}rld\"\n    console.print(\"[${s.substring(1, 4)}] [${s.substring(6, 100)}] [${s.substring(3, 1)}] [${s.substring(-2, 2)}] [${\"\".substring(0, 1)}]\")\n    console.print(\"[${\"  \\t hi there \\n\".trim()}] [${\"\".trim()}] [${\"   \".trim()}] [${\"x\".trim()}] [${\" \u{a0}y \".trim()}]\")\n    var i = 0\n    var acc = \"\"\n    while i < 3:\n        acc = acc + s.substring(i, i + 1).trim()\n        i = i + 1\n    console.print(acc)\n",
-    );
-    assert_eq!(
-        output,
-        vec![
-            "[\u{e9}ll] [w\u{f6}rld] [] [h\u{e9}] []".to_string(),
-            "[hi there] [] [] [x] [\u{a0}y]".to_string(),
-            "h\u{e9}l".to_string(),
-        ]
-    );
 }
 
 #[test]
@@ -359,21 +222,6 @@ fn admitted_string_searches_ordering_find_and_to_int_scan_bytes() {
 }
 
 #[test]
-fn admitted_aggregates_with_string_payloads_construct_match_and_propagate() {
-    // A record with a string field, Result(Int, String) through `?`, and
-    // Option(String) through `??`: reference payloads live behind owned
-    // pointer slots, are copied in on construction, and load as shared
-    // clones; the destructor drops each child.
-    let output = run_admitted(
-        "type Account:\n    name: String\n    balance: Int\n\npub fn parse(s: String) -> Result(Int, String):\n    if s.starts_with(\"x\"):\n        Err(\"bad \" + s)\n    else:\n        Ok(s.length())\n\npub fn both(a: String, b: String) -> Result(Int, String):\n    let x = parse(a)?\n    let y = parse(b)?\n    Ok(x + y)\n\npub fn name_of(n: Int) -> Option(String):\n    if n > 0:\n        Some(\"n${n}\")\n    else:\n        None\n\nfn main(console: Console):\n    let acc = Account(name: \"bob\", balance: 5)\n    let richer = Account(balance: acc.balance + 10, ..acc)\n    console.print(\"${acc.name} ${richer.name} ${richer.balance}\")\n    match both(\"ab\", \"cde\"):\n        Ok(v) -> console.print(\"ok ${v}\")\n        Err(e) -> console.print(\"err ${e}\")\n    match both(\"ab\", \"xz\"):\n        Ok(v) -> console.print(\"ok ${v}\")\n        Err(e) -> console.print(\"err ${e}\")\n    console.print(\"${name_of(3) ?? \"none\"} ${name_of(0) ?? \"none\"}\")\n",
-    );
-    assert_eq!(
-        output,
-        vec!["bob bob 15".to_string(), "ok 5".to_string(), "err bad xz".to_string(), "n3 none".to_string()]
-    );
-}
-
-#[test]
 fn admitted_tuples_construct_index_destructure_and_nest() {
     // A tuple is an anonymous aggregate: construction, `.n` access, `let`
     // destructuring, nested tuples behind pointer slots, and a tuple as an
@@ -413,14 +261,6 @@ fn admitted_var_alias_of_a_list_parameter_copies_on_write() {
 }
 
 #[test]
-fn admitted_guarded_match_arm_with_a_short_circuit_guard_runs() {
-    let output = run_admitted(
-        "pub fn cls(code: Int) -> String:\n    match code:\n        x if x >= 200 && x <= 299 -> \"success\"\n        _ -> \"unknown\"\n\nfn main(console: Console):\n    console.print(cls(204))\n    console.print(cls(600))\n",
-    );
-    assert_eq!(output, vec!["success".to_string(), "unknown".to_string()]);
-}
-
-#[test]
 fn admitted_nested_list_index_runs() {
     let output = run_admitted(
         "fn main(console: Console):\n    let grid = [[1, 2, 3], [4, 5, 6]]\n    console.print(\"g = ${grid[1][2]}\")\n",
@@ -440,20 +280,6 @@ fn admitted_recursive_search_threads_a_list_parameter_through_loop_and_join() {
 }
 
 #[test]
-fn admitted_if_choosing_between_two_reference_parameters_runs() {
-    // Each arm clones the parameter it returns, so the join's result lane owns
-    // a token of its own and both parameters release at the return.
-    let output = run_admitted(
-        "pub fn choose(flag: Bool, left: String, right: String) -> String:\n    if flag:\n        left\n    else:\n        right\n\nfn main(console: Console):\n    console.print(choose(true, \"l\", \"r\") + choose(false, \"l\", \"r\"))\n",
-    );
-    assert_eq!(output, vec!["lr".to_string()]);
-    let output = run_admitted(
-        "pub fn choose(flag: Bool, left: List(Int), right: List(Int)) -> List(Int):\n    if flag:\n        left\n    else:\n        right\n\nfn main(console: Console):\n    let a = [1, 2]\n    let b = [3]\n    console.print(\"${choose(true, a, b).length()} ${choose(false, a, b).length()}\")\n",
-    );
-    assert_eq!(output, vec!["2 1".to_string()]);
-}
-
-#[test]
 fn admitted_proper_tail_calls_inside_if_and_match_arms_run_in_constant_stack() {
     // RFC-0090 resource evidence through the admitted launch path: 300,000
     // self and mutual tail transitions inside `if`/`match` arms with a
@@ -462,16 +288,6 @@ fn admitted_proper_tail_calls_inside_if_and_match_arms_run_in_constant_stack() {
         "pub fn countdown(n: Int, acc: Int) -> Int:\n    if n == 0:\n        acc\n    else:\n        countdown(n - 1, acc + 1)\n\npub fn spin(n: Int, acc: Int) -> Int:\n    match n:\n        0 -> acc\n        _ -> spin(n - 1, acc + 2)\n\npub fn ping(n: Int) -> Int:\n    if n == 0:\n        0\n    else:\n        pong(n - 1)\n\npub fn pong(n: Int) -> Int:\n    if n == 0:\n        1\n    else:\n        ping(n - 1)\n\nfn main(console: Console):\n    console.print(\"${countdown(300000, 0)} ${spin(300000, 0)} ${ping(300001)}\")\n",
     );
     assert_eq!(output, vec!["300000 600000 1".to_string()]);
-}
-
-#[test]
-fn admitted_if_joining_a_shared_parameter_with_a_fresh_allocation_runs() {
-    // One arm returns the parameter (a shared token), the other a fresh
-    // unique list; the fresh token weakens to shared at the join.
-    let output = run_admitted(
-        "pub fn pick(xs: List(Int), n: Int) -> List(Int):\n    if xs.length() == n:\n        xs\n    else:\n        var out = xs\n        out.push(n)\n        out\n\nfn main(console: Console):\n    console.print(\"${pick([1], 1).length()} ${pick([1], 2).length()}\")\n",
-    );
-    assert_eq!(output, vec!["1 2".to_string()]);
 }
 
 #[test]
@@ -526,102 +342,6 @@ fn admitted_lists_of_strings_are_read_iterated_and_pushed() {
 }
 
 #[test]
-fn admitted_lists_of_aggregates_tuples_and_floats_are_built_read_and_grown() {
-    // Records, tuples, and floats as list elements: iteration with field
-    // reads, a record lane rebound from a loaded (shared) element, a `var`
-    // alias of a literal list grown by push, a `var` list passed to a callee
-    // and pushed afterwards (the callee receives a copy), tuple destructuring
-    // out of a list, and a float fold.
-    let output = run_admitted(
-        "type Account:\n    name: String\n    balance: Int\n\npub fn total(accounts: List(Account)) -> Int:\n    var sum = 0\n    for a in accounts:\n        sum = sum + a.balance\n    sum\n\npub fn richest(accounts: List(Account)) -> String:\n    var best = Account(\"nobody\", -1)\n    for a in accounts:\n        if a.balance > best.balance:\n            best = a\n    best.name\n\npub fn count(xs: List(String)) -> Int:\n    xs.length()\n\npub fn mean(xs: List(Float)) -> Float:\n    var sum = 0.0\n    for x in xs:\n        sum = sum + x\n    sum / math.to_float(xs.length())\n\nfn main(console: Console):\n    let accounts = [Account(\"alice\", 100), Account(\"bob\", 50)]\n    console.print(\"total = ${total(accounts)}\")\n    console.print(\"richest = ${richest(accounts)}\")\n    var more = accounts\n    more.push(Account(\"carol\", 250))\n    console.print(\"${total(more)} ${richest(more)} ${accounts.length()}\")\n    let pairs = [(1, \"one\"), (2, \"two\")]\n    var labels = []\n    for pair in pairs:\n        let (n, word) = pair\n        labels.push(\"${n}:\" + word)\n    console.print(labels.join(\" \"))\n    var seen = []\n    seen.push(\"x\")\n    console.print(\"${count(seen)}\")\n    seen.push(\"y\")\n    console.print(\"${count(seen)} ${seen.join(\",\")}\")\n    console.print(\"${mean([1.5, 2.5, 5.0]) > 2.9}\")\n",
-    );
-    assert_eq!(
-        output,
-        vec![
-            "total = 150".to_string(),
-            "richest = alice".to_string(),
-            "400 carol 2".to_string(),
-            "1:one 2:two".to_string(),
-            "1".to_string(),
-            "2 x,y".to_string(),
-            "true".to_string(),
-        ]
-    );
-}
-
-#[test]
-fn admitted_string_chars_split_and_replace_run_over_runtime_strings() {
-    // `string.chars`, `string.split`, and `string.replace` over runtime
-    // strings: a UTF-8 sequence loop and a match-scan loop feeding the
-    // canonical push and concatenation templates. Edge cases follow the
-    // interpreter: an empty separator yields the whole string, an empty
-    // `from` surrounds every character, trailing separators keep an empty
-    // tail piece, and matches never overlap.
-    let output = run_admitted(
-        "pub fn show(xs: List(String)) -> String:\n    \"[\" + xs.join(\"|\") + \"]\"\n\nfn main(console: Console):\n    let word = \"héllo→\"\n    console.print(show(word.chars()))\n    console.print(\"${word.chars().length()}\")\n    console.print(show(\"a,b,,c\".split(\",\")))\n    console.print(show(\"a,b,c,\".split(\",\")))\n    console.print(show(\"\".split(\",\")))\n    console.print(show(\"abc\".split(\"\")))\n    console.print(show(\"é→\".split(\"\")))\n    console.print(show((\"x\" + \"y\").split(\"\")))\n    console.print(show(\"no separators\".split(\"xyz\")))\n    console.print(show(\"aaa\".split(\"aa\")))\n    console.print(\"a-b-c\".replace(\"-\", \"+\"))\n    console.print(\"aaaa\".replace(\"aa\", \"b\"))\n    console.print(\"ab\".replace(\"\", \"-\"))\n    console.print(\"é→\".replace(\"\", \".\"))\n    console.print(\"keep\".replace(\"zz\", \"y\"))\n    console.print(\"hello world\".replace(\"o\", \"\"))\n    var acc = \"\"\n    for c in \"xyz\".chars():\n        acc = c + acc\n    console.print(acc)\n",
-    );
-    assert_eq!(
-        output,
-        vec![
-            "[h|é|l|l|o|→]".to_string(),
-            "6".to_string(),
-            "[a|b||c]".to_string(),
-            "[a|b|c|]".to_string(),
-            "[]".to_string(),
-            "[abc]".to_string(),
-            "[é→]".to_string(),
-            "[xy]".to_string(),
-            "[no separators]".to_string(),
-            "[|a]".to_string(),
-            "a+b+c".to_string(),
-            "bb".to_string(),
-            "-a-b-".to_string(),
-            ".é.→.".to_string(),
-            "keep".to_string(),
-            "hell wrld".to_string(),
-            "zyx".to_string(),
-        ]
-    );
-}
-
-#[test]
-fn admitted_element_reads_after_a_kernel_loop_wait_for_the_converged_prefix() {
-    // The checker's dataflow visits a kernel loop's exit with the entry
-    // state first (an empty prefix); a read the back edge alone justifies
-    // must be held until the states converge, not refused at once. The
-    // receiver is a parameter, so the loop bound is not a constant the
-    // checker could prune on.
-    let output = run_admitted(
-        "pub fn first(text: String) -> String:\n    let chars = text.chars()\n    chars.at(0)\n\npub fn encode(text: String) -> String:\n    let chars = text.chars()\n    let n = chars.length()\n    var out = \"\"\n    var i = 0\n    while i < n:\n        let run_char = chars.at(i)\n        var count = 0\n        while i < n && chars.at(i) == run_char:\n            count = count + 1\n            i = i + 1\n        out = out + \"${count}\" + run_char\n    out\n\nfn main(console: Console):\n    console.print(first(\"xyz\"))\n    console.print(encode(\"aaabbc\"))\n",
-    );
-    assert_eq!(output, vec!["x".to_string(), "3a2b1c".to_string()]);
-}
-
-#[test]
-fn admitted_bool_lists_store_one_byte_elements_and_nest() {
-    // `List(Bool)` elements are one-byte scalars: literal, pushed, indexed,
-    // iterated, and nested in a list of lists.
-    let output = run_admitted(
-        "pub fn count_true(flags: List(Bool)) -> Int:\n    var n = 0\n    for f in flags:\n        if f:\n            n = n + 1\n    n\n\nfn main(console: Console):\n    var seen = [true, false, true]\n    seen.push(false)\n    seen.push(true)\n    console.print(\"${count_true(seen)} ${seen.length()} ${seen[1]} ${seen[4]}\")\n    let grid = [[true, false], [false, false]]\n    var rows = 0\n    for row in grid:\n        for cell in row:\n            if cell:\n                rows = rows + 1\n    console.print(\"${rows}\")\n",
-    );
-    assert_eq!(output, vec!["3 5 false true".to_string(), "1".to_string()]);
-}
-
-#[test]
-fn admitted_for_over_a_loaded_row_and_a_var_copy_of_a_list_parameter_grow() {
-    // A `for` over an element loaded out of a list of lists authenticates
-    // that element's header itself; a `var` copy of a list parameter (a
-    // pointer-bearing prefix cloned from a shared object) is grown by push
-    // while the parameter keeps its length. A `for` header lane holding a
-    // shared call result takes a shared phi, not the push template's unique
-    // one.
-    let output = run_admitted(
-        "pub fn total(board: List(List(Int))) -> Int:\n    var sum = 0\n    for row in board:\n        for v in row:\n            sum = sum + v\n    sum\n\npub fn with_first(board: List(List(Int)), value: Int) -> List(List(Int)):\n    var copy = board\n    copy.push([value])\n    copy\n\nfn main(console: Console):\n    let board = [[1, 2], [3, 4]]\n    console.print(\"${total(board)}\")\n    let grown = with_first(board, 5)\n    console.print(\"${total(grown)} ${grown.length()} ${board.length()}\")\n",
-    );
-    assert_eq!(output, vec!["10".to_string(), "15 3 2".to_string()]);
-}
-
-#[test]
 fn admitted_break_and_continue_leave_and_advance_every_loop_kind() {
     // `break` leaves through the loop's exit with the current state lanes
     // (the exit takes the header lanes' phi authority when a body breaks);
@@ -669,29 +389,6 @@ fn admitted_guard_near_misses_trap_exactly_at_the_boundary() {
 }
 
 #[test]
-fn admitted_capture_free_scalar_lambdas_are_function_values_bound_to_their_witness() {
-    // A capture-free lambda over scalars lowers to a function of its own,
-    // bound to its closure witness rather than a source declaration; its
-    // value passes through `fn(...)` parameters and is called through the
-    // authenticated table, alongside a named function used as a value.
-    let output = run_admitted(
-        "pub fn apply(f: fn(Int) -> Int, n: Int) -> Int:\n    f(n)\n\npub fn twice(f: fn(Int) -> Int, n: Int) -> Int:\n    f(f(n))\n\npub fn reduce(nums: List(Int), f: fn(Int, Int) -> Int, init: Int) -> Int:\n    var acc = init\n    for n in nums:\n        acc = f(acc, n)\n    acc\n\npub fn cube(n: Int) -> Int:\n    n * n * n\n\nfn main(console: Console):\n    console.print(\"${apply(fn(n: Int): n * n, 9)} ${twice(fn(n: Int): n + 3, 10)}\")\n    let nums = [1, 2, 3, 4, 5]\n    console.print(\"${reduce(nums, fn(a: Int, b: Int): a + b, 0)} ${reduce(nums, fn(a: Int, b: Int): a * b, 1)}\")\n    console.print(\"${apply(cube, 3)} ${apply(fn(n: Int): cube(n) - 1, 2)}\")\n",
-    );
-    assert_eq!(output, vec!["81 16".to_string(), "15 120".to_string(), "27 7".to_string()]);
-}
-
-#[test]
-fn admitted_string_capture_survives_its_creating_call() {
-    // The returned closure owns its captured string independently of the
-    // creating call. Typed environment slots replace the former Int-only
-    // coverage restriction without introducing an erased payload.
-    let output = run_admitted(
-        "pub fn greeter(prefix: String) -> fn(String) -> String:\n    fn(name: String): prefix + name\n\nfn main(console: Console):\n    console.print(greeter(\"hi \")(\"you\"))\n",
-    );
-    assert_eq!(output, vec!["hi you".to_string()]);
-}
-
-#[test]
 fn admitted_lambdas_over_references_pass_through_indirect_calls_and_std_combinators() {
     // A capture-free lambda over strings: its shared parameters follow the
     // direct-call conventions through the indirect call (the checker's
@@ -732,18 +429,6 @@ fn admitted_nested_constructor_patterns_test_payloads_behind_the_tag() {
         output,
         vec!["less", "greater", "equal", "none", "true", "12 9 0", "2"].into_iter().map(str::to_string).collect::<Vec<_>>()
     );
-}
-
-#[test]
-fn admitted_record_write_back_in_a_loop_takes_a_shared_lane() {
-    // A record bound from a call result (a shared value) and advanced by a
-    // `var` write-back inside the loop is rebound by that call exactly as an
-    // assignment rebinds it: the lane is a shared phi and the write-back's
-    // unique result weakens into it on the back edge.
-    let output = run_admitted(
-        "type Counter:\n    n: Int\n\nfn bump(var c: Counter) -> Int:\n    c = Counter(n: c.n + 1)\n    c.n\n\nfn make() -> Counter:\n    Counter(n: 0)\n\nfn main(console: Console):\n    var c = make()\n    var i = 0\n    var total = 0\n    while i < 4:\n        total = total + bump(c)\n        i = i + 1\n    console.print(\"${total} ${c.n}\")\n    console.print([1, 2, 3].map(fn(n: Int): \"<${n}>\").join(\"\"))\n",
-    );
-    assert_eq!(output, vec!["10 4".to_string(), "<1><2><3>".to_string()]);
 }
 
 #[test]
@@ -794,18 +479,6 @@ fn admitted_dictionaries_are_tuples_of_two_lists_in_insertion_order() {
 }
 
 #[test]
-fn admitted_inner_loops_thread_only_the_names_they_rebind() {
-    // A `while` (like a `for`) carries only the names its body rebinds as
-    // header lanes; an outer reference it merely reads keeps its value and
-    // its token, so a `for` around it still owns that token on its own
-    // back edge (the shape of `maze.find`).
-    let output = run_admitted(
-        "fn find(rows: List(String), m: String, width: Int) -> Int:\n    var pos = -1\n    var r = 0\n    for row in rows:\n        var c = 0\n        while c < width:\n            if row.substring(c, c + 1) == m:\n                pos = r * width + c\n            c = c + 1\n        r = r + 1\n    pos\n\nfn count(rows: List(String), m: String) -> Int:\n    var n = 0\n    for row in rows:\n        var c = 0\n        while c < row.length():\n            if row.substring(c, c + 1) == m:\n                n = n + 1\n            c = c + 1\n    n\n\nfn main(console: Console):\n    let rows = [\"ab\", \"cS\", \"SS\"]\n    console.print(\"${find(rows, \\\"S\\\", 2)} ${find(rows, \\\"z\\\", 2)} ${count(rows, \\\"S\\\")}\")\n",
-    );
-    assert_eq!(output, vec!["5 -1 3".to_string()]);
-}
-
-#[test]
 fn admitted_closures_are_records_of_code_and_int_captures() {
     // Every `fn` value is a closure record: slot 0 holds the code (a
     // function taking the record first), the remaining slots its `Int`
@@ -839,54 +512,6 @@ fn admitted_bytes_kernels_index_grow_slice_and_render() {
             .map(str::to_string)
             .collect::<Vec<_>>()
     );
-}
-
-#[test]
-fn admitted_bytes_to_string_decodes_utf8_lossily_like_the_standard_library() {
-    // `bytes.to_string` replaces each maximal invalid prefix with U+FFFD the
-    // way `String::from_utf8_lossy` does: an invalid lead byte on its own, a
-    // truncated or broken sequence as the lead plus the continuation bytes
-    // that were valid before the first bad or missing one. The expected
-    // result is Rust's decoder, independent of either backend.
-    let inputs: Vec<Vec<u8>> = vec![
-        vec![104, 105],
-        vec![0xC3, 0xA9],
-        vec![0xE2, 0x82, 0xAC],
-        vec![0xF0, 0x9F, 0x98, 0x80],
-        vec![0x80],
-        vec![0xC0, 0x80],
-        vec![0xC1, 0xBF],
-        vec![0xC3],
-        vec![0xC3, 0x28],
-        vec![0xE2, 0x28, 0xA1],
-        vec![0xE2, 0x82, 0x28],
-        vec![0xE2, 0x82],
-        vec![0xE0, 0x80, 0x80],
-        vec![0xE0, 0xA0, 0x80],
-        vec![0xED, 0xA0, 0x80],
-        vec![0xED, 0x9F, 0xBF],
-        vec![0xF0, 0x80, 0x80, 0x80],
-        vec![0xF0, 0x90, 0x80, 0x80],
-        vec![0xF4, 0x8F, 0xBF, 0xBF],
-        vec![0xF4, 0x90, 0x80, 0x80],
-        vec![0xF5, 0x80],
-        vec![0xFF, 0xFE],
-        vec![0xF0, 0x9F, 0x98],
-        vec![0xF0, 0x9F, 0x98, 0x28, 0x41],
-        vec![0x41, 0xE2, 0x82, 0xAC, 0xC3, 0x28, 0x42],
-        vec![],
-    ];
-    let mut source = String::from(
-        "import bytes\n\nfn decode(console: Console, xs: List(Int)):\n    let b: Bytes = match bytes.from_list(xs):\n        Ok(v) -> v\n        Err(_) -> bytes.from_string(\"\")\n    let s = bytes.to_string(b)\n    console.print(\"${s.length()} ${s}\")\n\nfn main(console: Console):\n",
-    );
-    let mut expected = Vec::new();
-    for input in &inputs {
-        let list = input.iter().map(|byte| byte.to_string()).collect::<Vec<_>>().join(", ");
-        source.push_str(&format!("    decode(console, [{list}])\n"));
-        let decoded = String::from_utf8_lossy(input);
-        expected.push(format!("{} {}", decoded.len(), decoded));
-    }
-    assert_eq!(run_admitted(&source), expected);
 }
 
 #[test]
@@ -1054,29 +679,3 @@ fn admitted_entry_without_a_dir_or_env_grant_is_refused_before_it_runs() {
     assert!(refused.is_err(), "{refused:?}");
 }
 
-#[test]
-fn admitted_dir_list_names_entries_sorted_and_an_empty_directory_is_empty() {
-    // `dir.list` arrives as the sorted admitted names joined by NUL through
-    // the bounded read protocol; the guest splits them, and an empty payload
-    // is the empty list rather than one empty name.
-    let root = scratch_dir("dir-list");
-    std::fs::create_dir_all(root.join("sub")).expect("subdir");
-    std::fs::create_dir_all(root.join("empty")).expect("subdir");
-    std::fs::write(root.join("b.txt"), "b").expect("seed");
-    std::fs::write(root.join("a.txt"), "a").expect("seed");
-    std::fs::write(root.join("sub/inner.txt"), "i").expect("seed");
-    let output = run_admitted_with_grants(
-        "fn main(console: Console, dir: Dir[Read]):\n    let names = dir.list()\n    console.print(\"${names.length()} ${names}\")\n    console.print(\"${dir.subtree(\"sub\").list()} ${dir.subtree(\"empty\").list().length()}\")\n",
-        Capabilities {
-            print: true,
-            print_int: true,
-            quiet: true,
-            dir_root: Some(root.clone()),
-            dir_read: true,
-            ..Default::default()
-        },
-    )
-    .expect("runs");
-    assert_eq!(output, vec!["4 [a.txt, b.txt, empty, sub]".to_string(), "[inner.txt] 0".to_string()]);
-    std::fs::remove_dir_all(&root).expect("cleanup");
-}

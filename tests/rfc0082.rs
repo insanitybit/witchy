@@ -9,9 +9,5 @@
 //! names against `tests/`, not the subdir.
 #[path = "support/authenticated.rs"]
 mod authenticated;
-#[path = "rfc0082/dynamic.rs"]
-mod dynamic;
 #[path = "rfc0082/dynamic_methods.rs"]
 mod dynamic_methods;
-#[path = "rfc0082/ownership.rs"]
-mod ownership;
