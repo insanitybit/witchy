@@ -146,13 +146,8 @@ pub(super) fn compiler_type_syntax_value(
                 message: "CompilerTypeSyntax carried an invalid syntax handle".into(),
             })
         }
-        ("TypeSyntax", [Value::Str(source)]) => {
-            witchy_syntax::syntax_holes::parse_type_payload(source)
-                .map_err(|message| RuntimeError { message })
-        }
         ("CompilerTypeSyntax", _) => err("CompilerTypeSyntax carried an invalid payload"),
-        ("TypeSyntax", _) => err("TypeSyntax carried an invalid source payload"),
-        (other, _) => err(format!("meta.stmt_let expected TypeSyntax, got `{other}`")),
+        _ => err("meta.stmt_let expected compiler-owned TypeSyntax"),
     }
 }
 
@@ -423,9 +418,7 @@ pub(super) fn compiler_item_holes(
     compiler_type_syntax: &HashMap<String, Type>,
     compiler_pattern_syntax: &HashMap<String, Pattern>,
 ) -> Result<Vec<witchy_syntax::syntax_holes::ItemSyntaxHole>, RuntimeError> {
-    use witchy_syntax::syntax_holes::{
-        ItemSyntaxHole, parse_expr_payload, parse_pattern_payload, parse_type_payload,
-    };
+    use witchy_syntax::syntax_holes::{ItemSyntaxHole, parse_expr_payload, parse_pattern_payload};
 
     fn tail(name: &str) -> &str {
         name.rsplit_once('.').map_or(name, |(_, tail)| tail)
@@ -486,9 +479,7 @@ pub(super) fn compiler_item_holes(
                                     .into(),
                             })
                     }
-                    _ => parse_type_payload(source(syntax, "TypeSyntax")?)
-                        .map(ItemSyntaxHole::Type)
-                        .map_err(|message| RuntimeError { message }),
+                    _ => err("compiler-owned item hole expected compiler-owned TypeSyntax"),
                 },
                 "PatternHole" => match syntax {
                     Value::Ctor { name, fields } if tail(name) == "CompilerPatternSyntax" => {
@@ -622,16 +613,7 @@ pub(super) fn compiler_type_holes(
                                 .into(),
                         })
                 }
-                "TypeSyntax" => {
-                    let [Value::Str(source)] = fields.as_slice() else {
-                        return err("TypeSyntax carried an invalid source payload");
-                    };
-                    witchy_syntax::syntax_holes::parse_type_payload(source)
-                        .map_err(|message| RuntimeError { message })
-                }
-                other => err(format!(
-                    "compiler-owned type hole carried `{other}`, expected TypeSyntax"
-                )),
+                _ => err("compiler-owned type hole expected compiler-owned TypeSyntax"),
             }
         })
         .collect()
@@ -979,5 +961,26 @@ mod tests {
         let error = compiler_block_syntax_value(&block, &HashMap::new())
             .expect_err("source-backed blocks cannot be reparsed");
         assert!(error.message.contains("compiler-owned BlockSyntax"), "{error}");
+    }
+
+    #[test]
+    fn type_builders_and_item_holes_reject_source_backed_syntax() {
+        let type_source = Value::Ctor {
+            name: "meta.TypeSyntax".into(),
+            fields: Rc::new(vec![Value::str("Int")]),
+        };
+        let error = compiler_type_syntax_value(&type_source, &HashMap::new())
+            .expect_err("source-backed type cannot enter a statement");
+        assert!(error.message.contains("compiler-owned TypeSyntax"), "{error}");
+        let error = compiler_type_holes(&[type_source.clone()], &HashMap::new())
+            .expect_err("source-backed type cannot enter a type builder");
+        assert!(error.message.contains("compiler-owned TypeSyntax"), "{error}");
+        let hole = Value::Ctor {
+            name: "meta.TypeHole".into(),
+            fields: Rc::new(vec![type_source]),
+        };
+        let error = compiler_item_holes(&[hole], &HashMap::new(), &HashMap::new(), &HashMap::new())
+            .expect_err("source-backed type cannot enter an item quote");
+        assert!(error.message.contains("compiler-owned TypeSyntax"), "{error}");
     }
 }

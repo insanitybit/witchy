@@ -2689,7 +2689,6 @@ Source spans are compiler-owned metadata. The constructor is sealed so user code
 
 Hole-free `quote type:` values retain a compiler-owned type AST. The internal constructor carries its opaque identity plus canonical source so existing builders can compose it through the compatibility path.
 
-- `TypeSyntax(String)`
 - `CompilerTypeSyntax(String, String)`
 
 #### `sealed type ExprSyntax`
@@ -2801,7 +2800,7 @@ Construct a nested tagged literal from validated tag identity, static parts, and
 
 #### `fn type_named(name: Ident, args: List(TypeSyntax)) -> TypeSyntax`
 
-Source-backed type syntax. Prefer this to assembling type names at each generator call site; it is still a migration helper, not full hygiene.
+Compiler-owned named type syntax. Type arguments retain their AST and origin through generator calls instead of being assembled from source text.
 
 #### `fn type_qualified(module: Ident, name: Ident, args: List(TypeSyntax)) -> TypeSyntax`
 

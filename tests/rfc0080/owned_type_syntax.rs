@@ -1,4 +1,4 @@
-//! RFC-0080 compiler-owned type payloads with source-backed builder compatibility.
+//! RFC-0080 compiler-owned type payloads through builders and quote holes.
 
 use witchy::{ast, comptime, format, interpreter, parser, pipeline, typeck};
 
@@ -18,6 +18,48 @@ comptime:
 fn main(console: Console):
     console.print("${generated(.{value: 42})}")
 "#;
+
+#[test]
+fn compiler_owned_type_holes_build_admitted_wasm_without_source_reparse() {
+    use witchy::opt::{self, OptSet};
+    use witchy::runtime::{Capabilities, Runtime};
+
+    struct ResetOptimizationOverride;
+    impl Drop for ResetOptimizationOverride {
+        fn drop(&mut self) { opt::set_for_tests(None); }
+    }
+
+    // The generated identity function returns the literal argument 42.
+    let source = r#"
+import meta
+
+comptime:
+    let int = quote type:
+        Int
+    let item = quote item:
+        pub fn generated(value: ${int}) -> Int:
+            value
+    emit_item(item)
+
+fn main() -> Int:
+    generated(42)
+"#;
+    opt::set_for_tests(Some(OptSet::none()));
+    let _reset = ResetOptimizationOverride;
+    let checked = witchy::resolve_std_only_checked(source)
+        .expect("compiler-owned type hole type-checks");
+    let artifact = witchy::codegen::compile_checked_module_artifact(&checked)
+        .expect_lowered("compiler-owned type hole admits SafeWIR");
+    let mut runtime = Runtime::batch().expect("runtime");
+    let mut actor = runtime.spawn_admitted(
+        &artifact,
+        Capabilities { print_int: true, quiet: true, ..Capabilities::none() },
+        128,
+    ).expect("admitted Wasm instance");
+    actor.run().expect("admitted unoptimized Wasm execution");
+    assert_eq!(actor.output(), vec!["42".to_string()]);
+    assert_eq!(actor.canonical_heap_leaks().expect("canonical heap audit"), Some(0));
+}
 
 #[test]
 fn owned_types_survive_direct_holes_and_run_on_both_backends() {

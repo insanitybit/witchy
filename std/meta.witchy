@@ -30,7 +30,6 @@ sealed type Span:
 // internal constructor carries its opaque identity plus canonical source so
 // existing builders can compose it through the compatibility path.
 sealed type TypeSyntax:
-    TypeSyntax(String)
     CompilerTypeSyntax(String, String)
 
 // Hole-free `quote expr:` values retain a compiler-owned expression AST.
@@ -202,8 +201,8 @@ fn is_keyword(name: String) -> Bool:
         "capability" -> true
         _ -> false
 
-// Source-backed type syntax. Prefer this to assembling type names at each
-// generator call site; it is still a migration helper, not full hygiene.
+// Compiler-owned named type syntax. Type arguments retain their AST and origin
+// through generator calls instead of being assembled from source text.
 pub fn type_named(name: Ident, args: List(TypeSyntax)) -> TypeSyntax:
     match name:
         Ident(source) -> __meta_type_named(source, args)
@@ -283,7 +282,6 @@ fn __meta_type_expr(ty: TypeExpr) -> TypeSyntax:
 
 fn type_syntax_source(ty: TypeSyntax) -> String:
     match ty:
-        TypeSyntax(source) -> source
         CompilerTypeSyntax(_, source) -> source
 
 // Expression syntax builders. Ordinary names retain the compatibility payload;
