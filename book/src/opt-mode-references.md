@@ -244,6 +244,10 @@ unsupported carrier, root or projection obligation, and the operation that
 would lose it. The repair is usually to keep the view in an admitted carrier,
 pass an owned value, or materialize explicitly with `.owned()`.
 
+For example, `Dict(String, &String)` currently fails canonical admission with a
+missing collection-carrier diagnostic, including when nested in a record.
+Store an owned `String` value if the dictionary must execute today.
+
 Normal source may use the same view syntax and call view-bearing exports. When
 a separately compiled boundary lacks authenticated carrier metadata, it fails
 closed at that boundary rather than changing the signature or silently
