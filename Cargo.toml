@@ -200,29 +200,27 @@ strip = "symbols"
 [profile.test]
 strip = "symbols"
 
-# Tests run these crates hard (tree-walking interpreter, witchy->WASM lowering,
-# wasmtime host glue); unoptimized they dominate suite time. Opt just the hot
-# stage crates; the root crate and everything else keeps fast unopt compiles.
-# Level 2 (was 1): −23% interpreter CPU on call-dense differential tests
-# (rfc0090 5M-transition cycles, measured min-of-3 user time) for ~15s more on
-# a cold stage-crate build. A `package."*"` opt-2 override for external deps
-# was measured too and bought nothing further — cranelift is NOT the wasm-test
-# bottleneck — so deps stay unoptimized for cheap cold builds (CI has no
-# sccache).
+# Tests run the interpreter and Wasmtime host glue hard, so keep those two hot
+# execution crates at level 2. The compiler crates are dominated by codegen on
+# edit builds: on 2026-09-24 a warm-dependency lower probe spent 14m28s
+# compiling before 63s of tests, and a WIR probe spent 10m59s compiling before
+# 17s of tests. Level 1 preserves useful optimization without paying level-2
+# codegen for every compiler edit and test harness. The root crate and external
+# dependencies remain unoptimized for cheap cold builds.
 [profile.dev.package.witchy-interp]
 opt-level = 2
 [profile.dev.package.witchy-runtime]
 opt-level = 2
 [profile.dev.package.witchy-lower]
-opt-level = 2
+opt-level = 1
 [profile.dev.package.witchy-wir]
-opt-level = 2
+opt-level = 1
 [profile.dev.package.witchy-types]
-opt-level = 2
+opt-level = 1
 [profile.dev.package.witchy-canonical-source]
-opt-level = 2
+opt-level = 1
 [profile.dev.package.witchy-syntax]
-opt-level = 2
+opt-level = 1
 # foldhash backs the compiler crates' HashMaps; unoptimized it LOSES to std's
 # precompiled SipHash (~2% more instructions on a pm-front-end compile), with
 # this override it wins. Tiny crate — no build-time cost.
