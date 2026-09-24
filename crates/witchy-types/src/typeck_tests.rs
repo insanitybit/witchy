@@ -1474,7 +1474,7 @@
         let projected = args.first().expect("projected argument");
         let place = facts.place_at(typed.module(), projected).expect("retained projected place");
         assert_eq!(place.root(), "state");
-        assert_eq!(place.steps(), &[crate::access::CheckedPlaceStep::Field("items".into())]);
+        assert_eq!(place.steps(), &[witchy_canonical_source::access::CheckedPlaceStep::Field("items".into())]);
         let Stmt::Expr(direct_call @ Expr::Call { .. }) = main.body.stmts.last().expect("direct tail") else {
             panic!("main must retain direct call")
         };

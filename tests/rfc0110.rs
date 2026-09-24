@@ -4,10 +4,11 @@ use witchy::runtime::{Capabilities, Runtime};
 use witchy::{codegen, interpreter};
 use witchy_syntax::ast::{Expr, Item, Module, Stmt};
 use witchy_syntax::opt::{self, Opt, OptSet};
-use witchy_types::access::{
+use witchy_canonical_source::access::{
     AccessKind, AccessQualifier, AccessSignature, CheckedPlaceStep, OwnershipStateClass,
-    checked_facts, checked_place_facts,
+    checked_place_facts,
 };
+use witchy_types::access::checked_facts;
 use witchy_wir::wir::{ClosureSignature, Kind, WirExpr, WirFunc, WirNode, WirTy};
 
 const ACCESS_MATRIX: &str = r#"

@@ -8,7 +8,7 @@
 use super::*;
 
 use witchy_syntax::opt::OptSchemaKey;
-use witchy_types::access::AccessIdentityKey;
+use witchy_canonical_source::access::AccessIdentityKey;
 use witchy_types::traits::LogicalSpecializationIdentity;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -888,7 +888,7 @@ mod tests {
         parameters: Vec<Option<LayoutId>>,
         result: Option<LayoutId>,
     ) -> CallableSpecializationKey {
-        let access = witchy_types::access::AccessSignature::from_function(function)
+        let access = witchy_canonical_source::access::AccessSignature::from_function(function)
             .expect("closed specialization access signature");
         CallableSpecializationKey {
             logical,
@@ -901,7 +901,7 @@ mod tests {
     fn key_with_access(layout: LayoutId, convention: Convention) -> CallableSpecializationKey {
         let mut function = relay_function();
         function.params[0].convention = convention;
-        let access = witchy_types::access::AccessSignature::from_function(&function)
+        let access = witchy_canonical_source::access::AccessSignature::from_function(&function)
             .expect("closed relay access signature");
         CallableSpecializationKey {
             logical: LogicalSpecializationIdentity::from_types(&[named("Point")]),
@@ -1375,7 +1375,7 @@ mod tests {
                 convention: Convention::Let,
                 default: None,
             });
-            let access = witchy_types::access::AccessSignature::from_function(&conflicting)
+            let access = witchy_canonical_source::access::AccessSignature::from_function(&conflicting)
                 .expect("conflicting test access signature");
             let conflicting_key = CallableSpecializationKey {
                 logical: LogicalSpecializationIdentity::from_types(&[named("Point")]),

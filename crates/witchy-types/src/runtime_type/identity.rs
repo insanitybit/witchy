@@ -2,7 +2,7 @@ use super::*;
 
 use witchy_syntax::ast::{CallableQualifiers, Convention};
 
-use crate::access::{
+use witchy_canonical_source::access::{
     AccessKind, AccessQualifier, AccessSignature, LoanProjection, LoanProjectionStep,
 };
 

@@ -104,7 +104,7 @@ stage crates have this maximum direct-dependency graph:
 | `witchy-testkit` | `cap-model` | KEEP | Keep deterministic fixture models, validation, provider state machines, expectations, and transcripts authority-free and independent of compiler and runtime stages. |
 | `witchy-test-host` | `testkit` | KEEP | Keep backend-neutral fixture dispatch over opaque handles; adapters in the interpreter, Wasmtime runtime, and browser remain consumers rather than dependencies. |
 | `witchy-syntax` | `cap-model` | KEEP | Keep source, AST, diagnostics, expansion, and base lowering self-contained above the shared capability vocabulary. |
-| `witchy-canonical-source` | `syntax` | EXTRACT | RFC-0170: the AST-level checked-source contract (aggregate shapes, capability representations) shared by the checker, SafeWIR and lowering, so `witchy-wir` stops depending on `witchy-types`. No inference and no checker `Ty`. |
+| `witchy-canonical-source` | `cap-model`, `syntax` | EXTRACT | RFC-0170: the AST-level checked-source contract (aggregate shapes, capability representations, callable and access signatures) shared by the checker, SafeWIR and lowering, so `witchy-wir` stops depending on `witchy-types`. No inference and no checker `Ty`. |
 | `witchy-types` | `canonical-source`, `cap-model`, `syntax` | KEEP | Expose checked modules and stable type/witness identities instead of pass internals. |
 | `witchy-wir` | `canonical-source`, `syntax` | NARROW | Retain only the shared diagnostic-template dependency; keep AST and type-system concepts out of WIR. |
 | `witchy-caps` | `cap-model`, `syntax` | KEEP | Keep source-footprint analysis compiler-side and consume the dependency-bottom capability vocabulary without duplicating it. |

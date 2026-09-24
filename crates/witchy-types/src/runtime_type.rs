@@ -165,7 +165,7 @@ impl RuntimeTypePlan {
     /// `build_with_runtime_shapes`.
     pub(crate) fn build_with_runtime_shapes_and_checked_callables<'a>(
         types: impl IntoIterator<Item = &'a Type>,
-        callables: impl IntoIterator<Item = &'a crate::access::AccessSignature>,
+        callables: impl IntoIterator<Item = &'a witchy_canonical_source::access::AccessSignature>,
         catalog: &RuntimeDeclarationCatalog,
         module: &Module,
     ) -> Result<Self, RuntimeTypeError> {
@@ -850,11 +850,11 @@ mod tests {
             vec![Convention::Borrow],
             CallableQualifiers::ORDINARY,
         );
-        let type_only_signature = crate::access::AccessSignature::from_function_type(&ty)
+        let type_only_signature = witchy_canonical_source::access::AccessSignature::from_function_type(&ty)
             .expect("type-only callable signature");
         assert_eq!(
             type_only_signature.params()[0].kind(),
-            crate::access::AccessKind::SharedBorrow,
+            witchy_canonical_source::access::AccessKind::SharedBorrow,
         );
 
         let public_identity = RuntimeTypeIdentity::from_resolved_type(&ty, &|_, _| None)
@@ -1163,10 +1163,10 @@ mod tests {
             pair.params()
                 .iter()
                 .map(|parameter| match parameter.kind() {
-                    crate::access::AccessKind::OwnedImmutable => Convention::Let,
-                    crate::access::AccessKind::SharedBorrow => Convention::Borrow,
-                    crate::access::AccessKind::ExclusiveWriteback => Convention::Var,
-                    crate::access::AccessKind::Consuming => Convention::Own,
+                    witchy_canonical_source::access::AccessKind::OwnedImmutable => Convention::Let,
+                    witchy_canonical_source::access::AccessKind::SharedBorrow => Convention::Borrow,
+                    witchy_canonical_source::access::AccessKind::ExclusiveWriteback => Convention::Var,
+                    witchy_canonical_source::access::AccessKind::Consuming => Convention::Own,
                 })
                 .collect(),
             CallableQualifiers::ORDINARY,

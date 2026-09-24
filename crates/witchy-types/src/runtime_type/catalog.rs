@@ -349,7 +349,7 @@ impl RuntimeDeclarationCatalog {
     /// identity outside the runtime-value descriptor closure.
     pub(crate) fn checked_callable_identity_with_authority(
         &self,
-        signature: &crate::access::AccessSignature,
+        signature: &witchy_canonical_source::access::AccessSignature,
         module: &Module,
     ) -> Result<RuntimeTypeIdentity, RuntimeTypeError> {
         RuntimeTypeIdentity::from_checked_callable_with_authority(

@@ -63,7 +63,10 @@ mod pattern_decision_tests;
 
 use witchy_syntax::ast::{BinOp, Convention, Expr, Item, Pattern, Stmt, Type, TypeDef, TypeQual, UnOp};
 use witchy_canonical_source::aggregates::{canonical_owner_aggregate_identity, concrete_aggregate_identity, dictionary_as_tuple, scalar_aggregate_shape, ScalarAggregateShape, ScalarVariant};
-use witchy_types::access::{AccessIdentityKey, AccessKind, AccessSignature, CheckedAccessFacts, CheckedPlaceStep};
+use witchy_canonical_source::access::{
+    AccessIdentityKey, AccessKind, AccessSignature, CheckedPlaceStep,
+};
+use witchy_types::access::CheckedAccessFacts;
 use witchy_types::loans::LoanFacts;
 use witchy_types::pipeline::CanonicalCheckedSource;
 use witchy_types::canonical_closure::lambda_sites;
@@ -3240,7 +3243,7 @@ fn exact_callable_shared_alias_contract(signature: &AccessSignature) -> bool {
         && is_direct_shared_owned_object(referent)
         && matches!(signature.borrow_relations(), [relation]
             if relation.lifetime() == lifetime
-                && relation.kind() == witchy_types::access::BorrowKind::Shared
+                && relation.kind() == witchy_canonical_source::access::BorrowKind::Shared
                 && relation.storage_type().unqualified() == referent.unqualified()
                 && relation.output_projection().steps.is_empty()
                 && matches!(relation.owners(), [owner]
@@ -3912,7 +3915,7 @@ fn lower_function(
                 .zip(declaration.params())
                 .enumerate()
                 .filter_map(|(index, (parameter, contract))| {
-                    (contract.kind() == witchy_types::access::AccessKind::ExclusiveWriteback
+                    (contract.kind() == witchy_canonical_source::access::AccessKind::ExclusiveWriteback
                         && (is_direct_exclusive_reference(contract.ty())
                             || write_back::exact_projected_result_root_relation(
                                 declaration, index,

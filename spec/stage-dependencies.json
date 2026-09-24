@@ -4,7 +4,7 @@
   "witchy-testkit": ["witchy-cap-model"],
   "witchy-test-host": ["witchy-testkit"],
   "witchy-syntax": ["witchy-cap-model"],
-  "witchy-canonical-source": ["witchy-syntax"],
+  "witchy-canonical-source": ["witchy-cap-model", "witchy-syntax"],
   "witchy-types": ["witchy-canonical-source", "witchy-cap-model", "witchy-caps", "witchy-syntax"],
   "witchy-wir": ["witchy-canonical-source", "witchy-syntax", "witchy-types"],
   "witchy-caps": ["witchy-cap-model", "witchy-syntax"],

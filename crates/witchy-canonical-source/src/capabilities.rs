@@ -3,6 +3,23 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use witchy_syntax::ast::{Type, TypeDef};
+
+/// The migrated host capabilities represented as unforgeable `externref`
+/// values on the compiled backend.
+pub fn externref_cap_name(name: &str) -> Option<&'static str> {
+    match name {
+        "Dir" => Some("Dir"),
+        "File" => Some("File"),
+        "Env" => Some("Env"),
+        "Exec" => Some("Exec"),
+        "Net" => Some("Net"),
+        "Fetch" => Some("Fetch"),
+        "Socket" => Some("Socket"),
+        "Listener" => Some("Listener"),
+        "Secret" => Some("Secret"),
+        _ => None,
+    }
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CapabilityKind { Console, Dir, Env, File, Net, Listener, Socket, BuildOut, BuildRead, BuildEnv, BuildExec, BuildNet, Exec, Fetch, Clock, SecretStore, Secret }
 

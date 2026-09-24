@@ -9,7 +9,7 @@
 
 use witchy_syntax::ast::{Expr, Function, Item, Module, Type, TypeQual};
 
-use crate::access::{checked_view_place, CheckedPlace};
+use witchy_canonical_source::access::{checked_view_place, CheckedPlace};
 use crate::typeck::{Ty, TypeError, TypeTable};
 
 fn terr(message: impl Into<String>) -> TypeError {

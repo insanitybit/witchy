@@ -6,6 +6,7 @@
 use foldhash::{HashMap, HashMapExt as _, HashSet, HashSetExt as _};
 use witchy_cap_model::CapabilityKind;
 use witchy_syntax::ast::{Item, Module, Type, TypeDef};
+use witchy_canonical_source::capabilities::externref_cap_name;
 
 /// The reference leaf that makes a value require reference-safe storage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -14,23 +15,6 @@ pub enum ReferenceLeaf {
     Function,
     /// RFC-0081's owned `{structref payload, i32 witness}` envelope.
     Existential,
-}
-
-/// The migrated host capabilities represented as unforgeable `externref`
-/// values on the compiled backend.
-pub fn externref_cap_name(name: &str) -> Option<&'static str> {
-    match name {
-        "Dir" => Some("Dir"),
-        "File" => Some("File"),
-        "Env" => Some("Env"),
-        "Exec" => Some("Exec"),
-        "Net" => Some("Net"),
-        "Fetch" => Some("Fetch"),
-        "Socket" => Some("Socket"),
-        "Listener" => Some("Listener"),
-        "Secret" => Some("Secret"),
-        _ => None,
-    }
 }
 
 type StoredParamSummaries<'a> = HashMap<&'a str, HashSet<String>>;

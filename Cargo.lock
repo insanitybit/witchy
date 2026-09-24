@@ -2901,6 +2901,7 @@ dependencies = [
  "wasmprinter 0.251.0",
  "wasmtime",
  "webpki-roots 0.26.11",
+ "witchy-canonical-source",
  "witchy-caps",
  "witchy-confinement",
  "witchy-interp",
@@ -2919,6 +2920,7 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "foldhash 0.2.0",
+ "witchy-cap-model",
  "witchy-syntax",
 ]
 

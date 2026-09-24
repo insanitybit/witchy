@@ -79,7 +79,7 @@ fn assignment_read_matches(expression: &Expr, root: &str, path: &[AssignmentProj
 /// authenticate the fixed field independently, so neither source can erase
 /// the other into a root alias.
 pub(super) fn exact_projected_result_root_relation(
-    access: &witchy_types::access::AccessSignature,
+    access: &witchy_canonical_source::access::AccessSignature,
     parameter: usize,
 ) -> bool {
     let Some((result_lifetime, result_referent)) = exclusive_reference_parts(access.result().ty()) else {
@@ -91,7 +91,7 @@ pub(super) fn exact_projected_result_root_relation(
     let Some(contract) = access.params().get(parameter) else {
         return false;
     };
-    if contract.kind() != witchy_types::access::AccessKind::ExclusiveWriteback
+    if contract.kind() != witchy_canonical_source::access::AccessKind::ExclusiveWriteback
         || !exclusive_reference_parts(contract.ty()).is_some_and(|(parameter_lifetime, owner)| {
             parameter_lifetime == result_lifetime
                 && matches!(owner.unqualified(), Type::Named(_, arguments) if arguments.is_empty())
@@ -119,14 +119,14 @@ pub(super) fn exact_projected_result_root_relation_shape(
     result_referent: &Type,
     parameter: usize,
     relation_lifetime: &str,
-    relation_kind: witchy_types::access::BorrowKind,
+    relation_kind: witchy_canonical_source::access::BorrowKind,
     relation_storage: &Type,
-    output_projection: &witchy_types::access::LoanProjection,
+    output_projection: &witchy_canonical_source::access::LoanProjection,
     owner_position: usize,
-    input_projection: &witchy_types::access::LoanProjection,
+    input_projection: &witchy_canonical_source::access::LoanProjection,
 ) -> bool {
     relation_lifetime == result_lifetime
-        && relation_kind == witchy_types::access::BorrowKind::Exclusive
+        && relation_kind == witchy_canonical_source::access::BorrowKind::Exclusive
         && relation_storage.unqualified() == result_referent.unqualified()
         && owner_position == parameter
         && input_projection.steps.is_empty()
@@ -361,11 +361,11 @@ impl FunctionLowerer<'_> {
         let [owner] = relation.owners() else { return Ok(None) };
         let owner_parameter = owner.position();
         if relation.lifetime() != lifetime
-            || relation.kind() != witchy_types::access::BorrowKind::Exclusive
+            || relation.kind() != witchy_canonical_source::access::BorrowKind::Exclusive
             || relation.storage_type().unqualified() != referent.unqualified()
             || !owner.input_projection().steps.is_empty()
             || !call_access.params().get(owner_parameter).is_some_and(|parameter| {
-                parameter.kind() == witchy_types::access::AccessKind::ExclusiveWriteback
+                parameter.kind() == witchy_canonical_source::access::AccessKind::ExclusiveWriteback
                     && exclusive_reference_parts(parameter.ty()).is_some_and(|(candidate_lifetime, candidate_referent)| {
                         candidate_lifetime == lifetime
                             && candidate_referent.unqualified() == referent.unqualified()
@@ -522,13 +522,13 @@ impl FunctionLowerer<'_> {
         let [owner] = relation.owners() else { return Ok(None) };
         let owner_parameter = owner.position();
         if relation.lifetime() != lifetime
-            || relation.kind() != witchy_types::access::BorrowKind::Exclusive
+            || relation.kind() != witchy_canonical_source::access::BorrowKind::Exclusive
             || relation.storage_type().unqualified() != referent.unqualified()
             || relation.output_projection().steps
-                != [witchy_types::access::LoanProjectionStep::Tuple(slot)]
+                != [witchy_canonical_source::access::LoanProjectionStep::Tuple(slot)]
             || !owner.input_projection().steps.is_empty()
             || !call_access.params().get(owner_parameter).is_some_and(|parameter| {
-                parameter.kind() == witchy_types::access::AccessKind::ExclusiveWriteback
+                parameter.kind() == witchy_canonical_source::access::AccessKind::ExclusiveWriteback
                     && exclusive_reference_parts(parameter.ty()).is_some_and(|(candidate_lifetime, candidate_referent)| {
                         candidate_lifetime == lifetime
                             && candidate_referent.unqualified() == referent.unqualified()
@@ -555,7 +555,7 @@ impl FunctionLowerer<'_> {
                 && opened.owner == event.owner
                 && opened.projection == event.projection
                 && opened.borrower_projection.steps
-                    == [witchy_types::access::LoanProjectionStep::Tuple(slot)]
+                    == [witchy_canonical_source::access::LoanProjectionStep::Tuple(slot)]
                 && opened.kind == event.kind
                 && opened.owner_type == event.owner_type
                 && opened.origin == event.origin
@@ -565,7 +565,7 @@ impl FunctionLowerer<'_> {
                 && opened.owner == event.owner
                 && opened.projection == event.projection
                 && opened.borrower_projection.steps
-                    == [witchy_types::access::LoanProjectionStep::Tuple(slot)]
+                    == [witchy_canonical_source::access::LoanProjectionStep::Tuple(slot)]
                 && opened.kind == event.kind
                 && opened.owner_type == event.owner_type
                 && opened.origin == event.origin
@@ -634,8 +634,8 @@ impl FunctionLowerer<'_> {
         // because its declaration says `&mut`: the relation is the authority.
         let projected_result_parameter = exact_projected_result_root_relation(access, parameter);
         if !matches!(contract.kind(),
-            witchy_types::access::AccessKind::ExclusiveWriteback
-                | witchy_types::access::AccessKind::Consuming)
+            witchy_canonical_source::access::AccessKind::ExclusiveWriteback
+                | witchy_canonical_source::access::AccessKind::Consuming)
             || !(is_direct_exclusive_reference(contract.ty()) || projected_result_parameter)
         {
             return Err(CanonicalLoweringError::UnsupportedExpression(
@@ -833,7 +833,7 @@ impl FunctionLowerer<'_> {
         let Some(declaration) = self.access_facts.declaration(callee) else { return Ok(None) };
         if call_access.verify_exact(declaration).is_err()
             || !matches!(call_access.borrow_relations(), [relation]
-                if relation.kind() == witchy_types::access::BorrowKind::Exclusive
+                if relation.kind() == witchy_canonical_source::access::BorrowKind::Exclusive
                     && relation.output_projection().steps.is_empty()
                     && relation.owners().iter().map(|owner| owner.position()).eq(carrier.candidates.iter().map(|candidate| *candidate as usize))
                     && relation.owners().iter().all(|owner| owner.input_projection().steps.is_empty()))
@@ -894,7 +894,7 @@ impl FunctionLowerer<'_> {
             Some(event) => event.clone(),
             None => return Ok(None),
         };
-        let [witchy_types::access::LoanProjectionStep::Field(field)] = event.projection.steps.as_slice() else {
+        let [witchy_canonical_source::access::LoanProjectionStep::Field(field)] = event.projection.steps.as_slice() else {
             return Ok(None);
         };
         if !event.borrower_projection.steps.is_empty()
@@ -930,7 +930,7 @@ impl FunctionLowerer<'_> {
         let borrowed_type = self.expression_type(borrowed)?;
         if borrowed_place.root() != event.owner
             || borrowed_place.steps()
-                != [witchy_types::access::CheckedPlaceStep::Field(field.to_owned())]
+                != [witchy_canonical_source::access::CheckedPlaceStep::Field(field.to_owned())]
             || owner_root.local != event.owner
             || owner_root.direct_storage_type.as_ref() != Some(&owner_type)
             || event.owner_type != borrowed_type
@@ -988,13 +988,13 @@ impl FunctionLowerer<'_> {
         };
         let relations = call_access.borrow_relations().iter().filter(|relation| {
             relation.lifetime() == result_lifetime
-                && relation.kind() == witchy_types::access::BorrowKind::Exclusive
+                && relation.kind() == witchy_canonical_source::access::BorrowKind::Exclusive
                 && relation.output_projection().steps.is_empty()
                 && relation.storage_type().unqualified() == event.owner_type.unqualified()
                 && matches!(relation.owners(), [candidate]
                     if candidate.input_projection().steps.is_empty()
                         && call_access.params().get(candidate.position()).is_some_and(|parameter| {
-                            parameter.kind() == witchy_types::access::AccessKind::ExclusiveWriteback
+                            parameter.kind() == witchy_canonical_source::access::AccessKind::ExclusiveWriteback
                                 && exclusive_reference_parts(parameter.ty()).is_some_and(|(lifetime, referent)| {
                                     lifetime == result_lifetime
                                         && referent.unqualified() == result_referent.unqualified()
@@ -1169,7 +1169,7 @@ impl FunctionLowerer<'_> {
         };
         if place.root() != owner
             || place.steps()
-                != [witchy_types::access::CheckedPlaceStep::Field(field.clone())]
+                != [witchy_canonical_source::access::CheckedPlaceStep::Field(field.clone())]
             || !self.mutable_bindings.contains(owner)
             || !self.bindings.contains_key(owner)
         {
@@ -1182,7 +1182,7 @@ impl FunctionLowerer<'_> {
                 && event.kind == witchy_types::loans::BorrowKind::Exclusive
                 && event.owner == *owner
                 && event.projection.steps
-                    == [witchy_types::access::LoanProjectionStep::Field(field.clone())]
+                    == [witchy_canonical_source::access::LoanProjectionStep::Field(field.clone())]
                 && event.borrower_projection.steps.is_empty()
                 && is_direct_exclusive_owned_object(&event.owner_type)
                 && event.owner_root().local == *owner

@@ -37,10 +37,10 @@ use witchy_syntax::ast::{
 };
 use witchy_syntax::intrinsics;
 
-pub use crate::access::{BorrowKind, LoanProjection, LoanProjectionStep};
-use crate::access::{
-    checked_assignment_place, AccessKind, AccessSignature, BorrowRelation, BorrowRelationCatalog,
-    CheckedPlaceStep,
+pub use witchy_canonical_source::access::{BorrowKind, LoanProjection, LoanProjectionStep};
+use witchy_canonical_source::access::{
+    checked_assignment_place, AccessKind, AccessSignature, BorrowRelation,
+    BorrowRelationCatalog, CheckedPlaceStep,
 };
 use crate::typeck::{TypeError, TypeTable, ty_to_ast};
 

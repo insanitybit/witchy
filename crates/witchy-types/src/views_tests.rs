@@ -1,6 +1,6 @@
 use witchy_syntax::ast::{Expr, Item, Stmt, Type, TypeQual};
 
-use crate::access::{AccessKind, AccessSignature, OwnershipStateClass};
+use witchy_canonical_source::access::{AccessKind, AccessSignature, OwnershipStateClass};
 use crate::typeck::{annotate_checked, check, Ty};
 
 fn checked(source: &str) -> crate::typeck::TypedModule {

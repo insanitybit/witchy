@@ -235,9 +235,9 @@ fn type_is_unique_capacity_shape(ty: &Type) -> bool {
 }
 
 pub fn call_ownership_fact(
-    signature: &witchy_types::access::AccessSignature,
+    signature: &witchy_canonical_source::access::AccessSignature,
 ) -> CallOwnershipFact {
-    use witchy_types::access::{AccessKind, AccessQualifier, OwnershipStateClass};
+    use witchy_canonical_source::access::{AccessKind, AccessQualifier, OwnershipStateClass};
 
     let owns_physical_state = |state: &OwnershipStateClass| {
         matches!(
@@ -325,7 +325,7 @@ pub fn call_ownership_fact(
         && signature
             .result()
             .qualifiers()
-            .contains(&witchy_types::access::AccessQualifier::Unique);
+            .contains(&witchy_canonical_source::access::AccessQualifier::Unique);
     // Preserve the narrow ABI channel. Named-layout lowering uses its exact
     // result representation rather than this collection compatibility value.
     let unique_capacity_result = unique_ownership_result
@@ -360,7 +360,7 @@ fn checked_call_ownership_fact(
                 && param.qualifiers().iter().any(|qualifier| {
                     matches!(
                         qualifier,
-                        witchy_types::access::AccessQualifier::Unique
+                        witchy_canonical_source::access::AccessQualifier::Unique
                     )
                 })
         })
@@ -3835,14 +3835,14 @@ fn no_copy_qualified_type(ty: &Type) -> bool {
 }
 
 fn callable_no_copy_contract_type(ty: &Type) -> Option<(Vec<usize>, bool)> {
-    let signature = witchy_types::access::AccessSignature::from_function_type(ty).ok()?;
+    let signature = witchy_canonical_source::access::AccessSignature::from_function_type(ty).ok()?;
     Some(no_copy_contract(&signature)).filter(|(required, unique_result)| {
         !required.is_empty() || *unique_result
     })
 }
 
 fn no_copy_contract(
-    signature: &witchy_types::access::AccessSignature,
+    signature: &witchy_canonical_source::access::AccessSignature,
 ) -> (Vec<usize>, bool) {
     let fact = call_ownership_fact(signature);
     (fact.unique_params_to_check(), fact.unique_ownership_result())
@@ -3852,7 +3852,7 @@ fn no_copy_requirements(
     module: &Module,
     access: Option<&witchy_types::access::CheckedAccessFacts>,
 ) -> HashMap<String, Vec<usize>> {
-    use witchy_types::access::AccessQualifier;
+    use witchy_canonical_source::access::AccessQualifier;
 
     module
         .items
@@ -3863,7 +3863,7 @@ fn no_copy_requirements(
                 let signature = access
                     .and_then(|facts| facts.declaration(&function.name).cloned())
                     .or_else(|| {
-                        witchy_types::access::AccessSignature::from_function(function).ok()
+                        witchy_canonical_source::access::AccessSignature::from_function(function).ok()
                     })?;
                 let mut required = no_copy_contract(&signature).0;
                 if private_structural
@@ -3898,7 +3898,7 @@ fn unique_capacity_results(
             Item::Function(function) => access
                 .and_then(|facts| facts.declaration(&function.name).cloned())
                 .or_else(|| {
-                    witchy_types::access::AccessSignature::from_function(function).ok()
+                    witchy_canonical_source::access::AccessSignature::from_function(function).ok()
                 })
                 .as_ref()
                 .map(no_copy_contract)
@@ -4007,7 +4007,7 @@ fn merge_no_copy_env(
 struct NoCopyInputs<'facts, 'module> {
     module: &'module Module,
     access: Option<&'facts witchy_types::access::CheckedAccessFacts>,
-    places: &'facts witchy_types::access::CheckedPlaceFacts,
+    places: &'facts witchy_canonical_source::access::CheckedPlaceFacts,
     required: &'facts HashMap<String, Vec<usize>>,
     unique_results: &'facts HashSet<String>,
     summaries: &'facts Summaries,
@@ -4018,7 +4018,7 @@ struct NoCopyWalker<'facts, 'module> {
     function: String,
     module: &'module Module,
     access: Option<&'facts witchy_types::access::CheckedAccessFacts>,
-    places: &'facts witchy_types::access::CheckedPlaceFacts,
+    places: &'facts witchy_canonical_source::access::CheckedPlaceFacts,
     required: &'facts HashMap<String, Vec<usize>>,
     unique_results: &'facts HashSet<String>,
     summaries: &'facts Summaries,
@@ -4074,11 +4074,11 @@ impl<'facts, 'module> NoCopyWalker<'facts, 'module> {
         mut self,
         params: &[witchy_syntax::ast::Param],
         body: &Block,
-        signature: Option<&witchy_types::access::AccessSignature>,
+        signature: Option<&witchy_canonical_source::access::AccessSignature>,
     ) -> Vec<NoCopyMiss> {
         let own_cap_param = signature.and_then(|signature| {
             signature.params().iter().enumerate().find_map(|(index, param)| {
-                (param.kind() == witchy_types::access::AccessKind::Consuming
+                (param.kind() == witchy_canonical_source::access::AccessKind::Consuming
                     && param.ownership().input().is_some()
                     && no_copy_qualified_type(param.ty()))
                 .then_some(index)
@@ -4093,13 +4093,13 @@ impl<'facts, 'module> NoCopyWalker<'facts, 'module> {
         params: &[witchy_syntax::ast::Param],
         body: &Block,
         own_cap_param: Option<usize>,
-        signature: Option<&witchy_types::access::AccessSignature>,
+        signature: Option<&witchy_canonical_source::access::AccessSignature>,
     ) {
         let mut env = HashMap::new();
         for (index, param) in params.iter().enumerate() {
             let resolved = signature.and_then(|signature| signature.params().get(index));
             let param_type = resolved
-                .map(witchy_types::access::AccessParam::ty)
+                .map(witchy_canonical_source::access::AccessParam::ty)
                 .or(param.ty.as_ref());
             if let Some((required, unique_result)) =
                 param_type.and_then(callable_no_copy_contract_type)
@@ -4111,13 +4111,13 @@ impl<'facts, 'module> NoCopyWalker<'facts, 'module> {
                 continue;
             }
             let access_kind = resolved
-                .map(witchy_types::access::AccessParam::kind)
-                .unwrap_or_else(|| witchy_types::access::AccessKind::from(param.convention));
+                .map(witchy_canonical_source::access::AccessParam::kind)
+                .unwrap_or_else(|| witchy_canonical_source::access::AccessKind::from(param.convention));
             let convention = match access_kind {
-                witchy_types::access::AccessKind::OwnedImmutable => Convention::Let,
-                witchy_types::access::AccessKind::SharedBorrow => Convention::Borrow,
-                witchy_types::access::AccessKind::ExclusiveWriteback => Convention::Var,
-                witchy_types::access::AccessKind::Consuming => Convention::Own,
+                witchy_canonical_source::access::AccessKind::OwnedImmutable => Convention::Let,
+                witchy_canonical_source::access::AccessKind::SharedBorrow => Convention::Borrow,
+                witchy_canonical_source::access::AccessKind::ExclusiveWriteback => Convention::Var,
+                witchy_canonical_source::access::AccessKind::Consuming => Convention::Own,
             };
             let qualified = param_type.is_some_and(no_copy_qualified_type);
             let carries_cap = convention == Convention::Var
@@ -4700,7 +4700,7 @@ pub enum BoundaryEntry {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BoundaryAdapter {
     entry: BoundaryEntry,
-    access_identity: witchy_types::access::AccessIdentityKey,
+    access_identity: witchy_canonical_source::access::AccessIdentityKey,
 }
 
 impl BoundaryAdapter {
@@ -4708,7 +4708,7 @@ impl BoundaryAdapter {
         self.entry
     }
 
-    pub fn access_identity(&self) -> &witchy_types::access::AccessIdentityKey {
+    pub fn access_identity(&self) -> &witchy_canonical_source::access::AccessIdentityKey {
         &self.access_identity
     }
 }
@@ -4849,7 +4849,7 @@ fn module_no_copy_misses_with_access(
     module: &Module,
     access: Option<&witchy_types::access::CheckedAccessFacts>,
 ) -> Vec<NoCopyMiss> {
-    let places = witchy_types::access::checked_place_facts(module);
+    let places = witchy_canonical_source::access::checked_place_facts(module);
     let required = no_copy_requirements(module, access);
     if required.is_empty() {
         return Vec::new();

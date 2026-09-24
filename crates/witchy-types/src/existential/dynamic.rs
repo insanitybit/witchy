@@ -1,6 +1,7 @@
 use super::*;
 
-use crate::access::{AccessSignature, CheckedAccessFacts};
+use witchy_canonical_source::access::AccessSignature;
+use crate::access::CheckedAccessFacts;
 use witchy_syntax::ast::visit::{visit_block, visit_expr};
 #[derive(Clone, Debug)]
 pub(super) struct DynamicMethodDefinition {

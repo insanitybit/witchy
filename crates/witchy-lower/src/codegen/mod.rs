@@ -126,7 +126,7 @@ use witchy_syntax::ast::{
     collect_type_vars, BinOp, Block, Convention, Expr, Function, Item, MatchArm, Module, Param,
     Pattern, Stmt, Type, TypeQual, UnOp,
 };
-use witchy_types::storage::externref_cap_name;
+use witchy_canonical_source::capabilities::externref_cap_name;
 use specialization::{CallableSpecializationKey, GenericCallableInstances};
 
 /// Build the only SafeWIR form accepted for a packed-list header store.
@@ -613,7 +613,7 @@ impl ClosureOwnershipEnvelope {
 #[derive(Clone, Copy)]
 struct LambdaContract<'a> {
     result_ty: Option<&'a Type>,
-    access: Option<&'a witchy_types::access::AccessSignature>,
+    access: Option<&'a witchy_canonical_source::access::AccessSignature>,
     ownership: &'a ClosureOwnershipEnvelope,
 }
 
@@ -1616,7 +1616,7 @@ struct Codegen<'types> {
     /// Exact access rows for the tiny compiler-owned forwarding calls created
     /// after type annotation. Source calls must be present in `access_facts`;
     /// only an address explicitly registered here may use a declaration row.
-    synthesized_call_access: HashMap<usize, witchy_types::access::AccessSignature>,
+    synthesized_call_access: HashMap<usize, witchy_canonical_source::access::AccessSignature>,
     /// Loans active at the statement currently being lowered. `Expr::Try` uses
     /// this to release roots before its structured early return.
     active_loan_events: Vec<witchy_types::loans::LoanEvent>,
@@ -3154,7 +3154,7 @@ impl<'types> Codegen<'types> {
     }
 
     fn ownership_envelope_for_signature(
-        signature: &witchy_types::access::AccessSignature,
+        signature: &witchy_canonical_source::access::AccessSignature,
     ) -> ClosureOwnershipEnvelope {
         let fact = analysis::call_ownership_fact(signature);
         ClosureOwnershipEnvelope {
@@ -3203,7 +3203,7 @@ impl<'types> Codegen<'types> {
     fn ownership_envelope_for_named_signature(
         &self,
         name: &str,
-        signature: &witchy_types::access::AccessSignature,
+        signature: &witchy_canonical_source::access::AccessSignature,
     ) -> ClosureOwnershipEnvelope {
         let mut envelope = Self::ownership_envelope_for_signature(signature);
         let Some(layout) = self.callable_layouts.get(name) else {
@@ -3227,20 +3227,20 @@ impl<'types> Codegen<'types> {
     }
 
     fn signature_has_unique_layout_result(
-        signature: &witchy_types::access::AccessSignature,
+        signature: &witchy_canonical_source::access::AccessSignature,
     ) -> bool {
         signature
             .result()
             .qualifiers()
-            .contains(&witchy_types::access::AccessQualifier::Unique)
+            .contains(&witchy_canonical_source::access::AccessQualifier::Unique)
             && matches!(
                 signature.result().ownership_output(),
-                Some(witchy_types::access::OwnershipStateClass::LayoutDependent { .. })
+                Some(witchy_canonical_source::access::OwnershipStateClass::LayoutDependent { .. })
             )
     }
 
     fn ownership_envelope_for_type(ty: &Type) -> ClosureOwnershipEnvelope {
-        witchy_types::access::AccessSignature::from_function_type(ty)
+        witchy_canonical_source::access::AccessSignature::from_function_type(ty)
             .ok()
             .as_ref()
             .map(Self::ownership_envelope_for_signature)
@@ -3250,7 +3250,7 @@ impl<'types> Codegen<'types> {
     fn call_access_signature(
         &self,
         call: &Expr,
-    ) -> Option<&witchy_types::access::AccessSignature> {
+    ) -> Option<&witchy_canonical_source::access::AccessSignature> {
         self.access_facts
             .call_at(self.checked_module, call)
             .or_else(|| {
@@ -3277,7 +3277,7 @@ impl<'types> Codegen<'types> {
     fn closure_access_signature(
         &self,
         func: &Expr,
-    ) -> Option<witchy_types::access::AccessSignature> {
+    ) -> Option<witchy_canonical_source::access::AccessSignature> {
         if let Some(signature) = self.access_facts.callable_at(self.checked_module, func) {
             return Some(signature.clone());
         }
@@ -3379,7 +3379,7 @@ impl<'types> Codegen<'types> {
     fn lower_closure_args(
         &mut self,
         args: &[Expr],
-        access: &witchy_types::access::AccessSignature,
+        access: &witchy_canonical_source::access::AccessSignature,
         param_kinds: &[Kind],
         typed_abi: bool,
         ownership: &ClosureOwnershipEnvelope,
@@ -3390,7 +3390,7 @@ impl<'types> Codegen<'types> {
         let mut next_coordinate = 0;
         for (index, arg) in args.iter().enumerate() {
             let is_var = access.params().get(index).is_some_and(|param| {
-                param.kind() == witchy_types::access::AccessKind::ExclusiveWriteback
+                param.kind() == witchy_canonical_source::access::AccessKind::ExclusiveWriteback
                     && !Self::is_executable_reference_type(param.ty())
             });
             let kind = if is_var {
@@ -4897,7 +4897,7 @@ impl<'types> Codegen<'types> {
             .filter(|(index, p)| {
                 access_signature.as_ref().is_some_and(|signature| {
                     signature.params().get(*index).is_some_and(|param| {
-                        param.kind() == witchy_types::access::AccessKind::ExclusiveWriteback
+                        param.kind() == witchy_canonical_source::access::AccessKind::ExclusiveWriteback
                     }) && p.convention == Convention::Var
                 })
             })
@@ -8645,7 +8645,7 @@ impl<'types> Codegen<'types> {
         name: &str,
         emitted_name: &str,
         args: &[Expr],
-        access: &witchy_types::access::AccessSignature,
+        access: &witchy_canonical_source::access::AccessSignature,
     ) -> Option<witchy_wir::wir::WirExpr> {
         // A generic call target is a physical specialization whose ABI retains
         // the checked callable's compatibility state channels. The logical name
@@ -8799,7 +8799,7 @@ impl<'types> Codegen<'types> {
         &'expr str,
         &'expr [Expr],
         LayoutId,
-        witchy_types::access::AccessSignature,
+        witchy_canonical_source::access::AccessSignature,
     )> {
         let Expr::Call {
             name: producer,
@@ -8840,7 +8840,7 @@ impl<'types> Codegen<'types> {
         emitted_name: &str,
         args: &[Expr],
         destination: witchy_wir::wir::WirExpr,
-        access: &witchy_types::access::AccessSignature,
+        access: &witchy_canonical_source::access::AccessSignature,
     ) -> Option<witchy_wir::wir::WirExpr> {
         use witchy_wir::wir::{WirExpr as W, WirNode as N};
         let ownership = self.ownership_envelope_for_named_signature(name, access);
@@ -9197,7 +9197,7 @@ impl<'types> Codegen<'types> {
         emitted_name: &str,
         args: &[Expr],
         result_kind: Kind,
-        access: &witchy_types::access::AccessSignature,
+        access: &witchy_canonical_source::access::AccessSignature,
     ) -> Option<witchy_wir::wir::WirExpr> {
         use witchy_wir::wir::{WirExpr as W, WirNode as N};
         // The physical `var` specialization of `dict.update_str` must retain
@@ -9252,7 +9252,7 @@ impl<'types> Codegen<'types> {
         let mut next_coordinate = 0;
         for (i, arg) in args.iter().enumerate() {
             let is_var = access.params().get(i).is_some_and(|param| {
-                param.kind() == witchy_types::access::AccessKind::ExclusiveWriteback
+                param.kind() == witchy_canonical_source::access::AccessKind::ExclusiveWriteback
             }) && self
                 .fn_params
                 .get(name)
@@ -9874,7 +9874,7 @@ impl<'types> Codegen<'types> {
         body: &Block,
         signature: &(Vec<Kind>, Kind),
         result_ty: Option<&Type>,
-        access: Option<&witchy_types::access::AccessSignature>,
+        access: Option<&witchy_canonical_source::access::AccessSignature>,
         ownership: &ClosureOwnershipEnvelope,
     ) -> Option<witchy_wir::wir::WirExpr> {
         use witchy_wir::wir::WirExpr as W;
@@ -9986,7 +9986,7 @@ impl<'types> Codegen<'types> {
         body: &Block,
         signature: &(Vec<Kind>, Kind),
         result_ty: Option<&Type>,
-        access: Option<&witchy_types::access::AccessSignature>,
+        access: Option<&witchy_canonical_source::access::AccessSignature>,
         ownership: &ClosureOwnershipEnvelope,
     ) -> Option<ThreadedClosure> {
         if !self.collect_wir {
@@ -10064,7 +10064,7 @@ impl<'types> Codegen<'types> {
                 access.map_or(param.convention == Convention::Var, |signature| {
                     signature.params().get(*index).is_some_and(|access| {
                         access.kind()
-                            == witchy_types::access::AccessKind::ExclusiveWriteback
+                            == witchy_canonical_source::access::AccessKind::ExclusiveWriteback
                             && !Self::is_executable_reference_type(access.ty())
                     })
                 })
@@ -10086,7 +10086,7 @@ impl<'types> Codegen<'types> {
         for (index, p) in params.iter().enumerate() {
             let resolved_type = access
                 .and_then(|signature| signature.params().get(index))
-                .map(witchy_types::access::AccessParam::ty)
+                .map(witchy_canonical_source::access::AccessParam::ty)
                 .or(p.ty.as_ref());
             self.locals.insert(p.name.clone(), Kind::I32);
             if let Some(t) = resolved_type {
@@ -10123,7 +10123,7 @@ impl<'types> Codegen<'types> {
         for (index, p) in params.iter().enumerate() {
             let resolved_type = access
                 .and_then(|signature| signature.params().get(index))
-                .map(witchy_types::access::AccessParam::ty)
+                .map(witchy_canonical_source::access::AccessParam::ty)
                 .or(p.ty.as_ref());
             let k = resolved_type
                 .map(|ty| self.kind_for_type(ty))

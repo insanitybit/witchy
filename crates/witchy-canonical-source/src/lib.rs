@@ -12,6 +12,7 @@
 
 use witchy_syntax::ast::Type;
 
+pub mod access;
 pub mod aggregates;
 pub mod capabilities;
 pub mod closure;

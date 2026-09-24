@@ -2,8 +2,8 @@
     //! checker (`check_str`) over a small `mode opt` program and asserts the loan
     //! rule accepts or rejects it with the documented diagnostic.
 
+    use witchy_canonical_source::access::AccessSignature;
     use crate::{
-        access::AccessSignature,
         loans::facts,
         typeck::{check, check_reference_migration_str as check_str},
     };

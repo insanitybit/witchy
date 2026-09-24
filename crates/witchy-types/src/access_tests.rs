@@ -2,12 +2,12 @@ use witchy_syntax::ast::{
     Block, CallableQualifiers, Convention, Function, Param, Type, TypeQual,
 };
 
-use crate::access::{
+use witchy_canonical_source::access::{
     AccessKind, AccessMismatchKind, AccessQualifier, AccessSignature, AccessSignatureError,
     BorrowKind, BorrowRelationCatalog, CheckedPlaceStep, LoanProjection, LoanProjectionStep,
-    OwnershipStateClass, SignaturePosition, checked_facts, checked_place_facts,
-    ownership_state_class,
+    OwnershipStateClass, SignaturePosition, checked_place_facts, ownership_state_class,
 };
+use crate::access::checked_facts;
 
 fn named(name: &str) -> Type {
     Type::Named(name.to_string(), Vec::new())

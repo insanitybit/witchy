@@ -73,7 +73,7 @@ impl Codegen<'_> {
 
     fn callable_layout_signature_for_access(
         &self,
-        access: &witchy_types::access::AccessSignature,
+        access: &witchy_canonical_source::access::AccessSignature,
     ) -> CallableLayoutSignature {
         CallableLayoutSignature::new(
             access

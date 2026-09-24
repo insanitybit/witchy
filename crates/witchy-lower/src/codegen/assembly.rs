@@ -2345,10 +2345,10 @@ fn register_module_items(
                             .params()
                             .iter()
                             .map(|param| match param.kind() {
-                                witchy_types::access::AccessKind::OwnedImmutable => Convention::Let,
-                                witchy_types::access::AccessKind::SharedBorrow => Convention::Borrow,
-                                witchy_types::access::AccessKind::ExclusiveWriteback => Convention::Var,
-                                witchy_types::access::AccessKind::Consuming => Convention::Own,
+                                witchy_canonical_source::access::AccessKind::OwnedImmutable => Convention::Let,
+                                witchy_canonical_source::access::AccessKind::SharedBorrow => Convention::Borrow,
+                                witchy_canonical_source::access::AccessKind::ExclusiveWriteback => Convention::Var,
+                                witchy_canonical_source::access::AccessKind::Consuming => Convention::Own,
                             })
                             .collect(),
                     );
@@ -2411,8 +2411,8 @@ fn register_module_items(
                             signature.params().iter().all(|param| {
                                 matches!(
                                     param.kind(),
-                                    witchy_types::access::AccessKind::OwnedImmutable
-                                        | witchy_types::access::AccessKind::SharedBorrow
+                                    witchy_canonical_source::access::AccessKind::OwnedImmutable
+                                        | witchy_canonical_source::access::AccessKind::SharedBorrow
                                 )
                             })
                         })
@@ -2810,20 +2810,20 @@ fn build_existential_adapter_funcs(
             })?;
             let receiver_access = access.params().first().map(|param| param.kind());
             let receiver_is_var = receiver_access
-                == Some(witchy_types::access::AccessKind::ExclusiveWriteback);
+                == Some(witchy_canonical_source::access::AccessKind::ExclusiveWriteback);
             let receiver_is_own =
-                receiver_access == Some(witchy_types::access::AccessKind::Consuming);
+                receiver_access == Some(witchy_canonical_source::access::AccessKind::Consuming);
             let explicit_access = access.params().iter().skip(1).collect::<Vec<_>>();
             if explicit_access.iter().any(|param| {
                 !matches!(
                     param.kind(),
-                    witchy_types::access::AccessKind::OwnedImmutable
-                        | witchy_types::access::AccessKind::ExclusiveWriteback
+                    witchy_canonical_source::access::AccessKind::OwnedImmutable
+                        | witchy_canonical_source::access::AccessKind::ExclusiveWriteback
                 )
             }) || (receiver_is_own
                 && explicit_access.iter().any(|param| {
                     param.kind()
-                        == witchy_types::access::AccessKind::ExclusiveWriteback
+                        == witchy_canonical_source::access::AccessKind::ExclusiveWriteback
                 }))
             {
                 return unsupported(format!(
@@ -2906,7 +2906,7 @@ fn build_existential_adapter_funcs(
                 .enumerate()
                 .filter_map(|(index, param)| {
                     (param.kind()
-                        == witchy_types::access::AccessKind::ExclusiveWriteback)
+                        == witchy_canonical_source::access::AccessKind::ExclusiveWriteback)
                     .then_some(index)
                 })
                 .collect();

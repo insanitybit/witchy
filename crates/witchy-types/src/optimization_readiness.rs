@@ -10,7 +10,7 @@ use std::fmt;
 
 use witchy_syntax::ast::{Block, Expr, Item, Module, Pattern, Stmt};
 
-use crate::access::{AccessIdentityKey, AccessQualifier, AccessSignature};
+use witchy_canonical_source::access::{AccessIdentityKey, AccessQualifier, AccessSignature};
 use crate::pipeline::CanonicalCheckedSource;
 use crate::typeck::{CheckedAccessFactsError, TypedModule};
 

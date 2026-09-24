@@ -275,7 +275,7 @@ impl<'types> Codegen<'types> {
                             .rev()
                             .find(|loan| {
                                 loan.view == *reference
-                                    && loan.kind == witchy_types::access::BorrowKind::Exclusive
+                                    && loan.kind == witchy_canonical_source::access::BorrowKind::Exclusive
                                     && loan.projection.steps.is_empty()
                             })
                             .map(|loan| loan.owner.clone());
@@ -359,7 +359,7 @@ impl<'types> Codegen<'types> {
                     .rev()
                     .find(|loan| {
                         loan.view == *reference
-                            && loan.kind == witchy_types::access::BorrowKind::Exclusive
+                            && loan.kind == witchy_canonical_source::access::BorrowKind::Exclusive
                             && loan.projection.steps.is_empty()
                     })
                     .map(|loan| loan.owner.clone());
@@ -762,8 +762,8 @@ impl<'types> Codegen<'types> {
                     || access.params().iter().skip(1).any(|param| {
                         !matches!(
                             param.kind(),
-                            witchy_types::access::AccessKind::OwnedImmutable
-                                | witchy_types::access::AccessKind::ExclusiveWriteback
+                            witchy_canonical_source::access::AccessKind::OwnedImmutable
+                                | witchy_canonical_source::access::AccessKind::ExclusiveWriteback
                         )
                     })
                     || self.existential_dispatch_stride == 0
@@ -867,9 +867,9 @@ impl<'types> Codegen<'types> {
                 } else if access.params().first().is_some_and(|receiver| {
                     matches!(
                         receiver.kind(),
-                        witchy_types::access::AccessKind::OwnedImmutable
-                            | witchy_types::access::AccessKind::SharedBorrow
-                            | witchy_types::access::AccessKind::Consuming
+                        witchy_canonical_source::access::AccessKind::OwnedImmutable
+                            | witchy_canonical_source::access::AccessKind::SharedBorrow
+                            | witchy_canonical_source::access::AccessKind::Consuming
                     )
                 }) {
                     seq.push(N::Push(W::CallIndirect {
@@ -3543,7 +3543,7 @@ impl<'types> Codegen<'types> {
                 let call_access = self.call_access_signature(e).cloned();
                 let has_var = call_access.as_ref().is_some_and(|signature| {
                     signature.params().iter().enumerate().any(|(index, param)| {
-                        param.kind() == witchy_types::access::AccessKind::ExclusiveWriteback
+                        param.kind() == witchy_canonical_source::access::AccessKind::ExclusiveWriteback
                             && self
                                 .fn_params
                                 .get(name)

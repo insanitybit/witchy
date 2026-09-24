@@ -2458,7 +2458,7 @@ fn projected_exclusive_signature_parameter(
 fn direct_reference_binding_is_checked(
     source_signature: &witchy_syntax::ast::Type,
     declaration: Option<&witchy_syntax::ast::Function>,
-    access: Option<&witchy_types::access::AccessSignature>,
+    access: Option<&witchy_canonical_source::access::AccessSignature>,
     loan_facts_available: bool,
     records: &ScalarRecordFields,
 ) -> bool {
@@ -2499,7 +2499,7 @@ fn direct_reference_binding_is_checked(
 /// ever treated as an owner relation.
 fn aggregate_reference_result_relation_is_checked(
     declaration: &witchy_syntax::ast::Function,
-    access: Option<&witchy_types::access::AccessSignature>,
+    access: Option<&witchy_canonical_source::access::AccessSignature>,
     records: &ScalarRecordFields,
 ) -> bool {
     let Some(result) = declaration.ret.as_ref() else { return false };
@@ -2520,9 +2520,9 @@ fn aggregate_reference_result_relation_is_checked(
         // exact tree below.
         return matches!(result.unqualified(), witchy_syntax::ast::Type::Named(_, arguments)
             if arguments.is_empty())
-            || (!witchy_types::access::type_requires_ownership_state(result)
+            || (!witchy_canonical_source::access::type_requires_ownership_state(result)
                 && access.result().ownership_output().is_none())
-            || witchy_types::access::ownership_state_class(result).ok().flatten().as_ref()
+            || witchy_canonical_source::access::ownership_state_class(result).ok().flatten().as_ref()
                 == access.result().ownership_output();
     }
     if let witchy_syntax::ast::Type::Named(name, arguments) = result.unqualified()
@@ -2540,7 +2540,7 @@ fn aggregate_reference_result_relation_is_checked(
                 declaration,
                 access,
                 ok,
-                &[witchy_types::access::LoanProjectionStep::Tuple(0)],
+                &[witchy_canonical_source::access::LoanProjectionStep::Tuple(0)],
             );
     }
     match result.unqualified() {
@@ -2553,7 +2553,7 @@ fn aggregate_reference_result_relation_is_checked(
             let Some((lifetime, referent, kind)) = aggregate_reference_leaf(&arguments[0]) else {
                 return false;
             };
-            if kind != witchy_types::access::BorrowKind::Shared {
+            if kind != witchy_canonical_source::access::BorrowKind::Shared {
                 return false;
             }
             matches!(access.borrow_relations(), [relation]
@@ -2561,7 +2561,7 @@ fn aggregate_reference_result_relation_is_checked(
                     && relation.kind() == kind
                     && relation.storage_type().unqualified() == referent.unqualified()
                     && relation.output_projection().steps
-                        == [witchy_types::access::LoanProjectionStep::AnyIndex]
+                        == [witchy_canonical_source::access::LoanProjectionStep::AnyIndex]
                     && aggregate_relation_owners_match(declaration, relation.owners(), lifetime, referent, kind))
         }
         _ => false,
@@ -2575,7 +2575,7 @@ fn aggregate_reference_result_relation_is_checked(
 /// where that child came from, so parameter count never grants authority.
 fn option_rooted_int_view_result_relation_is_checked(
     declaration: &witchy_syntax::ast::Function,
-    access: &witchy_types::access::AccessSignature,
+    access: &witchy_canonical_source::access::AccessSignature,
 ) -> bool {
     declaration.ret.as_ref().is_some_and(|result| {
         is_option_rooted_int_view_carrier(result)
@@ -2591,9 +2591,9 @@ fn option_rooted_int_view_result_relation_is_checked(
 /// `&Int` owner. Any other child shape rejects.
 fn option_rooted_view_ownership_matches(
     source: &witchy_syntax::ast::Type,
-    class: &witchy_types::access::OwnershipStateClass,
+    class: &witchy_canonical_source::access::OwnershipStateClass,
 ) -> bool {
-    use witchy_types::access::OwnershipStateClass;
+    use witchy_canonical_source::access::OwnershipStateClass;
 
     if is_direct_rooted_view_int(source) {
         return matches!(class, OwnershipStateClass::RootedViewCarrier);
@@ -2618,9 +2618,9 @@ fn is_option_rooted_int_view_carrier(source: &witchy_syntax::ast::Type) -> bool 
 /// bare aggregate with the same reference fields.
 fn aggregate_tuple_reference_result_relation_is_checked(
     declaration: &witchy_syntax::ast::Function,
-    access: &witchy_types::access::AccessSignature,
+    access: &witchy_canonical_source::access::AccessSignature,
     payload: &witchy_syntax::ast::Type,
-    prefix: &[witchy_types::access::LoanProjectionStep],
+    prefix: &[witchy_canonical_source::access::LoanProjectionStep],
 ) -> bool {
     let witchy_syntax::ast::Type::Tuple(items) = payload.unqualified() else {
         return false;
@@ -2641,7 +2641,7 @@ fn aggregate_tuple_reference_result_relation_is_checked(
                 return false;
             };
             let mut expected_projection = prefix.to_vec();
-            expected_projection.push(witchy_types::access::LoanProjectionStep::Tuple(slot));
+            expected_projection.push(witchy_canonical_source::access::LoanProjectionStep::Tuple(slot));
             relation.lifetime() == lifetime
                 && relation.kind() == kind
                 && relation.storage_type().unqualified() == referent.unqualified()
@@ -2662,10 +2662,10 @@ fn aggregate_tuple_reference_result_relation_is_checked(
 /// manufacture a list carrier authority.
 fn aggregate_relation_owners_match(
     declaration: &witchy_syntax::ast::Function,
-    owners: &[witchy_types::access::BorrowOwnerRelation],
+    owners: &[witchy_canonical_source::access::BorrowOwnerRelation],
     lifetime: &str,
     referent: &witchy_syntax::ast::Type,
-    kind: witchy_types::access::BorrowKind,
+    kind: witchy_canonical_source::access::BorrowKind,
 ) -> bool {
     !owners.is_empty()
         && owners.windows(2).all(|pair| pair[0].position() < pair[1].position())
@@ -2684,12 +2684,12 @@ fn aggregate_relation_owners_match(
 
 fn aggregate_reference_leaf(
     source: &witchy_syntax::ast::Type,
-) -> Option<(&str, &witchy_syntax::ast::Type, witchy_types::access::BorrowKind)> {
+) -> Option<(&str, &witchy_syntax::ast::Type, witchy_canonical_source::access::BorrowKind)> {
     if let Some((lifetime, referent)) = direct_shared_reference_parts(source) {
-        return Some((lifetime, referent, witchy_types::access::BorrowKind::Shared));
+        return Some((lifetime, referent, witchy_canonical_source::access::BorrowKind::Shared));
     }
     direct_exclusive_reference_parts(source)
-        .map(|(lifetime, referent)| (lifetime, referent, witchy_types::access::BorrowKind::Exclusive))
+        .map(|(lifetime, referent)| (lifetime, referent, witchy_canonical_source::access::BorrowKind::Exclusive))
 }
 
 /// A generic shared return may use the ordinary `AliasesParameter` contract
@@ -2846,7 +2846,7 @@ fn source_signature_contains_direct_exclusive_reference(
 /// lowerer's reconstructed AST traversal.
 fn direct_exclusive_reference_relation_is_checked(
     declaration: &witchy_syntax::ast::Function,
-    access: Option<&witchy_types::access::AccessSignature>,
+    access: Option<&witchy_canonical_source::access::AccessSignature>,
     loan_facts_available: bool,
 ) -> bool {
     let direct = declaration.params.iter().enumerate().filter(|(_, parameter)| {
@@ -2860,15 +2860,15 @@ fn direct_exclusive_reference_relation_is_checked(
     loan_facts_available && access.is_some_and(|access| {
         direct.iter().all(|(index, parameter)| {
             let expected_kind = match parameter.convention {
-                witchy_syntax::ast::Convention::Let => witchy_types::access::AccessKind::ExclusiveWriteback,
-                witchy_syntax::ast::Convention::Own => witchy_types::access::AccessKind::Consuming,
+                witchy_syntax::ast::Convention::Let => witchy_canonical_source::access::AccessKind::ExclusiveWriteback,
+                witchy_syntax::ast::Convention::Own => witchy_canonical_source::access::AccessKind::Consuming,
                 _ => return false,
             };
             access.params().get(*index).is_some_and(|actual| {
                 actual.ty() == parameter.ty.as_ref().expect("filtered above")
                     && actual.kind() == expected_kind
                     && actual.qualifiers().iter().any(|qualifier|
-                        matches!(qualifier, witchy_types::access::AccessQualifier::BorrowMut(_)))
+                        matches!(qualifier, witchy_canonical_source::access::AccessQualifier::BorrowMut(_)))
             })
         })
     })
@@ -2881,7 +2881,7 @@ fn direct_exclusive_reference_relation_is_checked(
 /// degrading to a shape-derived shared result.
 fn direct_exclusive_result_relation_is_checked(
     declaration: &witchy_syntax::ast::Function,
-    access: Option<&witchy_types::access::AccessSignature>,
+    access: Option<&witchy_canonical_source::access::AccessSignature>,
     records: &ScalarRecordFields,
 ) -> bool {
     let Some(result) = declaration.ret.as_ref() else { return true };
@@ -2902,11 +2902,11 @@ fn direct_exclusive_result_relation_is_checked(
         return access.is_some_and(|access| {
         access.result().ty() == result
             && access.result().qualifiers().iter().any(|qualifier| {
-                matches!(qualifier, witchy_types::access::AccessQualifier::BorrowMut(candidate) if candidate == lifetime)
+                matches!(qualifier, witchy_canonical_source::access::AccessQualifier::BorrowMut(candidate) if candidate == lifetime)
             })
             && matches!(access.borrow_relations(), [relation]
                 if relation.lifetime() == lifetime
-                    && relation.kind() == witchy_types::access::BorrowKind::Exclusive
+                    && relation.kind() == witchy_canonical_source::access::BorrowKind::Exclusive
                     && relation.storage_type().unqualified() == referent.unqualified()
                     && relation.output_projection().steps.is_empty()
                     && matches!(relation.owners(), [candidate]
@@ -2918,11 +2918,11 @@ fn direct_exclusive_result_relation_is_checked(
         return access.is_some_and(|access| {
             access.result().ty() == result
                 && access.result().qualifiers().iter().any(|qualifier| {
-                    matches!(qualifier, witchy_types::access::AccessQualifier::BorrowMut(candidate) if candidate == lifetime)
+                    matches!(qualifier, witchy_canonical_source::access::AccessQualifier::BorrowMut(candidate) if candidate == lifetime)
                 })
                 && matches!(access.borrow_relations(), [relation]
                     if relation.lifetime() == lifetime
-                        && relation.kind() == witchy_types::access::BorrowKind::Exclusive
+                        && relation.kind() == witchy_canonical_source::access::BorrowKind::Exclusive
                         && relation.storage_type().unqualified() == referent.unqualified()
                         && relation.output_projection().steps.is_empty()
                         && relation.owners().iter().map(|owner| owner.position()).eq(candidates.iter().copied())
@@ -2934,11 +2934,11 @@ fn direct_exclusive_result_relation_is_checked(
     access.is_some_and(|access| {
         access.result().ty() == result
             && access.result().qualifiers().iter().any(|qualifier| {
-                matches!(qualifier, witchy_types::access::AccessQualifier::BorrowMut(candidate) if candidate == lifetime)
+                matches!(qualifier, witchy_canonical_source::access::AccessQualifier::BorrowMut(candidate) if candidate == lifetime)
             })
             && matches!(access.borrow_relations(), [relation]
                 if relation.lifetime() == lifetime
-                    && relation.kind() == witchy_types::access::BorrowKind::Exclusive
+                    && relation.kind() == witchy_canonical_source::access::BorrowKind::Exclusive
                     && relation.storage_type().unqualified() == referent.unqualified()
                     && relation.output_projection().steps.is_empty()
                     && matches!(relation.owners(), [candidate]
@@ -2953,7 +2953,7 @@ fn direct_exclusive_result_relation_is_checked(
 /// typed module and was already used to reject stale or missing facts.
 fn direct_shared_reference_relation_is_checked(
     declaration: &witchy_syntax::ast::Function,
-    access: Option<&witchy_types::access::AccessSignature>,
+    access: Option<&witchy_canonical_source::access::AccessSignature>,
 ) -> bool {
     let Some(result) = declaration.ret.as_ref() else { return true };
     let Some((lifetime, referent)) = direct_shared_reference_parts(result) else {
@@ -2971,7 +2971,7 @@ fn direct_shared_reference_relation_is_checked(
     let [owner] = candidates.as_slice() else { return false };
     access.is_some_and(|access| access.borrow_relations().iter().any(|relation| {
         relation.lifetime() == lifetime
-            && relation.kind() == witchy_types::access::BorrowKind::Shared
+            && relation.kind() == witchy_canonical_source::access::BorrowKind::Shared
             && relation.storage_type().unqualified() == referent.unqualified()
             && relation.output_projection().steps.is_empty()
             && matches!(relation.owners(), [candidate]

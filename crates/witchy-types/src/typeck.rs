@@ -32,7 +32,8 @@ use witchy_canonical_source::proper_tail::{
 use witchy_syntax::{cap_ops, intrinsics};
 use witchy_cap_model::{CapabilityClass, CapabilityKind};
 
-use crate::storage::{externref_cap_name, ReferenceLeaf, ReferenceStorageClassifier};
+use crate::storage::{ReferenceLeaf, ReferenceStorageClassifier};
+use witchy_canonical_source::capabilities::externref_cap_name;
 
 mod coverage;
 use coverage::{
@@ -5930,7 +5931,7 @@ impl Checker {
         {
             return Ok(());
         }
-        let Some(place) = args.first().and_then(crate::access::checked_place) else {
+        let Some(place) = args.first().and_then(witchy_canonical_source::access::checked_place) else {
             // Catalog/source conventions still require a mutable place. There
             // is no caller-visible write-back to classify until one exists.
             return Ok(());
@@ -7692,14 +7693,14 @@ impl Checker {
         if self.is_frozen_binding(root) {
             return Ok(true);
         }
-        let place = crate::access::checked_assignment_place(root, value, place_depth);
+        let place = witchy_canonical_source::access::checked_assignment_place(root, value, place_depth);
         if place.steps().len() != place_depth as usize {
             return Err(());
         }
         let mut current = self.lookup(root).map(|ty| self.resolve(&ty)).ok_or(())?;
         for step in place.steps() {
             match (self.resolve(&current), step) {
-                (Ty::Named(record, args), crate::access::CheckedPlaceStep::Field(field)) => {
+                (Ty::Named(record, args), witchy_canonical_source::access::CheckedPlaceStep::Field(field)) => {
                     if self
                         .frozen_record_fields
                         .get(record.as_ref())
@@ -7716,11 +7717,11 @@ impl Checker {
                         .collect();
                     current = self.subst_vars(field_ty, &substitutions);
                 }
-                (Ty::List(element), crate::access::CheckedPlaceStep::Index(_)
-                    | crate::access::CheckedPlaceStep::DynamicIndex) => {
+                (Ty::List(element), witchy_canonical_source::access::CheckedPlaceStep::Index(_)
+                    | witchy_canonical_source::access::CheckedPlaceStep::DynamicIndex) => {
                     current = element.as_ref().clone();
                 }
-                (Ty::Named(name, arguments), crate::access::CheckedPlaceStep::DynamicIndex)
+                (Ty::Named(name, arguments), witchy_canonical_source::access::CheckedPlaceStep::DynamicIndex)
                     if name.as_ref() == "Dict" && arguments.len() == 2 => {
                     current = arguments[1].clone();
                 }
@@ -11385,7 +11386,7 @@ impl Checker {
                 // implementation's function-value parameter type. Preserve the
                 // declaration's actual conventions in `at` and the type table.
                 let access = |ty: &Ty| ty_to_ast(ty).and_then(|ty|
-                    crate::access::AccessSignature::from_function_type(&ty).ok());
+                    witchy_canonical_source::access::AccessSignature::from_function_type(&ty).ok());
                 let compatible = access(&self.resolve(param_ty))
                     .zip(access(&self.resolve(&at)))
                     .is_some_and(|(expected, actual)|
@@ -11429,7 +11430,7 @@ impl Checker {
         // Enforce conventions: a `var` parameter needs a mutable variable;
         // `own` consumes its argument (use-after-move becomes an error).
         if !is_cap_op && let Some(convs) = self.fn_conventions.get(name).cloned() {
-            let mut var_places: Vec<(usize, crate::access::CheckedPlace)> = Vec::new();
+            let mut var_places: Vec<(usize, witchy_canonical_source::access::CheckedPlace)> = Vec::new();
             for (i, (arg, conv)) in args.iter().zip(&convs).enumerate() {
                 self.reject_consumed_own_argument(arg, *conv)?;
                 if let Some(parameter) = params.get(i) {
@@ -11487,7 +11488,7 @@ impl Checker {
                 }
                 if explicit_exclusive
                     && let Expr::Unary { op: UnOp::BorrowMut, expr } = arg
-                    && let Some(place) = crate::access::checked_place(expr)
+                    && let Some(place) = witchy_canonical_source::access::checked_place(expr)
                 {
                     for (previous_index, previous) in &var_places {
                         if previous.overlaps(&place) {
@@ -11510,7 +11511,7 @@ impl Checker {
                         // already recorded the referent place for aliasing.
                         if explicit_exclusive
                             && let Expr::Unary { op: UnOp::BorrowMut, expr } = arg
-                            && let Some(place) = crate::access::checked_place(expr)
+                            && let Some(place) = witchy_canonical_source::access::checked_place(expr)
                         {
                             if self.is_mutable(place.root()) == Some(true) {
                                 continue;
@@ -11528,7 +11529,7 @@ impl Checker {
                                 i + 1
                             ));
                         }
-                        match crate::access::checked_place(arg) {
+                        match witchy_canonical_source::access::checked_place(arg) {
                             Some(place) if self.is_mutable(place.root()) == Some(true) => {
                                 for (previous_index, previous) in &var_places {
                                     if previous.overlaps(&place) {
@@ -11652,7 +11653,7 @@ impl Checker {
         reference_params: &[bool],
         source_contract: Option<&UniqueCallableContract>,
     ) -> Result<(), TypeError> {
-        let mut var_places: Vec<(usize, crate::access::CheckedPlace)> = Vec::new();
+        let mut var_places: Vec<(usize, witchy_canonical_source::access::CheckedPlace)> = Vec::new();
         for (index, (arg, convention)) in args.iter().zip(conventions).enumerate() {
             self.reject_consumed_own_argument(arg, *convention)?;
             if let Some(parameter) = parameter_types.get(index) {
@@ -11677,7 +11678,7 @@ impl Checker {
             }
             if reference_params.get(index).copied().unwrap_or(false)
                 && let Expr::Unary { op: UnOp::BorrowMut, expr } = arg
-                && let Some(place) = crate::access::checked_place(expr)
+                && let Some(place) = witchy_canonical_source::access::checked_place(expr)
             {
                 for (previous_index, previous) in &var_places {
                     if previous.overlaps(&place) {
@@ -11700,7 +11701,7 @@ impl Checker {
                     // impossible to call.
                     if reference_params.get(index).copied().unwrap_or(false)
                         && let Expr::Unary { op: UnOp::BorrowMut, expr } = arg
-                        && let Some(place) = crate::access::checked_place(expr)
+                        && let Some(place) = witchy_canonical_source::access::checked_place(expr)
                     {
                         if self.is_mutable(place.root()) == Some(true) {
                             continue;
@@ -11718,7 +11719,7 @@ impl Checker {
                             index + 1
                         ));
                     }
-                    match crate::access::checked_place(arg) {
+                    match witchy_canonical_source::access::checked_place(arg) {
                         Some(place) if self.is_mutable(place.root()) == Some(true) => {
                             for (previous_index, previous) in &var_places {
                                 if previous.overlaps(&place) {
@@ -11826,7 +11827,7 @@ impl Checker {
             ));
         }
 
-        let mut var_places: Vec<(usize, crate::access::CheckedPlace)> = Vec::new();
+        let mut var_places: Vec<(usize, witchy_canonical_source::access::CheckedPlace)> = Vec::new();
         for (index, (operand, convention)) in operands.iter().zip(conventions).enumerate() {
             self.reject_consumed_own_argument(operand, *convention)?;
             if index > 0
@@ -11847,7 +11848,7 @@ impl Checker {
                             index + 1
                         ));
                     }
-                    match crate::access::checked_place(operand) {
+                    match witchy_canonical_source::access::checked_place(operand) {
                         Some(place) if self.is_mutable(place.root()) == Some(true) => {
                             for (previous_index, previous) in &var_places {
                                 if previous.overlaps(&place) {
@@ -11928,7 +11929,7 @@ impl Checker {
     fn collect_var_writebacks_in_expr(
         &self,
         expr: &Expr,
-        out: &mut Vec<(String, usize, crate::access::CheckedPlace)>,
+        out: &mut Vec<(String, usize, witchy_canonical_source::access::CheckedPlace)>,
     ) {
         match expr {
             Expr::Call { name, args } => {
@@ -11937,7 +11938,7 @@ impl Checker {
                         args.iter().zip(&conventions).enumerate()
                     {
                         if *convention == Convention::Var
-                            && let Some(place) = crate::access::checked_place(argument)
+                            && let Some(place) = witchy_canonical_source::access::checked_place(argument)
                         {
                             out.push((name.clone(), index, place));
                         }
@@ -11949,7 +11950,7 @@ impl Checker {
                     // reservation, so every assignable argument is a
                     // potential write-back until its call is checked locally.
                     for (index, argument) in args.iter().enumerate() {
-                        if let Some(place) = crate::access::checked_place(argument) {
+                        if let Some(place) = witchy_canonical_source::access::checked_place(argument) {
                             out.push((name.clone(), index, place));
                         }
                     }
@@ -11973,7 +11974,7 @@ impl Checker {
                     .enumerate()
                 {
                     if *convention == Convention::Var
-                        && let Some(place) = crate::access::checked_place(argument)
+                        && let Some(place) = witchy_canonical_source::access::checked_place(argument)
                     {
                         out.push((callee.clone(), index, place));
                     }
@@ -11990,14 +11991,14 @@ impl Checker {
                             args.iter().zip(&conventions).enumerate()
                         {
                             if *convention == Convention::Var
-                                && let Some(place) = crate::access::checked_place(argument)
+                                && let Some(place) = witchy_canonical_source::access::checked_place(argument)
                             {
                                 out.push((name.clone(), index, place));
                             }
                         }
                     } else {
                         for (index, argument) in args.iter().enumerate() {
-                            if let Some(place) = crate::access::checked_place(argument) {
+                            if let Some(place) = witchy_canonical_source::access::checked_place(argument) {
                                 out.push((name.clone(), index, place));
                             }
                         }
@@ -12009,7 +12010,7 @@ impl Checker {
                     // assignable argument as a potential write-back; the
                     // call's own inference later determines its exact ABI.
                     for (index, argument) in args.iter().enumerate() {
-                        if let Some(place) = crate::access::checked_place(argument) {
+                        if let Some(place) = witchy_canonical_source::access::checked_place(argument) {
                             out.push(("computed callable".to_string(), index, place));
                         }
                     }
@@ -12029,7 +12030,7 @@ impl Checker {
                     .is_none_or(|conventions| conventions.contains(&Convention::Var))
                 {
                     for (index, (_, argument)) in args.iter().enumerate() {
-                        if let Some(place) = crate::access::checked_place(argument) {
+                        if let Some(place) = witchy_canonical_source::access::checked_place(argument) {
                             out.push((name.clone(), index, place));
                         }
                     }
@@ -12117,7 +12118,7 @@ impl Checker {
     fn collect_var_writebacks_in_block(
         &self,
         block: &Block,
-        out: &mut Vec<(String, usize, crate::access::CheckedPlace)>,
+        out: &mut Vec<(String, usize, witchy_canonical_source::access::CheckedPlace)>,
     ) {
         for statement in &block.stmts {
             match statement {
@@ -12125,7 +12126,7 @@ impl Checker {
                     out.push((
                         "assignment".to_string(),
                         0,
-                        crate::access::checked_assignment_place(name, value, *place_depth),
+                        witchy_canonical_source::access::checked_assignment_place(name, value, *place_depth),
                     ));
                     self.collect_var_writebacks_in_expr(value, out);
                 }
@@ -12165,7 +12166,7 @@ impl Checker {
         callee: &str,
         args: &[Expr],
         reserved_index: usize,
-        reserved: &crate::access::CheckedPlace,
+        reserved: &witchy_canonical_source::access::CheckedPlace,
     ) -> Result<(), TypeError> {
         for (later_index, argument) in args.iter().enumerate().skip(reserved_index + 1) {
             let mut writebacks = Vec::new();
