@@ -1063,6 +1063,9 @@ The current canonical implementation refuses `Dict(String, &String)` because
 dictionary values do not yet have an authenticated `&String` collection carrier.
 The refusal also applies when that dictionary is a field of a record or crosses
 a public record boundary. Ordinary `Dict(String, String)` remains admitted.
+The exact whole-root view `&Dict(String, Int)` is admitted. It retains the
+dictionary root, so a later update of the owner does not change the view's
+snapshot. Other dictionary-root view shapes remain outside this carrier.
 
 ```witchy
 fn first[a](items: &[a]) -> Option(&a):

@@ -248,6 +248,11 @@ For example, `Dict(String, &String)` currently fails canonical admission with a
 missing collection-carrier diagnostic, including when nested in a record.
 Store an owned `String` value if the dictionary must execute today.
 
+A whole `&Dict(String, Int)` has an admitted root view. It retains the
+dictionary snapshot: inserting into the owner after the view forms does not
+change what `(*view).length()` reads. This exact key and value shape has a
+carrier; views of other dictionary shapes need their own admission evidence.
+
 Normal source may use the same view syntax and call view-bearing exports. When
 a separately compiled boundary lacks authenticated carrier metadata, it fails
 closed at that boundary rather than changing the signature or silently
