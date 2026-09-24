@@ -72,7 +72,7 @@ fn main() -> Int:
     assert!(
         refusal
             .to_string()
-            .contains("rooted view payload has no admitted authenticated carrier"),
+            .contains("UnsupportedType(Qualified(View, Slice(Qualified(Unique, Named(\"List\", [Named(\"Int\", [])])))))"),
         "{refusal}"
     );
 }

@@ -513,7 +513,7 @@ mod tests {
         let slice = |child| Type::Qualified(TypeQual::View, Box::new(Type::Slice(Box::new(child))));
         assert_eq!(rooted_slice_element(&slice(nested.clone())), Some("List(Int)"));
         for qualifier in [TypeQual::Unique, TypeQual::Frozen] {
-            assert_eq!(rooted_slice_element(&slice(Type::Qualified(qualifier, Box::new(nested.clone())))), None);
+            assert_eq!(rooted_slice_element(&slice(Type::Qualified(qualifier.clone(), Box::new(nested.clone())))), None);
             assert_eq!(
                 rooted_slice_element(&slice(Type::Qualified(qualifier, Box::new(Type::Named("Int".into(), Vec::new()))))),
                 None,
