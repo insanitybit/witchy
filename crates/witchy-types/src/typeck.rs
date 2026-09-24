@@ -8207,7 +8207,7 @@ impl Checker {
             && arguments.len() == 1
         {
             let element = self.resolve(&arguments[0]);
-            if matches!(&element, Ty::Int | Ty::Float | Ty::Bool | Ty::Duration)
+            if matches!(&element, Ty::Int | Ty::Float | Ty::Bool | Ty::Duration | Ty::String)
                 || matches!(&element, Ty::Var(variable)
                     if self.current_typarams.values().any(|typaram| typaram == variable))
             {
@@ -8215,7 +8215,7 @@ impl Checker {
             }
             return terr(format!(
                 "`.owned()` cannot materialize the slice view `{payload}`: only Int, Float, Bool, \
-                 and Duration elements have an admitted checked copy into List(T)"
+                 Duration, and String elements have an admitted checked copy into List(T)"
             ));
         }
         if let Some(capability) = self.ty_authority_taint(&payload, &mut HashSet::new()) {

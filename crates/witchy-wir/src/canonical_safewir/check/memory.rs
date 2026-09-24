@@ -2602,14 +2602,13 @@ impl<'a> MemoryChecker<'a> {
             return Ok(state);
         }
         // A checked ABI parameter or result denotes a complete logical value.
-        // Its child slots were initialized by the caller, so the full counted
-        // prefix can be cloned or moved without reconstructing per-slot facts
-        // in this function. Partial ranges still require local evidence.
+        // Its child slots were initialized by the caller. Both callers first
+        // pass the source through check_typed_range(Read), which proves this
+        // exact subrange lies within the current logical length of the same
+        // owner generation. A clone can therefore retain a bounded subrange
+        // without reconstructing each caller-owned slot locally.
         let object = self.live_object(range.object)?.clone();
         if object.initialized_owned_slots
-            && self.is_zero(range.start)
-            && matches!(object.extent, Extent::Counted { count, .. }
-                if self.same_scalar(count, range.length))
             && self.descriptor(object.layout)?.kind().packed_element_layout() == Some(element)
         {
             return Ok(RangeState {
@@ -10051,6 +10050,20 @@ mod tests {
             crate::layout::LayoutId,
         ),
     ) {
+        with_nominal_pointer_slot_checker_values(1, 0, 1, test);
+    }
+
+    fn with_nominal_pointer_slot_checker_values(
+        count: u64,
+        start: u64,
+        length: u64,
+        test: impl FnOnce(
+            &mut MemoryChecker<'_>,
+            crate::layout::LayoutId,
+            crate::layout::LayoutId,
+            crate::layout::LayoutId,
+        ),
+    ) {
         let mut layouts = LayoutInterner::new();
         let pointee = layouts.intern_scalar(ScalarKind::Int).expect("pointee layout");
         let pointer = layouts
@@ -10104,10 +10117,10 @@ mod tests {
         let mut checker = MemoryChecker::new(&function, &layouts, &signature, &closure_layouts)
             .expect("checker construction");
         for (destination, value) in [
-            (COUNT, 1),
-            (CAPACITY, 1),
-            (START, 0),
-            (LENGTH, 1),
+            (COUNT, count),
+            (CAPACITY, count),
+            (START, start),
+            (LENGTH, length),
             (ALIAS_START, 0),
             (ALIAS_LENGTH, 1),
             (ZERO, 0),
@@ -10462,6 +10475,45 @@ mod tests {
                 }),
                 Ok(true)
             );
+        });
+    }
+
+    #[test]
+    fn complete_managed_abi_subrange_admits_bounded_clone() {
+        with_nominal_pointer_slot_checker_values(3, 1, 1, |checker, list, _pointee, _nominal| {
+            let element = checker.descriptor(list).unwrap().kind().packed_element_layout().unwrap();
+            // Model an authenticated complete ABI source and an empty
+            // destination range to isolate bounded subrange admission here.
+            // The source-level Wasm witness checks actual retain behavior.
+            let source = checker.state.objects.get_mut(&SOURCE).unwrap();
+            source.ownership = Ownership::Shared;
+            source.allocation_class = None;
+            source.shared_immutable = true;
+            source.initialized_owned_slots = true;
+            checker.state.range_states.insert(
+                RangeIdentity { object: DESTINATION, start: ZERO, length: ZERO },
+                RangeState {
+                    element,
+                    ownership: Ownership::Unique,
+                    allocation_class: None,
+                    initialized: true,
+                    zero_width: true,
+                    zero_start: true,
+                },
+            );
+            let destination = Place::projected(
+                DESTINATION,
+                Projection::Slice { start: ZERO, length: LENGTH },
+                ValueType::Ref(list),
+                AccessMode::Write,
+            );
+            let source = Place::projected(
+                SOURCE,
+                Projection::Slice { start: START, length: LENGTH },
+                ValueType::Ref(list),
+                AccessMode::Read,
+            );
+            assert_eq!(checker.check(&Operation::CloneRange { destination, source, count: LENGTH }), Ok(true));
         });
     }
 

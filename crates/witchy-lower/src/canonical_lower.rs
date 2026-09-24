@@ -4918,10 +4918,10 @@ impl<'a> FunctionLowerer<'a> {
         self.load_list_element(root, absolute, element_type)
     }
 
-    /// Materialize exactly the authenticated scalar projection of `&[T]`.
+    /// Materialize exactly the authenticated projection of `&[T]`.
     /// The result owns a fresh list root; the source slice retains its old
     /// root, so later `var` changes on either side preserve both snapshots.
-    fn lower_owned_scalar_slice(
+    fn lower_owned_slice(
         &mut self,
         expression: &Expr,
         receiver: &Expr,
@@ -4932,7 +4932,7 @@ impl<'a> FunctionLowerer<'a> {
             return Err(CanonicalLoweringError::UnsupportedExpression(".owned() slice receiver"));
         };
         let element = rooted_slice_element(inner)
-            .filter(|element| matches!(*element, "Int" | "Float" | "Bool" | "Duration"))
+            .filter(|element| matches!(*element, "Int" | "Float" | "Bool" | "Duration" | "String"))
             .ok_or(CanonicalLoweringError::UnsupportedExpression(".owned() slice element"))?;
         let result_type = self.expression_type(expression)?;
         let expected = Type::Named("List".into(), vec![Type::Named(element.into(), Vec::new())]);
@@ -4942,7 +4942,9 @@ impl<'a> FunctionLowerer<'a> {
         let (layout, element_type, header_bytes, stride_bytes) = list_layout(
             &expected, self.layout_bundle, self.layouts, &self.closures.layouts, self.definitions,
         )?;
-        if matches!(element_type, ValueType::Ref(_) | ValueType::Gc(_)) {
+        if matches!(element_type, ValueType::Gc(_))
+            || (matches!(element_type, ValueType::Ref(_)) && element != "String")
+        {
             return Err(CanonicalLoweringError::UnsupportedExpression(".owned() slice pointer element"));
         }
         let slice = self.lower_expr(receiver)?;
@@ -11205,7 +11207,7 @@ impl FunctionLowerer<'_> {
             Expr::MethodCall { receiver, method, args }
                 if method == "owned" && args.is_empty() =>
             {
-                self.lower_owned_scalar_slice(expression, receiver)
+                self.lower_owned_slice(expression, receiver)
             }
             Expr::LabeledCall { .. }
             | Expr::LabeledMethodCall { .. }

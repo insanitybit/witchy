@@ -1,4 +1,4 @@
-//! RFC-0167 row G: `.owned()` on an authenticated scalar slice copies only
+//! RFC-0167 row G: `.owned()` on an authenticated slice copies only
 //! its projected range into a fresh `List(T)`. The expected result below is
 //! hand-computed; the admitted unoptimized Wasm result and heap audit are
 //! independent of the source interpreter.
@@ -63,20 +63,55 @@ fn main() -> Int:
 }
 
 #[test]
+fn string_slice_owned_retains_each_copied_element_and_the_original_view() {
+    opt::set_for_tests(Some(OptSet::none()));
+    let _reset = ResetOptimizationOverride;
+    let source = r#"
+fn copy[a](xs: &[a]) -> List(a):
+    xs.owned()
+
+fn main() -> Int:
+    var words = ["aa", "bbb", "cccc", "ddddd"]
+    let view = &words[1..3]
+    var owned = copy(view)
+    words[1] = "Z"
+    owned[0] = "YY"
+    view[0].length() * 1000 + owned[0].length() * 100 + words[1].length() * 10 + owned[1].length()
+"#;
+    // The view still reads "bbb" (3), the new list reads "YY" (2) and
+    // "cccc" (4), and the changed root reads "Z" (1): 3000+200+10+4.
+    let expected = 3214;
+    let checked = witchy::resolve_std_only_checked(source).expect("String slice materialization checks");
+    let (artifact, ()) = codegen::compile_checked_module_artifact_with_observer(&checked, |_, _| ())
+        .expect_lowered("canonical SafeWIR admits a pointer-bearing projection copy");
+    let mut runtime = Runtime::batch().expect("runtime");
+    let mut vm = runtime
+        .spawn_admitted(
+            &artifact,
+            Capabilities { print_int: true, quiet: true, ..Capabilities::none() },
+            128,
+        )
+        .expect("admitted Wasm instance");
+    vm.run().expect("admitted Wasm execution");
+    assert_eq!(vm.output(), vec![expected.to_string()]);
+    assert_eq!(vm.canonical_heap_leaks().expect("heap audit"), Some(0));
+}
+
+#[test]
 fn unsupported_slice_elements_fail_closed_while_checking() {
     let source = r#"
 fn copy[a](xs: &[a]) -> List(a):
     xs.owned()
 
 fn main() -> Int:
-    let words = ["a", "bb"]
-    let copied = copy(&words[0..2])
+    let nested = [[1], [2]]
+    let copied = copy(&nested[0..2])
     copied.length()
 "#;
     let error = witchy::resolve_std_only_checked(source)
-        .err().expect("String element copy is outside the admitted slice materialization")
+        .err().expect("nested List element copy is outside the admitted slice materialization")
         .to_string();
-    assert!(error.contains("only Int, Float, Bool, and Duration elements"), "{error}");
+    assert!(error.contains("only Int, Float, Bool, Duration, and String elements"), "{error}");
 
     let must_source = r#"
 must type Ticket:
@@ -90,5 +125,5 @@ fn main() -> Int:
     let error = witchy::resolve_std_only_checked(must_source)
         .err().expect("must element cannot become a copyable slice")
         .to_string();
-    assert!(error.contains("Ticket") && error.contains("only Int, Float, Bool, and Duration elements"), "{error}");
+    assert!(error.contains("Ticket") && error.contains("only Int, Float, Bool, Duration, and String elements"), "{error}");
 }
