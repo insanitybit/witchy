@@ -354,18 +354,42 @@
             (297, 300),   // the top of the generator's own range
         ];
 
-        #[test]
-        fn range_for_boundaries_match_reference_on_both_backends() {
+        fn boundary_suite() -> (String, Vec<String>) {
+            let mut source = String::from("fn main(console: Console):\n");
+            let mut expected = Vec::with_capacity(BOUNDARIES.len() * 3);
+            let mut case = 0;
             for (lo, hi) in BOUNDARIES {
                 for inclusive in [false, true] {
-                    let (src, want) = sum_case(lo, hi, inclusive);
-                    assert_eq!(interp(&src), want, "interpreter disagrees on:\n{src}");
-                    assert_eq!(run_on_wasm_cached(&src), want, "compiled disagrees on:\n{src}");
+                    let op = if inclusive { "..=" } else { ".." };
+                    source.push_str(&format!(
+                        "    var s{case} = 0\n    for i in {lo}{op}{hi}:\n        s{case} = s{case} + i\n    console.print(\"${{s{case}}}\")\n"
+                    ));
+                    let reference: i64 =
+                        if inclusive { (lo..=hi).sum() } else { (lo..hi).sum() };
+                    expected.push(reference.to_string());
+                    case += 1;
                 }
-                let (src, want) = odds_case(lo, hi);
-                assert_eq!(interp(&src), want, "interpreter disagrees on:\n{src}");
-                assert_eq!(run_on_wasm_cached(&src), want, "compiled disagrees on:\n{src}");
+                source.push_str(&format!(
+                    "    var s{case} = 0\n    for i in {lo}..{hi}:\n        if i % 2 != 0:\n            continue\n        s{case} = s{case} + i\n    console.print(\"${{s{case}}}\")\n"
+                ));
+                expected.push((lo..hi).filter(|x| x % 2 == 0).sum::<i64>().to_string());
+                case += 1;
             }
+            (source, expected)
+        }
+
+        #[test]
+        fn range_for_boundaries_match_reference_on_both_backends() {
+            // Keep every literal boundary in one module. The old loop compiled
+            // and launched 18 separate modules on each backend even though the
+            // cases share no setup or state.
+            let (source, expected) = boundary_suite();
+            assert_eq!(interp(&source), expected, "interpreter disagrees on:\n{source}");
+            assert_eq!(
+                run_on_wasm_cached(&source),
+                expected,
+                "compiled disagrees on:\n{source}"
+            );
         }
 
         proptest! {
