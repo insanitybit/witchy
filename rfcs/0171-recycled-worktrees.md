@@ -1,7 +1,7 @@
 ---
 rfc: 0171
 title: Recycle agent worktrees so incremental state survives between tasks
-status: proposed
+status: accepted
 created: 2026-09-24
 tracking:
 ---
@@ -160,3 +160,29 @@ and they rebuild incrementally, because the path and its state are unchanged.
 - The sweep and the create hook become stateful. A bug there can hand an
   agent a dirty tree, so the hook re-checks `git status` on the slot before
   printing it, and falls back to a fresh worktree if the slot is not clean.
+
+## Implementation
+
+Landed with this status change:
+
+- `scripts/worktree-pool.sh` holds the slot protocol (claim, release, evict,
+  reserve). State lives under `state/worktree-pool/{free,claims}`.
+- `scripts/worktree-create.sh` claims a free slot first, then creates new
+  worktrees at `pool-<NN>` while under `WITCHY_WORKTREE_POOL_MAX` (default 6;
+  `0` turns the pool off). A slot that is stale (older than
+  `WITCHY_WORKTREE_POOL_MAX_AGE_HOURS`, default 24), has no `target/debug`,
+  or is not a clean detached checkout is evicted, not handed out. The name
+  `pool-<NN>` is reserved.
+- `merge-queue.sh sweep` recycles a merged, clean, unqueued pool worktree in
+  place and journals it as `swept` with `recycled: 1`. Anything else is
+  removed as before.
+- `reclaim-build-caches.sh` lists a free slot as `POOL:<age>h` and keeps its
+  cache until `--pool-min-age-hours` (24). After that, the cache is reclaimable,
+  and the hook evicts the cacheless slot.
+- Tests: `tools/merge-queue-tests` `worktree::create` (recycle, cap, dirty
+  eviction, concurrent claims) and `merge_queue::coordinator`
+  `sweep_recycles_a_landed_pool_worktree_in_place`.
+
+The status moves to `implemented` once the timing acceptance criterion, the
+first edit in a recycled slot within 2x of the second edit, is measured on a
+recycled slot.

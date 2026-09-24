@@ -120,6 +120,7 @@ else
     root="$(git -C "$here" worktree list --porcelain | sed -n '1s/^worktree //p')"
 fi
 . "$here/scripts/state-paths.sh"
+[ ! -f "$here/scripts/worktree-pool.sh" ] || . "$here/scripts/worktree-pool.sh"
 qdir="$(witchy_merge_queue_state_dir "$root")"
 queue_dir="$qdir/queue"
 changes_dir="$qdir/changes"
@@ -3760,6 +3761,17 @@ cmd_sweep() {
         [ -z "$(git -C "$wt" status --porcelain 2>/dev/null)" ] || continue
         if [ "$(git -C "$wt" rev-list --count "master..HEAD" 2>/dev/null || echo 1)" != "0" ]; then
             git -C "$wt" cherry master HEAD 2>/dev/null | grep -q '^+' && continue
+        fi
+        # RFC-0171: a pool worktree is recycled in place (detached at master,
+        # marked free) so its path-keyed incremental state serves the next
+        # task. Anything else, or a recycle that fails, is removed as before.
+        if declare -F worktree_pool_release >/dev/null \
+            && worktree_pool_release "$root" "$wt"; then
+            note "sweep: recycled merged+clean pool worktree $wt (branch $branch)"
+            git -C "$root" branch -d "$branch" >/dev/null 2>&1 || true
+            record swept "$branch" worktree "$wt" recycled 1
+            swept=$((swept + 1))
+            continue
         fi
         note "sweep: removing merged+clean worktree $wt (branch $branch)"
         if git -C "$root" worktree remove "$wt" >/dev/null 2>&1; then

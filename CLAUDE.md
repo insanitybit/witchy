@@ -25,8 +25,13 @@ repeat the rules; consult it when you're working inside one of these areas.
   republished by the coordinator after every green merge, plus the gate
   checkout's file mtimes, which `scripts/build-seed.py apply` copies onto every
   identical file. Without those mtimes a fresh checkout's "now" timestamps make
-  cargo rebuild every workspace crate. When your worktree's work
-  is merged, remove the worktree (its multi-GB `target/` goes with it). What
+  cargo rebuild every workspace crate. New worktrees are created at
+  `.claude/worktrees/pool-<NN>` (RFC-0171). When the queue lands a pool
+  worktree's branch, the sweep recycles it in place, detached at master, for
+  the next agent. rustc's incremental state is keyed to the path, so the next
+  first edit rebuilds incrementally. A worktree at any other path is removed on
+  merge as before. Never reuse your worktree after submitting: the recycled
+  path will soon belong to another agent. What
   gets left behind is abandoned checkouts, not merged ones (569 registered on
   2026-09-19, 362 untouched for two weeks): `scripts/worktree-status.sh
   --prune-stale --dry-run` lists them and `--prune-stale` removes them,

@@ -2295,6 +2295,58 @@ fn sweep_caches_merged_history_but_keeps_queue_admission_live() {
 }
 
 #[test]
+fn sweep_recycles_a_landed_pool_worktree_in_place() {
+    let fixture = QueueFixture::stack(&["a.txt"]);
+    run_git(&fixture.root, &["merge", "--ff-only", "a"]);
+    fs::write(fixture.root.join(".git/info/exclude"), "target/\nstate/\n.claude/\n")
+        .expect("ignore build caches like the real checkout");
+    let pool = fixture.root.join(".claude/worktrees");
+    let landed = pool.join("pool-00");
+    let dirty = pool.join("pool-01");
+    run_git(&fixture.root, &["worktree", "add", landed.to_str().unwrap(), "a"]);
+    run_git(&fixture.root, &["branch", "c", "master"]);
+    run_git(&fixture.root, &["worktree", "add", dirty.to_str().unwrap(), "c"]);
+    let state = landed.join("target/debug/incremental/witchy_types-fixture/s-1");
+    fs::create_dir_all(state.parent().unwrap()).expect("create slot target");
+    fs::write(&state, "incremental\n").expect("write incremental state");
+    fs::write(dirty.join("stray.txt"), "unfinished\n").expect("dirty the second slot");
+
+    fixture.mq_ok(&["status"], "true");
+    fs::write(
+        fixture.state.join("journal.jsonl"),
+        "{\"event\":\"merged\",\"branch\":\"a\"}\n{\"event\":\"merged\",\"branch\":\"c\"}\n",
+    )
+    .expect("write merged branch history");
+    let witchy_state = fixture._temp.path().join("witchy-state");
+    let output = fixture
+        .mq_command(&["sweep"], "true")
+        .env("WITCHY_STATE_DIR", &witchy_state)
+        .output()
+        .expect("run sweep");
+    assert!(output.status.success(), "sweep failed: {}", String::from_utf8_lossy(&output.stderr));
+
+    assert!(landed.is_dir(), "sweep deleted a landed pool worktree instead of recycling it");
+    assert!(state.is_file(), "recycling discarded the slot's incremental state");
+    let head = git_output(&landed, &["rev-parse", "--abbrev-ref", "HEAD"]);
+    assert_eq!(String::from_utf8_lossy(&head.stdout).trim(), "HEAD", "recycled slot is not detached");
+    assert!(witchy_state.join("worktree-pool/free/00").is_file(), "recycled slot was not marked free");
+    assert!(
+        !git_output(&fixture.root, &["show-ref", "--verify", "refs/heads/a"]).status.success(),
+        "sweep kept the landed branch ref of a recycled slot",
+    );
+    let journal = fs::read_to_string(fixture.state.join("journal.jsonl")).expect("read journal");
+    assert!(
+        journal.lines().any(|line| line.contains("\"swept\"") && line.contains("\"recycled\"")),
+        "recycle was not journaled as a sweep: {journal}",
+    );
+
+    assert!(dirty.join("stray.txt").is_file(), "sweep touched a dirty pool worktree");
+    let dirty_head = git_output(&dirty, &["branch", "--show-current"]);
+    assert_eq!(String::from_utf8_lossy(&dirty_head.stdout).trim(), "c");
+    assert!(!witchy_state.join("worktree-pool/free/01").exists(), "a dirty slot was marked free");
+}
+
+#[test]
 fn sweep_defers_branch_pruning_while_ready_work_waits() {
     let fixture = QueueFixture::stack(&["a.txt"]);
     fixture.mq_ok(&["status"], "true");

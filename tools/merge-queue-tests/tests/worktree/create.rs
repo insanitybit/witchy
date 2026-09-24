@@ -9,25 +9,72 @@ use super::support::{TempRepo, git, workspace_root};
 
 fn temp_repo() -> TempRepo {
     TempRepo::new("worktree-create", |path| {
-        git(path, &["init", "--quiet"]);
+        git(path, &["init", "--quiet", "-b", "master"]);
         git(path, &["config", "user.email", "worktree-test@witchy.invalid"]);
         git(path, &["config", "user.name", "Witchy Worktree Test"]);
         fs::write(path.join("README.md"), "fixture\n").expect("write fixture");
         git(path, &["add", "README.md"]);
         git(path, &["commit", "--quiet", "-m", "fixture"]);
+        // Build caches and queue state are ignored in the real checkout.
+        fs::write(path.join(".git/info/exclude"), "target/\nstate/\n.claude/\n")
+            .expect("write fixture excludes");
     })
 }
 
 fn create(repo: &Path, name: &str) -> Output {
+    create_with(repo, name, &[])
+}
+
+fn create_command(repo: &Path, name: &str, env: &[(&str, &str)]) -> Command {
     let script = workspace_root().join("scripts/worktree-create.sh");
-    Command::new("bash")
+    let mut command = Command::new("bash");
+    command
         .arg(script)
         .arg(name)
         .current_dir(repo)
         .env("CLAUDE_PROJECT_DIR", repo)
         .env("WITCHY_WORKTREE_CREATE_PREBUILD", "0")
+        .env_remove("WITCHY_STATE_DIR")
+        .env_remove("WITCHY_WORKTREE_POOL_MAX");
+    for (key, value) in env {
+        command.env(key, value);
+    }
+    command
+}
+
+fn create_with(repo: &Path, name: &str, env: &[(&str, &str)]) -> Output {
+    create_command(repo, name, env).output().expect("run worktree-create.sh")
+}
+
+/// What the merge-queue sweep does to a landed pool worktree.
+fn release(repo: &Path, worktree: &Path) {
+    let scripts = workspace_root().join("scripts");
+    let output = Command::new("bash")
+        .arg("-c")
+        .arg(". \"$0/state-paths.sh\" && . \"$0/worktree-pool.sh\" && worktree_pool_release \"$1\" \"$2\"")
+        .arg(&scripts)
+        .arg(repo)
+        .arg(worktree)
+        .env_remove("WITCHY_STATE_DIR")
         .output()
-        .expect("run worktree-create.sh")
+        .expect("run worktree_pool_release");
+    assert!(
+        output.status.success(),
+        "pool release failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn pool_slot(repo: &Path, slot: &str) -> PathBuf {
+    repo.join(".claude/worktrees").join(format!("pool-{slot}"))
+}
+
+/// Stand in for the incremental state an earlier task left in the slot.
+fn plant_incremental_state(worktree: &Path) -> PathBuf {
+    let state = worktree.join("target/debug/incremental/witchy_types-fixture/s-1");
+    fs::create_dir_all(state.parent().expect("state parent")).expect("create target dir");
+    fs::write(&state, "incremental\n").expect("write incremental state");
+    state
 }
 
 #[cfg(unix)]
@@ -174,4 +221,89 @@ fn worktree_create_runs_background_prebuild_at_utility_priority() {
     assert_eq!(calls.len(), 2, "expected build and test prebuild calls: {cargo}");
     assert!(calls[0].starts_with("build --workspace --manifest-path "));
     assert!(calls[1].starts_with("test --workspace --no-run --manifest-path "));
+}
+
+#[test]
+fn worktree_create_recycles_a_released_pool_slot_with_its_build_state() {
+    let repo = temp_repo();
+    let root = repo.path();
+    let first = created_path(&create(root, "first"));
+    assert_eq!(first, pool_slot(root, "00"), "new worktrees are created at pool paths");
+    let state = plant_incremental_state(&first);
+    release(root, &first);
+    assert_eq!(git(&first, &["rev-parse", "--abbrev-ref", "HEAD"]), "HEAD");
+
+    let output = create(root, "second");
+    let second = created_path(&output);
+    assert_eq!(second, first, "a free slot was not handed out");
+    assert_eq!(git(&second, &["branch", "--show-current"]), "worktree-second");
+    assert!(state.is_file(), "recycling discarded the slot's incremental state");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("recycled pool worktree"));
+
+    let third = created_path(&create(root, "third"));
+    assert_eq!(third, pool_slot(root, "01"), "a claimed slot was handed out twice");
+}
+
+#[test]
+fn worktree_create_past_the_pool_cap_makes_a_named_worktree() {
+    let repo = temp_repo();
+    let root = repo.path();
+    let cap = [("WITCHY_WORKTREE_POOL_MAX", "1")];
+    assert_eq!(created_path(&create_with(root, "first", &cap)), pool_slot(root, "00"));
+    assert_eq!(
+        created_path(&create_with(root, "overflow", &cap)),
+        root.join(".claude/worktrees/overflow"),
+    );
+    let off = [("WITCHY_WORKTREE_POOL_MAX", "0")];
+    assert_eq!(
+        created_path(&create_with(root, "unpooled", &off)),
+        root.join(".claude/worktrees/unpooled"),
+    );
+    let reserved = create(root, "pool-07");
+    assert!(!reserved.status.success(), "a caller claimed a pool path by name");
+}
+
+#[test]
+fn worktree_create_evicts_a_dirty_pool_slot_instead_of_handing_it_out() {
+    let repo = temp_repo();
+    let root = repo.path();
+    let first = created_path(&create(root, "first"));
+    let state = plant_incremental_state(&first);
+    release(root, &first);
+    fs::write(first.join("stray.txt"), "left behind\n").expect("dirty the free slot");
+
+    let output = create(root, "second");
+    let second = created_path(&output);
+    assert!(String::from_utf8_lossy(&output.stderr).contains("evicting slot 00"));
+    assert!(!second.join("stray.txt").exists(), "a dirty slot was handed out");
+    assert!(!state.exists(), "the evicted slot's cache survived");
+    assert_eq!(git(&second, &["branch", "--show-current"]), "worktree-second");
+}
+
+#[test]
+fn concurrent_worktree_creates_never_share_a_pool_slot() {
+    let repo = temp_repo();
+    let root = repo.path();
+    for name in ["seed-a", "seed-b"] {
+        let path = created_path(&create(root, name));
+        plant_incremental_state(&path);
+        release(root, &path);
+    }
+    let children: Vec<_> = (0..5)
+        .map(|index| {
+            create_command(root, &format!("racer-{index}"), &[])
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .expect("spawn concurrent worktree-create.sh")
+        })
+        .collect();
+    let mut paths: Vec<PathBuf> = children
+        .into_iter()
+        .map(|child| created_path(&child.wait_with_output().expect("wait for create")))
+        .collect();
+    paths.sort();
+    let before = paths.len();
+    paths.dedup();
+    assert_eq!(paths.len(), before, "two creates were handed the same worktree: {paths:?}");
 }

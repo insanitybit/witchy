@@ -32,6 +32,11 @@ if [ -e "$dest" ]; then
     echo "worktree-create: $dest already exists" >&2
     exit 1
 fi
+case "$name" in
+    pool-[0-9][0-9])
+        echo "worktree-create: '$name' is reserved for the worktree pool" >&2
+        exit 1 ;;
+esac
 
 # A deleted branch can still be journaled as merged. Reusing that name would
 # make the coordinator's next sweep remove this new, clean worktree.
@@ -54,7 +59,27 @@ if branch_unavailable "$branch"; then
     echo "worktree-create: branch $base_branch already exists or was previously merged; using $branch" >&2
 fi
 
-git worktree add -b "$branch" "$dest" HEAD 1>&2 || exit 1
+# RFC-0171: prefer a recycled pool worktree. Its path is one an earlier task
+# already built in, so rustc's path-keyed incremental state survives and the
+# first edit rebuilds incrementally instead of from scratch (measured 256s
+# first edit vs 43s second edit in a fresh worktree). Under the cap, a new
+# worktree is created AT a pool path so the sweep can recycle it later.
+# WITCHY_WORKTREE_POOL_MAX=0 turns the pool off.
+. "$script_dir/worktree-pool.sh"
+base="$(git rev-parse HEAD)"
+if [ "$(worktree_pool_max)" -gt 0 ]; then
+    if pooled="$(worktree_pool_claim "$root" "$branch" "$base")"; then
+        echo "worktree-create: recycled pool worktree $pooled on $branch" >&2
+        echo "$pooled"
+        exit 0
+    fi
+    if slot="$(worktree_pool_reserve_new "$root")"; then
+        dest="$(worktree_pool_slot_path "$root" "$slot")"
+        trap 'worktree_pool_unreserve "$root" "$slot"' EXIT
+    fi
+fi
+
+git worktree add -b "$branch" "$dest" "$base" 1>&2 || exit 1
 
 "$root/scripts/worktree-warm.sh" "$dest" 1>&2 || true
 

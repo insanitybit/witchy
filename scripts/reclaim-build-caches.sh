@@ -45,6 +45,7 @@ orphan_min_age_hours="${RECLAIM_ORPHAN_MIN_AGE_HOURS:-48}"
 include_unlanded=0
 include_clones=0
 include_queued=0
+pool_min_age_hours="${RECLAIM_POOL_MIN_AGE_HOURS:-24}"
 keep_free_gb=0
 
 usage() {
@@ -66,6 +67,8 @@ Usage: scripts/reclaim-build-caches.sh [options]
   --include-queued        also consider worktrees whose branch is sitting in
                           the merge queue (their owner may need a warm tree to
                           fix a red gate, so they are held back by default)
+  --pool-min-age-hours N  keep the cache of a free worktree-pool slot
+                          (RFC-0171) until it has sat free N hours (default 24)
   --keep-free-gb N        stop once free space reaches N GB
 USAGE
 }
@@ -78,6 +81,7 @@ while [ $# -gt 0 ]; do
         --include-unlanded) include_unlanded=1 ;;
         --include-clones) include_clones=1 ;;
         --include-queued) include_queued=1 ;;
+        --pool-min-age-hours) pool_min_age_hours="$2"; shift ;;
         --keep-free-gb) keep_free_gb="$2"; shift ;;
         -h|--help) usage; exit 0 ;;
         *) echo "unknown option: $1" >&2; usage >&2; exit 2 ;;
@@ -116,6 +120,9 @@ if [ "$include_queued" -eq 0 ]; then
 fi
 
 now="$(date +%s)"
+. "$root/scripts/state-paths.sh"
+. "$root/scripts/worktree-pool.sh"
+pool_state="$(worktree_pool_state_dir "$main")"
 start_free="$(free_mb)"
 printf 'reclaim: %s MB free before\n\n' "$start_free"
 printf '%9s  %-8s  %s\n' SIZE_MB STATE PATH
@@ -159,12 +166,26 @@ while IFS= read -r wt; do
         unlanded=0
     fi
 
+    # A free pool slot (RFC-0171) is detached at a landed master, so branch
+    # state alone would call its cache stale. Its age is how long it has sat
+    # free; worktree-create.sh evicts a slot whose cache is gone.
+    pool_age_hours=""
+    if [ "$gone" -eq 0 ] && [ "$branch" = HEAD ] \
+        && pool_slot="$(worktree_pool_slot_of "$main" "$wt")" \
+        && [ -f "$pool_state/free/$pool_slot" ]; then
+        pool_freed="$(cat "$pool_state/free/$pool_slot" 2>/dev/null || echo 0)"
+        case "$pool_freed" in '' | *[!0-9]*) pool_freed=0 ;; esac
+        pool_age_hours=$(( (now - pool_freed) / 3600 ))
+    fi
     for t in "$wt"/target*; do
         [ -d "$t" ] || continue
         base="$(basename "$t")"
         state=""
         if grep -qF -- "$t" <<<"$open_paths"; then
             state=LIVE
+        elif [ -n "$pool_age_hours" ] && [ "$pool_age_hours" -lt "$pool_min_age_hours" ]; then
+            # RFC-0171: a free pool slot keeps its cache for the next task.
+            state="POOL:${pool_age_hours}h"
         elif [ "$base" = target ] && [ "$include_clones" -eq 0 ]; then
             state=CLONE
         elif [ "$gone" -eq 1 ] && [ "$(( (now - $(stat -f %m "$t")) / 3600 ))" -lt "$orphan_min_age_hours" ]; then
