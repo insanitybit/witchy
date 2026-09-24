@@ -38,18 +38,6 @@ use crate::precompiled_declarations::PrecompiledDeclarationEnvironment;
 use crate::optimization_readiness::OptimizationReadiness;
 use crate::typeck::{self, ProperTailSiteManifest, TypeError};
 
-/// The structural `()` spelling is canonical; legacy names remain accepted
-/// while old source is migrated.
-pub(super) fn is_unit_type(ty: &Type) -> bool {
-    match ty.unqualified() {
-        Type::Tuple(items) => items.is_empty(),
-        Type::Named(name, arguments) => {
-            arguments.is_empty() && matches!(name.as_str(), "Nil" | "Unit")
-        }
-        _ => false,
-    }
-}
-
 /// The executable callable inventory produced by the canonical checked
 /// frontend.  Generic templates deliberately have no entry: a direct call may
 /// target only a concrete function whose body and signature were rechecked
@@ -206,7 +194,7 @@ pub struct CanonicalCheckedSource {
 
 impl CanonicalCheckedSource {
     /// The declared types of the typed module, keyed by bare and
-    /// entry-qualified name (see `canonical_aggregates::type_definitions`).
+    /// entry-qualified name (see `witchy_canonical_source::aggregates::type_definitions`).
     pub fn type_definitions(&self) -> &BTreeMap<String, witchy_syntax::ast::TypeDef> {
         &self.type_definitions
     }
@@ -849,7 +837,7 @@ fn attach_canonical_source(
     let launch_contract_digest = launch_contract_digest(&launch_contract_payload);
     let optimization_readiness = OptimizationReadiness::from_typed(&typed, source_bundle_digest)
         .map_err(|error| PipelineError::Type(TypeError { message: error.to_string() }))?;
-    let type_definitions = crate::canonical_aggregates::type_definitions(typed.module());
+    let type_definitions = witchy_canonical_source::aggregates::type_definitions(typed.module());
     checked.canonical_source = Some(CanonicalCheckedSource {
         console_fixture: false,
         build_entry: None,

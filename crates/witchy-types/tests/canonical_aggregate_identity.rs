@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use witchy_syntax::ast::{Type, TypeDef};
-use witchy_types::canonical_aggregates::{
+use witchy_canonical_source::aggregates::{
     concrete_aggregate_identity, scalar_aggregate_shape, ScalarAggregateShape,
 };
 
@@ -59,4 +59,71 @@ fn concrete_identity_bounds_nested_argument_work() {
     let mut argument = named("Int");
     for _ in 0..65 { argument = Type::Named("List".into(), vec![argument]); }
     assert!(concrete_aggregate_identity(&argument, &BTreeMap::new()).is_none());
+}
+
+// The actual std scheduler types, checked from source, must have finite
+// aggregate shapes. These compile witchy source, so they live with the
+// checker rather than in the source-contract crate.
+mod scheduler_shapes {
+    use std::collections::HashSet;
+    use witchy_canonical_source::aggregates::{is_v1_field_type, scalar_aggregate_shape, type_definitions};
+    use witchy_syntax::ast::Type;
+    use witchy_types::pipeline::link_checked_authenticated_from_source_bundle_with_user_modules;
+    use witchy_types::runtime_type::{AuthenticatedModuleOwners, ModuleLoadIdentity, PackageCoordinate, PackageSource};
+
+    fn owners(application: &str) -> AuthenticatedModuleOwners {
+        let toolchain = PackageCoordinate::new(PackageSource::Toolchain, "witchy/stdlib", "0.1.0").unwrap();
+        let application = PackageCoordinate::new(PackageSource::Workspace, application, "0.1.0").unwrap();
+        let mut owners = vec![("main".into(), ModuleLoadIdentity::new(application, ["main"]).unwrap())];
+        owners.extend(witchy_syntax::linker::STD_MODULES.iter().map(|name| {
+            ((*name).to_owned(), ModuleLoadIdentity::new(toolchain.clone(), ["std", name]).unwrap())
+        }));
+        AuthenticatedModuleOwners::from_loader_assignments(owners).unwrap()
+    }
+
+    #[test]
+    fn canonical_task_tuple_has_a_bounded_concrete_shape() {
+        let source = b"import chan\nasync fn next(n: Int) -> Int:\n    n + 1\nasync fn main(console: Console):\n    let values = chan.par_map([4], fn(n): next(n)).await\n    console.print(\"${values}\")\n";
+        let checked = link_checked_authenticated_from_source_bundle_with_user_modules(
+            vec![("main".into(), source.to_vec()),
+                ("task".into(), include_bytes!("../../../std/task.witchy").to_vec()),
+                ("chan".into(), include_bytes!("../../../std/chan.witchy").to_vec())],
+            "main", |_, _, _| Ok(Default::default()),
+            &HashSet::from(["main".into()]),
+            owners("test/task-tuple-shape"),
+        ).expect("the actual task-tuple source checks");
+        let definitions = type_definitions(checked.canonical_source().unwrap().typed_module().module());
+        let nil = Type::Named("Nil".into(), vec![]);
+        let int = Type::Named("Int".into(), vec![]);
+        let tuple = Type::Tuple(vec![
+            Type::Named("List".into(), vec![Type::Named("task.Task".into(), vec![nil])]),
+            Type::Named("List".into(), vec![Type::Named("chan.Receiver".into(), vec![int])]),
+        ]);
+        let task = Type::Named("task.Task".into(), vec![tuple.clone()]);
+        assert!(is_v1_field_type(&tuple, &definitions), "the concrete tuple argument is supported");
+        assert!(is_v1_field_type(&task, &definitions), "finite Task<Tuple> refused within the shape-node budget");
+        assert!(scalar_aggregate_shape(&task, &definitions).is_some());
+    }
+
+    #[test]
+    fn canonical_scheduler_slot_is_a_finite_owned_graph() {
+        let checked = link_checked_authenticated_from_source_bundle_with_user_modules(
+            vec![("main".into(), b"import task\nfn main():\n    task.run(task.done(()))\n".to_vec()),
+                ("task".into(), include_bytes!("../../../std/task.witchy").to_vec())],
+            "main", |_, _, _| Ok(Default::default()),
+            &HashSet::from(["main".into()]),
+            owners("test/scheduler-shape"),
+        ).expect("actual source scheduler checks and messages are prepared");
+        let definitions = type_definitions(checked.canonical_source().unwrap().typed_module().module());
+        let slot = Type::Named("task.Slot".into(), vec![]);
+        let definition = definitions.get("task.Slot").expect("actual scheduler slot declaration");
+        let first_bad_field = definition.variants.iter().flat_map(|variant| &variant.fields)
+            .find(|field| !is_v1_field_type(field, &definitions));
+        assert!(is_v1_field_type(&slot, &definitions),
+            "finite scheduler graph refused; independently unsupported field={first_bad_field:?}");
+
+        let mut invalid = definitions.clone();
+        invalid.get_mut("task.Slot").unwrap().variants[0].fields.push(Type::Named("Missing".into(), vec![]));
+        assert!(!is_v1_field_type(&slot, &invalid), "an unknown field cannot acquire storage authority");
+    }
 }

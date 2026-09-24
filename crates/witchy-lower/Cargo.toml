@@ -16,6 +16,7 @@ raw-module-test-api = ["witchy-wir/legacy-encoder-bridge"]
 # so it never enters a non-test or wasm build.
 [dependencies]
 witchy-syntax = { path = "../witchy-syntax" }
+witchy-canonical-source = { path = "../witchy-canonical-source" }
 witchy-types = { path = "../witchy-types" }
 witchy-wir = { path = "../witchy-wir" }
 # Fast non-DoS-resistant hasher for internal tables (see witchy-types).

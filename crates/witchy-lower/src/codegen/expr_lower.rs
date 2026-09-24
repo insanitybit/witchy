@@ -2210,7 +2210,7 @@ impl<'types> Codegen<'types> {
                 let Type::Named(name, _) = ty else {
                     return None;
                 };
-                let variants = witchy_types::typeck::anon_union_synthetic_variants(&name)?;
+                let variants = witchy_syntax::synthetic_names::anon_union_synthetic_variants(&name)?;
                 let (_, arity) = variants
                     .iter()
                     .find(|(variant, arity)| variant == tag && *arity == args.len())?;

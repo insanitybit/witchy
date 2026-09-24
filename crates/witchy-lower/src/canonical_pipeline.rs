@@ -44,7 +44,7 @@ pub(crate) fn admit_checked_module_with_observer<R>(
         .canonical_source()
         .ok_or(CanonicalPipelineError::MissingCheckedSourceWitness)?;
     // One shape memo spans validation and admission (see `with_shape_memo`).
-    witchy_types::canonical_aggregates::with_shape_memo(source.type_definitions(), || {
+    witchy_canonical_source::aggregates::with_shape_memo(source.type_definitions(), || {
         let validated = validate_checked_source(source)?;
         witchy_wir::admit_canonical_with_observer(validated, source, observe)
             .map_err(CanonicalPipelineError::Admission)
@@ -54,7 +54,7 @@ pub(crate) fn admit_checked_module_with_observer<R>(
 pub(crate) fn admit_checked_source(
     source: &CanonicalCheckedSource,
 ) -> Result<AdmittedCanonicalArtifact, CanonicalPipelineError> {
-    witchy_types::canonical_aggregates::with_shape_memo(source.type_definitions(), || {
+    witchy_canonical_source::aggregates::with_shape_memo(source.type_definitions(), || {
         let validated = validate_checked_source(source)?;
         admit_canonical(validated, source).map_err(CanonicalPipelineError::Admission)
     })
@@ -83,7 +83,7 @@ pub(crate) fn validate_checked_source(
     // Layout derivation and lowering query the same source's projection five
     // times; share one (see `canonical_layouts::with_layout_memo`).
     crate::canonical_layouts::with_layout_memo(source, || {
-        witchy_types::canonical_aggregates::with_shape_memo(source.type_definitions(), || {
+        witchy_canonical_source::aggregates::with_shape_memo(source.type_definitions(), || {
             validate_checked_source_inner(source)
         })
     })

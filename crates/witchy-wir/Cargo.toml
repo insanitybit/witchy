@@ -18,6 +18,9 @@ wasmparser = "0.251"
 # `DiagTemplate::id()` into their `__witchy_abort` calls, so the template ids
 # stay single-sourced. `witchy-syntax` is dependency-free, so no cycle.
 witchy-syntax = { path = "../witchy-syntax" }
+# The checked-source contract (RFC-0170): aggregate shapes and capability
+# representations shared with the checker without depending on it.
+witchy-canonical-source = { path = "../witchy-canonical-source" }
 # The canonical source facade is the only production input that can mint
 # initial SafeWIR authority. witchy-types depends only on frontend crates, so
 # this dependency does not form a cycle.

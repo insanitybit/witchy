@@ -166,7 +166,7 @@ pub fn check_build_recipe_from_source_bundle(
                         | (Some(typeck::Ty::BuildEnv), 14) | (Some(typeck::Ty::BuildExec), 15)
                         | (Some(typeck::Ty::BuildNet), 16))
         })
-        || !wrapper.ret.as_ref().is_some_and(is_unit_type)
+        || !wrapper.ret.as_ref().is_some_and(witchy_canonical_source::is_unit_type)
     {
         return Err(refused("build recipe requires exact checked BuildOut/BuildRead/BuildEnv/BuildExec/BuildNet parameters in source order and `()` result; other providers are unsupported"));
     }

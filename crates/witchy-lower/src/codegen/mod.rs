@@ -978,7 +978,7 @@ impl EqShape {
 }
 
 fn anon_union_variant_names(name: &str) -> Option<Vec<String>> {
-    witchy_types::typeck::anon_union_synthetic_variants(name).map(|variants| {
+    witchy_syntax::synthetic_names::anon_union_synthetic_variants(name).map(|variants| {
         variants
             .into_iter()
             .map(|(tag, _)| format!(".{tag}"))
@@ -991,7 +991,7 @@ fn anon_union_tag_key(tag: &str, arity: usize) -> String {
 }
 
 fn anon_union_variant_types(name: &str, args: &[Type]) -> Option<Vec<Vec<Type>>> {
-    let variants = witchy_types::typeck::anon_union_synthetic_variants(name)?;
+    let variants = witchy_syntax::synthetic_names::anon_union_synthetic_variants(name)?;
     let mut out = Vec::with_capacity(variants.len());
     let mut offset = 0usize;
     for (_, arity) in variants {
@@ -2252,7 +2252,7 @@ impl<'types> Codegen<'types> {
     }
 
     fn anon_union_tag_codes_for(&mut self, name: &str) -> Option<Vec<i32>> {
-        let variants = witchy_types::typeck::anon_union_synthetic_variants(name)?;
+        let variants = witchy_syntax::synthetic_names::anon_union_synthetic_variants(name)?;
         Some(
             variants
                 .into_iter()
@@ -4085,7 +4085,7 @@ impl<'types> Codegen<'types> {
         let Type::Named(name, union_args) = expected?.unqualified() else {
             return None;
         };
-        let variants = witchy_types::typeck::anon_union_synthetic_variants(name)?;
+        let variants = witchy_syntax::synthetic_names::anon_union_synthetic_variants(name)?;
         let mut offset = 0usize;
         for (variant, variant_arity) in variants {
             let end = offset.checked_add(variant_arity)?;
@@ -11763,7 +11763,7 @@ impl<'types> Codegen<'types> {
                     )),
                     _ => None,
                 },
-                t if witchy_types::typeck::anon_union_synthetic_variants(t).is_some() => {
+                t if witchy_syntax::synthetic_names::anon_union_synthetic_variants(t).is_some() => {
                     let variants = anon_union_variant_types(t, args)?;
                     let inst: Option<Vec<Vec<EqShape>>> = variants
                         .iter()

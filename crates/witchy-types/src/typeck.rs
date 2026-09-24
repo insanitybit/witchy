@@ -24,6 +24,7 @@ use witchy_syntax::ast::{
     Stmt, UnOp,
 };
 use witchy_syntax::build_entry::{build_entrypoint, is_build_capability_type};
+use witchy_syntax::synthetic_names::anon_union_synthetic_variants;
 use witchy_syntax::{cap_ops, intrinsics};
 use witchy_cap_model::{CapabilityClass, CapabilityKind};
 
@@ -536,16 +537,6 @@ fn tuple_synthetic_arity(name: &str) -> Option<usize> {
         .and_then(|n| n.parse::<usize>().ok())
 }
 
-fn parse_fixed_width_usize(s: &str, pos: &mut usize, width: usize) -> Option<usize> {
-    let end = pos.checked_add(width)?;
-    let part = s.get(*pos..end)?;
-    if !part.bytes().all(|b| b.is_ascii_digit()) {
-        return None;
-    }
-    *pos = end;
-    part.parse().ok()
-}
-
 fn anon_union_synthetic_arity(name: &str) -> Option<usize> {
     anon_union_synthetic_variants(name).map(|variants| {
         variants
@@ -553,31 +544,6 @@ fn anon_union_synthetic_arity(name: &str) -> Option<usize> {
             .map(|(_, arity)| arity)
             .sum()
     })
-}
-
-pub fn anon_union_synthetic_variants(name: &str) -> Option<Vec<(String, usize)>> {
-    let mut pos = "__union".len();
-    let rest = name.strip_prefix("__union")?;
-    if rest.len() < 10 {
-        return None;
-    }
-    let count = parse_fixed_width_usize(name, &mut pos, 10)?;
-    let mut variants = Vec::with_capacity(count);
-    for _ in 0..count {
-        let len = parse_fixed_width_usize(name, &mut pos, 10)?;
-        let mut bytes = Vec::with_capacity(len);
-        for _ in 0..len {
-            let byte = parse_fixed_width_usize(name, &mut pos, 3)?;
-            if byte > u8::MAX as usize {
-                return None;
-            }
-            bytes.push(byte as u8);
-        }
-        let tag = String::from_utf8(bytes).ok()?;
-        let arity = parse_fixed_width_usize(name, &mut pos, 10)?;
-        variants.push((tag, arity));
-    }
-    (pos == name.len()).then_some(variants)
 }
 
 /// Validate that every named type in `t` is known — a builtin, a declared type,
@@ -5133,8 +5099,8 @@ impl Checker {
             // into an owner field exactly like the `&Int` place owner.
             || is_admitted_slice_view(payload)
             || ty_to_ast(payload).is_some_and(|payload| {
-                crate::canonical_aggregates::is_record_root_payload(&payload, &self.canonical_definitions)
-                    || crate::canonical_aggregates::is_list_root_payload(&payload)
+                witchy_canonical_source::aggregates::is_record_root_payload(&payload, &self.canonical_definitions)
+                    || witchy_canonical_source::aggregates::is_list_root_payload(&payload)
             })
     }
 
@@ -17065,7 +17031,7 @@ fn run_check_selected(
         })
         .collect();
     let mut c = Checker {
-        canonical_definitions: crate::canonical_aggregates::type_definitions(module),
+        canonical_definitions: witchy_canonical_source::aggregates::type_definitions(module),
         resolve_cache: std::cell::RefCell::new(HashMap::new()),
         type_record: if record { Some(HashMap::new()) } else { None },
         // Construction requests are also retained during ordinary checking so

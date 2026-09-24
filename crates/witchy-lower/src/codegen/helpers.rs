@@ -1031,7 +1031,7 @@ impl Codegen<'_> {
                 self.build_variant_rcopy_wir(&all)
             }
             EqShape::AdtInst(tyname, variants)
-                if witchy_types::typeck::anon_union_synthetic_variants(tyname).is_some() =>
+                if witchy_syntax::synthetic_names::anon_union_synthetic_variants(tyname).is_some() =>
             {
                 let tag_codes = self.anon_union_tag_codes_for(tyname)?;
                 self.build_variant_rcopy_wir_with_tags(&tag_codes, variants)
@@ -1379,7 +1379,7 @@ impl Codegen<'_> {
                 return self.build_variant_eq_wir(&all);
             }
             EqShape::AdtInst(tyname, variant_shapes)
-                if witchy_types::typeck::anon_union_synthetic_variants(tyname).is_some() =>
+                if witchy_syntax::synthetic_names::anon_union_synthetic_variants(tyname).is_some() =>
             {
                 let tag_codes = self.anon_union_tag_codes_for(tyname)?;
                 let all = variant_shapes.clone();

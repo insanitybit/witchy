@@ -20,7 +20,9 @@ legal. Adding one requires changing the contract and this ledger together, so
 architecture growth is explicit and reviewable. `witchy-types` may depend on
 `witchy-caps` to bind the launch contract before admission, and `witchy-wir`
 may depend on `witchy-types` to authenticate lowered candidates against checked
-source; neither edge points back up the stage graph.
+source; neither edge points back up the stage graph. RFC-0170 retires the
+`witchy-wir -> witchy-types` edge by moving the checked-source contract SafeWIR
+consumes into `witchy-canonical-source`, beneath both.
 
 ## Semantic-surface baseline
 
@@ -102,13 +104,14 @@ stage crates have this maximum direct-dependency graph:
 | `witchy-testkit` | `cap-model` | KEEP | Keep deterministic fixture models, validation, provider state machines, expectations, and transcripts authority-free and independent of compiler and runtime stages. |
 | `witchy-test-host` | `testkit` | KEEP | Keep backend-neutral fixture dispatch over opaque handles; adapters in the interpreter, Wasmtime runtime, and browser remain consumers rather than dependencies. |
 | `witchy-syntax` | `cap-model` | KEEP | Keep source, AST, diagnostics, expansion, and base lowering self-contained above the shared capability vocabulary. |
-| `witchy-types` | `cap-model`, `syntax` | KEEP | Expose checked modules and stable type/witness identities instead of pass internals. |
-| `witchy-wir` | `syntax` | NARROW | Retain only the shared diagnostic-template dependency; keep AST and type-system concepts out of WIR. |
+| `witchy-canonical-source` | `syntax` | EXTRACT | RFC-0170: the AST-level checked-source contract (aggregate shapes, capability representations) shared by the checker, SafeWIR and lowering, so `witchy-wir` stops depending on `witchy-types`. No inference and no checker `Ty`. |
+| `witchy-types` | `canonical-source`, `cap-model`, `syntax` | KEEP | Expose checked modules and stable type/witness identities instead of pass internals. |
+| `witchy-wir` | `canonical-source`, `syntax` | NARROW | Retain only the shared diagnostic-template dependency; keep AST and type-system concepts out of WIR. |
 | `witchy-caps` | `cap-model`, `syntax` | KEEP | Keep source-footprint analysis compiler-side and consume the dependency-bottom capability vocabulary without duplicating it. |
 | `witchy-confinement` | none | KEEP | Own the target-neutral derived filesystem, network, Fetch-origin, and syscall-class policy plus target-gated enforcement providers, without depending on compiler stages, Wasmtime, or browsers. The safe Linux Landlock dependency isn't a stage edge. |
 | `witchy-worker-protocol` | none | KEEP | Keep the bounded, versioned worker admission and response protocol dependency-bottom and independent of compiler/runtime implementation. |
 | `witchy-compiler-worker` | `witchy-confinement`, `witchy-worker-protocol` | EXTRACT | Keep the confined compiler-worker process boundary above the protocol and confinement policy, with no dependency on parser, type-checker, or runtime stages. |
-| `witchy-lower` | `syntax`, `types`, `wir` | KEEP | Lower typed source to WIR through explicit checked/type-information inputs. |
+| `witchy-lower` | `canonical-source`, `syntax`, `types`, `wir` | KEEP | Lower typed source to WIR through explicit checked/type-information inputs. |
 | `witchy-runtime` | `cap-model`, `caps`, `confinement`, `syntax`, `test-host`, `testkit`, `wir` | EXTRACT | Derive one target-neutral outer policy from concrete runtime grants; keep platform providers outside the Wasmtime kernel. The optional fixture adapter consumes the authority-free test host and testkit; compiler implementation and Wasmtime bridging have distinct `native/compiler.rs` and `runtime/compiler.rs` seams. Inject the service implementation from above until post-compilation enforcement has no parser/type/WIR implementation dependency. |
 | `witchy-interp` | `caps`, `runtime`, `syntax`, `test-host`, `testkit`, `types` | NARROW | Consume runtime values and policy interfaces without importing the native Wasm sandbox. Its optional fixture adapter delegates to the same test host and testkit as Wasmtime. |
 

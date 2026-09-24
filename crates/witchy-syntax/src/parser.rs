@@ -23,18 +23,6 @@ impl fmt::Display for ParseError {
 
 impl std::error::Error for ParseError {}
 
-fn anon_union_type_name(variants: &[(String, usize)]) -> String {
-    let mut suffix = format!("{:010}", variants.len());
-    for (tag, arity) in variants {
-        suffix.push_str(&format!("{:010}", tag.len()));
-        for byte in tag.as_bytes() {
-            suffix.push_str(&format!("{byte:03}"));
-        }
-        suffix.push_str(&format!("{arity:010}"));
-    }
-    format!("__union{suffix}")
-}
-
 fn reserved_source_identifier(name: &str) -> bool {
     name.contains("__")
 }
@@ -3467,7 +3455,7 @@ impl Parser {
         let shape: Vec<(String, usize)> =
             variants.iter().map(|(tag, payloads)| (tag.clone(), payloads.len())).collect();
         let args = variants.into_iter().flat_map(|(_, payloads)| payloads).collect();
-        Ok(Type::Named(anon_union_type_name(&shape), args))
+        Ok(Type::Named(crate::synthetic_names::anon_union_type_name(&shape), args))
     }
 
     fn anon_union_injection(&mut self) -> Result<Expr, ParseError> {

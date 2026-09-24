@@ -10,10 +10,11 @@
 //! must exempt.
 
 use witchy_syntax::ast::{self, ImplOrigin, Item, Module};
+use witchy_syntax::synthetic_names::anon_union_synthetic_variants;
 
 use super::{
-    anon_union_synthetic_variants, dequalify_home, detect_entry_module, diagnostic_callable_name,
-    is_anon_record_synthetic_name, terr, TypeError,
+    dequalify_home, detect_entry_module, diagnostic_callable_name, is_anon_record_synthetic_name,
+    terr, TypeError,
 };
 
 pub(super) fn compiler_syntax_type_name(name: &str) -> Option<&'static str> {

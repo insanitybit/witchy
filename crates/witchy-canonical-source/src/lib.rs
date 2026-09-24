@@ -1,0 +1,28 @@
+//! `witchy-canonical-source` — the checked-source contract between the checker
+//! and canonical SafeWIR (RFC-0170).
+//!
+//! It holds the AST-level shapes and judgments that `witchy-types` produces
+//! and `witchy-wir` consumes: scalar aggregate shapes and capability
+//! representations. Nothing here performs inference or names the checker's
+//! internal `Ty`; a judgment that needs the typing tables belongs upstream in
+//! `witchy-types`.
+
+#![allow(clippy::collapsible_if, clippy::collapsible_match, clippy::items_after_test_module)]
+#![deny(unsafe_code)]
+
+use witchy_syntax::ast::Type;
+
+pub mod aggregates;
+pub mod capabilities;
+
+/// The structural `()` spelling is canonical; legacy names remain accepted
+/// while old source is migrated.
+pub fn is_unit_type(ty: &Type) -> bool {
+    match ty.unqualified() {
+        Type::Tuple(items) => items.is_empty(),
+        Type::Named(name, arguments) => {
+            arguments.is_empty() && matches!(name.as_str(), "Nil" | "Unit")
+        }
+        _ => false,
+    }
+}

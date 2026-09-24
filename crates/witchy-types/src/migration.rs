@@ -161,7 +161,7 @@ fn signatures(module: &Module) -> BTreeMap<String, Signature> {
         .iter()
         .filter_map(|item| {
             let Item::Function(function) = item else { return None };
-            let returns_nil = function.ret.as_ref().is_none_or(crate::pipeline::is_unit_type);
+            let returns_nil = function.ret.as_ref().is_none_or(witchy_canonical_source::is_unit_type);
             Some((
                 function.name.clone(),
                 Signature {

@@ -41,7 +41,7 @@ pub(crate) fn synthesize_anon_union_impls(
 
     let mut impls = Vec::new();
     for (name, arity) in heads {
-        let Some(variants) = crate::typeck::anon_union_synthetic_variants(&name) else {
+        let Some(variants) = witchy_syntax::synthetic_names::anon_union_synthetic_variants(&name) else {
             continue;
         };
         if let Some(trait_name) = &show_trait
@@ -170,7 +170,7 @@ fn collect_anon_union_heads_method_sig(ms: &MethodSig, out: &mut HashMap<String,
 fn collect_anon_union_heads_type(ty: &Type, out: &mut HashMap<String, usize>) {
     match ty {
         Type::Named(name, args) => {
-            if let Some(variants) = crate::typeck::anon_union_synthetic_variants(name) {
+            if let Some(variants) = witchy_syntax::synthetic_names::anon_union_synthetic_variants(name) {
                 let arity = variants.iter().map(|(_, arity)| *arity).sum();
                 if arity == args.len() {
                     out.insert(name.clone(), arity);

@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt;
 
 use sha2::{Digest, Sha256};
-use witchy_types::canonical_aggregates::{aggregate_key, canonical_owner_aggregate_identity, concrete_aggregate_identity, is_scalar_type, is_v1_list_element_type, scalar_aggregate_shape, shape_from_definition};
+use witchy_canonical_source::aggregates::{aggregate_key, canonical_owner_aggregate_identity, concrete_aggregate_identity, is_scalar_type, is_v1_list_element_type, scalar_aggregate_shape, shape_from_definition};
 use witchy_syntax::ast::{self, Item, Type, TypeDef};
 use witchy_types::pipeline::CanonicalCheckedSource;
 use witchy_types::typeck;
@@ -214,7 +214,7 @@ pub(crate) fn rooted_slice_layouts(
 /// and the callable qualifiers dropped, so `fn(Int) -> Int` written at a
 /// parameter, a lambda, and a declaration share one closure layout.
 pub(crate) fn closure_key(ty: &Type) -> Type {
-    if let Some(view) = witchy_types::canonical_aggregates::owner_carried_view_identity(ty) {
+    if let Some(view) = witchy_canonical_source::aggregates::owner_carried_view_identity(ty) {
         return view;
     }
     match ty.unqualified() {
@@ -247,7 +247,7 @@ pub(crate) fn canonical_closure_key(
     // Lowering asks this of the same few `fn` and aggregate types for every
     // list update and record rebuild of the std executor; neither identity
     // normalization nor the key rewrite is otherwise memoized for `fn` types.
-    witchy_types::canonical_aggregates::memoize_derived_type("canonical_closure_key", ty, definitions, || {
+    witchy_canonical_source::aggregates::memoize_derived_type("canonical_closure_key", ty, definitions, || {
         let identity = concrete_aggregate_identity(ty, definitions)
             .unwrap_or_else(|| ty.unqualified().clone());
         closure_key(&identity)
@@ -405,7 +405,7 @@ fn project_layouts(
     };
 
     let memo_definitions = std::rc::Rc::clone(&projection.definitions);
-    witchy_types::canonical_aggregates::with_shape_memo(&memo_definitions, || -> Result<(), CanonicalLayoutError> {
+    witchy_canonical_source::aggregates::with_shape_memo(&memo_definitions, || -> Result<(), CanonicalLayoutError> {
         for item in &typed.module().items {
             let Item::Function(function) = item else { continue };
             if !scope.contains(&function.name) {
@@ -575,12 +575,12 @@ impl LayoutProjection {
     fn visit_type_fields(&mut self, ty: &Type) -> Result<(), CanonicalLayoutError> {
         // Checked capability brands and their optional form are externrefs,
         // never heap aggregates with pointer-bearing payload slots.
-        if witchy_types::canonical_capabilities::representation(ty, &self.definitions).is_some() {
+        if witchy_canonical_source::capabilities::representation(ty, &self.definitions).is_some() {
             return Ok(());
         }
         // A dictionary is laid out as its canonical tuple of the key list
         // and the value list, before any aggregate rule sees the name.
-        if let Some(tuple) = witchy_types::canonical_aggregates::dictionary_as_tuple(ty) {
+        if let Some(tuple) = witchy_canonical_source::aggregates::dictionary_as_tuple(ty) {
             return self.visit_type(&tuple);
         }
         match ty {
@@ -691,7 +691,7 @@ impl LayoutProjection {
         Vec<RootedSliceLayout>,
     ), CanonicalLayoutError> {
         let memo_definitions = std::rc::Rc::clone(&self.definitions);
-        witchy_types::canonical_aggregates::with_shape_memo(&memo_definitions, move || self.finish_with_families_scoped())
+        witchy_canonical_source::aggregates::with_shape_memo(&memo_definitions, move || self.finish_with_families_scoped())
     }
 
     fn finish_with_families_scoped(self) -> Result<(
@@ -719,7 +719,7 @@ impl LayoutProjection {
             let source = canonical_layout_type(ty, &self.definitions);
             // Direct and optional host tokens already have a checked externref
             // ABI. Their source shape must not also mint an aggregate family.
-            if witchy_types::canonical_capabilities::representation(&source, &self.definitions).is_some() {
+            if witchy_canonical_source::capabilities::representation(&source, &self.definitions).is_some() {
                 return None;
             }
             let shape = scalar_aggregate_shape(&source, &self.definitions)?;
@@ -991,7 +991,7 @@ fn type_requires_opaque_owner(
     {
         return true;
     }
-    if witchy_types::canonical_capabilities::representation(ty, definitions).is_some() {
+    if witchy_canonical_source::capabilities::representation(ty, definitions).is_some() {
         return true;
     }
     if matches!(ty.unqualified(), Type::Fn(..)) {
@@ -1005,7 +1005,7 @@ fn type_requires_opaque_owner(
         return false;
     }
     let requires_owner = if let Some(tuple) =
-        witchy_types::canonical_aggregates::dictionary_as_tuple(identity.unqualified())
+        witchy_canonical_source::aggregates::dictionary_as_tuple(identity.unqualified())
     {
         type_requires_opaque_owner(
             &tuple, definitions, opaque_signatures, opaque_aggregates, visiting,
@@ -1061,7 +1061,7 @@ fn intern_closure_environment(
         let mut storage = Vec::with_capacity(fields.len());
         let mut owner_field = 2u32;
         for field in &fields {
-            if witchy_types::canonical_capabilities::representation(field, definitions).is_some() {
+            if witchy_canonical_source::capabilities::representation(field, definitions).is_some() {
                 storage.push(CaptureStorage::OwnerField(owner_field));
                 owner_field = owner_field.checked_add(1).ok_or_else(||
                     CanonicalLayoutError::InvalidLayout("opaque capture field overflow".into()))?;
@@ -1137,7 +1137,7 @@ fn opaque_owner_type_for(
 #[allow(clippy::too_many_arguments)]
 fn intern_opaque_aggregate_environment(
     interner: &mut LayoutInterner,
-    shape: &witchy_types::canonical_aggregates::ScalarAggregateShape,
+    shape: &witchy_canonical_source::aggregates::ScalarAggregateShape,
     definitions: &BTreeMap<String, TypeDef>,
     recursive_types: &HashSet<Type>,
     closure_layouts: &HashMap<Type, LayoutId>,
@@ -1154,7 +1154,7 @@ fn intern_opaque_aggregate_environment(
         let first_field = children.len();
         let mut storage = Vec::with_capacity(fields.len());
         for field in &fields {
-            if witchy_types::canonical_capabilities::representation(field, definitions).is_some()
+            if witchy_canonical_source::capabilities::representation(field, definitions).is_some()
                 || opaque_owner_type_for(
                     field, definitions, closure_owner_types, aggregate_owner_types,
                 ).is_some()
@@ -1231,7 +1231,7 @@ fn intern_v1_layout_checked(
     active: &mut HashSet<Type>,
     closure_layouts: &HashMap<Type, LayoutId>,
 ) -> Result<witchy_wir::layout::LayoutId, CanonicalLayoutError> {
-    if witchy_types::canonical_capabilities::representation(ty, definitions).is_some() {
+    if witchy_canonical_source::capabilities::representation(ty, definitions).is_some() {
         return Err(CanonicalLayoutError::UnsupportedType(format!("opaque capability has no linear layout: {ty:?}")));
     }
     let key = canonical_layout_type(ty, definitions);
@@ -1299,7 +1299,7 @@ fn intern_v1_layout_fields(
             .intern_packed_list(element, RcHeader::Required)
             .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()));
     }
-    if let Some(tuple) = witchy_types::canonical_aggregates::dictionary_as_tuple(ty) {
+    if let Some(tuple) = witchy_canonical_source::aggregates::dictionary_as_tuple(ty) {
         return intern_v1_layout_checked(
             interner, &tuple, definitions, recursive_types, active, closure_layouts,
         );
@@ -1433,7 +1433,7 @@ fn collect_heap_targets(
         targets.extend(std::iter::once(ty.clone()));
         return;
     }
-    if let Some(tuple) = witchy_types::canonical_aggregates::dictionary_as_tuple(ty) {
+    if let Some(tuple) = witchy_canonical_source::aggregates::dictionary_as_tuple(ty) {
         collect_heap_targets(&tuple, definitions, targets);
         return;
     }
@@ -1788,7 +1788,7 @@ mod tests {
     }
 
     fn heap_definition(name: &str, fields: Vec<Type>) -> witchy_syntax::ast::TypeDef {
-        let mut definition = witchy_types::canonical_aggregates::ScalarAggregateShape {
+        let mut definition = witchy_canonical_source::aggregates::ScalarAggregateShape {
             name: name.into(), fields, variants: Vec::new(), tagged: false, packed: false,
         }.packed_view();
         definition.packed = false;
@@ -2254,7 +2254,7 @@ mod tests {
         )
         .expect("decode canonical tuple layout");
         // A tuple is an anonymous heap aggregate: a fixed record of its
-        // items behind one reference (see `canonical_aggregates`).
+        // items behind one reference (see `witchy_canonical_source::aggregates`).
         assert!(matches!(
             layouts.get(bundle.roots()[0]).expect("tuple root").kind(),
             LayoutKind::PackedRecord { fields } if fields.len() == 2
@@ -2396,7 +2396,7 @@ mod tests {
             vec![("main".into(), b"type Node:\n    value: Int\n\nfn main() -> Int:\n    0\n".to_vec())],
             "main", |_, _, _| Ok(Default::default()),
         ).unwrap();
-        let definitions = witchy_types::canonical_aggregates::type_definitions(
+        let definitions = witchy_canonical_source::aggregates::type_definitions(
             checked.canonical_source().unwrap().typed_module().module());
         let callable = |name: &str, convention| Type::Fn(
             vec![named(name)],

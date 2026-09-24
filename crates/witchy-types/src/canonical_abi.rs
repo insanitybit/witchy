@@ -241,7 +241,7 @@ impl Context {
                 _ => None,
             })
             .collect();
-        let definitions = crate::canonical_aggregates::type_definitions(module);
+        let definitions = witchy_canonical_source::aggregates::type_definitions(module);
         Self { nominal_ordinals, type_declarations, definitions }
     }
 
@@ -560,7 +560,7 @@ fn rooted_view_from_ty(
         }
         Ty::Named(..) => {
             if !crate::typeck::ty_to_ast(payload).is_some_and(|payload| {
-                crate::canonical_aggregates::is_record_root_payload(&payload, &context.definitions)
+                witchy_canonical_source::aggregates::is_record_root_payload(&payload, &context.definitions)
             }) {
                 return Err(CanonicalAbiError::Unsupported(
                     "rooted view payload has no admitted authenticated carrier".into(),
@@ -637,7 +637,7 @@ fn rooted_view_from_ast(
         {
             // A record root is a head; scalar and String leaves appear only as
             // its type arguments.
-            if !crate::canonical_aggregates::is_record_root_payload(payload.unqualified(), &context.definitions) {
+            if !witchy_canonical_source::aggregates::is_record_root_payload(payload.unqualified(), &context.definitions) {
                 return Err(CanonicalAbiError::Unsupported(
                     "rooted view payload has no admitted authenticated carrier".into(),
                 ));
@@ -672,7 +672,7 @@ fn is_user_record_name(name: &str) -> bool {
     !matches!(name, "Int" | "Float" | "Duration" | "Bool" | "Nil" | "Unit" | "String" | "Bytes"
         | "List" | "Dict" | "Option" | "Result" | "Slice" | "SecretStore")
         && !is_capability_name(name)
-        && crate::typeck::anon_union_synthetic_variants(name).is_none()
+        && witchy_syntax::synthetic_names::anon_union_synthetic_variants(name).is_none()
 }
 
 fn rooted_record_payload_key(identity: &[u8]) -> CanonicalTypeKey {
@@ -898,7 +898,7 @@ fn encode_ty(ty: &Ty, context: &Context, bytes: &mut Vec<u8>) -> Result<(), Cano
             bytes.push(33);
             encode_ty(&args[0], context, bytes)?;
         }
-        Ty::Named(name, args) if crate::typeck::anon_union_synthetic_variants(name).is_some() => {
+        Ty::Named(name, args) if witchy_syntax::synthetic_names::anon_union_synthetic_variants(name).is_some() => {
             encode_anonymous_union_ty(name, args, context, bytes)?;
         }
         Ty::Named(name, args) => { bytes.push(27); bytes.extend_from_slice(&context.nominal(name)?.to_le_bytes()); put_len(bytes, args.len()); for arg in args.iter() { encode_ty(arg, context, bytes)?; } }
@@ -918,7 +918,7 @@ fn encode_anonymous_union_ty(
     context: &Context,
     bytes: &mut Vec<u8>,
 ) -> Result<(), CanonicalAbiError> {
-    let variants = crate::typeck::anon_union_synthetic_variants(name).ok_or_else(|| {
+    let variants = witchy_syntax::synthetic_names::anon_union_synthetic_variants(name).ok_or_else(|| {
         CanonicalAbiError::InvalidCallable("invalid anonymous-union head".into())
     })?;
     let expected = variants.iter().map(|(_, arity)| *arity).sum::<usize>();
@@ -954,7 +954,7 @@ fn encode_ast(ty: &Type, context: &Context, bytes: &mut Vec<u8>) -> Result<(), C
             encode_ast(&args[0], context, bytes)?;
         }
         Type::Named(name, args) => {
-            if crate::typeck::anon_union_synthetic_variants(name).is_some() {
+            if witchy_syntax::synthetic_names::anon_union_synthetic_variants(name).is_some() {
                 return encode_anonymous_union_ast(name, args, context, bytes);
             }
             bytes.push(0);
@@ -1014,7 +1014,7 @@ fn encode_anonymous_union_ast(
     context: &Context,
     bytes: &mut Vec<u8>,
 ) -> Result<(), CanonicalAbiError> {
-    let variants = crate::typeck::anon_union_synthetic_variants(name).ok_or_else(|| {
+    let variants = witchy_syntax::synthetic_names::anon_union_synthetic_variants(name).ok_or_else(|| {
         CanonicalAbiError::InvalidCallable("invalid anonymous-union head".into())
     })?;
     let expected = variants.iter().map(|(_, arity)| *arity).sum::<usize>();
@@ -1203,7 +1203,7 @@ mod tests {
             &Ty::View(std::rc::Rc::new(Ty::Int)),
         ).expect("rooted checked type encoding");
         let union_checked = union.table().concrete_types()
-            .find(|ty| matches!(ty, Ty::Named(name, _) if crate::typeck::anon_union_synthetic_variants(name).is_some()))
+            .find(|ty| matches!(ty, Ty::Named(name, _) if witchy_syntax::synthetic_names::anon_union_synthetic_variants(name).is_some()))
             .and_then(|ty| canonical_checked_ty_bytes(&union, ty).ok())
             .expect("anonymous union checked type encoding");
         assert_eq!(rooted_checked.first(), Some(&32));

@@ -564,7 +564,7 @@ impl Codegen<'_> {
                 let Type::Named(name, union_args) = expected?.unqualified() else {
                     return None;
                 };
-                let variants = witchy_types::typeck::anon_union_synthetic_variants(name)?;
+                let variants = witchy_syntax::synthetic_names::anon_union_synthetic_variants(name)?;
                 let mut offset = 0usize;
                 let mut found = None;
                 for (variant, arity) in variants {

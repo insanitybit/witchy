@@ -112,7 +112,7 @@ pub fn check_bare_test_driver(
     let (ordinal, target) = targets[0];
     if target.is_gen || target.comptime_only || !target.params.is_empty()
         || !target.bounds.is_empty()
-        || target.ret.as_ref().is_some_and(|ty| !is_unit_type(ty))
+        || target.ret.as_ref().is_some_and(|ty| !witchy_canonical_source::is_unit_type(ty))
     {
         return Err(refused(format!("bare test `{selected}` requires an ordinary or async nullary unit declaration; generator, parameterized and generic targets are unsupported")));
     }

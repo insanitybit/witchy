@@ -613,7 +613,7 @@ fn validate_capability_free_type(
                 }
                 return Ok(());
             }
-            if let Some(variants) = crate::typeck::anon_union_synthetic_variants(name) {
+            if let Some(variants) = witchy_syntax::synthetic_names::anon_union_synthetic_variants(name) {
                 let mut at = 0;
                 for (variant, arity) in variants {
                     for index in 0..arity {

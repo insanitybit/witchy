@@ -1556,7 +1556,7 @@ fn bind_typed_pattern(
         Pattern::AnonCtor { tag, args } => {
             let mut fields: Option<Vec<Type>> = None;
             if let Some(Type::Named(name, types)) = expected.map(Type::unqualified) {
-                if let Some(variants) = crate::typeck::anon_union_synthetic_variants(name) {
+                if let Some(variants) = witchy_syntax::synthetic_names::anon_union_synthetic_variants(name) {
                     let mut offset = 0usize;
                     for (variant, arity) in variants {
                         let end = offset.saturating_add(arity);

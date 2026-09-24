@@ -12,7 +12,7 @@ use witchy_syntax::ast::{
 };
 use witchy_syntax::ast::visit::{visit_block, visit_block_mut, visit_expr_mut};
 
-use crate::canonical_aggregates::{concrete_aggregate_identity, scalar_aggregate_shape, type_definitions};
+use witchy_canonical_source::aggregates::{concrete_aggregate_identity, scalar_aggregate_shape, type_definitions};
 use crate::traits::LogicalSpecializationIdentity;
 use crate::typeck::{self, TypeTable, TypedModule};
 use crate::witness::WitnessCatalog;
@@ -361,7 +361,7 @@ impl Preparation<'_> {
                 ]), true))
             }
             Type::Named(name, _) => {
-                if crate::canonical_capabilities::representation(ty, &self.definitions).is_some() {
+                if witchy_canonical_source::capabilities::representation(ty, &self.definitions).is_some() {
                     return Err("structural equality cannot inspect a capability representation".into());
                 }
                 let definition = self.definitions.get(name);

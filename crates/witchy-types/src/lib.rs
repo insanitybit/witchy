@@ -11,8 +11,6 @@
 
 pub mod access;
 pub mod canonical_abi;
-pub mod canonical_aggregates;
-pub mod canonical_capabilities;
 pub mod canonical_closure;
 mod canonical_dictionary;
 mod canonical_equality;

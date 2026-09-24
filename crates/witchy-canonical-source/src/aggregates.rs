@@ -183,9 +183,9 @@ fn field_type_ok_at_with_dependencies(
     }
     // This recognizes source fields, not linear-memory slots. Capability
     // fields require the catalog's checked opaque-owner representation.
-    match crate::canonical_capabilities::representation(ty, definitions) {
-        Some(crate::canonical_capabilities::CapabilityRepresentation::Direct(_)) => return true,
-        Some(crate::canonical_capabilities::CapabilityRepresentation::Nullable(_)) => return false,
+    match crate::capabilities::representation(ty, definitions) {
+        Some(crate::capabilities::CapabilityRepresentation::Direct(_)) => return true,
+        Some(crate::capabilities::CapabilityRepresentation::Nullable(_)) => return false,
         None => {}
     }
     if let Some(tuple) = dictionary_as_tuple(ty) {
@@ -199,7 +199,7 @@ fn field_type_ok_at_with_dependencies(
         // payload lanes in tag order.  It has no declaration to find in
         // `definitions`, but it is otherwise an ordinary finite aggregate.
         Type::Named(name, arguments)
-            if crate::typeck::anon_union_synthetic_variants(name)
+            if witchy_syntax::synthetic_names::anon_union_synthetic_variants(name)
                 .is_some_and(|variants| variants.iter().map(|(_, arity)| *arity).sum::<usize>() == arguments.len()) =>
         {
             arguments.iter().all(|argument| {
@@ -241,8 +241,8 @@ fn field_type_ok_at_with_dependencies(
 // Capability parameters/results have callable ABI lanes without granting a
 // linear-memory field representation. Unit also has its own scalar layout.
 fn is_callable_only_lane(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> bool {
-    crate::pipeline::is_unit_type(ty)
-        || crate::canonical_capabilities::representation(ty, definitions).is_some()
+    crate::is_unit_type(ty)
+        || crate::capabilities::representation(ty, definitions).is_some()
 }
 
 fn definition_fields_ok(
@@ -772,7 +772,7 @@ pub fn is_record_root_payload(ty: &Type, definitions: &BTreeMap<String, TypeDef>
     let Type::Named(name, arguments) = ty.unqualified() else { return false };
     let head = matches!((name.as_str(), arguments.len()), ("Option", 1) | ("Result", 2))
         || definitions.contains_key(name);
-    head && crate::canonical_capabilities::representation(ty, definitions).is_none()
+    head && crate::capabilities::representation(ty, definitions).is_none()
         && scalar_aggregate_shape(ty, definitions).is_some_and(|shape| !shape.packed)
         && !contains_view(ty, definitions, &mut BTreeSet::new())
 }
@@ -947,8 +947,8 @@ fn concrete_identity_at(
     if depth >= MAX_AGGREGATE_SHAPE_EXPANSION || !consume_shape_nodes(budget, 1) {
         return None;
     }
-    if matches!(crate::canonical_capabilities::representation(ty, definitions),
-        Some(crate::canonical_capabilities::CapabilityRepresentation::Direct(_))) {
+    if matches!(crate::capabilities::representation(ty, definitions),
+        Some(crate::capabilities::CapabilityRepresentation::Direct(_))) {
         return Some(ty.unqualified().clone());
     }
     // An owner-carried view (`&Int`, `&[T]`) has its own opaque GC family,
@@ -1523,7 +1523,7 @@ fn scalar_aggregate_shape_uncached(
         });
     }
     let Type::Named(name, arguments) = ty.unqualified() else { return None };
-    if let Some(variants) = crate::typeck::anon_union_synthetic_variants(name) {
+    if let Some(variants) = witchy_syntax::synthetic_names::anon_union_synthetic_variants(name) {
         let expected = variants.iter().map(|(_, arity)| *arity).sum::<usize>();
         if expected != arguments.len()
             || !arguments.iter().all(|argument| is_v1_field_type(argument, definitions))
@@ -1576,72 +1576,5 @@ fn scalar_aggregate_shape_uncached(
             packed: false,
         }),
         _ => definitions.get(name).and_then(|definition| shape_from_instantiation(definition, arguments, definitions)),
-    }
-}
-
-#[cfg(test)]
-mod scheduler_shape_tests {
-    use super::*;
-    use crate::runtime_type::{AuthenticatedModuleOwners, ModuleLoadIdentity, PackageCoordinate, PackageSource};
-
-    #[test]
-    fn canonical_task_tuple_has_a_bounded_concrete_shape() {
-        let toolchain = PackageCoordinate::new(PackageSource::Toolchain, "witchy/stdlib", "0.1.0").unwrap();
-        let application = PackageCoordinate::new(PackageSource::Workspace, "test/task-tuple-shape", "0.1.0").unwrap();
-        let mut owners = vec![("main".into(), ModuleLoadIdentity::new(application, ["main"]).unwrap())];
-        owners.extend(witchy_syntax::linker::STD_MODULES.iter().map(|name| {
-            ((*name).to_owned(), ModuleLoadIdentity::new(toolchain.clone(), ["std", name]).unwrap())
-        }));
-        let source = b"import chan\nasync fn next(n: Int) -> Int:\n    n + 1\nasync fn main(console: Console):\n    let values = chan.par_map([4], fn(n): next(n)).await\n    console.print(\"${values}\")\n";
-        let checked = crate::pipeline::link_checked_authenticated_from_source_bundle_with_user_modules(
-            vec![("main".into(), source.to_vec()),
-                ("task".into(), include_bytes!("../../../std/task.witchy").to_vec()),
-                ("chan".into(), include_bytes!("../../../std/chan.witchy").to_vec())],
-            "main", |_, _, _| Ok(Default::default()),
-            &std::collections::HashSet::from(["main".into()]),
-            AuthenticatedModuleOwners::from_loader_assignments(owners).unwrap(),
-        ).expect("the actual task-tuple source checks");
-        let definitions = type_definitions(checked.canonical_source().unwrap().typed_module().module());
-        let nil = Type::Named("Nil".into(), vec![]);
-        let int = Type::Named("Int".into(), vec![]);
-        let tuple = Type::Tuple(vec![
-            Type::Named("List".into(), vec![Type::Named("task.Task".into(), vec![nil])]),
-            Type::Named("List".into(), vec![Type::Named("chan.Receiver".into(), vec![int])]),
-        ]);
-        let task = Type::Named("task.Task".into(), vec![tuple.clone()]);
-        assert!(is_v1_field_type(&tuple, &definitions), "the concrete tuple argument is supported");
-        let mut budget = MAX_AGGREGATE_SHAPE_NODES;
-        let valid = field_type_ok_at(&task, &definitions, &mut BTreeSet::new(), 0, &mut budget, &mut ShapeMemo::new());
-        assert!(valid, "finite Task<Tuple> refused with {budget} shape nodes remaining");
-        assert!(scalar_aggregate_shape(&task, &definitions).is_some());
-    }
-
-    #[test]
-    fn canonical_scheduler_slot_is_a_finite_owned_graph() {
-        let toolchain = PackageCoordinate::new(PackageSource::Toolchain, "witchy/stdlib", "0.1.0").unwrap();
-        let application = PackageCoordinate::new(PackageSource::Workspace, "test/scheduler-shape", "0.1.0").unwrap();
-        let mut owners = vec![("main".into(), ModuleLoadIdentity::new(application, ["main"]).unwrap())];
-        owners.extend(witchy_syntax::linker::STD_MODULES.iter().map(|name| {
-            ((*name).to_owned(), ModuleLoadIdentity::new(toolchain.clone(), ["std", name]).unwrap())
-        }));
-        let checked = crate::pipeline::link_checked_authenticated_from_source_bundle_with_user_modules(
-            vec![("main".into(), b"import task\nfn main():\n    task.run(task.done(()))\n".to_vec()),
-                ("task".into(), include_bytes!("../../../std/task.witchy").to_vec())],
-            "main", |_, _, _| Ok(Default::default()),
-            &std::collections::HashSet::from(["main".into()]),
-            AuthenticatedModuleOwners::from_loader_assignments(owners).unwrap(),
-        ).expect("actual source scheduler checks and messages are prepared");
-        let definitions = type_definitions(checked.canonical_source().unwrap().typed_module().module());
-        let slot = Type::Named("task.Slot".into(), vec![]);
-        let definition = definitions.get("task.Slot").expect("actual scheduler slot declaration");
-        let first_bad_field = definition.variants.iter().flat_map(|variant| &variant.fields)
-            .find(|field| !is_v1_field_type(field, &definitions));
-        let mut budget = MAX_AGGREGATE_SHAPE_NODES;
-        let valid = field_type_ok_at(&slot, &definitions, &mut BTreeSet::new(), 0, &mut budget, &mut ShapeMemo::new());
-        assert!(valid, "finite scheduler graph refused: remaining budget={budget}, independently unsupported field={first_bad_field:?}");
-
-        let mut invalid = definitions.clone();
-        invalid.get_mut("task.Slot").unwrap().variants[0].fields.push(Type::Named("Missing".into(), vec![]));
-        assert!(!is_v1_field_type(&slot, &invalid), "an unknown field cannot acquire storage authority");
     }
 }

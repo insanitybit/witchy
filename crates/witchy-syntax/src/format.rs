@@ -2066,41 +2066,6 @@ pub fn block_str(b: &Block) -> String {
     s.trim_end_matches('\n').to_string()
 }
 
-fn parse_fixed_width_usize(s: &str, pos: &mut usize, width: usize) -> Option<usize> {
-    let end = pos.checked_add(width)?;
-    let part = s.get(*pos..end)?;
-    if !part.bytes().all(|b| b.is_ascii_digit()) {
-        return None;
-    }
-    *pos = end;
-    part.parse().ok()
-}
-
-fn decode_anon_union_type_name(name: &str) -> Option<Vec<(String, usize)>> {
-    let mut pos = "__union".len();
-    let rest = name.strip_prefix("__union")?;
-    if rest.len() < 10 {
-        return None;
-    }
-    let count = parse_fixed_width_usize(name, &mut pos, 10)?;
-    let mut variants = Vec::with_capacity(count);
-    for _ in 0..count {
-        let len = parse_fixed_width_usize(name, &mut pos, 10)?;
-        let mut bytes = Vec::with_capacity(len);
-        for _ in 0..len {
-            let byte = parse_fixed_width_usize(name, &mut pos, 3)?;
-            if byte > u8::MAX as usize {
-                return None;
-            }
-            bytes.push(byte as u8);
-        }
-        let tag = String::from_utf8(bytes).ok()?;
-        let arity = parse_fixed_width_usize(name, &mut pos, 10)?;
-        variants.push((tag, arity));
-    }
-    if pos == name.len() { Some(variants) } else { None }
-}
-
 pub fn type_str(t: &Type) -> String {
     match t {
         Type::Qualified(TypeQual::View, inner) => {
@@ -2141,7 +2106,7 @@ pub fn type_str(t: &Type) -> String {
             if n == "Nil" && args.is_empty() {
                 return "()".to_string();
             }
-            if let Some(variants) = decode_anon_union_type_name(n) {
+            if let Some(variants) = crate::synthetic_names::anon_union_synthetic_variants(n) {
                 let total: usize = variants.iter().map(|(_, arity)| *arity).sum();
                 if total == args.len() {
                     let mut idx = 0;

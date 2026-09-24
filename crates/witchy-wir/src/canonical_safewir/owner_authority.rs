@@ -115,7 +115,7 @@ pub(super) fn validate<S: ModuleStage>(
                             && super::authority::is_direct_rooted_view_whole_root(original.checked_type(), &records)
                             && !matches!(original.checked_type(),
                                 witchy_syntax::ast::Type::Qualified(witchy_syntax::ast::TypeQual::View, inner)
-                                    if witchy_types::canonical_aggregates::is_scalar_value_view_payload(inner))
+                                    if witchy_canonical_source::aggregates::is_scalar_value_view_payload(inner))
                         // A `&Float`/`&Bool`/`&Duration` view is its value
                         // (`ScalarValue`), so its capture is a copied scalar
                         // environment field, as in the plain closure check.
@@ -124,7 +124,7 @@ pub(super) fn validate<S: ModuleStage>(
                              CaptureStorage::EnvironmentField(_), CaptureTransfer::CopyScalar))
                             && matches!(original.checked_type(),
                                 witchy_syntax::ast::Type::Qualified(witchy_syntax::ast::TypeQual::View, inner)
-                                    if witchy_types::canonical_aggregates::is_scalar_value_view_payload(inner)))
+                                    if witchy_canonical_source::aggregates::is_scalar_value_view_payload(inner)))
                 { return Err(refuse()); }
             }
         }
@@ -486,10 +486,10 @@ fn validate_aggregate_family<S: ModuleStage>(
     layouts: &crate::layout::LayoutInterner,
 ) -> Result<(), CandidateAbiBindingError> {
     let refuse = || CandidateAbiBindingError::MissingCanonicalLayouts;
-    let normalized = witchy_types::canonical_aggregates::canonical_owner_aggregate_identity(claimed, records)
+    let normalized = witchy_canonical_source::aggregates::canonical_owner_aggregate_identity(claimed, records)
         .ok_or_else(refuse)?;
     if &normalized != claimed { return Err(refuse()); }
-    let shape = witchy_types::canonical_aggregates::scalar_aggregate_shape(&normalized, records)
+    let shape = witchy_canonical_source::aggregates::scalar_aggregate_shape(&normalized, records)
         .filter(|shape| !shape.packed).ok_or_else(refuse)?;
     if shape.variants.len() != family.constructors.len()
         || family.constructors.is_empty()
@@ -622,8 +622,8 @@ mod tests {
             |_, _, _| Ok(Default::default()),
         ).expect("checked aggregate source");
         let source = checked.canonical_source().expect("canonical source");
-        let records = witchy_types::canonical_aggregates::type_definitions(source.typed_module().module());
-        let source_type = witchy_types::canonical_aggregates::concrete_aggregate_identity(
+        let records = witchy_canonical_source::aggregates::type_definitions(source.typed_module().module());
+        let source_type = witchy_canonical_source::aggregates::concrete_aggregate_identity(
             &Type::Named("Envelope".into(), Vec::new()), &records,
         ).expect("normalized concrete aggregate");
         let mut interner = LayoutInterner::new();
@@ -703,8 +703,8 @@ mod tests {
             |_, _, _| Ok(Default::default()),
         ).expect("checked record source");
         let source = checked.canonical_source().expect("canonical source");
-        let records = witchy_types::canonical_aggregates::type_definitions(source.typed_module().module());
-        let packet = witchy_types::canonical_aggregates::canonical_owner_aggregate_identity(
+        let records = witchy_canonical_source::aggregates::type_definitions(source.typed_module().module());
+        let packet = witchy_canonical_source::aggregates::canonical_owner_aggregate_identity(
             &Type::Named("Packet".into(), Vec::new()), &records,
         ).expect("exact aggregate identity");
         let slice_view = |element: &str| Type::Qualified(

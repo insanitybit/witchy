@@ -58,7 +58,7 @@ pub struct SourceConstructor<'a> {
 
 impl<'a> SourceConstructor<'a> {
     pub fn from_checked(source: &'a CanonicalCheckedSource, ordinal: ConstructorId) -> Result<Self, ContractError> {
-        use witchy_types::canonical_capabilities::{CapabilityKind, CapabilityRepresentation};
+        use witchy_canonical_source::capabilities::{CapabilityKind, CapabilityRepresentation};
         let witness = source.closure_witness().entries().get(ordinal.0 as usize)
             .ok_or(ContractError::MissingWitness)?;
         let definitions = source.type_definitions();
@@ -71,7 +71,7 @@ impl<'a> SourceConstructor<'a> {
             // scalar value (`ScalarValue`): it has no carrier to retain.
             ClosureCaptureTransfer::RootedViewByValue if matches!(capture.checked_type(),
                 witchy_syntax::ast::Type::Qualified(witchy_syntax::ast::TypeQual::View, inner)
-                    if witchy_types::canonical_aggregates::is_scalar_value_view_payload(inner)) =>
+                    if witchy_canonical_source::aggregates::is_scalar_value_view_payload(inner)) =>
             {
                 Ok(CaptureTransfer::CopyScalar)
             }
@@ -79,7 +79,7 @@ impl<'a> SourceConstructor<'a> {
             ClosureCaptureTransfer::ExplicitOwnedMove => Err(ContractError::UnsupportedCapture),
             ClosureCaptureTransfer::CopyCapability => {
                 let Some(CapabilityRepresentation::Direct(kind)) =
-                    witchy_types::canonical_capabilities::representation(capture.checked_type(), &definitions)
+                    witchy_canonical_source::capabilities::representation(capture.checked_type(), &definitions)
                 else { return Err(ContractError::UnsupportedCapture) };
                 Ok(CaptureTransfer::CopyCapability(match kind {
                     CapabilityKind::Console => CapabilityKindId::new(0),

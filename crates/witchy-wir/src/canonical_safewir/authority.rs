@@ -869,7 +869,7 @@ fn validate_candidate_abi_bindings<S: ModuleStage>(
                         && is_direct_rooted_view_whole_root(capture.checked_type(), &records)
                         && !matches!(capture.checked_type(),
                             witchy_syntax::ast::Type::Qualified(witchy_syntax::ast::TypeQual::View, inner)
-                                if witchy_types::canonical_aggregates::is_scalar_value_view_payload(inner))
+                                if witchy_canonical_source::aggregates::is_scalar_value_view_payload(inner))
                 ) || (
                     // A `&Float`/`&Bool`/`&Duration` view is its value
                     // (`ScalarValue`), so its capture is a copied scalar slot.
@@ -877,7 +877,7 @@ fn validate_candidate_abi_bindings<S: ModuleStage>(
                         && matches!(capture.transfer(), witchy_types::canonical_closure::ClosureCaptureTransfer::RootedViewByValue)
                         && matches!(capture.checked_type(),
                             witchy_syntax::ast::Type::Qualified(witchy_syntax::ast::TypeQual::View, inner)
-                                if witchy_types::canonical_aggregates::is_scalar_value_view_payload(inner))
+                                if witchy_canonical_source::aggregates::is_scalar_value_view_payload(inner))
                 );
                 (transfer_matches && value_type_matches_source(
                     actual, capture.checked_type(), closure_layout_catalog, candidate.signatures(), &mut correspondence,
@@ -1260,7 +1260,7 @@ fn hidden_environment_uses_are_closed(
 /// The checked module's type definitions, keyed by bare and entry-qualified
 /// names. A nominal scalar aggregate (a record, a sum type, a scalar
 /// `Option`/`Result`) binds to a candidate reference whose layout carries
-/// exactly the slots `witchy_types::canonical_aggregates` derives for it.
+/// exactly the slots `witchy_canonical_source::aggregates` derives for it.
 type ScalarRecordFields = BTreeMap<String, witchy_syntax::ast::TypeDef>;
 
 /// The only source form permitted to carry an exclusive result through a
@@ -1338,7 +1338,7 @@ pub(super) fn source_closure_family_key(
 ) -> witchy_syntax::ast::Type {
     use witchy_syntax::ast::{CallableQualifiers, Convention, Type};
     fn normalize(source: &Type) -> Type {
-        if let Some(view) = witchy_types::canonical_aggregates::owner_carried_view_identity(source) {
+        if let Some(view) = witchy_canonical_source::aggregates::owner_carried_view_identity(source) {
             return view;
         }
         match source.unqualified() {
@@ -1354,7 +1354,7 @@ pub(super) fn source_closure_family_key(
             other => other.clone(),
         }
     }
-    normalize(&witchy_types::canonical_aggregates::concrete_aggregate_identity(source, records)
+    normalize(&witchy_canonical_source::aggregates::concrete_aggregate_identity(source, records)
         .unwrap_or_else(|| source.unqualified().clone()))
 }
 
@@ -1643,7 +1643,7 @@ fn erase_scalar_value_views(ty: &witchy_syntax::ast::Type) -> witchy_syntax::ast
     use witchy_syntax::ast::Type;
     match ty {
         Type::Qualified(witchy_syntax::ast::TypeQual::View, inner)
-            if witchy_types::canonical_aggregates::is_scalar_value_view_payload(inner) =>
+            if witchy_canonical_source::aggregates::is_scalar_value_view_payload(inner) =>
         {
             inner.unqualified().clone()
         }
@@ -1695,9 +1695,9 @@ pub(super) fn is_direct_rooted_view_whole_root(source: &witchy_syntax::ast::Type
     is_direct_rooted_view_string(source)
         || matches!(source,
             witchy_syntax::ast::Type::Qualified(witchy_syntax::ast::TypeQual::View, inner)
-                if witchy_types::canonical_aggregates::is_record_root_payload(inner, records)
-                    || witchy_types::canonical_aggregates::is_list_root_payload(inner)
-                    || witchy_types::canonical_aggregates::is_scalar_value_view_payload(inner))
+                if witchy_canonical_source::aggregates::is_record_root_payload(inner, records)
+                    || witchy_canonical_source::aggregates::is_list_root_payload(inner)
+                    || witchy_canonical_source::aggregates::is_scalar_value_view_payload(inner))
 }
 
 /// A whole immutable `&String` view: carried as the retained String token
@@ -1767,14 +1767,14 @@ fn is_aggregate_reference_carrier(source: &witchy_syntax::ast::Type) -> bool {
         witchy_syntax::ast::Type::Named(name, arguments)
             if name == "Option" && arguments.len() == 1 =>
         {
-            witchy_types::canonical_aggregates::is_rooted_int_option_payload_carrier(&arguments[0], &BTreeMap::new())
+            witchy_canonical_source::aggregates::is_rooted_int_option_payload_carrier(&arguments[0], &BTreeMap::new())
         }
         _ => false,
     }
 }
 
 /// A non-packed aggregate of `&Int` views, or a named record with one direct
-/// exact `&[Int]` field (see `canonical_aggregates::is_rooted_int_view_aggregate`). The opaque
+/// exact `&[Int]` field (see `witchy_canonical_source::aggregates::is_rooted_int_view_aggregate`). The opaque
 /// aggregate family and constructor are revalidated independently; this
 /// predicate only prevents source correspondence from erasing the exact
 /// checked aggregate identity.
@@ -1782,7 +1782,7 @@ fn is_direct_rooted_view_aggregate_carrier(
     source: &witchy_syntax::ast::Type,
     records: &ScalarRecordFields,
 ) -> bool {
-    witchy_types::canonical_aggregates::is_rooted_int_view_aggregate(source, records)
+    witchy_canonical_source::aggregates::is_rooted_int_view_aggregate(source, records)
 }
 
 fn is_shared_reference_tuple_carrier(source: &witchy_syntax::ast::Type) -> bool {
@@ -3063,7 +3063,7 @@ pub(super) fn value_type_matches_source(
             } else {
                 source
             };
-            return witchy_types::canonical_aggregates::canonical_owner_aggregate_identity(aggregate, records)
+            return witchy_canonical_source::aggregates::canonical_owner_aggregate_identity(aggregate, records)
                 .is_some_and(|normalized| &normalized == expected);
         }
         let callable = if id == family.list_type {
@@ -3077,8 +3077,8 @@ pub(super) fn value_type_matches_source(
         return candidate_signature_matches_source_inner(declaration, callable, parameters, result, conventions,
             layouts, signatures, context, records, closure_layouts);
     }
-    if let Some(representation) = witchy_types::canonical_capabilities::representation(source, records) {
-        use witchy_types::canonical_capabilities::{CapabilityKind, CapabilityRepresentation};
+    if let Some(representation) = witchy_canonical_source::capabilities::representation(source, records) {
+        use witchy_canonical_source::capabilities::{CapabilityKind, CapabilityRepresentation};
         let kind = match representation {
             CapabilityRepresentation::Direct(CapabilityKind::Console) | CapabilityRepresentation::Nullable(CapabilityKind::Console) => super::CapabilityKindId::new(0),
             CapabilityRepresentation::Direct(CapabilityKind::Dir) | CapabilityRepresentation::Nullable(CapabilityKind::Dir) => super::DIR_CAPABILITY_KIND,
@@ -3128,7 +3128,7 @@ pub(super) fn value_type_matches_source(
             "String" | "Bytes" => matches!(actual, super::ValueType::Ref(layout) if layout_matches_source_with_closures(layout, source, layouts, records, closure_layouts, signatures, context)),
             // A scalar aggregate: one reference to a fixed layout whose slots
             // are exactly the shape's fields, in order.
-            _ => witchy_types::canonical_aggregates::scalar_aggregate_shape(source, records).is_some_and(|shape| {
+            _ => witchy_canonical_source::aggregates::scalar_aggregate_shape(source, records).is_some_and(|shape| {
                 matches!(actual, super::ValueType::Ref(layout) if record_layout_matches_with_closures(layout, &shape.fields, shape.tagged, layouts, records, closure_layouts, signatures, context))
             }),
         },
@@ -3137,12 +3137,12 @@ pub(super) fn value_type_matches_source(
         witchy_syntax::ast::Type::Named(name, arguments)
             if matches!(name.as_str(), "Option" | "Result") || (name == "Dict" && arguments.len() == 2) =>
         {
-            witchy_types::canonical_aggregates::scalar_aggregate_shape(source, records).is_some_and(|shape| {
+            witchy_canonical_source::aggregates::scalar_aggregate_shape(source, records).is_some_and(|shape| {
                 matches!(actual, super::ValueType::Ref(layout) if record_layout_matches_with_closures(layout, &shape.fields, shape.tagged, layouts, records, closure_layouts, signatures, context))
             })
         }
         witchy_syntax::ast::Type::Tuple(_) => {
-            witchy_types::canonical_aggregates::scalar_aggregate_shape(source, records).is_some_and(|shape| {
+            witchy_canonical_source::aggregates::scalar_aggregate_shape(source, records).is_some_and(|shape| {
                 matches!(actual, super::ValueType::Ref(layout) if record_layout_matches_with_closures(layout, &shape.fields, shape.tagged, layouts, records, closure_layouts, signatures, context))
             })
         }
@@ -3310,7 +3310,7 @@ fn enqueue_layout_children(
     let Some(descriptor) = layouts.get(layout) else { return false };
     // An aggregate (record, sum, tuple, scalar Option/Result) is a fixed
     // record of its shape's slots.
-    if let Some(shape) = witchy_types::canonical_aggregates::scalar_aggregate_shape(source, records) {
+    if let Some(shape) = witchy_canonical_source::aggregates::scalar_aggregate_shape(source, records) {
         return enqueue_record_fields(layout, &shape.fields, shape.tagged, layouts, pending);
     }
     match source.unqualified() {
@@ -3936,7 +3936,7 @@ mod tests {
     fn source_recursive_layout_graph_checks_every_pair_and_child() {
         use crate::layout::{LayoutInterner, PointerSlot, ScalarKind};
         use witchy_syntax::ast::Type;
-        use witchy_types::canonical_aggregates::ScalarAggregateShape;
+        use witchy_canonical_source::aggregates::ScalarAggregateShape;
         let named = |name: &str| Type::Named(name.into(), vec![]);
         let definition = |name: &str, fields: Vec<Type>| {
             let mut definition = ScalarAggregateShape {
@@ -3967,7 +3967,7 @@ mod tests {
     fn source_generic_layout_graph_checks_instantiated_payload_types() {
         use crate::layout::{LayoutInterner, PointerSlot, ScalarKind};
         use witchy_syntax::ast::Type;
-        use witchy_types::canonical_aggregates::ScalarAggregateShape;
+        use witchy_canonical_source::aggregates::ScalarAggregateShape;
         let named = |name: &str| Type::Named(name.into(), vec![]);
         let mut definition = ScalarAggregateShape {
             name: "Box".into(), fields: vec![named("a")], variants: vec![],
@@ -4175,7 +4175,7 @@ mod tests {
             vec![("main".into(), b"type Node:\n    value: Int\n\nfn main() -> Int:\n    0\n".to_vec())],
             "main", |_, _, _| Ok(Default::default()),
         ).unwrap();
-        let records = witchy_types::canonical_aggregates::type_definitions(
+        let records = witchy_canonical_source::aggregates::type_definitions(
             checked.canonical_source().unwrap().typed_module().module());
         // Synthetic spellings exercise the helper contract. This does not
         // claim the frontend emits both spellings for one source fixture.
@@ -4251,7 +4251,7 @@ mod tests {
     fn rooted_view_aggregate_authority_nests_only_through_carrier_fields() {
         let carrier = |source: &str, name: &str| {
             let module = witchy_syntax::parser::parse_module(source).expect("parse aggregate fixture");
-            let records = witchy_types::canonical_aggregates::type_definitions(&module);
+            let records = witchy_canonical_source::aggregates::type_definitions(&module);
             is_direct_rooted_view_aggregate_carrier(
                 &witchy_syntax::ast::Type::Named(name.into(), Vec::new()),
                 &records,
@@ -4484,7 +4484,7 @@ mod tests {
     fn recursive_fn_returning_aggregate_matches_and_rejects_wrong_nested_signature() {
         use crate::layout::{LayoutInterner, PointerSlot, ScalarKind};
         use witchy_syntax::ast::{CallableQualifiers, Type};
-        use witchy_types::canonical_aggregates::ScalarAggregateShape;
+        use witchy_canonical_source::aggregates::ScalarAggregateShape;
 
         let named = |name: &str| Type::Named(name.into(), Vec::new());
         let source_fn = Type::Fn(

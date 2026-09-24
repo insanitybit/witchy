@@ -2914,6 +2914,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "witchy-canonical-source"
+version = "0.1.0"
+dependencies = [
+ "foldhash 0.2.0",
+ "witchy-syntax",
+]
+
+[[package]]
 name = "witchy-cap-model"
 version = "0.1.0"
 dependencies = [
@@ -2972,6 +2980,7 @@ dependencies = [
  "sha2 0.11.0",
  "wasmparser 0.251.0",
  "wasmtime",
+ "witchy-canonical-source",
  "witchy-lower",
  "witchy-syntax",
  "witchy-types",
@@ -3045,6 +3054,7 @@ dependencies = [
  "blake3",
  "foldhash 0.2.0",
  "sha2 0.11.0",
+ "witchy-canonical-source",
  "witchy-cap-model",
  "witchy-caps",
  "witchy-syntax",
@@ -3065,6 +3075,7 @@ dependencies = [
  "wasm-encoder 0.251.0",
  "wasmparser 0.251.0",
  "wasmtime",
+ "witchy-canonical-source",
  "witchy-syntax",
  "witchy-types",
  "witchy-wir",

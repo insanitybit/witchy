@@ -355,6 +355,7 @@ registry_replay_contract_surface=0
 for p in "${paths[@]}"; do
     path_has_early=0
     case "$p" in
+        crates/witchy-canonical-source/src/* | \
         crates/witchy-lower/src/canonical* | \
         crates/witchy-types/src/canonical* | \
         crates/witchy-wir/src/canonical*)
@@ -557,6 +558,17 @@ for p in "${paths[@]}"; do
             path_has_early=1 ;;
     esac
     case "$p" in
+        crates/witchy-canonical-source/*)
+            any_rust=1
+            gate_need_conformance=1
+            # The checked-source contract (RFC-0170) sits under the checker,
+            # SafeWIR and lowering; each of them observes its judgments.
+            add_pkg witchy-canonical-source
+            add_pkg witchy-types
+            add_pkg witchy-wir
+            add_pkg witchy-lower
+            add "cargo nextest run -p witchy-canonical-source -p witchy-types"
+            add "./scripts/nextest-admitted.sh witchy -- cargo nextest run -E 'test(/^example_tests::/)'" ;;
         crates/witchy-types/*)
             any_rust=1
             gate_need_conformance=1

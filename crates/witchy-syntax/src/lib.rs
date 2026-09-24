@@ -40,5 +40,6 @@ pub mod records;
 pub mod reflect;
 pub mod source_check;
 pub mod suspension;
+pub mod synthetic_names;
 pub mod syntax_holes;
 pub mod type_resolve;

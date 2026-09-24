@@ -62,7 +62,7 @@ mod short_circuit_tests;
 mod pattern_decision_tests;
 
 use witchy_syntax::ast::{BinOp, Convention, Expr, Item, Pattern, Stmt, Type, TypeDef, TypeQual, UnOp};
-use witchy_types::canonical_aggregates::{canonical_owner_aggregate_identity, concrete_aggregate_identity, dictionary_as_tuple, scalar_aggregate_shape, ScalarAggregateShape, ScalarVariant};
+use witchy_canonical_source::aggregates::{canonical_owner_aggregate_identity, concrete_aggregate_identity, dictionary_as_tuple, scalar_aggregate_shape, ScalarAggregateShape, ScalarVariant};
 use witchy_types::access::{AccessIdentityKey, AccessKind, AccessSignature, CheckedAccessFacts, CheckedPlaceStep};
 use witchy_types::loans::LoanFacts;
 use witchy_types::pipeline::CanonicalCheckedSource;
@@ -306,7 +306,7 @@ pub fn lower_typed_module(
     }).collect::<HashMap<_, _>>();
     // Shape and identity judgments recur for every value of the same type;
     // memoize them for this map for the rest of the lowering.
-    witchy_types::canonical_aggregates::with_shape_memo(&definitions, || {
+    witchy_canonical_source::aggregates::with_shape_memo(&definitions, || {
     let (_, layout_catalog) = LayoutBundle::decode_canonical(&layouts.canonical_bytes())
         .map_err(|error| CanonicalLoweringError::InvalidLayoutBundle(error.to_string()))?;
     let tail_manifest = source.proper_tail_manifest();
@@ -2847,7 +2847,7 @@ fn is_aggregate_reference_carrier(ty: &Type) -> bool {
 /// needs a separate authenticated Option projection and is refused here.
 /// Definition-free: used only where a builtin shell names its payload directly.
 fn is_view_or_option_view_carrier(ty: &Type) -> bool {
-    witchy_types::canonical_aggregates::is_rooted_int_option_payload_carrier(ty, &BTreeMap::new())
+    witchy_canonical_source::aggregates::is_rooted_int_option_payload_carrier(ty, &BTreeMap::new())
 }
 
 /// An admitted aggregate of `&Int` views, or a named record with one direct
@@ -2860,7 +2860,7 @@ fn is_direct_rooted_int_view_aggregate_carrier(
     ty: &Type,
     definitions: &BTreeMap<String, TypeDef>,
 ) -> bool {
-    witchy_types::canonical_aggregates::is_rooted_int_view_aggregate(ty, definitions)
+    witchy_canonical_source::aggregates::is_rooted_int_view_aggregate(ty, definitions)
 }
 
 fn is_shared_reference_tuple_carrier(ty: &Type) -> bool {
@@ -2903,8 +2903,8 @@ fn is_direct_view_payload(inner: &Type) -> bool {
     // under the view (`&(&mut T)`, `&unique T`) is not a direct view.
     !matches!(inner, Type::Qualified(qualifier, _) if *qualifier != TypeQual::Frozen)
         && (is_direct_shared_int(inner) || is_rooted_slice(inner) || is_rooted_string(inner)
-            || is_rooted_user_record(inner) || witchy_types::canonical_aggregates::is_list_root_payload(inner)
-            || witchy_types::canonical_aggregates::is_scalar_value_view_payload(inner))
+            || is_rooted_user_record(inner) || witchy_canonical_source::aggregates::is_list_root_payload(inner)
+            || witchy_canonical_source::aggregates::is_scalar_value_view_payload(inner))
 }
 
 /// A reference qualifier inside a callable signature other than a direct
@@ -3309,7 +3309,7 @@ fn is_rooted_user_record(ty: &Type) -> bool {
             && !matches!(name.as_str(), "List" | "Dict" | "Slice")
             && !matches!(name.as_str(), "Int" | "Float" | "Duration" | "Bool" | "Nil" | "Unit"
                 | "String" | "Bytes" | "SecretStore")
-            && witchy_types::canonical_capabilities::representation(ty, &BTreeMap::new()).is_none())
+            && witchy_canonical_source::capabilities::representation(ty, &BTreeMap::new()).is_none())
 }
 
 /// A whole immutable `&String` view.  Its carrier is the retained String
@@ -3649,7 +3649,7 @@ fn ordinary_own_type_supported(ty: &Type) -> bool {
         // copy of that value. Async lowering carries live views into
         // continuation segments as `own` parameters.
         Type::Qualified(TypeQual::View, inner)
-            if witchy_types::canonical_aggregates::is_scalar_value_view_payload(inner) => return true,
+            if witchy_canonical_source::aggregates::is_scalar_value_view_payload(inner) => return true,
         _ => ty,
     };
     ordinary_unqualified_own_type_supported(ty)
@@ -7431,7 +7431,7 @@ impl FunctionLowerer<'_> {
             return Ok(Vec::new());
         }
         if let Pattern::Ctor { name, args } = pattern
-            && witchy_types::canonical_capabilities::representation(scrutinee_type, self.definitions).is_some()
+            && witchy_canonical_source::capabilities::representation(scrutinee_type, self.definitions).is_some()
         {
             let payload = capability_constructor_payload(scrutinee_type, name, self.definitions)?;
             let expected = usize::from(payload.is_some());
@@ -7729,7 +7729,7 @@ impl FunctionLowerer<'_> {
         scrutinee_type: &Type,
     ) -> Result<Option<ValueId>, CanonicalLoweringError> {
         if let Pattern::Ctor { name, args } = pattern
-            && witchy_types::canonical_capabilities::representation(scrutinee_type, self.definitions).is_some()
+            && witchy_canonical_source::capabilities::representation(scrutinee_type, self.definitions).is_some()
         {
             let payload = capability_constructor_payload(scrutinee_type, name, self.definitions)?;
             let expected = usize::from(payload.is_some());
@@ -11274,7 +11274,7 @@ impl FunctionLowerer<'_> {
         arguments: &[Expr],
     ) -> Result<ValueId, CanonicalLoweringError> {
         let source_type = self.expression_type(expression)?;
-        if witchy_types::canonical_capabilities::representation(&source_type, self.definitions).is_some() {
+        if witchy_canonical_source::capabilities::representation(&source_type, self.definitions).is_some() {
             let payload = capability_constructor_payload(&source_type, name, self.definitions)?;
             let expected = usize::from(payload.is_some());
             if arguments.len() != expected {
@@ -11560,13 +11560,13 @@ impl FunctionLowerer<'_> {
         source_type: &Type,
         destination_type: &Type,
     ) -> Result<ValueId, CanonicalLoweringError> {
-        if witchy_types::typeck::anon_union_synthetic_variants(
+        if witchy_syntax::synthetic_names::anon_union_synthetic_variants(
             match source_type.unqualified() {
                 Type::Named(name, _) => name,
                 _ => return Err(CanonicalLoweringError::UnsupportedExpression("anonymous union widening source")),
             },
         ).is_none()
-            || witchy_types::typeck::anon_union_synthetic_variants(
+            || witchy_syntax::synthetic_names::anon_union_synthetic_variants(
                 match destination_type.unqualified() {
                     Type::Named(name, _) => name,
                     _ => return Err(CanonicalLoweringError::UnsupportedExpression("anonymous union widening destination")),
@@ -14299,7 +14299,7 @@ impl FunctionLowerer<'_> {
         let fact = self.checked_rooted_view_fact(expression)?;
         let record_root = matches!(fact.payload(), Ty::Named(..))
             && witchy_types::typeck::ty_to_ast(fact.payload()).is_some_and(|payload| {
-                witchy_types::canonical_aggregates::is_record_root_payload(&payload, self.definitions)
+                witchy_canonical_source::aggregates::is_record_root_payload(&payload, self.definitions)
             });
         if matches!(fact.payload(), Ty::Float | Ty::Bool | Ty::Duration) {
             // A scalar-value view is the value read at formation: a whole
@@ -14565,7 +14565,7 @@ impl FunctionLowerer<'_> {
         let scalar_value_view = operator == UnOp::Deref
             && self.expression_type(operand).is_ok_and(|ty| matches!(&ty,
                 Type::Qualified(TypeQual::View, inner)
-                    if witchy_types::canonical_aggregates::is_scalar_value_view_payload(inner)));
+                    if witchy_canonical_source::aggregates::is_scalar_value_view_payload(inner)));
         let direct_mut_root = operator == UnOp::BorrowMut && matches!(operand, Expr::Var(_));
         let direct_mut_projected_field = operator == UnOp::BorrowMut
             && self.authenticated_direct_projected_exclusive_handle_open(operand)?;
@@ -19265,15 +19265,15 @@ fn source_value_type(
     // retained object token.
     if let Type::Qualified(TypeQual::View, inner) = source
         && (is_rooted_user_record(inner)
-            || witchy_types::canonical_aggregates::is_scalar_value_view_payload(inner))
+            || witchy_canonical_source::aggregates::is_scalar_value_view_payload(inner))
     {
         return source_value_type(inner, layout_bundle, layouts, closure_layouts, definitions);
     }
     if let Some(owner) = closure_layouts.opaque_type(source, definitions) {
         return Ok(ValueType::Gc(owner));
     }
-    use witchy_types::canonical_capabilities::{CapabilityKind, CapabilityRepresentation};
-    if let Some(representation) = witchy_types::canonical_capabilities::representation(source, definitions) {
+    use witchy_canonical_source::capabilities::{CapabilityKind, CapabilityRepresentation};
+    if let Some(representation) = witchy_canonical_source::capabilities::representation(source, definitions) {
         let (CapabilityRepresentation::Direct(kind) | CapabilityRepresentation::Nullable(kind)) = representation;
         let kind = match kind {
             CapabilityKind::Console => witchy_wir::canonical_safewir::CapabilityKindId::new(0),
@@ -19375,7 +19375,7 @@ fn capability_constructor_payload(
     constructor: &str,
     definitions: &BTreeMap<String, TypeDef>,
 ) -> Result<Option<Type>, CanonicalLoweringError> {
-    use witchy_types::canonical_capabilities::{representation, brand_payload, CapabilityRepresentation};
+    use witchy_canonical_source::capabilities::{representation, brand_payload, CapabilityRepresentation};
     match representation(source, definitions) {
         Some(CapabilityRepresentation::Nullable(_)) => {
             let Type::Named(_, arguments) = source.unqualified() else { unreachable!() };
@@ -20400,7 +20400,7 @@ mod tests {
 
     fn rooted_view_aggregate_carrier(source: &str, name: &str) -> bool {
         let module = witchy_syntax::parser::parse_module(source).expect("parse aggregate fixture");
-        let definitions = witchy_types::canonical_aggregates::type_definitions(&module);
+        let definitions = witchy_canonical_source::aggregates::type_definitions(&module);
         super::is_direct_rooted_int_view_aggregate_carrier(
             &Type::Named(name.into(), Vec::new()),
             &definitions,

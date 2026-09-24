@@ -141,7 +141,7 @@ mod tests {
         assert_eq!(brand_payload(&postgres, &definitions), None);
         assert_eq!(representation(&postgres, &definitions), None);
         assert_eq!(representation(&Type::Named("Option".into(), vec![postgres.clone()]), &definitions), None);
-        assert!(crate::canonical_aggregates::is_v1_field_type(&postgres, &definitions));
+        assert!(crate::aggregates::is_v1_field_type(&postgres, &definitions));
         let fields = &definitions["Postgres"].variants[0].fields;
         assert_eq!(fields.len(), 2);
         assert_eq!(representation(&fields[0], &definitions), Some(CapabilityRepresentation::Direct(CapabilityKind::Net)));

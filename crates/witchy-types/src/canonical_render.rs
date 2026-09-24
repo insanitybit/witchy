@@ -13,7 +13,7 @@ use witchy_syntax::ast::{
 };
 use witchy_syntax::ast::visit::{visit_block, visit_block_mut, visit_expr_mut};
 
-use crate::canonical_aggregates::{concrete_aggregate_identity, scalar_aggregate_shape, type_definitions};
+use witchy_canonical_source::aggregates::{concrete_aggregate_identity, scalar_aggregate_shape, type_definitions};
 use crate::canonical_equality::{arm, binary, binding, bindings, block, call, destructure, var};
 use crate::typeck::{self, TypeTable, TypedModule};
 
@@ -115,7 +115,7 @@ impl Preparation {
     fn reserve(&mut self, ty: &Type) -> Result<String, String> {
         let identity = concrete_aggregate_identity(ty, &self.definitions)
             .ok_or("structural rendering needs a concrete checked type")?;
-        if crate::canonical_capabilities::representation(ty, &self.definitions).is_some() {
+        if witchy_canonical_source::capabilities::representation(ty, &self.definitions).is_some() {
             return Err("structural rendering cannot inspect a capability representation".into());
         }
         // Concrete arguments AND source qualifiers are part of the key. Equal

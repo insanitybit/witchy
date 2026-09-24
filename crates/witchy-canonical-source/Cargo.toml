@@ -1,0 +1,14 @@
+[package]
+name = "witchy-canonical-source"
+version = "0.1.0"
+edition = "2024"
+publish = false            # internal workspace crate — not published standalone
+license = "MIT OR Apache-2.0"
+description = "witchy compiler — the checked-source contract SafeWIR consumes (RFC-0170)"
+
+# AST-level data and judgments only: no inference and no checker `Ty`. Both the
+# checker (`witchy-types`) and SafeWIR (`witchy-wir`) depend on it, so neither
+# has to wait for, or be invalidated by, the other.
+[dependencies]
+witchy-syntax = { path = "../witchy-syntax" }
+foldhash = "0.2.0"

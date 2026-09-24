@@ -275,7 +275,7 @@ fn capture_transfer(ty: &Type, module: &ast::Module) -> ClosureCaptureTransfer {
         return ClosureCaptureTransfer::RootedViewByValue;
     }
     if is_capability(ty, module) { return ClosureCaptureTransfer::CopyCapability; }
-    if crate::canonical_aggregates::is_scalar_type(ty) {
+    if witchy_canonical_source::aggregates::is_scalar_type(ty) {
         ClosureCaptureTransfer::CopyScalar
     } else {
         ClosureCaptureTransfer::ManagedReferenceByValue

@@ -688,7 +688,7 @@ impl RuntimeTypeIdentity {
                     fields.sort_by(|left, right| left.0.cmp(&right.0));
                     return Ok(Self::Record(fields));
                 }
-                if let Some(variants) = crate::typeck::anon_union_synthetic_variants(name) {
+                if let Some(variants) = witchy_syntax::synthetic_names::anon_union_synthetic_variants(name) {
                     return convert_union(variants, args, resolve, allow_capability);
                 }
                 Ok(Self::Nominal {
