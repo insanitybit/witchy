@@ -4757,6 +4757,11 @@ struct Checker {
     /// nominal shells.  The common `consumed` set records their affine flow;
     /// this set only retains the erased source qualifier provenance.
     unique_storage_bindings: Vec<HashSet<String>>,
+    /// In opt mode, a source `&place` may leave a retained root-plus-projection
+    /// carrier. Keep every observed root for this function, including across
+    /// branches and carrier copies: without a liveness proof a later unique
+    /// write-back cannot silently clone the old root to repair that alias.
+    opt_viewed_roots: HashSet<String>,
     /// Original declared types for bindings carrying unique storage. Pattern
     /// extraction needs these because `Ty` has already erased nested qualifiers.
     unique_binding_types: Vec<HashMap<String, ast::Type>>,
@@ -6998,6 +7003,20 @@ impl Checker {
                 .is_some_and(|contract| contract.unique_result),
             _ => self.ty_carries_unique_storage(ty),
         }
+    }
+
+    fn reject_opt_unique_call_after_view(&self, argument: &Expr, context: &str) -> Result<(), TypeError> {
+        if !self.opt_mode {
+            return Ok(());
+        }
+        if let Some(root) = self.affine_place_root(argument)
+            && self.opt_viewed_roots.contains(&root)
+        {
+            return terr(format!(
+                "{context} cannot pass `unique` storage rooted in `{root}` in `mode opt` after forming an immutable view of that root; preserving the view would require a hidden copy"
+            ));
+        }
+        Ok(())
     }
 
     /// A positive, source-authenticated proof that this expression forms or
@@ -11032,18 +11051,22 @@ impl Checker {
                             pty,
                             &at,
                         )?;
-                        if self.opt_mode
+                        let unique_requested = self.opt_mode
                             && unique_contract
                                 .as_ref()
                                 .and_then(|contract| contract.unique_params.get(index))
                                 .copied()
-                                .unwrap_or(false)
-                            && !self.expression_carries_unique_storage(arg, pty)
-                        {
-                            return terr(format!(
-                                "argument {} to function value `{display}` cannot repair ordinary storage into a `unique` parameter in `mode opt`; pass an existing unique owner",
-                                index + 1
-                            ));
+                                .unwrap_or(false);
+                        if unique_requested {
+                            if !self.expression_carries_unique_storage(arg, pty) {
+                                return terr(format!(
+                                    "argument {} to function value `{display}` cannot repair ordinary storage into a `unique` parameter in `mode opt`; pass an existing unique owner",
+                                    index + 1
+                                ));
+                            }
+                            self.reject_opt_unique_call_after_view(
+                                arg, &format!("argument {} to function value `{display}`", index + 1),
+                            )?;
                         }
                         self.coerce_arg(pty, &at).map_err(|e| TypeError {
                             message: format!("in call to `{display}`: {}", e.message),
@@ -11466,21 +11489,23 @@ impl Checker {
                         i + 1
                     ));
                 }
-                if self.opt_mode
+                let unique_requested = self.opt_mode
                     && self
                         .fn_unique_contracts
                         .get(name)
                         .and_then(|contract| contract.unique_params.get(i))
                         .copied()
-                        .unwrap_or(false)
-                    && !params.get(i).is_some_and(|parameter| {
+                        .unwrap_or(false);
+                if unique_requested {
+                    if !params.get(i).is_some_and(|parameter| {
                         self.expression_carries_unique_storage(arg, parameter)
-                    })
-                {
-                    return terr(format!(
-                        "argument {} to `{name}` cannot repair ordinary storage into a `unique` parameter in `mode opt`; pass an existing unique owner",
-                        i + 1
-                    ));
+                    }) {
+                        return terr(format!(
+                            "argument {} to `{name}` cannot repair ordinary storage into a `unique` parameter in `mode opt`; pass an existing unique owner",
+                            i + 1
+                        ));
+                    }
+                    self.reject_opt_unique_call_after_view(arg, &format!("argument {} to `{name}`", i + 1))?;
                 }
                 let explicit_exclusive = self
                     .fn_exclusive_reference_params
@@ -12990,18 +13015,22 @@ impl Checker {
                             pty,
                             &at,
                         )?;
-                        if self.opt_mode
+                        let unique_requested = self.opt_mode
                             && unique_contract
                                 .as_ref()
                                 .and_then(|contract| contract.unique_params.get(index))
                                 .copied()
-                                .unwrap_or(false)
-                            && !self.expression_carries_unique_storage(arg, pty)
-                        {
-                            return terr(format!(
-                                "argument {} to function value cannot repair ordinary storage into a `unique` parameter in `mode opt`; pass an existing unique owner",
-                                index + 1
-                            ));
+                                .unwrap_or(false);
+                        if unique_requested {
+                            if !self.expression_carries_unique_storage(arg, pty) {
+                                return terr(format!(
+                                    "argument {} to function value cannot repair ordinary storage into a `unique` parameter in `mode opt`; pass an existing unique owner",
+                                    index + 1
+                                ));
+                            }
+                            self.reject_opt_unique_call_after_view(
+                                arg, &format!("argument {} to function value", index + 1),
+                            )?;
                         }
                         self.coerce_arg(pty, &at).map_err(|e| TypeError {
                             message: format!("in function application: {}", e.message),
@@ -13219,6 +13248,11 @@ impl Checker {
                     // published by `CheckedViewFacts`, not LoanFacts.
                     UnOp::Borrow => {
                         self.admit_view_payload(&t, "immutable view formation")?;
+                        if self.opt_mode
+                            && let Some(root) = self.affine_place_root(expr)
+                        {
+                            self.opt_viewed_roots.insert(root);
+                        }
                         Ok(Ty::View(Box::new(t).into()))
                     }
                     UnOp::Deref => match self.resolve(&t) {
@@ -14729,6 +14763,7 @@ impl Checker {
         self.frozen_bindings = vec![HashSet::new()];
         self.unique_value_bindings = vec![HashSet::new()];
         self.unique_storage_bindings = vec![HashSet::new()];
+        self.opt_viewed_roots.clear();
         self.inferred_owner_bindings = vec![HashSet::new()];
         self.unique_binding_types = vec![HashMap::new()];
         self.callable_unique_contracts = vec![HashMap::new()];
@@ -17073,6 +17108,7 @@ fn run_check_selected(
         frozen_bindings: vec![HashSet::new()],
         unique_value_bindings: vec![HashSet::new()],
         unique_storage_bindings: vec![HashSet::new()],
+        opt_viewed_roots: HashSet::new(),
         unique_binding_types: vec![HashMap::new()],
         callable_unique_contracts: vec![HashMap::new()],
         callable_opt_provenance: vec![HashMap::new()],

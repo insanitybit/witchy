@@ -228,5 +228,43 @@ fn main(console: Console):
     let error = witchy::resolve_std_only_checked(source)
         .expect_err("opt must refuse a hidden copy before the unique call");
     let message = error.to_string();
-    assert!(message.contains("unique") || message.contains("mode opt"), "{message}");
+    assert!(message.contains("hidden copy") && message.contains("unique"), "{message}");
+}
+
+#[test]
+fn mode_opt_unique_call_without_a_view_updates_the_original_root() {
+    opt::set_for_tests(Some(OptSet::none()));
+    let _reset = ResetOptimizationOverride;
+    assert_both_backends(r#"
+mode opt
+
+fn update(var xs: unique List(Int)):
+    xs[0] = 9
+
+fn main(console: Console):
+    var xs: unique List(Int) = [1, 2]
+    update(xs)
+    console.print("${xs[0]}")
+"#, &["9"]);
+}
+
+#[test]
+fn mode_opt_refuses_hidden_copy_for_view_through_function_value() {
+    let source = r#"
+mode opt
+
+fn update(var xs: unique List(Int)):
+    xs[0] = 9
+
+fn main(console: Console):
+    var xs: unique List(Int) = [1, 2]
+    let operation = update
+    let old = &xs[0]
+    operation(xs)
+    console.print("${*old}:${xs[0]}")
+"#;
+    let error = witchy::resolve_std_only_checked(source)
+        .expect_err("opt must refuse a hidden copy through an indirect unique call");
+    let message = error.to_string();
+    assert!(message.contains("hidden copy") && message.contains("unique"), "{message}");
 }
