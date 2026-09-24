@@ -79,6 +79,7 @@ impl Mono<'_> {
                     continue;
                 }
                 self.current_function.clone_from(&f.name);
+                self.current_params.clone_from(&f.params);
                 let mut s = Scope::new();
                 seed_typed_params(&f.params, &mut s);
                 self.walk_block(&mut f.body, &mut s);
@@ -90,6 +91,7 @@ impl Mono<'_> {
         while i < self.generated.len() {
             self.current_function.clone_from(&self.generated[i].name);
             let params = self.generated[i].params.clone();
+            self.current_params.clone_from(&params);
             let mut body = std::mem::replace(
                 &mut self.generated[i].body,
                 Block { stmts: Vec::new(), lines: Vec::new(), region: None },
@@ -116,6 +118,51 @@ impl Mono<'_> {
                 )
             })
             .or_else(|| cap_op_result_type(e, &|arg| self.type_ast(arg, scope)))
+    }
+
+    /// A generated caller's declared parameter can confirm a concrete type
+    /// only when its retained specialization identity and re-annotated
+    /// signature agree on that exact parameter. This closes the table gap for
+    /// calls like `children.is_empty()` inside `render_element__Int`, without
+    /// treating an arbitrary scoped expression as specialization authority.
+    fn checked_instance_parameter_type(
+        &self,
+        argument: &Expr,
+        scope: &Scope<Type>,
+    ) -> Option<Type> {
+        let Expr::Var(local) = argument else { return None };
+        if !scope.is_local(local) {
+            return None;
+        }
+        let identity = self.specializations.get(&self.current_function)?;
+        let template = identity.template()?;
+        if template.type_parameters().len() != identity.concrete_types().len() {
+            return None;
+        }
+        let (checked_params, _, _, _) = self.fn_sigs.get(&self.current_function)?;
+        if self.current_params.len() != checked_params.len()
+            || self.current_params.len() != template.parameters().len()
+        {
+            return None;
+        }
+        let index = self.current_params.iter().position(|param| param.name == *local)?;
+        let source_pattern = template.parameters().get(index)?.as_ref()?;
+        let substitution = template
+            .type_parameters()
+            .iter()
+            .cloned()
+            .zip(identity.concrete_types().iter().cloned())
+            .collect::<HashMap<_, _>>();
+        let concrete = subst_trait_params(source_pattern, &substitution);
+        let declared = self.current_params[index].ty.as_ref()?;
+        let checked = checked_params.get(index)?.as_ref()?;
+        let mut free = Vec::new();
+        collect_type_vars(&concrete, &mut free);
+        (free.is_empty()
+            && declared == &concrete
+            && checked == &concrete
+            && scope.get(local) == Some(&concrete))
+            .then_some(concrete)
     }
 
     fn refine_var_call_args(&self, name: &str, args: &[Expr], scope: &mut Scope<Type>) {
@@ -179,6 +226,12 @@ impl Mono<'_> {
             if let Some(table_ty) = from_table {
                 let mut confirmed = HashMap::new();
                 if bind_ast_type_vars(pattern, &table_ty, &mut confirmed) {
+                    table_confirmed.extend(confirmed.into_keys());
+                }
+            }
+            if let Some(checked_parameter) = self.checked_instance_parameter_type(arg, scope) {
+                let mut confirmed = HashMap::new();
+                if bind_ast_type_vars(pattern, &checked_parameter, &mut confirmed) {
                     table_confirmed.extend(confirmed.into_keys());
                 }
             }

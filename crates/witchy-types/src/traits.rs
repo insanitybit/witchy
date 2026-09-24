@@ -861,6 +861,7 @@ fn lower_with(
                         show_types: &show_types,
                         render_available,
                         current_function: String::new(),
+                        current_params: Vec::new(),
                         current_line: 0,
                         mono_unbounded,
                     };
@@ -4816,6 +4817,9 @@ struct Mono<'a> {
     /// the monomorphization walk. Tagged-literal hole expressions retain their
     /// call-site statement line in `Block::lines`.
     current_function: String,
+    /// The declaration being walked, retained for exact parameter checks when
+    /// a generated specialization has no expression-table fact for a param.
+    current_params: Vec<Param>,
     current_line: u32,
     /// Whether this lowering target also requests the existing broad primitive
     /// specializations. Affine-once instantiations are specialized on every

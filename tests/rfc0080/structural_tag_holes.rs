@@ -141,6 +141,41 @@ fn glamour() -> witchy::ast::Module {
 }
 
 #[test]
+fn imported_generic_vnode_renderer_admits_exact_checked_instance() {
+    opt::set_for_tests(Some(OptSet::none()));
+    let _reset = ResetOptimizationOverride;
+    // Hand calculation: the static p element contains one text child, Ada.
+    // HTML serialization therefore produces exactly <p>Ada</p>.
+    let source = r#"
+import glamour
+from glamour import VNode
+
+fn main(console: Console):
+    let node: VNode(Int) = html"<p>Ada</p>"
+    console.print(glamour.to_html(node))
+"#;
+    let checked = witchy::resolve_std_only_checked(source)
+        .expect("imported generic renderer type-checks from authenticated source");
+    let artifact = witchy::codegen::compile_checked_module_artifact(&checked)
+        .expect_lowered("checked VNode(Int) renderer admits to canonical SafeWIR");
+    let mut runtime = witchy::runtime::Runtime::batch().expect("compiled runtime");
+    let mut actor = runtime
+        .spawn_admitted(
+            &artifact,
+            witchy::runtime::Capabilities {
+                print: true,
+                quiet: true,
+                ..witchy::runtime::Capabilities::none()
+            },
+            64,
+        )
+        .expect("admitted unoptimized Wasm instance");
+    actor.run().expect("admitted unoptimized Wasm execution");
+    assert_eq!(actor.output(), vec!["<p>Ada</p>".to_string()]);
+    assert_eq!(actor.canonical_heap_leaks().expect("canonical heap audit"), Some(0));
+}
+
+#[test]
 fn structural_tag_holes_expand_css_html_and_jsx_without_raw_source() {
     let entry = parser::parse_module(
         r#"
