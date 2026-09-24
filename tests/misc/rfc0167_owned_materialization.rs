@@ -163,6 +163,43 @@ fn main() -> Int:
 }
 
 #[test]
+fn generic_owned_is_checked_at_each_concrete_receiver_type() {
+    // The owned Int call returns 7. At `a = &Int`, `.owned()` would return
+    // Int, which cannot satisfy the declared `&Int` result.
+    assert_wasm(r#"
+fn copy[a](x: a) -> a:
+    x.owned()
+
+fn main() -> Int:
+    copy(7)
+"#, 7);
+
+    assert_refused(r#"
+fn copy[a](x: a) -> a:
+    x.owned()
+
+fn main() -> Int:
+    let n = 7
+    let v = copy(&n)
+    *v
+"#, "expected `&Int`, found `Int`");
+}
+
+#[test]
+fn generic_owned_refuses_a_concrete_nested_view() {
+    assert_refused(r#"
+fn copy[a](xs: List(a)) -> List(a):
+    xs.owned()
+
+fn main() -> Int:
+    let n = 7
+    let xs = [&n]
+    let copied = copy(xs)
+    copied.length()
+"#, "contains an immutable view");
+}
+
+#[test]
 fn a_bounding_traits_owned_method_wins_on_a_generic_receiver() {
     // Dup.owned doubles: 21 * 2.
     assert_wasm(r#"

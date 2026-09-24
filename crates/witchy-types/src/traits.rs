@@ -724,11 +724,10 @@ fn lower_with(
         );
     }
 
-    // The no-fallback template set: bounded generics PLUS the generic helpers that
-    // transitively call them (RFC-0046 §2). Both are kept in `items` through the
-    // fixpoint so each re-annotate sees their signatures, then removed afterwards —
-    // they have no runnable generic form (their bounded call can't resolve while
-    // generic). Their concrete specializations are what gets emitted.
+    // The no-fallback template set: bounded generics, generic materialization,
+    // and helpers that transitively call them. Keep them through the fixpoint
+    // so each re-annotate sees their signatures, then emit only concrete bodies.
+    let generic_owned_templates = generic_owned_template_names(&typed.module().items);
     let mut no_fallback = no_fallback_template_names(&typed.module().items);
     let rooted_slice_templates = generic_rooted_slice_template_names(&typed.module().items);
     // Canonical lowering represents a rooted slice as a concrete carrier and
@@ -919,7 +918,12 @@ fn lower_with(
             let mut module = typed.into_module();
             let generated_names = generated
                 .iter()
-                .filter(|function| affine_specializations.contains(&function.name))
+                .filter(|function| {
+                    affine_specializations.contains(&function.name)
+                        || generic_owned_templates.iter().any(|template| {
+                            function.name.starts_with(&format!("{template}__"))
+                        })
+                })
                 .map(|function| function.name.clone())
                 .collect::<HashSet<_>>();
             module.items.extend(generated.into_iter().map(Item::Function));
@@ -4591,13 +4595,11 @@ fn collect_function_refs(f: &Function, out: &mut HashSet<String>) {
     walk_block(&f.body, &mut locals, out);
 }
 
-/// The set of function names that must be monomorphized WITHOUT a generic
-/// fallback: the `where`-bounded templates, plus every generic helper that
-/// (transitively) calls one. A bounded call's obligation can only be discharged
-/// once the CALLER's type variables are concrete, so a generic function that
-/// contains such a call cannot run generically — it propagates the need for
-/// specialization up to its own concrete call sites (RFC-0046 §2). Closed to a
-/// fixpoint over the call graph.
+/// The set of functions that need concrete bodies: `where`-bounded templates,
+/// generic `.owned()` calls, and generic helpers that transitively call either.
+/// Bounds and materialization can only be judged after the caller's type
+/// variables are concrete, so the need for specialization propagates up the
+/// generic call graph. Closed to a fixpoint (RFC-0046 §2, RFC-0167 §5).
 fn no_fallback_template_names(items: &[Item]) -> HashSet<String> {
     let mut names: HashSet<String> = items
         .iter()
@@ -4608,6 +4610,7 @@ fn no_fallback_template_names(items: &[Item]) -> HashSet<String> {
             _ => None,
         })
         .collect();
+    names.extend(generic_owned_template_names(items));
     loop {
         let mut added = false;
         for it in items {
@@ -4631,6 +4634,37 @@ fn no_fallback_template_names(items: &[Item]) -> HashSet<String> {
         }
     }
     names
+}
+
+/// A generic `.owned()` call can change both its result type and whether the
+/// copy is lawful when a type parameter becomes concrete. Keep its body out of
+/// the generic fallback and check each specialization against that concrete
+/// type. This includes a generic payload inside an aggregate or another view.
+fn generic_owned_template_names(items: &[Item]) -> HashSet<String> {
+    items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Function(function)
+                if !crate::typeck::intrinsic(&function.name)
+                    && !signature_type_vars(function).is_empty() =>
+            {
+                let mut has_owned = false;
+                let _ = witchy_syntax::ast::visit::visit_block::<()>(
+                    &function.body,
+                    &mut |expression| {
+                        if matches!(expression, Expr::MethodCall { method, args, .. }
+                            if method == crate::typeck::OWNED_MATERIALIZATION && args.is_empty())
+                        {
+                            has_owned = true;
+                        }
+                        Ok(())
+                    },
+                );
+                has_owned.then(|| function.name.clone())
+            }
+            _ => None,
+        })
+        .collect()
 }
 
 /// Generic rooted slices have no backend-independent ABI: canonical lowering
