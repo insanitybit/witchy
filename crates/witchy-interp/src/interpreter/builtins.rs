@@ -1468,22 +1468,22 @@ impl Interpreter {
                         &self.compiler_type_syntax,
                     )?;
                     let body = compiler_block_syntax_value(body, &self.compiler_block_syntax)?;
-                    let module = parse_module("fn __witchy_meta_generated():\n    ()\n")
-                        .map_err(|error| RuntimeError {
-                            message: format!(
-                                "meta.function_block failed to build a function skeleton: {error}"
-                            ),
-                        })?;
-                    let [Item::Function(parsed)] = module.items.as_slice() else {
-                        return err("meta.function_block failed to build one function skeleton");
-                    };
-                    let mut function = parsed.clone();
-                    function.public = *public;
-                    function.name = name;
-                    function.params = params;
-                    function.ret = ret;
-                    function.body = body;
-                    let item = Item::Function(function);
+                    let item = Item::Function(Function {
+                        // Preserve the old fixed skeleton's declaration line.
+                        line: 1,
+                        public: *public,
+                        pure: false,
+                        comptime_only: false,
+                        attributes: Vec::new(),
+                        name,
+                        type_params: Vec::new(),
+                        params,
+                        ret,
+                        body,
+                        bounds: Vec::new(),
+                        is_gen: false,
+                        is_async: false,
+                    });
                     let handle = self.next_compiler_syntax_handle("function-item")?;
                     self.compiler_item_syntax.insert(handle.clone(), item);
                     Ok(Some(Value::Ctor {
