@@ -267,22 +267,34 @@ fn rfc0167_typed_builders_reject_retired_view_and_local_unique() {
             .expect_err("retired type shape must fail during expansion").to_string();
         let expected = if builder.starts_with("__meta_") { "compiler-private intrinsic" }
             else if builder.contains("local unique") { "unknown qualifier `local unique`" }
-            else { "`View(T, 'a)` is retired" };
+            else { "`View(T, 'a)` is retired; use `&T` (or `&[T]` for a slice view)" };
         assert!(error.contains(expected), "{builder}: {error}");
     }
 }
 
 #[test]
-fn rfc0167_typed_builders_retain_nominal_view_lifetimes() {
+fn rfc0167_typed_builders_reject_emitted_nominal_view_lifetimes() {
     let source = r#"import meta
+
+type View(a):
+    value: a
 
 comptime:
     let lifetime = meta.type_expr(meta.TNamed("'a", []))
-    let _ = meta.type_named(meta.ident("View"), [lifetime])
-    let _ = meta.type_named(meta.call_site("View"), [lifetime])
-    let _ = meta.type_expr(meta.TNamed("View", [meta.TNamed("'a", [])]))
+    let view = meta.type_named(meta.call_site("View"), [lifetime])
+    let value = meta.ident("value")
+    let parameter = meta.param(value, view)
+    let body = meta.block([], Some(meta.expr_int(0)))
+    emit_item(meta.function_block(true, meta.ident("bad"), [parameter], Some(meta.type_named(meta.ident("Int"), [])), body))
 "#;
     let parsed = parser::parse_module(source).expect("parse nominal builders");
-    pipeline::link(vec![("main".into(), parsed)], "main")
-        .expect("nominal View with one lifetime is not the retired builtin");
+    let linked = pipeline::link(vec![("main".into(), parsed)], "main")
+        .expect("typed builder constructs the nominal syntax value");
+    let error = typeck::check(&linked)
+        .expect_err("ordinary type checking must reject the emitted lifetime argument")
+        .to_string();
+    assert!(
+        error.contains("lifetime argument `'a` cannot be used for ordinary type parameter `a` of `View`"),
+        "{error}"
+    );
 }

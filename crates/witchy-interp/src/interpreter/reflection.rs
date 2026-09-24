@@ -637,14 +637,14 @@ pub(super) fn compiler_type_holes(
         .collect()
 }
 
-/// Typed builders must obey the same retired-spelling boundary as source and
-/// quotes. A nominal `View('a)` remains legal; only the old builtin shape is gone.
+/// Typed builders must reject the retired two-argument view spelling. Ordinary
+/// rooted views use `&T` or `&[T]`, without a written lifetime.
 pub(super) fn validate_compiler_named_type(name: &str, args: &[Type]) -> Result<(), RuntimeError> {
     if name == "View" && args.len() == 2
         && let Type::Named(lifetime, nested) = &args[1]
         && nested.is_empty() && lifetime.starts_with('\'')
     {
-        return err("`View(T, 'a)` is retired; build an explicit `&'a T` reference instead");
+        return err("`View(T, 'a)` is retired; use `&T` (or `&[T]` for a slice view)");
     }
     Ok(())
 }
