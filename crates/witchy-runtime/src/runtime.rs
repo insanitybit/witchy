@@ -2166,7 +2166,6 @@ impl Runtime {
         config.wasm_reference_types(true);
         config.wasm_function_references(true);
         config.wasm_gc(true);
-        config.wasm_threads(false);
         config.wasm_simd(true);
         config.wasm_relaxed_simd(true);
         config.wasm_multi_memory(false);
@@ -2212,9 +2211,9 @@ impl Runtime {
         // 10-line differential case is not paying an optimizing JIT.
         config.cranelift_opt_level(opt_level);
         // (RFC-0005 step 7) Defense in depth: shrink the codegen/runtime surface to
-        // exactly what witchy emits. Disable every WASM proposal we never lower to —
-        // threads, SIMD, relaxed-SIMD, multiple memories, tail calls, memory64 — so a
-        // miscompile or a crafted module can't reach that machinery. We KEEP the
+        // exactly what witchy emits. Threads are compiled out of the Wasmtime
+        // dependency entirely; pin every other WASM proposal explicitly so a
+        // miscompile or a crafted module cannot reach unselected machinery. We KEEP the
         // proposals we DO emit (bulk memory for `MemoryCopy`/`MemoryFill`, multi-value
         // for the `*_cap` ABI) at their defaults, and explicitly keep reference
         // types / function references / GC on for the externref capability core
@@ -2225,7 +2224,6 @@ impl Runtime {
         config.wasm_reference_types(true);
         config.wasm_function_references(true);
         config.wasm_gc(true);
-        config.wasm_threads(false);
         config.wasm_simd(true);
         config.wasm_relaxed_simd(true);
         config.wasm_multi_memory(false);
