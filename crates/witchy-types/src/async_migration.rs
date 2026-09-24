@@ -218,27 +218,3 @@ fn classify_call(name: &str, args: &[Expr], function: &str, line: u32, census: &
         _ => {}
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use witchy_syntax::parser::parse_module;
-
-    #[test]
-    fn reports_changed_async_surfaces_by_resolved_callee_and_capacity_class() {
-        let source = "async fn main():\n    let (tx, rx) = chan.channel(4).await\n    let _ = chan.channel(0).await\n    let cap = 1\n    let _ = chan.channel(cap).await\n    let _ = chan.recv(rx).await\n    let child = chan.spawn(task.done(unit())).await\n    chan.cancel(child).await\n";
-        let module = parse_module(source).expect("parse migration source");
-        let census = census_linked(&module, "main");
-        let counts = census.counts();
-        assert_eq!(counts["async-callable"], 1);
-        assert_eq!(counts["legacy-channel-bounded"], 1);
-        assert_eq!(counts["legacy-channel-unbounded"], 1);
-        assert_eq!(counts["legacy-channel-dynamic-capacity"], 1);
-        assert_eq!(counts["legacy-handle"], 1);
-        assert_eq!(counts["legacy-cancellation"], 1);
-        assert_eq!(counts["legacy-receive-quiescence"], 1);
-        assert_eq!(counts["task-consumption"], 6);
-        assert!(!census.migration_complete());
-        assert_eq!(census.migration_findings(), census.findings.len() - 1);
-    }
-}

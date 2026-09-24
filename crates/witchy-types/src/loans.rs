@@ -1971,11 +1971,6 @@ fn assignment_overlaps_loan(
     projections_overlap_any(&loan.projection, &LoanProjection { steps })
 }
 
-#[cfg(test)]
-fn projections_overlap(left: &LoanProjection, right: &LoanProjection) -> bool {
-    projections_overlap_any(left, right)
-}
-
 /// A parenthetical clause naming the interior field/slot of a borrowed aggregate
 /// whose live use keeps the owner borrowed (RFC-0112 row 7 diagnostics). Only a
 /// fixed borrowed aggregate carries a non-empty `borrower_projection`; an

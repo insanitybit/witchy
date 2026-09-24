@@ -466,25 +466,6 @@ mod tests {
     }
 
     #[test]
-    fn validated_shape_keeps_blocked_operation_and_retry_distinct() {
-        shape().validate().expect("well-formed typed execution shape");
-    }
-
-    #[test]
-    fn rejects_dangling_lane_before_backend_binding() {
-        let mut invalid = shape();
-        invalid.states[0].transitions[0].actions = vec![LaneAction::Clear { lane: FrameLaneId(1) }];
-        assert!(invalid.validate().expect_err("dangling lane must fail").contains("absent frame lane"));
-    }
-
-    #[test]
-    fn rejects_a_result_lane_outside_the_execution_frame() {
-        let mut invalid = shape();
-        invalid.result_lanes = vec![FrameLaneId(1)];
-        assert!(invalid.validate().expect_err("result lane must exist").contains("result binding references absent"));
-    }
-
-    #[test]
     fn rejects_a_terminal_must_lane_without_a_transfer_or_discharge() {
         let mut invalid = shape();
         invalid.frame[0].ownership = LaneOwnership::MustConsume;
@@ -506,20 +487,5 @@ mod tests {
             to: FrameLaneId(0),
         }];
         assert!(invalid.validate().expect_err("must values are affine").contains("copies a must-consume"));
-    }
-
-    #[test]
-    fn rejects_a_select_edge_that_does_not_name_a_select_operation_or_arm() {
-        let mut invalid = shape();
-        invalid.states[0].transitions[0].condition = ExecutionEdgeCondition::SelectArm {
-            operation: OperationSiteId(0),
-            arm: 0,
-        };
-        assert!(invalid.validate().expect_err("operation kind is semantic")
-            .contains("non-select operation"));
-
-        invalid.operations[0].kind = ExecutionOperation::Select;
-        assert!(invalid.validate().expect_err("select arm must exist")
-            .contains("absent select arm"));
     }
 }

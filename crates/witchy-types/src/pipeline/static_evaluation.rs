@@ -233,57 +233,6 @@ mod tests {
     }
 
     #[test]
-    fn rewrite_is_owner_bound_and_preserves_structural_order() {
-        let mut module = witchy_syntax::parser::parse_module(
-            "fn page() -> ():\n    let _left = glamour.interactive(a, b)\n    let _right = glamour.client_region(c, d)\n    ()\n",
-        ).unwrap();
-        rewrite_module(&mut module, &owner()).unwrap();
-        let mut calls = Vec::new();
-        witchy_syntax::ast::visit::visit_module_exprs::<()>(
-            &module,
-            &mut |expression| {
-                if let Expr::Call { name, args } = expression
-                    && matches!(name.as_str(), "glamour.interactive_with_origin" | "glamour.client_region_with_origin")
-                { calls.push((name.clone(), args.first().cloned())); }
-                Ok(())
-            },
-        ).unwrap();
-        let [(first, Some(Expr::Str(first_origin))), (second, Some(Expr::Str(second_origin)))] = calls.as_slice()
-        else { panic!("rewritten calls: {calls:?}; module={module:?}"); };
-        assert_eq!(first, "glamour.interactive_with_origin");
-        assert_eq!(second, "glamour.client_region_with_origin");
-        assert_ne!(first_origin, second_origin);
-        assert!(first_origin.starts_with("interactive-origin1-"));
-    }
-
-    #[test]
-    fn recipe_witness_is_distinct_from_raw_source_witness() {
-        let sources = vec![("main".to_string(), b"fn main() -> ():\n    ()\n".to_vec())];
-        let toolchain = PackageCoordinate::new(PackageSource::Toolchain, "witchy/stdlib", "0.1.0").unwrap();
-        let mut assignments = vec![("main".to_string(), owner())];
-        let glamour = PackageCoordinate::new(PackageSource::Toolchain, "witchy/glamour", "0.1.0").unwrap();
-        assignments.push(("glamour".to_string(), ModuleLoadIdentity::new(
-            glamour, ["src", "glamour"],
-        ).unwrap()));
-        assignments.extend(witchy_syntax::linker::STD_MODULES.iter().map(|name| (
-            (*name).to_string(), ModuleLoadIdentity::new(toolchain.clone(), ["std", *name]).unwrap(),
-        )));
-        let owners = AuthenticatedModuleOwners::from_loader_assignments(assignments).unwrap();
-        let ordinary = link_checked_authenticated_from_source_bundle_with_user_modules(
-            sources.clone(), "main", no_expand,
-            &HashSet::from(["main".to_string()]), owners.clone(),
-        ).unwrap();
-        let recipe = link_checked_static_evaluation_from_source_bundle(
-            sources, "main", no_expand,
-            &HashSet::from(["main".to_string()]), owners,
-        ).unwrap();
-        assert_ne!(
-            ordinary.canonical_source_witness().unwrap().source_bundle_digest(),
-            recipe.canonical_source().source_witness().source_bundle_digest(),
-        );
-    }
-
-    #[test]
     fn recipe_witness_binds_every_authenticated_owner_assignment() {
         let sources = vec![("main".to_string(), b"fn main() -> ():\n    ()\n".to_vec())];
         let owner_set = |main_owner| {

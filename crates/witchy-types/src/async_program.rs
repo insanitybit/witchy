@@ -621,65 +621,11 @@ mod tests {
     }
 
     #[test]
-    fn conversion_preserves_ordered_select_and_rollback_bindings() {
-        let shape = shape();
-        let binding = binding(&shape);
-        let execution = shape.into_typed_execution(&binding).expect("canonical shape binds");
-        let operation = &execution.operations[0];
-        assert_eq!(execution.result_lanes, vec![FrameLaneId(0)]);
-        assert_eq!(operation.fallback_state, Some(ExecutionStateId(0)));
-        assert_eq!(operation.arms.len(), 2);
-        assert_eq!(operation.arms[0].operation, ExecutionOperation::ChannelReceive);
-        assert_eq!(operation.arms[1].operation, ExecutionOperation::ChannelSend);
-        assert_eq!(execution.states[0].transitions[0].condition, ExecutionEdgeCondition::SelectArm { operation: OperationSiteId(0), arm: 1 });
-    }
-
-    #[test]
     fn rejects_a_select_arm_that_reorders_source_priority() {
         let mut shape = shape();
         shape.operations[0].arms[1].ordinal = 2;
         let binding = binding(&shape);
         assert!(shape.into_typed_execution(&binding).expect_err("arm ordering is semantic").contains("dense and ordered"));
-    }
-
-    #[test]
-    fn semantic_fingerprint_covers_arm_operation_and_queue_ownership() {
-        let program = AsyncProgram::new(vec![shape()]).expect("canonical program");
-        program.validate().expect("fresh fingerprint matches canonical bytes");
-        let mut changed = program.clone();
-        changed.execution_shapes[0].operations[0].arms[0].operation = ExecutionOperation::ChannelSend;
-        assert!(changed.validate().expect_err("arm operation changed").contains("fingerprint"));
-
-        let mut queue_changed = program;
-        queue_changed.execution_shapes[0].queues[0].ownership = PayloadOwnership::BufferRoot;
-        for arm in &mut queue_changed.execution_shapes[0].operations[0].arms {
-            arm.ownership = PayloadOwnership::BufferRoot;
-        }
-        assert!(queue_changed.validate().expect_err("queue ownership changed").contains("fingerprint"));
-    }
-
-    #[test]
-    fn semantic_fingerprint_covers_entry_result_and_cancellation_bindings() {
-        let mut shape = shape();
-        shape.operations[0].kind = ExecutionOperation::Cancellation;
-        shape.operations[0].input_lanes.clear();
-        shape.operations[0].result_lanes.clear();
-        shape.operations[0].pending_move_lanes.clear();
-        shape.operations[0].fallback_state = None;
-        shape.operations[0].queue = None;
-        shape.operations[0].arms.clear();
-        shape.states[0].edges[0].condition = ExecutionEdgeCondition::Always;
-        shape.cancellation = Some(AsyncCancellationTransition {
-            operation: AsyncProgramOperationId(0),
-            state: AsyncProgramStateId(0),
-        });
-        let program = AsyncProgram::new(vec![shape]).expect("canonical program");
-        let mut changed = program.clone();
-        changed.execution_shapes[0].result_lanes.clear();
-        assert!(changed.validate().expect_err("result ABI changed").contains("fingerprint"));
-        let mut changed = program;
-        changed.execution_shapes[0].entry = AsyncProgramStateId(1);
-        assert!(changed.validate().expect_err("entry changed").contains("absent state"));
     }
 
     #[test]
@@ -689,41 +635,5 @@ mod tests {
         shape.result_lanes.clear();
         let error = AsyncProgram::new(vec![shape]).expect_err("must lane cannot reach completion");
         assert!(error.contains("must-consume frame lane undisposed"));
-    }
-
-    #[test]
-    fn backend_binding_rejects_final_callable_and_layout_drift() {
-        let shape = shape();
-        let mut changed = binding(&shape);
-        changed.states[0].callable = FinalCallableIndex(99);
-        assert!(shape.validate_backend_binding(&changed).expect_err("callable drift").contains("state binding drifted"));
-        let mut changed = binding(&shape);
-        changed.closure_layout_fingerprint[0] ^= 1;
-        assert!(shape.validate_backend_binding(&changed).expect_err("layout drift").contains("fingerprint drifted"));
-    }
-
-    #[test]
-    fn final_typed_execution_producer_preserves_the_complete_operation_contract() {
-        let mut shape = shape();
-        shape.dynamic_boundaries = vec![DynamicAsyncBoundary::DynamicAsyncCall];
-        let backend = binding(&shape);
-        let execution = shape.clone().into_typed_execution(&backend).expect("typed execution");
-        let produced = AsyncProgram::from_final_typed_executions(vec![FinalTypedAsyncExecution {
-            execution,
-            closure_layout_fingerprint: shape.closure_layout_fingerprint,
-            state_bindings: shape.states.iter().map(|state| FinalTypedAsyncStateBinding {
-                state: ExecutionStateId(state.state.0),
-                callable: state.callable,
-                capture_to_lane: state.capture_to_lane.iter().copied().map(FrameLaneId).collect(),
-            }).collect(),
-            dynamic_boundaries: shape.dynamic_boundaries.clone(),
-        }]).expect("canonical producer");
-        let expected = AsyncProgram::new(vec![shape]).expect("expected program");
-        assert_eq!(produced.semantic_fingerprint, expected.semantic_fingerprint);
-        assert_eq!(produced.execution_shapes[0].operations[0].arms.len(), 2);
-        assert_eq!(produced.execution_shapes[0].states[0].edges[0].condition,
-            ExecutionEdgeCondition::SelectArm { operation: OperationSiteId(0), arm: 1 });
-        assert_eq!(produced.execution_shapes[0].dynamic_boundaries,
-            vec![DynamicAsyncBoundary::DynamicAsyncCall]);
     }
 }

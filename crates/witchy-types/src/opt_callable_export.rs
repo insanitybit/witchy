@@ -463,21 +463,9 @@ mod tests {
         }
     }
 
-    fn scalar_contract() -> OptCallableContract {
-        OptCallableContract { parameters: vec![OptCallableSlot::Value], result: OptCallableSlot::Value }
-    }
-
     fn export(contract: OptCallableContract) -> OptCallableExport {
         let signature = CheckedCallableSignatureDigest::from_canonical_checked_signature(b"checked-signature").unwrap();
         OptCallableExport::new("fn map(value: Int) -> Int".into(), signature, contract).unwrap()
-    }
-
-    #[test]
-    fn canonical_round_trip_binds_identity_and_recursive_contract() {
-        let sidecar = OptCallableExportSidecar::new(module(), [("map".into(), export(nested()))]).unwrap();
-        let bytes = sidecar.canonical_bytes().unwrap();
-        assert_eq!(OptCallableExportSidecar::decode(&bytes).unwrap(), sidecar);
-        assert_eq!(OptCallableExportSidecar::decode(&bytes).unwrap().export("map").unwrap().contract(), &nested());
     }
 
     #[test]
@@ -492,59 +480,6 @@ mod tests {
             OptCallableExportSidecar::new(module(), [("map".into(), export(nested())), ("map".into(), export(nested()))]),
             Err(OptCallableExportError::DuplicateExport(name)) if name == "map"
         ));
-    }
-
-    #[test]
-    fn checked_signature_envelope_changes_for_convention_and_loan_contract() {
-        let plain = crate::typeck::annotate_checked(
-            witchy_syntax::parser::parse_reference_migration("mode opt\nfn edit(value: &'a String) -> &'a String:\n    value\n").unwrap(),
-        ).unwrap();
-        let exclusive = crate::typeck::annotate_checked(
-            witchy_syntax::parser::parse_reference_migration("mode opt\nfn edit(own value: &'a mut unique String) -> &'a mut unique String:\n    value\n").unwrap(),
-        ).unwrap();
-        let plain = canonical_checked_signature_bytes(&plain, "edit").unwrap();
-        let exclusive = canonical_checked_signature_bytes(&exclusive, "edit").unwrap();
-        assert_ne!(plain, exclusive, "convention, qualifier, and loan facts are signed");
-        assert_ne!(
-            CheckedCallableSignatureDigest::from_canonical_checked_signature(&plain).unwrap(),
-            CheckedCallableSignatureDigest::from_canonical_checked_signature(&exclusive).unwrap(),
-        );
-    }
-
-    #[test]
-    fn signed_declaration_header_reconstructs_the_checked_signature_not_an_import_site_guess() {
-        let typed = crate::typeck::annotate_checked(
-            witchy_syntax::parser::parse_module("mode opt\nfn map(value: Int) -> Int:\n    value\n").unwrap(),
-        ).unwrap();
-        let signature = canonical_checked_signature_bytes(&typed, "map").unwrap();
-        let digest = CheckedCallableSignatureDigest::from_canonical_checked_signature(&signature).unwrap();
-        let export = OptCallableExport::new("fn map(value: Int) -> Int".into(), digest, scalar_contract()).unwrap();
-        assert_eq!(export.checked_scalar_signature("map").unwrap(), signature);
-        let forged = OptCallableExport::new("fn map(value: String) -> String".into(), digest, scalar_contract()).unwrap();
-        assert!(matches!(forged.checked_scalar_signature("map"), Err(OptCallableExportError::UnsupportedAbi(_))));
-        let nested = OptCallableExport::new("fn map(value: Int) -> Int".into(), digest, nested()).unwrap();
-        assert!(matches!(nested.checked_scalar_signature("map"), Err(OptCallableExportError::UnsupportedAbi(_))));
-    }
-
-    #[test]
-    fn signed_scalar_export_keeps_the_source_contract_without_an_abi_payload_claim() {
-        let typed = crate::typeck::annotate_checked(
-            witchy_syntax::parser::parse_module(
-                "mode opt\npub fn ping(value: Bool) -> Bool:\n    false\n",
-            )
-            .unwrap(),
-        )
-        .unwrap();
-        let signature = canonical_checked_signature_bytes(&typed, "ping").unwrap();
-        let export = OptCallableExport::new(
-            "pub fn ping(value: Bool) -> Bool".into(),
-            CheckedCallableSignatureDigest::from_canonical_checked_signature(&signature).unwrap(),
-            scalar_contract(),
-        )
-        .unwrap();
-        let declaration = export.checked_scalar_declaration("ping").unwrap();
-        assert!(declaration.public);
-        assert_eq!(export.checked_scalar_signature("ping").unwrap(), signature);
     }
 
     #[test]

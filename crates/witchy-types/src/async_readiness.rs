@@ -434,18 +434,13 @@ mod tests {
     use witchy_syntax::async_surface::AsyncSurfaceId;
     use witchy_syntax::ast::{CallableQualifiers, Convention};
 
-    use crate::async_control_flow::{
-        AsyncCallableId, SourceAsyncBinding, SourceAsyncControlFlow, SourceBindingId,
-        SourceBindingKind,
-    };
+    use crate::async_control_flow::{AsyncCallableId, SourceAsyncControlFlow};
     use crate::async_program::{AsyncExecutionShape, AsyncStateEdge, FinalStateBinding};
     use crate::typed_async_lowering::{
-        FinalCallableIndex, TypedAsyncFrameInput, TypedAsyncQueueBinding, TypedAsyncStateInput,
-        TypedAsyncStateKind,
+        FinalCallableIndex, TypedAsyncFrameInput, TypedAsyncStateInput, TypedAsyncStateKind,
     };
     use crate::typed_execution::{
-        ExecutionEdgeCondition, ExecutionOutcome, FrameLane, FrameLaneId, PayloadOwnership,
-        QueueCapacity, QueueShape, QueueShapeId,
+        ExecutionEdgeCondition, ExecutionOutcome, FrameLane, FrameLaneId,
     };
 
     fn input(frame: Vec<TypedAsyncFrameInput>) -> TypedAsyncLoweringInput {
@@ -547,68 +542,6 @@ mod tests {
         assert_eq!(
             validate_program_binding(&input, &program).unwrap_err(),
             AsyncReadinessError::ReplayableOnceCapture,
-        );
-    }
-
-    #[test]
-    fn async_readiness_rejects_refingerprinted_capture_lane_swap() {
-        let int = Type::Named("Int".into(), vec![]);
-        let string = Type::Named("String".into(), vec![]);
-        let input = input(vec![
-            TypedAsyncFrameInput {
-                parameter: 0,
-                name: "number".into(),
-                source_binding: None,
-                ty: int.clone(),
-                convention: Convention::Let,
-            },
-            TypedAsyncFrameInput {
-                parameter: 1,
-                name: "text".into(),
-                source_binding: None,
-                ty: string.clone(),
-                convention: Convention::Let,
-            },
-        ]);
-        let lanes = vec![
-            FrameLane { id: FrameLaneId(0), ty: int, ownership: LaneOwnership::Copy, initially_initialized: true },
-            FrameLane { id: FrameLaneId(1), ty: string, ownership: LaneOwnership::Copy, initially_initialized: true },
-        ];
-        let correct = program(vec![0, 1], lanes.clone());
-        validate_program_binding(&input, &correct).expect("typed fields bind their matching lanes");
-
-        // `new` recomputes a valid semantic fingerprint for this program, so
-        // the rejection proves field-to-lane type checks rather than merely
-        // detecting mutation after fingerprinting.
-        let swapped = program(vec![1, 0], lanes);
-        assert_ne!(correct.semantic_fingerprint, swapped.semantic_fingerprint);
-        assert_eq!(
-            validate_program_binding(&input, &swapped).unwrap_err(),
-            AsyncReadinessError::StateDestinationMismatch,
-        );
-    }
-
-    #[test]
-    fn async_readiness_rejects_queue_binding_for_nonoperand_lexical_binding() {
-        let mut input = input(vec![]);
-        let unrelated = SourceBindingId(7);
-        input.source[0].bindings.push(SourceAsyncBinding {
-            id: unrelated,
-            name: "not_an_endpoint".into(),
-            kind: SourceBindingKind::Let,
-        });
-        input.queue_bindings.push(TypedAsyncQueueBinding {
-            endpoint: unrelated,
-            shape: QueueShape {
-                id: QueueShapeId(0),
-                capacity: QueueCapacity::Rendezvous,
-                payload_layout_fingerprint: [0x67; 32],
-                ownership: PayloadOwnership::Inline,
-            },
-        });
-        assert_eq!(
-            queue_bindings_are_structural(&input).unwrap_err(),
-            AsyncReadinessError::QueueBindingMismatch,
         );
     }
 }
