@@ -62,6 +62,39 @@ fn main() -> Int:
 }
 
 #[test]
+fn a_closure_capture_retains_the_nested_list_snapshot() {
+    opt::set_for_tests(Some(OptSet::none()));
+    let _reset = ResetOptimizationOverride;
+    let checked = witchy::resolve_std_only_checked(
+        r#"
+mode opt
+
+fn main() -> Int:
+    var rows = [[1, 2], [3]]
+    let old = &rows
+    let action = fn() -> Int:
+        (*old)[0][0] + (*old)[1][0]
+    rows[0][0] = 9
+    action() * 10 + rows[0][0]
+"#,
+    )
+    .expect("exact whole-root carrier survives a closure capture");
+    // The closure keeps the old children 1 and 3 while the current first
+    // child becomes 9: (1 + 3)*10 + 9 = 49.
+    let (artifact, ()) = codegen::compile_checked_module_artifact_with_observer(&checked, |_, _| ())
+        .expect_lowered("closure capture has an authenticated nested-list root");
+    let mut runtime = Runtime::batch().expect("runtime");
+    let mut vm = runtime.spawn_admitted(
+        &artifact,
+        Capabilities { print_int: true, quiet: true, ..Capabilities::none() },
+        128,
+    ).expect("admitted unoptimized Wasm instance");
+    vm.run().expect("admitted Wasm execution");
+    assert_eq!(vm.output(), vec!["49".to_string()]);
+    assert_eq!(vm.canonical_heap_leaks().expect("canonical heap audit"), Some(0));
+}
+
+#[test]
 fn a_region_born_nested_list_cannot_escape_through_a_view() {
     let error = witchy::resolve_std_only_checked(
         r#"
