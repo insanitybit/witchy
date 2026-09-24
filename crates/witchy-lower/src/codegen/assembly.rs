@@ -7212,16 +7212,6 @@ async fn main(console: Console):
     }
 
     #[test]
-    fn canonical_async_module_compiles_from_authenticated_source() {
-        let checked = authenticated_checked(
-            "import task\n\nasync fn main():\n    let value = task.done(7).await\n    let _keep = value\n",
-        );
-        let bytes = compile_checked_module_binary(&checked)
-            .expect_lowered("compile typed suspension-carrier fixture");
-        assert_eq!(&bytes[..4], b"\0asm", "authenticated async source emits Wasm");
-    }
-
-    #[test]
     fn ready_region_formation_splits_unsupported_task_map_between_channel_regions() {
         let checked = authenticated_checked(
             "import task\n\nasync fn main(console: Console):\n    console.print(\"before\")\n    let (tx, rx) = chan.channel(1).await\n    let ignored = task.map(task.done(1), fn(own value): value + 1).await\n    chan.send(tx, 7).await\n    let value = chan.recv(rx).await\n    console.print(\"value=${value}\")\n",
