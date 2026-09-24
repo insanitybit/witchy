@@ -12,6 +12,87 @@ impl Drop for ResetOptimizationOverride {
 }
 
 #[test]
+fn typed_tag_hole_reaches_admitted_wasm_without_reparse() {
+    opt::set_for_tests(Some(OptSet::none()));
+    let _reset = ResetOptimizationOverride;
+    // Hand calculation: the same parser-owned 21 is substituted twice; 21 + 21 = 42.
+    let source = r#"
+import meta
+
+comptime fn duplicate(parts: List(String), holes: List(meta.TagHole)) -> meta.ExprSyntax:
+    let hole = meta.expr_tag_hole_typed(holes.at(0))
+    meta.expr_binary("+", hole, hole)
+
+fn main(console: Console):
+    console.print("${duplicate"${21}"}")
+"#;
+    let checked = witchy::resolve_std_only_checked(source)
+        .expect("typed compiler-issued tag hole type-checks");
+    let (artifact, ()) = witchy::codegen::compile_checked_module_artifact_with_observer(
+        &checked,
+        |_, _| (),
+    )
+    .expect_lowered("typed tag hole admits through canonical SafeWIR");
+    let mut runtime = witchy::runtime::Runtime::batch().expect("compiled runtime");
+    let mut actor = runtime
+        .spawn_admitted(
+            &artifact,
+            witchy::runtime::Capabilities {
+                print: true,
+                quiet: true,
+                ..witchy::runtime::Capabilities::none()
+            },
+            64,
+        )
+        .expect("admitted unoptimized Wasm instance");
+    actor.run().expect("admitted unoptimized Wasm execution");
+    assert_eq!(actor.output(), vec!["42".to_string()]);
+    assert_eq!(actor.canonical_heap_leaks().expect("canonical heap audit"), Some(0));
+}
+
+#[test]
+fn typed_tag_hole_rejects_forged_and_wrongly_typed_holes() {
+    for (source, expected) in [
+        (
+            r#"
+import meta
+comptime fn forged(parts: List(String), holes: List(meta.TagHole)) -> meta.ExprSyntax:
+    meta.expr_tag_hole_typed(meta.TagHole("__witchy_hole_0"))
+fn main() -> Int:
+    forged"x${1}"
+"#,
+            "sealed",
+        ),
+        (
+            r#"
+import meta
+comptime fn borrowed(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
+    meta.expr_tag_hole_typed(meta.TagHole(holes.at(0)))
+fn main() -> Int:
+    borrowed"x${1}"
+"#,
+            "sealed",
+        ),
+        (
+            r#"
+import meta
+comptime fn wrong(parts: List(String), holes: List(Int)) -> meta.ExprSyntax:
+    meta.expr_int(42)
+fn main() -> Int:
+    wrong"x${1}"
+"#,
+            "must accept holes as List(meta.TagHole) or legacy List(String)",
+        ),
+    ] {
+        let parsed = parser::parse_module(source).expect("parse typed tag-hole near miss");
+        let error = pipeline::link(vec![("main".into(), parsed)], "main")
+            .expect_err("unsupported tag hole form must fail closed")
+            .to_string();
+        assert!(error.contains(expected), "{error}");
+    }
+}
+
+#[test]
 fn parser_owned_tag_hole_reaches_admitted_wasm_without_reparse() {
     opt::set_for_tests(Some(OptSet::none()));
     let _reset = ResetOptimizationOverride;

@@ -65,6 +65,11 @@ sealed type Ident:
     Ident(String)
     CallSiteIdent(String)
 
+// A compiler-issued hole in the active tagged literal. The compiler bridge
+// constructs this sealed value; tags never receive the hole's source.
+sealed type TagHole:
+    TagHole(String)
+
 // Attach compiler-approved standard-module imports to an already structural
 // item. The item remains sealed and the import set is carried as a compiler
 // module fragment; no source is rendered or reparsed.
@@ -136,9 +141,14 @@ fn expr_ident(id: Ident) -> ExprSyntax:
 fn __meta_expr_leaf(kind: String, payload: String) -> ExprSyntax:
     __meta_expr_leaf(kind, payload)
 
-// Reify exactly one compiler-issued tagged-literal hole. This does not parse a
-// name: the compiler accepts only a sentinel issued for the active tag
-// invocation, then substitutes the call-site expression after expansion.
+// Reify exactly one compiler-issued hole without parsing its source. The
+// compiler substitutes its call-site expression after tag expansion.
+pub fn expr_tag_hole_typed(hole: TagHole) -> ExprSyntax:
+    match hole:
+        TagHole(marker) -> __meta_expr_tag_hole(marker)
+
+// Temporary compatibility lane for existing tags. Remove after all tag
+// signatures use List(TagHole).
 pub fn expr_tag_hole(marker: String) -> ExprSyntax:
     __meta_expr_tag_hole(marker)
 

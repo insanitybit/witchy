@@ -2735,6 +2735,12 @@ Hole-free `quote block:` values retain compiler-owned block AST.
 - `Ident(String)`
 - `CallSiteIdent(String)`
 
+#### `sealed type TagHole`
+
+A compiler-issued hole in the active tagged literal. The compiler bridge constructs this sealed value; tags never receive the hole's source.
+
+- `TagHole(String)`
+
 #### `type TypeExpr`
 
 A declared type expression, exposed as data so generators do not have to parse source-looking type strings.
@@ -2789,9 +2795,13 @@ A deterministic compiler-owned binding name. The returned identifier cannot coll
 
 #### `fn is_identifier(name: String) -> Bool`
 
+#### `fn expr_tag_hole_typed(hole: TagHole) -> ExprSyntax`
+
+Reify exactly one compiler-issued hole without parsing its source. The compiler substitutes its call-site expression after tag expansion.
+
 #### `fn expr_tag_hole(marker: String) -> ExprSyntax`
 
-Reify exactly one compiler-issued tagged-literal hole. This does not parse a name: the compiler accepts only a sentinel issued for the active tag invocation, then substitutes the call-site expression after expansion.
+Temporary compatibility lane for existing tags. Remove after all tag signatures use List(TagHole).
 
 #### `fn expr_tagged(tag: Ident, parts: List(String), holes: List(ExprSyntax)) -> ExprSyntax`
 

@@ -209,7 +209,7 @@ position: the lexer splits the literal into its static fragments and its `${…}
 holes. Tags use the typed signature
 
 ```text
-comptime fn tag(parts: List(String), holes: List(String)) -> meta.ExprSyntax
+comptime fn tag(parts: List(String), holes: List(meta.TagHole)) -> meta.ExprSyntax
 ```
 
 Tags that generate source-indexed artifacts may accept a third `String`
@@ -218,13 +218,15 @@ diagnostics, while deriving stable artifact identity from normalized static
 input:
 
 ```text
-comptime fn tag(parts: List(String), holes: List(String), origin: String) -> meta.ExprSyntax
+comptime fn tag(parts: List(String), holes: List(meta.TagHole), origin: String) -> meta.ExprSyntax
 ```
 
-String-returning tags are rejected. With `parts` = the static fragments and `holes` = one
-**opaque marker** per hole,
-The tag returns the typed expression that replaces the literal. Convert a marker
-with `meta.expr_tag_hole`, or compose it through a structural quote or builder.
+String-returning tags are rejected. `parts` contains the static fragments;
+`holes` contains one sealed `meta.TagHole` per hole. The tag returns the typed
+expression that replaces the literal. Convert a hole with
+`meta.expr_tag_hole_typed`, or compose it through a structural quote or builder.
+Existing `List(String)` tags and `meta.expr_tag_hole` remain a temporary
+compatibility lane; other hole parameter types are rejected.
 The compiler substitutes the real hole expression -
 resolved at the call site - and splices the result before type-checking.
 Reachable tag evaluator items don't invoke tagged literals in their bodies or
@@ -283,8 +285,8 @@ fn main(console: Console):
 import list
 import meta
 
-comptime fn greet(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
-    let name = meta.expr_tag_hole(holes.at(0))
+comptime fn greet(parts: List(String), holes: List(meta.TagHole)) -> meta.ExprSyntax:
+    let name = meta.expr_tag_hole_typed(holes.at(0))
     quote expr:
         "Hello, " + ${name} + "!"
 

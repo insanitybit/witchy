@@ -1,7 +1,8 @@
 //! `tag"…${expr}…"` — compile-time tagged literals (RFC-0006).
 //!
 //! A *tag* is a `comptime` function
-//! `comptime fn <tag>(parts: List(String), holes: List(String)) -> meta.ExprSyntax`.
+//! `comptime fn <tag>(parts: List(String), holes: List(meta.TagHole)) -> meta.ExprSyntax`.
+//! Existing `List(String)` tags use a temporary compatibility lane.
 //! A tag may accept a third `String` parameter containing the compiler-owned
 //! invocation origin (`module:line`). This is metadata, not identity: generators
 //! derive stable semantic IDs from their static input and use the origin only for
@@ -593,6 +594,19 @@ fn is_expr_syntax_type(ty: &Type) -> bool {
     }
 }
 
+fn tag_hole_type(ty: &Type) -> Option<bool> {
+    match ty {
+        Type::Named(name, args) if name == "List" && args.len() == 1 => match &args[0] {
+            Type::Named(element, fields) if fields.is_empty() && element == "String" => Some(false),
+            Type::Named(element, fields) if fields.is_empty() && element == "meta.TagHole" => {
+                Some(true)
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 /// Run one tag: build a synthetic comptime program calling `tag(parts, holes)`,
 /// run it on the reference interpreter, and transfer its emitted expression AST.
 /// A tag must return `meta.ExprSyntax`.
@@ -626,7 +640,24 @@ fn expand_one(
         validate_tag(ctx, tag).map_err(|reason| format!("{}: tag `{tag}` {reason}", where_()))?;
     let canonical_tag = format!("{}.{}", definition_origin.module, selected_tag.name);
     let tag_name = selected_tag.name.clone();
-    let mut tag_args = vec![str_list(parts), str_list(&markers)];
+    let typed_holes = selected_tag
+        .params
+        .get(1)
+        .and_then(|param| param.ty.as_ref())
+        .and_then(tag_hole_type)
+        .ok_or_else(|| format!(
+            "{}: tag `{tag}` must accept holes as List(meta.TagHole) or legacy List(String)",
+            where_()
+        ))?;
+    let hole_arg = if typed_holes {
+        Expr::List(markers.iter().map(|marker| Expr::Ctor {
+            name: "meta.TagHole".into(),
+            args: vec![Expr::Str(marker.clone())],
+        }).collect())
+    } else {
+        str_list(&markers)
+    };
+    let mut tag_args = vec![str_list(parts), hole_arg];
     match selected_tag.params.len() {
         2 => {}
         3 => tag_args.push(Expr::Str(format!("{}:{}", ctx.name, invocation_line))),

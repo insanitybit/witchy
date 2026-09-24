@@ -1519,25 +1519,28 @@ A string literal written **immediately after an identifier**, `tag"a${x}b"`, is 
 and its `${…}` hole sources, and the compiler calls the `tag` function
 
 ```text
-comptime fn tag(parts: List(String), holes: List(String)) -> meta.ExprSyntax
+comptime fn tag(parts: List(String), holes: List(meta.TagHole)) -> meta.ExprSyntax
 ```
 
 A tag may accept a third `String` parameter. The compiler supplies
 `module:line` invocation metadata for diagnostics:
 
 ```text
-comptime fn tag(parts: List(String), holes: List(String), origin: String) -> meta.ExprSyntax
+comptime fn tag(parts: List(String), holes: List(meta.TagHole), origin: String) -> meta.ExprSyntax
 ```
 
 The metadata isn't a stable semantic identity. A tag derives stable IDs from
 its normalized static parts and slot structure, keeping source location separate.
 
-with `parts` = the static fragments and `holes` = an **opaque marker** per hole -
-a token the tag *places* where that hole's value belongs (the tag doesn't read
-the hole's source). A tag returns `meta.ExprSyntax`; String-returning tags are
+Here `parts` holds the static fragments and `holes` holds a sealed `meta.TagHole`
+per hole. `meta.expr_tag_hole_typed` converts one to expression syntax that the
+tag places where the hole's value belongs; the tag cannot read the hole's source.
+Existing `List(String)` tags and `meta.expr_tag_hole` remain a temporary
+compatibility lane; other hole parameter types are rejected. A tag returns
+`meta.ExprSyntax`; String-returning tags are
 rejected. A compiler-owned expression transfers its AST through the expansion
 event directly. A tag constructs generated expressions with a quote,
-`meta.expr_tag_hole`, and the structural `meta.expr_*` builders; it cannot parse
+`meta.expr_tag_hole_typed`, and the structural `meta.expr_*` builders; it cannot parse
 source text dynamically.
 Reachable tag evaluator items may not contain tagged literals in their bodies or
 initializers; nested tags are returned as expression syntax and expanded after the outer tag
@@ -1579,8 +1582,8 @@ import meta
 // marker where the hole's value goes, then constructs one typed expression. The
 // compiler substitutes the real hole expression (here `name`, resolved at the
 // call site) at the marker.
-comptime fn greet(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
-    meta.expr_binary("+", meta.expr_string("Hello, "), meta.expr_tag_hole(holes.at(0)))
+comptime fn greet(parts: List(String), holes: List(meta.TagHole)) -> meta.ExprSyntax:
+    meta.expr_binary("+", meta.expr_string("Hello, "), meta.expr_tag_hole_typed(holes.at(0)))
 
 fn main(console: Console):
     let name = "witch"

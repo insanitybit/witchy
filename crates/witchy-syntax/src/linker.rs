@@ -3821,7 +3821,15 @@ fn check_sealing(
                 mode == LinkMode::Test && mname == entry && source_authored;
             match item {
                 Item::Function(f) => {
-                    seal_block(&f.body, &sealed, mname, allow_test_sealed_type_construction)?;
+                    // This unspellable function is built entirely by tagged::expand.
+                    // Give only its compiler-issued TagHole constructors a distinct
+                    // sealing identity; ordinary source in this module keeps mname.
+                    let seal_home = if f.name == "@compiler:tag-bridge" {
+                        "@compiler:tag-bridge"
+                    } else {
+                        mname.as_str()
+                    };
+                    seal_block(&f.body, &sealed, seal_home, allow_test_sealed_type_construction)?;
                 }
                 Item::Impl(im) => {
                     for method in &im.methods {
@@ -3850,6 +3858,13 @@ fn seal_use(
             return Ok(());
         }
         if decl != home {
+            if verb == "construct"
+                && home == "@compiler:tag-bridge"
+                && decl == "meta"
+                && (name == "meta.TagHole" || name == "TagHole")
+            {
+                return Ok(());
+            }
             if verb == "construct" && !is_capability && allow_test_sealed_type_construction {
                 return Ok(());
             }
