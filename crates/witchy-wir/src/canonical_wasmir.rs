@@ -3776,21 +3776,34 @@ impl StructuredEmitter<'_> {
         })
     }
 
+    fn successor_slice(&self, id: crate::canonical_safewir::BlockId) -> Result<&[crate::canonical_safewir::BlockId], EncodeError> {
+        self.successors_by_block.get(&id).map(Vec::as_slice).ok_or(EncodeError::MissingBlock {
+            function: self.source_function.id,
+            block: id,
+        })
+    }
+
     /// `distances_from` stopping at `stops` (which are never entered).
     fn distances_until(
         &self,
         start: crate::canonical_safewir::BlockId,
         stops: &[crate::canonical_safewir::BlockId],
-    ) -> Result<BTreeMap<crate::canonical_safewir::BlockId, usize>, EncodeError> {
-        let mut distances = BTreeMap::new();
+    ) -> Result<foldhash::HashMap<crate::canonical_safewir::BlockId, usize>, EncodeError> {
+        // Hashed rather than ordered: callers only probe and rank the
+        // entries, and on an executor-sized function this walk runs per
+        // branch (the ordered map and a successor-list clone per step were
+        // most of its cost).
+        let mut distances = foldhash::HashMap::default();
         let mut pending = VecDeque::from([(start, 0)]);
         while let Some((id, distance)) = pending.pop_front() {
             if stops.contains(&id) || distances.contains_key(&id) {
                 continue;
             }
-            self.block(id)?;
+            // The edge map is keyed by exactly the function's blocks, so
+            // this lookup also rejects a missing block.
+            let successors = self.successor_slice(id)?;
             distances.insert(id, distance);
-            pending.extend(self.successors(id)?.into_iter().map(|successor| (successor, distance + 1)));
+            pending.extend(successors.iter().map(|successor| (*successor, distance + 1)));
         }
         Ok(distances)
     }
@@ -4147,14 +4160,15 @@ impl StructuredEmitter<'_> {
         })
     }
 
-    fn reachable_until(&self, start: crate::canonical_safewir::BlockId, stops: &[crate::canonical_safewir::BlockId]) -> Result<BTreeSet<crate::canonical_safewir::BlockId>, EncodeError> {
-        let mut seen = BTreeSet::new();
+    fn reachable_until(&self, start: crate::canonical_safewir::BlockId, stops: &[crate::canonical_safewir::BlockId]) -> Result<foldhash::HashSet<crate::canonical_safewir::BlockId>, EncodeError> {
+        // Hashed: callers only test membership, disjointness and all/any.
+        let mut seen = foldhash::HashSet::default();
         let mut pending = VecDeque::from([start]);
         while let Some(id) = pending.pop_front() {
             if stops.contains(&id) || !seen.insert(id) {
                 continue;
             }
-            pending.extend(self.successors(id)?);
+            pending.extend(self.successor_slice(id)?);
         }
         Ok(seen)
     }
@@ -6532,21 +6546,28 @@ impl<'a> PlanEmitter<'a> {
         self.successors_by_block.get(&id).cloned().ok_or(CanonicalAdmissionError::UnsupportedPlan)
     }
 
+    fn successor_slice(&self, id: crate::canonical_safewir::BlockId) -> Result<&[crate::canonical_safewir::BlockId], CanonicalAdmissionError> {
+        self.successors_by_block.get(&id).map(Vec::as_slice).ok_or(CanonicalAdmissionError::UnsupportedPlan)
+    }
+
     /// `distances_from` stopping at `stops` (which are never entered).
     fn distances_until(
         &self,
         start: crate::canonical_safewir::BlockId,
         stops: &[crate::canonical_safewir::BlockId],
-    ) -> Result<BTreeMap<crate::canonical_safewir::BlockId, usize>, CanonicalAdmissionError> {
-        let mut distances = BTreeMap::new();
+    ) -> Result<foldhash::HashMap<crate::canonical_safewir::BlockId, usize>, CanonicalAdmissionError> {
+        // Hashed: `find_join` only probes and ranks the entries.
+        let mut distances = foldhash::HashMap::default();
         let mut pending = VecDeque::from([(start, 0)]);
         while let Some((id, distance)) = pending.pop_front() {
             if stops.contains(&id) || distances.contains_key(&id) {
                 continue;
             }
-            self.block(id)?;
+            // The edge map is keyed by exactly the function's blocks, so
+            // this lookup also rejects a missing block.
+            let successors = self.successor_slice(id)?;
             distances.insert(id, distance);
-            pending.extend(self.successors(id)?.into_iter().map(|successor| (successor, distance + 1)));
+            pending.extend(successors.iter().map(|successor| (*successor, distance + 1)));
         }
         Ok(distances)
     }
@@ -6854,14 +6875,15 @@ impl<'a> PlanEmitter<'a> {
         self.predecessors_by_block.get(&block).cloned().ok_or(CanonicalAdmissionError::UnsupportedPlan)
     }
 
-    fn reachable_until(&self, start: crate::canonical_safewir::BlockId, stops: &[crate::canonical_safewir::BlockId]) -> Result<BTreeSet<crate::canonical_safewir::BlockId>, CanonicalAdmissionError> {
-        let mut seen = BTreeSet::new();
+    fn reachable_until(&self, start: crate::canonical_safewir::BlockId, stops: &[crate::canonical_safewir::BlockId]) -> Result<foldhash::HashSet<crate::canonical_safewir::BlockId>, CanonicalAdmissionError> {
+        // Hashed: callers only test membership, disjointness and all/any.
+        let mut seen = foldhash::HashSet::default();
         let mut pending = VecDeque::from([start]);
         while let Some(id) = pending.pop_front() {
             if stops.contains(&id) || !seen.insert(id) {
                 continue;
             }
-            pending.extend(self.successors(id)?);
+            pending.extend(self.successor_slice(id)?);
         }
         Ok(seen)
     }
