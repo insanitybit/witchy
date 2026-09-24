@@ -232,10 +232,10 @@ Environment knobs: `MERGE_QUEUE_GATE_CMD` (default `./scripts/check.sh`),
 default, disables it), `MERGE_QUEUE_STALL_TIMEOUT` (600s of no log
 output **while the gate's process group is idle** — a group still burning CPU is
 compiling/testing, not hung, so silence alone never kills it; see the stall
-note below), `MERGE_QUEUE_WORKSPACE_TEST_BUDGET` (hard wall-clock on the
-workspace-test stage, default 600s, starting at the first `==> [N] tests`
-marker; streamed `PASS` lines and heartbeat pulses do **not** reset it — a
-starved-but-chatty nextest that would otherwise crawl for an hour is a
+note below), `MERGE_QUEUE_WORKSPACE_TEST_BUDGET` (hard wall-clock on workspace
+test execution, default 1,800s, starting when nextest announces its run after
+Cargo compilation; streamed `PASS` lines and heartbeat pulses do **not** reset
+it — a starved-but-chatty nextest that would otherwise crawl for an hour is a
 timeout. `0` disables the budget), `MERGE_QUEUE_BUSY_SILENCE_MAX` (3× the stall window: the ceiling on
 silence even for a *busy* group, so a CPU-burning runaway is reclaimed here
 rather than relying on a whole-gate ceiling), `MERGE_QUEUE_BATCH_MAX` (5),
@@ -465,8 +465,8 @@ instead of `--workspace --all-targets`. `--full` / CI still run everything.
    global sccache process. Discovery pressure on the macOS gate host is bounded
    by the nextest list wrapper (see above); execution runs at nextest's normal
    concurrency. A monitor loop kills the group on
-   overall timeout, on the workspace-test wall-clock
-   (`MERGE_QUEUE_WORKSPACE_TEST_BUDGET`, default 600s from `==> [N] tests`,
+   overall timeout, on workspace test execution
+   (`MERGE_QUEUE_WORKSPACE_TEST_BUDGET`, default 1,800s from `Nextest run ID`,
    ignoring PASS/heartbeat resets), or on log-stall **only when the group is
    also idle** (CPU near zero) — a silent-but-CPU-busy gate is
    compiling/enumerating, not hung — and journals `timeout`. `check.sh` emits

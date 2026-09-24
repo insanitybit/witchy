@@ -45,7 +45,7 @@ fn zero_whole_gate_timeout_does_not_kill_a_progressing_gate() {
 }
 
 #[test]
-fn workspace_test_budget_kills_a_chatty_progressing_stage() {
+fn workspace_test_budget_kills_chatty_execution_without_invalidating_its_build() {
     let fixture = QueueFixture::stack(&["a.txt"]);
     fixture.mq_ok(&["submit", "a"], "true");
 
@@ -57,6 +57,7 @@ fp=\"$PWD/$CARGO_TARGET_DIR/debug/.fingerprint\"
 mkdir -p \"$fp/witchy-wir-0123456789abcdef\" \"$fp/serde-0123456789abcdef\"
 printf '%s' \"$fp\" > \"$FINGERPRINT_PROBE\"
 printf '==> [1] tests (workspace) (t+0s)\\n'
+printf 'Nextest run ID 01234567-89ab-cdef-0123-456789abcdef with nextest profile: default\\n'
 i=0
 while :; do
   i=$((i+1))
@@ -66,7 +67,6 @@ while :; do
 done
 ";
 
-    let started = Instant::now();
     let output = fixture
         .mq_command(&["run", "--once"], gate)
         .env("MERGE_QUEUE_WORKSPACE_TEST_BUDGET", "1")
@@ -76,13 +76,6 @@ done
         .env("FINGERPRINT_PROBE", &probe)
         .output()
         .expect("run gate past the workspace-test budget");
-    let elapsed = started.elapsed();
-
-    assert!(
-        elapsed < Duration::from_secs(20),
-        "workspace-test budget did not fire promptly: {elapsed:?}\nstderr: {}",
-        String::from_utf8_lossy(&output.stderr),
-    );
     assert!(
         fixture
             .journal()
@@ -102,6 +95,17 @@ done
         reason.contains("MERGE_QUEUE_WORKSPACE_TEST_BUDGET"),
         "timeout reason did not name the workspace-test budget: {reason}",
     );
+    let gate_elapsed = fixture
+        .journal()
+        .iter()
+        .find(|event| event["event"] == "timeout")
+        .and_then(|event| event["gate_elapsed_s"].as_str())
+        .and_then(|elapsed| elapsed.parse::<u64>().ok())
+        .expect("timeout event recorded gate elapsed time");
+    assert!(
+        gate_elapsed < 20,
+        "workspace-test budget did not fire promptly inside the gate: {gate_elapsed}s",
+    );
     assert!(
         fixture
             .journal()
@@ -110,14 +114,20 @@ done
         "over-budget stage was still merged",
     );
 
-    // A killed build may have half-written a workspace crate; its stale
-    // fingerprint must not survive, while dependencies stay warm.
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("preserved workspace fingerprints"),
+        "coordinator did not report preserving the completed build: {}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+
+    // Cargo completed before nextest announced the run, so preserve both
+    // workspace and dependency fingerprints for the retry.
     let fingerprints = std::path::PathBuf::from(
         std::fs::read_to_string(&probe).expect("fake gate reported its fingerprint dir"),
     );
     assert!(
-        !fingerprints.join("witchy-wir-0123456789abcdef").exists(),
-        "a workspace crate's fingerprint survived the kill",
+        fingerprints.join("witchy-wir-0123456789abcdef").exists(),
+        "completed workspace build was invalidated after nextest started",
     );
     assert!(
         fingerprints.join("serde-0123456789abcdef").exists(),
@@ -133,6 +143,117 @@ done
     assert!(
         String::from_utf8_lossy(&invalid.stderr)
             .contains("MERGE_QUEUE_WORKSPACE_TEST_BUDGET must be a non-negative integer")
+    );
+}
+
+#[test]
+fn workspace_test_timeout_after_nextest_starts_preserves_cargo_fingerprints() {
+    let fixture = QueueFixture::stack(&["a.txt"]);
+    fixture.mq_ok(&["submit", "a"], "true");
+
+    let probe = fixture.state.join("fingerprint-probe");
+    let gate = "\
+fp=\"$PWD/$CARGO_TARGET_DIR/debug/.fingerprint\"
+mkdir -p \"$fp/witchy-wir-0123456789abcdef\" \"$fp/serde-0123456789abcdef\"
+printf '%s' \"$fp\" > \"$FINGERPRINT_PROBE\"
+printf '==> [1] tests (workspace) (t+0s)\\n'
+sleep 3
+printf '    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.00s\\n'
+printf 'Nextest run ID 01234567-89ab-cdef-0123-456789abcdef with nextest profile: default\\n'
+printf reached > \"$NEXTEST_REACHED\"
+i=0
+while :; do
+  i=$((i+1))
+  printf '        PASS [  0.010s] (%d/9999) witchy-types types::keeps_printing\\n' \"$i\"
+  sleep 0.2
+done
+";
+
+    let output = fixture
+        .mq_command(&["run", "--once"], gate)
+        .env("MERGE_QUEUE_WORKSPACE_TEST_BUDGET", "1")
+        .env("MERGE_QUEUE_MONITOR_INTERVAL", "0.1")
+        .env("MERGE_QUEUE_STALL_TIMEOUT", "600")
+        .env("MERGE_QUEUE_TEST_TERMINATE_GRACE", "0.05")
+        .env("FINGERPRINT_PROBE", &probe)
+        .env("NEXTEST_REACHED", fixture.state.join("nextest-reached"))
+        .output()
+        .expect("run nextest execution past the workspace-test budget");
+
+    assert!(
+        fixture
+            .journal()
+            .iter()
+            .any(|event| event["event"] == "timeout" && event["branch"] == "a"),
+        "over-budget nextest run was not journaled as timeout: {:?}",
+        fixture.journal(),
+    );
+    assert!(
+        fixture.state.join("nextest-reached").exists(),
+        "compilation time consumed the test-execution budget before nextest started",
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("preserved workspace fingerprints"),
+        "coordinator did not report preserving the completed build: {}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+
+    let fingerprints = std::path::PathBuf::from(
+        std::fs::read_to_string(&probe).expect("fake gate reported its fingerprint dir"),
+    );
+    assert!(
+        fingerprints.join("witchy-wir-0123456789abcdef").exists(),
+        "completed workspace build was invalidated after nextest started",
+    );
+    assert!(
+        fingerprints.join("serde-0123456789abcdef").exists(),
+        "dependency fingerprint was invalidated after nextest started",
+    );
+}
+
+#[test]
+fn whole_gate_timeout_during_compilation_invalidates_workspace_fingerprints() {
+    let fixture = QueueFixture::stack(&["a.txt"]);
+    fixture.mq_ok(&["submit", "a"], "true");
+
+    let probe = fixture.state.join("fingerprint-probe");
+    let gate = "\
+fp=\"$PWD/$CARGO_TARGET_DIR/debug/.fingerprint\"
+mkdir -p \"$fp/witchy-wir-0123456789abcdef\" \"$fp/serde-0123456789abcdef\"
+printf '%s' \"$fp\" > \"$FINGERPRINT_PROBE\"
+printf '==> [1] tests (workspace) (t+0s)\\n'
+while :; do printf '   Compiling witchy-wir v0.1.0\\n'; sleep 0.2; done
+";
+
+    let output = fixture
+        .mq_command(&["run", "--once"], gate)
+        .env("MERGE_QUEUE_GATE_TIMEOUT", "1")
+        .env("MERGE_QUEUE_WORKSPACE_TEST_BUDGET", "1")
+        .env("MERGE_QUEUE_MONITOR_INTERVAL", "0.1")
+        .env("MERGE_QUEUE_TEST_TERMINATE_GRACE", "0.05")
+        .env("FINGERPRINT_PROBE", &probe)
+        .output()
+        .expect("time out a foreground Cargo build");
+
+    assert!(
+        fixture
+            .journal()
+            .iter()
+            .any(|event| event["event"] == "timeout" && event["branch"] == "a"),
+        "compile timeout was not journaled: {:?}\nstderr: {}",
+        fixture.journal(),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let fingerprints = std::path::PathBuf::from(
+        std::fs::read_to_string(&probe).expect("fake gate reported its fingerprint dir"),
+    );
+    assert!(
+        !fingerprints.join("witchy-wir-0123456789abcdef").exists(),
+        "a workspace fingerprint survived a killed compiler",
+    );
+    assert!(
+        fingerprints.join("serde-0123456789abcdef").exists(),
+        "compile-time cleanup invalidated a dependency fingerprint",
     );
 }
 

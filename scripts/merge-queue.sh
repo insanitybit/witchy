@@ -1461,7 +1461,8 @@ run_gate() { # run_gate <log> [fuzz-mode] [gate-scope] [queue-infra] [queue-infr
     local last_real_sig=""
     local last_progress_mtime=""
     local last_real_time="$start"
-    local test_stage_start=""
+    local test_stage_seen=0
+    local test_execution_start=""
     local test_stage_done=0
     while :; do
         if ! pid_is_alive "$gpid"; then
@@ -1474,26 +1475,31 @@ run_gate() { # run_gate <log> [fuzz-mode] [gate-scope] [queue-infra] [queue-infr
         sleep "$monitor_interval"
         local t; t="$(date +%s)"
         local elapsed=$((t - start))
-        # Hard wall-clock on the workspace-test stage. Heartbeat pulses and
-        # streamed PASS lines reset the stall clock above (they are real
-        # output), but they must not keep a 70-minute starved crawl alive.
-        # The budget starts at the first `==> [N] tests` marker and stops
-        # applying once that stage records a "took" line or a later stage
-        # begins. 0 disables it so a known-slow cold first gate can opt out.
+        # Hard wall-clock on workspace TEST EXECUTION. Cargo compilation is
+        # protected by the independent idle/busy-silence and optional whole-
+        # gate ceilings below; charging it to this budget made a cold target
+        # consume almost all 1,800 seconds before the first test ran. Start
+        # only after nextest announces its run, which is the stable boundary
+        # that its foreground Cargo build has completed. Streamed PASS lines
+        # remain real liveness but cannot keep a starved test crawl alive.
+        # 0 disables this execution budget.
         if [ "$test_stage_done" -eq 0 ]; then
-            if [ -z "$test_stage_start" ] \
+            if [ "$test_stage_seen" -eq 0 ] \
                 && grep -E '==> \[[0-9]+\] tests' "$log" >/dev/null 2>&1; then
-                test_stage_start="$t"
+                test_stage_seen=1
             fi
-            if [ -n "$test_stage_start" ]; then
+            if [ "$test_stage_seen" -eq 1 ]; then
                 if grep -E '\[([0-9]+)\] tests .* took [0-9]+s' "$log" >/dev/null 2>&1 \
                     || { grep -E '==> \[[0-9]+\] ' "$log" 2>/dev/null \
                         | grep -vE '==> \[[0-9]+\] tests' >/dev/null; }; then
                     test_stage_done=1
-                elif [ "$workspace_test_budget" -gt 0 ]; then
-                    local test_elapsed=$((t - test_stage_start))
+                elif [ -z "$test_execution_start" ] \
+                    && grep -aqF 'Nextest run ID ' "$log" 2>/dev/null; then
+                    test_execution_start="$t"
+                elif [ -n "$test_execution_start" ] && [ "$workspace_test_budget" -gt 0 ]; then
+                    local test_elapsed=$((t - test_execution_start))
                     if [ "$test_elapsed" -gt "$workspace_test_budget" ]; then
-                        why="workspace-test stage exceeded ${workspace_test_budget}s (MERGE_QUEUE_WORKSPACE_TEST_BUDGET)"
+                        why="workspace test execution exceeded ${workspace_test_budget}s (MERGE_QUEUE_WORKSPACE_TEST_BUDGET)"
                         local starved; starved="$(cargo_lock_starvation_note "$log")"
                         [ -n "$starved" ] && why="$why — $starved"
                         break
@@ -1570,7 +1576,18 @@ run_gate() { # run_gate <log> [fuzz-mode] [gate-scope] [queue-infra] [queue-infr
     active_gate_pgid=""
     rm -f "$lock/gate_pgid" 2>/dev/null || true
     rm -f "$progress_file"
-    invalidate_workspace_fingerprints "$gate_wt/$cargo_target_dir"
+    # Once nextest has announced its run, Cargo finished the foreground
+    # test-profile build and committed every fingerprint it will use. A
+    # timeout in test execution cannot leave those files half-written. Keep
+    # them: deleting all workspace fingerprints here turned one slow test run
+    # into a guaranteed cold compiler rebuild on the retry (28m34s in the
+    # 2026-09-24 incident). Before that boundary, a killed rustc may still be
+    # writing an artifact, so retain the conservative invalidation.
+    if grep -aqF 'Nextest run ID ' "$log" 2>/dev/null; then
+        note "preserved workspace fingerprints in $gate_wt/$cargo_target_dir after test-execution timeout"
+    else
+        invalidate_workspace_fingerprints "$gate_wt/$cargo_target_dir"
+    fi
     gate_result="timeout: $why"
     return 0
 }
