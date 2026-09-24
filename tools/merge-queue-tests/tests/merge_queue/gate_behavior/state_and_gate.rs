@@ -752,6 +752,35 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
             );
 
             fs::write(&cargo_args_file, "").expect("clear fake cargo arguments");
+            let docs = check_sh(&root, &[])
+                .env("PATH", &path)
+                .env("CARGO_TARGET_DIR", temp.path().join("target-docs-contracts"))
+                .env("WITCHY_GATE_SCOPE", "docs")
+                .env("WITCHY_GATE_NEXTEST", "-p repo-tests")
+                .env("WITCHY_GATE_NEXTEST_EXPR", "package(repo-tests)")
+                .env("FAKE_CARGO_ARGS_FILE", &cargo_args_file)
+                .env("WITCHY_STAGE_HEARTBEAT_INTERVAL", "0")
+                .output()
+                .expect("run docs-only repository contracts");
+            assert!(
+                docs.status.success(),
+                "docs-only repository contracts failed: {}",
+                String::from_utf8_lossy(&docs.stderr),
+            );
+            let docs_args =
+                fs::read_to_string(&cargo_args_file).expect("read docs-only cargo arguments");
+            assert!(
+                docs_args.lines().any(|line| {
+                    line.starts_with("nextest run -p repo-tests --test repo_hygiene")
+                }),
+                "docs-only gate omitted repository contracts: {docs_args}",
+            );
+            assert!(
+                !docs_args.lines().any(|line| line.contains("--workspace")),
+                "docs-only repository gate compiled the workspace: {docs_args}",
+            );
+
+            fs::write(&cargo_args_file, "").expect("clear fake cargo arguments");
             let fuzz_env_file = temp.path().join("fuzz-env");
             let differential_fuzz = check_sh(&root, &["--fast"])
                 .env("PATH", &path)

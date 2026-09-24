@@ -8,7 +8,7 @@
 
 use std::collections::BTreeSet;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 const LIFECYCLE: &[&str] = &[
     "proposed",
@@ -33,7 +33,7 @@ fn is_companion(name: &str) -> bool {
 }
 
 fn rfcs_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("rfcs")
+    super::workspace_root().join("rfcs")
 }
 
 /// The YAML frontmatter block, if the file opens with one.

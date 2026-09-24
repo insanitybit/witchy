@@ -746,6 +746,11 @@ for p in "${paths[@]}"; do
         tools/merge-queue-tests/tests/worktree/*.rs)
             add_gate_test worktree
             add "cargo nextest run -p merge-queue-tests --test worktree" ;;
+        tools/repo-tests/Cargo.toml | \
+        tools/repo-tests/tests/repo_hygiene.rs | \
+        tools/repo-tests/tests/repo_hygiene/*.rs)
+            add_pkg repo-tests
+            add "cargo nextest run -p repo-tests --test repo_hygiene" ;;
         tests/test_for_paths.rs)
             # Keep deleted-path routing narrow during the one-time move into
             # the standalone tooling package.
@@ -777,6 +782,15 @@ for p in "${paths[@]}"; do
             any_rust=1
             add_early "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test misc -E 'test(/^rfc0087_migration_census::/)'"
             path_has_early=1 ;;
+        tests/misc/architecture.rs | \
+        tests/misc/example_source_paths.rs | \
+        tests/misc/release_packaging.rs | \
+        tests/misc/rfc_status_hygiene.rs | \
+        tests/misc/spec_freshness.rs)
+            # Keep deleted-path routing narrow during the one-time move into
+            # the compiler-independent repository-contract package.
+            add_pkg repo-tests
+            add "cargo nextest run -p repo-tests --test repo_hygiene" ;;
         tests/misc/rfc0152_async_region_formation.rs)
             any_rust=1
             add_early "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test misc -E 'test(/^rfc0152_async_region_formation::/)'"
@@ -831,7 +845,8 @@ for p in "${paths[@]}"; do
             # actually invalidate is the root-integration budget census, so
             # run that instead.
             if [ ! -f "$p" ]; then
-                add_early "cargo nextest run --test misc -E 'test(architecture::root_integration_test_binaries_stay_within_budget)'"
+                add_pkg repo-tests
+                add_early "cargo nextest run -p repo-tests --test repo_hygiene -E 'test(architecture::root_integration_test_binaries_stay_within_budget)'"
                 path_has_early=1
                 continue
             fi
@@ -851,7 +866,8 @@ for p in "${paths[@]}"; do
                     ;;
             esac
             if ! git cat-file -e "master:$p" 2>/dev/null; then
-                add_early "cargo nextest run --test misc -E 'test(architecture::root_integration_test_binaries_stay_within_budget)'"
+                add_pkg repo-tests
+                add_early "cargo nextest run -p repo-tests --test repo_hygiene -E 'test(architecture::root_integration_test_binaries_stay_within_budget)'"
                 path_has_early=1
             fi
             add_gate_test "$test_name"
@@ -906,12 +922,20 @@ for p in "${paths[@]}"; do
             add "for f in scripts/*.sh scripts/bin/*; do bash -n \"\$f\"; done"
             add "cargo nextest run -p merge-queue-tests --test worktree" ;;
         scripts/check-spec-freshness.sh)
+            add_pkg repo-tests
             add "for f in scripts/*.sh scripts/bin/*; do bash -n \"\$f\"; done"
-            add "./scripts/check-spec-freshness.sh" ;;
+            add "./scripts/check-spec-freshness.sh"
+            add "cargo nextest run -p repo-tests --test repo_hygiene -E 'test(spec_freshness::)'" ;;
+        scripts/release-package.sh | scripts/release-checksums.sh | scripts/pinned-binaryen.py)
+            add_pkg repo-tests
+            add "for f in scripts/*.sh scripts/bin/*; do bash -n \"\$f\"; done"
+            add "cargo nextest run -p repo-tests --test repo_hygiene -E 'test(release_packaging::)'" ;;
         scripts/gate-test-cost.py | scripts/test-gate-test-cost.py)
             add "python3 scripts/test-gate-test-cost.py" ;;
         scripts/check-stage-dependencies.py | spec/stage-dependencies.json)
+            add_pkg repo-tests
             add_early "python3 scripts/check-stage-dependencies.py"
+            add_early "cargo nextest run -p repo-tests --test repo_hygiene -E 'test(architecture::stage_crates_follow_the_declared_dependency_dag)'"
             path_has_early=1 ;;
         scripts/agent-check.sh | scripts/test-agent-check-qos.sh)
             add_gate_test merge_queue
@@ -961,7 +985,10 @@ for p in "${paths[@]}"; do
             # Do not turn the explicitly deferred source-interpreter parity
             # sweep into a zero-test admitted command.
             ;;
-        *.md | rfcs/* | bugs/* | wiki/*)
+        rfcs/*)
+            add_pkg repo-tests
+            add "cargo nextest run -p repo-tests --test repo_hygiene -E 'test(rfc_status_hygiene::)'" ;;
+        *.md | bugs/* | wiki/*)
             : ;; # prose only — but book/README witchy blocks are covered above
     esac
     [ "$path_has_early" -eq 1 ] || all_paths_have_early=0
@@ -1139,7 +1166,7 @@ elif [ "$edit_loop" -eq 1 ] && [ "$canonical_rewrite" -eq 1 ] \
     fi
     canonical_native_wir_expr="test(wir_prelude::tests::every_prelude_import_has_abi_metadata) or test(wir_prelude::tests::parsed_prelude_imports_are_complete) or test(canonical_safewir::build_read::tests::build_read_catalog_separates_root_authority_from_bounded_responses) or test(canonical_safewir::check::tests::scalar_checker_refuses_non_total_backend_combinations) or test(boolean_reaches::) or test(constant_successor_publication_keeps_the_existing_prefix_ownership) or test(constant_prefix_publication_rejects_gaps_and_missing_children) or test(scalar_move_range_is_bounds_checked_and_admitted) or test(scalar_clone_range_is_ownership_safe_and_admitted) or test(owned_tail_nonprefix_range_requires_a_checked_end_bound) or test(dynamic_pointer_prefix_cannot_hide_an_unaccounted_child_slot) or test(canonical_capabilities_lower_only_to_externref) or test(canonical_interpreter::capability_tests::a_token_of_another_kind_cannot_serve_a_dir_operation) or test(=validated_safewir_has_one_checker_owned_construction_surface) or test(canonical_wasm_encoding_is_private_and_requires_final_authority)${canonical_wasmir_tail_expr}${canonical_build_recipe_wir_expr}${canonical_crypto_wir_expr}"
     canonical_native_lower_expr="test(canonical_pipeline::tests::list_string_)${canonical_build_recipe_lower_expr}"
-    canonical_native_app_expr="test(architecture::root_integration_test_binaries_stay_within_budget) or test(wasm_abi_catalog::native_host_links_every_catalog_import_with_the_declared_signature) or test(wasm_abi_catalog::public_spec_contains_the_generated_complete_catalog) or test(wasm_abi_catalog::capability_imports_name_their_authority_family) or test(wasm_abi_catalog::precompiled_runner_authority_rows_are_cataloged) or test(rfc0077_integration_grants::source_integration_recipe_runs_selected_console_capture_and_reports_abort) or test(rfc0087_uniform_var::list_pop_projected_coordinates_and_nested_payloads_on_three_legs) or test(rfc0165_admitted_launch::admitted_entry_without_a_console_grant_is_refused_before_it_runs) or test(rfc0165_admitted_launch::admitted_guard_near_misses_trap_exactly_at_the_boundary) or test(rfc0165_admitted_launch::admitted_aggregates_render_structurally_as_the_interpreter_prints_them) or test(rfc0165_owner_adapters::server_pool_oracle::/) or test(=rfc0165_owner_adapters::server_workers_reject_raw_wasm_even_with_genuine_entry_metadata) or test(=semantic_conformance::independent_expectation_rejects_a_shared_semantic_mutation) or test(/^commands::embedded_pm::tests::/) or test(/^commands::test_runner::canonical_integration_tests::/) or test(/^rfc0165_enum_equality::/) or test(=rfc0165_oracle::admitted_observer_is_not_called_on_refusal) or test(=rfc0165_oracle::oracle_agrees_on_the_admitted_examples_shard_3) or test(/^example_tests::rfc0/)${canonical_build_recipe_app_expr}${canonical_crypto_app_expr}"
+    canonical_native_app_expr="test(wasm_abi_catalog::native_host_links_every_catalog_import_with_the_declared_signature) or test(wasm_abi_catalog::public_spec_contains_the_generated_complete_catalog) or test(wasm_abi_catalog::capability_imports_name_their_authority_family) or test(wasm_abi_catalog::precompiled_runner_authority_rows_are_cataloged) or test(rfc0077_integration_grants::source_integration_recipe_runs_selected_console_capture_and_reports_abort) or test(rfc0087_uniform_var::list_pop_projected_coordinates_and_nested_payloads_on_three_legs) or test(rfc0165_admitted_launch::admitted_entry_without_a_console_grant_is_refused_before_it_runs) or test(rfc0165_admitted_launch::admitted_guard_near_misses_trap_exactly_at_the_boundary) or test(rfc0165_admitted_launch::admitted_aggregates_render_structurally_as_the_interpreter_prints_them) or test(rfc0165_owner_adapters::server_pool_oracle::/) or test(=rfc0165_owner_adapters::server_workers_reject_raw_wasm_even_with_genuine_entry_metadata) or test(=semantic_conformance::independent_expectation_rejects_a_shared_semantic_mutation) or test(/^commands::embedded_pm::tests::/) or test(/^commands::test_runner::canonical_integration_tests::/) or test(/^rfc0165_enum_equality::/) or test(=rfc0165_oracle::admitted_observer_is_not_called_on_refusal) or test(=rfc0165_oracle::oracle_agrees_on_the_admitted_examples_shard_3) or test(/^example_tests::rfc0/)${canonical_build_recipe_app_expr}${canonical_crypto_app_expr}"
     canonical_native_batch=("$canonical_native_wir_expr" "$canonical_native_lower_expr" "$canonical_native_app_expr" "$canonical_build_recipe")
     cmds=(
         "cargo nextest run -p witchy-wir --features native --lib --test rfc0165_route_gate -E '${canonical_native_wir_expr}'"

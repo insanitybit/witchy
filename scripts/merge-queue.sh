@@ -1303,6 +1303,8 @@ group_is_busy() { # group_is_busy <pgid>
 GATE_NO_TEST_PATHS='^(rfcs/|wiki/|bugs/|docs/|external-refs/|scratch/|security-eval/|\.claude/|\.codex/|CLAUDE\.md$|AGENTS\.md$|tests/glamour\.rs$|tests/glamour/|src/example_tests/glamour\.rs$|src/example_tests/pm_coven\.rs$|src/source/package_inputs/registry_replay_tests\.rs$|src/commands/project_resolver_tests\.rs$|projects/coven-web/)'
 
 # Docs-safe path set, matching check.sh's WITCHY_GATE_SCOPE=docs classifier.
+# RFCs have lightweight cross-link/status contracts in repo-tests; docs scope
+# runs that package without taking the full compiler-gate lock.
 # Empty input is not docs-safe (fail closed). rfcs/0167-witchy-language-contract.md is
 # excluded because example_tests reads it. docs/ is the agent playbook —
 # example_tests walks README/CONTRIBUTING/spec/book only.
@@ -2749,7 +2751,8 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
     # changed path is documentation that no test or gate stage reads, the heavy
     # stages could only re-validate master's already-gated tree — skip them and
     # let post-merge CI's complete run be the backstop. The safe set is
-    # deliberately TINY: rfcs/ (except rfcs/0167-witchy-language-contract.md, which
+    # deliberately TINY: rfcs/ (whose lightweight repo-tests contracts run in
+    # docs scope, except rfcs/0167-witchy-language-contract.md, which
     # example_tests::public_sources_do_not_call_legacy_render_intrinsic reads —
     # it panics if that path vanishes), wiki/, bugs/, and docs/ (tracked, but
     # read by no test or gate stage — if a test ever starts reading them,

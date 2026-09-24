@@ -1,12 +1,11 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
 use std::process::Command;
 
 use serde_json::Value;
 
 fn stage_dependencies() -> BTreeMap<String, BTreeSet<String>> {
     let dependencies: BTreeMap<String, Vec<String>> = serde_json::from_str(include_str!(
-        "../../spec/stage-dependencies.json"
+        "../../../../spec/stage-dependencies.json"
     ))
     .expect("parse stage dependency contract");
     dependencies
@@ -16,9 +15,9 @@ fn stage_dependencies() -> BTreeMap<String, BTreeSet<String>> {
 }
 
 fn metadata() -> Value {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let root = super::workspace_root();
     let output = Command::new(env!("CARGO"))
-        .current_dir(root)
+        .current_dir(&root)
         .args(["metadata", "--no-deps", "--format-version", "1"])
         .output()
         .expect("run cargo metadata");
@@ -102,7 +101,7 @@ fn root_integration_test_binaries_stay_within_budget() {
     // binary, even though it is absent from the blocking profile.
     const BUDGET: usize = 25;
 
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
+    let root = super::workspace_root().join("tests");
     let mut drivers: Vec<String> = std::fs::read_dir(&root)
         .expect("read tests/")
         .filter_map(|entry| {
@@ -142,7 +141,7 @@ fn root_integration_test_binaries_stay_within_budget() {
 fn only_one_glamour_driver_reads_the_real_book() {
     const READS_REAL_BOOK: &[&str] = &["glamour-docs-bundle.test.mjs"];
 
-    let drivers = Path::new(env!("CARGO_MANIFEST_DIR")).join("web/witchy-runtime");
+    let drivers = super::workspace_root().join("web/witchy-runtime");
     let mut found: Vec<String> = std::fs::read_dir(&drivers)
         .expect("read web/witchy-runtime")
         .filter_map(|entry| {
@@ -179,7 +178,7 @@ fn only_one_glamour_driver_reads_the_real_book() {
 /// the feature exists and is NOT in `default`, and the shard still enables it.
 #[test]
 fn glamour_tests_stay_out_of_the_default_compiler_gate() {
-    let manifest = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml"))
+    let manifest = std::fs::read_to_string(super::workspace_root().join("Cargo.toml"))
         .expect("read the root manifest");
     assert!(
         manifest.lines().any(|line| line.starts_with("glamour-tests = [")),
@@ -198,7 +197,7 @@ fn glamour_tests_stay_out_of_the_default_compiler_gate() {
         "the `glamour` test binary lost its required-features guard",
     );
 
-    let check = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/scripts/check.sh"))
+    let check = std::fs::read_to_string(super::workspace_root().join("scripts/check.sh"))
         .expect("read check.sh");
     assert!(
         check.contains("witchy-wir/native,glamour-tests"),

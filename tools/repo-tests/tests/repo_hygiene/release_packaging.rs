@@ -4,11 +4,14 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-const REPO: &str = env!("CARGO_MANIFEST_DIR");
 const COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
 const TARGET: &str = "x86_64-unknown-linux-gnu";
 const VERSION: &str = "0.2.7";
 static NEXT: AtomicU64 = AtomicU64::new(0);
+
+fn repo() -> PathBuf {
+    super::workspace_root()
+}
 
 struct Scratch(PathBuf);
 
@@ -56,7 +59,7 @@ fn fake_binary(scratch: &Scratch, version: &str) -> PathBuf {
 
 fn package(_scratch: &Scratch, binary: &Path, output: &Path) -> Output {
     run(
-        Command::new(Path::new(REPO).join("scripts/release-package.sh"))
+        Command::new(repo().join("scripts/release-package.sh"))
             .arg("--version")
             .arg(VERSION)
             .arg("--binary")
@@ -69,7 +72,7 @@ fn package(_scratch: &Scratch, binary: &Path, output: &Path) -> Output {
             .arg(output)
             .arg("--source-date-epoch")
             .arg("1720000000")
-            .current_dir(REPO),
+            .current_dir(repo()),
     )
 }
 
@@ -102,11 +105,11 @@ fn package_is_deterministic_exact_and_checksummed() {
 
     let sums = first.join("SHA256SUMS");
     let checksummed = run(
-        Command::new(Path::new(REPO).join("scripts/release-checksums.sh"))
+        Command::new(repo().join("scripts/release-checksums.sh"))
             .arg("--output")
             .arg(&sums)
             .arg(&first_archive)
-            .current_dir(REPO),
+            .current_dir(repo()),
     );
     assert!(checksummed.status.success(), "{}", stderr(&checksummed));
     let manifest = std::fs::read_to_string(sums).unwrap();
@@ -151,9 +154,9 @@ fn pinned_binaryen_installer_exposes_the_reviewed_target_identity_and_rejects_su
 
     let scratch = Scratch::new();
     let shown = run(
-        Command::new(Path::new(REPO).join("scripts/pinned-binaryen.py"))
+        Command::new(repo().join("scripts/pinned-binaryen.py"))
             .args(["show", "--target", TARGET])
-            .current_dir(REPO),
+            .current_dir(repo()),
     );
     assert!(shown.status.success(), "{}", stderr(&shown));
     let identity = String::from_utf8(shown.stdout).unwrap();
@@ -175,10 +178,10 @@ fn pinned_binaryen_installer_exposes_the_reviewed_target_identity_and_rejects_su
     .unwrap();
     std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
     let rejected = run(
-        Command::new(Path::new(REPO).join("scripts/pinned-binaryen.py"))
+        Command::new(repo().join("scripts/pinned-binaryen.py"))
             .args(["verify", "--target", TARGET, "--bundle-root"])
             .arg(&bundle)
-            .current_dir(REPO),
+            .current_dir(repo()),
     );
     assert!(!rejected.status.success());
     assert!(stderr(&rejected).contains("wasm-opt digest mismatch"));
@@ -207,14 +210,14 @@ fn package_contains_the_exact_reviewed_binaryen_bundle() {
     };
     let output = scratch.join("dist");
     let packaged = run(
-        Command::new(Path::new(REPO).join("scripts/release-package.sh"))
+        Command::new(repo().join("scripts/release-package.sh"))
             .args(["--version", VERSION, "--binary"])
             .arg(&binary)
             .args(["--target", target, "--commit", COMMIT, "--output-dir"])
             .arg(&output)
             .args(["--source-date-epoch", "1720000000", "--binaryen-root"])
             .arg(&bundle)
-            .current_dir(REPO),
+            .current_dir(repo()),
     );
     assert!(packaged.status.success(), "{}", stderr(&packaged));
     let archive = output.join(format!("witchy-{VERSION}-{target}.tar.gz"));

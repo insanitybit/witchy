@@ -26,7 +26,7 @@ fn example_sources(examples: &Path) -> Vec<PathBuf> {
 
 #[test]
 fn example_sources_use_current_rune_paths() {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let root = super::workspace_root();
     let stale = Regex::new(r"examples/[A-Za-z0-9_-]+\.witchy").expect("valid stale-path regex");
     let current = Regex::new(r"examples/[A-Za-z0-9_-]+/src/[A-Za-z0-9_-]+\.witchy")
         .expect("valid current-path regex");

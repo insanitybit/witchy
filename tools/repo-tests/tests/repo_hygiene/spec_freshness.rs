@@ -53,7 +53,7 @@ fn spec_freshness_distinguishes_advisory_strict_and_invalid_stamps() {
     fs::create_dir(root.join("scripts")).expect("scripts directory");
     fs::create_dir(root.join("spec")).expect("spec directory");
     fs::copy(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/check-spec-freshness.sh"),
+        super::workspace_root().join("scripts/check-spec-freshness.sh"),
         root.join("scripts/check-spec-freshness.sh"),
     )
     .expect("copy freshness script");

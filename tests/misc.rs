@@ -49,10 +49,6 @@ mod canonical_net_read_profile;
 #[path = "misc/canonical_tail_binding.rs"]
 mod canonical_tail_binding;
 
-#[path = "misc/rfc_status_hygiene.rs"]
-mod rfc_status_hygiene;
-#[path = "misc/example_source_paths.rs"]
-mod example_source_paths;
 #[path = "misc/examples_index.rs"]
 mod examples_index;
 #[path = "misc/fmt_cli.rs"]
@@ -65,16 +61,12 @@ mod list_filter_method;
 mod region_copyout;
 #[path = "misc/binaryen_production_differential.rs"]
 mod binaryen_production_differential;
-#[path = "misc/release_packaging.rs"]
-mod release_packaging;
 #[path = "misc/rendering_protocol.rs"]
 mod rendering_protocol;
 #[path = "misc/semantic_conformance.rs"]
 mod semantic_conformance;
 #[path = "misc/sealed_task_handles.rs"]
 mod sealed_task_handles;
-#[path = "misc/spec_freshness.rs"]
-mod spec_freshness;
 #[path = "misc/url_components.rs"]
 mod url_components;
 #[path = "misc/async_contract.rs"]
@@ -85,8 +77,6 @@ mod rfc0129_async_lowering;
 mod rfc0130_surface;
 #[path = "misc/rfc0130_adapter_collection.rs"]
 mod rfc0130_adapter_collection;
-#[path = "misc/architecture.rs"]
-mod architecture;
 #[path = "misc/policy_sealing.rs"]
 mod policy_sealing;
 #[path = "misc/rfc0063_bytes_catalog.rs"]

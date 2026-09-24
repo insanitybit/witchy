@@ -245,17 +245,18 @@ fn gate_nextest_test_support_selects_only_its_consumers() {
 fn gate_nextest_docs_plus_integration_test_keeps_both_target_kinds() {
     let output = gate_nextest(&[
         "spec/architecture-ledger.md",
-        "tests/misc/architecture.rs",
+        "tools/repo-tests/tests/repo_hygiene/architecture.rs",
         "scripts/test-for-paths.sh",
     ]);
     let args = output.lines().next().unwrap_or_default();
     assert!(args.contains("-p witchy"), "root package was omitted: {output}");
+    assert!(args.contains("-p repo-tests"), "repository contracts were omitted: {output}");
     assert!(
         !args.contains("--bin witchy"),
-        "bin narrowing excluded the misc integration test: {output}",
+        "bin narrowing excluded the mixed package selection: {output}",
     );
     assert!(
-        output.contains("binary(misc)")
+        output.contains("package(repo-tests)")
             && output.contains("documentation_examples_are_valid"),
         "mixed selection omitted a required target: {output}",
     );
@@ -562,7 +563,7 @@ fn new_root_integration_driver_checks_the_binary_budget_first() {
     let commands = selected(&["tests/new_velocity_probe_driver.rs"]);
     assert_eq!(
         commands.first().map(String::as_str),
-        Some("cargo nextest run --test misc -E 'test(architecture::root_integration_test_binaries_stay_within_budget)'")
+        Some("cargo nextest run -p repo-tests --test repo_hygiene -E 'test(architecture::root_integration_test_binaries_stay_within_budget)'")
     );
     assert!(commands.contains(&"./scripts/check.sh --fast".to_owned()), "{commands:?}");
 
@@ -1662,14 +1663,17 @@ fn gate_report_change_runs_its_end_to_end_probe() {
 }
 
 #[test]
-fn stage_dependency_contract_and_probe_route_to_the_no_build_check() {
+fn stage_dependency_contract_and_probe_route_to_lightweight_checks() {
     for path in [
         "scripts/check-stage-dependencies.py",
         "spec/stage-dependencies.json",
     ] {
         assert_eq!(
             selected(&["--edit-loop", path]),
-            ["python3 scripts/check-stage-dependencies.py"],
+            [
+                "python3 scripts/check-stage-dependencies.py",
+                "cargo nextest run -p repo-tests --test repo_hygiene -E 'test(architecture::stage_crates_follow_the_declared_dependency_dag)'",
+            ],
             "{path}",
         );
     }
@@ -1710,6 +1714,37 @@ fn spec_freshness_script_runs_its_behavior_check() {
     let output = route(&["scripts/check-spec-freshness.sh"]);
     assert!(output.contains("for f in scripts/*.sh scripts/bin/*; do bash -n"));
     assert!(output.contains("./scripts/check-spec-freshness.sh"));
+    assert!(output.contains("cargo nextest run -p repo-tests --test repo_hygiene"));
+}
+
+#[test]
+fn repository_contracts_route_without_the_compiler_package() {
+    for path in [
+        "tools/repo-tests/tests/repo_hygiene/architecture.rs",
+        "tools/repo-tests/tests/repo_hygiene/release_packaging.rs",
+        "tools/repo-tests/tests/repo_hygiene/rfc_status_hygiene.rs",
+    ] {
+        assert_eq!(
+            selected(&[path]),
+            ["cargo nextest run -p repo-tests --test repo_hygiene"],
+            "focused route for {path}",
+        );
+        let gate = gate_nextest(&[path]);
+        assert!(gate.contains("-p repo-tests"), "gate route for {path}: {gate}");
+        assert!(!gate.contains("-p witchy"), "compiler package leaked into {path}: {gate}");
+    }
+}
+
+#[test]
+fn rfc_edits_run_the_lightweight_cross_link_contract() {
+    let commands = selected(&["rfcs/0170-compiler-boundaries.md"]);
+    assert_eq!(
+        commands,
+        ["cargo nextest run -p repo-tests --test repo_hygiene -E 'test(rfc_status_hygiene::)'"]
+    );
+    let gate = gate_nextest(&["rfcs/0170-compiler-boundaries.md"]);
+    assert!(gate.contains("-p repo-tests"), "{gate}");
+    assert!(!gate.contains("-p witchy"), "{gate}");
 }
 
 #[test]
