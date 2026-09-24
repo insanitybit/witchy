@@ -378,24 +378,7 @@ pub(super) fn compiler_match_arms(
                     }
                 })
             }
-            Value::Ctor { name, fields }
-                if tail(name) == "MatchArmSyntax" && matches!(fields.as_slice(), [Value::Str(_)]) =>
-            {
-                let Value::Str(source) = &fields[0] else { unreachable!() };
-                let source = source.replace('\n', "\n    ");
-                let expr = witchy_syntax::syntax_holes::parse_expr_payload(&format!(
-                    "match 0:\n    {source}"
-                ))
-                .map_err(|message| RuntimeError { message })?;
-                let Expr::Match { arms, .. } = expr else {
-                    return err("meta.expr_match failed to parse a compatibility arm");
-                };
-                let [arm] = arms.as_slice() else {
-                    return err("meta.expr_match expected exactly one compatibility arm");
-                };
-                Ok(arm.clone())
-            }
-            _ => err("meta.expr_match expected MatchArmSyntax arms"),
+            _ => err("meta.expr_match expected compiler-owned MatchArmSyntax arms"),
         })
         .collect()
 }
@@ -1000,5 +983,16 @@ mod tests {
         let error = compiler_params(&source_backed, &handles)
             .expect_err("source-backed parameters cannot be reparsed");
         assert!(error.message.contains("compiler-owned ParamSyntax"), "{error}");
+    }
+
+    #[test]
+    fn match_arms_reject_source_backed_syntax() {
+        let source_backed = Value::List(Rc::new(vec![Value::Ctor {
+            name: "meta.MatchArmSyntax".into(),
+            fields: Rc::new(vec![Value::str("1 -> 42")]),
+        }]));
+        let error = compiler_match_arms(&source_backed, &HashMap::new())
+            .expect_err("source-backed arms cannot be reparsed");
+        assert!(error.message.contains("compiler-owned MatchArmSyntax"), "{error}");
     }
 }

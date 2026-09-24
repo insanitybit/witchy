@@ -2728,7 +2728,6 @@ Hole-free `quote block:` values retain compiler-owned block AST.
 
 #### `sealed type MatchArmSyntax`
 
-- `MatchArmSyntax(String)`
 - `CompilerMatchArmSyntax(String, String)`
 
 #### `sealed type ParamSyntax`

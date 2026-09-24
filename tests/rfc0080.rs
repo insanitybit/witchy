@@ -38,6 +38,8 @@ mod fresh_ident;
 mod expansion_diagnostics;
 #[path = "rfc0080/owned_body_syntax.rs"]
 mod owned_body_syntax;
+#[path = "rfc0080/owned_match_arm_syntax.rs"]
+mod owned_match_arm_syntax;
 #[path = "rfc0080/owned_expr_syntax.rs"]
 mod owned_expr_syntax;
 #[path = "rfc0080/owned_item_syntax.rs"]

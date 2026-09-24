@@ -60,7 +60,6 @@ sealed type BlockSyntax:
     CompilerBlockSyntax(String, String)
 
 sealed type MatchArmSyntax:
-    MatchArmSyntax(String)
     CompilerMatchArmSyntax(String, String)
 
 sealed type ParamSyntax:
@@ -432,8 +431,7 @@ pub fn expr_block(body: BlockSyntax) -> ExprSyntax:
 fn __meta_expr_block(body: BlockSyntax) -> ExprSyntax:
     __meta_expr_block(body)
 
-// The scrutinee remains compiler-owned. Match arms are still the documented
-// source-backed compatibility boundary until MatchArmSyntax has owned nodes.
+// The scrutinee and each match arm retain compiler-owned syntax nodes.
 fn __meta_expr_match(scrutinee: ExprSyntax, arms: List(MatchArmSyntax)) -> ExprSyntax:
     __meta_expr_match(scrutinee, arms)
 
