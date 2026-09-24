@@ -68,7 +68,7 @@ impl<'a> Registry<'a> {
                             let Some(OwnerCapture { value_type: ValueType::Ref(root_layout), .. }) = constructor.captures.first() else { return Err(InitialCheckError::CallableContractMismatch { signature: family.signature }) };
                             let physical = layouts.resolve_nominal(*root_layout).map_err(|_| InitialCheckError::CallableContractMismatch { signature: family.signature })?;
                             let element = match layouts.get(physical).map(|descriptor| descriptor.kind()) {
-                                Some(crate::layout::LayoutKind::PackedList { element, .. }) => Some(*element),
+                                Some(crate::layout::LayoutKind::PackedList { element, rc: crate::layout::RcHeader::Required }) => Some(*element),
                                 _ => None,
                             };
                             root.0 == 0 && index.0 == 1 && kinds.insert(1_u8)
@@ -98,7 +98,7 @@ impl<'a> Registry<'a> {
                             let Some(OwnerCapture { value_type: ValueType::Ref(root_layout), .. }) = constructor.captures.first() else { return Err(InitialCheckError::CallableContractMismatch { signature: family.signature }) };
                             let physical = layouts.resolve_nominal(*root_layout).map_err(|_| InitialCheckError::CallableContractMismatch { signature: family.signature })?;
                             let element = match layouts.get(physical).map(|descriptor| descriptor.kind()) {
-                                Some(crate::layout::LayoutKind::PackedList { element, .. }) => Some(*element),
+                                Some(crate::layout::LayoutKind::PackedList { element, rc: crate::layout::RcHeader::Required }) => Some(*element),
                                 _ => None,
                             };
                             // The backing list's element representation must be

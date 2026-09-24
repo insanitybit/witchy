@@ -416,7 +416,7 @@ fn validate_shared_reference_family(
                 let index_capture = constructor.captures.get(index.0 as usize).ok_or_else(refuse)?;
                 let CaptureStorage::EnvironmentField(index_field) = index_capture.storage else { return Err(refuse()) };
                 insert_compatible_environment_field(&mut expected_environment, index_field, ValueType::Size)?;
-                let Some(crate::layout::LayoutKind::PackedList { element, .. }) =
+                let Some(crate::layout::LayoutKind::PackedList { element, rc: crate::layout::RcHeader::Required }) =
                     layouts.get(physical).map(|descriptor| descriptor.kind())
                 else { return Err(refuse()) };
                 if !is_shared_int_reference(source_type) || root.0 != 0 || index.0 != 1 || !kinds.insert(1_u8)
@@ -439,7 +439,7 @@ fn validate_shared_reference_family(
                 else { return Err(refuse()) };
                 insert_compatible_environment_field(&mut expected_environment, start_field, ValueType::Size)?;
                 insert_compatible_environment_field(&mut expected_environment, length_field, ValueType::Size)?;
-                let Some(crate::layout::LayoutKind::PackedList { element, .. }) =
+                let Some(crate::layout::LayoutKind::PackedList { element, rc: crate::layout::RcHeader::Required }) =
                     layouts.get(physical).map(|descriptor| descriptor.kind())
                 else { return Err(refuse()) };
                 // The backing list's element representation must be exactly
@@ -690,5 +690,61 @@ mod tests {
         let mut wrong = family;
         wrong.constructors[1].captures[0].value_type = ValueType::Ref(int);
         assert!(validate_shared_reference_family(std::slice::from_ref(&wrong), &wrong, &source, &layouts).is_err());
+    }
+
+    #[test]
+    fn rooted_list_reference_families_require_a_retained_backing_header() {
+        use super::super::closure_owner_contract::OwnerCapture;
+        use crate::layout::{PointerSlot, RcHeader};
+        use witchy_syntax::ast::TypeQual;
+
+        let mut layouts = LayoutInterner::new();
+        let int = layouts.intern_scalar(ScalarKind::Int).unwrap();
+        let size = layouts.intern_scalar(ScalarKind::U32).unwrap();
+        for rc in [RcHeader::Required, RcHeader::Elided] {
+            let list = layouts.intern_packed_list(int, rc).unwrap();
+            let root_slot = layouts.intern_runtime_pointer_value_slot(list, PointerSlot::OwnedNullable).unwrap();
+            for slice in [false, true] {
+                let fields = if slice { vec![int, root_slot, size, size] } else { vec![int, root_slot, size] };
+                let environment = layouts.intern_packed_record(fields).unwrap();
+                let source = Type::Qualified(
+                    TypeQual::View,
+                    Box::new(if slice {
+                        Type::Slice(Box::new(Type::Named("Int".into(), Vec::new())))
+                    } else {
+                        Type::Named("Int".into(), Vec::new())
+                    }),
+                );
+                let mut captures = vec![OwnerCapture {
+                    value_type: ValueType::Ref(list),
+                    storage: CaptureStorage::EnvironmentField(1),
+                    transfer: CaptureTransfer::CloneManaged,
+                }];
+                for field in 2..=(if slice { 3 } else { 2 }) {
+                    captures.push(OwnerCapture {
+                        value_type: ValueType::Size,
+                        storage: CaptureStorage::EnvironmentField(field),
+                        transfer: CaptureTransfer::CopyScalar,
+                    });
+                }
+                let family = OwnerFamily {
+                    source: OwnerFamilySource::SharedReference(source.clone()),
+                    owner_type: GcTypeId::new(900 + u32::from(slice)),
+                    list_type: GcTypeId::new(902 + u32::from(slice)),
+                    signature: FunctionSignatureId::new(904 + u32::from(slice)),
+                    declaration_signature: FunctionSignatureId::new(906 + u32::from(slice)),
+                    environment,
+                    constructors: vec![OwnerConstructor {
+                        id: ConstructorId(908 + u32::from(slice)),
+                        function: super::super::FunctionId::new(u32::MAX),
+                        witness: None,
+                        environment_tag: 0,
+                        captures,
+                    }],
+                };
+                let checked = validate_shared_reference_family(std::slice::from_ref(&family), &family, &source, &layouts);
+                assert_eq!(checked.is_ok(), rc == RcHeader::Required, "slice={slice}, rc={rc:?}: {checked:?}");
+            }
+        }
     }
 }
