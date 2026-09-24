@@ -132,6 +132,16 @@ pub fn is_dict_string_int_root_payload(ty: &Type) -> bool {
                     && value == "Int" && value_args.is_empty()))
 }
 
+/// The exact tuple root whose heap representation and child String token are
+/// authenticated by the canonical whole-root view carrier.
+pub fn is_tuple_int_string_root_payload(ty: &Type) -> bool {
+    matches!(ty, Type::Tuple(items)
+        if matches!(items.as_slice(),
+            [Type::Named(first, first_args), Type::Named(second, second_args)]
+                if first == "Int" && first_args.is_empty()
+                    && second == "String" && second_args.is_empty()))
+}
+
 const MAX_AGGREGATE_SHAPE_EXPANSION: usize = 64;
 /// Total instantiated AST nodes examined while recognizing one shape. This
 /// bounds changing generic recursion before it clones its next expanded field.

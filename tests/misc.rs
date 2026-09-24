@@ -285,3 +285,5 @@ mod rfc0167_mode_transport;
 mod rfc0167_dict_view_diagnostic;
 #[path = "misc/rfc0167_dict_root_view.rs"]
 mod rfc0167_dict_root_view;
+#[path = "misc/rfc0167_tuple_root_view.rs"]
+mod rfc0167_tuple_root_view;

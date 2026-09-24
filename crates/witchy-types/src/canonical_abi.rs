@@ -319,6 +319,12 @@ fn rooted_view_from_ty(
     context: &Context,
 ) -> Result<CanonicalReferenceKind, CanonicalAbiError> {
     match payload {
+        Ty::Tuple(items) if matches!(items.as_ref(), [Ty::Int, Ty::String]) => {
+            Ok(CanonicalReferenceKind::RootedView {
+                payload: rooted_tuple_int_string_payload_key(),
+                carrier: CanonicalRootedViewCarrier::TupleRoot,
+            })
+        }
         Ty::Named(name, arguments)
             if name.as_ref() == "Dict"
                 && matches!(arguments.as_ref(), [Ty::String, Ty::Int]) =>
@@ -391,6 +397,14 @@ fn rooted_view_from_ast(
     context: &Context,
 ) -> Result<CanonicalReferenceKind, CanonicalAbiError> {
     match payload.unqualified() {
+        exact if witchy_canonical_source::aggregates::is_tuple_int_string_root_payload(exact)
+            && payload == exact =>
+        {
+            Ok(CanonicalReferenceKind::RootedView {
+                payload: rooted_tuple_int_string_payload_key(),
+                carrier: CanonicalRootedViewCarrier::TupleRoot,
+            })
+        }
         exact if witchy_canonical_source::aggregates::is_dict_string_int_root_payload(exact)
             && payload == exact =>
         {
@@ -499,6 +513,12 @@ fn rooted_record_payload_key(identity: &[u8]) -> CanonicalTypeKey {
 fn rooted_dict_string_int_payload_key() -> CanonicalTypeKey {
     CanonicalTypeKey::from_digest(
         *blake3::hash(b"witchy.canonical-rooted-view-payload.v1/dict-string-int").as_bytes(),
+    )
+}
+
+fn rooted_tuple_int_string_payload_key() -> CanonicalTypeKey {
+    CanonicalTypeKey::from_digest(
+        *blake3::hash(b"witchy.canonical-rooted-view-payload.v1/tuple-int-string").as_bytes(),
     )
 }
 

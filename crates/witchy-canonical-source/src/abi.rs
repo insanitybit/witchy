@@ -100,6 +100,9 @@ pub enum CanonicalRootedViewCarrier {
     /// A whole `Dict(String, Int)` view retains the dictionary's immutable
     /// root token. Its payload key is distinct from record and list roots.
     DictRoot,
+    /// A whole two-field `(Int, String)` tuple view retains its immutable
+    /// aggregate root. Other tuple shapes require their own carrier proof.
+    TupleRoot,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
