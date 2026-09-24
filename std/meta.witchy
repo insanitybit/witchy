@@ -27,8 +27,8 @@ sealed type Span:
     Span(String, Int, Int)
 
 // Hole-free `quote type:` values retain a compiler-owned type AST. The
-// internal constructor carries its opaque identity plus canonical source so
-// existing builders can compose it through the compatibility path.
+// internal constructor carries an opaque handle and display source. Builders
+// resolve the handle to its checked type AST.
 sealed type TypeSyntax:
     CompilerTypeSyntax(String, String)
 
@@ -37,7 +37,7 @@ sealed type ExprSyntax:
     CompilerExprSyntax(String, String)
 
 // Hole-free `quote pattern:` values retain compiler-owned pattern AST. Existing
-// builders project canonical source when composing compatibility values.
+// builders compose the checked pattern AST through its opaque handle.
 sealed type PatternSyntax:
     CompilerPatternSyntax(String, String)
 
@@ -288,9 +288,8 @@ pub fn type_expr(ty: TypeExpr) -> TypeSyntax:
 fn __meta_type_expr(ty: TypeExpr) -> TypeSyntax:
     __meta_type_expr(ty)
 
-// Expression syntax builders. Ordinary names retain the compatibility payload;
-// call-site names become compiler-owned nodes so their origin cannot be forged
-// or lost before linking.
+// Expression syntax builders retain compiler-owned AST handles. Call-site
+// names keep their origin through composition and linking.
 pub fn expr_name(name: Ident) -> ExprSyntax:
     expr_ident(name)
 
@@ -340,8 +339,7 @@ fn __meta_expr_qualified_call_path(path: List(Ident), member: Ident, args: List(
     __meta_expr_qualified_call_path(path, member, args)
 
 // Compiler-owned structural composition for `expr_call`. It preserves syntax
-// identity such as `meta.call_site` through a constructed call; source-backed
-// syntax values remain supported by the compatibility path in the intrinsic.
+// identity such as `meta.call_site` through a constructed call.
 fn __meta_expr_call(callee: ExprSyntax, args: List(ExprSyntax)) -> ExprSyntax:
     __meta_expr_call(callee, args)
 
@@ -370,7 +368,7 @@ pub fn expr_bool(b: Bool) -> ExprSyntax:
 
 // A compiler-owned string literal. The value is stored as an `Expr::Str`, so
 // quotes, backslashes, interpolation markers, and source-looking text remain
-// data; a compatibility source projection never determines the generated AST.
+// data rather than generated syntax.
 pub fn expr_string(value: String) -> ExprSyntax:
     __meta_expr_leaf("string", value)
 

@@ -2687,7 +2687,7 @@ Source spans are compiler-owned metadata. The constructor is sealed so user code
 
 #### `sealed type TypeSyntax`
 
-Hole-free `quote type:` values retain a compiler-owned type AST. The internal constructor carries its opaque identity plus canonical source so existing builders can compose it through the compatibility path.
+Hole-free `quote type:` values retain a compiler-owned type AST. The internal constructor carries an opaque handle and display source. Builders resolve the handle to its checked type AST.
 
 - `CompilerTypeSyntax(String, String)`
 
@@ -2699,7 +2699,7 @@ Hole-free `quote expr:` values retain a compiler-owned expression AST.
 
 #### `sealed type PatternSyntax`
 
-Hole-free `quote pattern:` values retain compiler-owned pattern AST. Existing builders project canonical source when composing compatibility values.
+Hole-free `quote pattern:` values retain compiler-owned pattern AST. Builders compose the checked pattern AST through its opaque handle.
 
 - `CompilerPatternSyntax(String, String)`
 
@@ -2842,7 +2842,7 @@ A capability type with rights, such as `Dir[Read]`.
 
 #### `fn expr_name(name: Ident) -> ExprSyntax`
 
-Expression syntax builders. Ordinary names retain the compatibility payload; call-site names become compiler-owned nodes so their origin cannot be forged or lost before linking.
+Expression syntax builders retain compiler-owned AST handles. Call-site names keep their origin through composition and linking.
 
 #### `fn expr_call(callee: ExprSyntax, args: List(ExprSyntax)) -> ExprSyntax`
 
@@ -2870,7 +2870,7 @@ A qualified call with a compiler-validated nominal path, such as `sibling.Child.
 
 #### `fn expr_string(value: String) -> ExprSyntax`
 
-A compiler-owned string literal. The value is stored as an `Expr::Str`, so quotes, backslashes, interpolation markers, and source-looking text remain data; a compatibility source projection never determines the generated AST.
+A compiler-owned string literal. The value is stored as an `Expr::Str`, so quotes, backslashes, interpolation markers, and source-looking text remain data rather than generated syntax.
 
 #### `fn expr_binary(op: String, lhs: ExprSyntax, rhs: ExprSyntax) -> ExprSyntax`
 
