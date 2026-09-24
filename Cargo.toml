@@ -251,8 +251,14 @@ opt-level = 3
 # decodes it again to match the plan mirror; unoptimized, those two passes
 # were 27% of a warm async compile in the test suite. Both crates are small,
 # so the one-time cost is a short rebuild, not a bigger cache.
+# wasmparser's debug-assertions block is a self-check of its OWN operator
+# arity table: per validated operator it re-decodes the operator and eagerly
+# formats (then drops) a BinaryReaderError via `ok_or(format_err!(..))` --
+# 22% of `decode_and_match_plan` on an async test driver (2026-09-24). Our
+# validation verdicts do not depend on it.
 [profile.dev.package.wasmparser]
 opt-level = 3
+debug-assertions = false
 [profile.dev.package.wasm-encoder]
 opt-level = 3
 # SafeWIR admission hashes constantly: sha2 for module and recipe digests,
