@@ -343,7 +343,7 @@ fn cargo_shim_preserves_incremental_mode_for_a_warm_seed_unless_overridden() {
     write(
         root,
         "state/mbx/bin/mbx",
-        "#!/bin/sh\nprintf 'incremental=%s learned=%s\\n' \"${MBX_INCREMENTAL-unset}\" \"${MBX_LEARNED_INCREMENTAL-unset}\"\n",
+        "#!/bin/sh\nprintf 'incremental=%s learned=%s priority=%s\\n' \"${MBX_INCREMENTAL-unset}\" \"${MBX_LEARNED_INCREMENTAL-unset}\" \"${MBX_SCHEDULER_PRIORITY-unset}\"\n",
     );
     for executable in ["scripts/bin/cargo", "fake-bin/cargo", "state/mbx/bin/mbx"] {
         let status = Command::new("chmod")
@@ -355,7 +355,7 @@ fn cargo_shim_preserves_incremental_mode_for_a_warm_seed_unless_overridden() {
     }
     write(root, "seeded/.witchy-mbx-incremental-seed", "gate build seed\n");
 
-    let run = |target: &str, mode: Option<&str>| {
+    let run = |target: &str, mode: Option<&str>, priority: Option<&str>| {
         let path = std::env::join_paths(
             std::iter::once(root.join("fake-bin"))
                 .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())),
@@ -370,6 +370,7 @@ fn cargo_shim_preserves_incremental_mode_for_a_warm_seed_unless_overridden() {
             .env("MBX_STATS_REPORT", root.join("mbx-report.json"))
             .env_remove("MBX_INCREMENTAL")
             .env_remove("MBX_LEARNED_INCREMENTAL")
+            .env_remove("MBX_SCHEDULER_PRIORITY")
             .env_remove("WITCHY_BUILD_CACHE")
             .env_remove("WITCHY_CARGO_SHIM_ACTIVE")
             .env_remove("WITCHY_GATE_SCOPE");
@@ -378,20 +379,32 @@ fn cargo_shim_preserves_incremental_mode_for_a_warm_seed_unless_overridden() {
         } else {
             command.env_remove("WITCHY_MBX_MODE");
         }
+        if let Some(priority) = priority {
+            command.env("MBX_SCHEDULER_PRIORITY", priority);
+        }
         command.output().expect("run cargo shim fixture")
     };
 
-    let seeded = run("seeded", None);
+    let seeded = run("seeded", None, None);
     assert!(seeded.status.success(), "{}", String::from_utf8_lossy(&seeded.stderr));
-    assert_eq!(String::from_utf8_lossy(&seeded.stdout), "incremental=1 learned=unset\n");
+    assert_eq!(
+        String::from_utf8_lossy(&seeded.stdout),
+        "incremental=1 learned=unset priority=low\n"
+    );
 
-    let cold = run("cold", None);
+    let cold = run("cold", None, None);
     assert!(cold.status.success(), "{}", String::from_utf8_lossy(&cold.stderr));
-    assert_eq!(String::from_utf8_lossy(&cold.stdout), "incremental=0 learned=1\n");
+    assert_eq!(
+        String::from_utf8_lossy(&cold.stdout),
+        "incremental=0 learned=1 priority=low\n"
+    );
 
-    let explicit = run("seeded", Some("restore"));
+    let explicit = run("seeded", Some("restore"), Some("normal"));
     assert!(explicit.status.success(), "{}", String::from_utf8_lossy(&explicit.stderr));
-    assert_eq!(String::from_utf8_lossy(&explicit.stdout), "incremental=unset learned=unset\n");
+    assert_eq!(
+        String::from_utf8_lossy(&explicit.stdout),
+        "incremental=unset learned=unset priority=normal\n"
+    );
 }
 
 #[test]

@@ -134,6 +134,12 @@ esac
 mbx_version="$(basename "$(dirname "$(readlink "$mbx" 2>/dev/null || echo "$mbx")")")"
 export MBX_CACHE_DIR="${MBX_CACHE_DIR:-$state_root/state/mbx/store-$mbx_version}"
 
+# Ad-hoc and background agent builds yield one quarter of the shared compiler
+# pool while a focused validation asks for normal priority. This prevents a
+# short presubmit from sitting behind four multi-minute workspace compiles.
+# Callers such as agent-check may explicitly promote themselves to normal.
+export MBX_SCHEDULER_PRIORITY="${MBX_SCHEDULER_PRIORITY:-low}"
+
 # worktree-warm clones the merge gate's Cargo-incremental target. Preserve that
 # exact profile unless the caller chose a mode explicitly; learned/shareable
 # mode intentionally uses a different profile and otherwise recompiles every

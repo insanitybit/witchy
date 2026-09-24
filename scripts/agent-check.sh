@@ -31,6 +31,11 @@ elif command -v nice >/dev/null 2>&1; then
     agent_priority=(nice -n 10)
 fi
 
+# Focused validation is latency-sensitive. The repo cargo shim gives ordinary
+# agent builds low MBX priority; promote this bounded presubmit unless the
+# caller deliberately selected another priority.
+export MBX_SCHEDULER_PRIORITY="${MBX_SCHEDULER_PRIORITY:-normal}"
+
 # `cargo` inside the agent env resolves to scripts/bin/cargo, which routes
 # build subcommands through the mbx build cache when it is installed and not
 # disabled (WITCHY_BUILD_CACHE=off). The wrapper clears below stay: they

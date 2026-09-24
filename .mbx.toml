@@ -18,5 +18,7 @@ share_workspace_root = true
 # 2026-09-24: over six hours the gate was busy 62% of the time, and compiles
 # outside any pool (then the worktree-create prebuild) were 28% of busy CPU
 # against the gate's 27%.
+# scripts/bin/cargo marks ordinary agent builds low priority, leaving one
+# permit available when a normal-priority agent-check presubmit is waiting.
 [scheduler]
 cpus = 4
