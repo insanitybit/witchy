@@ -585,7 +585,7 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
 
         let queue_selection = scope.spawn(|| {
     let default_queue_prefix =
-        "nextest run -p merge-queue-tests --test merge_queue --test test_for_paths --test worktree -j 3";
+        "nextest run -p merge-queue-tests --test merge_queue --test test_for_paths --test worktree -j 6";
     let override_queue_prefix =
         "nextest run -p merge-queue-tests --test merge_queue --test test_for_paths --test worktree -j 4";
     let cargo_args_file = temp.path().join("cargo-args-queue-selection");

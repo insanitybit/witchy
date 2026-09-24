@@ -440,7 +440,7 @@ done
 # reliability baselines. It runs after product/background work so process and
 # timing assertions see an idle compiler and reuse the already-built test binary.
 queue_infra="${WITCHY_GATE_QUEUE_INFRA:-0}"
-queue_infra_jobs="${WITCHY_QUEUE_INFRA_JOBS:-3}"
+queue_infra_jobs="${WITCHY_QUEUE_INFRA_JOBS:-6}"
 case "$queue_infra" in
     0 | 1) ;;
     *) echo "check.sh: WITCHY_GATE_QUEUE_INFRA must be 0 or 1" >&2; exit 2 ;;
@@ -814,6 +814,8 @@ if cargo nextest --version >/dev/null 2>&1; then
     # Every queue fixture owns a distinct temporary repository, state root, and
     # process group. Bounded width removes the serialized fixture floor while
     # retaining an operator override for repeated reliability measurements.
+    # Alternating on 2026-09-24 under the same loaded host, width 6 ran all 228
+    # tests in 381s versus 453s at width 3 (-16% wall, +7% CPU+sys).
     queue_infra_cmd=(cargo nextest run -p merge-queue-tests --test merge_queue --test test_for_paths --test worktree -j "$queue_infra_jobs" \
         --ignore-default-filter --profile nightly)
     repo_contracts_cmd=(cargo nextest run -p repo-tests --test repo_hygiene)
