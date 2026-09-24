@@ -2716,14 +2716,12 @@ Hole-free `quote pattern:` values retain compiler-owned pattern AST. Existing bu
 
 Hole-free `quote stmt:` values retain compiler-owned statement AST.
 
-- `StmtSyntax(String)`
 - `CompilerStmtSyntax(String, String)`
 
 #### `sealed type BlockSyntax`
 
 Hole-free `quote block:` values retain compiler-owned block AST.
 
-- `BlockSyntax(String)`
 - `CompilerBlockSyntax(String, String)`
 
 #### `sealed type MatchArmSyntax`
@@ -2949,7 +2947,7 @@ An or-pattern. Every alternative must bind the same names when type-checked.
 
 #### `fn stmt_let(mutable: Bool, name: Ident, ty: Option(TypeSyntax), value: ExprSyntax) -> StmtSyntax`
 
-Source-backed statement and block syntax. These are still text at the compiler boundary, but they make block-shaped generators compose through typed, validated pieces instead of one large string template.
+Compiler-owned statement and block syntax retain AST nodes through block-shaped generators.
 
 #### `fn stmt_expr(expr: ExprSyntax) -> StmtSyntax`
 

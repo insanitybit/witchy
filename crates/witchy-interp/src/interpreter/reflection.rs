@@ -2,7 +2,6 @@ use std::collections::HashMap;
 
 use witchy_syntax::ast::*;
 use witchy_syntax::origin::SyntaxCategory;
-use witchy_syntax::parser::parse_module;
 
 use super::{err, ComptimeHoleOrigin, ComptimeSyntaxOrigin, RuntimeError, Value};
 
@@ -228,25 +227,8 @@ pub(super) fn compiler_stmt_syntax_value(
                 message: "CompilerStmtSyntax carried an invalid syntax handle".into(),
             })
         }
-        ("StmtSyntax", [Value::Str(source)]) => {
-            let body = source.replace('\n', "\n    ");
-            let module = parse_module(&format!(
-                "fn __witchy_meta_stmt_payload():\n    {body}\n"
-            ))
-            .map_err(|error| RuntimeError {
-                message: format!("invalid StmtSyntax payload: {error}"),
-            })?;
-            let [Item::Function(function)] = module.items.as_slice() else {
-                return err("invalid StmtSyntax payload: expected one function wrapper");
-            };
-            let [stmt] = function.body.stmts.as_slice() else {
-                return err("invalid StmtSyntax payload: expected exactly one statement");
-            };
-            Ok(stmt.clone())
-        }
         ("CompilerStmtSyntax", _) => err("CompilerStmtSyntax carried an invalid payload"),
-        ("StmtSyntax", _) => err("StmtSyntax carried an invalid source payload"),
-        (other, _) => err(format!("meta.block expected StmtSyntax, got `{other}`")),
+        _ => err("meta.block expected compiler-owned StmtSyntax values"),
     }
 }
 
@@ -430,24 +412,8 @@ pub(super) fn compiler_block_syntax_value(
                 message: "CompilerBlockSyntax carried an invalid syntax handle".into(),
             })
         }
-        ("BlockSyntax", [Value::Str(source)]) => {
-            let body = source.replace('\n', "\n    ");
-            let module = parse_module(&format!(
-                "fn __witchy_meta_block_payload():\n    {body}\n"
-            ))
-            .map_err(|error| RuntimeError {
-                message: format!("invalid BlockSyntax payload: {error}"),
-            })?;
-            let [Item::Function(function)] = module.items.as_slice() else {
-                return err("invalid BlockSyntax payload: expected one function wrapper");
-            };
-            Ok(function.body.clone())
-        }
         ("CompilerBlockSyntax", _) => err("CompilerBlockSyntax carried an invalid payload"),
-        ("BlockSyntax", _) => err("BlockSyntax carried an invalid source payload"),
-        (other, _) => err(format!(
-            "meta.function_block expected BlockSyntax, got `{other}`"
-        )),
+        _ => err("meta.function_block expected compiler-owned BlockSyntax values"),
     }
 }
 
@@ -994,5 +960,24 @@ mod tests {
         let error = compiler_match_arms(&source_backed, &HashMap::new())
             .expect_err("source-backed arms cannot be reparsed");
         assert!(error.message.contains("compiler-owned MatchArmSyntax"), "{error}");
+    }
+
+    #[test]
+    fn statements_and_blocks_reject_source_backed_syntax() {
+        let statement = Value::Ctor {
+            name: "meta.StmtSyntax".into(),
+            fields: Rc::new(vec![Value::str("let x = 42")]),
+        };
+        let error = compiler_stmt_syntax_value(&statement, &HashMap::new())
+            .expect_err("source-backed statements cannot be reparsed");
+        assert!(error.message.contains("compiler-owned StmtSyntax"), "{error}");
+
+        let block = Value::Ctor {
+            name: "meta.BlockSyntax".into(),
+            fields: Rc::new(vec![Value::str("42")]),
+        };
+        let error = compiler_block_syntax_value(&block, &HashMap::new())
+            .expect_err("source-backed blocks cannot be reparsed");
+        assert!(error.message.contains("compiler-owned BlockSyntax"), "{error}");
     }
 }

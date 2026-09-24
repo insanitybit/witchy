@@ -87,6 +87,53 @@ fn main(console: Console):
 "#;
 
 #[test]
+fn compiler_owned_statements_and_blocks_build_admitted_wasm_without_source_reparse() {
+    use witchy::opt::{self, OptSet};
+    use witchy::runtime::{Capabilities, Runtime};
+
+    struct ResetOptimizationOverride;
+    impl Drop for ResetOptimizationOverride {
+        fn drop(&mut self) { opt::set_for_tests(None); }
+    }
+
+    // Each generated function returns 42: the structural statement binds 40,
+    // then adds 2; the quoted block computes 20 * 2 + 2. Their sum is 84.
+    let source = r#"
+import meta
+
+comptime:
+    let int = meta.type_named(meta.ident("Int"), [])
+    let x = meta.ident("x")
+    let bind = meta.stmt_let(false, x, Some(int), meta.expr_int(40))
+    let sum = meta.expr_binary("+", meta.expr_name(x), meta.expr_int(2))
+    let body = meta.block([bind], Some(sum))
+    emit_item(meta.function_block(true, meta.ident("generated_stmt"), [], Some(int), body))
+    let quoted = quote block:
+        let y = 20
+        y * 2 + 2
+    emit_item(meta.function_block(true, meta.ident("generated_quote"), [], Some(int), quoted))
+
+fn main() -> Int:
+    generated_stmt() + generated_quote()
+"#;
+    opt::set_for_tests(Some(OptSet::none()));
+    let _reset = ResetOptimizationOverride;
+    let checked = witchy::resolve_std_only_checked(source)
+        .expect("compiler-owned statements and blocks type-check");
+    let artifact = witchy::codegen::compile_checked_module_artifact(&checked)
+        .expect_lowered("compiler-owned statements and blocks admit SafeWIR");
+    let mut runtime = Runtime::batch().expect("runtime");
+    let mut actor = runtime.spawn_admitted(
+        &artifact,
+        Capabilities { print_int: true, quiet: true, ..Capabilities::none() },
+        128,
+    ).expect("admitted Wasm instance");
+    actor.run().expect("admitted unoptimized Wasm execution");
+    assert_eq!(actor.output(), vec!["84".to_string()]);
+    assert_eq!(actor.canonical_heap_leaks().expect("canonical heap audit"), Some(0));
+}
+
+#[test]
 fn compiler_owned_parameter_builds_admitted_wasm_without_source_reparse() {
     use witchy::opt::{self, OptSet};
     struct ResetOptimizationOverride;

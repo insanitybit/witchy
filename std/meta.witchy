@@ -51,12 +51,10 @@ sealed type SyntaxHole:
 
 // Hole-free `quote stmt:` values retain compiler-owned statement AST.
 sealed type StmtSyntax:
-    StmtSyntax(String)
     CompilerStmtSyntax(String, String)
 
 // Hole-free `quote block:` values retain compiler-owned block AST.
 sealed type BlockSyntax:
-    BlockSyntax(String)
     CompilerBlockSyntax(String, String)
 
 sealed type MatchArmSyntax:
@@ -568,9 +566,8 @@ pub fn match_arm(pattern: PatternSyntax, body: ExprSyntax) -> MatchArmSyntax:
 fn __meta_match_arm(pattern: PatternSyntax, body: ExprSyntax) -> MatchArmSyntax:
     __meta_match_arm(pattern, body)
 
-// Source-backed statement and block syntax. These are still text at the
-// compiler boundary, but they make block-shaped generators compose through
-// typed, validated pieces instead of one large string template.
+// Compiler-owned statement and block syntax retain AST nodes through
+// block-shaped generators.
 pub fn stmt_let(mutable: Bool, name: Ident, ty: Option(TypeSyntax), value: ExprSyntax) -> StmtSyntax:
     __meta_stmt_let(mutable, name, ty, value)
 
