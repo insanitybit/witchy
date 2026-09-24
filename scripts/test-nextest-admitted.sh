@@ -56,6 +56,21 @@ if grep -Fxq -- --bin "$NEXTEST_ADMITTED_LOG"; then
     fail 'explicit target gained an implicit binary'
 fi
 
+# Command-module tests are also owned exclusively by src/main.rs. Both broad
+# router expressions must avoid compiling every root integration target.
+for command_selection in 'test(/^commands::/)' 'test(/^commands::web/)'; do
+    PATH="$tmp/bin:$PATH" ./scripts/nextest-admitted.sh witchy -- \
+        cargo nextest run -E "$command_selection"
+    [ "$(sed -n '3p' "$NEXTEST_ADMITTED_LOG")" = --bin ] \
+        || fail 'command selection was not target-narrowed'
+    [ "$(sed -n '4p' "$NEXTEST_ADMITTED_LOG")" = witchy ] \
+        || fail 'command selection selected the wrong binary'
+    [ "$(sed -n '5p' "$NEXTEST_ADMITTED_LOG")" = -E ] \
+        || fail 'command selection lost its filter flag'
+    [ "$(sed -n '6p' "$NEXTEST_ADMITTED_LOG")" = "($command_selection) and ($policy)" ] \
+        || fail 'command selection composition changed'
+done
+
 if NEXTEST_ADMITTED_EXIT=23 PATH="$tmp/bin:$PATH" \
     ./scripts/nextest-admitted.sh witchy-lower -- cargo nextest run -p witchy-lower; then
     fail 'cargo failure was swallowed'

@@ -49,15 +49,21 @@ while [ "$#" -gt 0 ]; do
     esac
 done
 
-# The exact full example matrix lives in src/main.rs's `mod example_tests;`,
-# so Cargo only needs the root binary. Without a target selector, Cargo builds
-# every integration-test binary before nextest applies -E. The same narrowing
-# at the route layer cut a measured warm run from 41s to 12s; one cold docs
-# route had spent 7m14s compiling 24 binaries to start a single selected test.
-# Keep this exact and central so every edit-loop route gets the fix without
-# changing compound selections or an explicit caller scope.
+# These exact selections name modules declared only by src/main.rs, so Cargo
+# needs the root binary and no integration-test targets. Without a target
+# selector, Cargo builds every integration binary before nextest applies -E.
+# The same narrowing at the route layer cut a measured warm run from 41s to
+# 12s; one cold route spent 7m14s compiling 24 binaries to start one test.
+# Keep the allowlist exact so compound selections and caller scopes cannot be
+# silently narrowed.
+root_bin_selection=false
+case "$selection" in
+    'test(/^example_tests::/)' | 'test(/^commands::/)' | 'test(/^commands::web/)')
+        root_bin_selection=true
+        ;;
+esac
 if [ "$package" = witchy ] \
-    && [ "$selection" = 'test(/^example_tests::/)' ] \
+    && [ "$root_bin_selection" = true ] \
     && [ "$explicit_scope" = false ]; then
     filtered+=(--bin witchy)
 fi
