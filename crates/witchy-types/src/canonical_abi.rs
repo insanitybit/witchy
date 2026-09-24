@@ -621,7 +621,7 @@ fn rooted_list_view(element: &str) -> Result<CanonicalReferenceKind, CanonicalAb
 /// Checked HM types and source annotations call this same constructor.
 fn rooted_nested_int_list_view() -> CanonicalReferenceKind {
     CanonicalReferenceKind::RootedView {
-        payload: CanonicalTypeKey(*blake3::hash(
+        payload: CanonicalTypeKey::from_digest(*blake3::hash(
             b"witchy.canonical-rooted-view-payload.v2/list-of-list-int",
         ).as_bytes()),
         carrier: CanonicalRootedViewCarrier::ListRoot,
