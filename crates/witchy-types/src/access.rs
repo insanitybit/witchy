@@ -2944,7 +2944,17 @@ impl<'a> AccessVerifier<'a> {
         expression: &Expr,
         args: &[&Expr],
     ) -> Result<Option<AccessSignature>, AccessFlowError> {
-        let Some(function) = self.functions.get(name) else { return Ok(None) };
+        let Some(function) = self.functions.get(name) else {
+            // A callee std pruning removed would skip its conventions here
+            // (a `unique` parameter is what rejects an aliased owner): fail,
+            // so the route reruns against the full standard library.
+            if crate::std_pruning::removed(name) {
+                return Err(AccessFlowError {
+                    message: format!("std pruning removed `{name}`, which this call needs"),
+                });
+            }
+            return Ok(None);
+        };
         if function.params.len() != args.len() {
             return Ok(None);
         }

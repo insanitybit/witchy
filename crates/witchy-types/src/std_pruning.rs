@@ -25,7 +25,7 @@
 //! every rejection and its diagnostic are the unpruned compiler's.
 //! `SYNTHESIZED_ROOTS` only spares the common forms that second run.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 
 use witchy_syntax::ast::{Item, Module};
@@ -48,29 +48,45 @@ thread_local! {
     static ENABLED: Cell<bool> = const { Cell::new(false) };
     static PRUNED: Cell<bool> = const { Cell::new(false) };
     static LINK_DEPTH: Cell<usize> = const { Cell::new(0) };
+    /// The std functions the current pruned check removed.
+    static REMOVED: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
 }
 
 /// Restores the thread's pruning state even if the body panics.
 struct Restore {
     enabled: bool,
     pruned: bool,
+    removed: HashSet<String>,
 }
 
 impl Drop for Restore {
     fn drop(&mut self) {
         ENABLED.set(self.enabled);
         PRUNED.set(self.pruned);
+        REMOVED.set(std::mem::take(&mut self.removed));
     }
 }
 
 /// Run `body` with pruning allowed (`enabled`) or not; also returns whether
 /// any check inside actually pruned.
 pub fn with_pruning<T>(enabled: bool, body: impl FnOnce() -> T) -> (T, bool) {
-    let restore = Restore { enabled: ENABLED.replace(enabled), pruned: PRUNED.replace(false) };
+    let restore = Restore {
+        enabled: ENABLED.replace(enabled),
+        pruned: PRUNED.replace(false),
+        removed: REMOVED.take(),
+    };
     let result = body();
     let pruned = PRUNED.get();
     drop(restore);
     (result, pruned)
+}
+
+/// Whether the current pruned check removed the std function `name`. A
+/// check that silently tolerates a missing callee (the access check skips
+/// conventions it cannot find) must treat this as an error instead, so the
+/// route reruns unpruned rather than accepting what the full std rejects.
+pub fn removed(name: &str) -> bool {
+    REMOVED.with_borrow(|removed| removed.contains(name))
 }
 
 /// Held for the duration of one checked link. Only the OUTERMOST link on a
@@ -136,16 +152,16 @@ type Candidate = (usize, Option<usize>);
 /// or a whole-program module is linked). `std_impls` identifies inherent
 /// impls declared by standard-library modules, as (type name, method names).
 pub fn prune(module: &Module, std_impls: &HashSet<(String, Vec<String>)>) -> Option<Module> {
-    // OFF by default (2026-09-23): the reference scan cannot see a std call
-    // the checker desugars implicitly -- `d[i] = v` reaches a std insert
-    // whose `unique` parameter makes `mode opt` REJECT an aliased owner, and
-    // with that function pruned the program was accepted
-    // (rfc0165_dictionary_mutation). A wrong acceptance has no fallback, so
-    // pruning stays opt-in (WITCHY_PRUNE_STD=on) until the roots cover every
-    // implicit desugaring.
+    // The reference scan cannot see a std call the checker or a later pass
+    // desugars implicitly (`d[i] = v` reaches a std insert whose `unique`
+    // parameter makes `mode opt` reject an aliased owner). Every std name the
+    // compiler spells in its own source is therefore a root
+    // (`COMPILER_STD_NAMES`, kept complete by a drift test). A wrong
+    // acceptance has no fallback, so `WITCHY_PRUNE_STD=off` stays as the
+    // kill switch.
     if !ENABLED.get()
         || LINK_DEPTH.get() > 1
-        || !(cfg!(test) || std::env::var_os("WITCHY_PRUNE_STD").is_some_and(|value| value == "on"))
+        || (!cfg!(test) && std::env::var_os("WITCHY_PRUNE_STD").is_some_and(|value| value == "off"))
     {
         return None;
     }
@@ -155,7 +171,12 @@ pub fn prune(module: &Module, std_impls: &HashSet<(String, Vec<String>)>) -> Opt
         match item {
             Item::Function(function) => match std_module_of(&function.name) {
                 Some(owner) if WHOLE_PROGRAM_MODULES.contains(&owner) => return None,
+                // `show`, and internal `mod.__*` helpers the compiler may name
+                // through a constructed string, are always retained.
                 Some("show") | None => roots.push(index),
+                Some(_) if function.name.split_once('.').is_some_and(|(_, rest)| rest.starts_with("__")) => {
+                    roots.push(index)
+                }
                 Some(_) => {
                     // A call may name it qualified (`list.map`) or, from
                     // inside its own module, by its bare suffix.
@@ -197,6 +218,15 @@ pub fn prune(module: &Module, std_impls: &HashSet<(String, Vec<String>)>) -> Opt
         strings_in(&format!("{:?}", module.items[index]), &mut names);
     }
     names.extend(SYNTHESIZED_ROOTS.iter().map(|name| name.to_string()));
+    // Every std function the compiler itself spells (implicit desugarings
+    // such as `d[i] = v`), generated from its sources. The bare suffix keeps
+    // the inherent method of that name too, since methods are keyed bare.
+    for name in crate::std_pruning_roots::COMPILER_STD_NAMES {
+        names.insert(name.to_string());
+        if let Some((_, bare)) = name.split_once('.') {
+            names.insert(bare.to_string());
+        }
+    }
     frontier.extend(names.drain());
     while let Some(name) = frontier.pop() {
         if !seen_names.insert(name.clone()) {
@@ -221,6 +251,7 @@ pub fn prune(module: &Module, std_impls: &HashSet<(String, Vec<String>)>) -> Opt
 
     let mut pruned = module.clone();
     let mut removed = 0usize;
+    let mut removed_names = HashSet::new();
     let lines_aligned = pruned.item_lines.len() == pruned.items.len();
     let old_lines = std::mem::take(&mut pruned.item_lines);
     let mut items = Vec::with_capacity(pruned.items.len());
@@ -228,12 +259,14 @@ pub fn prune(module: &Module, std_impls: &HashSet<(String, Vec<String>)>) -> Opt
         let before = items.len();
         match item {
             Item::Function(function)
-                if std_module_of(&function.name).is_some_and(|owner| owner != "show") =>
+                if std_module_of(&function.name).is_some_and(|owner| owner != "show")
+                    && !function.name.split_once('.').is_some_and(|(_, rest)| rest.starts_with("__")) =>
             {
                 if kept.contains(&(index, None)) {
                     items.push(Item::Function(function));
                 } else {
                     removed += 1;
+                    removed_names.insert(function.name);
                 }
             }
             Item::Impl(mut implementation)
@@ -274,6 +307,7 @@ pub fn prune(module: &Module, std_impls: &HashSet<(String, Vec<String>)>) -> Opt
         return None;
     }
     PRUNED.set(true);
+    REMOVED.set(removed_names);
     if std::env::var_os("WITCHY_PRUNE_STD_TRACE").is_some() {
         eprintln!("std_pruning: removed {removed} std functions/methods, kept {}", kept.len());
     }
@@ -369,8 +403,16 @@ mod tests {
         let std_impls: HashSet<(String, Vec<String>)> =
             [("List".to_string(), vec!["map".to_string(), "filter".to_string()])].into();
 
-        let pruned =
-            with_pruning(true, || prune(&module, &std_impls)).0.expect("something to prune");
+        let (pruned, removed_unused) = with_pruning(true, || {
+            let pruned = prune(&module, &std_impls).expect("something to prune");
+            (pruned, removed("list.unused"))
+        })
+        .0;
+        // The access check turns a call to a removed function into an error
+        // (and so an unpruned rerun); it needs to know what was removed, and
+        // only for the duration of the pruned check.
+        assert!(removed_unused);
+        assert!(!removed("list.unused"));
         assert_eq!(
             names(&pruned),
             ["main", "list.helper", "user_fn", "caller", "impl.map"],
@@ -383,6 +425,50 @@ mod tests {
         let kept_impl =
             with_pruning(true, || prune(&module, &unrelated)).0.expect("free std still prunable");
         assert!(names(&kept_impl).contains(&"impl.filter".to_string()));
+    }
+
+    /// Every std name the compiler spells must be a pruning root; regenerate
+    /// with scripts/gen-std-pruning-roots.py when this fails.
+    #[test]
+    fn pruning_roots_cover_every_compiler_std_literal() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let modules = witchy_syntax::linker::STD_MODULES;
+        let mut found = std::collections::BTreeSet::new();
+        let mut stack: Vec<std::path::PathBuf> = [
+            "crates/witchy-types", "crates/witchy-lower", "crates/witchy-syntax",
+            "crates/witchy-wir", "crates/witchy-interp", "crates/witchy-runtime", "src",
+        ]
+        .iter()
+        .map(|crate_dir| root.join(crate_dir))
+        .collect();
+        while let Some(path) = stack.pop() {
+            if path.is_dir() {
+                for entry in std::fs::read_dir(&path).into_iter().flatten().flatten() {
+                    stack.push(entry.path());
+                }
+                continue;
+            }
+            if path.extension().is_none_or(|ext| ext != "rs")
+                || path.file_name().is_some_and(|name| name == "std_pruning_roots.rs" || name == "std_pruning.rs")
+            {
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(&path) else { continue };
+            for literal in text.split('"').skip(1).step_by(1) {
+                let Some((module, rest)) = literal.split_once('.') else { continue };
+                if modules.contains(&module)
+                    && !rest.is_empty()
+                    && rest.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+                    && rest.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                {
+                    found.insert(format!("{module}.{rest}"));
+                }
+            }
+        }
+        let listed: std::collections::BTreeSet<String> =
+            crate::std_pruning_roots::COMPILER_STD_NAMES.iter().map(|name| name.to_string()).collect();
+        let missing: Vec<_> = found.difference(&listed).collect();
+        assert!(missing.is_empty(), "run scripts/gen-std-pruning-roots.py; missing roots: {missing:?}");
     }
 
     #[test]

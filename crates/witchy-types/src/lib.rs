@@ -38,6 +38,7 @@ pub mod traits;
 pub mod typed_execution;
 pub mod typed_async_lowering;
 pub mod std_pruning;
+mod std_pruning_roots;
 pub mod typeck;
 pub mod try_context;
 pub mod witness;
