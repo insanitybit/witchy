@@ -10589,6 +10589,22 @@ impl Checker {
                     ty = self.fresh();
                 }
                 Stmt::Expr(e) => {
+                    // A non-tail `&name` has no surviving handle. Preserve an
+                    // earlier view of the same root, but do not let this
+                    // discarded expression make a later opt call look aliased.
+                    // Other places may evaluate effects or escape through a
+                    // nested expression, so they retain the conservative mark.
+                    let discarded_direct_view_root = if self.opt_mode && i != tail {
+                        match e {
+                            Expr::Unary { op: UnOp::Borrow, expr }
+                                if matches!(expr.as_ref(), Expr::Var(_)) => self
+                                    .affine_place_root(expr)
+                                    .filter(|root| !self.opt_viewed_roots.contains(root)),
+                            _ => None,
+                        }
+                    } else {
+                        None
+                    };
                     ty = if i == tail {
                         match expected {
                             Some(expected) => self.infer_expected(e, expected)?,
@@ -10612,6 +10628,9 @@ impl Checker {
                             &ty,
                             "non-tail expression statement",
                         )?;
+                        if let Some(root) = discarded_direct_view_root {
+                            self.opt_viewed_roots.remove(&root);
+                        }
                     }
                 }
                 Stmt::Yield(e) => {

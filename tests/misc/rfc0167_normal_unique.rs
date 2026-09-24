@@ -222,6 +222,7 @@ fn update(var xs: unique List(Int)):
 fn main(console: Console):
     var xs: unique List(Int) = [1, 2]
     let old = &xs[0]
+    &xs
     update(xs)
     console.print("${*old}:${xs[0]}")
 "#;
@@ -232,9 +233,10 @@ fn main(console: Console):
 }
 
 #[test]
-fn mode_opt_unique_call_without_a_view_updates_the_original_root() {
+fn mode_opt_unique_call_after_discarded_view_updates_the_original_root() {
     opt::set_for_tests(Some(OptSet::none()));
     let _reset = ResetOptimizationOverride;
+    // Hand result: the discarded view retains no snapshot; update writes 9.
     assert_both_backends(r#"
 mode opt
 
@@ -243,6 +245,7 @@ fn update(var xs: unique List(Int)):
 
 fn main(console: Console):
     var xs: unique List(Int) = [1, 2]
+    &xs
     update(xs)
     console.print("${xs[0]}")
 "#, &["9"]);
