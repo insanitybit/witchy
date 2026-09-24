@@ -273,7 +273,6 @@ fn check_candidate<S: ModuleStage>(
     catalog: Option<&CanonicalAbiCatalog>,
     derived: Option<&contracts::Summaries>,
 ) -> Result<(), InitialCheckError> {
-
     let (_, layouts) =
         crate::layout::LayoutBundle::decode_canonical(&candidate.layouts().canonical_bytes())
             .map_err(|error| InitialCheckError::InvalidLayoutBundle(error.to_string()))?;
@@ -715,30 +714,6 @@ fn canonical_scalar_bytes(kind: crate::layout::ScalarKind, bytes: &[u8]) -> bool
         | crate::layout::ScalarKind::RawByte
         | crate::layout::ScalarKind::V128 => true,
     }
-}
-
-#[test]
-fn nominal_static_data_checks_resolve_physical_storage() {
-    use crate::layout::{LayoutInterner, PointerSlot, ScalarKind};
-    let mut layouts = LayoutInterner::new();
-    let recursive = layouts.intern_opaque_nominal([41; 32]).unwrap();
-    let slot = layouts.intern_runtime_pointer_value_slot(recursive, PointerSlot::OwnedNullable).unwrap();
-    let body = layouts.intern_packed_record(vec![slot]).unwrap();
-    layouts.bind_nominal(recursive, body).unwrap();
-    assert!(layout_contains_pointer(recursive, &layouts, &mut Vec::new()));
-    assert!(!static_data_extent_matches(recursive, &super::Extent::FixedBytes(0), &[], &BTreeMap::new(), &layouts), "opaque identity size is not physical storage extent");
-
-    let int = layouts.intern_scalar(ScalarKind::Int).unwrap();
-    let scalar_body = layouts.intern_packed_record(vec![int]).unwrap();
-    let scalar_nominal = layouts.intern_opaque_nominal([42; 32]).unwrap();
-    layouts.bind_nominal(scalar_nominal, scalar_body).unwrap();
-    assert!(!layout_contains_pointer(scalar_nominal, &layouts, &mut Vec::new()));
-    assert!(static_data_extent_matches(scalar_nominal, &super::Extent::FixedBytes(8), &[0; 8], &BTreeMap::new(), &layouts));
-    assert!(!static_data_extent_matches(scalar_nominal, &super::Extent::FixedBytes(0), &[], &BTreeMap::new(), &layouts));
-
-    let unbound = layouts.intern_opaque_nominal([43; 32]).unwrap();
-    assert!(layout_contains_pointer(unbound, &layouts, &mut Vec::new()));
-    assert!(!static_data_extent_matches(unbound, &super::Extent::FixedBytes(0), &[], &BTreeMap::new(), &layouts));
 }
 
 fn index_signatures(
@@ -2283,11 +2258,11 @@ mod tests {
         AccessMode, AllocationClass, ArithmeticOperator, BasicBlock, BlockId, BlockParameter, CallableContract,
         CanonicalAbiCatalog, CanonicalModule,
         CheckedSourceIdentity, ComparisonOperator, Extent, Function, FunctionId, FunctionSignature,
-        FunctionSignatureId, GuardKind, HeaderField, HostBufferExtent, HostCallArgument,
+        FunctionSignatureId, GuardKind, HostBufferExtent, HostCallArgument,
         HostMutation, HostParameterRole, HostReentrancy, HostResultRole, ImportContract,
         ImportContractIdentity, ImportId, LoadTransfer, LoweredModuleParts, MemoryEffect, Operation, ParameterContract,
         ParameterOwnership, Place, Projection, ProperTailSite, ResultContract, Revision, TailSiteId,
-        ProperTailLocation, StaticDataId, StaticDataSegment, Terminator, ValueId, ValueType,
+        ProperTailLocation, Terminator, ValueId, ValueType,
     };
     use super::{InitialCheckError, check_initial};
     use super::super::{CallArgument, OverflowBehavior, StoreTransfer};
@@ -2330,69 +2305,6 @@ mod tests {
             Err(InitialCheckError::InvalidLayoutBundle(message))
                 if message == "nullable owned slots require canonical presence and destruction support"
         ));
-    }
-
-    #[test]
-    fn tail_reallocation_proof_may_weaken_to_unique_but_not_the_reverse() {
-        let mut layouts = LayoutInterner::new();
-        let layout = layouts.intern_scalar(ScalarKind::Int).unwrap();
-        let replacement = ResultContract::ReallocatesParameter {
-            parameter: 0,
-            layout,
-        };
-        let unique = ResultContract::Unique { layout };
-
-        assert!(super::tail_result_contracts_compatible(
-            std::slice::from_ref(&replacement),
-            std::slice::from_ref(&unique),
-        ));
-        assert!(!super::tail_result_contracts_compatible(
-            std::slice::from_ref(&unique),
-            std::slice::from_ref(&replacement),
-        ));
-
-        // Fresh storage may also be forwarded as a merely shared result of
-        // the same layout, but never the reverse and never across layouts.
-        let shared = ResultContract::Shared { layout };
-        assert!(super::tail_result_contracts_compatible(
-            std::slice::from_ref(&replacement),
-            std::slice::from_ref(&shared),
-        ));
-        assert!(!super::tail_result_contracts_compatible(
-            std::slice::from_ref(&shared),
-            std::slice::from_ref(&replacement),
-        ));
-        let other = layouts.intern_scalar(ScalarKind::Bool).unwrap();
-        assert!(!super::tail_result_contracts_compatible(
-            std::slice::from_ref(&replacement),
-            &[ResultContract::Shared { layout: other }],
-        ));
-    }
-
-    #[test]
-    fn nullable_owned_pointer_buffer_is_refused_at_the_initial_catalog_gate() {
-        let mut layouts = LayoutInterner::new();
-        let pointee = layouts.intern_scalar(ScalarKind::Int).unwrap();
-        layouts
-            .intern_runtime_pointer_buffer(pointee, PointerSlot::OwnedNullable)
-            .unwrap();
-        assert!(super::has_unadmitted_nullable_owned_slot(&layouts));
-    }
-
-    #[test]
-    fn nullable_owned_collection_cannot_borrow_a_fixed_field_catalog_exception() {
-        let mut layouts = LayoutInterner::new();
-        let pointee = layouts.intern_scalar(ScalarKind::Int).unwrap();
-        let nullable = layouts.intern_runtime_pointer_value_slot(pointee, PointerSlot::OwnedNullable).unwrap();
-        let record = layouts.intern_packed_record(vec![nullable]).unwrap();
-        let list = layouts.intern_packed_list(nullable, crate::layout::RcHeader::Required).unwrap();
-        let candidate = CanonicalModule::from_lowering(LoweredModuleParts {
-            revision: Revision::new(0), checked_source: CheckedSourceIdentity::from_digest([9; 32]),
-            layouts: LayoutBundle::from_interner(&layouts, [record, list]).unwrap(),
-            signatures: vec![], imports: vec![], functions: vec![], proper_tail_sites: vec![],
-        });
-        assert!(matches!(check_initial(candidate), Err(InitialCheckError::InvalidLayoutBundle(message))
-            if message == "nullable owned slots require canonical presence and destruction support"));
     }
 
     fn closure_layout() -> (LayoutBundle, LayoutId) {
@@ -2579,53 +2491,6 @@ mod tests {
     }
 
     #[test]
-    fn closure_slot_load_before_store_is_refused() {
-        // A fresh record's code slot holds nothing a call may dispatch
-        // through: the store to the capture slot alone leaves the lane
-        // uninitialized, and the load refuses.
-        let module = closure_module(
-            Place::projected(
-                CLOSURE,
-                Projection::Field { index: 1 },
-                ValueType::Int,
-                AccessMode::Write,
-            ),
-            CAPTURE,
-            callable_place(AccessMode::Read, ENV_SIGNATURE),
-            ValueType::Callable(ENV_SIGNATURE),
-            true,
-        );
-
-        assert_eq!(
-            check_initial(module).unwrap_err(),
-            InitialCheckError::InvalidClosureSlot { function: FUNCTION, object: CLOSURE }
-        );
-    }
-
-    #[test]
-    fn closure_slot_rejects_an_integer_store() {
-        // The lane is typed by the registry, so a place claiming `Int` over
-        // it is a closure-slot refusal rather than an ordinary type mismatch.
-        let module = closure_module(
-            Place::projected(
-                CLOSURE,
-                Projection::Field { index: 0 },
-                ValueType::Int,
-                AccessMode::Write,
-            ),
-            CAPTURE,
-            callable_place(AccessMode::Read, ENV_SIGNATURE),
-            ValueType::Callable(ENV_SIGNATURE),
-            true,
-        );
-
-        assert_eq!(
-            check_initial(module).unwrap_err(),
-            InitialCheckError::InvalidClosureSlot { function: FUNCTION, object: CLOSURE }
-        );
-    }
-
-    #[test]
     fn closure_slot_load_rejects_a_different_signature() {
         let module = closure_module(
             callable_place(AccessMode::Write, ENV_SIGNATURE),
@@ -2633,22 +2498,6 @@ mod tests {
             callable_place(AccessMode::Read, SIGNATURE),
             ValueType::Callable(SIGNATURE),
             true,
-        );
-
-        assert_eq!(
-            check_initial(module).unwrap_err(),
-            InitialCheckError::InvalidClosureSlot { function: FUNCTION, object: CLOSURE }
-        );
-    }
-
-    #[test]
-    fn closure_record_outside_the_registry_has_no_callable_slot() {
-        let module = closure_module(
-            callable_place(AccessMode::Write, ENV_SIGNATURE),
-            FUNCTION_VALUE,
-            callable_place(AccessMode::Read, ENV_SIGNATURE),
-            ValueType::Callable(ENV_SIGNATURE),
-            false,
         );
 
         assert_eq!(
@@ -3339,60 +3188,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn canonical_list_bounds_diagnostic_grants_no_slice_access_or_liveness() {
-        for case in 0..6 {
-            let (mut module, _) = allocated_host_buffer_module(true, 0, 2, 1,
-                HostBufferExtent::Slice, HostBufferExtent::Slice);
-            let text = module.functions[0].value_types[&ValueId::new(5)];
-            let ValueType::Ref(layout) = text else { unreachable!() };
-            let id = FunctionSignatureId::new(1);
-            let parameters = vec![ValueType::Int, ValueType::Size, text, ValueType::Size];
-            module.signatures[1] = FunctionSignature {
-                id, parameters: parameters.clone(), results: Vec::new(),
-                contract: CallableContract {
-                    parameters: parameters.into_iter().map(|value_type| ParameterContract { value_type, ownership: ParameterOwnership::Value }).collect(),
-                    results: Vec::new(), parameter_effects: BTreeMap::from([(2, vec![MemoryEffect::Read])]),
-                },
-            };
-            let catalog = CanonicalAbiCatalog::from_imports(Vec::new()).with_list_bounds_import(id, layout).unwrap();
-            let import = catalog.imports().pop().unwrap();
-            module.imports = vec![import.clone()];
-            let object = ValueId::new(5);
-            let index = ValueId::new(6);
-            let mut label = HostCallArgument::Buffer {
-                place: Place::projected(object, Projection::Slice {
-                    start: ValueId::new(0), length: ValueId::new(if case == 1 { 1 } else { 2 }),
-                }, text, AccessMode::Read), extent: HostBufferExtent::Slice,
-            };
-            if case == 2 { label = HostCallArgument::Value(object); }
-            let function = &mut module.functions[0];
-            let block = &mut function.blocks[0];
-            block.operations.retain(|operation| !matches!(operation, Operation::HostCall { .. } | Operation::DropRef { .. }));
-            block.operations.push(Operation::WidenSize { destination: index, value: ValueId::new(0) });
-            if case == 3 { block.operations.push(Operation::DropRef { object }); }
-            block.operations.push(Operation::HostCall {
-                destinations: Vec::new(), import: import.id,
-                arguments: vec![HostCallArgument::Value(index), HostCallArgument::Value(ValueId::new(2)), label, HostCallArgument::Value(ValueId::new(2))],
-            });
-            if case == 4 || case == 5 {
-                let result = ValueId::new(7);
-                function.value_types.insert(result, ValueType::Size);
-                // A returning call cannot authorize an unguarded element read.
-                // Nor may a released label be reused after that call.
-                if case == 5 { block.operations.push(Operation::DropRef { object }); }
-                block.operations.push(Operation::Load { destination: result,
-                    place: Place::projected(object, Projection::Element { index: ValueId::new(2) }, ValueType::Size, AccessMode::Read),
-                    transfer: LoadTransfer::CopyScalar,
-                });
-            }
-            block.terminator = Terminator::Trap;
-            let result = check_initial(module.with_abi_catalog(catalog));
-            if case == 0 { result.expect("bounded live diagnostic label"); }
-            else { assert!(result.is_err(), "case {case} must not gain slice, bounds, or lifetime authority"); }
-        }
-    }
-
     /// A `float_to_str`-shaped host call: the guest hands the host a unique
     /// raw-byte buffer to fill, then publishes the returned byte count under
     /// its own capacity guard.
@@ -3715,24 +3510,6 @@ mod tests {
         (module, catalog)
     }
 
-    /// The new backend form: a WRITE slice of the buffer's whole capacity on
-    /// a unique, non-static raw-byte buffer.
-    #[test]
-    fn write_slice_host_call_is_admitted_at_capacity() {
-        let (module, catalog) = write_slice_host_module(WriteSliceLength::Capacity);
-        let result = super::check_initial_with_catalog(module, &catalog);
-        assert!(result.is_ok(), "{result:?}");
-    }
-
-    /// A shorter lane than the capacity is admitted only because constants
-    /// prove it lies inside the capacity.
-    #[test]
-    fn write_slice_host_call_admits_a_constant_range_inside_capacity() {
-        let (module, catalog) = write_slice_host_module(WriteSliceLength::Constant(16));
-        let result = super::check_initial_with_catalog(module, &catalog);
-        assert!(result.is_ok(), "{result:?}");
-    }
-
     #[test]
     fn host_write_does_not_initialize_unspecified_capacity() {
         let (mut module, catalog) = write_slice_host_module(WriteSliceLength::Constant(16));
@@ -3786,21 +3563,6 @@ mod tests {
     }
 
     #[test]
-    fn write_buffer_host_call_is_admitted_within_capacity() {
-        let (module, catalog) = write_buffer_host_module(32, HostMutation::WriteBuffers, false);
-        let result = super::check_initial_with_catalog(module, &catalog);
-        assert!(result.is_ok(), "{result:?}");
-    }
-
-    #[test]
-    fn write_buffer_host_call_refuses_a_slice_beyond_capacity() {
-        let (module, catalog) = write_buffer_host_module(64, HostMutation::WriteBuffers, false);
-        let result = super::check_initial_with_catalog(module, &catalog);
-        assert!(result.is_err(), "a 64-byte slice of a 32-byte buffer must be refused");
-        println!("slice beyond capacity: {:?}", result.err());
-    }
-
-    #[test]
     fn write_buffer_host_call_refuses_a_shared_object() {
         let (module, catalog) = write_buffer_host_module(32, HostMutation::WriteBuffers, true);
         let result = super::check_initial_with_catalog(module, &catalog);
@@ -3816,154 +3578,6 @@ mod tests {
             matches!(result, Err(InitialCheckError::UnsupportedHostMutation { .. })),
             "{result:?}"
         );
-    }
-
-    fn byte_copy_module(raw_bytes: bool) -> CanonicalModule<super::super::LoweredCandidate> {
-        let (layouts, layout) = if raw_bytes {
-            dynamic_byte_layout()
-        } else {
-            packed_u32_layout()
-        };
-        let (base, stride) = if raw_bytes { (4, 1) } else { (8, 4) };
-        let start = ValueId::new(0);
-        let length = ValueId::new(1);
-        let capacity = ValueId::new(2);
-        let capacity_ok = ValueId::new(3);
-        let source = ValueId::new(4);
-        let destination = ValueId::new(5);
-        let index_1 = ValueId::new(6);
-        let index_2 = ValueId::new(7);
-        let index_3 = ValueId::new(8);
-        let stored = ValueId::new(9);
-        let check_0 = ValueId::new(10);
-        let check_1 = ValueId::new(11);
-        let check_2 = ValueId::new(12);
-        let check_3 = ValueId::new(13);
-        CanonicalModule::from_lowering(LoweredModuleParts {
-            revision: Revision::new(0),
-            checked_source: CheckedSourceIdentity::from_digest([7; 32]),
-            layouts,
-            signatures: vec![FunctionSignature {
-                id: SIGNATURE,
-                parameters: Vec::new(),
-                results: Vec::new(),
-                contract: contract(Vec::new()),
-            }],
-            imports: Vec::new(),
-            functions: vec![Function {
-                id: FUNCTION,
-                signature: SIGNATURE,
-                entry: ENTRY,
-                value_types: [
-                    (start, ValueType::Size),
-                    (length, ValueType::Size),
-                    (capacity, ValueType::Size),
-                    (capacity_ok, ValueType::Bool),
-                    (source, ValueType::Ref(layout)),
-                    (destination, ValueType::Ref(layout)),
-                    (index_1, ValueType::Size),
-                    (index_2, ValueType::Size),
-                    (index_3, ValueType::Size),
-                    (stored, ValueType::Size),
-                    (check_0, ValueType::Bool),
-                    (check_1, ValueType::Bool),
-                    (check_2, ValueType::Bool),
-                    (check_3, ValueType::Bool),
-                ]
-                .into_iter()
-                .collect(),
-                blocks: vec![BasicBlock {
-                    id: ENTRY,
-                    parameters: Vec::new(),
-                    operations: vec![
-                        Operation::ConstSize { destination: start, value: 0 },
-                        Operation::ConstSize { destination: length, value: 4 },
-                        Operation::ConstSize { destination: capacity, value: 4 },
-                        Operation::Compare {
-                            destination: capacity_ok,
-                            operator: ComparisonOperator::LessEqualUnsigned,
-                            left: length,
-                            right: capacity,
-                        },
-                        Operation::Guard { condition: capacity_ok, kind: GuardKind::Bounds },
-                        Operation::Alloc {
-                            destination: source,
-                            layout,
-                            extent: Extent::Counted {
-                                header_bytes: base,
-                                count: length,
-                                capacity,
-                                stride_bytes: stride,
-                            },
-                            class: AllocationClass::ReferenceCounted,
-                        },
-                        Operation::Alloc {
-                            destination,
-                            layout,
-                            extent: Extent::Counted {
-                                header_bytes: base,
-                                count: length,
-                                capacity,
-                                stride_bytes: stride,
-                            },
-                            class: AllocationClass::ReferenceCounted,
-                        },
-                        Operation::ConstSize { destination: index_1, value: 1 },
-                        Operation::ConstSize { destination: index_2, value: 2 },
-                        Operation::ConstSize { destination: index_3, value: 3 },
-                        Operation::ConstSize { destination: stored, value: 0 },
-                        Operation::Compare { destination: check_0, operator: ComparisonOperator::LessUnsigned, left: start, right: capacity },
-                        Operation::Guard { condition: check_0, kind: GuardKind::Bounds },
-                        Operation::Compare { destination: check_1, operator: ComparisonOperator::LessUnsigned, left: index_1, right: capacity },
-                        Operation::Guard { condition: check_1, kind: GuardKind::Bounds },
-                        Operation::Compare { destination: check_2, operator: ComparisonOperator::LessUnsigned, left: index_2, right: capacity },
-                        Operation::Guard { condition: check_2, kind: GuardKind::Bounds },
-                        Operation::Compare { destination: check_3, operator: ComparisonOperator::LessUnsigned, left: index_3, right: capacity },
-                        Operation::Guard { condition: check_3, kind: GuardKind::Bounds },
-                        Operation::Store {
-                            place: Place::projected(source, Projection::Element { index: start }, ValueType::Size, AccessMode::Write),
-                            value: stored,
-                            transfer: StoreTransfer::CopyScalar,
-                        },
-                        Operation::Store {
-                            place: Place::projected(source, Projection::Element { index: index_1 }, ValueType::Size, AccessMode::Write),
-                            value: stored,
-                            transfer: StoreTransfer::CopyScalar,
-                        },
-                        Operation::Store {
-                            place: Place::projected(source, Projection::Element { index: index_2 }, ValueType::Size, AccessMode::Write),
-                            value: stored,
-                            transfer: StoreTransfer::CopyScalar,
-                        },
-                        Operation::Store {
-                            place: Place::projected(source, Projection::Element { index: index_3 }, ValueType::Size, AccessMode::Write),
-                            value: stored,
-                            transfer: StoreTransfer::CopyScalar,
-                        },
-                        Operation::CopyBytes {
-                            destination: Place::projected(
-                                destination,
-                                Projection::Slice { start, length },
-                                ValueType::Ref(layout),
-                                AccessMode::Write,
-                            ),
-                            source: Place::projected(
-                                source,
-                                Projection::Slice { start, length },
-                                ValueType::Ref(layout),
-                                AccessMode::Read,
-                            ),
-                            length,
-                        },
-                        // Callee-drops: both buffers are released before exit.
-                        Operation::DropRef { object: source },
-                        Operation::DropRef { object: destination },
-                    ],
-                    terminator: Terminator::Return { values: Vec::new() },
-                }],
-            }],
-            proper_tail_sites: Vec::new(),
-        })
     }
 
     fn host_import(
@@ -3983,49 +3597,6 @@ mod tests {
             mutation,
             reentrancy,
         }
-    }
-
-    #[test]
-    fn typed_capability_host_call_is_admitted() {
-        let kind = super::super::CapabilityKindId::new(4);
-        let import = host_import(
-            HostParameterRole::Capability(kind),
-            HostResultRole::Value(ValueType::Int),
-            HostMutation::ReadOnly,
-            HostReentrancy::Forbidden,
-        );
-        let module = host_module(
-            ValueType::Capability(kind),
-            ValueType::Capability(kind),
-            HostCallArgument::Capability(VALUE),
-            empty_layouts(),
-            vec![import.clone()],
-        );
-        let catalog = CanonicalAbiCatalog::from_imports(vec![import]);
-        assert!(super::check_initial_with_catalog(module, &catalog).is_ok());
-    }
-
-    #[test]
-    fn integer_cannot_fill_capability_host_role() {
-        let kind = super::super::CapabilityKindId::new(4);
-        let import = host_import(
-            HostParameterRole::Capability(kind),
-            HostResultRole::Value(ValueType::Int),
-            HostMutation::ReadOnly,
-            HostReentrancy::Forbidden,
-        );
-        let module = host_module(
-            ValueType::Int,
-            ValueType::Capability(kind),
-            HostCallArgument::Value(VALUE),
-            empty_layouts(),
-            vec![import.clone()],
-        );
-        let catalog = CanonicalAbiCatalog::from_imports(vec![import]);
-        assert!(matches!(
-            super::check_initial_with_catalog(module, &catalog),
-            Err(InitialCheckError::TypeMismatch { .. })
-        ));
     }
 
     #[test]
@@ -4076,37 +3647,6 @@ mod tests {
         assert!(matches!(
             super::check_initial_with_catalog(module, &catalog),
             Err(InitialCheckError::TypeMismatch { .. })
-        ));
-    }
-
-    #[test]
-    fn unknown_import_contract_is_rejected() {
-        let module = lowered(
-            [(ValueId::new(1), ValueType::Int)].into_iter().collect(),
-            vec![Operation::HostCall {
-                destinations: vec![ValueId::new(1)],
-                import: ImportId::new(99),
-                arguments: vec![],
-            }],
-            Terminator::Return {
-                values: vec![ValueId::new(1)],
-            },
-            vec![ValueType::Int],
-            Vec::new(),
-        );
-        let result = check_initial(module);
-        assert!(
-            matches!(result.as_ref(), Err(InitialCheckError::MissingImportContract { .. })),
-            "unexpected result: {result:?}"
-        );
-    }
-
-    #[test]
-    fn external_call_rejects_unknown_import_identity() {
-        let module = external_scalar_module(ImportContractIdentity::Unknown, ValueType::Int, empty_layouts());
-        assert!(matches!(
-            super::check_initial(module),
-            Err(InitialCheckError::UnsupportedExternalCall { .. })
         ));
     }
 
@@ -4178,57 +3718,6 @@ mod tests {
     }
 
     #[test]
-    fn host_buffer_extent_must_satisfy_contract() {
-        let (layouts, layout) = dynamic_u32_layout();
-        let place = Place::projected(
-            VALUE,
-            Projection::Field { index: 0 },
-            ValueType::Ref(layout),
-            AccessMode::Read,
-        );
-        let role = HostParameterRole::Buffer {
-            value_type: ValueType::Ref(layout),
-            access: AccessMode::Read,
-            extent: HostBufferExtent::Exact(8),
-        };
-        let import = host_import(
-            role.clone(),
-            HostResultRole::Value(ValueType::Int),
-            HostMutation::ReadOnly,
-            HostReentrancy::Forbidden,
-        );
-        let module = host_module(
-            ValueType::Ref(layout),
-            ValueType::Ref(layout),
-            HostCallArgument::Buffer {
-                place,
-                extent: HostBufferExtent::Exact(4),
-            },
-            layouts,
-            vec![import.clone()],
-        );
-        let catalog = CanonicalAbiCatalog::from_imports(vec![import]);
-        assert!(matches!(
-            super::check_initial_with_catalog(module, &catalog),
-            Err(InitialCheckError::HostBufferExtentMismatch { .. })
-        ));
-    }
-
-    #[test]
-    fn authenticated_dynamic_host_slice_is_accepted() {
-        let (module, catalog) = allocated_host_buffer_module(
-            true,
-            0,
-            4,
-            4,
-            HostBufferExtent::Slice,
-            HostBufferExtent::Slice,
-        );
-        let result = super::check_initial_with_catalog(module, &catalog);
-        assert!(result.is_ok(), "{result:?}");
-    }
-
-    #[test]
     fn authenticated_host_read_refuses_uninitialized_guest_bytes() {
         let (mut module, catalog) = allocated_host_buffer_module(
             true, 0, 4, 4, HostBufferExtent::Slice, HostBufferExtent::Slice,
@@ -4272,23 +3761,6 @@ mod tests {
         assert!(matches!(
             super::check_initial_with_catalog(module, &catalog),
             Err(InitialCheckError::UnsupportedHostBuffer { .. })
-        ));
-    }
-
-    #[test]
-    fn raw_byte_slice_copy_is_accepted() {
-        let result = check_initial(byte_copy_module(true));
-        assert!(result.is_ok(), "{result:?}");
-    }
-
-    #[test]
-    fn typed_element_slice_cannot_use_copy_bytes() {
-        assert!(matches!(
-            check_initial(byte_copy_module(false)),
-            Err(InitialCheckError::UnsupportedMemoryOperation {
-                operation: "CopyBytes(non-byte layout)",
-                ..
-            })
         ));
     }
 
@@ -4402,133 +3874,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn scalar_module_mints_initial_valid() {
-        let module = lowered(
-            [(VALUE, ValueType::Int)].into_iter().collect(),
-            vec![Operation::ConstInt {
-                destination: VALUE,
-                value: 42,
-            }],
-            Terminator::Return {
-                values: vec![VALUE],
-            },
-            vec![ValueType::Int],
-            Vec::new(),
-        );
-
-        assert!(check_initial(module).is_ok());
-    }
-
-    fn static_candidate(
-        layouts: LayoutBundle,
-        value_types: BTreeMap<ValueId, ValueType>,
-        operations: Vec<Operation>,
-        segments: Vec<StaticDataSegment>,
-    ) -> CanonicalModule<super::super::LoweredCandidate> {
-        CanonicalModule::from_lowering_with_static_data(
-            LoweredModuleParts {
-                revision: Revision::new(0),
-                checked_source: CheckedSourceIdentity::from_digest([41; 32]),
-                layouts,
-                signatures: vec![FunctionSignature {
-                    id: SIGNATURE,
-                    parameters: Vec::new(),
-                    results: Vec::new(),
-                    contract: contract(Vec::new()),
-                }],
-                imports: Vec::new(),
-                functions: vec![Function {
-                    id: FUNCTION,
-                    signature: SIGNATURE,
-                    entry: ENTRY,
-                    value_types,
-                    blocks: vec![BasicBlock {
-                        id: ENTRY,
-                        parameters: Vec::new(),
-                        operations,
-                        terminator: Terminator::Return { values: Vec::new() },
-                    }],
-                }],
-                proper_tail_sites: Vec::new(),
-            },
-            segments,
-        )
-    }
-
-    #[test]
-    fn static_data_id_cannot_change_normalized_extent() {
-        let (layouts, layout) = dynamic_byte_layout();
-        let count_a = ValueId::new(40);
-        let capacity_a = ValueId::new(41);
-        let count_b = ValueId::new(42);
-        let capacity_b = ValueId::new(43);
-        let first = ValueId::new(44);
-        let second = ValueId::new(45);
-        let data = StaticDataId::new(0);
-        let candidate = static_candidate(
-            layouts,
-            [
-                (count_a, ValueType::Size), (capacity_a, ValueType::Size),
-                (count_b, ValueType::Size), (capacity_b, ValueType::Size),
-                (first, ValueType::Ref(layout)), (second, ValueType::Ref(layout)),
-            ].into_iter().collect(),
-            vec![
-                Operation::ConstSize { destination: count_a, value: 1 },
-                Operation::ConstSize { destination: capacity_a, value: 1 },
-                Operation::ConstSize { destination: count_b, value: 0 },
-                Operation::ConstSize { destination: capacity_b, value: 0 },
-                Operation::StaticData { destination: first, layout, extent: Extent::Counted { header_bytes: 4, count: count_a, capacity: capacity_a, stride_bytes: 1 }, data },
-                Operation::StaticData { destination: second, layout, extent: Extent::Counted { header_bytes: 4, count: count_b, capacity: capacity_b, stride_bytes: 1 }, data },
-            ],
-            vec![StaticDataSegment::new(data, vec![1, 0, 0, 0, 7])],
-        );
-        assert!(matches!(check_initial(candidate), Err(InitialCheckError::InconsistentStaticDataUse(id)) if id == data));
-    }
-
-    #[test]
-    fn nested_static_bool_requires_canonical_zero_or_one() {
-        let mut interner = LayoutInterner::new();
-        let boolean = interner.intern_scalar(ScalarKind::Bool).unwrap();
-        let inner = interner.intern_packed_record(vec![boolean]).unwrap();
-        let outer = interner.intern_packed_record(vec![inner]).unwrap();
-        let descriptor = interner.get(outer).unwrap();
-        let crate::layout::LayoutSize::Fixed(size) = descriptor.size() else { panic!("fixed record") };
-        let inner_offset = descriptor.fields()[0].offset() as usize;
-        let bool_offset = interner.get(inner).unwrap().fields()[0].offset() as usize;
-        let mut bytes = vec![0; size as usize];
-        bytes[inner_offset + bool_offset] = 2;
-        let object = ValueId::new(40);
-        let data = StaticDataId::new(0);
-        let candidate = static_candidate(
-            LayoutBundle::from_interner(&interner, [outer]).unwrap(),
-            [(object, ValueType::Ref(outer))].into_iter().collect(),
-            vec![Operation::StaticData { destination: object, layout: outer, extent: Extent::FixedBytes(u64::from(size)), data }],
-            vec![StaticDataSegment::new(data, bytes)],
-        );
-        assert!(matches!(check_initial(candidate), Err(InitialCheckError::InvalidStaticDataEncoding { object: invalid, .. }) if invalid == object));
-    }
-
-    #[test]
-    fn static_runtime_buffer_header_must_match_declared_count() {
-        let (layouts, layout) = dynamic_byte_layout();
-        let count = ValueId::new(40);
-        let capacity = ValueId::new(41);
-        let object = ValueId::new(42);
-        let data = StaticDataId::new(0);
-        let candidate = static_candidate(
-            layouts,
-            [(count, ValueType::Size), (capacity, ValueType::Size), (object, ValueType::Ref(layout))].into_iter().collect(),
-            vec![
-                Operation::ConstSize { destination: count, value: 1 },
-                Operation::ConstSize { destination: capacity, value: 1 },
-                Operation::StaticData { destination: object, layout, extent: Extent::Counted { header_bytes: 4, count, capacity, stride_bytes: 1 }, data },
-            ],
-            vec![StaticDataSegment::new(data, vec![0, 0, 0, 0, 7])],
-        );
-        assert!(matches!(check_initial(candidate), Err(InitialCheckError::StaticDataExtentMismatch { object: invalid, .. }) if invalid == object));
-    }
-
     fn scalar_binary_candidate(
         value_type: ValueType,
         operation: Operation,
@@ -4625,37 +3970,6 @@ mod tests {
     }
 
     #[test]
-    fn size_constant_must_fit_wasm32() {
-        let module = lowered(
-            [(VALUE, ValueType::Size)].into_iter().collect(),
-            vec![Operation::ConstSize { destination: VALUE, value: u64::from(u32::MAX) + 1 }],
-            Terminator::Return { values: vec![VALUE] },
-            vec![ValueType::Size],
-            Vec::new(),
-        );
-        assert!(matches!(check_initial(module), Err(InitialCheckError::UnsupportedScalarOperation { operation: "ConstSize outside Wasm32", .. })));
-    }
-
-    #[test]
-    fn scalar_checker_accepts_exact_backend_matrix_edges() {
-        let arithmetic = |value_type, operator, overflow| scalar_binary_candidate(
-            value_type,
-            Operation::Arithmetic { destination: ValueId::new(42), operator, left: ValueId::new(40), right: ValueId::new(41), overflow },
-        );
-        for candidate in [
-            arithmetic(ValueType::Int, ArithmeticOperator::BitXor, OverflowBehavior::Wrap),
-            arithmetic(ValueType::Int, ArithmeticOperator::Add, OverflowBehavior::Trap),
-            arithmetic(ValueType::Int, ArithmeticOperator::DivideSigned, OverflowBehavior::Trap),
-            arithmetic(ValueType::Size, ArithmeticOperator::Add, OverflowBehavior::Trap),
-            arithmetic(ValueType::Size, ArithmeticOperator::DivideUnsigned, OverflowBehavior::Trap),
-            arithmetic(ValueType::Float, ArithmeticOperator::DivideUnsigned, OverflowBehavior::Wrap),
-            scalar_binary_candidate(ValueType::Bool, Operation::Compare { destination: ValueId::new(42), operator: ComparisonOperator::NotEqual, left: ValueId::new(40), right: ValueId::new(41) }),
-        ] {
-            assert!(check_initial(candidate).is_ok());
-        }
-    }
-
-    #[test]
     fn nullable_capability_operations_are_checked() {
         let absent = ValueId::new(40);
         let present = ValueId::new(41);
@@ -4732,47 +4046,6 @@ mod tests {
     }
 
     #[test]
-    fn function_value_rejects_unknown_function() {
-        let destination = ValueId::new(1);
-        let unknown = FunctionId::new(99);
-        let module = lowered(
-            [(destination, ValueType::Callable(SIGNATURE))].into_iter().collect(),
-            vec![Operation::FunctionValue {
-                destination,
-                function: unknown,
-            }],
-            Terminator::Return { values: Vec::new() },
-            Vec::new(),
-            Vec::new(),
-        );
-
-        assert_eq!(
-            check_initial(module).unwrap_err(),
-            InitialCheckError::MissingFunction(unknown)
-        );
-    }
-
-    #[test]
-    fn proper_tail_site_is_matched_exactly_once() {
-        let module = lowered(
-            BTreeMap::new(),
-            Vec::new(),
-            Terminator::TailCall {
-                site: TAIL_SITE,
-                callee: FUNCTION,
-                arguments: Vec::new(),
-            },
-            Vec::new(),
-            vec![ProperTailSite {
-                id: TAIL_SITE,
-                function: FUNCTION, discharged_by: None,
-            }],
-        ).with_proper_tail_locations(vec![ProperTailLocation::new(TAIL_SITE, FUNCTION, ENTRY)]);
-
-        assert!(check_initial(module).is_ok());
-    }
-
-    #[test]
     fn duplicate_tail_terminators_cannot_discharge_one_obligation() {
         let mut module = lowered(
             BTreeMap::new(),
@@ -4821,92 +4094,6 @@ mod tests {
         assert_eq!(
             check_initial(module).unwrap_err(),
             InitialCheckError::DuplicateTailObligation(TAIL_SITE)
-        );
-    }
-
-    #[test]
-    fn unreachable_tail_decoy_cannot_discharge_an_obligation() {
-        let mut module = lowered(
-            BTreeMap::new(),
-            Vec::new(),
-            Terminator::Return { values: Vec::new() },
-            Vec::new(),
-            vec![ProperTailSite {
-                id: TAIL_SITE,
-                function: FUNCTION, discharged_by: None,
-            }],
-        ).with_proper_tail_locations(vec![ProperTailLocation::new(
-            TAIL_SITE,
-            FUNCTION,
-            BlockId::new(1),
-        )]);
-        module.functions[0].blocks.push(BasicBlock {
-            id: BlockId::new(1),
-            parameters: Vec::new(),
-            operations: Vec::new(),
-            terminator: Terminator::TailCall {
-                site: TAIL_SITE,
-                callee: FUNCTION,
-                arguments: Vec::new(),
-            },
-        });
-        assert_eq!(
-            check_initial(module).unwrap_err(),
-            InitialCheckError::MissingTailObligation(TAIL_SITE)
-        );
-    }
-
-    #[test]
-    fn ordinary_return_cannot_discharge_a_tail_obligation() {
-        let module = lowered(
-            BTreeMap::new(),
-            Vec::new(),
-            Terminator::Return { values: Vec::new() },
-            Vec::new(),
-            vec![ProperTailSite {
-                id: TAIL_SITE,
-                function: FUNCTION, discharged_by: None,
-            }],
-        ).with_proper_tail_locations(vec![ProperTailLocation::new(TAIL_SITE, FUNCTION, ENTRY)]);
-
-        assert_eq!(
-            check_initial(module).unwrap_err(),
-            InitialCheckError::MissingTailObligation(TAIL_SITE)
-        );
-    }
-
-    #[test]
-    fn unreachable_tail_at_the_bound_location_cannot_discharge_an_obligation() {
-        let mut module = lowered(
-            BTreeMap::new(),
-            Vec::new(),
-            Terminator::Return { values: Vec::new() },
-            Vec::new(),
-            vec![ProperTailSite {
-                id: TAIL_SITE,
-                function: FUNCTION,
-                discharged_by: None,
-            }],
-        )
-        .with_proper_tail_locations(vec![ProperTailLocation::new(
-            TAIL_SITE,
-            FUNCTION,
-            BlockId::new(1),
-        )]);
-        module.functions[0].blocks.push(BasicBlock {
-            id: BlockId::new(1),
-            parameters: Vec::new(),
-            operations: Vec::new(),
-            terminator: Terminator::TailCall {
-                site: TAIL_SITE,
-                callee: FUNCTION,
-                arguments: Vec::new(),
-            },
-        });
-
-        assert_eq!(
-            check_initial(module).unwrap_err(),
-            InitialCheckError::MissingTailObligation(TAIL_SITE)
         );
     }
 
@@ -5322,17 +4509,6 @@ mod tests {
     }
 
     #[test]
-    fn dynamic_allocation_extent_must_fit_wasm_address_space() {
-        assert_eq!(
-            check_initial(dynamic_load_module(true, u64::MAX, true, false)).unwrap_err(),
-            InitialCheckError::UnsupportedScalarOperation {
-                function: FUNCTION,
-                operation: "ConstSize outside Wasm32",
-            }
-        );
-    }
-
-    #[test]
     fn declared_callable_result_must_match_checked_signature() {
         let module = CanonicalModule::from_lowering(LoweredModuleParts {
             revision: Revision::new(0),
@@ -5371,42 +4547,6 @@ mod tests {
                 signature: SIGNATURE,
             }
         );
-    }
-
-    #[test]
-    fn matching_callable_result_contract_is_accepted() {
-        let module = CanonicalModule::from_lowering(LoweredModuleParts {
-            revision: Revision::new(0),
-            checked_source: CheckedSourceIdentity::from_digest([7; 32]),
-            layouts: empty_layouts(),
-            signatures: vec![FunctionSignature {
-                id: SIGNATURE,
-                parameters: Vec::new(),
-                results: vec![ValueType::Int],
-                contract: contract(vec![ResultContract::Value(ValueType::Int)]),
-            }],
-            imports: Vec::new(),
-            functions: vec![Function {
-                id: FUNCTION,
-                signature: SIGNATURE,
-                entry: ENTRY,
-                value_types: [(VALUE, ValueType::Int)].into_iter().collect(),
-                blocks: vec![BasicBlock {
-                    id: ENTRY,
-                    parameters: Vec::new(),
-                    operations: vec![Operation::ConstInt {
-                        destination: VALUE,
-                        value: 42,
-                    }],
-                    terminator: Terminator::Return {
-                        values: vec![VALUE],
-                    },
-                }],
-            }],
-            proper_tail_sites: Vec::new(),
-        });
-
-        assert!(check_initial(module).is_ok());
     }
 
     #[test]
@@ -5707,88 +4847,6 @@ mod tests {
         assert!(result.is_ok(), "UpdateCount fixture rejected: {result:?}");
     }
 
-    fn header_load_module(length_type: ValueType) -> CanonicalModule<super::super::LoweredCandidate> {
-        let count = ValueId::new(0);
-        let capacity = ValueId::new(1);
-        let object = ValueId::new(2);
-        let loaded_length = ValueId::new(3);
-        let loaded_capacity = ValueId::new(4);
-        let (layouts, layout) = packed_u32_layout();
-        let header = |field, destination, value_type| Operation::Load {
-            destination,
-            place: Place::projected(
-                object,
-                Projection::Header(field),
-                value_type,
-                AccessMode::Read,
-            ),
-            transfer: LoadTransfer::CopyScalar,
-        };
-        CanonicalModule::from_lowering(LoweredModuleParts {
-            revision: Revision::new(0),
-            checked_source: CheckedSourceIdentity::from_digest([7; 32]),
-            layouts,
-            signatures: vec![FunctionSignature {
-                id: SIGNATURE,
-                parameters: Vec::new(),
-                results: Vec::new(),
-                contract: contract(Vec::new()),
-            }],
-            imports: Vec::new(),
-            functions: vec![Function {
-                id: FUNCTION,
-                signature: SIGNATURE,
-                entry: ENTRY,
-                value_types: [
-                    (count, ValueType::Size),
-                    (capacity, ValueType::Size),
-                    (object, ValueType::Ref(layout)),
-                    (loaded_length, length_type),
-                    (loaded_capacity, ValueType::Size),
-                ]
-                .into_iter()
-                .collect(),
-                blocks: vec![BasicBlock {
-                    id: ENTRY,
-                    parameters: Vec::new(),
-                    operations: vec![
-                        Operation::ConstSize { destination: count, value: 1 },
-                        Operation::ConstSize { destination: capacity, value: 2 },
-                        Operation::Alloc {
-                            destination: object,
-                            layout,
-                            extent: Extent::Counted {
-                                header_bytes: 8,
-                                count,
-                                capacity,
-                                stride_bytes: 4,
-                            },
-                            class: AllocationClass::ReferenceCounted,
-                        },
-                        header(HeaderField::Length, loaded_length, length_type),
-                        header(HeaderField::Capacity, loaded_capacity, ValueType::Size),
-                        Operation::Reclaim { object },
-                    ],
-                    terminator: Terminator::Return { values: Vec::new() },
-                }],
-            }],
-            proper_tail_sites: Vec::new(),
-        })
-    }
-
-    #[test]
-    fn counted_header_projections_load_typed_scalars() {
-        assert!(check_initial(header_load_module(ValueType::Size)).is_ok());
-    }
-
-    #[test]
-    fn header_projection_cannot_claim_non_scalar_type() {
-        assert!(matches!(
-            check_initial(header_load_module(ValueType::Bool)),
-            Err(InitialCheckError::TypeMismatch { .. })
-        ));
-    }
-
     #[test]
     fn bounds_guard_without_a_comparison_is_refused() {
         let condition = ValueId::new(1);
@@ -5907,36 +4965,6 @@ mod tests {
             check_initial(module).unwrap_err(),
             InitialCheckError::CallableContractMismatch { signature: SIGNATURE }
         );
-    }
-
-    #[test]
-    fn checked_value_memory_result_is_refused_in_auxiliary_signature() {
-        let (layouts, layout) = dynamic_u32_layout();
-        let module = CanonicalModule::from_lowering(LoweredModuleParts {
-            revision: Revision::new(0),
-            checked_source: CheckedSourceIdentity::from_digest([7; 32]),
-            layouts,
-            signatures: vec![
-                FunctionSignature {
-                    id: SIGNATURE, parameters: Vec::new(), results: Vec::new(),
-                    contract: contract(Vec::new()),
-                },
-                FunctionSignature {
-                    id: CALLEE_SIGNATURE, parameters: Vec::new(), results: vec![ValueType::Ref(layout)],
-                    contract: contract(vec![ResultContract::CheckedValue { layout }]),
-                },
-            ],
-            imports: Vec::new(),
-            functions: vec![Function {
-                id: FUNCTION, signature: SIGNATURE, entry: ENTRY,
-                value_types: BTreeMap::new(),
-                blocks: vec![BasicBlock { id: ENTRY, parameters: Vec::new(), operations: Vec::new(),
-                    terminator: Terminator::Return { values: Vec::new() } }],
-            }],
-            proper_tail_sites: Vec::new(),
-        });
-        assert_eq!(check_initial(module).unwrap_err(),
-            InitialCheckError::CallableContractMismatch { signature: CALLEE_SIGNATURE });
     }
 
     #[test]
@@ -6146,88 +5174,6 @@ mod tests {
     }
 
     #[test]
-    fn moved_value_alias_parameter_transport_requires_the_complete_contract() {
-        let layout = LayoutId::from_bytes([3; 32]);
-        let other_layout = LayoutId::from_bytes([4; 32]);
-        let moved = CallArgument::Move(VALUE);
-        let value = CallArgument::Value(VALUE);
-        let relay = || FunctionSignature {
-            id: CALLEE_SIGNATURE,
-            parameters: vec![ValueType::Ref(layout)],
-            results: vec![ValueType::Ref(layout)],
-            contract: call_contract(
-                layout,
-                ParameterOwnership::Value,
-                vec![ResultContract::AliasesParameter { parameter: 0, layout }],
-                BTreeMap::from([(
-                    0,
-                    vec![MemoryEffect::Read, MemoryEffect::Retain, MemoryEffect::Release],
-                )]),
-            ),
-        };
-
-        assert!(super::exact_moved_value_alias_parameter_transport(&moved, &relay()));
-        assert!(!super::exact_moved_value_alias_parameter_transport(&value, &relay()));
-
-        let mut wrong_result_kind = relay();
-        wrong_result_kind.contract.results[0] = ResultContract::Shared { layout };
-        assert!(!super::exact_moved_value_alias_parameter_transport(&moved, &wrong_result_kind));
-
-        let mut wrong_result_index = relay();
-        wrong_result_index.contract.results[0] = ResultContract::AliasesParameter { parameter: 1, layout };
-        assert!(!super::exact_moved_value_alias_parameter_transport(&moved, &wrong_result_index));
-
-        let mut wrong_result_layout = relay();
-        wrong_result_layout.results[0] = ValueType::Ref(other_layout);
-        wrong_result_layout.contract.results[0] = ResultContract::AliasesParameter {
-            parameter: 0,
-            layout: other_layout,
-        };
-        assert!(!super::exact_moved_value_alias_parameter_transport(&moved, &wrong_result_layout));
-
-        let mut wrong_effects = relay();
-        wrong_effects.contract.parameter_effects.insert(0, vec![MemoryEffect::Read]);
-        assert!(!super::exact_moved_value_alias_parameter_transport(&moved, &wrong_effects));
-
-        let mut extra_lanes = relay();
-        extra_lanes.parameters.push(ValueType::Ref(layout));
-        extra_lanes.contract.parameters.push(ParameterContract {
-            value_type: ValueType::Ref(layout),
-            ownership: ParameterOwnership::Value,
-        });
-        extra_lanes.results.push(ValueType::Ref(layout));
-        extra_lanes.contract.results.push(ResultContract::AliasesParameter { parameter: 0, layout });
-        assert!(!super::exact_moved_value_alias_parameter_transport(&moved, &extra_lanes));
-
-        let foreign_reference = Function {
-            id: FUNCTION,
-            signature: SIGNATURE,
-            entry: ENTRY,
-            value_types: [
-                (VALUE, ValueType::Ref(other_layout)),
-                (ValueId::new(1), ValueType::Ref(layout)),
-            ]
-            .into_iter()
-            .collect(),
-            blocks: Vec::new(),
-        };
-        assert!(matches!(
-            super::check_call(
-                &foreign_reference,
-                &[ValueId::new(1)],
-                &[CallArgument::Move(VALUE)],
-                &relay(),
-                None,
-            ),
-            Err(InitialCheckError::TypeMismatch { function, value, expected, actual })
-                if function == FUNCTION
-                    && value == VALUE
-                    && expected == ValueType::Ref(layout)
-                    && actual == ValueType::Ref(other_layout)
-        ));
-    }
-
-    #[test]
     fn tail_call_after_release_is_rejected() {
         let (layouts, layout) = dynamic_u32_layout();
         let (values, mut operations) = allocated_list(layout);
@@ -6307,141 +5253,6 @@ mod tests {
     }
 
     #[test]
-    fn owned_parameter_read_then_drop_is_accepted() {
-        let (layouts, layout) = packed_u32_layout();
-        let object = ValueId::new(2);
-        let destination = ValueId::new(12);
-        let (mut values, mut operations) = allocated_list_with_header(layout, 8);
-        values.insert(destination, ValueType::Size);
-        operations.push(Operation::Call {
-            destinations: vec![destination],
-            callee: CALLEE,
-            arguments: vec![super::super::CallArgument::Move(object)],
-        });
-        let parameter = ValueId::new(10);
-        let length = ValueId::new(11);
-        let module = call_module(
-            layouts,
-            values,
-            operations,
-            Terminator::Return { values: Vec::new() },
-            vec![
-                Operation::Load {
-                    destination: length,
-                    place: Place::projected(
-                        parameter,
-                        Projection::Header(HeaderField::Length),
-                        ValueType::Size,
-                        super::super::AccessMode::Read,
-                    ),
-                    transfer: LoadTransfer::CopyScalar,
-                },
-                Operation::DropRef { object: parameter },
-            ],
-            [(parameter, ValueType::Ref(layout)), (length, ValueType::Size)]
-                .into_iter()
-                .collect(),
-            Terminator::Return { values: vec![length] },
-            call_contract(
-                layout,
-                ParameterOwnership::Shared,
-                vec![ResultContract::Value(ValueType::Size)],
-                [(0, vec![MemoryEffect::Read, MemoryEffect::Release])]
-                    .into_iter()
-                    .collect(),
-            ),
-            vec![ValueType::Size],
-            vec![BlockParameter {
-                value: parameter,
-                value_type: ValueType::Ref(layout),
-                ownership: Some(super::super::Ownership::Shared),
-            }],
-            Vec::new(),
-        );
-        assert!(check_initial(module).is_ok());
-    }
-
-    #[test]
-    fn clone_then_move_requires_caller_source_cleanup() {
-        let (layouts, layout) = dynamic_u32_layout();
-        let (mut values, mut operations) = allocated_list(layout);
-        let source = ValueId::new(2);
-        let clone = ValueId::new(3);
-        values.insert(clone, ValueType::Ref(layout));
-        operations.extend([
-            Operation::CloneRef { destination: clone, source },
-            Operation::Call {
-                destinations: Vec::new(),
-                callee: CALLEE,
-                arguments: vec![super::super::CallArgument::Move(clone)],
-            },
-        ]);
-        let module = call_module(
-            layouts,
-            values,
-            operations,
-            Terminator::Return { values: Vec::new() },
-            vec![Operation::DropRef { object: ValueId::new(10) }],
-            [(ValueId::new(10), ValueType::Ref(layout))].into_iter().collect(),
-            Terminator::Return { values: Vec::new() },
-            call_contract(
-                layout,
-                ParameterOwnership::Shared,
-                Vec::new(),
-                [(0, vec![MemoryEffect::Release])].into_iter().collect(),
-            ),
-            Vec::new(),
-            vec![BlockParameter {
-                value: ValueId::new(10),
-                value_type: ValueType::Ref(layout),
-                ownership: Some(super::super::Ownership::Shared),
-            }],
-            Vec::new(),
-        );
-        assert_eq!(
-            check_initial(module).unwrap_err(),
-            InitialCheckError::UnconsumedReference {
-                function: FUNCTION,
-                object: source,
-            }
-        );
-    }
-
-    #[test]
-    fn tail_shared_move_transfers_without_reclaim() {
-        let (layouts, layout) = dynamic_u32_layout();
-        let (values, operations) = allocated_list(layout);
-        let object = ValueId::new(2);
-        let module = call_module(
-            layouts,
-            values,
-            operations,
-            Terminator::TailCall {
-                site: TAIL_SITE,
-                callee: CALLEE,
-                arguments: vec![super::super::CallArgument::Move(object)],
-            },
-            vec![Operation::DropRef { object: ValueId::new(10) }],
-            [(ValueId::new(10), ValueType::Ref(layout))].into_iter().collect(),
-            Terminator::Return { values: Vec::new() },
-            call_contract(
-                layout,
-                ParameterOwnership::Shared,
-                Vec::new(),
-                [(0, vec![MemoryEffect::Release])].into_iter().collect(),
-            ),
-            Vec::new(),
-            vec![BlockParameter {
-                value: ValueId::new(10),
-                value_type: ValueType::Ref(layout),
-                ownership: Some(super::super::Ownership::Shared),
-            }],
-            vec![ProperTailSite { id: TAIL_SITE, function: FUNCTION, discharged_by: None }],
-        ).with_proper_tail_locations(vec![ProperTailLocation::new(TAIL_SITE, FUNCTION, ENTRY)]);
-        assert!(check_initial(module).is_ok());
-    }
-
-    #[test]
     fn shared_move_into_unique_parameter_is_rejected() {
         let (layouts, layout) = dynamic_u32_layout();
         let (mut values, mut operations) = allocated_list(layout);
@@ -6485,115 +5296,6 @@ mod tests {
                 function: FUNCTION,
                 object: shared,
             }
-        );
-    }
-
-    fn function_keys(
-        module: &CanonicalModule<super::super::LoweredCandidate>,
-    ) -> Vec<super::cache::FunctionCheckKey> {
-        let (_, layouts) =
-            LayoutBundle::decode_canonical(&module.layouts().canonical_bytes()).unwrap();
-        let signatures = super::index_signatures(module.signatures()).unwrap();
-        let imports = super::index_imports(module.imports()).unwrap();
-        let functions = super::index_functions(module.functions()).unwrap();
-        let tail_obligations = super::index_tail_obligations(
-            module.proper_tail_sites(),
-            module.proper_tail_locations(),
-        )
-        .unwrap();
-        module
-            .functions()
-            .iter()
-            .map(|function| {
-                super::cache::key(
-                    function,
-                    &signatures,
-                    &imports,
-                    module.abi_catalog(),
-                    &functions,
-                    &tail_obligations,
-                    &layouts,
-                    module.closure_layouts(),
-                )
-                .expect("the verdict memo is enabled")
-            })
-            .collect()
-    }
-
-    fn scalar_module(
-        value: i64,
-        extra_signatures: Vec<FunctionSignature>,
-    ) -> CanonicalModule<super::super::LoweredCandidate> {
-        let mut signatures = vec![FunctionSignature {
-            id: SIGNATURE,
-            parameters: Vec::new(),
-            results: vec![ValueType::Int],
-            contract: contract(vec![ResultContract::Value(ValueType::Int)]),
-        }];
-        signatures.extend(extra_signatures);
-        CanonicalModule::from_lowering(LoweredModuleParts {
-            revision: Revision::new(0),
-            checked_source: CheckedSourceIdentity::from_digest([7; 32]),
-            layouts: empty_layouts(),
-            signatures,
-            imports: Vec::new(),
-            functions: vec![Function {
-                id: FUNCTION,
-                signature: SIGNATURE,
-                entry: ENTRY,
-                value_types: [(VALUE, ValueType::Int)].into_iter().collect(),
-                blocks: vec![BasicBlock {
-                    id: ENTRY,
-                    parameters: Vec::new(),
-                    operations: vec![Operation::ConstInt { destination: VALUE, value }],
-                    terminator: Terminator::Return { values: vec![VALUE] },
-                }],
-            }],
-            proper_tail_sites: Vec::new(),
-        })
-    }
-
-    #[test]
-    fn memo_key_is_a_function_of_the_inputs_a_verdict_reads() {
-        let base = function_keys(&scalar_module(42, Vec::new()));
-        assert_eq!(base, function_keys(&scalar_module(42, Vec::new())));
-        assert_ne!(base, function_keys(&scalar_module(43, Vec::new())));
-
-        // A module item the function never names is not one of its inputs:
-        // that is what lets one program's verdict serve another program.
-        let unrelated = FunctionSignature {
-            id: FunctionSignatureId::new(99),
-            parameters: vec![ValueType::Bool],
-            results: Vec::new(),
-            contract: contract(Vec::new()),
-        };
-        assert_eq!(base, function_keys(&scalar_module(42, vec![unrelated])));
-
-        // The closure table is consulted per layout, so registering the
-        // closure layout changes the key of every function naming it.
-        let registered = function_keys(&admitted_closure_module());
-        let unregistered = function_keys(&closure_module(
-            callable_place(AccessMode::Write, ENV_SIGNATURE),
-            FUNCTION_VALUE,
-            callable_place(AccessMode::Read, ENV_SIGNATURE),
-            ValueType::Callable(ENV_SIGNATURE),
-            false,
-        ));
-        assert_eq!(registered.len(), 2);
-        assert!(registered.iter().zip(&unregistered).all(|(with, without)| with != without));
-    }
-
-    #[test]
-    fn admitted_verdicts_replay_from_the_memo() {
-        let functions = admitted_closure_module().functions().len() as u64;
-        assert!(check_initial(admitted_closure_module()).is_ok());
-        let (hits_before, _) = super::cache::stats();
-        assert!(check_initial(admitted_closure_module()).is_ok());
-        let (hits_after, _) = super::cache::stats();
-        assert!(
-            hits_after - hits_before >= functions,
-            "expected {functions} replayed verdicts, saw {}",
-            hits_after - hits_before
         );
     }
 

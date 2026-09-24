@@ -31,7 +31,6 @@ pub use authority::{
 #[cfg(test)]
 pub(crate) use authority::{
     check_initial_with_test_witness, validate_final_for_test,
-    validate_optimized_final_for_test,
 };
 #[path = "canonical_safewir/history.rs"]
 mod identity;

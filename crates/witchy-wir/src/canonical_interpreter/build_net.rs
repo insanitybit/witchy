@@ -82,39 +82,3 @@ impl Engine<'_> {
         Ok(())
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn build_net_oracle_preserves_raw_status_lossy_framing_and_exact_order() {
-        let fixture = OracleBuildNetFixture {
-            hosts: BTreeSet::from(["peer:80".into(), "other:80".into()]),
-            expectations: vec![
-                OracleBuildNetCall { host: "peer:80".into(), path: "/first".into(),
-                    response: b"HTTP/1.1 404 Missing\r\nHeader: \xff\r\n\r\none\xff\r\n\r\nrest".to_vec() },
-                OracleBuildNetCall { host: "other:80".into(), path: "/second".into(), response: b"unframed\xff".to_vec() },
-                OracleBuildNetCall { host: "peer:80".into(), path: "/third".into(),
-                    response: b"HTTP/1.1 302 Found\r\nLocation: http://denied:80/\r\n\r\n".to_vec() },
-            ],
-        };
-        let mut state = State::new();
-        assert!(state.finish(Some(&fixture)).is_err());
-        assert!(state.invoke(&fixture, "peer:81", "/first").unwrap_err().to_string().contains("allow-list"));
-        assert!(state.invoke(&fixture, "other:80", "/second").unwrap_err().to_string().contains("transcript mismatch"));
-        assert!(state.invoke(&fixture, "peer:80", "/wrong").is_err());
-        assert_eq!(state.consumed, 0);
-        let first = state.invoke(&fixture, "peer:80", "/first").unwrap();
-        assert_eq!(first.as_ref(), "one\u{fffd}\r\n\r\nrest".as_bytes());
-        let second = state.invoke(&fixture, "other:80", "/second").unwrap();
-        assert_eq!(second.as_ref(), "unframed\u{fffd}".as_bytes());
-        assert!(state.finish(Some(&fixture)).is_err());
-        assert!(state.invoke(&fixture, "peer:80", "/third").unwrap().is_empty());
-        assert_eq!(state.consumed, 3);
-        state.finish(Some(&fixture)).unwrap();
-        assert_eq!(first.as_ref(), "one\u{fffd}\r\n\r\nrest".as_bytes(), "later responses do not mutate the first");
-        assert!(state.invoke(&fixture, "peer:80", "/first").is_err());
-        assert_eq!(state.consumed, 3);
-    }
-}

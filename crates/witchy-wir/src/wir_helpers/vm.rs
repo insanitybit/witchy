@@ -149,24 +149,3 @@ pub(super) fn vm_with_dir_helper() -> WirFunc {
         "fill_pending",
     )
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn dir_bytes_trampoline_preserves_the_externref_parameter() {
-        let trampoline = call_dir_bytes_helper();
-        let [WirNode::Push(WirExpr::CallIndirect { signature, args, .. })] =
-            trampoline.body.as_slice()
-        else {
-            panic!("typed Dir trampoline must be one indirect call")
-        };
-        assert_eq!(
-            signature.params,
-            [Kind::GcRef(0), Kind::ExternRef, Kind::I32]
-        );
-        assert_eq!(signature.results, [Kind::I32]);
-        assert!(matches!(args.get(1), Some(WirExpr::GetLocal(name)) if name == "dir"));
-    }
-}

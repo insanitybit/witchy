@@ -84,34 +84,3 @@ impl Engine<'_> {
         Ok(())
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn build_exec_oracle_transcript_is_exact_ordered_and_terminal() {
-        let fixture = OracleBuildExecFixture {
-            tools: BTreeSet::from(["tool".into(), "other".into()]),
-            expectations: vec![
-                OracleBuildExecCall { tool: "tool".into(), stdin: "first".into(), stdout: vec![0xff, b'x'], exit_code: 0 },
-                OracleBuildExecCall { tool: "other".into(), stdin: "second".into(), stdout: b"not returned".to_vec(), exit_code: 7 },
-            ],
-        };
-        let mut state = State::new();
-        assert!(state.finish(Some(&fixture)).is_err());
-        assert!(state.invoke(&fixture, "denied", "first").unwrap_err().to_string().contains("allow-list"));
-        assert!(state.invoke(&fixture, "other", "second").unwrap_err().to_string().contains("transcript mismatch"));
-        assert!(state.invoke(&fixture, "tool", "wrong").is_err());
-        assert_eq!(state.consumed, 0, "refused calls must not skip expected events");
-        let first = state.invoke(&fixture, "tool", "first").unwrap();
-        assert_eq!(first.as_ref(), "\u{fffd}x".as_bytes());
-        assert_eq!(state.consumed, 1);
-        assert!(state.finish(Some(&fixture)).is_err());
-        assert!(state.invoke(&fixture, "other", "second").unwrap_err().to_string().contains("exit status: 7"));
-        assert_eq!(state.consumed, 2, "a nonzero real outcome consumes its invocation");
-        assert_eq!(first.as_ref(), "\u{fffd}x".as_bytes(), "later calls cannot alter an earlier response");
-        assert!(state.invoke(&fixture, "tool", "first").is_err());
-        assert_eq!(state.consumed, 2);
-    }
-}

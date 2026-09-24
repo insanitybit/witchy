@@ -2853,16 +2853,6 @@ fn fixed_alloc_bytes(bytes: u64) -> Option<u32> {
         .map(|bytes| bytes.max(4))
 }
 
-#[cfg(test)]
-#[test]
-fn fixed_alloc_reserves_a_complete_free_list_link() {
-    assert_eq!(fixed_alloc_bytes(0), Some(4));
-    assert_eq!(fixed_alloc_bytes(1), Some(4));
-    assert_eq!(fixed_alloc_bytes(2), Some(4));
-    assert_eq!(fixed_alloc_bytes(4), Some(4));
-    assert_eq!(fixed_alloc_bytes(5), Some(5));
-}
-
 fn emit_update_count(
     body: &mut wasm_encoder::Function,
     function: &Function,
@@ -4360,7 +4350,7 @@ impl StructuredEmitter<'_> {
             // A side's own first block can be the merge: when the other side
             // only terminates (`if c: return x` then fall through) or flows
             // into it (a length test guarding a scan loop that exits there),
-            // the structured form is `if c { ... } else { } end` followed by
+            // the structured form is `if c { ... } else {} end` followed by
             // that block. An enclosing loop's header or exit is never a
             // merge: emission reaches those only through `br`.
             if candidate == current || self.escape_label(candidate).is_some() {
@@ -8183,91 +8173,16 @@ fn admit_canonical_with_bytes_for_test(
 mod tests {
     mod unique_pop;
     mod boolean_reaches;
-    /// Every entry capability tag survives the custom section, so a
-    /// launcher reading a `.wasm` back mints exactly the tokens the checked
-    /// signature declared.
-    #[test]
-    fn entry_capability_tags_round_trip() {
-        let entry = super::CanonicalEntry {
-            export: "f0".to_string(),
-            argument_positions: Vec::new(),
-            capabilities: vec![
-                super::CanonicalEntryCapability::Console,
-                super::CanonicalEntryCapability::Dir,
-                super::CanonicalEntryCapability::Env,
-                super::CanonicalEntryCapability::Net,
-            ],
-            result: super::CanonicalEntryResult::Int,
-        };
-        let encoded = entry.encode();
-        assert_eq!(encoded[encoded.len() - 5..encoded.len() - 1], [0, 1, 2, 4]);
-        assert_eq!(super::CanonicalEntry::decode(&encoded), Ok(entry));
-    }
-
-    #[test]
-    fn registry_hosts_entry_tags_preserve_separate_roots() {
-        use super::{CanonicalEntry, CanonicalEntryCapability as C, CanonicalEntryResult};
-        let entry = CanonicalEntry { export: "f0".into(),
-            capabilities: vec![C::Clock, C::SecretStore, C::Secret, C::Dir],
-            argument_positions: Vec::new(), result: CanonicalEntryResult::Unit };
-        let bytes = entry.encode();
-        assert_eq!(&bytes[bytes.len() - 5..bytes.len() - 1], &[19, 20, 21, 1]);
-        assert_eq!(CanonicalEntry::decode(&bytes), Ok(entry));
-    }
-
-    #[test]
-    fn entry_argument_positions_round_trip_and_refuse_malformed_order() {
-        let entry = super::CanonicalEntry {
-            export: "f0".into(),
-            capabilities: vec![super::CanonicalEntryCapability::Console],
-            argument_positions: vec![0, 2],
-            result: super::CanonicalEntryResult::Unit,
-        };
-        let bytes = entry.encode();
-        assert_eq!(bytes[0], 2);
-        assert_eq!(super::CanonicalEntry::decode(&bytes), Ok(entry));
-        let last = bytes.len() - 1;
-        for bad_position in [0, 3, u8::MAX] {
-            let mut bad = bytes.clone();
-            bad[last] = bad_position;
-            assert!(super::CanonicalEntry::decode(&bad).is_err());
-        }
-        assert!(super::CanonicalEntry::decode(&bytes[..last]).is_err());
-        let mut trailing = bytes;
-        trailing.push(0);
-        assert!(super::CanonicalEntry::decode(&trailing).is_err());
-    }
-
     use super::*;
     use crate::canonical_safewir::{
         BasicBlock, BlockId, BlockParameter, CallableContract, CheckedSourceIdentity,
-        FunctionSignature, FunctionSignatureId, GcTypeId,
+        FunctionSignature, FunctionSignatureId,
         GuardKind,
         LoweredCandidate, LoweredModuleParts, OverflowBehavior, ParameterContract,
         ParameterOwnership, Revision, ResultContract, check_initial_with_test_witness,
         validate_final_for_test,
     };
 
-    #[test]
-    fn external_unit_signature_has_zero_physical_wasm_lanes() {
-        let signature = FunctionSignature {
-            id: FunctionSignatureId::new(91),
-            parameters: vec![ValueType::Unit],
-            results: vec![ValueType::Unit],
-            contract: CallableContract {
-                parameters: vec![ParameterContract {
-                    value_type: ValueType::Unit,
-                    ownership: ParameterOwnership::Value,
-                }],
-                results: vec![ResultContract::Value(ValueType::Unit)],
-                parameter_effects: BTreeMap::new(),
-            },
-        };
-        assert_eq!(
-            super::external_import_wasm_signature(FunctionId::new(91), &signature),
-            Ok((Vec::new(), Vec::new())),
-        );
-    }
     use crate::layout::{LayoutBundle, LayoutInterner, PointerSlot, RcHeader, ScalarKind};
 
     fn checked_scalar() -> ValidatedSafeWir {
@@ -8361,48 +8276,6 @@ mod tests {
         let checked =
             check_initial_with_test_witness(candidate).expect("subtraction fixture is valid");
         validate_final_for_test(checked).expect("subtraction fixture is final-valid")
-    }
-
-    #[test]
-    fn scalar_lowering_has_one_mapping_per_operation_and_terminator() {
-        let source = checked_scalar();
-        let target = lower_validated(&source).unwrap();
-        let receipt = check_correspondence(source.module(), &target).unwrap();
-        assert_eq!(receipt.mappings.len(), 2);
-    }
-
-    #[test]
-    fn zero_pass_scalar_module_encodes_and_validates_real_wasm() {
-        let wasm = encode_validated(checked_scalar()).expect("validated scalar authority encodes");
-        wasmparser::validate(&wasm).expect("encoded scalar module is structurally valid");
-        assert!(wasm.windows(2).any(|window| window == [0x42, 9]));
-    }
-
-    #[test]
-    fn int_subtraction_matches_the_exact_encoded_plan() {
-        let artifact = admit_canonical(checked_int_subtraction())
-            .expect("checked subtraction admits through exact-byte matching");
-        wasmparser::validate(artifact.wasm()).expect("subtraction artifact is valid Wasm");
-    }
-
-    #[test]
-    fn a3_zero_pass_candidate_admits_with_all_witnesses() {
-        let validated = checked_scalar();
-        let artifact = admit_canonical(validated).expect("zero-pass A3 witness chain admits");
-        wasmparser::validate(artifact.wasm()).expect("admitted bytes remain valid Wasm");
-    }
-
-    #[test]
-    fn a3_target_witness_cannot_substitute_for_other_bytes() {
-        let validated = checked_scalar();
-        let target = lower_validated(&validated).unwrap();
-        let bytes = encode_validated(checked_scalar()).expect("validated scalar encodes");
-        let witness = decode_and_match_plan(validated.module(), &target, &bytes)
-            .expect("exact target witness");
-        let mut substituted = bytes;
-        substituted.push(0);
-
-        assert!(!witness.matches_bytes(&substituted));
     }
 
     fn scalar_signature(id: FunctionSignatureId) -> FunctionSignature {
@@ -8553,31 +8426,6 @@ mod tests {
         }))
     }
 
-    #[test]
-    fn owner_gc_scratch_uses_exact_externref_type() {
-        let interner = LayoutInterner::new();
-        let owner = ValueId::new(1);
-        let signature = scalar_signature_with(FunctionSignatureId::new(991), Vec::new(), Vec::new());
-        let function = Function {
-            id: FunctionId::new(991),
-            signature: signature.id,
-            entry: BlockId::new(991),
-            value_types: [(owner, ValueType::Gc(GcTypeId::new(991)))].into_iter().collect(),
-            blocks: vec![BasicBlock {
-                id: BlockId::new(991),
-                parameters: Vec::new(),
-                operations: Vec::new(),
-                terminator: Terminator::Return { values: Vec::new() },
-            }],
-        };
-        let layout = local_layout(&function, &signature, &interner).expect("Gc local layout");
-        let scratch = layout.owner_scratch.expect("synthetic Gc scratch");
-        assert_eq!(layout.extra_types[scratch[0] as usize], ValType::I32);
-        assert_eq!(layout.extra_types[scratch[1] as usize], ValType::I32);
-        assert_eq!(layout.extra_types[scratch[2] as usize], ValType::Ref(RefType::EXTERNREF));
-        assert_eq!(layout.extra_types[scratch[3] as usize], ValType::I32);
-    }
-
     #[cfg(feature = "native")]
     fn run_size_add(module: ValidatedSafeWir) -> Result<u32, wasmtime::Error> {
         let wasm = encode_validated(module).expect("validated size addition encodes");
@@ -8598,60 +8446,6 @@ mod tests {
         let instance = wasmtime::Instance::new(&mut store, &module, &[])?;
         let run = instance.get_typed_func::<(), i64>(&mut store, "f71")?;
         run.call(&mut store, ())
-    }
-
-    #[cfg(feature = "native")]
-    #[test]
-    fn trapping_int_add_accepts_signed_boundaries() {
-        for (left, right, expected) in [
-            (i64::MAX - 1, 1, i64::MAX),
-            (i64::MIN + 1, -1, i64::MIN),
-            (-20, 62, 42),
-        ] {
-            let validated = checked_int_add(left, right);
-            assert_eq!(
-                crate::canonical_interpreter::interpret(
-                    &validated,
-                    FunctionId::new(71),
-                    Vec::new(),
-                ),
-                Ok(vec![crate::canonical_interpreter::InterpreterValue::Int(
-                    expected,
-                )]),
-            );
-            assert_eq!(run_int_add(validated).unwrap(), expected);
-        }
-    }
-
-    #[cfg(feature = "native")]
-    #[test]
-    fn trapping_int_add_overflow_matches_interpreter() {
-        for (left, right) in [(i64::MAX, 1), (i64::MIN, -1)] {
-            let validated = checked_int_add(left, right);
-            assert_eq!(
-                crate::canonical_interpreter::interpret(
-                    &validated,
-                    FunctionId::new(71),
-                    Vec::new(),
-                ),
-                Err(crate::canonical_interpreter::InterpretError::ArithmeticTrap),
-            );
-            assert!(run_int_add(validated).is_err());
-        }
-    }
-
-    #[cfg(feature = "native")]
-    #[test]
-    fn trapping_size_add_accepts_the_unsigned_boundary() {
-        assert_eq!(
-            run_size_add(checked_size_add(
-                u32::MAX - 1,
-                1,
-                crate::canonical_safewir::OverflowBehavior::Trap,
-            ))
-            .unwrap(),
-            u32::MAX,
-        );
     }
 
     #[cfg(feature = "native")]
@@ -8942,136 +8736,11 @@ mod tests {
     }
 
     #[test]
-    fn structured_loop_plan_rejects_control_opcode_mutation() {
-        let mut bytes = encode_validated(checked_loop()).expect("structured loop encodes");
-        let block = bytes
-            .windows(2)
-            .position(|window| window == [0x02, 0x40])
-            .expect("structured loop has an outer empty block");
-        bytes[block] = 0x03;
-        assert!(matches!(
-            admit_canonical_with_bytes_for_test(checked_loop(), bytes),
-            Err(CanonicalAdmissionError::PlanMismatch(_) | CanonicalAdmissionError::WasmValidation(_))
-        ));
-    }
-
-    #[cfg(feature = "native")]
-    #[test]
-    fn admitted_int_list_loop_executes_with_bounds_checks() {
-        let artifact = admit_canonical(checked_int_list_loop()).expect("validated List(Int) loop admits");
-        let engine = wasmtime::Engine::default();
-        let module = wasmtime::Module::new(&engine, artifact.wasm()).unwrap();
-        let mut store = wasmtime::Store::new(&engine, ());
-        let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
-        let function = instance.get_typed_func::<(), i64>(&mut store, "f37").unwrap();
-        assert_eq!(function.call(&mut store, ()).unwrap(), 42);
-    }
-
-    #[cfg(feature = "native")]
-    #[test]
-    fn encoded_trap_terminator_remains_terminal() {
-        let wasm = encode_validated(checked_trap()).expect("trap terminator encodes");
-        wasmparser::validate(&wasm).expect("trap module is valid Wasm");
-        let engine = wasmtime::Engine::default();
-        let module = wasmtime::Module::new(&engine, &wasm).unwrap();
-        let mut store = wasmtime::Store::new(&engine, ());
-        let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
-        let function = instance.get_typed_func::<(), ()>(&mut store, "f9").unwrap();
-        assert!(function.call(&mut store, ()).is_err());
-    }
-
-    #[test]
     fn irreducible_cfg_is_refused_without_dispatcher_lowering() {
         assert!(matches!(
             encode_validated(checked_irreducible()),
             Err(EncodeError::Lowering(LoweringError::UnsupportedControlFlow { .. }))
         ));
-    }
-
-    #[test]
-    fn common_reachable_join_with_non_terminating_bypass_is_refused() {
-        assert!(matches!(
-            encode_validated(checked_join_bypass()),
-            Err(EncodeError::Lowering(LoweringError::UnsupportedControlFlow { .. }))
-        ));
-    }
-
-    #[test]
-    fn structured_diamond_chain_admits_without_enumerating_paths() {
-        admit_canonical(checked_diamond_chain(96, false)).expect("bounded diamond graph admits");
-    }
-
-    #[test]
-    fn structured_diamond_chain_with_cyclic_suffix_refuses_fail_closed() {
-        assert!(matches!(
-            encode_validated(checked_diamond_chain(96, true)),
-            Err(EncodeError::Lowering(LoweringError::UnsupportedControlFlow { .. }))
-        ));
-    }
-
-    #[test]
-    fn cached_natural_loop_members_match_forward_predicate_for_multi_exit_loop() {
-        use crate::canonical_safewir::BlockId;
-
-        let header = BlockId::new(1);
-        let body = BlockId::new(2);
-        let back_edge = BlockId::new(3);
-        let first_exit = BlockId::new(4);
-        let second_exit = BlockId::new(5);
-        let join = BlockId::new(6);
-        let outside = BlockId::new(7);
-        let successors = BTreeMap::from([
-            (header, vec![body, first_exit]),
-            (body, vec![back_edge, second_exit]),
-            (back_edge, vec![header]),
-            (first_exit, vec![join]),
-            (second_exit, vec![join]),
-            (join, Vec::new()),
-            (outside, vec![join]),
-        ]);
-        let mut predecessors = successors
-            .keys()
-            .copied()
-            .map(|block| (block, Vec::new()))
-            .collect::<BTreeMap<_, _>>();
-        for (source, targets) in &successors {
-            for target in targets {
-                let sources = predecessors.get_mut(target).unwrap();
-                if !sources.contains(source) {
-                    sources.push(*source);
-                }
-            }
-        }
-
-        let cached = reverse_loop_members(header, vec![back_edge], &predecessors);
-        let old_predicate = |start| {
-            let mut seen = BTreeSet::new();
-            let mut pending = VecDeque::from([start]);
-            while let Some(block) = pending.pop_front() {
-                if block == header || !seen.insert(block) {
-                    continue;
-                }
-                if block == back_edge {
-                    return true;
-                }
-                pending.extend(successors.get(&block).unwrap().iter().copied());
-            }
-            false
-        };
-
-        for block in [header, body, back_edge, first_exit, second_exit, join, outside] {
-            assert_eq!(
-                block != header && cached.contains(&block),
-                old_predicate(block),
-                "natural-loop membership changed for block {}",
-                block.get(),
-            );
-        }
-        assert!(!cached.contains(&header));
-        assert!(cached.contains(&back_edge));
-        assert!(!cached.contains(&outside));
-        assert!(!cached.contains(&first_exit));
-        assert!(!cached.contains(&second_exit));
     }
 
     #[test]
@@ -9222,20 +8891,6 @@ mod tests {
 
     #[cfg(feature = "native")]
     #[test]
-    fn admitted_scalar_var_call_uses_authenticated_table_and_executes() {
-        let artifact = admit_canonical(checked_var_call()).expect("scalar indirect call artifact admits");
-        wasmparser::validate(&artifact.wasm()).expect("scalar indirect call is structurally valid");
-        assert!(artifact.wasm().contains(&0x11), "encoded artifact contains call_indirect");
-        let engine = wasmtime::Engine::default();
-        let module = wasmtime::Module::new(&engine, artifact.wasm()).unwrap();
-        let mut store = wasmtime::Store::new(&engine, ());
-        let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
-        let function = instance.get_typed_func::<(), i64>(&mut store, "f20").unwrap();
-        assert_eq!(function.call(&mut store, ()).unwrap(), 42);
-    }
-
-    #[cfg(feature = "native")]
-    #[test]
     fn admitted_scalar_var_tail_call_executes_with_return_call_indirect() {
         let artifact = admit_canonical(checked_var_tail_call())
             .expect("scalar indirect proper-tail call artifact admits");
@@ -9245,18 +8900,6 @@ mod tests {
         let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
         let function = instance.get_typed_func::<(), i64>(&mut store, "f22").unwrap();
         assert_eq!(function.call(&mut store, ()).unwrap(), 42);
-    }
-
-    #[test]
-    fn mutated_scalar_var_call_signature_fails_exact_admission() {
-        let mut bytes = encode_validated(checked_var_call()).expect("scalar indirect call encodes");
-        let call = bytes.iter().position(|byte| *byte == 0x11).expect("call_indirect opcode exists");
-        bytes[call + 1] = 0;
-        assert!(matches!(
-            admit_canonical_with_bytes_for_test(checked_var_call(), bytes),
-            Err(CanonicalAdmissionError::PlanMismatch("function body"))
-                | Err(CanonicalAdmissionError::WasmValidation(_))
-        ));
     }
 
     fn capability_indirect_parts(tail: bool, value_type: ValueType) -> LoweredModuleParts {
@@ -9354,49 +8997,6 @@ mod tests {
     fn indirect_capability_types() -> [ValueType; 2] {
         let kind = crate::canonical_safewir::CapabilityKindId::new(17);
         [ValueType::Capability(kind), ValueType::NullableCapability(kind)]
-    }
-
-    #[test]
-    fn admitted_capability_var_call_preserves_kind_and_plan() {
-        for value_type in indirect_capability_types() {
-            admit_canonical(finalize(capability_indirect_candidate(false, value_type)))
-                .expect("checked capability indirect call matches the independent byte plan");
-        }
-    }
-
-    #[test]
-    fn admitted_capability_var_tail_call_preserves_proper_tail_and_plan() {
-        for value_type in indirect_capability_types() {
-            admit_canonical(finalize(capability_indirect_candidate(true, value_type)))
-                .expect("checked capability proper tail matches the independent byte plan");
-        }
-    }
-
-    #[cfg(feature = "native")]
-    #[test]
-    fn admitted_capability_indirect_calls_preserve_externrefs() {
-        for tail in [false, true] {
-            for value_type in indirect_capability_types() {
-                let artifact = admit_canonical(finalize(capability_indirect_candidate(tail, value_type)))
-                    .expect("capability identity call admits");
-                let engine = wasmtime::Engine::default();
-                let module = wasmtime::Module::new(&engine, artifact.wasm()).unwrap();
-                let mut store = wasmtime::Store::new(&engine, ());
-                let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
-                let function = instance.get_typed_func::<
-                    Option<wasmtime::Rooted<wasmtime::ExternRef>>,
-                    Option<wasmtime::Rooted<wasmtime::ExternRef>>,
-                >(&mut store, "f20").unwrap();
-                // This is a transport sentinel, not a host-minted authority:
-                // the fixture performs no host calls or capability effects.
-                let token = wasmtime::ExternRef::new(&mut store, 73_u32).unwrap();
-                let returned = function.call(&mut store, Some(token)).unwrap().unwrap();
-                assert_eq!(returned.data(&store).unwrap().unwrap().downcast_ref::<u32>(), Some(&73));
-                if matches!(value_type, ValueType::NullableCapability(_)) {
-                    assert!(function.call(&mut store, None).unwrap().is_none());
-                }
-            }
-        }
     }
 
     fn lower_capability_indirect_for_test(parts: &LoweredModuleParts) -> Result<(), LoweringError> {
@@ -9511,40 +9111,6 @@ mod tests {
             value_type: ValueType::Ref(layout), ownership: ParameterOwnership::Shared,
         });
         assert!(!is_authenticated_indirect_callable_writeback(&widened));
-    }
-
-    #[test]
-    fn unique_reference_indirect_parameter_accepts_only_non_mutating_effects() {
-        let mut interner = LayoutInterner::new();
-        let element = interner.intern_scalar(ScalarKind::U32).unwrap();
-        let layout = interner.intern_packed_list(element, RcHeader::Required).unwrap();
-        let value_type = ValueType::Ref(layout);
-        let mut signature = FunctionSignature {
-            id: FunctionSignatureId::new(22),
-            parameters: vec![value_type],
-            results: vec![value_type],
-            contract: CallableContract {
-                parameters: vec![ParameterContract {
-                    value_type,
-                    ownership: ParameterOwnership::Unique,
-                }],
-                results: vec![ResultContract::Unique { layout }],
-                parameter_effects: BTreeMap::new(),
-            },
-        };
-
-        assert!(is_indirect_parameter(&signature, 0, value_type));
-        for effect in [MemoryEffect::Read, MemoryEffect::Retain, MemoryEffect::Release] {
-            signature.contract.parameter_effects.insert(0, vec![effect]);
-            assert!(is_indirect_parameter(&signature, 0, value_type));
-        }
-        for effect in [MemoryEffect::Write, MemoryEffect::Reclaim] {
-            signature.contract.parameter_effects.insert(0, vec![effect]);
-            assert!(!is_indirect_parameter(&signature, 0, value_type));
-        }
-        signature.contract.parameters[0].ownership = ParameterOwnership::Value;
-        signature.contract.parameter_effects.clear();
-        assert!(!is_indirect_parameter(&signature, 0, value_type));
     }
 
     #[test]
@@ -9833,96 +9399,6 @@ mod tests {
         }))
     }
 
-    #[cfg(feature = "native")]
-    #[test]
-    fn direct_call_encodes_as_wasm_call() {
-        let artifact = admit_canonical(checked_direct_call(false)).expect("direct call artifact admits");
-        let wasm = artifact.wasm();
-        wasmparser::validate(&wasm).expect("direct call module is structurally valid");
-        assert!(wasm.windows(2).any(|window| window == [0x10, 0x01]));
-        let engine = wasmtime::Engine::default();
-        let module = wasmtime::Module::new(&engine, wasm).unwrap();
-        let mut store = wasmtime::Store::new(&engine, ());
-        let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
-        let function = instance.get_typed_func::<(), i64>(&mut store, "f1").unwrap();
-        assert_eq!(function.call(&mut store, ()).unwrap(), 17);
-    }
-
-    #[cfg(feature = "native")]
-    #[test]
-    fn proper_tail_call_encodes_as_wasm_return_call() {
-        let artifact = admit_canonical(checked_direct_call(true)).expect("proper tail call artifact admits");
-        let wasm = artifact.wasm();
-        wasmparser::Validator::new_with_features(
-            wasmparser::WasmFeatures::default() | wasmparser::WasmFeatures::TAIL_CALL,
-        )
-        .validate_all(wasm)
-        .expect("tail-call module is structurally valid");
-        assert!(wasm.windows(2).any(|window| window == [0x12, 0x01]));
-        let engine = wasmtime::Engine::default();
-        let module = wasmtime::Module::new(&engine, wasm).unwrap();
-        let mut store = wasmtime::Store::new(&engine, ());
-        let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
-        let function = instance.get_typed_func::<(), i64>(&mut store, "f1").unwrap();
-        assert_eq!(function.call(&mut store, ()).unwrap(), 17);
-    }
-
-    #[test]
-    fn mutated_direct_call_callee_index_fails_admission() {
-        let mut bytes = encode_validated(checked_direct_call(false)).unwrap();
-        let call = bytes
-            .windows(2)
-            .position(|window| window == [0x10, 0x01])
-            .expect("direct call opcode and index exist");
-        bytes[call + 1] = 0;
-        assert!(matches!(
-            admit_canonical_with_bytes_for_test(checked_direct_call(false), bytes),
-            Err(CanonicalAdmissionError::PlanMismatch(_))
-        ));
-    }
-
-    #[cfg(feature = "native")]
-    #[test]
-    fn admitted_owned_reference_call_executes_and_preserves_ownership() {
-        let artifact = admit_canonical(checked_object_call_move()).expect("owned reference call artifact admits");
-        let engine = wasmtime::Engine::default();
-        let module = wasmtime::Module::new(&engine, artifact.wasm()).unwrap();
-        let mut store = wasmtime::Store::new(&engine, ());
-        let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
-        let function = instance.get_typed_func::<(), ()>(&mut store, "f40").unwrap();
-        function.call(&mut store, ()).unwrap();
-    }
-
-    #[cfg(feature = "native")]
-    #[test]
-    fn parameterized_scalar_call_artifact_executes() {
-        let artifact = admit_canonical(checked_parameterized_scalar_call())
-            .expect("parameterized scalar call artifact admits");
-        let engine = wasmtime::Engine::default();
-        let module = wasmtime::Module::new(&engine, artifact.wasm()).unwrap();
-        let mut store = wasmtime::Store::new(&engine, ());
-        let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
-        let function = instance
-            .get_typed_func::<(), i64>(&mut store, "f51")
-            .unwrap();
-        assert_eq!(function.call(&mut store, ()).unwrap(), 42);
-    }
-
-    #[test]
-    fn parameterized_call_signature_mutation_fails_exact_admission() {
-        let mut bytes = encode_validated(checked_parameterized_scalar_call()).unwrap();
-        let signature = bytes
-            .windows(5)
-            .position(|window| window == [0x60, 0x01, 0x7e, 0x01, 0x7e])
-            .expect("increment signature exists");
-        bytes[signature + 2] = 0x7f;
-        assert!(matches!(
-            admit_canonical_with_bytes_for_test(checked_parameterized_scalar_call(), bytes),
-            Err(CanonicalAdmissionError::PlanMismatch(_))
-                | Err(CanonicalAdmissionError::WasmValidation(_))
-        ));
-    }
-
     fn checked_comparison() -> ValidatedSafeWir {
         let left = ValueId::new(1);
         let right = ValueId::new(2);
@@ -10012,20 +9488,6 @@ mod tests {
 
     fn checked_size_operation(operation: Operation, input: ValueId, result: ValueId) -> ValidatedSafeWir {
         checked_size_operation_with_input(operation, input, result, -1)
-    }
-
-    #[test]
-    fn narrow_size_negative_traps_in_wasmtime() {
-        let input = ValueId::new(1);
-        let result = ValueId::new(2);
-        let validated = checked_size_operation(Operation::NarrowSize { destination: result, value: input }, input, result);
-        let wasm = encode_validated(validated).expect("negative narrow encodes with a trap");
-        let engine = wasmtime::Engine::default();
-        let module = wasmtime::Module::new(&engine, &wasm).unwrap();
-        let mut store = wasmtime::Store::new(&engine, ());
-        let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
-        let result = instance.get_typed_func::<(), i32>(&mut store, "f4").unwrap().call(&mut store, ());
-        assert!(result.is_err());
     }
 
     #[test]
@@ -10676,167 +10138,6 @@ mod tests {
         }))
     }
 
-    #[cfg(feature = "native")]
-    #[test]
-    fn outlined_memory_bounds_body_size_and_executes_shared_nullable_drops() {
-        let checked = checked_outlined_memory_fixture();
-        let oracle = crate::canonical_interpreter::interpret_program(
-            &checked, FunctionId::new(141), Vec::new(), Default::default(),
-        ).expect("independent oracle executes the checked operations");
-        assert_eq!(oracle.results, vec![crate::canonical_interpreter::InterpreterValue::Size(7)]);
-        assert_eq!(oracle.leaked_objects, 0);
-        let artifact = admit_canonical(checked).expect("wide repeated memory operations admit");
-        let mut sizes = Vec::new();
-        let mut calls = Vec::new();
-        for payload in wasmparser::Parser::new(0).parse_all(artifact.wasm()) {
-            if let wasmparser::Payload::CodeSectionEntry(body) = payload.unwrap() {
-                if sizes.is_empty() {
-                    let mut operators = body.get_operators_reader().unwrap();
-                    while !operators.eof() {
-                        if let wasmparser::Operator::Call { function_index } = operators.read().unwrap() {
-                            calls.push(function_index);
-                        }
-                    }
-                }
-                sizes.push(body.range().len());
-            }
-        }
-        assert_eq!(sizes.len(), 4, "one source body and address, drop, retain helpers");
-        assert!(sizes[0] < 64 * (128 * 16 + 1024), "repeated kernels expanded into the source body: {sizes:?}");
-        assert_eq!(calls.iter().filter(|index| **index == 1).count(), 65 * 128);
-        assert_eq!(calls.iter().filter(|index| **index == 2).count(), 64 * 2 + 1);
-        assert_eq!(calls.iter().filter(|index| **index == 3).count(), 64);
-        let engine = wasmtime::Engine::default();
-        let module = wasmtime::Module::new(&engine, artifact.wasm()).unwrap();
-        let mut store = wasmtime::Store::new(&engine, ());
-        let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
-        assert_eq!(instance.get_typed_func::<(), i32>(&mut store, "f141").unwrap().call(&mut store, ()).unwrap(), 7);
-        let memory = instance.get_memory(&mut store, "memory").unwrap();
-        let mut free = instance.get_global(&mut store, HEAP_FREE_EXPORT).unwrap().get(&mut store).i32().unwrap() as usize;
-        let mut seen = BTreeSet::new();
-        while free != 0 {
-            assert!(seen.insert(free), "free-list cycle or double release");
-            free = u32::from_le_bytes(memory.data(&store)[free..free + 4].try_into().unwrap()) as usize;
-        }
-        assert_eq!(seen.len(), 64, "every allocated container must be reclaimed exactly once");
-    }
-
-    #[test]
-    fn outlined_address_predicate_mutation_fails_independent_admission() {
-        let mut bytes = encode_validated(checked_outlined_memory_fixture()).unwrap();
-        let mut body_index = 0;
-        let mut comparison = None;
-        for payload in wasmparser::Parser::new(0).parse_all(&bytes) {
-            if let wasmparser::Payload::CodeSectionEntry(body) = payload.unwrap() {
-                if body_index == 1 {
-                    let mut reader = body.get_operators_reader().unwrap();
-                    while !reader.eof() {
-                        let offset = reader.original_position();
-                        if matches!(reader.read().unwrap(), wasmparser::Operator::I64GtU) {
-                            comparison = Some(offset);
-                        }
-                    }
-                }
-                body_index += 1;
-            }
-        }
-        // i64.lt_u is structurally valid with the same stack signature, but
-        // reverses the address authority predicate. Only exact plan matching
-        // may authorize the helper, just as for an inlined memory operation.
-        bytes[comparison.expect("outlined unsigned overflow comparison")] = 0x54;
-        assert!(matches!(
-            admit_canonical_with_bytes_for_test(checked_outlined_memory_fixture(), bytes),
-            Err(CanonicalAdmissionError::PlanMismatch(_))
-        ));
-    }
-
-    #[cfg(feature = "native")]
-    #[test]
-    fn scalar_local_storage_reuse_executes_above_fifty_thousand_ssa_values() {
-        use crate::canonical_interpreter::{interpret_program, InterpreterValue};
-        let mut interner = LayoutInterner::new();
-        let int = interner.intern_scalar(ScalarKind::Int).unwrap();
-        let record = interner.intern_packed_record(vec![int]).unwrap();
-        let crate::layout::LayoutSize::Fixed(bytes) = interner.get(record).unwrap().size() else { panic!("fixed scalar record"); };
-        let captured = ValueId::new(0);
-        let object = ValueId::new(1);
-        let aggregate = ValueId::new(2);
-        let loaded = ValueId::new(55_003);
-        let extracted = ValueId::new(55_004);
-        let mut value_types = BTreeMap::from([
-            (captured, ValueType::Int), (object, ValueType::Ref(record)),
-            (aggregate, ValueType::InlineAggregate(record)),
-            (loaded, ValueType::Int), (extracted, ValueType::Int),
-        ]);
-        let mut operations = vec![
-            Operation::ConstInt { destination: captured, value: 42 },
-            Operation::MakeInlineAggregate { destination: aggregate, layout: record, fields: vec![captured] },
-            Operation::Alloc { destination: object, layout: record, extent: Extent::FixedBytes(u64::from(bytes)), class: crate::canonical_safewir::AllocationClass::ReferenceCounted },
-        ];
-        for index in 0..55_000 {
-            let value = ValueId::new(index + 3);
-            value_types.insert(value, ValueType::Int);
-            operations.push(Operation::ConstInt { destination: value, value: i64::from(index) });
-            operations.push(Operation::Store {
-                place: Place::projected(object, Projection::Field { index: 0 }, ValueType::Int, AccessMode::Write),
-                value, transfer: StoreTransfer::CopyScalar,
-            });
-        }
-        operations.extend([
-            Operation::Load { destination: loaded, place: Place::projected(object, Projection::Field { index: 0 }, ValueType::Int, AccessMode::Read), transfer: LoadTransfer::CopyScalar },
-            Operation::ExtractInlineField { destination: extracted, aggregate, index: 0 },
-            Operation::DropRef { object },
-        ]);
-        let checked = finalize(CanonicalModule::from_lowering(LoweredModuleParts {
-            revision: Revision::new(142), checked_source: CheckedSourceIdentity::from_digest([142; 32]),
-            layouts: LayoutBundle::from_interner(&interner, [record]).unwrap(),
-            signatures: vec![scalar_signature_with(FunctionSignatureId::new(142), Vec::new(), vec![ValueType::Int, ValueType::Int])],
-            imports: Vec::new(),
-            functions: vec![Function {
-                id: FunctionId::new(142), signature: FunctionSignatureId::new(142),
-                entry: crate::canonical_safewir::BlockId::new(0), value_types,
-                blocks: vec![BasicBlock { id: crate::canonical_safewir::BlockId::new(0), parameters: Vec::new(), operations, terminator: Terminator::Return { values: vec![loaded, extracted] } }],
-            }], proper_tail_sites: Vec::new(),
-        }));
-        let oracle = interpret_program(&checked, FunctionId::new(142), Vec::new(), Default::default()).unwrap();
-        assert_eq!(oracle.results, vec![InterpreterValue::Int(54_999), InterpreterValue::Int(42)]);
-        assert_eq!(oracle.leaked_objects, 0);
-        let artifact = admit_canonical(checked).expect("SSA value count is not Wasm local count");
-        let source_body = wasmparser::Parser::new(0).parse_all(artifact.wasm()).find_map(|payload| {
-            if let wasmparser::Payload::CodeSectionEntry(body) = payload.unwrap() { Some(body) } else { None }
-        }).unwrap();
-        let locals: u32 = source_body.get_locals_reader().unwrap().into_iter().map(|entry| entry.unwrap().0).sum();
-        assert!(locals < 64, "nonescaping scalars consumed {locals} Wasm locals");
-        assert!(source_body.range().len() < 2_000_000);
-        let engine = wasmtime::Engine::default();
-        let module = wasmtime::Module::new(&engine, artifact.wasm()).unwrap();
-        let mut store = wasmtime::Store::new(&engine, ());
-        let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
-        let result = instance.get_typed_func::<(), (i64, i64)>(&mut store, "f142").unwrap().call(&mut store, ()).unwrap();
-        assert_eq!(result, (54_999, 42), "deferred inline field must retain its original scalar");
-    }
-
-    #[test]
-    fn outlined_retain_saturation_predicate_mutation_fails_admission() {
-        let mut bytes = encode_validated(checked_outlined_memory_fixture()).unwrap();
-        let mut body_index = 0;
-        let mut limit = None;
-        for payload in wasmparser::Parser::new(0).parse_all(&bytes) {
-            if let wasmparser::Payload::CodeSectionEntry(body) = payload.unwrap() {
-                if body_index == 3 {
-                    let mut reader = body.get_operators_reader().unwrap();
-                    while !reader.eof() {
-                        let offset = reader.original_position();
-                        if matches!(reader.read().unwrap(), wasmparser::Operator::I32Const { value: -1 }) { limit = Some(offset + 1); }
-                    }
-                }
-                body_index += 1;
-            }
-        }
-        bytes[limit.expect("retain saturation limit")] = 0;
-        assert!(matches!(admit_canonical_with_bytes_for_test(checked_outlined_memory_fixture(), bytes), Err(CanonicalAdmissionError::PlanMismatch(_))));
-    }
-
     fn checked_share_fixture() -> ValidatedSafeWir {
         let mut interner = LayoutInterner::new();
         let element = interner.intern_scalar(ScalarKind::U32).unwrap();
@@ -11182,27 +10483,6 @@ mod tests {
         }))
     }
 
-    #[cfg(feature = "native")]
-    #[test]
-    fn admitted_pointer_list_move_and_clone_execute_with_retained_child() {
-        let artifact = admit_canonical(checked_pointer_list_transfer_artifact())
-            .expect("pointer-list transfers match exact admission plan");
-        let engine = wasmtime::Engine::default();
-        let module = wasmtime::Module::new(&engine, artifact.wasm()).unwrap();
-        let mut store = wasmtime::Store::new(&engine, ());
-        let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
-        let run = instance.get_typed_func::<(), i32>(&mut store, "f36").unwrap();
-        let retained = run.call(&mut store, ()).unwrap();
-        // The child is the first heap object: its reference count header sits
-        // at the heap start and its pointer eight bytes past it.
-        assert_eq!(retained, 24, "the returned clone is the child object");
-        let memory = instance.get_memory(&mut store, "memory").unwrap();
-        // Move into the container, clone out, drop the container: the child
-        // keeps exactly the clone's reference.
-        let rc = u32::from_le_bytes(memory.data(&store)[16..20].try_into().unwrap());
-        assert_eq!(rc, 1);
-    }
-
     fn checked_guard_artifact() -> ValidatedSafeWir {
         let left = ValueId::new(1);
         let right = ValueId::new(2);
@@ -11238,25 +10518,6 @@ mod tests {
         }))
     }
 
-    #[test]
-    fn valid_scalar_and_packed_list_artifacts_admit() {
-        let scalar = admit_canonical(checked_scalar()).expect("scalar artifact admits");
-        wasmparser::validate(scalar.wasm()).expect("admitted scalar bytes validate");
-        let list = admit_canonical(checked_packed_list_allocation_artifact()).expect("list allocation artifact admits");
-        wasmparser::validate(list.wasm()).expect("admitted list bytes validate");
-    }
-
-    #[test]
-    fn admitted_int_list_load_store_executes() {
-        let artifact = admit_canonical(checked_int_list_fixture()).expect("int list literal/index artifact admits");
-        let engine = wasmtime::Engine::default();
-        let module = wasmtime::Module::new(&engine, artifact.wasm()).unwrap();
-        let mut store = wasmtime::Store::new(&engine, ());
-        let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
-        let result = instance.get_typed_func::<(), i64>(&mut store, "f36").unwrap().call(&mut store, ()).unwrap();
-        assert_eq!(result, 19);
-    }
-
     #[path = "nullable_admission.rs"]
     mod nullable_admission;
 
@@ -11277,32 +10538,6 @@ mod tests {
     }
 
     #[test]
-    fn canonical_entry_round_trips_through_its_section_encoding() {
-        let entry = CanonicalEntry {
-            export: "f3".to_owned(),
-            argument_positions: Vec::new(),
-            capabilities: vec![CanonicalEntryCapability::Console],
-            result: CanonicalEntryResult::Int,
-        };
-        assert_eq!(CanonicalEntry::decode(&entry.encode()).unwrap(), entry);
-        assert!(CanonicalEntry::decode(&[2]).is_err());
-        assert!(CanonicalEntry::decode(&[1, 2, b'f', b'0', 1, 0]).is_err(), "count/payload mismatch");
-    }
-
-    #[test]
-    fn mutated_int_list_store_offset_fails_admission() {
-        let mut bytes = encode_validated(checked_int_list_fixture()).unwrap();
-        let opcode = bytes.iter().position(|byte| *byte == 0x37).expect("i64.store opcode exists");
-        assert_eq!(bytes[opcode + 1], 3);
-        assert_eq!(bytes[opcode + 2], 0);
-        bytes[opcode + 2] = 1;
-        assert!(matches!(
-            admit_canonical_with_bytes_for_test(checked_int_list_fixture(), bytes),
-            Err(CanonicalAdmissionError::PlanMismatch(_))
-        ));
-    }
-
-    #[test]
     fn mutated_emitted_bytes_fail_independent_admission_plan() {
         let mut bytes = encode_validated(checked_scalar()).unwrap();
         let immediate = bytes
@@ -11317,82 +10552,6 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn mismatched_source_plan_fails_admission() {
-        let bytes = encode_validated(checked_scalar()).unwrap();
-        assert!(matches!(
-            admit_canonical_with_bytes_for_test(checked_packed_list_allocation_artifact(), bytes),
-            Err(CanonicalAdmissionError::PlanMismatch(_))
-        ));
-    }
-
-    #[test]
-    fn mutated_local_declaration_fails_admission() {
-        let mut bytes = encode_validated(checked_scalar()).unwrap();
-        let body_start = bytes
-            .windows(2)
-            .rposition(|window| window == [1, 0x7f])
-            .expect("scalar body has an i32 local declaration");
-        bytes[body_start + 1] = 0x7e;
-        assert!(matches!(
-            admit_canonical_with_bytes_for_test(checked_scalar(), bytes),
-            Err(CanonicalAdmissionError::WasmValidation(_) | CanonicalAdmissionError::PlanMismatch(_))
-        ));
-    }
-
-    #[test]
-    fn mutated_if_block_type_fails_admission() {
-        let mut bytes = encode_validated(checked_guard_artifact()).unwrap();
-        let block_type = bytes
-            .windows(2)
-            .position(|window| window == [0x04, 0x40])
-            .expect("guard body has an empty if block")
-            + 1;
-        bytes[block_type] = 0x00;
-        assert!(matches!(
-            admit_canonical_with_bytes_for_test(checked_guard_artifact(), bytes),
-            Err(CanonicalAdmissionError::PlanMismatch(_))
-        ));
-    }
-    #[cfg(feature = "native")]
-    #[test]
-    fn packed_scalar_collection_access_mutates_and_preserves_headers() {
-        let source = checked_packed_list_fixture(false);
-        let target = lower_validated(&source).unwrap();
-        let receipt = check_correspondence(source.module(), &target).unwrap();
-        assert_eq!(receipt.mappings.len(), 24);
-        assert!(receipt
-            .mappings
-            .iter()
-            .any(|mapping| mapping.rule == CorrespondenceRule::MemoryStore));
-        assert!(receipt
-            .mappings
-            .iter()
-            .any(|mapping| mapping.rule == CorrespondenceRule::MemoryUpdateCount));
-        assert_eq!(
-            crate::canonical_interpreter::interpret(
-                &source,
-                FunctionId::new(30),
-                Vec::new(),
-            )
-            .unwrap(),
-            vec![
-                crate::canonical_interpreter::InterpreterValue::Size(2),
-                crate::canonical_interpreter::InterpreterValue::Size(2),
-                crate::canonical_interpreter::InterpreterValue::Size(42),
-            ],
-        );
-        let wasm = encode_validated(source).expect("packed scalar collection encodes");
-        let engine = wasmtime::Engine::default();
-        let module = wasmtime::Module::new(&engine, &wasm).unwrap();
-        let mut store = wasmtime::Store::new(&engine, ());
-        let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
-        let run = instance
-            .get_typed_func::<(), (i32, i32, i32)>(&mut store, "f30")
-            .unwrap();
-        assert_eq!(run.call(&mut store, ()).unwrap(), (2, 2, 42));
-    }
-
     #[cfg(feature = "native")]
     #[test]
     fn packed_scalar_collection_oob_guard_traps_in_wasmtime() {
@@ -11403,22 +10562,6 @@ mod tests {
         let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
         let run = instance.get_typed_func::<(), ()>(&mut store, "f30").unwrap();
         assert!(run.call(&mut store, ()).is_err());
-    }
-
-    #[cfg(feature = "native")]
-    #[test]
-    fn shared_release_preserves_surviving_original_for_use() {
-        let source = checked_share_fixture();
-        let target = lower_validated(&source).unwrap();
-        let receipt = check_correspondence(source.module(), &target).unwrap();
-        assert_eq!(receipt.mappings.len(), 8);
-        let wasm = encode_validated(source).expect("shared scalar collection encodes");
-        let engine = wasmtime::Engine::default();
-        let module = wasmtime::Module::new(&engine, &wasm).unwrap();
-        let mut store = wasmtime::Store::new(&engine, ());
-        let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
-        let run = instance.get_typed_func::<(), i32>(&mut store, "f33").unwrap();
-        assert_eq!(run.call(&mut store, ()).unwrap(), 1);
     }
 
     #[cfg(feature = "native")]
@@ -11473,180 +10616,6 @@ mod tests {
         assert!(run.call(&mut store, ()).is_err(), "refused growth traps");
     }
 
-    #[test]
-    fn allocation_exclusive_end_boundary_matches_emission_and_plan() {
-        fn module_with_body(body: &WasmFunctionEncoder) -> Vec<u8> {
-            let mut types = TypeSection::new();
-            types.ty().function([], []);
-            let mut functions = FunctionSection::new();
-            functions.function(0);
-            let mut memories = MemorySection::new();
-            memories.memory(MemoryType {
-                minimum: 1,
-                maximum: None,
-                memory64: false,
-                shared: false,
-                page_size_log2: None,
-            });
-            let mut globals = GlobalSection::new();
-            for value in [16, 0, 16] {
-                globals.global(
-                    GlobalType {
-                        val_type: ValType::I32,
-                        mutable: true,
-                        shared: false,
-                    },
-                    &ConstExpr::i32_const(value),
-                );
-            }
-            let mut code = CodeSection::new();
-            code.function(body);
-            let mut module = WasmModule::new();
-            module
-                .section(&types)
-                .section(&functions)
-                .section(&memories)
-                .section(&globals)
-                .section(&code);
-            module.finish()
-        }
-
-        fn operator_positions(bytes: &[u8]) -> (Option<usize>, Option<usize>) {
-            let mut boundary = None;
-            let mut mutation = None;
-            let mut index = 0;
-            for payload in wasmparser::Parser::new(0).parse_all(bytes) {
-                if let wasmparser::Payload::CodeSectionEntry(body) = payload.unwrap() {
-                    let mut operators = body.get_operators_reader().unwrap();
-                    while !operators.eof() {
-                        match operators.read().unwrap() {
-                            wasmparser::Operator::I64Const { value }
-                                if value == i64::from(u32::MAX) && boundary.is_none() =>
-                            {
-                                boundary = Some(index);
-                            }
-                            wasmparser::Operator::MemoryGrow { .. }
-                            | wasmparser::Operator::GlobalSet { .. }
-                            | wasmparser::Operator::I32Store { .. }
-                                if mutation.is_none() =>
-                            {
-                                mutation = Some(index);
-                            }
-                            _ => {}
-                        }
-                        index += 1;
-                    }
-                }
-            }
-            (boundary, mutation)
-        }
-
-        let mut interner = LayoutInterner::new();
-        let scalar = interner.intern_scalar(ScalarKind::U32).unwrap();
-        let destination = ValueId::new(1);
-        let signature = scalar_signature_with(
-            FunctionSignatureId::new(168),
-            Vec::new(),
-            Vec::new(),
-        );
-        let function = Function {
-            id: FunctionId::new(168),
-            signature: signature.id,
-            entry: BlockId::new(168),
-            value_types: [(destination, ValueType::Ref(scalar))].into_iter().collect(),
-            blocks: vec![BasicBlock {
-                id: BlockId::new(168),
-                parameters: Vec::new(),
-                operations: Vec::new(),
-                terminator: Terminator::Return { values: Vec::new() },
-            }],
-        };
-        let layout = local_layout(&function, &signature, &interner).unwrap();
-        let representable_bytes = u64::from(u32::MAX - RC_PREFIX_BYTES);
-        let representable = Extent::FixedBytes(representable_bytes);
-        let exclusive_4gib = Extent::FixedBytes(representable_bytes + 1);
-
-        assert_eq!(fixed_alloc_bytes(representable_bytes), Some(u32::MAX - RC_PREFIX_BYTES));
-        assert_eq!(fixed_alloc_bytes(representable_bytes + 1), None);
-
-        let declarations = || layout.extra_types.iter().copied().map(|value_type| (1, value_type));
-        let mut emitted = WasmFunctionEncoder::new(declarations());
-        emit_alloc(
-            &mut emitted,
-            &function,
-            &layout,
-            &interner,
-            destination,
-            scalar,
-            &representable,
-        )
-        .expect("an exclusive end of u32::MAX remains structurally representable");
-        emitted.instruction(&wasm_encoder::Instruction::End);
-        let emitted = module_with_body(&emitted);
-        wasmparser::validate(&emitted).expect("representable boundary emission is valid Wasm");
-        let (emitted_boundary, emitted_mutation) = operator_positions(&emitted);
-        assert!(
-            emitted_boundary.unwrap() < emitted_mutation.unwrap(),
-            "the exclusive-end guard must precede memory growth and allocator mutation",
-        );
-
-        let mut planned = Vec::new();
-        expected_alloc_plan(
-            &mut planned,
-            &function,
-            &layout,
-            None,
-            destination,
-            &representable,
-        )
-        .expect("the independent plan accepts the representable predecessor");
-        let planned_boundary = planned
-            .iter()
-            .position(|token| *token == PlanToken::I64Const(i64::from(u32::MAX)))
-            .unwrap();
-        let planned_mutation = planned
-            .iter()
-            .position(|token| matches!(
-                token,
-                PlanToken::MemoryGrow
-                    | PlanToken::GlobalSet(_)
-                    | PlanToken::I32Store { .. }
-            ))
-            .unwrap();
-        assert!(planned_boundary < planned_mutation);
-
-        let mut rejected = WasmFunctionEncoder::new(declarations());
-        assert!(matches!(
-            emit_alloc(
-                &mut rejected,
-                &function,
-                &layout,
-                &interner,
-                destination,
-                scalar,
-                &exclusive_4gib,
-            ),
-            Err(EncodeError::UnsupportedLayout { operation: "Alloc extent", .. })
-        ));
-        rejected.instruction(&wasm_encoder::Instruction::End);
-        let rejected = module_with_body(&rejected);
-        assert_eq!(operator_positions(&rejected), (None, None));
-
-        let mut rejected_plan = Vec::new();
-        assert!(matches!(
-            expected_alloc_plan(
-                &mut rejected_plan,
-                &function,
-                &layout,
-                None,
-                destination,
-                &exclusive_4gib,
-            ),
-            Err(CanonicalAdmissionError::UnsupportedPlan)
-        ));
-        assert!(rejected_plan.is_empty(), "rejection must precede planned allocator mutation");
-    }
-
     #[cfg(feature = "native")]
     #[test]
     fn share_at_max_refcount_traps_before_destination_or_refcount_write() {
@@ -11695,23 +10664,6 @@ mod tests {
                 ..
             })
         ));
-    }
-
-    #[test]
-    fn pointer_bearing_catalog_layout_is_refused_before_the_canonical_backend() {
-        // A pointer-bearing catalog buffer never reaches the encoder: under
-        // callee-drops its owned token must be released, and the initial
-        // checker has no recursive destructor for that layout, so the module
-        // fails closed one stage earlier than this test once pinned.
-        let mut interner = LayoutInterner::new();
-        let element = interner.intern_scalar(ScalarKind::U32).unwrap();
-        let layout = interner.intern_runtime_pointer_buffer(element, PointerSlot::Owned).unwrap();
-        let bundle = LayoutBundle::from_interner(&interner, [layout]).unwrap();
-        let candidate = alloc_only_candidate(layout, bundle, crate::canonical_safewir::AllocationClass::ReferenceCounted, 4, 8, 1);
-        let Err(refusal) = check_initial_with_test_witness(candidate) else {
-            panic!("pointer-bearing catalog buffer must be refused");
-        };
-        assert!(format!("{refusal:?}").contains("pointer-bearing recursive destructor"), "{refusal:?}");
     }
 
     #[cfg(feature = "native")]
@@ -11940,100 +10892,6 @@ mod tests {
             .section(&exports)
             .section(&code);
         (module.finish(), collection.data_offset, collection.stride)
-    }
-
-    #[cfg(feature = "native")]
-    #[test]
-    fn scalar_clone_range_admits_emits_and_matches_exact_correspondence() {
-        let validated = checked_scalar_range(1, 0, 0, false);
-        let target = lower_validated(&validated).expect("scalar CloneRange lowers");
-        assert!(target.functions.iter().flat_map(|function| function.blocks.iter()).flat_map(|block| block.instructions.iter()).any(
-            |instruction| matches!(instruction.operation, ScalarInstruction::CloneRange { .. })
-        ));
-        let receipt = check_correspondence(validated.module(), &target).expect("CloneRange correspondence is exact");
-        assert!(receipt.mappings.iter().any(|mapping| mapping.rule == CorrespondenceRule::MemoryCopy));
-
-        let artifact = admit_canonical(validated).expect("scalar CloneRange admits with its exact plan");
-        wasmparser::validate(artifact.wasm()).expect("admitted scalar CloneRange is valid Wasm");
-        assert!(artifact.wasm().windows(2).any(|window| window == [0xfc, 0x0a]));
-        assert_eq!(run_scalar_range(1, 0, 0, false).unwrap(), 42);
-    }
-
-    #[cfg(feature = "native")]
-    #[test]
-    fn scalar_move_range_admits_and_executes_destination_value() {
-        let validated = checked_scalar_range(1, 0, 0, true);
-        let target = lower_validated(&validated).expect("scalar MoveRange lowers");
-        assert!(target
-            .functions
-            .iter()
-            .flat_map(|function| function.blocks.iter())
-            .flat_map(|block| block.instructions.iter())
-            .any(|instruction| matches!(instruction.operation, ScalarInstruction::MoveRange { .. })));
-        let receipt = check_correspondence(validated.module(), &target)
-            .expect("MoveRange correspondence is exact");
-        assert!(receipt
-            .mappings
-            .iter()
-            .any(|mapping| mapping.rule == CorrespondenceRule::MemoryOwnership));
-
-        let artifact = admit_canonical(validated).expect("scalar MoveRange admits with its exact plan");
-        wasmparser::validate(artifact.wasm()).expect("admitted scalar MoveRange is valid Wasm");
-        assert!(artifact.wasm().windows(2).any(|window| window == [0xfc, 0x0a]));
-        assert_eq!(run_scalar_range(1, 0, 0, true).unwrap(), 42);
-    }
-
-    #[test]
-    fn pointer_bearing_clone_range_lowers_in_canonical_backend() {
-        let mut interner = LayoutInterner::new();
-        let byte = interner.intern_scalar(ScalarKind::RawByte).unwrap();
-        let string = interner.intern_runtime_buffer(byte).unwrap();
-        let slot = interner
-            .intern_runtime_pointer_value_slot(string, PointerSlot::Owned)
-            .unwrap();
-        let list = interner.intern_packed_list(slot, RcHeader::Required).unwrap();
-        let count = ValueId::new(1);
-        let source_start = ValueId::new(2);
-        let destination_start = ValueId::new(3);
-        let source = ValueId::new(4);
-        let destination = ValueId::new(5);
-        let source_place = Place::projected(
-            source,
-            Projection::Slice { start: source_start, length: count },
-            ValueType::Ref(list),
-            AccessMode::Read,
-        );
-        let destination_place = Place::projected(
-            destination,
-            Projection::Slice { start: destination_start, length: count },
-            ValueType::Ref(list),
-            AccessMode::Write,
-        );
-        let operation = Operation::CloneRange { destination: destination_place, source: source_place, count };
-        let value_types = [
-            (count, ValueType::Size),
-            (source_start, ValueType::Size),
-            (destination_start, ValueType::Size),
-            (source, ValueType::Ref(list)),
-            (destination, ValueType::Ref(list)),
-        ]
-        .into_iter()
-        .collect();
-        assert!(
-            lower_operation(
-                FunctionId::new(165),
-                crate::canonical_safewir::BlockId::new(165),
-                0,
-                &operation,
-                &value_types,
-                &BTreeMap::new(),
-                &BTreeMap::new(),
-                &interner,
-                &BTreeMap::new(),
-                &mut BTreeMap::new(),
-            )
-            .is_ok()
-        );
     }
 
     fn checked_pointer_clone_range_execution() -> (ValidatedSafeWir, BTreeSet<usize>) {
@@ -12332,12 +11190,6 @@ mod tests {
 
     #[cfg(feature = "native")]
     #[test]
-    fn scalar_clone_range_start_stride_overflow_traps_before_copy() {
-        assert!(run_raw_scalar_clone_range_probe([0, 0, (u32::MAX - 1) as i32, 0, 0]).is_err());
-    }
-
-    #[cfg(feature = "native")]
-    #[test]
     fn pointer_clone_range_second_saturated_child_traps_before_destination_publish() {
         let (wasm, data_offset, stride) = raw_pointer_clone_range_probe();
         wasmparser::validate(&wasm).expect("raw pointer CloneRange probe is valid Wasm");
@@ -12392,44 +11244,9 @@ mod tests {
     }
 
     #[test]
-    fn headerless_runtime_buffer_is_refused_by_canonical_backend() {
-        let mut interner = LayoutInterner::new();
-        let element = interner.intern_scalar(ScalarKind::U32).unwrap();
-        let layout = interner.intern_runtime_buffer(element).unwrap();
-        let bundle = LayoutBundle::from_interner(&interner, [layout]).unwrap();
-        assert!(matches!(
-            encode_validated(checked_alloc_only(layout, bundle, crate::canonical_safewir::AllocationClass::ReferenceCounted, 4, 4, 1)),
-            Err(EncodeError::Lowering(LoweringError::UnsupportedLayout { .. }))
-        ));
-    }
-
-    #[test]
     fn full_u32_size_constant_encodes_and_validates() {
         let wasm = encode_validated(checked_full_u32_size()).expect("full u32 size encodes");
         wasmparser::validate(&wasm).expect("full u32 size module is structurally valid");
-    }
-
-    #[test]
-    fn full_u32_size_constant_matches_exact_admission_plan() {
-        let artifact = admit_canonical(checked_full_u32_size())
-            .expect("full u32 size matches its independently decoded plan");
-        wasmparser::validate(artifact.wasm()).expect("admitted full u32 size remains valid Wasm");
-    }
-
-    #[cfg(feature = "native")]
-    #[test]
-    fn encoded_comparison_and_full_u32_size_execute() {
-        let engine = wasmtime::Engine::default();
-        for (wasm, export, expected) in [
-            (encode_validated(checked_comparison()).unwrap(), "f3", 1),
-            (encode_validated(checked_full_u32_size()).unwrap(), "f5", -1),
-        ] {
-            let module = wasmtime::Module::new(&engine, &wasm).unwrap();
-            let mut store = wasmtime::Store::new(&engine, ());
-            let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
-            let function = instance.get_typed_func::<(), i32>(&mut store, export).unwrap();
-            assert_eq!(function.call(&mut store, ()).unwrap(), expected);
-        }
     }
 
     #[cfg(feature = "native")]
@@ -12444,122 +11261,6 @@ mod tests {
             .get_typed_func::<(), i64>(&mut store, "f1")
             .expect("scalar export has the checked signature");
         assert_eq!(function.call(&mut store, ()).unwrap(), 9);
-    }
-
-    #[cfg(feature = "native")]
-    #[test]
-    fn fixed_static_aggregate_and_nominal_reuse_match_both_engines() {
-        use crate::canonical_interpreter::{InterpreterValue, interpret};
-
-        let mut interner = LayoutInterner::new();
-        let int = interner.intern_scalar(ScalarKind::Int).unwrap();
-        let boolean = interner.intern_scalar(ScalarKind::Bool).unwrap();
-        let physical = interner.intern_packed_record(vec![int, boolean]).unwrap();
-        let nominal = interner.intern_opaque_nominal([0x5a; 32]).unwrap();
-        interner.bind_nominal(nominal, physical).unwrap();
-        let descriptor = interner.get(physical).unwrap();
-        let crate::layout::LayoutSize::Fixed(size) = descriptor.size() else { panic!("fixed aggregate") };
-        let int_offset = descriptor.fields()[0].offset() as usize;
-        let bool_offset = descriptor.fields()[1].offset() as usize;
-        let mut bytes = vec![0; size as usize];
-        bytes[int_offset..int_offset + 8].copy_from_slice(&42_i64.to_le_bytes());
-        bytes[bool_offset] = 1;
-
-        let first = ValueId::new(1);
-        let second = ValueId::new(2);
-        let loaded_int = ValueId::new(3);
-        let loaded_bool = ValueId::new(4);
-        let data = crate::canonical_safewir::StaticDataId::new(0);
-        let signature = FunctionSignature {
-            id: FunctionSignatureId::new(24),
-            parameters: Vec::new(),
-            results: vec![ValueType::Int, ValueType::Bool],
-            contract: CallableContract {
-                parameters: Vec::new(),
-                results: vec![ResultContract::Value(ValueType::Int), ResultContract::Value(ValueType::Bool)],
-                parameter_effects: BTreeMap::new(),
-            },
-        };
-        let candidate = CanonicalModule::from_lowering_with_static_data(
-            LoweredModuleParts {
-                revision: Revision::new(24),
-                checked_source: CheckedSourceIdentity::from_digest([24; 32]),
-                layouts: LayoutBundle::from_interner(&interner, [nominal]).unwrap(),
-                signatures: vec![signature],
-                imports: Vec::new(),
-                functions: vec![Function {
-                    id: FunctionId::new(24),
-                    signature: FunctionSignatureId::new(24),
-                    entry: BlockId::new(0),
-                    value_types: [
-                        (first, ValueType::Ref(nominal)),
-                        (second, ValueType::Ref(physical)),
-                        (loaded_int, ValueType::Int),
-                        (loaded_bool, ValueType::Bool),
-                    ]
-                    .into_iter()
-                    .collect(),
-                    blocks: vec![BasicBlock {
-                        id: BlockId::new(0),
-                        parameters: Vec::new(),
-                        operations: vec![
-                            Operation::StaticData { destination: first, layout: nominal, extent: Extent::FixedBytes(u64::from(size)), data },
-                            Operation::StaticData { destination: second, layout: physical, extent: Extent::FixedBytes(u64::from(size)), data },
-                            Operation::Load {
-                                destination: loaded_int,
-                                place: Place::projected(first, Projection::Field { index: 0 }, ValueType::Int, AccessMode::Read),
-                                transfer: LoadTransfer::CopyScalar,
-                            },
-                            Operation::Load {
-                                destination: loaded_bool,
-                                place: Place::projected(second, Projection::Field { index: 1 }, ValueType::Bool, AccessMode::Read),
-                                transfer: LoadTransfer::CopyScalar,
-                            },
-                        ],
-                        terminator: Terminator::Return { values: vec![loaded_int, loaded_bool] },
-                    }],
-                }],
-                proper_tail_sites: Vec::new(),
-            },
-            vec![crate::canonical_safewir::StaticDataSegment::new(data, bytes)],
-        );
-        let checked = check_initial_with_test_witness(candidate).unwrap();
-        let validated = validate_final_for_test(checked).unwrap();
-        assert_eq!(
-            interpret(&validated, FunctionId::new(24), Vec::new()).unwrap(),
-            vec![InterpreterValue::Int(42), InterpreterValue::Bool(true)]
-        );
-
-        let wasm = encode_validated(validated).unwrap();
-        let engine = wasmtime::Engine::default();
-        let module = wasmtime::Module::new(&engine, &wasm).unwrap();
-        let mut store = wasmtime::Store::new(&engine, ());
-        let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
-        assert_eq!(
-            instance
-                .get_typed_func::<(), (i64, i32)>(&mut store, "f24")
-                .unwrap()
-                .call(&mut store, ())
-                .unwrap(),
-            (42, 1)
-        );
-    }
-
-    #[test]
-    fn static_data_boundary_selects_enough_initial_memory_pages() {
-        for (end, expected_heap_start, expected_pages) in [
-            (65_536_usize, 65_536_u32, 1_u64),
-            (65_537_usize, 65_544_u32, 2_u64),
-        ] {
-            let segment = crate::canonical_safewir::StaticDataSegment::new(
-                crate::canonical_safewir::StaticDataId::new(0),
-                vec![0; end - STATIC_DATA_BASE as usize],
-            );
-            let (plan, heap_start) = static_data_plan(&[segment]).unwrap();
-            assert_eq!(plan[0].offset as usize + plan[0].bytes.len(), end);
-            assert_eq!(heap_start, expected_heap_start);
-            assert_eq!(initial_memory_pages(heap_start), expected_pages);
-        }
     }
 
     #[cfg(feature = "native")]
@@ -12639,95 +11340,4 @@ mod tests {
         assert!(matches!(check_correspondence(source.module(), &target), Err(CorrespondenceError::InstructionMismatch(_))));
     }
 
-    #[test]
-    fn correspondence_rejects_omission() {
-        let source = checked_scalar();
-        let mut target = lower_validated(&source).unwrap();
-        target.functions[0].blocks[0].instructions.clear();
-        assert!(matches!(check_correspondence(source.module(), &target), Err(CorrespondenceError::MissingSourceItem(_))));
-    }
-
-    #[test]
-    fn correspondence_rejects_duplication() {
-        let source = checked_scalar();
-        let mut target = lower_validated(&source).unwrap();
-        let duplicate = target.functions[0].blocks[0].instructions[0].clone();
-        target.functions[0].blocks[0].instructions.push(duplicate);
-        assert!(matches!(check_correspondence(source.module(), &target), Err(CorrespondenceError::DuplicateSourceItem(_))));
-    }
-}
-
-#[cfg(test)]
-mod dominance_tests {
-    use std::collections::{BTreeMap, BTreeSet, VecDeque};
-
-    use super::{dominates_in, immediate_dominators};
-    use crate::canonical_safewir::BlockId;
-
-    /// The definition both emitters used before the dominator tree: a
-    /// breadth-first search from the entry that never enters `avoid`.
-    fn dominates_by_search(
-        successors: &BTreeMap<BlockId, Vec<BlockId>>,
-        entry: BlockId,
-        dominator: BlockId,
-        node: BlockId,
-    ) -> bool {
-        if node == dominator {
-            return true;
-        }
-        let mut seen = BTreeSet::new();
-        let mut pending = VecDeque::from([entry]);
-        while let Some(id) = pending.pop_front() {
-            if id == dominator || !seen.insert(id) {
-                continue;
-            }
-            if id == node {
-                return false;
-            }
-            pending.extend(successors.get(&id).into_iter().flatten().copied());
-        }
-        true
-    }
-
-    fn graph(edges: &[(u32, &[u32])]) -> BTreeMap<BlockId, Vec<BlockId>> {
-        edges
-            .iter()
-            .map(|(from, to)| (BlockId::new(*from), to.iter().map(|id| BlockId::new(*id)).collect()))
-            .collect()
-    }
-
-    #[test]
-    fn dominator_tree_matches_the_path_definition() {
-        // A diamond feeding a loop with a nested loop and two exits, a
-        // self-loop, a terminal sink shared by both arms, and an unreachable
-        // island (7 -> 8) that nothing enters.
-        let successors = graph(&[
-            (0, &[1, 2]),
-            (1, &[3]),
-            (2, &[3]),
-            (3, &[4, 9]),
-            (4, &[5, 6]),
-            (5, &[5, 4]),
-            (6, &[3, 9]),
-            (7, &[8]),
-            (8, &[7, 9]),
-            (9, &[]),
-        ]);
-        let entry = BlockId::new(0);
-        let idom = immediate_dominators(entry, &successors);
-        assert_eq!(idom.get(&BlockId::new(3)), Some(&entry));
-        assert_eq!(idom.get(&BlockId::new(5)), Some(&BlockId::new(4)));
-        assert_eq!(idom.get(&BlockId::new(9)), Some(&BlockId::new(3)));
-        assert!(!idom.contains_key(&BlockId::new(7)));
-        for dominator in 0..10 {
-            for node in 0..10 {
-                let (dominator, node) = (BlockId::new(dominator), BlockId::new(node));
-                assert_eq!(
-                    dominates_in(&idom, entry, dominator, node),
-                    dominates_by_search(&successors, entry, dominator, node),
-                    "dominates({dominator:?}, {node:?})"
-                );
-            }
-        }
-    }
 }

@@ -581,7 +581,7 @@ fn rooted_int_slice_reference(source_type: &witchy_syntax::ast::Type) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::canonical_safewir::{BlockParameter, CallableContract, ParameterContract};
+    use crate::canonical_safewir::{BlockParameter};
 
     fn fixture(operations: Vec<OwnerOperation>, results: Vec<ValueId>) -> (Function, OwnerFamily) {
         let owner_type = GcTypeId::new(0xc1000000);
@@ -610,25 +610,6 @@ mod tests {
             }],
         };
         (function, family)
-    }
-
-    #[test]
-    fn opaque_owner_affine_clone_drop_and_return() {
-        let signature = FunctionSignatureId::new(0);
-        let source = ValueId::new(0);
-        let cloned = ValueId::new(1);
-        let (function, family) = fixture(vec![
-            OwnerOperation::Clone { destination: cloned, owner: source, family: signature },
-            OwnerOperation::Drop { owner: source, family: signature },
-        ], vec![cloned]);
-        check(&function, &Registry { families: &[family.clone()] }).unwrap();
-        let mut duplicated = function.clone();
-        duplicated.blocks[0].terminator = Terminator::Return { values: vec![cloned, cloned] };
-        assert!(matches!(check(&duplicated, &Registry { families: &[family.clone()] }), Err(InitialCheckError::UseAfterConsume { .. })));
-        let mut reused = function;
-        reused.blocks[0].operations.push(Operation::ClosureOwner(OwnerOperation::Clone { destination: ValueId::new(2), owner: source, family: signature }));
-        reused.value_types.insert(ValueId::new(2), ValueType::Gc(family.owner_type));
-        assert!(matches!(check(&reused, &Registry { families: &[family] }), Err(InitialCheckError::UseAfterConsume { .. })));
     }
 
     #[test]

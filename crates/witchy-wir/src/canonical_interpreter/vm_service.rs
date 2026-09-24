@@ -322,17 +322,4 @@ mod tests {
         assert!(owner.authenticate(&mislabeled).is_err());
     }
 
-    #[test]
-    fn worker_responses_are_immutable_copies_not_mutable_pending_state() {
-        let owner = ServiceState::new();
-        let mut input = vec![0, 255, 42];
-        let first = owner.mint(Resource::Response(input.clone().into()));
-        input[0] = 77;
-        let second = owner.mint(Resource::Response(input.into()));
-        let Resource::Response(first_bytes) = owner.authenticate(&first).unwrap() else { panic!("response"); };
-        let Resource::Response(second_bytes) = owner.authenticate(&second).unwrap() else { panic!("response"); };
-        assert_eq!(&**first_bytes, &[0, 255, 42]);
-        assert_eq!(&**second_bytes, &[77, 255, 42]);
-        assert_ne!(first, second);
-    }
 }

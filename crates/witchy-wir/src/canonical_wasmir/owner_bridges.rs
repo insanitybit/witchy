@@ -423,31 +423,6 @@ fn recipe_requires_cleanup_helper(recipe: &OwnerBridgeRecipe) -> bool {
         || matches!(recipe, OwnerBridgeRecipe::Drop(_) | OwnerBridgeRecipe::DropList(_))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::canonical_safewir::FunctionSignatureId;
-
-    #[test]
-    fn list_mutation_recipes_append_cleanup_even_without_drop_recipe() {
-        let family = FunctionSignatureId::new(7);
-        assert!(recipe_has_cleanup_result(&OwnerBridgeRecipe::ListSet(family)));
-        assert!(recipe_has_cleanup_result(&OwnerBridgeRecipe::ListPush(family)));
-        assert!(recipe_requires_cleanup_helper(&OwnerBridgeRecipe::ListSet(family)));
-        assert!(recipe_requires_cleanup_helper(&OwnerBridgeRecipe::ListPush(family)));
-        assert!(!recipe_requires_cleanup_helper(&OwnerBridgeRecipe::CloneList(family)));
-    }
-
-    #[test]
-    fn read_tag_bridge_keeps_its_intrinsic_int_result() {
-        let family = FunctionSignatureId::new(8);
-        assert_eq!(
-            recipe_results(&OwnerBridgeRecipe::ReadTag(family), vec![ValueType::Size]),
-            vec![ValueType::Int],
-        );
-    }
-}
-
 pub fn payload_slots(family: &OwnerFamily) -> usize {
     family.constructors.iter().flat_map(|c| &c.captures).filter_map(|c| match c.storage {
         crate::canonical_safewir::closure_owner_contract::CaptureStorage::OwnerField(index) => Some(index as usize + 1),

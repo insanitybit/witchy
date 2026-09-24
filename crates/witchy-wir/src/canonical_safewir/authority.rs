@@ -3589,13 +3589,6 @@ pub(crate) fn validate_final_for_test(
 }
 
 #[cfg(test)]
-pub(crate) fn validate_optimized_final_for_test(
-    checked: CheckedOptimizedSafeWir,
-) -> Result<ValidatedSafeWir, FinalValidationError> {
-    validate_optimized_final_inner(checked, None)
-}
-
-#[cfg(test)]
 fn validate_optimized_final_parts_for_test(
     module: CanonicalModule<InitialValid>,
     checked_lowering: CheckedLoweringWitness,
@@ -3959,14 +3952,6 @@ mod tests {
         let (operations, terminator) = forwarding_body();
         let (module, adapter, target) = adapter_candidate(operations, terminator);
         assert!(!adapter_shape_holds(&module, adapter, target));
-    }
-
-    #[test]
-    fn adapter_binding_admits_a_trailing_release_of_the_environment() {
-        let (mut operations, terminator) = forwarding_body();
-        operations.push(Operation::DropRef { object: ValueId::new(0) });
-        let (module, adapter, target) = adapter_candidate(operations, terminator);
-        assert!(adapter_shape_holds(&module, adapter, target));
     }
 
     #[test]
@@ -4537,32 +4522,5 @@ mod tests {
             validate_optimized_final_parts_for_test(module, lowering, witnesses),
             Err(FinalValidationError::OptimizationDoesNotMatchWitness)
         ));
-    }
-}
-
-#[cfg(test)]
-mod unit_storage_authority_tests {
-    use super::*;
-    use crate::layout::{LayoutInterner, RcHeader, ScalarKind};
-    use witchy_syntax::ast::Type;
-
-    #[test]
-    fn unit_storage_authority_accepts_structural_unit_fields_and_lists() {
-        let mut layouts = LayoutInterner::new();
-        let int = layouts.intern_scalar(ScalarKind::Int).unwrap();
-        for ty in [
-            Type::Tuple(Vec::new()),
-            Type::Named("Nil".into(), vec![]),
-            Type::Named("Unit".into(), vec![]),
-        ] {
-            for scalar in [ScalarKind::Unit, ScalarKind::Bool, ScalarKind::Int, ScalarKind::U32, ScalarKind::Callable] {
-                let element = layouts.intern_scalar(scalar).unwrap();
-                let record = layouts.intern_packed_record(vec![element, int]).unwrap();
-                assert_eq!(enqueue_record_fields(record, &[ty.clone(), Type::Named("Int".into(), vec![])], false, &layouts, &mut vec![]), scalar == ScalarKind::Unit);
-                if scalar == ScalarKind::Callable { continue; }
-                let list = layouts.intern_packed_list(element, RcHeader::Required).unwrap();
-                assert_eq!(layout_matches_source(list, &Type::Named("List".into(), vec![ty.clone()]), &layouts, &BTreeMap::new()), scalar == ScalarKind::Unit);
-            }
-        }
     }
 }

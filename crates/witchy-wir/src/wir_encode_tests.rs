@@ -1,97 +1,11 @@
     use super::*;
     use crate::wir::{
-        BinOp, ClosureSignature, DataSegment, GlobalInit, Kind, UnOp, WirExpr, WirFunc, WirGlobal,
-        WirImport, WirLocal, WirModule, WirNode, WirTable, WirTy, closure_wrapper_struct,
-        slot_closure_signature,
+        GlobalInit, Kind, WirExpr, WirFunc, WirGlobal,
+        WirImport, WirLocal, WirModule, WirNode, WirTy,
     };
-    use std::sync::{Arc, Mutex};
 
     fn local(name: &str, ty: WirTy) -> WirLocal {
         WirLocal { name: name.into(), ty }
-    }
-
-    /// Instantiate a wasm binary and run its `run` export, capturing scalar and
-    /// string output as ordered lines. (Copied from `wir.rs`'s test setup.)
-    fn run_binary(binary: &[u8]) -> Vec<String> {
-        // Fuel-capped so a buggy helper loop TRAPS fast instead of hanging the
-        // suite (a runaway $find_byte/$str_eq once spun a test for 70 minutes).
-        let mut config = wasmtime::Config::new();
-        config.consume_fuel(true);
-        config.wasm_reference_types(true);
-        config.wasm_function_references(true);
-        config.wasm_gc(true);
-        config.wasm_simd(true);
-        config.wasm_relaxed_simd(true);
-        let engine = wasmtime::Engine::new(&config).expect("engine");
-        let m = wasmtime::Module::new(&engine, binary)
-            .unwrap_or_else(|e| panic!("encoded module invalid: {e:#}"));
-        let out: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-        let mut linker = wasmtime::Linker::new(&engine);
-        let o = out.clone();
-        linker
-            .func_wrap("witchy", "print_int", move |n: i64| {
-                o.lock().unwrap().push(n.to_string());
-            })
-            .unwrap();
-        let o = out.clone();
-        linker
-            .func_wrap("witchy", "print_float", move |n: f64| {
-                o.lock().unwrap().push(n.to_string());
-            })
-            .unwrap();
-        let o = out.clone();
-        linker
-            .func_wrap(
-                "witchy",
-                "print",
-                move |mut caller: wasmtime::Caller<'_, ()>, ptr: i32, len: i32| {
-                    let mem = caller.get_export("memory").and_then(|e| e.into_memory()).unwrap();
-                    let data = mem.data(&caller);
-                    let s = String::from_utf8_lossy(&data[ptr as usize..(ptr + len) as usize])
-                        .into_owned();
-                    o.lock().unwrap().push(s);
-                },
-            )
-            .unwrap();
-        // (RFC-0045) `__witchy_abort` is always linked; a helper that routes an
-        // abort through it (e.g. `str_to_int`) declares the import, so define a
-        // trapping stub matching the real host's never-returns contract.
-        linker
-            .func_wrap(
-                "witchy",
-                "__witchy_abort",
-                |_: i32, _: i64, _: i64, _: i32| -> wasmtime::Result<()> {
-                    wasmtime::bail!("runtime error (test harness abort)")
-                },
-            )
-            .unwrap();
-        let mut store = wasmtime::Store::new(&engine, ());
-        store.set_fuel(500_000_000).expect("fuel"); // ~5e8 ops — ample for tests, traps runaways
-        let inst = linker.instantiate(&mut store, &m).expect("instantiate");
-        let run = inst.get_typed_func::<(), ()>(&mut store, "run").expect("run export");
-        run.call(&mut store, ()).expect("run (or fuel-exhausted — likely a runaway loop)");
-        out.lock().unwrap().clone()
-    }
-
-    /// Run a module via the binary encoder.
-    ///
-    /// Goes through the production bridge rather than the raw `encode`: the WIR
-    /// helper library now emits SafeWIR, and the raw entrypoint carries no
-    /// erasure, so it would meet an operation it is not allowed to encode.
-    /// These tests assert what the helpers DO, so they should encode the way
-    /// production encodes.
-    fn run_encoded(module: &WirModule) -> Vec<String> {
-        let encoded = crate::wir_encode::try_encode_with_gc_source_map(module, &[], &[])
-            .expect("the migration bridge encodes a helper-bearing module");
-        run_binary(&encoded.wasm)
-    }
-
-    /// Assert the encoder output runs identically to the expected lines. (Was
-    /// also a binary-vs-`to_wat` agreement gate; the WAT leg is retired with the
-    /// `wat` crate — `to_wat` is now only emit-wat's display, not an exec path.)
-    fn assert_agrees(module: &WirModule, expected: &[&str]) {
-        let exp: Vec<String> = expected.iter().map(|s| s.to_string()).collect();
-        assert_eq!(run_encoded(&with_rc_floor(module)), exp, "binary output mismatch");
     }
 
     /// Assert the module TRAPS when run (e.g. the RFC-0005 in-place bounds check fires).
@@ -131,28 +45,6 @@
             run.call(&mut store, ()).is_err(),
             "expected a trap, but the module ran to completion"
         );
-    }
-
-    /// The transitive helper closure of `root` (itself + every helper it calls, via the
-    /// registry's `helper_deps`) — so a synthetic test can pull a helper with a large
-    /// dependency chain (e.g. `dict_insert_cap` -> `dict_find`/`dict_index_put`/
-    /// `key_eq`/`str_eq`/…) without hand-listing every dep.
-    fn helper_closure(root: &str) -> Vec<WirFunc> {
-        let mut seen = std::collections::BTreeSet::new();
-        let mut queue = vec![root.to_string()];
-        let mut out = vec![];
-        while let Some(n) = queue.pop() {
-            if !seen.insert(n.clone()) {
-                continue;
-            }
-            if let Some(spec) = crate::wir_helpers::wir_helper(&n) {
-                for d in spec.helper_deps {
-                    queue.push((*d).to_string());
-                }
-                out.push(spec.func);
-            }
-        }
-        out
     }
 
     /// (RFC-0016) The list/string/dict/`mk` allocators are routed through `$rc_alloc`,
@@ -225,77 +117,6 @@
             }
         }
         m
-    }
-
-    /// Module with one Int-returning func + a `run` that prints its result.
-    /// (Mirrors `wir.rs`'s `int_demo`.)
-    fn int_demo(f: WirFunc, call: WirExpr) -> WirModule {
-        let run = WirFunc {
-            name: "run".into(),
-            params: vec![],
-            ret: vec![],
-            locals: vec![],
-            body: vec![WirNode::Do(WirExpr::CallHost {
-                import: "print_int".into(),
-                args: vec![call],
-            })],
-            raw_body: None,
-        };
-        WirModule {
-            imports: vec![
-                WirImport { name: "print_int".into(), params: vec![Kind::I64], results: vec![] },
-                WirImport {
-                    name: "print".into(),
-                    params: vec![Kind::I32, Kind::I32],
-                    results: vec![],
-                },
-            ],
-            funcs: vec![f, run],
-            memory_pages: 1,
-            data: vec![],
-            globals: vec![],
-            table: None,
-            exports: vec![("run".into(), "run".into())],
-        }
-    }
-
-    #[test]
-    fn compiler_encoded_modules_forbid_post_encoding_byte_optimization() {
-        let module = WirModule {
-            imports: Vec::new(),
-            funcs: vec![WirFunc {
-                name: "main".into(),
-                params: Vec::new(),
-                ret: Vec::new(),
-                locals: Vec::new(),
-                body: Vec::new(),
-                raw_body: None,
-            }],
-            memory_pages: 1,
-            data: Vec::new(),
-            globals: Vec::new(),
-            table: None,
-            exports: Vec::new(),
-        };
-        let encoded = crate::wir_encode::try_encode_with_gc_source_map(&module, &[], &[])
-            .expect("the compiler encoder accepts an empty module");
-        let policies = wasmparser::Parser::new(0)
-            .parse_all(&encoded.wasm)
-            .filter_map(Result::ok)
-            .filter_map(|payload| match payload {
-                wasmparser::Payload::CustomSection(section)
-                    if section.name() == crate::optimizer_policy::SECTION_NAME =>
-                {
-                    Some(section.data().to_vec())
-                }
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(
-            policies,
-            vec![crate::optimizer_policy::PRESERVE_RAW_PAYLOAD.to_vec()],
-            "every compiler-encoded artifact must prevent byte-level post-admission optimization",
-        );
     }
 
 

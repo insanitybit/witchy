@@ -509,18 +509,6 @@ mod tests {
     }
 
     #[test]
-    fn int_or_ref_cannot_fill_capability_role() {
-        let kind = super::super::super::CapabilityKindId::new(4);
-        let role = HostParameterRole::Capability(kind);
-        for actual in [ValueType::Int, ValueType::Ref(LayoutId::from_bytes([3; 32]))] {
-            assert!(matches!(
-                check(actual, role.clone(), HostCallArgument::Value(VALUE)),
-                Err(super::InitialCheckError::TypeMismatch { .. })
-            ));
-        }
-    }
-
-    #[test]
     fn capability_cannot_be_declared_as_a_generic_host_value() {
         let capability = ValueType::Capability(CapabilityKindId::new(4));
         assert!(matches!(

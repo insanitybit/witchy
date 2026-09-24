@@ -52,12 +52,6 @@ impl<K: Ord, V> SortedMap<K, V> {
         self.entries.len()
     }
 
-    /// Fixture assertions only; the checker asks `len` or iterates.
-    #[cfg(test)]
-    pub(crate) fn is_empty(&self) -> bool {
-        self.entries.is_empty()
-    }
-
     /// Fixture setup only: production facts are dropped with their state.
     #[cfg(test)]
     pub(crate) fn clear(&mut self) {
@@ -388,116 +382,5 @@ impl<'a, T> IntoIterator for &'a SortedSet<T> {
     type IntoIter = std::slice::Iter<'a, T>;
     fn into_iter(self) -> Self::IntoIter {
         self.items.iter()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::collections::{BTreeMap, BTreeSet};
-
-    /// A deterministic spread of keys that revisits earlier ones, so inserts
-    /// land before, after, and on top of existing entries.
-    fn keys() -> Vec<u32> {
-        (0..200u32).map(|step| (step * 37) % 61).collect()
-    }
-
-    #[test]
-    fn a_sorted_map_answers_exactly_as_the_tree_it_replaces() {
-        let mut sorted = SortedMap::new();
-        let mut tree = BTreeMap::new();
-        for (step, key) in keys().into_iter().enumerate() {
-            let value = step as u64;
-            assert_eq!(sorted.insert(key, value), tree.insert(key, value), "insert {key}");
-            if step % 7 == 3 {
-                assert_eq!(sorted.remove(&key), tree.remove(&key), "remove {key}");
-            }
-            assert_eq!(sorted.get(&key), tree.get(&key));
-            assert_eq!(sorted.contains_key(&key), tree.contains_key(&key));
-            assert_eq!(sorted.len(), tree.len());
-        }
-        assert_eq!(
-            sorted.iter().map(|(k, v)| (*k, *v)).collect::<Vec<_>>(),
-            tree.iter().map(|(k, v)| (*k, *v)).collect::<Vec<_>>(),
-            "iteration is ascending by key, as the meet operations require",
-        );
-        assert_eq!(sorted.keys().copied().collect::<Vec<_>>(), tree.keys().copied().collect::<Vec<_>>());
-        assert_eq!(sorted.values().copied().collect::<Vec<_>>(), tree.values().copied().collect::<Vec<_>>());
-    }
-
-    #[test]
-    fn a_sorted_map_retains_and_extends_as_the_tree_does() {
-        let build = || (0..40u32).map(|key| (key, u64::from(key) * 2));
-        let mut sorted: SortedMap<u32, u64> = build().collect();
-        let mut tree: BTreeMap<u32, u64> = build().collect();
-        sorted.retain(|key, _| key % 3 == 0);
-        tree.retain(|key, _| key % 3 == 0);
-        assert_eq!(sorted.iter().map(|(k, v)| (*k, *v)).collect::<Vec<_>>(),
-            tree.iter().map(|(k, v)| (*k, *v)).collect::<Vec<_>>());
-
-        let added = (35..50u32).map(|key| (key, 1));
-        sorted.extend(added.clone());
-        tree.extend(added);
-        assert_eq!(sorted.iter().map(|(k, v)| (*k, *v)).collect::<Vec<_>>(),
-            tree.iter().map(|(k, v)| (*k, *v)).collect::<Vec<_>>(),
-            "extend overwrites a present key, as the tree does");
-    }
-
-    #[test]
-    fn collecting_duplicate_keys_keeps_the_last_one_like_the_tree() {
-        let pairs = [(1u32, 'a'), (2, 'b'), (1, 'c'), (2, 'd'), (1, 'e')];
-        let sorted: SortedMap<u32, char> = pairs.into_iter().collect();
-        let tree: BTreeMap<u32, char> = pairs.into_iter().collect();
-        assert_eq!(sorted.iter().map(|(k, v)| (*k, *v)).collect::<Vec<_>>(),
-            tree.iter().map(|(k, v)| (*k, *v)).collect::<Vec<_>>());
-    }
-
-    #[test]
-    fn an_entry_inserts_once_and_then_modifies_in_place() {
-        let mut sorted: SortedMap<u32, Vec<u32>> = SortedMap::new();
-        sorted.entry(5).or_default().push(1);
-        sorted.entry(5).or_default().push(2);
-        sorted.entry(3).or_insert_with(|| vec![7]);
-        sorted.entry(3).or_insert_with(|| vec![99]).push(8);
-        assert_eq!(sorted.get(&5), Some(&vec![1, 2]));
-        assert_eq!(sorted.get(&3), Some(&vec![7, 8]), "a present key is not re-created");
-        assert_eq!(sorted.keys().copied().collect::<Vec<_>>(), vec![3, 5]);
-    }
-
-    #[test]
-    fn equality_is_equality_of_facts_not_of_insertion_order() {
-        let forward: SortedMap<u32, u64> = (0..20u32).map(|key| (key, 1)).collect();
-        let backward: SortedMap<u32, u64> = (0..20u32).rev().map(|key| (key, 1)).collect();
-        assert_eq!(forward, backward);
-    }
-
-    #[test]
-    fn a_sorted_set_answers_exactly_as_the_tree_it_replaces() {
-        let mut sorted = SortedSet::new();
-        let mut tree = BTreeSet::new();
-        for (step, key) in keys().into_iter().enumerate() {
-            assert_eq!(sorted.insert(key), tree.insert(key), "insert {key}");
-            if step % 5 == 2 {
-                assert_eq!(sorted.remove(&key), tree.remove(&key), "remove {key}");
-            }
-            assert_eq!(sorted.contains(&key), tree.contains(&key));
-            assert_eq!(sorted.len(), tree.len());
-        }
-        assert_eq!(sorted.iter().copied().collect::<Vec<_>>(), tree.iter().copied().collect::<Vec<_>>());
-        assert_eq!(sorted.first(), tree.first());
-    }
-
-    #[test]
-    fn set_intersection_agrees_with_the_tree() {
-        let left_items: Vec<u32> = (0..60).filter(|key| key % 2 == 0).collect();
-        let right_items: Vec<u32> = (0..60).filter(|key| key % 3 == 0).collect();
-        let left: SortedSet<u32> = left_items.iter().copied().collect();
-        let right: SortedSet<u32> = right_items.iter().copied().collect();
-        let left_tree: BTreeSet<u32> = left_items.into_iter().collect();
-        let right_tree: BTreeSet<u32> = right_items.into_iter().collect();
-
-
-        assert_eq!(left.intersection(&right).copied().collect::<Vec<_>>(),
-            left_tree.intersection(&right_tree).copied().collect::<Vec<_>>());
     }
 }

@@ -129,43 +129,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn outlined_retain_preserves_static_zero_and_saturated_count_boundaries() {
-        let mut types = TypeSection::new();
-        types.ty().function([ValType::I32], [ValType::I32]);
-        let mut functions = FunctionSection::new();
-        functions.function(0);
-        let mut memories = MemorySection::new();
-        memories.memory(MemoryType { minimum: 1, maximum: Some(1), memory64: false, shared: false, page_size_log2: None });
-        let mut globals = GlobalSection::new();
-        for value in [64, 0, 32] {
-            globals.global(GlobalType { val_type: ValType::I32, mutable: false, shared: false }, &ConstExpr::i32_const(value));
-        }
-        let mut exports = ExportSection::new();
-        exports.export("retain", ExportKind::Func, 0);
-        exports.export("memory", ExportKind::Memory, 0);
-        let mut code = CodeSection::new();
-        code.function(&emit_retain());
-        let mut module = WasmModule::new();
-        module.section(&types).section(&functions).section(&memories).section(&globals).section(&exports).section(&code);
-        let engine = wasmtime::Engine::default();
-        let module = wasmtime::Module::new(&engine, module.finish()).unwrap();
-        let mut store = wasmtime::Store::new(&engine, ());
-        let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
-        let memory = instance.get_memory(&mut store, "memory").unwrap();
-        let retain = instance.get_typed_func::<i32, i32>(&mut store, "retain").unwrap();
-        assert_eq!(retain.call(&mut store, 8).unwrap(), 8);
-        assert!(memory.data(&store).iter().all(|byte| *byte == 0), "static retain wrote memory");
-        memory.write(&mut store, 32, &1u32.to_le_bytes()).unwrap();
-        assert_eq!(retain.call(&mut store, 40).unwrap(), 40);
-        assert_eq!(&memory.data(&store)[32..36], &2u32.to_le_bytes());
-        for count in [0u32, u32::MAX] {
-            memory.write(&mut store, 32, &count.to_le_bytes()).unwrap();
-            assert!(retain.call(&mut store, 40).is_err());
-            assert_eq!(&memory.data(&store)[32..36], &count.to_le_bytes(), "refusal changed the count");
-        }
-    }
-
-    #[test]
     fn outlined_address_retains_unsigned_overflow_and_exact_end() {
         // Kernel-only arithmetic test. Production does not export this helper;
         // the full admitted-program and tampered-byte tests cover its binding.

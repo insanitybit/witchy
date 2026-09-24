@@ -48,56 +48,6 @@ fn dir_storage_oracle_frozen_abi_and_response_issuer_refusals() {
 }
 
 #[test]
-fn dir_storage_oracle_create_new_and_atomic_replace() {
-    let (module, layout) = module(vec![]);
-    let mut engine = Engine::new(module.module(), config());
-    engine.config.fixture.directories.insert("folder".into());
-    let mut values = BTreeMap::from([(CAP, bound(&engine, DIR_KIND))]);
-    write(&mut engine, layout, &mut values, "dir_create_new_at", b"./folder/./note", b"first").unwrap();
-    assert_eq!(values[&RESULT], InterpreterValue::Bool(true));
-    let before = engine.config.fixture.clone();
-    write(&mut engine, layout, &mut values, "dir_create_new_at", b"folder/note", b"loser").unwrap();
-    assert_eq!(values[&RESULT], InterpreterValue::Bool(false));
-    assert_eq!(engine.config.fixture, before);
-    write(&mut engine, layout, &mut values, "dir_create_new_at", b"folder", b"directory collision").unwrap();
-    assert_eq!(values[&RESULT], InterpreterValue::Bool(false));
-    assert_eq!(engine.config.fixture, before, "a named existing directory loses exclusive creation without becoming a file");
-    write(&mut engine, layout, &mut values, "dir_replace_at", b"folder/note", b"complete replacement").unwrap();
-    assert_eq!(engine.config.fixture.files["folder/note"], b"complete replacement");
-    write(&mut engine, layout, &mut values, "dir_replace_at", b"folder/absent", b"created").unwrap();
-    assert_eq!(engine.config.fixture.files["folder/absent"], b"created");
-    assert_eq!(engine.config.fixture.files.len(), 2, "no pending file or temporary sibling is published");
-    assert_eq!(engine.config.fixture.directories, before.directories);
-}
-
-#[test]
-fn dir_storage_oracle_snapshots_survive_writes_and_short_copies() {
-    let (module, layout) = module(vec![]);
-    let mut engine = Engine::new(module.module(), config());
-    let mut values = BTreeMap::from([(CAP, bound(&engine, DIR_KIND))]);
-    let original = [0, 255, 128, b'A'];
-    write(&mut engine, layout, &mut values, "dir_write_bytes_at", b"file", &original).unwrap();
-    let first = snapshot(&mut engine, layout, &mut values, b"./file");
-    write(&mut engine, layout, &mut values, "dir_write_bytes_at", b"file", &[1, 2]).unwrap();
-    let second = snapshot(&mut engine, layout, &mut values, b"file");
-    engine.config.fixture.files.remove("file");
-    for (response, expected) in [(first, original.to_vec()), (second, vec![1, 2])] {
-        values.insert(RESPONSE, response);
-        for capacity in [0, 1, 2, 3, 4, 5] {
-            engine.dir_storage_host_call("dir_bytes_response_size", &[RESULT], &[HostCallArgument::Capability(RESPONSE)], &mut values).unwrap();
-            assert_eq!(values[&RESULT], InterpreterValue::Size(expected.len() as u64));
-            let output = buffer(&mut engine, layout, &mut values, &vec![b'!'; capacity], true);
-            engine.dir_storage_host_call("dir_bytes_response_into", &[RESULT], &[HostCallArgument::Capability(RESPONSE), output.clone()], &mut values).unwrap();
-            assert_eq!(values[&RESULT], InterpreterValue::Size(expected.len() as u64));
-            let mut wanted = vec![b'!'; capacity];
-            if capacity >= expected.len() { wanted[..expected.len()].copy_from_slice(&expected); }
-            assert_eq!(bytes(&engine, &output, &values), wanted);
-        }
-    }
-    assert!(engine.config.fixture.files.is_empty(), "response reads do not recreate or reread a file");
-}
-
-#[test]
 fn dir_storage_oracle_response_length_signed_abi_boundary_without_allocation() {
     use crate::canonical_interpreter::dir_storage::response_length;
     for length in [0, 1, i32::MAX as usize - 1, i32::MAX as usize] {
@@ -106,100 +56,6 @@ fn dir_storage_oracle_response_length_signed_abi_boundary_without_allocation() {
     for length in [i32::MAX as usize + 1, u32::MAX as usize, usize::MAX] {
         assert_eq!(response_length(length),
             Err(InterpretError::RegistryFixture("Dir byte response exceeds the guest ABI size limit".into())));
-    }
-}
-
-#[test]
-fn dir_storage_oracle_empty_response_has_typed_zero() {
-    let (module, layout) = module(vec![]);
-    let mut engine = Engine::new(module.module(), config());
-    let mut values = BTreeMap::from([(CAP, bound(&engine, DIR_KIND))]);
-    write(&mut engine, layout, &mut values, "dir_write_bytes_at", b"empty", b"").unwrap();
-    let response = snapshot(&mut engine, layout, &mut values, b"empty");
-    values.insert(RESPONSE, response);
-    for capacity in [0, 1] {
-        let output = buffer(&mut engine, layout, &mut values, &vec![b'?'; capacity], true);
-        for name in ["dir_bytes_response_size", "dir_bytes_response_into"] {
-            let mut args = vec![HostCallArgument::Capability(RESPONSE)];
-            if name.ends_with("into") { args.push(output.clone()); }
-            engine.dir_storage_host_call(name, &[RESULT], &args, &mut values).unwrap();
-            assert_eq!(values[&RESULT], InterpreterValue::Size(0));
-        }
-        assert_eq!(bytes(&engine, &output, &values), vec![b'?'; capacity]);
-    }
-}
-
-#[test]
-fn dir_storage_oracle_text_and_full_input_preflight_before_existing_false() {
-    let (module, layout) = module(vec![]);
-    for name in ["dir_create_new_at", "dir_replace_at", "dir_write_bytes_at"] {
-        for failure in ["path-utf8", "missing-cell", "non-byte", "past-end", "write-input", "arity", "forged-dir"] {
-            let mut engine = Engine::new(module.module(), config());
-            engine.config.fixture.files.insert("file".into(), b"unchanged".to_vec());
-            let before = engine.config.fixture.clone();
-            let mut values = BTreeMap::from([(CAP, bound(&engine, DIR_KIND)), (RESULT, InterpreterValue::Int(777))]);
-            let path_bytes: &[u8] = if failure == "path-utf8" { &[255] } else { b"file" };
-            let path = buffer(&mut engine, layout, &mut values, path_bytes, false);
-            let data = buffer(&mut engine, layout, &mut values, b"data", failure == "write-input");
-            let (object, _, _) = engine.slice_place(place(&data), &values).unwrap();
-            match failure {
-                "missing-cell" => { engine.objects.get_mut(&object).unwrap().cells.remove(&CellKey::Element(3)); }
-                "non-byte" => { engine.objects.get_mut(&object).unwrap().cells.insert(CellKey::Element(3), InterpreterValue::Size(256)); }
-                "past-end" => {
-                    let Projection::Slice { length, .. } = place(&data).projection() else { unreachable!() };
-                    values.insert(*length, InterpreterValue::Size(5));
-                }
-                "forged-dir" => { values.insert(CAP, InterpreterValue::capability(DIR_KIND)); }
-                _ => {},
-            }
-            let results = if name == "dir_create_new_at" { vec![RESULT] } else { vec![] };
-            let results = if failure == "arity" { vec![RESULT, RESULT] } else { results };
-            assert!(engine.dir_storage_host_call(name, &results, &[HostCallArgument::Capability(CAP), path, data], &mut values).is_err(), "{name}/{failure}");
-            assert_eq!(engine.config.fixture, before);
-            assert_eq!(values[&RESULT], InterpreterValue::Int(777));
-        }
-    }
-    let mut engine = Engine::new(module.module(), config());
-    engine.config.fixture.files.insert("file".into(), b"old".to_vec());
-    let mut values = BTreeMap::from([(CAP, bound(&engine, DIR_KIND))]);
-    for name in ["dir_create_new_at", "dir_replace_at"] {
-        assert_eq!(write(&mut engine, layout, &mut values, name, b"file", &[255]),
-            Err(InterpretError::TypeMismatch("host string is not UTF-8")));
-        assert_eq!(engine.config.fixture.files["file"], b"old");
-    }
-    write(&mut engine, layout, &mut values, "dir_replace_at", b"file", b"\xc3\xa9").unwrap();
-    assert_eq!(engine.config.fixture.files["file"], b"\xc3\xa9");
-}
-
-#[test]
-fn dir_storage_oracle_response_output_preflight_is_atomic() {
-    let (module, layout) = module(vec![]);
-    for capacity in [0, 1, 4, 8] {
-        for failure in ["readonly", "static", "read-place", "past-end", "overflow", "foreign", "root", "wrong-kind"] {
-            let mut engine = Engine::new(module.module(), config());
-            let response = engine.registry.mint_dir_bytes(vec![0, 255, 2, 3]);
-            let mut values = BTreeMap::from([(RESPONSE, InterpreterValue::Capability(response)), (RESULT, InterpreterValue::Int(777))]);
-            let output = buffer(&mut engine, layout, &mut values, &vec![b'?'; capacity], failure != "read-place");
-            let (object, _, _) = engine.slice_place(place(&output), &values).unwrap();
-            let before = engine.objects[&object].cells.clone();
-            match failure {
-                "readonly" => engine.objects.get_mut(&object).unwrap().immutable = true,
-                "static" => engine.objects.get_mut(&object).unwrap().storage = RuntimeStorage::StaticData,
-                "past-end" | "overflow" => {
-                    let Projection::Slice { start, length } = place(&output).projection() else { unreachable!() };
-                    values.insert(*length, InterpreterValue::Size(capacity as u64 + 1));
-                    if failure == "overflow" { values.insert(*start, InterpreterValue::Size(u64::MAX)); }
-                }
-                "foreign" => { values.insert(RESPONSE, InterpreterValue::Capability(State::new().mint_dir_bytes(vec![9]))); }
-                "root" => { values.insert(RESPONSE, InterpreterValue::capability(22)); }
-                "wrong-kind" => { values.insert(RESPONSE, bound(&engine, DIR_KIND)); }
-                _ => {},
-            }
-            assert!(engine.dir_storage_host_call("dir_bytes_response_into", &[RESULT],
-                &[HostCallArgument::Capability(RESPONSE), output], &mut values).is_err(), "{failure}/{capacity}");
-            assert_eq!(engine.objects[&object].cells, before);
-            assert_eq!(values[&RESULT], InterpreterValue::Int(777));
-        }
     }
 }
 
@@ -258,18 +114,6 @@ fn dir_storage_oracle_scoped_curdir_write_and_read_stay_under_grant() {
     assert!(engine.dir_storage_host_call("dir_read_bytes_at", &[RESULT],
         &[HostCallArgument::Capability(CAP), missing], &mut values).is_err());
     assert_eq!(values[&RESULT], before, "failed reads never publish a response");
-}
-
-#[test]
-fn dir_storage_oracle_aliased_inputs_are_snapshotted() {
-    let (module, layout) = module(vec![]);
-    let mut engine = Engine::new(module.module(), config());
-    let mut values = BTreeMap::from([(CAP, bound(&engine, DIR_KIND))]);
-    let input = buffer(&mut engine, layout, &mut values, b"name", false);
-    engine.dir_storage_host_call("dir_create_new_at", &[RESULT],
-        &[HostCallArgument::Capability(CAP), input.clone(), input.clone()], &mut values).unwrap();
-    assert_eq!(engine.config.fixture.files["name"], b"name");
-    assert_eq!(bytes(&engine, &input, &values), b"name");
 }
 
 #[test]

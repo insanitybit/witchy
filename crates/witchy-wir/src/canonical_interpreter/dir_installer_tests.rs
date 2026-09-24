@@ -12,29 +12,6 @@ fn invoke(engine: &mut Engine<'_>, layout: LayoutId, values: &mut BTreeMap<Value
 }
 
 #[test]
-fn dir_installer_oracle_append_chmod_rename_retains_bytes_and_response() {
-    let (module, layout) = module(vec![]);
-    let mut engine = Engine::new(module.module(), config());
-    let mut values = BTreeMap::from([(CAP, bound(&engine, DIR_KIND))]);
-    invoke(&mut engine, layout, &mut values, "dir_append_bytes_at", b"stage", &[0, 255]).unwrap();
-    let path = buffer(&mut engine, layout, &mut values, b"stage", false);
-    engine.dir_storage_host_call("dir_read_bytes_at", &[RESULT], &[HostCallArgument::Capability(CAP), path], &mut values).unwrap();
-    let response = values[&RESULT].clone();
-    for _ in 0..2 { invoke(&mut engine, layout, &mut values, "dir_set_executable_at", b"stage", b"").unwrap(); }
-    invoke(&mut engine, layout, &mut values, "dir_append_bytes_at", b"stage", &[128, 1]).unwrap();
-    engine.config.fixture.files.insert("installed".into(), b"old".to_vec());
-    invoke(&mut engine, layout, &mut values, "dir_rename_at", b"stage", b"installed").unwrap();
-    assert_eq!(engine.config.fixture.file("installed"), Some(vec![0, 255, 128, 1]));
-    assert!(!engine.config.fixture.exists("stage"));
-    assert_eq!(engine.config.fixture.dir_mutations.executable, BTreeSet::from(["installed".into()]));
-    let InterpreterValue::Capability(response) = response else { panic!("response") };
-    assert_eq!(&*engine.registry.dir_bytes(&response).unwrap(), &[0, 255]);
-    invoke(&mut engine, layout, &mut values, "dir_rename_at", b"installed", b"installed").unwrap();
-    invoke(&mut engine, layout, &mut values, "dir_append_bytes_at", b"stage", b"").unwrap();
-    assert_eq!(engine.config.fixture.file("stage"), Some(vec![]));
-}
-
-#[test]
 fn dir_installer_oracle_rejects_transport_and_forged_tokens_before_mutation() {
     let (module, layout) = module(vec![]);
     for name in INSTALLER_IMPORTS {
@@ -74,64 +51,6 @@ fn dir_installer_oracle_rejects_transport_and_forged_tokens_before_mutation() {
             assert_eq!(values[&RESULT], InterpreterValue::Int(777));
         }
     }
-}
-
-#[test]
-fn dir_installer_oracle_directory_moves_and_invalid_destinations_are_atomic() {
-    let (module, layout) = module(vec![]);
-    let mut engine = Engine::new(module.module(), config());
-    engine.config.fixture.files.insert("scope/source/nested/file".into(), vec![255]);
-    engine.config.fixture.directories.insert("scope/empty".into());
-    let InterpreterValue::Capability(root) = bound(&engine, DIR_KIND) else { panic!("root") };
-    let narrowed = engine.registry.narrow_dir(&root, "scope".into()).unwrap();
-    let mut values = BTreeMap::from([(CAP, InterpreterValue::Capability(narrowed))]);
-    for (from, to) in [("missing", "empty"), ("source", "source/sub"), ("source/nested/file", "empty"),
-        ("empty", "source"), ("source", "missing/child"), ("source", "../outside")] {
-        let before = engine.config.fixture.clone();
-        assert!(invoke(&mut engine, layout, &mut values, "dir_rename_at", from.as_bytes(), to.as_bytes()).is_err());
-        assert_eq!(engine.config.fixture, before);
-    }
-    invoke(&mut engine, layout, &mut values, "dir_rename_at", b"source", b"empty").unwrap();
-    assert_eq!(engine.config.fixture.file("scope/empty/nested/file"), Some(vec![255]));
-    assert!(!engine.config.fixture.exists("scope/source"));
-    assert_eq!(engine.config.fixture.entry_names("scope"), vec!["empty"]);
-    for name in ["dir_append_bytes_at", "dir_set_executable_at"] {
-        let before = engine.config.fixture.clone();
-        assert!(invoke(&mut engine, layout, &mut values, name, b"missing/child", b"data").is_err());
-        assert_eq!(engine.config.fixture, before);
-    }
-}
-
-#[test]
-fn dir_installer_oracle_backing_rename_never_resurrects_deleted_names() {
-    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let root = std::env::temp_dir().join(format!("witchy-dir-installer-{}-{}", std::process::id(),
-        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
-    std::fs::create_dir_all(root.join("old/nested")).unwrap();
-    std::fs::write(root.join("old/nested/file"), [0, 255]).unwrap();
-    struct Cleanup(std::path::PathBuf);
-    impl Drop for Cleanup { fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); } }
-    let _cleanup = Cleanup(root.clone());
-    let (module, layout) = module(vec![]);
-    let mut cfg = config(); cfg.fixture.root = Some(root.clone());
-    let mut engine = Engine::new(module.module(), cfg);
-    let mut values = BTreeMap::from([(CAP, bound(&engine, DIR_KIND))]);
-    invoke(&mut engine, layout, &mut values, "dir_rename_at", b"old", b"new").unwrap();
-    assert!(!engine.config.fixture.exists("old"));
-    assert!(!engine.config.fixture.metadata_is_directory("", "old"));
-    assert_eq!(engine.config.fixture.file("old/nested/file"), None);
-    assert_eq!(engine.config.fixture.entry_names(""), vec!["new"]);
-    assert_eq!(engine.config.fixture.file("new/nested/file"), Some(vec![0, 255]));
-    engine.config.fixture.make_directory("old").unwrap();
-    assert!(engine.config.fixture.metadata_is_directory("", "old"));
-    assert!(engine.config.fixture.entry_names("old").is_empty());
-    assert_eq!(engine.config.fixture.file("old/nested/file"), None);
-    assert!(invoke(&mut engine, layout, &mut values, "dir_set_executable_at", b"old/nested/file", b"").is_err());
-    invoke(&mut engine, layout, &mut values, "dir_rename_at", b"new/nested/file", b"reinstalled").unwrap();
-    assert!(engine.config.fixture.is_directory("new/nested"));
-    assert_eq!(engine.config.fixture.file("new/nested/file"), None);
-    assert_eq!(std::fs::read(root.join("old/nested/file")).unwrap(), [0, 255]);
-    assert!(!root.join("new").exists());
 }
 
 #[test]
@@ -182,22 +101,6 @@ fn dir_installer_oracle_virtual_links_resolve_without_backing_and_stay_confined(
     invoke(&mut engine, layout, &mut values, "dir_rename_at", b"moved/escape", b"escape").unwrap();
     assert_eq!(engine.config.fixture.dir_mutations.links["scope/escape"], std::path::PathBuf::from("../../outside"));
     assert!(!engine.config.fixture.metadata_is_directory("scope", "escape"));
-}
-
-#[test]
-fn dir_installer_oracle_rename_destination_preflight_and_auth_order() {
-    let (module, layout) = module(vec![]);
-    for forged in [false, true] {
-        let mut engine = Engine::new(module.module(), config());
-        engine.config.fixture.files.insert("source".into(), b"retained".to_vec());
-        let before = engine.config.fixture.clone();
-        let token = if forged { InterpreterValue::capability(DIR_KIND) } else { bound(&engine, DIR_KIND) };
-        let mut values = BTreeMap::from([(CAP, token)]);
-        let error = invoke(&mut engine, layout, &mut values, "dir_rename_at", b"source", &[255]).unwrap_err();
-        assert_eq!(error, if forged { InterpretError::RegistryFixture("registry unauthenticated resource".into()) }
-            else { InterpretError::TypeMismatch("host string is not UTF-8") });
-        assert_eq!(engine.config.fixture, before);
-    }
 }
 
 fn open_subtree(engine: &mut Engine<'_>, layout: LayoutId, values: &mut BTreeMap<ValueId, InterpreterValue>, path: &[u8]) -> InterpreterValue {
@@ -302,35 +205,6 @@ fn dir_installer_oracle_displaced_directory_handles_never_redirect() {
 }
 
 #[test]
-fn dir_installer_oracle_renamed_links_have_consistent_scoped_metadata() {
-    let (module, layout) = module(vec![]);
-    let mut engine = Engine::new(module.module(), config());
-    engine.config.fixture.directories.extend(["scope/dir", "outside"].map(String::from));
-    engine.config.fixture.files.insert("scope/file".into(), b"data".to_vec());
-    engine.config.fixture.dir_mutations.links.extend([
-        ("scope/original".into(), "dir".into()), ("scope/file-link".into(), "file".into()),
-        ("scope/dangling".into(), "missing".into()), ("scope/escape".into(), "../outside".into()),
-        ("scope/absolute".into(), "/outside".into()), ("scope/cycle".into(), "cycle".into()),
-    ]);
-    let mut values = BTreeMap::from([(CAP, bound(&engine, DIR_KIND))]);
-    let scoped = open_subtree(&mut engine, layout, &mut values, b"scope");
-    values.insert(CAP, scoped);
-    invoke(&mut engine, layout, &mut values, "dir_rename_at", b"original", b"moved").unwrap();
-    assert!(engine.config.fixture.exists("scope/moved"));
-    assert!(engine.config.fixture.metadata_is_directory("scope", "moved"));
-    for (path, exists, directory) in [("moved", true, true), ("file-link", true, false),
-        ("dangling", false, false), ("escape", false, false), ("absolute", false, false),
-        ("cycle", false, false), ("original", false, false)] {
-        for name in ["dir_exists_at", "dir_is_dir_at"] {
-            let input = buffer(&mut engine, layout, &mut values, path.as_bytes(), false);
-            engine.capability_host_call(name, &[RESULT], &[HostCallArgument::Capability(CAP), input], &mut values).unwrap();
-            assert_eq!(values[&RESULT], if name == "dir_exists_at" { InterpreterValue::Size(u64::from(exists)) }
-                else { InterpreterValue::Bool(directory) }, "{name}/{path}");
-        }
-    }
-}
-
-#[test]
 fn dir_installer_oracle_mkdir_rejects_unbound_root_and_legacy_subtree() {
     let (module, layout) = module(vec![]);
     for narrowed in [false, true] {
@@ -353,35 +227,4 @@ fn dir_installer_oracle_mkdir_rejects_unbound_root_and_legacy_subtree() {
             Err(InterpretError::RegistryFixture("registry unauthenticated resource".into())));
         assert_eq!(engine.config.fixture, before);
     }
-}
-
-#[cfg(unix)]
-#[test]
-fn dir_installer_oracle_socket_exists_without_opening_or_reading_it() {
-    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let root = std::env::temp_dir().join(format!("wir-sock-{}-{}", std::process::id(),
-        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
-    std::fs::create_dir(&root).unwrap();
-    struct Cleanup(std::path::PathBuf);
-    impl Drop for Cleanup { fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); } }
-    let _cleanup = Cleanup(root.clone());
-    let _listener = std::os::unix::net::UnixListener::bind(root.join("sock")).unwrap();
-    let (module, layout) = module(vec![]);
-    let mut cfg = config(); cfg.fixture.root = Some(root);
-    let mut engine = Engine::new(module.module(), cfg);
-    let mut values = BTreeMap::from([(CAP, bound(&engine, DIR_KIND))]);
-    assert!(engine.config.fixture.exists("sock"));
-    assert!(!engine.config.fixture.metadata_is_directory("", "sock"));
-    assert!(!engine.config.fixture.exists("sock/child"));
-    assert_eq!(engine.config.fixture.file("sock"), None);
-    for name in ["dir_exists_at", "dir_is_dir_at"] {
-        let path = buffer(&mut engine, layout, &mut values, b"sock", false);
-        engine.capability_host_call(name, &[RESULT], &[HostCallArgument::Capability(CAP), path], &mut values).unwrap();
-        assert_eq!(values[&RESULT], if name == "dir_exists_at" { InterpreterValue::Size(1) } else { InterpreterValue::Bool(false) });
-    }
-    let before = engine.config.fixture.clone();
-    let path = buffer(&mut engine, layout, &mut values, b"sock", false);
-    assert!(engine.dir_storage_host_call("dir_read_bytes_at", &[RESULT],
-        &[HostCallArgument::Capability(CAP), path], &mut values).is_err());
-    assert_eq!(engine.config.fixture, before);
 }

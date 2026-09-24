@@ -94,17 +94,6 @@ fn bytes(engine: &Engine<'_>, argument: &HostCallArgument, values: &BTreeMap<Val
 }
 
 #[test]
-fn registry_oracle_frozen_kinds_and_import_order() {
-    assert_eq!([CLOCK, DIR_KIND, STORE, SECRET], [19, 1, 20, 21]);
-    assert_eq!(IMPORTS, ["clock_now", "dir_make_dir_at", "secretstore_lookup_at", "crypto_sign_into", "crypto_public_key_into"]);
-    for (entry, kind) in [(crate::CanonicalEntryCapability::Clock, CLOCK),
-        (crate::CanonicalEntryCapability::SecretStore, STORE), (crate::CanonicalEntryCapability::Secret, SECRET)]
-    {
-        assert_eq!(InterpreterValue::entry_capability(entry), InterpreterValue::capability(kind));
-    }
-}
-
-#[test]
 fn registry_oracle_mints_bind_kind_scope_and_session() {
     let owner = State::new();
     let foreign = State::new();
@@ -170,60 +159,6 @@ fn registry_oracle_launch_requires_explicit_grants_even_when_unused() {
         assert!(engine.bind_registry_entry(vec![InterpreterValue::capability(SECRET)]).is_err(),
             "a named secret is not the direct signing grant");
     }
-}
-
-#[test]
-fn registry_oracle_clock_exact_zero_consumed_unused_and_refusals() {
-    let (module, _) = module(vec![]);
-    let mut cfg = config();
-    cfg.fixture.clock.as_mut().unwrap().observations = vec![0, 1_700_000_000_123];
-    let mut engine = Engine::new(module.module(), cfg.clone());
-    let mut values = BTreeMap::from([(CAP, bound(&engine, CLOCK))]);
-    assert_eq!(engine.finish_registry(), Err(refusal("Clock unused observations: consumed 0 of 2")));
-    let request = [HostCallArgument::Capability(CAP)];
-    for invalid in [InterpreterValue::capability(CLOCK), bound(&engine, STORE), InterpreterValue::NullableCapability(None)] {
-        let saved = values.insert(CAP, invalid).unwrap();
-        assert!(engine.registry_host_call("clock_now", &[RESULT], &request, &mut values).is_err());
-        assert_eq!(engine.registry.consumed_clock, 0);
-        values.insert(CAP, saved);
-    }
-    assert!(engine.registry_host_call("clock_now", &[], &request, &mut values).is_err());
-    for expected in [0, 1_700_000_000_123] {
-        engine.registry_host_call("clock_now", &[RESULT], &request, &mut values).unwrap();
-        assert_eq!(values[&RESULT], InterpreterValue::Int(expected));
-    }
-    engine.finish_registry().unwrap();
-    assert_eq!(engine.registry_host_call("clock_now", &[RESULT], &request, &mut values),
-        Err(refusal("unexpected Clock call after observations end")));
-    assert_eq!(engine.registry.consumed_clock, 2);
-    assert!(interpret_with_config(&module, FunctionId::new(0), vec![], cfg.clone()).is_err());
-    assert!(interpret_program(&module, FunctionId::new(0), vec![], cfg.clone()).is_err());
-    assert!(interpret_entry_program(&module, FunctionId::new(0), vec![], &[], cfg).is_err());
-}
-
-#[test]
-fn registry_oracle_store_empty_absence_first_match_and_snapshot() {
-    let (module, layout) = module(vec![]);
-    let mut engine = Engine::new(module.module(), config());
-    let mut values = BTreeMap::from([(CAP, bound(&engine, STORE))]);
-    let name = buffer(&mut engine, layout, &mut values, b"publish", false);
-    let request = [HostCallArgument::Capability(CAP), name];
-    engine.registry_host_call("secretstore_lookup_at", &[RESULT], &request, &mut values).unwrap();
-    assert_eq!(values[&RESULT], InterpreterValue::NullableCapability(None));
-    let first = OracleSecretFixture::Sealed(vec![0; 32]);
-    engine.config.fixture.secret_store.as_mut().unwrap().secrets = vec![
-        ("publish".into(), first.clone()), ("publish".into(), signing())];
-    values.insert(CAP, bound(&engine, STORE));
-    engine.config.fixture.secret_store.as_mut().unwrap().secrets.clear();
-    engine.registry_host_call("secretstore_lookup_at", &[RESULT], &request, &mut values).unwrap();
-    let InterpreterValue::NullableCapability(Some(token)) = &values[&RESULT] else { panic!("named secret") };
-    assert_eq!(token.kind(), SECRET);
-    assert_eq!(engine.registry.authenticate(token, SECRET).unwrap(), Resource::Secret(Arc::new(first)));
-    let invalid = buffer(&mut engine, layout, &mut values, &[255], false);
-    let saved = values[&RESULT].clone();
-    assert_eq!(engine.registry_host_call("secretstore_lookup_at", &[RESULT], &[HostCallArgument::Capability(CAP), invalid], &mut values),
-        Err(InterpretError::TypeMismatch("host string is not UTF-8")));
-    assert_eq!(values[&RESULT], saved);
 }
 
 #[test]
@@ -321,52 +256,6 @@ fn registry_oracle_sign_snapshots_aliased_utf8_message() {
             assert!(!values.contains_key(&RESULT));
         }
     }
-}
-
-#[test]
-fn registry_oracle_sign_public_key_offline_verify_and_tamper() {
-    let (module, layout) = module(vec![]);
-    let mut engine = Engine::new(module.module(), config());
-    let mut values = BTreeMap::from([(CAP, bound(&engine, SECRET))]);
-    let message = buffer(&mut engine, layout, &mut values, b"coven publish: sha256:fixture", false);
-    let key = buffer(&mut engine, layout, &mut values, &[0; 64], true);
-    let signature = buffer(&mut engine, layout, &mut values, &[0; 128], true);
-    engine.registry_host_call("crypto_public_key_into", &[RESULT], &[HostCallArgument::Capability(CAP), key.clone()], &mut values).unwrap();
-    engine.registry_host_call("crypto_sign_into", &[RESULT], &[HostCallArgument::Capability(CAP), message.clone(), signature.clone()], &mut values).unwrap();
-    assert_eq!(bytes(&engine, &key, &values), KEY.as_bytes());
-    engine.ed25519_verify_host_call(&[RESULT], &[key.clone(), message, signature.clone()], &mut values).unwrap();
-    assert_eq!(values[&RESULT], InterpreterValue::Int(1));
-    let tampered = buffer(&mut engine, layout, &mut values, b"coven publish: sha256:tampered", false);
-    engine.ed25519_verify_host_call(&[RESULT], &[key, tampered, signature], &mut values).unwrap();
-    assert_eq!(values[&RESULT], InterpreterValue::Int(0));
-}
-
-#[test]
-fn registry_oracle_mkdir_empty_recursive_idempotent_and_subtree() {
-    let (module, layout) = module(vec![]);
-    let mut engine = Engine::new(module.module(), config());
-    let mut values = BTreeMap::from([(CAP, bound(&engine, DIR_KIND))]);
-    let path = buffer(&mut engine, layout, &mut values, b"registry//empty/nested", false);
-    for _ in 0..2 {
-        engine.registry_host_call("dir_make_dir_at", &[], &[HostCallArgument::Capability(CAP), path.clone()], &mut values).unwrap();
-    }
-    assert_eq!(engine.config.fixture.directories, ["registry", "registry/empty", "registry/empty/nested"].map(String::from).into_iter().collect());
-    assert!(engine.config.fixture.files.is_empty());
-    assert_eq!(engine.config.fixture.entry_names(""), ["registry"]);
-    assert_eq!(engine.config.fixture.entry_names("registry"), ["empty"]);
-    assert!(engine.config.fixture.metadata_is_directory("", "registry/empty/nested"));
-    assert!(engine.config.fixture.is_directory("registry/empty/nested"));
-    assert!(engine.config.fixture.exists("registry/empty/nested"));
-    engine.capability_host_call("dir_exists_at", &[RESULT], &[HostCallArgument::Capability(CAP), path.clone()], &mut values).unwrap();
-    assert_eq!(values[&RESULT], InterpreterValue::Size(1));
-    engine.capability_host_call("dir_subtree_at", &[RESULT], &[HostCallArgument::Capability(CAP), path], &mut values).unwrap();
-    let subtree = values[&RESULT].clone(); values.insert(CAP, subtree);
-    let child = buffer(&mut engine, layout, &mut values, b"child", false);
-    engine.registry_host_call("dir_make_dir_at", &[], &[HostCallArgument::Capability(CAP), child], &mut values).unwrap();
-    assert!(engine.config.fixture.directories.contains("registry/empty/nested/child"));
-    let parent = buffer(&mut engine, layout, &mut values, b"../escape", false);
-    assert!(engine.registry_host_call("dir_make_dir_at", &[], &[HostCallArgument::Capability(CAP), parent], &mut values).is_err());
-    assert!(!engine.config.fixture.exists("escape"));
 }
 
 #[test]

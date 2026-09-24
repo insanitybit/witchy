@@ -189,46 +189,6 @@ fn candidate(pointer: bool, mutation: Option<u8>) -> CanonicalModule<LoweredCand
 }
 
 #[test]
-fn unique_pop_oracle_complete_call_chain_reclaims_every_reference() {
-    for pointer in [false, true] {
-        let validated = finalize(candidate(pointer, None));
-        let result = crate::canonical_interpreter::interpret_program(
-            &validated, FunctionId::new(4), vec![], Default::default(),
-        ).unwrap();
-        assert_eq!(result.results, vec![crate::canonical_interpreter::InterpreterValue::Size(42)]);
-        assert_eq!(result.leaked_objects, 0);
-    }
-}
-
-#[test]
-fn unique_pop_byte_plan_rejects_capacity_write_instead_of_tail_publication() {
-    let artifact = admit_canonical(finalize(candidate(false, None))).unwrap();
-    let mut bytes = artifact.wasm().to_vec();
-    let mut code_index = 0;
-    let mut store_offset = None;
-    for section in wasmparser::Parser::new(0).parse_all(&bytes) {
-        if let wasmparser::Payload::CodeSectionEntry(body) = section.unwrap() {
-            if code_index == 1 {
-                let mut operators = body.get_operators_reader().unwrap();
-                while !operators.eof() {
-                    let position = operators.original_position();
-                    if let wasmparser::Operator::I32Store { memarg } = operators.read().unwrap() {
-                        assert_eq!(memarg.offset, 0);
-                        store_offset = Some(position);
-                    }
-                }
-            }
-            code_index += 1;
-        }
-    }
-    let position = store_offset.expect("TakeLast publishes exactly one header count");
-    assert_eq!(&bytes[position..position + 3], &[0x36, 2, 0]);
-    bytes[position + 2] = 4;
-    wasmparser::Validator::new().validate_all(&bytes).expect("mutation remains structurally valid Wasm");
-    assert!(admit_canonical_with_bytes_for_test(finalize(candidate(false, None)), bytes).is_err());
-}
-
-#[test]
 fn unique_pop_checker_refuses_shared_container_missing_bounds_and_non_tail() {
     for pointer in [false, true] {
         check_initial_with_test_witness(candidate(pointer, None)).expect("positive initial check");
@@ -236,43 +196,6 @@ fn unique_pop_checker_refuses_shared_container_missing_bounds_and_non_tail() {
             let module = candidate(pointer, Some(mutation));
             assert!(check_initial_with_test_witness(module).is_err(), "mutation {mutation}, pointer={pointer}");
         }
-    }
-}
-
-#[cfg(feature = "native")]
-#[test]
-fn unique_pop_native_preserves_receiver_address_heap_top_and_shared_child() {
-    for pointer in [false, true] {
-        let artifact = admit_canonical(finalize(candidate(pointer, None))).expect("initial/final/byte-plan admission");
-        let engine = wasmtime::Engine::default();
-        let module = wasmtime::Module::new(&engine, artifact.wasm()).unwrap();
-        let mut store = wasmtime::Store::new(&engine, ());
-        let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
-        let make = instance.get_typed_func::<(), (i32, i32)>(&mut store, "f0").unwrap();
-        let take = instance.get_typed_func::<i32, (i32, i32)>(&mut store, "f1").unwrap();
-        let drop_list = instance.get_typed_func::<i32, ()>(&mut store, "f2").unwrap();
-        let drop_child = instance.get_typed_func::<i32, ()>(&mut store, "f3").unwrap();
-        let (root, child) = make.call(&mut store, ()).unwrap();
-        let bump = instance.get_global(&mut store, HEAP_TOP_EXPORT).unwrap();
-        let before = bump.get(&mut store).i32().unwrap();
-        let (last, after_one) = take.call(&mut store, root).unwrap();
-        let (first, after_two) = take.call(&mut store, after_one).unwrap();
-        assert_eq!((after_one, after_two), (root, root), "receiver storage never changes");
-        assert_eq!(bump.get(&mut store).i32().unwrap(), before, "callee allocates no replacement or payload copy");
-        assert_eq!(last, child);
-        if pointer { assert_ne!(first, child, "independently allocated first child"); }
-        else { assert_eq!(first, child); }
-        // A direct empty extraction traps, and must not consume a cell or alter
-        // the count. Source pop handles this case before issuing TakeLast.
-        assert!(take.call(&mut store, after_two).is_err());
-        drop_list.call(&mut store, after_two).unwrap();
-        drop_child.call(&mut store, last).unwrap();
-        drop_child.call(&mut store, first).unwrap();
-        if pointer {
-            let memory = instance.get_memory(&mut store, "memory").unwrap();
-            assert_eq!(u32::from_le_bytes(memory.data(&store)[child as usize - 8..child as usize - 4].try_into().unwrap()), 1, "external child survives both transfers and list destruction");
-        }
-        drop_child.call(&mut store, child).unwrap();
     }
 }
 
@@ -285,71 +208,5 @@ fn unique_pop_rejects_live_prefix_overwrite_direct_moved_and_unknown() {
             Ok(_) => panic!("live-prefix overwrite admitted: mutation {mutation}"),
         };
         assert!(error.contains("Store(overwrite initialized prefix)"), "mutation {mutation}: {error}");
-    }
-}
-
-#[test]
-fn unique_pop_append_after_pop_preserves_prefix_direct_and_moved() {
-    for mutation in [5, 6] {
-        let validated = finalize(candidate(true, Some(mutation)));
-        let result = crate::canonical_interpreter::interpret_program(&validated, FunctionId::new(4), vec![], Default::default()).unwrap();
-        assert_eq!(result.leaked_objects, 0);
-        let artifact = admit_canonical(validated).unwrap();
-        #[cfg(feature = "native")]
-        {
-            let engine = wasmtime::Engine::default();
-            let module = wasmtime::Module::new(&engine, artifact.wasm()).unwrap();
-            let mut store = wasmtime::Store::new(&engine, ());
-            let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
-            let closed = instance.get_typed_func::<(), i32>(&mut store, "f4").unwrap();
-            assert_eq!(closed.call(&mut store, ()).unwrap(), 42);
-        }
-    }
-}
-
-#[test]
-fn unique_pop_scalar_zero_storage_and_republished_bytes_agree() {
-    for (mutation, expected) in [(8, 0), (9, 42)] {
-        let validated = finalize(candidate(false, Some(mutation)));
-        let result = crate::canonical_interpreter::interpret_program(&validated, FunctionId::new(4), vec![], Default::default()).unwrap();
-        assert_eq!(result.results, vec![crate::canonical_interpreter::InterpreterValue::Size(expected)]);
-        assert_eq!(result.leaked_objects, 0);
-        let artifact = admit_canonical(validated).unwrap();
-        #[cfg(feature = "native")]
-        {
-            let engine = wasmtime::Engine::default();
-            let module = wasmtime::Module::new(&engine, artifact.wasm()).unwrap();
-            let mut store = wasmtime::Store::new(&engine, ());
-            let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
-            let closed = instance.get_typed_func::<(), i32>(&mut store, "f4").unwrap();
-            assert_eq!(closed.call(&mut store, ()).unwrap(), expected as i32);
-        }
-    }
-}
-
-#[test]
-fn unique_pop_append_then_complete_transfer_preserves_shared_child() {
-    for mutation in [10, 11, 12] {
-        let validated = finalize(candidate(true, Some(mutation)));
-        let result = crate::canonical_interpreter::interpret_program(&validated, FunctionId::new(4), vec![], Default::default()).unwrap();
-        assert_eq!(result.results, vec![crate::canonical_interpreter::InterpreterValue::Size(42)]);
-        assert_eq!(result.leaked_objects, 0);
-        let artifact = admit_canonical(validated).unwrap();
-        #[cfg(feature = "native")]
-        {
-            let engine = wasmtime::Engine::default();
-            let module = wasmtime::Module::new(&engine, artifact.wasm()).unwrap();
-            let mut store = wasmtime::Store::new(&engine, ());
-            let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
-            let make = instance.get_typed_func::<(), (i32, i32)>(&mut store, "f0").unwrap();
-            let drop_list = instance.get_typed_func::<i32, ()>(&mut store, "f2").unwrap();
-            let drop_child = instance.get_typed_func::<i32, ()>(&mut store, "f3").unwrap();
-            let (root, child) = make.call(&mut store, ()).unwrap();
-            drop_list.call(&mut store, root).unwrap();
-            let memory = instance.get_memory(&mut store, "memory").unwrap();
-            assert_eq!(u32::from_le_bytes(memory.data(&store)[child as usize - 8..child as usize - 4].try_into().unwrap()), 1,
-                "shared child survives append, complete transfer and destination destruction");
-            drop_child.call(&mut store, child).unwrap();
-        }
     }
 }

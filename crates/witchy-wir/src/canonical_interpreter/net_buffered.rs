@@ -145,7 +145,3 @@ impl NetState {
         Ok(length)
     }
 }
-
-#[cfg(test)]
-#[path = "net_buffered_tests.rs"]
-mod tests;

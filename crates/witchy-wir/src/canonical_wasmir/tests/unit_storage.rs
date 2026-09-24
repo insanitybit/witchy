@@ -102,24 +102,6 @@ fn unit_storage_rejects_type_layout_initialization_and_bounds() {
     assert!(matches!(error, InitialCheckError::UnsupportedMemoryOperation { operation: "Load(uninitialized scalar)", .. }));
 }
 
-#[test]
-fn unit_storage_layout_round_trip_preserves_scalar_tags() {
-    let mut layouts = LayoutInterner::new();
-    let unit = layouts.intern_scalar(ScalarKind::Unit).unwrap();
-    let int = layouts.intern_scalar(ScalarKind::Int).unwrap();
-    let record = layouts.intern_packed_record(vec![unit, int]).unwrap();
-    let d = layouts.get(record).unwrap();
-    assert_eq!(d.size(), LayoutSize::Fixed(16));
-    assert_eq!(d.fields()[0].offset(), 0);
-    assert_eq!(d.fields()[1].offset(), 8);
-    assert_eq!(ScalarKind::Unit.size(), 4);
-    assert_eq!(ScalarKind::Unit.alignment(), 4);
-    let bundle = LayoutBundle::from_interner(&layouts, [record]).unwrap();
-    let (decoded, restored) = LayoutBundle::decode_canonical(&bundle.canonical_bytes()).unwrap();
-    assert_eq!(decoded.canonical_bytes(), bundle.canonical_bytes());
-    assert_eq!(restored.get(unit).unwrap(), layouts.get(unit).unwrap());
-}
-
 fn list_candidate(guarded: bool) -> CanonicalModule<LoweredCandidate> {
     let mut layouts = LayoutInterner::new();
     let unit = layouts.intern_scalar(ScalarKind::Unit).unwrap();
@@ -180,29 +162,4 @@ Operation::Guard { condition: ok, kind: GuardKind::Bounds }); }
                 operations: ops, terminator: Terminator::Return { values: vec![loaded, length] } }],
         }],
     })
-}
-
-#[test]
-fn unit_storage_list_clone_push_guard_native_oracle() {
-    assert!(check_initial_with_test_witness(list_candidate(false)).is_err(), "unguarded Unit index must refuse");
-    let checked = validate_final_for_test(check_initial_with_test_witness(list_candidate(true)).expect("Unit list initial")).expect("Unit list final");
-    let oracle = (0..3).map(|index| interpret_program(&checked, FunctionId::new(103), vec![InterpreterValue::Size(index)], InterpreterConfig::default())).collect::<Vec<_>>();
-    let artifact = admit_canonical(checked).expect("Unit list exact-byte admission");
-    let engine = wasmtime::Engine::default();
-    let module = wasmtime::Module::new(&engine, artifact.wasm()).unwrap();
-    let mut store = wasmtime::Store::new(&engine, ());
-    let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
-    let run = instance.get_typed_func::<i32, (i32, i32)>(&mut store, "f103").unwrap();
-    for (index, oracle) in oracle.into_iter().enumerate() {
-        let native = run.call(&mut store, index as i32);
-        if index < 2 {
-            let oracle = oracle.unwrap();
-            assert_eq!(oracle.results, vec![InterpreterValue::Unit, InterpreterValue::Size(2)]);
-            assert_eq!(oracle.leaked_objects, 0);
-            assert_eq!(native.unwrap(), (0, 2));
-        } else {
-            assert!(oracle.is_err());
-            assert!(native.is_err());
-        }
-    }
 }

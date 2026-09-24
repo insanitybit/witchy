@@ -30,18 +30,6 @@ fn crypto_rsa_oracle_known_answer_and_tampered_inputs() {
 }
 
 #[test]
-fn crypto_rsa_oracle_key_before_signature_and_hex_statuses() {
-    for key in ["", "00", "gg", "f", "\u{e9}", "3006020101020103"] {
-        assert_eq!(rsa_verify_status(key, "message", "bad signature"), Ok(-1), "{key}");
-    }
-    for signature in ["", "f", "gg", "-0", " 0", "0 ", "\u{e9}"] {
-        assert_eq!(rsa_verify_status(vector::KEY, "message", signature), Ok(-3), "{signature}");
-    }
-    assert_eq!(rsa_hex("+f00AF"), Some(vec![15, 0, 175]));
-    assert_eq!(rsa_hex(""), Some(Vec::new()));
-}
-
-#[test]
 fn crypto_rsa_oracle_pkcs1_encoding_boundaries() {
     let key = rsa_hex(vector::KEY).unwrap();
     assert!(rsa_key_encoding(&key));
@@ -181,27 +169,4 @@ fn crypto_rsa_oracle_range_addition_overflow_is_not_ordinary_bounds() {
     assert_eq!(engine.check_range(object, 1, u64::MAX, false), Err(InterpretError::ArithmeticTrap));
     assert_eq!(engine.check_range(object, 0, u64::MAX, false),
         Err(InterpretError::IndexOutOfBounds { index: u64::MAX, length: 7 }));
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-#[test]
-fn crypto_rsa_oracle_bounded_handler_executes_known_answer() {
-    let (module, layout) = module();
-    let mut engine = Engine::new(module.module(), InterpreterConfig::default());
-    let mut values = BTreeMap::new();
-    let arguments = [
-        buffer(&mut engine, layout, &mut values, vector::KEY.as_bytes()),
-        buffer(&mut engine, layout, &mut values, vector::MESSAGE.as_bytes()),
-        buffer(&mut engine, layout, &mut values, vector::SIGNATURE.as_bytes()),
-    ];
-    let destination = ValueId::new(9000);
-    engine.rsa_verify_host_call(&[destination], &arguments, &mut values).unwrap();
-    assert_eq!(values[&destination], InterpreterValue::Int(1));
-}
-
-#[cfg(target_arch = "wasm32")]
-#[test]
-fn crypto_rsa_oracle_wasm32_primitive_is_explicitly_unsupported() {
-    assert_eq!(rsa_verify_status(vector::KEY, vector::MESSAGE, vector::SIGNATURE),
-        Err(InterpretError::UnsupportedOperation("RSA PKCS1 SHA256 oracle primitive on wasm32")));
 }

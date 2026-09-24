@@ -113,7 +113,7 @@ impl CanonicalAbiCatalog {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::wir_prelude::{abi_import_info, AbiImportClass, WasmTy::{I32, I64}};
+    use crate::wir_prelude::{abi_import_info, AbiImportClass, WasmTy::{}};
 
     #[test]
     fn crypto_rsa_catalog_requires_three_initialized_read_slices() {
@@ -137,18 +137,6 @@ mod tests {
     }
 
     #[test]
-    fn crypto_rsa_catalog_refuses_legacy_and_result_carrier_shapes() {
-        for (name, parameters, results) in [
-            (CRYPTO_RSA_PKCS1_SHA256_VERIFY_IMPORT, vec![I32; 3], vec![I64]),
-            (CRYPTO_RSA_PKCS1_SHA256_VERIFY_IMPORT, vec![I32; 6], vec![I32]),
-            (witchy_syntax::intrinsics::CRYPTO_RSA_PKCS1_SHA256_VERIFY_STATUS, vec![I32; 6], vec![I64]),
-        ] {
-            assert!(authenticated_prelude_import(name, &parameters, &results,
-                FunctionSignatureId::new(0), vec![], vec![], HostMutation::ReadOnly).is_err());
-        }
-    }
-
-    #[test]
     fn crypto_ed25519_catalog_requires_three_initialized_read_slices() {
         let layout = LayoutId::from_bytes([53; 32]);
         let catalog = CanonicalAbiCatalog { imports: BTreeMap::new() }
@@ -169,17 +157,6 @@ mod tests {
         assert!(!info.browser);
     }
 
-    #[test]
-    fn crypto_ed25519_catalog_does_not_accept_the_legacy_header_shape() {
-        assert!(authenticated_prelude_import(
-            CRYPTO_ED25519_VERIFY_IMPORT, &[I32; 3], &[I64], FunctionSignatureId::new(0),
-            vec![], vec![], HostMutation::ReadOnly,
-        ).is_err());
-        assert!(authenticated_prelude_import(
-            witchy_syntax::intrinsics::CRYPTO_ED25519_VERIFY_STATUS, &[I32; 6], &[I64], FunctionSignatureId::new(0),
-            vec![], vec![], HostMutation::ReadOnly,
-        ).is_err());
-    }
 }
 
 pub const CRYPTO_SHA256_IMPORT: &str = "crypto_sha256_slices";

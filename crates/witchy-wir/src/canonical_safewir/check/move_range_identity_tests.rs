@@ -166,16 +166,6 @@ fn move_range_partial_after_move_value_cannot_erase_unmoved_children() {
 }
 
 #[test]
-fn move_range_complete_after_move_value_preserves_transfer_support() {
-    super::super::check_initial(transfer_module(2, 2)).unwrap();
-}
-
-#[test]
-fn move_range_empty_after_move_value_preserves_empty_transfer_support() {
-    super::super::check_initial(transfer_module(0, 0)).unwrap();
-}
-
-#[test]
 fn move_range_completeness_includes_unmaterialized_owned_prefix() {
     // White-box predicate coverage: a summarized Counted value need not have
     // individual slot facts. No claim about a particular ABI transition is

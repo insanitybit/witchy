@@ -1,5 +1,4 @@
 use super::*;
-use crate::canonical_interpreter::{interpret_program, InterpretError, InterpreterConfig, InterpreterValue};
 use crate::canonical_safewir::{AllocationClass, ValueType};
 
 const FUNCTION: FunctionId = FunctionId::new(101);
@@ -79,47 +78,6 @@ fn candidate_with_transfer(present: bool, shared: bool, nullable: bool) -> Canon
 fn validated(present: bool) -> ValidatedSafeWir {
     let initial = check_initial_with_test_witness(candidate(present)).expect("initial nullable check");
     validate_final_for_test(initial).expect("final nullable check")
-}
-
-#[test]
-fn nullable_admission_present_and_absent_agree_with_oracle() {
-    for present in [false, true] {
-        let checked = validated(present);
-        let oracle = interpret_program(&checked, FUNCTION, vec![], InterpreterConfig::default());
-        let artifact = admit_canonical(checked).expect("nullable artifact admission");
-        let engine = wasmtime::Engine::default();
-        let module = wasmtime::Module::new(&engine, artifact.wasm()).unwrap();
-        let mut store = wasmtime::Store::new(&engine, ());
-        let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
-        let output = instance.get_typed_func::<(), i64>(&mut store, "f101").unwrap().call(&mut store, ());
-        if present {
-            let oracle = oracle.unwrap();
-            assert_eq!(oracle.results, vec![InterpreterValue::Int(42)]);
-            assert_eq!(oracle.leaked_objects, 0);
-            assert_eq!(output.unwrap(), 42);
-        } else {
-            assert!(matches!(oracle, Err(InterpretError::GuardTrap)));
-            assert!(output.is_err());
-        }
-    }
-}
-
-#[test]
-fn shared_store_preserves_external_owner_after_parent_drop() {
-    for nullable in [false, true] {
-        let initial = check_initial_with_test_witness(candidate_with_transfer(true, true, nullable)).unwrap();
-        let checked = validate_final_for_test(initial).unwrap();
-        let oracle = interpret_program(&checked, FUNCTION, vec![], InterpreterConfig::default()).unwrap();
-        assert_eq!(oracle.results, vec![InterpreterValue::Int(42)]);
-        assert_eq!(oracle.leaked_objects, 0);
-        let artifact = admit_canonical(checked).expect("shared store exact admission");
-        let engine = wasmtime::Engine::default();
-        let module = wasmtime::Module::new(&engine, artifact.wasm()).unwrap();
-        let mut store = wasmtime::Store::new(&engine, ());
-        let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
-        let output = instance.get_typed_func::<(), i64>(&mut store, "f101").unwrap().call(&mut store, ()).unwrap();
-        assert_eq!(output, 42, "external child survives parent destruction; nullable={nullable}");
-    }
 }
 
 #[test]

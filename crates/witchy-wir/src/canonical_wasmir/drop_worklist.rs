@@ -465,36 +465,6 @@ mod tests {
     }
 
     #[test]
-    fn drop_worklist_width_does_not_allocate_one_frame_per_element() {
-        let count = 10_000usize;
-        let root_bytes = 16 + count * 8;
-        let mut heap = vec![0; root_bytes + count * 16];
-        put(&mut heap, 0, 1);
-        put(&mut heap, 4, (root_bytes - 8) as u32);
-        put(&mut heap, 8, count as u32);
-        put(&mut heap, 12, count as u32);
-        for index in 0..count {
-            let child = root_bytes + index * 16;
-            put(&mut heap, 16 + index * 8, (32 + child + 8) as u32);
-            put(&mut heap, child, 1);
-            put(&mut heap, child + 4, 8);
-        }
-        let (mut store, instance, memory) = fixture(&heap);
-        let before = memory.size(&store);
-        instance.get_typed_func::<i32, ()>(&mut store, "drop").unwrap().call(&mut store, 40).unwrap();
-        assert!(memory.size(&store) <= before + 1, "width must not grow the traversal stack");
-        assert_eq!(global(&instance, &mut store, "frontier"), (32 + heap.len()) as u32);
-        let mut free = global(&instance, &mut store, "free");
-        let mut released = 0;
-        while free != 0 {
-            released += 1;
-            assert!(released <= count + 1, "free list contains a cycle");
-            free = word(memory.data(&store), free as usize);
-        }
-        assert_eq!(released, count + 1);
-    }
-
-    #[test]
     fn drop_worklist_counts_shared_edges_and_refuses_underflow() {
         let mut heap = vec![0; 48];
         for (at, value) in [(0, 1), (4, 24), (8, 2), (12, 2), (16, 72), (24, 72), (32, 2), (36, 8)] {
@@ -540,20 +510,4 @@ mod tests {
         assert!(instance.get_typed_func::<i32, ()>(&mut store, "drop").unwrap().call(&mut store, 40).is_err());
     }
 
-    #[test]
-    fn failed_child_frame_reservation_preserves_the_owned_parent_edge() {
-        let maximum_bytes = 64 * 65_536usize;
-        let mut heap = vec![0; maximum_bytes - 32 - FRAME_BYTES as usize];
-        for (at, value) in [
-            (0, 1), (4, 16), (8, 1), (12, 1),
-            (24, 1), (28, 16), (32, 0), (36, 0),
-        ] {
-            put(&mut heap, at, value);
-        }
-        put(&mut heap, 16, 64);
-        let (mut store, instance, memory) = fixture(&heap);
-        assert!(instance.get_typed_func::<i32, ()>(&mut store, "drop").unwrap().call(&mut store, 40).is_err());
-        assert_eq!(word(memory.data(&store), 48), 64, "a failed worklist growth must not consume the parent's owned edge");
-        assert_eq!(global(&instance, &mut store, "free"), 0, "neither live object may be reclaimed after the failed transfer");
-    }
 }

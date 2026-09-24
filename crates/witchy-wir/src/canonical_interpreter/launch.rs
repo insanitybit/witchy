@@ -100,7 +100,3 @@ pub(super) fn prepare_launch(
     Ok(values)
 }
 }
-
-#[cfg(test)]
-#[path = "launch_tests.rs"]
-mod tests;

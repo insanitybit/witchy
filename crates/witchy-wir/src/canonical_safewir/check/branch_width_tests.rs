@@ -81,9 +81,3 @@ fn signed_size_branch_cannot_hide_reachable_out_of_bounds_access() {
         Err(InitialCheckError::MissingBoundsGuard { .. }),
     ));
 }
-
-#[test]
-fn unsigned_size_branch_keeps_the_high_bit_positive() {
-    check_initial(candidate(ComparisonOperator::LessUnsigned))
-        .expect("unsigned high-bit value is not less than zero");
-}

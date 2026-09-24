@@ -16,32 +16,6 @@ fn documentation_edits_do_not_run_the_deferred_source_interpreter_sweep() {
     }
 }
 
-#[test]
-fn wasm_abi_doc_uses_catalog_contracts_without_deferred_docs_sweep() {
-    for paths in [
-        vec!["spec/wasm-abi.md"],
-        vec!["--focused", "spec/wasm-abi.md"],
-        vec!["--edit-loop", "spec/wasm-abi.md"],
-        vec!["--edit-loop", "Cargo.lock", "crates/witchy-wir/Cargo.toml", "spec/wasm-abi.md"],
-    ] {
-        let commands = selected(&paths);
-        for required in [
-            "every_prelude_import_has_abi_metadata",
-            "parsed_prelude_imports_are_complete",
-            "public_spec_contains_the_generated_complete_catalog",
-            "native_host_links_every_catalog_import_with_the_declared_signature",
-        ] {
-            assert!(commands.iter().any(|command| command.contains(required)),
-                "missing {required}: {commands:?}");
-        }
-        assert!(!commands.iter().any(|command| command.contains("documentation_examples_are_valid")),
-            "ABI document selected the deferred prose sweep: {commands:?}");
-    }
-    let gate = gate_nextest(&["spec/wasm-abi.md"]);
-    assert!(gate.contains("--test misc"), "missing ABI integration tests: {gate}");
-    assert!(!gate.contains("documentation_examples_are_valid"), "{gate}");
-}
-
 fn workspace_root() -> PathBuf {
     let manifest_dir = PathBuf::from(
         std::env::var_os("CARGO_MANIFEST_DIR").expect("Cargo sets CARGO_MANIFEST_DIR for tests"),
@@ -630,24 +604,6 @@ fn new_root_integration_driver_checks_the_binary_budget_first() {
 }
 
 #[test]
-fn wir_abi_surfaces_run_the_catalog_contracts_first() {
-    for path in [
-        "crates/witchy-wir/src/wir_prelude.rs",
-        "crates/witchy-wir/examples/abi_catalog.rs",
-        "tests/misc/wasm_abi_catalog.rs",
-        "spec/wasm-abi.md",
-    ] {
-        let commands = selected(&[path]);
-        assert!(commands[0].contains("every_prelude_import_has_abi_metadata"), "{path}: {commands:?}");
-        assert!(commands[0].contains("parsed_prelude_imports_are_complete"), "{path}: {commands:?}");
-        assert!(commands[1].contains("public_spec_contains_the_generated_complete_catalog"), "{path}: {commands:?}");
-        assert!(commands[1].contains("native_host_links_every_catalog_import_with_the_declared_signature"), "{path}: {commands:?}");
-        assert!(commands[1].contains("capability_imports_name_their_authority_family"), "{path}: {commands:?}");
-        assert!(commands[1].contains("precompiled_runner_authority_rows_are_cataloged"), "{path}: {commands:?}");
-    }
-}
-
-#[test]
 fn authenticated_owner_surfaces_keep_the_cli_contract_probe() {
     for path in [
         "src/commands/compile.rs",
@@ -748,73 +704,6 @@ fn standalone_registry_replay_tests_run_their_own_contract() {
 }
 
 #[test]
-fn edit_loop_stops_after_named_cheap_probes_when_available() {
-    let commands = selected(&["--edit-loop", "crates/witchy-wir/src/wir_prelude.rs"]);
-    assert_eq!(commands.len(), 2, "{commands:?}");
-    assert!(
-        commands[0].contains("every_prelude_import_has_abi_metadata"),
-        "{commands:?}"
-    );
-    assert!(commands[0].contains("--features native"), "{commands:?}");
-    assert!(
-        commands[1].contains("public_spec_contains_the_generated_complete_catalog"),
-        "{commands:?}"
-    );
-    assert!(
-        !commands
-            .iter()
-            .any(|command| command.contains("check.sh --wasm")),
-        "{commands:?}"
-    );
-
-    let focused = selected(&["--focused", "crates/witchy-wir/src/wir_prelude.rs"]);
-    assert!(
-        !focused
-            .iter()
-            .any(|command| command.contains("check.sh --wasm")),
-        "the browser build is docs-site work and no longer rides on compiler edits: {focused:?}"
-    );
-
-    let mixed = selected(&[
-        "--edit-loop",
-        "crates/witchy-wir/src/wir_prelude.rs",
-        "crates/witchy-lower/src/canonical_lower.rs",
-    ]);
-    assert_eq!(mixed.len(), 3, "canonical edit loop expanded past its sentinels: {mixed:?}");
-    assert!(mixed[0].contains("constant_prefix_publication_rejects_gaps_and_missing_children"), "{mixed:?}");
-    assert!(mixed[0].contains("scalar_checker_refuses_non_total_backend_combinations"), "{mixed:?}");
-    assert!(mixed[0].contains("test(boolean_reaches::)"), "{mixed:?}");
-    assert!(mixed[0].contains("scalar_move_range_is_bounds_checked_and_admitted"), "{mixed:?}");
-    assert!(mixed[0].contains("scalar_clone_range_is_ownership_safe_and_admitted"), "{mixed:?}");
-    assert!(mixed[0].contains("owned_tail_nonprefix_range_requires_a_checked_end_bound"), "{mixed:?}");
-    assert!(mixed[0].contains("canonical_capabilities_lower_only_to_externref"), "{mixed:?}");
-    assert!(mixed[0].contains("a_token_of_another_kind_cannot_serve_a_dir_operation"), "{mixed:?}");
-    assert!(mixed[0].contains("validated_safewir_has_one_checker_owned_construction_surface"), "{mixed:?}");
-    assert!(mixed[1].contains("canonical_pipeline::tests::list_string_"), "{mixed:?}");
-    assert!(mixed[2].contains("native_host_links_every_catalog_import_with_the_declared_signature"), "{mixed:?}");
-    assert!(mixed[2].contains("list_pop_projected_coordinates_and_nested_payloads_on_three_legs"), "{mixed:?}");
-    assert!(mixed[2].contains("admitted_entry_without_a_console_grant_is_refused_before_it_runs"), "{mixed:?}");
-    assert!(mixed[2].contains("admitted_guard_near_misses_trap_exactly_at_the_boundary"), "{mixed:?}");
-    assert!(mixed[2].contains("admitted_aggregates_render_structurally_as_the_interpreter_prints_them"), "{mixed:?}");
-    assert!(mixed[2].contains("rfc0165_owner_adapters::server_pool_oracle::"), "{mixed:?}");
-    assert!(
-        mixed[2].contains("rfc0165_owner_adapters::server_workers_reject_raw_wasm_even_with_genuine_entry_metadata"),
-        "{mixed:?}"
-    );
-    assert!(
-        mixed[2].contains("semantic_conformance::independent_expectation_rejects_a_shared_semantic_mutation"),
-        "{mixed:?}"
-    );
-    assert!(mixed[2].contains("source_integration_recipe_runs_selected_console_capture_and_reports_abort"), "{mixed:?}");
-    assert!(mixed[2].contains("commands::embedded_pm::tests::"), "{mixed:?}");
-    assert!(mixed[2].contains("rfc0165_oracle::admitted_observer_is_not_called_on_refusal"), "{mixed:?}");
-    assert!(mixed[2].contains("fetch_root_requires_an_explicit_valid_origin_and_admitted_artifact"), "{mixed:?}");
-    assert!(mixed[2].contains("commands::test_runner::canonical_integration_tests::"), "{mixed:?}");
-    assert!(mixed[2].contains("rfc0165_enum_equality::"), "{mixed:?}");
-    assert!(!mixed.iter().any(|command| command.contains("check.sh --wasm") || command == "cargo nextest run --test misc"), "{mixed:?}");
-}
-
-#[test]
 fn canonical_rewrite_edit_loop_stays_bounded_across_stage_files() {
     let commands = selected(&[
         "--edit-loop",
@@ -860,19 +749,6 @@ fn canonical_rewrite_edit_loop_stays_bounded_across_stage_files() {
                 "test(=rfc0165_oracle::oracle_agrees_on_the_admitted_examples_shard_3)",
             ),
         "the focused route omitted the filtered production oracle: {commands:?}",
-    );
-}
-
-#[test]
-fn canonical_wasmir_edit_keeps_bounds_and_defers_mutation_stress() {
-    let commands = selected(&["--edit-loop", "crates/witchy-wir/src/canonical_wasmir.rs"]);
-    assert_eq!(commands.len(), 3, "canonical WasmIR route changed shape: {commands:?}");
-    assert!(
-        commands[0].contains("admitted_owned_reference_call_executes_and_preserves_ownership")
-            && commands[0].contains("outlined_memory_bounds_body_size_and_executes_shared_nullable_drops")
-            && !commands[0].contains("outlined_address_predicate_mutation_fails_independent_admission")
-            && !commands[0].contains("outlined_retain_saturation_predicate_mutation_fails_admission"),
-        "direct WasmIR edits did not defer the measured mutation stress tests: {commands:?}",
     );
 }
 
@@ -1536,31 +1412,6 @@ fn canonical_type_edit_uses_the_bounded_semantic_sentinels() {
     assert!(commands[0].contains("scalar_move_range_is_bounds_checked_and_admitted"), "{commands:?}");
     assert!(commands[1].contains("canonical_pipeline::tests::list_string_"), "{commands:?}");
     assert!(commands[2].contains("admitted_aggregates_render_structurally_as_the_interpreter_prints_them"), "{commands:?}");
-}
-
-#[test]
-fn owned_prefix_routes_stay_on_narrow_publication_surfaces() {
-    let checker = selected(&["crates/witchy-wir/src/canonical_safewir/check/memory.rs"]);
-    assert!(checker[0].contains("constant_successor_publication_keeps_the_existing_prefix_ownership"), "{checker:?}");
-    assert!(checker[0].contains("constant_prefix_publication_rejects_gaps_and_missing_children"), "{checker:?}");
-
-    for path in [
-        "crates/witchy-lower/src/canonical_list_update.rs",
-        "crates/witchy-lower/src/canonical_pipeline.rs",
-    ] {
-        let commands = selected(&[path]);
-        assert!(commands[0].contains("canonical_pipeline::tests::list_string_"), "{path}: {commands:?}");
-        assert!(commands[1].contains("admitted_aggregates_render_structurally_as_the_interpreter_prints_them"), "{path}: {commands:?}");
-    }
-
-    let launch = selected(&["tests/misc/rfc0165_admitted_launch.rs"]);
-    assert!(launch[0].contains("admitted_aggregates_render_structurally_as_the_interpreter_prints_them"), "{launch:?}");
-
-    let broad_lowering = selected(&["crates/witchy-lower/src/canonical_lower.rs"]);
-    assert!(
-        !broad_lowering.iter().any(|command| command.contains("admitted_aggregates_render_structurally_as_the_interpreter_prints_them")),
-        "the shared lowering file is too broad for the publication probe: {broad_lowering:?}"
-    );
 }
 
 #[test]

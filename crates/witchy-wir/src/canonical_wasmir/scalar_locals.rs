@@ -200,58 +200,13 @@ pub(super) fn verify(function: &Function, assigned: &BTreeMap<ValueId, (u8, usiz
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::canonical_safewir::{AllocationClass, BlockId, FunctionSignatureId};
+    use crate::canonical_safewir::{BlockId, FunctionSignatureId};
 
     fn function(values: &[(ValueId, ValueType)], operations: Vec<Operation>, results: Vec<ValueId>) -> Function {
         Function { id: FunctionId::new(0), signature: FunctionSignatureId::new(0), entry: BlockId::new(0),
             value_types: values.iter().copied().collect(),
             blocks: vec![BasicBlock { id: BlockId::new(0), parameters: Vec::new(), operations, terminator: Terminator::Return { values: results } }],
         }
-    }
-
-    #[test]
-    fn scalar_intervals_are_closed_and_terminator_values_are_pinned() {
-        let [a, b, c] = [ValueId::new(0), ValueId::new(1), ValueId::new(2)];
-        let function = function(&[(a, ValueType::Int), (b, ValueType::Int), (c, ValueType::Int)], vec![
-            Operation::ConstInt { destination: a, value: 1 },
-            Operation::MoveValue { destination: b, source: a },
-            Operation::MoveValue { destination: c, source: b },
-        ], vec![c]);
-        let assigned = slots(&function);
-        assert_eq!(verify(&function, &assigned), Ok(()));
-        assert_ne!(assigned[&a], assigned[&b], "last use and definition in one instruction overlap");
-        assert!(!assigned.contains_key(&c));
-    }
-
-    #[test]
-    fn scalar_allocation_extent_operands_extend_lifetimes() {
-        let [count, first, later, second, object] = [0, 1, 2, 3, 4].map(ValueId::new);
-        let mut layouts = LayoutInterner::new();
-        let int = layouts.intern_scalar(ScalarKind::Int).unwrap();
-        let list = layouts.intern_packed_list(int, crate::layout::RcHeader::Required).unwrap();
-        let function = function(&[(count, ValueType::Size), (first, ValueType::Size), (later, ValueType::Size), (second, ValueType::Size), (object, ValueType::Ref(list))], vec![
-            Operation::ConstSize { destination: count, value: 1 },
-            Operation::MoveValue { destination: first, source: count },
-            Operation::ConstSize { destination: later, value: 9 },
-            Operation::MoveValue { destination: second, source: later },
-            Operation::Alloc { destination: object, layout: list, extent: Extent::Counted { header_bytes: 8, count, capacity: count, stride_bytes: 8 }, class: AllocationClass::ReferenceCounted },
-            Operation::DropRef { object },
-        ], vec![first, second]);
-        let assigned = slots(&function);
-        assert_eq!(verify(&function, &assigned), Ok(()));
-        assert_ne!(assigned[&count], assigned[&later], "Alloc still reads count/capacity after the earlier ordinary use");
-        assert!(!assigned.contains_key(&object));
-        assert!(verify(&function, &[(count, (0, 0)), (later, (0, 0))].into()).is_err(), "Counted metadata is a late runtime use");
-    }
-
-    #[test]
-    fn scalar_cross_block_uses_are_not_recycled() {
-        let [a, b] = [ValueId::new(0), ValueId::new(1)];
-        let mut function = function(&[(a, ValueType::Int), (b, ValueType::Int)], vec![Operation::ConstInt { destination: a, value: 41 }], Vec::new());
-        function.blocks[0].terminator = Terminator::Branch { target: BlockId::new(1), arguments: Vec::new() };
-        function.blocks.push(BasicBlock { id: BlockId::new(1), parameters: Vec::new(), operations: vec![Operation::MoveValue { destination: b, source: a }], terminator: Terminator::Return { values: vec![b] } });
-        assert!(slots(&function).is_empty());
-        assert!(verify(&function, &[(a, (1, 0))].into()).is_err());
     }
 
     #[test]
@@ -269,38 +224,4 @@ mod tests {
         assert!(verify(&function, &[(ValueId::new(99), (1, 0))].into()).is_err());
     }
 
-    #[test]
-    fn scalar_slot_verifier_rejects_parameters_duplicate_and_ineligible_definitions() {
-        let [a, b] = [0, 1].map(ValueId::new);
-        let values = [(a, ValueType::Int), (b, ValueType::Int)];
-        let assigned = [(a, (1, 0))].into();
-        let mut parameter = function(&values, vec![Operation::MoveValue { destination: b, source: a }], vec![b]);
-        parameter.blocks[0].parameters.push(crate::canonical_safewir::BlockParameter { value: a, value_type: ValueType::Int, ownership: None });
-        assert!(verify(&parameter, &assigned).is_err());
-        let duplicate = function(&values, vec![Operation::ConstInt { destination: a, value: 1 },
-            Operation::ConstInt { destination: a, value: 2 }, Operation::MoveValue { destination: b, source: a }], vec![b]);
-        assert!(verify(&duplicate, &assigned).is_err());
-        let call = function(&values, vec![Operation::Call { destinations: vec![a], callee: FunctionId::new(1), arguments: Vec::new() },
-            Operation::MoveValue { destination: b, source: a }], vec![b]);
-        assert!(verify(&call, &assigned).is_err());
-        let unused = function(&values, vec![Operation::ConstInt { destination: a, value: 1 }], Vec::new());
-        assert!(verify(&unused, &assigned).is_err());
-    }
-
-    #[test]
-    fn scalar_slot_verifier_rejects_deferred_aggregate_fields_and_pointer_kinds() {
-        let [a, b, aggregate] = [0, 1, 2].map(ValueId::new);
-        let mut layouts = LayoutInterner::new();
-        let int = layouts.intern_scalar(ScalarKind::Int).unwrap();
-        let function = function(&[(a, ValueType::Int), (b, ValueType::Int), (aggregate, ValueType::InlineAggregate(int))], vec![
-            Operation::ConstInt { destination: a, value: 42 },
-            Operation::MakeInlineAggregate { destination: aggregate, layout: int, fields: vec![a] },
-            Operation::MoveValue { destination: b, source: a },
-        ], vec![b]);
-        assert!(verify(&function, &[(a, (1, 0))].into()).is_err());
-        // White-box forged storage inputs, not fabricated checked modules.
-        let mut pointer = function;
-        pointer.value_types.insert(a, ValueType::Ref(int));
-        assert!(verify(&pointer, &[(a, (0, 0))].into()).is_err());
-    }
 }

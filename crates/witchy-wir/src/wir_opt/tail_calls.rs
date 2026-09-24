@@ -8,8 +8,6 @@ use analysis::{
     dispatcher_results_compatible, has_single_result, indirect_signature_matches,
     strongly_connected_components,
 };
-#[cfg(test)]
-pub(in crate::wir_opt) use hygiene::{rename_expr_locals, rename_node_locals};
 use hygiene::{
     adapt_function_result_to_slot, rename_seq_locals, unique_dispatch_label,
     unique_function_name, unique_label, unique_local_name,

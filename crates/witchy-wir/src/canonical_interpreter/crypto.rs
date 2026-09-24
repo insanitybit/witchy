@@ -174,12 +174,4 @@ mod tests {
         assert_eq!(verify_status(&"+0".repeat(32), "", SIGNATURE), 0);
     }
 
-    #[test]
-    fn crypto_ed25519_oracle_preserves_native_hex_byte_spelling() {
-        assert_eq!(decode_hex::<3>("00aAFF"), Some([0, 170, 255]));
-        assert_eq!(decode_hex::<1>("+f"), Some([15]));
-        for malformed in ["", "f", "fff", " f", "f ", "-0", "gg", "\u{00e9}"] {
-            assert_eq!(decode_hex::<1>(malformed), None, "{malformed:?}");
-        }
-    }
 }

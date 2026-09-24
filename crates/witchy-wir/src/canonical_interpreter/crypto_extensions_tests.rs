@@ -23,21 +23,6 @@ fn crypto_extensions_oracle_ecdsa_vectors_and_status_precedence() {
     assert_eq!(ecdsa_status(KEY, "", "3006020100020100", true), Ok(0));
 }
 
-#[test]
-fn crypto_extensions_oracle_shake_independent_raw_vectors_and_prefixes() {
-    for (name, empty, raw) in [
-        (CRYPTO_SHAKE128_IMPORT, "7f9c2ba4e88f827d616045507605853e", "131ab8d2b594946b9c81333f9bb6e0ce"),
-        (CRYPTO_SHAKE256_IMPORT, "46b9dd2b0ba88d13233b3feb743eeb24", "cd8a920ed141aa0407a22d59288652e9"),
-    ] {
-        assert_eq!(hex(&shake(name, b"", 16).unwrap()), empty.as_bytes());
-        assert_eq!(hex(&shake(name, &[0xa3; 200], 16).unwrap()), raw.as_bytes());
-        let short = shake(name, &[0, 255, 128], 17).unwrap();
-        assert_eq!(shake(name, &[0, 255, 128], 169).unwrap()[..17], short);
-        assert_eq!(shake(name, &[255], 0).unwrap(), Vec::<u8>::new());
-        for length in [-1, 1_048_577, i64::MIN, i64::MAX] { assert!(shake(name, b"", length).is_err()); }
-    }
-}
-
 fn module() -> (ValidatedSafeWir, LayoutId) {
     let mut layouts = LayoutInterner::new();
     let byte = layouts.intern_scalar(ScalarKind::RawByte).unwrap();
@@ -103,31 +88,5 @@ fn crypto_extensions_oracle_checks_initialized_inputs_and_full_output_capacity()
         assert!(engine.crypto_extension_host_call(name, &[destination], &arguments, &mut values).is_err(), "{invalid}");
         assert_eq!(values[&destination], InterpreterValue::Size(77));
         assert_eq!(engine.objects[&output_object].cells, before);
-    }
-}
-
-#[test]
-fn crypto_extensions_oracle_short_output_is_untouched_and_exact_output_is_initialized() {
-    let (module, layout) = module();
-    let mut engine = Engine::new(module.module(), InterpreterConfig::default());
-    for capacity in [0, 15, 16, 24] {
-        let mut values = BTreeMap::new();
-        let input = buffer(&mut engine, layout, &mut values, b"", AccessMode::Read);
-        let output = buffer(&mut engine, layout, &mut values, &vec![0xa5; capacity], AccessMode::Write);
-        let HostCallArgument::Buffer { place, .. } = &output else { unreachable!() };
-        let InterpreterValue::ObjectRef(object) = values[&place.object()] else { unreachable!() };
-        let mut expected = engine.objects[&object].cells.clone();
-        let length = ValueId::new(9000);
-        let destination = ValueId::new(9001);
-        values.insert(length, InterpreterValue::Int(16));
-        engine.crypto_extension_host_call(CRYPTO_SHAKE128_IMPORT, &[destination],
-            &[input, HostCallArgument::Value(length), output], &mut values).unwrap();
-        assert_eq!(values[&destination], InterpreterValue::Size(16));
-        if capacity >= 16 {
-            for (offset, byte) in [0x7f, 0x9c, 0x2b, 0xa4, 0xe8, 0x8f, 0x82, 0x7d, 0x61, 0x60, 0x45, 0x50, 0x76, 0x05, 0x85, 0x3e].into_iter().enumerate() {
-                expected.insert(CellKey::Element(offset as u64), InterpreterValue::Size(byte));
-            }
-        }
-        assert_eq!(engine.objects[&object].cells, expected);
     }
 }

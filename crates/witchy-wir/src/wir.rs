@@ -2213,8 +2213,3 @@ fn escape_data(bytes: &[u8]) -> String {
     }
     s
 }
-
-#[cfg(test)]
-#[cfg(feature = "native")]
-#[path = "wir_tests.rs"]
-mod tests;

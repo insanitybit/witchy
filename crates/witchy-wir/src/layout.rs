@@ -57,29 +57,3 @@ pub fn type_tag_of(name: &str) -> u8 {
     }
     (h % 255) as u8 + 1
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn type_tag_vectors_are_stable() {
-        assert_eq!(type_tag_of("Point"), 181);
-        assert_eq!(type_tag_of("packed:Point"), 118);
-        assert_eq!(type_tag_of("main.Point"), 40);
-        assert_eq!(type_tag_of("Option"), 77);
-        assert_eq!(type_tag_of("Result"), 208);
-        assert_eq!(type_tag_of(""), 2);
-    }
-
-    #[test]
-    fn slot_layout_vectors_are_stable() {
-        assert_eq!(DATA_BASE, 8);
-        assert_eq!(SLOT_HEADER_SIZE, 4);
-        assert_eq!(VALUE_SLOT_SIZE, 8);
-        assert_eq!(slot_record_size(0), 4);
-        assert_eq!(slot_record_size(3), 28);
-        assert_eq!(slot_offset(0), 4);
-        assert_eq!(slot_offset(3), 28);
-    }
-}

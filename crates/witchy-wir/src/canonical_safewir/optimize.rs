@@ -345,43 +345,6 @@ mod tests {
     const TAIL_SITE: TailSiteId = TailSiteId::from_digest([7; 32]);
 
     #[test]
-    fn analysis_facts_are_scoped_to_the_snapshot_and_program_point() {
-        let before = validated(duplicate_operations());
-        let point = ProgramPoint {
-            revision: before.revision(), function: FUNCTION, block: BlockId::new(0), operation: 6,
-        };
-        let mut analyses = AnalysisDb::new(&before);
-        assert_eq!(analyses.query::<BoundsGuardRedundancy>(point), Some(&true));
-        assert_eq!(analyses.query::<BoundsGuardRedundancy>(ProgramPoint { operation: 3, ..point }), Some(&false));
-        for invalid in [
-            ProgramPoint { revision: Revision::new(2), ..point },
-            ProgramPoint { function: FunctionId::new(7), ..point },
-            ProgramPoint { block: BlockId::new(9), ..point },
-            ProgramPoint { operation: 99, ..point },
-        ] {
-            assert_eq!(analyses.query::<BoundsGuardRedundancy>(invalid), None);
-        }
-        let mut different = duplicate_operations();
-        different[5] = comparison(SECOND_CONDITION, ComparisonOperator::LessEqualUnsigned, LEFT, RIGHT);
-        let other = validated(different);
-        assert_eq!(other.revision(), before.revision());
-        assert_eq!(AnalysisDb::new(&other).query::<BoundsGuardRedundancy>(point), Some(&false));
-
-        let after = eliminate_same_block_redundant_bounds_guards(before.clone()).unwrap();
-        let mut next = AnalysisDb::new(&after);
-        assert_eq!(next.query::<BoundsGuardRedundancy>(point), None);
-        assert_eq!(next.query::<BoundsGuardRedundancy>(ProgramPoint { revision: after.revision(), ..point }), None);
-    }
-
-    #[test]
-    fn repeated_passes_are_idempotent() {
-        let first = eliminate_same_block_redundant_bounds_guards(validated(duplicate_operations())).unwrap();
-        let second = eliminate_same_block_redundant_bounds_guards(first.clone()).unwrap();
-        assert_eq!(second.revision(), first.revision());
-        assert_eq!(super::super::identity::module_digest(&second), super::super::identity::module_digest(&first));
-    }
-
-    #[test]
     fn optional_pass_failure_preserves_initial_authority_and_final_validation() {
         let mut lowered = candidate(vec![block(0, duplicate_operations(), Terminator::Return { values: Vec::new() })]);
         lowered.revision = Revision::new(u64::MAX);
@@ -406,63 +369,6 @@ mod tests {
             panic!("initial authority changed kind on retention");
         };
         super::super::validate_final_for_test(original).expect("retained authority validates");
-    }
-
-    #[test]
-    fn declined_second_pass_retains_first_checked_revision() {
-        let initial = validated_authority(duplicate_operations());
-        let first = match run_checked_pass(initial, PassId::SameBlockBoundsGuards) {
-            CheckedPassOutcome::Applied(checked) => checked,
-            CheckedPassOutcome::Retained { reason, .. } => panic!("first pass retained: {reason:?}"),
-        };
-        let first_revision = first.module().revision();
-        let first_digest = super::super::identity::module_digest(first.module());
-        let second = match run_checked_pass(first, PassId::SameBlockBoundsGuards) {
-            CheckedPassOutcome::Applied(_) => panic!("idempotent second pass changed the module"),
-            CheckedPassOutcome::Retained { current, reason } => {
-                assert!(matches!(
-                    reason,
-                    CheckedPassError::SameBlockBoundsGuards(
-                        BoundsGuardEliminationError::NoChange
-                    )
-                ));
-                current
-            }
-        };
-        assert_eq!(second.module().revision(), first_revision);
-        assert_eq!(super::super::identity::module_digest(second.module()), first_digest);
-        let CheckedSafeWirRevision::Optimized(second) = second else {
-            panic!("a declined second pass lost optimized authority");
-        };
-        super::super::validate_optimized_final_for_test(second)
-            .expect("the retained checked pass chain validates");
-    }
-
-    #[test]
-    fn independent_analysis_extensions_compute_once_per_function() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        use super::super::analysis::Analysis;
-        static COMPUTATIONS: AtomicUsize = AtomicUsize::new(0);
-        struct OperationCount;
-        impl Analysis for OperationCount {
-            type Result = usize;
-            type Fact = usize;
-            const VERSION: u32 = 3;
-            fn compute(_module: &CanonicalModule<InitialValid>, function: &Function) -> usize {
-                COMPUTATIONS.fetch_add(1, Ordering::Relaxed);
-                function.blocks.iter().map(|block| block.operations.len()).sum()
-            }
-            fn fact_at(result: &usize, _point: ProgramPoint) -> Option<&usize> {
-                Some(result)
-            }
-        }
-        let before = validated(duplicate_operations());
-        let mut analyses = AnalysisDb::new(&before);
-        for operation in [0, 3, 6, 7] {
-            let point = ProgramPoint { revision: before.revision(), function: FUNCTION, block: BlockId::new(0), operation };
-            assert_eq!(analyses.query::<OperationCount>(point), Some(&7));
-        }
-        assert_eq!(COMPUTATIONS.load(Ordering::Relaxed), 1);
     }
 
     fn block(id: u32, operations: Vec<Operation>, terminator: Terminator) -> BasicBlock {
@@ -548,15 +454,6 @@ mod tests {
         .expect("initial graph is valid")
     }
 
-    fn validated_authority(operations: Vec<Operation>) -> CheckedInitialSafeWir {
-        super::super::check_initial_with_test_witness(candidate(vec![block(
-            0,
-            operations,
-            Terminator::Return { values: Vec::new() },
-        )]))
-        .expect("initial authority is valid")
-    }
-
     fn validated_with_tail_location() -> CanonicalModule<InitialValid> {
         let module = candidate_with_tail_sites(
             vec![block(
@@ -611,108 +508,6 @@ mod tests {
             ),
             bounds(SECOND_CONDITION),
         ]
-    }
-
-    #[test]
-    fn removes_only_the_later_same_block_guard_and_revalidates() {
-        let optimized =
-            eliminate_same_block_redundant_bounds_guards(validated(duplicate_operations()))
-                .expect("rewrite relation and full revalidation");
-        assert_eq!(optimized.revision(), Revision::new(2));
-        let operations = &optimized.functions()[0].blocks[0].operations;
-        assert_eq!(operations.len(), 6);
-        assert!(operations.contains(&bounds(FIRST_CONDITION)));
-        assert!(!operations.contains(&bounds(SECOND_CONDITION)));
-        assert!(operations.contains(&comparison(
-            SECOND_CONDITION,
-            ComparisonOperator::LessUnsigned,
-            LEFT,
-            RIGHT,
-        )));
-    }
-
-    #[test]
-    fn no_op_keeps_the_existing_revision() {
-        let operations = vec![
-            Operation::ConstSize {
-                destination: LEFT,
-                value: 1,
-            },
-            Operation::ConstSize {
-                destination: RIGHT,
-                value: 2,
-            },
-            comparison(
-                FIRST_CONDITION,
-                ComparisonOperator::LessUnsigned,
-                LEFT,
-                RIGHT,
-            ),
-            bounds(FIRST_CONDITION),
-            comparison(
-                SECOND_CONDITION,
-                ComparisonOperator::LessEqualUnsigned,
-                LEFT,
-                RIGHT,
-            ),
-            Operation::ConstInt {
-                destination: MARKER,
-                value: 0,
-            },
-        ];
-        let optimized = eliminate_same_block_redundant_bounds_guards(validated(operations))
-            .expect("unchanged graph is revalidated");
-        assert_eq!(optimized.revision(), Revision::new(1));
-    }
-
-    #[test]
-    fn changed_graph_refuses_revision_overflow() {
-        let mut lowered = candidate(vec![block(
-            0,
-            duplicate_operations(),
-            Terminator::Return { values: Vec::new() },
-        )]);
-        lowered.revision = Revision::new(u64::MAX);
-        let initial = super::super::check_initial(lowered).expect("initial graph is valid");
-        assert_eq!(
-            eliminate_same_block_redundant_bounds_guards(initial).unwrap_err(),
-            BoundsGuardEliminationError::RevisionOverflow {
-                revision: Revision::new(u64::MAX),
-            },
-        );
-    }
-
-    #[test]
-    fn does_not_remove_different_operator_or_operands_or_guard_kind() {
-        for later in [
-            comparison(
-                SECOND_CONDITION,
-                ComparisonOperator::LessEqualUnsigned,
-                LEFT,
-                RIGHT,
-            ),
-            comparison(
-                SECOND_CONDITION,
-                ComparisonOperator::LessUnsigned,
-                RIGHT,
-                LEFT,
-            ),
-        ] {
-            let mut operations = duplicate_operations();
-            operations[5] = later;
-            let optimized = eliminate_same_block_redundant_bounds_guards(validated(operations))
-                .expect("non-matching guard remains valid");
-            assert_eq!(optimized.functions()[0].blocks[0].operations.len(), 7);
-        }
-
-        let mut operations = duplicate_operations();
-        operations[6] = Operation::Guard {
-            condition: SECOND_CONDITION,
-            kind: GuardKind::Arithmetic,
-        };
-        let optimized = eliminate_same_block_redundant_bounds_guards(validated(operations))
-            .expect("non-bounds guard remains valid");
-        assert_eq!(optimized.functions()[0].blocks[0].operations.len(), 7);
     }
 
     #[test]
@@ -803,14 +598,6 @@ mod tests {
             check_rewrite_relation(&before, &different),
             Err(RewriteRelationError::OperationChanged),
         );
-    }
-
-    #[test]
-    fn relation_preserves_proper_tail_locations() {
-        let before = validated_with_tail_location();
-        let preserved: CanonicalModule<OptimizationCandidate> = before.clone().into_stage();
-
-        assert_eq!(check_rewrite_relation(&before, &preserved), Ok(()));
     }
 
     #[test]

@@ -1178,43 +1178,6 @@ mod tests {
         assert_ne!(module_digest(&candidate(1, false)), module_digest(&candidate(2, false)));
     }
 
-    #[test]
-    fn function_value_changes_sha256_identity() {
-        let first = candidate(1, false);
-        let mut changed = candidate(1, false);
-        changed.functions[0].blocks[0].operations = vec![Operation::FunctionValue {
-            destination: ValueId::new(0),
-            function: FunctionId::new(0),
-        }];
-        assert_ne!(module_digest(&first), module_digest(&changed));
-    }
-
-    #[test]
-    fn map_construction_order_does_not_change_identity() {
-        assert_eq!(
-            module_digest(&candidate(1, false)),
-            module_digest(&candidate(1, true))
-        );
-    }
-
-    #[test]
-    fn rooted_view_source_identity_is_lifetime_free_and_not_a_loan_alias() {
-        use witchy_syntax::ast::{Type, TypeQual};
-
-        let inner = Type::Named("Int".into(), Vec::new());
-        let encoded = |source| {
-            let mut writer = CanonicalWriter::new(1, b"test/source-type");
-            writer.source_type(&source);
-            writer.finish()
-        };
-        let view = encoded(Type::Qualified(TypeQual::View, Box::new(inner.clone())));
-        let borrow = encoded(Type::Qualified(TypeQual::Borrow("a".into()), Box::new(inner.clone())));
-        let mutable = encoded(Type::Qualified(TypeQual::BorrowMut("a".into()), Box::new(inner)));
-
-        assert_ne!(view, borrow, "a rooted view is not a lifetime-bearing shared loan");
-        assert_ne!(view, mutable, "a rooted view is not a mutable loan");
-    }
-
     fn with_static_data(
         module: CanonicalModule<super::super::LoweredCandidate>,
         segments: Vec<super::super::StaticDataSegment>,

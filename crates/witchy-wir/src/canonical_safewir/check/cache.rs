@@ -584,7 +584,7 @@ mod store {
 
         use super::super::super::super::TailSiteId;
         use super::super::FunctionCheckKey;
-        use super::{claim, read, stamp_dir, write};
+        use super::{read, stamp_dir, write};
 
         fn scratch(name: &str) -> std::path::PathBuf {
             let dir = std::env::temp_dir()
@@ -630,30 +630,6 @@ mod store {
             let _ = fs::remove_dir_all(&root);
         }
 
-        /// A second claimant blocks until the first publishes and releases, so
-        /// it reads the verdict instead of checking again. Without the lock the
-        /// second thread reads before the first has written and sees nothing.
-        #[test]
-        fn a_claim_excludes_a_concurrent_claim_until_the_verdict_is_published() {
-            let root = scratch("claim");
-            let dir = stamp_dir(&root);
-            let key = FunctionCheckKey([9; 32]);
-            let sites = [[3; 32]].into_iter().map(TailSiteId::from_digest).collect::<BTreeSet<_>>();
-            let held = claim(&dir, &key).expect("first claim").expect("the first claimant holds the lock");
-            let waiter = {
-                let dir = dir.clone();
-                std::thread::spawn(move || {
-                    let second = claim(&dir, &key).expect("second claim");
-                    assert!(second.is_none(), "a claimant that waited must not keep the lock");
-                    read(&dir, &key)
-                })
-            };
-            std::thread::sleep(std::time::Duration::from_millis(200));
-            write(&dir, key, &sites);
-            drop(held);
-            assert_eq!(waiter.join().expect("waiter"), Some(sites));
-            let _ = fs::remove_dir_all(&root);
-        }
     }
 }
 

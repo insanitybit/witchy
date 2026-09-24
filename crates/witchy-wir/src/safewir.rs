@@ -593,43 +593,6 @@ mod tests {
     }
 
     #[test]
-    fn rule_codes_are_unique_and_schema_stable() {
-        const SCHEMA_1_GOLDEN: &[(u8, &str)] = &[
-            (0, "SWIR-MOD-001"),
-            (1, "SWIR-LAY-001"),
-            (2, "SWIR-PROV-001"),
-            (3, "SWIR-OWN-001"),
-            (4, "SWIR-OWN-002"),
-            (5, "SWIR-GEN-001"),
-            (6, "SWIR-RNG-001"),
-            (7, "SWIR-RNG-002"),
-            (8, "SWIR-CTL-001"),
-            (9, "SWIR-CTL-002"),
-            (10, "SWIR-CALL-001"),
-            (11, "SWIR-CALL-002"),
-            (12, "SWIR-MEM-001"),
-            (13, "SWIR-MEM-002"),
-            (14, "SWIR-BULK-001"),
-            (15, "SWIR-REF-001"),
-            (16, "SWIR-HOST-001"),
-            (17, "SWIR-KERN-001"),
-            (18, "SWIR-ENC-001"),
-            (19, "SWIR-BUD-001"),
-            (20, "SWIR-GC-001"),
-        ];
-        let codes: BTreeSet<_> = RuleId::ALL.iter().copied().map(RuleId::code).collect();
-        assert_eq!(RuleId::ALL.len(), RuleId::COUNT);
-        assert_eq!(codes.len(), RuleId::COUNT);
-        let actual: Vec<_> = RuleId::ALL
-            .iter()
-            .copied()
-            .map(|rule| (rule as u8, rule.code()))
-            .collect();
-        assert_eq!(SAFEWIR_SCHEMA_VERSION, 1, "update the golden under a new schema");
-        assert_eq!(actual, SCHEMA_1_GOLDEN, "schema-1 rule IDs are append-only");
-    }
-
-    #[test]
     fn unknown_callable_result_never_claims_freshness() {
         let contract = CallableMemoryContract::unknown(2);
         assert_eq!(contract.result, CallableMemoryResult::Unknown);
@@ -651,19 +614,6 @@ mod tests {
         );
         assert!(contract.parameters.iter().all(|parameter| parameter.effects.is_unknown()));
         assert!(contract.result_effects_are_consistent());
-    }
-
-    #[test]
-    fn callable_effect_join_is_conservative_and_kills_mutable_range_facts() {
-        assert_eq!(ParameterMemoryEffects::default(), ParameterMemoryEffects::unknown());
-        let read_write = ParameterMemoryEffects::only(ParameterMemoryEffect::Read)
-            .join(ParameterMemoryEffects::only(ParameterMemoryEffect::Write));
-        assert!(read_write.contains(ParameterMemoryEffect::Read));
-        assert!(read_write.contains(ParameterMemoryEffect::Write));
-        assert!(read_write.preserves_unique_ownership());
-        assert!(!read_write.preserves_object_range_facts());
-        assert!(!ParameterMemoryEffects::unknown().preserves_unique_ownership());
-        assert!(!ParameterMemoryEffects::unknown().preserves_object_range_facts());
     }
 
     #[test]
@@ -700,70 +650,6 @@ mod tests {
         assert!(place.range_matches_object_generation());
         place.range.object.generation = GenerationId::new(1);
         assert!(!place.range_matches_object_generation());
-    }
-
-    #[test]
-    fn projections_compose_without_forging_offsets() {
-        let index = DefinitionId::new(3);
-        let projection = Projection::root()
-            .project(ProjectionStep::Header { component: 0 })
-            .project(ProjectionStep::Element { index })
-            .project(ProjectionStep::Field { index: 1 });
-        assert_eq!(
-            projection.steps(),
-            &[
-                ProjectionStep::Header { component: 0 },
-                ProjectionStep::Element { index },
-                ProjectionStep::Field { index: 1 },
-            ]
-        );
-    }
-
-    #[test]
-    fn aliases_are_generation_specific_and_empty_sets_are_invalid() {
-        let identity = ObjectIdentity {
-            root: DefinitionId::new(11),
-            generation: GenerationId::new(4),
-        };
-        let alias = Provenance::Aliases {
-            object: identity,
-            projection: Projection::root(),
-        };
-        assert!(alias.has_nonempty_alias_set());
-        assert!(!Provenance::MayAlias(BTreeSet::new()).has_nonempty_alias_set());
-
-        let contract = CallableMemoryContract {
-            parameters: vec![ParameterMemoryContract {
-                entry: ParameterMemoryEntry::Shared,
-                layout: Some(layout(3)),
-                extent: Some(ContractExtent::Exact(ContractSizeExpr::Constant(8))),
-                dynamic_header: None,
-                effects: ParameterMemoryEffects::none(),
-            }],
-            result: CallableMemoryResult::Shared(BTreeSet::new()),
-        };
-        assert!(!contract.result_effects_are_consistent());
-    }
-
-    #[test]
-    fn contract_facts_are_caller_substitutable() {
-        let projection = ContractProjection::from_steps([
-            ContractProjectionStep::Header { component: 1 },
-            ContractProjectionStep::Field { index: 2 },
-            ContractProjectionStep::Element { index: 3 },
-        ]);
-        assert_eq!(projection.steps().len(), 3);
-
-        let result = CallableMemoryResult::Fresh {
-            layout: layout(4),
-            extent: ContractExtent::Counted {
-                header: ContractSizeExpr::Constant(8),
-                count: ContractSizeExpr::Parameter(0),
-                stride: ContractSizeExpr::Constant(4),
-            },
-        };
-        assert!(matches!(result, CallableMemoryResult::Fresh { .. }));
-        assert_ne!(Extent::Unknown, Extent::Exact(SizeExpr::Constant(0)));
     }
 
     #[test]

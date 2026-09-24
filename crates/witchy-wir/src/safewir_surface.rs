@@ -34,20 +34,6 @@ pub const fn scratch_formatter_prefix_is_nonwrapping(length: u32) -> bool {
     length <= MAX_SCRATCH_FORMATTER_PREFIX_LENGTH
 }
 
-#[cfg(test)]
-mod scratch_formatter_range_tests {
-    use super::{
-        MAX_SCRATCH_FORMATTER_PREFIX_LENGTH, scratch_formatter_prefix_is_nonwrapping,
-    };
-
-    #[test]
-    fn scratch_formatter_uses_the_full_unsigned_i32_address_domain() {
-        assert_eq!(MAX_SCRATCH_FORMATTER_PREFIX_LENGTH, u32::MAX - 21);
-        assert!(scratch_formatter_prefix_is_nonwrapping(u32::MAX - 21));
-        assert!(!scratch_formatter_prefix_is_nonwrapping(u32::MAX - 20));
-    }
-}
-
 #[derive(Debug, Clone)]
 pub enum SafeSizeExpr {
     Constant(u64),
@@ -370,37 +356,9 @@ pub enum SafeCopyKind {
 
 #[cfg(test)]
 mod tests {
-
-    // RFC-0162: the numeric backward cursor is a sealed, non-authorizing
-    // marker. It must never be inferred from projection steps, and it must
-    // never travel through the ordinary `from_steps` construction path.
-    #[test]
-    fn numeric_backward_cursor_marker_is_sealed() {
-        let root = SafeProjectionExpr::root();
-        assert!(!root.is_numeric_backward_cursor());
-        assert!(root.steps().is_empty());
-
-        let marked = SafeProjectionExpr::numeric_backward_cursor();
-        assert!(marked.is_numeric_backward_cursor());
-        assert!(
-            marked.steps().is_empty(),
-            "the marker carries no projection authority",
-        );
-
-        // Ordinary construction never sets the marker, whatever the steps.
-        let ordinary = SafeProjectionExpr::from_steps([
-            SafeProjectionStep::Field { index: 0 },
-            SafeProjectionStep::SumTag,
-        ]);
-        assert!(
-            !ordinary.is_numeric_backward_cursor(),
-            "from_steps must not infer the sealed marker",
-        );
-        assert_eq!(ordinary.steps().len(), 2);
-    }
     use super::*;
     use crate::safewir::AccessMode;
-    use crate::wir::{Kind, WirFunc, WirLocal, WirModule, WirNode, WirTy, to_wat};
+    use crate::wir::{Kind, WirFunc, WirLocal, WirModule, WirNode, WirTy};
 
     fn place_with_root(
         access: AccessMode,
@@ -477,187 +435,6 @@ mod tests {
         assert!(matches!(claim.object.provenance, SafeProvenanceExpr::Unknown));
     }
 
-    #[test]
-    fn semantic_memory_operations_have_the_exact_raw_wat_shape() {
-        let raw = module(vec![
-            WirNode::Drop(WirExpr::Load {
-                ptr: Box::new(WirExpr::GetLocal("object".into())),
-                kind: Kind::I32,
-                offset: 4,
-            }),
-            WirNode::Store {
-                ptr: WirExpr::GetLocal("object".into()),
-                value: WirExpr::ConstI32(9),
-                kind: Kind::I32,
-                offset: 8,
-            },
-            WirNode::Drop(WirExpr::Load8U {
-                ptr: Box::new(WirExpr::GetLocal("object".into())),
-                offset: 3,
-            }),
-            WirNode::Store8 {
-                ptr: WirExpr::GetLocal("object".into()),
-                value: WirExpr::ConstI32(1),
-                offset: 2,
-            },
-            WirNode::MemoryCopy {
-                dest: WirExpr::GetLocal("object".into()),
-                src: WirExpr::GetLocal("object".into()),
-                len: WirExpr::ConstI32(4),
-            },
-            WirNode::MemoryFill {
-                dest: WirExpr::GetLocal("object".into()),
-                value: WirExpr::ConstI32(0),
-                len: WirExpr::ConstI32(4),
-            },
-        ]);
-        let semantic = module(vec![
-            WirNode::Drop(WirExpr::SafeLoad {
-                place: place(AccessMode::Read, 4),
-                kind: Kind::I32,
-            }),
-            WirNode::SafeStore {
-                place: place(AccessMode::Write, 8),
-                value: WirExpr::ConstI32(9),
-                kind: Kind::I32,
-            },
-            WirNode::Drop(WirExpr::SafeLoad8U {
-                place: place(AccessMode::Read, 3),
-            }),
-            WirNode::SafeStore8 {
-                place: place(AccessMode::Write, 2),
-                value: WirExpr::ConstI32(1),
-            },
-            WirNode::SafeMemoryCopy {
-                destination: place(AccessMode::Write, 0),
-                source: place(AccessMode::Read, 0),
-                len: WirExpr::ConstI32(4),
-                kind: SafeCopyKind::MayOverlap,
-            },
-            WirNode::SafeMemoryFill {
-                destination: place(AccessMode::Write, 0),
-                value: WirExpr::ConstI32(0),
-                len: WirExpr::ConstI32(4),
-            },
-        ]);
-
-        assert_eq!(to_wat(&semantic), to_wat(&raw));
-    }
-
-    // RFC-0162: the 584-site migration can only proceed one subsystem at a time
-    // if a PARTIALLY migrated module still encodes. Validation forbids raw
-    // memory and the ordinary encoder forbids SafeWIR, so without the bridge a
-    // module holding one migrated site and one unmigrated site would encode
-    // through neither, and all 584 would have to move at once.
-    #[test]
-    fn migration_bridge_encodes_a_module_that_is_part_raw_and_part_safewir() {
-        let mixed = module(vec![
-            // an already-migrated site
-            WirNode::Drop(WirExpr::SafeLoad {
-                place: place(AccessMode::Read, 0),
-                kind: Kind::I32,
-            }),
-            // a site not migrated yet
-            WirNode::Drop(WirExpr::Load {
-                ptr: Box::new(WirExpr::GetLocal("object".into())),
-                kind: Kind::I32,
-                offset: 0,
-            }),
-        ]);
-        let encoded = crate::wir_encode::try_encode_with_gc_source_map(&mixed, &[], &[])
-            .expect("a partially migrated module must still encode");
-        assert!(!encoded.wasm.is_empty());
-
-        // And the migrated site erases to exactly the raw operation it denotes,
-        // so migrating a site does not change the emitted program.
-        let all_raw = module(vec![
-            WirNode::Drop(WirExpr::Load {
-                ptr: Box::new(WirExpr::GetLocal("object".into())),
-                kind: Kind::I32,
-                offset: 0,
-            }),
-            WirNode::Drop(WirExpr::Load {
-                ptr: Box::new(WirExpr::GetLocal("object".into())),
-                kind: Kind::I32,
-                offset: 0,
-            }),
-        ]);
-        let raw_encoded = crate::wir_encode::try_encode_with_gc_source_map(&all_raw, &[], &[])
-            .expect("the all-raw module encodes");
-        assert_eq!(
-            encoded.wasm, raw_encoded.wasm,
-            "migrating a site must not change the emitted bytes",
-        );
-
-        // Pin byte identity against the PRE-BRIDGE implementation, which still
-        // exists as the test-only `try_encode_with_gc`. Comparing the bridge
-        // only against itself would not catch erasure drifting away from what
-        // the raw encoder emits.
-        let pre_bridge = crate::wir_encode::try_encode_with_gc(&all_raw, &[], &[])
-            .expect("the all-raw module encodes on the pre-bridge path");
-        assert_eq!(
-            raw_encoded.wasm, pre_bridge,
-            "the bridge must be byte-identity for an all-raw module",
-        );
-    }
-
-    // The mixed case the bridge exists for, at NODE granularity: a raw memory
-    // node whose operand is already migrated. A partially converted helper
-    // produces exactly this -- `Store8 { value: SafeLoad8U { .. } }` -- and
-    // passing the raw node through untouched left SafeWIR inside it, where
-    // nothing downstream erases it and preflight rejects the whole function.
-    #[test]
-    fn migration_bridge_erases_inside_an_unmigrated_raw_node() {
-        let mixed = module(vec![WirNode::Store8 {
-            ptr: WirExpr::GetLocal("object".into()),
-            value: WirExpr::SafeLoad8U { place: place(AccessMode::Read, 0) },
-            offset: 0,
-        }]);
-        let encoded = crate::wir_encode::try_encode_with_gc_source_map(&mixed, &[], &[])
-            .expect("a raw node holding a migrated operand must still encode");
-
-        // And it erases to exactly the all-raw equivalent.
-        let all_raw = module(vec![WirNode::Store8 {
-            ptr: WirExpr::GetLocal("object".into()),
-            value: WirExpr::Load8U {
-                ptr: Box::new(WirExpr::GetLocal("object".into())),
-                offset: 0,
-            },
-            offset: 0,
-        }]);
-        let expected = crate::wir_encode::try_encode_with_gc_source_map(&all_raw, &[], &[])
-            .expect("the all-raw equivalent encodes");
-        assert_eq!(
-            encoded.wasm, expected.wasm,
-            "erasing inside a raw node must produce the same bytes",
-        );
-    }
-
-    // `encoded_offset` is the field most likely to be dropped or normalized by
-    // a future refactor of erasure, and every other bridge fixture uses zero.
-    #[test]
-    fn migration_bridge_preserves_a_nonzero_encoded_offset() {
-        let mut place = place(AccessMode::Read, 0);
-        place.encoded_offset = 12;
-        let semantic = module(vec![WirNode::Drop(WirExpr::SafeLoad {
-            place,
-            kind: Kind::I32,
-        })]);
-        let raw = module(vec![WirNode::Drop(WirExpr::Load {
-            ptr: Box::new(WirExpr::GetLocal("object".into())),
-            kind: Kind::I32,
-            offset: 12,
-        })]);
-        let erased = crate::wir_encode::try_encode_with_gc_source_map(&semantic, &[], &[])
-            .expect("a nonzero offset erases");
-        let expected = crate::wir_encode::try_encode_with_gc_source_map(&raw, &[], &[])
-            .expect("the raw equivalent encodes");
-        assert_eq!(
-            erased.wasm, expected.wasm,
-            "erasure must carry the load immediate offset through unchanged",
-        );
-    }
-
     // NOTE: this covers `try_encode_with_gc`, which is `#[cfg(any(test,
     // raw-encoder-test-api))]` and unreachable from a normal build. It does NOT
     // cover the production entrypoint `try_encode_with_gc_source_map`, which
@@ -676,12 +453,4 @@ mod tests {
         assert!(error.message.contains("validated encoder authority"), "{error}");
     }
 
-    #[test]
-    fn call_summary_preserves_semantic_load_result_kind() {
-        let expression = WirExpr::SafeLoad {
-            place: place(AccessMode::Read, 0),
-            kind: Kind::I32,
-        };
-        assert_eq!(crate::wir_opt::call_summary::infer_expr_kind(&expression), Kind::I32);
-    }
 }

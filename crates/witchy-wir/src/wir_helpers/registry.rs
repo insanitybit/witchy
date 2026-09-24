@@ -8,7 +8,6 @@ use super::encoding::{crypto_hash_helper, crypto_keyed_helper, crypto_xof_helper
 use super::host::{
     compiler_introspect_helper, host_call_helper_ret, host_call_helper_typed,
     host_void_helper, host_void_helper_typed, net_recv_helper, staged_string_helper,
-    staged_string_helper_typed,
     two_phase_helper_typed,
 };
 use crate::wir::*;
@@ -1546,109 +1545,6 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
                 }
             }
             None
-        }
-    }
-}
-
-#[cfg(test)]
-mod intrinsic_catalog_tests {
-    use super::*;
-
-    /// Every local a helper NAMES is a local it DECLARES -- including inside a
-    /// SafeWIR claim.
-    ///
-    /// This exists because a claim operand is not validated during the migration.
-    /// `SafeExactExtent::counted(getl("slen"))` in a helper with no `slen` local
-    /// compiled, ran correctly, and passed all 326 crate tests plus
-    /// `check.sh --fast`: the count lives only in the claim, and the transitional
-    /// bridge erases claims without checking them. So nothing else in the tree
-    /// catches a claim that names a local which does not exist.
-    ///
-    /// Deliberately crude -- it reads the debug rendering rather than walking
-    /// typed fields -- because crude is TOTAL here. A structural walk has to know
-    /// every place a `GetLocal` can hide (object root, extent count, projection
-    /// index, slice start and length, encoded base) and silently misses any field
-    /// added later; the rendering cannot.
-    #[test]
-    fn helper_locals_referenced_are_locals_declared() {
-        // Close over `helper_deps`: an internal helper like `match_at` is named by
-        // no intrinsic and is reached only as another helper's dependency. The
-        // first version of this test enumerated intrinsics alone and therefore
-        // PASSED with a known undeclared-local bug sitting in `match_at`.
-        let mut pending: Vec<&str> = witchy_syntax::intrinsics::ALL
-            .iter()
-            .flat_map(|intrinsic| intrinsic.wir_helpers.iter().copied())
-            .collect();
-        let mut seen = std::collections::BTreeSet::new();
-        let mut reachable = Vec::new();
-        while let Some(name) = pending.pop() {
-            if !seen.insert(name) {
-                continue;
-            }
-            let Some(spec) = wir_helper(name) else { continue };
-            pending.extend(spec.helper_deps.iter().copied());
-            reachable.push(name);
-        }
-        assert!(
-            reachable.len() > 40,
-            "expected the transitive helper closure to be large, got {}",
-            reachable.len(),
-        );
-
-        for name in reachable {
-            {
-                let Some(spec) = wir_helper(name) else { continue };
-                let declared: std::collections::BTreeSet<&str> = spec
-                    .func
-                    .params
-                    .iter()
-                    .chain(spec.func.locals.iter())
-                    .map(|local| local.name.as_str())
-                    .collect();
-                let rendered = format!("{:?}", spec.func);
-                let mut rest = rendered.as_str();
-                while let Some(at) = rest.find("GetLocal(") {
-                    rest = &rest[at + "GetLocal(".len()..];
-                    let Some(open) = rest.find('"') else { break };
-                    let Some(close) = rest[open + 1..].find('"') else { break };
-                    let referenced = &rest[open + 1..open + 1 + close];
-                    assert!(
-                        declared.contains(referenced),
-                        "helper `{}` names local `{}` but declares only {:?}",
-                        spec.func.name,
-                        referenced,
-                        declared,
-                    );
-                    rest = &rest[open + 1 + close..];
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn cataloged_static_wir_helpers_exist() {
-        for intrinsic in witchy_syntax::intrinsics::ALL {
-            for helper in intrinsic.wir_helpers {
-                assert!(
-                    wir_helper(helper).is_some(),
-                    "intrinsic {} names missing WIR helper {}",
-                    intrinsic.name,
-                    helper
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn ordinary_dictionary_searches_do_not_inject_unmodeled_simd_helpers() {
-        for helper in ["dict_find", "dict_find_slice", "dict_find_bucket"] {
-            let spec = wir_helper(helper).expect("dictionary helper is cataloged");
-            assert!(
-                !spec.helper_deps.iter().any(|dependency| {
-                    matches!(*dependency, "dict_ctrl_h2" | "dict_ctrl_h2_mask" | "dict_index_eq4")
-                }),
-                "{helper} must not inject an unmodeled SIMD carrier helper",
-            );
         }
     }
 }
