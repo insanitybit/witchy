@@ -97,10 +97,10 @@ fn relay[a](left: &a, right: &a, choose_left: Bool) -> &a:
         right
 
 fn main():
-    // `&String`, `&Float`, and `&List(Int)` now have carriers, so either root
-    // is sound for them; a list of lists has none and must still refuse.
-    let left = [[1]]
-    let right = [[2]]
+    // A whole `&List(List(Int))` has an authenticated carrier. A third List
+    // shell does not, so choosing between two such roots must still refuse.
+    let left = [[[1]]]
+    let right = [[[2]]]
     let _ = relay(&left, &right, true)
 "#,
     );

@@ -95,6 +95,46 @@ fn main() -> Int:
 }
 
 #[test]
+fn a_generic_choice_retains_the_selected_nested_list_root() {
+    opt::set_for_tests(Some(OptSet::none()));
+    let _reset = ResetOptimizationOverride;
+    let checked = witchy::resolve_std_only_checked(
+        r#"
+mode opt
+
+fn choose[a](left: &a, right: &a, choose_left: Bool) -> &a:
+    if choose_left:
+        left
+    else:
+        right
+
+fn main() -> Int:
+    var left = [[1], [2]]
+    var right = [[3], [4]]
+    let old_left = choose(&left, &right, true)
+    let old_right = choose(&left, &right, false)
+    left[0][0] = 9
+    right[0][0] = 8
+    (*old_left)[0][0] * 1000 + (*old_right)[0][0] * 100 + left[0][0] * 10 + right[0][0]
+"#,
+    )
+    .expect("generic choice keeps either authenticated nested-list root");
+    // The true and false branches retain the original 1 and 3. The current
+    // roots read 9 and 8: 1,000 + 300 + 90 + 8 = 1,398.
+    let (artifact, ()) = codegen::compile_checked_module_artifact_with_observer(&checked, |_, _| ())
+        .expect_lowered("both generic root choices have authenticated carriers");
+    let mut runtime = Runtime::batch().expect("runtime");
+    let mut vm = runtime.spawn_admitted(
+        &artifact,
+        Capabilities { print_int: true, quiet: true, ..Capabilities::none() },
+        128,
+    ).expect("admitted unoptimized Wasm instance");
+    vm.run().expect("admitted Wasm execution");
+    assert_eq!(vm.output(), vec!["1398".to_string()]);
+    assert_eq!(vm.canonical_heap_leaks().expect("canonical heap audit"), Some(0));
+}
+
+#[test]
 fn a_region_born_nested_list_cannot_escape_through_a_view() {
     let error = witchy::resolve_std_only_checked(
         r#"
