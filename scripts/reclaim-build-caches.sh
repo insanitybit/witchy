@@ -16,7 +16,7 @@
 #   * A cache with an open file handle is a LIVE build. Removing it corrupts
 #     another agent's in-flight compile.
 #
-# Two classes of cache are considered:
+# Three classes of cache are considered:
 #
 #   * `target*` dirs inside registered worktrees (in the repo or under
 #     /private/tmp/witchy-*), judged by the worktree's branch state.
@@ -25,6 +25,12 @@
 #     create per task and abandon. Nothing can vouch for those, so they are
 #     reclaimable only after --orphan-min-age-hours (default 48) with no open
 #     handle. They are the bulk of the disk on a busy day.
+#   * `state/mbx/store-<version>` build-cache stores for an mbx version the
+#     checkout no longer pins. An mbx upgrade starts a fresh store and nothing
+#     removes the old one (53 GB for 1.16.0 on 2026-09-24). A worktree still on
+#     an older base keeps using its store, so a superseded store is reclaimable
+#     only once nothing in it has been touched for --min-age-hours and no
+#     handle is open.
 #
 # Default is a dry run. Nothing is deleted without --apply.
 set -euo pipefail
@@ -225,6 +231,33 @@ for t in /private/tmp/witchy-*; do
     fi
 done
 
+# Superseded mbx stores. The pinned version is read from the main checkout,
+# which is what new worktrees and the shims use.
+pinned_mbx="$(sed -n 's/^MBX_VERSION="\([^"]*\)".*/\1/p' "$main/scripts/mbx-install.sh" | head -1)"
+for t in "$main"/state/mbx/store-*; do
+    [ -d "$t" ] || continue
+    [ -n "$pinned_mbx" ] || break
+    [ "$(basename "$t")" = "store-$pinned_mbx" ] && continue
+    # The store root's own mtime does not move on a cache hit; its top-level
+    # entries (scheduler, incremental, actions) do.
+    newest="$(stat -f %m "$t" "$t"/* 2>/dev/null | sort -n | tail -1)"
+    if grep -qF -- "$t" <<<"$lsof_output"; then
+        state=LIVE
+    elif [ "$(( (now - ${newest:-$now}) / 3600 ))" -lt "$min_age_hours" ]; then
+        state=RECENT
+    else
+        state=OLDMBX
+    fi
+    if [ "$state" = OLDMBX ]; then
+        size="$(du -sm "$t" 2>/dev/null | cut -f1 || echo 0)"
+        printf '%9s  %-8s  %s\n' "$size" "$state" "${t#"$main"/}"
+        doomed+=("${newest:-0}	$t")
+        freed_candidates=$((freed_candidates + size))
+    else
+        printf '%9s  %-8s  %s\n' "-" "$state" "${t#"$main"/}"
+    fi
+done
+
 printf '\nreclaim: %d cache(s) reclaimable, %d MB apparent\n' "${#doomed[@]}" "$freed_candidates"
 
 if [ "$apply" -eq 0 ]; then
@@ -252,6 +285,11 @@ while IFS=$'\t' read -r _mtime t; do
             if grep -qxF -- "$t" <<<"$registered" || [ -e "$t/.git" ]; then
                 echo "reclaim: refusing to remove a checkout: $t" >&2; exit 3
             fi ;;
+        "$main"/state/mbx/store-*)
+            [ "$t" = "$main/state/mbx/store-$pinned_mbx" ] && {
+                echo "reclaim: refusing to remove the pinned mbx store: $t" >&2; exit 3; }
+            # mbx stores its entries read-only; rm -rf alone fails on them.
+            chmod -R u+w "$t" ;;
         *) echo "reclaim: refusing to remove unrecognised path: $t" >&2; exit 3 ;;
     esac
     rm -rf "$t"
