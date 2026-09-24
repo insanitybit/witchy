@@ -2,7 +2,8 @@
 
 A small data pipeline composed from the `list` module's transforms: sum the
 squares of the even numbers in `0..10`, then double and comma-join the first
-five. Data-only, so it runs identically interpreted and compiled to WASM.
+five. The ordinary command runs admitted Wasm; `witchy parity` can compare it
+with canonical SafeWIR.
 
 **Shows:** the `list` module (`range`, `filter`, `map`, `sum`), closures,
 `list.join`, string interpolation.

@@ -3,8 +3,9 @@
 Define your own trait and write code generic over it. `Shape` declares `area`
 and `name`; three types implement it; and `describe` / `total_area` work for
 *any* Shape via a `where s: Shape` bound. Witchy monomorphizes such a generic
-per concrete type, so trait code stays fast and compiles to WASM identically to
-the canonical interpreter. Data-only apart from `main` (root footprint: `Console`).
+per concrete type, so trait code stays fast. The ordinary command runs admitted
+Wasm; `witchy parity` can compare it with canonical SafeWIR. Data-only apart
+from `main` (root footprint: `Console`).
 
 **Shows:** trait declaration and `impl`, generics with a `where` bound, and
 `match` over enum variants.
