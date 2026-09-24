@@ -78,6 +78,13 @@ if [ -n "${WITCHY_GATE_SCOPE+x}" ]; then
     export CARGO_BUILD_JOBS="${WITCHY_GATE_BUILD_JOBS:-8}"
 fi
 
+# The test graph is the gate's critical path. Check, Clippy, and wasm still run
+# concurrently for fail-fast coverage, but must not each inherit the foreground
+# graph's eight-job allowance: that let one gate ask a 10-core host for 24-32
+# compiler jobs before any agent work was counted. Check and wasm need only one
+# job each; Clippy gets two so it still finishes inside the foreground build.
+# That bounds the common native gate at eleven jobs initially and ten after the
+# fast check finishes. Each leg remains retunable on a larger gate host.
 # macOS test discovery in the serialized gate is bounded to two cold binaries
 # at a time by default in scripts/nextest-list-wrapper.sh (.config/nextest.toml),
 # which can take longer than the three-pulse standalone startup window. Keep
@@ -1172,7 +1179,11 @@ seed_cow_target() { # seed_cow_target <dir>
 launch_clippy_leg() {
     clippy_log="$(mktemp "${TMPDIR:-/tmp}/witchy-clippy-XXXXXX")"
     clippy_started=$(date +%s)
-    ( seed_cow_target "$clippy_dir" && background_leg env CARGO_TARGET_DIR="$clippy_dir" cargo clippy "${compile_sel[@]}" --all-targets ${native_feature_args[@]+"${native_feature_args[@]}"} -- "${CLIPPY_GATE_LINTS[@]}" ) >"$clippy_log" 2>&1 &
+    if [ -n "${WITCHY_GATE_SCOPE+x}" ]; then
+        ( seed_cow_target "$clippy_dir" && background_leg env CARGO_BUILD_JOBS="${WITCHY_GATE_CLIPPY_BUILD_JOBS:-2}" CARGO_TARGET_DIR="$clippy_dir" cargo clippy "${compile_sel[@]}" --all-targets ${native_feature_args[@]+"${native_feature_args[@]}"} -- "${CLIPPY_GATE_LINTS[@]}" ) >"$clippy_log" 2>&1 &
+    else
+        ( seed_cow_target "$clippy_dir" && background_leg env CARGO_TARGET_DIR="$clippy_dir" cargo clippy "${compile_sel[@]}" --all-targets ${native_feature_args[@]+"${native_feature_args[@]}"} -- "${CLIPPY_GATE_LINTS[@]}" ) >"$clippy_log" 2>&1 &
+    fi
     clippy_pid=$!
 }
 
@@ -1188,7 +1199,11 @@ check_dir="${target_dir}-check"
 launch_check_leg() {
     check_log="$(mktemp "${TMPDIR:-/tmp}/witchy-check-XXXXXX")"
     check_started=$(date +%s)
-    ( seed_cow_target "$check_dir" && background_leg env CARGO_TARGET_DIR="$check_dir" cargo check "${compile_sel[@]}" --all-targets ${native_feature_args[@]+"${native_feature_args[@]}"} ) >"$check_log" 2>&1 &
+    if [ -n "${WITCHY_GATE_SCOPE+x}" ]; then
+        ( seed_cow_target "$check_dir" && background_leg env CARGO_BUILD_JOBS="${WITCHY_GATE_CHECK_BUILD_JOBS:-1}" CARGO_TARGET_DIR="$check_dir" cargo check "${compile_sel[@]}" --all-targets ${native_feature_args[@]+"${native_feature_args[@]}"} ) >"$check_log" 2>&1 &
+    else
+        ( seed_cow_target "$check_dir" && background_leg env CARGO_TARGET_DIR="$check_dir" cargo check "${compile_sel[@]}" --all-targets ${native_feature_args[@]+"${native_feature_args[@]}"} ) >"$check_log" 2>&1 &
+    fi
     check_pid=$!
 }
 
@@ -1437,7 +1452,11 @@ if [ "$gate_skip_wasm" -eq 1 ]; then
 else
     wasm_log="$(mktemp "${TMPDIR:-/tmp}/witchy-wasm-XXXXXX")"
     wasm_started=$(date +%s)
-    ( background_leg "${wasm_cargo[@]}" build --lib --no-default-features --features browser-fixtures --target wasm32-unknown-unknown ) >"$wasm_log" 2>&1 &
+    if [ -n "${WITCHY_GATE_SCOPE+x}" ]; then
+        ( background_leg env CARGO_BUILD_JOBS="${WITCHY_GATE_WASM_BUILD_JOBS:-1}" "${wasm_cargo[@]}" build --lib --no-default-features --features browser-fixtures --target wasm32-unknown-unknown ) >"$wasm_log" 2>&1 &
+    else
+        ( background_leg "${wasm_cargo[@]}" build --lib --no-default-features --features browser-fixtures --target wasm32-unknown-unknown ) >"$wasm_log" 2>&1 &
+    fi
     wasm_pid=$!
 fi
 

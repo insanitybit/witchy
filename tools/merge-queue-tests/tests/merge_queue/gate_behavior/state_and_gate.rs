@@ -480,6 +480,7 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
         .env("FAKE_CARGO_JOBS_FILE", &cargo_jobs_file)
         .env_remove("CARGO_BUILD_JOBS")
         .env_remove("WITCHY_GATE_BUILD_JOBS")
+        .env_remove("WITCHY_GATE_CLIPPY_BUILD_JOBS")
         .env("FAKE_CARGO_CLIPPY_SECS", "1")
         .env("FAKE_CARGO_NEXTEST_SECS", "1")
         .env("WITCHY_FAILFAST_POLL", "0.05")
@@ -517,8 +518,10 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
     );
     let cargo_jobs = fs::read_to_string(&cargo_jobs_file).expect("read fake cargo build jobs");
     assert!(
-        !cargo_jobs.trim().is_empty() && cargo_jobs.lines().all(|value| value == "8"),
-        "serialized gate must lift the machine-wide build-job cap to eight: {cargo_jobs}",
+        cargo_jobs.lines().any(|value| value == "8")
+            && cargo_jobs.lines().any(|value| value == "2")
+            && cargo_jobs.lines().all(|value| value == "8" || value == "2"),
+        "serialized fast gate must give the foreground eight jobs and cap Clippy at two: {cargo_jobs}",
     );
 
     fs::write(&cargo_env_file, "").expect("clear fake cargo environment");
