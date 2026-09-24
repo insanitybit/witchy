@@ -136,9 +136,16 @@ type Candidate = (usize, Option<usize>);
 /// or a whole-program module is linked). `std_impls` identifies inherent
 /// impls declared by standard-library modules, as (type name, method names).
 pub fn prune(module: &Module, std_impls: &HashSet<(String, Vec<String>)>) -> Option<Module> {
+    // OFF by default (2026-09-23): the reference scan cannot see a std call
+    // the checker desugars implicitly -- `d[i] = v` reaches a std insert
+    // whose `unique` parameter makes `mode opt` REJECT an aliased owner, and
+    // with that function pruned the program was accepted
+    // (rfc0165_dictionary_mutation). A wrong acceptance has no fallback, so
+    // pruning stays opt-in (WITCHY_PRUNE_STD=on) until the roots cover every
+    // implicit desugaring.
     if !ENABLED.get()
         || LINK_DEPTH.get() > 1
-        || std::env::var_os("WITCHY_PRUNE_STD").is_some_and(|value| value == "off")
+        || !(cfg!(test) || std::env::var_os("WITCHY_PRUNE_STD").is_some_and(|value| value == "on"))
     {
         return None;
     }
