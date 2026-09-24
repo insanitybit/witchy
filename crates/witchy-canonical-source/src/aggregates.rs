@@ -110,6 +110,17 @@ pub fn dictionary_as_tuple(ty: &Type) -> Option<Type> {
     ]))
 }
 
+/// Dictionary values use list storage, but the dictionary operations do not
+/// yet authenticate a `&String` value's retained root. Detect this before
+/// layout identity erases the nested view qualifier.
+pub fn dictionary_has_unadmitted_string_view_value(ty: &Type) -> bool {
+    matches!(ty.unqualified(), Type::Named(name, arguments)
+        if name == "Dict"
+            && matches!(arguments.as_slice(), [_, Type::Qualified(witchy_syntax::ast::TypeQual::View, payload)]
+                if matches!(payload.as_ref(), Type::Named(name, arguments)
+                    if name == "String" && arguments.is_empty())))
+}
+
 const MAX_AGGREGATE_SHAPE_EXPANSION: usize = 64;
 /// Total instantiated AST nodes examined while recognizing one shape. This
 /// bounds changing generic recursion before it clones its next expanded field.

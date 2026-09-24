@@ -8,7 +8,11 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt;
 
 use sha2::{Digest, Sha256};
-use witchy_canonical_source::aggregates::{aggregate_key, canonical_owner_aggregate_identity, concrete_aggregate_identity, is_scalar_type, is_v1_list_element_type, scalar_aggregate_shape, shape_from_definition};
+use witchy_canonical_source::aggregates::{
+    aggregate_key, canonical_owner_aggregate_identity, concrete_aggregate_identity,
+    dictionary_has_unadmitted_string_view_value, is_scalar_type, is_v1_list_element_type,
+    scalar_aggregate_shape, shape_from_definition,
+};
 use witchy_syntax::ast::{self, Item, Type, TypeDef};
 use witchy_types::pipeline::CanonicalCheckedSource;
 use witchy_types::typeck;
@@ -536,6 +540,11 @@ impl LayoutProjection {
     }
 
     fn visit_type(&mut self, ty: &Type) -> Result<(), CanonicalLayoutError> {
+        if dictionary_has_unadmitted_string_view_value(ty) {
+            return Err(CanonicalLayoutError::UnsupportedType(
+                "Dict value `&String` has no admitted collection carrier".into(),
+            ));
+        }
         // Qualifiers are intentionally erased from ordinary physical layout
         // identities. A direct shared scalar reference is the exception: it
         // requires an addressable scalar root even though the unqualified
