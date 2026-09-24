@@ -267,7 +267,8 @@ fn gate_nextest_docs_plus_integration_test_keeps_both_target_kinds() {
 
 /// The narrowing must stay off wherever the selection can name a target outside
 /// the bin. `--bin` ANDs with `-p` instead of unioning, so a wrong narrowing
-/// does not error -- it silently runs a subset and reports green.
+/// does not error -- it silently runs a subset and reports green. Main-only
+/// modules, however, should never pay to build the other root test targets.
 #[test]
 fn gate_nextest_does_not_narrow_past_the_bin_target() {
     // A crate package plus the rfc0* conformance binaries.
@@ -279,28 +280,57 @@ fn gate_nextest_does_not_narrow_past_the_bin_target() {
             || (compiler.contains(" --lib") && compiler.contains("--test misc")),
         "a compiler-stage change narrowed away its crate and conformance tests: {compiler}",
     );
-    // A free-form witchy test filter that is not an `example_tests` name.
-    let lsp = gate_nextest(&["src/lsp.rs"]);
-    assert!(
-        !lsp.contains("--bin witchy"),
-        "a non-example_tests filter narrowed to the bin target: {lsp}",
-    );
+    for path in ["src/lsp.rs", "src/diagnostic_golden_tests.rs", "src/commands/test.rs"] {
+        let output = gate_nextest(&[path]);
+        assert!(
+            output.contains("--bin witchy"),
+            "main-only tests still build every root target for {path}: {output}",
+        );
+    }
 }
 
-/// The narrowing above is only sound while `example_tests` is compiled into the
-/// bin target. That is a structural fact, so assert it structurally rather than
-/// trusting it to stay true.
+/// The narrowing above is only sound while these modules are compiled into the
+/// bin target. Assert that structural fact rather than trusting it to stay true.
 #[test]
-fn example_tests_is_declared_in_the_bin_target() {
+fn focused_main_modules_are_declared_in_the_bin_target() {
     let main = std::fs::read_to_string(
         workspace_root().join("src/main.rs"),
     )
     .expect("read src/main.rs");
-    assert!(
-        main.contains("mod example_tests;"),
-        "example_tests is no longer declared in the bin target; \
-         scripts/test-for-paths.sh narrows docs gates to `--bin witchy` on that basis",
-    );
+    for module in ["commands", "lsp", "diagnostic_golden_tests", "example_tests"] {
+        assert!(
+            main.contains(&format!("mod {module};")),
+            "{module} is no longer declared in the bin target; \
+             scripts/test-for-paths.sh narrows its gates to `--bin witchy` on that basis",
+        );
+    }
+}
+
+#[test]
+fn focused_main_routes_build_only_the_bin_target() {
+    for path in [
+        "src/lsp.rs",
+        "src/diagnostic_golden_tests.rs",
+        "std/list.witchy",
+        "spec/stdlib.md",
+    ] {
+        let commands = selected_focused(&[path]);
+        let main_only = commands
+            .iter()
+            .filter(|command| {
+                command.contains("lsp")
+                    || command.contains("diagnostic_golden_tests")
+                    || command.contains("stdlib_docs_are_current")
+            })
+            .collect::<Vec<_>>();
+        assert!(!main_only.is_empty(), "{path} selected no main-only test: {commands:?}");
+        for command in main_only {
+            assert!(
+                command.contains("--bin witchy"),
+                "{path} left a main-only test route broad: {commands:?}",
+            );
+        }
+    }
 }
 
 #[test]

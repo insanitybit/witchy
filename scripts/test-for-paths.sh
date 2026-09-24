@@ -233,10 +233,10 @@ emit_gate_nextest() {
     # binaries", while holding the serialized gate lock against 21 queued
     # branches.
     #
-    # `example_tests` (and `stdlib_docs_are_current` inside it) are declared by
-    # `mod example_tests;` in src/main.rs, which IS the bin target -- so they
-    # live in `witchy::bin/witchy` structurally, not by coincidence. Adding
-    # `--bin witchy` builds that one binary instead of 24.
+    # `commands`, `lsp`, `diagnostic_golden_tests`, and `example_tests` (with
+    # `stdlib_docs_are_current` inside it) are declared in src/main.rs, which IS
+    # the bin target. They live in `witchy::bin/witchy` structurally, not by
+    # coincidence. Adding `--bin witchy` builds that one binary instead of 24.
     #
     # Narrow ONLY when `-p witchy` stands alone. `--bin`/`--test` AND with `-p`
     # rather than unioning (see the note at the top of this file): measured on
@@ -245,12 +245,12 @@ emit_gate_nextest() {
     # binaries name targets outside the bin, so either disables the narrowing.
     #
     # `add_witchy_test` also takes free-form names (including from stdin), and
-    # those may live in any binary -- so require every one of them to be an
-    # `example_tests` name, which main.rs's `mod example_tests;` pins to the bin.
+    # those may live in any binary. Narrow only the module families pinned to
+    # main.rs above.
     local witchy_tests_all_bin=1 gwt
     for gwt in ${gate_witchy_tests[0]+"${gate_witchy_tests[@]}"}; do
         case "$gwt" in
-            example_tests*) ;;
+            commands::* | lsp* | diagnostic_golden_tests* | example_tests*) ;;
             *) witchy_tests_all_bin=0 ;;
         esac
     done
@@ -688,11 +688,11 @@ for p in "${paths[@]}"; do
         src/lsp.rs | src/lsp_tests.rs)
             any_rust=1
             add_witchy_test 'lsp'
-            add "cargo nextest run -E 'test(/^lsp/)'" ;;
+            add "./scripts/nextest-admitted.sh witchy -- cargo nextest run --bin witchy -E 'test(/^lsp/)'" ;;
         src/diagnostic_golden_tests.rs | src/snapshots/*)
             any_rust=1
             add_witchy_test 'diagnostic_golden_tests'
-            add "cargo nextest run -E 'test(/^diagnostic_golden_tests/)'" ;;
+            add "./scripts/nextest-admitted.sh witchy -- cargo nextest run --bin witchy -E 'test(/^diagnostic_golden_tests/)'" ;;
         src/lib.rs | src/artifact.rs | src/stats.rs | src/idp.rs | \
         src/trusted_publisher.rs | src/capabilities_tests.rs)
             any_rust=1
@@ -709,7 +709,7 @@ for p in "${paths[@]}"; do
             gate_need_examples=1
             gate_need_stdlib_docs=1
             add "./scripts/nextest-admitted.sh witchy -- cargo nextest run -E 'test(/^example_tests::/)'"
-            add "cargo nextest run -E 'test(stdlib_docs_are_current)'"
+            add "./scripts/nextest-admitted.sh witchy -- cargo nextest run --bin witchy -E 'test(stdlib_docs_are_current)'"
             add "\"\${CARGO_TARGET_DIR:-target}/debug/witchy\" fmt --check std/*.witchy" ;;
         README.md)
             corpus_impact=1
@@ -997,7 +997,7 @@ for p in "${paths[@]}"; do
         spec/stdlib.md)
             echo "WARNING: spec/stdlib.md is GENERATED — edit std/*.witchy doc-comments instead" >&2
             gate_need_stdlib_docs=1
-            add "cargo nextest run -E 'test(stdlib_docs_are_current)'" ;;
+            add "./scripts/nextest-admitted.sh witchy -- cargo nextest run --bin witchy -E 'test(stdlib_docs_are_current)'" ;;
         spec/* | CONTRIBUTING.md)
             # documentation_examples_are_valid walks README, CONTRIBUTING,
             # spec/, and book/src. A spec-only edit cannot change crate
