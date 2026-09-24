@@ -40,8 +40,21 @@ PATH="$tmp/bin:$PATH" ./scripts/nextest-admitted.sh witchy -- \
 [ "$(sed -n '2p' "$NEXTEST_ADMITTED_LOG")" = run ] || fail 'nextest action changed'
 [ "$(sed -n '3p' "$NEXTEST_ADMITTED_LOG")" = --features ] || fail 'feature flag changed'
 [ "$(sed -n '4p' "$NEXTEST_ADMITTED_LOG")" = witchy-wir/native ] || fail 'feature value changed'
-[ "$(sed -n '5p' "$NEXTEST_ADMITTED_LOG")" = -E ] || fail 'filter flag missing'
-[ "$(sed -n '6p' "$NEXTEST_ADMITTED_LOG")" = "($selection) and ($policy)" ] || fail 'filter composition changed'
+[ "$(sed -n '5p' "$NEXTEST_ADMITTED_LOG")" = --bin ] || fail 'example matrix was not target-narrowed'
+[ "$(sed -n '6p' "$NEXTEST_ADMITTED_LOG")" = witchy ] || fail 'example matrix selected the wrong binary'
+[ "$(sed -n '7p' "$NEXTEST_ADMITTED_LOG")" = -E ] || fail 'filter flag missing'
+[ "$(sed -n '8p' "$NEXTEST_ADMITTED_LOG")" = "($selection) and ($policy)" ] || fail 'filter composition changed'
+[ "$(wc -l < "$NEXTEST_ADMITTED_LOG" | tr -d ' ')" -eq 8 ] || fail 'unexpected example-matrix arguments'
+
+# An explicit target owns its compilation scope even when the filter text is
+# the full example expression. Do not silently replace or expand it.
+PATH="$tmp/bin:$PATH" ./scripts/nextest-admitted.sh witchy -- \
+    cargo nextest run --test misc -E "$selection"
+[ "$(sed -n '3p' "$NEXTEST_ADMITTED_LOG")" = --test ] || fail 'explicit target flag changed'
+[ "$(sed -n '4p' "$NEXTEST_ADMITTED_LOG")" = misc ] || fail 'explicit target value changed'
+if grep -Fxq -- --bin "$NEXTEST_ADMITTED_LOG"; then
+    fail 'explicit target gained an implicit binary'
+fi
 
 if NEXTEST_ADMITTED_EXIT=23 PATH="$tmp/bin:$PATH" \
     ./scripts/nextest-admitted.sh witchy-lower -- cargo nextest run -p witchy-lower; then

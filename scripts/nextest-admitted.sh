@@ -20,6 +20,7 @@ fi
 
 selection=""
 filtered=()
+explicit_scope=false
 while [ "$#" -gt 0 ]; do
     case "$1" in
         -E)
@@ -34,9 +35,32 @@ while [ "$#" -gt 0 ]; do
             selection="$2"
             shift 2
             ;;
+        -p|--package|--workspace|--all|--lib|--bin|--bins|--test|--tests|--all-targets)
+            explicit_scope=true
+            filtered+=("$1")
+            shift
+            ;;
+        -p?*|--package=*|--bin=*|--test=*)
+            explicit_scope=true
+            filtered+=("$1")
+            shift
+            ;;
         *) filtered+=("$1"); shift ;;
     esac
 done
+
+# The exact full example matrix lives in src/main.rs's `mod example_tests;`,
+# so Cargo only needs the root binary. Without a target selector, Cargo builds
+# every integration-test binary before nextest applies -E. The same narrowing
+# at the route layer cut a measured warm run from 41s to 12s; one cold docs
+# route had spent 7m14s compiling 24 binaries to start a single selected test.
+# Keep this exact and central so every edit-loop route gets the fix without
+# changing compound selections or an explicit caller scope.
+if [ "$package" = witchy ] \
+    && [ "$selection" = 'test(/^example_tests::/)' ] \
+    && [ "$explicit_scope" = false ]; then
+    filtered+=(--bin witchy)
+fi
 
 policy="$(./scripts/rfc0165-deferred-filter.sh scripts/rfc0165-deferred-tests.txt "$package")"
 
