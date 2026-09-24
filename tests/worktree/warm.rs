@@ -247,6 +247,21 @@ fn worktree_warm_prefers_the_build_seed_and_restores_matching_mtimes() {
             (1, &format!("{}/std/set.witchy", seeded_worktree.display())),
         ]),
     );
+
+    // A fresh worktree using an isolated Cargo target should take the same
+    // published seed without waiting for a checkout-local target or gate lock.
+    std::fs::remove_dir_all(worktree.join("target")).expect("remove default target");
+    let isolated = run_warm(&worktree, &["--target-dir", "target-agent"], Some("copy"));
+    assert!(isolated.status.success(), "{}", String::from_utf8_lossy(&isolated.stderr));
+    assert!(worktree.join("target-agent/debug/deps/seeded.rlib").is_file());
+    assert_eq!(
+        std::fs::read(worktree.join("target-agent/debug/.fingerprint/unit-1/dep-lib-unit"))
+            .expect("read isolated target dep-info"),
+        dep_info(&[
+            (0, "src/lib.rs"),
+            (1, &format!("{}/std/set.witchy", seeded_worktree.display())),
+        ]),
+    );
 }
 
 /// Cargo's encoded fingerprint dep-info, as scripts/build-seed.py decodes it.

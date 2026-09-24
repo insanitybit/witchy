@@ -24,10 +24,9 @@
 #                                                  # target-codex) from ./target
 #   ./scripts/worktree-warm.sh --help               # show this help
 #
-# The --target-dir form is for agents sharing the MAIN checkout with an
-# isolated target dir (the CLAUDE.md concurrency rule). Because the workspace
-# path is identical there, even the workspace-crate fingerprints stay valid —
-# the seeded dir is warmer than a worktree seed.
+# The --target-dir form also works in a secondary worktree. It uses the
+# published build seed there, so an isolated target does not wait for the gate
+# merely because the worktree has no checkout-local target/ yet.
 #
 # Do NOT share one CARGO_TARGET_DIR across worktrees instead: cargo's build lock
 # would serialize concurrent agents, and the local gates assume ./target
@@ -243,15 +242,15 @@ clone_or_gate_fallback() { # clone_or_gate_fallback <preferred-source> <dest> <m
 # every file with the current time, which alone rebuilt all of them. The main
 # checkout's target/ is the fallback, but nobody builds there, so it trails
 # master by days. Returns 1 (caller falls back) when there is no usable seed.
-seed_from_build_seed() { # seed_from_build_seed <main> <dest-worktree>
-    local main="$1" dest="$2" seed
+seed_from_build_seed() { # seed_from_build_seed <main> <dest-worktree> <target-dir>
+    local main="$1" dest="$2" target_dir="$3" seed
     [[ "${WITCHY_BUILD_SEED:-on}" == off ]] && return 1
     seed="$(cd "$main/state/build-seed/current" 2>/dev/null && pwd -P)" || return 1
     [[ -f "$seed/manifest.json" && -d "$seed/target" ]] || return 1
     clone_testcache=0
-    clone_target "$seed/target" "$dest/target" || { rm -rf "$dest/target"; return 1; }
-    echo "worktree-warm: seeded $dest/target from $seed ($copy_description, incremental/ and deps/*.rcgu.o skipped)"
-    python3 "$(dirname "$0")/build-seed.py" apply "$seed" "$dest" \
+    clone_target "$seed/target" "$target_dir" || { rm -rf "$target_dir"; return 1; }
+    echo "worktree-warm: seeded $target_dir from $seed ($copy_description, incremental/ and deps/*.rcgu.o skipped)"
+    python3 "$(dirname "$0")/build-seed.py" apply "$seed" "$dest" "$target_dir" \
         || echo "worktree-warm: could not apply seed mtimes; workspace crates will rebuild" >&2
 }
 
@@ -264,7 +263,13 @@ if [[ "${1:-}" == "--target-dir" ]]; then
         echo "worktree-warm: $dest already exists; leaving it alone" >&2
         exit 0
     fi
-    clone_or_gate_fallback "$root/target" "$dest" "$main" "$@"
+    if [[ "$root" != "$main" ]]; then
+        clone_testcache=0
+        seed_from_build_seed "$main" "$root" "$dest" \
+            || clone_or_gate_fallback "$root/target" "$dest" "$main" "$@"
+    else
+        clone_or_gate_fallback "$root/target" "$dest" "$main" "$@"
+    fi
     seed_verdict_cache_from_best_source "$main" "$root"
     exit $?
 fi
@@ -284,6 +289,6 @@ if [[ -e "$dest/target" ]]; then
     exit 0
 fi
 clone_testcache=0
-seed_from_build_seed "$main" "$dest" \
+seed_from_build_seed "$main" "$dest" "$dest/target" \
     || clone_or_gate_fallback "$main/target" "$dest/target" "$main" "$@"
 seed_verdict_cache_from_best_source "$main" "$dest"

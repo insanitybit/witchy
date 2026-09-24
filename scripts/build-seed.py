@@ -38,7 +38,7 @@ interrupted apply leaves every source at its checkout time):
 
     build-seed.py publish <gate-checkout> <gate-target> <seed-root>  # locked
     build-seed.py finish <seed-root>                                 # unlocked
-    build-seed.py apply <seed-dir> <worktree>
+    build-seed.py apply <seed-dir> <worktree> [<target-dir>]
 """
 
 import fcntl, hashlib, json, os, shutil, struct, subprocess, sys, time
@@ -364,14 +364,14 @@ def rebase_dep_info(target, old_root, new_root):
     return rewritten, dropped
 
 
-def apply(seed, worktree):
+def apply(seed, worktree, target_dir=None):
     """Rebase the seeded dep-info onto this worktree, THEN give identical
     files the gate's mtimes. The order is the safety property: until every
     unit's dep-info names this worktree, sources keep their checkout time and
     cargo rebuilds; an interrupted apply only costs rebuilds."""
     manifest = load_manifest(seed)
     worktree = os.path.realpath(worktree)
-    rewritten, dropped = rebase_dep_info(os.path.join(worktree, "target"),
+    rewritten, dropped = rebase_dep_info(target_dir or os.path.join(worktree, "target"),
                                          manifest["checkout"], worktree)
     files = tracked(worktree)
     dirty = modified(worktree)
@@ -415,7 +415,7 @@ if __name__ == "__main__":
         sys.exit(publish(*sys.argv[2:]))
     if len(sys.argv) == 3 and sys.argv[1] == "finish":
         sys.exit(finish(sys.argv[2]))
-    if len(sys.argv) == 4 and sys.argv[1] == "apply":
+    if len(sys.argv) in (4, 5) and sys.argv[1] == "apply":
         sys.exit(apply(*sys.argv[2:]))
     print(__doc__, file=sys.stderr)
     sys.exit(2)
