@@ -231,3 +231,31 @@ mod rfc0167_nested_list_root_view;
 mod rfc0167_normal_unique;
 #[path = "misc/rfc0167_scalar_value_view.rs"]
 mod rfc0167_scalar_value_view;
+#[path = "misc/rfc0167_aggregate_reference_carriers.rs"]
+mod rfc0167_aggregate_reference_carriers;
+#[path = "misc/rfc0167_dict_root_view.rs"]
+mod rfc0167_dict_root_view;
+#[path = "misc/rfc0167_generic_view_instantiation.rs"]
+mod rfc0167_generic_view_instantiation;
+#[path = "misc/rfc0167_indirect_list_view.rs"]
+mod rfc0167_indirect_list_view;
+#[path = "misc/rfc0167_indirect_var_aggregate.rs"]
+mod rfc0167_indirect_var_aggregate;
+#[path = "misc/rfc0167_list_of_int_views.rs"]
+mod rfc0167_list_of_int_views;
+#[path = "misc/rfc0167_mode_transport.rs"]
+mod rfc0167_mode_transport;
+#[path = "misc/rfc0167_opt_callable_cross_module.rs"]
+mod rfc0167_opt_callable_cross_module;
+#[path = "misc/rfc0167_region_qualifier_matrix.rs"]
+mod rfc0167_region_qualifier_matrix;
+#[path = "misc/rfc0167_result_reference_carriers.rs"]
+mod rfc0167_result_reference_carriers;
+#[path = "misc/rfc0167_scalar_views_across_await.rs"]
+mod rfc0167_scalar_views_across_await;
+#[path = "misc/rfc0167_slice_index_read.rs"]
+mod rfc0167_slice_index_read;
+#[path = "misc/rfc0167_slice_owned_materialization.rs"]
+mod rfc0167_slice_owned_materialization;
+#[path = "misc/rfc0167_slice_subscript_in_async.rs"]
+mod rfc0167_slice_subscript_in_async;
