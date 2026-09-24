@@ -894,22 +894,26 @@ fn main(console: Console):
             "../../web/witchy-runtime/glamour-media-query-corpus.json"
         ))
         .expect("media-query corpus");
-        for example in corpus.as_array().expect("media-query cases") {
+        let mut valid_source = String::from("import glamour\n\nfn main(console: Console):\n");
+        let mut valid_queries = Vec::new();
+        for (index, example) in corpus
+            .as_array()
+            .expect("media-query cases")
+            .iter()
+            .enumerate()
+        {
             let query = example["query"].as_str().expect("query");
             let valid = example["valid"].as_bool().expect("valid flag");
             let escaped = query.replace('\\', "\\\\").replace('"', "\\\"");
-            let source = format!(
-                "import glamour\n\nfn main(console: Console):\n    let _condition = media\"{escaped}\"\n    let sheet = css\"@media {escaped} {{ .card {{ color: red; }} }}\"\n    let global = global_css\"@media {escaped} {{ body {{ color: red; }} }}\"\n    console.print(glamour.css_text(sheet) + glamour.css_text(global))\n"
-            );
             if valid {
-                let output = glamour_run_both(&source);
-                assert!(
-                    output[0].contains(&format!("@media {query}"))
-                        && output[0].contains("[data-glamour-scope=")
-                        && output[0].contains("body { color: red;}"),
-                    "accepted media query did not survive checked scoped CSS: {query:?}"
-                );
+                valid_queries.push(query.to_owned());
+                valid_source.push_str(&format!(
+                    "    let _condition_{index} = media\"{escaped}\"\n    let sheet_{index} = css\"@media {escaped} {{ .card {{ color: red; }} }}\"\n    let global_{index} = global_css\"@media {escaped} {{ body {{ color: red; }} }}\"\n    console.print(glamour.css_text(sheet_{index}) + glamour.css_text(global_{index}))\n"
+                ));
             } else {
+                let source = format!(
+                    "import glamour\n\nfn main(console: Console):\n    let _condition = media\"{escaped}\"\n    let sheet = css\"@media {escaped} {{ .card {{ color: red; }} }}\"\n    let global = global_css\"@media {escaped} {{ body {{ color: red; }} }}\"\n    console.print(glamour.css_text(sheet) + glamour.css_text(global))\n"
+                );
                 let entry = parser::parse_module(&source).expect("parse invalid media fixture");
                 let glamour = glamour_module_cached();
                 let error = crate::pipeline::link(
@@ -923,6 +927,20 @@ fn main(console: Console):
                     "unexpected media rejection for {query:?}: {error}"
                 );
             }
+        }
+        let output = glamour_run_both(&valid_source);
+        assert_eq!(
+            output.len(),
+            valid_queries.len(),
+            "one output per valid media query"
+        );
+        for (query, observed) in valid_queries.iter().zip(&output) {
+            assert!(
+                observed.contains(&format!("@media {query}"))
+                    && observed.contains("[data-glamour-scope=")
+                    && observed.contains("body { color: red;}"),
+                "accepted media query did not survive checked scoped CSS: {query:?}"
+            );
         }
         for stylesheet in [
             "@supports (display: grid) { .card { color: red; } }",
