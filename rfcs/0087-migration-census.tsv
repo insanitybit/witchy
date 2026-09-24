@@ -1,12 +1,6 @@
 path	line	category	callee	parameter	root
 benchmarks/dict_count.witchy	9	expression-position-mutator	dict.insert__Int__Int	-	-
-benchmarks/rfc0153_std_show_dict.witchy	11	expression-position-mutator	dict.insert__String__Int	-	-
 examples/dice/src/dice.witchy	14	expression-position-mutator	prng.Rng__next_below	-	-
-examples/maze/src/maze.witchy	80	expression-position-mutator	dict.insert__Int__Int	-	-
-examples/maze/src/maze.witchy	84	expression-position-mutator	dict.insert__Int__Int	-	-
-examples/maze/src/maze.witchy	27	expression-position-mutator	dict.insert__Int__Int	-	-
-examples/maze/src/maze.witchy	37	expression-position-mutator	dict.insert__Int__Int	-	-
-examples/wordcount/src/wordcount.witchy	10	expression-position-mutator	dict.insert__String__Int	-	-
 projects/glamour/src/glamour.witchy	574	expression-position-mutator	dict.insert__String__Int	-	-
 projects/glamour/src/glamour.witchy	580	expression-position-mutator	dict.insert__String__Int	-	-
 projects/glamour/src/glamour.witchy	496	expression-position-mutator	dict.insert__Int__Int	-	-
@@ -17,14 +11,6 @@ std/dict.witchy	25	auxiliary-result-discard	dict.insert	-	-
 std/dict.witchy	31	auxiliary-result-discard	dict.__insert_extract	-	-
 std/dict.witchy	101	auxiliary-result-discard	dict.remove	-	-
 std/dict.witchy	104	auxiliary-result-discard	dict.__remove_extract	-	-
-std/list.witchy	42	auxiliary-result-discard	list.__pop_extract	-	-
-std/list.witchy	87	auxiliary-result-discard	list.__pop_extract	-	-
-std/prng.witchy	92	expression-position-mutator	prng.advance	-	-
-std/prng.witchy	67	expression-position-mutator	prng.draw_below	-	-
-std/prng.witchy	52	expression-position-mutator	prng.advance	-	-
-std/prng.witchy	97	auxiliary-result-discard	prng.choice	-	-
-std/prng.witchy	76	auxiliary-result-discard	prng.advance	-	-
-std/prng.witchy	88	auxiliary-result-discard	prng.draw_below	-	-
 book/src/cookbook-collections.md#block-2	10	expression-position-mutator	Set__insert__String	-	-
 book/src/mutating-methods.md#block-1	7	expression-position-mutator	main.take_last	-	-
 book/src/mutating-methods.md#block-1	12	expression-position-mutator	dict.insert__String__Int	-	-
@@ -35,14 +21,14 @@ book/src/mutating-methods.md#block-4	4	expression-position-mutator	dict.insert__
 book/src/mutating-methods.md#block-4	5	expression-position-mutator	dict.remove__String__Int	-	-
 spec/language.md#block-17	7	expression-position-mutator	main.bump	-	-
 
-witchy-files	9
+witchy-files	4
 markdown-blocks	51
-checked	60
+checked	55
 rejected	0
-var-declarations	23
-resolved-var-calls	198
+var-declarations	11
+resolved-var-calls	166
 mechanical-self-reassignment	0
-expression-position-mutator	25
+expression-position-mutator	16
 immutable-var-argument	0
 temporary-var-argument	0
-auxiliary-result-discard	10
+auxiliary-result-discard	5
