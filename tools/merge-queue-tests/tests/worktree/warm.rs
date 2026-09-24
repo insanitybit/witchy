@@ -408,6 +408,63 @@ fn cargo_shim_preserves_incremental_mode_for_a_warm_seed_unless_overridden() {
 }
 
 #[test]
+fn cargo_shim_keeps_queue_tooling_out_of_the_shared_mbx_pool() {
+    let repo = temp_repo();
+    let root = repo.path();
+    write(root, "scripts/bin/cargo", include_str!("../../../../scripts/bin/cargo"));
+    write(
+        root,
+        "scripts/feature-unification.sh",
+        include_str!("../../../../scripts/feature-unification.sh"),
+    );
+    write(root, "fake-bin/cargo", "#!/bin/sh\nprintf 'cargo:%s\\n' \"$*\"\n");
+    write(root, "state/mbx/bin/mbx", "#!/bin/sh\nprintf 'mbx:%s\\n' \"$*\"\n");
+    for executable in ["scripts/bin/cargo", "fake-bin/cargo", "state/mbx/bin/mbx"] {
+        let status = Command::new("chmod")
+            .args(["+x", executable])
+            .current_dir(root)
+            .status()
+            .expect("mark fixture executable");
+        assert!(status.success());
+    }
+    let path = std::env::join_paths(
+        std::iter::once(root.join("fake-bin"))
+            .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())),
+    )
+    .expect("fixture PATH");
+    let run = |args: &[&str]| {
+        Command::new(root.join("scripts/bin/cargo"))
+            .args(args)
+            .current_dir(root)
+            .env("PATH", &path)
+            .env("MBX_STATS_REPORT", root.join("mbx-report.json"))
+            .env_remove("WITCHY_BUILD_CACHE")
+            .env_remove("WITCHY_CARGO_SHIM_ACTIVE")
+            .env_remove("WITCHY_GATE_SCOPE")
+            .output()
+            .expect("run cargo shim fixture")
+    };
+
+    for args in [
+        &["nextest", "run", "-p", "merge-queue-tests"][..],
+        &["test", "--package=merge-queue-tests", "--no-run"][..],
+    ] {
+        let output = run(&args);
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        assert!(String::from_utf8_lossy(&output.stdout).starts_with("cargo:"));
+    }
+
+    for args in [
+        &["test", "-p", "witchy", "--no-run"][..],
+        &["test", "-p", "merge-queue-tests", "-pwitchy"][..],
+    ] {
+        let output = run(&args);
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        assert!(String::from_utf8_lossy(&output.stdout).starts_with("mbx:"));
+    }
+}
+
+#[test]
 fn build_seed_finish_never_moves_current_back_to_an_older_snapshot() {
     let repo = temp_repo();
     let root = repo.path();
