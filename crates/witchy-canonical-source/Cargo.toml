@@ -12,3 +12,5 @@ description = "witchy compiler — the checked-source contract SafeWIR consumes 
 [dependencies]
 witchy-syntax = { path = "../witchy-syntax" }
 foldhash = "0.2.0"
+# Proper-tail manifest digests (same hash the checker has always used).
+blake3 = "1.8.3"

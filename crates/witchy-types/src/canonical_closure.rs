@@ -11,15 +11,9 @@ use std::fmt;
 use witchy_syntax::ast::{self, Block, Expr, Item, Pattern, Stmt, Type};
 
 use crate::canonical_abi;
-use crate::typeck::{self, ProperTailCallableId, ProperTailExprKind, ProperTailPathStep, Ty, TypedModule};
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum ClosureBindingPathStep {
-    Parameter(u32),
-    Statement(u32),
-    Pattern(u32),
-    LoopVariable,
-}
+use crate::typeck::{self, Ty, TypedModule};
+use witchy_canonical_source::closure::{ClosureBindingPathStep, ClosureCaptureTransfer};
+use witchy_canonical_source::proper_tail::{ProperTailCallableId, ProperTailExprKind, ProperTailPathStep};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ClosureBindingId {
@@ -32,20 +26,6 @@ impl ClosureBindingId {
     pub fn owner(&self) -> &ProperTailCallableId { &self.owner }
     pub fn path(&self) -> &[ClosureBindingPathStep] { &self.path }
     pub fn name(&self) -> &str { &self.name }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum ClosureCaptureTransfer {
-    CopyScalar,
-    CopyCapability,
-    ManagedReferenceByValue,
-    /// An already-authenticated immutable root-plus-projection carrier.
-    ///
-    /// This is deliberately not the generic managed-reference case: lowering
-    /// may retain the carrier, but must never recover a root or projection
-    /// from its physical layout and synthesize a new view.
-    RootedViewByValue,
-    ExplicitOwnedMove,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

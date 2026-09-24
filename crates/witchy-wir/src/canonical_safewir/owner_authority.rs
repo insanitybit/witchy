@@ -4,7 +4,7 @@ use super::authority::*;
 use super::closure_owner_contract::{CaptureStorage, CaptureTransfer, OwnerConstructor, OwnerFamily, OwnerFamilySource, OwnerOperation, SharedReferenceConstructor, SourceConstructor, rooted_slice_element, slice_element_layout_matches};
 use super::{CanonicalModule, ModuleStage, Operation, ValueId, ValueType};
 use std::collections::{BTreeMap, BTreeSet};
-use witchy_types::canonical_closure::ClosureBindingPathStep;
+use witchy_canonical_source::closure::ClosureBindingPathStep;
 
 pub(super) fn validate<S: ModuleStage>(
     candidate: &CanonicalModule<S>,
@@ -80,7 +80,7 @@ pub(super) fn validate<S: ModuleStage>(
                 // are the authority; matching a pointer-shaped slot alone is
                 // never enough to claim a view capture.
                 let rooted_view = original.transfer()
-                    == witchy_types::canonical_closure::ClosureCaptureTransfer::RootedViewByValue;
+                    == witchy_canonical_source::closure::ClosureCaptureTransfer::RootedViewByValue;
                 if rooted_view && (!matches!(original.checked_type(), witchy_syntax::ast::Type::Qualified(
                     witchy_syntax::ast::TypeQual::View, _
                 )) || original.checked_type_encoding().is_empty()) {
@@ -203,7 +203,7 @@ pub(super) fn validate<S: ModuleStage>(
                                 && current.lambda_path.starts_with(&id.lambda_path)
                         }).max_by_key(|witness| witness.id().lambda_path.len())
                             .map(|witness| witness.id().clone())
-                            .unwrap_or_else(|| witchy_types::typeck::ProperTailCallableId {
+                            .unwrap_or_else(|| witchy_canonical_source::proper_tail::ProperTailCallableId {
                                 item: current.item,
                                 method: current.method,
                                 lambda_path: Vec::new(),
@@ -281,9 +281,9 @@ pub(super) fn validate<S: ModuleStage>(
                             return Err(refuse());
                         };
                         let source_transfer_is_authorized = matches!(source_capture.transfer(),
-                            witchy_types::canonical_closure::ClosureCaptureTransfer::ManagedReferenceByValue
+                            witchy_canonical_source::closure::ClosureCaptureTransfer::ManagedReferenceByValue
                         ) || (source_capture.transfer()
-                            == witchy_types::canonical_closure::ClosureCaptureTransfer::RootedViewByValue
+                            == witchy_canonical_source::closure::ClosureCaptureTransfer::RootedViewByValue
                             && matches!(source_capture.checked_type(), witchy_syntax::ast::Type::Qualified(
                                 witchy_syntax::ast::TypeQual::View, _
                             ))

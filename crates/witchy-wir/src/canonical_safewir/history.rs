@@ -57,7 +57,7 @@ pub(crate) fn tail_digest<S: ModuleStage>(module: &CanonicalModule<S>) -> Module
         .map(|site| (site.id.digest(), site.function.get()))
         .collect::<Vec<_>>();
     ModuleDigest::from_bytes(
-        witchy_types::typeck::canonical_proper_tail_manifest_digest(&sites),
+        witchy_canonical_source::proper_tail::canonical_proper_tail_manifest_digest(&sites),
     )
 }
 

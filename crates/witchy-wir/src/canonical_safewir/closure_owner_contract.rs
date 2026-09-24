@@ -20,7 +20,8 @@
 
 use super::{CapabilityKindId, FunctionId, FunctionSignatureId, GcTypeId, ValueId, ValueType};
 use crate::layout::LayoutId;
-use witchy_types::canonical_closure::{ClosureCaptureTransfer, ClosureWitness};
+use witchy_canonical_source::closure::ClosureCaptureTransfer;
+use witchy_types::canonical_closure::ClosureWitness;
 use witchy_types::pipeline::CanonicalCheckedSource;
 
 /// Static candidate metadata, never an SSA operand or guest bridge argument.

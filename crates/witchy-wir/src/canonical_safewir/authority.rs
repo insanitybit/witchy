@@ -857,15 +857,15 @@ fn validate_candidate_abi_bindings<S: ModuleStage>(
                 };
                 let transfer_matches = matches!(
                     (actual, capture.transfer()),
-                    (super::ValueType::Ref(_), witchy_types::canonical_closure::ClosureCaptureTransfer::ManagedReferenceByValue)
+                    (super::ValueType::Ref(_), witchy_canonical_source::closure::ClosureCaptureTransfer::ManagedReferenceByValue)
                         | (super::ValueType::Int | super::ValueType::Float | super::ValueType::Bool | super::ValueType::Unit,
-                           witchy_types::canonical_closure::ClosureCaptureTransfer::CopyScalar)
+                           witchy_canonical_source::closure::ClosureCaptureTransfer::CopyScalar)
                 ) || (
                     // A whole-root view (`&String`, a record or sum, a scalar
                     // List) is its retained object token, so its capture is a
                     // managed reference slot.
                     matches!(actual, super::ValueType::Ref(_))
-                        && matches!(capture.transfer(), witchy_types::canonical_closure::ClosureCaptureTransfer::RootedViewByValue)
+                        && matches!(capture.transfer(), witchy_canonical_source::closure::ClosureCaptureTransfer::RootedViewByValue)
                         && is_direct_rooted_view_whole_root(capture.checked_type(), &records)
                         && !matches!(capture.checked_type(),
                             witchy_syntax::ast::Type::Qualified(witchy_syntax::ast::TypeQual::View, inner)
@@ -874,7 +874,7 @@ fn validate_candidate_abi_bindings<S: ModuleStage>(
                     // A `&Float`/`&Bool`/`&Duration` view is its value
                     // (`ScalarValue`), so its capture is a copied scalar slot.
                     matches!(actual, super::ValueType::Int | super::ValueType::Float | super::ValueType::Bool)
-                        && matches!(capture.transfer(), witchy_types::canonical_closure::ClosureCaptureTransfer::RootedViewByValue)
+                        && matches!(capture.transfer(), witchy_canonical_source::closure::ClosureCaptureTransfer::RootedViewByValue)
                         && matches!(capture.checked_type(),
                             witchy_syntax::ast::Type::Qualified(witchy_syntax::ast::TypeQual::View, inner)
                                 if witchy_canonical_source::aggregates::is_scalar_value_view_payload(inner))

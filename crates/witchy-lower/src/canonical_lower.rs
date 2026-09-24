@@ -67,8 +67,10 @@ use witchy_types::access::{AccessIdentityKey, AccessKind, AccessSignature, Check
 use witchy_types::loans::LoanFacts;
 use witchy_types::pipeline::CanonicalCheckedSource;
 use witchy_types::canonical_closure::lambda_sites;
-use witchy_types::typeck::{
+use witchy_canonical_source::proper_tail::{
     ProperTailCallableId, ProperTailDispatchKind, ProperTailExprKind, ProperTailPathStep,
+};
+use witchy_types::typeck::{
     ProperTailSite, ProperTailSiteKey, ProperTailSiteManifest, RegionMustDisposition,
     RegionPackedLayoutDescriptor, RegionPromotionFact, Ty, TypeTable,
 };
