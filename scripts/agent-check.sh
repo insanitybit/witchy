@@ -68,7 +68,10 @@ run_edit_checks() {
     if printf '%s\n' "$edit_plan" | grep -Eq '^  .*(cargo|check[.]sh)'; then
         ensure_agent_target
     fi
-    run_in_agent_env ./scripts/test-for-paths.sh --edit-loop --run "$@"
+    # The gate's warm seed uses incremental Cargo artifacts. Keep the edit
+    # loop on that profile unless the caller explicitly selects another mode.
+    WITCHY_MBX_MODE="${WITCHY_MBX_MODE:-incremental}" \
+        run_in_agent_env ./scripts/test-for-paths.sh --edit-loop --run "$@"
     # With no explicit paths, test-for-paths derived its selection from the
     # entire branch diff. An explicit path list is equally safe only when its
     # pathspec expansion covers that complete committed diff; partial probes
