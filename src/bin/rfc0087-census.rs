@@ -54,35 +54,63 @@ fn run() -> Result<(), String> {
     let mut rejected = Vec::new();
 
     println!("path\tline\tcategory\tcallee\tparameter\troot");
-    // Each file's census (link + typecheck + trait-lowering) is fully
-    // independent — no shared mutable state beyond the (thread-safe) parse
-    // cache above. Keep a small, bounded worker wave rather than spawning one
-    // typechecker per corpus file: each typecheck retains a substantial module
+    // Each file's and each markdown block's census (link + typecheck +
+    // trait-lowering) is fully independent -- no shared mutable state beyond
+    // the (thread-safe) parse cache. One bounded pool of workers takes files
+    // first (the largest, glamour, dominates) and then the markdown blocks, so
+    // the blocks fill in behind it. Keep the pool small rather than spawning
+    // one typechecker per job: each typecheck retains a substantial module
     // graph, and an unbounded wave can exhaust memory before the gate starts.
-    // Reports remain in sorted input order, so the checked-in TSV is unchanged.
+    // Reports are recorded in input order (files, then blocks) and the first
+    // error in that order wins, so the checked-in TSV is unchanged.
     let parse_cache: Mutex<BTreeMap<String, Arc<OnceLock<Result<ast::Module, String>>>>> =
         Mutex::new(BTreeMap::new());
-    let jobs = census_jobs(files.len());
-    let reports: Vec<Result<Census, String>> = std::thread::scope(|scope| {
-        let mut reports = Vec::with_capacity(files.len());
-        for wave in files.chunks(jobs) {
-            let handles: Vec<_> = wave
-                .iter()
-                .map(|path| {
-                    let source_index = &source_index;
-                    let parse_cache = &parse_cache;
-                    scope.spawn(move || link_file(path, source_index, parse_cache))
-                })
-                .collect();
-            reports.extend(handles.into_iter().map(|handle| handle.join().unwrap()));
+    let markdown = markdown_files(root, full_scan)?;
+    let mut blocks = Vec::new();
+    for path in &markdown {
+        let source = std::fs::read_to_string(path)
+            .map_err(|e| format!("cannot read `{}`: {e}", path.display()))?;
+        for (index, snippet) in extract_witchy_blocks(&source).into_iter().enumerate() {
+            blocks.push((format!("{}#block-{}", display_from(root, path), index + 1), snippet));
         }
-        reports
+    }
+    let markdown_blocks = blocks.len();
+    let job_count = files.len() + blocks.len();
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let slots: Vec<Mutex<Option<Result<Census, String>>>> =
+        (0..job_count).map(|_| Mutex::new(None)).collect();
+    std::thread::scope(|scope| {
+        for _ in 0..census_jobs(job_count) {
+            scope.spawn(|| loop {
+                let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                if index >= job_count {
+                    break;
+                }
+                let report = match index.checked_sub(files.len()) {
+                    None => link_file(&files[index], &source_index, &parse_cache),
+                    Some(block) => {
+                        let (label, snippet) = &blocks[block];
+                        parser::parse_module(snippet)
+                            .map_err(|e| format!("{label}: {e}"))
+                            .and_then(|module| {
+                                pipeline::migration_census(
+                                    vec![("main".to_string(), module)],
+                                    "main",
+                                    &HashSet::new(),
+                                )
+                                .map_err(|e| format!("{label}: {e}"))
+                            })
+                    }
+                };
+                *slots[index].lock().unwrap() = Some(report);
+            });
+        }
     });
-    for (path, report) in files.iter().zip(reports) {
-        let report = report?;
+    let mut reports = slots.into_iter().map(|slot| slot.into_inner().unwrap().expect("every job ran"));
+    for path in &files {
         record_report(
             display_from(root, path),
-            report,
+            reports.next().expect("one report per file")?,
             &mut declarations,
             &mut calls,
             &mut checked,
@@ -90,33 +118,16 @@ fn run() -> Result<(), String> {
             &mut totals,
         );
     }
-
-    let markdown = markdown_files(root, full_scan)?;
-    let mut markdown_blocks = 0usize;
-    let no_user_modules = HashSet::new();
-    for path in &markdown {
-        let source = std::fs::read_to_string(path)
-            .map_err(|e| format!("cannot read `{}`: {e}", path.display()))?;
-        for (index, snippet) in extract_witchy_blocks(&source).into_iter().enumerate() {
-            markdown_blocks += 1;
-            let label = format!("{}#block-{}", display_from(root, path), index + 1);
-            let module = parser::parse_module(&snippet).map_err(|e| format!("{label}: {e}"))?;
-            let report = pipeline::migration_census(
-                vec![("main".to_string(), module)],
-                "main",
-                &no_user_modules,
-            )
-                .map_err(|e| format!("{label}: {e}"))?;
-            record_report(
-                label,
-                report,
-                &mut declarations,
-                &mut calls,
-                &mut checked,
-                &mut rejected,
-                &mut totals,
-            );
-        }
+    for ((label, _), report) in blocks.into_iter().zip(reports) {
+        record_report(
+            label,
+            report?,
+            &mut declarations,
+            &mut calls,
+            &mut checked,
+            &mut rejected,
+            &mut totals,
+        );
     }
 
     println!();
