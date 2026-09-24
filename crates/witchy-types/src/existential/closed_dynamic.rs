@@ -67,7 +67,7 @@ pub(crate) fn prepare(
         // inventory. Only a concrete body can require a closed payload here;
         // the complete supplied plan was independently authenticated above.
         if let Item::Function(function) = item && scope.contains(&function.name)
-            && !crate::pipeline::function_has_free_signature_variables(function)
+            && !witchy_canonical_source::scope::function_has_free_signature_variables(function)
         {
             visit_block::<String>(&function.body, &mut |expr| {
                 constructs_dynamic |= matches!(expr, Expr::Ctor { name, .. } if name == "dynamic.Dynamic");

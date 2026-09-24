@@ -20,7 +20,7 @@ fn operation(name: &str) -> Option<(usize, witchy_wir::canonical_safewir::Capabi
 pub(super) fn is_operation(name: &str) -> bool { operation(name).is_some() }
 
 pub(super) fn collect_imports(module: &witchy_syntax::ast::Module) -> BTreeSet<&'static str> {
-    let scope = witchy_types::pipeline::canonical_scope(module);
+    let scope = witchy_canonical_source::scope::canonical_scope(module);
     let mut needed = BTreeSet::new();
     for item in &module.items {
         let Item::Function(function) = item else { continue };

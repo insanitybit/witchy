@@ -191,7 +191,7 @@ pub fn check_build_recipe_from_source_bundle(
     payload.extend_from_slice(&target.function_ordinal.to_le_bytes());
     payload.extend_from_slice(&abi.key.as_bytes());
     payload.extend_from_slice(&parameter_abi);
-    source.source_witness.launch_contract_digest = launch_contract_digest(&payload);
+    source.source_witness.rebind_launch_contract_for_build_recipe(launch_contract_digest(&payload));
     source.launch_contract_payload = payload;
     source.build_entry = Some(entry_name);
     Ok(CheckedBuildRecipe { original, checked, identity })

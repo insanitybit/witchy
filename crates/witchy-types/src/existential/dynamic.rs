@@ -484,7 +484,7 @@ pub(super) fn dynamic_rewrite_scope(
             _ => None,
         })
         .collect::<std::collections::HashMap<_, _>>();
-    let mut scope = (*crate::pipeline::canonical_scope(module)).clone();
+    let mut scope = (*witchy_canonical_source::scope::canonical_scope(module)).clone();
     if runtime_functions.is_empty() {
         // Entry-module export roots normally retain every public declaration.
         // An uninvoked `@dynamic` method is different: its descriptor contract
@@ -520,7 +520,7 @@ pub(super) fn dynamic_rewrite_scope(
         // helper edges follow the ordinary canonical rule: a free generic
         // template is not executable until a named concrete instance calls it.
         if !runtime_roots.contains(&name)
-            && crate::pipeline::function_has_free_signature_variables(function)
+            && witchy_canonical_source::scope::function_has_free_signature_variables(function)
         {
             continue;
         }
@@ -565,7 +565,7 @@ pub(super) fn dynamic_rewrite_scope(
 /// ordinary data and must not materialize an otherwise unsupported parameter
 /// lane such as `unique String`.
 pub(super) fn dynamic_method_bodies_requested(module: &Module) -> bool {
-    let scope = crate::pipeline::canonical_scope(module);
+    let scope = witchy_canonical_source::scope::canonical_scope(module);
     for item in &module.items {
         let Item::Function(function) = item else { continue };
         if !scope.contains(&function.name) {

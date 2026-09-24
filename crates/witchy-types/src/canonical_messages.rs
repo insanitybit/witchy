@@ -21,7 +21,7 @@ pub(crate) fn prepare(
     typed: TypedModule,
     catalog: Option<&RuntimeDeclarationCatalog>,
 ) -> Result<TypedModule, String> {
-    let scope = crate::pipeline::canonical_scope(typed.module());
+    let scope = witchy_canonical_source::scope::canonical_scope(typed.module());
     // Match the existing callable witness's runtime inventory exactly. Entry
     // libraries retain generic templates in canonical_scope, but templates
     // are not executable bodies and cannot define a concrete message tag.
@@ -29,7 +29,7 @@ pub(crate) fn prepare(
     // an unstamped erasure in one of those bodies continues to reject.
     let runtime_functions = typed.module().items.iter().filter_map(|item| match item {
         Item::Function(function) if scope.contains(&function.name)
-            && !crate::pipeline::function_has_free_signature_variables(function) => Some(function.name.clone()),
+            && !witchy_canonical_source::scope::function_has_free_signature_variables(function) => Some(function.name.clone()),
         _ => None,
     }).collect::<std::collections::BTreeSet<_>>();
     // Rechecking a rewritten root still needs every exact declaration its body
@@ -510,11 +510,11 @@ pub fn pack(value: a) -> __Msg:
     __erase(value)
 "#, "task");
         assert!(checked.module().items.iter().any(|item| matches!(item,
-            Item::Function(function) if crate::pipeline::function_has_free_signature_variables(function))));
+            Item::Function(function) if witchy_canonical_source::scope::function_has_free_signature_variables(function))));
         let canonical = checked.canonical_source().unwrap().typed_module();
         for item in &canonical.module().items {
             if let Item::Function(function) = item {
-                assert!(!crate::pipeline::function_has_free_signature_variables(function));
+                assert!(!witchy_canonical_source::scope::function_has_free_signature_variables(function));
                 visit_block::<()>(&function.body, &mut |expr| {
                     if let Expr::Call { name, .. } = expr {
                         assert!(!intrinsics::is_erasure_bridge(name));

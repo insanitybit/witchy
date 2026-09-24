@@ -98,7 +98,7 @@ impl CheckedPassOutcome {
 
     pub fn validate_final(
         self,
-        source: &witchy_types::pipeline::CanonicalCheckedSource,
+        source: &witchy_canonical_source::source::CanonicalSourceView<'_>,
     ) -> Result<super::ValidatedSafeWir, super::FinalValidationError> {
         match self {
             Self::Applied(checked) => super::validate_optimized_final(checked, source),

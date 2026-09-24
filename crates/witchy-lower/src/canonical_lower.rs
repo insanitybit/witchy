@@ -203,7 +203,7 @@ pub fn lower_typed_module(
     source: &CanonicalCheckedSource,
     layouts: LayoutBundle,
 ) -> Result<CanonicalModule<LoweredCandidate>, CanonicalLoweringError> {
-    let service_sites = witchy_types::canonical_worker::service_sites(source)
+    let service_sites = witchy_canonical_source::service::service_sites(&source.view())
         .map_err(CanonicalLoweringError::UnsupportedCanonicalObligation)?;
     let typed = source.typed_module();
     // Canonical rooted views use their own exact checked product.  Do not
@@ -240,7 +240,7 @@ pub fn lower_typed_module(
         .optimization_readiness()
         .validate_source(source)
         .map_err(|error| CanonicalLoweringError::InvalidCheckedAccessFacts(error.to_string()))?;
-    let scope = witchy_types::pipeline::canonical_scope(typed.module());
+    let scope = witchy_canonical_source::scope::canonical_scope(typed.module());
     // Checked source records what it could not bind as canonical authority
     // (RFC-0165): library specializations, closures the v1 witness cannot
     // authenticate, callable ABIs it cannot encode. Canonical v1 has no
@@ -259,7 +259,7 @@ pub fn lower_typed_module(
             continue;
         }
         // `CanonicalCheckedSource` emits callable witnesses only for runtime
-        // declarations: `pipeline::function_has_free_signature_variables`
+        // declarations: `witchy_canonical_source::scope::function_has_free_signature_variables`
         // omits generic templates.  Do not turn an arbitrary missing final
         // witness into a skipped scan; only that exact free-variable template
         // shape remains compile-time input here.
@@ -740,7 +740,7 @@ pub fn lower_typed_module(
         let declaration_signature = closure_context.declaration_by_layout[&family.closure];
         let mut constructors = Vec::new();
         for lambda in lambda_functions.iter().filter(|lambda| lambda.signature_id == signature) {
-            let source_constructor = SourceConstructor::from_checked(source, ConstructorId(lambda.witness_index))
+            let source_constructor = SourceConstructor::from_checked(&source.view(), ConstructorId(lambda.witness_index))
                 .map_err(|_| CanonicalLoweringError::UnsupportedExpression("checked opaque capture contract"))?;
             let variant = family.variants.iter().find(|variant| variant.witness == Some(lambda.witness_index))
                 .ok_or(CanonicalLoweringError::UnsupportedExpression("opaque capture variant"))?;
@@ -19733,7 +19733,7 @@ fn compiler_service_import(name: &str) -> Option<(&'static str, usize)> {
 }
 
 fn collect_compiler_imports(module: &witchy_syntax::ast::Module) -> BTreeSet<&'static str> {
-    let scope = witchy_types::pipeline::canonical_scope(module);
+    let scope = witchy_canonical_source::scope::canonical_scope(module);
     let mut needed = BTreeSet::new();
     for item in &module.items {
         let Item::Function(function) = item else { continue };
@@ -19760,7 +19760,7 @@ fn is_capability_op(name: &str) -> bool {
 
 /// The imports the canonical functions' capability operations reach.
 fn collect_capability_imports(module: &witchy_syntax::ast::Module, table: &TypeTable) -> BTreeSet<&'static str> {
-    let scope = witchy_types::pipeline::canonical_scope(module);
+    let scope = witchy_canonical_source::scope::canonical_scope(module);
     let mut needed = BTreeSet::new();
     for item in &module.items {
         let Item::Function(function) = item else { continue };
@@ -19829,7 +19829,7 @@ fn collect_capability_imports(module: &witchy_syntax::ast::Module, table: &TypeT
 /// Whether any canonical source function renders a `Float`, which reaches
 /// the `float_to_str` import.
 fn renders_float(module: &witchy_syntax::ast::Module, table: &TypeTable, definitions: &BTreeMap<String, TypeDef>) -> bool {
-    let scope = witchy_types::pipeline::canonical_scope(module);
+    let scope = witchy_canonical_source::scope::canonical_scope(module);
     module.items.iter().any(|item| {
         let Item::Function(function) = item else { return false };
         if !scope.contains(&function.name) {
@@ -19941,7 +19941,7 @@ fn render_variant_name(variant: &ScalarVariant) -> String {
 }
 
 fn collect_string_payloads(module: &witchy_syntax::ast::Module, table: &TypeTable, definitions: &BTreeMap<String, TypeDef>) -> Vec<Vec<u8>> {
-    let scope = witchy_types::pipeline::canonical_scope(module);
+    let scope = witchy_canonical_source::scope::canonical_scope(module);
     let mut literal_uses = BTreeMap::<Vec<u8>, usize>::new();
     let mut chars_inputs = BTreeMap::<Vec<u8>, usize>::new();
     let mut chars_outputs = BTreeSet::new();
@@ -20033,7 +20033,7 @@ fn collect_pattern_literals(pattern: &Pattern, literal_uses: &mut BTreeMap<Vec<u
 }
 
 fn contains_console_print(module: &witchy_syntax::ast::Module) -> bool {
-    let scope = witchy_types::pipeline::canonical_scope(module);
+    let scope = witchy_canonical_source::scope::canonical_scope(module);
     module.items.iter().filter_map(|item| match item {
         Item::Function(function) if scope.contains(&function.name) => {
             Some(&function.body)
@@ -20230,7 +20230,7 @@ fn canonical_tail_sites(
     lambda_functions: &HashMap<ProperTailCallableId, FunctionId>,
     locations: &BTreeMap<witchy_wir::canonical_safewir::TailSiteId, witchy_wir::canonical_safewir::ProperTailLocation>,
 ) -> Result<Vec<witchy_wir::canonical_safewir::ProperTailSite>, CanonicalLoweringError> {
-    let scope = witchy_types::pipeline::canonical_scope(module);
+    let scope = witchy_canonical_source::scope::canonical_scope(module);
     manifest
         .sites()
         .iter()
@@ -20565,7 +20565,7 @@ mod tests {
         let layouts = crate::canonical_layouts::derive_layout_bundle(source).expect("source layouts");
         let candidate = lower_typed_module(source, layouts).expect("lower Option rooted-view carrier")
             .with_launch_contract_payload(source.launch_contract_payload().to_vec());
-        check_initial_with_witness(candidate.clone(), source).expect("source-bound Option owner");
+        check_initial_with_witness(candidate.clone(), &source.view()).expect("source-bound Option owner");
 
         let mut families = candidate.owner_families().to_vec();
         let family = families.iter_mut().find(|family| matches!(
@@ -20577,7 +20577,7 @@ mod tests {
             "Option".into(),
             vec![Type::Named("Int".into(), Vec::new())],
         ));
-        assert!(check_initial_with_witness(candidate.with_owner_families(families), source).is_err(),
+        assert!(check_initial_with_witness(candidate.with_owner_families(families), &source.view()).is_err(),
             "erasing View from the owner source identity must be refused");
     }
 
@@ -20588,9 +20588,9 @@ mod tests {
         let layouts = crate::canonical_layouts::derive_layout_bundle(source).expect("source layouts");
         let candidate = lower_typed_module(source, layouts).expect("lower Option rooted-view carrier")
             .with_launch_contract_payload(source.launch_contract_payload().to_vec());
-        let initial = check_initial_with_witness(candidate, source).expect("check ownership and joins");
-        let validated = validate_final(initial, source).expect("final validation");
-        witchy_wir::admit_canonical_with_observer(validated, source, |validated, artifact| {
+        let initial = check_initial_with_witness(candidate, &source.view()).expect("check ownership and joins");
+        let validated = validate_final(initial, &source.view()).expect("final validation");
+        witchy_wir::admit_canonical_with_observer(validated, &source.view(), |validated, artifact| {
             let export = artifact.entry().expect("admitted entry").export();
             let main = FunctionId::new(export.strip_prefix('f').expect("canonical function export")
                 .parse().expect("canonical entry function id"));
@@ -21093,9 +21093,9 @@ pub fn take_int(var xs: unique List(Int)) -> Option(Int):
         }
         assert_eq!(helpers, 2, "both source-generated scalar and reference extraction helpers");
         assert!(prepared_calls >= 2, "snapshot preparation must precede both normal-to-opt calls");
-        let initial = check_initial_with_witness(candidate, source).unwrap();
-        let validated = validate_final(initial, source).unwrap();
-        let artifact = witchy_wir::admit_canonical(validated, source).unwrap();
+        let initial = check_initial_with_witness(candidate, &source.view()).unwrap();
+        let validated = validate_final(initial, &source.view()).unwrap();
+        let artifact = witchy_wir::admit_canonical(validated, &source.view()).unwrap();
         assert!(!artifact.wasm().is_empty());
     }
 
@@ -21196,26 +21196,26 @@ fn exercise(console: Console) -> Int:
             .find_map(|(family, entry)| entry.constructors.iter().position(|c| c.witness.is_none())
                 .map(|constructor| (family, constructor))).expect("named adapter in opaque family");
         let adapter = candidate.owner_families()[family_index].constructors[constructor_index].function;
-        check_initial_with_witness(candidate.clone(), source).expect("source-bound adapter does not need a lambda witness");
+        check_initial_with_witness(candidate.clone(), &source.view()).expect("source-bound adapter does not need a lambda witness");
 
         let missing = candidate.clone().with_adapter_bindings(CandidateAdapterBindings::new(
             candidate.adapter_bindings().entries().iter().filter(|binding| binding.adapter() != adapter).cloned().collect()));
-        assert!(check_initial_with_witness(missing, source).is_err());
+        assert!(check_initial_with_witness(missing, &source.view()).is_err());
         let redirected = candidate.clone().with_adapter_bindings(CandidateAdapterBindings::new(
             candidate.adapter_bindings().entries().iter().map(|binding| {
                 if binding.adapter() == adapter { CandidateAdapterBinding::new(adapter, adapter) } else { binding.clone() }
             }).collect()));
-        assert!(check_initial_with_witness(redirected, source).is_err());
+        assert!(check_initial_with_witness(redirected, &source.view()).is_err());
 
         let families = candidate.owner_families().to_vec();
         let mut tagged = families.clone();
         tagged[family_index].constructors[constructor_index].environment_tag = 1;
-        assert!(check_initial_with_witness(candidate.clone().with_owner_families(tagged), source).is_err());
+        assert!(check_initial_with_witness(candidate.clone().with_owner_families(tagged), &source.view()).is_err());
         let mut capturing = families.clone();
         let capture = families.iter().flat_map(|family| &family.constructors)
             .flat_map(|constructor| &constructor.captures).next().expect("logging captures authority").clone();
         capturing[family_index].constructors[constructor_index].captures.push(capture);
-        assert!(check_initial_with_witness(candidate.clone().with_owner_families(capturing), source).is_err());
+        assert!(check_initial_with_witness(candidate.clone().with_owner_families(capturing), &source.view()).is_err());
 
         let mut missing_lambda = families;
         let lambda = missing_lambda.iter_mut().flat_map(|family| &mut family.constructors)
@@ -21223,7 +21223,7 @@ fn exercise(console: Console) -> Int:
         lambda.witness = None;
         lambda.environment_tag = 0;
         lambda.captures.clear();
-        assert!(check_initial_with_witness(candidate.with_owner_families(missing_lambda), source).is_err());
+        assert!(check_initial_with_witness(candidate.with_owner_families(missing_lambda), &source.view()).is_err());
     }
 
     #[test]
@@ -21274,7 +21274,7 @@ fn main() -> Int:
         .with_closure_bindings(candidate.closure_bindings().clone())
         .with_adapter_bindings(candidate.adapter_bindings().clone())
         .with_closure_layouts(candidate.closure_layouts().clone());
-        assert!(check_initial_with_witness(candidate, source).is_err());
+        assert!(check_initial_with_witness(candidate, &source.view()).is_err());
     }
 
     #[test]
@@ -21331,7 +21331,7 @@ fn main() -> Int:
             .with_closure_bindings(candidate.closure_bindings().clone())
             .with_adapter_bindings(candidate.adapter_bindings().clone())
             .with_closure_layouts(candidate.closure_layouts().clone());
-        let error = match check_initial_with_witness(candidate, source) {
+        let error = match check_initial_with_witness(candidate, &source.view()) {
             Err(error) => error,
             Ok(_) => panic!("post-prefix reload must be rejected"),
         };
@@ -21353,7 +21353,7 @@ fn main() -> Int:
         let candidate = lower_typed_module(source, layouts)
             .expect("lower managed capture")
             .with_launch_contract_payload(source.launch_contract_payload().to_vec());
-        check_initial_with_witness(candidate, source)
+        check_initial_with_witness(candidate, &source.view())
             .expect("ordinary managed capture remains source-authorized");
     }
 
@@ -21377,7 +21377,7 @@ fn main() -> Int:
         let candidate = lower_typed_module(source, layouts)
             .expect("lower rooted-view capture")
             .with_launch_contract_payload(source.launch_contract_payload().to_vec());
-        check_initial_with_witness(candidate.clone(), source)
+        check_initial_with_witness(candidate.clone(), &source.view())
             .expect("checked rooted-view capture is source-bound");
 
         let mut missing_witness = candidate.owner_families().to_vec();
@@ -21385,7 +21385,7 @@ fn main() -> Int:
             .find(|constructor| constructor.witness.is_some() && !constructor.captures.is_empty())
             .expect("capturing rooted-view constructor");
         constructor.witness = None;
-        assert!(check_initial_with_witness(candidate.clone().with_owner_families(missing_witness), source).is_err(),
+        assert!(check_initial_with_witness(candidate.clone().with_owner_families(missing_witness), &source.view()).is_err(),
             "the physical closure cannot replace its checked capture witness");
 
         let mut wrong_transfer = candidate.owner_families().to_vec();
@@ -21394,7 +21394,7 @@ fn main() -> Int:
             .and_then(|constructor| constructor.captures.first_mut())
             .expect("rooted-view retained capture");
         capture.transfer = witchy_wir::canonical_safewir::closure_owner_contract::CaptureTransfer::CopyScalar;
-        assert!(check_initial_with_witness(candidate.clone().with_owner_families(wrong_transfer), source).is_err(),
+        assert!(check_initial_with_witness(candidate.clone().with_owner_families(wrong_transfer), &source.view()).is_err(),
             "a rooted-view capture cannot be downgraded to a scalar copy");
 
         let mut wrong_carrier = candidate.owner_families().to_vec();
@@ -21403,7 +21403,7 @@ fn main() -> Int:
             .and_then(|constructor| constructor.captures.first_mut())
             .expect("rooted-view retained capture");
         capture.value_type = ValueType::Int;
-        assert!(check_initial_with_witness(candidate.with_owner_families(wrong_carrier), source).is_err(),
+        assert!(check_initial_with_witness(candidate.with_owner_families(wrong_carrier), &source.view()).is_err(),
             "a different carrier cannot stand in for an authenticated rooted view");
     }
 
@@ -21561,9 +21561,9 @@ fn main() -> Int:
             .iter()
             .any(|signature| signature.parameters == [ValueType::Int]
                 && signature.contract.parameters[0].ownership == ParameterOwnership::Value));
-        let initial = check_initial_with_witness(candidate, source)
+        let initial = check_initial_with_witness(candidate, &source.view())
             .expect("generic own scalar ABI agrees with the checked source witness");
-        validate_final(initial, source)
+        validate_final(initial, &source.view())
             .expect("generic own scalar ABI remains valid at the final SafeWIR boundary");
     }
 
@@ -21934,9 +21934,9 @@ fn main() -> Int:
         ).all(|header| header.parameters.iter().all(|parameter|
             parameter.value_type != ValueType::Ref(string_layout)
         )), "the invariant String root must remain the dominating entry SSA value");
-        let initial = check_initial_with_witness(candidate, source)
+        let initial = check_initial_with_witness(candidate, &source.view())
             .expect("initial SafeWIR validation keeps the root and metadata coupled");
-        validate_final(initial, source)
+        validate_final(initial, &source.view())
             .expect("final SafeWIR validation preserves the invariant String loop contract");
     }
 
@@ -21977,9 +21977,9 @@ fn main() -> Int:
                     parameter.value_type == ValueType::Size
                 ).count() == 4
         }), "the mutable root remains the lone reference loop parameter; both roots carry scalar metadata");
-        let initial = check_initial_with_witness(candidate, source)
+        let initial = check_initial_with_witness(candidate, &source.view())
             .expect("initial SafeWIR validation keeps while metadata tied to the dominating root");
-        validate_final(initial, source)
+        validate_final(initial, &source.view())
             .expect("final SafeWIR validation preserves the invariant String while contract");
     }
 
@@ -21995,9 +21995,9 @@ fn main() -> Int:
         )
         .expect("rfind-style source lowers")
         .with_launch_contract_payload(source.launch_contract_payload().to_vec());
-        let initial = check_initial_with_witness(candidate, source)
+        let initial = check_initial_with_witness(candidate, &source.view())
             .expect("all metadata values used after the if/while join dominate that join");
-        validate_final(initial, source)
+        validate_final(initial, &source.view())
             .expect("rfind-style control flow reaches final SafeWIR validation");
     }
 
@@ -22040,9 +22040,9 @@ fn main() -> Int:
                 parameter.value != key.value && parameter.value_type != ValueType::Ref(string_layout)
             ), "the edge transports fresh scalar metadata while key retains its dominating root");
         }
-        let initial = check_initial_with_witness(candidate, source)
+        let initial = check_initial_with_witness(candidate, &source.view())
             .expect("invariant string equality has a current extent in the loop body");
-        validate_final(initial, source)
+        validate_final(initial, &source.view())
             .expect("invariant string equality reaches final SafeWIR validation");
     }
 
@@ -22542,7 +22542,7 @@ fn main() -> Int:
             Terminator::TailCall { arguments, .. } if matches!(arguments.as_slice(), [CallArgument::Move(_)])
         ));
         assert!(!caller.blocks[0].operations.iter().any(|operation| matches!(operation, Operation::CloneRef { .. })));
-        let admitted = check_initial_with_witness(candidate, source);
+        let admitted = check_initial_with_witness(candidate, &source.view());
         assert!(admitted.is_ok(), "source-bound own candidate admits: {:?}", admitted.err());
     }
 
@@ -22565,9 +22565,9 @@ fn main() -> Int:
         assert_eq!(signature.contract.parameters[0].ownership, ParameterOwnership::Unique);
         assert!(matches!(signature.contract.results.as_slice(), [ResultContract::Unique { .. }]));
         assert_eq!(function.blocks[0].parameters[0].ownership, Some(Ownership::Unique));
-        let initial = check_initial_with_witness(candidate, source)
+        let initial = check_initial_with_witness(candidate, &source.view())
             .expect("root unique own ABI passes initial SafeWIR validation");
-        validate_final(initial, source)
+        validate_final(initial, &source.view())
             .expect("root unique own ABI passes final SafeWIR validation");
     }
 
@@ -22591,9 +22591,9 @@ fn main() -> Int:
         assert_eq!(signature.results, [ValueType::Int]);
         assert_eq!(signature.contract.parameters[0].ownership, ParameterOwnership::Value);
         assert_eq!(signature.contract.results, [ResultContract::Value(ValueType::Int)]);
-        let initial = check_initial_with_witness(candidate, source)
+        let initial = check_initial_with_witness(candidate, &source.view())
             .expect("root unique scalar ABI passes initial SafeWIR validation");
-        validate_final(initial, source)
+        validate_final(initial, &source.view())
             .expect("root unique scalar ABI passes final SafeWIR validation");
     }
 
@@ -22609,9 +22609,9 @@ fn main() -> Int:
         )
         .expect("a root unique local has the ordinary list representation")
         .with_launch_contract_payload(source.launch_contract_payload().to_vec());
-        let initial = check_initial_with_witness(candidate, source)
+        let initial = check_initial_with_witness(candidate, &source.view())
             .expect("root unique local passes initial SafeWIR validation");
-        validate_final(initial, source)
+        validate_final(initial, &source.view())
             .expect("root unique local passes final SafeWIR validation");
     }
 

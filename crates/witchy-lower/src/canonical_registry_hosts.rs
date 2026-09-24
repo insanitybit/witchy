@@ -20,7 +20,7 @@ pub(super) fn is_require(name: &str) -> bool {
 }
 
 pub(super) fn collect_imports(module: &witchy_syntax::ast::Module) -> (BTreeSet<&'static str>, bool) {
-    let scope = witchy_types::pipeline::canonical_scope(module);
+    let scope = witchy_canonical_source::scope::canonical_scope(module);
     let mut imports = BTreeSet::new();
     let mut requires_secret = false;
     for item in &module.items {
@@ -171,7 +171,7 @@ fn main(clock: Clock, root: Dir, store: SecretStore, key: Secret[Seal]) -> Int:
             "now" | "dir_make_dir" | "secretstore_lookup" | "crypto.sign" | "crypto.public_key")));
         assert!(!module.owner_families().is_empty(), "captures keep their authenticated owner bindings");
         let source = checked.canonical_source().unwrap();
-        witchy_wir::admit_canonical(validated, source).expect("independent plan and encoded bytes admit");
+        witchy_wir::admit_canonical(validated, &source.view()).expect("independent plan and encoded bytes admit");
     }
 
     #[test]

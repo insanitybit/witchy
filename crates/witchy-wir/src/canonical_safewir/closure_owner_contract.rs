@@ -22,7 +22,7 @@ use super::{CapabilityKindId, FunctionId, FunctionSignatureId, GcTypeId, ValueId
 use crate::layout::LayoutId;
 use witchy_canonical_source::closure::ClosureCaptureTransfer;
 use witchy_canonical_source::closure::ClosureWitness;
-use witchy_types::pipeline::CanonicalCheckedSource;
+use witchy_canonical_source::source::CanonicalSourceView;
 
 /// Static candidate metadata, never an SSA operand or guest bridge argument.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -52,13 +52,13 @@ pub enum ContractError {
 /// A borrowed view of the existing checked product, not a new receipt/token.
 /// Candidate metadata must be compared with this source, never trusted itself.
 pub struct SourceConstructor<'a> {
-    source: &'a CanonicalCheckedSource,
+    source: CanonicalSourceView<'a>,
     witness: &'a ClosureWitness,
     transfers: Vec<CaptureTransfer>,
 }
 
 impl<'a> SourceConstructor<'a> {
-    pub fn from_checked(source: &'a CanonicalCheckedSource, ordinal: ConstructorId) -> Result<Self, ContractError> {
+    pub fn from_checked(source: &CanonicalSourceView<'a>, ordinal: ConstructorId) -> Result<Self, ContractError> {
         use witchy_canonical_source::capabilities::{CapabilityKind, CapabilityRepresentation};
         let witness = source.closure_witness().entries().get(ordinal.0 as usize)
             .ok_or(ContractError::MissingWitness)?;
@@ -109,10 +109,10 @@ impl<'a> SourceConstructor<'a> {
         {
             return Err(ContractError::PureCapabilityCapture);
         }
-        Ok(Self { source, witness, transfers })
+        Ok(Self { source: *source, witness, transfers })
     }
 
-    pub fn source(&self) -> &CanonicalCheckedSource { self.source }
+    pub fn source(&self) -> &CanonicalSourceView<'a> { &self.source }
     pub fn witness(&self) -> &ClosureWitness { self.witness }
     pub fn transfers(&self) -> &[CaptureTransfer] { &self.transfers }
 
@@ -528,8 +528,9 @@ mod tests {
             "main", |_, _, _| Ok(Default::default()),
         ).unwrap();
         let source = checked.canonical_source().unwrap();
-        let contract = SourceConstructor::from_checked(source, ConstructorId(0)).unwrap();
-        assert!(std::ptr::eq(contract.source(), source));
+        let contract = SourceConstructor::from_checked(&source.view(), ConstructorId(0)).unwrap();
+        assert!(std::ptr::eq(contract.source().module(), source.typed_module().module()));
+        assert!(std::ptr::eq(contract.source().closure_witness(), source.closure_witness()));
         assert!(std::ptr::eq(contract.witness(), &source.closure_witness().entries()[0]));
         assert_eq!(contract.transfers().len(), 2);
         assert!(contract.transfers().contains(&CaptureTransfer::CloneManaged));
@@ -547,7 +548,7 @@ mod tests {
             }
         }
         assert_eq!(contract.capability_read(CaptureOrdinal(u32::MAX)), Err(ContractError::NotCapabilityCapture));
-        assert!(matches!(SourceConstructor::from_checked(source, ConstructorId(u32::MAX)), Err(ContractError::MissingWitness)));
+        assert!(matches!(SourceConstructor::from_checked(&source.view(), ConstructorId(u32::MAX)), Err(ContractError::MissingWitness)));
         assert_eq!(BridgeAbi::seal().parameters, vec![BridgeValue::TypedGcPayload]);
         assert_eq!(BridgeAbi::release().results, vec![BridgeValue::FinalPayload]);
         assert_eq!(BridgeAbi::retain().parameters, vec![BridgeValue::OpaqueOwner]);

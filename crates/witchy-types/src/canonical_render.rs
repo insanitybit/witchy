@@ -45,12 +45,12 @@ impl Preparation {
 
     pub(crate) fn extend(&mut self, typed: TypedModule) -> Result<(TypedModule, bool), String> {
         self.definitions = type_definitions(typed.module());
-        let scope = crate::pipeline::canonical_scope(typed.module());
+        let scope = witchy_canonical_source::scope::canonical_scope(typed.module());
         let mut needed = false;
         for item in &typed.module().items {
             if let Item::Function(function) = item
                 && scope.contains(&function.name)
-                && !crate::pipeline::function_has_free_signature_variables(function)
+                && !witchy_canonical_source::scope::function_has_free_signature_variables(function)
             {
                 visit_block::<String>(&function.body, &mut |expression| {
                     if let Some(ty) = render_operand_type(expression, typed.table())
@@ -70,7 +70,7 @@ impl Preparation {
             for item in &mut module.items {
                 if let Item::Function(function) = item
                     && scope.contains(&function.name)
-                    && !crate::pipeline::function_has_free_signature_variables(function)
+                    && !witchy_canonical_source::scope::function_has_free_signature_variables(function)
                 {
                     visit_block_mut(&mut function.body, &mut |expression| {
                         self.rewrite(expression, table, &mut changed)

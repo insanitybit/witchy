@@ -59,7 +59,7 @@ pub(super) fn sites(module: &witchy_syntax::ast::Module, console: bool) -> Resul
         }
         Ok(())
     }
-    let scope = witchy_types::pipeline::canonical_scope(module);
+    let scope = witchy_canonical_source::scope::canonical_scope(module);
     let mut sites = HashMap::new();
     let mut visited = HashSet::new();
     for item in &module.items {

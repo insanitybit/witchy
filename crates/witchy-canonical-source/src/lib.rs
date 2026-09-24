@@ -18,6 +18,9 @@ pub mod aggregates;
 pub mod capabilities;
 pub mod closure;
 pub mod proper_tail;
+pub mod scope;
+pub mod service;
+pub mod source;
 pub mod specialization;
 
 /// The structural `()` spelling is canonical; legacy names remain accepted

@@ -13,7 +13,7 @@ fn main(console: Console):
 #[test]
 fn vm_service_source_sites_reach_sealed_artifact() {
     let checked = witchy::resolve_std_only_checked(SOURCE).unwrap();
-    let sites = witchy_types::canonical_worker::service_sites(checked.canonical_source().unwrap()).unwrap();
+    let sites = witchy_canonical_source::service::service_sites(&checked.canonical_source().unwrap().view()).unwrap();
     assert_eq!(sites.len(), 1);
     assert_eq!(sites[0].id(), 0);
     assert_eq!(sites[0].occurrence(), 0);

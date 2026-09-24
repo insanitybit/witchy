@@ -8,7 +8,7 @@ use witchy_canonical_source::closure::ClosureBindingPathStep;
 
 pub(super) fn validate<S: ModuleStage>(
     candidate: &CanonicalModule<S>,
-    source: &witchy_types::pipeline::CanonicalCheckedSource,
+    source: &witchy_canonical_source::source::CanonicalSourceView<'_>,
 ) -> Result<(), CandidateAbiBindingError> {
     let records = source.type_definitions();
     let (_, layouts) = crate::layout::LayoutBundle::decode_canonical(&candidate.layouts().canonical_bytes())
@@ -211,7 +211,7 @@ pub(super) fn validate<S: ModuleStage>(
                         let (expected_function, offset) = if enclosing.lambda_path.is_empty() && enclosing.method.is_none() {
                             let item = usize::try_from(enclosing.item).map_err(|_| refuse())?;
                             let Some(witchy_syntax::ast::Item::Function(owner)) =
-                                source.typed_module().module().items.get(item)
+                                source.module().items.get(item)
                             else { return Err(refuse()); };
                             let source_abi = source.closed_callable_abi(&owner.name).ok_or_else(refuse)?;
                             let witchy_canonical_source::abi::CanonicalTargetPolicy::ClosedLocal(target) = source_abi.target_policy

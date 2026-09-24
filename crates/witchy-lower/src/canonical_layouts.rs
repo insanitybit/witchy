@@ -379,7 +379,7 @@ fn project_layouts(
     source: &CanonicalCheckedSource,
 ) -> Result<LayoutProjection, CanonicalLayoutError> {
     let typed = source.typed_module();
-    let scope = witchy_types::pipeline::canonical_scope(typed.module());
+    let scope = witchy_canonical_source::scope::canonical_scope(typed.module());
     // The checker spells an entry-module type as `entry.Name` while the
     // definition keeps its bare source name; key both spellings.
     let entry_module = typed.module().linked_entry.as_deref();

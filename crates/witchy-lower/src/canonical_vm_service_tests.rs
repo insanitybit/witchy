@@ -45,13 +45,13 @@ fn vm_service_exact_bindings_validate_and_bad_descriptors_refuse() {
         .with_launch_contract_payload(source.launch_contract_payload().to_vec());
     let original = candidate();
     let descriptor = original.vm_services()[0].clone();
-    let initial = check_initial_with_witness(original, source).expect("exact source site validates");
-    validate_final(initial, source).expect("final service validation");
+    let initial = check_initial_with_witness(original, &source.view()).expect("exact source site validates");
+    validate_final(initial, &source.view()).expect("final service validation");
     let malformed = [vec![], vec![descriptor.clone(), descriptor.clone()],
         vec![CandidateVmService::new(descriptor.id() + 1, descriptor.caller(), descriptor.callback())],
         vec![CandidateVmService::new(descriptor.id(), descriptor.callback(), descriptor.callback())],
         vec![CandidateVmService::new(descriptor.id(), descriptor.caller(), FunctionId::new(u32::MAX))]];
     for descriptors in malformed {
-        assert!(check_initial_with_witness(candidate().with_vm_services(descriptors), source).is_err());
+        assert!(check_initial_with_witness(candidate().with_vm_services(descriptors), &source.view()).is_err());
     }
 }

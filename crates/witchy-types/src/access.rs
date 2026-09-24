@@ -314,6 +314,16 @@ pub struct CheckedAccessFacts {
     places: CheckedPlaceFacts,
 }
 
+impl witchy_canonical_source::source::CheckedAccessQuery for CheckedAccessFacts {
+    fn declaration(&self, name: &str) -> Option<&AccessSignature> {
+        CheckedAccessFacts::declaration(self, name)
+    }
+
+    fn call_at(&self, module: &Module, expression: &Expr) -> Option<&AccessSignature> {
+        CheckedAccessFacts::call_at(self, module, expression)
+    }
+}
+
 impl CheckedAccessFacts {
     fn owns(&self, module: &Module) -> bool {
         std::ptr::eq(self.owner, module)

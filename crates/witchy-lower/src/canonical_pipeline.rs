@@ -46,7 +46,7 @@ pub(crate) fn admit_checked_module_with_observer<R>(
     // One shape memo spans validation and admission (see `with_shape_memo`).
     witchy_canonical_source::aggregates::with_shape_memo(source.type_definitions(), || {
         let validated = validate_checked_source(source)?;
-        witchy_wir::admit_canonical_with_observer(validated, source, observe)
+        witchy_wir::admit_canonical_with_observer(validated, &source.view(), observe)
             .map_err(CanonicalPipelineError::Admission)
     })
 }
@@ -56,7 +56,7 @@ pub(crate) fn admit_checked_source(
 ) -> Result<AdmittedCanonicalArtifact, CanonicalPipelineError> {
     witchy_canonical_source::aggregates::with_shape_memo(source.type_definitions(), || {
         let validated = validate_checked_source(source)?;
-        admit_canonical(validated, source).map_err(CanonicalPipelineError::Admission)
+        admit_canonical(validated, &source.view()).map_err(CanonicalPipelineError::Admission)
     })
 }
 
@@ -96,7 +96,7 @@ fn validate_checked_source_inner(
     let candidate = lower_typed_module(source, layouts)
         .map_err(CanonicalPipelineError::Lowering)?
         .with_launch_contract_payload(source.launch_contract_payload().to_vec());
-    let checked = check_initial_with_witness(candidate, source)
+    let checked = check_initial_with_witness(candidate, &source.view())
         .map_err(CanonicalPipelineError::InitialValidation)?;
     if source
         .typed_module()
@@ -105,14 +105,14 @@ fn validate_checked_source_inner(
         .iter()
         .any(|mode| mode == "opt")
     {
-        run_checked_pass(checked, PassId::SameBlockBoundsGuards).validate_final(source)
+        run_checked_pass(checked, PassId::SameBlockBoundsGuards).validate_final(&source.view())
             .map_err(CanonicalPipelineError::FinalValidation)
     } else {
         // Ordinary mode remains the zero-pass baseline. The final validator
         // consumes and rechecks this exact sealed graph; functions whose
         // checker inputs are byte-identical to the initial pass replay their
         // admitted verdict from the per-function memo (`check::cache`).
-        validate_final(checked, source).map_err(CanonicalPipelineError::FinalValidation)
+        validate_final(checked, &source.view()).map_err(CanonicalPipelineError::FinalValidation)
     }
 }
 
@@ -575,7 +575,7 @@ pub(crate) mod tests {
         let validated = validate_checked_module(&first).expect("first module validates");
         let error = match admit_canonical(
             validated,
-            second.canonical_source().expect("second canonical witness"),
+            &(second.canonical_source().expect("second canonical witness")).view(),
         ) {
             Ok(_) => panic!("a different source witness must not admit"),
             Err(error) => error,

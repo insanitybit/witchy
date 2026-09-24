@@ -2,7 +2,7 @@
 use super::*;
 
 pub(super) fn is_needed(module: &witchy_syntax::ast::Module) -> bool {
-    let scope = witchy_types::pipeline::canonical_scope(module);
+    let scope = witchy_canonical_source::scope::canonical_scope(module);
     let mut needed = false;
     for item in &module.items {
         let Item::Function(function) = item else { continue };

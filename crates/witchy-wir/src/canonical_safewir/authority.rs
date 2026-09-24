@@ -162,7 +162,7 @@ impl CheckedSafeWirRevision {
 
     pub fn validate_final(
         self,
-        source: &witchy_types::pipeline::CanonicalCheckedSource,
+        source: &witchy_canonical_source::source::CanonicalSourceView<'_>,
     ) -> Result<ValidatedSafeWir, FinalValidationError> {
         match self {
             Self::Initial(checked) => validate_final(checked, source),
@@ -279,7 +279,7 @@ impl ValidatedSafeWir {
 
     pub(crate) fn validate_external_source_witness(
         &self,
-        source: &witchy_types::pipeline::CanonicalCheckedSource,
+        source: &witchy_canonical_source::source::CanonicalSourceView<'_>,
     ) -> Result<(), AdmissionWitnessMismatch> {
         let witness = source.source_witness();
         if witness.source_bundle_digest() != self.checked_source().digest()
@@ -546,7 +546,7 @@ impl std::error::Error for FinalValidationError {}
 
 pub fn check_initial_with_witness(
     candidate: CanonicalModule<LoweredCandidate>,
-    source: &witchy_types::pipeline::CanonicalCheckedSource,
+    source: &witchy_canonical_source::source::CanonicalSourceView<'_>,
 ) -> Result<CheckedInitialSafeWir, InitialWitnessError> {
     let source_digest = source.source_witness().source_bundle_digest();
     let expected_source = source_digest;
@@ -597,20 +597,18 @@ pub fn check_initial_with_witness(
 
 fn validate_external_imports(
     candidate: &CanonicalModule<LoweredCandidate>,
-    source: &witchy_types::pipeline::CanonicalCheckedSource,
+    source: &witchy_canonical_source::source::CanonicalSourceView<'_>,
 ) -> Result<(), InitialWitnessError> {
-    let expected = source.precompiled_declarations().libraries().flat_map(|library| {
-        library.exports().map(move |(export, _)| {
-            (
-                format!("witchy.precompiled.{}", library.alias()),
-                export.to_owned(),
-                super::ExternalWasmIdentity {
-                    library_binding_digest: library.binding_digest(),
-                    wasm_sha256: library.wasm_sha256(),
-                    sidecar_sha256: library.sidecar_sha256(),
-                },
-            )
-        })
+    let expected = source.precompiled_exports().iter().map(|export| {
+        (
+            format!("witchy.precompiled.{}", export.library_alias),
+            export.export.clone(),
+            super::ExternalWasmIdentity {
+                library_binding_digest: export.library_binding_digest,
+                wasm_sha256: export.wasm_sha256,
+                sidecar_sha256: export.sidecar_sha256,
+            },
+        )
     }).collect::<HashSet<_>>();
     let actual = candidate.imports().iter().filter_map(|import| {
         let super::ImportContractIdentity::AuthenticatedExternal(identity) = &import.abi_identity else {
@@ -623,7 +621,7 @@ fn validate_external_imports(
 
 fn validate_candidate_abi_bindings<S: ModuleStage>(
     candidate: &CanonicalModule<S>,
-    source: &witchy_types::pipeline::CanonicalCheckedSource,
+    source: &witchy_canonical_source::source::CanonicalSourceView<'_>,
 ) -> Result<(), CandidateAbiBindingError> {
     use witchy_canonical_source::abi::CanonicalTargetPolicy;
     super::vm_service::validate(candidate, source).map_err(CandidateAbiBindingError::VmService)?;
@@ -638,10 +636,10 @@ fn validate_candidate_abi_bindings<S: ModuleStage>(
     // computed once, used only by the two layout-correspondence matches.
     let string_view_records = erase_record_string_views(&records);
     let access_facts = source.access_facts()
-        .map_err(|_| CandidateAbiBindingError::MissingCanonicalLayouts)?;
+        .ok_or(CandidateAbiBindingError::MissingCanonicalLayouts)?;
     // A direct exclusive ABI has no syntax-only fallback: a stale or absent
     // checked loan graph must not be silently treated as an empty one.
-    let loan_facts_available = source.loan_facts().is_ok();
+    let loan_facts_available = source.loans_checked();
     // One decode of the candidate's layout bundle serves every signature
     // comparison and the closure catalog below.
     let (_bundle, layouts) = match crate::layout::LayoutBundle::decode_canonical(&candidate.layouts().canonical_bytes()) {
@@ -699,7 +697,7 @@ fn validate_candidate_abi_bindings<S: ModuleStage>(
         let projected_scalar_relay = source_declaration.is_some_and(|declaration| {
             authenticated_projected_scalar_relay_relation_is_checked(
                 declaration,
-                source.typed_module().module(),
+                source.module(),
                 access_facts,
                 &records,
             )
@@ -723,7 +721,7 @@ fn validate_candidate_abi_bindings<S: ModuleStage>(
         restore_authenticated_projected_scalar_relay_abi(
             &mut source_signature,
             source_declaration,
-            source.typed_module().module(),
+            source.module(),
             access_facts,
             &records,
         );
@@ -1888,7 +1886,7 @@ fn restore_source_abi_qualifiers(
 fn authenticated_projected_scalar_relay_relation_is_checked(
     declaration: &witchy_syntax::ast::Function,
     module: &witchy_syntax::ast::Module,
-    access_facts: &witchy_types::access::CheckedAccessFacts,
+    access_facts: &dyn witchy_canonical_source::source::CheckedAccessQuery,
     records: &ScalarRecordFields,
 ) -> bool {
     let [witchy_syntax::ast::Stmt::Expr(call @ witchy_syntax::ast::Expr::Call { name, args })] = declaration.body.stmts.as_slice() else {
@@ -1943,7 +1941,7 @@ fn restore_authenticated_projected_scalar_relay_abi(
     restored: &mut witchy_syntax::ast::Type,
     declaration: Option<&witchy_syntax::ast::Function>,
     module: &witchy_syntax::ast::Module,
-    access_facts: &witchy_types::access::CheckedAccessFacts,
+    access_facts: &dyn witchy_canonical_source::source::CheckedAccessQuery,
     records: &ScalarRecordFields,
 ) {
     let (witchy_syntax::ast::Type::Fn(parameters, result, conventions, _), Some(declaration)) =
@@ -2698,7 +2696,7 @@ fn aggregate_reference_leaf(
 /// matching physical `Ref` layout: either would let a different generic body
 /// borrow the direct carrier's authority.
 fn exact_generic_shared_relay_binding(
-    source: &witchy_types::pipeline::CanonicalCheckedSource,
+    source: &witchy_canonical_source::source::CanonicalSourceView<'_>,
     source_signature: &witchy_syntax::ast::Type,
     declaration: &witchy_syntax::ast::Function,
     candidate_signature: &super::FunctionSignature,
@@ -2791,7 +2789,7 @@ fn exact_generic_shared_relay_binding(
 /// source `&'l a -> &'l a` relation. The closed source ABI below is physical
 /// `[Concrete] -> Concrete`, so it cannot serve as this predicate itself.
 fn generic_shared_relay_template_candidate(
-    source: &witchy_types::pipeline::CanonicalCheckedSource,
+    source: &witchy_canonical_source::source::CanonicalSourceView<'_>,
     name: &str,
 ) -> bool {
     use witchy_syntax::ast::Type;
@@ -3372,7 +3370,7 @@ fn enqueue_layout_children(
 /// There is intentionally no transform or history input in milestone one.
 pub fn validate_final(
     checked: CheckedInitialSafeWir,
-    source: &witchy_types::pipeline::CanonicalCheckedSource,
+    source: &witchy_canonical_source::source::CanonicalSourceView<'_>,
 ) -> Result<ValidatedSafeWir, FinalValidationError> {
     validate_final_inner(checked.module, checked.witness, Some(source))
 }
@@ -3416,7 +3414,7 @@ pub(super) fn bind_checked_same_block_bounds_guard_optimization(
 
 pub fn validate_optimized_final(
     checked: CheckedOptimizedSafeWir,
-    source: &witchy_types::pipeline::CanonicalCheckedSource,
+    source: &witchy_canonical_source::source::CanonicalSourceView<'_>,
 ) -> Result<ValidatedSafeWir, FinalValidationError> {
     validate_optimized_final_inner(checked, Some(source))
 }
@@ -3424,7 +3422,7 @@ pub fn validate_optimized_final(
 fn validate_final_inner(
     module: CanonicalModule<InitialValid>,
     checked_lowering: CheckedLoweringWitness,
-    source: Option<&witchy_types::pipeline::CanonicalCheckedSource>,
+    source: Option<&witchy_canonical_source::source::CanonicalSourceView<'_>>,
 ) -> Result<ValidatedSafeWir, FinalValidationError> {
     if checked_lowering.checked_source != module.checked_source()
         || checked_lowering.revision != module.revision()
@@ -3474,7 +3472,7 @@ fn validate_final_inner(
 
 fn validate_optimized_final_inner(
     checked: CheckedOptimizedSafeWir,
-    source: Option<&witchy_types::pipeline::CanonicalCheckedSource>,
+    source: Option<&witchy_canonical_source::source::CanonicalSourceView<'_>>,
 ) -> Result<ValidatedSafeWir, FinalValidationError> {
     let CheckedOptimizedSafeWir {
         module,
@@ -4036,7 +4034,7 @@ mod tests {
     #[test]
     fn checked_source_abi_binding_accepts_the_actual_matching_candidate() {
         let checked = source();
-        assert!(check_initial_with_witness(candidate_bound_to_source(&checked), checked.canonical_source().unwrap()).is_ok());
+        assert!(check_initial_with_witness(candidate_bound_to_source(&checked), &checked.canonical_source().unwrap().view()).is_ok());
     }
 
     #[test]
@@ -4351,7 +4349,7 @@ mod tests {
             super::super::CandidateAbiBinding::new(FunctionId::new(0), target.function_ordinal),
         ]);
         assert!(matches!(
-            check_initial_with_witness(candidate, checked.canonical_source().unwrap()),
+            check_initial_with_witness(candidate, &checked.canonical_source().unwrap().view()),
             Err(InitialWitnessError::CandidateAbi(CandidateAbiBindingError::CandidateSignatureMismatch { .. }))
         ));
     }
@@ -4363,7 +4361,7 @@ mod tests {
         candidate.signatures[0].results.push(ValueType::Bool);
         candidate.signatures[0].contract.results.push(ResultContract::Value(ValueType::Bool));
         assert!(matches!(
-            check_initial_with_witness(candidate, checked.canonical_source().unwrap()),
+            check_initial_with_witness(candidate, &checked.canonical_source().unwrap().view()),
             Err(InitialWitnessError::CandidateAbi(CandidateAbiBindingError::CandidateSignatureMismatch { .. }))
         ));
     }
@@ -4612,7 +4610,7 @@ mod tests {
         let mut missing = candidate_bound_to_source(&checked);
         missing.abi_bindings = super::super::CandidateAbiBindings::default();
         assert!(matches!(
-            check_initial_with_witness(missing, source),
+            check_initial_with_witness(missing, &source.view()),
             Err(InitialWitnessError::CandidateAbi(CandidateAbiBindingError::MissingBinding { .. }))
         ));
 
@@ -4621,7 +4619,7 @@ mod tests {
         let mut duplicate = candidate;
         duplicate.abi_bindings = super::super::CandidateAbiBindings::new(vec![binding.clone(), binding]);
         assert!(matches!(
-            check_initial_with_witness(duplicate, source),
+            check_initial_with_witness(duplicate, &source.view()),
             Err(InitialWitnessError::CandidateAbi(CandidateAbiBindingError::DuplicateSourceDeclaration { .. }))
         ));
     }
@@ -4666,12 +4664,12 @@ mod tests {
     fn final_authority_refuses_a_mismatched_closure_witness() {
         let checked_source = source();
         let source = checked_source.canonical_source().unwrap();
-        let mut checked = check_initial_with_witness(candidate_bound_to_source(&checked_source), source)
+        let mut checked = check_initial_with_witness(candidate_bound_to_source(&checked_source), &source.view())
             .expect("initial authority");
         checked.witness.checked_source_witness.closure_witness_digest = [0xa5; 32];
 
         assert!(matches!(
-            validate_final(checked, source),
+            validate_final(checked, &source.view()),
             Err(FinalValidationError::SourceWitnessDoesNotMatchInitial)
         ));
     }

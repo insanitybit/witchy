@@ -452,7 +452,7 @@ pub fn lambda_sites(typed: &TypedModule) -> Result<Vec<LambdaSite>, ClosureWitne
 
 fn walk_module(typed: &TypedModule) -> Result<Builder<'_>, ClosureWitnessError> {
     let mut builder = Builder { typed, module: typed.module(), entries: Vec::new(), scopes: Vec::new(), sites: Vec::new() };
-    let scope = crate::pipeline::canonical_scope(typed.module());
+    let scope = witchy_canonical_source::scope::canonical_scope(typed.module());
     for (item_index, item_def) in typed.module().items.iter().enumerate() {
         let item = u32::try_from(item_index).map_err(|_| ClosureWitnessError::PathOverflow)?;
         match item_def {

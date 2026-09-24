@@ -178,7 +178,7 @@ fn build_env_recipe_binds_order_and_refuses_ordinary_main() {
     assert_eq!(second.identity().parameter_kinds(), &[9, 14]);
     assert_ne!(first.identity().derived_source_digest(), second.identity().derived_source_digest());
     let validated = crate::codegen::validate_checked_build_recipe_for_oracle(&first).unwrap();
-    assert!(witchy_wir::admit_canonical(validated, second.canonical_source()).is_err());
+    assert!(witchy_wir::admit_canonical(validated, &second.canonical_source().view()).is_err());
     let main = folder.source("fn main(env: BuildEnv) -> ():\n    ()\n");
     assert!(crate::link_file_checked(main.to_str().unwrap()).is_err(), "ordinary main cannot demand BuildEnv");
     for source in [

@@ -16,9 +16,9 @@ pub(super) fn assert_execution(source_text: &str, expected: i64) {
         let layouts = crate::canonical_layouts::derive_layout_bundle(source).expect("source layouts");
         let candidate = super::lower_typed_module(source, layouts).expect("lower short-circuit state")
             .with_launch_contract_payload(source.launch_contract_payload().to_vec());
-        let initial = check_initial_with_witness(candidate, source).expect("check ownership and joins");
-        let validated = validate_final(initial, source).expect("final validation");
-        witchy_wir::admit_canonical_with_observer(validated, source, |validated, artifact| {
+        let initial = check_initial_with_witness(candidate, &source.view()).expect("check ownership and joins");
+        let validated = validate_final(initial, &source.view()).expect("final validation");
+        witchy_wir::admit_canonical_with_observer(validated, &source.view(), |validated, artifact| {
             let export = artifact.entry().expect("admitted entry").export();
             let main = FunctionId::new(export.strip_prefix('f').expect("canonical function export")
                 .parse().expect("canonical entry function id"));

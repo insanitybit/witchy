@@ -19,7 +19,7 @@ fn arm(id: u32, body: Expr) -> MatchArm {
 }
 
 pub(crate) fn prepare(typed: TypedModule, catalog: &WitnessCatalog) -> Result<(TypedModule, bool), String> {
-    let mut scope = (*crate::pipeline::canonical_scope(typed.module())).clone();
+    let mut scope = (*witchy_canonical_source::scope::canonical_scope(typed.module())).clone();
     let functions = typed.module().items.iter().filter_map(|item| match item {
         Item::Function(function) => Some(function.name.clone()),
         _ => None,
@@ -32,7 +32,7 @@ pub(crate) fn prepare(typed: TypedModule, catalog: &WitnessCatalog) -> Result<(T
         let mut next = scope.clone();
         for item in &typed.module().items {
             if let Item::Function(function) = item && scope.contains(&function.name)
-                && !crate::pipeline::function_has_free_signature_variables(function)
+                && !witchy_canonical_source::scope::function_has_free_signature_variables(function)
             {
                 visit_block::<String>(&function.body, &mut |expr| {
                     if let Some(request) = pack_request(typed.table(), expr)? { requests.push(request); }

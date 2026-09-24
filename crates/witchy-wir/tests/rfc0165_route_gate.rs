@@ -36,7 +36,7 @@ fn is_validated_artifact_admission(function: &ItemFn) -> bool {
     takes(function, "ValidatedSafeWir")
         && (test_helper || (matches!(function.sig.ident.to_string().as_str(),
             "admit_canonical" | "admit_canonical_with_observer")
-            && takes(function, "CanonicalCheckedSource")))
+            && takes(function, "CanonicalSourceView")))
 }
 
 fn cfg_text(function: &ItemFn) -> String {
@@ -561,11 +561,11 @@ fn canonical_wasm_encoding_is_private_and_requires_final_authority() {
 fn canonical_admission_surface_pin_rejects_unvalidated_and_raw_routes() {
     for name in ["admit_canonical", "admit_canonical_with_observer"] {
         let valid: ItemFn = syn::parse_str(&format!(
-            "pub fn {name}(module: ValidatedSafeWir, source: &CanonicalCheckedSource) {{}}"
+            "pub fn {name}(module: ValidatedSafeWir, source: &CanonicalSourceView<'_>) {{}}"
         )).unwrap();
         assert!(is_validated_artifact_admission(&valid));
         for parameters in [
-            "module: Candidate, source: &CanonicalCheckedSource",
+            "module: Candidate, source: &CanonicalSourceView<'_>",
             "module: ValidatedSafeWir, source: SourceBundleDigest",
             "module: WasmIr",
         ] {
@@ -575,7 +575,7 @@ fn canonical_admission_surface_pin_rejects_unvalidated_and_raw_routes() {
         }
     }
     let raw: ItemFn = syn::parse_str(
-        "pub fn encode_raw(module: ValidatedSafeWir, source: &CanonicalCheckedSource) {}"
+        "pub fn encode_raw(module: ValidatedSafeWir, source: &CanonicalSourceView<'_>) {}"
     ).unwrap();
     assert!(!is_validated_artifact_admission(&raw));
     let test_helper: ItemFn = syn::parse_str(

@@ -9,12 +9,12 @@ use crate::typeck::{self, TypedModule};
 use crate::witness::WitnessCatalog;
 
 fn discover(typed: &TypedModule, known: &[(Type, String)]) -> Result<Vec<Type>, String> {
-    let scope = crate::pipeline::canonical_scope(typed.module());
+    let scope = witchy_canonical_source::scope::canonical_scope(typed.module());
     let mut keys = Vec::<Type>::new();
     for item in &typed.module().items {
         let Item::Function(function) = item else { continue };
         if !scope.contains(&function.name)
-            || crate::pipeline::function_has_free_signature_variables(function)
+            || witchy_canonical_source::scope::function_has_free_signature_variables(function)
         {
             continue;
         }
@@ -70,7 +70,7 @@ impl<'catalog> Preparation<'catalog> {
         let target = self.catalog.dictionary_equality(&key)?;
         if !module.items.iter().any(|item| matches!(item,
             Item::Function(function) if function.name == target
-                && !crate::pipeline::function_has_free_signature_variables(function)))
+                && !witchy_canonical_source::scope::function_has_free_signature_variables(function)))
         {
             return Err(format!("canonical dictionary comparator for `{}` has no concrete checked body",
                 witchy_syntax::format::type_str(&key)));

@@ -77,7 +77,7 @@ fn checked_entry_scope_preserves_calls_and_captures_across_three_legs() {
     ] {
         let checked = check(entry.as_bytes());
         let source = checked.canonical_source().unwrap();
-        let scope = witchy_types::pipeline::canonical_scope(source.typed_module().module());
+        let scope = witchy_canonical_source::scope::canonical_scope(source.typed_module().module());
         assert!(scope.contains(retained)
             || retained.strip_prefix("entry.").is_some_and(|name| scope.contains(name)),
             "retain required declaration {retained}");
@@ -172,9 +172,9 @@ pub fn inspect(console: Console):
     let module = canonical.typed_module().module();
     // Metadata-only methods remain authenticated in the runtime plan, but
     // their uncalled bodies and private helpers stay outside executable scope.
-    assert!(!witchy_types::pipeline::canonical_scope(module).contains("library.add"));
-    assert!(!witchy_types::pipeline::canonical_scope(module).contains("library.adjusted"));
-    assert!(!witchy_types::pipeline::canonical_scope(module).contains("library.unused"));
+    assert!(!witchy_canonical_source::scope::canonical_scope(module).contains("library.add"));
+    assert!(!witchy_canonical_source::scope::canonical_scope(module).contains("library.adjusted"));
+    assert!(!witchy_canonical_source::scope::canonical_scope(module).contains("library.unused"));
     let expected = ["library.Counter"];
     let (artifact, ()) = witchy::codegen::compile_checked_module_artifact_with_observer(&checked, |validated, artifact| {
         let entry = artifact.entry().unwrap();

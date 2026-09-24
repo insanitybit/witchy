@@ -15,3 +15,8 @@ witchy-syntax = { path = "../witchy-syntax" }
 foldhash = "0.2.0"
 # Proper-tail manifest digests (same hash the checker has always used).
 blake3 = "1.8.3"
+
+[dev-dependencies]
+# The construction-surface architecture test parses the workspace sources.
+proc-macro2 = "1"
+syn = { version = "2", features = ["full", "visit"] }

@@ -1,7 +1,7 @@
 //! Source-bound isolated service sites. No backend integer selects a callback.
 use witchy_syntax::ast::{Convention, Expr, Item, Type};
-use witchy_canonical_source::abi::CanonicalTargetPolicy;
-use crate::pipeline::CanonicalCheckedSource;
+use crate::abi::CanonicalTargetPolicy;
+use crate::source::CanonicalSourceView;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ServiceSite<'a> {
@@ -20,15 +20,15 @@ impl<'a> ServiceSite<'a> {
     pub fn callback_ordinal(&self) -> u32 { self.callback }
     pub fn expression(&self) -> &'a Expr { self.expression }
 }
-fn closed_ordinal(source: &CanonicalCheckedSource, name: &str) -> Result<u32, String> {
+fn closed_ordinal(source: &CanonicalSourceView<'_>, name: &str) -> Result<u32, String> {
     match source.closed_callable_abi(name).map(|abi| &abi.target_policy) {
         Some(CanonicalTargetPolicy::ClosedLocal(target)) => Ok(target.function_ordinal),
         _ => Err("service requires an exact checked declaration binding".into()),
     }
 }
-pub fn service_sites(source: &CanonicalCheckedSource) -> Result<Vec<ServiceSite<'_>>, String> {
-    let module = source.typed_module().module();
-    let scope = crate::pipeline::canonical_scope(module);
+pub fn service_sites<'s>(source: &CanonicalSourceView<'s>) -> Result<Vec<ServiceSite<'s>>, String> {
+    let module = source.module();
+    let scope = crate::scope::canonical_scope(module);
     let mut sites = Vec::new();
     for item in &module.items {
         let Item::Function(function) = item else { continue };

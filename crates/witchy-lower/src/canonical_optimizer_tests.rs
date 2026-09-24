@@ -77,14 +77,14 @@ fn source_bounds_guard_optimization_admits_and_matches_execution() {
         .count();
 
     let zero_pass = validate_final(
-        check_initial_with_witness(candidate.clone(), source).expect("zero-pass initial authority"),
-        source,
+        check_initial_with_witness(candidate.clone(), &source.view()).expect("zero-pass initial authority"),
+        &source.view(),
     )
     .expect("zero-pass final authority");
     let zero_pass_artifact =
-        witchy_wir::admit_canonical(zero_pass, source).expect("zero-pass module admits");
+        witchy_wir::admit_canonical(zero_pass, &source.view()).expect("zero-pass module admits");
 
-    let checked = check_initial_with_witness(candidate, source).expect("initial authority");
+    let checked = check_initial_with_witness(candidate, &source.view()).expect("initial authority");
     let CheckedPassOutcome::Applied(optimized) = run_checked_pass(checked, PassId::SameBlockBoundsGuards) else {
         panic!("the production driver must apply this valid optimization");
     };
@@ -112,10 +112,10 @@ fn source_bounds_guard_optimization_admits_and_matches_execution() {
         optimized_guard_count < initial_guard_count,
         "the assured pass must remove at least the injected duplicate bounds guard"
     );
-    let validated = validate_optimized_final(optimized, source).expect("optimized final authority");
+    let validated = validate_optimized_final(optimized, &source.view()).expect("optimized final authority");
 
     let (optimized_artifact, (interpreted, compiled)) =
-        witchy_wir::admit_canonical_with_observer(validated, source, |validated, artifact| {
+        witchy_wir::admit_canonical_with_observer(validated, &source.view(), |validated, artifact| {
             let interpreted = interpret(validated, main, Vec::new()).expect("interpreter run");
             let engine = wasmtime::Engine::default();
             let module = wasmtime::Module::new(&engine, artifact.wasm()).expect("Wasm module");
@@ -219,13 +219,13 @@ fn generated_bounds_guard_cases_preserve_interpreter_observations() {
                 .count();
 
             let baseline = validate_final(
-                check_initial_with_witness(candidate.clone(), source)
+                check_initial_with_witness(candidate.clone(), &source.view())
                     .expect("generated baseline validates initially"),
-                source,
+                &source.view(),
             )
             .expect("generated baseline validates finally");
             let optimized = eliminate_same_block_redundant_bounds_guards_checked(
-                check_initial_with_witness(candidate, source)
+                check_initial_with_witness(candidate, &source.view())
                     .expect("generated optimization input validates"),
             )
             .expect("generated relation-checked optimization");
@@ -249,7 +249,7 @@ fn generated_bounds_guard_cases_preserve_interpreter_observations() {
                 optimized_guard_count < baseline_guard_count,
                 "generated case was not transformed for length={length}, index={index}",
             );
-            let optimized = validate_optimized_final(optimized, source)
+            let optimized = validate_optimized_final(optimized, &source.view())
                 .expect("generated optimized graph validates finally");
 
             let baseline_observation = interpret(&baseline, main, Vec::new());
@@ -278,7 +278,7 @@ fn generated_bounds_guard_cases_preserve_interpreter_observations() {
 
             if index == -1 || index == length {
                 for (route, validated) in [("baseline", baseline), ("optimized", optimized)] {
-                    let artifact = witchy_wir::admit_canonical(validated, source)
+                    let artifact = witchy_wir::admit_canonical(validated, &source.view())
                         .expect("generated boundary module admits");
                     let engine = wasmtime::Engine::default();
                     let module = wasmtime::Module::new(&engine, artifact.wasm())

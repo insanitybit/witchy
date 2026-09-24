@@ -36,9 +36,9 @@ impl CanonicalAbiCatalog {
     }
 }
 
-pub(super) fn validate<S: ModuleStage>(candidate: &CanonicalModule<S>, source: &witchy_types::pipeline::CanonicalCheckedSource) -> Result<(), String> {
+pub(super) fn validate<S: ModuleStage>(candidate: &CanonicalModule<S>, source: &witchy_canonical_source::source::CanonicalSourceView<'_>) -> Result<(), String> {
     use std::collections::{BTreeMap, BTreeSet};
-    let sites = witchy_types::canonical_worker::service_sites(source)?;
+    let sites = witchy_canonical_source::service::service_sites(source)?;
     if candidate.vm_services().len() != sites.len() { return Err("missing/extra service descriptors".into()); }
     let bindings: BTreeMap<_, _> = candidate.source_abi_bindings().entries().iter()
         .map(|binding| (binding.source_declaration_ordinal(), binding.function())).collect();

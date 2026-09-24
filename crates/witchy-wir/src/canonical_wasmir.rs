@@ -4796,7 +4796,7 @@ fn encode_function(
 
 fn authorize_wasm_ir(
     validated: &ValidatedSafeWir,
-    source_witness: &witchy_types::pipeline::CanonicalCheckedSource,
+    source_witness: &witchy_canonical_source::source::CanonicalSourceView<'_>,
     entry: Option<&CanonicalEntry>,
 ) -> Result<CheckedWasmIr, EncodeError> {
     authorize_wasm_ir_inner(validated, Some(source_witness), entry.map(CanonicalEntry::encode))
@@ -4809,7 +4809,7 @@ fn authorize_wasm_ir_for_test(validated: ValidatedSafeWir) -> Result<CheckedWasm
 
 fn authorize_wasm_ir_inner(
     validated: &ValidatedSafeWir,
-    source_witness: Option<&witchy_types::pipeline::CanonicalCheckedSource>,
+    source_witness: Option<&witchy_canonical_source::source::CanonicalSourceView<'_>>,
     entry_payload: Option<Vec<u8>>,
 ) -> Result<CheckedWasmIr, EncodeError> {
     validated.validate_pre_admission().map_err(|_| {
@@ -7960,7 +7960,7 @@ fn admit_parts(
 #[cfg(not(test))]
 fn derive_entry(
     validated: &ValidatedSafeWir,
-    source: &witchy_types::pipeline::CanonicalCheckedSource,
+    source: &witchy_canonical_source::source::CanonicalSourceView<'_>,
 ) -> Result<Option<CanonicalEntry>, CanonicalAdmissionError> {
     use crate::canonical_safewir::{CapabilityKindId, ValueType};
     use witchy_canonical_source::abi::CanonicalTargetPolicy;
@@ -8083,7 +8083,7 @@ ValueType::Capability(kind) if *kind == crate::canonical_safewir::BUILD_OUT_CAPA
 #[cfg(not(test))]
 pub fn admit_canonical(
     validated: ValidatedSafeWir,
-    source: &witchy_types::pipeline::CanonicalCheckedSource,
+    source: &witchy_canonical_source::source::CanonicalSourceView<'_>,
 ) -> Result<AdmittedCanonicalArtifact, CanonicalAdmissionError> {
     admit_canonical_with_observer(validated, source, |_, _| ())
         .map(|(artifact, ())| artifact)
@@ -8094,7 +8094,7 @@ pub fn admit_canonical(
 #[cfg(not(test))]
 pub fn admit_canonical_with_observer<R>(
     validated: ValidatedSafeWir,
-    source: &witchy_types::pipeline::CanonicalCheckedSource,
+    source: &witchy_canonical_source::source::CanonicalSourceView<'_>,
     observe: impl FnOnce(&ValidatedSafeWir, &AdmittedCanonicalArtifact) -> R,
 ) -> Result<(AdmittedCanonicalArtifact, R), CanonicalAdmissionError> {
     let entry = derive_entry(&validated, source)?;

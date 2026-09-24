@@ -99,7 +99,7 @@ fn build_recipe_rejects_wrong_source_binding_and_missing_grant() {
     assert_ne!(first.identity().original_source_digest(), second.identity().original_source_digest());
     assert_ne!(first.identity().derived_source_digest(), second.identity().derived_source_digest());
     let validated = crate::codegen::validate_checked_build_recipe_for_oracle(&first).unwrap();
-    assert!(witchy_wir::admit_canonical(validated, second.canonical_source()).is_err());
+    assert!(witchy_wir::admit_canonical(validated, &second.canonical_source().view()).is_err());
     let error = native(&first, None).unwrap_err();
     assert!(error.contains("no BuildOut grant"), "{error}");
     let artifact = crate::codegen::compile_checked_build_recipe_artifact(&first).expect_lowered("artifact");
@@ -367,7 +367,7 @@ fn build_read_recipe_binds_order_and_remains_unavailable_to_ordinary_main() {
     assert_eq!(second.identity().parameter_kinds(), &[9, 12]);
     assert_ne!(first.identity().derived_source_digest(), second.identity().derived_source_digest());
     let validated = crate::codegen::validate_checked_build_recipe_for_oracle(&first).unwrap();
-    assert!(witchy_wir::admit_canonical(validated, second.canonical_source()).is_err());
+    assert!(witchy_wir::admit_canonical(validated, &second.canonical_source().view()).is_err());
     let path = folder.source("fn main(input: BuildRead) -> ():\n    ()\n");
     assert!(crate::link_file_checked(path.to_str().unwrap()).is_err(), "ordinary main cannot request BuildRead");
 }

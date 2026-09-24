@@ -100,7 +100,7 @@ pub(crate) fn extend(&mut self, mut typed: TypedModule) -> Result<TypedModule, S
         let (prepared, rendered) = rendering.extend(typed)?;
         typed = prepared;
         if rendered { continue; }
-        let scope = crate::pipeline::canonical_scope(typed.module());
+        let scope = witchy_canonical_source::scope::canonical_scope(typed.module());
         preparation.functions = typed.module().items.iter().filter_map(|item| match item {
             Item::Function(function) => Some(function.name.clone()),
             _ => None,
@@ -113,7 +113,7 @@ pub(crate) fn extend(&mut self, mut typed: TypedModule) -> Result<TypedModule, S
         for item in &typed.module().items {
             if let Item::Function(function) = item
                 && scope.contains(&function.name)
-                && !crate::pipeline::function_has_free_signature_variables(function)
+                && !witchy_canonical_source::scope::function_has_free_signature_variables(function)
             {
                 visit_block::<String>(&function.body, &mut |expression| {
                     if let Expr::Binary { op: BinOp::Eq | BinOp::NotEq, lhs, .. } = expression
@@ -137,7 +137,7 @@ pub(crate) fn extend(&mut self, mut typed: TypedModule) -> Result<TypedModule, S
             for item in &mut module.items {
                 if let Item::Function(function) = item
                     && scope.contains(&function.name)
-                    && !crate::pipeline::function_has_free_signature_variables(function)
+                    && !witchy_canonical_source::scope::function_has_free_signature_variables(function)
                 {
                     visit_block_mut(&mut function.body, &mut |expression| {
                         preparation.rewrite(expression, table, &mut changed)
