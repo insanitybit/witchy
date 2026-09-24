@@ -82,6 +82,26 @@ fn worktree_create_never_reuses_a_merged_branch_name() {
     assert!(live_branch.starts_with("worktree-live-"));
 }
 
+#[test]
+fn worktree_create_does_not_speculatively_prebuild_by_default() {
+    let repo = temp_repo();
+    let root = repo.path();
+    let script = workspace_root().join("scripts/worktree-create.sh");
+    let output = Command::new("bash")
+        .arg(script)
+        .arg("no-prebuild")
+        .current_dir(root)
+        .env("CLAUDE_PROJECT_DIR", root)
+        .env_remove("WITCHY_WORKTREE_CREATE_PREBUILD")
+        .output()
+        .expect("create worktree without speculative prebuild");
+    created_path(&output);
+    assert!(
+        !String::from_utf8_lossy(&output.stderr).contains("background workspace prebuild started"),
+        "worktree creation started an unrequested full-workspace build",
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn worktree_create_runs_background_prebuild_at_utility_priority() {
@@ -97,8 +117,16 @@ fn worktree_create_runs_background_prebuild_at_utility_priority() {
     );
     write_executable(
         &bin.join("cargo"),
+        "#!/bin/sh\nprintf 'fallback\\n' >> \"$WITCHY_PREBUILD_TRACE/fallback-cargo\"\n",
+    );
+    let shim = root.join("scripts/bin/cargo");
+    fs::create_dir_all(shim.parent().expect("shim parent")).expect("create shim directory");
+    write_executable(
+        &shim,
         "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$WITCHY_PREBUILD_TRACE/cargo\"\n",
     );
+    git(root, &["add", "scripts/bin/cargo"]);
+    git(root, &["commit", "--quiet", "-m", "fixture cargo shim"]);
 
     let script = workspace_root().join("scripts/worktree-create.sh");
     let path = format!("{}:{}", bin.display(), std::env::var("PATH").expect("PATH"));
@@ -108,6 +136,7 @@ fn worktree_create_runs_background_prebuild_at_utility_priority() {
         .current_dir(root)
         .env("CLAUDE_PROJECT_DIR", root)
         .env("WITCHY_PREBUILD_TRACE", &trace)
+        .env("WITCHY_WORKTREE_CREATE_PREBUILD", "1")
         .env("PATH", path)
         .output()
         .expect("run worktree-create.sh");
@@ -132,6 +161,14 @@ fn worktree_create_runs_background_prebuild_at_utility_priority() {
 
     let priority = fs::read_to_string(taskpolicy_trace).expect("taskpolicy was invoked");
     assert!(priority.starts_with("-c utility sh -c "), "unexpected taskpolicy command: {priority}");
+    assert!(
+        priority.contains("/scripts/bin/cargo"),
+        "prebuild did not select the new worktree's cargo shim: {priority}",
+    );
+    assert!(
+        !trace.join("fallback-cargo").exists(),
+        "prebuild bypassed the repository cargo shim",
+    );
     let cargo = fs::read_to_string(cargo_trace).expect("cargo was invoked");
     let calls: Vec<_> = cargo.lines().collect();
     assert_eq!(calls.len(), 2, "expected build and test prebuild calls: {cargo}");

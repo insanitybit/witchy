@@ -62,21 +62,32 @@ git worktree add -b "$branch" "$dest" HEAD 1>&2 || exit 1
 # warm but the 8 workspace crates cold (their fingerprints are path-keyed), so
 # the agent's first build pays ~1-2 min. Starting it now means that cost runs
 # during the agent's read/think phase instead of blocking its first command.
-# Safe to race the agent's own cargo: the per-target-dir build lock serializes
-# them and the work is shared either way. Fully detached; never fails creation.
+# Use the new worktree's repository cargo shim: it preserves the unified feature
+# graph, shares MBX artifacts, and participates in host-wide build admission.
+# The per-target-dir Cargo lock still makes a race with the agent safe. Fully
+# detached; never fails creation.
 # Build both dev (for the binary) and test (for nextest) profiles — the test
 # profile needs cfg(test) so it recompiles all workspace crates; doing both
 # here means the agent's first `cargo nextest run` is a no-op link.
-# WITCHY_WORKTREE_CREATE_PREBUILD=0 keeps script integration tests hermetic.
-if [ "${WITCHY_WORKTREE_CREATE_PREBUILD:-1}" != "0" ] && command -v cargo >/dev/null 2>&1; then
+# The warm seed makes a fresh target immediately usable. A speculative pair of
+# full-workspace builds for every created worktree overwhelmed this 10-core host
+# when several agents started together. Opt in only when the caller knows it
+# will consume both profiles.
+if [ "${WITCHY_WORKTREE_CREATE_PREBUILD:-0}" = "1" ] && command -v cargo >/dev/null 2>&1; then
     priority=()
     if command -v taskpolicy >/dev/null 2>&1; then
         priority=(taskpolicy -c utility)
     elif command -v nice >/dev/null 2>&1; then
         priority=(nice -n 10)
     fi
-    nohup "${priority[@]}" sh -c "cargo build --workspace --manifest-path '$dest/Cargo.toml' && \
-        cargo test --workspace --no-run --manifest-path '$dest/Cargo.toml'" \
+    prebuild_cargo="cargo"
+    [ ! -x "$dest/scripts/bin/cargo" ] || prebuild_cargo="$dest/scripts/bin/cargo"
+    nohup "${priority[@]}" sh -c '
+        cargo_runner="$1"
+        manifest="$2"
+        "$cargo_runner" build --workspace --manifest-path "$manifest" &&
+            "$cargo_runner" test --workspace --no-run --manifest-path "$manifest"
+    ' sh "$prebuild_cargo" "$dest/Cargo.toml" \
         >"$dest/.worktree-prebuild.log" 2>&1 </dev/null &
     disown
     echo "worktree-create: background workspace prebuild started (log: $dest/.worktree-prebuild.log)" >&2
