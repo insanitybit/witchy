@@ -319,6 +319,15 @@ fn rooted_view_from_ty(
     context: &Context,
 ) -> Result<CanonicalReferenceKind, CanonicalAbiError> {
     match payload {
+        Ty::Named(name, arguments)
+            if name.as_ref() == "Dict"
+                && matches!(arguments.as_ref(), [Ty::String, Ty::Int]) =>
+        {
+            Ok(CanonicalReferenceKind::RootedView {
+                payload: rooted_dict_string_int_payload_key(),
+                carrier: CanonicalRootedViewCarrier::DictRoot,
+            })
+        }
         Ty::Int => Ok(CanonicalReferenceKind::RootedView {
             payload: rooted_scalar_payload_key(CanonicalScalarKind::Int),
             carrier: CanonicalRootedViewCarrier::IntScalarRoot,
@@ -382,6 +391,14 @@ fn rooted_view_from_ast(
     context: &Context,
 ) -> Result<CanonicalReferenceKind, CanonicalAbiError> {
     match payload.unqualified() {
+        exact if witchy_canonical_source::aggregates::is_dict_string_int_root_payload(exact)
+            && payload == exact =>
+        {
+            Ok(CanonicalReferenceKind::RootedView {
+                payload: rooted_dict_string_int_payload_key(),
+                carrier: CanonicalRootedViewCarrier::DictRoot,
+            })
+        }
         Type::Named(name, arguments) if name == "Int" && arguments.is_empty() => Ok(CanonicalReferenceKind::RootedView {
             payload: rooted_scalar_payload_key(CanonicalScalarKind::Int),
             carrier: CanonicalRootedViewCarrier::IntScalarRoot,
@@ -477,6 +494,12 @@ fn rooted_record_payload_key(identity: &[u8]) -> CanonicalTypeKey {
     let mut bytes = b"witchy.canonical-rooted-view-payload.v2/record".to_vec();
     bytes.extend_from_slice(identity);
     CanonicalTypeKey::from_digest(*blake3::hash(&bytes).as_bytes())
+}
+
+fn rooted_dict_string_int_payload_key() -> CanonicalTypeKey {
+    CanonicalTypeKey::from_digest(
+        *blake3::hash(b"witchy.canonical-rooted-view-payload.v1/dict-string-int").as_bytes(),
+    )
 }
 
 /// Record-root payload identity, written identically from a checked type and

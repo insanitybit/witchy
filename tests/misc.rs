@@ -277,3 +277,5 @@ mod rfc0167_slice_owned_materialization;
 mod rfc0167_mode_transport;
 #[path = "misc/rfc0167_dict_view_diagnostic.rs"]
 mod rfc0167_dict_view_diagnostic;
+#[path = "misc/rfc0167_dict_root_view.rs"]
+mod rfc0167_dict_root_view;

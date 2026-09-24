@@ -97,6 +97,9 @@ pub enum CanonicalRootedViewCarrier {
     /// view observes, the RFC's proven-equivalent representation.  `&Int`
     /// keeps its `IntScalarRoot` cell, which also carries list element views.
     ScalarValue,
+    /// A whole `Dict(String, Int)` view retains the dictionary's immutable
+    /// root token. Its payload key is distinct from record and list roots.
+    DictRoot,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]

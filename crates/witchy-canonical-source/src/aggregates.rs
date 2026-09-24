@@ -121,6 +121,17 @@ pub fn dictionary_has_unadmitted_string_view_value(ty: &Type) -> bool {
                     if name == "String" && arguments.is_empty())))
 }
 
+/// The one dictionary shape whose whole immutable view can retain its
+/// existing reference-counted root token. Nested qualifiers and other key or
+/// value types need separate carrier evidence.
+pub fn is_dict_string_int_root_payload(ty: &Type) -> bool {
+    matches!(ty, Type::Named(name, arguments)
+        if name == "Dict" && matches!(arguments.as_slice(),
+            [Type::Named(key, key_args), Type::Named(value, value_args)]
+                if key == "String" && key_args.is_empty()
+                    && value == "Int" && value_args.is_empty()))
+}
+
 const MAX_AGGREGATE_SHAPE_EXPANSION: usize = 64;
 /// Total instantiated AST nodes examined while recognizing one shape. This
 /// bounds changing generic recursion before it clones its next expanded field.
