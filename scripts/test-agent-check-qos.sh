@@ -86,9 +86,9 @@ grep -F 'strip=unset target=target-codex args=--edit-loop --run docs/probe.md' \
 
 test "$(wc -l <"$tmp/warm.log" | tr -d ' ')" = 3
 
-# A linked worktree has its own target/ and must not pay to clone it into a
-# second target-codex/. Keep the non-git fixture above as the shared-checkout
-# fallback, then exercise Git's actual linked-worktree metadata here.
+# A linked worktree reuses whichever private target the agent already seeded.
+# Keep the non-git fixture above as the shared-checkout fallback, then exercise
+# Git's actual linked-worktree metadata for both conventions here.
 main_fixture="$tmp/main-repo"
 linked_fixture="$tmp/linked-repo"
 mkdir -p "$main_fixture/scripts"
@@ -105,8 +105,13 @@ env -u CARGO_TARGET_DIR AGENT_CHECK_ENV_LOG="$tmp/linked-env.log" FAKE_AGENT_PLA
     "$linked_fixture/scripts/agent-check.sh" edit docs/probe.md >/dev/null
 grep -F 'strip=unset target=target args=--edit-loop --run docs/probe.md' \
     "$tmp/linked-env.log" >/dev/null
+mkdir -p "$linked_fixture/target-codex"
+env -u CARGO_TARGET_DIR AGENT_CHECK_ENV_LOG="$tmp/linked-codex-env.log" \
+    "$linked_fixture/scripts/agent-check.sh" edit docs/probe.md >/dev/null
+grep -F 'strip=unset target=target-codex args=--edit-loop --run docs/probe.md' \
+    "$tmp/linked-codex-env.log" >/dev/null
 
 echo "agent-check focused commands inherit utility QoS"
 echo "agent-check matches gate-seeded test profiles and preserves explicit symbols"
 echo "agent-check skips target seeding for shell-only edit plans"
-echo "agent-check reuses the private target of a linked worktree"
+echo "agent-check reuses the seeded private target of a linked worktree"

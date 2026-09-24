@@ -133,9 +133,14 @@ default_agent_target() {
     }
     main_worktree="$(git worktree list --porcelain 2>/dev/null | sed -n '1s/^worktree //p')"
     if [ -n "$main_worktree" ] && [ "$repo_root" != "$main_worktree" ]; then
-        # A linked worktree already owns its seeded target/. Reuse it instead
-        # of cloning the same cache into a second per-agent directory.
-        printf 'target\n'
+        # Current agent setup seeds target-codex/ in linked worktrees. Prefer
+        # that warm directory when it exists, while retaining target/ for
+        # older worktrees that already keep their private build there.
+        if [ -d "$repo_root/target-codex" ]; then
+            printf 'target-codex\n'
+        else
+            printf 'target\n'
+        fi
     else
         # Agents sharing the main checkout still need independent Cargo locks.
         printf 'target-codex\n'
