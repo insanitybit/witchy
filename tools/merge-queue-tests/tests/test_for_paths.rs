@@ -1215,6 +1215,25 @@ fn exact_filters_for_the_same_test_target_share_one_build() {
 }
 
 #[test]
+fn compiler_feature_variants_share_one_example_matrix() {
+    let commands = selected(&[
+        "--edit-loop",
+        "crates/witchy-lower/Cargo.toml",
+        "crates/witchy-runtime/Cargo.toml",
+        "crates/witchy-wir/Cargo.toml",
+    ]);
+    let example_runs: Vec<_> = commands
+        .iter()
+        .filter(|command| command.contains("test(/^example_tests::/)"))
+        .collect();
+    assert_eq!(example_runs.len(), 1, "duplicate example matrices: {commands:?}");
+    assert!(
+        !example_runs[0].contains("--features witchy-wir/native"),
+        "the root test graph already enables witchy-wir/native: {commands:?}"
+    );
+}
+
+#[test]
 fn async_region_edits_run_complete_rfc0152_modules() {
     for (path, module) in [
         (

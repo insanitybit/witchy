@@ -607,7 +607,11 @@ for p in "${paths[@]}"; do
             gate_need_conformance=1
             add_pkg witchy-lower
             add "./scripts/nextest-admitted.sh witchy-lower -- cargo nextest run -p witchy-lower --features witchy-wir/native"
-            add "./scripts/nextest-admitted.sh witchy -- cargo nextest run --features witchy-wir/native -E 'test(/^example_tests::/)'"
+            # The root package's test graph already enables witchy-wir/native
+            # through its dev-dependency. Spelling the feature here creates a
+            # distinct command for the same test binary, causing the 311-test
+            # example matrix to run twice for a combined compiler-manifest edit.
+            add "./scripts/nextest-admitted.sh witchy -- cargo nextest run -E 'test(/^example_tests::/)'"
             ;;
         crates/witchy-wir/*)
             any_rust=1
@@ -621,7 +625,7 @@ for p in "${paths[@]}"; do
             add_pkg witchy-lower
             add_pkg witchy-runtime
             add "cargo nextest run -p witchy-wir --features witchy-wir/native"
-            add "./scripts/nextest-admitted.sh witchy -- cargo nextest run --features witchy-wir/native -E 'test(/^example_tests::/)'"
+            add "./scripts/nextest-admitted.sh witchy -- cargo nextest run -E 'test(/^example_tests::/)'"
             ;;
         crates/witchy-runtime/*)
             any_rust=1
