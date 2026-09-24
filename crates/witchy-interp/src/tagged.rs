@@ -941,97 +941,6 @@ fn expand_one(
     Ok((e, canonical_tag, tag_name, definition_origin))
 }
 
-/// Parse `src` as a single expression by wrapping it as the tail expression of a
-/// throwaway `fn __tagsplice()` (only `parse_module` exists). `qualifiers` are the
-/// module names to seed as `import` lines so `m.f(…)` parses as a qualified call,
-/// not a UFCS method call — load-bearing for the tag's hygienic qualified emission.
-/// Whether `name` is a valid witchy module identifier — the shape an `import`
-/// line accepts, and the only shape a qualified call `name.f(…)` can lex as. A
-/// standalone file's module name is its filesystem stem, which may not be one
-/// (`tag-hyphen`), so tag-splice import seeding must gate on this.
-fn is_module_ident(name: &str) -> bool {
-    let mut chars = name.chars();
-    chars
-        .next()
-        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
-        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-}
-
-/// Re-indent a spliced tag body so it nests under the throwaway `fn __tagsplice():`
-/// wrapper (whose body sits at 4-column indentation): every *structural* newline
-/// must carry the same 4-space continuation so a multi-line emitted expression stays
-/// inside the function block. A newline that falls INSIDE a `"…"` string literal is
-/// NOT structural — it is literal content the author wrote (a multiline tagged
-/// literal, BUG-339) and must survive byte-for-byte; injecting spaces there would
-/// silently rewrite the string in the shared expanded AST (both backends). We track
-/// string state (honoring `\`-escapes) and indent only newlines outside a string.
-fn reindent_body(src: &str) -> String {
-    let mut out = String::with_capacity(src.len() + src.len() / 8);
-    let mut in_string = false;
-    let mut escaped = false;
-    for c in src.chars() {
-        if in_string {
-            out.push(c);
-            if escaped {
-                escaped = false;
-            } else if c == '\\' {
-                escaped = true;
-            } else if c == '"' {
-                in_string = false;
-            }
-            continue;
-        }
-        match c {
-            '"' => {
-                in_string = true;
-                out.push(c);
-            }
-            // A structural newline: keep the body indented under `__tagsplice`.
-            '\n' => out.push_str("\n    "),
-            _ => out.push(c),
-        }
-    }
-    out
-}
-
-fn parse_splice_expr(src: &str, qualifiers: &[String]) -> Result<Expr, String> {
-    let mut wrapped = String::new();
-    for q in qualifiers {
-        // A qualifier that is not a valid module identifier can never be referenced
-        // as `q.f(…)` (it would not lex), so it never needs an `import` line — and
-        // emitting one would itself fail to parse. A standalone file's module name
-        // is its filesystem stem, which may be a NON-identifier (`tag-hyphen`); such
-        // a name reaches `qualifiers` via `seen`, so it must be skipped here rather
-        // than break every tag expansion in a hyphenated file (BUG-182).
-        if !is_module_ident(q) {
-            continue;
-        }
-        // Only real (non-prelude) module names need an explicit `import`; the
-        // prelude modules (`list`/`string`/…) the parser already seeds. Importing a
-        // prelude name again is harmless, so we don't filter — the parse is
-        // throwaway and never linked.
-        wrapped.push_str("import ");
-        wrapped.push_str(q);
-        wrapped.push('\n');
-    }
-    wrapped.push_str("fn __tagsplice():\n    ");
-    wrapped.push_str(&reindent_body(src));
-    wrapped.push('\n');
-    let parsed = witchy_syntax::parser::parse_module(&wrapped)
-        .map_err(|e| format!("does not parse as an expression: {e}"))?;
-    let Some(Item::Function(f)) = parsed
-        .items
-        .into_iter()
-        .find(|it| matches!(it, Item::Function(f) if f.name == "__tagsplice"))
-    else {
-        return Err("did not yield an expression".to_string());
-    };
-    let Some(Stmt::Expr(e)) = f.body.stmts.into_iter().next_back() else {
-        return Err("is not a single expression".to_string());
-    };
-    Ok(e)
-}
-
 /// Stamp a structural hole with its source position `(line, _col)` so type
 /// errors point INTO the literal.
 /// The stamping is a one-statement `Expr::Block` whose `lines` carry the hole line,
@@ -1283,26 +1192,8 @@ fn substitute_holes_block(
 
 #[cfg(test)]
 mod tests {
-    use super::{reindent_body, substitute_holes};
+    use super::substitute_holes;
     use witchy_syntax::ast::{Expr, TaggedHole};
-
-    #[test]
-    fn reindents_structural_newlines_only() {
-        // A structural newline (outside any string) gets the 4-space continuation
-        // so the emitted expression stays nested under `fn __tagsplice()`.
-        assert_eq!(reindent_body("f(\na)"), "f(\n    a)");
-        // A newline INSIDE a string literal is content — preserved byte-for-byte
-        // (BUG-339); it must NOT gain four spaces.
-        assert_eq!(reindent_body("\"line1\nline2\""), "\"line1\nline2\"");
-        // Mixed: structural newlines reindent, the in-string newline does not.
-        assert_eq!(
-            reindent_body("f(\n\"a\nb\",\n1)"),
-            "f(\n    \"a\nb\",\n    1)"
-        );
-        // An escaped quote does not close the string, so its trailing newline stays
-        // content, and the newline after the real closing quote is structural.
-        assert_eq!(reindent_body("\"a\\\"\nb\"\nc"), "\"a\\\"\nb\"\n    c");
-    }
 
     #[test]
     fn substitution_traverses_nested_structural_tag_holes() {
