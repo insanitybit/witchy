@@ -5,6 +5,9 @@
 
 // `Option` powers the total lookups below (head/last/get/find): a missing
 // element is `None`, never an out-of-bounds trap.
+// A whole-root view of exact `List(List(Int))` retains the outer list and its
+// owned inner lists across later `var` changes. Qualified inner-list shapes
+// without an authenticated carrier are refused during canonical admission.
 
 import option
 // `Eq`/`Ord` back the equality- and order-bounded lookups (`contains`, `unique`,

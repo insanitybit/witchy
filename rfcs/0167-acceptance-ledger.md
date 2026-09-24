@@ -54,6 +54,16 @@ is needed for soundness.
 
 ## Exact-tip evidence checkpoint
 
+Row G bounded nested-list carrier (2026-09-24):
+`tests/misc/rfc0167_nested_list_root_view.rs` gives a hand-computed result of
+4239: the retained two-row root begins with 1 and 3, while the mutated owner
+has three rows and begins with 9. Admitted unoptimized Wasm returns 4239 with
+zero canonical heap leaks. A region-born root is refused before escape, and
+`&List(unique List(Int))` is refused as an unsupported exact carrier. This
+closes the whole-root `&List(List(Int))` child-ownership gap only; other nested
+list payloads and broader row G carriers remain open. The focused witness is
+3/3 green; exact-tip branch presubmit and queue gate are pending.
+
 At `adf1d01c7` (2026-09-18), the integrated core smoke was **42/42 passed**: rooted views (13), unique/write-back (12), normal/opt interoperation (2), resource composition (5), and optimization readiness (10). This is core canonical-route evidence only; it does not include the source interpreter, full, end-to-end, or examples suites.
 
 At `2f62f4038` (2026-09-19), the newly integrated concrete `Option(&Int)` evidence is **6/6 passed**: four lower carrier/tamper/`var` checks, one exact authority payload-state check, and one production-runtime three-leg fixture (`790`, zero leaks). The three generic rooted-slice fixtures are **1 passed / 2 failed**: region-root escape rejects as expected, while both positive forms stop at the explicit missing authenticated slice-element projection. This is a live failure checkpoint, not an acceptance closeout.

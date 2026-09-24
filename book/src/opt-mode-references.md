@@ -154,6 +154,11 @@ surface is accepted by the current frontend. Where a carrier is not yet
 admitted, the compiler must reject it rather than silently materialize an
 unrelated value or reconstruct a place from source syntax.
 
+One admitted nested whole-root case is `&List(List(Int))`. It keeps both the
+outer list and its owned child lists alive while the original `var` list is
+changed. The admitted family is exact: `&List(unique List(Int))` is refused,
+and a region-born list cannot escape by wrapping it in a view.
+
 The same rule applies to destructuring, field access, indexing, iteration,
 `Option`, `Result`, tuples, and supported nested aggregates: transport the
 carrier and its proof, or reject the operation. A displayed field name or

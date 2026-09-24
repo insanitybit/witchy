@@ -1142,6 +1142,13 @@ carrier. Future optimization may elide provably redundant retains, copies, or
 carrier materialization, but it may not change snapshot behavior, bounds,
 write-back, or destruction order.
 
+The admitted whole-root `&List(List(Int))` carrier retains the outer list and
+its owned inner lists. A mutation to an inner element or a push to the outer
+`var` list leaves an earlier view's contents unchanged. This is an exact
+carrier family: a qualified inner list such as `List(unique List(Int))` has no
+admitted whole-root view carrier and is refused during canonical admission.
+Region-born outer roots cannot escape through this view.
+
 ## 8. Generics and traits
 
 ```witchy
