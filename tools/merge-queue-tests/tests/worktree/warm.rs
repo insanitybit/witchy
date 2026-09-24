@@ -1,7 +1,7 @@
 use std::path::Path;
 use std::process::{Command, Output};
 
-use super::support::{TempRepo, git, write};
+use super::support::{TempRepo, git, workspace_root, write};
 
 fn temp_repo() -> TempRepo {
     TempRepo::new("worktree-warm", |path| {
@@ -10,7 +10,7 @@ fn temp_repo() -> TempRepo {
 }
 
 fn run_warm(repo: &Path, args: &[&str], mode: Option<&str>) -> Output {
-    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/worktree-warm.sh");
+    let script = workspace_root().join("scripts/worktree-warm.sh");
     let mut command = Command::new("bash");
     command.arg(script).args(args).current_dir(repo);
     if let Some(mode) = mode {
@@ -24,7 +24,7 @@ fn seed(repo: &Path, destination: &str, mode: Option<&str>) -> Output {
 }
 
 fn seed_from_locked_gate(repo: &Path, destination: &str) -> Output {
-    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/worktree-warm.sh");
+    let script = workspace_root().join("scripts/worktree-warm.sh");
     Command::new("bash")
         .arg(script)
         .args(["--target-dir", destination])
@@ -129,7 +129,7 @@ fn worktree_warm_uses_portable_copy_modes_and_filters_dead_artifacts() {
 fn worktree_warm_uses_the_active_gate_generation_when_main_target_is_absent() {
     let repo = temp_repo();
     let root = repo.path();
-    write(root, "scripts/state-paths.sh", include_str!("../../scripts/state-paths.sh"));
+    write(root, "scripts/state-paths.sh", include_str!("../../../../scripts/state-paths.sh"));
     write(root, "state/merge-queue/gate-target", "target-prewarm\n");
     write(
         root,
@@ -195,7 +195,7 @@ fn worktree_warm_prefers_the_build_seed_and_restores_matching_mtimes() {
         (1, &outside),
     ]))
     .expect("write dep-info");
-    let scripts = Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts");
+    let scripts = workspace_root().join("scripts");
     let published = Command::new("python3")
         .arg(scripts.join("build-seed.py"))
         .args(["publish", ".", "target", "state/build-seed"])
@@ -271,11 +271,11 @@ fn worktree_warm_prefers_the_build_seed_and_restores_matching_mtimes() {
 fn cargo_shim_preserves_incremental_mode_for_a_warm_seed_unless_overridden() {
     let repo = temp_repo();
     let root = repo.path();
-    write(root, "scripts/bin/cargo", include_str!("../../scripts/bin/cargo"));
+    write(root, "scripts/bin/cargo", include_str!("../../../../scripts/bin/cargo"));
     write(
         root,
         "scripts/feature-unification.sh",
-        include_str!("../../scripts/feature-unification.sh"),
+        include_str!("../../../../scripts/feature-unification.sh"),
     );
     write(root, "fake-bin/cargo", "#!/bin/sh\nexit 0\n");
     write(
@@ -354,7 +354,7 @@ fn build_seed_finish_never_moves_current_back_to_an_older_snapshot() {
         .expect("create current seed link");
     assert!(linked.success());
 
-    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/build-seed.py");
+    let script = workspace_root().join("scripts/build-seed.py");
     let finished = Command::new("python3")
         .arg(script)
         .args(["finish", "state/build-seed"])

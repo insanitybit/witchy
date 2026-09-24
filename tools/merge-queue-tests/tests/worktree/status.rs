@@ -2,7 +2,7 @@ use std::fs;
 use std::path::Path;
 use std::process::{Command, Output};
 
-use super::support::{TempRepo, git, write};
+use super::support::{TempRepo, git, workspace_root, write};
 
 fn temp_repo() -> TempRepo {
     TempRepo::new("worktree-status", |path| {
@@ -26,12 +26,12 @@ fn ref_exists(repo: &Path, name: &str) -> bool {
 }
 
 fn run_status(repo: &Path, args: &[&str]) -> Output {
-    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/worktree-status.sh");
+    let source = workspace_root().join("scripts/worktree-status.sh");
     let script = repo.join("scripts/worktree-status.sh");
     fs::create_dir_all(script.parent().expect("script parent")).expect("create scripts dir");
     fs::copy(source, &script).expect("copy worktree-status script");
     fs::copy(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/state-paths.sh"),
+        workspace_root().join("scripts/state-paths.sh"),
         repo.join("scripts/state-paths.sh"),
     )
     .expect("copy state path resolver");

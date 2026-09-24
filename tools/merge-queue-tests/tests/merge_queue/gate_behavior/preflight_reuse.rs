@@ -131,8 +131,8 @@ fn workspace_preflight_narrows_its_target_and_partitions_the_main_run() {
         "{preflight}"
     );
     assert!(main.contains(&format!("and not ({replay})")), "{main}");
-    assert!(preflight.contains("not binary(merge_queue)"), "{preflight}");
-    assert!(main.contains("not binary(merge_queue)"), "{main}");
+    assert!(preflight.contains("not package(merge-queue-tests)"), "{preflight}");
+    assert!(main.contains("not package(merge-queue-tests)"), "{main}");
 }
 
 #[test]

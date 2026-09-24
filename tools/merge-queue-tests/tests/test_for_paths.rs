@@ -221,8 +221,8 @@ fn gate_nextest_docs_only_builds_the_bin_target() {
     }
 }
 
-/// `tests/support/` is the shared test-helper module. Exactly three
-/// integration binaries declare `mod support;` -- e2e, rfc0092, worktree --
+/// `tests/support/` is the shared test-helper module. Exactly two integration
+/// binaries declare `mod support;` -- e2e and rfc0092 --
 /// so a change there cannot reach another target. It used to fall through to
 /// the whole workspace: one presubmit ran the workspace-minus-e2e stage for
 /// 2,604s for a two-line helper change.
@@ -231,8 +231,8 @@ fn gate_nextest_test_support_selects_only_its_consumers() {
     for path in ["tests/support/coven.rs", "tests/support/mod.rs"] {
         let output = gate_nextest(&[path]);
         assert!(
-            output.contains("--test rfc0092") && output.contains("--test worktree"),
-            "{path} did not select the binaries that compile it: {output}",
+            output.contains("--test rfc0092") && !output.contains("--test worktree"),
+            "{path} did not select only the binaries that compile it: {output}",
         );
         assert!(
             !output.contains("WORKSPACE"),
@@ -1694,13 +1694,14 @@ fn source_backed_test_driver_runs_the_native_host_catalog_probe_early() {
 }
 
 #[test]
-fn worktree_module_and_script_route_to_the_real_integration_binary() {
+fn worktree_module_and_script_route_to_the_lightweight_integration_binary() {
     assert_eq!(
-        selected(&["tests/worktree/status.rs"]),
-        ["./scripts/check.sh --fast"]
+        selected(&["tools/merge-queue-tests/tests/worktree/status.rs"]),
+        ["cargo nextest run -p merge-queue-tests --test worktree"]
     );
     let commands = selected(&["scripts/worktree-status.sh"]);
-    assert!(commands.contains(&"cargo nextest run --test worktree".to_owned()));
+    assert!(commands.contains(&"./scripts/check.sh --queue-infra".to_owned()));
+    assert_eq!(gate_nextest(&["scripts/worktree-status.sh"]), "--test worktree\n");
     assert!(!commands.iter().any(|command| command.contains("worktree_status")));
 }
 
@@ -2057,7 +2058,8 @@ fn extensionless_script_shims_are_syntax_checked() {
 #[test]
 fn script_rules_gate_on_the_binary_their_focused_check_names() {
     // These rules already knew which binary covers them: each ran
-    // `cargo nextest run --test worktree` (or the queue-infra shard) as a
+    // `cargo nextest run -p merge-queue-tests --test worktree` (or the
+    // queue-infra shard) as a
     // focused check. But none of them called `add_gate_test`, so the GATE
     // selection stayed empty and fell through to WORKSPACE -- a full
     // 4,000-test workspace build and run to validate a shell edit. Replaying
@@ -2065,7 +2067,7 @@ fn script_rules_gate_on_the_binary_their_focused_check_names() {
     // biggest driver of WORKSPACE fallback.
     //
     // The covering binary is a checkable fact, not a guess:
-    // tests/worktree/{status,warm,create,rfc_status}.rs reference the four
+    // tools/merge-queue-tests/tests/worktree/{status,warm,create,rfc_status}.rs reference the four
     // worktree scripts, and tools/merge-queue-tests/tests/merge_queue/
     // coordinator.rs references agent-check.sh and submit-with-presubmit.sh.
     for (path, binary) in [

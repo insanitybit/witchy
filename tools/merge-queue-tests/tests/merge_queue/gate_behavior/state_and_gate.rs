@@ -567,9 +567,9 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
 
         let queue_selection = scope.spawn(|| {
     let default_queue_prefix =
-        "nextest run -p merge-queue-tests --test merge_queue --test test_for_paths -j 3";
+        "nextest run -p merge-queue-tests --test merge_queue --test test_for_paths --test worktree -j 3";
     let override_queue_prefix =
-        "nextest run -p merge-queue-tests --test merge_queue --test test_for_paths -j 4";
+        "nextest run -p merge-queue-tests --test merge_queue --test test_for_paths --test worktree -j 4";
     let cargo_args_file = temp.path().join("cargo-args-queue-selection");
     let isolated = check_sh(&root, &["--fast"])
         .env("PATH", format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default()))
@@ -618,11 +618,11 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
         .env("WITCHY_GATE_QUEUE_INFRA", "1")
         .env("WITCHY_QUEUE_INFRA_JOBS", "4")
         // This is the exact selector emitted for a queue-infrastructure-only
-        // landing. Both test binaries live in the standalone package, so root
-        // Cargo must not be asked to resolve either one.
+        // landing. All test binaries live in the standalone package, so root
+        // Cargo must not be asked to resolve any of them.
         .env(
             "WITCHY_GATE_NEXTEST",
-            "--test merge_queue --test test_for_paths",
+            "--test merge_queue --test test_for_paths --test worktree",
         )
         .env("FAKE_CARGO_ARGS_FILE", &cargo_args_file)
         .env("WITCHY_FAILFAST_POLL", "0.05")
@@ -659,7 +659,7 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
         .env("WITCHY_GATE_SCOPE", "all")
         .env_remove("WITCHY_GATE_QUEUE_INFRA")
         .env_remove("WITCHY_QUEUE_INFRA_JOBS")
-        .env("WITCHY_GATE_NEXTEST", "--test merge_queue --test worktree")
+        .env("WITCHY_GATE_NEXTEST", "--test merge_queue --test rfc0092")
         .env("FAKE_CARGO_ARGS_FILE", &cargo_args_file)
         .env("WITCHY_FAILFAST_POLL", "0.05")
         .env("WITCHY_STAGE_HEARTBEAT_INTERVAL", "0")
@@ -681,7 +681,7 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
     assert!(
         mixed_args
             .lines()
-            .any(|line| line.starts_with("nextest run") && line.contains("--test worktree")),
+            .any(|line| line.starts_with("nextest run") && line.contains("--test rfc0092")),
         "the product target left the main run: {mixed_args}",
     );
     assert!(

@@ -457,7 +457,7 @@ if cargo nextest --version >/dev/null 2>&1; then
     # Combine the e2e exclusion (default/--fast) and the fuzz-skip exclusion into one
     # filterset (nextest ANDs, so join with ` and `).
     # Queue-infrastructure fixtures run only in their isolated shard below.
-    excl="not binary(merge_queue)"
+    excl="not package(merge-queue-tests)"
     census_proof_sha="${WITCHY_GATE_CENSUS_PROOF_SHA:-}"
     if [ -n "$census_proof_sha" ] \
         && [ "$(git rev-parse HEAD 2>/dev/null || true)" = "$census_proof_sha" ]; then
@@ -532,10 +532,10 @@ if cargo nextest --version >/dev/null 2>&1; then
     if [ -n "$gate_nextest" ]; then
         # shellcheck disable=SC2206 — selectors are `-p crate` / `--test name`.
         nextest_sel=($gate_nextest)
-        # merge_queue and test_for_paths live in the standalone
+        # Queue fixtures live in the standalone
         # merge-queue-tests package, which root Cargo cannot resolve: a
         # selection mixing them with product targets (`--test merge_queue
-        # --test worktree`, from a diff touching scripts/merge-queue.sh and a
+        # --test rfc0092`, from a diff touching scripts/merge-queue.sh and a
         # root integration test) redded at t+0s with "no test target named
         # `merge_queue` in default-run package" (build/seed-from-gate,
         # 2026-09-23). Run them in the isolated queue shard, which selects
@@ -547,7 +547,7 @@ if cargo nextest --version >/dev/null 2>&1; then
         while [ "$sel_index" -lt "${#nextest_sel[@]}" ]; do
             if [ "${nextest_sel[$sel_index]}" = "--test" ]; then
                 case "${nextest_sel[$((sel_index + 1))]:-}" in
-                    merge_queue | test_for_paths)
+                    merge_queue | test_for_paths | worktree)
                         queue_sel_seen=1
                         sel_index=$((sel_index + 2))
                         continue
@@ -651,16 +651,16 @@ if cargo nextest --version >/dev/null 2>&1; then
         if [ "$ratchet_arg" = "-j" ]; then ratchet_skip_next=1; continue; fi
         ratchet_nextest_args+=("$ratchet_arg")
     done
-    # The workspace stage ALWAYS excludes `binary(merge_queue)` (see $excl
-    # above) because those fixtures run in their own isolated shard. So a diff
-    # whose entire selection IS merge_queue -- any change to the standalone
-    # queue test package -- leaves this stage with nothing, and nextest's
+    # The workspace stage ALWAYS excludes `package(merge-queue-tests)` (see
+    # $excl above) because those fixtures run in their own isolated shard. So
+    # a diff whose entire selection belongs to that package leaves this stage
+    # with nothing, and nextest's
     # default is to FAIL on an empty selection. Observed 2026-08-27 on
     # fix/prewarm-preemption-flake: "Starting 0 tests across 0 binaries
     # (1 binary skipped)" -> "error: no tests to run" -> branch RED, even
     # though its tests ran green in the queue-infra shard moments later.
     #
-    # Narrow deliberately: every selector must name one of the two standalone
+    # Narrow deliberately: every selector must name one of the standalone
     # queue binaries, so a mapper bug that genuinely selects nothing or mixes
     # in a product target still fails loudly here.
     main_queue_only=0
@@ -674,7 +674,7 @@ if cargo nextest --version >/dev/null 2>&1; then
                 break
             fi
             case "${nextest_sel[$((selector_index + 1))]}" in
-                merge_queue | test_for_paths) ;;
+                merge_queue | test_for_paths | worktree) ;;
                 *) main_queue_only=0; break ;;
             esac
             selector_index=$((selector_index + 2))
@@ -793,10 +793,10 @@ if cargo nextest --version >/dev/null 2>&1; then
         main_expr="$excl"
     fi
     if [ "$main_queue_only" -eq 1 ]; then
-        # merge_queue now belongs to the standalone merge-queue-tests package.
-        # Asking root Cargo to resolve `--test merge_queue` fails before its
-        # exclusion can produce an empty selection. The isolated shard below
-        # runs that binary plus test_for_paths with the owning package selected.
+        # These targets belong to the standalone merge-queue-tests package.
+        # Asking root Cargo to resolve them fails before the exclusion can
+        # produce an empty selection. The isolated shard below runs them with
+        # the owning package selected.
         preflight_cmd=()
         test_cmd=(true)
     else
@@ -807,7 +807,7 @@ if cargo nextest --version >/dev/null 2>&1; then
     # Every queue fixture owns a distinct temporary repository, state root, and
     # process group. Bounded width removes the serialized fixture floor while
     # retaining an operator override for repeated reliability measurements.
-    queue_infra_cmd=(cargo nextest run -p merge-queue-tests --test merge_queue --test test_for_paths -j "$queue_infra_jobs" \
+    queue_infra_cmd=(cargo nextest run -p merge-queue-tests --test merge_queue --test test_for_paths --test worktree -j "$queue_infra_jobs" \
         --ignore-default-filter --profile nightly)
     queue_infra_edit_cmd=("${queue_infra_cmd[@]}" -E \
         'test(/^(coordinator::(a_code_submission_without_a_receipt_still_warns|a_red_remembers_its_failing_tests_for_the_next_attempt|mixed_failure_targets_keep_the_broad_preflight_build_scope|concurrent_daemon_starts_create_exactly_one_coordinator|concurrent_dependency_updates_cannot_commit_opposite_cycle_edges|coordinator_reexecs_committed_script_between_attempts_without_losing_singleton|queue_substrate_change_requests_the_isolated_fixture_shard|ready_queue_items_run_before_post_merge_worktree_sweep|submit_journals_whether_a_presubmit_receipt_covers_the_tip|submit_wrapper_changes_are_presubmit_eligible_queue_infrastructure|sweep_batches_historical_branch_pruning|sweep_caches_merged_history_but_keeps_queue_admission_live|sweep_defers_branch_pruning_while_ready_work_waits|sweep_skips_only_unchanged_superseded_refs_already_swept|sweep_yields_when_ready_work_arrives_during_branch_pruning)|gate_behavior::preflight_reuse::(workspace_preflight_narrows_its_target_and_partitions_the_main_run|invalid_or_missing_preflight_target_fails_safe_to_the_workspace|scoped_preflight_keeps_the_complete_main_selection)|gate_behavior::state_and_gate::(fast_gate_emits_structured_foreground_and_background_timings|gate_report_is_read_only_and_aggregates_batches_failures_and_phases|state_path_prefers_fresh_canonical_layout_and_preserves_legacy_until_cutover|unrelated_red_batch_evicts_the_culprit_and_rebatches_the_rest)|packaged_source_surfaces_run_the_unsafe_input_probe_first)$/)')
@@ -820,7 +820,7 @@ else
     # Without this explicit feature, witchy-wir's native security tests are
     # compiled out while cargo still reports a green workspace test run.
     test_cmd=(cargo test --workspace --features witchy-wir/native)
-    queue_infra_cmd=(cargo test -p merge-queue-tests --test merge_queue --test test_for_paths -- --test-threads=1)
+    queue_infra_cmd=(cargo test -p merge-queue-tests --test merge_queue --test test_for_paths --test worktree -- --test-threads=1)
     # Plain Cargo accepts only one substring filter, which cannot express the
     # representative cross-module selection without dropping coverage. Keep
     # the complete shard in this uncommon fallback.

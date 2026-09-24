@@ -2,7 +2,7 @@ use std::fs;
 use std::path::Path;
 use std::process::{Command, Output};
 
-use super::support::{TempRepo, git};
+use super::support::{TempRepo, git, workspace_root};
 
 fn temp_repo() -> TempRepo {
     TempRepo::new("rfc-status", |path| {
@@ -21,7 +21,7 @@ fn temp_repo() -> TempRepo {
 }
 
 fn copy_script(relative: &str, repo: &Path) {
-    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join(relative);
+    let source = workspace_root().join(relative);
     fs::copy(source, repo.join(relative)).expect("copy script fixture");
 }
 

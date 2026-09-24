@@ -742,15 +742,18 @@ for p in "${paths[@]}"; do
         tools/merge-queue-tests/tests/merge_queue/**/*.rs)
             add_gate_test merge_queue
             add "./scripts/check.sh --queue-infra" ;;
+        tools/merge-queue-tests/tests/worktree.rs | \
+        tools/merge-queue-tests/tests/worktree/*.rs)
+            add_gate_test worktree
+            add "cargo nextest run -p merge-queue-tests --test worktree" ;;
         tests/test_for_paths.rs)
             # Keep deleted-path routing narrow during the one-time move into
             # the standalone tooling package.
             add_gate_test test_for_paths
             add "cargo nextest run -p merge-queue-tests --test test_for_paths" ;;
-        tests/worktree/*.rs)
-            any_rust=1
+        tests/worktree.rs | tests/worktree/*.rs)
             add_gate_test worktree
-            add "cargo nextest run --test worktree" ;;
+            add "cargo nextest run -p merge-queue-tests --test worktree" ;;
         tests/glamour/dom.rs)
             any_rust=1
             add "cargo nextest run --test glamour -E 'test(=dom::every_node_test_driver_is_wired_to_a_rust_test)'" ;;
@@ -788,7 +791,7 @@ for p in "${paths[@]}"; do
             path_has_early=1 ;;
         tests/support/*.rs)
             # The shared test-helper module. `mod support;` is declared by
-            # EXACTLY three integration binaries -- e2e, rfc0092, worktree --
+            # EXACTLY two integration binaries -- e2e and rfc0092 --
             # so a change here cannot reach any other target, and falling
             # through to the whole workspace charged it for all of them: one
             # such presubmit on 2026-09-21 ran the workspace-minus-e2e stage
@@ -797,8 +800,7 @@ for p in "${paths[@]}"; do
             broad_e2e=1
             add "./scripts/check.sh --e2e"
             add_gate_test rfc0092
-            add_gate_test worktree
-            add "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test rfc0092 --test worktree" ;;
+            add "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test rfc0092" ;;
         tests/e2e.rs)
             gate_workspace=1
             broad_e2e=1
@@ -888,21 +890,21 @@ for p in "${paths[@]}"; do
         scripts/worktree-status.sh)
             add_gate_test worktree
             add "for f in scripts/*.sh scripts/bin/*; do bash -n \"\$f\"; done"
-            add "cargo nextest run --test worktree"
+            add "cargo nextest run -p merge-queue-tests --test worktree"
             add "./scripts/check.sh --queue-infra" ;;
         scripts/rfc-status.sh)
             add_gate_test worktree
             add "for f in scripts/*.sh scripts/bin/*; do bash -n \"\$f\"; done"
-            add "cargo nextest run --test worktree" ;;
+            add "cargo nextest run -p merge-queue-tests --test worktree" ;;
         scripts/worktree-warm.sh)
             add_gate_test worktree
             add "for f in scripts/*.sh scripts/bin/*; do bash -n \"\$f\"; done"
-            add "cargo nextest run --test worktree"
+            add "cargo nextest run -p merge-queue-tests --test worktree"
             add "./scripts/check.sh --queue-infra" ;;
         scripts/worktree-create.sh)
             add_gate_test worktree
             add "for f in scripts/*.sh scripts/bin/*; do bash -n \"\$f\"; done"
-            add "cargo nextest run --test worktree" ;;
+            add "cargo nextest run -p merge-queue-tests --test worktree" ;;
         scripts/check-spec-freshness.sh)
             add "for f in scripts/*.sh scripts/bin/*; do bash -n \"\$f\"; done"
             add "./scripts/check-spec-freshness.sh" ;;

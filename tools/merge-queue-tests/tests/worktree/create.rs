@@ -5,7 +5,7 @@ use std::process::{Command, Output};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use super::support::{TempRepo, git};
+use super::support::{TempRepo, git, workspace_root};
 
 fn temp_repo() -> TempRepo {
     TempRepo::new("worktree-create", |path| {
@@ -19,7 +19,7 @@ fn temp_repo() -> TempRepo {
 }
 
 fn create(repo: &Path, name: &str) -> Output {
-    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/worktree-create.sh");
+    let script = workspace_root().join("scripts/worktree-create.sh");
     Command::new("bash")
         .arg(script)
         .arg(name)
@@ -100,7 +100,7 @@ fn worktree_create_runs_background_prebuild_at_utility_priority() {
         "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$WITCHY_PREBUILD_TRACE/cargo\"\n",
     );
 
-    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/worktree-create.sh");
+    let script = workspace_root().join("scripts/worktree-create.sh");
     let path = format!("{}:{}", bin.display(), std::env::var("PATH").expect("PATH"));
     let output = Command::new("bash")
         .arg(script)
