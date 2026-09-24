@@ -4676,6 +4676,10 @@ struct Checker {
     // The boolean is checked non-completion, recorded in the same session so
     // infer_transient suppresses both facts for temporary AST allocations.
     type_record: Option<HashMap<usize, (Ty, bool, Option<Ty>)>>,
+    /// Exact retained expressions checked as the compiler-known `.owned()`
+    /// operation. Method spelling and receiver shape alone cannot distinguish
+    /// this operation from a user-declared method.
+    compiler_owned_materializations: HashSet<usize>,
     /// Directed concrete-to-existential coercions discovered while checking.
     /// The types remain checker types until the ending substitution is known.
     /// [`TypeTable`] preserves unresolved requests so final existential
@@ -8155,8 +8159,8 @@ impl Checker {
     /// value. A view `&T` materializes its referent `T`; an owned value is
     /// its own materialization. Only lawfully copyable payloads qualify: no
     /// authority, no `must` obligation, no once-callable, and no nested view
-    /// (an aggregate holding a view is not deeply owned). A slice has no
-    /// owned `[T]` form, so it is refused rather than guessed into a list.
+    /// (an aggregate holding a view is not deeply owned). An admitted scalar
+    /// slice explicitly materializes its projection as a fresh `List(T)`.
     fn owned_materialization_ty(&mut self, receiver: &Ty) -> Result<Ty, TypeError> {
         let payload = match self.resolve(receiver) {
             Ty::View(payload) => self.resolve(&payload),
@@ -8183,9 +8187,16 @@ impl Checker {
             && name.as_ref() == "Slice"
             && arguments.len() == 1
         {
+            let element = self.resolve(&arguments[0]);
+            if matches!(&element, Ty::Int | Ty::Float | Ty::Bool | Ty::Duration)
+                || matches!(&element, Ty::Var(variable)
+                    if self.current_typarams.values().any(|typaram| typaram == variable))
+            {
+                return Ok(Ty::List(Rc::new(element)));
+            }
             return terr(format!(
-                "`.owned()` cannot materialize the slice view `{payload}`: a slice has no owned \
-                 form; copy its elements into a list explicitly"
+                "`.owned()` cannot materialize the slice view `{payload}`: only Int, Float, Bool, \
+                 and Duration elements have an admitted checked copy into List(T)"
             ));
         }
         if let Some(capability) = self.ty_authority_taint(&payload, &mut HashSet::new()) {
@@ -12356,13 +12367,17 @@ impl Checker {
             // RFC-0167 §5: `.owned()` is a compiler-known operation, not a
             // library method. Trait lowering leaves it in place until the
             // receiver's checked type is in the table, then lowers it to the
-            // view read `*view` (or identity on an owned value); this is the
-            // judgment that admits it.
+            // view read `*view` (or identity on an owned value). An admitted
+            // slice keeps the call for its checked projection-copy lowering.
             Expr::MethodCall { receiver, method, args }
                 if method == OWNED_MATERIALIZATION && args.is_empty() =>
             {
                 let receiver_ty = self.infer(receiver)?;
-                self.owned_materialization_ty(&receiver_ty)
+                let result = self.owned_materialization_ty(&receiver_ty)?;
+                if self.type_record.is_some() {
+                    self.compiler_owned_materializations.insert(expr as *const Expr as usize);
+                }
+                Ok(result)
             }
             Expr::MethodCall { receiver, method, .. } => {
                 // Trait lowering resolves every method call (impl, trait
@@ -15417,6 +15432,10 @@ impl RegionPromotionFact {
 #[derive(Debug, Default, PartialEq)]
 pub struct TypeTable {
     types: HashMap<usize, Ty>,
+    /// Expression identity produced by the checker branch for the
+    /// compiler-known `.owned()` operation. Structural rewrites must rebuild
+    /// this table before any authority or tail-manifest consumer uses it.
+    compiler_owned_materializations: HashSet<usize>,
     /// Canonical view expressions retain their carrier type even while a
     /// generic payload variable remains unresolved. These are authenticated
     /// formation facts, not general permission for downstream consumers to
@@ -15866,7 +15885,9 @@ fn collect_expr(
     keys: &mut Vec<ProperTailSiteKey>,
 ) -> Result<(), ProperTailManifestError> {
     path.push(ProperTailPathStep::Node(expr_kind(expr)));
-    if tail && direct_tail_envelope_is_forwarded(expr, *caller) {
+    if tail && direct_tail_envelope_is_forwarded(expr, *caller)
+        && !compiler_known_slice_owned_tail(expr, caller.table)
+    {
         if let Some(dispatch) = proper_tail_dispatch(expr) {
             keys.push(ProperTailSiteKey { callable: caller.callable.clone(), path: path.clone(), dispatch });
         }
@@ -16023,6 +16044,20 @@ fn proper_tail_dispatch(expr: &Expr) -> Option<ProperTailDispatchKind> {
         Expr::Apply { .. } | Expr::ExistentialCall { .. } => Some(ProperTailDispatchKind::Indirect),
         _ => None,
     }
+}
+
+/// The checked zero-argument slice materialization is emitted inline as a
+/// fresh List, not as a callable transfer. A declared `owned` method is
+/// resolved to a call before this manifest is sealed; all other surviving
+/// method calls keep their proper-tail obligation.
+fn compiler_known_slice_owned_tail(expr: &Expr, table: &TypeTable) -> bool {
+    let Expr::MethodCall { receiver, method, args } = expr else { return false };
+    method == "owned"
+        && args.is_empty()
+        && table.compiler_owned_materializations.contains(&(expr as *const Expr as usize))
+        && matches!(table.type_of(receiver).or_else(|| table.view_type_of(receiver)), Some(Ty::View(payload))
+            if matches!(payload.as_ref(), Ty::Named(name, elements)
+                if name.as_ref() == "Slice" && elements.len() == 1))
 }
 
 fn expr_kind(expr: &Expr) -> ProperTailExprKind {
@@ -16947,6 +16982,7 @@ fn run_check_selected(
         canonical_definitions: witchy_canonical_source::aggregates::type_definitions(module),
         resolve_cache: std::cell::RefCell::new(HashMap::new()),
         type_record: if record { Some(HashMap::new()) } else { None },
+        compiler_owned_materializations: HashSet::new(),
         // Construction requests are also retained during ordinary checking so
         // capability payloads resolved only by the ending substitution are
         // rejected before annotation or lowering.
@@ -17601,6 +17637,7 @@ fn run_check_selected(
             .collect();
         return Ok(Some(TypeTable {
             types,
+            compiler_owned_materializations: c.compiler_owned_materializations,
             view_types,
             local_callees,
             non_completing,
@@ -17841,6 +17878,16 @@ mod proper_tail_manifest_tests {
             "fn chars() -> List(String):\n    string.chars(\"x\")\n\nfn len(xs: List(Int)) -> Int:\n    list.length(xs)\n",
         );
         assert!(manifest.sites().is_empty());
+    }
+
+    #[test]
+    fn checked_slice_owned_tail_is_inline_materialization() {
+        for source in [
+            "fn copy(xs: &[Int]) -> List(Int):\n    xs.owned()\n",
+            "fn copy[a](xs: &[a]) -> List(a):\n    xs.owned()\n",
+        ] {
+            assert!(manifest(source).sites().is_empty(), "compiler-known slice materialization has no tail callee: {source}");
+        }
     }
 
     #[test]

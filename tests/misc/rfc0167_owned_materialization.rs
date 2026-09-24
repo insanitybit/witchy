@@ -2,8 +2,9 @@
 //! value. It is compiler-known (no import): on a view `&T` it reads the
 //! referent exactly as `*view` does, and on an owned copyable value it is
 //! identity. The result carries no view, so later mutation of either the root
-//! or the copy is invisible to the other. Authority, `must` payloads, slices,
-//! and view-bearing aggregates are refused while checking.
+//! or the copy is invisible to the other. Scalar slices materialize a fresh
+//! list; other slice elements, authority, `must` payloads, and view-bearing
+//! aggregates are refused while checking.
 //! Independent expectation, admitted unoptimized Wasm, zero leaks.
 
 use witchy::codegen;
@@ -228,14 +229,14 @@ fn main() -> Int:
 }
 
 #[test]
-fn a_slice_view_is_refused() {
-    assert_refused(r#"
+fn a_slice_view_materializes_only_its_projection() {
+    assert_wasm(r#"
 fn main() -> Int:
     let xs = [1, 2, 3]
     let s = &xs[0..2]
     let copy = s.owned()
-    copy.length()
-"#, "`.owned()` cannot materialize the slice view `&[Int]`");
+    copy[0] * 10 + copy[1]
+"#, 12);
 }
 
 #[test]

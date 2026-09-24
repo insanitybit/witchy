@@ -2704,8 +2704,9 @@ impl Ctx<'_> {
                 // import. A type's own `owned` method, a bounding trait's
                 // `owned`, and a `dyn` receiver's trait surface all take
                 // precedence. The checker admits it on the surviving method
-                // call; once its judgment is in the table, a view lowers to
-                // exactly the view read `*view` and an owned value to itself.
+                // call; once its judgment is in the table, a scalar view
+                // lowers to `*view`, an owned value to itself, and a slice
+                // keeps the method for its checked projection copy.
                 // Never guess from the empty-table judgment: leave the call
                 // for the checker instead.
                 let declared_owned = || receiver_ty.as_ref().is_some_and(|ty| {
@@ -2724,7 +2725,16 @@ impl Ctx<'_> {
                 {
                     if let Some(checked) = table_ast_type(self.table, receiver) {
                         let operand = std::mem::replace(receiver.as_mut(), Expr::Bool(false));
-                        *e = if matches!(checked, Type::Qualified(TypeQual::View, _)) {
+                        *e = if matches!(&checked, Type::Qualified(TypeQual::View, inner)
+                            if matches!(inner.unqualified(), Type::Slice(_))
+                                || matches!(inner.unqualified(), Type::Named(name, args)
+                                    if name == "Slice" && args.len() == 1)) {
+                            // A slice needs its authenticated projection to
+                            // materialize a fresh List(T) in canonical lowering.
+                            Expr::MethodCall {
+                                receiver: Box::new(operand), method: method.clone(), args: Vec::new(),
+                            }
+                        } else if matches!(checked, Type::Qualified(TypeQual::View, _)) {
                             Expr::Unary { op: UnOp::Deref, expr: Box::new(operand) }
                         } else {
                             operand

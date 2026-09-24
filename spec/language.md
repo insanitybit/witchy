@@ -1078,6 +1078,12 @@ retired. The explicit migration tool may parse old spellings only to produce
 current source; `check`, formatting, generated-source admission, and ordinary
 parsing reject them.
 
+The compiler-known `(&[T]).owned()` operation materializes the exact retained
+slice range as a fresh `List(T)` for `T = Int`, `Float`, `Bool`, or `Duration`.
+Generic uses are admitted after specialization to one of these types. Other
+element types fail closed. A declared `owned` method has ordinary method
+resolution precedence over this operation.
+
 #### Roots, projections, and snapshots
 
 Taking `&place` records the exact checked root and projection. Field and index

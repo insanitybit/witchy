@@ -3326,6 +3326,10 @@ fn enqueue_layout_children(
             }
             match arguments[0].unqualified() {
                 witchy_syntax::ast::Type::Named(name, arguments) if name == "Int" && arguments.is_empty() => matches!(element.kind(), LayoutKind::Scalar(ScalarKind::Int)),
+                witchy_syntax::ast::Type::Named(name, inner_arguments) if name == "Duration" && inner_arguments.is_empty() => {
+                    matches!(&arguments[0], witchy_syntax::ast::Type::Named(name, arguments) if name == "Duration" && arguments.is_empty())
+                        && matches!(element.kind(), LayoutKind::Scalar(ScalarKind::Duration))
+                }
                 witchy_syntax::ast::Type::Named(name, arguments) if name == "Float" && arguments.is_empty() => matches!(element.kind(), LayoutKind::Scalar(ScalarKind::Float)),
                 witchy_syntax::ast::Type::Named(name, arguments) if name == "Bool" && arguments.is_empty() => matches!(element.kind(), LayoutKind::Scalar(ScalarKind::Bool)),
                 witchy_syntax::ast::Type::Named(name, arguments) if matches!(name.as_str(), "Nil" | "Unit") && arguments.is_empty() => matches!(element.kind(), LayoutKind::Scalar(ScalarKind::Unit)),
@@ -4166,6 +4170,38 @@ mod tests {
         let Type::Qualified(TypeQual::Unique, plain) = &parameters[0] else { panic!("checked unique qualifier") };
         let ordinary = Type::Fn(vec![(**plain).clone()], result.clone(), vec![Convention::Var], qualifiers.clone());
         assert!(!candidate_signature_matches_source(&signature, &ordinary, &module), "candidate cannot invent unique authority for plain source var");
+    }
+
+    #[test]
+    fn duration_list_layout_correspondence_requires_duration_elements() {
+        use crate::layout::{RcHeader, ScalarKind};
+        use witchy_syntax::ast::{Type, TypeQual};
+
+        let mut layouts = LayoutInterner::new();
+        let duration = layouts.intern_scalar(ScalarKind::Duration).unwrap();
+        let integer = layouts.intern_scalar(ScalarKind::Int).unwrap();
+        let duration_list = layouts.intern_packed_list(duration, RcHeader::Required).unwrap();
+        let integer_list = layouts.intern_packed_list(integer, RcHeader::Required).unwrap();
+        let source = Type::Named("List".into(), vec![Type::Named("Duration".into(), vec![])]);
+        let mut pending = Vec::new();
+        assert!(enqueue_layout_children(
+            duration_list, &source, &layouts, &BTreeMap::new(), &mut pending,
+            &BTreeMap::new(), &[], &mut CorrespondenceContext::default(),
+        ));
+        assert!(pending.is_empty(), "a scalar Duration element needs no child owner layout");
+        assert!(!enqueue_layout_children(
+            integer_list, &source, &layouts, &BTreeMap::new(), &mut Vec::new(),
+            &BTreeMap::new(), &[], &mut CorrespondenceContext::default(),
+        ), "an Int list cannot authenticate the Duration source layout");
+        for qualifier in [TypeQual::View, TypeQual::Unique] {
+            let qualified = Type::Named("List".into(), vec![
+                Type::Qualified(qualifier, Box::new(Type::Named("Duration".into(), vec![]))),
+            ]);
+            assert!(!enqueue_layout_children(
+                duration_list, &qualified, &layouts, &BTreeMap::new(), &mut Vec::new(),
+                &BTreeMap::new(), &[], &mut CorrespondenceContext::default(),
+            ), "a qualified Duration source cannot claim the plain scalar layout");
+        }
     }
 
     #[test]

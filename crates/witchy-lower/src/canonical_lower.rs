@@ -4918,6 +4918,81 @@ impl<'a> FunctionLowerer<'a> {
         self.load_list_element(root, absolute, element_type)
     }
 
+    /// Materialize exactly the authenticated scalar projection of `&[T]`.
+    /// The result owns a fresh list root; the source slice retains its old
+    /// root, so later `var` changes on either side preserve both snapshots.
+    fn lower_owned_scalar_slice(
+        &mut self,
+        expression: &Expr,
+        receiver: &Expr,
+    ) -> Result<ValueId, CanonicalLoweringError> {
+        use witchy_wir::canonical_safewir::closure_owner_contract::SharedSliceField;
+        let source_type = self.expression_type(receiver)?;
+        let Type::Qualified(TypeQual::View, inner) = &source_type else {
+            return Err(CanonicalLoweringError::UnsupportedExpression(".owned() slice receiver"));
+        };
+        let element = rooted_slice_element(inner)
+            .filter(|element| matches!(*element, "Int" | "Float" | "Bool" | "Duration"))
+            .ok_or(CanonicalLoweringError::UnsupportedExpression(".owned() slice element"))?;
+        let result_type = self.expression_type(expression)?;
+        let expected = Type::Named("List".into(), vec![Type::Named(element.into(), Vec::new())]);
+        if result_type != expected {
+            return Err(CanonicalLoweringError::UnsupportedExpression(".owned() slice result"));
+        }
+        let (layout, element_type, header_bytes, stride_bytes) = list_layout(
+            &expected, self.layout_bundle, self.layouts, &self.closures.layouts, self.definitions,
+        )?;
+        if matches!(element_type, ValueType::Ref(_) | ValueType::Gc(_)) {
+            return Err(CanonicalLoweringError::UnsupportedExpression(".owned() slice pointer element"));
+        }
+        let slice = self.lower_expr(receiver)?;
+        if self.rooted_slice_view_family(slice).map(|(_, actual)| actual) != Some(element) {
+            return Err(CanonicalLoweringError::UnsupportedExpression(".owned() slice carrier family"));
+        }
+        let root = self.read_rooted_slice(slice, SharedSliceField::Root)?;
+        if self.values[&root] != ValueType::Ref(layout) {
+            return Err(CanonicalLoweringError::UnsupportedExpression(".owned() slice root layout"));
+        }
+        let start = self.read_rooted_slice(slice, SharedSliceField::Start)?;
+        let length = self.read_rooted_slice(slice, SharedSliceField::Length)?;
+        self.ensure_list_extent(root)?;
+        let root_length = *self.list_counts.get(&root).ok_or(
+            CanonicalLoweringError::UnsupportedExpression(".owned() slice root extent"),
+        )?;
+        let end = self.push_arithmetic(
+            ValueType::Size, ArithmeticOperator::Add, start, length, OverflowBehavior::Trap,
+        )?;
+        let in_bounds = self.push_compare(ComparisonOperator::LessEqualUnsigned, end, root_length)?;
+        self.push_guard(in_bounds, witchy_wir::canonical_safewir::GuardKind::Bounds);
+        self.guard_allocation_capacity(length, header_bytes, stride_bytes)?;
+        let zero = self.push_const_size(0)?;
+        let destination = self.fresh(ValueType::Ref(layout))?;
+        self.push_operation(Operation::Alloc {
+            destination,
+            layout,
+            extent: witchy_wir::canonical_safewir::Extent::Counted {
+                header_bytes, count: zero, capacity: length, stride_bytes,
+            },
+            class: witchy_wir::canonical_safewir::AllocationClass::ReferenceCounted,
+        });
+        self.push_operation(Operation::CloneRange {
+            destination: witchy_wir::canonical_safewir::Place::projected(
+                destination, Projection::Slice { start: zero, length },
+                ValueType::Ref(layout), AccessMode::Write,
+            ),
+            source: witchy_wir::canonical_safewir::Place::projected(
+                root, Projection::Slice { start, length },
+                ValueType::Ref(layout), AccessMode::Read,
+            ),
+            count: length,
+        });
+        self.push_operation(Operation::UpdateCount { object: destination, count: length });
+        self.list_counts.insert(destination, length);
+        self.list_capacities.insert(destination, length);
+        self.push_operation(Operation::DropRef { object: root });
+        Ok(destination)
+    }
+
     /// `xs[i]` by value on any `&[T]` view carrier.
     fn read_slice_element_by_value(
         &mut self,
@@ -11126,6 +11201,11 @@ impl FunctionLowerer<'_> {
                     [] => Err(CanonicalLoweringError::UnsupportedExpression("void call used as non-unit value")),
                     _ => Err(CanonicalLoweringError::UnsupportedExpression("multi-result call")),
                 }
+            }
+            Expr::MethodCall { receiver, method, args }
+                if method == "owned" && args.is_empty() =>
+            {
+                self.lower_owned_scalar_slice(expression, receiver)
             }
             Expr::LabeledCall { .. }
             | Expr::LabeledMethodCall { .. }
