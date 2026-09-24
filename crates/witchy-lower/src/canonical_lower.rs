@@ -2899,6 +2899,7 @@ fn is_direct_view_payload(inner: &Type) -> bool {
         && (is_direct_shared_int(inner) || is_rooted_slice(inner) || is_rooted_string(inner)
             || is_rooted_user_record(inner) || witchy_canonical_source::aggregates::is_list_root_payload(inner)
             || witchy_canonical_source::aggregates::is_dict_string_int_root_payload(inner)
+            || witchy_canonical_source::aggregates::is_dict_string_bool_root_payload(inner)
             || witchy_canonical_source::aggregates::is_tuple_int_string_root_payload(inner)
             || witchy_canonical_source::aggregates::is_scalar_value_view_payload(inner))
 }
@@ -14314,6 +14315,7 @@ impl FunctionLowerer<'_> {
             && witchy_types::typeck::ty_to_ast(fact.payload()).is_some_and(|payload| {
                 witchy_canonical_source::aggregates::is_record_root_payload(&payload, self.definitions)
                     || witchy_canonical_source::aggregates::is_dict_string_int_root_payload(&payload)
+                    || witchy_canonical_source::aggregates::is_dict_string_bool_root_payload(&payload)
                     || witchy_canonical_source::aggregates::is_tuple_int_string_root_payload(&payload)
             });
         if matches!(fact.payload(), Ty::Float | Ty::Bool | Ty::Duration) {
@@ -19282,6 +19284,7 @@ fn source_value_type(
     if let Type::Qualified(TypeQual::View, inner) = source
         && (is_rooted_user_record(inner)
             || witchy_canonical_source::aggregates::is_dict_string_int_root_payload(inner)
+            || witchy_canonical_source::aggregates::is_dict_string_bool_root_payload(inner)
             || witchy_canonical_source::aggregates::is_tuple_int_string_root_payload(inner)
             || witchy_canonical_source::aggregates::is_scalar_value_view_payload(inner))
     {

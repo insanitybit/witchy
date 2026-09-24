@@ -1,5 +1,6 @@
-//! RFC-0167 row G: a whole `&Dict(String, Int)` retains its exact dictionary
-//! root. This witness uses admitted unoptimized Wasm and a zero-leak audit.
+//! RFC-0167 row G: whole `&Dict(String, Int)` and `&Dict(String, Bool)`
+//! views retain their exact dictionary roots. This witness uses admitted
+//! unoptimized Wasm and a zero-leak audit.
 
 use witchy::codegen;
 use witchy::opt::{self, OptSet};
@@ -14,19 +15,27 @@ impl Drop for ResetOptimizationOverride {
 }
 
 #[test]
-fn string_int_dictionary_view_keeps_the_old_root_after_owner_mutation() {
-    // The view snapshots one entry. The owner receives a second entry:
-    // 1 * 10 + 2 = 12, independent of the interpreter.
+fn string_int_and_bool_dictionary_views_keep_old_roots_after_owner_mutation() {
+    // The Int view has one entry while its owner has two: 1 * 10 + 2 = 12.
+    // The Bool view still reads true (100) after its owner replaces it with
+    // false (0). The independent result is 12 + 100 + 0 = 112.
     let source = r#"
 fn count(v: &Dict(String, Int)) -> Int:
     (*v).length()
+
+fn old_bool(v: &Dict(String, Bool)) -> Int:
+    if (*v).at("a"): 100 else: 0
 
 fn main() -> Int:
     var d: Dict(String, Int) = dict.new()
     let _ = d.insert("a", 2)
     let v = &d
     let _ = d.insert("b", 3)
-    count(v) * 10 + d.length()
+    var flags: Dict(String, Bool) = dict.new()
+    let _ = flags.insert("a", true)
+    let old_flags = &flags
+    let _ = flags.insert("a", false)
+    count(v) * 10 + d.length() + old_bool(old_flags) + (if flags.at("a"): 1000 else: 0)
 "#;
     opt::set_for_tests(Some(OptSet::none()));
     let _reset = ResetOptimizationOverride;
@@ -40,19 +49,19 @@ fn main() -> Int:
         128,
     ).expect("admitted Wasm instance");
     vm.run().expect("admitted Wasm execution");
-    assert_eq!(vm.output(), vec!["12".to_string()], "hand-computed view and owner lengths");
+    assert_eq!(vm.output(), vec!["112".to_string()], "hand-computed retained roots and Bool value");
     assert_eq!(vm.canonical_heap_leaks().expect("canonical heap audit"), Some(0));
 }
 
 #[test]
 fn other_dictionary_view_payloads_stay_outside_the_exact_carrier() {
     let different_value = r#"
-fn count(v: &Dict(String, Bool)) -> Int:
+fn count(v: &Dict(String, Float)) -> Int:
     (*v).length()
 
 fn main() -> Int:
-    var d: Dict(String, Bool) = dict.new()
-    let _ = d.insert("a", true)
+    var d: Dict(String, Float) = dict.new()
+    let _ = d.insert("a", 1.5)
     count(&d)
 "#;
     let nested_view = r#"
@@ -70,11 +79,23 @@ fn main() -> Int:
         assert!(refusal.to_string().contains("rooted view payload has no admitted authenticated carrier"),
             "near miss names the missing carrier: {refusal}");
     }
+    let closure_capture = r#"
+fn main() -> Int:
+    var d: Dict(String, Bool) = dict.new()
+    let _ = d.insert("a", true)
+    let view = &d
+    let read = fn() -> Int: if (*view).at("a"): 1 else: 0
+    read()
+"#;
+    let error = witchy::resolve_std_only_checked(closure_capture).err()
+        .map(|error| error.to_string())
+        .expect("Bool dictionary view closure capture stays fail-closed");
+    assert!(error.contains("no admitted carrier"), "closure capture refusal: {error}");
 }
 
 #[test]
 fn a_region_born_dictionary_root_cannot_escape_through_the_view() {
-    let source = r#"
+    let int_source = r#"
 fn main() -> Int:
     let v = region -> &Dict(String, Int):
         var d: Dict(String, Int) = dict.new()
@@ -82,8 +103,18 @@ fn main() -> Int:
         &d
     0
 "#;
-    let error = witchy::resolve_std_only_checked(source).err()
-        .map(|error| error.to_string())
-        .expect("region-born dictionary root cannot escape");
-    assert!(error.contains("region-born"), "region refusal names its root: {error}");
+    let bool_source = r#"
+fn main() -> Int:
+    let v = region -> &Dict(String, Bool):
+        var d: Dict(String, Bool) = dict.new()
+        let _ = d.insert("a", true)
+        &d
+    0
+"#;
+    for source in [int_source, bool_source] {
+        let error = witchy::resolve_std_only_checked(source).err()
+            .map(|error| error.to_string())
+            .expect("region-born dictionary root cannot escape");
+        assert!(error.contains("region-born"), "region refusal names its root: {error}");
+    }
 }

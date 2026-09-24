@@ -9,9 +9,9 @@
 // The canonical backend currently refuses `Dict(String, &String)` values:
 // `&String` has no admitted dictionary collection carrier. Use owned String
 // values until that carrier is implemented.
-// A whole `&Dict(String, Int)` has a distinct admitted root carrier: it keeps
-// the old dictionary snapshot when the owner is updated. Other dictionary
-// root-view shapes still need their own carrier evidence.
+// Whole `&Dict(String, Int)` and `&Dict(String, Bool)` views have distinct
+// admitted root identities: each keeps its dictionary snapshot when the owner
+// is updated. Other dictionary root-view shapes still need carrier evidence.
 
 // --- native primitives ---
 

@@ -121,7 +121,7 @@ pub fn dictionary_has_unadmitted_string_view_value(ty: &Type) -> bool {
                     if name == "String" && arguments.is_empty())))
 }
 
-/// The one dictionary shape whose whole immutable view can retain its
+/// The Int-valued dictionary shape whose whole immutable view can retain its
 /// existing reference-counted root token. Nested qualifiers and other key or
 /// value types need separate carrier evidence.
 pub fn is_dict_string_int_root_payload(ty: &Type) -> bool {
@@ -130,6 +130,16 @@ pub fn is_dict_string_int_root_payload(ty: &Type) -> bool {
             [Type::Named(key, key_args), Type::Named(value, value_args)]
                 if key == "String" && key_args.is_empty()
                     && value == "Int" && value_args.is_empty()))
+}
+
+/// The Bool-valued dictionary root has the same retained-token shape as the
+/// Int-valued root, but keeps a distinct authenticated payload identity.
+pub fn is_dict_string_bool_root_payload(ty: &Type) -> bool {
+    matches!(ty, Type::Named(name, arguments)
+        if name == "Dict" && matches!(arguments.as_slice(),
+            [Type::Named(key, key_args), Type::Named(value, value_args)]
+                if key == "String" && key_args.is_empty()
+                    && value == "Bool" && value_args.is_empty()))
 }
 
 /// The exact tuple root whose heap representation and child String token are
