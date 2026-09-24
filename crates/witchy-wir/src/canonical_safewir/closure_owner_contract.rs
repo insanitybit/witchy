@@ -21,7 +21,7 @@
 use super::{CapabilityKindId, FunctionId, FunctionSignatureId, GcTypeId, ValueId, ValueType};
 use crate::layout::LayoutId;
 use witchy_canonical_source::closure::ClosureCaptureTransfer;
-use witchy_types::canonical_closure::ClosureWitness;
+use witchy_canonical_source::closure::ClosureWitness;
 use witchy_types::pipeline::CanonicalCheckedSource;
 
 /// Static candidate metadata, never an SSA operand or guest bridge argument.
@@ -104,7 +104,7 @@ impl<'a> SourceConstructor<'a> {
             }
         }).collect::<Result<Vec<_>, _>>()?;
         if transfers.iter().any(|transfer| matches!(transfer, CaptureTransfer::CopyCapability(_)))
-            && matches!(witchy_types::typeck::ty_to_ast(witness.signature()),
+            && matches!(witness.signature().cloned(),
                 Some(witchy_syntax::ast::Type::Fn(_, _, _, qualifiers)) if qualifiers.pure)
         {
             return Err(ContractError::PureCapabilityCapture);

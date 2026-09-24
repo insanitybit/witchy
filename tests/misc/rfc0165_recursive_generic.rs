@@ -236,7 +236,7 @@ fn main(console: Console):
     assert_eq!(entries.len(), 2, "both source closures must have checked witnesses");
     assert!(entries.iter().all(|entry| entry.captures().len() == 1));
     let parameters = canonical.closure_witness().entries().iter().filter_map(|entry| {
-        let witchy::ast::Type::Fn(parameters, _, _, _) = witchy::typeck::ty_to_ast(entry.signature())? else { return None };
+        let witchy::ast::Type::Fn(parameters, _, _, _) = entry.signature()? else { return None };
         Some(parameters)
     }).collect::<Vec<_>>();
     assert_eq!(parameters.len(), 2);

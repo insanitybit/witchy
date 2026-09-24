@@ -12,88 +12,11 @@ use witchy_syntax::ast::{self, Block, Expr, Item, Pattern, Stmt, Type};
 
 use crate::canonical_abi;
 use crate::typeck::{self, Ty, TypedModule};
-use witchy_canonical_source::closure::{ClosureBindingPathStep, ClosureCaptureTransfer};
+use witchy_canonical_source::closure::{
+    ClosureBindingId, ClosureBindingPathStep, ClosureCaptureTransfer, ClosureCaptureWitness, ClosureWitness,
+    ClosureWitnessManifest,
+};
 use witchy_canonical_source::proper_tail::{ProperTailCallableId, ProperTailExprKind, ProperTailPathStep};
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct ClosureBindingId {
-    owner: ProperTailCallableId,
-    path: Vec<ClosureBindingPathStep>,
-    name: String,
-}
-
-impl ClosureBindingId {
-    pub fn owner(&self) -> &ProperTailCallableId { &self.owner }
-    pub fn path(&self) -> &[ClosureBindingPathStep] { &self.path }
-    pub fn name(&self) -> &str { &self.name }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ClosureCaptureWitness {
-    binding: ClosureBindingId,
-    checked_type: Type,
-    checked_type_encoding: Vec<u8>,
-    transfer: ClosureCaptureTransfer,
-}
-
-impl ClosureCaptureWitness {
-    pub fn binding(&self) -> &ClosureBindingId { &self.binding }
-    pub fn checked_type(&self) -> &Type { &self.checked_type }
-    pub fn checked_type_encoding(&self) -> &[u8] { &self.checked_type_encoding }
-    pub fn transfer(&self) -> ClosureCaptureTransfer { self.transfer }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ClosureWitness {
-    id: ProperTailCallableId,
-    /// The runtime type-table view used for physical closure-family layout.
-    signature: Ty,
-    /// The checked source declaration used to authenticate the callable ABI.
-    /// `Ty` intentionally omits qualifier-only state, so a compiler-generated
-    /// eta lambda must retain its declared parameter contract separately.
-    declared_signature: Type,
-    signature_encoding: Vec<u8>,
-    captures: Vec<ClosureCaptureWitness>,
-}
-
-impl ClosureWitness {
-    pub fn id(&self) -> &ProperTailCallableId { &self.id }
-    pub fn signature(&self) -> &Ty { &self.signature }
-    pub fn declared_signature(&self) -> &Type { &self.declared_signature }
-    pub fn captures(&self) -> &[ClosureCaptureWitness] { &self.captures }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct ClosureWitnessManifest {
-    entries: Vec<ClosureWitness>,
-    source_bundle_digest: [u8; 32],
-}
-
-impl ClosureWitnessManifest {
-    pub fn entries(&self) -> &[ClosureWitness] { &self.entries }
-
-    pub fn digest(&self) -> [u8; 32] {
-        let mut bytes = b"witchy.canonical-closure-witness.v1".to_vec();
-        bytes.extend_from_slice(&self.source_bundle_digest);
-        put_u32(&mut bytes, self.entries.len());
-        for entry in &self.entries {
-            encode_callable(&entry.id, &mut bytes);
-            put_bytes(&mut bytes, &entry.signature_encoding);
-            put_u32(&mut bytes, entry.captures.len());
-            for capture in &entry.captures {
-                encode_binding(&capture.binding, &mut bytes);
-                put_bytes(&mut bytes, &capture.checked_type_encoding);
-                bytes.push(capture.transfer as u8);
-            }
-        }
-        *blake3::hash(&bytes).as_bytes()
-    }
-
-    pub(crate) fn bind_source_bundle_digest(mut self, digest: [u8; 32]) -> Self {
-        self.source_bundle_digest = digest;
-        self
-    }
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClosureWitnessError {
@@ -149,54 +72,11 @@ struct Binding {
     borrowed: bool,
 }
 
-fn put_u32(bytes: &mut Vec<u8>, value: usize) {
-    bytes.extend_from_slice(&u32::try_from(value).expect("validated closure manifest size").to_le_bytes());
-}
 
-fn put_bytes(bytes: &mut Vec<u8>, value: &[u8]) {
-    put_u32(bytes, value.len());
-    bytes.extend_from_slice(value);
-}
 
-fn put_str(bytes: &mut Vec<u8>, value: &str) {
-    put_bytes(bytes, value.as_bytes());
-}
 
-fn encode_callable(callable: &ProperTailCallableId, bytes: &mut Vec<u8>) {
-    put_u32(bytes, callable.item as usize);
-    match callable.method { Some(method) => { bytes.push(1); put_u32(bytes, method as usize); }, None => bytes.push(0) }
-    put_path(&callable.lambda_path, bytes);
-}
 
-fn encode_binding(binding: &ClosureBindingId, bytes: &mut Vec<u8>) {
-    encode_callable(&binding.owner, bytes);
-    put_u32(bytes, binding.path.len());
-    for step in &binding.path {
-        match step {
-            ClosureBindingPathStep::Parameter(index) => { bytes.push(0); put_u32(bytes, *index as usize); }
-            ClosureBindingPathStep::Statement(index) => { bytes.push(1); put_u32(bytes, *index as usize); }
-            ClosureBindingPathStep::Pattern(index) => { bytes.push(2); put_u32(bytes, *index as usize); }
-            ClosureBindingPathStep::LoopVariable => bytes.push(3),
-        }
-    }
-    put_str(bytes, &binding.name);
-}
 
-fn put_path(path: &[ProperTailPathStep], bytes: &mut Vec<u8>) {
-    put_u32(bytes, path.len());
-    for step in path {
-        match step {
-            ProperTailPathStep::Statement(v) => { bytes.push(0); put_u32(bytes, *v as usize); }
-            ProperTailPathStep::Value => bytes.push(1),
-            ProperTailPathStep::ReturnValue => bytes.push(2),
-            ProperTailPathStep::YieldValue => bytes.push(3),
-            ProperTailPathStep::Node(v) => { bytes.push(4); bytes.push(*v as u8); }
-            ProperTailPathStep::Child(v) => { bytes.push(5); put_u32(bytes, *v as usize); }
-            ProperTailPathStep::Arm(v) => { bytes.push(6); put_u32(bytes, *v as usize); }
-            ProperTailPathStep::Guard => bytes.push(7),
-        }
-    }
-}
 
 fn expr_kind(expr: &Expr) -> ProperTailExprKind {
     match expr {
@@ -328,7 +208,7 @@ impl<'a> Builder<'a> {
     fn observe_binding_type(&mut self, name: &str, checked_type: Type) {
         if let Some(binding) = self.scopes.iter_mut().rev()
             .flat_map(|scope| scope.iter_mut().rev())
-            .find(|binding| binding.id.name == name)
+            .find(|binding| binding.id.name() == name)
             && binding.ty.is_none()
         {
             binding.borrowed |= explicit_borrow(&checked_type);
@@ -337,7 +217,7 @@ impl<'a> Builder<'a> {
     }
 
     fn resolve(&self, name: &str) -> Option<&Binding> {
-        self.scopes.iter().rev().flat_map(|scope| scope.iter().rev()).find(|binding| binding.id.name == name)
+        self.scopes.iter().rev().flat_map(|scope| scope.iter().rev()).find(|binding| binding.id.name() == name)
     }
 
     /// A name a closure body may mention without capturing anything: a checked
@@ -373,7 +253,7 @@ impl<'a> Builder<'a> {
         let mut scope = Vec::new();
         for (index, param) in params.iter().enumerate() {
             let ty = param.ty.clone().or_else(|| param_types.get(index).cloned());
-            scope.push(Binding { id: ClosureBindingId { owner: callable.clone(), path: vec![ClosureBindingPathStep::Parameter(index as u32)], name: param.name.clone() }, ty: ty.clone(), borrowed: ty.as_ref().is_some_and(explicit_borrow) });
+            scope.push(Binding { id: ClosureBindingId::new(callable.clone(), vec![ClosureBindingPathStep::Parameter(index as u32)], param.name.clone()), ty: ty.clone(), borrowed: ty.as_ref().is_some_and(explicit_borrow) });
         }
         self.scopes.push(scope);
         let mut initial_path = Vec::new();
@@ -394,13 +274,13 @@ impl<'a> Builder<'a> {
                     let borrowed = ty.as_ref().is_some_and(explicit_borrow)
                         || matches!(value, Expr::Unary { op: ast::UnOp::BorrowMut, .. })
                         || matches!(value, Expr::Var(source) if self.resolve(source).is_some_and(|binding| binding.borrowed));
-                    self.scopes.last_mut().unwrap().push(Binding { id: ClosureBindingId { owner: callable.clone(), path: vec![ClosureBindingPathStep::Statement(index)], name: name.clone() }, ty: checked, borrowed });
+                    self.scopes.last_mut().unwrap().push(Binding { id: ClosureBindingId::new(callable.clone(), vec![ClosureBindingPathStep::Statement(index)], name.clone()), ty: checked, borrowed });
                 }
                 Stmt::Assign { value, .. } => self.child(value, callable.clone(), path, 0)?,
                 Stmt::LetPattern { pattern, value } => {
                     self.child(value, callable.clone(), path, 0)?;
                     for (slot, name) in pattern_names(pattern).into_iter().enumerate() {
-                        self.scopes.last_mut().unwrap().push(Binding { id: ClosureBindingId { owner: callable.clone(), path: vec![ClosureBindingPathStep::Statement(index), ClosureBindingPathStep::Pattern(slot as u32)], name }, ty: None, borrowed: false });
+                        self.scopes.last_mut().unwrap().push(Binding { id: ClosureBindingId::new(callable.clone(), vec![ClosureBindingPathStep::Statement(index), ClosureBindingPathStep::Pattern(slot as u32)], name), ty: None, borrowed: false });
                     }
                 }
                 Stmt::Return(Some(value)) => {
@@ -448,7 +328,7 @@ impl<'a> Builder<'a> {
                     .map_err(|error| ClosureWitnessError::UnsupportedType { context: error.to_string() })?;
                 let declared_signature_encoding = canonical_abi::canonical_ast_type_bytes(self.typed, &declared_signature)
                     .map_err(|error| ClosureWitnessError::UnsupportedType { context: error.to_string() })?;
-                put_bytes(&mut signature_encoding, &declared_signature_encoding);
+                witchy_canonical_source::closure::put_bytes(&mut signature_encoding, &declared_signature_encoding);
                 let captures = witchy_syntax::lambda_scan::scan_lambda(params, body).captures();
                 let param_types = match self.typed.table().type_of(expr) {
                     Some(Ty::Fn(inputs, _, _, _, _)) => inputs.iter().filter_map(typeck::ty_to_ast).collect::<Vec<_>>(),
@@ -459,7 +339,7 @@ impl<'a> Builder<'a> {
                 self.scopes.push(Vec::new());
                 for (index, param) in params.iter().enumerate() {
                     let ty = param.ty.clone().or_else(|| param_types.get(index).cloned());
-                    self.scopes.last_mut().unwrap().push(Binding { id: ClosureBindingId { owner: id.clone(), path: vec![ClosureBindingPathStep::Parameter(index as u32)], name: param.name.clone() }, ty: ty.clone(), borrowed: ty.as_ref().is_some_and(explicit_borrow) });
+                    self.scopes.last_mut().unwrap().push(Binding { id: ClosureBindingId::new(id.clone(), vec![ClosureBindingPathStep::Parameter(index as u32)], param.name.clone()), ty: ty.clone(), borrowed: ty.as_ref().is_some_and(explicit_borrow) });
                 }
                 self.walk_block(body, id.clone(), &mut body_path)?;
                 self.scopes.pop();
@@ -475,15 +355,16 @@ impl<'a> Builder<'a> {
                     if binding.borrowed || explicit_borrow(&checked_type) { return Err(ClosureWitnessError::BorrowedCapture { name }); }
                     let checked_type_encoding = canonical_abi::canonical_ast_type_bytes(self.typed, &checked_type)
                         .map_err(|error| ClosureWitnessError::UnsupportedType { context: error.to_string() })?;
-                    capture_witnesses.push(ClosureCaptureWitness { binding: binding.id, transfer: capture_transfer(&checked_type, self.module), checked_type, checked_type_encoding });
+                    let transfer = capture_transfer(&checked_type, self.module);
+                    capture_witnesses.push(ClosureCaptureWitness::new(binding.id, checked_type, checked_type_encoding, transfer));
                 }
-                self.entries.push(ClosureWitness {
+                self.entries.push(ClosureWitness::new(
                     id,
-                    signature,
+                    typeck::ty_to_ast(&signature),
                     declared_signature,
                     signature_encoding,
-                    captures: capture_witnesses,
-                });
+                    capture_witnesses,
+                ));
             }
             Expr::Call { args, .. } | Expr::Ctor { args, .. } | Expr::AnonCtor { args, .. } | Expr::List(args) | Expr::Tuple(args) => for (index, arg) in args.iter().enumerate() { self.child(arg, callable.clone(), path, index)?; },
             Expr::LabeledCall { args, .. } => for (index, (_, arg)) in args.iter().enumerate() { self.child(arg, callable.clone(), path, index)?; },
@@ -501,7 +382,7 @@ impl<'a> Builder<'a> {
                     path.push(ProperTailPathStep::Arm(u32::try_from(index).map_err(|_| ClosureWitnessError::PathOverflow)?));
                     self.scopes.push(Vec::new());
                     for (slot, name) in pattern_names(&arm.pattern).into_iter().enumerate() {
-                        self.scopes.last_mut().unwrap().push(Binding { id: ClosureBindingId { owner: callable.clone(), path: vec![ClosureBindingPathStep::Pattern(slot as u32)], name }, ty: None, borrowed: false });
+                        self.scopes.last_mut().unwrap().push(Binding { id: ClosureBindingId::new(callable.clone(), vec![ClosureBindingPathStep::Pattern(slot as u32)], name), ty: None, borrowed: false });
                     }
                     if let Some(guard) = &arm.guard { path.push(ProperTailPathStep::Guard); self.walk_expr(guard, callable.clone(), path)?; path.pop(); }
                     path.push(ProperTailPathStep::Value); self.walk_expr(&arm.body, callable.clone(), path)?; path.pop();
@@ -514,7 +395,7 @@ impl<'a> Builder<'a> {
             Expr::For { var, iter, body } => {
                 self.child(iter, callable.clone(), path, 0)?;
                 path.push(ProperTailPathStep::Child(1));
-                self.scopes.push(vec![Binding { id: ClosureBindingId { owner: callable.clone(), path: vec![ClosureBindingPathStep::LoopVariable], name: var.clone() }, ty: None, borrowed: false }]);
+                self.scopes.push(vec![Binding { id: ClosureBindingId::new(callable.clone(), vec![ClosureBindingPathStep::LoopVariable], var.clone()), ty: None, borrowed: false }]);
                 self.walk_block(body, callable.clone(), path)?;
                 self.scopes.pop();
                 path.pop();
@@ -522,7 +403,7 @@ impl<'a> Builder<'a> {
             Expr::WhileLet { pattern, scrutinee, body } => {
                 self.child(scrutinee, callable.clone(), path, 0)?;
                 path.push(ProperTailPathStep::Child(1));
-                let bindings = pattern_names(pattern).into_iter().enumerate().map(|(slot, name)| Binding { id: ClosureBindingId { owner: callable.clone(), path: vec![ClosureBindingPathStep::Pattern(slot as u32)], name }, ty: None, borrowed: false }).collect();
+                let bindings = pattern_names(pattern).into_iter().enumerate().map(|(slot, name)| Binding { id: ClosureBindingId::new(callable.clone(), vec![ClosureBindingPathStep::Pattern(slot as u32)], name), ty: None, borrowed: false }).collect();
                 self.scopes.push(bindings);
                 self.walk_block(body, callable.clone(), path)?;
                 self.scopes.pop();
@@ -558,9 +439,9 @@ impl<'a> Builder<'a> {
 pub fn derive_closure_witness(typed: &TypedModule) -> Result<ClosureWitnessManifest, ClosureWitnessError> {
     let builder = walk_module(typed)?;
     let mut entries = builder.entries;
-    entries.sort_by(|left, right| left.id.cmp(&right.id));
-    for pair in entries.windows(2) { if pair[0].id == pair[1].id { return Err(ClosureWitnessError::DuplicateLambda); } }
-    Ok(ClosureWitnessManifest { entries, source_bundle_digest: [0; 32] })
+    entries.sort_by(|left, right| left.id().cmp(right.id()));
+    for pair in entries.windows(2) { if pair[0].id() == pair[1].id() { return Err(ClosureWitnessError::DuplicateLambda); } }
+    Ok(ClosureWitnessManifest::new(entries))
 }
 
 /// Every lambda of the checked module with its structural identity, in the
@@ -658,8 +539,8 @@ mod tests {
             Err(ClosureWitnessError::UnresolvedCapture { .. })));
         // Lexical identity wins even for a name registered by the intrinsic
         // catalog. Catalog membership never grants a local value authority.
-        let mut binding = builder.entries[0].captures[0].binding.clone();
-        binding.name = "list.length".into();
+        let captured = builder.entries[0].captures()[0].binding();
+        let binding = ClosureBindingId::new(captured.owner().clone(), captured.path().to_vec(), "list.length".into());
         builder.scopes.push(vec![Binding { id: binding, ty: None, borrowed: false }]);
         assert!(builder.resolve_capture("list.length").expect("lexical shadow").is_some());
     }
@@ -727,8 +608,8 @@ mod tests {
         ).expect("parse lexical capture");
         let typed = typeck::annotate_checked(module).expect("check lexical capture");
         let mut builder = walk_module(&typed).expect("ordinary witness");
-        let capture = builder.entries[0].captures[0].clone();
-        let borrowed = Binding { id: capture.binding, ty: Some(capture.checked_type), borrowed: true };
+        let capture = builder.entries[0].captures()[0].clone();
+        let borrowed = Binding { id: capture.binding().clone(), ty: Some(capture.checked_type().clone()), borrowed: true };
         builder.entries.clear();
         builder.sites.clear();
         builder.scopes = vec![vec![borrowed]];

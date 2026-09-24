@@ -49,7 +49,7 @@ pub(super) fn validate<S: ModuleStage>(
             if constructor.id.0 != closure || !seen.insert(closure) { return Err(refuse()); }
             let checked = SourceConstructor::from_checked(source, constructor.id).map_err(|_| refuse())?;
             let witness = checked.witness();
-            let signature = witchy_types::typeck::ty_to_ast(witness.signature()).ok_or_else(refuse)?;
+            let signature = witness.signature().cloned().ok_or_else(refuse)?;
             let key = source_closure_family_key(&signature, &records);
             if source_key.as_ref().is_some_and(|previous| previous != &key) { return Err(refuse()); }
             source_key = Some(key.clone());
@@ -62,7 +62,7 @@ pub(super) fn validate<S: ModuleStage>(
                 || constructor.captures.len() != witness.captures().len()
             { return Err(refuse()); }
             let related = witnesses.iter().enumerate().filter(|(_, w)| {
-                witchy_types::typeck::ty_to_ast(w.signature()).is_some_and(|s| source_closure_family_key(&s, &records) == key)
+                w.signature().cloned().is_some_and(|s| source_closure_family_key(&s, &records) == key)
             }).collect::<Vec<_>>();
             let position = related.iter().position(|(ordinal, _)| *ordinal == closure as usize).ok_or_else(refuse)?;
             if constructor.environment_tag != i64::try_from(position + 1).map_err(|_| refuse())? { return Err(refuse()); }
@@ -131,7 +131,7 @@ pub(super) fn validate<S: ModuleStage>(
         let key = source_key.ok_or(CandidateAbiBindingError::MissingCanonicalLayouts)?;
         if !family_keys.insert(key.clone()) { return Err(CandidateAbiBindingError::MissingCanonicalLayouts); }
         let expected = witnesses.iter().enumerate().filter_map(|(index, witness)| {
-            witchy_types::typeck::ty_to_ast(witness.signature())
+            witness.signature().cloned()
                 .filter(|s| source_closure_family_key(s, &records) == key).map(|_| index as u32)
         }).collect::<BTreeSet<_>>();
         // Opaque storage is required for managed owner captures as well as

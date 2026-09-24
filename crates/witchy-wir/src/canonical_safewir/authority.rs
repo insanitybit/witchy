@@ -812,7 +812,7 @@ fn validate_candidate_abi_bindings<S: ModuleStage>(
         }
         let family_key = source_closure_family_key(&source_signature, &records);
         let family = closures.iter().filter(|entry| {
-            witchy_types::typeck::ty_to_ast(entry.signature())
+            entry.signature().cloned()
                 .is_some_and(|signature| source_closure_family_key(&signature, &records) == family_key)
         }).collect::<Vec<_>>();
         let Some(tag) = family.iter().position(|entry| entry.id() == witness.id()) else {

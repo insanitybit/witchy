@@ -34,7 +34,7 @@ use crate::runtime_type::{
 };
 use crate::canonical_abi;
 use witchy_canonical_source::abi::{CanonicalCallableAbi, CanonicalCallableAbiManifest, CanonicalTargetPolicy};
-use crate::canonical_closure::{ClosureWitnessError, ClosureWitnessManifest};
+use witchy_canonical_source::closure::ClosureWitnessManifest;
 use crate::precompiled_declarations::PrecompiledDeclarationEnvironment;
 use crate::optimization_readiness::OptimizationReadiness;
 use crate::typeck::{self, ProperTailSiteManifest, TypeError};

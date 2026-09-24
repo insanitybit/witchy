@@ -263,7 +263,7 @@ fn closure_capture_variants(
 ) -> Result<HashMap<Type, Vec<(u32, Vec<Type>)>>, CanonicalLayoutError> {
     let mut variants = HashMap::new();
     for (index, witness) in source.closure_witness().entries().iter().enumerate() {
-        let Some(fn_type) = typeck::ty_to_ast(witness.signature()) else { continue };
+        let Some(fn_type) = witness.signature().cloned() else { continue };
         let index = u32::try_from(index).map_err(|_| CanonicalLayoutError::InvalidLayout("closure witness index overflow".into()))?;
         variants.entry(canonical_closure_key(&fn_type, definitions)).or_insert_with(Vec::new).push((
             index,
