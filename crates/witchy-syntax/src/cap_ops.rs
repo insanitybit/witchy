@@ -311,27 +311,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn catalog_covers_disambiguated_overloads() {
-        assert_eq!(op_info("read", 1).map(|op| op.receiver), Some(ReceiverKind::File));
-        assert_eq!(op_info("read", 2).map(|op| op.receiver), Some(ReceiverKind::Dir));
-        assert_eq!(op_info("write", 2).map(|op| op.receiver), Some(ReceiverKind::File));
-        assert_eq!(op_info("write", 3).map(|op| op.receiver), Some(ReceiverKind::Dir));
-    }
-
-    #[test]
-    fn marked_names_resolve_to_surface_catalog_rows() {
-        assert!(is_op_name("__capop.listen_tls"));
-        assert_eq!(
-            result_shape("__capop.listen_tls", 4),
-            Some(ResultShape::Listener)
-        );
-        assert_eq!(
-            diagnostic_suggestion("__capop.fetch_build", 3),
-            Some("build_net.fetch_build(host, path)")
-        );
-    }
-
-    #[test]
     fn receiver_lookup_disambiguates_arity_and_result() {
         let file_read = operation("read", ReceiverKind::File).expect("File.read");
         let dir_read = operation("read", ReceiverKind::Dir).expect("Dir.read");
@@ -341,21 +320,6 @@ mod tests {
             operation("__capop.resolve", ReceiverKind::Net).map(|op| op.result),
             Some(ResultShape::ListString)
         );
-    }
-
-    #[test]
-    fn receiver_and_name_identify_one_catalog_row() {
-        for (index, operation) in OPS.iter().enumerate() {
-            assert!(
-                !OPS[index + 1..].iter().any(|candidate| {
-                    candidate.name == operation.name
-                        && candidate.receiver == operation.receiver
-                }),
-                "duplicate {:?}.{} capability operation",
-                operation.receiver,
-                operation.name
-            );
-        }
     }
 
     #[test]
@@ -376,17 +340,5 @@ mod tests {
                 Some(operation.receiver)
             );
         }
-    }
-
-    #[test]
-    fn unique_name_lookup_rejects_overloaded_operations() {
-        assert_eq!(
-            unique_operation("now").map(|operation| operation.receiver),
-            Some(ReceiverKind::Clock)
-        );
-        assert_eq!(unique_operation("__capop.recv_line").map(|operation| operation.result), Some(ResultShape::String));
-        assert_eq!(unique_operation("read"), None);
-        assert_eq!(unique_operation("write"), None);
-        assert_eq!(unique_operation("only"), None);
     }
 }

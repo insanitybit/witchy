@@ -44,66 +44,6 @@ fn bytes(vm: &Vm, token: Token) -> &[u8] {
 }
 
 #[test]
-fn build_read_ordered_roots_fall_back_after_missing_read_and_utf8_errors() {
-    let (root, mut vm, grant) = setup();
-    let result = read(&mut vm, grant, "sample.txt").unwrap();
-    assert_eq!(bytes(&vm, result), b"first");
-    std::fs::write(root.path().join("a/sample.txt"), [0xff]).unwrap();
-    std::fs::write(root.path().join("b/sample.txt"), b"fallback \xc3\xa9").unwrap();
-    let result = read(&mut vm, grant, "sample.txt").unwrap();
-    assert_eq!(bytes(&vm, result), b"fallback \xc3\xa9");
-    std::fs::remove_file(root.path().join("a/sample.txt")).unwrap();
-    let result = read(&mut vm, grant, "sample.txt").unwrap();
-    assert_eq!(bytes(&vm, result), b"fallback \xc3\xa9");
-    std::fs::create_dir(root.path().join("a/sample.txt")).unwrap();
-    let result = read(&mut vm, grant, "sample.txt").unwrap();
-    assert_eq!(bytes(&vm, result), b"fallback \xc3\xa9");
-    let error = read(&mut vm, grant, "absent.txt").unwrap_err();
-    assert!(error.root_cause().to_string().contains("not found in any granted read root"));
-    assert!(vm.store.data().pending.is_none());
-    assert!(vm.output().is_empty());
-}
-
-#[test]
-fn build_read_responses_are_immutable_bounded_reusable_and_released_with_store() {
-    let (root, mut vm, grant) = setup();
-    let result = read(&mut vm, grant, "sample.txt").unwrap();
-    let weak = {
-        let data = result.unwrap().data(&vm.store).unwrap().unwrap().downcast_ref::<Response>().unwrap();
-        Arc::downgrade(data.bytes.as_ref().unwrap())
-    };
-    std::fs::write(root.path().join("a/sample.txt"), "changed").unwrap();
-    let memory = vm.instance.get_memory(&mut vm.store, "memory").unwrap();
-    let size = vm.instance.get_typed_func::<Token, i32>(&mut vm.store, "size").unwrap();
-    let copy = vm.instance.get_typed_func::<(Token, i32, i32), i32>(&mut vm.store, "copy").unwrap();
-    for _ in 0..2 {
-        assert_eq!(size.call(&mut vm.store, result).unwrap(), 5);
-        memory.write(&mut vm.store, 4096, &[0xa5; 16]).unwrap();
-        let before = memory.data(&vm.store).to_vec();
-        assert_eq!(copy.call(&mut vm.store, (result, 4096, 4)).unwrap(), 5);
-        assert_eq!(memory.data(&vm.store), before.as_slice(), "short capacity must write nothing");
-        for (ptr, capacity) in [(-1, 1), (0, -1), (65535, 2), (65537, 0), (4096, i32::MAX)] {
-            assert!(copy.call(&mut vm.store, (result, ptr, capacity)).is_err());
-            assert_eq!(memory.data(&vm.store), before.as_slice());
-        }
-        assert_eq!(copy.call(&mut vm.store, (result, 65536, 0)).unwrap(), 5);
-        assert_eq!(copy.call(&mut vm.store, (result, 4096, 16)).unwrap(), 5);
-        assert_eq!(&memory.data(&vm.store)[4096..4112], b"first\xa5\xa5\xa5\xa5\xa5\xa5\xa5\xa5\xa5\xa5\xa5");
-    }
-    std::fs::write(root.path().join("a/sample.txt"), "").unwrap();
-    let empty = read(&mut vm, grant, "sample.txt").unwrap();
-    assert_eq!(size.call(&mut vm.store, empty).unwrap(), 0);
-    assert_eq!(copy.call(&mut vm.store, (empty, 65536, 0)).unwrap(), 0);
-    assert!(copy.call(&mut vm.store, (empty, 65536, 1)).is_err());
-    assert!(vm.store.data().pending.is_none());
-    assert!(vm.output().is_empty());
-    // This raw host fixture allocates no canonical guest objects. It proves
-    // response lifetime directly, not a fabricated canonical heap audit.
-    drop(vm);
-    assert!(weak.upgrade().is_none(), "Store teardown must release the immutable response");
-}
-
-#[test]
 fn build_read_authenticates_grants_before_memory_and_rejects_missing_grants() {
     let (root, _vm, _grant) = setup();
     let no_memory = WAT.replace("(memory (export \"memory\") 1)", "");

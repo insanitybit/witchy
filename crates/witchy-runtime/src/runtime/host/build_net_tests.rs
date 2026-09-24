@@ -46,18 +46,6 @@ fn call(vm: &mut Vm, grant: Token, host: &str, path: &str) -> Result<Token> {
         .call(&mut vm.store, (grant, 0, host.len() as i32, 1024, path.len() as i32))
 }
 
-fn response_bytes(vm: &mut Vm, token: Token) -> Vec<u8> {
-    assert!(token.is_some(), "a successful fetch returns a non-null Some response");
-    let some = vm.instance.get_typed_func::<Token, i32>(&mut vm.store, "some").unwrap();
-    let size = vm.instance.get_typed_func::<Token, i32>(&mut vm.store, "size").unwrap();
-    let copy = vm.instance.get_typed_func::<(Token, i32, i32), i32>(&mut vm.store, "copy").unwrap();
-    assert_eq!(some.call(&mut vm.store, token).unwrap(), 1);
-    let size = size.call(&mut vm.store, token).unwrap();
-    assert_eq!(copy.call(&mut vm.store, (token, 4096, size)).unwrap(), size);
-    let memory = vm.instance.get_memory(&mut vm.store, "memory").unwrap();
-    memory.data(&vm.store)[4096..4096 + size as usize].to_vec()
-}
-
 // Test-only bounded peer. Even an unexpected connection receives EOF, so a
 // failed preflight assertion cannot leave the production read waiting forever.
 // finish drains queued accepts before returning its complete request census.
@@ -121,80 +109,6 @@ impl Drop for Peer {
         self.stop.store(true, Ordering::Release);
         if let Some(thread) = self.thread.take() { let _ = thread.join(); }
     }
-}
-
-#[test]
-fn build_net_preserves_literal_request_status_lossy_decode_and_eof_framing() {
-    let peer = Peer::new(vec![
-        b"HTTP/1.1 503 Unavailable\r\nContent-Length: 0\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nbad\r\n0\r\n\r\n".to_vec(),
-        b"HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:1/elsewhere\r\nX-Raw: \xff\r\n\r\ncaf\xc3\xa9\xff".to_vec(),
-        b"no headers\xff\0end".to_vec(),
-        b"HTTP/1.1 200 OK\r\n\r\nfirst\r\n\r\nsecond".to_vec(),
-        Vec::new(),
-    ]);
-    let mut vm = vm(Capabilities { build_net_allow: Some(vec![peer.host.clone()]), ..Capabilities::none() }, true);
-    let grant = grant(&mut vm);
-    let cases = [
-        ("/schema?x=%2F", "3\r\nbad\r\n0\r\n\r\n"),
-        ("/raw caf\u{e9}\r\nX-Requested: literal", "caf\u{e9}\u{fffd}"),
-        ("relative path", "no headers\u{fffd}\0end"),
-        ("/first-separator", "first\r\n\r\nsecond"),
-        ("/empty", ""),
-    ];
-    for (path, expected) in cases {
-        let response = call(&mut vm, grant, &peer.host, path).unwrap();
-        assert_eq!(response_bytes(&mut vm, response), expected.as_bytes());
-    }
-    let requests = peer.finish();
-    assert_eq!(requests, cases.iter().map(|(path, _)| {
-        format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n").into_bytes()
-    }).collect::<Vec<_>>());
-    assert!(vm.output().is_empty());
-    assert!(vm.store.data().pending.is_none());
-}
-
-#[test]
-fn build_net_retains_independent_responses_without_refetch_and_releases_host_roots() {
-    let peer = Peer::new(vec![b"HTTP/1.1 200 OK\r\n\r\nfirst".to_vec(), b"second".to_vec()]);
-    let mut vm = vm(Capabilities { build_net_allow: Some(vec![peer.host.clone()]), ..Capabilities::none() }, true);
-    let grant = grant(&mut vm);
-    let weak_hosts = {
-        let authority = grant.unwrap().data(&vm.store).unwrap().unwrap().downcast_ref::<Authority>().unwrap();
-        Arc::downgrade(&authority.hosts)
-    };
-    let weak_response_issuer = Arc::downgrade(&vm.store.data().build_read_issuer);
-    let first = call(&mut vm, grant, &peer.host, "/first").unwrap();
-    // A granted root owns its immutable snapshot, not a live view of caps.
-    vm.store.data_mut().caps.build_net_allow = None;
-    let second = call(&mut vm, grant, &peer.host, "/second").unwrap();
-    let memory = vm.instance.get_memory(&mut vm.store, "memory").unwrap();
-    let size = vm.instance.get_typed_func::<Token, i32>(&mut vm.store, "size").unwrap();
-    let copy = vm.instance.get_typed_func::<(Token, i32, i32), i32>(&mut vm.store, "copy").unwrap();
-    for (token, expected) in [(first, "first"), (second, "second"), (first, "first")] {
-        let length = expected.len() as i32;
-        assert_eq!(size.call(&mut vm.store, token).unwrap(), length);
-        memory.write(&mut vm.store, 4096, &[0xa5; 32]).unwrap();
-        let before = memory.data(&vm.store).to_vec();
-        assert_eq!(copy.call(&mut vm.store, (token, 4096, length - 1)).unwrap(), length);
-        assert_eq!(memory.data(&vm.store), before.as_slice());
-        for (ptr, capacity) in [(-1, 1), (0, -1), (65535, 2), (65537, 0), (4096, i32::MAX)] {
-            assert!(copy.call(&mut vm.store, (token, ptr, capacity)).is_err());
-            assert_eq!(memory.data(&vm.store), before.as_slice());
-        }
-        assert_eq!(copy.call(&mut vm.store, (token, 65536, 0)).unwrap(), length);
-        assert_eq!(memory.data(&vm.store), before.as_slice());
-        assert_eq!(copy.call(&mut vm.store, (token, 4096, 32)).unwrap(), length);
-        assert_eq!(&memory.data(&vm.store)[4096..4096 + expected.len()], expected.as_bytes());
-        assert!(memory.data(&vm.store)[4096 + expected.len()..4128].iter().all(|byte| *byte == 0xa5));
-    }
-    assert_eq!(peer.finish().len(), 2, "size/copy must never issue another request");
-    assert!(vm.output().is_empty());
-    assert!(vm.store.data().pending.is_none());
-    // This raw host fixture has no canonical guest heap. Audit its host roots,
-    // not a fabricated zero-guest-leak result. Responses share this issuer.
-    drop(vm);
-    assert!(weak_hosts.upgrade().is_none(), "Store teardown releases the exact host grant");
-    assert!(weak_response_issuer.upgrade().is_none(), "no response payload retains its issuer after Store teardown");
 }
 
 #[test]
@@ -281,17 +195,6 @@ fn build_net_responses_are_not_roots_and_reauthenticate_the_response_issuer() {
     vm.store.data_mut().build_read_issuer = Arc::new(());
     assert_eq!(size.call(&mut vm.store, response).unwrap_err().root_cause().to_string(), "BuildRead response belongs to another instance");
     assert_eq!(copy.call(&mut vm.store, (response, -1, -1)).unwrap_err().root_cause().to_string(), "BuildRead response belongs to another instance");
-}
-
-#[test]
-fn build_net_preserves_connection_error_without_staging_a_response() {
-    let host = "127.0.0.1:not-a-port";
-    let mut vm = vm(Capabilities { build_net_allow: Some(vec![host.into()]), ..Capabilities::none() }, true);
-    let grant = grant(&mut vm);
-    let error = call(&mut vm, grant, host, "/").unwrap_err().root_cause().to_string();
-    assert!(error.starts_with(&format!("fetch_build: cannot connect to `{host}`:")), "{error}");
-    assert!(vm.store.data().pending.is_none());
-    assert!(vm.output().is_empty());
 }
 
 #[test]

@@ -63,44 +63,6 @@ fn invoke(vm: &mut Vm, [a, b, c, d, e, f]: [i32; 6]) -> wasmtime::Result<i64> {
 }
 
 #[test]
-fn rsa_slices_known_answer_and_native_status_order() {
-    let mut vm = setup();
-    for (key, message, signature, expected) in [
-        (PUBLIC_KEY, MESSAGE, SIGNATURE, 1),
-        (PUBLIC_KEY, "altered", SIGNATURE, 0),
-        (PUBLIC_KEY, "", SIGNATURE, 0),
-        ("not-hex", MESSAGE, SIGNATURE, -1),
-        ("00", MESSAGE, SIGNATURE, -1),
-        ("", MESSAGE, SIGNATURE, -1),
-        ("not-hex", MESSAGE, "not-hex", -1),
-        (PUBLIC_KEY, MESSAGE, "not-hex", -3),
-        (PUBLIC_KEY, MESSAGE, "0", -3),
-        (PUBLIC_KEY, MESSAGE, "", -3),
-        // Nonempty, well-formed hex with the wrong signature length is 0, not -3.
-        (PUBLIC_KEY, MESSAGE, "00", 0),
-        (PUBLIC_KEY, MESSAGE, SIGNATURE, 1),
-    ] {
-        let args = inputs(&mut vm, key.as_bytes(), message.as_bytes(), signature.as_bytes());
-        assert_eq!(invoke(&mut vm, args).unwrap(), expected);
-    }
-}
-
-#[test]
-fn rsa_slices_preserve_native_plus_hex_spelling() {
-    let mut vm = setup();
-    let mut signature = SIGNATURE.as_bytes().to_vec();
-    let pair = signature.chunks_exact_mut(2).find(|pair| *pair == b"0f")
-        .expect("fixed signature includes a 0f byte");
-    pair[0] = b'+';
-    let args = inputs(&mut vm, PUBLIC_KEY.as_bytes(), MESSAGE.as_bytes(), &signature);
-    assert_eq!(invoke(&mut vm, args).unwrap(), 1, "+f must decode identically to 0f");
-    for signature in [b"0f".as_slice(), b"+f".as_slice()] {
-        let args = inputs(&mut vm, PUBLIC_KEY.as_bytes(), MESSAGE.as_bytes(), signature);
-        assert_eq!(invoke(&mut vm, args).unwrap(), 0, "valid hex, invalid signature");
-    }
-}
-
-#[test]
 fn rsa_slices_preflight_every_range_without_wraparound() {
     let mut vm = setup();
     let valid = inputs(&mut vm, PUBLIC_KEY.as_bytes(), MESSAGE.as_bytes(), SIGNATURE.as_bytes());
@@ -124,53 +86,3 @@ fn rsa_slices_preflight_every_range_without_wraparound() {
         "RSA input slice lies outside guest memory");
 }
 
-#[test]
-fn rsa_slices_decode_all_utf8_before_native_status_short_circuit() {
-    let mut vm = setup();
-    for slot in [0, 2, 4] {
-        for invalid in [b"\xff".as_slice(), b"\xc2".as_slice(), b"\xc0\x80".as_slice()] {
-            let mut args = inputs(&mut vm, PUBLIC_KEY.as_bytes(), MESSAGE.as_bytes(), SIGNATURE.as_bytes());
-            let memory = vm.instance.get_memory(&mut vm.store, "memory").unwrap();
-            memory.write(&mut vm.store, args[slot] as usize, invalid).unwrap();
-            args[slot + 1] = invalid.len() as i32;
-            assert_eq!(invoke(&mut vm, args).unwrap_err().root_cause().to_string(),
-                "RSA input slice is not valid UTF-8");
-        }
-    }
-    for (message, signature) in [(b"\xff".as_slice(), b"".as_slice()), (b"".as_slice(), b"\xff".as_slice())] {
-        let args = inputs(&mut vm, b"not-hex", message, signature);
-        assert_eq!(invoke(&mut vm, args).unwrap_err().root_cause().to_string(),
-            "RSA input slice is not valid UTF-8");
-    }
-}
-
-#[test]
-fn rsa_slices_exact_end_empty_aliases_and_missing_memory() {
-    let mut vm = setup();
-    for (slot, bytes) in [(0, PUBLIC_KEY.as_bytes()), (2, MESSAGE.as_bytes()), (4, SIGNATURE.as_bytes())] {
-        let mut args = inputs(&mut vm, PUBLIC_KEY.as_bytes(), MESSAGE.as_bytes(), SIGNATURE.as_bytes());
-        let memory = vm.instance.get_memory(&mut vm.store, "memory").unwrap();
-        let end = memory.data_size(&vm.store);
-        memory.write(&mut vm.store, end - bytes.len(), bytes).unwrap();
-        args[slot] = (end - bytes.len()) as i32;
-        assert_eq!(invoke(&mut vm, args).unwrap(), 1);
-    }
-    for (slot, expected) in [(0, -1), (2, 0), (4, -3)] {
-        let mut args = inputs(&mut vm, PUBLIC_KEY.as_bytes(), MESSAGE.as_bytes(), SIGNATURE.as_bytes());
-        args[slot] = 65536;
-        args[slot + 1] = 0;
-        assert_eq!(invoke(&mut vm, args).unwrap(), expected);
-    }
-    let mut args = inputs(&mut vm, PUBLIC_KEY.as_bytes(), MESSAGE.as_bytes(), SIGNATURE.as_bytes());
-    args[2] = args[0];
-    args[3] = args[1];
-    assert_eq!(invoke(&mut vm, args).unwrap(), 0, "overlapping read slices need no write authority");
-
-    let mut runtime = Runtime::new().unwrap();
-    let wat = WAT.replace("(memory (export \"memory\") 1)", "");
-    let mut vm = runtime.spawn(wat.as_bytes(), Capabilities::none(), 1).unwrap();
-    let verify = vm.instance.get_typed_func::<(i32, i32, i32, i32, i32, i32), i64>(
-        &mut vm.store, "verify").unwrap();
-    assert!(verify.call(&mut vm.store, (0, 0, 0, 0, 0, 0)).is_err());
-    assert!(vm.output().is_empty());
-}

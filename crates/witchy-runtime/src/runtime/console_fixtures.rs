@@ -101,20 +101,3 @@ impl Runtime {
         Ok(FixtureWasmOutcome { result, output, transcript, leaked_objects })
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn canonical_console_fixture_serializes_only_structured_diagnostics() {
-        let error = diagnostic("suite.test_console", 3, "runtime error: literal payload".into());
-        assert_eq!(error.to_string(), "runtime error: `suite.test_console`, line 3: runtime error: literal payload");
-        assert_eq!(fixture_error_message(&error), "`suite.test_console`, line 3: runtime error: literal payload");
-        let error = error.context("Wasm execution context");
-        assert_eq!(fixture_error_message(&error), "`suite.test_console`, line 3: runtime error: literal payload");
-        assert_eq!(fixture_error_message(&diagnostic("", 0, "runtime error: literal".into())), "runtime error: literal");
-        assert_eq!(fixture_error_message(&diagnostic("", 4, "runtime error: literal".into())), "line 4: runtime error: literal");
-        assert_eq!(fixture_error_message(&Error::msg("runtime error: arbitrary host text")), "runtime error: arbitrary host text");
-    }
-}

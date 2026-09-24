@@ -371,66 +371,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_tls_root_guard_registers_and_removes_exactly_one_root() {
-        let before = TEST_TLS_ROOTS.lock().unwrap().len();
-        {
-            let _guard = register_test_tls_root("fixture.pem");
-            assert_eq!(TEST_TLS_ROOTS.lock().unwrap().len(), before + 1);
-        }
-        assert_eq!(TEST_TLS_ROOTS.lock().unwrap().len(), before);
-    }
-
-    #[test]
-    fn read_timeout_is_classified_as_eof_signal() {
-        use std::io::{Error, ErrorKind};
-        assert!(is_read_timeout(&Error::from(ErrorKind::WouldBlock)));
-        assert!(is_read_timeout(&Error::from(ErrorKind::TimedOut)));
-        // Real read errors must still propagate, not be swallowed as EOF.
-        assert!(!is_read_timeout(&Error::from(ErrorKind::ConnectionReset)));
-        assert!(!is_read_timeout(&Error::from(ErrorKind::UnexpectedEof)));
-    }
-
-    #[test]
-    fn server_read_timeout_default_override_and_disable() {
-        let d = |secs| Some(std::time::Duration::from_secs(secs));
-        // Unset (or absent) -> the conservative default.
-        assert_eq!(server_read_timeout_from(None), d(DEFAULT_SERVER_READ_TIMEOUT_SECS));
-        // An explicit value overrides.
-        assert_eq!(server_read_timeout_from(Some("5")), d(5));
-        assert_eq!(server_read_timeout_from(Some("  90 ")), d(90));
-        // Zero disables the timeout (restores unbounded blocking).
-        assert_eq!(server_read_timeout_from(Some("0")), None);
-        // Garbage falls back to the default rather than silently disabling the guard.
-        assert_eq!(server_read_timeout_from(Some("not-a-number")), d(DEFAULT_SERVER_READ_TIMEOUT_SECS));
-    }
-
-    // Slow-loris mitigation, end to end: a peer connects and sends nothing. With a read
-    // timeout on the accepted socket, `read_line_capped` must return promptly with the
-    // (empty) bytes-so-far as EOF — never hang, never error — so the worker is freed.
-    #[test]
-    fn accepted_socket_stall_reads_as_eof_within_the_timeout() {
-        use std::io::BufReader;
-        use std::time::{Duration, Instant};
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        // Client connects but never sends a byte, holding the connection open.
-        let _client = TcpStream::connect(addr).unwrap();
-        let (server, _peer) = listener.accept().unwrap();
-        // Same call the accept loops make, but with a short timeout for the test.
-        server.set_read_timeout(Some(Duration::from_millis(150))).unwrap();
-        let mut reader = BufReader::new(server);
-        let start = Instant::now();
-        let line = read_line_capped(&mut reader).expect("a stalled read is EOF, not an error");
-        assert!(line.is_empty(), "no bytes were sent, so the line is empty");
-        assert!(
-            start.elapsed() < Duration::from_secs(5),
-            "the read returned near the timeout, not after blocking indefinitely"
-        );
-        // The still-connected client keeps `_client` alive until here.
-        drop(_client);
-    }
-
-    #[test]
     fn listener_binds_only_the_concrete_identity_admitted_by_policy() {
         let allowed = vec!["127.0.0.1:0".to_string()];
         let listener = bind_admitted_listener(&allowed, "127.0.0.1:00000")

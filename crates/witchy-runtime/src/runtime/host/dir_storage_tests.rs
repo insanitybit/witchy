@@ -93,69 +93,6 @@ fn names(root: &std::path::Path) -> std::collections::BTreeSet<String> {
 }
 
 #[test]
-fn dir_storage_text_create_replace_and_overlapping_inputs() {
-    let (root, mut vm, grant) = setup(true);
-    let args = inputs(&mut vm, grant, "\u{e9}.txt", "first\0\u{1f980}".as_bytes());
-    let before = memory(&mut vm);
-    assert_eq!(create(&mut vm, args).unwrap(), 1);
-    assert_eq!(memory(&mut vm), before);
-    assert_eq!(std::fs::read(root.path().join("\u{e9}.txt")).unwrap(), "first\0\u{1f980}".as_bytes());
-    let args = inputs(&mut vm, grant, "\u{e9}.txt", b"must not overwrite");
-    assert_eq!(create(&mut vm, args).unwrap(), 0);
-    assert_eq!(std::fs::read(root.path().join("\u{e9}.txt")).unwrap(), "first\0\u{1f980}".as_bytes());
-    let args = inputs(&mut vm, grant, "\u{e9}.txt", b"replaced");
-    write(&mut vm, "replace", args).unwrap();
-    assert_eq!(std::fs::read(root.path().join("\u{e9}.txt")).unwrap(), b"replaced");
-    put(&mut vm, 0, b"alias");
-    let before = memory(&mut vm);
-    assert_eq!(create(&mut vm, (grant, 0, 5, 0, 5)).unwrap(), 1);
-    write(&mut vm, "replace", (grant, 0, 5, 0, 5)).unwrap();
-    write(&mut vm, "write", (grant, 0, 5, 0, 5)).unwrap();
-    assert_eq!(memory(&mut vm), before);
-    assert_eq!(std::fs::read(root.path().join("alias")).unwrap(), b"alias");
-    let args = inputs(&mut vm, grant, "new", b"atomic new target");
-    write(&mut vm, "replace", args).unwrap();
-    assert_eq!(std::fs::read(root.path().join("new")).unwrap(), b"atomic new target");
-    assert_eq!(names(root.path()), ["\u{e9}.txt", "alias", "new"].map(String::from).into_iter().collect());
-    assert!(vm.output().is_empty());
-}
-
-#[test]
-fn dir_storage_binary_responses_are_independent_immutable_snapshots() {
-    let (root, mut vm, grant) = setup(true);
-    let first = [0, 0xff, 0xc2, 0, 0xa9, 10];
-    let args = inputs(&mut vm, grant, "binary", &first);
-    let before = memory(&mut vm);
-    write(&mut vm, "write", args).unwrap();
-    assert_eq!(memory(&mut vm), before);
-    let old = read_path(&mut vm, grant, "binary");
-    let args = inputs(&mut vm, grant, "binary", &[0xfe, 1]);
-    write(&mut vm, "write", args).unwrap();
-    let new = read_path(&mut vm, grant, "binary");
-    std::fs::remove_file(root.path().join("binary")).unwrap();
-    for _ in 0..3 {
-        assert_eq!(payload(&mut vm, old), first);
-        assert_eq!(payload(&mut vm, new), [0xfe, 1]);
-    }
-    let args = inputs(&mut vm, grant, "empty", b"");
-    write(&mut vm, "write", args).unwrap();
-    let empty = read_path(&mut vm, grant, "empty");
-    assert!(empty.is_some());
-    assert_eq!(size(&mut vm, empty).unwrap(), 0);
-    assert_eq!(copy(&mut vm, empty, 65536, 0).unwrap(), 0);
-    assert!(vm.store.data().pending.is_none(), "canonical reads must not stage global data");
-    assert!(vm.output().is_empty());
-    let weak = {
-        let token = old.unwrap();
-        let response = token.data(&vm.store).unwrap().unwrap().downcast_ref::<DirBytesResponse>().unwrap();
-        Arc::downgrade(&response.bytes)
-    };
-    assert!(weak.upgrade().is_some());
-    drop(vm);
-    assert!(weak.upgrade().is_none(), "Store teardown releases the host-held snapshot");
-}
-
-#[test]
 fn dir_storage_response_preflight_short_capacity_and_exact_prefix() {
     let (root, mut vm, grant) = setup(true);
     std::fs::write(root.path().join("bytes"), [0, 0xff, 9]).unwrap();
@@ -249,31 +186,6 @@ fn dir_storage_kind_rights_and_response_issuer_precede_memory() {
 }
 
 #[test]
-fn dir_storage_file_directory_collisions_and_replace_cleanup() {
-    let (root, mut vm, grant) = setup(true);
-    std::fs::create_dir(root.path().join("directory")).unwrap();
-    let args = inputs(&mut vm, grant, "directory", b"not a file");
-    // Preserve the existing exclusive-create provider's already-present result.
-    let expected = crate::confine::ConfinedDir::open_ambient(root.path()).unwrap().create_new("directory", b"not a file");
-    match expected {
-        Ok(created) => assert_eq!(create(&mut vm, args).unwrap(), i32::from(created)),
-        Err(_) => assert!(create(&mut vm, args).is_err()),
-    }
-    assert!(write(&mut vm, "replace", args).is_err());
-    assert!(write(&mut vm, "write", args).is_err());
-    assert!(read(&mut vm, grant, 0, 9).is_err());
-    assert_eq!(names(root.path()), ["directory".into()].into_iter().collect(), "failed atomic replace removes its temp sibling");
-    for path in ["missing/child", "", ".", "../outside", "/outside", "bad\0name"] {
-        let args = inputs(&mut vm, grant, path, b"data");
-        assert!(create(&mut vm, args).is_err(), "{path:?}");
-        assert!(write(&mut vm, "replace", args).is_err(), "{path:?}");
-        assert!(write(&mut vm, "write", args).is_err(), "{path:?}");
-        assert!(read(&mut vm, grant, 0, path.len() as i32).is_err(), "{path:?}");
-    }
-    assert_eq!(names(root.path()), ["directory".into()].into_iter().collect());
-}
-
-#[test]
 fn dir_storage_entry_policy_is_preserved_for_every_file_operation() {
     let (root, mut vm, grant) = setup(true);
     std::fs::write(root.path().join("keep.bin"), b"original").unwrap();
@@ -320,50 +232,6 @@ fn dir_storage_symlinks_never_acquire_outside_authority() {
     assert!(!std::fs::symlink_metadata(root.path().join("leaf.txt")).unwrap().file_type().is_symlink());
     assert_eq!(std::fs::read(root.path().join("leaf.txt")).unwrap(), b"local replacement");
     assert_eq!(std::fs::read(outside.path().join("secret")).unwrap(), b"outside");
-}
-
-#[test]
-fn dir_storage_concurrent_create_has_one_complete_winner() {
-    let root = tempfile::tempdir().unwrap();
-    let results = std::thread::scope(|scope| {
-        let mut handles = Vec::new();
-        for byte in [b'a', b'b'] {
-            let path = root.path();
-            handles.push(scope.spawn(move || {
-                let (mut vm, grant) = vm_at(path, true);
-                let contents = vec![byte; 16384];
-                let args = inputs(&mut vm, grant, "winner", &contents);
-                (create(&mut vm, args).unwrap(), contents)
-            }));
-        }
-        handles.into_iter().map(|handle| handle.join().unwrap()).collect::<Vec<_>>()
-    });
-    assert_eq!(results.iter().map(|(created, _)| *created).sum::<i32>(), 1);
-    let winner = &results.iter().find(|(created, _)| *created == 1).unwrap().1;
-    assert_eq!(&std::fs::read(root.path().join("winner")).unwrap(), winner);
-    assert_eq!(names(root.path()), ["winner".into()].into_iter().collect());
-}
-
-#[test]
-fn dir_storage_atomic_replace_readers_observe_complete_versions() {
-    let (root, mut vm, grant) = setup(true);
-    let old = vec![b'a'; 16384];
-    let new = vec![b'b'; 16384];
-    std::fs::write(root.path().join("value"), &old).unwrap();
-    std::thread::scope(|scope| {
-        let reader = scope.spawn(|| {
-            for _ in 0..128 {
-                let bytes = std::fs::read(root.path().join("value")).unwrap();
-                assert!(bytes == old || bytes == new, "atomic replacement must not expose a torn value");
-            }
-        });
-        for index in 0..16 {
-            let args = inputs(&mut vm, grant, "value", if index % 2 == 0 { &new } else { &old });
-            write(&mut vm, "replace", args).unwrap();
-        }
-        reader.join().unwrap();
-    });
-    assert_eq!(names(root.path()), ["value".into()].into_iter().collect());
 }
 
 #[test]

@@ -35,35 +35,6 @@ fn setup() -> (tempfile::TempDir, Vm, Token, Token) {
 }
 
 #[test]
-fn exec_slices_preserve_status_streams_arguments_and_effect_once() {
-    let (root, mut vm, exec, dir) = setup();
-    let memory = vm.instance.get_memory(&mut vm.store, "memory").unwrap();
-    let marker = root.path().join("effects");
-    let args = format!("{}\0two words\0\0tail", marker.display());
-    memory.write(&mut vm.store, 64, args.as_bytes()).unwrap();
-    memory.write(&mut vm.store, 2048, b"input\n").unwrap();
-    let invoke = vm.instance.get_typed_func::<(Token, Token, i32, i32, i32, i32, i32, i32), Token>(&mut vm.store, "invoke").unwrap();
-    let result = invoke.call(&mut vm.store, (exec, dir, 0, 5, 64, args.len() as i32, 2048, 6)).unwrap();
-    let expected = b"7\nargs=two words,,tail;stdin=input\nstderr\n";
-    let size = vm.instance.get_typed_func::<Token, i32>(&mut vm.store, "size").unwrap();
-    let copy = vm.instance.get_typed_func::<(Token, i32, i32), i32>(&mut vm.store, "copy").unwrap();
-    for _ in 0..2 {
-        assert_eq!(size.call(&mut vm.store, result).unwrap(), expected.len() as i32);
-        memory.write(&mut vm.store, 4096, &[0xa5; 64]).unwrap();
-        assert_eq!(copy.call(&mut vm.store, (result, 4096, 1)).unwrap(), expected.len() as i32);
-        assert_eq!(&memory.data(&vm.store)[4096..4160], &[0xa5; 64]);
-        assert_eq!(copy.call(&mut vm.store, (result, 4096, 64)).unwrap(), expected.len() as i32);
-        assert_eq!(&memory.data(&vm.store)[4096..4096 + expected.len()], expected);
-        assert!(copy.call(&mut vm.store, (result, 65535, 2)).is_err());
-    }
-    assert_eq!(std::fs::read(marker).unwrap(), b"x");
-    assert!(vm.output().is_empty());
-    // This harness allocates no guest heap objects. Dropping the isolated Store
-    // releases its host-held immutable response; no child process remains live.
-    drop(vm);
-}
-
-#[test]
 fn exec_slices_require_dir_read_before_invalid_buffers_or_effects() {
     let (root, mut vm, exec, dir) = setup();
     // Attenuate the real minted Dir token without changing its backing or

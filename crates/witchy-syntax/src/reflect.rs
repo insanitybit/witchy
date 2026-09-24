@@ -193,26 +193,6 @@ mod tests {
     }
 
     #[test]
-    fn effective_params_preserve_explicit_then_inferred_order() {
-        let definition = parsed_type(
-            "type Mixed(a):\n    first: b\n    second: a\n    third: c\n    repeated: b\n",
-            "Mixed",
-        );
-        assert_eq!(
-            crate::ast::effective_type_def_params(&definition),
-            ["a", "b", "c"]
-        );
-    }
-
-    #[test]
-    fn normalized_typeinfo_includes_mixed_explicit_and_inferred_params() {
-        let definition = parsed_type("type Mixed(a):\n    first: a\n    second: b\n", "Mixed");
-        let normalized = normalized_type_for_typeinfo(&definition, &HashMap::default())
-            .expect("normalize reflected type");
-        assert_eq!(normalized.params, ["a", "b"]);
-    }
-
-    #[test]
     #[should_panic(expected = "lifetime parameters are retired")]
     fn ordinary_parser_rejects_lifetime_bearing_reflection_input() {
         let definition = parsed_type(
@@ -223,25 +203,6 @@ mod tests {
     }
 
     #[test]
-    fn rfc0167_reflection_preserves_lifetime_free_rooted_view_access() {
-        let definition = parsed_type(
-            "type Access(a):\n    shared: &a\n    items: &[a]\n",
-            "Access",
-        );
-        let normalized = normalized_type_for_typeinfo(&definition, &HashMap::default())
-            .expect("normalize canonical rooted-view fields");
-        assert_eq!(normalized.params, ["a"]);
-        let Expr::Ctor { args, .. } = type_info_expr(&normalized) else { panic!("TypeInfo") };
-        let Expr::List(fields) = &args[3] else { panic!("fields") };
-        for field in fields {
-            let Expr::Ctor { args: field_args, .. } = field else { panic!("field") };
-            let Expr::Ctor { name, args: view, .. } = &field_args[1] else { panic!("view") };
-            assert_eq!(name, "meta.TView");
-            assert_eq!(view.len(), 1);
-        }
-    }
-
-    #[test]
     #[should_panic(expected = "cannot reflect a migration-only mutable reference")]
     fn reflected_mutable_reference_cannot_be_emitted_as_a_rooted_view() {
         let reference = Type::Qualified(
@@ -249,90 +210,6 @@ mod tests {
             Box::new(Type::Named("String".into(), Vec::new())),
         );
         let _ = type_expr(&reference);
-    }
-
-    #[test]
-    fn reflected_function_type_preserves_all_callable_contract_bits() {
-        for qualifiers in [
-            CallableQualifiers::ORDINARY,
-            CallableQualifiers::new(true, false),
-            CallableQualifiers::new(false, true),
-            CallableQualifiers::new(true, true),
-        ] {
-            let reflected = type_expr(&Type::Fn(
-                vec![Type::Named("Int".into(), Vec::new())],
-                Box::new(Type::Named("String".into(), Vec::new())),
-                vec![Convention::Own],
-                qualifiers,
-            ));
-            let Expr::Ctor { name, args } = reflected else {
-                panic!("function type must reflect as a structured constructor")
-            };
-            assert_eq!(name, "meta.TFn");
-            assert_eq!(args[3], Expr::Bool(qualifiers.pure));
-            assert_eq!(args[4], Expr::Bool(qualifiers.once));
-        }
-    }
-
-    #[test]
-    fn normalized_typeinfo_preserves_parameter_order_across_alias_expansion() {
-        let module = crate::parser::parse_module(
-            "type Flip(x, y) = (y, x)\n\ntype Mixed(a):\n    payload: Flip(b, c)\n",
-        )
-        .expect("parse aliased mixed parameters");
-        let aliases = crate::aliases::resolved_map(&module).expect("resolve aliases");
-        let definition = module
-            .items
-            .iter()
-            .find_map(|item| match item {
-                Item::Type(definition) if definition.name == "Mixed" => Some(definition),
-                _ => None,
-            })
-            .expect("Mixed declaration");
-        let normalized = normalized_type_for_typeinfo(definition, &aliases)
-            .expect("normalize aliased reflected type");
-        assert_eq!(normalized.params, ["a", "b", "c"]);
-    }
-
-    #[test]
-    fn rfc0167_reflection_uses_a_lifetime_free_rooted_view_descriptor() {
-        let view = Type::Qualified(
-            TypeQual::View,
-            Box::new(Type::Slice(Box::new(Type::Named("Int".into(), Vec::new())))),
-        );
-        assert_eq!(type_expr(&view), Expr::Ctor {
-            name: "meta.TView".into(),
-            args: vec![Expr::Ctor {
-                name: "meta.TNamed".into(),
-                args: vec![Expr::Str("[Int]".into()), Expr::List(vec![Expr::Ctor {
-                    name: "meta.TNamed".into(),
-                    args: vec![Expr::Str("Int".into()), Expr::List(Vec::new())],
-                }])],
-            }],
-        });
-        assert_eq!(crate::format::type_str(&view), "&[Int]");
-    }
-
-    #[test]
-    fn rfc0167_reflection_keeps_nested_aggregate_views_structural() {
-        let nested = Type::Qualified(
-            TypeQual::View,
-            Box::new(Type::Tuple(vec![
-                Type::Named("Header".into(), Vec::new()),
-                Type::Qualified(
-                    TypeQual::View,
-                    Box::new(Type::Slice(Box::new(Type::Named("Int".into(), Vec::new())))),
-                ),
-            ])),
-        );
-        let Expr::Ctor { name, args } = type_expr(&nested) else { panic!("outer view") };
-        assert_eq!(name, "meta.TView");
-        let Expr::Ctor { name, args } = &args[0] else { panic!("tuple") };
-        assert_eq!(name, "meta.TTuple");
-        let Expr::List(items) = &args[0] else { panic!("tuple items") };
-        let Expr::Ctor { name, args } = &items[1] else { panic!("nested view") };
-        assert_eq!(name, "meta.TView");
-        assert_eq!(args.len(), 1);
     }
 
     #[test]

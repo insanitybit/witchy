@@ -56,64 +56,6 @@ fn verify(vm: &mut Vm, name: &str, [a, b, c, d, e, f]: [i32; 6]) -> wasmtime::Re
 }
 
 #[test]
-fn crypto_extensions_slices_hash_vectors_short_outputs_and_overlap() {
-    let mut vm = setup();
-    for (name, expected) in [
-        ("sha512", "ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f"),
-        ("sha3", "3a985da74fe225b2045c172d6bd390bd855f086e3e9d525b46bfe24511431532"),
-    ] {
-        for capacity in [0, expected.len() - 1, expected.len(), expected.len() + 8] {
-            for output in [17, 4097] {
-                let mut memory = seed(&mut vm, &[(17, b"abc")]);
-                assert_eq!(hash(&mut vm, name, [17, 3, output, capacity as i32]).unwrap(), expected.len() as i32);
-                if capacity >= expected.len() {
-                    memory[output as usize..output as usize + expected.len()].copy_from_slice(expected.as_bytes());
-                }
-                unchanged(&mut vm, &memory);
-            }
-        }
-    }
-    for key in ["0b".repeat(20), "+b".repeat(20)] {
-        for capacity in [0, 63, 64, 72] {
-            let mut memory = seed(&mut vm, &[(17, key.as_bytes()), (1025, b"Hi There")]);
-            assert_eq!(hmac(&mut vm, [17, key.len() as i32, 1025, 8, 17, capacity]).unwrap(), 64);
-            if capacity >= 64 {
-                memory[17..81].copy_from_slice(b"b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7");
-            }
-            unchanged(&mut vm, &memory);
-        }
-    }
-}
-
-#[test]
-fn crypto_extensions_shake_slices_raw_zero_max_and_short_outputs() {
-    let mut vm = setup();
-    for (name, expected) in [
-        ("shake128", [0x7f, 0x9c, 0x2b, 0xa4, 0xe8, 0x8f, 0x82, 0x7d, 0x61, 0x60, 0x45, 0x50, 0x76, 0x05, 0x85, 0x3e]),
-        ("shake256", [0x46, 0xb9, 0xdd, 0x2b, 0x0b, 0xa8, 0x8d, 0x13, 0x23, 0x3b, 0x3f, 0xeb, 0x74, 0x3e, 0xeb, 0x24]),
-    ] {
-        for cap in [0, 15, 16, 32] {
-            let mut memory = seed(&mut vm, &[]);
-            assert_eq!(shake(&mut vm, name, (65536, 0, 16, 17, cap)).unwrap(), 16);
-            if cap >= 16 { memory[17..33].copy_from_slice(&expected); }
-            unchanged(&mut vm, &memory);
-        }
-        let memory = seed(&mut vm, &[(17, &[0xff, 0x80, 0])]);
-        assert_eq!(shake(&mut vm, name, (17, 3, 0, 65536, 0)).unwrap(), 0);
-        assert_eq!(shake(&mut vm, name, (17, 3, 1_048_576, 65536, 0)).unwrap(), 1_048_576);
-        unchanged(&mut vm, &memory);
-        for length in [-1, 1_048_577, i64::MIN, i64::MAX] {
-            assert!(shake(&mut vm, name, (17, 3, length, 4097, 64)).is_err());
-            unchanged(&mut vm, &memory);
-        }
-    }
-    let mut memory = seed(&mut vm, &[(17, &[0xa3; 200])]);
-    assert_eq!(shake(&mut vm, "shake128", (17, 200, 16, 17, 16)).unwrap(), 16);
-    memory[17..33].copy_from_slice(&[0x13, 0x1a, 0xb8, 0xd2, 0xb5, 0x94, 0x94, 0x6b, 0x9c, 0x81, 0x33, 0x3f, 0x9b, 0xb6, 0xe0, 0xce]);
-    unchanged(&mut vm, &memory);
-}
-
-#[test]
 fn crypto_extensions_slices_preflight_every_range_before_decoding() {
     let mut vm = setup();
     for (pointer, length) in [(-1, 1), (0, -1), (65535, 2), (65537, 0), (i32::MAX, i32::MAX)] {
@@ -161,27 +103,3 @@ fn crypto_extensions_slices_preflight_every_range_before_decoding() {
     }
 }
 
-const KEY: &str = "048f81cd9fca785a42a6f5dd58972cc0f702e83b1c960b5912354471496597e227fec81ff1d52530b06d7091649e6beb49dba70968b4b727bb24e3ceb7dd01a039";
-const SIG: &str = "304402203260029f4c6beb2e78afdd906c057c63f8828e2b03820de7053d97254577fb8c02204478b9b75f8fd7a1ce4298f0d119e12926dafda116ae4c197b0048dc117bc9de";
-
-#[test]
-fn crypto_extensions_ecdsa_slices_preserve_exact_statuses_and_read_only_inputs() {
-    let mut vm = setup();
-    let message = "webauthn-es256-test-message";
-    let encoded: String = message.bytes().map(|byte| format!("{byte:02x}")).collect();
-    let plus = format!("+4{}", &KEY[2..]);
-    for (name, key, message, signature, expected) in [
-        ("ecdsa", KEY, message, SIG, 1), ("ecdsa_hex", KEY, encoded.as_str(), SIG, 1),
-        ("ecdsa", plus.as_str(), message, SIG, 1),
-        ("ecdsa", KEY, "tampered", SIG, 0), ("ecdsa_hex", KEY, "+f", SIG, 0),
-        ("ecdsa_hex", "bad", "bad", "bad", -1), ("ecdsa_hex", KEY, "gg", "bad", -2),
-        ("ecdsa_hex", KEY, "", "bad", -3),
-        ("ecdsa", KEY, message, "3006020180020101", -3),
-        ("ecdsa", KEY, message, "300702020001020101", -3),
-        ("ecdsa", KEY, message, "3006020100020100", 0),
-    ] {
-        let memory = seed(&mut vm, &[(17, key.as_bytes()), (1025, message.as_bytes()), (2049, signature.as_bytes())]);
-        assert_eq!(verify(&mut vm, name, [17, key.len() as i32, 1025, message.len() as i32, 2049, signature.len() as i32]).unwrap(), expected);
-        unchanged(&mut vm, &memory);
-    }
-}

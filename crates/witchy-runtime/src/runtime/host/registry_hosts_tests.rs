@@ -26,10 +26,6 @@ const WAT: &str = r#"(module
 
 // RFC 8032 test vector 1: independent expected key and empty-message signature.
 const SEED: &str = "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60";
-const PK: &str = "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a";
-const SIG: &str = concat!("e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555f",
-    "b8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b");
-
 fn seed() -> [u8; 32] {
     let bytes: Vec<_> = (0..SEED.len()).step_by(2)
         .map(|i| u8::from_str_radix(&SEED[i..i + 2], 16).unwrap()).collect();
@@ -130,63 +126,6 @@ fn registry_hosts_clock_grant_kind_session_and_provider() {
 }
 
 #[test]
-fn registry_hosts_store_snapshot_empty_first_match_and_missing() {
-    let (_root, mut vm) = setup(caps(), true);
-    let root = store(&mut vm);
-    vm.store.data_mut().caps.secrets.clear();
-    let signing = named(&mut vm, root, "signing");
-    assert_eq!(pk(&mut vm, signing, 1024, 64).unwrap(), 64);
-    assert_eq!(&memory(&mut vm)[1024..1088], PK.as_bytes());
-    assert!(named(&mut vm, root, "missing").is_none());
-    let empty = store(&mut vm);
-    assert!(named(&mut vm, empty, "signing").is_none());
-    // An already returned token owns its snapshot independently of the store.
-    assert_eq!(sign(&mut vm, signing, 0, 0, 1024, 128).unwrap(), 128);
-    assert_eq!(&memory(&mut vm)[1024..1152], SIG.as_bytes());
-    vm.store.data_mut().caps.signing_key = None;
-    vm.store.data_mut().caps.secrets.push(SecretGrant::new("signing", seed().to_vec()));
-    assert!(mint_canonical_secret(vm.store.data()).is_err(), "named secrets must not mint a bare root Secret");
-}
-
-#[test]
-fn registry_hosts_crypto_vectors_utf8_aliasing_short_and_sealed() {
-    let (_root, mut vm) = setup(caps(), true);
-    let root = store(&mut vm);
-    let signing = named(&mut vm, root, "signing");
-    let hexadecimal = named(&mut vm, root, "hex");
-    let bare = key(&mut vm);
-    for token in [signing, hexadecimal, bare] {
-        write(&mut vm, 1024, &[0xa5; 256]);
-        let before = memory(&mut vm);
-        assert_eq!(sign(&mut vm, token, 0, 0, 1024, 127).unwrap(), 128);
-        assert_eq!(pk(&mut vm, token, 1024, 63).unwrap(), 64);
-        assert_eq!(memory(&mut vm), before);
-        assert_eq!(sign(&mut vm, token, 0, 0, 1024, 256).unwrap(), 128);
-        assert_eq!(&memory(&mut vm)[1024..1152], SIG.as_bytes());
-        assert_eq!(&memory(&mut vm)[1152..1280], &[0xa5; 128]);
-        assert_eq!(pk(&mut vm, token, 1024, 256).unwrap(), 64);
-        assert_eq!(&memory(&mut vm)[1024..1088], PK.as_bytes());
-    }
-    let message = "\u{e9}\u{1f980}".repeat(60);
-    let expected = crate::native::lookup(witchy_syntax::intrinsics::CRYPTO_SIGN).unwrap()(&[
-        crate::value::NativeValue::Secret(seed().to_vec()),
-        crate::value::NativeValue::Str(message.clone()),
-    ]).unwrap();
-    let crate::value::NativeValue::Str(expected) = expected else { panic!("signature") };
-    write(&mut vm, 1024, message.as_bytes());
-    assert_eq!(sign(&mut vm, signing, 1024, message.len() as i32, 1024, 128).unwrap(), 128);
-    assert_eq!(&memory(&mut vm)[1024..1152], expected.as_bytes(), "copy full UTF-8 input before overlapping output");
-    let sealed = named(&mut vm, root, "sealed");
-    let reveal = vm.instance.get_typed_func::<Token, i32>(&mut vm.store, "reveal").unwrap();
-    assert!(reveal.call(&mut vm.store, sealed).is_err());
-    assert!(reveal.call(&mut vm.store, signing).is_err());
-    assert!(reveal.call(&mut vm.store, bare).is_err());
-    let value = named(&mut vm, root, "value");
-    assert_eq!(reveal.call(&mut vm.store, value).unwrap(), 7);
-    assert!(vm.output().is_empty());
-}
-
-#[test]
 fn registry_hosts_full_slice_preflight_and_invalid_seed_never_write() {
     let (_root, mut vm) = setup(caps(), true);
     let key = key(&mut vm);
@@ -236,38 +175,6 @@ fn registry_hosts_secret_kind_and_foreign_issuer_precede_memory() {
     error(lookup(&mut vm, root, -1, -1).unwrap_err(), "another instance");
     error(sign(&mut vm, secret, -1, -1, -1, -1).unwrap_err(), "another instance");
     error(pk(&mut vm, secret, -1, -1).unwrap_err(), "another instance");
-}
-
-#[test]
-fn registry_hosts_make_dir_confined_idempotent_and_policy() {
-    let (root, mut vm) = setup(Capabilities::none(), true);
-    let grant = dir(&mut vm);
-    for path in ["nested/\u{e9}", "nested/\u{e9}", ".", ""] {
-        write(&mut vm, 0, path.as_bytes());
-        let before = memory(&mut vm);
-        mkdir(&mut vm, grant, 0, path.len() as i32).unwrap();
-        assert_eq!(memory(&mut vm), before);
-    }
-    assert!(root.path().join("nested/\u{e9}").is_dir());
-    let mut files = grant.unwrap().data(&vm.store).unwrap().unwrap().downcast_ref::<DirAuthority>().unwrap().clone();
-    files.policy = "kind:file".into();
-    let files = Some(ExternRef::new(&mut vm.store, files).unwrap());
-    write(&mut vm, 0, b"denied");
-    error(mkdir(&mut vm, files, 0, 6).unwrap_err(), "entry policy");
-    assert!(!root.path().join("denied").exists());
-    std::fs::write(root.path().join("file"), b"retained").unwrap();
-    for path in ["../escape", "/escape", "file/child", "bad\0name"] {
-        write(&mut vm, 0, path.as_bytes());
-        let before = memory(&mut vm);
-        assert!(mkdir(&mut vm, grant, 0, path.len() as i32).is_err(), "{path:?}");
-        assert_eq!(memory(&mut vm), before);
-    }
-    assert_eq!(std::fs::read(root.path().join("file")).unwrap(), b"retained");
-    write(&mut vm, 0, &[0xff]);
-    for (ptr, len) in [(0, 1), (-1, 0), (0, -1), (65535, 2)] {
-        assert!(mkdir(&mut vm, grant, ptr, len).is_err());
-    }
-    assert!(vm.output().is_empty());
 }
 
 #[test]

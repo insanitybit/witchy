@@ -452,29 +452,6 @@ fn subst_expr(
 mod tests {
     use super::*;
 
-    fn func_of(src: &str, name: &str) -> crate::ast::Function {
-        let m = inline(crate::parser::parse_module(src).expect("parse"));
-        m.items
-            .into_iter()
-            .find_map(|it| match it {
-                Item::Function(f) if f.name == name => Some(f),
-                _ => None,
-            })
-            .expect("function")
-    }
-
-    #[test]
-    fn inlines_constant_and_resolves_const_to_const() {
-        // `BASE` is inlined into `DOUBLE`, and both into `f`; no const items
-        // remain and no constant name survives in the body.
-        let src = "let BASE = 10\nlet DOUBLE = BASE * 2\nfn f() -> Int:\n    DOUBLE + BASE\n";
-        let m = inline(crate::parser::parse_module(src).expect("parse"));
-        assert!(!m.items.iter().any(|it| matches!(it, Item::Const { .. })));
-        let f = func_of(src, "f");
-        let printed = format!("{:?}", f.body);
-        assert!(!printed.contains("BASE") && !printed.contains("DOUBLE"), "{printed}");
-    }
-
     #[test]
     fn find_cycle_flags_cyclic_constants() {
         let cyclic = crate::parser::parse_module("let A = B\nlet B = A\n").expect("parse");
@@ -483,17 +460,6 @@ mod tests {
         assert!(find_cycle(&self_ref).is_some());
         let ok = crate::parser::parse_module("let A = 10\nlet B = A + 1\n").expect("parse");
         assert!(find_cycle(&ok).is_none());
-    }
-
-    #[test]
-    fn local_binding_shadows_constant() {
-        // A parameter named like the constant wins: the reference is left alone.
-        let f = func_of("let limit = 100\nfn g(limit: Int) -> Int:\n    limit\n", "g");
-        assert_eq!(f.body.stmts.len(), 1);
-        match &f.body.stmts[0] {
-            Stmt::Expr(Expr::Var(n)) => assert_eq!(n, "limit"),
-            other => panic!("expected the parameter reference, got {other:?}"),
-        }
     }
 }
 

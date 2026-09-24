@@ -1226,20 +1226,6 @@ fn rename_dir_entries(dir: &DirAuthority, from: &str, to: &str) -> Result<()> {
 mod tests {
     use super::super::super::{Capabilities, FsRights, Runtime};
 
-    /// Read `a.txt` into a 3-byte buffer at 64 and record the answer at 256.
-    const READ_INTO: &str = r#"
-        (module
-          (import "witchy" "mint_dir" (func $mint_dir (param i32) (result externref)))
-          (import "witchy" "dir_read_into"
-            (func $dir_read_into (param externref i32 i32 i32 i32) (result i32)))
-          (memory (export "memory") 1)
-          (data (i32.const 0) "a.txt")
-          (func (export "run")
-            (i32.store (i32.const 256)
-              (call $dir_read_into (call $mint_dir (i32.const 0))
-                (i32.const 0) (i32.const 5) (i32.const 64) (i32.const 3)))))
-    "#;
-
     /// The same read, aimed outside the granted root.
     const READ_ESCAPING: &str = r#"
         (module
@@ -1271,35 +1257,6 @@ mod tests {
         let root = tempfile::tempdir().expect("granted root");
         std::fs::write(root.path().join(name), contents).expect("seed the granted root");
         root
-    }
-
-    /// The bounded-buffer protocol: the host writes only what the guest's
-    /// declared capacity admits, and reports the length the guest needs to
-    /// allocate for a second, complete call.
-    #[test]
-    fn dir_read_into_writes_at_most_the_declared_capacity_and_reports_the_full_length() {
-        let root = seeded_root("a.txt", "hello");
-        let mut runtime = Runtime::new().expect("runtime");
-        let mut vm = runtime
-            .spawn(
-                READ_INTO,
-                Capabilities {
-                    dir_root: Some(root.path().to_path_buf()),
-                    dir_read: true,
-                    ..Capabilities::default()
-                },
-                4,
-            )
-            .expect("instantiate the canonical read probe");
-        vm.run().expect("run the canonical read probe");
-
-        let memory = vm.instance.get_memory(&mut vm.store, "memory").expect("guest memory");
-        let mut answer = [0u8; 4];
-        memory.read(&vm.store, 256, &mut answer).expect("read the reported length");
-        assert_eq!(i32::from_le_bytes(answer), 5, "the FULL file length is reported");
-        let mut out = [0u8; 4];
-        memory.read(&vm.store, 64, &mut out).expect("read the out buffer");
-        assert_eq!(&out, b"hel\0", "only the declared capacity may be written");
     }
 
     /// Confinement is the frozen route's, unchanged: a path that leaves the

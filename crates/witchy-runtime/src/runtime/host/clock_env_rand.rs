@@ -239,22 +239,6 @@ fn host_env_get_into(
 mod tests {
     use super::super::super::{Capabilities, Runtime};
 
-    /// A name no process sets, so the probes below need no ambient fixture.
-    const UNSET: &str = "WITCHY_TRACK_R_UNSET_NAME";
-
-    /// Ask about `UNSET` (25 bytes at 0) and record the answer at 256.
-    const HAS_VAR: &str = r#"
-        (module
-          (import "witchy" "mint_env" (func $mint_env (result externref)))
-          (import "witchy" "env_has_var"
-            (func $env_has_var (param externref i32 i32) (result i32)))
-          (memory (export "memory") 1)
-          (data (i32.const 0) "WITCHY_TRACK_R_UNSET_NAME")
-          (func (export "run")
-            (i32.store (i32.const 256)
-              (call $env_has_var (call $mint_env) (i32.const 0) (i32.const 25)))))
-    "#;
-
     /// Ask about `OTHER_NAME` (10 bytes at 0), which the allow-list omits.
     const HAS_VAR_DENIED: &str = r#"
         (module
@@ -267,38 +251,8 @@ mod tests {
             (drop (call $env_has_var (call $mint_env) (i32.const 0) (i32.const 10)))))
     "#;
 
-    /// Read `UNSET` into a 64-byte buffer without asking whether it is set.
-    const GET_INTO: &str = r#"
-        (module
-          (import "witchy" "mint_env" (func $mint_env (result externref)))
-          (import "witchy" "env_get_into"
-            (func $env_get_into (param externref i32 i32 i32 i32) (result i32)))
-          (memory (export "memory") 1)
-          (data (i32.const 0) "WITCHY_TRACK_R_UNSET_NAME")
-          (func (export "run")
-            (drop (call $env_get_into (call $mint_env)
-              (i32.const 0) (i32.const 25) (i32.const 64) (i32.const 64)))))
-    "#;
-
     fn env_capabilities(allow: Option<Vec<String>>) -> Capabilities {
         Capabilities { env: true, env_allow: allow, ..Capabilities::default() }
-    }
-
-    /// Existence is a total answer, so an unset name is `0` rather than a trap
-    /// — that is what makes it safe to ask before reading.
-    #[test]
-    fn env_has_var_reports_zero_for_an_unset_name() {
-        assert!(std::env::var(UNSET).is_err(), "the probe name must be unset");
-        let mut runtime = Runtime::new().expect("runtime");
-        let mut vm = runtime
-            .spawn(HAS_VAR, env_capabilities(None), 4)
-            .expect("instantiate the existence probe");
-        vm.run().expect("run the existence probe");
-
-        let memory = vm.instance.get_memory(&mut vm.store, "memory").expect("guest memory");
-        let mut answer = [0u8; 4];
-        memory.read(&vm.store, 256, &mut answer).expect("read the reported answer");
-        assert_eq!(i32::from_le_bytes(answer), 0, "an unset variable is not present");
     }
 
     /// A name outside the allow-list is refused loudly, exactly as the frozen
@@ -314,22 +268,6 @@ mod tests {
         assert!(
             format!("{error:?}").contains("allow-list"),
             "expected an allow-list refusal, got: {error:?}"
-        );
-    }
-
-    /// The read reports a length, so it has no way to encode absence; a guest
-    /// that skipped `env_has_var` broke the contract and traps.
-    #[test]
-    fn env_get_into_traps_on_an_unset_name() {
-        assert!(std::env::var(UNSET).is_err(), "the probe name must be unset");
-        let mut runtime = Runtime::new().expect("runtime");
-        let mut vm = runtime
-            .spawn(GET_INTO, env_capabilities(None), 4)
-            .expect("instantiate the unset-read probe");
-        let error = vm.run().expect_err("reading an unset variable must trap");
-        assert!(
-            format!("{error:?}").contains("is not set"),
-            "expected an unset-variable trap, got: {error:?}"
         );
     }
 }

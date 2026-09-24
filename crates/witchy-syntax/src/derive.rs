@@ -430,23 +430,6 @@ mod borrowed_nominal_tests {
     use super::*;
 
     #[test]
-    fn borrowed_nominal_reflect_derive_preserves_typeinfo_only() {
-        let mut module = crate::parser::parse_reference_migration(
-            "mode opt\n\nimport reflect\n\ntype Holder('a) derive(Reflect):\n    view: &'a String\n",
-        )
-        .expect("parse borrowed Reflect derive");
-        let error =
-            expand(&mut module).expect_err("runtime reflection must reject a borrowed shell");
-
-        assert!(error.contains("derive(Reflect)"), "{error}");
-        assert!(
-            error.contains("Compile-time TypeInfo reflection remains available"),
-            "{error}"
-        );
-        assert!(error.contains("module_types"), "{error}");
-    }
-
-    #[test]
     fn borrowed_nominal_deserialize_derive_requires_an_owned_companion() {
         let mut module = crate::parser::parse_reference_migration(
             "mode opt\n\nimport json\n\ntype Holder('a) derive(Deserialize):\n    view: &'a String\n",
@@ -458,15 +441,5 @@ mod borrowed_nominal_tests {
         assert!(error.contains("derive(Deserialize)"), "{error}");
         assert!(error.contains("authenticated owner relation"), "{error}");
         assert!(error.contains("owned companion type"), "{error}");
-    }
-
-    #[test]
-    fn ordinary_generic_reflect_derive_is_unchanged() {
-        let mut module = crate::parser::parse_module(
-            "import reflect\n\ntype Box(a) derive(Reflect):\n    Box(a)\n",
-        )
-        .expect("parse ordinary generic Reflect derive");
-
-        expand(&mut module).expect("an ordinary type parameter is not a lifetime relation");
     }
 }

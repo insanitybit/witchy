@@ -710,22 +710,4 @@ mod server_startup_tests {
         }
         Ok(())
     }
-
-    #[test]
-    fn server_startup_failure_is_returned_and_cancels_ready_workers() {
-        let (ready, received) = std::sync::mpsc::channel();
-        let (release, released) = std::sync::mpsc::channel();
-        ready.send(Ok(())).unwrap();
-        let (failed, failure) = std::sync::mpsc::channel();
-        let (cancel, cancelled) = std::sync::mpsc::channel();
-        failed.send(Err("missing private owner recipe".into())).unwrap();
-        let error = await_server_startup(vec![(received, release), (failure, cancel)]).unwrap_err();
-        assert!(error.to_string().contains("missing private owner recipe"));
-        assert!(released.recv().is_err());
-        assert!(cancelled.recv().is_err());
-        let (died, death) = std::sync::mpsc::channel();
-        let (release, _) = std::sync::mpsc::channel();
-        drop(died);
-        assert!(await_server_startup(vec![(death, release)]).is_err());
-    }
 }

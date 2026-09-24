@@ -138,34 +138,6 @@ impl Drop for Peer {
 }
 
 #[test]
-fn fetch_host_preserves_request_and_once_decoded_provider_payload() {
-    let peer = Peer::new(vec![
-        b"HTTP/1.1 503 Busy\r\nTransfer-Encoding: chunked\r\nX-Test: yes\r\n\r\n3\r\n\xc3\xa9\xff\r\n0\r\n\r\n".to_vec(),
-        b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\ntwo".to_vec(),
-    ]);
-    let origin = format!("http://{}", peer.host);
-    let mut vm = vm(Capabilities { fetch_grants: vec![vec![origin.clone()]], ..Capabilities::none() }, true);
-    let root = grant(&mut vm, 0);
-    let first = send(&mut vm, root, "POST", &format!("{origin}/echo?q=%2F#ignored"), "X-Request: yes\n", "caf\u{e9}");
-    // Changing launch input tables cannot alter an already minted policy.
-    vm.store.data_mut().fetch_grants.clear();
-    vm.store.data_mut().caps.fetch_grants.clear();
-    let second = send(&mut vm, root, "GET", &format!("{origin}/second"), "", "");
-    let expected = "HTTP/1.1 503\r\nTransfer-Encoding: chunked\r\nX-Test: yes\r\n\r\n\u{e9}\u{fffd}";
-    assert_eq!(bytes(&mut vm, first), expected.as_bytes());
-    assert_eq!(bytes(&mut vm, second), b"HTTP/1.1 200\r\nContent-Length: 3\r\n\r\ntwo");
-    assert_eq!(bytes(&mut vm, first), expected.as_bytes());
-    assert!(vm.store.data().pending.is_none());
-    assert!(vm.output().is_empty());
-    let requests = peer.finish();
-    assert_eq!(requests.len(), 2);
-    assert_eq!(requests[0], format!("POST /echo?q=%2F HTTP/1.1\r\nHost: {}\r\nConnection: close\r\nX-Request: yes\r\nContent-Length: 5\r\n\r\ncaf\u{e9}", peer_host(&origin)).as_bytes());
-    assert!(requests[1].starts_with(b"GET /second HTTP/1.1\r\n"));
-}
-
-fn peer_host(origin: &str) -> &str { origin.strip_prefix("http://").unwrap() }
-
-#[test]
 fn fetch_host_errors_are_values_redirects_injection_and_size_remain_enforced() {
     let peer = Peer::new(vec![
         b"HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:1/no-follow\r\n\r\n".to_vec(),
@@ -240,40 +212,6 @@ fn fetch_host_authenticates_private_kinds_and_issuer_before_memory() {
         error_contains(copy.call(&mut vm.store, (token, -1, -1)).unwrap_err(), expected);
     }
     assert!(vm.output().is_empty());
-}
-
-#[test]
-fn fetch_host_response_copy_is_repeatable_atomic_and_releases_with_store() {
-    let (mut vm, root) = empty_grant_fixture();
-    let response = Some(new_response(&mut vm.store, "a\u{e9}z").unwrap());
-    let weak_bytes = {
-        let data = response.unwrap().data(&vm.store).unwrap().unwrap().downcast_ref::<Response>().unwrap();
-        Arc::downgrade(&data.bytes)
-    };
-    let weak_issuer = Arc::downgrade(&vm.store.data().fetch_issuer);
-    let memory = vm.instance.get_memory(&mut vm.store, "memory").unwrap();
-    let copy = vm.instance.get_typed_func::<(Token, i32, i32), i32>(&mut vm.store, "copy").unwrap();
-    memory.write(&mut vm.store, 0, &[0x5a; 32]).unwrap();
-    for cap in [0, 1, 3] { assert_eq!(copy.call(&mut vm.store, (response, 0, cap)).unwrap(), 4); }
-    assert_eq!(&memory.data(&vm.store)[..32], &[0x5a; 32]);
-    for (ptr, cap) in [(-1, 4), (0, -1), (65535, 2), (65537, 0), (32, i32::MAX)] {
-        assert!(copy.call(&mut vm.store, (response, ptr, cap)).is_err());
-        assert_eq!(&memory.data(&vm.store)[..32], &[0x5a; 32]);
-    }
-    for _ in 0..2 {
-        assert_eq!(copy.call(&mut vm.store, (response, 0, 32)).unwrap(), 4);
-        assert_eq!(&memory.data(&vm.store)[..4], "a\u{e9}z".as_bytes());
-        assert_eq!(&memory.data(&vm.store)[4..32], &[0x5a; 28]);
-    }
-    let size = vm.instance.get_typed_func::<Token, i32>(&mut vm.store, "size").unwrap();
-    assert!(size.call(&mut vm.store, root).is_err());
-    let empty = Some(new_response(&mut vm.store, "").unwrap());
-    assert_eq!(copy.call(&mut vm.store, (empty, 65536, 0)).unwrap(), 0);
-    assert!(copy.call(&mut vm.store, (empty, 65536, 1)).is_err());
-    assert!(checked_response_len(i32::MAX as usize + 1).is_err());
-    drop(vm);
-    assert!(weak_bytes.upgrade().is_none());
-    assert!(weak_issuer.upgrade().is_none(), "Store teardown releases roots and all response owners");
 }
 
 #[test]

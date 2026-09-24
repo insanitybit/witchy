@@ -65,24 +65,3 @@ fn service_start_refuses_raw_exports_and_invalid_site_numbers() -> Result<()> {
     assert_eq!(vm.vm_service_metrics().started, 0);
     Ok(())
 }
-
-#[test]
-fn service_copy_distinguishes_static_data_from_owned_binary_extent() -> Result<()> {
-    let mut runtime = crate::runtime::Runtime::batch()?;
-    let mut vm = runtime.spawn(br#"(module
-        (memory (export "memory") 1)
-        (global (export "__witchy_heap_base") i32 (i32.const 32))
-        (global (export "__witchy_heap_bump") (mut i32) (i32.const 32))
-        (data (i32.const 8) "\03\00\00\00\00\ff\80"))"#,
-        Capabilities::default(), 1)?;
-    assert_eq!(vm.copy_owned_bytes(8)?, (vec![0, 255, 128], false));
-    let owned = vm.materialize_owned_bytes(&[255, 0, 128])?;
-    assert_eq!(vm.copy_owned_bytes(owned)?, (vec![255, 0, 128], true));
-    assert!(vm.copy_owned_bytes(0).is_err());
-    let memory = vm.instance.get_memory(&mut vm.store, "memory").unwrap();
-    memory.write(&mut vm.store, owned as usize, &99u32.to_le_bytes())?;
-    assert!(vm.copy_owned_bytes(owned).is_err());
-    memory.write(&mut vm.store, 8, &99u32.to_le_bytes())?;
-    assert!(vm.copy_owned_bytes(8).is_err());
-    Ok(())
-}

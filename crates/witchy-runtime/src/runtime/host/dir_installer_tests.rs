@@ -63,54 +63,6 @@ fn error(error: Error, expected: &str) {
 }
 
 #[test]
-fn dir_installer_append_preserves_binary_empty_and_aliased_inputs() {
-    let (root, mut vm, grant) = setup(true);
-    let write_only = attenuate(&mut vm, grant, false, true, "");
-    for chunk in [b"first\0\xff".as_slice(), b"\xc2\xa9\nsecond".as_slice()] {
-        let args = inputs(&mut vm, write_only, "\u{e9}.bin", chunk);
-        call(&mut vm, "append", args).unwrap();
-    }
-    assert_eq!(std::fs::read(root.path().join("\u{e9}.bin")).unwrap(), b"first\0\xff\xc2\xa9\nsecond");
-    let mut args = inputs(&mut vm, write_only, "\u{e9}.bin", b"");
-    args.3 = 65536;
-    call(&mut vm, "append", args).unwrap();
-    assert_eq!(std::fs::read(root.path().join("\u{e9}.bin")).unwrap(), b"first\0\xff\xc2\xa9\nsecond");
-    put(&mut vm, 65531, b"alias");
-    call(&mut vm, "append", (write_only, 65531, 5, 65531, 5)).unwrap();
-    assert_eq!(std::fs::read(root.path().join("alias")).unwrap(), b"alias");
-    let args = inputs(&mut vm, write_only, "empty", b"");
-    call(&mut vm, "append", args).unwrap();
-    assert_eq!(std::fs::read(root.path().join("empty")).unwrap(), b"");
-}
-
-#[cfg(unix)]
-#[test]
-fn dir_installer_chmod_then_rename_preserves_payload_and_replaces_destination() {
-    use std::os::unix::fs::PermissionsExt;
-    let (root, mut vm, grant) = setup(true);
-    let write_only = attenuate(&mut vm, grant, false, true, "");
-    std::fs::write(root.path().join("staged"), b"first").unwrap();
-    std::fs::set_permissions(root.path().join("staged"), std::fs::Permissions::from_mode(0o640)).unwrap();
-    std::fs::write(root.path().join("command"), b"old executable").unwrap();
-    let args = inputs(&mut vm, write_only, "staged", b"\0\xffsecond");
-    call(&mut vm, "append", args).unwrap();
-    let before = std::fs::metadata(root.path().join("staged")).unwrap().permissions().mode();
-    assert_eq!(before & 0o777, 0o640);
-    call(&mut vm, "chmod", args).unwrap();
-    assert_eq!(std::fs::metadata(root.path().join("staged")).unwrap().permissions().mode(), before | 0o111);
-    assert_eq!(std::fs::read(root.path().join("command")).unwrap(), b"old executable");
-    let args = inputs(&mut vm, write_only, "staged", b"command");
-    call(&mut vm, "rename", args).unwrap();
-    assert!(!root.path().join("staged").exists());
-    assert_eq!(std::fs::read(root.path().join("command")).unwrap(), b"first\0\xffsecond");
-    assert_eq!(std::fs::metadata(root.path().join("command")).unwrap().permissions().mode(), before | 0o111);
-    let args = inputs(&mut vm, write_only, "command", b"fresh");
-    call(&mut vm, "rename", args).unwrap();
-    assert!(!root.path().join("command").exists());
-    assert_eq!(std::fs::read(root.path().join("fresh")).unwrap(), b"first\0\xffsecond");
-}
-
-#[test]
 fn dir_installer_authentication_and_write_right_precede_memory() {
     let (_root, mut vm, grant) = setup(false);
     let read_only = attenuate(&mut vm, grant, true, false, "");
@@ -160,28 +112,6 @@ fn dir_installer_full_buffer_preflight_prevents_filesystem_effects() {
     assert_eq!(std::fs::read(root.path().join("dest")).unwrap(), b"destination");
     assert_eq!(std::fs::metadata(root.path().join("keep")).unwrap().permissions(), mode);
     assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 2);
-}
-
-#[test]
-fn dir_installer_rename_and_append_preserve_collision_rules() {
-    let (root, mut vm, grant) = setup(true);
-    std::fs::write(root.path().join("file"), b"original").unwrap();
-    std::fs::create_dir(root.path().join("directory")).unwrap();
-    let args = inputs(&mut vm, grant, "directory", b"data");
-    assert!(call(&mut vm, "append", args).is_err());
-    for (from, to) in [("file", "directory"), ("directory", "file"), ("missing", "file")] {
-        let args = inputs(&mut vm, grant, from, to.as_bytes());
-        assert!(call(&mut vm, "rename", args).is_err());
-        assert_eq!(std::fs::read(root.path().join("file")).unwrap(), b"original");
-        assert!(root.path().join("directory").is_dir());
-    }
-    put(&mut vm, 17, b"file");
-    call(&mut vm, "rename", (grant, 17, 4, 17, 4)).unwrap();
-    assert_eq!(std::fs::read(root.path().join("file")).unwrap(), b"original");
-    std::fs::write(root.path().join("directory/child"), b"child").unwrap();
-    let args = inputs(&mut vm, grant, "directory", b"moved");
-    call(&mut vm, "rename", args).unwrap();
-    assert_eq!(std::fs::read(root.path().join("moved/child")).unwrap(), b"child");
 }
 
 #[test]

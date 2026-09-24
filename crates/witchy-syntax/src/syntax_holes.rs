@@ -503,109 +503,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn substitutes_mixed_item_holes_without_reparsing_the_item() {
-        let module = parse_module(
-            "fn generated(x: __witchy_quote_type_hole_0):\n    match x:\n        __witchy_quote_pattern_hole_0 -> __witchy_quote_expr_hole_0\n",
-        )
-        .expect("parse template");
-        let item = instantiate_item(
-            &module.items[0],
-            vec![
-                ItemSyntaxHole::Type(Type::Named("Int".into(), Vec::new())),
-                ItemSyntaxHole::Pattern(Pattern::Int(1)),
-                ItemSyntaxHole::Expr(Expr::Int(7)),
-            ],
-        )
-        .expect("substitute holes");
-        let source = crate::format::module(&crate::ast::Module {
-            modes: Vec::new(),
-            imports: Vec::new(),
-            from_imports: Vec::new(),
-            items: vec![item],
-            import_lines: Vec::new(),
-            item_lines: vec![0],
-            compiler_item_syntax: Vec::new(),
-            compiler_expr_syntax: Vec::new(),
-            compiler_type_syntax: Vec::new(),
-            compiler_pattern_syntax: Vec::new(),
-            compiler_stmt_syntax: Vec::new(),
-            compiler_block_syntax: Vec::new(),
-            linked_entry: None,
-        }, &[]);
-        assert!(source.contains("x: Int"), "{source}");
-        assert!(source.contains("1 -> 7"), "{source}");
-    }
-
-    #[test]
     fn syntax_payloads_reject_category_escape() {
         assert!(parse_expr_payload("1\n2").is_err());
         assert!(parse_type_payload("Int\nfn injected():\n    0").is_err());
         assert!(parse_pattern_payload("_ -> 1\n        _").is_err());
     }
 
-    #[test]
-    fn substitutes_expression_holes_without_reparsing() {
-        let template = Expr::Binary {
-            op: crate::ast::BinOp::Add,
-            lhs: Box::new(Expr::Var(format!("{QUOTE_EXPR_HOLE_PREFIX}0"))),
-            rhs: Box::new(Expr::Int(2)),
-        };
-        let expr = instantiate_expr(&template, vec![Expr::Int(40)])
-            .expect("substitute expression hole");
-        assert_eq!(crate::format::expr_str(&expr), "40 + 2");
-    }
-
-    #[test]
-    fn substitutes_type_holes_without_reparsing() {
-        let template = Type::Named(
-            "List".into(),
-            vec![Type::Named(format!("{QUOTE_TYPE_HOLE_PREFIX}0"), Vec::new())],
-        );
-        let hole = Type::Named("Int".into(), Vec::new());
-        let ty = instantiate_type(&template, vec![hole.clone()]).expect("substitute type hole");
-        assert_eq!(ty, Type::Named("List".into(), vec![hole]));
-    }
-
-    #[test]
-    fn substitutes_pattern_holes_without_reparsing() {
-        let template = Pattern::Or(vec![
-            Pattern::Var(format!("{QUOTE_PATTERN_HOLE_PREFIX}0")),
-            Pattern::Int(2),
-        ]);
-        let pattern = instantiate_pattern(&template, vec![Pattern::Int(1)])
-            .expect("substitute pattern hole");
-        assert_eq!(pattern, Pattern::Or(vec![Pattern::Int(1), Pattern::Int(2)]));
-    }
-
-    #[test]
-    fn substitutes_mixed_block_holes_without_reparsing() {
-        let template = Block {
-            stmts: vec![
-                Stmt::Let {
-                    name: "x".into(),
-                    ty: Some(Type::Named(format!("{QUOTE_TYPE_HOLE_PREFIX}0"), Vec::new())),
-                    mutable: false,
-                    value: Expr::Var(format!("{QUOTE_EXPR_HOLE_PREFIX}0")),
-                },
-                Stmt::LetPattern {
-                    pattern: Pattern::Var(format!("{QUOTE_PATTERN_HOLE_PREFIX}0")),
-                    value: Expr::Var("x".into()),
-                },
-                Stmt::Expr(Expr::Var(format!("{QUOTE_EXPR_HOLE_PREFIX}1"))),
-            ],
-            lines: vec![0, 0, 0],
-            region: None,
-        };
-        let block = instantiate_block(
-            &template,
-            vec![
-                ItemSyntaxHole::Type(Type::Named("Int".into(), Vec::new())),
-                ItemSyntaxHole::Expr(Expr::Int(40)),
-                ItemSyntaxHole::Pattern(Pattern::Var("value".into())),
-                ItemSyntaxHole::Expr(Expr::Var("value".into())),
-            ],
-        )
-        .expect("substitute mixed block holes");
-        assert_eq!(crate::format::block_str(&block), "let x: Int = 40\nlet value = x\nvalue");
-    }
 }

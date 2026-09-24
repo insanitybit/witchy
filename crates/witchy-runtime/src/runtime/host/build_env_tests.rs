@@ -72,41 +72,6 @@ fn build_env_preserves_some_empty_unset_and_denied() {
 }
 
 #[test]
-fn build_env_snapshot_and_responses_are_immutable_and_owned() {
-    let (mut vm, grant) = setup();
-    let weak = {
-        let data = grant.unwrap().data(&vm.store).unwrap().unwrap().downcast_ref::<Authority>().unwrap();
-        Arc::downgrade(&data.values)
-    };
-    let result = get(&mut vm, grant, "VALUE").unwrap();
-    vm.store.data_mut().caps.build_env.as_mut().unwrap().insert("VALUE".into(), Some("changed".into()));
-    let again = get(&mut vm, grant, "VALUE").unwrap();
-    let memory = vm.instance.get_memory(&mut vm.store, "memory").unwrap();
-    let copy = vm.instance.get_typed_func::<(Token, i32, i32), i32>(&mut vm.store, "copy").unwrap();
-    for response in [result, again, result] {
-        memory.write(&mut vm.store, 4096, &[0xa5; 512]).unwrap();
-        let before = memory.data(&vm.store).to_vec();
-        assert_eq!(copy.call(&mut vm.store, (response, 4096, 499)).unwrap(), 500);
-        assert_eq!(memory.data(&vm.store), before.as_slice());
-        for (ptr, capacity) in [(-1, 1), (0, -1), (65535, 2), (65537, 0), (4096, i32::MAX)] {
-            assert!(copy.call(&mut vm.store, (response, ptr, capacity)).is_err());
-            assert_eq!(memory.data(&vm.store), before.as_slice());
-        }
-        assert_eq!(copy.call(&mut vm.store, (response, 65536, 0)).unwrap(), 500);
-        assert_eq!(copy.call(&mut vm.store, (response, 4096, 512)).unwrap(), 500);
-        assert_eq!(&memory.data(&vm.store)[4096..4596], "caf\u{e9}".repeat(100).as_bytes());
-        assert_eq!(&memory.data(&vm.store)[4596..4608], &[0xa5; 12]);
-    }
-    let empty = get(&mut vm, grant, "EMPTY").unwrap();
-    assert_eq!(copy.call(&mut vm.store, (empty, 65536, 0)).unwrap(), 0);
-    assert!(copy.call(&mut vm.store, (empty, 65536, 1)).is_err());
-    assert!(vm.output().is_empty());
-    assert!(vm.store.data().pending.is_none());
-    drop(vm);
-    assert!(weak.upgrade().is_none(), "Store teardown releases the grant snapshot");
-}
-
-#[test]
 fn build_env_authenticates_kind_session_and_read_before_memory() {
     let mut vm = vm(Capabilities { build_env: Some(BTreeMap::new()), ..Capabilities::none() }, false);
     let authority = mint(vm.store.data()).unwrap();

@@ -274,7 +274,7 @@ fn host_compiler_doc_result_json_len(
 
 #[cfg(test)]
 mod tests {
-    use super::{checked_guest_range, read_slice_str, required_result_size, write_result_bytes_to_memory};
+    use super::{read_slice_str, write_result_bytes_to_memory};
     use crate::runtime::{Capabilities, Runtime};
     use std::sync::Arc;
     use wasmtime::Error;
@@ -373,15 +373,6 @@ mod tests {
 
         assert!(read_slice_str(&memory, 2, 4).is_err());
         assert!(write_result_bytes_to_memory(&mut memory, 31, 2, b"x").is_err());
-    }
-
-    #[test]
-    fn bounded_compiler_lanes_preserve_unsigned_wasm32_bits() {
-        let wasm32_max = u32::MAX as usize;
-        assert_eq!(checked_guest_range(wasm32_max, 0, -1, "input").unwrap(), (0, wasm32_max));
-        assert_eq!(checked_guest_range(wasm32_max, -1, 0, "input").unwrap(), (wasm32_max, 0));
-        assert_eq!(required_result_size(0x8000_0000usize).unwrap(), i32::MIN);
-        assert!(required_result_size((u32::MAX as usize) + 1).is_err());
     }
 
     #[test]

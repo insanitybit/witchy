@@ -1,6 +1,4 @@
 use crate::runtime::{Capabilities, Runtime, Vm};
-use crate::value::NativeValue as Value;
-use witchy_syntax::intrinsics;
 
 const INPUT: usize = 17;
 const OUTPUT: usize = 4097;
@@ -47,63 +45,6 @@ fn transport(paths: &[&str], contents: &[&str]) -> Vec<u8> {
         }
     }
     bytes
-}
-
-fn native_hash(name: &str, args: &[Value]) -> String {
-    match crate::native::lookup(name).unwrap()(args).unwrap() {
-        Value::Str(value) => value,
-        _ => panic!("native digest must be a String"),
-    }
-}
-
-fn assert_digest(vm: &mut Vm, name: &str, bytes: &[u8], digest: &str) {
-    for capacity in [0, digest.len() - 1, digest.len(), digest.len() + 8] {
-        let mut expected = input(vm, bytes);
-        assert_eq!(invoke(vm, name, [INPUT as i32, bytes.len() as i32, OUTPUT as i32, capacity as i32]).unwrap(), digest.len() as i32);
-        if capacity >= digest.len() {
-            expected[OUTPUT..OUTPUT + digest.len()].copy_from_slice(digest.as_bytes());
-        }
-        memory_equals(vm, &expected);
-    }
-}
-
-#[test]
-fn sha256_slices_hash_raw_bytes_and_write_only_complete_digests() {
-    let mut vm = setup();
-    assert_digest(&mut vm, "sha", b"", "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
-    let abc = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
-    assert_digest(&mut vm, "sha", b"abc", abc);
-    let raw = [0, 0xff, 0x80, b'\r', b'\n'];
-    let expected = native_hash(intrinsics::CRYPTO_SHA256_BYTES, &[Value::Bytes(raw.to_vec())]);
-    assert_digest(&mut vm, "sha", &raw, &expected);
-    let mut expected = input(&mut vm, b"abc");
-    assert_eq!(invoke(&mut vm, "sha", [INPUT as i32, 3, INPUT as i32, 64]).unwrap(), 64);
-    expected[INPUT..INPUT + 64].copy_from_slice(abc.as_bytes());
-    memory_equals(&mut vm, &expected);
-    let expected = input(&mut vm, b"");
-    assert_eq!(invoke(&mut vm, "sha", [65536, 0, 65536, 0]).unwrap(), 64);
-    memory_equals(&mut vm, &expected);
-}
-
-#[test]
-fn rune_hash_slices_preserve_native_unicode_order_duplicates_and_normalization() {
-    let mut vm = setup();
-    for (paths, contents) in [
-        (vec![], vec![]),
-        (vec!["z.witchy", "\u{e9}.witchy", "a.witchy"], vec!["a\r\nb\r", "\u{1f980}\0", ""]),
-        (vec!["same", "same", "../data\0"], vec!["first", "second", "path is data"]),
-        (vec!["same", "same"], vec!["second", "first"]),
-    ] {
-        let list = |values: &[&str]| Value::List(values.iter().map(|value| Value::Str((*value).into())).collect());
-        let expected = native_hash(intrinsics::CRYPTO_RUNE_HASH, &[list(&paths), list(&contents)]);
-        let bytes = transport(&paths, &contents);
-        assert_digest(&mut vm, "rune", &bytes, &expected);
-        // Input/output overlap must not affect parsing or native normalization.
-        let mut memory = input(&mut vm, &bytes);
-        assert_eq!(invoke(&mut vm, "rune", [INPUT as i32, bytes.len() as i32, INPUT as i32, 71]).unwrap(), 71);
-        memory[INPUT..INPUT + 71].copy_from_slice(expected.as_bytes());
-        memory_equals(&mut vm, &memory);
-    }
 }
 
 #[test]

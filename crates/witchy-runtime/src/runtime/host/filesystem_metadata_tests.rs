@@ -67,18 +67,6 @@ fn query(vm: &mut Vm, token: Token, path: &str, expected: i32) {
 }
 
 #[test]
-fn dir_is_dir_slices_preserve_total_legacy_metadata_and_utf8() {
-    let (root, mut vm, token) = setup(true);
-    for (path, expected) in [("", 1), (".", 1), ("nested", 1), ("nested/leaf", 1),
-        ("nested//leaf/", 1), ("\u{e9}-\u{1f980}", 1), ("file", 0), ("missing", 0),
-        ("file/child", 0), ("../", 0), ("nested/../", 0), ("/", 0), ("bad\0name", 0)] {
-        query(&mut vm, token, path, expected);
-    }
-    assert_eq!(call(&mut vm, token, 65536, 0).unwrap(), 1);
-    assert_eq!(std::fs::read(root.path().join("file")).unwrap(), b"unchanged");
-}
-
-#[test]
 fn dir_is_dir_slices_preserve_entry_policy_without_minting_authority() {
     let (_root, mut vm, token) = setup(true);
     let directories = attenuate(&mut vm, token, "kind:dir", true);

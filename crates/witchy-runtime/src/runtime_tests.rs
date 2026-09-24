@@ -47,15 +47,6 @@
     }
 
     #[test]
-    fn ordinary_batch_runtime_has_mutable_executable_cache() {
-        let publisher = Runtime::batch().expect("publisher runtime");
-        assert!(
-            publisher.executable_cache,
-            "publisher applications use the ordinary optimized-Wasm and Wasmtime cache policy"
-        );
-    }
-
-    #[test]
     fn admitted_module_builder_validates_without_binaryen_or_byte_rewriting() {
         let runtime = Runtime::batch().expect("runtime");
         let wasm = BARE.as_bytes();
@@ -212,27 +203,6 @@
         };
         assert!(
             error.to_string().contains("has no generated ABI metadata"),
-            "{error}"
-        );
-    }
-
-    #[cfg(feature = "test-fixtures")]
-    #[test]
-    fn fixture_execution_validates_artifact_layout_metadata() {
-        let empty = LayoutBundle::from_interner(&LayoutInterner::new(), [])
-            .expect("empty canonical layout bundle");
-        let mut unknown_schema = empty.canonical_bytes();
-        unknown_schema[8..12].copy_from_slice(&2u32.to_le_bytes());
-        let mut runtime = Runtime::batch().expect("runtime");
-        let error = runtime
-            .run_fixtures(
-                wasm_with_layout_payload(unknown_schema),
-                witchy_testkit::FixturePlan::default(),
-                4,
-            )
-            .expect_err("fixture execution must reject an unknown layout schema");
-        assert!(
-            error.to_string().contains("unsupported layout schema 2"),
             "{error}"
         );
     }
@@ -432,102 +402,6 @@ fi
         );
     }
 
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    #[test]
-    fn binaryen_rejects_unexpected_version_and_preserves_input_on_tool_failure() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let temp = tempfile::tempdir().expect("temporary Binaryen fixture");
-        let distribution = temp.path().join("binaryen-version_131");
-        let configured = distribution.join("bin").join("wasm-opt");
-        std::fs::create_dir_all(configured.parent().unwrap()).expect("fake Binaryen bin");
-        #[cfg(target_os = "macos")]
-        let library_digest = {
-            let library = distribution.join("lib").join("libbinaryen.dylib");
-            std::fs::create_dir_all(library.parent().unwrap()).expect("fake Binaryen lib");
-            let bytes = b"fake authenticated Binaryen runtime library";
-            std::fs::write(library, bytes).expect("write fake Binaryen runtime library");
-            Some(sha256(bytes))
-        };
-        #[cfg(target_os = "linux")]
-        let library_digest = None;
-        let staging = temp.path().join("staging");
-
-        let wrong_version = b"#!/bin/sh\nprintf 'wasm-opt version 130\\n'\n";
-        std::fs::write(&configured, wrong_version).expect("write wrong-version tool");
-        std::fs::set_permissions(&configured, std::fs::Permissions::from_mode(0o700))
-            .expect("make wrong-version tool executable");
-        assert!(authenticate_binaryen(
-            &configured,
-            sha256(wrong_version),
-            library_digest,
-            &staging,
-        )
-        .is_none());
-
-        let failing = b"#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf 'wasm-opt version 131 (version_131)\\n'; exit 0; fi\nexit 42\n";
-        std::fs::write(&configured, failing).expect("write failing tool");
-        let tool = authenticate_binaryen(
-            &configured,
-            sha256(failing),
-            library_digest,
-            &staging,
-        )
-        .expect("the failing tool still has the pinned version and identity");
-        let wasm = b"already validated input";
-        assert!(
-            matches!(
-                binaryen_optimize(wasm, Some(&tool), false).unwrap(),
-                Cow::Borrowed(bytes) if bytes == wasm
-            ),
-            "a nonzero optimizer exit must preserve the validated input"
-        );
-        assert!(
-            binaryen_optimize(wasm, Some(&tool), true)
-                .unwrap_err()
-                .to_string()
-                .contains("optimizer process exited unsuccessfully"),
-            "required evidence mode must reject optimizer process failure"
-        );
-    }
-
-    #[test]
-    fn invalid_binaryen_output_falls_back_to_the_validated_input() {
-        let engine = Engine::default();
-        let original = WasmModule::new().finish();
-        let invalid = Cow::Owned(b"not a wasm module".to_vec());
-        let (_, optimized_valid) = module_from_binaryen_output(&engine, &original, &invalid, false)
-            .expect("invalid optimizer output falls back to the original module");
-        assert!(!optimized_valid, "invalid optimizer output must not be cacheable");
-        assert!(
-            module_from_binaryen_output(&engine, &original, &invalid, true)
-                .unwrap_err()
-                .to_string()
-                .contains("required pinned Binaryen produced invalid Wasm"),
-            "required evidence mode must reject invalid optimizer output"
-        );
-    }
-
-    #[test]
-    fn preserve_raw_returns_before_binaryen_resolution() {
-        let engine = Engine::default();
-        let mut preserve_raw = WasmModule::new().finish();
-        append_optimizer_policy(
-            &mut preserve_raw,
-            &witchy_wir::optimizer_policy::PRESERVE_RAW_PAYLOAD,
-        );
-        build_module_with_binaryen(
-            &engine,
-            &preserve_raw,
-            true,
-            false,
-            || -> Result<Option<&BinaryenTool>> {
-                panic!("PreserveRaw must not resolve or invoke Binaryen")
-            },
-        )
-        .expect("PreserveRaw module uses the validated original bytes");
-    }
-
     #[test]
     fn binaryen_pin_resolution_rejects_mismatch_partial_sets_and_cross_source_mixing() {
         let executable_digest = [0x11; 32];
@@ -647,178 +521,23 @@ fi
         );
     }
 
-    #[test]
-    fn required_binaryen_rejects_fallback_while_optional_mode_is_observable() {
-        assert!(
-            resolve_binaryen_result(false, Err("test authentication failure"))
-                .expect("optional policy preserves the validated input")
-                .is_none()
-        );
-        let error = resolve_binaryen_result(true, Err("test authentication failure"))
-            .expect_err("required policy must make missing optimization fail closed");
-        assert!(
-            error.to_string().contains(
-                "required pinned Binaryen unavailable: test authentication failure"
-            ),
-            "{error}"
-        );
-    }
-
     #[cfg(any(
         all(target_arch = "aarch64", target_os = "linux"),
         all(target_arch = "x86_64", target_os = "linux"),
         all(target_arch = "aarch64", target_os = "macos"),
         all(target_arch = "x86_64", target_os = "macos"),
     ))]
-    #[test]
-    fn binaryen_compiled_release_identity_matches_the_reviewed_lock() {
-        let lock = include_str!("../../../tools/binaryen-version_131.lock");
-        #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
-        let platform = "aarch64-linux";
-        #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
-        let platform = "x86_64-linux";
-        #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
-        let platform = "arm64-macos";
-        #[cfg(all(target_arch = "x86_64", target_os = "macos"))]
-        let platform = "x86_64-macos";
-        let asset = lock
-            .split("[[asset]]")
-            .find(|block| block.contains(&format!("platform = \"{platform}\"")))
-            .expect("current platform has one reviewed lock asset");
-        assert!(asset.contains(RELEASE_BINARYEN_EXECUTABLE_SHA256));
-        #[cfg(target_os = "macos")]
-        assert!(asset.contains(RELEASE_BINARYEN_LIBRARY_SHA256));
-        assert!(lock.contains("version_stdout = \"wasm-opt version 131 (version_131)\\n\""));
-    }
-
     #[cfg(any(
         all(target_arch = "aarch64", target_os = "linux"),
         all(target_arch = "x86_64", target_os = "linux"),
         all(target_arch = "aarch64", target_os = "macos"),
         all(target_arch = "x86_64", target_os = "macos"),
     ))]
-    #[test]
-    fn binaryen_reviewed_release_bundle_authenticates_and_runs() {
-        let Some(configured) = std::env::var_os("WITCHY_TEST_REVIEWED_BINARYEN_PATH")
-            .map(std::path::PathBuf::from)
-        else {
-            eprintln!(
-                "skipping official-bundle execution: WITCHY_TEST_REVIEWED_BINARYEN_PATH is unset"
-            );
-            return;
-        };
-        let (executable_digest, library_digest) =
-            release_binaryen_digests().expect("supported release platform");
-        let staging = tempfile::tempdir().expect("private staging root");
-        let tool = authenticate_binaryen(
-            &configured,
-            executable_digest,
-            library_digest,
-            staging.path(),
-        )
-        .expect("official reviewed bundle authenticates");
-        let input = WasmModule::new().finish();
-        let optimized = binaryen_optimize(&input, Some(&tool), true)
-            .expect("official reviewed bundle executes the production recipe");
-        assert!(matches!(optimized, Cow::Owned(_)));
-        Module::new(&Engine::default(), optimized.as_ref())
-            .expect("official Binaryen output remains valid Wasm");
-    }
-
-    #[test]
-    fn binaryen_digest_parser_is_exact() {
-        let digest = [0xab; 32];
-        let hex: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
-        assert_eq!(decode_sha256_hex(&hex), Some(digest));
-        assert_eq!(decode_sha256_hex(&hex[..63]), None);
-        assert_eq!(decode_sha256_hex(&"z".repeat(64)), None);
-        assert_eq!(decode_sha256_hex(&"+f".repeat(32)), None);
-        assert_eq!(decode_sha256_hex(&hex.to_uppercase()), None);
-    }
-
-    #[test]
-    fn bundled_binaryen_path_is_fixed_relative_to_the_installed_executable() {
-        let executable = std::path::Path::new("/opt/witchy/bin/witchy");
-        assert_eq!(
-            bundled_binaryen_path_for_executable(executable).unwrap(),
-            std::path::Path::new("/opt/witchy/libexec/witchy-binaryen/bin/wasm-opt")
-        );
-        assert_eq!(
-            bundled_binaryen_path_for_executable(std::path::Path::new("/opt/witchy/witchy"))
-                .unwrap_err(),
-            "installed executable is not in the release bin directory"
-        );
-    }
-
-    #[test]
-    fn binaryen_evidence_names_the_exact_invocation_recipe() {
-        assert_eq!(
-            binaryen_recipe_evidence(),
-            "-O4|--all-features|--inlining-optimizing|--inline-functions-with-loops|--flexible-inline-max-function-size=100|--one-caller-inline-max-function-size=200"
-        );
-        assert_eq!(sha256_hex(&sha256(PINNED_BINARYEN_VERSION)).len(), 64);
-    }
-
-    #[test]
-    fn stale_debug_compilation_cache_generations_are_bounded_without_touching_release_cache() {
-        let cache = tempfile::tempdir().expect("cache directory");
-        let modules = cache.path().join("modules");
-        std::fs::create_dir_all(&modules).expect("modules directory");
-
-        for generation in 0..=MAX_DEBUG_COMPILATION_CACHE_GENERATIONS {
-            std::fs::create_dir(modules.join(format!("wasmtime--{generation}")))
-                .expect("debug generation");
-        }
-        std::fs::create_dir(modules.join("wasmtime-45.0.3"))
-            .expect("release generation");
-
-        prune_stale_debug_compilation_cache_generations(cache.path());
-
-        assert!(
-            !modules.join("wasmtime--0").exists(),
-            "the oldest debug generation is unusable after a rebuild"
-        );
-        assert!(modules.join(format!("wasmtime--{MAX_DEBUG_COMPILATION_CACHE_GENERATIONS}")).exists());
-        assert!(modules.join("wasmtime-45.0.3").exists(), "release cache remains reusable");
-        let debug_generations = std::fs::read_dir(&modules)
-            .expect("modules directory")
-            .flatten()
-            .filter(|entry| entry.file_name().to_string_lossy().starts_with("wasmtime--"))
-            .count();
-        assert_eq!(debug_generations, MAX_DEBUG_COMPILATION_CACHE_GENERATIONS);
-    }
-
     const NULL_FILE_READ: &str = r#"
         (module
           (import "witchy" "file_read_len" (func $file_read_len (param externref) (result i32)))
           (func (export "run")
             (drop (call $file_read_len (ref.null extern)))))
-    "#;
-
-    const DIR_READ_FILE_INTO: &str = r#"
-        (module
-          (import "witchy" "mint_dir" (func $mint_dir (param i32) (result externref)))
-          (import "witchy" "dir_read_file"
-            (func $dir_read_file (param externref i32 i32) (result externref)))
-          (import "witchy" "file_read_into"
-            (func $file_read_into (param externref i32 i32) (result i32)))
-          (memory (export "memory") 1)
-          (data (i32.const 0) "config.txt")
-          (func (export "run")
-            (local $file externref)
-            i32.const 0
-            call $mint_dir
-            i32.const 0
-            i32.const 10
-            call $dir_read_file
-            local.set $file
-            i32.const 256
-            local.get $file
-            i32.const 128
-            i32.const 32
-            call $file_read_into
-            i32.store)
-        )
     "#;
 
     const DIR_READ_FILE_INTO_SHORT: &str = r#"
@@ -1087,15 +806,6 @@ fi
     }
 
     #[test]
-    fn granted_capability_instantiates() {
-        let mut rt = Runtime::new().unwrap();
-        let mut vm = rt
-            .spawn(IMPORTS_PRINT, Capabilities { print: true, ..Default::default() }, 4)
-            .unwrap();
-        vm.run().unwrap();
-    }
-
-    #[test]
     fn vm_with_dir_start_observes_only_the_delegated_dir() {
         let root = tempfile::tempdir().expect("empty delegated root");
         assert!(std::path::Path::new("Cargo.toml").exists(), "test requires workspace cwd marker");
@@ -1233,29 +943,6 @@ fi
         }
 
         let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn dir_read_file_and_file_read_into_preserve_opaque_bounded_utf8_semantics() {
-        let root = tempfile::tempdir().expect("temporary capability root");
-        std::fs::write(root.path().join("config.txt"), "hello").expect("fixture file");
-
-        let mut runtime = Runtime::new().expect("runtime");
-        let mut vm = runtime
-            .spawn(
-                DIR_READ_FILE_INTO,
-                Capabilities {
-                    dir_root: Some(root.path().to_owned()),
-                    dir_read: true,
-                    ..Default::default()
-                },
-                4,
-            )
-            .expect("Dir read capability links both imports");
-        vm.run().expect("Dir -> File -> bounded read");
-        let memory = vm.instance.get_memory(&mut vm.store, "memory").expect("memory");
-        assert_eq!(&memory.data(&vm.store)[128..133], b"hello");
-        assert_eq!(memory.data(&vm.store)[256..260], 5_i32.to_le_bytes());
     }
 
     #[test]
@@ -1411,24 +1098,6 @@ fi
             local.get $ptr))
     "#;
 
-    const BYTE_EXPORT_SPINNER: &str = r#"
-        (module
-          (memory (export "memory") 1)
-          (global $heap (mut i32) (i32.const 64))
-          (func (export "__galloc") (param $size i32) (result i32)
-            (local $ptr i32)
-            global.get $heap
-            local.tee $ptr
-            local.get $size
-            i32.add
-            global.set $heap
-            local.get $ptr)
-          (func (export "__export_export_spin") (param i32 i32) (result i32)
-            (loop $forever
-              br $forever)
-            i32.const 0))
-    "#;
-
     #[test]
     fn byte_export_round_trips_non_utf8_and_enforces_output_limit() {
         let mut runtime = Runtime::new().unwrap();
@@ -1452,48 +1121,6 @@ fi
     }
 
     #[test]
-    fn byte_export_budget_interrupts_and_success_cancels_watchdog_promptly() {
-        let mut runtime = Runtime::new().unwrap();
-        let mut spinner = runtime
-            .spawn(BYTE_EXPORT_SPINNER, Capabilities::none(), 2)
-            .unwrap();
-        let error = runtime
-            .invoke_bytes_with_budget(
-                &mut spinner,
-                "__export_export_spin",
-                b"",
-                1,
-                Duration::from_millis(20),
-            )
-            .unwrap_err();
-        assert!(
-            matches!(error.downcast_ref::<wasmtime::Trap>(), Some(wasmtime::Trap::Interrupt)),
-            "expected an interrupt trap, got: {error}"
-        );
-
-        let mut echo = runtime
-            .spawn(BYTE_EXPORT_ECHO, Capabilities::none(), 2)
-            .unwrap();
-        let started = std::time::Instant::now();
-        assert_eq!(
-            runtime
-                .invoke_bytes_with_budget(
-                    &mut echo,
-                    "__export_export_echo",
-                    b"ok",
-                    2,
-                    Duration::from_secs(2),
-                )
-                .unwrap(),
-            b"ok"
-        );
-        assert!(
-            started.elapsed() < Duration::from_secs(1),
-            "successful invocation waited for the watchdog budget"
-        );
-    }
-
-    #[test]
     fn read_wstr_list_huge_count_fails_closed_not_aborts() {
         // SEC-033: a guest claiming i32::MAX elements in a tiny buffer must NOT pre-allocate
         // ~51GB and abort the host — the capacity hint is capped at the slots that fit in
@@ -1506,18 +1133,6 @@ fi
         );
     }
 
-    // RFC-0023 checked heap: a `heap_register(start,end)` poisons the trailing
-    // redzone; the post-run sweep proves it survived. A clean object passes; a write
-    // past the object end into the redzone — in-bounds for the linear memory, so
-    // invisible to wasmtime — is caught.
-    const HEAP_OK: &str = r#"
-        (module
-          (import "witchy" "heap_register" (func $reg (param i32 i32)))
-          (memory (export "memory") 1)
-          (func (export "run")
-            (call $reg (i32.const 16) (i32.const 32))))
-    "#;
-
     const HEAP_OVERRUN: &str = r#"
         (module
           (import "witchy" "heap_register" (func $reg (param i32 i32)))
@@ -1526,26 +1141,6 @@ fi
             (call $reg (i32.const 16) (i32.const 32))
             (i32.store (i32.const 32) (i32.const 0))))
     "#;
-
-    // SEC-035: read_line_capped consumes exactly one line per call (leaving the rest for
-    // the next recv — line protocols depend on this) and returns the remainder at EOF.
-    #[test]
-    fn read_line_capped_splits_one_line_per_call() {
-        use std::io::BufReader;
-        let data = b"hello\nworld\ntail-no-newline";
-        let mut r = BufReader::new(&data[..]);
-        assert_eq!(crate::net::read_line_capped(&mut r).unwrap(), b"hello\n");
-        assert_eq!(crate::net::read_line_capped(&mut r).unwrap(), b"world\n");
-        assert_eq!(crate::net::read_line_capped(&mut r).unwrap(), b"tail-no-newline");
-        assert_eq!(crate::net::read_line_capped(&mut r).unwrap(), b""); // EOF
-    }
-
-    #[test]
-    fn heap_check_clean_redzone_passes() {
-        let mut rt = Runtime::new().unwrap();
-        let mut vm = rt.spawn(HEAP_OK, Capabilities::none(), 4).unwrap();
-        vm.run().expect("an untouched redzone must pass the sweep");
-    }
 
     #[test]
     fn heap_check_overrun_redzone_traps() {
@@ -1556,95 +1151,6 @@ fi
             err.to_string().contains("HEAP CHECK"),
             "an overrun into the redzone must trap the sweep, got: {err}"
         );
-    }
-
-    // A region/watermark reset moves $heap back and reuses the space. `heap_frontier(wm)`
-    // is the reclaim signal (emitted by the checked `$ensure` and the region copy-out): it
-    // drops every redzone reaching `wm`, so the reused space's legitimate overwrite (here,
-    // the i64 store over A's old redzone) is NOT later mistaken for an overrun.
-    const HEAP_REGION_REUSE: &str = r#"
-        (module
-          (import "witchy" "heap_register" (func $reg (param i32 i32)))
-          (import "witchy" "heap_frontier" (func $reclaim (param i32)))
-          (memory (export "memory") 1)
-          (func (export "run")
-            (call $reg (i32.const 16) (i32.const 20))   ;; A [16,20), redzone [20,28)
-            (call $reclaim (i32.const 16))              ;; reset to wm=16 reclaims A's redzone
-            (i64.store (i32.const 20) (i64.const 123))  ;; reused space overwritten (legit)
-            (call $reg (i32.const 16) (i32.const 28))))  ;; B re-registered at the base
-    "#;
-
-    #[test]
-    fn heap_check_region_reuse_does_not_false_positive() {
-        let mut rt = Runtime::new().unwrap();
-        let mut vm = rt.spawn(HEAP_REGION_REUSE, Capabilities::none(), 4).unwrap();
-        vm.run().expect("a reclaim of the watermark must drop the stale redzone");
-    }
-
-    // The reclaim must NOT drop a redzone that lies entirely below the watermark — a
-    // pre-region object stays guarded across the region.
-    const HEAP_RECLAIM_KEEPS_BELOW: &str = r#"
-        (module
-          (import "witchy" "heap_register" (func $reg (param i32 i32)))
-          (import "witchy" "heap_frontier" (func $reclaim (param i32)))
-          (memory (export "memory") 1)
-          (func (export "run")
-            (call $reg (i32.const 16) (i32.const 20))   ;; A [16,20), redzone [20,28)
-            (call $reclaim (i32.const 28))              ;; wm=28 is above A's whole redzone
-            (i32.store (i32.const 20) (i32.const 0))))   ;; corrupt A's still-guarded redzone
-    "#;
-
-    #[test]
-    fn heap_check_reclaim_keeps_redzone_below_watermark() {
-        let mut rt = Runtime::new().unwrap();
-        let mut vm = rt.spawn(HEAP_RECLAIM_KEEPS_BELOW, Capabilities::none(), 4).unwrap();
-        let err = vm.run().map(|_| ()).unwrap_err();
-        assert!(
-            err.to_string().contains("HEAP CHECK"),
-            "a redzone below the reclaim watermark must stay guarded, got: {err}"
-        );
-    }
-
-    const HEAP_UNREGISTER_IDEMPOTENT: &str = r#"
-        (module
-          (import "witchy" "heap_register" (func $reg (param i32 i32)))
-          (import "witchy" "heap_unregister" (func $unreg (param i32)))
-          (memory (export "memory") 1)
-          (func (export "run")
-            (call $reg (i32.const 16) (i32.const 20))
-            (call $reg (i32.const 32) (i32.const 36))
-            (call $unreg (i32.const 16))
-            (call $unreg (i32.const 16))
-            ;; Retired A's redzone may be overwritten; B's remains intact.
-            (i64.store (i32.const 20) (i64.const 0))))
-    "#;
-
-    const HEAP_UNREGISTER_KEEPS_ADJACENT: &str = r#"
-        (module
-          (import "witchy" "heap_register" (func $reg (param i32 i32)))
-          (import "witchy" "heap_unregister" (func $unreg (param i32)))
-          (memory (export "memory") 1)
-          (func (export "run")
-            (call $reg (i32.const 16) (i32.const 20))
-            (call $reg (i32.const 32) (i32.const 36))
-            (call $unreg (i32.const 16))
-            ;; Exact retirement must leave B's higher redzone guarded.
-            (i32.store (i32.const 36) (i32.const 0))))
-    "#;
-
-    #[test]
-    fn heap_unregister_is_idempotent_for_one_exact_object() {
-        let mut rt = Runtime::new().unwrap();
-        let mut vm = rt.spawn(HEAP_UNREGISTER_IDEMPOTENT, Capabilities::none(), 4).unwrap();
-        vm.run().expect("retiring the same exact object twice must be harmless");
-    }
-
-    #[test]
-    fn heap_unregister_keeps_higher_adjacent_redzones_guarded() {
-        let mut rt = Runtime::new().unwrap();
-        let mut vm = rt.spawn(HEAP_UNREGISTER_KEEPS_ADJACENT, Capabilities::none(), 4).unwrap();
-        let err = vm.run().expect_err("retiring A must not retire adjacent B");
-        assert!(err.to_string().contains("HEAP CHECK"), "adjacent B lost protection: {err}");
     }
 
     fn checked_uaf_module(double_free: bool) -> Vec<u8> {
@@ -1794,13 +1300,6 @@ fi
         witchy_wir::wir_encode::try_encode_with_gc_source_map(&module, &[], &[])
             .map(|encoded| encoded.wasm)
             .expect("combined checked-UAF fixture must encode")
-    }
-
-    #[test]
-    fn checked_uaf_unregisters_only_the_freed_cell_before_full_poison() {
-        let mut rt = Runtime::new().unwrap();
-        let mut vm = rt.spawn(checked_uaf_module(false), Capabilities::none(), 4).unwrap();
-        vm.run().expect("full-cell poison must retire only the freed object's redzone");
     }
 
     #[test]
@@ -1955,323 +1454,6 @@ fn empty_network_grant_remains_distinct_from_no_network_grant() {
     assert!(empty.network.connect_requested);
     assert!(empty.network.connect_tcp_ports.is_empty());
     assert!(empty.syscall_classes.contains(&SyscallClass::Network));
-}
-
-#[cfg(feature = "test-fixtures")]
-#[test]
-fn compiled_basic_fixtures_use_one_shared_host_and_transcript() {
-    use witchy_testkit::{
-        ClockFixture, ConsoleFixture, EnvFixture, Expectations, FixtureFamily, FixtureOutcome,
-        FixturePlan, FixtureStep, FixtureValue, RandFixture, U64Text,
-    };
-
-    const MODULE: &str = r#"
-        (module
-          (import "witchy" "print" (func $print (param i32 i32)))
-          (import "witchy" "console_read_len" (func $read (result i32)))
-          (import "witchy" "now" (func $now (result i64)))
-          (import "witchy" "now_monotonic" (func $mono (result i64)))
-          (import "witchy" "rand_u64" (func $rand (result i64)))
-          (import "witchy" "mint_env" (func $mint_env (result externref)))
-          (import "witchy" "env_len" (func $env_len (param externref i32) (result i32)))
-          (import "witchy" "args_size" (func $args_size (result i32)))
-          (memory (export "memory") 1)
-          (data (i32.const 0) "hello\0a")
-          (data (i32.const 16) "\04\00\00\00MODE")
-          (func (export "run") (local $env externref)
-            i32.const 0
-            i32.const 6
-            call $print
-            call $read
-            drop
-            call $now
-            drop
-            call $mono
-            drop
-            call $rand
-            drop
-            call $mint_env
-            local.set $env
-            local.get $env
-            i32.const 16
-            call $env_len
-            drop
-            call $args_size
-            drop))
-    "#;
-    let plan = FixturePlan {
-        version: 1,
-        console: Some(ConsoleFixture {
-            script: vec![
-                console_output_step("hello"),
-                FixtureStep {
-                    operation: "console_read_len".to_owned(),
-                    target: None,
-                    arguments: std::collections::BTreeMap::new(),
-                    effective_rights: Some(vec!["Read".to_owned()]),
-                    outcome: FixtureOutcome::Return {
-                        value: FixtureValue::String("fixture input".to_owned()),
-                    },
-                    required: true,
-                },
-            ],
-        }),
-        clock: Some(ClockFixture {
-            start_ns: Some(U64Text::new(2_000_000)),
-            step_ns: Some(U64Text::new(1_000_000)),
-            repeat_last: false,
-            script: Vec::new(),
-        }),
-        rand: Some(RandFixture {
-            seed: Some(U64Text::new(7)),
-            script: Vec::new(),
-        }),
-        env: Some(EnvFixture {
-            values: std::collections::BTreeMap::from([(
-                "MODE".to_owned(),
-                "fixture".to_owned(),
-            )]),
-            allow: vec!["MODE".to_owned()],
-            script: Vec::new(),
-        }),
-        argv: Some(vec!["one".to_owned()]),
-        expectations: Expectations::default(),
-        ..FixturePlan::default()
-    };
-    let mut runtime = Runtime::batch().expect("runtime");
-    let outcome = runtime
-        .run_fixtures(MODULE, plan, 2)
-        .expect("compiled fixture run");
-    assert!(matches!(outcome.result, FixtureWasmResult::Passed));
-    assert_eq!(outcome.output, vec!["hello"]);
-    assert_eq!(outcome.transcript.stdout, vec!["hello"]);
-    assert_eq!(
-        outcome
-            .transcript
-            .events
-            .iter()
-            .map(|event| (event.family, event.operation.as_str()))
-            .collect::<Vec<_>>(),
-        vec![
-            (FixtureFamily::Env, "mint_env"),
-            (FixtureFamily::Console, "print"),
-            (FixtureFamily::Console, "console_read_len"),
-            (FixtureFamily::Clock, "now"),
-            (FixtureFamily::Clock, "now"),
-            (FixtureFamily::Rand, "rand_u64"),
-            (FixtureFamily::Env, "env_len"),
-            (FixtureFamily::Argv, "args"),
-        ]
-    );
-}
-
-#[cfg(feature = "test-fixtures")]
-#[test]
-fn compiled_filesystem_fixture_uses_opaque_handles_and_shared_state() {
-    use witchy_testkit::{
-        FilesystemEntry, FilesystemFixture, FixtureFamily, FixturePlan,
-    };
-
-    const MODULE: &str = r#"
-        (module
-          (import "witchy" "mint_dir" (func $mint_dir (param i32) (result externref)))
-          (import "witchy" "dir_read_len"
-            (func $dir_read_len (param externref i32) (result i32)))
-          (import "witchy" "dir_write"
-            (func $dir_write (param externref i32 i32)))
-          (import "witchy" "dir_exists"
-            (func $dir_exists (param externref i32) (result i32)))
-          (memory (export "memory") 1)
-          (data (i32.const 0) "\08\00\00\00seed.txt")
-          (data (i32.const 32) "\07\00\00\00new.txt")
-          (data (i32.const 64) "\03\00\00\00new")
-          (func (export "run") (local $dir externref)
-            i32.const 0
-            call $mint_dir
-            local.set $dir
-            local.get $dir
-            i32.const 0
-            call $dir_read_len
-            drop
-            local.get $dir
-            i32.const 32
-            i32.const 64
-            call $dir_write
-            local.get $dir
-            i32.const 32
-            call $dir_exists
-            drop
-            local.get $dir
-            i32.const 32
-            call $dir_read_len
-            drop))
-    "#;
-    let plan = FixturePlan {
-        version: 1,
-        filesystem: Some(FilesystemFixture {
-            entries: std::collections::BTreeMap::from([(
-                "seed.txt".to_owned(),
-                FilesystemEntry::File {
-                    hex: "6f6c64".to_owned(),
-                },
-            )]),
-            rights: vec!["Read".to_owned(), "Write".to_owned()],
-            entry_policy: None,
-            script: Vec::new(),
-        }),
-        ..FixturePlan::default()
-    };
-    let mut runtime = Runtime::batch().expect("runtime");
-    let outcome = runtime
-        .run_fixtures(MODULE, plan, 2)
-        .expect("compiled fixture run");
-    assert!(matches!(outcome.result, FixtureWasmResult::Passed));
-    assert_eq!(
-        outcome
-            .transcript
-            .events
-            .iter()
-            .map(|event| (event.family, event.operation.as_str()))
-            .collect::<Vec<_>>(),
-        vec![
-            (FixtureFamily::Filesystem, "mint_dir"),
-            (FixtureFamily::Filesystem, "dir_read_len"),
-            (FixtureFamily::Filesystem, "dir_write"),
-            (FixtureFamily::Filesystem, "dir_exists"),
-            (FixtureFamily::Filesystem, "dir_read_len"),
-        ]
-    );
-}
-
-#[cfg(feature = "test-fixtures")]
-#[test]
-fn compiled_fetch_fixture_stages_success_and_provider_failures_without_network() {
-    use witchy_testkit::{
-        ConsoleFixture, FetchFixture, FixtureErrorCode, FixtureFailure, FixtureFamily,
-        FixtureOutcome, FixturePlan, FixtureStep, FixtureValue,
-    };
-
-    const URL: &str = "https://example.com/data";
-    const RESPONSE: &str = "HTTP/1.1 200\r\nX-Test: fixture\r\n\r\nok";
-    const TIMEOUT: &str = "WITCHY_FETCH_ERROR:timeout:configured timeout";
-    const MODULE: &str = r#"
-        (module
-          (import "witchy" "mint_fetch" (func $mint_fetch (param i32) (result externref)))
-          (import "witchy" "fetch_send_len"
-            (func $fetch_send_len (param externref i32 i32 i32 i32) (result i32)))
-          (import "witchy" "fill_pending" (func $fill_pending (param i32)))
-          (import "witchy" "print" (func $print (param i32 i32)))
-          (memory (export "memory") 1)
-          (data (i32.const 0) "\03\00\00\00GET")
-          (data (i32.const 32) "\18\00\00\00https://example.com/data")
-          (data (i32.const 96) "\00\00\00\00")
-          (data (i32.const 104) "\00\00\00\00")
-          (func (export "run") (local $fetch externref) (local $length i32)
-            i32.const 0
-            call $mint_fetch
-            local.set $fetch
-            local.get $fetch
-            i32.const 0
-            i32.const 32
-            i32.const 96
-            i32.const 104
-            call $fetch_send_len
-            local.set $length
-            i32.const 256
-            call $fill_pending
-            i32.const 256
-            local.get $length
-            call $print
-            local.get $fetch
-            i32.const 0
-            i32.const 32
-            i32.const 96
-            i32.const 104
-            call $fetch_send_len
-            local.set $length
-            i32.const 256
-            call $fill_pending
-            i32.const 256
-            local.get $length
-            call $print))
-    "#;
-    let request_arguments = std::collections::BTreeMap::from([
-        ("method".to_owned(), FixtureValue::String("GET".to_owned())),
-        ("headers".to_owned(), FixtureValue::List(Vec::new())),
-        ("body".to_owned(), FixtureValue::Bytes(String::new())),
-    ]);
-    let plan = FixturePlan {
-        version: 1,
-        console: Some(ConsoleFixture {
-            script: vec![
-                console_output_step(RESPONSE),
-                console_output_step(TIMEOUT),
-            ],
-        }),
-        fetch: Some(FetchFixture {
-            origins: vec!["https://example.com:443".to_owned()],
-            script: vec![
-                FixtureStep {
-                    operation: "fetch_send_len".to_owned(),
-                    target: Some(URL.to_owned()),
-                    arguments: request_arguments.clone(),
-                    effective_rights: Some(vec!["https://example.com:443".to_owned()]),
-                    outcome: FixtureOutcome::Return {
-                        value: FixtureValue::Map(std::collections::BTreeMap::from([
-                            ("status".to_owned(), FixtureValue::String("200".to_owned())),
-                            (
-                                "headers".to_owned(),
-                                FixtureValue::List(vec![FixtureValue::Map(
-                                    std::collections::BTreeMap::from([
-                                        (
-                                            "name".to_owned(),
-                                            FixtureValue::String("X-Test".to_owned()),
-                                        ),
-                                        (
-                                            "value".to_owned(),
-                                            FixtureValue::String("fixture".to_owned()),
-                                        ),
-                                    ]),
-                                )]),
-                            ),
-                            ("body".to_owned(), FixtureValue::Bytes("6f6b".to_owned())),
-                        ])),
-                    },
-                    required: true,
-                },
-                FixtureStep {
-                    operation: "fetch_send_len".to_owned(),
-                    target: Some(URL.to_owned()),
-                    arguments: request_arguments,
-                    effective_rights: Some(vec!["https://example.com:443".to_owned()]),
-                    outcome: FixtureOutcome::Fail {
-                        error: FixtureFailure {
-                            code: FixtureErrorCode::Timeout,
-                            message: "configured timeout".to_owned(),
-                        },
-                    },
-                    required: true,
-                },
-            ],
-        }),
-        ..FixturePlan::default()
-    };
-    let mut runtime = Runtime::batch().expect("runtime");
-    let outcome = runtime
-        .run_fixtures(MODULE, plan, 2)
-        .expect("compiled fixture run");
-    assert!(matches!(outcome.result, FixtureWasmResult::Passed));
-    assert_eq!(outcome.output, vec![RESPONSE, TIMEOUT]);
-    assert_eq!(
-        outcome
-            .transcript
-            .events
-            .iter()
-            .filter(|event| event.family == FixtureFamily::Fetch)
-            .map(|event| event.operation.as_str())
-            .collect::<Vec<_>>(),
-        vec!["mint_fetch", "fetch_send_len", "fetch_send_len"]
-    );
 }
 
 #[cfg(feature = "test-fixtures")]
@@ -2437,118 +1619,6 @@ fn compiled_secret_fixture_keeps_material_opaque_and_scripts_crypto() {
 }
 
 #[cfg(feature = "test-fixtures")]
-#[test]
-fn compiled_exec_fixture_uses_allowlisted_script_without_spawning() {
-    use witchy_testkit::{
-        ConsoleFixture, ExecFixture, FilesystemEntry, FilesystemFixture, FixtureFamily,
-        FixtureOutcome, FixturePlan, FixtureStep, FixtureValue,
-    };
-
-    const PAYLOAD: &str = "7\nouterr";
-    const MODULE: &str = r#"
-        (module
-          (import "witchy" "mint_dir" (func $mint_dir (param i32) (result externref)))
-          (import "witchy" "mint_exec" (func $mint_exec (result externref)))
-          (import "witchy" "exec_run"
-            (func $exec_run (param externref externref i32 i32 i32) (result i32)))
-          (import "witchy" "fill_pending" (func $fill_pending (param i32)))
-          (import "witchy" "print" (func $print (param i32 i32)))
-          (memory (export "memory") 1)
-          (data (i32.const 0) "\04\00\00\00tool")
-          (data (i32.const 32) "\07\00\00\00--check")
-          (data (i32.const 64) "\05\00\00\00input")
-          (func (export "run")
-            (local $dir externref)
-            (local $exec externref)
-            (local $length i32)
-            i32.const 0
-            call $mint_dir
-            local.set $dir
-            call $mint_exec
-            local.set $exec
-            local.get $exec
-            local.get $dir
-            i32.const 0
-            i32.const 32
-            i32.const 64
-            call $exec_run
-            local.set $length
-            i32.const 256
-            call $fill_pending
-            i32.const 256
-            local.get $length
-            call $print))
-    "#;
-    let plan = FixturePlan {
-        version: 1,
-        console: Some(ConsoleFixture {
-            script: vec![console_output_step(PAYLOAD)],
-        }),
-        filesystem: Some(FilesystemFixture {
-            entries: std::collections::BTreeMap::from([(
-                "tool".to_owned(),
-                FilesystemEntry::File {
-                    hex: "66697874757265".to_owned(),
-                },
-            )]),
-            rights: vec!["Read".to_owned()],
-            entry_policy: None,
-            script: Vec::new(),
-        }),
-        exec: Some(ExecFixture {
-            tools: vec!["tool".to_owned()],
-            script: vec![FixtureStep {
-                operation: "exec_run".to_owned(),
-                target: Some("tool".to_owned()),
-                arguments: std::collections::BTreeMap::from([
-                    (
-                        "args".to_owned(),
-                        FixtureValue::List(vec![FixtureValue::String("--check".to_owned())]),
-                    ),
-                    (
-                        "stdin".to_owned(),
-                        FixtureValue::String("input".to_owned()),
-                    ),
-                ]),
-                effective_rights: Some(vec!["exec:tool".to_owned(), "dir:Read".to_owned()]),
-                outcome: FixtureOutcome::Return {
-                    value: FixtureValue::Map(std::collections::BTreeMap::from([
-                        (
-                            "exit_code".to_owned(),
-                            FixtureValue::String("7".to_owned()),
-                        ),
-                        ("stdout".to_owned(), FixtureValue::String("out".to_owned())),
-                        ("stderr".to_owned(), FixtureValue::String("err".to_owned())),
-                    ])),
-                },
-                required: true,
-            }],
-        }),
-        ..FixturePlan::default()
-    };
-    let mut runtime = Runtime::batch().expect("runtime");
-    let outcome = runtime
-        .run_fixtures(MODULE, plan, 2)
-        .expect("compiled fixture run");
-    assert!(matches!(outcome.result, FixtureWasmResult::Passed));
-    assert_eq!(outcome.output, vec![PAYLOAD]);
-    assert_eq!(
-        outcome
-            .transcript
-            .events
-            .iter()
-            .map(|event| (event.family, event.operation.as_str()))
-            .collect::<Vec<_>>(),
-        vec![
-            (FixtureFamily::Filesystem, "mint_dir"),
-            (FixtureFamily::Exec, "mint_exec"),
-            (FixtureFamily::Exec, "exec_run"),
-            (FixtureFamily::Console, "print"),
-        ]
-    );
-}
-
-#[cfg(feature = "test-fixtures")]
 fn console_output_step(text: &str) -> witchy_testkit::FixtureStep {
     use witchy_testkit::{FixtureOutcome, FixtureStep, FixtureValue};
 
@@ -2564,46 +1634,6 @@ fn console_output_step(text: &str) -> witchy_testkit::FixtureStep {
             value: FixtureValue::Null,
         },
         required: true,
-    }
-}
-
-#[test]
-fn profiling_strategies_can_be_configured() {
-    let empty = LayoutBundle::from_interner(&LayoutInterner::new(), [])
-        .expect("empty canonical layout bundle");
-    let valid = wasm_with_layout_payload(empty.canonical_bytes());
-
-    assert_eq!(
-        Runtime::profiling_strategy_from_name("perfmap"),
-        Some(wasmtime::ProfilingStrategy::PerfMap)
-    );
-    assert_eq!(
-        Runtime::profiling_strategy_from_name("jitdump"),
-        Some(wasmtime::ProfilingStrategy::JitDump)
-    );
-    assert_eq!(
-        Runtime::profiling_strategy_from_name("vtune"),
-        Some(wasmtime::ProfilingStrategy::VTune)
-    );
-    assert_eq!(
-        Runtime::profiling_strategy_from_name("none"),
-        Some(wasmtime::ProfilingStrategy::None)
-    );
-    assert_eq!(
-        Runtime::profiling_strategy_from_name("invalid_xyz"),
-        None
-    );
-
-    for strategy in [
-        wasmtime::ProfilingStrategy::None,
-        wasmtime::ProfilingStrategy::PerfMap,
-        wasmtime::ProfilingStrategy::JitDump,
-    ] {
-        let mut runtime = Runtime::batch_with_profiler(strategy)
-            .expect("runtime initialization with profiling strategy");
-        runtime
-            .spawn(&valid, Capabilities::none(), 4)
-            .expect("module instantiation with profiling strategy");
     }
 }
 

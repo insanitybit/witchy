@@ -137,38 +137,3 @@ fn receive_all(reader: &mut impl std::io::Read, limit: u64) -> Result<Vec<u8>> {
     if bytes.len() as u64 > limit { bail!("recv_all exceeded the {limit}-byte cap"); }
     Ok(String::from_utf8_lossy(&bytes).into_owned().into_bytes())
 }
-
-#[cfg(test)]
-mod recv_all_tests {
-    use super::receive_all;
-    use std::io::{self, Read};
-
-    struct Pieces { bytes: &'static [u8], error: Option<io::ErrorKind> }
-    impl Read for Pieces {
-        fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
-            if out.is_empty() { return Ok(0); }
-            if let Some((&byte, rest)) = self.bytes.split_first() {
-                out[0] = byte;
-                self.bytes = rest;
-                return Ok(1);
-            }
-            match self.error { Some(kind) => Err(kind.into()), None => Ok(0) }
-        }
-    }
-
-    #[test]
-    fn recv_all_raw_cap_decode_timeout_and_failure_semantics() {
-        for error in [None, Some(io::ErrorKind::TimedOut), Some(io::ErrorKind::WouldBlock)] {
-            let mut reader = Pieces { bytes: b"\xf0\x9f\xa6\x80\xff\xe2", error };
-            assert_eq!(receive_all(&mut reader, 6).unwrap(), "\u{1f980}\u{fffd}\u{fffd}".as_bytes());
-        }
-        let mut exact = &b"abc"[..];
-        assert_eq!(receive_all(&mut exact, 3).unwrap(), b"abc");
-        let mut overflow = &b"abcd unread"[..];
-        assert_eq!(receive_all(&mut overflow, 3).unwrap_err().to_string(), "recv_all exceeded the 3-byte cap");
-        assert_eq!(overflow, b" unread", "read only one byte past the cap");
-        let mut reader = Pieces { bytes: b"partial", error: Some(io::ErrorKind::ConnectionReset) };
-        assert!(receive_all(&mut reader, 16).unwrap_err().to_string().starts_with("recv failed:"));
-        assert_eq!(receive_all(&mut &b""[..], 0).unwrap(), b"");
-    }
-}

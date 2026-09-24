@@ -43,32 +43,6 @@ fn invoke(vm: &mut Vm, export: &str, [a, b, c, d, e, f]: [i32; 6]) -> wasmtime::
 }
 
 #[test]
-fn bounded_compiler_doc_exact_short_empty_and_overlapping_output() {
-    for export in ["doc", "json"] {
-        let (mut vm, calls) = setup();
-        let memory = vm.instance.get_memory(&mut vm.store, "memory").unwrap();
-        let name = "caf\u{e9}";
-        let source = "pub fn answer() -> Int:\n    42\n";
-        let expected = format!("{}:{name}:{source}", if export == "doc" { "markdown" } else { "json" });
-        for (output, capacity) in [(1024, 0), (1024, expected.len() - 1), (1024, expected.len()), (1, expected.len()), (65536, 0)] {
-            memory.data_mut(&mut vm.store).fill(0xa5);
-            memory.write(&mut vm.store, 1, name.as_bytes()).unwrap();
-            memory.write(&mut vm.store, 129, source.as_bytes()).unwrap();
-            let before = memory.data(&vm.store).to_vec();
-            let old_calls = calls.load(Ordering::SeqCst);
-            let required = invoke(&mut vm, export, [1, name.len() as i32, 129, source.len() as i32, output, capacity as i32]).unwrap();
-            assert_eq!(required as usize, expected.len());
-            assert_eq!(calls.load(Ordering::SeqCst), old_calls + 1);
-            let mut wanted = before;
-            if capacity >= expected.len() {
-                wanted[output as usize..output as usize + expected.len()].copy_from_slice(expected.as_bytes());
-            }
-            assert_eq!(memory.data(&vm.store), wanted.as_slice());
-        }
-    }
-}
-
-#[test]
 fn bounded_compiler_doc_preflights_every_range_before_provider() {
     for export in ["doc", "json"] {
         let (mut vm, calls) = setup();

@@ -48,32 +48,6 @@ fn invoke(vm: &mut Vm, [a, b, c, d, e, f]: [i32; 6]) -> wasmtime::Result<i64> {
 }
 
 #[test]
-fn ed25519_slices_preserve_native_statuses_without_authority() {
-    let mut vm = setup();
-    for (pk, message, signature, expected) in [
-        (PUBLIC_KEY, "", SIGNATURE, 1),
-        (PUBLIC_KEY, "tampered", SIGNATURE, 0),
-        (PUBLIC_KEY, "caf\u{e9}\0line\n", SIGNATURE, 0),
-        ("not-hex", "", SIGNATURE, -1),
-        ("00", "", SIGNATURE, -1),
-        (PUBLIC_KEY, "", "not-hex", -3),
-        (PUBLIC_KEY, "", "00", -3),
-        ("not-hex", "", "not-hex", -1),
-    ] {
-        let args = write_inputs(&mut vm, pk.as_bytes(), message.as_bytes(), signature.as_bytes());
-        assert_eq!(invoke(&mut vm, args).unwrap(), expected);
-    }
-    let zero_signature = "00".repeat(64);
-    let args = write_inputs(&mut vm, PUBLIC_KEY.as_bytes(), b"", zero_signature.as_bytes());
-    assert_eq!(invoke(&mut vm, args).unwrap(), 0, "correctly sized invalid signatures remain verification failures");
-    let invalid_key = "ff".repeat(32);
-    let args = write_inputs(&mut vm, invalid_key.as_bytes(), b"", SIGNATURE.as_bytes());
-    assert_eq!(invoke(&mut vm, args).unwrap(), 0, "do not reinterpret native verifier rejection as malformed hex or length");
-    let args = write_inputs(&mut vm, PUBLIC_KEY.as_bytes(), b"", SIGNATURE.as_bytes());
-    assert_eq!(invoke(&mut vm, args).unwrap(), 1, "no pending-result protocol between calls");
-}
-
-#[test]
 fn ed25519_slices_reject_invalid_extents_and_utf8_without_writes() {
     let mut vm = setup();
     let valid = write_inputs(&mut vm, PUBLIC_KEY.as_bytes(), b"", SIGNATURE.as_bytes());

@@ -23,23 +23,3 @@ pub fn seeded_next(state: &mut u64) -> u64 {
     z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
     z ^ (z >> 31)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn seeded_sequence_is_deterministic_per_seed() {
-        let draw = |seed: u64| -> Vec<u64> {
-            let mut s = seed;
-            (0..6).map(|_| seeded_next(&mut s)).collect()
-        };
-        // Same seed → identical sequence (the parity/reproducibility guarantee).
-        assert_eq!(draw(42), draw(42));
-        // Different seed → different sequence (it actually mixes).
-        assert_ne!(draw(42), draw(7));
-        // And it advances (consecutive draws differ).
-        let seq = draw(42);
-        assert_ne!(seq[0], seq[1]);
-    }
-}

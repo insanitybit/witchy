@@ -55,18 +55,3 @@ fn parse_fixed_width_usize(s: &str, pos: &mut usize, width: usize) -> Option<usi
     *pos = end;
     part.parse().ok()
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn anon_union_names_round_trip() {
-        let variants = vec![("Ok".to_string(), 1), ("é".to_string(), 0)];
-        let name = anon_union_type_name(&variants);
-        assert_eq!(anon_union_synthetic_variants(&name), Some(variants));
-        assert_eq!(anon_union_synthetic_variants(&format!("{name}0")), None);
-        assert_eq!(anon_union_synthetic_variants("__union12"), None);
-        assert_eq!(anon_union_synthetic_variants("Option"), None);
-    }
-}

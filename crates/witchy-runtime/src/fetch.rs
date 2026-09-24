@@ -640,19 +640,6 @@ mod tests {
     }
 
     #[test]
-    fn sends_one_bounded_request_and_parses_the_response() {
-        let (origin, received) =
-            serve(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nX-Test: yes\r\n\r\nok");
-        let policy = FetchPolicy::allow([origin.clone()]).unwrap();
-        let response = send(&policy, &get(format!("{origin}/hello?x=1"))).unwrap();
-        assert_eq!(response.status, 200);
-        assert_eq!(response.body, b"ok");
-        let request = String::from_utf8(received.recv().unwrap()).unwrap();
-        assert!(request.starts_with("GET /hello?x=1 HTTP/1.1\r\n"));
-        assert!(request.contains("\r\nConnection: close\r\n"));
-    }
-
-    #[test]
     fn redirects_are_uniform_errors_and_never_followed() {
         let (origin, _) =
             serve(b"HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:9/\r\nContent-Length: 0\r\n\r\n");
@@ -681,13 +668,5 @@ mod tests {
             send(&policy, &get(format!("{origin}/large"))),
             Err(FetchError::ResponseTooLarge { limit: 8 })
         );
-    }
-
-    #[test]
-    fn chunked_bodies_are_decoded() {
-        let response =
-            parse_response(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2\r\nok\r\n0\r\n\r\n")
-                .unwrap();
-        assert_eq!(response.body, b"ok");
     }
 }

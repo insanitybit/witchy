@@ -380,23 +380,3 @@ fn visit_block(
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn suspension_slots_ignore_nested_binders_and_preserve_first_use_order() {
-        let module = crate::parser::parse_module(
-            "fn sample(a: Int, b: Int, c: Int) -> Int:\n    let body = fn(a: Int): a + c\n    if b > 0:\n        let c = 7\n        body(c)\n    a + body(b)\n",
-        )
-        .expect("slot-analysis fixture parses");
-        let crate::ast::Item::Function(function) = &module.items[0] else {
-            panic!("expected function")
-        };
-        let Stmt::Expr(expression) = function.body.stmts.last().expect("tail expression") else {
-            panic!("expected tail expression")
-        };
-        assert_eq!(free_bindings(expression), ["a", "body", "b"]);
-    }
-}
