@@ -273,3 +273,5 @@ mod rfc0167_frozen_view_matrix;
 mod rfc0167_view_witnesses;
 #[path = "misc/rfc0167_owned_materialization.rs"]
 mod rfc0167_owned_materialization;
+#[path = "misc/rfc0167_mode_transport.rs"]
+mod rfc0167_mode_transport;
