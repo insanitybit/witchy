@@ -5220,15 +5220,17 @@ mod no_copy_tests {
     }
 
     #[test]
-    fn completed_view_retains_a_snapshot_without_losing_root_capacity() {
-        let found = misses(
+    fn completed_view_without_a_liveness_proof_rejects_opt_unique_writeback() {
+        let module = runtime_module(
             "mode opt\n\nfn view(value: &Int) -> &Int:\n    value\n\
              \nfn take(var xs: unique List(Int)) -> ():\n    return\n\
              \nfn bad() -> ():\n    var xs: unique List(Int) = [1]\n    let w = view(&xs[0])\n    let _ = w\n    take(xs)\n    return\n",
         );
+        let error = witchy_types::typeck::check(&module)
+            .expect_err("opt must fail closed before no-copy analysis");
         assert!(
-            found.is_empty(),
-            "a rooted immutable view keeps its snapshot while the owner retains the capacity proof: {found:?}"
+            error.message.contains("preserving the view would require a hidden copy"),
+            "the checker must name the forbidden opt repair: {error:?}"
         );
     }
 
