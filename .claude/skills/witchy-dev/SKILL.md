@@ -354,7 +354,7 @@ handle. Judge by `df`, never `du` — a clone reports its full size.
 ## 4. Landing work: the merge queue
 
 `./scripts/check.sh` is the local green gate (build + clippy + `nextest
---workspace` + the wasm build). But **never run two full gates at once**, and
+--workspace`). But **never run two full gates at once**, and
 **never merge to master while a full gate is running** — it invalidates that
 gate. The coordinator (`scripts/merge-queue.sh`) enforces both. Protocol:
 
@@ -365,10 +365,9 @@ gate. The coordinator (`scripts/merge-queue.sh`) enforces both. Protocol:
    available for unusual explicit path sets (pass `--focused` to restrict
    strictly to touched crates/tests and avoid full workspace builds during
    inner-loop iteration). Shard building blocks:
-   `./scripts/check.sh --fast` (tests minus e2e, clippy overlapped in the
-   background), or `--e2e` / `--examples` / `--wasm` for the section your change
-   touches. A green shard **qualifies** you for the queue; it doesn't replace
-   the full gate.
+   `./scripts/check.sh --fast` (tests, clippy overlapped in the
+   background), or `--examples` for the example matrix. A green shard
+   **qualifies** you for the queue; it doesn't replace the full gate.
 2. **Submit:** `./scripts/merge-queue.sh submit <branch>` — or
    `submit --after <parent-branch> <branch>` if it's stacked on another queued
    change.

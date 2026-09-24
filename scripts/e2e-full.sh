@@ -1,13 +1,11 @@
 #!/usr/bin/env bash
-# The from-scratch acceptance test: build witchy and exercise every major
-# subsystem end to end with asserted outputs — the three backends and their
-# parity, capability auditing and sandbox enforcement, the formatter, the
-# in-language test framework, doc extraction, a multi-rune example project,
-# and the full registry lifecycle including trusted publishing, two-phase
-# release, and the capability-widening gate.
+# The from-scratch compiler acceptance test: build witchy and exercise the
+# compiler toolchain end to end with asserted outputs — backend parity,
+# capability auditing and sandbox enforcement, the formatter, the in-language
+# test framework, and doc extraction.
 #
 #   ./scripts/e2e-full.sh           # everything, including `cargo test`
-#   ./scripts/e2e-full.sh --quick   # skip the Rust test suites (CI runs them
+#   ./scripts/e2e-full.sh --quick   # skip the Rust test suites (the gate runs them
 #                                   # in their own job)
 set -euo pipefail
 
@@ -37,12 +35,7 @@ expect_fails() { # description, command...
 }
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/witchy-e2e.XXXXXX")"
-SERVER_PID=""
 cleanup() {
-    if [ -n "$SERVER_PID" ]; then
-        kill "$SERVER_PID" 2>/dev/null || true
-        wait "$SERVER_PID" 2>/dev/null || true
-    fi
     rm -rf "$WORK"
 }
 trap cleanup EXIT
@@ -58,11 +51,8 @@ BIN="$TARGET_DIR/release/witchy"
 ok "release build"
 
 if [ "$QUICK" = 0 ]; then
-    stage "1. The Rust test suites (unit + package-manager e2e)"
-    # `e2e-tests` is NON-DEFAULT, and a workspace `cargo test` SKIPS a target
-    # whose required features are unmet rather than failing, so without this
-    # the from-scratch acceptance run would quietly stop covering e2e.
-    cargo test --release --quiet --features e2e-tests >/dev/null
+    stage "1. The Rust test suites"
+    cargo test --release --quiet >/dev/null
     ok "cargo test"
 else
     stage "1. (skipped: --quick) Rust test suites"
@@ -196,109 +186,7 @@ fn main(console: Console, net: Net[Connect]):
 EOF
 expect_fails "an address outside the --net allowlist is refused" "$BIN" sandbox "$WORK/dialer.witchy"
 
-stage "7. The registry lifecycle, from nothing"
-export WITCHY_HOME="$WORK/home"
-mkdir -p "$WORK/idp" "$WORK/registry"
-PUBHEX="$("$BIN" coven-gen-issuer --out "$WORK/idp")"
-printf '%064d' 1 > "$WORK/registry-signing.seed"
-PORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')"
-export COVEN_URL="http://127.0.0.1:$PORT"
-"$BIN" coven-serve --addr "127.0.0.1:$PORT" --root "$WORK/registry" \
-    --signing-key "$WORK/registry-signing.seed" \
-    --trust-issuer "local-idp=$PUBHEX" > "$WORK/server.log" 2>&1 &
-SERVER_PID=$!
-# Wait up to ~30s: coven-serve cold-compiles its (sizable) WASM module before it
-# binds, and that can exceed 10s on a loaded or slow CI runner. The readiness
-# probe below is the real gate; this only bounds how long we wait for it.
-for _ in $(seq 1 300); do
-    grep -q "coven serving" "$WORK/server.log" 2>/dev/null && break
-    kill -0 "$SERVER_PID" 2>/dev/null || die "coven-serve exited during startup: $(cat "$WORK/server.log")"
-    sleep 0.1
-done
-grep -q "coven serving" "$WORK/server.log" 2>/dev/null \
-    || die "coven-serve did not become ready at $COVEN_URL: $(cat "$WORK/server.log")"
-ok "coven-serve up at $COVEN_URL"
-
-mint() { "$BIN" coven-mint-token --issuer-key "$WORK/idp" --issuer local-idp "$@"; }
-CI_TOKEN="$(mint --sub "repo:acme/logger-repo:ref:refs/heads/main" \
-    --claim repository=acme/logger-repo --claim workflow_ref=release.yml \
-    --claim ref=refs/heads/main --claim release=1.0.0)"
-ALICE="$(mint --sub alice --claim amr=webauthn --claim release=1.0.0)"
-ok "trusted-publishing identity tokens minted"
-
-mkdir -p "$WORK/logger/src"
-printf '[rune]\nname = "acme/logger"\nversion = "1.0.0"\n' > "$WORK/logger/witchy.toml"
-printf 'pub fn line(s: String) -> String:\n    "[log] " + s\n' > "$WORK/logger/src/logger.witchy"
-set +e
-PUBLISH_OUT="$(cd "$WORK/logger" && WITCHY_USER=ci-bot COVEN_ID_TOKEN="$CI_TOKEN" "$BIN" publish . 2>&1)"
-PUBLISH_CODE=$?
-set -e
-[ "$PUBLISH_CODE" -eq 0 ] || die "trusted publish failed: $PUBLISH_OUT"
-ok "trusted publish (lands STAGED)"
-
-mkdir -p "$WORK/app/src"
-printf '[rune]\nname = "demo/app"\nversion = "0.1.0"\n' > "$WORK/app/witchy.toml"
-expect_fails "a STAGED version is not addable" \
-    env -C "$WORK/app" WITCHY_USER=dev "$BIN" add acme/logger
-(cd "$WORK/logger" && WITCHY_USER=alice COVEN_ID_TOKEN="$ALICE" \
-    "$BIN" promote acme/logger 1.0.0 >/dev/null)
-ok "promote with a second factor (separation of duties)"
-expect_fails "a FRESH release sits out its staging cooldown" \
-    env -C "$WORK/app" WITCHY_USER=dev "$BIN" add acme/logger
-(cd "$WORK/app" && WITCHY_USER=dev "$BIN" add acme/logger --allow-fresh >/dev/null)
-ok "add: fetched over HTTP, signature-verified (--allow-fresh past the cooldown)"
-expect_contains "lockfile pins the registry key" 'registry_rootpub = "' "$(cat "$WORK/app/witchy.lock")"
-expect_contains "vendored record preserves trusted-publishing provenance" \
-    "trusted-publisher" "$(cat "$WORK/app/vendor/logger/coven.json")"
-
-printf 'import logger\n\nfn main(console: Console):\n    console.print(logger.line("hello"))\n' \
-    > "$WORK/app/src/app.witchy"
-# `pm run` drives the app through `Exec`, whose contract concatenates the child's
-# stdout with its stderr (rfcs/0004). When platform confinement is enforced
-# (Linux: Landlock + seccomp), the app's `confinement: layer=...` diagnostic lines
-# (correctly on stderr) are folded into that combined output. They are operational
-# noise, not program output — strip them before comparing, as release-smoke.sh does.
-GOT="$(cd "$WORK/app" && WITCHY_USER=dev "$BIN" run | grep -v '^confinement: layer=')"
-expect_eq "the consumer runs against the fetched rune" "[log] hello" "$GOT"
-
-# The widening gate: v1.1.0 quietly starts demanding Net.
-printf '[rune]\nname = "acme/logger"\nversion = "1.1.0"\n\n[capabilities]\nruntime = ["Net"]\n' \
-    > "$WORK/logger/witchy.toml"
-printf 'pub fn line(s: String) -> String:\n    "[log] " + s\n\npub fn beacon(net: Net, s: String) -> String:\n    s\n' \
-    > "$WORK/logger/src/logger.witchy"
-CI_TOKEN_2="$(mint --sub "repo:acme/logger-repo:ref:refs/heads/main" \
-    --claim repository=acme/logger-repo --claim workflow_ref=release.yml \
-    --claim ref=refs/heads/main --claim release=1.1.0)"
-ALICE_2="$(mint --sub alice --claim amr=webauthn --claim release=1.1.0)"
-set +e
-PUBLISH2_OUT="$(cd "$WORK/logger" && WITCHY_USER=ci-bot COVEN_ID_TOKEN="$CI_TOKEN_2" "$BIN" publish . 2>&1)"
-PUBLISH2_CODE=$?
-set -e
-[ "$PUBLISH2_CODE" -eq 0 ] || die "widened-version publish failed: $PUBLISH2_OUT"
-(cd "$WORK/logger" && WITCHY_USER=alice COVEN_ID_TOKEN="$ALICE_2" \
-    "$BIN" promote acme/logger 1.1.0 >/dev/null)
-set +e
-UPDATE_OUT="$(cd "$WORK/app" && WITCHY_USER=dev WITCHY_COOLDOWN_SECS=0 "$BIN" update 2>&1)"
-UPDATE_CODE=$?
-set -e
-[ "$UPDATE_CODE" -ne 0 ] || die "update must BLOCK a widening upgrade"
-expect_contains "update blocks and names the new authority" "Net" "$UPDATE_OUT"
-(cd "$WORK/app" && WITCHY_USER=dev WITCHY_COOLDOWN_SECS=0 \
-    "$BIN" update --allow-cap Net >/dev/null)
-expect_contains "explicit consent upgrades and re-locks" "1.1.0" "$(cat "$WORK/app/witchy.lock")"
-
-# Namespace binding: a valid token from another repository cannot publish.
-printf '[rune]\nname = "acme/logger"\nversion = "1.2.0"\n' > "$WORK/logger/witchy.toml"
-EVIL="$(mint --sub "repo:evil/fork:ref:refs/heads/main" \
-    --claim repository=evil/fork --claim workflow_ref=release.yml --claim ref=refs/heads/main)"
-expect_fails "a publish from the wrong repository is refused" \
-    env -C "$WORK/logger" WITCHY_USER=ci-bot COVEN_ID_TOKEN="$EVIL" "$BIN" publish .
-
-stage "8. A multi-rune example project (path deps, lockfile, diamond)"
-GOT="$("$BIN" run examples/projects/dashboard/dashboard 2>&1)" || die "dashboard run failed: $GOT"
-ok "examples/projects/dashboard builds and runs ($(echo "$GOT" | wc -l | tr -d ' ') lines)"
-
-stage "9. Documentation extraction"
+stage "7. Documentation extraction"
 expect_contains "witchy doc renders the std API" "##" "$("$BIN" doc "$REPO/std/list.witchy")"
 
 printf '\n\033[1m== ALL STAGES PASSED (%d checks) ==\033[0m\n' "$PASS"

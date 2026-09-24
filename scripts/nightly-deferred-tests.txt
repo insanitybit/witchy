@@ -95,7 +95,6 @@ rfc0081_public_check_accepts_valid_existential_signatures
 # what the gate protects. Medians across the last 150 gates:
 #   60.9s locked_precompiled_project_refuses_tamper_missing_oversize_and_source_overlap
 #   40.6s ordinary_project_build_env_preserves_present_empty_and_unset
-#   14.1s verify_rune_checked_entry_preserves_usage_and_missing_provenance_errors
 #   13.0s / 11.1s the two build_read_project tests, 11.6s build_env denial
 #   10.0s ordinary_project_command_executes_owner_capture_with_resolved_dependency
 #    7.7s packaged_owner_rechecks_closed_source_and_rejects_substitution_before_effects
@@ -109,4 +108,3 @@ rfc0165_build_read_project::ordinary_project_build_forwards_build_read_and_compi
 rfc0165_build_read_project::ordinary_project_build_read_cannot_escape_manifest_granted_root
 rfc0165_project_run::ordinary_project_command_executes_owner_capture_with_resolved_dependency
 rfc0165_packaged_source::packaged_owner_rechecks_closed_source_and_rejects_substitution_before_effects
-rfc0165_pm::verify_rune_checked_entry_preserves_usage_and_missing_provenance_errors

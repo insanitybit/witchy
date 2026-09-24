@@ -526,7 +526,7 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
 
     fs::write(&cargo_env_file, "").expect("clear fake cargo environment");
     fs::write(&cargo_jobs_file, "").expect("clear fake cargo build jobs");
-    let local = check_sh(&root, &["--wasm"])
+    let local = check_sh(&root, &["--examples"])
         .env("PATH", &path)
         .env("CARGO_TARGET_DIR", temp.path().join("target-local"))
         .env_remove("CARGO_PROFILE_TEST_STRIP")
@@ -549,7 +549,7 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
     );
 
     fs::write(&cargo_env_file, "").expect("clear fake cargo environment");
-    let overridden = check_sh(&root, &["--wasm"])
+    let overridden = check_sh(&root, &["--examples"])
         .env("PATH", &path)
         .env("CARGO_TARGET_DIR", temp.path().join("target-overridden"))
         .env("WITCHY_GATE_SCOPE", "all")
@@ -574,7 +574,7 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
         .collect();
     assert_eq!(timings.len(), 2, "expected test and clippy timings: {stdout}");
     assert_eq!(timings[0]["kind"], "foreground");
-    assert_eq!(timings[0]["name"], "tests (workspace, minus e2e)");
+    assert_eq!(timings[0]["name"], "tests (workspace)");
     assert_eq!(timings[0]["status"], "green");
     assert!(timings[0]["elapsed_s"].as_u64().unwrap() >= 1);
     assert_eq!(timings[1]["kind"], "background");
@@ -621,7 +621,7 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
     assert_eq!(
         isolated_names,
         [
-            "tests (workspace, minus e2e)",
+            "tests (workspace)",
             "clippy (bug lints)",
             "queue infrastructure (isolated)",
         ],
@@ -879,10 +879,8 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
         .env("WITCHY_GATE_SCOPE", "all")
         .env("WITCHY_GATE_NEXTEST", "-p witchy")
         .env("WITCHY_GATE_NEXTEST_EXPR", "test(/^example_tests::/)")
-        .env("WITCHY_GATE_SKIP_BOOK", "1")
         .env("WITCHY_GATE_SKIP_RUST_CLASS", "1")
         .env("WITCHY_GATE_SKIP_COMPILE", "1")
-        .env("WITCHY_GATE_SKIP_WASM", "1")
         .env("WITCHY_GATE_SKIP_FMT", "1")
         .env("FAKE_CARGO_ARGS_FILE", &cargo_args_file)
         .env("WITCHY_FAILFAST_POLL", "0.05")
@@ -897,17 +895,14 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
     );
     assert!(
         example_stdout.contains("skipping rust-class")
-            && example_stdout.contains("skipping runnable-book")
             && example_stdout.contains("skipping cargo check/clippy")
-            && example_stdout.contains("skipping wasm playground")
             && example_stdout.contains("skipping witchy fmt"),
-        "example_tests-only check.sh did not skip rust-class/book/compile/wasm/fmt: {example_stdout}",
+        "example_tests-only check.sh did not skip rust-class/compile/fmt: {example_stdout}",
     );
     assert!(
         !example_stdout.contains("Rust-class paired correctness")
-            && !example_stdout.contains("runnable book (browser)")
             && !example_stdout.contains("bench/rust-class/run.sh"),
-        "example_tests-only check.sh still launched rust-class or the book validator: {example_stdout}",
+        "example_tests-only check.sh still launched rust-class: {example_stdout}",
     );
     let example_args = fs::read_to_string(&cargo_args_file).expect("read example_tests cargo args");
     assert!(
@@ -932,10 +927,8 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
         .env("WITCHY_GATE_NEXTEST", "-p witchy-types")
         .env("WITCHY_GATE_NEXTEST_EXPR", "package(witchy-types)")
         .env("WITCHY_GATE_CHECK_PACKAGES", "-p witchy-types")
-        .env("WITCHY_GATE_SKIP_BOOK", "1")
         .env("WITCHY_GATE_SKIP_RUST_CLASS", "1")
         .env("WITCHY_GATE_SKIP_COMPILE", "0")
-        .env("WITCHY_GATE_SKIP_WASM", "1")
         .env("WITCHY_GATE_SKIP_FMT", "1")
         .env("FAKE_CARGO_ARGS_FILE", &cargo_args_file)
         .env("WITCHY_FAILFAST_POLL", "0.05")
@@ -971,10 +964,8 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
             "package(witchy-interp) or package(witchy-caps) or test(/^example_tests::/)",
         )
         .env("WITCHY_GATE_CHECK_PACKAGES", "-p witchy-interp -p witchy-caps")
-        .env("WITCHY_GATE_SKIP_BOOK", "1")
         .env("WITCHY_GATE_SKIP_RUST_CLASS", "1")
         .env("WITCHY_GATE_SKIP_COMPILE", "0")
-        .env("WITCHY_GATE_SKIP_WASM", "1")
         .env("WITCHY_GATE_SKIP_FMT", "1")
         .env("FAKE_CARGO_ARGS_FILE", &cargo_args_file)
         .env("WITCHY_FAILFAST_POLL", "0.05")
@@ -989,10 +980,9 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
     );
     assert!(
         interp_out.contains("skipping rust-class")
-            && interp_out.contains("skipping wasm playground")
             && interp_out.contains("skipping witchy fmt")
             && interp_out.contains("serialized check/clippy packages: -p witchy-interp -p witchy-caps"),
-        "interp+example_tests did not skip rust-class/wasm/fmt or scope check: {interp_out}",
+        "interp+example_tests did not skip rust-class/fmt or scope check: {interp_out}",
     );
     let interp_args = fs::read_to_string(&cargo_args_file).expect("read interp cargo args");
     assert!(
@@ -1006,10 +996,6 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
             line.starts_with("clippy ") && line.contains("-p witchy-interp") && !line.contains("--workspace")
         }),
         "interp+example_tests clippy still used --workspace: {interp_args}",
-    );
-    assert!(
-        !interp_args.lines().any(|line| line.contains("wasm32-unknown-unknown")),
-        "interp+example_tests still launched the wasm playground: {interp_args}",
     );
     });
 
@@ -1050,7 +1036,7 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
                 })
                 .expect("red foreground timing was emitted");
             assert_eq!(timing["kind"], "foreground");
-            assert_eq!(timing["name"], "tests (workspace, minus e2e)");
+            assert_eq!(timing["name"], "tests (workspace)");
             assert_eq!(timing["status"], "red");
         });
 
@@ -1063,7 +1049,7 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
 }
 
 /// Change 1 (gate fail-fast): the full merge-gate profile overlaps a compile
-/// check, clippy, and the wasm build behind the foreground tests, and aborts
+/// check and clippy behind the foreground tests, and aborts
 /// the tests the moment a background leg records a failure. Green path first:
 /// stage order and timing records are pinned so observability consumers
 /// (gate-report.sh, the journal stage summaries) keep parsing.
@@ -1171,8 +1157,6 @@ fn full_gate_fail_fast_aborts_tests_when_a_background_leg_goes_red() {
             "prose style (no em dashes)",
             "compile check (cargo check)",
             "clippy (bug lints)",
-            "wasm playground build",
-            "runnable book (browser)",
             "Rust-class paired correctness",
         ],
         "full-gate stage/timing order changed: {stdout}",

@@ -209,26 +209,6 @@ fn gate_nextest_docs_only_builds_the_bin_target() {
     }
 }
 
-/// `tests/support/` is the shared test-helper module. Exactly two integration
-/// binaries declare `mod support;` -- e2e and rfc0092 --
-/// so a change there cannot reach another target. It used to fall through to
-/// the whole workspace: one presubmit ran the workspace-minus-e2e stage for
-/// 2,604s for a two-line helper change.
-#[test]
-fn gate_nextest_test_support_selects_only_its_consumers() {
-    for path in ["tests/support/coven.rs", "tests/support/mod.rs"] {
-        let output = gate_nextest(&[path]);
-        assert!(
-            output.contains("--test rfc0092") && !output.contains("--test worktree"),
-            "{path} did not select only the binaries that compile it: {output}",
-        );
-        assert!(
-            !output.contains("WORKSPACE"),
-            "{path} still fell through to the whole workspace: {output}",
-        );
-    }
-}
-
 #[test]
 fn gate_nextest_docs_plus_integration_test_keeps_both_target_kinds() {
     let output = gate_nextest(&[
@@ -459,26 +439,10 @@ fn gate_nextest_crate_plus_integration_test_unions_without_workspace() {
 fn gate_nextest_nested_integration_modules_use_root_targets() {
     let output = gate_nextest(&[
         "crates/witchy-types/src/typeck.rs",
-        "tests/browser/shim.rs",
         "tests/rfc0082/dynamic_methods.rs",
     ]);
-    assert!(output.contains("binary(browser)"), "missing browser root target: {output}");
     assert!(output.contains("binary(rfc0082)"), "missing rfc0082 root target: {output}");
-    assert!(!output.contains("browser/shim"), "nested path became a binary selector: {output}");
     assert!(!output.contains("rfc0082/dynamic_methods"), "nested path became a binary selector: {output}");
-}
-
-#[test]
-fn gate_nextest_src_commands_web_is_not_workspace() {
-    let output = gate_nextest(&["src/commands/web/tests.rs"]);
-    assert!(
-        output.contains("commands::web"),
-        "src/commands/web mapping did not select commands::web tests: {output}",
-    );
-    assert!(
-        !output.contains("WORKSPACE") && !output.contains("--workspace"),
-        "src/commands/web mapping fell back to the full workspace: {output}",
-    );
 }
 
 #[test]
@@ -578,19 +542,6 @@ fn gate_nextest_examples_are_not_the_full_matrix() {
 }
 
 #[test]
-fn gate_nextest_highlighter_js_is_not_workspace() {
-    let output = gate_nextest(&["web/witchy-highlight.js"]);
-    assert!(
-        output.contains("--test browser"),
-        "highlighter JS did not select the browser test binary: {output}",
-    );
-    assert!(
-        !output.contains("WORKSPACE") && !output.contains("--workspace"),
-        "highlighter JS fail-safed to the full workspace: {output}",
-    );
-}
-
-#[test]
 fn rust_integration_tests_use_fast_without_redundant_binary_run() {
     let output = route(&["tests/differential_fuzz.rs"]);
     assert!(output.contains("./scripts/check.sh --fast"));
@@ -664,54 +615,6 @@ fn packaged_source_surfaces_run_the_unsafe_input_probe_first() {
     );
     assert!(commands.iter().any(|command| command.contains("source::tests")), "{commands:?}");
     assert!(commands.iter().any(|command| command.contains("cli_subcommands")), "{commands:?}");
-}
-
-#[test]
-fn registry_replay_edit_loop_stays_on_its_three_contracts() {
-    let commands = selected(&[
-        "--edit-loop",
-        "rfcs/0165-acceptance-ledger.md",
-        "src/source.rs",
-        "src/source/package_inputs.rs",
-        "src/source/package_inputs/registry.rs",
-        "src/source/package_inputs/registry_replay_tests.rs",
-        "src/source/package_inputs/registry_verify.witchy",
-        "src/trusted_publisher/source_inputs.rs",
-        "tests/misc/rfc0165_packaged_source.rs",
-    ]);
-    assert_eq!(commands.len(), 3, "{commands:?}");
-    assert!(commands[0].contains("packaged_source_rejects_custom_owner_and_unsafe_input_paths"), "{commands:?}");
-    assert!(commands[1].contains("compile_accepts_complete_authenticated_package_owners"), "{commands:?}");
-    assert!(commands[2].contains("nextest-admitted.sh"), "{commands:?}");
-    assert!(commands[2].contains("source::package_inputs::registry_replay_tests::"), "{commands:?}");
-    for probe in [
-        "pinned_vendor_package_replays_and_executes_after_original_sources_are_removed",
-        "pinned_vendor_replay_rejects_substituted_record_source_pin_and_coordinate",
-        "pinned_vendor_project_owner_flags_are_assertions_not_registry_authority",
-        "pinned_vendor_valid_source_b_with_wasm_a_rejects_rehashed_envelope_before_execution",
-        "pinned_vendor_explicit_path_dependency_wins_over_registry_lock_and_directory_name",
-        "pinned_vendor_offline_replay_uses_locked_version_without_manifest_reresolution",
-    ] {
-        assert!(commands[2].contains(probe), "missing focused registry probe {probe}: {commands:?}");
-    }
-    assert!(!commands[2].contains("pinned_vendor_unsigned_sibling_cannot_inherit_registry_owner"), "{commands:?}");
-    assert!(!commands[2].contains("pinned_vendor_consistent_key_b_cannot_satisfy_unchanged_registry_a_assertion"), "{commands:?}");
-    assert!(!commands.iter().any(|command| command.contains("rfc0165_oracle")), "{commands:?}");
-}
-
-#[test]
-fn standalone_registry_replay_tests_run_their_own_contract() {
-    let commands = selected(&[
-        "--edit-loop",
-        "src/source/package_inputs/registry_replay_tests.rs",
-    ]);
-    assert_eq!(commands.len(), 3, "{commands:?}");
-    assert!(
-        commands.iter().any(|command| command.contains("source::package_inputs::registry_replay_tests::")),
-        "standalone registry replay edits skipped their test family: {commands:?}",
-    );
-    assert!(commands[2].contains("pinned_vendor_replay_rejects_substituted_record_source_pin_and_coordinate"), "{commands:?}");
-    assert!(!commands[2].contains("pinned_vendor_consistent_key_b_cannot_satisfy_unchanged_registry_a_assertion"), "{commands:?}");
 }
 
 #[test]
@@ -1048,16 +951,6 @@ fn url_component_edits_run_only_the_url_component_module() {
         commands[0],
         "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test misc",
         "URL component edit expanded to every misc test: {commands:?}"
-    );
-}
-
-#[test]
-fn embedded_pm_edits_run_only_the_embedded_pm_module() {
-    let commands = selected(&["--edit-loop", "src/commands/embedded_pm.rs"]);
-    assert_eq!(commands.len(), 1, "{commands:?}");
-    assert_eq!(
-        commands[0],
-        "./scripts/nextest-admitted.sh witchy -- cargo nextest run --bin witchy -E 'test(/^commands::embedded_pm::tests::/)'"
     );
 }
 
@@ -1485,36 +1378,10 @@ fn broad_compiler_change_subsumes_the_native_cli_entrypoint_shard() {
 }
 
 #[test]
-fn e2e_integration_test_keeps_its_dedicated_shard() {
-    let output = route(&["tests/e2e.rs"]);
-    assert!(output.contains("./scripts/check.sh --e2e"));
-    assert!(!output.contains("--test e2e -E"));
-    assert!(!output.contains("./scripts/check.sh --fast"));
-}
-
-#[test]
-fn nested_e2e_module_uses_the_real_cargo_target_and_module_filter() {
-    assert_eq!(
-        selected(&["--edit-loop", "tests/e2e/sandbox_grants.rs"]),
-        ["./scripts/nextest-admitted.sh witchy -- cargo nextest run --features e2e-tests --test e2e -E 'test(/^sandbox_grants::/)'"],
-    );
-}
-
-#[test]
 fn nested_integration_module_uses_its_root_cargo_target() {
     assert_eq!(
         selected(&["--edit-loop", "tests/rfc0122.rs"]),
         ["./scripts/nextest-admitted.sh witchy -- cargo nextest run --test rfc0122"],
-    );
-}
-
-#[test]
-fn complete_e2e_shard_subsumes_a_nested_module_probe() {
-    let commands = selected(&["--edit-loop", "tests/e2e/offline_pm.rs", "tests/e2e.rs"]);
-    assert_eq!(commands, ["./scripts/check.sh --e2e"], "{commands:?}");
-    assert!(
-        !commands.iter().any(|command| command.contains("--test e2e/")),
-        "router emitted a nonexistent nested Cargo target: {commands:?}",
     );
 }
 
@@ -1555,14 +1422,6 @@ fn agent_check_changes_verify_utility_qos_without_a_rust_build() {
             "{path}"
         );
     }
-}
-
-#[test]
-fn glamour_dom_harness_change_runs_its_structural_probe() {
-    assert_eq!(
-        selected_focused(&["tests/glamour/dom.rs"]),
-        ["cargo nextest run --test glamour -E 'test(=dom::every_node_test_driver_is_wired_to_a_rust_test)'"],
-    );
 }
 
 #[test]
@@ -1801,62 +1660,9 @@ fn mixed_rust_and_std_keeps_only_fast_and_std_formatting() {
 #[test]
 fn project_formatting_uses_the_isolated_cargo_target() {
     let commands = selected(&["projects/glamour/examples/accessibility/src/main.witchy"]);
-    assert_eq!(commands.len(), 2, "{commands:?}");
+    assert_eq!(commands.len(), 1, "{commands:?}");
     assert!(commands[0].contains("${CARGO_TARGET_DIR:-target}/debug/witchy"), "{commands:?}");
     assert!(commands[0].contains("fmt --check"), "{commands:?}");
-    assert_eq!(commands[1], "./scripts/check.sh --e2e");
-}
-
-#[test]
-fn glamour_runtime_changes_get_javascript_and_integration_checks() {
-    assert_eq!(
-        selected(&["web/witchy-runtime/glamour-dom.mjs"]),
-        [
-            "find web/witchy-runtime -type f -name '*.mjs' -exec node --check {} \\;",
-            "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test glamour -E 'test(/^dom::/)'",
-        ]
-    );
-}
-
-#[test]
-fn browser_runtime_modules_route_to_their_consolidated_binary_modules() {
-    assert_eq!(
-        selected(&["web/witchy-runtime/witchy-runnable.test.mjs"])[1],
-        "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test browser -E 'test(/^shim::/)'"
-    );
-    assert_eq!(
-        selected(&["web/witchy-runtime/encoding-abi.test.mjs"])[1],
-        "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test browser -E 'test(/^encoding::/)'"
-    );
-}
-
-#[test]
-fn shared_browser_host_runs_every_dependent_integration_binary() {
-    let commands = selected(&["web/witchy-runtime/witchy-runtime.mjs"]);
-    assert_eq!(commands.len(), 2, "{commands:?}");
-    assert!(commands[0].contains("node --check"), "{commands:?}");
-    assert_eq!(
-        commands[1],
-        "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test browser --test glamour --test misc -E 'binary(browser) or (binary(glamour) and test(/^dom::/)) or (binary(misc) and test(/^wasm_abi_catalog::/))'"
-    );
-}
-
-#[test]
-fn import_catalog_change_runs_only_its_consolidated_module() {
-    let commands = selected(&["web/witchy-runtime/import-catalog.test.mjs"]);
-    assert_eq!(commands.len(), 2, "{commands:?}");
-    assert!(commands[0].contains("node --check"), "{commands:?}");
-    assert_eq!(
-        commands[1],
-        "cargo nextest run --test misc -E 'test(/^wasm_abi_catalog::/)'"
-    );
-}
-
-#[test]
-fn unwrapped_browser_module_still_gets_javascript_syntax_checks() {
-    let output = route(&["web/witchy-runtime/hex-strict.test.mjs"]);
-    assert!(output.contains("node --check"), "{output}");
-    assert!(!output.contains("prose-only"), "{output}");
 }
 
 #[test]
@@ -2082,102 +1888,6 @@ fn script_rules_gate_on_the_binary_their_focused_check_names() {
             "{path} did not select {binary}, the binary that covers it: {output}",
         );
     }
-}
-
-#[test]
-fn the_gate_never_selects_glamour_or_coven_tests() {
-    // glamour and coven/grimoire were deprioritized 2026-09-21: the compiler
-    // gate neither builds nor runs their tests, whatever a batch touches. The
-    // mapper used to select `--test glamour` for three paths; with the
-    // feature off that is a hard cargo error, so it must never come back.
-    for path in [
-        "tests/glamour/dom.rs",
-        "web/witchy-runtime/glamour-dom.mjs",
-        "web/witchy-runtime/witchy-runtime.mjs",
-        "projects/glamour/src/glamour.witchy",
-        "src/source/package_inputs/registry.rs",
-        "projects/coven/src/coven_proto.witchy",
-    ] {
-        let output = gate_nextest(&[path]);
-        let words: Vec<&str> = output.split_whitespace().collect();
-        assert!(
-            !words.windows(2).any(|pair| pair == ["--test", "glamour"]),
-            "{path} selects the glamour binary for the compiler gate: {output}",
-        );
-        for module in ["pm_coven", "registry_replay_tests", "project_resolver_tests", "example_tests::glamour"] {
-            assert!(!output.contains(module), "{path} selects {module}: {output}");
-        }
-    }
-    let repo = workspace_root();
-    let read = |relative: &str| std::fs::read_to_string(repo.join(relative)).expect(relative);
-    let queue = read("scripts/merge-queue.sh");
-    assert!(
-        queue.contains("    local ungated=\"glamour grimoire\""),
-        "the coordinator no longer skips BOTH families unconditionally",
-    );
-    let manifest = read("Cargo.toml");
-    let default_line = manifest.lines().find(|line| line.starts_with("default = [")).expect("default");
-    assert!(manifest.contains("coven-tests = []") && !default_line.contains("coven-tests"));
-    assert!(
-        read("scripts/check.sh").contains("witchy-wir/native,coven-tests"),
-        "`check.sh --grimoire` must compile the coven modules or it runs zero tests green",
-    );
-}
-
-#[test]
-fn every_e2e_consumer_enables_the_feature_that_compiles_it() {
-    // `tests/e2e.rs` sits behind the non-default `e2e-tests` feature, because
-    // the default gate excludes `binary(e2e)` from the workspace stage yet
-    // still compiled all 7,619 lines of it on every gate -- 9.0 CPU s of every
-    // gate's final build for tests it does not run.
-    //
-    // Every consumer must turn it back on, and MOST of them fail SILENTLY if
-    // they do not: naming the target with the feature unmet is a hard cargo
-    // error, but a workspace-wide run just drops the binary and reports green.
-    // So this pins each site by name rather than trusting one general rule.
-    let repo = workspace_root();
-    let read = |relative: &str| {
-        std::fs::read_to_string(repo.join(relative)).unwrap_or_else(|_| panic!("read {relative}"))
-    };
-
-    let manifest = read("Cargo.toml");
-    assert!(manifest.contains("e2e-tests = []"), "the e2e-tests feature is gone");
-    let default_line = manifest
-        .lines()
-        .find(|line| line.starts_with("default = ["))
-        .expect("a default feature set");
-    assert!(
-        !default_line.contains("e2e-tests"),
-        "e2e-tests is in `default`, so every gate compiles the e2e binary again: {default_line}",
-    );
-
-    let check = read("scripts/check.sh");
-    assert!(
-        check.contains("*\" --test e2e \"*) nextest_cmd+=(--features e2e-tests) ;;"),
-        "the workspace stage no longer enables e2e-tests for a selection that NAMES the target, \
-         so such a gate fails with `requires the features`",
-    );
-    assert!(
-        check.contains("[ \"$full\" -eq 1 ] && nextest_cmd+=(--features e2e-tests)"),
-        "--full stops excluding binary(e2e) but no longer compiles it, so the full gate would \
-         run ZERO e2e tests and still report green",
-    );
-    assert!(
-        check.contains("witchy-wir/native,e2e-tests"),
-        "`check.sh --e2e` no longer enables the feature, so the shard runs zero tests green",
-    );
-
-    let mapper = read("scripts/test-for-paths.sh");
-    assert!(
-        mapper.contains("cargo nextest run --features e2e-tests --test e2e"),
-        "the focused e2e check names the target without the feature, which is a hard error",
-    );
-
-    let ci = read("scripts/e2e-full.sh");
-    assert!(
-        ci.contains("cargo test --release --quiet --features e2e-tests"),
-        "CI's from-scratch acceptance run would silently stop covering e2e",
-    );
 }
 
 

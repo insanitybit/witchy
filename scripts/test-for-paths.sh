@@ -103,7 +103,6 @@ gate_example_mods=()
 gate_witchy_tests=()
 gate_need_conformance=0
 gate_need_std_roots=0
-broad_e2e=0
 add_pkg() {
     local p="$1" x
     for x in ${gate_pkgs[0]+"${gate_pkgs[@]}"}; do [ "$x" = "$p" ] && return; done
@@ -112,9 +111,9 @@ add_pkg() {
 add_gate_test() {
     local t="$1" x
     # `case` globs treat `*` as matching `/`, so the generic `tests/*.rs`
-    # route can receive a nested module such as `tests/browser/shim.rs`.
+    # route can receive a nested module such as `tests/misc/foo.rs`.
     # Nested modules are not Cargo integration-test binary names. Fail safe to
-    # the workspace instead of emitting an invalid `binary(browser/shim)`
+    # the workspace instead of emitting an invalid `binary(misc/foo)`
     # nextest selector that prevents the serialized gate from starting.
     case "$t" in
         */*) gate_workspace=1; return ;;
@@ -145,8 +144,8 @@ emit_gate_nextest() {
         printf 'WORKSPACE\n'
         return 0
     fi
-    # Pure integration-test selection keeps `--test` args so a JS-only
-    # glamour/browser change stays one binary, not `-p witchy`.
+    # Pure integration-test selection keeps `--test` args so a single
+    # integration-binary change stays one binary, not `-p witchy`.
     if [ "${#gate_tests[@]}" -gt 0 ] && [ "${#gate_pkgs[@]}" -eq 0 ] \
         && [ "$gate_need_examples" -eq 0 ] && [ "$gate_need_stdlib_docs" -eq 0 ] \
         && [ "${#gate_example_mods[@]}" -eq 0 ] \
@@ -360,9 +359,6 @@ canonical_build_recipe=0
 canonical_crypto=0
 canonical_fixture_rewrite=0
 canonical_fixture_rewrite_paths_only=1
-registry_replay=0
-registry_replay_paths_only=1
-registry_replay_contract_surface=0
 for p in "${paths[@]}"; do
     path_has_early=0
     case "$p" in
@@ -430,24 +426,6 @@ for p in "${paths[@]}"; do
             gate_need_std_roots=1 ;;
     esac
     case "$p" in
-        src/source/package_inputs/registry.rs | \
-        src/source/package_inputs/registry_replay_tests.rs | \
-        src/source/package_inputs/registry_verify.witchy)
-            registry_replay=1 ;;
-    esac
-    case "$p" in
-        rfcs/0165-acceptance-ledger.md | \
-        src/source.rs | \
-        src/source/package_inputs* | \
-        src/trusted_publisher/source_inputs.rs | \
-        tests/misc/rfc0165_packaged_source.rs) ;;
-        *) registry_replay_paths_only=0 ;;
-    esac
-    case "$p" in
-        tests/misc/rfc0165_packaged_source.rs)
-            registry_replay_contract_surface=1 ;;
-    esac
-    case "$p" in
         crates/witchy-interp/src/interpreter/runners.rs | \
         crates/witchy-runtime/src/runtime/console_fixtures.rs | \
         crates/witchy-test-host/src/lib.rs | \
@@ -465,10 +443,6 @@ for p in "${paths[@]}"; do
         scripts/rfc0165-deferred-tests.txt | \
         src/commands/test_runner/canonical_console_fixture.rs) ;;
         *) canonical_fixture_rewrite_paths_only=0 ;;
-    esac
-    case "$p" in
-        web/witchy-runtime/*.mjs)
-            add "find web/witchy-runtime -type f -name '*.mjs' -exec node --check {} \\;" ;;
     esac
     case "$p" in
         src/source.rs | \
@@ -541,9 +515,6 @@ for p in "${paths[@]}"; do
             path_has_early=1 ;;
         tests/misc/semantic_conformance.rs)
             add_early "cargo nextest run --test misc -E 'test(=semantic_conformance::independent_expectation_rejects_a_shared_semantic_mutation)'"
-            path_has_early=1 ;;
-        src/commands/embedded_pm.rs)
-            add_early "./scripts/nextest-admitted.sh witchy -- cargo nextest run --bin witchy -E 'test(/^commands::embedded_pm::tests::/)'"
             path_has_early=1 ;;
         tests/cli_subcommands.rs)
             # Keep the edit loop on the recent gate-red output contract plus
@@ -675,10 +646,6 @@ for p in "${paths[@]}"; do
             _et="${p##*/}"
             add_example_mod "${_et%.rs}"
             add "./scripts/nextest-admitted.sh witchy -- cargo nextest run -E 'test(/^example_tests::/)'" ;;
-        src/commands/web.rs | src/commands/web/*)
-            any_rust=1
-            add_witchy_test 'commands::web'
-            add "./scripts/nextest-admitted.sh witchy -- cargo nextest run -E 'test(/^commands::web/)'" ;;
         src/commands/dispatch.rs)
             any_rust=1
             add_early "cargo nextest run --test cli_subcommands -E 'test(=fetch_root_requires_an_explicit_valid_origin_and_admitted_artifact)'"
@@ -725,40 +692,9 @@ for p in "${paths[@]}"; do
             add "./scripts/nextest-admitted.sh witchy -- cargo nextest run -E 'test(/^example_tests::/)'"
             ;;
         projects/grimoire/* | projects/coven/* | projects/coven-web/* | projects/glamour/* | projects/docs/*)
-            add "find projects -type f -path '*/src/*.witchy' -exec \"\${CARGO_TARGET_DIR:-target}/debug/witchy\" fmt --check {} +"
-            broad_e2e=1
-            add "./scripts/check.sh --e2e" ;;
-        web/witchy-runtime/glamour-*.mjs | \
-        web/witchy-runtime/heap-reset.test.mjs | \
-        web/witchy-runtime/highlighter.test.mjs | \
-        web/witchy-runtime/user-cap-export.test.mjs)
-            add "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test glamour -E 'test(/^dom::/)'" ;;
-        web/witchy-runtime/abort-message.test.mjs | \
-        web/witchy-runtime/playground-examples.test.mjs | \
-        web/witchy-runtime/spike.mjs | \
-        web/witchy-runtime/witchy-highlight.test.mjs | \
-        web/witchy-runtime/witchy-runnable.test.mjs | \
-        web/witchy-runtime/witchy-cell-sandbox.test.mjs | \
-        web/witchy-highlight.js | \
-        web/witchy-cell-sandbox.js | \
-        web/witchy-cell-frame.js)
-            add_gate_test browser
-            add "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test browser -E 'test(/^shim::/)'" ;;
-        web/witchy-runtime/encoding-abi.test.mjs)
-            add_gate_test browser
-            add "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test browser -E 'test(/^encoding::/)'" ;;
-        web/witchy-runtime/import-catalog.test.mjs)
-            add_gate_test misc
-            add "cargo nextest run --test misc -E 'test(/^wasm_abi_catalog::/)'" ;;
-        web/witchy-runtime/witchy-runtime.mjs)
-            add_gate_test browser
-            add_gate_test misc
-            add "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test browser --test glamour --test misc -E 'binary(browser) or (binary(glamour) and test(/^dom::/)) or (binary(misc) and test(/^wasm_abi_catalog::/))'" ;;
-        web/*)
-            # Playground / highlighter JS is not a Rust surface. Keep a
-            # focused browser binary rather than fail-safe --workspace.
-            add_gate_test browser
-            add "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test browser" ;;
+            # Consumers of the compiler: untested here. Keep the witchy fmt
+            # gate, which still covers projects/**/src/*.witchy.
+            add "find projects -type f -path '*/src/*.witchy' -exec \"\${CARGO_TARGET_DIR:-target}/debug/witchy\" fmt --check {} +" ;;
         tools/merge-queue-tests/Cargo.toml | \
         tools/merge-queue-tests/tests/merge_queue.rs | \
         tools/merge-queue-tests/tests/test_for_paths.rs | \
@@ -783,9 +719,6 @@ for p in "${paths[@]}"; do
         tests/worktree.rs | tests/worktree/*.rs)
             add_gate_test worktree
             add "cargo nextest run -p merge-queue-tests --test worktree" ;;
-        tests/glamour/dom.rs)
-            any_rust=1
-            add "cargo nextest run --test glamour -E 'test(=dom::every_node_test_driver_is_wired_to_a_rust_test)'" ;;
         tests/misc/url_components.rs)
             any_rust=1
             add_early "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test misc -E 'test(/^url_components::/)'"
@@ -827,35 +760,6 @@ for p in "${paths[@]}"; do
             any_rust=1
             add_early "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test misc -E 'test(=rfc0167_mode_interop::reference_free_normal_opt_chain_preserves_modes_and_aliased_snapshot_without_opts)'"
             path_has_early=1 ;;
-        tests/support/*.rs)
-            # The shared test-helper module. `mod support;` is declared by
-            # EXACTLY two integration binaries -- e2e and rfc0092 --
-            # so a change here cannot reach any other target, and falling
-            # through to the whole workspace charged it for all of them: one
-            # such presubmit on 2026-09-21 ran the workspace-minus-e2e stage
-            # for 2,604s. Verify the consumer list before narrowing further:
-            #   grep -rn "mod support" --include='*.rs' tests/ | grep -v "^tests/support/"
-            broad_e2e=1
-            add "./scripts/check.sh --e2e"
-            add_gate_test rfc0092
-            add "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test rfc0092" ;;
-        tests/e2e.rs)
-            gate_workspace=1
-            broad_e2e=1
-            add "./scripts/check.sh --e2e" ;;
-        tests/e2e/*.rs)
-            any_rust=1
-            add_gate_test e2e
-            test_name="${p##*/}"
-            test_name="${test_name%.rs}"
-            case "$test_name" in
-                '' | *[!A-Za-z0-9_]*)
-                    broad_e2e=1
-                    add "./scripts/check.sh --e2e" ;;
-                *)
-                    add "./scripts/nextest-admitted.sh witchy -- cargo nextest run --features e2e-tests --test e2e -E 'test(/^${test_name}::/)'" ;;
-            esac
-            ;;
         tests/misc.rs | tests/misc/*)
             any_rust=1
             add_gate_test misc
@@ -1018,15 +922,6 @@ for p in "${paths[@]}"; do
     [ "$path_has_early" -eq 1 ] || all_paths_have_early=0
 done
 
-# A direct edit to the registry replay test module has no packaged-source
-# contract path to trigger the specialized route. Enable that route only for
-# the standalone file; mixed packaged-source edits retain their broader source
-# ownership probes.
-if [ "${#paths[@]}" -eq 1 ] \
-    && [ "${paths[0]}" = "src/source/package_inputs/registry_replay_tests.rs" ]; then
-    registry_replay_contract_surface=1
-fi
-
 # Corpus impact: partition example_tests by what the tests already name
 # (std/foo.witchy strings, include_str, // gate-covers: labels, filename
 # stems). Prelude std modules fail closed to the full matrix. python3
@@ -1065,26 +960,6 @@ if [ "$gate_nextest" -eq 1 ]; then
     exit 0
 fi
 
-# Nested `tests/e2e/*.rs` files are modules in the single Cargo target named
-# `e2e`; a path such as `--test e2e/offline_pm` names no target. When another
-# changed path already selected the complete e2e shard, drop the narrower
-# module invocation it subsumes so a successful broad run is not followed by
-# duplicate discovery and execution.
-if [ "$broad_e2e" -eq 1 ]; then
-    remaining=()
-    for c in ${cmds[0]+"${cmds[@]}"}; do
-        case "$c" in
-            # Match on the target and filter, NOT on the whole prefix: the
-            # command also carries `--features e2e-tests` (the e2e binary is
-            # behind a non-default feature), and pinning the old exact prefix
-            # here silently stopped subsuming it.
-            *"--test e2e -E 'test(/^"*) ;;
-            *) remaining+=("$c") ;;
-        esac
-    done
-    cmds=("${remaining[@]}")
-fi
-
 # Queue infrastructure keeps its complete 69-test process/locking corpus in the
 # landing shard. The edit loop runs a representative cross-section that covers
 # admission, singleton coordination, dependency cycles, reload, sweep ordering,
@@ -1099,7 +974,7 @@ fi
 
 # Any Rust change means the fast gate already runs every workspace nextest test.
 # Drop narrower nextest selections it subsumes, but retain independent shards
-# such as WASM, e2e, and Witchy source formatting.
+# such as Witchy source formatting.
 if [ "$edit_loop" -eq 1 ] && [ "${#paths[@]}" -eq 1 ]; then
     case "${paths[0]}" in
         tests/misc/rfc0165_fetch.rs)
@@ -1127,19 +1002,6 @@ if [ "$edit_loop" -eq 1 ] && [ "${#cmds[@]}" -gt 0 ] \
         || [ "${paths[0]}" = "tests/misc/rfc0165_project_run.rs" ] \
         || [ "${paths[0]}" = "tests/misc/rfc0165_owner_adapters.rs" ]; }; then
     : # Keep the exact direct-file module route selected above.
-elif [ "$edit_loop" -eq 1 ] && [ "$registry_replay" -eq 1 ] \
-    && [ "$registry_replay_paths_only" -eq 1 ] \
-    && [ "$registry_replay_contract_surface" -eq 1 ]; then
-    # Closed registry replay spans source capture, signature verification,
-    # restored ownership, and execution. Keep the standalone edit loop on
-    # representative replay, substitution, ownership, admission, path, and
-    # locked-replay contracts. The two additional authority variants remain in
-    # the complete serialized landing selection.
-    cmds=(
-        "cargo nextest run --test misc -E 'test(=rfc0165_packaged_source::packaged_source_rejects_custom_owner_and_unsafe_input_paths)'"
-        "cargo nextest run --test cli_subcommands -E 'test(=compile_accepts_complete_authenticated_package_owners)'"
-        "./scripts/nextest-admitted.sh witchy -- cargo nextest run --features coven-tests --bin witchy -E 'test(=source::package_inputs::registry_replay_tests::pinned_vendor_package_replays_and_executes_after_original_sources_are_removed) or test(=source::package_inputs::registry_replay_tests::pinned_vendor_replay_rejects_substituted_record_source_pin_and_coordinate) or test(=source::package_inputs::registry_replay_tests::pinned_vendor_project_owner_flags_are_assertions_not_registry_authority) or test(=source::package_inputs::registry_replay_tests::pinned_vendor_valid_source_b_with_wasm_a_rejects_rehashed_envelope_before_execution) or test(=source::package_inputs::registry_replay_tests::pinned_vendor_explicit_path_dependency_wins_over_registry_lock_and_directory_name) or test(=source::package_inputs::registry_replay_tests::pinned_vendor_offline_replay_uses_locked_version_without_manifest_reresolution)'"
-    )
 elif [ "$edit_loop" -eq 1 ] && [ "$canonical_fixture_rewrite" -eq 1 ] \
     && [ "$canonical_fixture_rewrite_paths_only" -eq 1 ]; then
     # Console-fixture plumbing spans the checked driver, interpreter, host,
@@ -1190,7 +1052,7 @@ elif [ "$edit_loop" -eq 1 ] && [ "$canonical_rewrite" -eq 1 ] \
     fi
     canonical_native_wir_expr="test(canonical_safewir::build_read::tests::build_read_catalog_separates_root_authority_from_bounded_responses) or test(canonical_safewir::check::tests::scalar_checker_refuses_non_total_backend_combinations) or test(boolean_reaches::) or test(constant_prefix_publication_rejects_gaps_and_missing_children) or test(scalar_move_range_is_bounds_checked_and_admitted) or test(scalar_clone_range_is_ownership_safe_and_admitted) or test(dynamic_pointer_prefix_cannot_hide_an_unaccounted_child_slot) or test(canonical_capabilities_lower_only_to_externref) or test(canonical_interpreter::capability_tests::a_token_of_another_kind_cannot_serve_a_dir_operation) or test(=validated_safewir_has_one_checker_owned_construction_surface) or test(canonical_wasm_encoding_is_private_and_requires_final_authority)${canonical_wasmir_tail_expr}${canonical_build_recipe_wir_expr}${canonical_crypto_wir_expr}"
     canonical_native_lower_expr="test(canonical_pipeline::tests::list_string_)${canonical_build_recipe_lower_expr}"
-    canonical_native_app_expr="test(wasm_abi_catalog::native_host_links_every_catalog_import_with_the_declared_signature) or test(wasm_abi_catalog::public_spec_contains_the_generated_complete_catalog) or test(wasm_abi_catalog::capability_imports_name_their_authority_family) or test(wasm_abi_catalog::precompiled_runner_authority_rows_are_cataloged) or test(rfc0077_integration_grants::source_integration_recipe_runs_selected_console_capture_and_reports_abort) or test(rfc0087_uniform_var::list_pop_projected_coordinates_and_nested_payloads_on_three_legs) or test(rfc0165_admitted_launch::admitted_entry_without_a_console_grant_is_refused_before_it_runs) or test(rfc0165_admitted_launch::admitted_guard_near_misses_trap_exactly_at_the_boundary) or test(rfc0165_admitted_launch::admitted_aggregates_render_structurally_as_the_interpreter_prints_them) or test(rfc0165_owner_adapters::server_pool_oracle::/) or test(=rfc0165_owner_adapters::server_workers_reject_raw_wasm_even_with_genuine_entry_metadata) or test(=semantic_conformance::independent_expectation_rejects_a_shared_semantic_mutation) or test(/^commands::embedded_pm::tests::/) or test(/^commands::test_runner::canonical_integration_tests::/) or test(/^rfc0165_enum_equality::/) or test(=rfc0165_oracle::admitted_observer_is_not_called_on_refusal) or test(=rfc0165_oracle::oracle_agrees_on_the_admitted_examples_shard_3) or test(/^example_tests::rfc0/)${canonical_build_recipe_app_expr}${canonical_crypto_app_expr}"
+    canonical_native_app_expr="test(wasm_abi_catalog::native_host_links_every_catalog_import_with_the_declared_signature) or test(wasm_abi_catalog::public_spec_contains_the_generated_complete_catalog) or test(wasm_abi_catalog::capability_imports_name_their_authority_family) or test(wasm_abi_catalog::precompiled_runner_authority_rows_are_cataloged) or test(rfc0077_integration_grants::source_integration_recipe_runs_selected_console_capture_and_reports_abort) or test(rfc0087_uniform_var::list_pop_projected_coordinates_and_nested_payloads_on_three_legs) or test(rfc0165_admitted_launch::admitted_entry_without_a_console_grant_is_refused_before_it_runs) or test(rfc0165_admitted_launch::admitted_guard_near_misses_trap_exactly_at_the_boundary) or test(rfc0165_admitted_launch::admitted_aggregates_render_structurally_as_the_interpreter_prints_them) or test(rfc0165_owner_adapters::server_pool_oracle::/) or test(=rfc0165_owner_adapters::server_workers_reject_raw_wasm_even_with_genuine_entry_metadata) or test(=semantic_conformance::independent_expectation_rejects_a_shared_semantic_mutation) or test(/^commands::test_runner::canonical_integration_tests::/) or test(/^rfc0165_enum_equality::/) or test(=rfc0165_oracle::admitted_observer_is_not_called_on_refusal) or test(=rfc0165_oracle::oracle_agrees_on_the_admitted_examples_shard_3) or test(/^example_tests::rfc0/)${canonical_build_recipe_app_expr}${canonical_crypto_app_expr}"
     canonical_native_batch=("$canonical_native_wir_expr" "$canonical_native_lower_expr" "$canonical_native_app_expr" "$canonical_build_recipe")
     cmds=(
         "cargo nextest run -p witchy-wir --features native --lib --test rfc0165_route_gate -E '${canonical_native_wir_expr}'"

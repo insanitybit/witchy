@@ -1164,12 +1164,6 @@ fn parse_single_project_arg(
     }
 }
 
-#[cfg(test)]
-fn check_project(root: &Path) -> Result<CheckedWeb, WebCommandError> {
-    let project = load_project(root)?;
-    check_loaded_project(project, false)
-}
-
 fn check_project_development(root: &Path) -> Result<CheckedWeb, WebCommandError> {
     let project = load_project(root)?;
     if project.delivery != Delivery::Client {
@@ -3595,47 +3589,6 @@ fn starter_files(name: &str, source_name: &str) -> BTreeMap<PathBuf, String> {
     files
 }
 
-#[cfg(test)]
-fn client_fixture_files(name: &str, source_name: &str) -> BTreeMap<PathBuf, String> {
-    let mut files = BTreeMap::new();
-    files.insert(
-        PathBuf::from("witchy.toml"),
-        format!(
-            "[rune]\nname = \"{name}\"\nversion = \"0.1.0\"\n\n\
-             [capabilities]\nruntime = []\n\n\
-             [dependencies]\n\n\
-             [web]\nentry = \"src/{source_name}.witchy\"\n\
-             delivery = \"client\"\n\
-             index = \"web/index.html\"\npublic = \"web/public\"\n\
-             manifest = \"web/glamour-manifest.json\"\ngrants = \"web/grants.toml\"\n"
-        ),
-    );
-    files.insert(
-        PathBuf::from(format!("src/{source_name}.witchy")),
-        CLIENT_FIXTURE_SOURCE.into(),
-    );
-    files.insert(PathBuf::from("web/index.html"), CLIENT_FIXTURE_INDEX.into());
-    files.insert(
-        PathBuf::from("web/glamour-manifest.json"),
-        CLIENT_FIXTURE_MANIFEST.into(),
-    );
-    files.insert(
-        PathBuf::from("web/grants.toml"),
-        format!("[user_caps]\nui = {{ type = \"UiRoot\", policy = \"{name}\" }}\n"),
-    );
-    files
-}
-
-#[cfg(test)]
-fn static_fixture_files(name: &str, source_name: &str) -> BTreeMap<PathBuf, String> {
-    let mut files = client_fixture_files(name, source_name);
-    let manifest = files
-        .get_mut(Path::new("witchy.toml"))
-        .expect("client fixture manifest");
-    *manifest = manifest.replace("delivery = \"client\"", "delivery = \"static\"");
-    files
-}
-
 fn create_project_atomically(
     destination: &Path,
     files: &BTreeMap<PathBuf, String>,
@@ -3824,120 +3777,6 @@ fn slash_path(path: &Path) -> String {
         .join("/")
 }
 
-#[cfg(test)]
-const CLIENT_FIXTURE_INDEX: &str = "\
-<!doctype html>
-<html lang=\"en\">
-<head>
-  <meta charset=\"utf-8\">
-  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">
-  <title>Witchy app</title>
-</head>
-<body>
-  <main id=\"app\" aria-live=\"polite\"></main>
-{{witchy-assets}}
-</body>
-</html>
-";
-
-#[cfg(test)]
-const CLIENT_FIXTURE_MANIFEST: &str = "\
-{
-  \"appId\": 1,
-  \"buildId\": \"1\",
-  \"templates\": {
-    \"1\": {
-      \"root\": {
-        \"kind\": \"element\",
-        \"tag\": \"h1\",
-        \"node\": 1,
-        \"children\": [
-          {\"kind\": \"text\", \"node\": 2, \"text\": \"Hello from Witchy\"}
-        ]
-      }
-    }
-  },
-  \"nodes\": {\"1\": {}, \"2\": {}},
-  \"regions\": {},
-  \"properties\": {},
-  \"attributes\": {},
-  \"aria\": {},
-  \"ownerInstances\": {},
-  \"eventClasses\": {},
-  \"eventPlans\": {},
-  \"effectDescriptors\": {},
-  \"subscriptionDescriptors\": {}
-}
-";
-
-#[cfg(test)]
-const CLIENT_FIXTURE_SOURCE: &str = r#"import bytes
-from glamour import UiRoot
-
-type BrowserState:
-    BrowserState(Bool)
-
-fn put_u8(var output: List(Int), value: Int):
-    output.push(value % 256)
-
-fn put_u16(var output: List(Int), value: Int):
-    put_u8(output, value)
-    put_u8(output, value / 256)
-
-fn put_u32(var output: List(Int), value: Int):
-    put_u16(output, value % 65536)
-    put_u16(output, value / 65536)
-
-fn put_u64(var output: List(Int), value: Int):
-    put_u32(output, value % 4294967296)
-    put_u32(output, value / 4294967296)
-
-fn output_frame() -> Bytes:
-    var output: List(Int) = []
-    for byte in [71, 76, 77, 82]:
-        put_u8(output, byte)
-    put_u16(output, 1)
-    put_u16(output, 0)
-    put_u8(output, 16)
-    put_u8(output, 0)
-    put_u16(output, 48)
-    put_u32(output, 76)
-    put_u32(output, 1)
-    put_u32(output, 1)
-    put_u64(output, 1)
-    put_u64(output, 0)
-    put_u32(output, 0)
-    put_u32(output, 0)
-    put_u16(output, 1)
-    put_u16(output, 0)
-    put_u32(output, 28)
-    put_u32(output, 1)
-    put_u32(output, 1)
-    put_u32(output, 0)
-    put_u32(output, 0)
-    put_u32(output, 0)
-    match bytes.from_list(output):
-        Ok(frame) -> frame
-        Err(_) -> bytes.from_string("")
-
-@browser
-pub fn glamour_init(_root: UiRoot, _input: Bytes) -> BrowserState:
-    BrowserState(true)
-
-@browser
-pub fn glamour_dispatch(state: BrowserState, _input: Bytes) -> BrowserState:
-    state
-
-@browser
-pub fn glamour_emit(_state: BrowserState) -> Bytes:
-    output_frame()
-
-@browser
-pub fn glamour_release(own state: BrowserState):
-    match state:
-        BrowserState(_) -> ()
-"#;
-
 const STARTER_SOURCE: &str = r#"from glamour import Cmd, Program, Site, Start, Sub, Ui, UiRoot
 
 type Msg:
@@ -3968,6 +3807,3 @@ pub fn web() -> Site:
     let counter = glamour.interactive(app(), 0).named("counter").activate(glamour.OnInteraction)
     glamour.site([glamour.static_page("/", glamour.ui(html"<main><h1>Witchy app</h1>${glamour.embed(counter)}</main>"))])
 "#;
-
-#[cfg(test)]
-mod tests;

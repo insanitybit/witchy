@@ -259,89 +259,6 @@ fn coven_url_net_grant(u: &str) -> Option<String> {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::coven_url_net_grant;
-
-    #[test]
-    fn offline_pm_entries_leave_online_and_unknown_dispatch_unchanged() {
-        // Add and offline rune verification now have fixed checked-source
-        // wrappers too. Other online verbs still use the original dispatcher.
-        for (verb, expected) in [
-            ("test", ("__witchy_project_test", super::PROJECT_TEST_ENTRY)),
-            ("deps", ("__witchy_project_deps", super::PROJECT_DEPS_ENTRY)),
-            ("tree", ("__witchy_project_tree", super::PROJECT_TREE_ENTRY)),
-            ("add", ("__witchy_project_add", super::PROJECT_ADD_ENTRY)),
-            ("verify-rune", ("__witchy_project_verify_rune", super::PROJECT_VERIFY_RUNE_ENTRY)),
-        ] {
-            assert_eq!(super::embedded_pm_entry(Some(verb)), expected);
-        }
-        let original = ("grimoire", include_str!("../../projects/grimoire/src/grimoire.witchy"));
-        for verb in ["verify", "install", "publish", "promote", "yank",
-            "list", "outdated", "update", "help", "not-a-verb", "test --integration",
-            "add --help", "verify-rune --help"]
-        {
-            let actual = super::embedded_pm_entry(Some(verb));
-            assert_eq!(actual.0, original.0, "{verb}");
-            assert_eq!(actual.1, original.1, "{verb}");
-        }
-        assert_eq!(super::embedded_pm_entry(None), original);
-    }
-
-    #[test]
-    fn internal_admitted_launch_preserves_embedded_owner_capture_and_args() {
-        let source = r#"
-fn greeter(prefix: String, console: Console) -> fn(String) -> String:
-    fn(name: String):
-        console.print(prefix)
-        prefix + name
-
-fn main(console: Console, args: List(String)) -> Int:
-    let greet = greeter(args[0], console)
-    console.print(greet("one"))
-    console.print(greet("two"))
-    7
-"#;
-        let checked = witchy::resolve_std_only_checked(source).expect("checked embedded fixture");
-        let artifact = witchy::codegen::compile_checked_module_artifact(&checked)
-            .expect_lowered("admitted embedded owner capture");
-        assert!(!artifact.owner_bridges().is_empty());
-        let args = vec!["launch:".to_owned()];
-        let expected = ["launch:", "launch:one", "launch:", "launch:two"]
-            .map(str::to_owned).to_vec();
-        let (oracle_output, oracle_exit) = witchy::interpreter::run_module_exit(
-            checked.module().clone(), ".", Vec::new(), args.clone(), None,
-        ).expect("independent source execution with launch arguments");
-        assert_eq!(oracle_output, expected);
-        assert_eq!(oracle_exit, 7);
-        let (output, exit_code) = super::run_embedded_program(
-            &checked, Vec::new(), Vec::new(), args,
-        ).expect("embedded launcher retains admitted owner capture");
-        assert_eq!(output, expected);
-        assert_eq!(exit_code, Some(7));
-    }
-
-    #[test]
-    fn coven_url_grant_defaults_the_port_from_the_scheme() {
-        assert_eq!(coven_url_net_grant("https://coven.example"), Some("coven.example:443".into()));
-        assert_eq!(coven_url_net_grant("https://coven.example/"), Some("coven.example:443".into()));
-        assert_eq!(coven_url_net_grant("http://coven.example"), Some("coven.example:80".into()));
-    }
-
-    #[test]
-    fn coven_url_grant_keeps_an_explicit_port() {
-        assert_eq!(coven_url_net_grant("https://localhost:8443"), Some("localhost:8443".into()));
-        assert_eq!(coven_url_net_grant("http://127.0.0.1:8787/"), Some("127.0.0.1:8787".into()));
-    }
-
-    #[test]
-    fn coven_url_grant_passes_a_bare_hostport_through() {
-        assert_eq!(coven_url_net_grant("127.0.0.1:8787"), Some("127.0.0.1:8787".into()));
-        assert_eq!(coven_url_net_grant(""), None);
-        assert_eq!(coven_url_net_grant("https://"), None);
-    }
-}
-
 fn embedded_pm_module(name: &str) -> Option<&'static str> {
     match name {
         "grimoire" => Some(include_str!("../../projects/grimoire/src/grimoire.witchy")),
@@ -357,7 +274,3 @@ fn embedded_pm_module(name: &str) -> Option<&'static str> {
         _ => None,
     }
 }
-// Compiles coven's own sources as fixtures: behind `coven-tests`.
-#[cfg(all(test, feature = "coven-tests"))]
-#[path = "project_resolver_tests.rs"]
-mod project_resolver_tests;

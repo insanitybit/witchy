@@ -92,7 +92,7 @@ load-flaky under overlap) and a merge landing mid-gate invalidates that gate.
 - In your worktree run only focused checks: `./scripts/test-for-paths.sh`
   prints the ones matching your diff (`--run` executes them; `--focused` runs
   crate-scoped checks without full workspace builds); the building blocks are
-  `./scripts/check.sh --fast` / `--e2e` / `--examples` / `--wasm`.
+  `./scripts/check.sh --fast` / `--examples`.
 - After committing the exact tip you plan to submit, run
   `./scripts/agent-check.sh edit` with no path arguments. It selects the
   cheapest probes for the complete branch diff and records a commit-keyed
@@ -125,7 +125,7 @@ load-flaky under overlap) and a merge landing mid-gate invalidates that gate.
   it for CPU — the slow-gate outliers (5-10× normal) are exactly gates that
   overlapped agent builds. Run long builds/tests at reduced priority so the
   gate stays ~3min: `taskpolicy -c utility cargo …` / `taskpolicy -c utility
-  cargo nextest …`. Hold off on the e2e-heavy shards (`--e2e`, `--examples`)
+  cargo nextest …`. Hold off on the heavy `--examples` shard
   until the gate finishes; build/clippy/`--fast` are fine anytime.
 - If `submit` or `./scripts/merge-queue.sh doctor` says NO COORDINATOR RUNNING,
   start the detached one: `./scripts/merge-queue.sh daemon` (survives your

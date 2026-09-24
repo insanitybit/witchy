@@ -1,7 +1,6 @@
 //! Native and browser host conformance to the compiler-owned WASM ABI catalog.
 #![cfg(feature = "native")]
 
-use std::process::Command;
 
 use wasm_encoder::{
     CodeSection, EntityType, ExportKind, ExportSection, Function, FunctionSection, ImportSection,
@@ -219,60 +218,4 @@ fn precompiled_runner_authority_rows_are_cataloged() {
     assert_eq!(authorities_for("mint_secret"), vec![A::Secret]);
     assert_eq!(authorities_for("crypto.sign"), vec![A::Secret]);
     assert_eq!(authorities_for("now_monotonic"), vec![A::Clock]);
-}
-
-fn node_available() -> bool {
-    Command::new("node")
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
-
-#[test]
-fn browser_host_implements_exactly_the_catalogued_browser_surface() {
-    if !node_available() {
-        eprintln!("skipping: `node` is not available on PATH");
-        return;
-    }
-
-    let manifest = super::manifest_dir();
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let wasm_path = std::env::temp_dir().join(format!(
-        "witchy-abi-catalog-{}-{nonce}.wasm",
-        std::process::id()
-    ));
-    std::fs::write(&wasm_path, importing_module(&[])).expect("write empty ABI probe");
-
-    let mut expected = prelude()
-        .imports
-        .iter()
-        .filter(|import| abi_import_info(&import.name).is_some_and(|info| info.browser))
-        .map(|import| import.name.as_str())
-        .collect::<Vec<_>>();
-    expected.sort_unstable();
-
-    let out = Command::new("node")
-        .arg(manifest.join("web/witchy-runtime/import-catalog.test.mjs"))
-        .arg(&wasm_path)
-        .env("WITCHY_EXPECTED_IMPORTS", expected.join("\n"))
-        .env("WITCHY_EXPECTED_ABI_VERSION", WITCHY_ABI_VERSION.to_string())
-        .current_dir(manifest)
-        .output()
-        .expect("spawn browser ABI probe");
-    let _ = std::fs::remove_file(wasm_path);
-
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        out.status.success(),
-        "browser ABI probe failed:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
-    );
-    assert!(
-        stdout.contains("WITCHY-IMPORT-CATALOG OK"),
-        "missing browser ABI success marker: {stdout}"
-    );
 }

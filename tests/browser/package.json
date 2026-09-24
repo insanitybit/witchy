@@ -1,8 +1,0 @@
-{
-  "name": "witchy-browser-acceptance",
-  "private": true,
-  "type": "module",
-  "devDependencies": {
-    "@playwright/test": "1.61.1"
-  }
-}

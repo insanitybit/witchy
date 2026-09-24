@@ -982,41 +982,6 @@
 
 
 
-    /// The glamour rune's source, embedded so tests can `import glamour` without a
-    /// sibling file on disk — the same trick `coven`'s server modules use.
-    const GLAMOUR_SRC: &str = include_str!("../projects/glamour/src/glamour.witchy");
-
-
-    /// `std/markdown`'s source, embedded so a test can `import markdown` (it `import glamour`
-    /// transitively) without sibling files on disk.
-    const MARKDOWN_SRC: &str = include_str!("../projects/glamour/src/markdown.witchy");
-
-    /// `GLAMOUR_SRC` is a ~6k-line `const &str` baked in at compile time — its
-    /// content can never differ within one process run. `glamour::glamour_run_both`/
-    /// `markdown_run_both` and roughly a dozen tests that inline the same
-    /// `parser::parse_module(GLAMOUR_SRC)` call (most sharply,
-    /// `glamour_media_policy_css_and_loader_share_one_query_corpus`, which parses it
-    /// once per corpus entry inside a loop) each re-parsed those ~6k lines from
-    /// scratch with no reuse across calls — the same redundant-parse class as the
-    /// rfc0087-census fix and the `resolve_std_src`/`try_link_std` fix above.
-    /// Caching by a `OnceLock<Module>` is unconditionally safe here: a cache hit
-    /// returns the identical AST a fresh parse would produce (2026-08-10).
-    fn glamour_module_cached() -> ast::Module {
-        static CACHE: std::sync::OnceLock<ast::Module> = std::sync::OnceLock::new();
-        CACHE
-            .get_or_init(|| parser::parse_module(GLAMOUR_SRC).expect("parse glamour"))
-            .clone()
-    }
-
-    /// Like [`glamour_module_cached`] for `MARKDOWN_SRC`.
-    fn markdown_module_cached() -> ast::Module {
-        static CACHE: std::sync::OnceLock<ast::Module> = std::sync::OnceLock::new();
-        CACHE
-            .get_or_init(|| parser::parse_module(MARKDOWN_SRC).expect("parse markdown"))
-            .clone()
-    }
-
-
     // ---- RFC-0043: write-back by declaration (not the name census) ----
 
     // ---- RFC-0087: uniform var write-back ----

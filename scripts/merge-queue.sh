@@ -7,7 +7,7 @@
 #
 # The protocol:
 #   * Agents work in isolated worktrees and run only FOCUSED tests there
-#     (a check.sh shard: --fast / --e2e / --examples / --wasm).
+#     (a check.sh shard: --fast / --examples).
 #   * When a branch is ready, the agent runs:  scripts/merge-queue.sh submit <branch>
 #   * ONE coordinator session runs:            scripts/merge-queue.sh run
 #     It takes branches FIFO, rebases each onto current master in a dedicated
@@ -99,7 +99,7 @@
 #                                                   worktree-status.sh reports what sweep
 #                                                   can't judge (abandoned/dirty trees).
 #
-# The gate command defaults to `./scripts/check.sh` (the push gate minus e2e);
+# The gate command defaults to `./scripts/check.sh` (the push gate minus --full);
 # override with MERGE_QUEUE_GATE_CMD (e.g. "./scripts/check.sh --full").
 set -euo pipefail
 
@@ -1327,10 +1327,9 @@ group_is_busy() { # group_is_busy <pgid>
 # Measured: a gate for an agent-skill edit ran the whole 4880-test suite for
 # 235s and could not have observed the diff. Keep the classifier comment in
 # check.sh in sync.
-# glamour and coven/grimoire tests (deprioritized 2026-09-21) are compiled
-# only under the non-default `glamour-tests`/`coven-tests` features, so the
-# default gate can neither build nor run them: a batch touching only those
-# files, or coven-web (not embedded in the CLI), cannot change any stage.
+# glamour and coven/grimoire are not tested by this repo's gate (2026-09-24):
+# a batch touching only coven-web (not embedded in the CLI) cannot change any
+# stage.
 # NOT here: projects/{glamour,coven,grimoire}/ -- eighteen of those files are
 # include_str!'d into the witchy binary, so deleting or renaming one breaks
 # the build and must still be gated.
@@ -2815,23 +2814,6 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
         gate_scope="docs"
     fi
 
-    # Ungated projects from the same diff (see check.sh's WITCHY_GATE_UNGATED).
-    # glamour, coven-web, grimoire and coven are applications built ON witchy,
-    # not the language the gate protects. Their tests are expensive — together
-    # 163 of ~2750 tests for ~45% of the suite's CPU, roughly two minutes of
-    # every gate — and they were charging every unrelated branch for projects
-    # the gate does not guard. Run a family's tests only when the batch touches
-    # a path that family OWNS. A compiler or stdlib change that breaks one of
-    # them without touching its paths is a deliberately accepted outcome, caught
-    # by the `--glamour`/`--grimoire` shard whoever next picks that work up runs.
-    #
-    # coven's publish flows already live entirely in the `e2e` binary, which the
-    # default gate excludes regardless — no separate classification needed.
-    #
-    # Fail SAFE toward SPEED: an errored/empty diff still skips both, because a
-    # missed regression costs a project we do not gate on, while an unnecessary
-    # run costs every queued branch behind this one. `ungated` lists the
-    # families to SKIP, so each grep ADDS a family when the diff misses it.
     # Corpus sweeps from the same diff (see check.sh's WITCHY_GATE_SKIP_SWEEPS).
     # The sweeps walk every example, std module and documented ```witchy block
     # on both backends — ~900 compile+run cycles, the largest remaining block
@@ -2853,10 +2835,10 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
         skip_sweeps=1
     fi
 
-    # The runnable-book validator and the wasm playground build (below) serve
-    # the docs site and the browser playground, not the compiler. Decided
-    # 2026-09-21: the compiler is the only thing gated. `--full`, CI and the
-    # explicit `./scripts/check.sh --wasm` still run both.
+    # check.sh no longer has a runnable-book leg or a wasm playground leg
+    # (consumers are untested by this repo since 2026-09-24). The positional
+    # skip_book/skip_wasm/ungated values below are inert plumbing kept only so
+    # the run_gate argument order stays stable.
     local skip_book=1
 
     # RFC-0111 rust-class, workspace check/clippy, and the wasm playground
@@ -2870,7 +2852,6 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
     if [ -n "$changed" ] && [ -z "$(diff_rust_class_surface "$changed")" ]; then
         skip_rust_class=1
     fi
-    # Browser playground build: docs-site surface, never gated (see skip_book).
     skip_wasm=1
     local skip_fmt=0
     if [ -n "$changed" ] && [ -z "$(diff_fmt_surface "$changed")" ]; then
@@ -2900,13 +2881,6 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
             ;;
     esac
 
-    # glamour and coven/grimoire are CONSUMERS of witchy, not the compiler
-    # the gate protects, and were deprioritized 2026-09-21 so compiler work
-    # moves faster. The gate skips both families unconditionally -- even when
-    # a batch touches `web/`, `projects/glamour`, `projects/coven*`,
-    # `projects/grimoire` or `book/`. Their tests are also not COMPILED by
-    # default (`glamour-tests` / `coven-tests` features). Run them explicitly
-    # with `./scripts/check.sh --glamour` / `--grimoire`.
     local ungated="glamour grimoire"
 
     # Queue fixtures manipulate process groups, detached daemons, file locks,

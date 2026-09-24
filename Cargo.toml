@@ -60,42 +60,14 @@ name = "witchy"
 path = "src/main.rs"
 required-features = ["native"]
 
-[[test]]
-name = "glamour"
-required-features = ["glamour-tests"]
-
-[[test]]
-name = "e2e"
-required-features = ["e2e-tests"]
-
 [features]
 # The full native toolchain (wasmtime sandbox, package manager, LSP). On by
 # default; the wasm playground builds the library alone with it OFF.
 default = ["native"]
 native = ["dep:wasmtime", "dep:wasmprinter", "dep:lsp-server", "dep:serde_json", "dep:serde", "dep:toml", "dep:tiny_http", "dep:getrandom", "dep:blake3", "dep:witchy-testkit", "dep:mimalloc", "witchy-wir/native", "witchy-caps/native", "witchy-interp/test-fixtures", "witchy-runtime/test-fixtures"]
-# glamour is an EXPERIMENTAL CONSUMER of witchy, not the language the gate
-# guards. Its tests were compiled into the compiler's own test binaries on
-# every gate even though the coordinator skips running them on ~90% of gates
-# (`WITCHY_GATE_UNGATED`). Measured 2026-09-21: they cost 12.1 CPU s of the
-# final test-binary build, on EVERY gate, for tests that mostly never run.
-# `./scripts/check.sh --glamour` turns them back on.
-glamour-tests = ["web"]
-# coven (registry) and grimoire (package manager) are CONSUMERS of witchy,
-# deprioritized 2026-09-21 so compiler work moves faster. Their tests compile
-# only with this feature; `./scripts/check.sh --grimoire` enables it. The
-# merge gate never does.
-coven-tests = []
 # The web/static-site commands (glamour, the docs site). Optional since
 # 2026-09-21: they are ~28% of the root crate and every build paid for them.
-# `glamour-tests` enables it because those tests drive `witchy build --web`.
 web = []
-# The end-to-end acceptance binary (coven/grimoire publish + install flows).
-# The default gate EXCLUDES `binary(e2e)` from the workspace stage, but it
-# still COMPILED all 7,619 lines of it on every gate: measured 2026-09-21,
-# alternating arms, min of 3, that is 9.0 CPU s of every gate's final build
-# for tests the gate does not run. `--e2e`, `--full`, the focused check and
-# CI's e2e-full.sh all enable this.
-e2e-tests = []
 # Shared deterministic fixture sessions for the opaque-frame browser host.
 # Kept out of ordinary library builds; the playground/docs builder enables it.
 browser-fixtures = ["dep:serde_json", "dep:witchy-test-host", "dep:witchy-testkit"]

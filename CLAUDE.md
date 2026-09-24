@@ -75,7 +75,7 @@ repeat the rules; consult it when you're working inside one of these areas.
 
 ## The gate in detail
 
-`./scripts/check.sh` = build + clippy + `nextest --workspace` + the wasm build.
+`./scripts/check.sh` = build + clippy + `nextest --workspace`.
 Clippy runs **bug-lint tiers only** — `correctness` + `suspicious` +
 `unused_must_use`, **not** `-D warnings`; style/perf/pedantic lints print but
 never block (see `CLIPPY_GATE_LINTS` in the script). Do not run the full gate
@@ -83,9 +83,7 @@ yourself. After committing the exact tip you intend to submit, run
 `./scripts/agent-check.sh edit`; it selects focused checks from the committed
 diff and records the commit-keyed receipt consumed by the merge queue. The
 coordinator owns the serialized full gate. CI (`.github/workflows/ci.yml`) runs
-build/clippy/nextest, canonical-conformance sweep, heap-check fuzz, e2e, docs, and fmt. For
-anything user-visible, add a runnable `book/` example alongside the differential
-test.
+build/clippy/nextest, canonical-conformance sweep, heap-check fuzz, and fmt.
 
 ## Why the optimization zoo stays (RFC-0016 / RFC-0051)
 
@@ -125,10 +123,10 @@ grow the shape tables.
   right now. The book and its glamour-built docs site are deprioritized with
   them until the compiler work is done: do not spend effort on book chapters,
   runnable-book validation or the docs site unless asked. RFC-0168 plans the
-  split that takes these out of the compiler. The merge gate neither builds nor runs their tests (the
-  `glamour-tests` / `coven-tests` features are off by default; `./scripts/check.sh
-  --glamour` / `--grimoire` run them on demand). Do not spend effort keeping
-  them green unless asked.
+  split that takes these out of the compiler. This repo has no tests, gate
+  legs or CI jobs for them (removed 2026-09-24): no glamour/browser/playground,
+  runnable-book, docs-site, coven, coven-web or grimoire tests. Do not add any
+  unless asked.
 
 - For 0.1 release work, [`RELEASE-READINESS.md`](RELEASE-READINESS.md) is the
   tracked evidence ledger; recheck its claims against current `master`,
@@ -233,8 +231,8 @@ before hand-rolling a measurement; every trap in it was hit in practice.
 reference, invariants, sharp edges, testing recipe, and recovery playbook. Read
 it before debugging or extending the queue.
 
-- Why the two invariants exist: the long-tail e2e tests stretch each other, and
-  the publish e2e is load-flaky.
+- Why the two invariants exist: concurrent full gates stretch each other's
+  long-tail tests, and a merge mid-gate invalidates that gate.
 - `--fast` overlaps clippy in the background, so a lint failure surfaces at the
   collect stage *after* tests.
 - A `submit --after <parent>` change reports as waiting/blocked until the stable

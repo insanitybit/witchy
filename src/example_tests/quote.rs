@@ -1,9 +1,7 @@
 use super::*;
-use crate::{interpreter, parser, typeck};
 
 /// (BUG-338) An escaped `\${...}` inside a tagged literal is static text, not
-/// a hole or a call-site capture. This pins both a minimal tag and glamour's
-/// `html` tag.
+/// a hole or a call-site capture.
 #[test]
 fn tagged_literal_escaped_dollar_stays_literal_on_both_backends() {
     if !is_nightly() {
@@ -21,37 +19,4 @@ fn main(console: Console):
     let expected_plain = ["cost ${price}"];
     assert_eq!(link_run(plain), expected_plain, "interp plain tag");
     assert_eq!(run_linked_on_wasm(&[("main", plain)], "main"), expected_plain, "wasm plain tag");
-
-    let glamour = r#"import glamour
-from glamour import VNode
-
-type Msg:
-    Click
-
-fn main(console: Console):
-    let price = "CAPTURED"
-    let node: VNode(Msg) = html"<p>literal: \${price}</p>"
-    console.print(glamour.to_html(node))
-"#;
-    let expected_glamour = ["<p>literal: ${price}</p>"];
-    let glamour_src = include_str!("../../projects/glamour/src/glamour.witchy");
-    let linked = crate::pipeline::link(
-        vec![
-            ("glamour".into(), parser::parse_module(glamour_src).expect("glamour parse")),
-            ("main".into(), parser::parse_module(glamour).expect("main parse")),
-        ],
-        "main",
-    )
-    .expect("link glamour");
-    typeck::check(&linked).expect("typecheck glamour");
-    assert_eq!(
-        interpreter::run_module(linked, ".", Vec::new()).expect("run glamour"),
-        expected_glamour,
-        "interp glamour html"
-    );
-    assert_eq!(
-        run_linked_on_wasm(&[("glamour", glamour_src), ("main", glamour)], "main"),
-        expected_glamour,
-        "wasm glamour html"
-    );
 }

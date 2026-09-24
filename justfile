@@ -182,7 +182,7 @@ doc-std: build-release
 e2e:
     ./scripts/e2e-full.sh
 
-# Acceptance run without the `cargo test` stage (CI runs that separately).
+# Acceptance run without the `cargo test` stage.
 e2e-quick:
     ./scripts/e2e-full.sh --quick
 
@@ -203,12 +203,7 @@ book-serve: docs-build
 playground:
     ./scripts/build-playground.sh
 
-# Validate every runnable book block against the manifest oracle (the CI
-# `playground` job's second step) — needs the browser wasm from `playground`.
-book-validate: playground
-    node scripts/validate_book_examples.mjs
-
-# Build the deployable docs bundle into ./dist (CI `docs-build` job). The bundle
+# Build the deployable docs bundle into ./dist. The bundle
 # builder generates its browser compiler from the same checkout.
 docs-build: build-release
     ./scripts/build-docs.sh dist
@@ -219,16 +214,13 @@ wasm:
 
 # --- Aggregates -----------------------------------------------------------
 
-# The full local gate — mirrors every ci.yml job EXCEPT the master-only Pages
-# deploy (`docs-deploy`), which needs GitHub Pages/OIDC and isn't locally
-# reproducible. See .github/workflows/ci.yml for the authoritative set.
+# The full local gate — mirrors the compiler jobs in ci.yml.
+# See .github/workflows/ci.yml for the authoritative set.
 #   zizmor        -> zizmor       build/clippy/test -> build-all clippy test-ci
 #   heap-check    -> heap-check      parity            -> parity-sweep
-#   acceptance    -> e2e-quick       fmt               -> wfmt-check
-#   playground    -> playground book-validate          docs-build -> docs-build
-# Needs node (book-validate) and the wasm32 target (playground/docs-build).
-ci: build-all clippy test-ci heap-check parity-sweep wfmt-check zizmor playground book-validate docs-build e2e-quick
-    @echo "✓ local CI gate passed (mirrors ci.yml minus the Pages deploy)"
+#   fmt           -> wfmt-check
+ci: build-all clippy test-ci heap-check parity-sweep wfmt-check zizmor
+    @echo "✓ local CI gate passed (mirrors ci.yml)"
 
 # Remove build artifacts.
 clean:

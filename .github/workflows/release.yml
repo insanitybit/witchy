@@ -142,7 +142,7 @@ jobs:
       # style lint the merge gate already let through.
       - name: Clippy (bug lints)
         run: cargo clippy --workspace --all-targets --features witchy-wir/native --locked -- -D clippy::correctness -D clippy::suspicious -D unused_must_use
-      - name: Unit, integration, and e2e tests
+      - name: Unit and integration tests
         run: cargo nextest run --workspace --features witchy-wir/native --profile ci --all-targets --locked
 
   heap-check:
@@ -210,21 +210,6 @@ jobs:
           echo "parity-sweep: $files files, $compared compared lines, positive control OK"
           exit "$fail"
 
-  acceptance:
-    name: From-scratch acceptance
-    needs: version
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          ref: ${{ needs.version.outputs.commit }}
-          persist-credentials: false
-      - uses: ./.github/actions/install-rust
-      - name: Whole-system acceptance
-        run: ./scripts/e2e-full.sh --quick
-
   fmt:
     name: Witchy source formatting
     needs: version
@@ -245,39 +230,9 @@ jobs:
           while IFS= read -r f; do files+=("$f"); done < <(find projects -type f -path '*/src/*.witchy' -print | sort)
           ./target/debug/witchy fmt --check "${files[@]}"
 
-  playground:
-    name: Browser compiler, runnable book, and docs bundle
-    needs: version
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          ref: ${{ needs.version.outputs.commit }}
-          persist-credentials: false
-      - uses: ./.github/actions/install-rust
-        with:
-          targets: wasm32-unknown-unknown
-      - name: Build native docs compiler
-        run: cargo build --release --locked
-      - name: Build browser compiler
-        run: cargo build --release --locked --lib --no-default-features --target wasm32-unknown-unknown
-      - name: Validate runnable book
-        env:
-          WITCHY_WASM_PATH: target/wasm32-unknown-unknown/release/witchy.wasm
-        run: node scripts/validate_book_examples.mjs
-      # Mirror ci.yml: build the fixtures-enabled browser wasm with the pinned
-      # toolchain and hand it to build-docs.sh, which otherwise rebuilds it via
-      # build-playground.sh.
-      - name: Build the browser compiler wasm (the Run buttons)
-        run: cargo build --release --locked --lib --no-default-features --features browser-fixtures --target wasm32-unknown-unknown
-      - name: Assemble docs without publishing them
-        run: WITCHY_BROWSER_WASM=target/wasm32-unknown-unknown/release/witchy.wasm ./scripts/build-docs.sh dist
-
   build:
     name: Native artifact ${{ matrix.target }}
-    needs: [version, workflow-security, test, heap-check, parity, acceptance, fmt, playground]
+    needs: [version, workflow-security, test, heap-check, parity, fmt]
     runs-on: ${{ matrix.os }}
     permissions:
       contents: read

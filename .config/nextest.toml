@@ -6,17 +6,7 @@
 # the whole suite, and prints a clean per-test summary. There are no doctests
 # in this crate, so `nextest run` covers everything `cargo test` did.
 
-# Setup scripts (nextest experimental, stable in practice; nextest-rs/nextest#978):
-# warm the wasmtime caches for the embedded pm/coven programs ONCE before any
-# server-spawning e2e test runs. The caches are keyed on the witchy binary's
-# mtime+size, so every rebuild invalidates them; without this, the first suite
-# after a rebuild re-compiles the same embedded programs in EVERY spawned
-# subprocess. The script is best-effort and always exits 0.
-experimental = ["setup-scripts", "wrapper-scripts"]
-
-[scripts.setup.warm-witchy-caches]
-command = "scripts/warm-witchy-caches.sh"
-slow-timeout = { period = "150s", terminate-after = 1 }
+experimental = ["wrapper-scripts"]
 
 # macOS can wedge dyld when nextest discovers the workspace's ~100 MB test
 # binaries at CPU-count concurrency. Bound only the list phase there; test
@@ -54,7 +44,7 @@ fail-fast = false
 # Show a failing test's output as it fails, then recap all failures at the end.
 failure-output = "immediate-final"
 status-level = "fail"
-# Flag pathologically slow tests (the registry e2e tests are the slowest) and
+# Flag pathologically slow tests and
 # kill anything that hangs well past that.
 # 90s x 3 = 270s, raised from 45s x 3 = 135s on 2026-08-26.
 #
@@ -73,7 +63,7 @@ status-level = "fail"
 slow-timeout = { period = "90s", terminate-after = 3 }
 
 # CI profile: `cargo nextest run --profile ci`. Retries absorb the occasional
-# flaky network/registry e2e test; JUnit output feeds CI test reporting.
+# flaky test; JUnit output feeds CI test reporting.
 [profile.ci]
 default-filter = 'not (binary(differential_fuzz_campaigns) | test(/^stats::tests::differential_sweep_output_is_invariant_on_both_backends$/) | test(/^example_tests::example_sweeps::all_examples_validate_via_cli$/))'
 fail-fast = false
@@ -95,24 +85,7 @@ path = "junit.xml"
 [profile.default.junit]
 path = "junit.xml"
 
-# The registry/coven e2e tests each bind a TCP port and spawn a `witchy` server
-# subprocess, then poll for readiness. Run concurrently across the whole suite,
-# many servers compile + start under heavy CPU contention and a few overrun
-# their readiness window — false failures that always pass in isolation (the
-# long-standing "don't run two suites at once" flakiness). Bound them to a
-# small group so server spawns stay rare; the rest of the suite still
-# parallelizes fully.
-#
-# Width 2 (was 1): the merge-queue coordinator now guarantees at most ONE
-# heavyweight suite runs at a time (scripts/merge-queue.sh), which removes the
-# machine-wide contention that motivated full serialization — and ~40% of the
-# spawning tests had drifted out of the old keyword filter and were running
-# concurrently anyway, without flaking. The group is ~90% of the gate's test
-# stage, so width 2 nearly halves gate wall-clock. The single per-group retry
-# absorbs a rare readiness overrun without masking real failures (a genuinely
-# red test fails twice).
 [test-groups]
-registry-serial = { max-threads = 2 }
 perf-serial = { max-threads = 1 }
 wasm-heavy = { max-threads = 2 }
 gate-cold-heavy = { max-threads = 4 }
@@ -235,67 +208,9 @@ priority = 90
 
 # Bound cold, compiler-heavy test binaries without serializing unrelated tests.
 [[profile.default.overrides]]
-filter = 'binary_id(witchy::glamour) | (binary_id(witchy::misc) & not test(/repository_census_matches_the_checked_in_type_resolved_snapshot/)) | binary_id(witchy::rfc0080) | binary_id(witchy::rfc0081_existential_frontend) | binary_id(witchy::rfc0090) | binary_id(witchy::rfc0092) | binary_id(merge-queue-tests::test_for_paths) | binary_id(merge-queue-tests::worktree) | (binary_id(witchy::bin/witchy) & test(/^(cli_flag_tests|compiled_build_step_tests)::/)) | (binary_id(witchy-lower) & test(/^analysis::(fip_tests|last_use_tests)::/)) | (binary_id(witchy-syntax) & test(/^aliases::tests::/))'
+filter = '(binary_id(witchy::misc) & not test(/repository_census_matches_the_checked_in_type_resolved_snapshot/)) | binary_id(witchy::rfc0080) | binary_id(witchy::rfc0081_existential_frontend) | binary_id(witchy::rfc0090) | binary_id(witchy::rfc0092) | binary_id(merge-queue-tests::test_for_paths) | binary_id(merge-queue-tests::worktree) | (binary_id(witchy::bin/witchy) & test(/^(cli_flag_tests|compiled_build_step_tests)::/)) | (binary_id(witchy-lower) & test(/^analysis::(fip_tests|last_use_tests)::/)) | (binary_id(witchy-syntax) & test(/^aliases::tests::/))'
 test-group = 'gate-cold-heavy'
 retries = 0
-
-# The `commands::web::tests` group compiles a full glamour program per test,
-# each driving the multi-core Wasm compiler. Left at the default group they
-# thundering-herd the compiler under a busy gate; the heaviest
-# (`typed_island_plan_erases_only_after_program_model_and_view_agree`) runs
-# ~120s standalone and tipped the default 135s slow-kill after 2,597 tests
-# passed on 2026-08-04 (the sole timeout on an otherwise-green gate). Bound them
-# in the width-4 cold-heavy group AND widen the slow-timeout to 240s so one
-# uninterrupted run clears the real runtime with headroom; assertions and the
-# bounded 480s (2 x 240s) hard cap are unchanged.
-[[profile.default.overrides]]
-filter = 'binary_id(witchy::bin/witchy) & test(/^commands::web::tests::/)'
-test-group = 'gate-cold-heavy'
-retries = 0
-slow-timeout = { period = "240s", terminate-after = 2 }
-priority = 80
-
-# Same shape as `commands::web::tests` above: each compiles/renders a full
-# glamour program through the multi-core Wasm compiler. Already run in
-# gate-cold-heavy via binary_id(witchy::glamour)/binary_id(witchy::bin/witchy),
-# but without a widened timeout, so they were exposed to the default 135s
-# slow-kill. Measured standalone: the `witchy::glamour dom::*` tests run
-# 47-95s baseline; `example_tests::glamour::
-# glamour_media_policy_css_and_loader_share_one_query_corpus` TIMED OUT at
-# 135s twice in a row under concurrent-gate load (2026-08-09) despite no
-# code-path relation to the change being gated -- pure contention, same
-# failure shape as the census/docs-bundle/web::tests entries above. Same
-# remedy: widen the period so one uninterrupted run clears the real runtime
-# with headroom.
-[[profile.default.overrides]]
-filter = 'test(/^dom::(glamour_island_completion_frames_agree_on_both_backends|glamour_island_host_work_frames_agree_on_both_backends|glamour_structural_patch_frames_agree_on_both_backends|glamour_version_and_trust_views_render_security_fields)$|^html_nul::html_rejects_static_nul_without_affecting_real_holes_or_strings$/)'
-test-group = 'gate-cold-heavy'
-retries = 0
-slow-timeout = { period = "240s", terminate-after = 2 }
-priority = 80
-
-# `cli_subcommands::{web_commands_route_natively_and_complete_clean_clone_flow,
-# static_web_flow_needs_no_client_scaffold_or_browser_runtime,
-# web_doctor_deployment_headers_check_declared_route_policy}` each spawn the
-# real `witchy` binary through a full `new`/`test --web`/`build --web`/`doctor`
-# flow (the third also runs a real header-probe server) — same shape as
-# `commands::web::tests` above (a full glamour program compiled through the
-# multi-core Wasm compiler, just out-of-process). Measured ~53s standalone but
-# TIMED OUT at the default 135s slow-kill in a full-suite run (2026-08-09)
-# purely from concurrent CPU contention — passes every time in isolation.
-# `web_doctor_deployment_headers_check_declared_route_policy` was added after
-# being missed by the original two-name list and independently timing out
-# under the same load (2026-08-09): a per-test name allowlist keeps missing
-# siblings that share the underlying cost shape — if a NEW `--web`-flow test
-# is added to this file, add it here too rather than waiting for it to time
-# out first. Same remedy: bound to the width-4 cold-heavy group and widen the
-# timeout so one uninterrupted run clears the real cost with headroom.
-[[profile.default.overrides]]
-filter = 'binary_id(witchy::cli_subcommands) & test(/web_commands_route_natively_and_complete_clean_clone_flow|static_web_flow_needs_no_client_scaffold_or_browser_runtime|web_doctor_deployment_headers_check_declared_route_policy/)'
-test-group = 'gate-cold-heavy'
-retries = 0
-slow-timeout = { period = "240s", terminate-after = 2 }
-priority = 80
 
 # Long-running regression guards: the at-scale perf programs can exceed the
 # default 135s slow-kill under a busy gate. Serialize them in their own group,
@@ -403,24 +318,6 @@ test-group = 'perf-serial'
 slow-timeout = { period = "600s", terminate-after = 2 }
 priority = 90
 
-# The docs-bundle proof builds the FULL book (every route) through the static
-# publisher, so its runtime scales with book size: ~7s at 43 routes, ~72-74s
-# at 56 routes after the 2026-08-06 cookbook expansion. Under a busy gate that
-# tips the default 135s slow-kill (sole timeout on an otherwise-green gate,
-# 2026-08-06 — same failure shape as the census on 07-18 and web::tests on
-# 08-04). Same remedy: widen the period so one uninterrupted run clears the
-# real runtime with headroom, keeping a bounded 480s (2 x 240s) hard cap. It
-# already runs in gate-cold-heavy via binary_id(witchy::glamour); this override
-# only widens its timeout.
-[[profile.default.overrides]]
-filter = 'test(/glamour_docs_bundle_renders_the_real_book/)'
-test-group = 'gate-cold-heavy'
-# Killed at its full 480s ceiling in the 2026-08-26 RFC-0158 batch; slow, not
-# flaky, so more ceiling and no retry.
-slow-timeout = { period = "600s", terminate-after = 2 }
-retries = 0
-priority = 85
-
 # Serial-tail elimination: these tests are slow AND sort late by name, so at
 # default priority they were the last to COMPLETE every gate — `wir_binary_path`
 # (~9s) and the heavy differential/example-matrix tests trailed the bulk. (The
@@ -473,26 +370,3 @@ priority = 95
 filter = 'test(/^example_tests::([a-z0-9_]+::)?wir_binary_path_runs_and_agrees_with_oracle$|^example_tests::([a-z0-9_]+::)?(documentation_examples_are_valid|all_examples_validate_via_cli|every_example_agrees_under_unbox|every_compilable_example_agrees_on_both_backends|every_example_agrees_under_rc_floor|examples_agree_under_rc_floor|examples_agree_under_inplace_and_forced_copy|all_examples_run_via_cli|book_examples_manifest_is_current)$|^example_tests::range_for_properties::/) | test(/differential_sweep_output_is_invariant_on_both_backends/)'
 test-group = 'wasm-heavy'
 priority = 90
-
-# Keyword filter: nextest can only match on names, so this must cover every
-# test that spawns a registry/coven server (RegistryServer::start() or raw
-# coven dispatch in tests/e2e.rs). If you add a spawning test, either match an
-# existing keyword or extend this list — `cargo nextest show-config test-groups`
-# shows current membership.
-[[profile.default.overrides]]
-filter = 'binary_id(witchy::e2e) & test(/coven|publish|promote|resolv|lifecycle|release|widen|glamour_publishes|pm_add|yank|trusted|api_docs|diamond|cool_down|consent|serves|tuf|vendored|registry|provenance|outdated|tree_shows|std_shadowing|module_name_collision|update_single|upgrade|transitive/)'
-test-group = 'registry-serial'
-retries = 1
-# Start the serialized long pole FIRST so it overlaps the parallel tail
-# instead of running after it (nextest runs same-priority tests in name
-# order; priority range is -100..=100, higher starts earlier).
-priority = 100
-
-[[profile.default.scripts]]
-filter = 'binary_id(witchy::e2e)'
-setup = 'warm-witchy-caches'
-
-[[profile.ci.overrides]]
-filter = 'binary_id(witchy::e2e) & test(/coven|publish|promote|resolv|lifecycle|release|widen|glamour_publishes|pm_add|yank|trusted|api_docs|diamond|cool_down|consent|serves|tuf|vendored|registry|provenance|outdated|tree_shows|std_shadowing|module_name_collision|update_single|upgrade|transitive/)'
-test-group = 'registry-serial'
-

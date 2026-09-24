@@ -616,14 +616,12 @@ instead of `--workspace --all-targets`. `--full` / CI still run everything.
   means an untracked collision introduced during the gate, or a worktree state
   Git refused at the final fast-forward; the gate result remains valid and only
   the landing needs help.
-- **check.sh shards:** `--fast` (commit gate: build+clippy+tests minus e2e),
-  `--e2e`, `--examples`, `--wasm`, `--queue-infra` — agents' pre-submit
+- **check.sh shards:** `--fast` (commit gate: build+clippy+tests),
+  `--examples`, `--queue-infra` — agents' pre-submit
   validation. The queue-infrastructure shard is serial and hermetic by design.
-  `test-for-paths.sh` maps a diff to the right shards. The `witchy` e2e
-  tests live in the `registry-serial` nextest group (width 2, retries 1,
-  priority 100 so the long pole starts first); the keyword filter in
-  `.config/nextest.toml` must cover every test that spawns a registry server
-  — `cargo nextest show-config test-groups` audits membership.
+  `test-for-paths.sh` maps a diff to the right shards. The e2e,
+  glamour, browser and registry tests (and the `registry-serial` group) were
+  removed 2026-09-24.
 - **Gate-speed history (2026-07-07):** gates went ~360s → ~180-270s via:
   registry-serial width 1→2 + complete filter; e2e test consolidation;
   at-scale guards made compiled-only; `[profile.dev.package]` opt-level=1

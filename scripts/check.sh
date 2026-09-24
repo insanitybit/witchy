@@ -3,34 +3,29 @@
 # before you commit, and before you push. Steps are ordered cheap-to-expensive so
 # a failure surfaces as early as possible.
 #
-#   ./scripts/check.sh --fast  the COMMIT gate: tests (minus the load-flaky
-#                              e2e and the nightly-deferred perf/build tests,
-#                              see NIGHTLY-DEFERRED below) with clippy
+#   ./scripts/check.sh --fast  the COMMIT gate: tests (minus the
+#                              nightly-deferred perf/build tests, see
+#                              NIGHTLY-DEFERRED below) with clippy
 #                              overlapped in the background,
 #                              plus witchy-fmt IF any .witchy files changed —
 #                              the fast inner loop
 #   ./scripts/check.sh         the MERGE gate: tests + fmt in the foreground with
-#                              a compile check (cargo check), clippy, and the wasm
-#                              playground build overlapped in the background
+#                              a compile check (cargo check) and clippy
+#                              overlapped in the background
 #                              (collected before the gate goes green). Fail-fast:
 #                              a background leg that finishes RED aborts the
 #                              foreground tests immediately instead of hiding
 #                              behind ~20 min of green tests
-#   ./scripts/check.sh --full  the PUSH gate: also the e2e suite + from-scratch acceptance
+#   ./scripts/check.sh --full  the PUSH gate: also the nightly-deferred tests and bench trend
 #
 # Shards — ONE named section, for a focused pre-queue run in your own worktree.
 # A green shard does not replace the full gate; scripts/merge-queue.sh runs that
 # once, serialized, at merge time:
-#   ./scripts/check.sh --e2e       just the e2e nextest binary (coven/pm/glamour)
 #   ./scripts/check.sh --examples  just the example differential matrix (example_tests::*)
-#   ./scripts/check.sh --wasm      just the wasm playground build
 #   ./scripts/check.sh --queue-infra-edit  representative queue edit probes
 #   ./scripts/check.sh --queue-infra  merge-queue fixtures, isolated and serial
-#   ./scripts/check.sh --glamour   glamour + coven-web tests
-#   ./scripts/check.sh --grimoire  grimoire + coven tests
-# The last two are UNGATED projects: the merge gate does not run them by
-# default, so run the shard yourself while working on one (see the UNGATED
-# PROJECTS block below).
+# glamour, coven, coven-web, grimoire, the browser playground and the book/docs
+# site are consumers of the compiler. This repo's gate and CI do not test them.
 #
 # rustfmt is deliberately NOT part of the gate: the Rust in this repo is
 # hand-formatted, so `cargo fmt` would fight the intended style.
@@ -78,13 +73,12 @@ if [ -n "${WITCHY_GATE_SCOPE+x}" ]; then
     export CARGO_BUILD_JOBS="${WITCHY_GATE_BUILD_JOBS:-8}"
 fi
 
-# The test graph is the gate's critical path. Check, Clippy, and wasm still run
+# The test graph is the gate's critical path. Check and Clippy still run
 # concurrently for fail-fast coverage, but must not each inherit the foreground
 # graph's eight-job allowance: that let one gate ask a 10-core host for 24-32
-# compiler jobs before any agent work was counted. Check and wasm need only one
-# job each; Clippy gets two so it still finishes inside the foreground build.
-# That bounds the common native gate at eleven jobs initially and ten after the
-# fast check finishes. Each leg remains retunable on a larger gate host.
+# compiler jobs before any agent work was counted. Check needs only one job;
+# Clippy gets two so it still finishes inside the foreground build. Each leg
+# remains retunable on a larger gate host.
 # macOS test discovery in the serialized gate is bounded to two cold binaries
 # at a time by default in scripts/nextest-list-wrapper.sh (.config/nextest.toml),
 # which can take longer than the three-pulse standalone startup window. Keep
@@ -123,9 +117,9 @@ for arg in "$@"; do
     case "$arg" in
         --full) full=1 ;;
         --fast) fast=1 ;;
-        --e2e | --examples | --wasm | --queue-infra-edit | --queue-infra | --glamour | --grimoire) shard="${arg#--}" ;;
-        -h | --help) sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
-        *) echo "check.sh: unknown argument '$arg' (try --fast, --full, --e2e, --examples, --wasm, --queue-infra-edit, --queue-infra, --glamour, --grimoire, or --help)" >&2; exit 2 ;;
+        --examples | --queue-infra-edit | --queue-infra) shard="${arg#--}" ;;
+        -h | --help) sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        *) echo "check.sh: unknown argument '$arg' (try --fast, --full, --examples, --queue-infra-edit, --queue-infra, or --help)" >&2; exit 2 ;;
     esac
 done
 if [ -n "$shard" ] && { [ "$full" -eq 1 ] || [ "$fast" -eq 1 ]; }; then
@@ -136,18 +130,6 @@ fi
 # dirs, e.g. CARGO_TARGET_DIR=target-claude): the cargo build below writes the
 # binary there, not under ./target, so the fmt check must look there too.
 target_dir="${CARGO_TARGET_DIR:-target}"
-
-# The wasm build needs the rustup toolchain's std: a Homebrew rustc/cargo first on
-# PATH can't supply wasm `core`, and `rustup run` alone does not fix it. Force the
-# toolchain's bin dir to the front and clear any RUSTC/RUSTFLAGS override (the same
-# approach as build-playground.sh).
-if command -v rustup >/dev/null; then
-    rustup target add wasm32-unknown-unknown >/dev/null 2>&1 || true
-    tc_bin="$(dirname "$(rustup which --toolchain stable rustc)")"
-    wasm_cargo=(env -u RUSTC -u RUSTFLAGS "PATH=$tc_bin:$PATH" cargo)
-else
-    wasm_cargo=(cargo)
-fi
 
 # Fuzz policy (WITCHY_GATE_FUZZ, default `full`) — set by the merge-queue
 # coordinator from the branch diff. Ordinary Rust tests are bounded deterministic
@@ -203,7 +185,7 @@ esac
 #      execution cost; rfc0092's trusted_publisher_application_end_to_end and
 #      trusted_minigrep_distribution::committed_minigrep_builds_and_runs_as_an_
 #      installed_trusted_app each shell out to a real `--release` cargo build,
-#      the same shape as the `binary(e2e)` tests this gate already defers.
+#      the same shape as other real-build tests this gate defers.
 #
 #   2. RFC-0135 parity oracles and structural/tail-lowering checks over TINY
 #      fixtures (13 tests, 2-26s) whose cost is the compiler's own optimizer
@@ -261,46 +243,6 @@ case "$gate_scope" in
 esac
 if [ "$full" -eq 1 ] || [ "$fast" -eq 1 ]; then gate_scope="all"; fi
 
-# UNGATED PROJECTS ----------------------------------------------------------
-# glamour, coven-web, grimoire and coven are applications built ON witchy, not
-# the language the merge gate exists to protect. Their tests were charging
-# every unrelated branch for projects the gate does not guard: together 163 of
-# ~2750 tests for ~45% of summed per-test wall time, roughly two minutes of every
-# gate. Breaking one of them while nobody is working on it is an accepted
-# outcome, so the DEFAULT here is to skip them all.
-#
-# WITCHY_GATE_UNGATED is the space-separated list of families to SKIP. The
-# merge-queue coordinator overrides it with exactly the families the batch does
-# not touch (see merge-queue.sh), so a branch that edits a project still gets
-# that project's tests. `--full` clears the list and runs everything, and each
-# family has a focused shard (`--glamour`, `--grimoire`) for working on it.
-#
-# Note `${VAR-default}`, not `${VAR:-default}`: an explicitly EMPTY value means
-# "gate everything", which is distinct from the variable being unset.
-#
-# Each filterset must select the family's whole surface wherever its tests
-# physically live, and must stay in step with the owning paths in
-# merge-queue.sh. coven's publish flows already live entirely in the `e2e`
-# binary, which the default (non-`--full`) gate excludes regardless.
-#
-# glamour: its own binary, every `witchy web` subcommand test (`::tests::` and
-# `::dev::tests::` alike), the glamour example matrix, and the three web CLI
-# flows in cli_subcommands. The anchored `web_`/`static_web_` deliberately does
-# NOT catch `example_tests::*::webauthn_*`, which is stdlib crypto, not this UI.
-ungated_filter_glamour='binary(glamour) or test(/^commands::web::/) or test(/^example_tests::glamour::/) or (binary(cli_subcommands) and test(/^(web_|static_web_)/))'
-# grimoire/coven: the package-manager and registry example matrix.
-# EXACTLY ONE test in the glamour family consumes real `book/` content, so a
-# book-only change does not need the other 55. Verified by reading the suite,
-# not by matching names: `glamour-docs.test.mjs` (glamour_docs_app_renders_
-# book_pages) serves a FAKE inline SUMMARY.md, `example_tests::glamour` uses
-# "/book/*slug" only as a route literal, and no `commands::web::` or
-# cli_subcommands web_/static_web_ test reads book/ at all. Measured cost of
-# getting this wrong in the permissive direction: 752s of summed test time for 162s of
-# warranted work, on every branch that edits a markdown page.
-ungated_filter_glamour_book='test(/glamour_docs_bundle_renders_the_real_book/)'
-ungated_filter_glamour_nonbook="($ungated_filter_glamour) and not ($ungated_filter_glamour_book)"
-ungated_filter_grimoire='test(/^example_tests::pm_coven::/) or test(/^source::package_inputs::registry_replay_tests::/) or test(/^commands::embedded_pm::project_resolver_tests::/)'
-
 # CORPUS SWEEPS -------------------------------------------------------------
 # The corpus sweeps walk every example, every std module and every ```witchy
 # block in the docs, compiling and running each on both backends — roughly 900
@@ -331,22 +273,10 @@ esac
 sweeps_excl=""
 [ "$gate_skip_sweeps" -eq 1 ] && sweeps_excl="not ($sweeps_filter)"
 
-# Runnable-book (browser) is keyed on the files that validator already walks
-# (book/, examples/, web/, the two validator scripts). The coordinator sets
-# WITCHY_GATE_SKIP_BOOK=1 when the batch cannot change those inputs. --full
-# and standalone keep the pass. 0/unset runs it.
-gate_skip_book="${WITCHY_GATE_SKIP_BOOK:-0}"
-case "$gate_skip_book" in
-    0 | 1) ;;
-    *) echo "check.sh: WITCHY_GATE_SKIP_BOOK must be 0 or 1" >&2; exit 2 ;;
-esac
-[ "$full" -eq 1 ] && gate_skip_book=0
-
 # Serialized-gate skips for legs the batch cannot change. Coordinator sets
 # these; --full and standalone keep the legs. 0/unset runs them.
 gate_skip_rust_class="${WITCHY_GATE_SKIP_RUST_CLASS:-0}"
 gate_skip_compile="${WITCHY_GATE_SKIP_COMPILE:-0}"
-gate_skip_wasm="${WITCHY_GATE_SKIP_WASM:-0}"
 gate_skip_fmt="${WITCHY_GATE_SKIP_FMT:-0}"
 case "$gate_skip_rust_class" in
     0 | 1) ;;
@@ -356,23 +286,17 @@ case "$gate_skip_compile" in
     0 | 1) ;;
     *) echo "check.sh: WITCHY_GATE_SKIP_COMPILE must be 0 or 1" >&2; exit 2 ;;
 esac
-case "$gate_skip_wasm" in
-    0 | 1) ;;
-    *) echo "check.sh: WITCHY_GATE_SKIP_WASM must be 0 or 1" >&2; exit 2 ;;
-esac
 case "$gate_skip_fmt" in
     0 | 1) ;;
     *) echo "check.sh: WITCHY_GATE_SKIP_FMT must be 0 or 1" >&2; exit 2 ;;
 esac
-[ "$full" -eq 1 ] && { gate_skip_rust_class=0; gate_skip_compile=0; gate_skip_wasm=0; gate_skip_fmt=0; }
+[ "$full" -eq 1 ] && { gate_skip_rust_class=0; gate_skip_compile=0; gate_skip_fmt=0; }
 # Nested check.sh (queue-infra fixtures, an agent's local shard) must not
 # inherit skip flags from a parent serialized gate. Only the coordinator's
 # marked run (WITCHY_GATE_SCOPE set) applies them.
 if [ -z "${WITCHY_GATE_SCOPE+x}" ]; then
-    gate_skip_book=0
     gate_skip_rust_class=0
     gate_skip_compile=0
-    gate_skip_wasm=0
     gate_skip_fmt=0
 fi
 
@@ -424,21 +348,6 @@ if [ -n "$gate_deferred" ]; then
     [ "$deferred_excl" = "all()" ] && deferred_excl=""
 fi
 
-gate_ungated="${WITCHY_GATE_UNGATED-glamour grimoire}"
-[ "$full" -eq 1 ] && gate_ungated=""
-ungated_excl=""
-for family in $gate_ungated; do
-    case "$family" in
-        glamour)  family_filter="$ungated_filter_glamour" ;;
-        # Skip the glamour family EXCEPT its one book-consuming test: what a
-        # `book/`-only batch needs.
-        glamour-nonbook) family_filter="$ungated_filter_glamour_nonbook" ;;
-        grimoire) family_filter="$ungated_filter_grimoire" ;;
-        *) echo "check.sh: unknown WITCHY_GATE_UNGATED family '$family' (want glamour|glamour-nonbook|grimoire)" >&2; exit 2 ;;
-    esac
-    ungated_excl="${ungated_excl:+$ungated_excl and }not ($family_filter)"
-done
-
 # Queue fixtures spawn detached coordinators, process groups, lock holders, and
 # nested throwaway Git repositories. Running them beside 2,000 product tests
 # makes their bounded readiness assertions measure machine contention instead
@@ -461,15 +370,12 @@ esac
 [ "$queue_infra" -eq 0 ] || gate_scope="all"
 
 # Prefer nextest (the project's runner); fall back to plain `cargo test`.
-# By default, exclude the load-flaky e2e binary (coven/glamour publish tests)
-# from the merge gate. It runs explicitly via `--e2e` and as part of `--full`.
 if cargo nextest --version >/dev/null 2>&1; then
     # On macOS the list wrapper avoids a second cold exec per test binary by
     # deriving the one audited legacy ignored test from the ordinary list. Keep that
     # optimization fail-closed: a new/renamed #[ignore] must update its policy first.
     scripts/nextest-list-wrapper.sh --validate-ignore-policy "$PWD"
-    # Combine the e2e exclusion (default/--fast) and the fuzz-skip exclusion into one
-    # filterset (nextest ANDs, so join with ` and `).
+    # Combine the exclusions into one filterset (nextest ANDs, so join with ` and `).
     # Queue-infrastructure fixtures run only in their isolated shard below.
     excl="not package(merge-queue-tests)"
     census_proof_sha="${WITCHY_GATE_CENSUS_PROOF_SHA:-}"
@@ -478,13 +384,9 @@ if cargo nextest --version >/dev/null 2>&1; then
         excl="$excl and not test(/^rfc0087_migration_census::repository_census_matches_the_checked_in_type_resolved_snapshot$/)"
         printf 'check.sh: reusing exact RFC-0087 census proof for %.12s\n' "$census_proof_sha"
     fi
-    [ "$full" -eq 0 ] && excl="$excl and not binary(e2e)"
     [ "$full" -eq 0 ] && excl="$excl and $nightly_excl"
     if [ -n "$fuzz_excl" ]; then
         excl="${excl:+$excl and }$fuzz_excl"
-    fi
-    if [ -n "$ungated_excl" ]; then
-        excl="${excl:+$excl and }$ungated_excl"
     fi
     if [ -n "$deferred_excl" ]; then
         excl="${excl:+$excl and }$deferred_excl"
@@ -611,52 +513,6 @@ if cargo nextest --version >/dev/null 2>&1; then
         *" --workspace "* | *" -p witchy-wir "* | *" -p witchy-lower "*)
             nextest_cmd+=(--features witchy-wir/native)
             ;;
-    esac
-    # `glamour-tests` is a NON-DEFAULT feature, so `tests/glamour.rs` carries
-    # `required-features` and cargo does not merely skip an unmet target -- it
-    # FAILS the whole invocation:
-    #
-    #   error: target `glamour` in package `witchy` requires the features:
-    #   `glamour-tests`
-    #
-    # Three mapper rules still name that target (`web/witchy-runtime/glamour-*.mjs`,
-    # `web/witchy-runtime/witchy-runtime.mjs`, `tests/glamour/dom.rs`), and the
-    # coordinator's ungated classifier keys on a DIFFERENT path set -- only
-    # `web/`, `projects/glamour`, `projects/coven-web` and `dist/` count as a
-    # glamour surface. So `tests/glamour/dom.rs` alone selects `--test glamour`
-    # while the family is still listed as skipped, which is precisely the
-    # combination that errors. The feature therefore follows the SELECTION, not
-    # the ungated list: if anything in this invocation names a glamour target,
-    # enable it. Naming the target is what makes cargo demand the feature.
-    # Same rule for the e2e acceptance binary, for the same reason: naming a
-    # target whose required features are unmet is a hard cargo error, and a
-    # WORKSPACE run with them unmet silently drops the binary instead. So
-    # enable it when the selection names it, and when `--full` is about to
-    # stop excluding `binary(e2e)` (check.sh's $excl above).
-    case " ${nextest_sel[*]} " in
-        *" --test e2e "*) nextest_cmd+=(--features e2e-tests) ;;
-        *) [ "$full" -eq 1 ] && nextest_cmd+=(--features e2e-tests) ;;
-    esac
-    case " ${nextest_sel[*]} " in
-        *" --test glamour "*)
-            nextest_cmd+=(--features glamour-tests)
-            ;;
-        *)
-            # No glamour target named. The family may still be RUN by
-            # expression (`--workspace` plus an unskipped ungated set), and
-            # those tests only exist when the feature is compiled in, so
-            # enable it whenever the family is not being skipped outright.
-            case " $gate_ungated " in
-                *" glamour "*) ;;
-                *) nextest_cmd+=(--features glamour-tests) ;;
-            esac
-            ;;
-    esac
-    # Same for coven/grimoire: `--full` (empty ungated set) means everything,
-    # and those modules only exist with `coven-tests` compiled in.
-    case " $gate_ungated " in
-        *" grimoire "*) ;;
-        *) nextest_cmd+=(--features coven-tests) ;;
     esac
     # The slow-test ratchet confirms candidates with exactly this selection and
     # feature set (minus --max-fail and -j), so its one confirmation run reuses
@@ -944,33 +800,6 @@ witchy_fmt_check() {
     "$target_dir/debug/witchy" fmt --check "${files[@]}"
 }
 
-# Run pinned examples and every complete book example through the SHIPPED
-# browser wasm + host. The second audit uses the exact providers wired into the
-# live docs page, so a browser-runnable classification cannot create a false Run
-# button. Uses the wasm built in the step above. Best-effort:
-# skips (green) if node or the wasm are absent so the gate never hard-depends on
-# a JS toolchain that may not be present everywhere.
-validate_runnable_book() {
-    command -v node >/dev/null 2>&1 || { echo "node absent — skipping runnable-book validation"; return 0; }
-    [ -f scripts/validate_book_examples.mjs ] || { echo "validator absent — skipping"; return 0; }
-    local built="$target_dir/wasm32-unknown-unknown/debug/witchy.wasm"
-    [ -f "$built" ] || { echo "wasm not built at $built — skipping"; return 0; }
-    local -a node_flags=()
-    if node --v8-options 2>/dev/null | grep -q -- '--experimental-wasm-jspi'; then
-        node_flags+=(--experimental-wasm-jspi)
-    fi
-    if ! node "${node_flags[@]+"${node_flags[@]}"}" -e \
-        'process.exit(typeof WebAssembly.Suspending === "function" && typeof WebAssembly.promising === "function" ? 0 : 1)'; then
-        echo "Node lacks WebAssembly JSPI — skipping runnable-book validation"
-        return 0
-    fi
-    # Point the validator at the freshly-built wasm via env — do NOT copy over the
-    # tracked web/witchy.wasm (a dirtied worktree would break the coordinator's ff-merge).
-    WITCHY_WASM_PATH="$built" node "${node_flags[@]+"${node_flags[@]}"}" scripts/validate_book_examples.mjs
-    WITCHY_WASM_PATH="$built" node "${node_flags[@]+"${node_flags[@]}"}" scripts/audit-browser-runnable.mjs
-    WITCHY_WASM_PATH="$built" node "${node_flags[@]+"${node_flags[@]}"}" web/witchy-runtime/fixture-host.test.mjs
-}
-
 # RFC-0111's ordinary gate leg is deliberately untimed: it proves that every
 # paired Witchy/Rust case agrees with its independent result. On ARM it also
 # proves that the Rust translation units contain no packed-vector instructions;
@@ -1012,26 +841,9 @@ rust_class_check() {
 if [ -n "$shard" ]; then
     shard_t0=$(date +%s)
     case "$shard" in
-        e2e)
-            cargo nextest --version >/dev/null 2>&1 || { echo "check.sh: --e2e requires cargo-nextest" >&2; exit 2; }
-            # The shard honours the RFC-0165 deferred list exactly like the default
-            # gate above; only --full (the push gate) clears it. Without this, an
-            # edit presubmit that selects --e2e runs the ~90 deferred e2e tests the
-            # landing gate never runs and can never record a green receipt.
-            # `e2e-tests` is NON-DEFAULT: without it this shard compiles no
-            # e2e binary and runs ZERO tests while reporting green.
-            cargo nextest run --workspace --features witchy-wir/native,e2e-tests -E "binary(e2e)${deferred_excl:+ and $deferred_excl}"
-            ;;
         examples)
             cargo nextest --version >/dev/null 2>&1 || { echo "check.sh: --examples requires cargo-nextest" >&2; exit 2; }
             cargo nextest run --workspace --features witchy-wir/native -E "test(/^example_tests::/)${deferred_excl:+ and $deferred_excl}"
-            ;;
-        wasm)
-            "${wasm_cargo[@]}" build --lib --no-default-features --features browser-fixtures --target wasm32-unknown-unknown
-            # Same browser-runnability check the full gate runs — so an agent
-            # validating a book/classifier change with `--wasm` catches a false
-            # Run button in their focused shard, not only at full-gate time.
-            validate_runnable_book
             ;;
         queue-infra)
             cargo nextest --version >/dev/null 2>&1 || { echo "check.sh: --queue-infra requires cargo-nextest" >&2; exit 2; }
@@ -1040,25 +852,6 @@ if [ -n "$shard" ]; then
         queue-infra-edit)
             cargo nextest --version >/dev/null 2>&1 || { echo "check.sh: --queue-infra-edit requires cargo-nextest" >&2; exit 2; }
             "${queue_infra_edit_cmd[@]}"
-            ;;
-        glamour)
-            # The tests the merge gate no longer runs by default. Run this while
-            # working on glamour or coven-web — the queue will not catch a
-            # regression there for you.
-            cargo nextest --version >/dev/null 2>&1 || { echo "check.sh: --glamour requires cargo-nextest" >&2; exit 2; }
-            # `glamour-tests` is a NON-DEFAULT feature: without it the glamour
-            # example module and the `glamour` test binary are not compiled at
-            # all, which is the point (they cost every gate a build they never
-            # ran). This shard is the only place that turns them back on.
-            cargo nextest run --workspace --features witchy-wir/native,glamour-tests -E "$ungated_filter_glamour"
-            ;;
-        grimoire)
-            # Likewise for grimoire/coven. Run this while working on the package
-            # manager or the registry; the queue will not catch it for you.
-            cargo nextest --version >/dev/null 2>&1 || { echo "check.sh: --grimoire requires cargo-nextest" >&2; exit 2; }
-            # `coven-tests` is NON-DEFAULT: without it these modules are not
-            # compiled and this shard would run zero tests green.
-            cargo nextest run --workspace --features witchy-wir/native,coven-tests -E "$ungated_filter_grimoire"
             ;;
     esac
     record_shard_receipt "$shard"
@@ -1266,12 +1059,6 @@ failfast_scan() {
         clippy_pid=""
         return 0
     fi
-    if [ -n "${wasm_pid:-}" ] && leg_finished_red "${wasm_log:-}"; then
-        failfast_label="wasm playground build"; failfast_pid="$wasm_pid"
-        failfast_log="$wasm_log"; failfast_started="$wasm_started"
-        wasm_pid=""
-        return 0
-    fi
     return 1
 }
 
@@ -1289,10 +1076,8 @@ reap_bg() {
     [ -n "${failfast_fg_pid:-}" ] && kill "$failfast_fg_pid" 2>/dev/null || true
     [ -n "${check_pid:-}" ] && kill "$check_pid" 2>/dev/null || true
     [ -n "${clippy_pid:-}" ] && kill "$clippy_pid" 2>/dev/null || true
-    [ -n "${wasm_pid:-}" ] && kill "$wasm_pid" 2>/dev/null || true
     [ -n "${check_log:-}" ] && rm -f "$check_log" || true
     [ -n "${clippy_log:-}" ] && rm -f "$clippy_log" || true
-    [ -n "${wasm_log:-}" ] && rm -f "$wasm_log" || true
     return 0
 }
 trap reap_bg EXIT
@@ -1401,7 +1186,7 @@ if [ "$fast" -eq 1 ]; then
     if [ "${#preflight_cmd[@]}" -gt 0 ]; then
         run_watched "preflight (tests that red the last attempt)" "${preflight_cmd[@]}"
     fi
-    run_watched "tests (workspace, minus e2e)" "${test_cmd[@]}"
+    run_watched "tests (workspace)" "${test_cmd[@]}"
     collect_bg "clippy (bug lints)" "$clippy_pid" "$clippy_log" "$clippy_started"
     clippy_pid=""
     # Product discovery already builds the excluded merge_queue test binary.
@@ -1409,7 +1194,7 @@ if [ "$fast" -eq 1 ]; then
     # and no background compiler load can distort process/timing assertions.
     [ "$queue_infra" -eq 0 ] || run "queue infrastructure (isolated)" "${queue_infra_cmd[@]}"
     record_shard_receipt fast
-    printf '\n\033[1;32mfast gate green\033[0m — run without --fast before push (fmt + wasm), --full for e2e\n'
+    printf '\n\033[1;32mfast gate green\033[0m — run without --fast before push (fmt + compile check)\n'
     exit 0
 fi
 
@@ -1420,7 +1205,7 @@ if [ "$gate_scope" = "docs" ]; then
         *)
             run "docs-only scope — heavy stages skipped" true ;;
     esac
-    printf '\n\033[1;32mall green\033[0m — WITCHY_GATE_SCOPE=docs: compiler tests/clippy/fmt/wasm/book skipped (post-merge CI runs the full suite)\n'
+    printf '\n\033[1;32mall green\033[0m — WITCHY_GATE_SCOPE=docs: compiler tests/clippy/fmt skipped (post-merge CI runs the full suite)\n'
     exit 0
 fi
 
@@ -1435,8 +1220,8 @@ if [ -n "${WITCHY_GATE_SCOPE+x}" ]; then
     fi
 fi
 
-# The full gate runs four independent legs CONCURRENTLY and collects the
-# background three after the foreground one finishes:
+# The full gate runs three independent legs CONCURRENTLY and collects the
+# background two after the foreground one finishes:
 #   [fg] tests  — nextest builds the workspace itself, including a fresh `witchy`
 #                 binary: the integration tests name it via CARGO_BIN_EXE_witchy,
 #                 so cargo must (re)build the bin before compiling them. That
@@ -1445,11 +1230,9 @@ fi
 #   [bg] check  — see launch_check_leg above (own CoW-cloned target dir);
 #                 surfaces plain compile errors in minutes.
 #   [bg] clippy — see launch_clippy_leg above (own CoW-cloned target dir).
-#   [bg] wasm   — targets wasm32-unknown-unknown, shares no native artifacts
-#                 (this leg overlapped tests before this restructure too).
 # A background-leg failure fails the gate FAST: run_watched polls the legs
 # while the tests run and aborts them the moment a leg records a failure, so
-# a red check/clippy/wasm surfaces in minutes instead of after the full test
+# a red check/clippy surfaces in minutes instead of after the full test
 # stage. The all-green path is unchanged (overlap, not serialization).
 # Serialized gates skip legs the batch cannot change (see WITCHY_GATE_SKIP_*).
 if [ "$gate_skip_compile" -eq 1 ]; then
@@ -1457,20 +1240,6 @@ if [ "$gate_skip_compile" -eq 1 ]; then
 else
     launch_check_leg
     launch_clippy_leg
-fi
-
-if [ "$gate_skip_wasm" -eq 1 ]; then
-    printf 'check.sh: skipping wasm playground build (WITCHY_GATE_SKIP_WASM=1)\n'
-    wasm_pid=""
-else
-    wasm_log="$(mktemp "${TMPDIR:-/tmp}/witchy-wasm-XXXXXX")"
-    wasm_started=$(date +%s)
-    if [ -n "${WITCHY_GATE_SCOPE+x}" ]; then
-        ( background_leg env CARGO_BUILD_JOBS="${WITCHY_GATE_WASM_BUILD_JOBS:-1}" "${wasm_cargo[@]}" build --lib --no-default-features --features browser-fixtures --target wasm32-unknown-unknown ) >"$wasm_log" 2>&1 &
-    else
-        ( background_leg "${wasm_cargo[@]}" build --lib --no-default-features --features browser-fixtures --target wasm32-unknown-unknown ) >"$wasm_log" 2>&1 &
-    fi
-    wasm_pid=$!
 fi
 
 if [ "${#preflight_cmd[@]}" -gt 0 ]; then
@@ -1501,10 +1270,6 @@ if [ "$gate_skip_compile" -eq 0 ]; then
     collect_bg "clippy (bug lints)"   "$clippy_pid" "$clippy_log" "$clippy_started"
     clippy_pid=""
 fi
-if [ "$gate_skip_wasm" -eq 0 ]; then
-    collect_bg "wasm playground build"    "$wasm_pid"   "$wasm_log" "$wasm_started"
-    wasm_pid=""
-fi
 
 # Product nextest compiles every integration binary before applying its
 # filterset, including merge_queue. Reuse that artifact only after every
@@ -1512,11 +1277,6 @@ fi
 # duplicate workspace build at the front of the gate.
 [ "$queue_infra" -eq 0 ] || run "queue infrastructure (isolated)" "${queue_infra_cmd[@]}"
 
-if [ "$gate_skip_book" -eq 1 ]; then
-    printf 'check.sh: skipping runnable-book (WITCHY_GATE_SKIP_BOOK=1; --full/CI still run it)\n'
-else
-    run "runnable book (browser)"  validate_runnable_book
-fi
 if [ "$gate_skip_rust_class" -eq 1 ]; then
     printf 'check.sh: skipping rust-class (WITCHY_GATE_SKIP_RUST_CLASS=1; --full/CI still run it)\n'
 else
@@ -1526,7 +1286,6 @@ if [ "$full" -eq 1 ]; then
     # Full differential-fuzz campaigns are explicit, non-blocking nightly CI targets.
     # `.github/workflows/nightly-fuzz.yml` preserves their legacy corpus sizes and sanitizer
     # modes; neither ordinary nor --full local gates execute them.
-    run "e2e (from scratch)"   ./scripts/e2e-full.sh
     # RFC-0030 bench/soak. The deterministic guards — the never-OOM soak and the
     # per-optimization counter assertions (src/stats.rs) — are HARD-gated in the
     # workspace test step above. The wall-clock benchmarks below are TREND only:
@@ -1542,5 +1301,5 @@ fi
 
 record_shard_receipt full
 printf '\n\033[1;32mall green\033[0m'
-[ "$full" -eq 1 ] || printf ' — run with --full for the e2e acceptance test'
+[ "$full" -eq 1 ] || printf ' — run with --full for the nightly-deferred tests'
 printf '\n'

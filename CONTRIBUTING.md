@@ -21,14 +21,11 @@ cargo clippy --workspace --all-targets -- -D clippy::correctness -D clippy::susp
 cargo nextest run --workspace
 ```
 
-The coordinator rebases, runs the full workspace/parity/browser gate once, and
+The coordinator rebases, runs the full workspace/parity gate once, and
 lands only the exact green commit. See `AGENTS.md` for shared-worktree target
 isolation, queue monitoring, and recovery commands. External contributors who
 do not use the coordinator may run `./scripts/check.sh`, but its result is local
 evidence rather than permission to bypass the repository landing gate.
-
-The end-to-end package-manager tests (`tests/e2e.rs`) drive the real binary
-through scaffold/publish/add/build/run against hermetic per-test registries.
 
 Agent-driven contribution flow is documented in
 `docs/agile-agent-playbook.md`, including ownership boundaries, required handoff
@@ -75,10 +72,8 @@ The intended layers are:
   tests for local contracts and fault localization;
 - `src/example_tests/` for independently expected language semantics and
   canonical-interpreter/admitted-Wasm conformance;
-- `tests/e2e.rs` for real-process package, publishing, confinement, and
-  lifecycle boundaries;
-- `tests/browser.rs` and `book/examples.json` for the browser host and runnable
-  documentation; and
+- `tests/cli_subcommands.rs` and `tests/misc/` for real-process CLI,
+  confinement, and capability boundaries; and
 - mutation/fault-injection tests for evidence that the retained oracles reject
   deliberately wrong behavior.
 
@@ -93,17 +88,15 @@ macro DSL or test framework to save superficial lines.
 `scripts/test-for-paths.sh` is the authority mapping changed paths to focused
 shards. When moving or extracting tests, update that mapping in the same change
 and confirm `--run` selects every required shard. The merge coordinator remains
-the authority for the serialized full workspace, e2e, canonical-conformance,
-compatibility-parity, and browser gate.
+the authority for the serialized full workspace, canonical-conformance, and
+compatibility-parity gate.
 
 `scripts/e2e-full.sh` is the whole-system acceptance run: it builds from
 scratch, checks the canonical interpreter and admitted-Wasm result plus the
 temporary source-walker compatibility path, exercises the formatter, the
 in-language test framework, capability
 auditing (`caps`/`caps-diff`), sandbox enforcement (confinement + allowlist
-denials), a complete registry lifecycle (trusted publish → staged → 2FA
-promote → verified add → the capability-widening gate → namespace binding), a
-multi-rune example project, and doc extraction - ~30 asserted checks.
+denials), and doc extraction. CI does not run it.
 `--quick` skips its test stage, which is redundant once `check.sh` has run the
 suite.
 
@@ -172,15 +165,8 @@ enforce these semantic idioms.
 ## Documentation is tested
 
 Runnable ` ```witchy ` examples in the markdown docs (`README.md`, `spec/*.md`,
-`book/src/*.md`) are exercised by the runnable-book gate,
-`scripts/validate_book_examples.mjs` (run in CI). It loads the compiled
-playground engine (`web/witchy.wasm` + `web/witchy-host.js` - the same engine a
-reader's Run button uses), and for each entry in the `book/examples.json`
-manifest it locates the referenced ` ```witchy ` block, runs the ones marked
-`runnable`, and asserts the block's output equals the canonical SafeWIR
-interpreter output the manifest recorded - so an in-book run can never diverge from the toolchain that
-produced the manifest. A divergence, or a manifest block that no longer exists,
-fails the gate. So a runnable example in the docs must be a **complete, correct
+`book/src/*.md`) are exercised by the `example_tests` documentation sweep. So a
+runnable example in the docs must be a **complete, correct
 program** - when you change the language, the examples that demonstrate it fail
 the build until updated. Genuinely partial snippets (signatures with `...`, shell
 commands, sample output) use a different fence (untagged, or ` ```sh `); blocks

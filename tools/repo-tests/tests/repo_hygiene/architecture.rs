@@ -99,7 +99,7 @@ fn stage_crates_follow_the_declared_dependency_dag() {
 fn root_integration_test_binaries_stay_within_budget() {
     // The explicitly nightly differential-fuzz campaign is a first-class
     // binary, even though it is absent from the blocking profile.
-    const BUDGET: usize = 25;
+    const BUDGET: usize = 18;
 
     let root = super::workspace_root().join("tests");
     let mut drivers: Vec<String> = std::fs::read_dir(&root)
@@ -158,86 +158,5 @@ fn rust_tests_do_not_compile_checkout_specific_manifest_paths() {
     assert!(
         offenders.is_empty(),
         "compile-time CARGO_MANIFEST_DIR makes seeded tests read the publisher checkout; use std::env::var_os at runtime instead: {offenders:#?}",
-    );
-}
-
-/// The merge coordinator runs the whole glamour family (150 tests, ~1699s of
-/// gate CPU) only when a glamour surface changes. A `book/`-only batch runs
-/// the `glamour-nonbook` family instead: everything EXCEPT the single test
-/// that renders the real book, saving ~1537s of CPU -- a third of the suite --
-/// on every branch that edits a page.
-///
-/// That split is only sound while exactly ONE driver reads real book content.
-/// `glamour-docs.test.mjs` looks like a second one and is not: it serves a
-/// FAKE inline SUMMARY.md and mentions `book` only as a capability name. If a
-/// new driver starts reading `book/src/`, the split would silently stop
-/// gating it on book changes, so pin the set here rather than trusting the
-/// next reader to notice the distinction.
-#[test]
-fn only_one_glamour_driver_reads_the_real_book() {
-    const READS_REAL_BOOK: &[&str] = &["glamour-docs-bundle.test.mjs"];
-
-    let drivers = super::workspace_root().join("web/witchy-runtime");
-    let mut found: Vec<String> = std::fs::read_dir(&drivers)
-        .expect("read web/witchy-runtime")
-        .filter_map(|entry| {
-            let path = entry.expect("read driver entry").path();
-            if path.extension().is_some_and(|ext| ext == "mjs")
-                && std::fs::read_to_string(&path).is_ok_and(|t| t.contains("book/src/"))
-            {
-                path.file_name().map(|n| n.to_string_lossy().into_owned())
-            } else {
-                None
-            }
-        })
-        .collect();
-    found.sort();
-
-    assert_eq!(
-        found, READS_REAL_BOOK,
-        "the set of node drivers reading real `book/src/` content changed. The \
-         `glamour-nonbook` ungated family (scripts/check.sh) skips every glamour \
-         test except `glamour_docs_bundle_renders_the_real_book` on a book-only \
-         batch; a new book-reading driver must be added to \
-         `ungated_filter_glamour_book` or it will stop being gated on book edits.",
-    );
-}
-
-/// glamour is an experimental CONSUMER of witchy, not the language the merge
-/// gate guards. Its tests used to compile into the compiler's own test binaries
-/// on every gate even though the coordinator skips RUNNING them on roughly 90%
-/// of gates, which bought nothing and cost every queued branch behind it.
-///
-/// They now sit behind the non-default `glamour-tests` feature, so the default
-/// gate does not build them at all. `./scripts/check.sh --glamour` is the one
-/// place that turns them back on. This pins both halves of that arrangement:
-/// the feature exists and is NOT in `default`, and the shard still enables it.
-#[test]
-fn glamour_tests_stay_out_of_the_default_compiler_gate() {
-    let manifest = std::fs::read_to_string(super::workspace_root().join("Cargo.toml"))
-        .expect("read the root manifest");
-    assert!(
-        manifest.lines().any(|line| line.starts_with("glamour-tests = [")),
-        "the `glamour-tests` feature is gone; glamour is back in every gate build",
-    );
-    let default_line = manifest
-        .lines()
-        .find(|line| line.starts_with("default = ["))
-        .expect("the manifest declares a default feature set");
-    assert!(
-        !default_line.contains("glamour-tests"),
-        "`glamour-tests` is in the DEFAULT feature set, so every gate builds it again: {default_line}",
-    );
-    assert!(
-        manifest.contains("required-features = [\"glamour-tests\"]"),
-        "the `glamour` test binary lost its required-features guard",
-    );
-
-    let check = std::fs::read_to_string(super::workspace_root().join("scripts/check.sh"))
-        .expect("read check.sh");
-    assert!(
-        check.contains("witchy-wir/native,glamour-tests"),
-        "`check.sh --glamour` no longer enables the feature, so the shard runs ZERO glamour tests \
-         and nothing covers glamour at all",
     );
 }

@@ -115,8 +115,6 @@ mod wasm_abi_catalog;
 mod rfc0102_console;
 #[path = "misc/rfc0103_build_step_confinement.rs"]
 mod rfc0103_build_step_confinement;
-#[path = "misc/rfc0103_csp.rs"]
-mod rfc0103_csp;
 #[path = "misc/rfc0165_admitted_launch.rs"]
 mod rfc0165_admitted_launch;
 #[path = "misc/rfc0165_oracle.rs"]
