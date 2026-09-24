@@ -52,19 +52,26 @@ fn main() -> Int:
 "#;
     opt::set_for_tests(Some(OptSet::none()));
     let _reset = ResetOptimizationOverride;
-    let checked = witchy::resolve_std_only_checked(source)
-        .expect("compiler-owned anonymous pattern type-checks");
-    let artifact = witchy::codegen::compile_checked_module_artifact(&checked)
-        .expect_lowered("compiler-owned anonymous pattern admits SafeWIR");
-    let mut runtime = Runtime::batch().expect("runtime");
-    let mut actor = runtime.spawn_admitted(
-        &artifact,
-        Capabilities { print_int: true, quiet: true, ..Capabilities::none() },
-        128,
-    ).expect("admitted Wasm instance");
-    actor.run().expect("admitted unoptimized Wasm execution");
-    assert_eq!(actor.output(), vec!["42".to_string()]);
-    assert_eq!(actor.canonical_heap_leaks().expect("canonical heap audit"), Some(0));
+    for source in [source.to_owned(), source.replace("meta.ident(\"Some\")", "meta.call_site(\"Some\")")] {
+        let checked = witchy::resolve_std_only_checked(&source)
+            .expect("compiler-owned anonymous pattern type-checks");
+        let artifact = witchy::codegen::compile_checked_module_artifact(&checked)
+            .expect_lowered("compiler-owned anonymous pattern admits SafeWIR");
+        let mut runtime = Runtime::batch().expect("runtime");
+        let mut actor = runtime.spawn_admitted(
+            &artifact,
+            Capabilities { print_int: true, quiet: true, ..Capabilities::none() },
+            128,
+        ).expect("admitted Wasm instance");
+        actor.run().expect("admitted unoptimized Wasm execution");
+        assert_eq!(actor.output(), vec!["42".to_string()]);
+        assert_eq!(actor.canonical_heap_leaks().expect("canonical heap audit"), Some(0));
+    }
+
+    let unknown_tag = source.replace("meta.ident(\"Some\")", "meta.ident(\"Missing\")");
+    let error = witchy::resolve_std_only_checked(&unknown_tag)
+        .expect_err("an anonymous tag outside Choice must fail closed");
+    assert!(format!("{error:?}").contains("has no tag `.Missing`"), "{error:?}");
 }
 
 #[test]

@@ -630,9 +630,16 @@ impl Interpreter {
                     );
                     let args =
                         compiler_pattern_holes(args, &self.compiler_pattern_syntax)?;
-                    let source =
-                        witchy_syntax::linker::call_site_pattern_source(name, &args);
-                    let pattern = witchy_syntax::linker::call_site_pattern(name, args);
+                    let (source, pattern) = if let Some(tag) = name.strip_prefix('.') {
+                        if tag.is_empty() || tag.contains('.') {
+                            return err("meta.pattern_anon_ctor expected one anonymous tag");
+                        }
+                        let pattern = Pattern::AnonCtor { tag: tag.into(), args };
+                        (witchy_syntax::format::pattern_str(&pattern), pattern)
+                    } else {
+                        let source = witchy_syntax::linker::call_site_pattern_source(name, &args);
+                        (source, witchy_syntax::linker::call_site_pattern(name, args))
+                    };
                     let handle = self.next_compiler_syntax_handle("call-site-pattern")?;
                     self.compiler_pattern_syntax.insert(handle.clone(), pattern);
                     self.compiler_pattern_origins.insert(
@@ -669,10 +676,16 @@ impl Interpreter {
                         self.cur_line,
                     );
                     let args = compiler_pattern_holes(args, &self.compiler_pattern_syntax)?;
+                    let pattern = if let Some(tag) = name.strip_prefix('.') {
+                        if tag.is_empty() || tag.contains('.') {
+                            return err("meta.pattern_anon_ctor expected one anonymous tag");
+                        }
+                        Pattern::AnonCtor { tag: tag.into(), args }
+                    } else {
+                        Pattern::Ctor { name: name.to_string(), args }
+                    };
                     Ok(Some(self.store_compiler_pattern_syntax(
-                        "constructor-pattern",
-                        Pattern::Ctor { name: name.to_string(), args },
-                        hole_ancestry,
+                        "constructor-pattern", pattern, hole_ancestry,
                     )?))
                 }
                 _ => err("meta.pattern_ctor expects a name and pattern arguments"),
