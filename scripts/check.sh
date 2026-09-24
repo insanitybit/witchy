@@ -528,6 +528,7 @@ if cargo nextest --version >/dev/null 2>&1; then
     # inclusion expression with the existing exclusions.
     gate_nextest="${WITCHY_GATE_NEXTEST:-}"
     gate_nextest_expr="${WITCHY_GATE_NEXTEST_EXPR:-}"
+    queue_nextest_args=""
     [ "$full" -eq 1 ] && { gate_nextest=""; gate_nextest_expr=""; }
     if [ -z "${WITCHY_GATE_SCOPE+x}" ]; then
         gate_nextest=""
@@ -563,6 +564,8 @@ if cargo nextest --version >/dev/null 2>&1; then
                 case "${nextest_sel[$((sel_index + 1))]:-}" in
                     merge_queue | test_for_paths | worktree)
                         queue_sel_seen=1
+                        queue_target="${nextest_sel[$((sel_index + 1))]}"
+                        queue_nextest_args="${queue_nextest_args:+$queue_nextest_args }--test $queue_target"
                         sel_index=$((sel_index + 2))
                         continue
                         ;;
@@ -823,7 +826,17 @@ if cargo nextest --version >/dev/null 2>&1; then
     # retaining an operator override for repeated reliability measurements.
     # Alternating on 2026-09-24 under the same loaded host, width 6 ran all 228
     # tests in 381s versus 453s at width 3 (-16% wall, +7% CPU+sys).
-    queue_infra_cmd=(cargo nextest run -p merge-queue-tests --test merge_queue --test test_for_paths --test worktree -j "$queue_infra_jobs" \
+    # The coordinator's mapper names queue integration binaries alongside
+    # product targets, then this script removes them from root Cargo above.
+    # Preserve that exact queue selection here instead of charging every
+    # worktree/router edit for all coordinator fixtures. An absent or unusable
+    # selection remains fail-safe and runs the complete three-binary shard.
+    queue_infra_targets=(--test merge_queue --test test_for_paths --test worktree)
+    if [ -n "$queue_nextest_args" ]; then
+        # shellcheck disable=SC2206 -- values are validated queue target names.
+        queue_infra_targets=($queue_nextest_args)
+    fi
+    queue_infra_cmd=(cargo nextest run -p merge-queue-tests "${queue_infra_targets[@]}" -j "$queue_infra_jobs" \
         --ignore-default-filter --profile nightly)
     repo_contracts_cmd=(cargo nextest run -p repo-tests --test repo_hygiene)
     queue_infra_edit_cmd=("${queue_infra_cmd[@]}" -E \

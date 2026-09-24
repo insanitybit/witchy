@@ -591,6 +591,10 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
         "nextest run -p merge-queue-tests --test merge_queue --test test_for_paths --test worktree -j 6";
     let override_queue_prefix =
         "nextest run -p merge-queue-tests --test merge_queue --test test_for_paths --test worktree -j 4";
+    let worktree_queue_prefix =
+        "nextest run -p merge-queue-tests --test worktree -j 4";
+    let mixed_queue_prefix =
+        "nextest run -p merge-queue-tests --test merge_queue -j 6";
     let cargo_args_file = temp.path().join("cargo-args-queue-selection");
     let isolated = check_sh(&root, &["--fast"])
         .env("PATH", format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default()))
@@ -670,6 +674,40 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
         "queue-only selection did not honor the configured bounded width: {queue_only_args}",
     );
     fs::write(&cargo_args_file, "").expect("clear fake cargo arguments");
+    let worktree_only = check_sh(&root, &["--fast"])
+        .env("PATH", &path)
+        .env("CARGO_TARGET_DIR", temp.path().join("target-worktree-only"))
+        .env("WITCHY_GATE_SCOPE", "all")
+        .env("WITCHY_GATE_QUEUE_INFRA", "1")
+        .env("WITCHY_QUEUE_INFRA_JOBS", "4")
+        .env("WITCHY_GATE_NEXTEST", "--test worktree")
+        .env("FAKE_CARGO_ARGS_FILE", &cargo_args_file)
+        .env("WITCHY_FAILFAST_POLL", "0.05")
+        .env("WITCHY_STAGE_HEARTBEAT_INTERVAL", "0")
+        .output()
+        .expect("run worktree-only queue gate");
+    assert!(
+        worktree_only.status.success(),
+        "worktree-only fake gate failed: {}",
+        String::from_utf8_lossy(&worktree_only.stderr)
+    );
+    let worktree_only_args =
+        fs::read_to_string(&cargo_args_file).expect("read worktree-only fake cargo arguments");
+    assert!(
+        worktree_only_args
+            .lines()
+            .any(|line| line.starts_with(worktree_queue_prefix)),
+        "worktree-only selection expanded to unrelated queue binaries: {worktree_only_args}",
+    );
+    assert!(
+        !worktree_only_args.lines().any(|line| {
+            line.starts_with("nextest run -p merge-queue-tests")
+                && (line.contains("--test merge_queue")
+                    || line.contains("--test test_for_paths"))
+        }),
+        "worktree-only selection ran unrelated queue binaries: {worktree_only_args}",
+    );
+    fs::write(&cargo_args_file, "").expect("clear fake cargo arguments");
     // A diff touching the queue scripts AND a root integration test maps to a
     // mixed selector. Root Cargo cannot resolve the standalone queue binary,
     // so it must go to the isolated shard (turned on even without the
@@ -706,8 +744,8 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
         "the product target left the main run: {mixed_args}",
     );
     assert!(
-        mixed_args.lines().any(|line| line.starts_with(default_queue_prefix)),
-        "the queue binary did not run in the isolated shard: {mixed_args}",
+        mixed_args.lines().any(|line| line.starts_with(mixed_queue_prefix)),
+        "the selected queue binary did not run alone in the isolated shard: {mixed_args}",
     );
     let invalid_width = check_sh(&root, &["--queue-infra"])
         .env("PATH", &path)
