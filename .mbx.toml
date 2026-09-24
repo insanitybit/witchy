@@ -10,3 +10,13 @@
 # literal source paths in debug information, file!() and panic locations,
 # which the gate does not depend on.
 share_workspace_root = true
+
+# Agent compiles share mbx's machine-wide permit pool: each rustc waits for a
+# permit, so no agent is blocked outright and a long test run holds nothing.
+# The serialized merge gate uses plain cargo and never draws from this pool, so
+# capping agents at 4 of this host's 10 CPUs leaves the gate the rest. Measured
+# 2026-09-24: over six hours the gate was busy 62% of the time, and compiles
+# outside any pool (then the worktree-create prebuild) were 28% of busy CPU
+# against the gate's 27%.
+[scheduler]
+cpus = 4

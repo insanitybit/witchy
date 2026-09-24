@@ -29,10 +29,8 @@
 # merely because the worktree has no checkout-local target/ yet.
 #
 # Do NOT share one CARGO_TARGET_DIR across worktrees instead: cargo's build lock
-# would serialize concurrent agents on Cargo's opaque per-target lock, and the
-# local gates assume ./target (BUG-020). Per-worktree targets keep Cargo state
-# isolated and warm; scripts/bin/cargo separately admits one compiler-heavy
-# agent command at a time so the host does not oversubscribe itself.
+# would serialize concurrent agents, and the local gates assume ./target
+# (BUG-020). Per-worktree target + CoW seed keeps builds parallel AND warm.
 #
 # A target cloned from the merge gate is a Cargo-incremental target. Mark that
 # provenance so scripts/bin/cargo preserves its profile instead of asking mbx
