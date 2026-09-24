@@ -253,10 +253,11 @@ For example, `Dict(String, &String)` currently fails canonical admission with a
 missing collection-carrier diagnostic, including when nested in a record.
 Store an owned `String` value if the dictionary must execute today.
 
-A whole `&Dict(String, Int)` has an admitted root view. It retains the
-dictionary snapshot: inserting into the owner after the view forms does not
-change what `(*view).length()` reads. This exact key and value shape has a
-carrier; views of other dictionary shapes need their own admission evidence.
+Whole `&Dict(String, Int)` and `&Dict(String, Bool)` views have admitted root
+carriers for direct calls. Each retains its dictionary snapshot: inserting or
+replacing a value in the owner after the view forms does not change what the
+view reads. Closure capture of a dictionary view and views of other dictionary
+shapes remain unsupported.
 
 An exact whole `&(Int, String)` view keeps the old tuple after its owner is
 replaced, including the String field. This carrier covers direct calls and
