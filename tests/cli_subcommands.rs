@@ -1157,7 +1157,7 @@ fn test_imported_module_tests_are_not_double_counted() {
 
 #[test]
 fn async_and_gen_tests_do_not_silently_pass() {
-    // BUG-184: an async test with `fail_with` must FAIL (its body actually runs);
+    // BUG-184: an async test with `fail` must FAIL (its body actually runs);
     // a gen test is reported as a failure. Passing async execution is covered
     // separately; keeping one scheduler-bearing driver makes this refusal
     // regression practical in focused presubmits.
@@ -1165,7 +1165,7 @@ fn async_and_gen_tests_do_not_silently_pass() {
     write(
         &dir,
         "a.witchy",
-        "import iter\nimport testing\nasync fn test_async_fails() -> ():\n    testing.fail_with(\"boom\")\ngen fn test_gen() -> Iter(Int):\n    yield 1\n",
+        "async fn test_async_fails() -> ():\n    fail(\"boom\")\ngen fn test_gen() -> Iter(Int):\n    yield 1\n",
     );
     let out = run(&["test", dir.to_str().unwrap()]);
     assert!(!out.status.success(), "the failing async test must fail the run");
