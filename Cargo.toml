@@ -230,8 +230,9 @@ strip = "symbols"
 # witchy-syntax 30s -> 7s / unchanged; witchy-interp 46s -> 6s / 4s -> 11s;
 # witchy-runtime 31s -> 8s / unchanged. NOT witchy-wir: safewir-depth-budget
 # calibrates recursion against optimized frames and overflows unoptimized.
-# NOT witchy-lower (yet): its codegen tests run for minutes and no controlled
-# comparison has shown unoptimized lowering is free there.
+# witchy-lower 214s -> 46s; alternating runs under equal load, its tests
+# 193-203 -> 221 CPU s and one test 7.3s -> 13.7s (the async module compile):
+# a win, since any syntax/types/wir change also rebuilds this harness.
 [profile.test.package.witchy-types]
 opt-level = 0
 [profile.test.package.witchy-syntax]
@@ -239,6 +240,8 @@ opt-level = 0
 [profile.test.package.witchy-interp]
 opt-level = 0
 [profile.test.package.witchy-runtime]
+opt-level = 0
+[profile.test.package.witchy-lower]
 opt-level = 0
 
 # Tests run these crates hard (tree-walking interpreter, witchy->WASM lowering,
