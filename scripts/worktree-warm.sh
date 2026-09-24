@@ -25,6 +25,9 @@
 #   ./scripts/worktree-warm.sh --clone-target <source> <dest>
 #                                                  # clone one Cargo generation
 #                                                  # into another (coordinator)
+#   ./scripts/worktree-warm.sh --profile-target-dir <check|clippy> <dir>
+#                                                  # seed an agent profile from
+#                                                  # the matching gate target
 #   ./scripts/worktree-warm.sh --help               # show this help
 #
 # The --target-dir form also works in a secondary worktree. It uses the
@@ -64,6 +67,17 @@ case "${1:-}" in
             echo "usage: worktree-warm.sh --clone-target <source> <dest>" >&2
             exit 2
         fi
+        ;;
+    --profile-target-dir)
+        if [[ "$#" -ne 3 || -z "${2:-}" || -z "${3:-}" ]]; then
+            echo "usage: worktree-warm.sh --profile-target-dir <check|clippy> <dir>" >&2
+            exit 2
+        fi
+        case "$2" in check | clippy) ;; *)
+            echo "worktree-warm: invalid profile '$2' (expected check or clippy)" >&2
+            exit 2
+            ;;
+        esac
         ;;
     -*)
         echo "worktree-warm: unknown option '${1}' (try --help)" >&2
@@ -196,6 +210,50 @@ if [[ "${1:-}" == "--clone-target" ]]; then
     clone_target "$source_target" "$dest_target"
     echo "worktree-warm: cloned $dest_target from $source_target ($copy_description, incremental/, deps/*.rcgu.o and stale witchy-testcache skipped)"
     exit 0
+fi
+
+if [[ "${1:-}" == "--profile-target-dir" ]]; then
+    profile="$2"
+    dest_target="$3"
+    root="$(git rev-parse --show-toplevel)"
+    main="$(git worktree list --porcelain | sed -n '1p' | sed 's/^worktree //')"
+    case "$dest_target" in /*) ;; *) dest_target="$root/$dest_target" ;; esac
+    if [[ -e "$dest_target" ]]; then
+        echo "worktree-warm: $dest_target already exists; leaving it alone" >&2
+        exit 0
+    fi
+    [[ -f "$main/scripts/state-paths.sh" ]] || exit 1
+    # shellcheck source=state-paths.sh
+    source "$main/scripts/state-paths.sh"
+    qdir="$(witchy_merge_queue_state_dir "$main")" || exit 1
+    [[ -f "$qdir/gate-target" ]] || exit 1
+    clone_testcache=0
+    for attempt in 1 2; do
+        selected_before="$(cat "$qdir/gate-target" 2>/dev/null || true)"
+        case "$selected_before" in target | target-prewarm) ;; *) exit 1 ;; esac
+        source_target="$main/.claude/worktrees/merge-gate/${selected_before}-${profile}"
+        [[ -d "$source_target" ]] || exit 1
+        temp_target="${dest_target}.profile-seed.$$.$attempt"
+        [[ ! -e "$temp_target" ]] || exit 1
+        clone_target "$source_target" "$temp_target"
+        selected_after="$(cat "$qdir/gate-target" 2>/dev/null || true)"
+        if [[ "$selected_before" == "$selected_after" ]]; then
+            # Publish only a complete filtered clone. `mv -n` makes concurrent
+            # check.sh callers harmless: the first wins and later clones are
+            # discarded without writing into Cargo's live directory.
+            mv -n "$temp_target" "$dest_target"
+            if [[ -d "$temp_target" ]]; then
+                rm -rf -- "$temp_target"
+            else
+                echo "worktree-warm: seeded $dest_target from $source_target ($copy_description, matching $profile profile)"
+            fi
+            exit 0
+        fi
+        # Promotion raced the clone. The old generation can now be reclaimed,
+        # so discard its snapshot and retry from the newly active generation.
+        rm -rf -- "$temp_target"
+    done
+    exit 1
 fi
 
 mark_incremental_seed() { # mark_incremental_seed <target-dir>

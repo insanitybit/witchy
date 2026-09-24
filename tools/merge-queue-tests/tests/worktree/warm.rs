@@ -72,6 +72,7 @@ fn worktree_warm_help_and_usage_errors_are_stable() {
     assert!(stdout.contains("worktree-warm.sh <path>"));
     assert!(stdout.contains("worktree-warm.sh --target-dir <dir>"));
     assert!(stdout.contains("worktree-warm.sh --clone-target <source> <dest>"));
+    assert!(stdout.contains("worktree-warm.sh --profile-target-dir <check|clippy> <dir>"));
     assert!(stdout.contains("worktree-warm.sh --help"));
     assert!(!stdout.contains("set -euo pipefail"));
 
@@ -81,6 +82,10 @@ fn worktree_warm_help_and_usage_errors_are_stable() {
             vec!["--clone-target", "source"],
             "usage: worktree-warm.sh --clone-target <source> <dest>",
         ),
+        (
+            vec!["--profile-target-dir", "check"],
+            "usage: worktree-warm.sh --profile-target-dir <check|clippy> <dir>",
+        ),
         (vec!["--unknown"], "unknown option '--unknown'"),
         (vec!["one", "two"], "usage: worktree-warm.sh [<worktree-path>"),
     ] {
@@ -88,6 +93,34 @@ fn worktree_warm_help_and_usage_errors_are_stable() {
         assert_eq!(output.status.code(), Some(2), "args {args:?}");
         assert!(String::from_utf8_lossy(&output.stderr).contains(expected), "args {args:?}");
     }
+}
+
+#[test]
+fn worktree_warm_clones_the_matching_active_gate_profile() {
+    let repo = temp_repo();
+    let root = repo.path();
+    write(root, "scripts/state-paths.sh", include_str!("../../../../scripts/state-paths.sh"));
+    write(root, "state/merge-queue/gate-target", "target-prewarm\n");
+    write(
+        root,
+        ".claude/worktrees/merge-gate/target-prewarm-check/debug/.fingerprint/aws-lc-sys/marker",
+        "warm native dependency\n",
+    );
+    write(
+        root,
+        ".claude/worktrees/merge-gate/target-prewarm-check/debug/deps/drop.rcgu.o",
+        "dead object\n",
+    );
+
+    let output = run_warm(root, &["--profile-target-dir", "check", "target-agent-check"], Some("copy"));
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(root.join("target-agent-check/debug/.fingerprint/aws-lc-sys/marker").is_file());
+    assert!(!root.join("target-agent-check/debug/deps/drop.rcgu.o").exists());
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("matching check profile"),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
 }
 
 #[test]

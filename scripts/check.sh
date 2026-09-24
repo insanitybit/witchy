@@ -973,8 +973,21 @@ seed_cow_target() { # seed_cow_target <dir>
     # self-heals on the next run). APFS clonefile (`cp -c`) or reflink where
     # available: seconds, ~zero disk. Where neither works, the dir stays
     # empty — a one-time cold run.
-    local dir="$1"
+    local dir="$1" profile=""
     [ -d "$dir" ] && return 0
+    case "$dir" in
+        "$target_dir-check") profile="check" ;;
+        "$target_dir-clippy") profile="clippy" ;;
+    esac
+    # The coordinator keeps independently warm check and Clippy generations.
+    # Reuse the matching Cargo profile instead of cloning the test target and
+    # recompiling native dependencies under a different unit hash. The helper
+    # validates that gate-target did not change while it cloned; on any miss or
+    # promotion race, retain the existing safe fallback below.
+    if [ -n "$profile" ] && [ -x scripts/worktree-warm.sh ] \
+        && scripts/worktree-warm.sh --profile-target-dir "$profile" "$dir"; then
+        return 0
+    fi
     mkdir "$dir" 2>/dev/null || return 0
     if [ -d "$target_dir" ]; then
         cp -Rc "$target_dir/." "$dir/" 2>/dev/null \
