@@ -4070,12 +4070,18 @@ impl StructuredEmitter<'_> {
         if let Some(known) = self.loop_exit_targets.borrow().get(&header) {
             return Ok(*known);
         }
+        // One natural-loop set, read once: probing it per block per header
+        // and scanning `members` per successor was quadratic in loop size.
+        // Every member is a block of the function, so `is_member` answers
+        // exactly what `members.contains` did.
+        let natural = if self.target_function.blocks.iter().any(|block| block.id != header) {
+            self.natural_loop_members(header)?
+        } else {
+            BTreeSet::new()
+        };
         let mut members = vec![header];
-        for block in &self.target_function.blocks {
-            if block.id != header && self.in_natural_loop(header, block.id)? {
-                members.push(block.id);
-            }
-        }
+        members.extend(self.target_function.blocks.iter().map(|block| block.id).filter(|id| *id != header && natural.contains(id)));
+        let is_member = |block: &crate::canonical_safewir::BlockId| *block == header || natural.contains(block);
         // The canonical `while` header names an exit directly: its `else`
         // side leaves the loop. Every other edge out of the loop is an exit
         // too unless all its paths terminate (a `return` inside the body,
@@ -4084,14 +4090,14 @@ impl StructuredEmitter<'_> {
         // at the nearest block all of them reach, and the edge blocks are
         // emitted inside the loop ahead of their `br`.
         let classic_exit = match &self.block(header)?.terminator.operation {
-            ScalarTerminator::BranchIf { else_target, .. } if !members.contains(else_target) => Some(*else_target),
+            ScalarTerminator::BranchIf { else_target, .. } if !is_member(else_target) => Some(*else_target),
             _ => None,
         };
         let mut leaving = BTreeSet::new();
         leaving.extend(classic_exit);
         for member in &members {
             for successor in self.successors(*member)? {
-                if !members.contains(&successor) {
+                if !is_member(&successor) {
                     leaving.insert(successor);
                 }
             }
@@ -6798,25 +6804,31 @@ impl<'a> PlanEmitter<'a> {
         if let Some(known) = self.loop_exit_targets.borrow().get(&header) {
             return Ok(*known);
         }
+        // One natural-loop set, read once: probing it per block per header
+        // and scanning `members` per successor was quadratic in loop size.
+        // Every member is a block of the function, so `is_member` answers
+        // exactly what `members.contains` did.
+        let natural = if self.source_function.blocks.iter().any(|block| block.id != header) {
+            self.natural_loop_members(header)?
+        } else {
+            BTreeSet::new()
+        };
         let mut members = vec![header];
-        for block in &self.source_function.blocks {
-            if block.id != header && self.in_natural_loop(header, block.id)? {
-                members.push(block.id);
-            }
-        }
+        members.extend(self.source_function.blocks.iter().map(|block| block.id).filter(|id| *id != header && natural.contains(id)));
+        let is_member = |block: &crate::canonical_safewir::BlockId| *block == header || natural.contains(block);
         // Mirror of the encoder's rule: the `while` header's `else` side and
         // every non-terminating edge out of the loop are exits; one exit is
         // the continuation, several continue at the nearest block they all
         // reach.
         let classic_exit = match &self.block(header)?.terminator {
-            Terminator::BranchIf { else_target, .. } if !members.contains(else_target) => Some(*else_target),
+            Terminator::BranchIf { else_target, .. } if !is_member(else_target) => Some(*else_target),
             _ => None,
         };
         let mut leaving = BTreeSet::new();
         leaving.extend(classic_exit);
         for member in &members {
             for successor in self.successors(*member)? {
-                if !members.contains(&successor) {
+                if !is_member(&successor) {
                     leaving.insert(successor);
                 }
             }

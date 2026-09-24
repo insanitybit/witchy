@@ -158,40 +158,58 @@ fn is_reference(function: &Function, value: ValueId) -> bool {
     matches!(function.value_types.get(&value), Some(ValueType::Ref(_) | ValueType::Gc(_)))
 }
 
+/// `is_reference` answered once per function: the liveness fixpoint and the
+/// per-operation scans below ask it for every value of every operation, and
+/// each answer was an ordered-map search of the function's value types.
+struct References(foldhash::HashSet<ValueId>);
+
+impl References {
+    fn of(function: &Function) -> Self {
+        Self(function.value_types.iter()
+            .filter(|(_, ty)| matches!(ty, ValueType::Ref(_) | ValueType::Gc(_)))
+            .map(|(value, _)| *value)
+            .collect())
+    }
+
+    fn contains(&self, value: ValueId) -> bool {
+        self.0.contains(&value)
+    }
+}
+
 fn edge_needs(
-    function: &Function,
+    references: &References,
     target: BlockId,
     arguments: &[ValueId],
     live_in: &BTreeMap<BlockId, Values>,
 ) -> Values {
     let mut needed = live_in.get(&target).cloned().unwrap_or_default();
-    needed.extend(arguments.iter().copied().filter(|value| is_reference(function, *value)));
+    needed.extend(arguments.iter().copied().filter(|value| references.contains(*value)));
     needed
 }
 
-fn live_tail(function: &Function, block: &BasicBlock, live_in: &BTreeMap<BlockId, Values>) -> Values {
+fn live_tail(references: &References, block: &BasicBlock, live_in: &BTreeMap<BlockId, Values>) -> Values {
     let mut live: Values = terminal_uses(&block.terminator)
         .into_iter()
-        .filter(|value| is_reference(function, *value))
+        .filter(|value| references.contains(*value))
         .collect();
     for (target, arguments) in edges(&block.terminator) {
-        live.extend(edge_needs(function, target, arguments, live_in));
+        live.extend(edge_needs(references, target, arguments, live_in));
     }
     live
 }
 
-fn liveness(function: &Function) -> BTreeMap<BlockId, Values> {
+fn liveness(function: &Function, references: &References) -> BTreeMap<BlockId, Values> {
     let mut live_in: BTreeMap<_, Values> = function.blocks.iter().map(|block| (block.id, Values::new())).collect();
     // Monotone finite-set iteration: no guessed loop trip count or range fact.
     loop {
         let mut changed = false;
         for block in function.blocks.iter().rev() {
-            let mut live = live_tail(function, block, &live_in);
+            let mut live = live_tail(references, block, &live_in);
             for operation in block.operations.iter().rev() {
                 for value in definitions(operation) {
-                    if is_reference(function, value) { live.remove(&value); }
+                    if references.contains(value) { live.remove(&value); }
                 }
-                live.extend(uses(operation).into_iter().filter(|value| is_reference(function, *value)));
+                live.extend(uses(operation).into_iter().filter(|value| references.contains(*value)));
             }
             for parameter in &block.parameters { live.remove(&parameter.value); }
             if live_in.get(&block.id) != Some(&live) {
@@ -486,7 +504,8 @@ pub(super) fn insert_releases(
             && matches!(contract.ownership, ParameterOwnership::Unique | ParameterOwnership::UniqueWriteBack | ParameterOwnership::Shared | ParameterOwnership::WriteBack))
             .then_some(parameter.value)
     }).collect::<Values>();
-    let live_in = liveness(function);
+    let references = References::of(function);
+    let live_in = liveness(function, &references);
     let immortal = static_data_values(function);
     let mut incoming = BTreeMap::from([(function.entry, owned)]);
     let mut pending = VecDeque::from([function.entry]);
@@ -497,7 +516,7 @@ pub(super) fn insert_releases(
     while let Some(id) = pending.pop_front() {
         let block = blocks.get(&id).ok_or(ReleasePlacementError::MissingBlock(id))?;
         let mut owned = incoming[&id].clone();
-        let mut live = live_tail(function, block, &live_in);
+        let mut live = live_tail(&references, block, &live_in);
         let mut dead_after = Vec::with_capacity(block.operations.len());
         for operation in block.operations.iter().rev() {
             let definitions = definitions(operation);
@@ -506,13 +525,13 @@ pub(super) fn insert_releases(
                 .iter()
                 .chain(&uses)
                 .copied()
-                .filter(|value| is_reference(function, *value) && !live.contains(value))
+                .filter(|value| references.contains(*value) && !live.contains(value))
                 .collect();
             dead_after.push(dead);
             for value in definitions {
-                if is_reference(function, value) { live.remove(&value); }
+                if references.contains(value) { live.remove(&value); }
             }
-            live.extend(uses.into_iter().filter(|value| is_reference(function, *value)));
+            live.extend(uses.into_iter().filter(|value| references.contains(*value)));
         }
         dead_after.reverse();
         let mut output = Vec::new();
@@ -553,7 +572,7 @@ pub(super) fn insert_releases(
             let mut drops = Vec::new();
             release_dead(
                 &mut edge_owned,
-                &edge_needs(function, target, arguments, &live_in),
+                &edge_needs(&references, target, arguments, &live_in),
                 &mut drops,
             );
             // Edge forwarding is simultaneous. One source token cannot provide
