@@ -3979,6 +3979,7 @@ fn lower_function(
         definitions,
         closures,
         result_type: function.ret.clone(),
+        value_types_by_source: std::cell::RefCell::new(HashMap::new()),
     };
     let entry = lowerer.new_block(&signature.parameters)?;
     for (parameter, contract) in lowerer.blocks[entry.get() as usize]
@@ -4627,6 +4628,11 @@ struct FunctionLowerer<'a> {
     definitions: &'a BTreeMap<String, TypeDef>,
     /// The function's declared result type, for `?` to build its failure.
     result_type: Option<Type>,
+    /// `source_value_type` answers already derived in this function. Every
+    /// input it reads is a shared borrow held for the lowerer's lifetime,
+    /// so an answer never goes stale; record construction asked it per field
+    /// per construction, each rescanning the layout bundle's roots.
+    value_types_by_source: std::cell::RefCell<HashMap<Type, ValueType>>,
 }
 
 /// Validate the retained region-promotion fact at the canonical boundary.
@@ -11220,7 +11226,7 @@ impl FunctionLowerer<'_> {
             // value itself. A representation change is outside the subset.
             Expr::As { expr, ty } => {
                 let value = self.lower_expr(expr)?;
-                let target = source_value_type(ty, self.layout_bundle, self.layouts, &self.closures.layouts, self.definitions)?;
+                let target = self.field_value_type(ty)?;
                 if self.values[&value] != target {
                     return Err(CanonicalLoweringError::UnsupportedExpression("as between different representations"));
                 }
@@ -11276,10 +11282,10 @@ impl FunctionLowerer<'_> {
                     callee: name.to_owned(), expected, actual: arguments.len(),
                 });
             }
-            let value_type = source_value_type(&source_type, self.layout_bundle, self.layouts, &self.closures.layouts, self.definitions)?;
+            let value_type = self.field_value_type(&source_type)?;
             if let Some(payload_type) = payload {
                 let source = self.lower_expr(&arguments[0])?;
-                let expected_type = source_value_type(&payload_type, self.layout_bundle, self.layouts, &self.closures.layouts, self.definitions)?;
+                let expected_type = self.field_value_type(&payload_type)?;
                 if self.values[&source] != expected_type {
                     return Err(CanonicalLoweringError::UnsupportedExpression("capability constructor payload type"));
                 }
@@ -11700,7 +11706,12 @@ impl FunctionLowerer<'_> {
     /// Allocate an immutable reference-counted record and store its fields.
     /// The SafeWIR value type of an aggregate field or payload.
     fn field_value_type(&self, ty: &Type) -> Result<ValueType, CanonicalLoweringError> {
-        source_value_type(ty, self.layout_bundle, self.layouts, &self.closures.layouts, self.definitions)
+        if let Some(known) = self.value_types_by_source.borrow().get(ty) {
+            return Ok(*known);
+        }
+        let value_type = source_value_type(ty, self.layout_bundle, self.layouts, &self.closures.layouts, self.definitions)?;
+        self.value_types_by_source.borrow_mut().insert(ty.clone(), value_type);
+        Ok(value_type)
     }
 
     /// A reference value as a fresh owned token for an aggregate slot: a
