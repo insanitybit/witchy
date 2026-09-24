@@ -465,12 +465,11 @@ pub(crate) fn run_admitted_artifact(
             )
             .map_err(|e| e.to_string())?;
         vm.run().map_err(|e| e.root_cause().to_string())?;
-        // The development runner audits reclamation: an admitted program that
-        // returns with live reference-counted objects has a lowering defect.
-        if let Some(leaks) = vm.canonical_heap_leaks().map_err(|e| e.to_string())?
-            && leaks > 0
-        {
-            return Err(format!("HEAP CHECK: {leaks} reference-counted object(s) were never released"));
+        // Every admitted semantic run must establish zero owned leaks; an
+        // unavailable audit is not evidence of reclamation.
+        let leaks = vm.canonical_heap_leaks().map_err(|e| e.to_string())?;
+        if leaks != Some(0) {
+            return Err(format!("HEAP CHECK: expected zero owned leaks, got {leaks:?}"));
         }
         Ok(vm.output())
     })
