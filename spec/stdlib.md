@@ -2699,7 +2699,7 @@ Hole-free `quote expr:` values retain a compiler-owned expression AST.
 
 #### `sealed type PatternSyntax`
 
-Hole-free `quote pattern:` values retain compiler-owned pattern AST. Builders compose the checked pattern AST through its opaque handle.
+Hole-free `quote pattern:` values retain compiler-owned pattern AST. Existing builders compose the checked pattern AST through its opaque handle.
 
 - `CompilerPatternSyntax(String, String)`
 
