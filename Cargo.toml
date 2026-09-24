@@ -177,7 +177,7 @@ witchy-interp = { path = "crates/witchy-interp", features = ["raw-module-test-ap
 # a separate opt-level-2 build of witchy-wir plus every dependent crate in the
 # same target dir. Dev-dependency features never reach `cargo build`, so the
 # production boundary around the raw encoder is unchanged.
-witchy-wir = { path = "crates/witchy-wir", features = ["native", "legacy-encoder-bridge", "raw-encoder-test-api"] }
+witchy-wir = { path = "crates/witchy-wir", features = ["native", "legacy-encoder-bridge", "raw-encoder-test-api", "checked-source-test-api"] }
 # Enables only the concurrency-safe TLS fixture hook for root-package tests.
 # The ordinary runtime dependency does not expose it in production builds.
 witchy-runtime = { path = "crates/witchy-runtime", features = ["test-support"] }

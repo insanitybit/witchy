@@ -3082,7 +3082,6 @@ dependencies = [
  "wasmtime",
  "witchy-canonical-source",
  "witchy-syntax",
- "witchy-types",
  "witchy-wir",
 ]
 

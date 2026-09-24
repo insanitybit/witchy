@@ -442,7 +442,8 @@ fn production_test_feature_violations(source: &str, lowerer: bool) -> Vec<usize>
         }
         let features = line.split(['"', '\'']).skip(1).step_by(2)
             .filter(|value| matches!(value.rsplit('/').next(),
-                Some("raw-encoder-test-api" | "raw-module-test-api" | "legacy-encoder-bridge")))
+                Some("raw-encoder-test-api" | "raw-module-test-api" | "legacy-encoder-bridge"
+                    | "checked-source-test-api")))
             .collect::<Vec<_>>();
         if features.is_empty() || section.contains("dev-dependencies") {
             continue;
@@ -479,6 +480,7 @@ fn production_feature_pin_rejects_dependency_and_default_activation() {
         "[features]\ndefault = [\"raw-module-test-api\"]\n",
         "[features]\nnative = [\"witchy-wir/legacy-encoder-bridge\"]\n",
         "[features]\ndefault = [\"alias\"]\nalias = [\"witchy-lower/raw-module-test-api\"]\n",
+        "[dependencies]\nwitchy-wir = { features = [\"checked-source-test-api\"] }\n",
     ] {
         assert!(!production_test_feature_violations(source, true).is_empty(), "{source}");
     }

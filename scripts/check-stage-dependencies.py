@@ -51,6 +51,15 @@ def main() -> None:
             f"and spec/stage-dependencies.json together (missing={missing}, unexpected={unexpected})"
         )
 
+    # RFC-0170 P4: witchy-wir must not reach the checker even through a
+    # dev-dependency. Cargo applies one to every test target, so a typeck edit
+    # would rebuild wir's test binaries.
+    for package in packages:
+        if package["name"] == "witchy-wir" and any(
+            dependency["name"] == "witchy-types" for dependency in package["dependencies"]
+        ):
+            fail("witchy-wir depends on witchy-types (in some dependency table); see RFC-0170 P4")
+
     violations = []
     for stage, dependencies in actual.items():
         forbidden = sorted(set(dependencies) - set(expected[stage]))

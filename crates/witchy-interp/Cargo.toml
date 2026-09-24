@@ -26,4 +26,4 @@ witchy-types = { path = "../witchy-types" }
 
 [dev-dependencies]
 # Share the one test build of witchy-wir (see crates/witchy-wir/Cargo.toml).
-witchy-wir = { path = "../witchy-wir", features = ["native", "legacy-encoder-bridge", "raw-encoder-test-api"] }
+witchy-wir = { path = "../witchy-wir", features = ["native", "legacy-encoder-bridge", "raw-encoder-test-api", "checked-source-test-api"] }

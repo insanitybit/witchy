@@ -49,6 +49,11 @@ legacy-encoder-bridge = []
 # Synthetic WIR and optimizer-oracle tests intentionally encode unchecked
 # modules. Normal dependents receive only the fallible production boundary.
 raw-encoder-test-api = []
+# SafeWIR cases that judge a real checked source (RFC-0170 P4). witchy-wir
+# cannot depend on the checker, even for tests, so witchy-lower's
+# tests/safewir_checked_source.rs drives them through this hidden surface. It
+# exposes only case functions that assert and return `()`; it mints nothing.
+checked-source-test-api = []
 
 [dev-dependencies]
 # Every test build requests witchy-wir's full test feature set, so all
@@ -57,11 +62,9 @@ raw-encoder-test-api = []
 # a separate opt-level-2 build of witchy-wir plus every dependent crate in the
 # same target dir. Dev-dependency features never reach `cargo build`, so the
 # production boundary around the raw encoder is unchanged.
-witchy-wir = { path = ".", features = ["native", "legacy-encoder-bridge", "raw-encoder-test-api"] }
+witchy-wir = { path = ".", features = ["native", "legacy-encoder-bridge", "raw-encoder-test-api", "checked-source-test-api"] }
 syn = { version = "2", features = ["full", "visit"] }
-# Tests compile witchy source through the checker to obtain real checked
-# products. Production code reads them only through witchy-canonical-source
-# (RFC-0170), so a checker edit does not rebuild witchy-wir or its dependents
-# under `cargo build`. check-stage-dependencies.py pins that this stays a
-# dev-dependency.
-witchy-types = { path = "../witchy-types" }
+# No checker crate, not even here (RFC-0170 P4): a dev-dependency reaches every
+# test target, so a checker edit would rebuild them all. Cases that need a real
+# checked source run from witchy-lower through `checked-source-test-api`.
+# check-stage-dependencies.py pins the absence.

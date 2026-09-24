@@ -481,6 +481,11 @@ impl OwnerOperation {
     }
 }
 
+// Closure-contract cases that need a real checked source (RFC-0170 P4).
+#[cfg(feature = "checked-source-test-api")]
+#[doc(hidden)]
+pub mod checked_source_cases;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -521,45 +526,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn opaque_closure_contract_keeps_caps_and_managed_captures_typed() {
-        let checked = witchy_types::pipeline::link_checked_from_source_bundle(
-            vec![("main".into(), b"fn logging(console: Console, prefix: String):\n    let log = fn(msg: String): console.print(prefix + msg)\n    log(\"ok\")\nfn main(console: Console):\n    logging(console, \"log: \")\n".to_vec())],
-            "main", |_, _, _| Ok(Default::default()),
-        ).unwrap();
-        let source = checked.canonical_source().unwrap();
-        let contract = SourceConstructor::from_checked(&source.view(), ConstructorId(0)).unwrap();
-        assert!(std::ptr::eq(contract.source().module(), source.typed_module().module()));
-        assert!(std::ptr::eq(contract.source().closure_witness(), source.closure_witness()));
-        assert!(std::ptr::eq(contract.witness(), &source.closure_witness().entries()[0]));
-        assert_eq!(contract.transfers().len(), 2);
-        assert!(contract.transfers().contains(&CaptureTransfer::CloneManaged));
-        for (index, transfer) in contract.transfers().iter().enumerate() {
-            let read = contract.capability_read(CaptureOrdinal(index as u32));
-            match transfer {
-                CaptureTransfer::CopyCapability(kind) => {
-                    assert_eq!(*kind, CapabilityKindId::new(0));
-                    assert_eq!(read.unwrap(), BridgeAbi {
-                        parameters: vec![BridgeValue::OpaqueOwner],
-                        results: vec![BridgeValue::Capability(*kind)],
-                    });
-                }
-                _ => assert_eq!(read, Err(ContractError::NotCapabilityCapture)),
-            }
-        }
-        assert_eq!(contract.capability_read(CaptureOrdinal(u32::MAX)), Err(ContractError::NotCapabilityCapture));
-        assert!(matches!(SourceConstructor::from_checked(&source.view(), ConstructorId(u32::MAX)), Err(ContractError::MissingWitness)));
-        assert_eq!(BridgeAbi::seal().parameters, vec![BridgeValue::TypedGcPayload]);
-        assert_eq!(BridgeAbi::release().results, vec![BridgeValue::FinalPayload]);
-        assert_eq!(BridgeAbi::retain().parameters, vec![BridgeValue::OpaqueOwner]);
-    }
-
-    #[test]
-    fn opaque_closure_contract_does_not_enable_pure_capability_capture() {
-        let checked = witchy_types::pipeline::link_checked_from_source_bundle(
-            vec![("main".into(), b"fn main(console: Console):\n    let bad = pure fn(msg: String): console.print(msg)\n    bad(\"no\")\n".to_vec())],
-            "main", |_, _, _| Ok(Default::default()),
-        );
-        assert!(checked.is_err(), "pure capture restrictions remain a source obligation");
-    }
+    // The checker-backed contract cases moved to `checked_source_cases.rs`
+    // and `crates/witchy-lower/tests/safewir_checked_source.rs`.
 }

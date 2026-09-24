@@ -74,6 +74,10 @@ impl Revision {
 /// Staged opaque-owner ABI contract. Not yet admitted as executable operations.
 pub mod closure_owner_contract;
 mod owner_authority;
+// Dev-only: SafeWIR cases driven by a real checked source (RFC-0170 P4).
+#[cfg(feature = "checked-source-test-api")]
+#[doc(hidden)]
+pub mod checked_source_test_api;
 mod exec;
 pub use exec::{EXEC_CAPABILITY_KIND, EXEC_RESPONSE_KIND, EXEC_IMPORT_NAMES};
 mod fetch;

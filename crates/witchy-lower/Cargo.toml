@@ -36,4 +36,4 @@ witchy-lower = { path = ".", features = ["raw-module-test-api"] }
 # a separate opt-level-2 build of witchy-wir plus every dependent crate in the
 # same target dir. Dev-dependency features never reach `cargo build`, so the
 # production boundary around the raw encoder is unchanged.
-witchy-wir = { path = "../witchy-wir", features = ["native", "legacy-encoder-bridge", "raw-encoder-test-api"] }
+witchy-wir = { path = "../witchy-wir", features = ["native", "legacy-encoder-bridge", "raw-encoder-test-api", "checked-source-test-api"] }

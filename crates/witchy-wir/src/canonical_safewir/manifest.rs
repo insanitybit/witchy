@@ -40,6 +40,9 @@ pub enum EvidenceFile {
     Launch,
     /// `crates/witchy-wir/src/canonical_safewir/authority.rs`
     Authority,
+    /// Authority cases over a real checked source, run by
+    /// `crates/witchy-lower/tests/safewir_checked_source.rs` (RFC-0170 P4).
+    CheckedSourceAuthority,
     /// `crates/witchy-wir/src/canonical_safewir/check/owners.rs`
     OwnerCheck,
     /// `crates/witchy-wir/src/canonical_wasmir/closure_owner_kernel.rs`
@@ -62,6 +65,7 @@ impl EvidenceFile {
             Self::NullableBackend => "crates/witchy-wir/src/canonical_wasmir/tests/nullable_admission.rs",
             Self::Launch => "tests/misc/rfc0165_admitted_launch.rs",
             Self::Authority => "crates/witchy-wir/src/canonical_safewir/authority.rs",
+            Self::CheckedSourceAuthority => "crates/witchy-wir/src/canonical_safewir/authority/checked_source_cases.rs",
             Self::OwnerCheck => "crates/witchy-wir/src/canonical_safewir/check/owners.rs",
             Self::OwnerBackend => "crates/witchy-wir/src/canonical_wasmir/closure_owner_kernel.rs",
             Self::OwnerLaunch => "tests/misc/rfc0165_oracle.rs",
@@ -80,6 +84,7 @@ impl EvidenceFile {
             Self::NullableBackend => include_str!("../canonical_wasmir/tests/nullable_admission.rs"),
             Self::Launch => include_str!("../../../../tests/misc/rfc0165_admitted_launch.rs"),
             Self::Authority => include_str!("authority.rs"),
+            Self::CheckedSourceAuthority => include_str!("authority/checked_source_cases.rs"),
             Self::OwnerCheck => include_str!("check/owners.rs"),
             Self::OwnerBackend => include_str!("../canonical_wasmir/closure_owner_kernel.rs"),
             Self::OwnerLaunch => include_str!("../../../../tests/misc/rfc0165_oracle.rs"),
@@ -354,7 +359,7 @@ pub const RULES: &[RuleEntry] = &[
             t(EvidenceFile::UniquePopBackend, "unique_pop_rejects_live_prefix_overwrite_direct_moved_and_unknown"),
             t(Memory, "unique_pop_synthetic_zero_prefix_has_only_zero_start"),
             t(EvidenceFile::UniquePopBackend, "unique_pop_byte_plan_rejects_capacity_write_instead_of_tail_publication"),
-            t(Authority, "unique_pop_source_abi_requires_checked_unique_input_and_output"),
+            t(EvidenceFile::CheckedSourceAuthority, "unique_pop_source_abi_requires_checked_unique_input_and_output"),
             t(Check, "header_projection_cannot_claim_non_scalar_type"),
             t(Memory, "pointer_bearing_ranges_fail_closed_without_element_transfer_state"),
             t(Check, "uninitialized_scalar_load_is_refused"),
@@ -991,6 +996,7 @@ fn cite(tests: &[TestRef]) -> String {
                 Backend => "backend",
                 Launch => "launch",
                 Authority => "authority",
+                EvidenceFile::CheckedSourceAuthority => "checked-source authority",
                 EvidenceFile::NullableBackend => "nullable backend",
                 EvidenceFile::UnitBackend => "unit backend",
                 OwnerCheck => "owner checker",
