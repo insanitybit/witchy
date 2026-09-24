@@ -221,29 +221,6 @@ strip = "symbols"
 [profile.test]
 strip = "symbols"
 
-# A crate's OWN test binaries (unit harness and `crates/<pkg>/tests/*`) are
-# built unoptimized. `profile.test` reaches only those: the library that every
-# other crate, the root integration tests and the example tests link stays at
-# the opt-level 2 below. Measured 2026-09-24, harness build / its test run,
-# opt-level 2 -> 0: witchy-types 72s -> 14s / 11.4s -> 14.8s (a real
-# witchy-types change: the harness was the tail of the gate build);
-# witchy-syntax 30s -> 7s / unchanged; witchy-interp 46s -> 6s / 4s -> 11s;
-# witchy-runtime 31s -> 8s / unchanged. NOT witchy-wir: safewir-depth-budget
-# calibrates recursion against optimized frames and overflows unoptimized.
-# witchy-lower 214s -> 46s; alternating runs under equal load, its tests
-# 193-203 -> 221 CPU s and one test 7.3s -> 13.7s (the async module compile):
-# a win, since any syntax/types/wir change also rebuilds this harness.
-[profile.test.package.witchy-types]
-opt-level = 0
-[profile.test.package.witchy-syntax]
-opt-level = 0
-[profile.test.package.witchy-interp]
-opt-level = 0
-[profile.test.package.witchy-runtime]
-opt-level = 0
-[profile.test.package.witchy-lower]
-opt-level = 0
-
 # Tests run these crates hard (tree-walking interpreter, witchy->WASM lowering,
 # wasmtime host glue); unoptimized they dominate suite time. Opt just the hot
 # stage crates; the root crate and everything else keeps fast unopt compiles.
