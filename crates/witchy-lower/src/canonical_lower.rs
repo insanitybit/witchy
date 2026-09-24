@@ -3290,8 +3290,8 @@ fn is_rooted_slice(ty: &Type) -> bool {
     rooted_slice_element(ty).is_some()
 }
 
-/// The admitted element of a `[T]` slice payload (`ListSliceRoot`): one
-/// scalar kind or String. A slice of owners has no carrier.
+/// The admitted element of a `[T]` slice payload (`ListSliceRoot`): an exact
+/// scalar, String, or List(Int). Deeper and qualified owner elements refuse.
 fn rooted_slice_element(ty: &Type) -> Option<&'static str> {
     match ty.unqualified() {
         Type::Slice(element) => crate::canonical_layouts::rooted_slice_element_name(element),

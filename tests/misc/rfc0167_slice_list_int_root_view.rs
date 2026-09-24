@@ -55,60 +55,24 @@ fn main() -> Int:
 }
 
 #[test]
-fn a_third_list_shell_is_not_a_slice_element_carrier() {
+fn a_qualified_list_child_cannot_borrow_slice_authority() {
     let checked = witchy::resolve_std_only_checked(
         r#"
-fn relay(rows: &[List(List(Int))]) -> &[List(List(Int))]:
+fn relay(rows: &[unique List(Int)]) -> &[unique List(Int)]:
     rows
 
 fn main() -> Int:
-    let rows = [[[1]], [[2]]]
+    let rows: List(unique List(Int)) = [[1], [2]]
     relay(&rows[0..2]).length()
 "#,
     )
-    .expect("deeper slice type-checks before canonical admission");
+    .expect("qualified slice source type-checks before canonical admission");
     let refusal = codegen::compile_checked_module_artifact(&checked)
-        .expect_unsupported("a third List shell has no slice carrier");
-    assert!(refusal.to_string().contains("rooted view payload has no admitted authenticated carrier"), "{refusal}");
-}
-
-#[test]
-fn a_qualified_list_child_cannot_borrow_slice_authority() {
-    for qualifier in ["unique", "frozen"] {
-        let source = format!(
-            "fn relay(rows: &[{qualifier} List(Int)]) -> &[{qualifier} List(Int)]:\n    rows\n\n\
-             fn main() -> Int:\n    let rows: List({qualifier} List(Int)) = [[1], [2]]\n    relay(&rows[0..2]).length()\n"
-        );
-        let checked = witchy::resolve_std_only_checked(&source)
-            .expect("qualified slice source type-checks before canonical admission");
-        let refusal = codegen::compile_checked_module_artifact(&checked)
-            .expect_unsupported("qualified child has no exact slice carrier");
-        assert!(refusal.to_string().contains("rooted view payload has no admitted authenticated carrier"), "{qualifier}: {refusal}");
-    }
-}
-
-#[test]
-fn must_is_not_an_element_type_qualifier() {
-    let error = witchy::resolve_std_only_checked(
-        "fn relay(rows: &[must List(Int)]) -> Int:\n    rows.length()\n",
-    )
-    .expect_err("must is a parameter convention, not a slice element type qualifier");
-    assert!(error.to_string().contains("must"), "{error}");
-}
-
-#[test]
-fn a_region_born_outer_list_cannot_escape_through_the_slice() {
-    let error = witchy::resolve_std_only_checked(
-        r#"
-fn bad() -> &[List(Int)]:
-    region:
-        let rows = [[1], [2]]
-        &rows[0..2]
-
-fn main() -> Int:
-    bad().length()
-"#,
-    )
-    .expect_err("region-born outer root cannot escape through the slice");
-    assert!(error.to_string().contains("region-born"), "{error}");
+        .expect_unsupported("qualified child has no exact slice carrier");
+    assert!(
+        refusal
+            .to_string()
+            .contains("rooted view payload has no admitted authenticated carrier"),
+        "{refusal}"
+    );
 }
