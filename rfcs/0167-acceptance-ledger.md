@@ -56,14 +56,17 @@ is needed for soundness.
 ## Exact-tip evidence checkpoint
 
 Row G bounded nested-list carrier (2026-09-24):
-`tests/misc/rfc0167_nested_list_root_view.rs` gives a hand-computed result of
-4239: the retained two-row root begins with 1 and 3, while the mutated owner
-has three rows and begins with 9. Admitted unoptimized Wasm returns 4239 with
-zero canonical heap leaks. A region-born root is refused before escape, and
-`&List(unique List(Int))` is refused as an unsupported exact carrier. This
-closes the whole-root `&List(List(Int))` child-ownership gap only; other nested
-list payloads and broader row G carriers remain open. The focused witness is
-3/3 green; exact-tip branch presubmit and queue gate are pending.
+`tests/misc/rfc0167_nested_list_root_view.rs` pins three distinct whole-root
+`&List(List(Int))` paths with hand-computed results: direct relay and nested
+mutation preserve the old two-row root while the current owner grows (4239);
+a closure retains old children 1 and 3 after mutation (49); and both branches
+of a generic two-root choice retain their selected snapshots (1398). Each
+result matches admitted unoptimized Wasm with `Some(0)` canonical heap leaks.
+A region-born root refuses escape at checking, while a qualified inner list
+and a third List shell refuse canonical admission. This closes the exact
+whole-root child-ownership gap only; `&[List(Int)]`, other nested payloads,
+and broader row G carriers remain open. Exact-tip presubmit and queue gate
+are pending.
 
 At `adf1d01c7` (2026-09-18), the integrated core smoke was **42/42 passed**: rooted views (13), unique/write-back (12), normal/opt interoperation (2), resource composition (5), and optimization readiness (10). This is core canonical-route evidence only; it does not include the source interpreter, full, end-to-end, or examples suites.
 
