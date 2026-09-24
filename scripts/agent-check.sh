@@ -116,7 +116,15 @@ report_bounded_edit_gap() {
 }
 
 ensure_agent_target() {
-    [ -d "$AGENT_TARGET_DIR" ] && return 0
+    if [ -d "$AGENT_TARGET_DIR" ]; then
+        # Agents commonly seed this directory before invoking us. Keep the
+        # gate's test profile for that existing seed too, or Cargo rebuilds
+        # its dependency graph under a different profile.
+        if [ -f "$AGENT_TARGET_DIR/.witchy-mbx-incremental-seed" ]; then
+            agent_target_from_gate=1
+        fi
+        return 0
+    fi
     if [ -d target ]; then
         ./scripts/worktree-warm.sh --target-dir "$AGENT_TARGET_DIR"
     elif ./scripts/worktree-warm.sh --target-dir "$AGENT_TARGET_DIR"; then
