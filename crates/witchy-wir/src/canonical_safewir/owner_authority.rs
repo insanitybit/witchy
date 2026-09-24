@@ -214,7 +214,7 @@ pub(super) fn validate<S: ModuleStage>(
                                 source.typed_module().module().items.get(item)
                             else { return Err(refuse()); };
                             let source_abi = source.closed_callable_abi(&owner.name).ok_or_else(refuse)?;
-                            let witchy_types::canonical_abi::CanonicalTargetPolicy::ClosedLocal(target) = source_abi.target_policy
+                            let witchy_canonical_source::abi::CanonicalTargetPolicy::ClosedLocal(target) = source_abi.target_policy
                             else { return Err(refuse()); };
                             (candidate.source_abi_bindings().entries().iter()
                                 .find(|binding| binding.source_declaration_ordinal() == target.function_ordinal)

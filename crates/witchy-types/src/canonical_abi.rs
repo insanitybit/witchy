@@ -6,212 +6,12 @@
 //! backend-assigned IDs are never part of the projection.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fmt;
 
 use witchy_syntax::ast::{self, Convention, Item, Type};
 
 use crate::typeck::{Ty, TypedModule};
+use witchy_canonical_source::abi::*;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum CanonicalScalarKind {
-    Int,
-    Float,
-    Duration,
-    Bool,
-    Unit,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum CanonicalCapabilityKind {
-    Console,
-    Clock,
-    Rand,
-    Env,
-    Secret,
-    Exec,
-    Fetch,
-    Dir,
-    File,
-    Net,
-    Socket,
-    Listener,
-    BuildOut,
-    BuildRead,
-    BuildEnv,
-    BuildNet,
-    BuildExec,
-    SecretStore,
-}
-
-/// A structural identity for a checked source type used by a reference or
-/// aggregate ABI entry.  It is not a WIR layout identity.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct CanonicalTypeKey([u8; 32]);
-
-impl CanonicalTypeKey {
-    pub fn as_bytes(self) -> [u8; 32] {
-        self.0
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum CanonicalReferenceKind {
-    String,
-    Bytes,
-    Aggregate(CanonicalTypeKey),
-    Capability(CanonicalCapabilityKind),
-    /// A local rooted-view lane.  The payload key binds the checked payload
-    /// identity; the carrier kind says how the retained root/projection is
-    /// represented.  This is deliberately not an open, separately compiled
-    /// reference ABI.
-    RootedView {
-        payload: CanonicalTypeKey,
-        carrier: CanonicalRootedViewCarrier,
-    },
-}
-
-/// Physical family selected for an authenticated rooted view.  New payloads
-/// require a new explicit carrier family; they may not reuse the scalar cell.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum CanonicalRootedViewCarrier {
-    IntScalarRoot,
-    /// Retained `List(T)` root plus checked `{start, len}` projection, for a
-    /// `&[T]` whose element is one scalar kind or String. It is not an open
-    /// List ABI: the element is read only through the checked projection.
-    ListSliceRoot,
-    /// A whole immutable `String` value.  The carrier is the retained
-    /// reference-counted String object itself: a whole-value view has no
-    /// projection, and the String representation is already immutable and
-    /// shared by retain, so the view is a value-semantic snapshot of its root.
-    StringRoot,
-    /// A whole immutable user record or sum (argument-less nominal).  Like
-    /// `StringRoot`, the carrier is the retained aggregate object itself: a
-    /// record is an immutable value shared by retain, so the token is the
-    /// snapshot.  The payload identity is the declaration's nominal ordinal.
-    RecordRoot,
-    /// A whole immutable `List` of scalars or `String`s.  The carrier is the
-    /// retained list object: a later mutation of the owner finds it shared and
-    /// copies, so the view keeps its snapshot.
-    ListRoot,
-    /// A view of an immutable `Float`, `Bool`, or `Duration` value is carried
-    /// as that value: an immutable scalar read at formation is exactly what the
-    /// view observes, the RFC's proven-equivalent representation.  `&Int`
-    /// keeps its `IntScalarRoot` cell, which also carries list element views.
-    ScalarValue,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum CanonicalValueKind {
-    Scalar(CanonicalScalarKind),
-    Reference(CanonicalReferenceKind),
-    Callable(CanonicalCallableAbiKey),
-    Value(CanonicalTypeKey),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum CanonicalParameterConvention {
-    Let,
-    Borrow,
-    Var,
-    Own,
-    VarUnique,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct CanonicalParameterAbi {
-    pub convention: CanonicalParameterConvention,
-    pub value: CanonicalValueKind,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum CanonicalResultKind {
-    Scalar(CanonicalScalarKind),
-    Reference(CanonicalReferenceKind),
-    Value(CanonicalValueKind),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct CanonicalCallableQualifiers {
-    pub pure: bool,
-    pub once: bool,
-}
-
-/// A source-structural local target.  The ordinal is assigned only from the
-/// final checked function sequence, never from a function spelling.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct CanonicalLocalTarget {
-    pub function_ordinal: u32,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum CanonicalTargetPolicy {
-    ClosedLocal(CanonicalLocalTarget),
-    OpenAbi,
-}
-
-/// Hash identity of a complete source-level callable ABI shape.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct CanonicalCallableAbiKey([u8; 32]);
-
-impl CanonicalCallableAbiKey {
-    pub fn as_bytes(self) -> [u8; 32] {
-        self.0
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct CanonicalCallableAbi {
-    pub key: CanonicalCallableAbiKey,
-    pub parameters: Vec<CanonicalParameterAbi>,
-    pub result: CanonicalResultKind,
-    pub qualifiers: CanonicalCallableQualifiers,
-    pub target_policy: CanonicalTargetPolicy,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CanonicalCallableAbiManifest {
-    entries: Vec<CanonicalCallableAbi>,
-    digest: [u8; 32],
-}
-
-impl CanonicalCallableAbiManifest {
-    /// The manifest of a checked source whose runtime declarations could not
-    /// be encoded (an RFC-0165 obligation recorded by the pipeline). It binds
-    /// no callable and its digest is the digest of no entries, so nothing can
-    /// mistake it for a derived manifest of the same program.
-    pub fn empty() -> Self {
-        let entries = Vec::new();
-        let digest = manifest_digest(&entries);
-        Self { entries, digest }
-    }
-
-    pub fn entries(&self) -> &[CanonicalCallableAbi] {
-        &self.entries
-    }
-
-    pub fn digest(&self) -> [u8; 32] {
-        self.digest
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CanonicalAbiError {
-    NonConcrete(String),
-    Unsupported(String),
-    InvalidCallable(String),
-}
-
-impl fmt::Display for CanonicalAbiError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::NonConcrete(context) => write!(f, "canonical callable ABI is not concrete: {context}"),
-            Self::Unsupported(context) => write!(f, "canonical callable ABI has unsupported type: {context}"),
-            Self::InvalidCallable(context) => write!(f, "canonical callable ABI is invalid: {context}"),
-        }
-    }
-}
-
-impl std::error::Error for CanonicalAbiError {}
 
 struct Context {
     nominal_ordinals: BTreeMap<String, u32>,
@@ -339,9 +139,7 @@ pub fn derive_manifest(
     for ty in typed.table().concrete_types() {
         collect_ty_callables(ty, CanonicalTargetPolicy::OpenAbi, &context, &mut entries)?;
     }
-    let entries = entries.into_iter().collect::<Vec<_>>();
-    let digest = manifest_digest(&entries);
-    Ok(CanonicalCallableAbiManifest { entries, digest })
+    Ok(CanonicalCallableAbiManifest::from_entries(entries.into_iter().collect()))
 }
 
 fn collect_ty_callables(
@@ -397,7 +195,7 @@ fn callable_from_ty(
     let qualifiers = CanonicalCallableQualifiers { pure: qualifiers.pure, once: qualifiers.once };
     let bytes = encode_callable_parts(&parameters, &result, qualifiers);
     Ok(CanonicalCallableAbi {
-        key: CanonicalCallableAbiKey(*blake3::hash(&bytes).as_bytes()),
+        key: CanonicalCallableAbiKey::from_digest(*blake3::hash(&bytes).as_bytes()),
         parameters,
         result,
         qualifiers,
@@ -433,7 +231,7 @@ fn callable_from_ast(
     let qualifiers = CanonicalCallableQualifiers { pure: qualifiers.pure, once: qualifiers.once };
     let bytes = encode_callable_parts(&parameters, &result, qualifiers);
     Ok(CanonicalCallableAbi {
-        key: CanonicalCallableAbiKey(*blake3::hash(&bytes).as_bytes()),
+        key: CanonicalCallableAbiKey::from_digest(*blake3::hash(&bytes).as_bytes()),
         parameters,
         result,
         qualifiers,
@@ -463,7 +261,7 @@ fn convention(convention: Convention) -> CanonicalParameterConvention {
 fn value_from_ty(ty: &Ty, context: &Context) -> Result<CanonicalValueKind, CanonicalAbiError> {
     let mut bytes = Vec::new();
     encode_ty(ty, context, &mut bytes)?;
-    let key = CanonicalTypeKey(*blake3::hash(&bytes).as_bytes());
+    let key = CanonicalTypeKey::from_digest(*blake3::hash(&bytes).as_bytes());
     Ok(match ty {
         Ty::Int => CanonicalValueKind::Scalar(CanonicalScalarKind::Int),
         Ty::Float => CanonicalValueKind::Scalar(CanonicalScalarKind::Float),
@@ -472,7 +270,7 @@ fn value_from_ty(ty: &Ty, context: &Context) -> Result<CanonicalValueKind, Canon
         Ty::Unit => CanonicalValueKind::Scalar(CanonicalScalarKind::Unit),
         Ty::String => CanonicalValueKind::Reference(CanonicalReferenceKind::String),
         Ty::Bytes => CanonicalValueKind::Reference(CanonicalReferenceKind::Bytes),
-        Ty::Fn(..) => CanonicalValueKind::Callable(CanonicalCallableAbiKey(*blake3::hash(&bytes).as_bytes())),
+        Ty::Fn(..) => CanonicalValueKind::Callable(CanonicalCallableAbiKey::from_digest(*blake3::hash(&bytes).as_bytes())),
         Ty::View(payload) => CanonicalValueKind::Reference(rooted_view_from_ty(payload, context)?),
         Ty::Console(_) | Ty::Clock | Ty::Rand | Ty::Env | Ty::Secret(_) | Ty::Exec | Ty::Fetch
         | Ty::Dir(_) | Ty::File(_) | Ty::Net(_) | Ty::Socket | Ty::Listener | Ty::BuildOut
@@ -497,7 +295,7 @@ fn value_from_ast(ty: &Type, context: &Context) -> Result<CanonicalValueKind, Ca
     }
     let mut bytes = Vec::new();
     encode_ast(ty, context, &mut bytes)?;
-    let key = CanonicalTypeKey(*blake3::hash(&bytes).as_bytes());
+    let key = CanonicalTypeKey::from_digest(*blake3::hash(&bytes).as_bytes());
     let ty = ty.unqualified();
     Ok(match ty {
         Type::Named(name, args) if name == "Int" && args.is_empty() => CanonicalValueKind::Scalar(CanonicalScalarKind::Int),
@@ -508,7 +306,7 @@ fn value_from_ast(ty: &Type, context: &Context) -> Result<CanonicalValueKind, Ca
         Type::Tuple(items) if items.is_empty() => CanonicalValueKind::Scalar(CanonicalScalarKind::Unit),
         Type::Named(name, args) if name == "String" && args.is_empty() => CanonicalValueKind::Reference(CanonicalReferenceKind::String),
         Type::Named(name, args) if name == "Bytes" && args.is_empty() => CanonicalValueKind::Reference(CanonicalReferenceKind::Bytes),
-        Type::Fn(..) => CanonicalValueKind::Callable(CanonicalCallableAbiKey(*blake3::hash(&bytes).as_bytes())),
+        Type::Fn(..) => CanonicalValueKind::Callable(CanonicalCallableAbiKey::from_digest(*blake3::hash(&bytes).as_bytes())),
         Type::Named(name, _) if is_capability_name(name) => CanonicalValueKind::Reference(CanonicalReferenceKind::Capability(capability_name(name))),
         Type::Named(_, _) | Type::Tuple(_) | Type::Slice(_) | Type::Dyn(_, _) => CanonicalValueKind::Reference(CanonicalReferenceKind::Aggregate(key)),
         Type::RecordCompose { .. } => return Err(CanonicalAbiError::Unsupported("record composition survived type checking".into())),
@@ -663,7 +461,7 @@ fn rooted_view_from_ast(
 fn rooted_scalar_payload_key(kind: CanonicalScalarKind) -> CanonicalTypeKey {
     let mut bytes = b"witchy.canonical-rooted-view-payload.v1".to_vec();
     bytes.push(kind as u8);
-    CanonicalTypeKey(*blake3::hash(&bytes).as_bytes())
+    CanonicalTypeKey::from_digest(*blake3::hash(&bytes).as_bytes())
 }
 
 /// Builtin heads and capabilities are never record roots; only a declared
@@ -678,7 +476,7 @@ fn is_user_record_name(name: &str) -> bool {
 fn rooted_record_payload_key(identity: &[u8]) -> CanonicalTypeKey {
     let mut bytes = b"witchy.canonical-rooted-view-payload.v2/record".to_vec();
     bytes.extend_from_slice(identity);
-    CanonicalTypeKey(*blake3::hash(&bytes).as_bytes())
+    CanonicalTypeKey::from_digest(*blake3::hash(&bytes).as_bytes())
 }
 
 /// Record-root payload identity, written identically from a checked type and
@@ -761,7 +559,7 @@ fn rooted_list_view(element: &str) -> Result<CanonicalReferenceKind, CanonicalAb
         ));
     }
     Ok(CanonicalReferenceKind::RootedView {
-        payload: CanonicalTypeKey(*blake3::hash(&bytes).as_bytes()),
+        payload: CanonicalTypeKey::from_digest(*blake3::hash(&bytes).as_bytes()),
         carrier: CanonicalRootedViewCarrier::ListRoot,
     })
 }
@@ -769,11 +567,11 @@ fn rooted_list_view(element: &str) -> Result<CanonicalReferenceKind, CanonicalAb
 fn rooted_scalar_value_payload_key(kind: CanonicalScalarKind) -> CanonicalTypeKey {
     let mut bytes = b"witchy.canonical-rooted-view-payload.v1/scalar-value".to_vec();
     bytes.push(kind as u8);
-    CanonicalTypeKey(*blake3::hash(&bytes).as_bytes())
+    CanonicalTypeKey::from_digest(*blake3::hash(&bytes).as_bytes())
 }
 
 fn rooted_string_payload_key() -> CanonicalTypeKey {
-    CanonicalTypeKey(*blake3::hash(b"witchy.canonical-rooted-view-payload.v1/string").as_bytes())
+    CanonicalTypeKey::from_digest(*blake3::hash(b"witchy.canonical-rooted-view-payload.v1/string").as_bytes())
 }
 
 /// The element of a `ListSliceRoot` carrier: one scalar kind carried inline,
@@ -801,7 +599,7 @@ fn slice_element_name_ast(element: &Type) -> Option<&'static str> {
 fn rooted_slice_payload_key(element: &str) -> CanonicalTypeKey {
     let mut bytes = b"witchy.canonical-rooted-view-payload.v1/slice-".to_vec();
     bytes.extend(element.to_ascii_lowercase().bytes());
-    CanonicalTypeKey(*blake3::hash(&bytes).as_bytes())
+    CanonicalTypeKey::from_digest(*blake3::hash(&bytes).as_bytes())
 }
 
 fn contains_rooted_view(ty: &Ty) -> bool {
@@ -818,64 +616,11 @@ fn contains_rooted_view(ty: &Ty) -> bool {
     }
 }
 
-fn encode_callable_parts(parameters: &[CanonicalParameterAbi], result: &CanonicalResultKind, qualifiers: CanonicalCallableQualifiers) -> Vec<u8> {
-    let mut bytes = b"witchy.canonical-callable-abi.v1".to_vec();
-    put_len(&mut bytes, parameters.len());
-    for parameter in parameters {
-        bytes.push(match parameter.convention { CanonicalParameterConvention::Let => 0, CanonicalParameterConvention::Borrow => 1, CanonicalParameterConvention::Var => 2, CanonicalParameterConvention::Own => 3, CanonicalParameterConvention::VarUnique => 4 });
-        encode_value(&mut bytes, &parameter.value);
-    }
-    encode_result(&mut bytes, result);
-    bytes.push(u8::from(qualifiers.pure));
-    bytes.push(u8::from(qualifiers.once));
-    bytes
-}
 
-fn encode_value(bytes: &mut Vec<u8>, value: &CanonicalValueKind) {
-    match value {
-        CanonicalValueKind::Scalar(kind) => { bytes.push(0); bytes.push(*kind as u8); }
-        CanonicalValueKind::Reference(kind) => { bytes.push(1); encode_reference(bytes, kind); }
-        CanonicalValueKind::Callable(key) => { bytes.push(2); bytes.extend_from_slice(&key.0); }
-        CanonicalValueKind::Value(key) => { bytes.push(3); bytes.extend_from_slice(&key.0); }
-    }
-}
 
-fn encode_result(bytes: &mut Vec<u8>, result: &CanonicalResultKind) {
-    match result {
-        CanonicalResultKind::Scalar(kind) => { bytes.push(0); bytes.push(*kind as u8); }
-        CanonicalResultKind::Reference(kind) => { bytes.push(1); encode_reference(bytes, kind); }
-        CanonicalResultKind::Value(value) => { bytes.push(2); encode_value(bytes, value); }
-    }
-}
 
-fn encode_reference(bytes: &mut Vec<u8>, kind: &CanonicalReferenceKind) {
-    match kind {
-        CanonicalReferenceKind::String => bytes.push(0),
-        CanonicalReferenceKind::Bytes => bytes.push(1),
-        CanonicalReferenceKind::Aggregate(key) => { bytes.push(2); bytes.extend_from_slice(&key.0); }
-        CanonicalReferenceKind::Capability(kind) => { bytes.push(3); bytes.push(*kind as u8); }
-        CanonicalReferenceKind::RootedView { payload, carrier } => {
-            bytes.push(4);
-            bytes.extend_from_slice(&payload.0);
-            bytes.push(*carrier as u8);
-        }
-    }
-}
 
-fn manifest_digest(entries: &[CanonicalCallableAbi]) -> [u8; 32] {
-    let mut bytes = b"witchy.canonical-callable-abi-manifest.v1".to_vec();
-    put_len(&mut bytes, entries.len());
-    for entry in entries {
-        bytes.extend_from_slice(&entry.key.0);
-        let policy = match entry.target_policy { CanonicalTargetPolicy::ClosedLocal(target) => { bytes.push(0); target.function_ordinal } CanonicalTargetPolicy::OpenAbi => { bytes.push(1); 0 } };
-        bytes.extend_from_slice(&policy.to_le_bytes());
-    }
-    *blake3::hash(&bytes).as_bytes()
-}
 
-fn put_len(bytes: &mut Vec<u8>, length: usize) {
-    bytes.extend_from_slice(&(u32::try_from(length).expect("validated canonical ABI length")).to_le_bytes());
-}
 
 fn encode_ty(ty: &Ty, context: &Context, bytes: &mut Vec<u8>) -> Result<(), CanonicalAbiError> {
     match ty {

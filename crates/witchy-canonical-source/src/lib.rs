@@ -12,11 +12,13 @@
 
 use witchy_syntax::ast::Type;
 
+pub mod abi;
 pub mod access;
 pub mod aggregates;
 pub mod capabilities;
 pub mod closure;
 pub mod proper_tail;
+pub mod specialization;
 
 /// The structural `()` spelling is canonical; legacy names remain accepted
 /// while old source is migrated.

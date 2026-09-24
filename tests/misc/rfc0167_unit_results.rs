@@ -1,7 +1,7 @@
 //! RFC-0167 row C: unit syntax is one source representation and one ABI shape.
 
 use witchy::ast::Type;
-use witchy_types::canonical_abi::{CanonicalResultKind, CanonicalScalarKind};
+use witchy_canonical_source::abi::{CanonicalResultKind, CanonicalScalarKind};
 use witchy_types::pipeline::CanonicalCheckedSource;
 
 const UNIT_MATRIX: &str = r#"

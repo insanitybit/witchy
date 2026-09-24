@@ -1,6 +1,7 @@
 //! Source-bound isolated service sites. No backend integer selects a callback.
 use witchy_syntax::ast::{Convention, Expr, Item, Type};
-use crate::{canonical_abi::CanonicalTargetPolicy, pipeline::CanonicalCheckedSource};
+use witchy_canonical_source::abi::CanonicalTargetPolicy;
+use crate::pipeline::CanonicalCheckedSource;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ServiceSite<'a> {

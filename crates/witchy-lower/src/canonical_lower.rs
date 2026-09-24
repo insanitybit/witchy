@@ -1548,7 +1548,7 @@ if capability_imports.contains("build_out_write_at") {
         .map(|(name, (function, _signature))| {
             let source_abi = source.closed_callable_abi(name)
                 .ok_or_else(|| CanonicalLoweringError::MissingCheckedFunctionType(name.clone()))?;
-            let witchy_types::canonical_abi::CanonicalTargetPolicy::ClosedLocal(target) = source_abi.target_policy else {
+            let witchy_canonical_source::abi::CanonicalTargetPolicy::ClosedLocal(target) = source_abi.target_policy else {
                 return Err(CanonicalLoweringError::InvalidCheckedFunctionType(name.clone()));
             };
             Ok(CandidateAbiBinding::new(

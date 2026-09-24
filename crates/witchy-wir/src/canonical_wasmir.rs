@@ -7963,7 +7963,7 @@ fn derive_entry(
     source: &witchy_types::pipeline::CanonicalCheckedSource,
 ) -> Result<Option<CanonicalEntry>, CanonicalAdmissionError> {
     use crate::canonical_safewir::{CapabilityKindId, ValueType};
-    use witchy_types::canonical_abi::CanonicalTargetPolicy;
+    use witchy_canonical_source::abi::CanonicalTargetPolicy;
 
     // The linker leaves the program entry unqualified as `main` whatever the
     // entry module is called; a library has no `main` and no launch entry.

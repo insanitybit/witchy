@@ -2176,7 +2176,7 @@ fn register_module_items(
     witnesses: &witchy_types::witness::WitnessPlan,
     generic_specializations: &BTreeMap<
         String,
-        witchy_types::traits::LogicalSpecializationIdentity,
+        witchy_canonical_source::specialization::LogicalSpecializationIdentity,
     >,
 ) -> Result<(), CodegenError> {
     register_specialized_layouts(cg, module);

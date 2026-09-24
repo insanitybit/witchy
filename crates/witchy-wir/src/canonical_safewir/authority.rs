@@ -625,7 +625,7 @@ fn validate_candidate_abi_bindings<S: ModuleStage>(
     candidate: &CanonicalModule<S>,
     source: &witchy_types::pipeline::CanonicalCheckedSource,
 ) -> Result<(), CandidateAbiBindingError> {
-    use witchy_types::canonical_abi::CanonicalTargetPolicy;
+    use witchy_canonical_source::abi::CanonicalTargetPolicy;
     super::vm_service::validate(candidate, source).map_err(CandidateAbiBindingError::VmService)?;
     super::owner_authority::validate(candidate, source)?;
 
@@ -4023,7 +4023,7 @@ mod tests {
         let mut candidate = candidate
             .with_launch_contract_payload(source.launch_contract_payload().to_vec());
         let source_abi = source.closed_callable_abi("main").expect("main ABI");
-        let witchy_types::canonical_abi::CanonicalTargetPolicy::ClosedLocal(target) = source_abi.target_policy else {
+        let witchy_canonical_source::abi::CanonicalTargetPolicy::ClosedLocal(target) = source_abi.target_policy else {
             panic!("main must have a closed target");
         };
         let binding = super::super::CandidateAbiBinding::new(
@@ -4346,7 +4346,7 @@ mod tests {
         // Rebuild the complete identity-only binding after the substitution.
         // No candidate-controlled ABI shape remains in it to bless the forgery.
         let source_abi = checked.canonical_source().unwrap().closed_callable_abi("main").unwrap();
-        let witchy_types::canonical_abi::CanonicalTargetPolicy::ClosedLocal(target) = source_abi.target_policy else { panic!("closed target") };
+        let witchy_canonical_source::abi::CanonicalTargetPolicy::ClosedLocal(target) = source_abi.target_policy else { panic!("closed target") };
         candidate.abi_bindings = super::super::CandidateAbiBindings::new(vec![
             super::super::CandidateAbiBinding::new(FunctionId::new(0), target.function_ordinal),
         ]);

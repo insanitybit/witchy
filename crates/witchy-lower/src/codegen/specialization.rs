@@ -9,7 +9,7 @@ use super::*;
 
 use witchy_syntax::opt::OptSchemaKey;
 use witchy_canonical_source::access::AccessIdentityKey;
-use witchy_types::traits::LogicalSpecializationIdentity;
+use witchy_canonical_source::specialization::LogicalSpecializationIdentity;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(super) struct CallableSpecializationKey {

@@ -13,7 +13,7 @@ use witchy_syntax::ast::{
 use witchy_syntax::ast::visit::{visit_block, visit_block_mut, visit_expr_mut};
 
 use witchy_canonical_source::aggregates::{concrete_aggregate_identity, scalar_aggregate_shape, type_definitions};
-use crate::traits::LogicalSpecializationIdentity;
+use witchy_canonical_source::specialization::LogicalSpecializationIdentity;
 use crate::typeck::{self, TypeTable, TypedModule};
 use crate::witness::WitnessCatalog;
 

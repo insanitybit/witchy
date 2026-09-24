@@ -32,7 +32,8 @@ use crate::runtime_type::{
     AuthenticatedModuleOwners, DeclarationKind, RuntimeDeclarationCatalog, RuntimeTypeError,
     RuntimeTypePlan,
 };
-use crate::canonical_abi::{self, CanonicalCallableAbi, CanonicalCallableAbiManifest, CanonicalTargetPolicy};
+use crate::canonical_abi;
+use witchy_canonical_source::abi::{CanonicalCallableAbi, CanonicalCallableAbiManifest, CanonicalTargetPolicy};
 use crate::canonical_closure::{ClosureWitnessError, ClosureWitnessManifest};
 use crate::precompiled_declarations::PrecompiledDeclarationEnvironment;
 use crate::optimization_readiness::OptimizationReadiness;
@@ -46,7 +47,7 @@ use crate::typeck::{self, ProperTailSiteManifest, TypeError};
 struct CanonicalCallableWitness {
     signatures: BTreeMap<String, witchy_syntax::ast::Type>,
     dictionary_comparators: Vec<(witchy_syntax::ast::Type, String)>,
-    generic_instances: BTreeMap<String, crate::traits::LogicalSpecializationIdentity>,
+    generic_instances: BTreeMap<String, witchy_canonical_source::specialization::LogicalSpecializationIdentity>,
     abi_manifest: CanonicalCallableAbiManifest,
     closed_abis: BTreeMap<String, CanonicalCallableAbi>,
     runtime_functions: Vec<String>,
@@ -280,7 +281,7 @@ impl CanonicalCheckedSource {
     pub fn generic_specialization(
         &self,
         name: &str,
-    ) -> Option<&crate::traits::LogicalSpecializationIdentity> {
+    ) -> Option<&witchy_canonical_source::specialization::LogicalSpecializationIdentity> {
         self.callable_witness.generic_instances.get(name)
     }
 
@@ -1082,7 +1083,7 @@ fn is_user_module_qualified(name: &str) -> bool {
 
 fn bind_canonical_callable_witness(
     typed: &typeck::TypedModule,
-    generic_instances: BTreeMap<String, crate::traits::LogicalSpecializationIdentity>,
+    generic_instances: BTreeMap<String, witchy_canonical_source::specialization::LogicalSpecializationIdentity>,
 ) -> Result<CanonicalCallableWitness, PipelineError> {
     let linked_entry = typed.module().linked_entry.as_deref();
     let scope = canonical_scope(typed.module());
