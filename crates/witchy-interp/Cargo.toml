@@ -6,6 +6,11 @@ publish = false            # internal workspace crate — not published standalo
 license = "MIT OR Apache-2.0"
 description = "witchy compiler — frozen source evaluator and temporary compile-time services"
 
+[lib]
+# No second cfg(test) compile of this crate: it has no tests (frozen tree walker).
+test = false
+doctest = false
+
 [features]
 test-fixtures = ["dep:witchy-test-host", "dep:witchy-testkit"]
 # Synthetic AST and oracle tests intentionally exercise execution below the

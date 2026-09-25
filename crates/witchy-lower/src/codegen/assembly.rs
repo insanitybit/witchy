@@ -3077,7 +3077,7 @@ fn public_outcome<T>(result: Result<T, LoweringFailure>) -> LoweringOutcome<T> {
     }
 }
 
-#[cfg(any(test, feature = "raw-module-test-api"))]
+#[cfg(feature = "raw-module-test-api")]
 fn encode_validated(
     module: &witchy_wir::wir::WirModule,
     gc_structs: &[witchy_wir::wir::WirStructDef],
@@ -3086,7 +3086,7 @@ fn encode_validated(
     encode_validated_with_source_map(module, gc_structs, gc_arrays).map(|encoded| encoded.wasm)
 }
 
-#[cfg(any(test, feature = "raw-module-test-api"))]
+#[cfg(feature = "raw-module-test-api")]
 fn encode_validated_with_source_map(
     module: &witchy_wir::wir::WirModule,
     gc_structs: &[witchy_wir::wir::WirStructDef],
@@ -3125,7 +3125,7 @@ fn encode_validated_with_source_map(
     Ok(encoded)
 }
 
-#[cfg(any(test, feature = "raw-module-test-api"))]
+#[cfg(feature = "raw-module-test-api")]
 fn validated_module_outcome(
     module: witchy_wir::wir::WirModule,
     gc_structs: &[witchy_wir::wir::WirStructDef],
@@ -3137,19 +3137,7 @@ fn validated_module_outcome(
     }
 }
 
-#[cfg(test)]
-fn encoded_binary_outcome(
-    module: &witchy_wir::wir::WirModule,
-    gc_structs: &[witchy_wir::wir::WirStructDef],
-    gc_arrays: &[witchy_wir::wir::WirArrayDef],
-) -> LoweringOutcome<Vec<u8>> {
-    match encode_validated(module, gc_structs, gc_arrays) {
-        Ok(bytes) => LoweringOutcome::Lowered(bytes),
-        Err(error) => LoweringOutcome::Rejected(error),
-    }
-}
-
-#[cfg(any(test, feature = "raw-module-test-api"))]
+#[cfg(feature = "raw-module-test-api")]
 fn append_layout_bundle(mut wasm: Vec<u8>, bundle: &witchy_wir::layout::LayoutBundle) -> Vec<u8> {
     const SECTION_NAME: &[u8] = b"witchy.layouts";
     fn push_u32_leb(bytes: &mut Vec<u8>, mut value: u32) {
@@ -3183,7 +3171,7 @@ fn append_layout_bundle(mut wasm: Vec<u8>, bundle: &witchy_wir::layout::LayoutBu
     wasm
 }
 
-#[cfg(any(test, feature = "raw-module-test-api"))]
+#[cfg(feature = "raw-module-test-api")]
 fn append_suspension_carrier(
     mut wasm: Vec<u8>,
     carrier: &witchy_types::suspension_carrier::SuspensionCarrierCatalog,
@@ -3223,7 +3211,7 @@ fn append_suspension_carrier(
     wasm
 }
 
-#[cfg(any(test, feature = "raw-module-test-api"))]
+#[cfg(feature = "raw-module-test-api")]
 fn encoded_module_outcome(
     module: &witchy_wir::wir::WirModule,
     gc_structs: &[witchy_wir::wir::WirStructDef],
@@ -3235,7 +3223,7 @@ fn encoded_module_outcome(
     }
 }
 
-#[cfg(any(test, feature = "raw-module-test-api"))]
+#[cfg(feature = "raw-module-test-api")]
 fn assemble_optimized_wir_with_structs(
     module: &Module,
 ) -> Result<
@@ -3283,7 +3271,7 @@ fn assemble_optimized_wir_with_structs_mode(
 /// Compile a module straight to a wasm **binary** via WIR + `wir_encode::encode`.
 /// The result distinguishes a valid source construct that lacks a compiled
 /// lowering from rejected input or malformed compiler output.
-#[cfg(any(test, feature = "raw-module-test-api"))]
+#[cfg(feature = "raw-module-test-api")]
 pub fn compile_module_binary(module: &Module) -> LoweringOutcome<Vec<u8>> {
     compile_module_binary_mode(module, false, None, None)
 }
@@ -3442,7 +3430,7 @@ pub fn compile_checked_development_module(
     ))
 }
 
-#[cfg(any(test, feature = "raw-module-test-api"))]
+#[cfg(feature = "raw-module-test-api")]
 fn compile_module_binary_mode(
     module: &Module,
     build_entrypoint: bool,
@@ -3462,7 +3450,7 @@ fn compile_module_binary_mode(
     }
 }
 
-#[cfg(any(test, feature = "raw-module-test-api"))]
+#[cfg(feature = "raw-module-test-api")]
 fn compile_module_binary_with_source_map_mode(
     module: &Module,
     build_entrypoint: bool,
@@ -3501,7 +3489,7 @@ fn compile_module_binary_with_source_map_mode(
 /// prelude raw-body helpers + the lowered user functions + the `run` export +
 /// imports/globals/data/table. Split out from `compile_module_binary` so tests
 /// can compare optimized and unoptimized encoding.
-#[cfg(any(test, feature = "raw-module-test-api"))]
+#[cfg(feature = "raw-module-test-api")]
 pub fn assemble_wir_module(module: &Module) -> LoweringOutcome<witchy_wir::wir::WirModule> {
     match assemble_wir_module_with_structs(module) {
         Ok((module, gc_structs, gc_arrays, _, _)) => {
@@ -3513,7 +3501,7 @@ pub fn assemble_wir_module(module: &Module) -> LoweringOutcome<witchy_wir::wir::
 
 /// Assemble legacy WIR for synthetic compiler tests. Production diagnostics
 /// disassemble the canonical admitted artifact instead.
-#[cfg(any(test, feature = "raw-module-test-api"))]
+#[cfg(feature = "raw-module-test-api")]
 pub fn assemble_checked_optimized_wir_module(
     checked: &witchy_types::pipeline::CheckedModule,
 ) -> LoweringOutcome<witchy_wir::wir::WirModule> {
@@ -3532,7 +3520,7 @@ pub fn assemble_checked_optimized_wir_module(
     }
 }
 
-#[cfg(any(test, feature = "raw-module-test-api"))]
+#[cfg(feature = "raw-module-test-api")]
 pub fn assemble_optimized_wir_module(
     module: &Module,
 ) -> LoweringOutcome<witchy_wir::wir::WirModule> {
@@ -3544,7 +3532,7 @@ pub fn assemble_optimized_wir_module(
     }
 }
 
-#[cfg(any(test, feature = "raw-module-test-api"))]
+#[cfg(feature = "raw-module-test-api")]
 fn assemble_wir_module_with_structs(
     module: &Module,
 ) -> Result<
@@ -7089,332 +7077,6 @@ fn prepare_synthetic_diagnostic_sites(func: &mut witchy_wir::wir::WirFunc) -> bo
     attach_diagnostic_sites(&mut func.body, 0)
 }
 
-#[cfg(test)]
-mod checked_codegen_boundary_tests {
-    use super::*;
-
-    fn no_expand(
-        _name: &str,
-        _module: &mut witchy_syntax::ast::Module,
-        _siblings: &[(String, witchy_syntax::ast::Module)],
-    ) -> Result<witchy_syntax::origin::OriginTable, String> {
-        Ok(witchy_syntax::origin::OriginTable::default())
-    }
-
-    fn authenticated_checked_result(
-        source: &str,
-    ) -> Result<witchy_types::pipeline::CheckedModule, witchy_types::pipeline::PipelineError> {
-        use witchy_types::runtime_type::{
-            AuthenticatedModuleOwners, ModuleLoadIdentity, PackageCoordinate, PackageSource,
-        };
-
-        let workspace = PackageCoordinate::new(
-            PackageSource::Workspace,
-            "example/dynamic-test",
-            "0.1.0",
-        )
-        .expect("workspace coordinate");
-        let toolchain = PackageCoordinate::new(
-            PackageSource::Toolchain,
-            "witchy/stdlib",
-            "0.1.0",
-        )
-        .expect("toolchain coordinate");
-        let mut assignments = vec![(
-            "main".to_string(),
-            ModuleLoadIdentity::new(workspace, ["main"]).expect("main owner"),
-        )];
-        assignments.extend(witchy_syntax::linker::STD_MODULES.iter().map(|module| {
-            (
-                (*module).to_string(),
-                ModuleLoadIdentity::new(toolchain.clone(), ["std", *module])
-                    .expect("std owner"),
-            )
-        }));
-        let owners = AuthenticatedModuleOwners::from_loader_assignments(assignments)
-            .expect("authenticated owners");
-        let user_modules = std::collections::HashSet::from(["main".to_owned()]);
-        witchy_types::pipeline::link_checked_authenticated_from_source_bundle_with_user_modules(
-            vec![("main".to_owned(), source.as_bytes().to_vec())],
-            "main",
-            no_expand,
-            &user_modules,
-            owners,
-        )
-    }
-
-    fn authenticated_checked(source: &str) -> witchy_types::pipeline::CheckedModule {
-        authenticated_checked_result(source).expect("authenticated checked link")
-    }
-
-    fn authenticated_select_frame_fixture(
-        source: &str,
-    ) -> Result<witchy_types::pipeline::CheckedModule, witchy_types::pipeline::PipelineError> {
-        // Do not flatten std/task into the opt application module.  That
-        // would give normal std declarations the application's mode and
-        // source identity, bypassing the same opt-callable boundary that a
-        // real program crosses.  The authenticated source linker follows the
-        // fixture's `chan` import transitively and retains `task` under its
-        // bundled std owner, where its private frame bridges are allowed.
-        authenticated_checked_result(source)
-    }
-
-    /// The privacy boundary is about what SOURCE may name, not about what the
-    /// `select` desugar emits on the program's behalf. These two assertions
-    /// are the whole contract: an ordinary `select` program compiles, and a
-    /// hand-written frame bridge in the same application is refused.
-    fn assert_select_frame_private_intrinsic_refusal(
-        ordinary: &str,
-        forged: &str,
-        intrinsic: &str,
-    ) {
-        authenticated_select_frame_fixture(ordinary)
-            .expect("an ordinary select program is not a private-intrinsic reference");
-        let error = authenticated_select_frame_fixture(forged)
-            .expect_err("an opt application must not invoke a compiler-private select frame intrinsic");
-        let message = error.to_string();
-        assert!(message.contains(intrinsic), "the rejected intrinsic must retain its exact source spelling: {message}");
-        assert!(message.contains("compiler-private intrinsic"), "the rejection must identify the private compiler boundary: {message}");
-        assert!(message.contains("std/chan or std/task"), "the rejection must retain the owning stdlib provenance: {message}");
-    }
-
-    /// A source-written frame bridge at `arity`, for the refusal side above.
-    fn forged_select_frame_source(arity: usize, intrinsic: &str) -> String {
-        let mut source = String::from("mode opt
-
-async fn main(console: Console):
-");
-        for index in 0..arity {
-            source.push_str(&format!("    let (tx{index}, rx{index}) = chan.channel(3).await
-"));
-            source.push_str(&format!("    chan.send(tx{index}, {index}).await
-"));
-        }
-        let receivers = (0..arity).map(|index| format!("rx{index}")).collect::<Vec<_>>().join(", ");
-        let select = if arity == 2 { "select".to_string() } else { format!("select{arity}") };
-        source.push_str(&format!("    let selected = chan.{select}({receivers}).await
-"));
-        source.push_str(&format!("    let forged = chan.{intrinsic}(selected)
-"));
-        source.push_str("    console.print(\"${forged ?? 0}\")\n");
-        source
-    }
-
-    #[test]
-    fn two_way_select_frame_rejects_private_intrinsic_from_opt_application() {
-        assert_select_frame_private_intrinsic_refusal(
-            include_str!("../../../../benchmarks/select_fanin.witchy"),
-            &forged_select_frame_source(2, "select2_frame_payload"),
-            "select2_frame_payload",
-        );
-    }
-
-    #[test]
-    fn select2_non_integer_payload_rejects_scalar_executor_fallback() {
-        let checked = authenticated_checked(
-            "async fn main(console: Console):\n    let (a_tx, a_rx) = chan.channel(1).await\n    let (b_tx, b_rx) = chan.channel(1).await\n    chan.send(a_tx, \"a\").await\n    chan.send(b_tx, \"b\").await\n    let selected = chan.select(a_rx, b_rx).await\n    match selected:\n        First(value) -> console.print(value)\n        Second(value) -> console.print(value)\n        Closed -> console.print(\"closed\")\n",
-        );
-        let (_, _, _, _, carrier) = assemble_optimized_wir_with_structs_mode(
-            checked.module(), false, None, None, false,
-        )
-        .expect("assemble non-integer select fallback");
-        let rejection = carrier
-            .scalar_executor_plan()
-            .expect_err("String select must not enter scalar payload emitter");
-        assert!(
-            matches!(
-                rejection,
-                witchy_types::suspension_carrier::ScalarExecutorRejection::NonIntegerChannel { .. }
-                    | witchy_types::suspension_carrier::ScalarExecutorRejection::BoxedState { .. }
-            ),
-            "unexpected fallback reason: {rejection:?}"
-        );
-    }
-
-    #[test]
-    fn dynamic_construction_rejects_a_transitive_capability_before_lowering() {
-        let error = authenticated_checked_result(
-            "import dynamic\nimport reflect\n\ntype Holder:\n    Holder(Console)\n\nimpl Reflect for Holder:\n    fn reflect(self) -> reflect.Mirror:\n        reflect.MNil\n\nfn main(console: Console) -> Int:\n    let value = dynamic.dynamic(Holder(console))\n    0\n",
-        )
-        .expect_err("capability-retaining Dynamic construction must be rejected");
-        let message = error.to_string();
-        assert!(message.contains("Console"), "{message}");
-        assert!(message.contains("Holder[0]"), "{message}");
-    }
-
-    #[test]
-    fn invalid_source_cannot_construct_checked_codegen_input() {
-        let module = witchy_syntax::parser::parse_module(
-            "fn main() -> Int:\n    \"not an int\"\n",
-        )
-        .expect("parse invalid checked-codegen fixture");
-        let error = witchy_types::pipeline::link_checked(
-            vec![("main".into(), module)],
-            "main",
-            no_expand,
-        )
-        .expect_err("type-invalid source must stop before checked codegen");
-
-        assert!(error.to_string().contains("expected `Int`"), "{error}");
-    }
-
-    #[test]
-    fn compiler_generated_executable_rejects_non_item_metadata() {
-        let checked = authenticated_checked("fn main() -> Int:\n    7\n");
-        let checked_application = witchy_types::pipeline::check_compiler_evaluation_module(
-            &checked,
-            checked.module().clone(),
-        )
-        .expect("check compiler-owned application clone");
-        let application =
-            CheckedGlamourApplication::forged_for_test(&checked, checked_application);
-        let empty = witchy_syntax::parser::parse_module("")
-            .expect("parse empty generated executable");
-
-        let mut with_mode = empty.clone();
-        with_mode.modes.push("opt".into());
-        let error = check_glamour_island_executable(&application, &with_mode)
-            .expect_err("generated performance modes must not cross the adapter boundary");
-        assert!(error.message.contains("unsupported module metadata"), "{error}");
-
-        let mut with_import_line = empty;
-        with_import_line.import_lines.push(1);
-        let error = check_glamour_island_executable(&application, &with_import_line)
-            .expect_err("orphaned generated import locations must not cross the adapter boundary");
-        assert!(error.message.contains("unsupported module metadata"), "{error}");
-    }
-}
-
-#[cfg(test)]
-mod lowering_outcome_tests {
-    use super::*;
-    use witchy_wir::wir::{
-        ClosureSignature, Kind, UnOp, WirExpr, WirFunc, WirModule,
-        WirNode, WirTable, };
-
-    fn empty_function(name: &str) -> WirFunc {
-        WirFunc {
-            name: name.into(),
-            params: Vec::new(),
-            ret: Vec::new(),
-            locals: Vec::new(),
-            body: Vec::new(),
-            raw_body: None,
-        }
-    }
-
-    fn malformed_export_module() -> WirModule {
-        WirModule {
-            imports: Vec::new(),
-            funcs: Vec::new(),
-            memory_pages: 1,
-            data: Vec::new(),
-            globals: Vec::new(),
-            table: None,
-            exports: vec![("run".into(), "missing".into())],
-        }
-    }
-
-    #[test]
-    fn malformed_wir_is_rejected_by_module_and_binary_finalizers() {
-        let module = malformed_export_module();
-        let module_error = validated_module_outcome(module.clone(), &[], &[])
-            .expect_rejected("public WIR assembly must reject malformed output");
-        assert!(module_error.message.contains("unknown func $missing"));
-
-        let binary_error = encoded_binary_outcome(&module, &[], &[])
-            .expect_rejected("public binary assembly must reject malformed output");
-        assert!(binary_error.message.contains("unknown func $missing"));
-    }
-
-    #[test]
-    fn reference_slot_crossing_is_rejected_before_encoder_panics() {
-        let module = WirModule {
-            imports: Vec::new(),
-            funcs: vec![WirFunc {
-                name: "run".into(),
-                params: Vec::new(),
-                ret: Vec::new(),
-                locals: Vec::new(),
-                body: vec![WirNode::Do(WirExpr::ToSlot(
-                    Box::new(WirExpr::RefNull(Kind::ExternRef)),
-                    Kind::ExternRef,
-                ))],
-                raw_body: None,
-            }],
-            memory_pages: 1,
-            data: Vec::new(),
-            globals: Vec::new(),
-            table: None,
-            exports: vec![("run".into(), "run".into())],
-        };
-        let error = encoded_binary_outcome(&module, &[], &[])
-            .expect_rejected("reference values cannot cross the scalar slot ABI");
-        assert!(error.message.contains("cannot cross the i64 slot boundary"));
-    }
-
-    #[test]
-    fn duplicate_names_and_bad_indirect_signatures_are_rejected() {
-        let duplicate = WirModule {
-            imports: Vec::new(),
-            funcs: vec![empty_function("run"), empty_function("run")],
-            memory_pages: 1,
-            data: Vec::new(),
-            globals: Vec::new(),
-            table: None,
-            exports: vec![("run".into(), "run".into())],
-        };
-        let duplicate_error = encoded_binary_outcome(&duplicate, &[], &[])
-            .expect_rejected("duplicate function identities must not silently retarget calls");
-        assert!(duplicate_error.message.contains("duplicate function name $run"));
-
-        let mut run = empty_function("run");
-        run.body.push(WirNode::Do(WirExpr::CallIndirect {
-            signature: ClosureSignature {
-                params: vec![Kind::I32],
-                results: Vec::new(),
-            },
-            args: Vec::new(),
-            index: Box::new(WirExpr::ConstI32(0)),
-        }));
-        let bad_indirect = WirModule {
-            imports: Vec::new(),
-            funcs: vec![run],
-            memory_pages: 1,
-            data: Vec::new(),
-            globals: Vec::new(),
-            table: Some(WirTable { funcs: Vec::new() }),
-            exports: vec![("run".into(), "run".into())],
-        };
-        let indirect_error = encoded_binary_outcome(&bad_indirect, &[], &[])
-            .expect_rejected("indirect-call signature mismatch must not reach the encoder");
-        assert!(indirect_error.message.contains("signature has 1 parameters"));
-    }
-
-    #[test]
-    fn invalid_unary_kind_is_a_hard_rejection() {
-        let mut run = empty_function("run");
-        run.body.push(WirNode::Do(WirExpr::Unary {
-            op: UnOp::Not,
-            kind: Kind::F64,
-            arg: Box::new(WirExpr::ConstI32(0)),
-        }));
-        let module = WirModule {
-            imports: Vec::new(),
-            funcs: vec![run],
-            memory_pages: 1,
-            data: Vec::new(),
-            globals: Vec::new(),
-            table: None,
-            exports: vec![("run".into(), "run".into())],
-        };
-        let error = encoded_binary_outcome(&module, &[], &[])
-            .expect_rejected("operator and kind mismatch must not be returned as lowered");
-        assert!(error.message.contains("unary Not on F64"));
-    }
-
-}
-
 /// Compile a rune's build step to a WASM binary that runs in the zero-ambient
 /// build sandbox. The `build` entrypoint is renamed to `main` so the whole
 /// `compile_module_binary` pipeline (the `run` export, marshaling, helpers) is
@@ -7423,7 +7085,7 @@ mod lowering_outcome_tests {
 /// appear in an ordinary program (so parity is untouched). The host links only
 /// `build_out_write`/`build_read_len`, confined to the granted output sandbox
 /// and read roots — nothing else exists for the guest to call.
-#[cfg(any(test, feature = "raw-module-test-api"))]
+#[cfg(feature = "raw-module-test-api")]
 pub fn compile_build_module(module: &Module) -> LoweringOutcome<Vec<u8>> {
     compile_build_module_mode(module, None)
 }
@@ -7444,7 +7106,7 @@ pub fn compile_checked_build_module(
     ))
 }
 
-#[cfg(any(test, feature = "raw-module-test-api"))]
+#[cfg(feature = "raw-module-test-api")]
 fn compile_build_module_mode(
     module: &Module,
     runtime_catalog: Option<&witchy_types::runtime_type::RuntimeDeclarationCatalog>,

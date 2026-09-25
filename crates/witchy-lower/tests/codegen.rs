@@ -1708,3 +1708,8 @@ fn main() -> Int:
     }
 
 }
+
+#[path = "codegen/canonical_layouts.rs"]
+mod canonical_layouts;
+#[path = "codegen/canonical_pipeline.rs"]
+mod canonical_pipeline;

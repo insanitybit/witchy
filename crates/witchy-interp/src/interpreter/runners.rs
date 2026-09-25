@@ -44,7 +44,7 @@ pub fn run_with(
 }
 
 /// Run an already-built (e.g. linked) module.
-#[cfg(any(test, feature = "raw-module-test-api"))]
+#[cfg(feature = "raw-module-test-api")]
 pub fn run_module(
     module: Module,
     root: impl AsRef<Path>,
@@ -221,7 +221,7 @@ fn run_module_fixtures_inner(
 }
 
 /// Run with deterministic Console input rather than process stdin.
-#[cfg(any(test, feature = "raw-module-test-api"))]
+#[cfg(feature = "raw-module-test-api")]
 pub fn run_module_console_input(
     module: Module,
     root: impl AsRef<Path>,
@@ -522,7 +522,7 @@ fn compiler_value(value: Value) -> Result<CompilerValue, RuntimeError> {
 
 /// Like [`run_module`], but with an evaluation step ceiling — the `comptime:`
 /// path, where termination is part of the contract.
-#[cfg(any(test, feature = "raw-module-test-api"))]
+#[cfg(feature = "raw-module-test-api")]
 pub fn run_module_budgeted(
     module: Module,
     root: impl AsRef<Path>,
@@ -531,7 +531,7 @@ pub fn run_module_budgeted(
     run_module_budgeted_in_scope(module, root, step_limit, None)
 }
 
-#[cfg(any(test, feature = "raw-module-test-api"))]
+#[cfg(feature = "raw-module-test-api")]
 pub(crate) fn run_module_budgeted_in_scope(
     module: Module,
     root: impl AsRef<Path>,
@@ -599,7 +599,7 @@ pub(crate) fn run_comptime_module_outputs_budgeted_in_scope_with_qualifiers(
 
 /// Run with direct `File` grants (RFC-0012): the i-th `File` parameter of `main`
 /// maps to `file_grants[i]`. The differential-test oracle for `--file`.
-#[cfg(any(test, feature = "raw-module-test-api"))]
+#[cfg(feature = "raw-module-test-api")]
 pub fn run_module_files(
     module: Module,
     root: impl AsRef<Path>,
@@ -615,7 +615,7 @@ pub fn run_module_files(
 /// Like [`run_module`], but also hands command-line `args` to a `main` that
 /// declares a `List(String)` parameter to receive them (argv is input data, not
 /// authority, so it is an ordinary value parameter — not a capability).
-#[cfg(any(test, feature = "raw-module-test-api"))]
+#[cfg(feature = "raw-module-test-api")]
 pub fn run_module_args(
     module: Module,
     root: impl AsRef<Path>,
@@ -628,7 +628,7 @@ pub fn run_module_args(
 /// Like [`run_module_args`], but also grants the root `Secret` capability
 /// from `signing_key` (an Ed25519 seed) to a `main` that declares one. Signing is
 /// authority, so the key is host-provided, never constructed by the program.
-#[cfg(any(test, feature = "raw-module-test-api"))]
+#[cfg(feature = "raw-module-test-api")]
 pub fn run_module_signed(
     module: Module,
     root: impl AsRef<Path>,
@@ -641,7 +641,7 @@ pub fn run_module_signed(
 
 /// Like [`run_module_signed`], but also returns the process exit code (`main`'s
 /// `Int` return, or 0). Used by the CLI to set the process status.
-#[cfg(any(test, feature = "raw-module-test-api"))]
+#[cfg(feature = "raw-module-test-api")]
 pub fn run_module_exit(
     module: Module,
     root: impl AsRef<Path>,
@@ -662,7 +662,7 @@ pub fn run_module_exit(
 /// is consumable by handle (`crypto.sign`, `server.serve_tls`) but `crypto.reveal`
 /// on it errors. This is the interpreter twin of the compiled runtime's
 /// `Capabilities.secrets`, for differential tests of secret-consuming servers.
-#[cfg(any(test, feature = "raw-module-test-api"))]
+#[cfg(feature = "raw-module-test-api")]
 pub fn run_module_exit_secrets(
     module: Module,
     root: impl AsRef<Path>,
@@ -696,7 +696,7 @@ pub fn run_module_exit_secrets(
 /// backs the first `Dir` param of `main` (handle 0), `roots[1..]` the rest, in
 /// order. For multi-directory programs — e.g. the witchy CLI holding both a
 /// project `Dir` and a toolchain-`bin` `Dir`. See rfcs/0004-self-hosted-cli.md.
-#[cfg(any(test, feature = "raw-module-test-api"))]
+#[cfg(feature = "raw-module-test-api")]
 pub fn run_module_exit_dirs(
     module: Module,
     roots: Vec<PathBuf>,
@@ -712,7 +712,7 @@ pub fn run_module_exit_dirs(
 
 /// Parse and run `src` with several `Dir` grants (the multi-`Dir` analog of
 /// [`run_in`]); test/CLI helper for [`run_module_exit_dirs`].
-#[cfg(any(test, feature = "raw-module-test-api"))]
+#[cfg(feature = "raw-module-test-api")]
 pub fn run_in_dirs(src: &str, roots: &[PathBuf]) -> Result<Vec<String>, RuntimeError> {
     let module = parse_module(src).map_err(|e| RuntimeError { message: e.to_string() })?;
     run_module_exit_dirs(module, roots.to_vec(), Vec::new(), Vec::new(), None).map(|(out, _)| out)
@@ -766,7 +766,7 @@ fn is_args_param(ty: &Option<Type>) -> bool {
 /// Run a `main` that binds bare grantable capabilities (RFC-0038): each grantable
 /// parameter mints a sealed record from `user_caps` (parameter name → field
 /// values). The oracle for `witchy sandbox --grants` with a `[user_caps]` section.
-#[cfg(any(test, feature = "raw-module-test-api"))]
+#[cfg(feature = "raw-module-test-api")]
 pub fn run_module_user_caps(
     module: Module,
     root: impl AsRef<Path>,
@@ -782,7 +782,7 @@ pub fn run_module_user_caps(
     .map(|outcome| outcome.output)
 }
 
-#[cfg(any(test, feature = "raw-module-test-api"))]
+#[cfg(feature = "raw-module-test-api")]
 fn run_module_inner(
     module: Module,
     root: PathBuf,
@@ -797,7 +797,7 @@ fn run_module_inner(
 /// Run a module with an origin-scoped root `Fetch` grant. Existing runners
 /// intentionally pass an empty grant so adding Fetch does not create ambient
 /// network authority.
-#[cfg(any(test, feature = "raw-module-test-api"))]
+#[cfg(feature = "raw-module-test-api")]
 pub fn run_module_fetch(
     module: Module,
     root: impl AsRef<Path>,
@@ -1033,7 +1033,7 @@ fn run_module_inner_limited_with_catalog_and_seed(
 /// default — anything not granted here cannot be minted, so a build step
 /// demanding it fails before running.
 #[derive(Debug, Clone, Default)]
-#[cfg(any(test, feature = "raw-module-test-api"))]
+#[cfg(feature = "raw-module-test-api")]
 pub struct BuildGrants {
     pub out_dir: PathBuf,
     pub read_roots: Vec<PathBuf>,
@@ -1051,7 +1051,7 @@ pub struct BuildGrants {
 /// a runtime capability (the type checker forbids a build step from taking one),
 /// so even without the WASM sandbox it can only touch what these confined grants
 /// permit. A module with no `build` entrypoint generates nothing.
-#[cfg(any(test, feature = "raw-module-test-api"))]
+#[cfg(feature = "raw-module-test-api")]
 pub fn run_build_step(module: Module, grants: BuildGrants) -> Result<Vec<String>, RuntimeError> {
     std::fs::create_dir_all(&grants.out_dir)
         .map_err(|e| RuntimeError { message: format!("build: cannot create output dir: {e}") })?;
@@ -1082,7 +1082,7 @@ pub fn run_build_step(module: Module, grants: BuildGrants) -> Result<Vec<String>
 /// Parse and link a multi-module program, then run it. `entry` is the module
 /// holding `main`. Importing a module grants no authority — only `main`'s root
 /// capabilities (and what it passes on) flow in.
-#[cfg(any(test, feature = "raw-module-test-api"))]
+#[cfg(feature = "raw-module-test-api")]
 pub fn run_program(sources: &[(&str, &str)], entry: &str) -> Result<Vec<String>, RuntimeError> {
     let mut modules = Vec::new();
     for (name, src) in sources {

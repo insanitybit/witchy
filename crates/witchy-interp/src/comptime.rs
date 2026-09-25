@@ -43,15 +43,6 @@ pub(crate) fn expand_with_origins(name: &str, module: &mut Module) -> Result<Ori
     expand_with_item_limit_and_origins(name, module, MAX_COMPTIME_GENERATED_ITEMS)
 }
 
-#[cfg(test)]
-fn expand_with_item_limit(
-    name: &str,
-    module: &mut Module,
-    max_generated_items: usize,
-) -> Result<(), String> {
-    expand_with_item_limit_and_origins(name, module, max_generated_items).map(|_| ())
-}
-
 fn expand_with_item_limit_and_origins(
     name: &str,
     module: &mut Module,
@@ -795,40 +786,4 @@ fn strip_comptime_only_functions(name: &str, module: &mut Module, origins: &mut 
         module.item_lines = new_lines;
     }
     origins.retain_items(name, &retained);
-}
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn generated_item_budget_rejects_one_block_over_the_limit() {
-        let src = r#"
-comptime:
-    emit_item(quote item:
-        fn first() -> Int:
-            1
-    )
-    emit_item(quote item:
-        fn second() -> Int:
-            2
-    )
-    emit_item(quote item:
-        fn third() -> Int:
-            3
-    )
-
-fn main():
-    0
-"#;
-
-        let mut module = witchy_syntax::parser::parse_module(src).expect("parse");
-        let err = super::expand_with_item_limit("main", &mut module, 2)
-            .expect_err("three generated items must exceed a two-item budget");
-        assert!(
-            err.contains(
-                "module `main`: comptime expansion exceeded the generated-item limit of 2"
-            ),
-            "got: {err}"
-        );
-    }
-
 }

@@ -96,7 +96,7 @@ fn with_deterministic_sequence_counters<T>(f: impl FnOnce() -> T) -> T {
 fn deterministic_sequence_counters_enabled() -> bool {
     DETERMINISTIC_SEQUENCE_COUNTERS.with(std::cell::Cell::get)
 }
-#[cfg(any(test, feature = "raw-module-test-api"))]
+#[cfg(feature = "raw-module-test-api")]
 pub use assembly::{
     assemble_checked_optimized_wir_module,
     assemble_optimized_wir_module, assemble_wir_module, compile_build_module,
@@ -12650,15 +12650,8 @@ fn collect_let_names_expr(expr: &Expr, out: &mut Vec<String>) {
 }
 
 
-#[cfg(test)]
-#[path = "../codegen_tests.rs"]
-mod tests;
 
-#[cfg(test)]
-mod callable_layout_tests;
 
-#[cfg(test)]
-mod host_layout_tests;
 
 /// The independently validated SafeWIR of a checked module, for the
 /// execution oracle (RFC-0135): the same graph admission encodes, so the

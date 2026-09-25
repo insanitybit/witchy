@@ -185,19 +185,6 @@ pub(crate) fn derive_layout_bundle(
     projected_layouts(source).map(|(bundle, _, _, _, _)| bundle)
 }
 
-/// The closure layout of every `fn` type the canonical functions reach: a
-/// heap record of the code slot and the environment's `Int` capture slots.
-/// Derived by the same projection the bundle comes from, so the ids agree
-/// with the bundle's roots (a layout id is its content digest).
-pub(crate) fn closure_layouts(
-    source: &CanonicalCheckedSource,
-) -> Result<HashMap<Type, witchy_wir::layout::LayoutId>, CanonicalLayoutError> {
-    closure_families(source).map(|families| families
-        .into_iter()
-        .map(|(signature, family)| (signature, family.closure))
-        .collect())
-}
-
 /// Derive the complete closure-family storage schema from the same checked
 /// source product as the canonical layout bundle.  This is intentionally not
 /// a caller-provided record schema: witness order, checked capture types, and
@@ -1644,16 +1631,18 @@ pub(crate) fn is_v1_scalar_record(definition: &TypeDef) -> bool {
         ))
 }
 
-#[cfg(test)]
-mod tests {
+/// Layout invariants that need private layout internals, compiled always so
+/// the crate needs no `cfg(test)` build (`[lib] test = false`). Driven by
+/// `tests/codegen/canonical_layouts.rs`; each panics on a violated invariant.
+#[doc(hidden)]
+pub mod self_checks {
     use super::{LayoutProjection, Type};
 
     fn named(name: &str) -> Type {
         Type::Named(name.to_owned(), Vec::new())
     }
 
-    #[test]
-    fn noncompletion_still_requires_checked_memory_bearing_descendants() {
+    pub fn noncompletion_still_requires_checked_memory_bearing_descendants() {
         use witchy_syntax::ast::{Expr, Item, Stmt, visit::visit_block};
         let module = witchy_syntax::parser::parse_module(
             "fn choose(flag: Bool) -> List(String):\n    match flag:\n        true ->\n            return [\"left\"]\n        false ->\n            return [\"right\"]\n    [\"unreachable\"]\n",
@@ -1702,8 +1691,7 @@ mod tests {
         assert_eq!(error, super::CanonicalLayoutError::MissingCheckedExpressionType(format!("{child:?}")));
     }
 
-    #[test]
-    fn rooted_slice_layout_requires_explicit_view_slice_request() {
+    pub fn rooted_slice_layout_requires_explicit_view_slice_request() {
         let list = Type::Named("List".into(), vec![named("Int")]);
         let mut ordinary = LayoutProjection::default();
         ordinary.visit_type(&list).expect("ordinary List(Int) projects");
@@ -1745,8 +1733,7 @@ mod tests {
         definition
     }
 
-    #[test]
-    fn direct_and_nested_capabilities_never_acquire_linear_slots() {
+    pub fn direct_and_nested_capabilities_never_acquire_linear_slots() {
         let definitions = std::collections::BTreeMap::from([
             ("Inner".into(), heap_definition("Inner", vec![named("Console")])),
             ("Outer".into(), heap_definition("Outer", vec![named("Inner"), named("String")])),

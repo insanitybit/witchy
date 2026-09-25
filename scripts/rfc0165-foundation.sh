@@ -9,5 +9,5 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 export CARGO_BUILD_RUSTC_WRAPPER="${CARGO_BUILD_RUSTC_WRAPPER-}"
 cargo nextest run -p witchy-wir --lib --features native --no-fail-fast
-cargo nextest run -p witchy-lower --lib -E 'test(/canonical/)' --no-fail-fast
+cargo nextest run -p witchy-lower --test codegen -E 'test(/canonical/)' --no-fail-fast
 cargo nextest run --test misc --features witchy-wir/native -E 'test(/^rfc0165_/)' --no-fail-fast

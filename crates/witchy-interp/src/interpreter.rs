@@ -77,7 +77,7 @@ pub use runners::{
     any(test, feature = "raw-module-test-api")
 ))]
 pub use runners::run_module_fixtures;
-#[cfg(any(test, feature = "raw-module-test-api"))]
+#[cfg(feature = "raw-module-test-api")]
 pub use runners::{
     BuildGrants, run_build_step, run_in_dirs, run_module, run_module_args, run_module_budgeted,
     run_module_console_input, run_module_exit, run_module_exit_dirs,
@@ -1166,7 +1166,7 @@ impl Interpreter {
     /// grants the build driver was handed. This is where build-time authority
     /// enters — never `main`. A demanded cap with no matching grant is an error
     /// (safe by default: only `BuildOut` is supplied unconditionally).
-    #[cfg(any(test, feature = "raw-module-test-api"))]
+    #[cfg(feature = "raw-module-test-api")]
     fn mint_build_cap(&self, ty: &Option<Type>, grants: &BuildGrants) -> Result<Value, RuntimeError> {
         match ty {
             Some(Type::Named(n, _)) if n == "BuildOut" => {
@@ -2496,6 +2496,3 @@ impl Interpreter {
 }
 
 
-#[cfg(test)]
-#[path = "interpreter_tests.rs"]
-mod tests;

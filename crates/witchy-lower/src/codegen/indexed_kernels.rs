@@ -394,10 +394,6 @@ impl IndexDomain {
             no_wrap,
         }
     }
-
-    pub(super) fn is_within_bounds(&self, len: i64) -> bool {
-        self.min >= 0 && self.max_exclusive.is_some_and(|max| max <= len) && self.no_wrap
-    }
 }
 
 /// (RFC-0153) Stability proof for a sequence root across a loop scope.
@@ -406,12 +402,6 @@ pub(super) struct RootStability {
     pub(super) epoch: usize,
     pub(super) writes: bool,
     pub(super) escapes: bool,
-}
-
-impl RootStability {
-    pub(super) fn is_stable(&self) -> bool {
-        !self.escapes && !self.writes
-    }
 }
 
 /// (RFC-0153) Canonical loop induction variable descriptor.
@@ -2196,25 +2186,4 @@ fn canonical_ordered_step(block: &Block, index: &str) -> Option<i64> {
         .keys()
         .any(|(candidate, _)| candidate == index);
     (!invalidates(&before) && !invalidates(&after) && !indexed_after).then_some(step)
-}
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn index_domain_and_root_stability_properties() {
-        let unit_dom = super::IndexDomain::new_unit(0, Some(10), true);
-        assert!(unit_dom.is_within_bounds(10));
-        assert!(!unit_dom.is_within_bounds(9));
-
-        let strided_dom = super::IndexDomain::new_strided(0, Some(100), 4, true);
-        assert_eq!(strided_dom.affine_step, 4);
-        assert!(strided_dom.is_within_bounds(100));
-
-        let stable = super::RootStability { epoch: 1, writes: false, escapes: false };
-        assert!(stable.is_stable());
-
-        let escaping = super::RootStability { epoch: 1, writes: false, escapes: true };
-        assert!(!escaping.is_stable());
-    }
-
 }

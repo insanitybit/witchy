@@ -6,6 +6,11 @@ publish = false            # internal workspace crate — not published standalo
 license = "MIT OR Apache-2.0"
 description = "witchy compiler — AST→WIR lowering (the compiled backend's front half)"
 
+[lib]
+# No second cfg(test) compile of this crate: its tests live in tests/ and drive the public API.
+test = false
+doctest = false
+
 [features]
 # Synthetic AST and lowerer tests intentionally exercise stages below the
 # checked pipeline. Production dependents receive only proof-carrying entries.

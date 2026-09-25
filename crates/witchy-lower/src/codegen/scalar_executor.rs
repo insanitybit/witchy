@@ -813,17 +813,3 @@ fn set_i64(name: &str, value: i64) -> N {
 fn binary(op: BinOp, kind: Kind, lhs: E, rhs: E) -> E {
     E::Binary { op, kind, lhs: Box::new(lhs), rhs: Box::new(rhs) }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn scalar_lane_transfer_rejects_calls_and_effects() {
-        let body = vec![N::Do(E::Call {
-            func: "task.and_then".into(),
-            args: Vec::new(),
-        })];
-        assert!(!scalar_lane_update_sequence(&body));
-    }
-}

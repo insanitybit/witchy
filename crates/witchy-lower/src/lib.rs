@@ -13,6 +13,8 @@
 pub mod analysis;
 pub mod canonical_lower;
 mod canonical_layouts;
+#[doc(hidden)]
+pub use canonical_layouts::self_checks as canonical_layout_self_checks;
 mod canonical_pipeline;
 pub mod codegen;
 pub mod escape;

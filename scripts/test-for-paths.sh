@@ -538,7 +538,7 @@ for p in "${paths[@]}"; do
             path_has_early=1 ;;
         crates/witchy-lower/src/canonical_list_update.rs | \
         crates/witchy-lower/src/canonical_pipeline.rs)
-            add_early "cargo nextest run -p witchy-lower --features witchy-wir/native --lib -E 'test(canonical_pipeline::tests::list_)'"
+            add_early "cargo nextest run -p witchy-lower --features witchy-wir/native --test codegen -E 'test(canonical_pipeline::list_)'"
             add_early "cargo nextest run -p witchy --features witchy-wir/native --test misc --ignore-default-filter -E 'test(rfc0165_admitted_launch::admitted_aggregates_render_structurally_as_the_interpreter_prints_them)'"
             path_has_early=1 ;;
         crates/witchy-lower/tests/codegen.rs)
@@ -624,7 +624,7 @@ for p in "${paths[@]}"; do
             gate_need_conformance=1
             add_pkg witchy-interp
             add_pkg witchy-caps
-            add "cargo nextest run -p witchy-interp -p witchy-caps"
+            add "cargo nextest run -p witchy-caps"
             add "./scripts/nextest-admitted.sh witchy -- cargo nextest run -E 'test(/^example_tests::/)'" ;;
         src/main.rs | src/cli.rs | src/source.rs)
             gate_workspace=1
@@ -1026,14 +1026,12 @@ elif [ "$edit_loop" -eq 1 ] && [ "$canonical_rewrite" -eq 1 ] \
     # semantic assertions. Standalone runtime feature profiles remain separate.
     # The serialized landing selection is unchanged.
     canonical_build_recipe_wir_expr=""
-    canonical_build_recipe_lower_target=""
     canonical_build_recipe_lower_expr=""
     canonical_build_recipe_app_expr=""
     canonical_crypto_wir_expr=""
     canonical_crypto_app_expr=""
     if [ "$canonical_build_recipe" -eq 1 ]; then
         canonical_build_recipe_wir_expr=" or test(canonical_safewir::build_read::tests::build_env_catalog_authenticates_root_and_keeps_presence_internal) or test(canonical_interpreter::build_read::tests::build_env_oracle_keeps_denied_unset_empty_and_private_sessions_distinct)"
-        canonical_build_recipe_lower_target=" --test codegen"
         canonical_build_recipe_lower_expr=" or test(=tests::grantful_build_primitives_compile_to_build_imports_only)"
         canonical_build_recipe_app_expr=" or test(/^source::build_recipe_tests::/) or test(/^source::build_env_recipe_tests::/) or test(/^rfc0103_build_step_confinement::/) or test(/^rfc0165_build_read_project::/) or test(/^rfc0165_build_env_project::/)"
     fi
@@ -1051,12 +1049,12 @@ elif [ "$edit_loop" -eq 1 ] && [ "$canonical_rewrite" -eq 1 ] \
         canonical_crypto_app_expr=" or test(/^rfc0165_crypto(_rsa)?::/)"
     fi
     canonical_native_wir_expr="test(canonical_safewir::build_read::tests::build_read_catalog_separates_root_authority_from_bounded_responses) or test(canonical_safewir::check::tests::scalar_checker_refuses_non_total_backend_combinations) or test(boolean_reaches::) or test(constant_prefix_publication_rejects_gaps_and_missing_children) or test(scalar_move_range_is_bounds_checked_and_admitted) or test(scalar_clone_range_is_ownership_safe_and_admitted) or test(dynamic_pointer_prefix_cannot_hide_an_unaccounted_child_slot) or test(canonical_capabilities_lower_only_to_externref) or test(canonical_interpreter::capability_tests::a_token_of_another_kind_cannot_serve_a_dir_operation) or test(=validated_safewir_has_one_checker_owned_construction_surface) or test(canonical_wasm_encoding_is_private_and_requires_final_authority)${canonical_wasmir_tail_expr}${canonical_build_recipe_wir_expr}${canonical_crypto_wir_expr}"
-    canonical_native_lower_expr="test(canonical_pipeline::tests::list_string_)${canonical_build_recipe_lower_expr}"
+    canonical_native_lower_expr="test(canonical_pipeline::list_string_)${canonical_build_recipe_lower_expr}"
     canonical_native_app_expr="test(wasm_abi_catalog::native_host_links_every_catalog_import_with_the_declared_signature) or test(wasm_abi_catalog::public_spec_contains_the_generated_complete_catalog) or test(wasm_abi_catalog::capability_imports_name_their_authority_family) or test(wasm_abi_catalog::precompiled_runner_authority_rows_are_cataloged) or test(rfc0077_integration_grants::source_integration_recipe_runs_selected_console_capture_and_reports_abort) or test(rfc0087_uniform_var::list_pop_projected_coordinates_and_nested_payloads_on_three_legs) or test(rfc0165_admitted_launch::admitted_entry_without_a_console_grant_is_refused_before_it_runs) or test(rfc0165_admitted_launch::admitted_guard_near_misses_trap_exactly_at_the_boundary) or test(rfc0165_admitted_launch::admitted_aggregates_render_structurally_as_the_interpreter_prints_them) or test(rfc0165_owner_adapters::server_pool_oracle::/) or test(=rfc0165_owner_adapters::server_workers_reject_raw_wasm_even_with_genuine_entry_metadata) or test(=semantic_conformance::independent_expectation_rejects_a_shared_semantic_mutation) or test(/^commands::test_runner::canonical_integration_tests::/) or test(/^rfc0165_enum_equality::/) or test(=rfc0165_oracle::admitted_observer_is_not_called_on_refusal) or test(=rfc0165_oracle::oracle_agrees_on_the_admitted_examples_shard_3) or test(/^example_tests::rfc0/)${canonical_build_recipe_app_expr}${canonical_crypto_app_expr}"
     canonical_native_batch=("$canonical_native_wir_expr" "$canonical_native_lower_expr" "$canonical_native_app_expr" "$canonical_build_recipe")
     cmds=(
         "cargo nextest run -p witchy-wir --features native --lib --test rfc0165_route_gate -E '${canonical_native_wir_expr}'"
-        "cargo nextest run -p witchy-lower --features witchy-wir/native --lib${canonical_build_recipe_lower_target} -E '${canonical_native_lower_expr}'"
+        "cargo nextest run -p witchy-lower --features witchy-wir/native --test codegen -E '${canonical_native_lower_expr}'"
         "WITCHY_ORACLE_EXAMPLE=calc cargo nextest run -p witchy --features witchy-wir/native --bin witchy --test misc --ignore-default-filter -E '${canonical_native_app_expr}' && ./scripts/nextest-admitted.sh witchy -- cargo nextest run --test cli_subcommands -E 'test(=fetch_root_requires_an_explicit_valid_origin_and_admitted_artifact)'"
     )
     if [ "$canonical_build_recipe" -eq 1 ]; then

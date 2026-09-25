@@ -41,14 +41,6 @@ impl<'authority> CheckedGlamourApplication<'authority> {
     pub(super) fn authority(&self) -> &'authority witchy_types::pipeline::CheckedModule {
         self.authority
     }
-
-    #[cfg(test)]
-    pub(super) fn forged_for_test(
-        authority: &'authority witchy_types::pipeline::CheckedModule,
-        checked: witchy_types::pipeline::CheckedEvaluationModule,
-    ) -> Self {
-        Self { authority, checked }
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
