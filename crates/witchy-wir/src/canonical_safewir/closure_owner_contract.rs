@@ -271,9 +271,21 @@ pub(crate) fn carrier_element_layout_matches(
     }
     use crate::layout::{LayoutId, LayoutInterner, LayoutKind, PointerSlot, RcHeader, ScalarKind};
     use witchy_canonical_source::abi::CanonicalScalarKind;
-    use witchy_canonical_source::carrier::CarrierLayoutQuery;
+    use witchy_canonical_source::carrier::{CarrierLayoutQuery, CarrierSlot};
 
     struct Query<'a>(&'a LayoutInterner);
+    impl Query<'_> {
+        fn owned_pointee(&self, layout: LayoutId, slot: CarrierSlot) -> Option<LayoutId> {
+            let LayoutKind::RuntimePointerValueSlot { pointee, semantics } =
+                self.0.get(layout)?.kind() else { return None };
+            let expected = match slot {
+                CarrierSlot::Owned => PointerSlot::Owned,
+                CarrierSlot::OwnedNullable => PointerSlot::OwnedNullable,
+            };
+            if *semantics != expected { return None; }
+            self.0.resolve_nominal(*pointee).ok()
+        }
+    }
     impl CarrierLayoutQuery for Query<'_> {
         type Layout = LayoutId;
 
@@ -287,33 +299,36 @@ pub(crate) fn carrier_element_layout_matches(
             }
         }
 
-        fn owned_string(&self, layout: LayoutId) -> bool {
-            let Some(LayoutKind::RuntimePointerValueSlot { pointee, semantics: PointerSlot::Owned }) =
-                self.0.get(layout).map(|descriptor| descriptor.kind()) else { return false };
-            let Ok(physical) = self.0.resolve_nominal(*pointee) else { return false };
+        fn owned_string(&self, layout: LayoutId, slot: CarrierSlot) -> bool {
+            let Some(physical) = self.owned_pointee(layout, slot) else { return false };
             let Some(LayoutKind::RuntimeBuffer { element: byte }) =
                 self.0.get(physical).map(|descriptor| descriptor.kind()) else { return false };
             matches!(self.0.get(*byte).map(|descriptor| descriptor.kind()),
                 Some(LayoutKind::Scalar(ScalarKind::RawByte)))
         }
 
-        fn owned_retained_list_element(&self, layout: LayoutId) -> Option<LayoutId> {
-            let LayoutKind::RuntimePointerValueSlot { pointee, semantics: PointerSlot::Owned } =
-                self.0.get(layout)?.kind() else { return None };
-            let physical = self.0.resolve_nominal(*pointee).ok()?;
+        fn owned_retained_list_element(&self, layout: LayoutId, slot: CarrierSlot) -> Option<LayoutId> {
+            let physical = self.owned_pointee(layout, slot)?;
             let LayoutKind::PackedList { element, rc: RcHeader::Required } =
                 self.0.get(physical)?.kind() else { return None };
             Some(*element)
         }
 
-        fn owned_record_fields(&self, layout: LayoutId) -> Option<Vec<LayoutId>> {
-            let LayoutKind::RuntimePointerValueSlot { pointee, semantics: PointerSlot::Owned } =
-                self.0.get(layout)?.kind() else { return None };
-            let physical = self.0.resolve_nominal(*pointee).ok()?;
+        fn owned_record_fields(&self, layout: LayoutId, slot: CarrierSlot) -> Option<Vec<LayoutId>> {
+            let physical = self.owned_pointee(layout, slot)?;
             let LayoutKind::PackedRecord { fields } = self.0.get(physical)?.kind() else {
                 return None;
             };
             Some(fields.clone())
+        }
+
+        fn owned_tagged_fields(&self, layout: LayoutId, slot: CarrierSlot) -> Option<Vec<LayoutId>> {
+            let physical = self.owned_pointee(layout, slot)?;
+            let LayoutKind::PackedRecord { fields } = self.0.get(physical)?.kind() else {
+                return None;
+            };
+            let [tag, payload @ ..] = fields.as_slice() else { return None };
+            (self.scalar(*tag) == Some(CanonicalScalarKind::Int)).then(|| payload.to_vec())
         }
     }
     carrier.matches_layout(&Query(layouts), layout)

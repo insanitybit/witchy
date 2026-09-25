@@ -22,12 +22,23 @@ pub enum CarrierElement {
     /// A checked, one-variant heap record. The declared identity and every
     /// instantiated field are part of the proof, including unused parameters.
     Record { name: String, arguments: Vec<Self>, fields: Vec<Self> },
+    /// A checked tagged heap aggregate. Variant payloads occupy flattened
+    /// nullable slots; only the active variant's slots are populated.
+    Sum { name: String, arguments: Vec<Self>, variants: Vec<Vec<Self>> },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CarrierOwnership {
     Copy,
     RetainCloneRelease,
+}
+
+/// Nullable owned slots occur only in tagged aggregate payloads. A normal
+/// owned pointer cannot silently stand in for one, or vice versa.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CarrierSlot {
+    Owned,
+    OwnedNullable,
 }
 
 /// SafeWIR supplies the physical facts without making this shared contract
@@ -37,9 +48,11 @@ pub trait CarrierLayoutQuery {
     type Layout: Copy;
 
     fn scalar(&self, layout: Self::Layout) -> Option<CanonicalScalarKind>;
-    fn owned_string(&self, layout: Self::Layout) -> bool;
-    fn owned_retained_list_element(&self, layout: Self::Layout) -> Option<Self::Layout>;
-    fn owned_record_fields(&self, layout: Self::Layout) -> Option<Vec<Self::Layout>>;
+    fn owned_string(&self, layout: Self::Layout, slot: CarrierSlot) -> bool;
+    fn owned_retained_list_element(&self, layout: Self::Layout, slot: CarrierSlot) -> Option<Self::Layout>;
+    fn owned_record_fields(&self, layout: Self::Layout, slot: CarrierSlot) -> Option<Vec<Self::Layout>>;
+    /// Require an Int tag followed by the flattened variant field slots.
+    fn owned_tagged_fields(&self, layout: Self::Layout, slot: CarrierSlot) -> Option<Vec<Self::Layout>>;
 }
 
 impl CarrierElement {
@@ -111,13 +124,13 @@ impl CarrierElement {
     /// aliases, capabilities and arbitrary nominal types do not acquire a
     /// carrier merely because their storage happens to resemble one.
     pub fn from_checked_type(ty: &Type) -> Option<Self> {
-        Self::from_checked_type_bounded(ty, 0, &mut 4_096)
+        Self::from_checked_type_with_definitions(ty, &BTreeMap::new())
     }
 
     /// Extend the structural grammar using checked source definitions. A
-    /// nominal record is admitted only when its instantiated fields have the
-    /// same recursive ownership proof; recursive and tagged declarations
-    /// remain outside this carrier until their operations can be proved.
+    /// nominal aggregate is admitted only when each instantiated variant
+    /// field has the same recursive ownership proof. Cycles and unproved
+    /// fields remain outside the carrier.
     pub fn from_checked_type_with_definitions(
         ty: &Type,
         definitions: &BTreeMap<String, TypeDef>,
@@ -137,23 +150,35 @@ impl CarrierElement {
         }
         *budget -= 1;
         match ty {
-            Type::Named(name, arguments) if definitions.contains_key(name) => {
-                let definition = definitions.get(name)?;
-                if definition.must_consume || definition.is_capability || name.len() > 1_024
-                    || arguments.len() > 128 {
+            Type::Named(name, arguments)
+                if definitions.contains_key(name) || matches!(name.as_str(), "Option" | "Result") => {
+                if definitions.get(name).is_some_and(|definition| definition.must_consume || definition.is_capability)
+                    || name.len() > 1_024 || arguments.len() > 128 {
                     None
                 } else {
                     let shape = crate::aggregates::scalar_aggregate_shape(ty, definitions)?;
-                    if shape.tagged || shape.packed || shape.fields.is_empty() || shape.fields.len() > 128 {
+                    if shape.packed || shape.fields.len() > 128 || shape.variants.len() > 128 {
                         None
                     } else {
                         let arguments = arguments.iter().map(|argument| {
                             Self::from_checked_type_with_definitions_at(argument, definitions, depth + 1, budget)
                         }).collect::<Option<Vec<_>>>()?;
-                        let fields = shape.fields.iter().map(|field| {
-                            Self::from_checked_type_with_definitions_at(field, definitions, depth + 1, budget)
-                        }).collect::<Option<Vec<_>>>()?;
-                        Some(Self::Record { name: name.clone(), arguments, fields })
+                        if shape.tagged {
+                            if shape.variants.len() < 2 { return None; }
+                            let variants = shape.variants.iter().map(|variant| {
+                                let end = variant.first_field.checked_add(variant.arity)?;
+                                shape.fields.get(variant.first_field..end)?.iter().map(|field| {
+                                    Self::from_checked_type_with_definitions_at(field, definitions, depth + 1, budget)
+                                }).collect::<Option<Vec<_>>>()
+                            }).collect::<Option<Vec<_>>>()?;
+                            Some(Self::Sum { name: name.clone(), arguments, variants })
+                        } else {
+                            if shape.fields.is_empty() { return None; }
+                            let fields = shape.fields.iter().map(|field| {
+                                Self::from_checked_type_with_definitions_at(field, definitions, depth + 1, budget)
+                            }).collect::<Option<Vec<_>>>()?;
+                            Some(Self::Record { name: name.clone(), arguments, fields })
+                        }
                     }
                 }
             }
@@ -333,13 +358,16 @@ impl CarrierElement {
             Self::Record { name, arguments, .. } => Type::Named(
                 name.clone(), arguments.iter().map(Self::source_type).collect(),
             ),
+            Self::Sum { name, arguments, .. } => Type::Named(
+                name.clone(), arguments.iter().map(Self::source_type).collect(),
+            ),
         }
     }
 
     pub fn ownership(&self) -> CarrierOwnership {
         match self {
             Self::Scalar(_) => CarrierOwnership::Copy,
-            Self::String | Self::List(_) | Self::Tuple(_) | Self::Dict(_, _) | Self::Record { .. } => CarrierOwnership::RetainCloneRelease,
+            Self::String | Self::List(_) | Self::Tuple(_) | Self::Dict(_, _) | Self::Record { .. } | Self::Sum { .. } => CarrierOwnership::RetainCloneRelease,
         }
     }
 
@@ -384,6 +412,13 @@ impl CarrierElement {
                     }
                     pending.extend(arguments.iter().chain(fields).map(|field| (field, depth + 1)));
                 }
+                Self::Sum { name, arguments, variants } => {
+                    if name.len() > 1_024 || arguments.len() > 128 || variants.len() < 2 || variants.len() > 128
+                        || !variants.iter().try_fold(0usize, |count, variant| count.checked_add(variant.len())).is_some_and(|count| count <= 127) {
+                        return None;
+                    }
+                    pending.extend(arguments.iter().chain(variants.iter().flatten()).map(|field| (field, depth + 1)));
+                }
             }
         }
         Some((4_096 - remaining, maximum_depth))
@@ -392,7 +427,11 @@ impl CarrierElement {
     /// The single recursive relation between checked element, physical
     /// storage, and its copy or retain/clone/release operation. Every List
     /// edge is checked independently; any missing fact fails closed.
-    pub fn matches_layout<Q: CarrierLayoutQuery>(&self, query: &Q, mut layout: Q::Layout) -> bool {
+    pub fn matches_layout<Q: CarrierLayoutQuery>(&self, query: &Q, layout: Q::Layout) -> bool {
+        self.within_resource_bounds() && self.matches_layout_at(query, layout, CarrierSlot::Owned)
+    }
+
+    fn matches_layout_at<Q: CarrierLayoutQuery>(&self, query: &Q, mut layout: Q::Layout, mut slot: CarrierSlot) -> bool {
         let mut current = self;
         loop {
             match current {
@@ -402,48 +441,57 @@ impl CarrierElement {
                 }
                 Self::String => {
                     return current.ownership() == CarrierOwnership::RetainCloneRelease
-                        && query.owned_string(layout);
+                        && query.owned_string(layout, slot);
                 }
                 Self::List(child) => {
                     if current.ownership() != CarrierOwnership::RetainCloneRelease {
                         return false;
                     }
-                    let Some(next) = query.owned_retained_list_element(layout) else {
+                    let Some(next) = query.owned_retained_list_element(layout, slot) else {
                         return false;
                     };
                     layout = next;
                     current = child;
+                    slot = CarrierSlot::Owned;
                 }
                 Self::Tuple(fields) => {
                     if current.ownership() != CarrierOwnership::RetainCloneRelease {
                         return false;
                     }
-                    let Some(actual) = query.owned_record_fields(layout) else {
+                    let Some(actual) = query.owned_record_fields(layout, slot) else {
                         return false;
                     };
                     return actual.len() == fields.len()
                         && fields.iter().zip(actual).all(|(field, slot)| {
-                            field.matches_layout(query, slot)
+                            field.matches_layout_at(query, slot, CarrierSlot::Owned)
                         });
                 }
                 Self::Dict(key, value) => {
-                    let Some(actual) = query.owned_record_fields(layout) else {
+                    let Some(actual) = query.owned_record_fields(layout, slot) else {
                         return false;
                     };
                     let [keys, values] = actual.as_slice() else { return false };
-                    let Some(key_layout) = query.owned_retained_list_element(*keys) else {
+                    let Some(key_layout) = query.owned_retained_list_element(*keys, CarrierSlot::Owned) else {
                         return false;
                     };
-                    let Some(value_layout) = query.owned_retained_list_element(*values) else {
+                    let Some(value_layout) = query.owned_retained_list_element(*values, CarrierSlot::Owned) else {
                         return false;
                     };
-                    return key.matches_layout(query, key_layout)
-                        && value.matches_layout(query, value_layout);
+                    return key.matches_layout_at(query, key_layout, CarrierSlot::Owned)
+                        && value.matches_layout_at(query, value_layout, CarrierSlot::Owned);
                 }
                 Self::Record { fields, .. } => {
-                    let Some(actual) = query.owned_record_fields(layout) else { return false };
+                    let Some(actual) = query.owned_record_fields(layout, slot) else { return false };
                     return actual.len() == fields.len()
-                        && fields.iter().zip(actual).all(|(field, slot)| field.matches_layout(query, slot));
+                        && fields.iter().zip(actual).all(|(field, child)| field.matches_layout_at(query, child, CarrierSlot::Owned));
+                }
+                Self::Sum { variants, .. } => {
+                    let Some(actual) = query.owned_tagged_fields(layout, slot) else { return false };
+                    let expected = variants.iter().flatten().collect::<Vec<_>>();
+                    return actual.len() == expected.len()
+                        && expected.iter().zip(actual).all(|(field, child)| {
+                            field.matches_layout_at(query, child, CarrierSlot::OwnedNullable)
+                        });
                 }
             }
         }
@@ -486,6 +534,19 @@ impl CarrierElement {
                     bytes.extend_from_slice(&(fields.len() as u32).to_le_bytes());
                     for field in fields { encode(field, bytes); }
                     bytes.push(9);
+                }
+                CarrierElement::Sum { name, arguments, variants } => {
+                    bytes.push(10);
+                    bytes.extend_from_slice(&(name.len() as u32).to_le_bytes());
+                    bytes.extend_from_slice(name.as_bytes());
+                    bytes.extend_from_slice(&(arguments.len() as u32).to_le_bytes());
+                    for argument in arguments { encode(argument, bytes); }
+                    bytes.extend_from_slice(&(variants.len() as u32).to_le_bytes());
+                    for variant in variants {
+                        bytes.extend_from_slice(&(variant.len() as u32).to_le_bytes());
+                        for field in variant { encode(field, bytes); }
+                    }
+                    bytes.push(11);
                 }
             }
         }

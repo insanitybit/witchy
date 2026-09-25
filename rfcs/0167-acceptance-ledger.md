@@ -390,6 +390,19 @@ record heads itself. Scalar-place and slice-projection views still use their
 separate authenticated paths. Checked-source nominal ordinals remain required
 at final ABI binding. No new carrier behavior or A–O evidence is claimed.
 
+Row G tagged child carrier composition (implemented but unverified,
+2026-09-25): the shared recursive `CarrierElement` relation now derives
+`Option(T)`, `Result(T, E)`, and checked declared sums from their instantiated
+variant fields. SafeWIR requires an exact owned or nullable-owned pointer
+slot, an Int tag, the flattened payload count, and a recursive layout and
+ownership match for every child. The finite depth and node budgets and
+must-consume/capability refusals remain in force. Temporary compiler smokes
+admitted `List(Option(Int))`, `List(Result(Int, String))`, and a declared
+`List(Shape)` with Int/String payload variants; each retained an old root
+across list mutation and returned the hand-computed 23, 23, and 34 on Wasm.
+`List(Option(&Int))` failed closed at callable ABI admission. These temporary
+smokes have no durable zero-leak audit or full A–O evidence; no row closes.
+
 At `adf1d01c7` (2026-09-18), the integrated core smoke was **42/42 passed**: rooted views (13), unique/write-back (12), normal/opt interoperation (2), resource composition (5), and optimization readiness (10). This is core canonical-route evidence only; it does not include the source interpreter, full, end-to-end, or examples suites.
 
 At `2f62f4038` (2026-09-19), the newly integrated concrete `Option(&Int)` evidence is **6/6 passed**: four lower carrier/tamper/`var` checks, one exact authority payload-state check, and one production-runtime three-leg fixture (`790`, zero leaks). The three generic rooted-slice fixtures are **1 passed / 2 failed**: region-root escape rejects as expected, while both positive forms stop at the explicit missing authenticated slice-element projection. This is a live failure checkpoint, not an acceptance closeout.
