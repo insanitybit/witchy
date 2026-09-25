@@ -14,6 +14,7 @@ use witchy_canonical_source::aggregates::{
     scalar_aggregate_shape, shape_from_definition,
 };
 use witchy_canonical_source::carrier::CarrierElement;
+use witchy_canonical_source::storage::StoragePlan;
 use witchy_syntax::ast::{self, Item, Type, TypeDef};
 use witchy_types::pipeline::CanonicalCheckedSource;
 use witchy_types::typeck;
@@ -61,7 +62,13 @@ fn rooted_slice_element_from_checked_definitions(
     element: &Type,
     definitions: &BTreeMap<String, TypeDef>,
 ) -> Option<CarrierElement> {
-    CarrierElement::from_checked_type_with_definitions(element, definitions)
+    match StoragePlan::classify(element, definitions, |_| Some(0)) {
+        StoragePlan::InlineScalar(kind) if kind != witchy_canonical_source::abi::CanonicalScalarKind::Unit => {
+            Some(CarrierElement::Scalar(kind))
+        }
+        StoragePlan::Owned(plan) => Some(plan),
+        _ => None,
+    }
 }
 
 pub(crate) fn rooted_slice_element_type(element: &CarrierElement) -> Type {

@@ -77,6 +77,18 @@ Adversarial review found no authority widening. This consolidates one checker
 gate, and a focused `witchy-types` compile passed. Admitted Wasm, zero-leak
 evidence, and A–O status are unchanged.
 
+Row G rooted-slice layout request (architecture implemented, semantic
+evidence unchanged, 2026-09-25): layout projection now asks the shared
+`StoragePlan` for a checked slice element's recursive owned carrier, or a
+non-Unit inline scalar, before registering its rooted-slice family. Qualified
+elements, view-bearing aggregates, and Unit still refuse this conversion;
+the physical layout gate remains separate. Adversarial review found no
+authority widening or prior positive-case loss, and a focused
+`witchy-lower` compile passed. This removes one direct
+carrier-parser call site, but the broader list/aggregate layout catalog is
+not yet unified with the shared plan. No admitted Wasm or zero-leak evidence
+or A–O closure is claimed.
+
 Row G shared source-storage entry point (architecture implemented, semantic
 evidence unchanged, 2026-09-25): `StoragePlan` now composes checked scalar,
 recursive owned-carrier, rooted-view, and view-bearing aggregate plans from
