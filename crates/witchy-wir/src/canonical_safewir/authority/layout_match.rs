@@ -1,5 +1,6 @@
 use super::*;
 use witchy_canonical_source::rooted_view::{OwnerCarriedViewPlan, OwnerCarriedViewStorage, RetainedRootStorage, RootedViewStorage};
+use witchy_canonical_source::storage::StoragePlan;
 
 pub(crate) fn value_type_matches_source(
     actual: super::super::ValueType,
@@ -19,7 +20,10 @@ pub(crate) fn value_type_matches_source(
     if let witchy_syntax::ast::Type::Qualified(witchy_syntax::ast::TypeQual::View, payload) = source {
         let record_head = witchy_canonical_source::rooted_record::has_record_root_head(payload, records);
         if record_head.is_none() { return false; }
-        let storage = RootedViewStorage::classify(payload, records, |_| Some(0));
+        let storage = match StoragePlan::classify(source, records, |_| Some(0)) {
+            StoragePlan::RootedView(plan) => Some(plan),
+            _ => None,
+        };
         if record_head == Some(true) {
             let Some(RootedViewStorage::RetainedRoot(RetainedRootStorage::CheckedAggregate(plan))) = storage else { return false };
             let super::super::ValueType::Ref(layout) = actual else { return false };

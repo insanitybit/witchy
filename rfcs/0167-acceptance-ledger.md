@@ -100,6 +100,17 @@ carrier-parser call site, but the broader list/aggregate layout catalog is
 not yet unified with the shared plan. No admitted Wasm or zero-leak evidence
 or A–O closure is claimed.
 
+Row G WIR rooted-view layout judgment (architecture implemented, semantic
+evidence unchanged, 2026-09-25): source/view physical correspondence now
+consumes the shared `StoragePlan` before matching checked aggregate,
+structural tuple/Dict, and recursive List roots. The existing record-head
+priority, independent physical layout checks, and final checked-source
+signature binding remain. Adversarial review found no authority widening;
+the new bounded source preflight can only conservatively refuse an edge
+case at the prior depth limit. The broader non-view and owner-family gates
+still have parallel classifications. No new Wasm, zero-leak evidence, or
+A–O closure is claimed.
+
 Row G shared source-storage entry point (architecture implemented, semantic
 evidence unchanged, 2026-09-25): `StoragePlan` now composes checked scalar,
 recursive owned-carrier, rooted-view, and view-bearing aggregate plans from
