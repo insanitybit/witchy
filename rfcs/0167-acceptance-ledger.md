@@ -67,6 +67,16 @@ passed. This does not yet replace the
 remaining layout, checker, and SafeWIR classification sites; A–O evidence
 and row status are unchanged.
 
+Row G `&[T].owned()` element judgment (architecture implemented, semantic
+evidence unchanged, 2026-09-25): type checking now consumes the shared
+`StoragePlan` for concrete slice elements. Only a recursive owned carrier or
+non-Unit inline scalar may materialize `List(T)`; the existing declared
+generic type-variable allowance is unchanged. Unit, qualifiers, view-bearing
+aggregates, unsupported nominals, and over-budget shapes remain refused.
+Adversarial review found no authority widening. This consolidates one checker
+gate, and a focused `witchy-types` compile passed. Admitted Wasm, zero-leak
+evidence, and A–O status are unchanged.
+
 Row G shared source-storage entry point (architecture implemented, semantic
 evidence unchanged, 2026-09-25): `StoragePlan` now composes checked scalar,
 recursive owned-carrier, rooted-view, and view-bearing aggregate plans from

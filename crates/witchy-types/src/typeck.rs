@@ -3546,9 +3546,17 @@ impl Checker {
             && arguments.len() == 1
         {
             let element = self.resolve(&arguments[0]);
-            if ty_to_ast(&element).as_ref()
-                .and_then(|ty| witchy_canonical_source::carrier::CarrierElement::from_checked_type_with_definitions(ty, &self.canonical_definitions))
-                .is_some()
+            if ty_to_ast(&element).as_ref().is_some_and(|ty| {
+                match witchy_canonical_source::storage::StoragePlan::classify(
+                    ty, &self.canonical_definitions, |_| Some(0),
+                ) {
+                    witchy_canonical_source::storage::StoragePlan::Owned(_) => true,
+                    witchy_canonical_source::storage::StoragePlan::InlineScalar(kind) => {
+                        kind != witchy_canonical_source::abi::CanonicalScalarKind::Unit
+                    }
+                    _ => false,
+                }
+            })
                 || matches!(&element, Ty::Var(variable)
                     if self.current_typarams.values().any(|typaram| typaram == variable))
             {
