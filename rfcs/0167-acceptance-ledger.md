@@ -365,6 +365,14 @@ Lowering and layout admission still have separate type-shape branches to
 consolidate. This is an architecture change, not new semantic evidence: the
 existing carrier forms retain their prior proofs, and no A–O row closes here.
 
+Row G lowerer consumption of the shared storage plan (implemented but
+unverified, 2026-09-25): the direct slice/List carrier prefilter and the
+indirect-call rooted-view prefilter now read `RootedViewStorage` instead of a
+second per-shape admission list. The direct slice's exact qualifier rule and
+the List root's Frozen-only rule remain explicit. Other lowerer construction
+branches and SafeWIR layout correspondence still need consolidation. This
+prefilter refactor adds no semantic evidence or A–O closure.
+
 At `adf1d01c7` (2026-09-18), the integrated core smoke was **42/42 passed**: rooted views (13), unique/write-back (12), normal/opt interoperation (2), resource composition (5), and optimization readiness (10). This is core canonical-route evidence only; it does not include the source interpreter, full, end-to-end, or examples suites.
 
 At `2f62f4038` (2026-09-19), the newly integrated concrete `Option(&Int)` evidence is **6/6 passed**: four lower carrier/tamper/`var` checks, one exact authority payload-state check, and one production-runtime three-leg fixture (`790`, zero leaks). The three generic rooted-slice fixtures are **1 passed / 2 failed**: region-root escape rejects as expected, while both positive forms stop at the explicit missing authenticated slice-element projection. This is a live failure checkpoint, not an acceptance closeout.
