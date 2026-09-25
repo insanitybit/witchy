@@ -3340,9 +3340,8 @@ prewarm_gate() {
         return 0
     fi
     # Warm every profile the gate uses in the inactive generation: dev + test
-    # in $inactive_target and the fail-fast compile check in the corresponding
-    # -check sibling. Nothing copies or renames Cargo
-    # outputs between generations. Every Cargo phase must succeed before the
+    # in $inactive_target. Nothing copies or renames Cargo outputs between
+    # generations. Every Cargo phase must succeed before the
     # selector can be promoted; a prewarm failure remains opportunistic and
     # leaves the current active generation unchanged.
     # Prewarm is opportunistic. A submission arriving after the under-lock
@@ -3396,7 +3395,7 @@ prewarm_gate() {
         target_cloner="$5"
         cd "$gate_wt"
         if [ "$reset_inactive" -eq 1 ]; then
-            rm -rf -- "$inactive_target" "${inactive_target}-check"
+            rm -rf -- "$inactive_target"
         fi
         # A reclaimed or cancelled inactive generation used to restart from
         # empty directories here. That cold path recompiles Wasmtime and
@@ -3404,23 +3403,20 @@ prewarm_gate() {
         # from the validated active generation first; the filtered CoW clone
         # drops path-bound incremental state and loose rcgu objects while
         # retaining dependency fingerprints, build-script outputs and rlibs.
-        for suffix in "" -check; do
-            source_dir="${active_target}${suffix}"
-            dest_dir="${inactive_target}${suffix}"
-            if [ ! -d "$dest_dir" ]; then
-                if [ -d "$source_dir" ]; then
-                    "$target_cloner" --clone-target "$source_dir" "$dest_dir"
-                else
-                    mkdir -p "$dest_dir"
-                fi
+        source_dir="$active_target"
+        dest_dir="$inactive_target"
+        if [ ! -d "$dest_dir" ]; then
+            if [ -d "$source_dir" ]; then
+                "$target_cloner" --clone-target "$source_dir" "$dest_dir"
+            else
+                mkdir -p "$dest_dir"
             fi
-        done
+        fi
         unset CARGO_INCREMENTAL
         [ ! -f scripts/feature-unification.sh ] || . scripts/feature-unification.sh
         export CARGO_TARGET_DIR="$inactive_target" CARGO_PROFILE_TEST_STRIP=symbols RUSTC_WRAPPER= CARGO_BUILD_RUSTC_WRAPPER=
         cargo build --workspace >/dev/null 2>&1
         cargo test --workspace --no-run >/dev/null 2>&1
-        CARGO_TARGET_DIR="${inactive_target}-check" cargo check --workspace >/dev/null 2>&1
         [ ! -x scripts/warm-witchy-caches.sh ] || ./scripts/warm-witchy-caches.sh >/dev/null 2>&1
     ' prewarm "$gate_wt" "$reset_inactive" "$inactive_target" "$active_target" \
         "$here/scripts/worktree-warm.sh" ) &

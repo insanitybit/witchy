@@ -881,7 +881,6 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
         .env("WITCHY_GATE_NEXTEST", "-p witchy")
         .env("WITCHY_GATE_NEXTEST_EXPR", "test(/^example_tests::/)")
         .env("WITCHY_GATE_SKIP_RUST_CLASS", "1")
-        .env("WITCHY_GATE_SKIP_COMPILE", "1")
         .env("WITCHY_GATE_SKIP_FMT", "1")
         .env("FAKE_CARGO_ARGS_FILE", &cargo_args_file)
         .env("WITCHY_FAILFAST_POLL", "0.05")
@@ -896,9 +895,8 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
     );
     assert!(
         example_stdout.contains("skipping rust-class")
-            && example_stdout.contains("skipping cargo check")
             && example_stdout.contains("skipping witchy fmt"),
-        "example_tests-only check.sh did not skip rust-class/compile/fmt: {example_stdout}",
+        "example_tests-only check.sh did not skip rust-class/fmt: {example_stdout}",
     );
     assert!(
         !example_stdout.contains("Rust-class paired correctness")
@@ -927,9 +925,7 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
         .env("WITCHY_GATE_SCOPE", "all")
         .env("WITCHY_GATE_NEXTEST", "-p witchy-types")
         .env("WITCHY_GATE_NEXTEST_EXPR", "package(witchy-types)")
-        .env("WITCHY_GATE_CHECK_PACKAGES", "-p witchy-types")
         .env("WITCHY_GATE_SKIP_RUST_CLASS", "1")
-        .env("WITCHY_GATE_SKIP_COMPILE", "0")
         .env("WITCHY_GATE_SKIP_FMT", "1")
         .env("FAKE_CARGO_ARGS_FILE", &cargo_args_file)
         .env("WITCHY_FAILFAST_POLL", "0.05")
@@ -944,7 +940,6 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
     );
     assert!(
         types_out.contains("skipping witchy fmt")
-            && types_out.contains("serialized check packages: -p witchy-types")
             && !types_out.contains("witchy fmt (std+examples)"),
         "types-only check.sh did not skip fmt: {types_out}",
     );
@@ -1010,9 +1005,7 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
             "WITCHY_GATE_NEXTEST_EXPR",
             "package(witchy-interp) or package(witchy-caps) or test(/^example_tests::/)",
         )
-        .env("WITCHY_GATE_CHECK_PACKAGES", "-p witchy-interp -p witchy-caps")
         .env("WITCHY_GATE_SKIP_RUST_CLASS", "1")
-        .env("WITCHY_GATE_SKIP_COMPILE", "0")
         .env("WITCHY_GATE_SKIP_FMT", "1")
         .env("FAKE_CARGO_ARGS_FILE", &cargo_args_file)
         .env("WITCHY_FAILFAST_POLL", "0.05")
@@ -1027,16 +1020,13 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
     );
     assert!(
         interp_out.contains("skipping rust-class")
-            && interp_out.contains("skipping witchy fmt")
-            && interp_out.contains("serialized check packages: -p witchy-interp -p witchy-caps"),
-        "interp+example_tests did not skip rust-class/fmt or scope check: {interp_out}",
+            && interp_out.contains("skipping witchy fmt"),
+        "interp+example_tests did not skip rust-class/fmt: {interp_out}",
     );
     let interp_args = fs::read_to_string(&cargo_args_file).expect("read interp cargo args");
     assert!(
-        interp_args.lines().any(|line| {
-            line.starts_with("check ") && line.contains("-p witchy-interp") && !line.contains("--workspace")
-        }),
-        "interp+example_tests check still used --workspace: {interp_args}",
+        interp_args.lines().all(|line| !line.starts_with("check ")),
+        "interp+example_tests launched redundant cargo check: {interp_args}",
     );
     });
 
@@ -1078,13 +1068,11 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
     });
 }
 
-/// Change 1 (gate fail-fast): the full merge-gate profile overlaps a compile
-/// check behind the foreground tests, and aborts
-/// the tests the moment a background leg records a failure. Green path first:
-/// stage order and timing records are pinned so observability consumers
-/// (gate-report.sh, the journal stage summaries) keep parsing.
+/// Nextest owns compilation in the full merge gate. Stage order and timing
+/// records are pinned so observability consumers keep parsing, and the removed
+/// cargo-check graph cannot silently return.
 #[test]
-fn full_gate_fail_fast_aborts_tests_when_a_background_leg_goes_red() {
+fn full_gate_compiles_once_through_nextest() {
     let root = workspace_root();
     let temp = TempDir::new();
     let bin = temp.path().join("bin");
@@ -1095,9 +1083,8 @@ fn full_gate_fail_fast_aborts_tests_when_a_background_leg_goes_red() {
         &tool,
         "#!/bin/sh\n\
          if [ \"$1\" = check ]; then\n\
-           sleep \"${FAKE_CARGO_CHECK_SECS:-0}\"\n\
-           if [ \"${FAKE_CARGO_FAIL_CHECK:-0}\" = 1 ]; then echo 'error: fake compile failure'; exit 5; fi\n\
-           exit 0\n\
+           echo 'redundant cargo check invoked' >&2\n\
+           exit 91\n\
          fi\n\
          if [ \"$1\" = nextest ] && [ \"$2\" = run ]; then\n\
            if [ -n \"${FAKE_NEXTEST_PID_FILE:-}\" ]; then printf '%s\\n' \"$$\" >\"$FAKE_NEXTEST_PID_FILE\"; fi\n\
@@ -1184,73 +1171,9 @@ fn full_gate_fail_fast_aborts_tests_when_a_background_leg_goes_red() {
             "tests (workspace)",
             "witchy fmt (std+examples)",
             "prose style (no em dashes)",
-            "compile check (cargo check)",
             "Rust-class paired correctness",
         ],
         "full-gate stage/timing order changed: {stdout}",
-    );
-
-    // Red leg: the compile check fails while the tests would run 60s. Fail-fast
-    // must abort the foreground stage, surface the check's output, and exit red
-    // in seconds, not after the test stage.
-    let target_red = temp.path().join("target-full-red");
-    fs::create_dir_all(target_red.join("debug")).expect("create red fake target dir");
-    let witchy_red = target_red.join("debug/witchy");
-    fs::write(&witchy_red, "#!/bin/sh\nexit 0\n").expect("write red fake witchy");
-    fs::set_permissions(&witchy_red, fs::Permissions::from_mode(0o755))
-        .expect("chmod red fake witchy");
-    let nextest_pid_file = temp.path().join("nextest.pid");
-    let started = Instant::now();
-    let red = check_sh(&root, &[])
-        .env("PATH", &path)
-        .env("CARGO_TARGET_DIR", &target_red)
-        .env("WITCHY_GATE_NEXTEST_EXTRA", "-p witchy-caps --lib")
-        .env("WITCHY_STAGE_HEARTBEAT_INTERVAL", "0")
-        .env("WITCHY_FAILFAST_POLL", "1")
-        .env("FAKE_CARGO_FAIL_CHECK", "1")
-        .env("FAKE_CARGO_NEXTEST_SECS", "60")
-        .env("FAKE_NEXTEST_PID_FILE", &nextest_pid_file)
-        .output()
-        .expect("run red full gate with fake tools");
-    let elapsed = started.elapsed();
-    assert!(!red.status.success(), "red compile-check leg did not fail the gate");
-    assert!(
-        elapsed < Duration::from_secs(45),
-        "fail-fast did not abort the 60s test stage promptly: {elapsed:?}",
-    );
-    let stdout = String::from_utf8(red.stdout).expect("red output is utf8");
-    assert!(
-        stdout.contains("aborting the foreground stage (fail-fast)"),
-        "missing fail-fast abort marker: {stdout}",
-    );
-    assert!(
-        stdout.contains("fake compile failure"),
-        "red leg output was not surfaced: {stdout}",
-    );
-    let timings: Vec<serde_json::Value> = stdout
-        .lines()
-        .filter_map(|line| line.strip_prefix("WITCHY_TIMING "))
-        .map(|json| serde_json::from_str(json).expect("timing record is JSON"))
-        .collect();
-    let tests = timings
-        .iter()
-        .find(|timing| timing["name"] == "tests (workspace)")
-        .expect("aborted foreground timing was emitted");
-    assert_eq!(tests["status"], "aborted");
-    let check = timings
-        .iter()
-        .find(|timing| timing["name"] == "compile check (cargo check)")
-        .expect("red compile-check timing was emitted");
-    assert_eq!(check["kind"], "background");
-    assert_eq!(check["status"], "red");
-    let nextest_pid = fs::read_to_string(&nextest_pid_file)
-        .expect("fake nextest recorded its pid")
-        .trim()
-        .parse::<i32>()
-        .expect("parse fake nextest pid");
-    assert!(
-        !process_is_alive(nextest_pid),
-        "fail-fast abort orphaned the foreground test process {nextest_pid}",
     );
 }
 

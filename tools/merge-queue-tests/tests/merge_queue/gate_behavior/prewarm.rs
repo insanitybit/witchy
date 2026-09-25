@@ -247,7 +247,6 @@ while :; do /bin/sleep 1; done
         "taskpolicy".to_owned(),
         "cargo:target-prewarm:build --workspace".to_owned(),
         "cargo:target-prewarm:test --workspace --no-run".to_owned(),
-        "cargo:target-prewarm-check:check --workspace".to_owned(),
         "cache:warm-witchy-caches".to_owned(),
     ]);
     assert_eq!(seen, expected, "not every prewarm workload inherited utility QoS");
@@ -587,10 +586,6 @@ fn successful_prewarm_promotes_inactive_generation_for_next_gate() {
     fs::create_dir_all(&fixture.state).expect("create generation state");
     fs::create_dir_all(fixture.gate_worktree.join("target"))
         .expect("create active gate target");
-    fs::create_dir_all(fixture.gate_worktree.join("target-check"))
-        .expect("create active check target");
-    fs::create_dir_all(fixture.gate_worktree.join("target-prewarm-check"))
-        .expect("create inactive check target");
     fs::write(
         fixture.gate_worktree.join("target/generation-sentinel"),
         "old-active\n",
@@ -724,8 +719,8 @@ fn successful_prewarm_promotes_inactive_generation_for_next_gate() {
         "main prewarm did not use target-prewarm: {targets}",
     );
     assert!(
-        targets.lines().any(|target| target == "target-prewarm-check"),
-        "check prewarm did not use the inactive suffix: {targets}",
+        targets.lines().all(|target| target == "target-prewarm"),
+        "prewarm recreated a redundant Cargo target: {targets}",
     );
 
     fixture.mq_ok(&["submit", "a"], "true");

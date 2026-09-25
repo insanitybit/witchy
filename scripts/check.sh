@@ -7,12 +7,9 @@
 #                              nightly-deferred perf/build tests, see
 #                              NIGHTLY-DEFERRED below), plus witchy-fmt IF any
 #                              .witchy files changed — the fast inner loop
-#   ./scripts/check.sh         the MERGE gate: tests + fmt in the foreground with
-#                              a compile check (cargo check) overlapped in the background
-#                              (collected before the gate goes green). Fail-fast:
-#                              a background leg that finishes RED aborts the
-#                              foreground tests immediately instead of hiding
-#                              behind ~20 min of green tests
+#   ./scripts/check.sh         the MERGE gate: tests + fmt. Nextest compiles the
+#                              selected production and test targets, so there is
+#                              no duplicate cargo-check graph
 #   ./scripts/check.sh --full  the PUSH gate: also the nightly-deferred tests and bench trend
 #
 # Shards — ONE named section, for a focused pre-queue run in your own worktree.
@@ -70,9 +67,7 @@ if [ -n "${WITCHY_GATE_SCOPE+x}" ]; then
     export CARGO_BUILD_JOBS="${WITCHY_GATE_BUILD_JOBS:-8}"
 fi
 
-# The test graph is the gate's critical path. The compile check runs
-# concurrently for fail-fast coverage but gets one build job so it cannot
-# crowd out the foreground graph's eight-job allowance.
+# The test graph is the gate's critical path.
 # macOS test discovery in the serialized gate is bounded to two cold binaries
 # at a time by default in scripts/nextest-list-wrapper.sh (.config/nextest.toml),
 # which can take longer than the three-pulse standalone startup window. Keep
@@ -270,53 +265,23 @@ sweeps_excl=""
 # Serialized-gate skips for legs the batch cannot change. Coordinator sets
 # these; --full and standalone keep the legs. 0/unset runs them.
 gate_skip_rust_class="${WITCHY_GATE_SKIP_RUST_CLASS:-0}"
-gate_skip_compile="${WITCHY_GATE_SKIP_COMPILE:-0}"
 gate_skip_fmt="${WITCHY_GATE_SKIP_FMT:-0}"
 case "$gate_skip_rust_class" in
     0 | 1) ;;
     *) echo "check.sh: WITCHY_GATE_SKIP_RUST_CLASS must be 0 or 1" >&2; exit 2 ;;
 esac
-case "$gate_skip_compile" in
-    0 | 1) ;;
-    *) echo "check.sh: WITCHY_GATE_SKIP_COMPILE must be 0 or 1" >&2; exit 2 ;;
-esac
 case "$gate_skip_fmt" in
     0 | 1) ;;
     *) echo "check.sh: WITCHY_GATE_SKIP_FMT must be 0 or 1" >&2; exit 2 ;;
 esac
-[ "$full" -eq 1 ] && { gate_skip_rust_class=0; gate_skip_compile=0; gate_skip_fmt=0; }
+[ "$full" -eq 1 ] && { gate_skip_rust_class=0; gate_skip_fmt=0; }
 # Nested check.sh (queue-infra fixtures, an agent's local shard) must not
 # inherit skip flags from a parent serialized gate. Only the coordinator's
 # marked run (WITCHY_GATE_SCOPE set) applies them.
 if [ -z "${WITCHY_GATE_SCOPE+x}" ]; then
     gate_skip_rust_class=0
-    gate_skip_compile=0
     gate_skip_fmt=0
 fi
-
-# Package-scoped compile check when the serialized nextest mapping named
-# crates. Unset / non-serialized / --full keep --workspace --all-targets.
-compile_sel=(--workspace)
-gate_check_packages="${WITCHY_GATE_CHECK_PACKAGES:-}"
-if [ -n "${WITCHY_GATE_SCOPE+x}" ] && [ "$full" -eq 0 ]; then
-    case "$gate_check_packages" in
-        -p\ *)
-            # shellcheck disable=SC2206
-            compile_sel=($gate_check_packages)
-            printf 'check.sh: serialized check packages: %s\n' "$gate_check_packages"
-            ;;
-    esac
-fi
-
-# Keep compile legs that explicitly select WIR on its native feature as well.
-# A lowerer-only compile is deliberately pure; the foreground workspace test
-# command below owns the explicit native lowerer campaign.
-native_feature_args=()
-case " ${compile_sel[*]} " in
-    *" --workspace "* | *" -p witchy-wir "*)
-        native_feature_args=(--features witchy-wir/native)
-        ;;
-esac
 
 # DEFERRED-FEATURE TESTS (RFC-0165) -------------------------------------------
 # The canonical SafeWIR production route refuses every program outside its
@@ -755,21 +720,9 @@ fi
 
 run_product_tests() {
     if [ "${#test_cmd_extra[@]}" -gt 0 ]; then
-        # run_watched signals this function's subshell on a background-leg
-        # failure. Forward that signal while the first partition owns a child;
-        # otherwise Cargo/nextest survives its wrapper and the gate waits for
-        # the entire test timeout. The primary below uses exec, preserving the
-        # original one-process cancellation boundary.
-        local child="" command_status=0
-        trap 'kill "${child:-}" 2>/dev/null || true; wait "${child:-}" 2>/dev/null || true; exit 143' TERM INT
-        "${test_cmd_extra[@]}" &
-        child=$!
-        wait "$child" || command_status=$?
-        child=""
-        trap - TERM INT
-        [ "$command_status" -eq 0 ] || return "$command_status"
+        "${test_cmd_extra[@]}" || return "$?"
     fi
-    exec "${test_cmd[@]}"
+    "${test_cmd[@]}"
 }
 
 # Progress channel for the bounded macOS list phase: the list wrapper appends
@@ -1005,204 +958,6 @@ run() {
     printf '\033[1;34m    [%d] %s took %ds\033[0m\n' "$step" "$label" "$(( t_finished - t_stage ))"
 }
 
-seed_cow_target() { # seed_cow_target <dir>
-    # `mkdir` is the atomic claim: exactly one concurrent run seeds; any other
-    # sees the dir and uses it as-is (a dir left partially seeded by a killed
-    # cp is safe — cargo treats missing artifacts as a cold cache, so the dir
-    # self-heals on the next run). APFS clonefile (`cp -c`) or reflink where
-    # available: seconds, ~zero disk. Where neither works, the dir stays
-    # empty — a one-time cold run.
-    local dir="$1" profile=""
-    [ -d "$dir" ] && return 0
-    case "$dir" in
-        "$target_dir-check") profile="check" ;;
-    esac
-    # The coordinator keeps an independently warm check generation. Reuse the
-    # matching Cargo profile instead of cloning the test target and
-    # recompiling native dependencies under a different unit hash. The helper
-    # validates that gate-target did not change while it cloned; on any miss or
-    # promotion race, retain the existing safe fallback below.
-    # WITCHY_GATE_PROFILE_SEED=off skips the lookup: the fake-tool gate
-    # fixtures time their legs to the second and have no gate generation.
-    if [ -n "$profile" ] && [ "${WITCHY_GATE_PROFILE_SEED:-on}" != off ] \
-        && [ -x scripts/worktree-warm.sh ] \
-        && scripts/worktree-warm.sh --profile-target-dir "$profile" "$dir"; then
-        return 0
-    fi
-    mkdir "$dir" 2>/dev/null || return 0
-    if [ -d "$target_dir" ]; then
-        cp -Rc "$target_dir/." "$dir/" 2>/dev/null \
-            || cp -R --reflink=auto "$target_dir/." "$dir/" 2>/dev/null \
-            || true
-    fi
-}
-
-# The compile check is a background leg in the MERGE gate only (not --fast):
-# `cargo check` over the selected packages is the cheapest command that
-# surfaces a plain rustc error in production library and binary targets, long
-# before nextest's test-profile build reports it. Nextest already compiles the
-# selected test targets; `--all-targets` duplicated that work in a second Cargo
-# profile and linked unrelated root tests on broad compiler gates.
-# It runs in its own CoW-seeded target dir so it never serializes on cargo's
-# build lock against the tests.
-check_dir="${target_dir}-check"
-launch_check_leg() {
-    check_log="$(mktemp "${TMPDIR:-/tmp}/witchy-check-XXXXXX")"
-    check_started=$(date +%s)
-    if [ -n "${WITCHY_GATE_SCOPE+x}" ]; then
-        ( seed_cow_target "$check_dir" && background_leg env CARGO_BUILD_JOBS="${WITCHY_GATE_CHECK_BUILD_JOBS:-1}" CARGO_TARGET_DIR="$check_dir" cargo check "${compile_sel[@]}" ${native_feature_args[@]+"${native_feature_args[@]}"} ) >"$check_log" 2>&1 &
-    else
-        ( seed_cow_target "$check_dir" && background_leg env CARGO_TARGET_DIR="$check_dir" cargo check "${compile_sel[@]}" ${native_feature_args[@]+"${native_feature_args[@]}"} ) >"$check_log" 2>&1 &
-    fi
-    check_pid=$!
-}
-
-# Preserve the command's real finish time without a sidecar file. The marker is
-# written into the leg's existing private log and stripped before diagnostics;
-# collect_bg turns it into the ordinary WITCHY_TIMING record. The wrapper owns
-# and forwards TERM/INT to the command so reap_bg retains the old `exec` safety:
-# abandoning a red foreground stage cannot orphan cargo behind the next gate.
-background_leg() { # background_leg <command...>
-    local child="" command_status=0 finished
-    trap 'kill "${child:-}" 2>/dev/null || true; wait "${child:-}" 2>/dev/null || true; exit 143' TERM INT
-    "$@" &
-    child=$!
-    wait "$child" || command_status=$?
-    trap - TERM INT
-    finished=$(date +%s)
-    # The marker carries finish time AND exit status: run_watched's fail-fast
-    # scan reads the status from the log (never `wait`), so collect_bg still
-    # owns the pid's single wait.
-    printf 'WITCHY_BG_FINISHED %d %d\n' "$finished" "$command_status"
-    return "$command_status"
-}
-
-# Has a background leg already finished RED? Judged from its log marker only —
-# no `wait`, no pid liveness games — so a green leg is still collected (and
-# reported) exactly as before by collect_bg.
-leg_finished_red() { # leg_finished_red <log>
-    local status
-    [ -n "${1:-}" ] && [ -f "$1" ] || return 1
-    status="$(sed -n 's/^WITCHY_BG_FINISHED [0-9][0-9]* \([0-9][0-9]*\)$/\1/p' "$1" | tail -1)"
-    [ -n "$status" ] && [ "$status" -ne 0 ]
-}
-
-# Scan every launched leg for a recorded failure; on the first hit, publish it
-# via failfast_* and clear its pid variable (collect ownership moves to the
-# abort path, and reap_bg must not signal a pid another wait will reap).
-failfast_scan() {
-    if [ -n "${check_pid:-}" ] && leg_finished_red "${check_log:-}"; then
-        failfast_label="compile check (cargo check)"; failfast_pid="$check_pid"
-        failfast_log="$check_log"; failfast_started="$check_started"
-        check_pid=""
-        return 0
-    fi
-    return 1
-}
-
-# Reap the background legs on ANY exit — green, red at tests/fmt, or a failed
-# collect. background_leg forwards the signal to its cargo child (rustc
-# children sit in the surrounding process group, which the coordinator's
-# timeout kill already covers). Without this, a red foreground stage abandoned live cargo
-# processes that kept building while the coordinator rebased the next
-# candidate in the same worktree. collect_bg clears each pid after reaping
-# it: a waited-on pid may be recycled by the OS and must never be signalled.
-# The trap is installed before any leg launches; every guard tolerates
-# nothing-launched-yet, so modes that skip the legs exit through it safely.
-reap_bg() {
-    [ -n "${stage_heartbeat_pid:-}" ] && kill "$stage_heartbeat_pid" 2>/dev/null || true
-    [ -n "${failfast_fg_pid:-}" ] && kill "$failfast_fg_pid" 2>/dev/null || true
-    [ -n "${check_pid:-}" ] && kill "$check_pid" 2>/dev/null || true
-    [ -n "${check_log:-}" ] && rm -f "$check_log" || true
-    return 0
-}
-trap reap_bg EXIT
-trap 'exit 143' TERM INT
-
-# Collect a background leg, cheapest-to-diagnose first. On failure, show the
-# leg's full output and exit red.
-collect_bg() { # collect_bg <label> <pid> <log> <started>
-    local label="$1" pid="$2" log="$3" started="$4"
-    step=$((step + 1))
-    local t_collect; t_collect=$(date +%s)
-    printf '\n\033[1;34m==> [%d] %s (t+%ds)\033[0m\n' "$step" "$label" "$(( t_collect - t_start ))"
-    local command_status=0
-    wait "$pid" || command_status=$?
-    local t_finished
-    t_finished=$(sed -n 's/^WITCHY_BG_FINISHED \([0-9][0-9]*\).*$/\1/p' "$log" | tail -1)
-    case "$t_finished" in '' | *[!0-9]*) t_finished=$(date +%s) ;; esac
-    if [ "$command_status" -ne 0 ]; then
-        emit_timing background "$step" "$label" red "$started" "$t_finished"
-        sed '/^WITCHY_BG_FINISHED /d' "$log"
-        rm -f "$log"
-        printf '\033[1;31m%s FAILED\033[0m\n' "$label"
-        exit 1
-    fi
-    emit_timing background "$step" "$label" green "$started" "$t_finished"
-    rm -f "$log"
-    printf '\033[1;34m    [%d] %s took %ds\033[0m\n' "$step" "$label" "$(( t_finished - started ))"
-}
-
-# Like `run`, but FAIL-FAST: while the foreground stage executes, poll the
-# background legs' logs; the moment one records a failure, abort the foreground
-# stage, surface the red leg's full output via collect_bg, and exit red. This
-# is what turns a 1-3 min compile failure into a ~2-4 min red gate
-# instead of one that only surfaces after ~20 min of doomed tests. On the
-# all-green path it is byte-identical to `run` (same marker, heartbeat, and
-# WITCHY_TIMING record; the poll adds at most WITCHY_FAILFAST_POLL seconds of
-# latency after the stage finishes). The aborted foreground stage is emitted
-# with status "aborted" — consumers that only read "green" (gate-report.sh)
-# ignore it, and the red leg's own record carries the failure.
-run_watched() {
-    step=$((step + 1))
-    local t_stage; t_stage=$(date +%s)
-    printf '\n\033[1;34m==> [%d] %s (t+%ds)\033[0m\n' "$step" "$1" "$(( t_stage - t_start ))"
-    local label="$1"
-    shift
-    stage_heartbeat "$step" "$label" "$t_stage" &
-    stage_heartbeat_pid=$!
-    "$@" &
-    failfast_fg_pid=$!
-    local poll="${WITCHY_FAILFAST_POLL:-1}"
-    # Tests with fake tools need subsecond polling so the monitor does not
-    # dominate the behavior being checked. Operators may also choose a
-    # fractional interval for faster failure detection. Reject zero and
-    # malformed values rather than spinning or passing bad input to sleep.
-    if ! [[ "$poll" =~ ^([1-9][0-9]*|0[.][0-9]*[1-9][0-9]*)$ ]]; then
-        poll=1
-    fi
-    while kill -0 "$failfast_fg_pid" 2>/dev/null; do
-        if failfast_scan; then
-            printf '\n\033[1;31m%s FAILED while %s ran — aborting the foreground stage (fail-fast)\033[0m\n' \
-                "$failfast_label" "$label"
-            kill "$failfast_fg_pid" 2>/dev/null || true
-            wait "$failfast_fg_pid" 2>/dev/null || true
-            failfast_fg_pid=""
-            kill "$stage_heartbeat_pid" 2>/dev/null || true
-            wait "$stage_heartbeat_pid" 2>/dev/null || true
-            stage_heartbeat_pid=""
-            emit_timing foreground "$step" "$label" aborted "$t_stage" "$(date +%s)"
-            # collect_bg prints the red leg's output, emits its red timing
-            # record, and exits 1 (the EXIT trap reaps the remaining legs).
-            collect_bg "$failfast_label" "$failfast_pid" "$failfast_log" "$failfast_started"
-            exit 1
-        fi
-        sleep "$poll"
-    done
-    local command_status=0
-    wait "$failfast_fg_pid" || command_status=$?
-    failfast_fg_pid=""
-    kill "$stage_heartbeat_pid" 2>/dev/null || true
-    wait "$stage_heartbeat_pid" 2>/dev/null || true
-    stage_heartbeat_pid=""
-    local t_finished; t_finished=$(date +%s)
-    local stage_status="green"
-    [ "$command_status" -eq 0 ] || stage_status="red"
-    emit_timing foreground "$step" "$label" "$stage_status" "$t_stage" "$t_finished"
-    [ "$command_status" -eq 0 ] || return "$command_status"
-    printf '\033[1;34m    [%d] %s took %ds\033[0m\n' "$step" "$label" "$(( t_finished - t_stage ))"
-}
-
 if [ "$fast" -eq 1 ]; then
     # The fast commit gate: nextest compiles+links its own test binaries, so no
     # standalone build or lint step is needed.
@@ -1218,15 +973,15 @@ if [ "$fast" -eq 1 ]; then
         run "prose style (no em dashes)" prose_em_dash_check
     fi
     if [ "${#preflight_cmd[@]}" -gt 0 ]; then
-        run_watched "preflight (tests that red the last attempt)" "${preflight_cmd[@]}"
+        run "preflight (tests that red the last attempt)" "${preflight_cmd[@]}"
     fi
-    run_watched "tests (workspace)" run_product_tests
+    run "tests (workspace)" run_product_tests
     # Product discovery already builds the excluded merge_queue test binary.
     # Run its hermetic shard after all product work so it reuses that artifact
     # and no background compiler load can distort process/timing assertions.
     [ "$queue_infra" -eq 0 ] || run "queue infrastructure (isolated)" "${queue_infra_cmd[@]}"
     record_shard_receipt fast
-    printf '\n\033[1;32mfast gate green\033[0m — run without --fast before push (fmt + compile check)\n'
+    printf '\n\033[1;32mfast gate green\033[0m — run without --fast before push (fmt + landing checks)\n'
     exit 0
 fi
 
@@ -1252,30 +1007,14 @@ if [ -n "${WITCHY_GATE_SCOPE+x}" ]; then
     fi
 fi
 
-# The full gate runs two independent legs CONCURRENTLY and collects the
-# background compile check after the foreground one finishes:
-#   [fg] tests  — nextest builds the workspace itself, including a fresh `witchy`
-#                 binary: the integration tests name it via CARGO_BIN_EXE_witchy,
-#                 so cargo must (re)build the bin before compiling them. That
-#                 makes a standalone pre-build redundant, and the fmt check below
-#                 can run AFTER the tests against the nextest-built binary.
-#   [bg] check  — see launch_check_leg above (own CoW-cloned target dir);
-#                 surfaces plain compile errors in minutes.
-# A background-leg failure fails the gate FAST: run_watched polls the legs
-# while the tests run and aborts them the moment a leg records a failure, so
-# a red check surfaces in minutes instead of after the full test
-# stage. The all-green path is unchanged (overlap, not serialization).
-# Serialized gates skip legs the batch cannot change (see WITCHY_GATE_SKIP_*).
-if [ "$gate_skip_compile" -eq 1 ]; then
-    printf 'check.sh: skipping cargo check (WITCHY_GATE_SKIP_COMPILE=1)\n'
-else
-    launch_check_leg
-fi
+# Nextest builds the selected production and test targets, including the
+# `witchy` binary named by CARGO_BIN_EXE_witchy. A separate cargo-check graph
+# duplicates compilation and competes with the gate's critical path.
 
 if [ "${#preflight_cmd[@]}" -gt 0 ]; then
-    run_watched "preflight (tests that red the last attempt)" "${preflight_cmd[@]}"
+    run "preflight (tests that red the last attempt)" "${preflight_cmd[@]}"
 fi
-run_watched "tests (workspace)"        run_product_tests
+run "tests (workspace)"        run_product_tests
 # Test execution is a few seconds; compiling its binaries is the expensive
 # part. Do not turn a loaded-host timing outlier into another Cargo invocation
 # here: mixed gate partitions made that confirmation rebuild the workspace for
@@ -1287,11 +1026,6 @@ else
     run "witchy fmt (std+examples)" witchy_fmt_check
 fi
 run "prose style (no em dashes)"  prose_em_dash_check
-
-if [ "$gate_skip_compile" -eq 0 ]; then
-    collect_bg "compile check (cargo check)" "$check_pid" "$check_log" "$check_started"
-    check_pid=""
-fi
 
 # Product nextest compiles every integration binary before applying its
 # filterset, including merge_queue. Reuse that artifact only after every
