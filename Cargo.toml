@@ -195,14 +195,13 @@ strip = "symbols"
 # execution crates at level 2. The compiler crates are dominated by codegen on
 # edit builds: on 2026-09-24 a warm-dependency lower probe spent 14m28s
 # compiling before 63s of tests, and a WIR probe spent 10m59s compiling before
-# 17s of tests. Level 1 is the default compromise for compiler stages. Lowering,
-# syntax and type checking are exceptions: their focused test execution is now
-# only seconds while cold compilation dominates. On 2026-09-25, an otherwise
-# warm witchy-types edit compiled in 14.9s at level 0 versus 79s at level 1; the
-# next incremental edit was 1.9s versus 3.0s, while 113 tests remained about 3s.
-# A syntax-plus-types first rebuild fell from 29.3s to 13.4s; its already-hot
-# edit-and-test loop rose only from 8.3s to 10.8s. Reserve optimized compiler
-# code for release builds.
+# 17s of tests. Level 1 is the default compromise for compiler stages. Do not
+# lower syntax or type checking to level 0 based only on focused crate timings:
+# a 2026-09-25 gate experiment reduced their focused compile time, but increased
+# the 1,647-test workspace run from 93.6s to 163.6s and its total workspace stage
+# from 419s to 599s. Lowering is the exception: its test execution is now only
+# seconds after native-runtime tests were split out, while compiling its 76k
+# lines remains the cold-path tail. Reserve optimized lowering for releases.
 # The root crate and external dependencies remain unoptimized for cheap cold
 # builds.
 #
@@ -227,13 +226,13 @@ debug = 0
 opt-level = 1
 debug = 0
 [profile.dev.package.witchy-types]
-opt-level = 0
+opt-level = 1
 debug = 0
 [profile.dev.package.witchy-canonical-source]
 opt-level = 1
 debug = 0
 [profile.dev.package.witchy-syntax]
-opt-level = 0
+opt-level = 1
 debug = 0
 [profile.dev.package.witchy]
 debug = 0
