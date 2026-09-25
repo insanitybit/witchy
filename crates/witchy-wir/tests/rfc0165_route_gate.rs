@@ -14,6 +14,18 @@ fn read_source(relative: &str) -> String {
     fs::read_to_string(&path).unwrap_or_else(|error| panic!("read {}: {error}", path.display()))
 }
 
+/// The private canonical backend: `canonical_wasmir.rs` and the sections split
+/// out of it into child files. Its other child modules are separate kernels.
+const CANONICAL_BACKEND_FILES: &[&str] = &[
+    "canonical_wasmir.rs",
+    "canonical_wasmir/lowering.rs",
+    "canonical_wasmir/correspondence.rs",
+    "canonical_wasmir/emit.rs",
+    "canonical_wasmir/structured.rs",
+    "canonical_wasmir/plan.rs",
+    "canonical_wasmir/plan_match.rs",
+];
+
 fn functions<'a>(file: &'a syn::File) -> impl Iterator<Item = &'a ItemFn> {
     file.items.iter().filter_map(|item| match item {
         Item::Fn(function) => Some(function),
@@ -204,7 +216,10 @@ impl<'ast> Visit<'ast> for WasmIrSurface {
 fn canonical_wasmir_has_one_private_validated_construction_surface() {
     let manifest_dir = manifest_dir();
     let source_root = manifest_dir.join("src");
-    let canonical = source_root.join("canonical_wasmir.rs");
+    let backend = CANONICAL_BACKEND_FILES
+        .iter()
+        .map(|file| source_root.join(file))
+        .collect::<Vec<_>>();
     let mut canonical_surface = WasmIrSurface::default();
 
     for (path, source) in rust_sources(&source_root) {
@@ -212,8 +227,10 @@ fn canonical_wasmir_has_one_private_validated_construction_surface() {
             .unwrap_or_else(|error| panic!("{} parses: {error}", path.display()));
         let mut surface = WasmIrSurface::default();
         surface.visit_file(&file);
-        if path == canonical {
-            canonical_surface = surface;
+        if backend.contains(&path) {
+            canonical_surface.references += surface.references;
+            canonical_surface.declarations.extend(surface.declarations);
+            canonical_surface.constructions.extend(surface.constructions);
         } else {
             assert_eq!(
                 surface.references, 0,
@@ -684,7 +701,10 @@ fn production_encoding_requires_checked_wasm_ir_authority() {
 
 #[test]
 fn canonical_capabilities_lower_only_to_externref() {
-    let source = read_source("src/canonical_wasmir.rs");
+    let source = CANONICAL_BACKEND_FILES
+        .iter()
+        .map(|file| read_source(&format!("src/{file}")))
+        .collect::<String>();
 
     assert!(
         source.contains("ValueType::Capability(_) => Ok(ValType::EXTERNREF)"),

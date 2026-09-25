@@ -437,7 +437,13 @@ for p in "${paths[@]}"; do
             canonical_rewrite=1 ;;
     esac
     case "$p" in
-        crates/witchy-wir/src/canonical_wasmir.rs)
+        crates/witchy-wir/src/canonical_wasmir.rs | \
+        crates/witchy-wir/src/canonical_wasmir/lowering.rs | \
+        crates/witchy-wir/src/canonical_wasmir/correspondence.rs | \
+        crates/witchy-wir/src/canonical_wasmir/emit.rs | \
+        crates/witchy-wir/src/canonical_wasmir/structured.rs | \
+        crates/witchy-wir/src/canonical_wasmir/plan.rs | \
+        crates/witchy-wir/src/canonical_wasmir/plan_match.rs)
             canonical_wasmir_tail=1 ;;
     esac
     case "$p" in
@@ -605,7 +611,8 @@ for p in "${paths[@]}"; do
             path_has_early=1 ;;
     esac
     case "$p" in
-        crates/witchy-wir/src/canonical_safewir/check/memory.rs)
+        crates/witchy-wir/src/canonical_safewir/check/memory.rs | \
+        crates/witchy-wir/src/canonical_safewir/check/memory/*.rs)
             add_early "cargo nextest run -p witchy-wir --features native --test unit -E 'test(constant_prefix_publication_rejects_gaps_and_missing_children)'"
             path_has_early=1 ;;
         crates/witchy-lower/src/canonical_list_update.rs | \
