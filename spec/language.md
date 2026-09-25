@@ -1172,8 +1172,12 @@ owned pointer to a packed record whose fields each satisfy that same relation.
 and an owned, retained value list, with `K` and `V` checked recursively.
 A declared one-variant heap record uses its checked instantiated fields in
 declaration order; every field needs that same recursive proof and an owned
-physical slot. Tagged, packed, must-consume, capability-bearing, and recursive
-records have no slice-element carrier yet.
+physical slot. `Option(T)`, `Result(T, E)`, and checked declared sums use an
+Int tag followed by their variants' payload fields in declaration order.
+Every payload field needs the recursive proof; managed payload fields require
+nullable owned pointer slots because inactive variants leave them empty.
+Packed, must-consume, capability-bearing, and recursive aggregates have no
+slice-element carrier yet.
 One direct `&[T]` field in a declared untagged record can carry the same
 proved slice owner through that record. Nested slice fields and tagged shells
 remain outside this aggregate-view carrier.

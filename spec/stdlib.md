@@ -2295,7 +2295,7 @@ Remove and return the final element. A uniquely owned non-empty list moves the l
 
 #### `fn slice(xs: List(a), start: Int, end: Int) -> List(a)`
 
-The elements in the half-open index range [start, end), clamped to bounds. `slice(xs, 1, 3)` of [a,b,c,d] is [b,c]. An immutable view `&xs[start..end]` retains a snapshot instead; its compiler-known `.owned()` copies that range to a fresh list when the checked element has a recursive ownership carrier: a scalar, String, List, nonempty tuple, Dict, or one-variant heap record whose children have the same proof. Other element types fail closed.
+The elements in the half-open index range [start, end), clamped to bounds. `slice(xs, 1, 3)` of [a,b,c,d] is [b,c]. An immutable view `&xs[start..end]` retains a snapshot instead; its compiler-known `.owned()` copies that range to a fresh list when the checked element has a recursive ownership carrier: a scalar, String, List, nonempty tuple, Dict, or non-packed checked aggregate whose fields and variant payloads have the same proof. Other element types fail closed.
 
 #### `fn range(n: Int) -> List(Int)`
 
@@ -2371,7 +2371,7 @@ The element at `index` (0-based). Out of bounds is a runtime error on every back
 
 #### `List.slice(start: Int, end: Int) -> List(a)`
 
-The elements in the half-open index range [start, end), clamped to bounds. `slice(xs, 1, 3)` of [a,b,c,d] is [b,c]. An immutable view `&xs[start..end]` retains a snapshot instead; its compiler-known `.owned()` copies that range to a fresh list when the checked element has a recursive ownership carrier: a scalar, String, List, nonempty tuple, Dict, or one-variant heap record whose children have the same proof. Other element types fail closed.
+The elements in the half-open index range [start, end), clamped to bounds. `slice(xs, 1, 3)` of [a,b,c,d] is [b,c]. An immutable view `&xs[start..end]` retains a snapshot instead; its compiler-known `.owned()` copies that range to a fresh list when the checked element has a recursive ownership carrier: a scalar, String, List, nonempty tuple, Dict, or non-packed checked aggregate whose fields and variant payloads have the same proof. Other element types fail closed.
 
 #### `List.get(index: Int) -> Option(a)`
 

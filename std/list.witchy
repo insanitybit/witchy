@@ -94,7 +94,8 @@ pub fn pop(var xs: unique List(a)) -> Option(a):
 // An immutable view `&xs[start..end]` retains a snapshot instead; its
 // compiler-known `.owned()` copies that range to a fresh list when the checked
 // element has a recursive ownership carrier: a scalar, String, List, nonempty
-// tuple, Dict, or one-variant heap record whose children have the same proof.
+// tuple, Dict, or non-packed checked aggregate whose fields and variant
+// payloads have the same proof.
 // Other element types fail closed.
 pub fn slice(xs: List(a), start: Int, end: Int) -> List(a):
     var out = []

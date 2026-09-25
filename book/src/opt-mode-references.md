@@ -176,10 +176,13 @@ Nonempty tuple elements use an owned packed record, with the same ownership
 proof applied to every field. Dictionary elements use two owned, retained
 lists for their keys and values, with the same proof applied to each element.
 A declared one-variant heap record is admitted when every instantiated field
-has that proof and an owned physical slot. Tagged, packed, must-consume,
-capability-bearing, and recursive records remain unsupported as slice elements.
+has that proof and an owned physical slot. `Option(T)`, `Result(T, E)`, and
+checked declared sums are admitted when each variant payload has that proof;
+managed payloads use nullable owned slots because inactive variants leave
+those slots empty. Packed, must-consume, capability-bearing, and recursive
+aggregates remain unsupported as slice elements.
 An untagged record may also hold one direct `&[T]` field when `T` has that
-proof. Nested slice fields and tagged wrappers remain unsupported.
+proof. Nested slice fields and tagged wrappers of slice fields remain unsupported.
 Carrier proof is bounded at 128 nested levels
 and 4,096 type nodes.
 Qualified children and elements without a complete ownership proof are
