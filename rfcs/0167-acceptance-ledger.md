@@ -68,6 +68,15 @@ found no authority widening. No new admitted Wasm, zero-leak evidence, or
 A–O closure is claimed. The five existing `List(&Int)` positive and negative
 smoke cases passed on this branch.
 
+Row G aggregate owner-family identity (architecture implemented, semantic
+evidence unchanged, 2026-09-25): opaque aggregate owner IDs now derive from
+a bounded, versioned typed encoding of the normalized checked source type,
+instantiated fields, their owner-storage classes, and constructor order. The
+layout catalog rejects truncated-ID collisions before constructing candidate
+WIR and keeps closure and rooted-view ID namespaces disjoint. This changes
+identity allocation, not aggregate admission or physical layout. Admitted Wasm,
+zero-leak evidence, and A–O status remain unchanged.
+
 Row G lowerer storage-plan consumption (architecture implemented, semantic
 evidence unchanged, 2026-09-25): the direct rooted-view gate and checked
 slice-element extraction now consume `StoragePlan` from canonical-source.

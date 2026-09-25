@@ -16,6 +16,7 @@ use witchy_canonical_source::aggregates::{
 use witchy_canonical_source::abi::CanonicalScalarKind;
 use witchy_canonical_source::carrier::CarrierElement;
 use witchy_canonical_source::storage::StoragePlan;
+use witchy_canonical_source::structural_identity::AggregateOwnerKey;
 use witchy_syntax::ast::{self, Item, Type, TypeDef};
 use witchy_types::pipeline::CanonicalCheckedSource;
 use witchy_types::typeck;
@@ -774,7 +775,7 @@ impl LayoutProjection {
             if opaque_signatures.contains(signature) {
                 let id = u32::try_from(ordinal).ok().and_then(|n| n.checked_mul(2))
                     .and_then(|n| n.checked_add(0xc100_0000))
-                    .filter(|n| *n < u32::MAX)
+                    .filter(|n| *n < 0xc200_0000)
                     .ok_or_else(|| CanonicalLayoutError::InvalidLayout("opaque closure type overflow".into()))?;
                 owner_types.insert(signature.clone(), GcTypeId::new(id));
             }
@@ -783,11 +784,23 @@ impl LayoutProjection {
             .filter(|(source, _)| opaque_aggregates.contains(source))
             .collect::<Vec<_>>();
         let mut aggregate_owner_types = HashMap::new();
-        for (ordinal, (source, _)) in opaque_aggregate_specs.iter().enumerate() {
-            let id = u32::try_from(ordinal).ok().and_then(|n| n.checked_mul(2))
-                .and_then(|n| n.checked_add(0xc200_0000))
-                .filter(|n| *n < u32::MAX)
-                .ok_or_else(|| CanonicalLayoutError::InvalidLayout("opaque aggregate type overflow".into()))?;
+        let mut allocated_aggregate_ids = HashSet::new();
+        for (source, shape) in &opaque_aggregate_specs {
+            let owner_fields = shape.fields.iter().map(|field| {
+                witchy_canonical_source::capabilities::representation(field, &self.definitions).is_some()
+                    || type_has_opaque_owner_membership(
+                        field, &self.definitions,
+                        |signature| opaque_signatures.contains(signature),
+                        |aggregate| opaque_aggregates.contains(aggregate),
+                    )
+            }).collect::<Vec<_>>();
+            let digest = AggregateOwnerKey { source, shape, owner_fields: &owner_fields }.digest()
+                .ok_or_else(|| CanonicalLayoutError::InvalidLayout("opaque aggregate identity exceeds bounds".into()))?;
+            let lower = u32::from_le_bytes([digest[0], digest[1], digest[2], digest[3]]);
+            let id = 0xc200_0000 | ((lower & 0x007f_ffff) << 1);
+            if !allocated_aggregate_ids.insert(id) {
+                return Err(CanonicalLayoutError::InvalidLayout("opaque aggregate owner ID collision".into()));
+            }
             aggregate_owner_types.insert(source.clone(), GcTypeId::new(id));
         }
         let mut closure_environments = HashMap::new();
@@ -1119,6 +1132,19 @@ fn type_has_opaque_owner(
     closure_owner_types: &HashMap<Type, GcTypeId>,
     aggregate_owner_types: &HashMap<Type, GcTypeId>,
 ) -> bool {
+    type_has_opaque_owner_membership(
+        ty, definitions,
+        |signature| closure_owner_types.contains_key(signature),
+        |aggregate| aggregate_owner_types.contains_key(aggregate),
+    )
+}
+
+fn type_has_opaque_owner_membership(
+    ty: &Type,
+    definitions: &BTreeMap<String, TypeDef>,
+    closure_has: impl Fn(&Type) -> bool,
+    aggregate_has: impl Fn(&Type) -> bool,
+) -> bool {
     if matches!(ty, Type::Qualified(ast::TypeQual::View, inner)
         if matches!(inner.unqualified(), Type::Named(name, arguments)
             if name == "Int" && arguments.is_empty()))
@@ -1131,10 +1157,10 @@ fn type_has_opaque_owner(
         return true;
     }
     if matches!(ty.unqualified(), Type::Fn(..)) {
-        return closure_owner_types.contains_key(&canonical_closure_key(ty, definitions));
+        return closure_has(&canonical_closure_key(ty, definitions));
     }
     let identity = canonical_layout_type(ty, definitions);
-    if aggregate_owner_types.contains_key(&identity) {
+    if aggregate_has(&identity) {
         return true;
     }
     let Type::Named(name, arguments) = identity.unqualified() else { return false };
@@ -1143,9 +1169,9 @@ fn type_has_opaque_owner(
     }
     let element = &arguments[0];
     if matches!(element.unqualified(), Type::Fn(..)) {
-        closure_owner_types.contains_key(&canonical_closure_key(element, definitions))
+        closure_has(&canonical_closure_key(element, definitions))
     } else {
-        aggregate_owner_types.contains_key(&canonical_layout_type(element, definitions))
+        aggregate_has(&canonical_layout_type(element, definitions))
     }
 }
 
