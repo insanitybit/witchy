@@ -421,6 +421,12 @@ pub fn expr_match(scrutinee: ExprSyntax, arms: List(MatchArmSyntax)) -> ExprSynt
 pub fn expr_block(body: BlockSyntax) -> ExprSyntax:
     __meta_expr_block(body)
 
+pub fn expr_if(cond: ExprSyntax, then_body: BlockSyntax, else_body: Option(BlockSyntax)) -> ExprSyntax:
+    __meta_expr_if(cond, then_body, else_body)
+
+fn __meta_expr_if(cond: ExprSyntax, then_body: BlockSyntax, else_body: Option(BlockSyntax)) -> ExprSyntax:
+    __meta_expr_if(cond, then_body, else_body)
+
 // The generated function is checked as async before this suspension is lowered.
 pub fn expr_await(value: ExprSyntax) -> ExprSyntax:
     __meta_expr_await(value)

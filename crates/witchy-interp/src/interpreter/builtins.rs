@@ -11,7 +11,7 @@ use witchy_syntax::diag::DiagTemplate;
 use witchy_syntax::intrinsics;
 
 use super::*;
-use super::reflection::validate_compiler_named_type;
+use super::reflection::{compiler_optional_block_syntax_value, validate_compiler_named_type};
 
 impl Interpreter {
     pub(super) fn call_builtin(&mut self, name: &str, args: &[Value]) -> Result<Option<Value>, RuntimeError> {
@@ -1336,6 +1336,19 @@ impl Interpreter {
                     Ok(Some(Value::Ctor { name: "meta.CompilerExprSyntax".into(), fields: Rc::new(vec![Value::str(handle), Value::str(source)]) }))
                 }
                 _ => err("meta.expr_block expects BlockSyntax"),
+            },
+            name if intrinsics::is_meta_expr_if(name) => match args {
+                [cond, then_body, else_body] => {
+                    if self.fresh_ident_scope.is_none() {
+                        return err("meta.expr_if is available only during compile-time expansion");
+                    }
+                    let cond = compiler_expr_syntax_value(cond, &self.compiler_expr_syntax)?;
+                    let then_block = compiler_block_syntax_value(then_body, &self.compiler_block_syntax)?;
+                    let else_block = compiler_optional_block_syntax_value(else_body, &self.compiler_block_syntax)?;
+                    let expr = Expr::If { cond: Box::new(cond), then_block, else_block };
+                    Ok(Some(self.store_compiler_expr_syntax("expression-if", expr, Vec::new())?))
+                }
+                _ => err("meta.expr_if expects ExprSyntax, BlockSyntax, and Option(BlockSyntax)"),
             },
             name if intrinsics::is_meta_expr_await(name) => match args {
                 [value] => {

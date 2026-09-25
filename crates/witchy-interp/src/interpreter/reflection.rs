@@ -405,6 +405,20 @@ pub(super) fn compiler_block_syntax_value(
     }
 }
 
+pub(super) fn compiler_optional_block_syntax_value(
+    value: &Value,
+    compiler_block_syntax: &HashMap<String, Block>,
+) -> Result<Option<Block>, RuntimeError> {
+    let Value::Ctor { name, fields } = value else {
+        return err("meta.expr_if expected Option(BlockSyntax) else branch");
+    };
+    match (name.rsplit_once('.').map_or(name.as_str(), |(_, tail)| tail), fields.as_slice()) {
+        ("Some", [body]) => Ok(Some(compiler_block_syntax_value(body, compiler_block_syntax)?)),
+        ("None", []) => Ok(None),
+        _ => err("meta.expr_if expected Option(BlockSyntax) else branch"),
+    }
+}
+
 pub(super) fn compiler_item_holes(
     values: &[Value],
     compiler_expr_syntax: &HashMap<String, Expr>,

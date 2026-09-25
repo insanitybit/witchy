@@ -95,6 +95,7 @@ pub enum IntrinsicId {
     MetaExprRecord,
     MetaExprMatch,
     MetaExprBlock,
+    MetaExprIf,
     MetaExprAwait,
     MetaMatchArm,
     MetaBlock,
@@ -664,6 +665,7 @@ pub(crate) const META_EXPR_TUPLE: &str = "__meta_expr_tuple";
 pub(crate) const META_EXPR_RECORD: &str = "__meta_expr_record";
 pub(crate) const META_EXPR_MATCH: &str = "__meta_expr_match";
 pub(crate) const META_EXPR_BLOCK: &str = "__meta_expr_block";
+pub(crate) const META_EXPR_IF: &str = "__meta_expr_if";
 pub(crate) const META_EXPR_AWAIT: &str = "__meta_expr_await";
 pub(crate) const META_MATCH_ARM: &str = "__meta_match_arm";
 pub(crate) const META_BLOCK: &str = "__meta_block";
@@ -2091,6 +2093,21 @@ pub const ALL: &[IntrinsicSpec] = &[
         dynamic_wir_helpers: false,
         wir_host_call: None,
         diagnostic_name: "meta.expr_block",
+        private_callers: META_BRIDGE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::MetaExprIf,
+        name: META_EXPR_IF,
+        arity: 3,
+        signature: IntrinsicSignature::DeclaredInSource,
+        effect: IntrinsicEffect::Toolchain,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::FrontendGenerated,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: NO_HELPERS,
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: "meta.expr_if",
         private_callers: META_BRIDGE_CALLERS,
     },
     IntrinsicSpec {
@@ -3962,6 +3979,10 @@ pub fn is_meta_expr_match(name: &str) -> bool {
 
 pub fn is_meta_expr_block(name: &str) -> bool {
     lookup(name).is_some_and(|spec| spec.id == IntrinsicId::MetaExprBlock)
+}
+
+pub fn is_meta_expr_if(name: &str) -> bool {
+    lookup(name).is_some_and(|spec| spec.id == IntrinsicId::MetaExprIf)
 }
 
 pub fn is_meta_expr_await(name: &str) -> bool {
