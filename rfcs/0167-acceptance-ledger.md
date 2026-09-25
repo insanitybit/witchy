@@ -56,8 +56,11 @@ is needed for soundness.
 ## Exact-tip evidence checkpoint
 
 Row G shared list-layout correspondence (architecture implemented, semantic
-evidence pending, 2026-09-25): SafeWIR's ordinary packed-List layout walk now
-consumes the same typed `ListElementProjection` as the checked layout catalog.
+evidence pending, 2026-09-25): the lowerer and SafeWIR's ordinary packed-List
+layout walk now consume the same typed `ListElementProjection` as the checked
+layout catalog. The lowerer selects element value classes from that plan but
+still requires its prior unique physical layout, exact scalar kind, owned
+pointer, dynamic header, and stride checks.
 A recursive owned element must pass the complete carrier-to-physical-layout
 relation; an explicit refusal cannot fall through to legacy pointer matching.
 Callable and other layout-only elements still require their existing physical

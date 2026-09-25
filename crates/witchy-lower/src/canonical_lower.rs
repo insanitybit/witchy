@@ -52,7 +52,7 @@ use witchy_syntax::ast::{BinOp, Convention, Expr, Item, Pattern, Stmt, Type, Typ
 use witchy_canonical_source::aggregates::{canonical_owner_aggregate_identity, concrete_aggregate_identity, dictionary_as_tuple, scalar_aggregate_shape, ScalarAggregateShape, ScalarVariant};
 use witchy_canonical_source::carrier::CarrierElement;
 use witchy_canonical_source::rooted_view::{RetainedRootStorage, RootedViewStorage};
-use witchy_canonical_source::storage::StoragePlan;
+use witchy_canonical_source::storage::{ListElementProjection, StoragePlan};
 use witchy_canonical_source::structural_identity::SourceTypeKey;
 use witchy_canonical_source::abi::CanonicalScalarKind;
 use witchy_canonical_source::access::{
@@ -20044,44 +20044,69 @@ fn list_layout(
     if name != "List" || arguments.len() != 1 {
         return Err(CanonicalLoweringError::UnsupportedType(source.clone()));
     }
-    // `Duration` is carried in the `Int` lane but keeps its own physical
-    // scalar identity, so a `List(Duration)` never matches a `List(Int)`.
-    let duration_element = matches!(arguments[0].unqualified(),
+    let projection = ListElementProjection::classify(&arguments[0], definitions);
+    if matches!(projection, ListElementProjection::Refused) {
+        return Err(CanonicalLoweringError::UnsupportedListElement(source.clone()));
+    }
+    // `Duration` uses the Int value lane but a distinct physical scalar.
+    let duration_element = matches!(
+        &projection,
+        ListElementProjection::Owned(CarrierElement::Scalar(CanonicalScalarKind::Duration))
+    ) || matches!(arguments[0].unqualified(),
         Type::Named(element, args) if element == "Duration" && args.is_empty());
-    let expected_element = match arguments[0].unqualified() {
-        Type::Named(element, args) if element == "Int" && args.is_empty() => ValueType::Int,
-        _ if duration_element => ValueType::Int,
-        Type::Named(element, args) if element == "Float" && args.is_empty() => ValueType::Float,
-        Type::Named(element, args) if element == "Bool" && args.is_empty() => ValueType::Bool,
-        Type::Named(element, args) if matches!(element.as_str(), "Nil" | "Unit") && args.is_empty() => ValueType::Unit,
-        Type::Tuple(items) if items.is_empty() => ValueType::Unit,
-        Type::Named(element, args) if matches!(element.as_str(), "String" | "Bytes") && args.is_empty() => {
-            ValueType::Ref(string_layout(&Type::Named("String".into(), Vec::new()), layout_bundle, layouts)?)
-        }
-        Type::Named(element, _) if element == "List" => {
+    let aggregate_element = || -> Result<ValueType, CanonicalLoweringError> {
+        let Some(shape) = scalar_aggregate_shape(&arguments[0], definitions).filter(|shape| !shape.packed) else {
+            return Err(CanonicalLoweringError::UnsupportedListElement(source.clone()));
+        };
+        Ok(ValueType::Ref(aggregate_layout_for_source(
+            &arguments[0], &shape.fields, shape.tagged, layout_bundle, layouts,
+            closure_layouts, definitions,
+        )?))
+    };
+    let byte_buffer_element = || -> Result<ValueType, CanonicalLoweringError> {
+        Ok(ValueType::Ref(string_layout(
+            &Type::Named("String".into(), Vec::new()), layout_bundle, layouts,
+        )?))
+    };
+    let expected_element = match projection {
+        ListElementProjection::Owned(CarrierElement::Scalar(kind)) => match kind {
+            CanonicalScalarKind::Int | CanonicalScalarKind::Duration => ValueType::Int,
+            CanonicalScalarKind::Float => ValueType::Float,
+            CanonicalScalarKind::Bool => ValueType::Bool,
+            CanonicalScalarKind::Unit => ValueType::Unit,
+        },
+        ListElementProjection::Owned(CarrierElement::String | CarrierElement::Bytes)
+        | ListElementProjection::RetainedByteBuffer(_) => byte_buffer_element()?,
+        ListElementProjection::Owned(CarrierElement::List(_)) => {
             ValueType::Ref(list_layout(&arguments[0], layout_bundle, layouts, closure_layouts, definitions)?.0)
         }
-        Type::Fn(..) => ValueType::Ref(
-            *closure_layouts
-                .get(&crate::canonical_layouts::canonical_closure_key(&arguments[0], definitions))
+        ListElementProjection::Owned(CarrierElement::Tuple(_)
+            | CarrierElement::Dict(_, _)
+            | CarrierElement::Record { .. }
+            | CarrierElement::Sum { .. }) => aggregate_element()?,
+        ListElementProjection::RetainedCallable(plan) => ValueType::Ref(
+            *closure_layouts.get(plan.family())
                 .ok_or_else(|| CanonicalLoweringError::UnsupportedType(arguments[0].clone()))?,
         ),
-        // An aggregate element (a record, sum, tuple, scalar Option/Result)
-        // lives behind an owned pointer slot to its record layout.
-        _ => match scalar_aggregate_shape(&arguments[0], definitions) {
-            Some(shape) if !shape.packed => {
-                ValueType::Ref(aggregate_layout_for_source(
-                    &arguments[0],
-                    &shape.fields,
-                    shape.tagged,
-                    layout_bundle,
-                    layouts,
-                    closure_layouts,
-                    definitions,
-                )?)
+        ListElementProjection::LayoutOnly => match arguments[0].unqualified() {
+            Type::Named(element, args) if element == "Int" && args.is_empty() => ValueType::Int,
+            _ if duration_element => ValueType::Int,
+            Type::Named(element, args) if element == "Float" && args.is_empty() => ValueType::Float,
+            Type::Named(element, args) if element == "Bool" && args.is_empty() => ValueType::Bool,
+            Type::Named(element, args) if matches!(element.as_str(), "Nil" | "Unit") && args.is_empty() => ValueType::Unit,
+            Type::Tuple(items) if items.is_empty() => ValueType::Unit,
+            Type::Named(element, args) if matches!(element.as_str(), "String" | "Bytes") && args.is_empty() => byte_buffer_element()?,
+            Type::Named(element, _) if element == "List" => {
+                ValueType::Ref(list_layout(&arguments[0], layout_bundle, layouts, closure_layouts, definitions)?.0)
             }
-            _ => return Err(CanonicalLoweringError::UnsupportedListElement(source.clone())),
+            Type::Fn(..) => ValueType::Ref(
+                *closure_layouts
+                    .get(&crate::canonical_layouts::canonical_closure_key(&arguments[0], definitions))
+                    .ok_or_else(|| CanonicalLoweringError::UnsupportedType(arguments[0].clone()))?,
+            ),
+            _ => aggregate_element()?,
         },
+        ListElementProjection::Refused => unreachable!("checked above"),
     };
 
     let mut candidates = Vec::new();
