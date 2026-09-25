@@ -24,7 +24,15 @@ pub enum CarrierElement {
     Record { name: String, arguments: Vec<Self>, fields: Vec<Self> },
     /// A checked tagged heap aggregate. Variant payloads occupy flattened
     /// nullable slots; only the active variant's slots are populated.
-    Sum { name: String, arguments: Vec<Self>, variants: Vec<Vec<Self>> },
+    Sum { name: String, arguments: Vec<Self>, variants: Vec<CarrierVariant> },
+}
+
+/// A checked constructor's name and fields are both part of the carrier's
+/// structural identity; equal storage with different tag meanings is distinct.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct CarrierVariant {
+    pub name: String,
+    pub fields: Vec<CarrierElement>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -167,9 +175,10 @@ impl CarrierElement {
                             if shape.variants.len() < 2 { return None; }
                             let variants = shape.variants.iter().map(|variant| {
                                 let end = variant.first_field.checked_add(variant.arity)?;
-                                shape.fields.get(variant.first_field..end)?.iter().map(|field| {
+                                let fields = shape.fields.get(variant.first_field..end)?.iter().map(|field| {
                                     Self::from_checked_type_with_definitions_at(field, definitions, depth + 1, budget)
-                                }).collect::<Option<Vec<_>>>()
+                                }).collect::<Option<Vec<_>>>()?;
+                                Some(CarrierVariant { name: variant.name.clone(), fields })
                             }).collect::<Option<Vec<_>>>()?;
                             Some(Self::Sum { name: name.clone(), arguments, variants })
                         } else {
@@ -414,10 +423,11 @@ impl CarrierElement {
                 }
                 Self::Sum { name, arguments, variants } => {
                     if name.len() > 1_024 || arguments.len() > 128 || variants.len() < 2 || variants.len() > 128
-                        || !variants.iter().try_fold(0usize, |count, variant| count.checked_add(variant.len())).is_some_and(|count| count <= 127) {
+                        || variants.iter().any(|variant| variant.name.len() > 1_024)
+                        || !variants.iter().try_fold(0usize, |count, variant| count.checked_add(variant.fields.len())).is_some_and(|count| count <= 127) {
                         return None;
                     }
-                    pending.extend(arguments.iter().chain(variants.iter().flatten()).map(|field| (field, depth + 1)));
+                    pending.extend(arguments.iter().chain(variants.iter().flat_map(|variant| &variant.fields)).map(|field| (field, depth + 1)));
                 }
             }
         }
@@ -487,7 +497,7 @@ impl CarrierElement {
                 }
                 Self::Sum { variants, .. } => {
                     let Some(actual) = query.owned_tagged_fields(layout, slot) else { return false };
-                    let expected = variants.iter().flatten().collect::<Vec<_>>();
+                    let expected = variants.iter().flat_map(|variant| &variant.fields).collect::<Vec<_>>();
                     return actual.len() == expected.len()
                         && expected.iter().zip(actual).all(|(field, child)| {
                             field.matches_layout_at(query, child, CarrierSlot::OwnedNullable)
@@ -543,8 +553,10 @@ impl CarrierElement {
                     for argument in arguments { encode(argument, bytes); }
                     bytes.extend_from_slice(&(variants.len() as u32).to_le_bytes());
                     for variant in variants {
-                        bytes.extend_from_slice(&(variant.len() as u32).to_le_bytes());
-                        for field in variant { encode(field, bytes); }
+                        bytes.extend_from_slice(&(variant.name.len() as u32).to_le_bytes());
+                        bytes.extend_from_slice(variant.name.as_bytes());
+                        bytes.extend_from_slice(&(variant.fields.len() as u32).to_le_bytes());
+                        for field in &variant.fields { encode(field, bytes); }
                     }
                     bytes.push(11);
                 }
