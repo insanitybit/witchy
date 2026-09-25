@@ -1334,6 +1334,8 @@ group_is_busy() { # group_is_busy <pgid>
 # include_str!'d into the witchy binary, so deleting or renaming one breaks
 # the build and must still be gated.
 GATE_NO_TEST_PATHS='^(rfcs/|wiki/|bugs/|docs/|external-refs/|scratch/|security-eval/|\.claude/|\.codex/|CLAUDE\.md$|AGENTS\.md$|tests/glamour\.rs$|tests/glamour/|src/example_tests/glamour\.rs$|src/example_tests/pm_coven\.rs$|src/source/package_inputs/registry_replay_tests\.rs$|src/commands/project_resolver_tests\.rs$|projects/coven-web/)'
+QUEUE_INFRA_PATHS='^(\.mbx\.toml|\.config/nextest\.toml|scripts/(check|gate-report|merge-queue|nextest-list-wrapper|state-paths|test-for-paths|test-impact|worktree-status|worktree-warm)\.(sh|py)|tools/merge-queue-tests/)'
+QUEUE_INFRA_CORE_PATHS='^(\.mbx\.toml|scripts/(merge-queue|state-paths|check|test-for-paths|test-impact|gate-report)\.(sh|py)|tools/merge-queue-tests/)'
 
 # Docs-safe path set, matching check.sh's WITCHY_GATE_SCOPE=docs classifier.
 # RFCs have lightweight cross-link/status contracts in repo-tests; docs scope
@@ -1350,6 +1352,32 @@ diff_is_docs_safe() { # diff_is_docs_safe <newline-separated-paths>
         return 1
     fi
     return 0
+}
+
+diff_is_queue_infra_only() { # diff_is_queue_infra_only <newline-separated-paths>
+    local paths="$1" non_queue_core
+    [ -n "$paths" ] || return 1
+    printf '%s\n' "$paths" | grep -cE "$QUEUE_INFRA_CORE_PATHS" >/dev/null || return 1
+    non_queue_core="$(printf '%s\n' "$paths" \
+        | grep -vE "${QUEUE_INFRA_CORE_PATHS}|^scripts/MERGE-QUEUE\.md$|${GATE_NO_TEST_PATHS}" || true)"
+    [ -z "$non_queue_core" ]
+}
+
+diff_batch_scope_class() { # diff_batch_scope_class <newline-separated-paths>
+    if diff_is_docs_safe "$1"; then
+        printf 'docs\n'
+    elif diff_is_queue_infra_only "$1"; then
+        printf 'queue-infra\n'
+    else
+        printf 'product\n'
+    fi
+}
+
+batch_scopes_are_compatible() { # batch_scopes_are_compatible <leader-class> <candidate-class>
+    case "$1:$2" in
+        docs:docs | queue-infra:queue-infra | product:product | product:docs) return 0 ;;
+        *) return 1 ;;
+    esac
 }
 
 # example_tests is compiled by the focused nextest selection. It cannot stale
@@ -2617,13 +2645,14 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
     local qf cand cand_id cand_attempt cdiff csha tip added stack_mode=0
     local batch_max="${MERGE_QUEUE_BATCH_MAX:-5}"
     local docs_batch_max="${MERGE_QUEUE_DOCS_BATCH_MAX:-25}"
-    local batch_ceiling="$batch_max" batch_limit docs_batch_mode=0 initial_diff=""
+    local batch_ceiling="$batch_max" batch_limit docs_batch_mode=0 initial_diff="" batch_scope_class=""
     case "$docs_batch_max" in '' | *[!0-9]* | 0) docs_batch_max="$batch_max" ;; esac
     # Raise only the documentation ceiling. The classifier is intentionally
     # stricter than gate_scope=docs: spec/book/README Markdown still receives
     # the full product gate, but may be integrated in one large compatible
     # batch. Any code/config/non-Markdown path keeps the semantic ceiling.
     initial_diff="$(git -C "$gate_wt" diff --name-only --no-renames "$base..HEAD" 2>/dev/null || true)"
+    batch_scope_class="$(diff_batch_scope_class "$initial_diff")"
     if [ -n "$initial_diff" ] \
         && ! printf '%s\n' "$initial_diff" | grep -cEv '\.md$' >/dev/null; then
         docs_batch_mode=1
@@ -2698,6 +2727,8 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
             git -C "$root" cat-file -e "$csha^{commit}" 2>/dev/null || continue
             cdiff="$(git -C "$root" diff --name-only "master...$csha" 2>/dev/null | sort -u)"
             [ -n "$cdiff" ] || continue
+            batch_scopes_are_compatible "$batch_scope_class" "$(diff_batch_scope_class "$cdiff")" \
+                || continue
             if [ "$docs_batch_mode" -eq 1 ] \
                 && printf '%s\n' "$cdiff" | grep -cEv '\.md$' >/dev/null; then
                 continue
@@ -2881,8 +2912,7 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
     # reds without weakening validation of relevant infrastructure changes.
     local queue_infra=0
     if [ -n "$changed" ] \
-        && printf '%s\n' "$changed" \
-            | grep -cE '^(\.mbx\.toml|\.config/nextest\.toml|scripts/(check|gate-report|merge-queue|nextest-list-wrapper|state-paths|test-for-paths|test-impact|worktree-status|worktree-warm)\.(sh|py)|tools/merge-queue-tests/)' >/dev/null; then
+        && printf '%s\n' "$changed" | grep -cE "$QUEUE_INFRA_PATHS" >/dev/null; then
         queue_infra=1
     fi
 
@@ -2892,16 +2922,8 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
     # config and worktree tooling can still affect general product-gate
     # behavior and therefore retain the complete gate.
     local queue_infra_only=0
-    local non_queue_core=""
-    if [ "$queue_infra" -eq 1 ] && [ -n "$changed" ]; then
-        non_queue_core="$(printf '%s\n' "$changed" \
-            | grep -vE "^(\.mbx\.toml|scripts/(merge-queue|state-paths|check|test-for-paths|test-impact|gate-report)\.(sh|py)|scripts/MERGE-QUEUE\.md|tools/merge-queue-tests/)|${GATE_NO_TEST_PATHS#^}" \
-            || true)"
-        if [ -z "$non_queue_core" ] \
-            && printf '%s\n' "$changed" \
-                | grep -cE '^(\.mbx\.toml|scripts/(merge-queue|state-paths|check|test-for-paths|test-impact|gate-report)\.(sh|py)|tools/merge-queue-tests/)' >/dev/null; then
-            queue_infra_only=1
-        fi
+    if [ "$queue_infra" -eq 1 ] && diff_is_queue_infra_only "$changed"; then
+        queue_infra_only=1
     fi
 
     gate_attempt=$((gate_attempt + 1))

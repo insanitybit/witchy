@@ -597,6 +597,49 @@ fn mbx_policy_batch_is_queue_infra_only_not_workspace_nextest() {
 }
 
 #[test]
+fn opportunistic_batches_do_not_mix_queue_infra_and_product_scopes() {
+    let fixture = QueueFixture::stack(&["scripts/check.sh"]);
+    run_git(&fixture.root, &["switch", "-c", "product", "master"]);
+    let product = fixture.root.join("crates/witchy-types/src/scope.rs");
+    fs::create_dir_all(product.parent().expect("product path has a parent"))
+        .expect("create product path");
+    fs::write(&product, "product\n").expect("write product change");
+    run_git(&fixture.root, &["add", "crates/witchy-types/src/scope.rs"]);
+    run_git(&fixture.root, &["commit", "-m", "product change"]);
+    run_git(&fixture.root, &["switch", "master"]);
+
+    fixture.mq_ok(&["submit", "--front", "a"], "true");
+    fixture.mq_ok(&["submit", "product"], "true");
+    fixture.mq_ok(
+        &["run", "--once"],
+        "test \"$WITCHY_GATE_QUEUE_INFRA_ONLY\" = 1",
+    );
+
+    assert!(run_git(&fixture.root, &["show", "master:scripts/check.sh"])
+        .status
+        .success());
+    assert!(
+        !git_output(&fixture.root, &["show", "master:crates/witchy-types/src/scope.rs"])
+            .status
+            .success(),
+        "product change rode along with the queue-infrastructure gate",
+    );
+    let merged: Vec<_> = fixture
+        .journal()
+        .into_iter()
+        .filter(|event| event["event"] == "merged")
+        .collect();
+    assert_eq!(merged.len(), 1);
+    assert_eq!(merged[0]["branch"], "a");
+    assert_eq!(merged[0]["batch"], "1");
+    assert_eq!(
+        fixture.change("product")["state"],
+        "red",
+        "the product change should be gated separately and fail the queue-only gate assertion",
+    );
+}
+
+#[test]
 fn example_tests_only_batch_classifies_focused_nextest_and_skips_heavy_legs() {
     let fixture = QueueFixture::stack(&["src/example_tests/rfc0167_views.rs"]);
     fixture.mq_ok(&["submit", "a"], "true");
