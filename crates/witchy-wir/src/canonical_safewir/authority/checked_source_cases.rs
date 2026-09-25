@@ -146,7 +146,9 @@ pub fn option_rooted_int_view_requires_checked_payload_state(checker: &dyn Sourc
         let declaration = canonical.closed_callable_declaration(0).expect("Option declaration");
         let access = canonical.access_facts().expect("retained access facts")
             .declaration(&declaration.name).expect("exact declaration access");
-        assert!(option_rooted_int_view_result_relation_is_checked(declaration, access));
+        assert!(aggregate_reference_result_relation_is_checked(
+            declaration, Some(access), canonical.type_definitions(),
+        ));
     });
 }
 
