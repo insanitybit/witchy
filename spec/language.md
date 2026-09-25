@@ -1068,11 +1068,12 @@ The exact whole-root views `&Dict(String, Int)`, `&Dict(String, Bool)`, and
 dictionary root, so a later update of the owner does not change the view's
 snapshot. Closure capture of a dictionary view and other dictionary-root view
 shapes remain unsupported.
-The same exact scalar-root path is implemented for `&Dict(String, Duration)`,
-with a distinct source ABI identity and a Duration value-list layout. Its
-runtime snapshot and zero-leak evidence is pending; this form is not yet a
-proven admitted carrier. Nested and qualified dictionary values remain outside
-the scalar-root path.
+The same exact whole-root path is implemented for `&Dict(String, Duration)`
+and `&Dict(String, String)`, each with a distinct source ABI identity. Duration
+uses its value-list layout; String values remain owned pointer children of the
+retained dictionary. Their runtime snapshot and zero-leak evidence is pending;
+these forms are not yet proven admitted carriers. Nested, qualified, and
+view-valued dictionary values remain outside this path.
 The exact whole-root view `&(Int, String)` also retains its tuple root. A
 later replacement of the owning tuple leaves both fields of the view at their
 earlier values. Other whole tuple-root shapes have no carrier here. This exact

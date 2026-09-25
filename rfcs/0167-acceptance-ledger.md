@@ -92,6 +92,15 @@ Qualified and deeper child lists, slice `.owned()` materialization, and
 closure capture remain refused. No hand-computed result, admitted unoptimized
 Wasm run, or zero-leak audit has been recorded; row G remains open.
 
+Row G String-valued dictionary expansion (implemented but unverified,
+2026-09-24): exact whole-root `&Dict(String, String)` now has a distinct
+checked/source DictRoot identity. The retained dictionary owns its String
+value children through the admitted dictionary layout. Qualified, nested,
+and view-valued dictionary values still refuse canonical admission; the
+existing negative fixture now checks the nested value boundary. No
+hand-computed result, admitted unoptimized Wasm run, or zero-leak audit has
+been recorded for this new shape; row G remains open.
+
 Row G tuple scalar/String expansion (implemented but unverified,
 2026-09-24): the compiler recognizes exact whole-root `&(S, String)` for
 unqualified `S = Float`, `Bool`, or `Duration`, alongside the previously
