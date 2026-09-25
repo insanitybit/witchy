@@ -1164,6 +1164,8 @@ impl Interpreter {
                         "-" => UnOp::Neg,
                         "!" => UnOp::Not,
                         "~" => UnOp::BitNot,
+                        "&" => UnOp::Borrow,
+                        "*" => UnOp::Deref,
                         _ => return err(format!("meta.expr_unary: unsupported operator `{op}`")),
                     };
                     let hole_ancestry = compiler_direct_hole_origins(

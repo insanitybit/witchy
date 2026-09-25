@@ -2886,7 +2886,7 @@ A compiler-owned binary expression. `op` is admitted by the compiler's fixed sou
 
 #### `fn expr_unary(op: String, value: ExprSyntax) -> ExprSyntax`
 
-Builds a compiler-owned unary expression for exactly `-`, `!`, or `~`. Other operators, including ownership and suspension operators, are refused. The operand must be a sealed expression handle.
+Builds a compiler-owned unary expression for exactly `-`, `!`, `~`, `&`, or `*`. Ordinary checking validates that `&` forms an admitted rooted view of a place and `*` reads an admitted view. Move, mutable borrow, and suspension operators remain refused here. The operand must be sealed.
 
 #### `fn expr_range(lo: ExprSyntax, hi: ExprSyntax, inclusive: Bool) -> ExprSyntax`
 

@@ -393,9 +393,10 @@ pub fn expr_binary(op: String, lhs: ExprSyntax, rhs: ExprSyntax) -> ExprSyntax:
 fn __meta_expr_binary(op: String, lhs: ExprSyntax, rhs: ExprSyntax) -> ExprSyntax:
     __meta_expr_binary(op, lhs, rhs)
 
-// Builds a compiler-owned unary expression for exactly `-`, `!`, or `~`.
-// Other operators, including ownership and suspension operators, are refused.
-// The operand must be a sealed expression handle.
+// Builds a compiler-owned unary expression for exactly `-`, `!`, `~`, `&`,
+// or `*`. Ordinary checking validates that `&` forms an admitted rooted view
+// of a place and `*` reads an admitted view. Move, mutable borrow, and
+// suspension operators remain refused here. The operand must be sealed.
 pub fn expr_unary(op: String, value: ExprSyntax) -> ExprSyntax:
     __meta_expr_unary(op, value)
 

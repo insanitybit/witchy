@@ -1561,6 +1561,8 @@ ordinary reassignment to an existing mutable local. It does not construct a
 field or index place assignment.
 `meta.expr_index` retains sealed base and index expressions as an ordinary
 subscript; emitted code still receives the usual type and bounds checks.
+`meta.expr_unary` admits only `-`, `!`, `~`, `&`, and `*` on sealed expressions;
+generated views and dereferences receive ordinary place and carrier checks.
 `quote type:` covers named, generic, module-qualified, tuple, function,
 ownership-qualified, capability-right, anonymous structural, and reference
 types.
