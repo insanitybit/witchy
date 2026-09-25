@@ -55,6 +55,20 @@ is needed for soundness.
 
 ## Exact-tip evidence checkpoint
 
+Row G SafeWIR aggregate-view and callable-family classification (architecture
+implemented, semantic evidence pending, 2026-09-25): the checked-source ABI
+gate now reads `StoragePlan::AggregateView` for tuple, record, sum, Option,
+and Result shells carrying authenticated views. It retains the existing
+opaque owner-family, exact source, and physical layout checks; oversized
+source graphs can now refuse during the shared bounded preflight. SafeWIR's
+closure-family key now comes from the same canonical-source normalizer as
+layout projection rather than an independent recursive copy. The exact
+callable signature remains separately authenticated. Direct callers of that
+legacy family normalizer still need one explicit structural resource guard;
+this move does not add one. Borrow-alias result
+exceptions retain their access-result evidence and are not inferred from
+aggregate storage. No A–O row closes here.
+
 Row G shared list-layout correspondence (architecture implemented, semantic
 evidence pending, 2026-09-25): the lowerer and SafeWIR's ordinary packed-List
 layout walk now consume the same typed `ListElementProjection` as the checked

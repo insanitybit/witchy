@@ -7,26 +7,7 @@ pub(crate) fn source_closure_family_key(
     source: &witchy_syntax::ast::Type,
     records: &ScalarRecordFields,
 ) -> witchy_syntax::ast::Type {
-    use witchy_syntax::ast::{CallableQualifiers, Convention, Type};
-    fn normalize(source: &Type, records: &ScalarRecordFields) -> Type {
-        if let Some(view) = witchy_canonical_source::aggregates::owner_carried_view_identity(source, records) {
-            return view;
-        }
-        match source.unqualified() {
-            Type::Fn(parameters, result, conventions, _) => Type::Fn(
-                parameters.iter().map(|parameter| normalize(parameter, records)).collect(),
-                Box::new(normalize(result, records)),
-                if conventions.is_empty() { vec![Convention::Let; parameters.len()] }
-                else { conventions.clone() },
-                CallableQualifiers::default(),
-            ),
-            Type::Named(name, arguments) => Type::Named(name.clone(), arguments.iter().map(|argument| normalize(argument, records)).collect()),
-            Type::Tuple(fields) => Type::Tuple(fields.iter().map(|field| normalize(field, records)).collect()),
-            other => other.clone(),
-        }
-    }
-    normalize(&witchy_canonical_source::aggregates::concrete_aggregate_identity(source, records)
-        .unwrap_or_else(|| source.unqualified().clone()), records)
+    witchy_canonical_source::callable_storage::canonical_closure_family_type(source, records)
 }
 
 pub(super) const MAX_SOURCE_CORRESPONDENCE_PAIRS: usize = 65_536;
@@ -494,7 +475,14 @@ pub(super) fn is_direct_rooted_view_aggregate_carrier(
     source: &witchy_syntax::ast::Type,
     records: &ScalarRecordFields,
 ) -> bool {
-    witchy_canonical_source::aggregates::is_rooted_int_view_aggregate(source, records)
+    matches!(
+        witchy_canonical_source::storage::StoragePlan::classify(
+            source.unqualified(), records, |_| Some(0),
+        ),
+        witchy_canonical_source::storage::StoragePlan::AggregateView(
+            witchy_canonical_source::aggregates::ViewCarrierPlan::Aggregate { .. }
+        )
+    )
 }
 
 pub(super) fn is_shared_reference_tuple_carrier(source: &witchy_syntax::ast::Type) -> bool {
