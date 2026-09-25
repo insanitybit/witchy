@@ -58,6 +58,6 @@ nullable-child/refcount adversarial tests before source admission is enabled.
 ## Current slice
 
 Only layout identity/transport and the production refusal are implemented.
-`recursive_layout_transport` tests self/mutual recursion, round-trip identity,
+`structural_contracts::recursive_layout_transport` tests self/mutual recursion, round-trip identity,
 missing/rebound/inline rejection, binding-dependent bytes, and the encoder
 authority refusal. It establishes infrastructure, not recursive source coverage.

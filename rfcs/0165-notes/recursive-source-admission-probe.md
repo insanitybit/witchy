@@ -12,7 +12,7 @@ the complete source/oracle/admitted-Wasm probe passed in 0.26 seconds. All
 three executions returned `5`; the oracle and Wasm heap audits reported zero
 leaks despite storing the same child in both branch slots.
 
-The `recursive_layout_transport` target also passed. It now submits an actual
+The `structural_contracts::recursive_layout_transport` module also passed. It now submits an actual
 candidate with pointer-bearing nominal static data, empty bytes, and a zero
 extent, and requires `PointerBearingStaticData`. Unbound, rebound, inline,
 and malformed transport rejection coverage is retained. A well-bound unused

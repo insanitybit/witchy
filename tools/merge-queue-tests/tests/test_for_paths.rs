@@ -1058,11 +1058,11 @@ fn semantic_conformance_edits_run_the_known_independent_expectation_probe_first(
 fn owned_slot_child_storage_edits_run_the_known_admission_probe_first() {
     let commands = selected(&[
         "--edit-loop",
-        "crates/witchy-wir/tests/owned_slot_child_storage.rs",
+        "crates/witchy-wir/tests/structural_contracts/owned_slot_child_storage.rs",
     ]);
     assert_eq!(
         commands,
-        ["cargo nextest run -p witchy-wir --features native --test owned_slot_child_storage -E 'test(=owned_slots_require_managed_child_storage_before_consuming_move)'"],
+        ["cargo nextest run -p witchy-wir --features native --test structural_contracts -E 'test(=owned_slot_child_storage::owned_slots_require_managed_child_storage_before_consuming_move)'"],
         "{commands:?}"
     );
 }

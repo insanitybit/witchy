@@ -12,7 +12,7 @@ No concrete bypass or missing fail-closed condition was found in the reviewed pr
 - Version-2 export walks ordinary descriptor dependencies acyclically, then follows every reachable opaque nominal to require and include its binding target; it serializes a sorted binding table (`crates/witchy-wir/src/layout/transport.rs:36-73`, `:87-115`).
 - Decode imports descriptors, validates strictly sorted bindings through `bind_nominal`, then rebuilds from roots and requires byte-for-byte canonical equality. This rejects dangling/missing/unused/reordered transport state rather than accepting a partial graph (`crates/witchy-wir/src/layout/transport.rs:120-185`). Descriptor cycles are separately refused during traversal (`crates/witchy-wir/src/layout/transport.rs:486-527`).
 - The initial canonical check decodes the candidate's canonical bytes and rejects if the reconstructed layout interner contains *any* `OpaqueNominal`, before static data, signatures, imports, functions, or contracts are processed (`crates/witchy-wir/src/canonical_safewir/check.rs:242-257`). A concrete body cannot bypass that check because the reachable identity descriptor itself remains in the reconstructed bundle.
-- The targeted tests cover self recursion, mutual recursion, unbound/rebound/inline refusal, binding-dependent bytes, malformed missing-binding bytes, and the production-authority refusal (`crates/witchy-wir/tests/recursive_layout_transport.rs:12-95`).
+- The targeted tests cover self recursion, mutual recursion, unbound/rebound/inline refusal, binding-dependent bytes, malformed missing-binding bytes, and the production-authority refusal (`crates/witchy-wir/tests/structural_contracts/recursive_layout_transport.rs:12-95`).
 
 ## Boundary retained
 
