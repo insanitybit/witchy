@@ -7,10 +7,10 @@ projects/glamour/src/glamour.witchy	496	expression-position-mutator	dict.insert_
 projects/glamour/src/glamour.witchy	504	expression-position-mutator	dict.insert__Int__Bool	-	-
 projects/glamour/src/glamour.witchy	511	expression-position-mutator	dict.insert__Int__Int	-	-
 projects/glamour/src/glamour.witchy	545	expression-position-mutator	dict.insert__Int__Bool	-	-
-std/dict.witchy	32	auxiliary-result-discard	dict.insert	-	-
-std/dict.witchy	38	auxiliary-result-discard	dict.__insert_extract	-	-
-std/dict.witchy	108	auxiliary-result-discard	dict.remove	-	-
-std/dict.witchy	111	auxiliary-result-discard	dict.__remove_extract	-	-
+std/dict.witchy	34	auxiliary-result-discard	dict.insert	-	-
+std/dict.witchy	40	auxiliary-result-discard	dict.__insert_extract	-	-
+std/dict.witchy	110	auxiliary-result-discard	dict.remove	-	-
+std/dict.witchy	113	auxiliary-result-discard	dict.__remove_extract	-	-
 book/src/cookbook-collections.md#block-2	10	expression-position-mutator	Set__insert__String	-	-
 book/src/mutating-methods.md#block-1	7	expression-position-mutator	main.take_last	-	-
 book/src/mutating-methods.md#block-1	12	expression-position-mutator	dict.insert__String__Int	-	-
