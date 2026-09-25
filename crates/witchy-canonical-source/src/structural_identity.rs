@@ -178,10 +178,12 @@ impl Encoder {
                 self.byte(4);
                 self.types(parameters, depth)?;
                 self.ty(result, depth + 1)?;
-                self.count(parameters.len())?;
-                for position in 0..parameters.len() {
-                    let convention = conventions.get(position).copied().unwrap_or_default();
-                    self.byte(match convention {
+                // Preserve the exact checked Type identity. Legacy empty
+                // conventions and an explicit all-Let vector compare unequal
+                // as Types, so their sort keys must remain distinct too.
+                self.count(conventions.len())?;
+                for convention in conventions {
+                    self.byte(match *convention {
                         Convention::Let => 0,
                         Convention::Borrow => 1,
                         Convention::Var => 2,

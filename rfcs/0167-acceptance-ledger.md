@@ -55,6 +55,17 @@ is needed for soundness.
 
 ## Exact-tip evidence checkpoint
 
+Row G typed aggregate family inventory (architecture implemented, semantic
+evidence unchanged, 2026-09-25): the layout projection now orders normalized
+checked aggregate types by a bounded structural key instead of their debug
+rendering. Equal normalized types deduplicate, while key collisions or
+inconsistent checked shapes refuse before family allocation. The typed encoder
+preserves the exact function-convention vector so distinct checked `Type` keys
+cannot collide through legacy empty-convention normalization. This changes
+family ordering and the key bytes of function-bearing types with legacy empty
+conventions; previously emitted layout artifacts fail closed. Admitted Wasm,
+zero-leak evidence, and A–O status remain unchanged.
+
 Row G WIR whole-root source predicate (architecture implemented, semantic
 evidence unchanged, 2026-09-25): SafeWIR's direct rooted whole-root source
 predicate now consumes the shared `StoragePlan` and requires its inline-scalar

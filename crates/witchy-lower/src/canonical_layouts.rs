@@ -734,7 +734,7 @@ impl LayoutProjection {
         // These ids identify candidate types; the independent checker binds
         // the complete family schema back to checked source before admission.
         let mut opaque_signatures = HashSet::new();
-        let mut aggregate_specs = self.visited.iter().filter_map(|ty| {
+        let aggregate_specs = self.visited.iter().filter_map(|ty| {
             let source = canonical_layout_type(ty, &self.definitions);
             // Direct and optional host tokens already have a checked externref
             // ABI. Their source shape must not also mint an aggregate family.
@@ -745,8 +745,22 @@ impl LayoutProjection {
             (!shape.packed && matches!(source.unqualified(), Type::Named(..) | Type::Tuple(..)))
                 .then_some((source, shape))
         }).collect::<Vec<_>>();
-        aggregate_specs.sort_by_key(|(ty, _)| format!("{ty:?}"));
-        aggregate_specs.dedup_by(|(left, _), (right, _)| left == right);
+        let mut keyed_aggregate_specs = aggregate_specs.into_iter().map(|(source, shape)| {
+            let key = SourceTypeKey { source: &source }.digest().ok_or_else(|| {
+                CanonicalLayoutError::InvalidLayout("aggregate family type key exceeds bounds".into())
+            })?;
+            Ok((key, source, shape))
+        }).collect::<Result<Vec<_>, CanonicalLayoutError>>()?;
+        keyed_aggregate_specs.sort_by_key(|(key, _, _)| *key);
+        if keyed_aggregate_specs.windows(2).any(|pair| {
+            pair[0].0 == pair[1].0 && (pair[0].1 != pair[1].1 || pair[0].2 != pair[1].2)
+        }) {
+            return Err(CanonicalLayoutError::InvalidLayout("aggregate family type key collision".into()));
+        }
+        keyed_aggregate_specs.dedup_by(|left, right| left.1 == right.1);
+        let aggregate_specs = keyed_aggregate_specs.into_iter().map(|(_, source, shape)| {
+            (source, shape)
+        }).collect::<Vec<_>>();
         let mut opaque_aggregates = HashSet::new();
         loop {
             let mut changed = false;
