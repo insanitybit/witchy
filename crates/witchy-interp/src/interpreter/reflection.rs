@@ -14,6 +14,18 @@ pub(super) fn compiler_expr_leaf(kind: &str, payload: &str) -> Result<Expr, Runt
         Ok(Expr::Int(payload.parse().map_err(|_| RuntimeError {
             message: "meta.expr_int carried an invalid Int payload".into(),
         })?))
+    } else if kind == "float" {
+        let value: f64 = payload.parse().map_err(|_| RuntimeError {
+            message: "meta.expr_float carried an invalid Float payload".into(),
+        })?;
+        if !value.is_finite() {
+            return err("meta.expr_float requires a finite Float value");
+        }
+        Ok(Expr::Float(value))
+    } else if kind == "duration_ms" {
+        Ok(Expr::Duration(payload.parse().map_err(|_| RuntimeError {
+            message: "meta.expr_duration_ms carried an invalid Int payload".into(),
+        })?))
     } else if kind == "bool" {
         Ok(Expr::Bool(payload.parse().map_err(|_| RuntimeError {
             message: "meta.expr_bool carried an invalid Bool payload".into(),

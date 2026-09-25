@@ -1476,6 +1476,12 @@ holes, the compiler stores an expression template and structurally replaces its
 exact hole nodes. Direct item holes and typed tagged-literal output consume the
 resulting AST without reparsing. Structural `meta.expr_*` builders retain their
 owned child nodes.
+
+`meta.expr_float(value)` constructs a finite Float literal, and
+`meta.expr_duration_ms(ms)` constructs a Duration literal from an exact
+integer millisecond count. Both builders return compiler-owned expression
+nodes; an invalid scalar payload or non-finite Float fails closed.
+
 `quote type:` values likewise retain a compiler-owned type AST. A hole-bearing
 quote stores a type template and structurally replaces its exact hole nodes.
 Direct item holes consume the result without reparsing, including anonymous

@@ -2866,6 +2866,14 @@ Construct a subscript from sealed base and index expressions. Ordinary checking 
 
 #### `fn expr_int(n: Int) -> ExprSyntax`
 
+#### `fn expr_float(value: Float) -> ExprSyntax`
+
+Construct a finite Float literal directly as a compiler-owned expression.
+
+#### `fn expr_duration_ms(ms: Int) -> ExprSyntax`
+
+Construct a Duration literal from its exact integer millisecond count.
+
 #### `fn expr_bool(b: Bool) -> ExprSyntax`
 
 #### `fn expr_string(value: String) -> ExprSyntax`

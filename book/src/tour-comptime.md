@@ -64,6 +64,10 @@ syntax categories before the generated item is appended. `meta.fresh(hint)` crea
 for a generated binding; user source can't spell its reserved name, so a local
 with the same human-readable hint can't capture it.
 
+`meta.expr_float(value)` constructs a finite Float literal, and
+`meta.expr_duration_ms(ms)` constructs a Duration literal from milliseconds.
+Both produce sealed expression handles without parsing source text.
+
 `quote item:` remains compiler-owned syntax from parsing through append; it's
 not rendered and reparsed. Typed holes replace exact expression, type, or
 pattern nodes in that item AST. `quote expr:`, `quote type:`, `quote pattern:`,

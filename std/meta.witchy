@@ -366,6 +366,14 @@ fn __meta_expr_index(base: ExprSyntax, index: ExprSyntax) -> ExprSyntax:
 pub fn expr_int(n: Int) -> ExprSyntax:
     __meta_expr_leaf("int", "${n}")
 
+// Construct a finite Float literal directly as a compiler-owned expression.
+pub fn expr_float(value: Float) -> ExprSyntax:
+    __meta_expr_leaf("float", "${value}")
+
+// Construct a Duration literal from its exact integer millisecond count.
+pub fn expr_duration_ms(ms: Int) -> ExprSyntax:
+    __meta_expr_leaf("duration_ms", "${ms}")
+
 pub fn expr_bool(b: Bool) -> ExprSyntax:
     __meta_expr_leaf("bool", if b: "true" else: "false")
 

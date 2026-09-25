@@ -72,6 +72,15 @@ scope. A focused `witchy-interp` build with the test profile passed. Generated
 CLI execution, admitted unoptimized Wasm, and a zero-leak audit remain pending;
 this does not close row M.
 
+Row M typed numeric and duration literals (implemented but unverified,
+2026-09-25): `meta.expr_float` constructs a finite `Expr::Float` and
+`meta.expr_duration_ms` constructs an exact `Expr::Duration` through the
+existing sealed expression-leaf bridge. Invalid payloads and non-finite Float
+values fail closed. A focused `witchy` build passed, and a fresh CLI `check`
+and `run` of two generated functions printed the hand-computed 11. No
+admitted unoptimized Wasm witness with a zero-leak audit has been recorded,
+so row M remains open.
+
 Row G bounded nested-list carrier (2026-09-24):
 `tests/misc/rfc0167_nested_list_root_view.rs` pins three distinct whole-root
 `&List(List(Int))` paths with hand-computed results: direct relay and nested
