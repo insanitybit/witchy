@@ -2631,11 +2631,24 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
     ensure_gate_worktree
     local base; base="$(git -C "$root" rev-parse master)"
 
+    # Preserve Cargo freshness across candidate preparation. A retry starts by
+    # checking this worktree back out at master and replaying the whole branch;
+    # without this snapshot Git gives every branch-touched file a new mtime and
+    # an assertion-only amendment recompiles the original broad patch. Restore
+    # is blob-checked, so any source that actually changed retains its new mtime.
+    local candidate_mtimes="$qdir/candidate-mtimes.json"
+    rm -f "$candidate_mtimes"
+    if [ -f "$here/build-seed.py" ]; then
+        python3 "$here/build-seed.py" snapshot-mtimes "$gate_wt" \
+            "$candidate_mtimes" >/dev/null 2>&1 || rm -f "$candidate_mtimes"
+    fi
+
     # Build from the current master tree and replay only the submitted patches.
     # `process_one` is called from an `||` list, which disables Bash's implicit
     # errexit inside the function, so guard the correctness boundary explicitly:
     # a sandbox-denied index lock must never leave a stale checkout to be gated.
     if ! git -C "$gate_wt" checkout --detach --quiet "$base"; then
+        rm -f "$candidate_mtimes"
         note "could not check out current master for $branch; refusing to gate the stale checkout"
         local checkout_failed; checkout_failed="$(date +%s)"
         record_attempt blocked "$branch" "$attempt_start" "$checkout_failed" \
@@ -2648,6 +2661,7 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
     fi
     if ! replay_unrepresented_patches "$base" "$submitted_sha"; then
         git -C "$gate_wt" cherry-pick --abort >/dev/null 2>&1 || true
+        rm -f "$candidate_mtimes"
         note "$branch does not replay cleanly onto master (or contains merge commits) — needs a human/agent rebase"
         local conflict_finished; conflict_finished="$(date +%s)"
         record_attempt conflict "$branch" "$attempt_start" "$conflict_finished" \
@@ -2821,6 +2835,15 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
             batch_kind="dependency stack"
         fi
         note "$batch_kind: gating ${#batch_branches[@]} branches at the tip: ${batch_branches[*]}"
+    fi
+
+    # Batch replay is part of candidate preparation too. Restore only after
+    # the final tip is assembled, so a red A+B batch retried as A+B preserves
+    # unchanged files from both branches rather than only the first member.
+    if [ -f "$candidate_mtimes" ]; then
+        python3 "$here/build-seed.py" restore-mtimes "$gate_wt" \
+            "$candidate_mtimes" || true
+        rm -f "$candidate_mtimes"
     fi
 
     # Re-baseline deterministic generated snapshots on the prepared candidate:

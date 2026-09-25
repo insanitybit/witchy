@@ -897,6 +897,93 @@ fn build_seed_finish_never_moves_current_back_to_an_older_snapshot() {
     assert!(seed_root.join("seed-older").is_dir(), "older staging seed should still finish");
 }
 
+#[test]
+fn build_seed_preserves_mtimes_only_for_content_identical_candidate_files() {
+    let repo = temp_repo();
+    let root = repo.path();
+    git(root, &["config", "user.email", "worktree-test@witchy.invalid"]);
+    git(root, &["config", "user.name", "Witchy Worktree Test"]);
+    write(root, "src/unchanged.rs", "pub const VALUE: u8 = 1;\n");
+    write(root, "src/changed.rs", "pub const VALUE: u8 = 1;\n");
+    git(root, &["add", "."]);
+    git(root, &["commit", "--quiet", "-m", "first candidate"]);
+
+    let unchanged_before = std::fs::metadata(root.join("src/unchanged.rs"))
+        .expect("unchanged metadata")
+        .modified()
+        .expect("unchanged mtime");
+    let changed_before = std::fs::metadata(root.join("src/changed.rs"))
+        .expect("changed metadata")
+        .modified()
+        .expect("changed mtime");
+    let directory_before = std::fs::metadata(root.join("src"))
+        .expect("directory metadata")
+        .modified()
+        .expect("directory mtime");
+    let snapshot = root.join("candidate-mtimes.json");
+    let script = workspace_root().join("scripts/build-seed.py");
+    let snap = Command::new("python3")
+        .arg(&script)
+        .arg("snapshot-mtimes")
+        .arg(root)
+        .arg(&snapshot)
+        .output()
+        .expect("snapshot candidate mtimes");
+    assert!(snap.status.success(), "{}", String::from_utf8_lossy(&snap.stderr));
+
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    // Model checkout + replay: Git rewrites even content-identical files, one
+    // source really changes, and transient directory entries perturb the dir.
+    write(root, "src/unchanged.rs", "pub const VALUE: u8 = 1;\n");
+    write(root, "src/changed.rs", "pub const VALUE: u8 = 2;\n");
+    write(root, "src/transient", "checkout scratch\n");
+    std::fs::remove_file(root.join("src/transient")).expect("remove transient file");
+    git(root, &["commit", "--quiet", "-am", "amended candidate"]);
+
+    let restore = Command::new("python3")
+        .arg(&script)
+        .arg("restore-mtimes")
+        .arg(root)
+        .arg(&snapshot)
+        .output()
+        .expect("restore candidate mtimes");
+    assert!(restore.status.success(), "{}", String::from_utf8_lossy(&restore.stderr));
+    let stdout = String::from_utf8_lossy(&restore.stdout);
+    assert!(stdout.contains("preserved mtimes for 1 unchanged tracked file(s)"), "{stdout}");
+    assert_eq!(
+        std::fs::metadata(root.join("src/unchanged.rs")).unwrap().modified().unwrap(),
+        unchanged_before,
+    );
+    assert_ne!(
+        std::fs::metadata(root.join("src/changed.rs")).unwrap().modified().unwrap(),
+        changed_before,
+    );
+    assert_eq!(
+        std::fs::metadata(root.join("src")).unwrap().modified().unwrap(),
+        directory_before,
+    );
+
+    // A dirty worktree is not safe to reason about from index blob ids.
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    write(root, "src/unchanged.rs", "pub const VALUE: u8 = 3;\n");
+    let dirty_mtime = std::fs::metadata(root.join("src/unchanged.rs"))
+        .unwrap()
+        .modified()
+        .unwrap();
+    let refused = Command::new("python3")
+        .arg(&script)
+        .arg("restore-mtimes")
+        .arg(root)
+        .arg(&snapshot)
+        .output()
+        .expect("refuse dirty candidate restore");
+    assert!(!refused.status.success());
+    assert_eq!(
+        std::fs::metadata(root.join("src/unchanged.rs")).unwrap().modified().unwrap(),
+        dirty_mtime,
+    );
+}
+
 /// Cargo's encoded fingerprint dep-info, as scripts/build-seed.py decodes it.
 fn dep_info(files: &[(u8, &str)]) -> Vec<u8> {
     let mut out = vec![1, 0, 0, 0, 0xff, 1];

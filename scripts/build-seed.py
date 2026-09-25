@@ -44,6 +44,8 @@ interrupted apply leaves every source at its checkout time):
     build-seed.py finish <seed-root>                                 # unlocked
     build-seed.py apply <seed-dir> <worktree> [<target-dir>]
     build-seed.py refresh <seed-dir> <worktree> [<target-dir>]  # scripts/bin/cargo
+    build-seed.py snapshot-mtimes <checkout> <snapshot>
+    build-seed.py restore-mtimes <checkout> <snapshot>
 """
 
 import fcntl, hashlib, json, os, re, shutil, struct, subprocess, sys, time
@@ -87,6 +89,86 @@ def directories(files):
         children.setdefault("/".join(parts[:-1]), set()).add(path)
     return {d: hashlib.blake2b("\0".join(sorted(c)).encode(), digest_size=16).hexdigest()
             for d, c in children.items() if d}
+
+
+def snapshot_mtimes(checkout, snapshot):
+    """Remember a clean candidate's tracked mtimes before Git replaces it.
+
+    The merge coordinator prepares every attempt by checking the gate worktree
+    back out at master and replaying the submitted patches. Git consequently
+    gives every file in a broad patch a new mtime, even when an amended retry
+    changed only one test. Cargo then recompiles every crate touched by the
+    original patch. The blob id makes restoring an old mtime content-safe: a
+    file that actually changed keeps Git's new mtime and rebuilds normally.
+    """
+    checkout = os.path.realpath(checkout)
+    dirty = modified(checkout)
+    if dirty:
+        print(f"build-seed: {checkout} has {len(dirty)} modified file(s); "
+              "not snapshotting candidate mtimes", file=sys.stderr)
+        return 1
+    files = tracked(checkout)
+    state = {"files": {}, "dirs": {}}
+    for path, blob in files.items():
+        try:
+            state["files"][path] = [blob, os.lstat(os.path.join(checkout, path)).st_mtime_ns]
+        except FileNotFoundError:
+            pass
+    for path, digest in directories(files).items():
+        try:
+            state["dirs"][path] = [digest, os.stat(os.path.join(checkout, path)).st_mtime_ns]
+        except FileNotFoundError:
+            pass
+    tmp = f"{snapshot}.{os.getpid()}.tmp"
+    try:
+        with open(tmp, "w") as out:
+            json.dump(state, out)
+        os.replace(tmp, snapshot)
+    finally:
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:
+            pass
+    return 0
+
+
+def restore_mtimes(checkout, snapshot):
+    """Restore mtimes only where the prepared candidate has the same blob."""
+    checkout = os.path.realpath(checkout)
+    dirty = modified(checkout)
+    if dirty:
+        print(f"build-seed: {checkout} has {len(dirty)} modified file(s); "
+              "not restoring candidate mtimes", file=sys.stderr)
+        return 1
+    with open(snapshot) as source:
+        state = json.load(source)
+    files = tracked(checkout)
+    restored_files = 0
+    for path, (blob, mtime_ns) in state.get("files", {}).items():
+        if files.get(path) != blob:
+            continue
+        try:
+            os.utime(os.path.join(checkout, path), ns=(mtime_ns, mtime_ns),
+                     follow_symlinks=False)
+            restored_files += 1
+        except FileNotFoundError:
+            pass
+    current_dirs = directories(files)
+    restored_dirs = 0
+    # Files first, directories last: restoring a child's mtime does not touch
+    # its parent, while any future metadata work must not perturb a directory
+    # that a build script watches through rerun-if-changed=<dir>.
+    for path, (digest, mtime_ns) in state.get("dirs", {}).items():
+        if current_dirs.get(path) != digest:
+            continue
+        try:
+            os.utime(os.path.join(checkout, path), ns=(mtime_ns, mtime_ns))
+            restored_dirs += 1
+        except FileNotFoundError:
+            pass
+    print(f"build-seed: preserved mtimes for {restored_files} unchanged tracked file(s) "
+          f"and {restored_dirs} director{'y' if restored_dirs == 1 else 'ies'}")
+    return 0
 
 
 try:
@@ -1016,5 +1098,9 @@ if __name__ == "__main__":
         sys.exit(apply(*sys.argv[2:]))
     if len(sys.argv) in (4, 5) and sys.argv[1] == "refresh":
         sys.exit(refresh(*sys.argv[2:]))
+    if len(sys.argv) == 4 and sys.argv[1] == "snapshot-mtimes":
+        sys.exit(snapshot_mtimes(*sys.argv[2:]))
+    if len(sys.argv) == 4 and sys.argv[1] == "restore-mtimes":
+        sys.exit(restore_mtimes(*sys.argv[2:]))
     print(__doc__, file=sys.stderr)
     sys.exit(2)
