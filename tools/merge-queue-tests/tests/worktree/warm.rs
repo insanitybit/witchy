@@ -568,7 +568,7 @@ fn cargo_shim_neutralizes_an_ambient_rustc_wrapper_for_plain_and_mbx_routes() {
 }
 
 #[test]
-fn cargo_shim_keeps_queue_tooling_out_of_the_shared_mbx_pool() {
+fn cargo_shim_schedules_queue_tooling_through_mbx() {
     let repo = temp_repo();
     let root = repo.path();
     write(root, "scripts/bin/cargo", include_str!("../../../../scripts/bin/cargo"));
@@ -608,13 +608,6 @@ fn cargo_shim_keeps_queue_tooling_out_of_the_shared_mbx_pool() {
     for args in [
         &["nextest", "run", "-p", "merge-queue-tests"][..],
         &["test", "--package=merge-queue-tests", "--no-run"][..],
-    ] {
-        let output = run(&args);
-        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
-        assert!(String::from_utf8_lossy(&output.stdout).starts_with("cargo:"));
-    }
-
-    for args in [
         &["test", "-p", "witchy", "--no-run"][..],
         &["test", "-p", "merge-queue-tests", "-pwitchy"][..],
     ] {

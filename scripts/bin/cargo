@@ -16,9 +16,11 @@
 #     permit pool. A reclaimed target can therefore restore expensive stable
 #     dependencies such as Wasmtime and AWS-LC without reducing the gate's own
 #     build parallelism or changing its incremental workspace profile.
-#   - A command selecting only merge-queue-tests uses plain cargo. That small
-#     tooling crate rebuilds in seconds from a warm target, while entering the
-#     shared compiler pool can park a presubmit behind long compiler builds.
+#   - Queue-tooling tests use mbx too. Since scheduler.tests is enabled, their
+#     process-heavy daemon fixtures hold global permits instead of several
+#     agents running six fixtures each and turning timing assertions flaky.
+#     Focused agent-check runs use normal priority, so they retain a permit
+#     ahead of ordinary low-priority background work.
 #   - WITCHY_BUILD_CACHE=off is the kill switch. MBX_DISABLE=1 (mbx's own)
 #     also works.
 #   - The store lives in the repo (state/mbx/store-<version>): an agent
@@ -115,25 +117,6 @@ fi
 
 passthrough() { exec "$real_cargo" "$@"; }
 
-selects_only_merge_queue_tooling() {
-    local expect_package=0 selected=0 arg package
-    for arg in "$@"; do
-        if [ "$expect_package" -eq 1 ]; then
-            package="$arg"
-            expect_package=0
-            [ "$package" = merge-queue-tests ] || return 1
-            selected=1
-            continue
-        fi
-        case "$arg" in
-            -p | --package) expect_package=1 ;;
-            -pmerge-queue-tests | --package=merge-queue-tests) selected=1 ;;
-            -p* | --package=* | --workspace | --all) return 1 ;;
-        esac
-    done
-    [ "$expect_package" -eq 0 ] && [ "$selected" -eq 1 ]
-}
-
 # Re-entry guard. mbx runs cargo itself; if that resolved back to this shim we
 # would exec mbx again forever (mise strips its dispatch dir for the same
 # reason). Two independent guards: a marker variable, and a PATH with this
@@ -164,8 +147,6 @@ case "${1:-}" in
     build|b|check|c|test|t|nextest|clippy|bench|doc|d|run|r|rustc) ;;
     *) passthrough "$@" ;;
 esac
-
-selects_only_merge_queue_tooling "$@" && passthrough "$@"
 
 mbx_version="$(basename "$(dirname "$(readlink "$mbx" 2>/dev/null || echo "$mbx")")")"
 export MBX_CACHE_DIR="${MBX_CACHE_DIR:-$state_root/state/mbx/store-$mbx_version}"
