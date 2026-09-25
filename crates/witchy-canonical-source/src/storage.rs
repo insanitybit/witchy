@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 use witchy_syntax::ast::{Type, TypeDef, TypeQual};
 
 use crate::abi::CanonicalScalarKind;
-use crate::aggregates::{ScalarAggregateShape, ViewCarrierPlan, scalar_aggregate_shape, view_carrier_plan};
+use crate::aggregates::{ScalarAggregateShape, ViewCarrierPlan, instantiated_declared_fields, scalar_aggregate_shape, view_carrier_plan};
 use crate::carrier::CarrierElement;
 use crate::callable_storage::CallableStoragePlan;
 use crate::closure::ClosureWitnessManifest;
@@ -19,6 +19,7 @@ pub enum StorageRefusal {
     ResourceLimit,
     UnprovedView,
     UnprovedQualifier,
+    UnprovedAuthority,
     UnprovedOwnership,
 }
 
@@ -225,6 +226,46 @@ fn contains_gc_view_owner(ty: &Type, definitions: &BTreeMap<String, TypeDef>) ->
     walk(ty, definitions, &mut HashSet::new(), 0, &mut 4_096)
 }
 
+/// A refusal caused by source capability authority must remain distinguishable
+/// from an ordinary missing ownership proof. Walk instantiated aggregate
+/// fields, rather than relying on a list of concrete container spellings.
+fn contains_capability_authority(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> Option<bool> {
+    fn walk(
+        ty: &Type,
+        definitions: &BTreeMap<String, TypeDef>,
+        active: &mut HashSet<Type>,
+        depth: usize,
+        remaining: &mut usize,
+    ) -> Option<bool> {
+        if depth > 128 || *remaining == 0 { return None; }
+        *remaining -= 1;
+        if crate::capabilities::representation(ty, definitions).is_some() { return Some(true); }
+        if !active.insert(ty.clone()) { return Some(false); }
+        let children = if let Some(shape) = scalar_aggregate_shape(ty, definitions) {
+            shape.fields
+        } else if let Some(fields) = instantiated_declared_fields(ty, definitions) {
+            fields.ok()?
+        } else {
+            match ty {
+                Type::Named(_, arguments) | Type::Dyn(_, arguments) | Type::Tuple(arguments) => arguments.clone(),
+                Type::Qualified(_, inner) | Type::Slice(inner) => vec![*inner.clone()],
+                Type::RecordCompose { base, fields } => {
+                    std::iter::once(base.as_ref().clone())
+                        .chain(fields.iter().map(|(_, field)| field.clone())).collect()
+                }
+                Type::Fn(parameters, result, _, _) => parameters.iter().cloned()
+                    .chain(std::iter::once(result.as_ref().clone())).collect(),
+            }
+        };
+        let result = children.iter().try_fold(false, |found, child| {
+            Some(found || walk(child, definitions, active, depth + 1, remaining)?)
+        });
+        active.remove(ty);
+        result
+    }
+    walk(ty, definitions, &mut HashSet::new(), 0, &mut 4_096)
+}
+
 /// The packed one-variant record layout class is selected from field storage,
 /// without duplicating a source-type name table in each compiler stage.
 pub fn is_inline_scalar_record(definition: &TypeDef) -> bool {
@@ -421,7 +462,11 @@ impl StoragePlan {
             Some(plan) if plan.within_resource_bounds() => Self::Owned(plan),
             _ => AggregateGraphPlan::classify(ty, definitions)
                 .map(Self::AuthenticatedPlace)
-                .unwrap_or(Self::Refused(StorageRefusal::UnprovedOwnership)),
+                .unwrap_or_else(|| match contains_capability_authority(ty, definitions) {
+                    Some(true) => Self::Refused(StorageRefusal::UnprovedAuthority),
+                    Some(false) => Self::Refused(StorageRefusal::UnprovedOwnership),
+                    None => Self::Refused(StorageRefusal::ResourceLimit),
+                }),
         }
     }
 }

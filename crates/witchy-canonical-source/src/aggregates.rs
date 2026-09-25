@@ -1113,6 +1113,31 @@ pub fn shape_from_definition(definition: &TypeDef, definitions: &BTreeMap<String
     shape_from_instantiation(definition, &[], definitions)
 }
 
+/// Instantiate declared fields even when their storage shape is refused.
+/// Refusal diagnostics need to find authority in a rejected field without
+/// treating the rejected declaration as a valid aggregate layout.
+pub(crate) fn instantiated_declared_fields(
+    ty: &Type,
+    definitions: &BTreeMap<String, TypeDef>,
+) -> Option<Result<Vec<Type>, ()>> {
+    let Type::Named(name, arguments) = ty.unqualified() else { return None };
+    let definition = definitions.get(name)?;
+    Some((|| {
+        let parameters = effective_type_def_params(definition);
+        if parameters.len() != arguments.len() { return Err(()); }
+        let substitutions: BTreeMap<&str, &Type> =
+            parameters.iter().map(String::as_str).zip(arguments.iter()).collect();
+        let mut budget = MAX_AGGREGATE_SHAPE_NODES;
+        let mut fields = Vec::new();
+        for field in definition.variants.iter().flat_map(|variant| &variant.fields) {
+            let nodes = substituted_node_count(field, &substitutions, budget).ok_or(())?;
+            budget = budget.checked_sub(nodes).ok_or(())?;
+            fields.push(substitute_type(field, &substitutions).ok_or(())?);
+        }
+        Ok(fields)
+    })())
+}
+
 fn shape_from_instantiation(
     definition: &TypeDef,
     arguments: &[Type],

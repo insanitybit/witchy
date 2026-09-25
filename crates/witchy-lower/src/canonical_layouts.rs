@@ -15,7 +15,7 @@ use witchy_canonical_source::aggregates::{
 };
 use witchy_canonical_source::abi::CanonicalScalarKind;
 use witchy_canonical_source::carrier::CarrierElement;
-use witchy_canonical_source::storage::{ListElementProjection, StoragePlan, is_inline_scalar_record};
+use witchy_canonical_source::storage::{ListElementProjection, StoragePlan, StorageRefusal, is_inline_scalar_record};
 use witchy_canonical_source::structural_identity::{AggregateOwnerKey, ClosureOwnerKey, SourceTypeKey};
 use witchy_syntax::ast::{self, Item, Type, TypeDef};
 use witchy_types::pipeline::CanonicalCheckedSource;
@@ -617,14 +617,18 @@ impl LayoutProjection {
                 _ => Err(CanonicalLayoutError::UnsupportedType(name.clone())),
             },
             Type::Named(name, arguments) if name == "List" => {
+                let storage = StoragePlan::classify(ty, &self.definitions, |_| Some(0));
                 let admitted = matches!(
-                    StoragePlan::classify(ty, &self.definitions, |_| Some(0)),
+                    storage,
                     StoragePlan::RetainedOwnerList(_) | StoragePlan::RetainedOpaqueAggregateList(_),
                 ) || arguments.len() == 1 && !matches!(
                     ListElementProjection::classify(&arguments[0], &self.definitions),
                     ListElementProjection::Refused,
                 );
                 if !admitted {
+                    if matches!(storage, StoragePlan::Refused(StorageRefusal::UnprovedAuthority)) {
+                        return Err(CanonicalLayoutError::UnsupportedType(format!("capability-bearing {ty:?}")));
+                    }
                     return Err(CanonicalLayoutError::UnsupportedType(format!("{ty:?}")));
                 }
                 self.visit_type(&arguments[0])?;
