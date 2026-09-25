@@ -469,6 +469,57 @@ fn cargo_shim_preserves_incremental_mode_for_a_warm_seed_unless_overridden() {
 }
 
 #[test]
+fn cargo_shim_restores_gate_dependencies_without_joining_the_agent_pool() {
+    let repo = temp_repo();
+    let root = repo.path();
+    write(root, "scripts/bin/cargo", include_str!("../../../../scripts/bin/cargo"));
+    write(
+        root,
+        "scripts/feature-unification.sh",
+        include_str!("../../../../scripts/feature-unification.sh"),
+    );
+    write(root, "fake-bin/cargo", "#!/bin/sh\nprintf 'plain cargo\\n'\n");
+    write(
+        root,
+        "state/mbx/bin/mbx",
+        "#!/bin/sh\nprintf 'incremental=%s scheduler=%s priority=%s\\n' \"${MBX_INCREMENTAL-unset}\" \"${MBX_SCHEDULER-unset}\" \"${MBX_SCHEDULER_PRIORITY-unset}\"\n",
+    );
+    for executable in ["scripts/bin/cargo", "fake-bin/cargo", "state/mbx/bin/mbx"] {
+        let status = Command::new("chmod")
+            .args(["+x", executable])
+            .current_dir(root)
+            .status()
+            .expect("mark fixture executable");
+        assert!(status.success());
+    }
+    let path = std::env::join_paths(
+        std::iter::once(root.join("fake-bin"))
+            .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())),
+    )
+    .expect("fixture PATH");
+    let output = Command::new(root.join("scripts/bin/cargo"))
+        .args(["test", "-p", "witchy", "--no-run"])
+        .current_dir(root)
+        .env("PATH", path)
+        .env("WITCHY_GATE_SCOPE", "all")
+        .env("MBX_STATS_REPORT", root.join("mbx-report.json"))
+        .env_remove("WITCHY_BUILD_CACHE")
+        .env_remove("WITCHY_CARGO_SHIM_ACTIVE")
+        .env_remove("WITCHY_MBX_MODE")
+        .env_remove("MBX_INCREMENTAL")
+        .env_remove("MBX_SCHEDULER")
+        .env_remove("MBX_SCHEDULER_PRIORITY")
+        .output()
+        .expect("run serialized gate cargo shim fixture");
+
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "incremental=1 scheduler=false priority=normal\n"
+    );
+}
+
+#[test]
 fn cargo_shim_neutralizes_an_ambient_rustc_wrapper_for_plain_and_mbx_routes() {
     let repo = temp_repo();
     let root = repo.path();

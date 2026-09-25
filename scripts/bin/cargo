@@ -11,8 +11,11 @@
 # Policy (each rule was measured; see scratch/build-cache-eval-2026-09-17.md):
 #   - Only build-shaped subcommands go through mbx. Everything else, and any
 #     `cargo +toolchain` invocation, goes straight to the real cargo.
-#   - The serialized merge gate (WITCHY_GATE_SCOPE) always uses plain cargo:
-#     it gains nothing from the cache and must not depend on it.
+#   - The serialized merge gate uses mbx for dependency artifact restore, but
+#     keeps Cargo incremental for workspace crates and disables mbx's agent
+#     permit pool. A reclaimed target can therefore restore expensive stable
+#     dependencies such as Wasmtime and AWS-LC without reducing the gate's own
+#     build parallelism or changing its incremental workspace profile.
 #   - A command selecting only merge-queue-tests uses plain cargo. That small
 #     tooling crate rebuilds in seconds from a warm target, while entering the
 #     shared compiler pool can park a presubmit behind long compiler builds.
@@ -147,7 +150,6 @@ export WITCHY_CARGO_SHIM_ACTIVE=1
 export CARGO="$real_cargo"
 
 [ "${WITCHY_BUILD_CACHE:-mbx}" != "off" ] || passthrough "$@"
-[ -z "${WITCHY_GATE_SCOPE+x}" ] || passthrough "$@"
 [ "${MBX_DISABLE:-0}" != "1" ] || passthrough "$@"
 
 mbx="$state_root/state/mbx/bin/mbx"
@@ -167,6 +169,15 @@ selects_only_merge_queue_tooling "$@" && passthrough "$@"
 
 mbx_version="$(basename "$(dirname "$(readlink "$mbx" 2>/dev/null || echo "$mbx")")")"
 export MBX_CACHE_DIR="${MBX_CACHE_DIR:-$state_root/state/mbx/store-$mbx_version}"
+
+# The serialized gate is outside the four-CPU agent pool. It still uses mbx as
+# an artifact cache: dependencies are shareable while edited workspace crates
+# retain the same incremental profile used by the gate target and its prewarm.
+if [ -n "${WITCHY_GATE_SCOPE+x}" ]; then
+    export WITCHY_MBX_MODE="${WITCHY_MBX_MODE:-incremental}"
+    export MBX_SCHEDULER="${MBX_SCHEDULER:-false}"
+    export MBX_SCHEDULER_PRIORITY="${MBX_SCHEDULER_PRIORITY:-normal}"
+fi
 
 # Ad-hoc and background agent builds yield one quarter of the shared compiler
 # pool while a focused validation asks for normal priority. This prevents a
@@ -221,9 +232,9 @@ esac
 # Do not wrap build scripts' C compiler. mbx's C cache hands every build
 # script HOST_CC=<store>/shims/native/<hash>/mbx-c, and wasmtime's build
 # script tracks HOST_CC: a target built through this shim and one built by
-# plain cargo (the gate, the build seed) then rerun it, rebuilding wasmtime
-# and everything above it (witchy-wir at opt-level 2), and every mbx upgrade
-# changes the path and does the same. The C it would cache is a few files.
+# plain cargo (CI or the cache kill switch) then rerun it, rebuilding wasmtime
+# and everything above it, and every mbx upgrade changes the path and does the
+# same. The C it would cache is a few files.
 export MBX_CC="${MBX_CC:-off}"
 
 # Keep mbx's interactive display out of agent logs; plain cargo output.

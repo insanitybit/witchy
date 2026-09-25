@@ -170,13 +170,15 @@ with the store at `state/mbx/store-<version>`; the checked-in `.mbx.toml`
 carries the build policy (workspace-root remapping, so a crate rebuilt in one
 worktree still hits in the others). `agent-check.sh` and the
 scripts it drives already use the shim; for ad hoc commands put
-`scripts/bin` first on `PATH` or call `./scripts/bin/cargo build ...`. The
-gate (`WITCHY_GATE_SCOPE`) always uses plain cargo. `WITCHY_BUILD_CACHE=off`
-is the kill switch. Workspace crates are cached and shared across worktrees
-too; mbx learns which crate you are editing and compiles that one
-incrementally (`WITCHY_MBX_MODE=incremental` restores the old
-every-member-incremental policy, which shared only third-party crates). Every shim build leaves a small JSON report
-under `state/mbx/reports/`; `scripts/mbx-report.py --since 24h --by worktree`
+`scripts/bin` first on `PATH` or call `./scripts/bin/cargo build ...`.
+`WITCHY_BUILD_CACHE=off` is the kill switch. Workspace crates are cached and
+shared across worktrees too; mbx learns which crate you are editing and
+compiles that one incrementally (`WITCHY_MBX_MODE=incremental` restores the old
+every-member-incremental policy, which shared only third-party crates). The
+serialized gate uses that incremental mode with mbx scheduling disabled: it
+keeps its own full parallelism while restoring stable dependencies such as
+Wasmtime and AWS-LC from the shared cache. Every shim build leaves a small JSON
+report under `state/mbx/reports/`; `scripts/mbx-report.py --since 24h --by worktree`
 turns them into hit rates and compiler time avoided, which is how to answer
 "is the cache helping" with numbers. Never run `mbx setup`: it rewrites machine-wide
 Cargo, mise, and rust-analyzer configuration for every agent. Measurements and

@@ -13,18 +13,18 @@ share_workspace_root = true
 
 # Agent compiles share mbx's machine-wide permit pool: each rustc waits for a
 # permit, so no agent is blocked outright and a long test run holds nothing.
-# The serialized merge gate uses plain cargo and never draws from this pool, so
-# capping agents at 4 of this host's 10 CPUs leaves the gate the rest. Measured
-# 2026-09-24: over six hours the gate was busy 62% of the time, and compiles
-# outside any pool (then the worktree-create prebuild) were 28% of busy CPU
-# against the gate's 27%.
+# The serialized merge gate uses mbx only for artifact restore, with scheduling
+# disabled, so it never draws from this pool. Capping agents at 4 of this host's
+# 10 CPUs leaves the gate the rest. Measured 2026-09-24: over six hours the gate
+# was busy 62% of the time, and compiles outside any pool (then the
+# worktree-create prebuild) were 28% of busy CPU against the gate's 27%.
 # scripts/bin/cargo marks ordinary agent builds low priority, leaving one
 # permit available when a normal-priority agent-check presubmit is waiting.
 # Test binaries must use the same pool too. Nextest processes do not hold a
 # compile permit after their binary is linked; without this setting, several
 # agents can each start their own test threads and push a 10-core host above
-# load 100 while the serialized gate is running. The gate uses plain Cargo and
-# remains outside this four-CPU agent pool.
+# load 100 while the serialized gate is running. The gate remains outside this
+# four-CPU agent pool.
 [scheduler]
 cpus = 4
 tests = true
