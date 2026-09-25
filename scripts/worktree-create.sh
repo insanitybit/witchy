@@ -16,6 +16,18 @@ cd "$root" || exit 1
 script_dir="$(cd "$(dirname "$0")" && pwd)"
 . "$script_dir/state-paths.sh"
 
+# `--branch <branch>` names the branch exactly, for agents that create their
+# own worktrees (Codex tasks create one per task: 148 rfc0167-* worktrees on
+# 2026-09-25, each starting with no incremental state). The worktree name
+# defaults to the branch with `/` replaced. An unavailable branch is an error
+# rather than a renamed one, since the caller will submit that name.
+explicit_branch=""
+if [ "${1:-}" = "--branch" ]; then
+    explicit_branch="${2:?worktree-create: --branch needs a branch name}"
+    shift 2
+    set -- "${1:-$(printf '%s' "$explicit_branch" | tr '/' '-')}"
+fi
+
 # Accept name from: (1) positional arg, (2) JSON on stdin (hook protocol), (3) generate one.
 name="${1:-}"
 if [ -z "$name" ] && [ ! -t 0 ]; then
@@ -48,7 +60,13 @@ branch_unavailable() {
     git show-ref --verify --quiet "refs/heads/$1" || branch_was_merged "$1"
 }
 
-if branch_unavailable "$branch"; then
+if [ -n "$explicit_branch" ]; then
+    branch="$explicit_branch"
+    if branch_unavailable "$branch"; then
+        echo "worktree-create: branch $branch already exists or was previously merged" >&2
+        exit 1
+    fi
+elif branch_unavailable "$branch"; then
     nonce="$(date +%s)-$$"
     branch="$base_branch-$nonce"
     attempt=0

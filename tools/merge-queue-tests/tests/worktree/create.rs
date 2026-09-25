@@ -244,6 +244,41 @@ fn worktree_create_recycles_a_released_pool_slot_with_its_build_state() {
     assert_eq!(third, pool_slot(root, "01"), "a claimed slot was handed out twice");
 }
 
+/// `--branch` gives agents that name their own branches (Codex tasks) a pool
+/// slot and its build state under exactly that branch, and refuses a name that
+/// is taken instead of renaming it.
+#[test]
+fn worktree_create_with_an_explicit_branch_claims_a_pool_slot() {
+    let repo = temp_repo();
+    let root = repo.path();
+    let first = created_path(&create(root, "first"));
+    let state = plant_incremental_state(&first);
+    release(root, &first);
+
+    let script = workspace_root().join("scripts/worktree-create.sh");
+    let run = |args: &[&str]| {
+        Command::new("bash")
+            .arg(&script)
+            .args(args)
+            .current_dir(root)
+            .env("CLAUDE_PROJECT_DIR", root)
+            .env("WITCHY_WORKTREE_CREATE_PREBUILD", "0")
+            .env_remove("WITCHY_STATE_DIR")
+            .env_remove("WITCHY_WORKTREE_POOL_MAX")
+            .output()
+            .expect("run worktree-create.sh --branch")
+    };
+    let output = run(&["--branch", "rfc0167/typed-thing"]);
+    let claimed = created_path(&output);
+    assert_eq!(claimed, first, "an explicit branch did not get the free pool slot");
+    assert_eq!(git(&claimed, &["branch", "--show-current"]), "rfc0167/typed-thing");
+    assert!(state.is_file(), "recycling discarded the slot's incremental state");
+
+    let taken = run(&["--branch", "rfc0167/typed-thing"]);
+    assert!(!taken.status.success(), "a taken branch name must be refused");
+    assert!(String::from_utf8_lossy(&taken.stderr).contains("already exists"));
+}
+
 #[test]
 fn worktree_create_past_the_pool_cap_makes_a_named_worktree() {
     let repo = temp_repo();

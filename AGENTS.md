@@ -20,6 +20,21 @@ export PATH="$PWD/scripts/bin:$PATH"
 CARGO_TARGET_DIR=target-codex cargo test --workspace
 ```
 
+Create each task's worktree with the pool script, not `git worktree add`:
+
+```sh
+wt="$(./scripts/worktree-create.sh --branch rfc0167/my-task)"
+cd "$wt"
+```
+
+It hands out a recycled `.claude/worktrees/pool-NN` checkout when one is free.
+That slot keeps the incremental build state of the task before it, because
+rustc keys incremental state to the path. A fresh path compiles every edited
+crate from scratch on its first build: 135 s against about 24 s for an edited
+witchy-types (2026-09-25). The script seeds the target the same way, and it
+refuses a branch name that already exists. Never reuse a worktree after its
+branch is submitted: the sweep recycles it for the next task once it lands.
+
 Keep `scripts/bin` first on `PATH` for every Cargo build or test in this repo.
 That routes the command through the shared MBX cache and global agent permit
 pool; plain system `cargo` bypasses both and can starve the serialized gate.
