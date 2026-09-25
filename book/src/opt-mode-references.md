@@ -168,6 +168,12 @@ refused. The `Int` case is verified on admitted Wasm; the other scalar cases
 are implemented but await semantic and leak evidence. These slices do not yet
 support `.owned()` materialization.
 
+An exact whole-root tuple view `&(S, String)` is recognized for unqualified
+`S = Int`, `Float`, `Bool`, or `Duration`. The view retains the tuple's String
+child. The `Int` case has admitted Wasm and zero-leak evidence; the other
+scalar cases are implemented but await semantic and leak evidence. Reordered
+or qualified tuple fields and capturing such a view in a closure are refused.
+
 The same rule applies to destructuring, field access, indexing, iteration,
 `Option`, `Result`, tuples, and supported nested aggregates: transport the
 carrier and its proof, or reject the operation. A displayed field name or

@@ -1165,6 +1165,12 @@ Nested or qualified child lists have no carrier and are refused. The `Int`
 case has admitted Wasm and zero-leak evidence; the other scalar cases still
 await that verification. `.owned()` on a slice of lists remains unsupported.
 
+The compiler recognizes exact whole-root `&(S, String)` tuple views for
+unqualified `S = Int`, `Float`, `Bool`, or `Duration`. The tuple root retains
+its String child. The `Int` case has admitted Wasm and zero-leak evidence;
+the other scalar cases await that verification. Reordered or qualified fields
+and closure capture of these tuple views remain unsupported.
+
 ## 8. Generics and traits
 
 ```witchy
