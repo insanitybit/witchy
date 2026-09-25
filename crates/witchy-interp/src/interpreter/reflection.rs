@@ -64,10 +64,11 @@ pub(super) fn compiler_pattern_leaf(
 }
 
 pub(super) fn compiler_stmt_leaf(kind: &str) -> Result<Stmt, RuntimeError> {
-    if kind == "return" {
-        Ok(Stmt::Return(None))
-    } else {
-        err(format!("unknown compiler-owned statement leaf `{kind}`"))
+    match kind {
+        "return" => Ok(Stmt::Return(None)),
+        "break" => Ok(Stmt::Break),
+        "continue" => Ok(Stmt::Continue),
+        _ => err(format!("unknown compiler-owned statement leaf `{kind}`")),
     }
 }
 

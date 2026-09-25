@@ -55,6 +55,14 @@ is needed for soundness.
 
 ## Exact-tip evidence checkpoint
 
+Row M typed loop control (implemented but unverified, 2026-09-25):
+`meta.stmt_break` and `meta.stmt_continue` use the existing sealed
+statement-leaf bridge with fixed compiler-owned variants. Other leaf names
+still fail closed, and canonical lowering determines whether a loop is in
+scope. A focused `witchy-interp` build with the test profile passed. Generated
+CLI execution, admitted unoptimized Wasm, and a zero-leak audit remain pending;
+this does not close row M.
+
 Row G bounded nested-list carrier (2026-09-24):
 `tests/misc/rfc0167_nested_list_root_view.rs` pins three distinct whole-root
 `&List(List(Int))` paths with hand-computed results: direct relay and nested

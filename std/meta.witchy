@@ -628,6 +628,16 @@ fn __meta_stmt_return(value: ExprSyntax) -> StmtSyntax:
 pub fn stmt_return_none() -> StmtSyntax:
     __meta_stmt_leaf("return")
 
+// Constructs a compiler-owned loop break statement.
+// Canonical lowering rejects it outside a loop.
+pub fn stmt_break() -> StmtSyntax:
+    __meta_stmt_leaf("break")
+
+// Constructs a compiler-owned loop continue statement.
+// Canonical lowering rejects it outside a loop.
+pub fn stmt_continue() -> StmtSyntax:
+    __meta_stmt_leaf("continue")
+
 // The generated function is checked as a generator before this yield is lowered.
 pub fn stmt_yield(value: ExprSyntax) -> StmtSyntax:
     __meta_stmt_yield(value)

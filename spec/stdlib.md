@@ -2988,6 +2988,14 @@ Construct an assignment to an existing mutable local from a sealed name and expr
 
 #### `fn stmt_return_none() -> StmtSyntax`
 
+#### `fn stmt_break() -> StmtSyntax`
+
+Constructs a compiler-owned loop break statement. Canonical lowering rejects it outside a loop.
+
+#### `fn stmt_continue() -> StmtSyntax`
+
+Constructs a compiler-owned loop continue statement. Canonical lowering rejects it outside a loop.
+
 #### `fn stmt_yield(value: ExprSyntax) -> StmtSyntax`
 
 The generated function is checked as a generator before this yield is lowered.
