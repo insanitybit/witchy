@@ -499,7 +499,7 @@ impl LayoutProjection {
     fn visit_type(&mut self, ty: &Type) -> Result<(), CanonicalLayoutError> {
         if matches!(ty.unqualified(), Type::Named(name, _) if name == "Dict")
             && !matches!(StoragePlan::classify(ty.unqualified(), &self.definitions, |_| Some(0)),
-                StoragePlan::Owned(CarrierElement::Dict(_, _)))
+                StoragePlan::Owned(CarrierElement::Dict(_, _)) | StoragePlan::AuthenticatedPlace(_))
         {
             return Err(CanonicalLayoutError::UnsupportedType(
                 "Dict children lack a recursive checked storage and ownership proof".into(),
@@ -561,7 +561,8 @@ impl LayoutProjection {
             // are roots of their own.
             Type::Tuple(fields) if scalar_aggregate_shape(ty, &self.definitions).is_some()
                 && matches!(StoragePlan::classify(ty, &self.definitions, |_| Some(0)),
-                    StoragePlan::Owned(CarrierElement::Tuple(_)) | StoragePlan::AggregateView(_)) => {
+                    StoragePlan::Owned(CarrierElement::Tuple(_)) | StoragePlan::AggregateView(_)
+                        | StoragePlan::AuthenticatedPlace(_)) => {
                 for field in fields {
                     if !layout_field_is_inline(field, &self.definitions) {
                         self.visit_type(field)?;
@@ -588,7 +589,7 @@ impl LayoutProjection {
                 if scalar_aggregate_shape(ty, &self.definitions).is_some_and(|shape| !shape.packed)
                     && matches!(StoragePlan::classify(ty, &self.definitions, |_| Some(0)),
                         StoragePlan::Owned(CarrierElement::Record { .. } | CarrierElement::Sum { .. })
-                            | StoragePlan::AggregateView(_)) =>
+                            | StoragePlan::AggregateView(_) | StoragePlan::AuthenticatedPlace(_)) =>
             {
                 let shape = scalar_aggregate_shape(ty, &self.definitions).expect("checked above");
                 for field in &shape.fields {
@@ -596,6 +597,13 @@ impl LayoutProjection {
                         self.visit_type(field)?;
                     }
                 }
+                self.roots.push(ty.clone());
+                Ok(())
+            }
+            Type::Named(..)
+                if matches!(StoragePlan::classify(ty, &self.definitions, |_| Some(0)),
+                    StoragePlan::InlineAggregate(_)) =>
+            {
                 self.roots.push(ty.clone());
                 Ok(())
             }
@@ -609,10 +617,14 @@ impl LayoutProjection {
                 _ => Err(CanonicalLayoutError::UnsupportedType(name.clone())),
             },
             Type::Named(name, arguments) if name == "List" => {
-                if arguments.len() != 1 || matches!(
+                let admitted = matches!(
+                    StoragePlan::classify(ty, &self.definitions, |_| Some(0)),
+                    StoragePlan::RetainedOwnerList(_) | StoragePlan::RetainedOpaqueAggregateList(_),
+                ) || arguments.len() == 1 && !matches!(
                     ListElementProjection::classify(&arguments[0], &self.definitions),
                     ListElementProjection::Refused,
-                ) {
+                );
+                if !admitted {
                     return Err(CanonicalLayoutError::UnsupportedType(format!("{ty:?}")));
                 }
                 self.visit_type(&arguments[0])?;
@@ -1396,14 +1408,11 @@ fn intern_recursive_nominal(
     aggregate_key(ty).ok_or_else(|| {
         CanonicalLayoutError::UnsupportedType(format!("recursive nominal layout {ty:?}"))
     })?;
-    let key = SourceTypeKey { source: ty }.digest().ok_or_else(|| {
+    let key = witchy_canonical_source::structural_identity::recursive_nominal_layout_key(ty).ok_or_else(|| {
         CanonicalLayoutError::InvalidLayout("recursive nominal identity exceeds bounds".into())
     })?;
-    let mut digest = Sha256::new();
-    digest.update(b"witchy/canonical-layout/recursive-nominal-v2\0");
-    digest.update(key);
     interner
-        .intern_opaque_nominal(digest.finalize().into())
+        .intern_opaque_nominal(key)
         .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))
 }
 
@@ -1776,7 +1785,9 @@ pub mod self_checks {
                 &std::collections::HashSet::new(), &std::collections::HashMap::new(),
             ).expect_err("a capability cannot be interned as a linear value or pointer pointee");
             assert!(matches!(error, super::CanonicalLayoutError::UnsupportedType(ref message)
-                if message.contains("opaque capability has no linear layout")), "{source:?}: {error:?}");
+                if message.contains("opaque capability has no linear layout")
+                    || matches!(&source, Type::Named(name, _) if name == "List")),
+                "{source:?}: {error:?}");
         }
 
         let mut projection = LayoutProjection::default();

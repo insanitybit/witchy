@@ -148,7 +148,7 @@ pub(super) fn validate_candidate_abi_bindings<S: ModuleStage>(
             access_facts,
             &records,
         );
-        let source_signature = erase_scalar_value_views(&erase_nested_byte_buffer_views(&source_signature));
+        let source_signature = erase_scalar_value_views(&erase_nested_byte_buffer_views(&source_signature, &records));
         let source_matches = candidate_signature_matches_source_with_layouts(
             signature,
             &source_signature,

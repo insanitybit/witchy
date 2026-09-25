@@ -2188,3 +2188,15 @@ frontend, runtime, host, and Wasm-engine assumptions. It is not a proof of
 source-language type soundness, arbitrary optimizer correctness, or safety of
 externally supplied Wasm. RFC-0165 remains `proposed`; changing that governance
 status is separate from this implementation ledger.
+
+2026-09-25 RFC-0167 recursive storage correction: the historical
+`canonical_layout_family_task_tuple_three_legs` witness passed through a
+case-specific list admission path. The current structural carrier contract
+refuses its `List(task.Handle)` scheduler value: `CloneRange` and `CloneRef`
+can duplicate a must-consume handle without a move-only list proof. The
+former large oracle fixture was removed by the interpreter-build cleanup;
+`sealed_task_handles::affine_handle_list_has_no_cloneable_safewir_carrier`
+now asserts the compiler refusal. The former three-leg result is historical
+evidence for the old route, not acceptance evidence for the current route.
+Restoring this path requires authenticated move-only list operations and
+fresh admitted-Wasm and zero-leak evidence.

@@ -27,6 +27,7 @@ pub(crate) fn value_type_matches_source(
         if record_head == Some(true) {
             let Some(RootedViewStorage::RetainedRoot(RetainedRootStorage::CheckedAggregate(plan))) = storage else { return false };
             let super::super::ValueType::Ref(layout) = actual else { return false };
+            if !nominal_layout_matches_source_identity(layout, payload, layouts, records) { return false; }
             return record_layout_matches_with_closures(
                 layout, &plan.shape.fields, plan.shape.tagged, layouts, records,
                 closure_layouts, signatures, context,
@@ -35,6 +36,8 @@ pub(crate) fn value_type_matches_source(
         match storage {
             Some(RootedViewStorage::RetainedRoot(RetainedRootStorage::StructuralRecord(plan))) => {
                 let super::super::ValueType::Ref(layout) = actual else { return false };
+                if matches!(layouts.get(layout).map(|descriptor| descriptor.kind()),
+                    Some(crate::layout::LayoutKind::OpaqueNominal { .. })) { return false; }
                 return super::super::closure_owner_contract::retained_structural_root_layout_matches(
                     layouts, layout, &plan,
                 );
@@ -42,6 +45,8 @@ pub(crate) fn value_type_matches_source(
             Some(RootedViewStorage::RetainedRoot(RetainedRootStorage::Sequence(carrier))) => {
                 // Every nested element still needs an owned slot and RC list.
                 let super::super::ValueType::Ref(layout) = actual else { return false };
+                if matches!(layouts.get(layout).map(|descriptor| descriptor.kind()),
+                    Some(crate::layout::LayoutKind::OpaqueNominal { .. })) { return false; }
                 let Ok(physical) = layouts.resolve_nominal(layout) else { return false };
                 let Some(crate::layout::LayoutKind::PackedList { element, rc: crate::layout::RcHeader::Required }) =
                     layouts.get(physical).map(|descriptor| descriptor.kind()) else { return false };
@@ -77,6 +82,11 @@ pub(crate) fn value_type_matches_source(
         }
         if let super::super::closure_owner_contract::OwnerFamilySource::Aggregate(expected) = &family.source {
             let aggregate = if id == family.list_type {
+                if !matches!(StoragePlan::classify(source.unqualified(), records, |_| Some(0)),
+                    StoragePlan::RetainedOpaqueAggregateList(_)
+                        | StoragePlan::RetainedGraphList(_)) {
+                    return false;
+                }
                 match source.unqualified() {
                     witchy_syntax::ast::Type::Named(name, arguments) if name == "List" && arguments.len() == 1 => &arguments[0],
                     _ => return false,
@@ -141,12 +151,14 @@ pub(crate) fn value_type_matches_source(
             | witchy_canonical_source::carrier::CarrierElement::Dict(_, _)
             | witchy_canonical_source::carrier::CarrierElement::Record { .. }
             | witchy_canonical_source::carrier::CarrierElement::Sum { .. }
-        ) | StoragePlan::AggregateView(_) => {
+        ) | StoragePlan::AggregateView(_) | StoragePlan::AuthenticatedPlace(_) => {
             witchy_canonical_source::aggregates::scalar_aggregate_shape(source, records).is_some_and(|shape| {
-                matches!(actual, super::super::ValueType::Ref(layout) if record_layout_matches_with_closures(layout, &shape.fields, shape.tagged, layouts, records, closure_layouts, signatures, context))
+                matches!(actual, super::super::ValueType::Ref(layout)
+                    if nominal_layout_matches_source_identity(layout, source, layouts, records)
+                        && record_layout_matches_with_closures(layout, &shape.fields, shape.tagged, layouts, records, closure_layouts, signatures, context))
             })
         }
-        StoragePlan::Owned(
+        StoragePlan::RetainedGraphList(_) | StoragePlan::RetainedCallableList(_) | StoragePlan::Owned(
             witchy_canonical_source::carrier::CarrierElement::String
             | witchy_canonical_source::carrier::CarrierElement::Bytes
             | witchy_canonical_source::carrier::CarrierElement::List(_)
@@ -166,7 +178,9 @@ pub(crate) fn value_type_matches_source(
             }
             _ => false,
         },
-        StoragePlan::RootedView(_) | StoragePlan::RetainedOwnerList(_) | StoragePlan::Refused(_) => false,
+        StoragePlan::InlineAggregate(_) | StoragePlan::RootedView(_)
+            | StoragePlan::RetainedOwnerList(_) | StoragePlan::RetainedOpaqueAggregateList(_)
+            | StoragePlan::Refused(_) => false,
     }
 }
 
@@ -254,6 +268,22 @@ pub(super) fn layout_matches_source_with_closures(
     match_layout_graph(vec![(layout, source.unqualified().clone())], layouts, records, closure_layouts, signatures, context)
 }
 
+fn nominal_layout_matches_source_identity(
+    layout: crate::layout::LayoutId,
+    source: &witchy_syntax::ast::Type,
+    layouts: &crate::layout::LayoutInterner,
+    records: &ScalarRecordFields,
+) -> bool {
+    let Some(crate::layout::LayoutKind::OpaqueNominal { key }) =
+        layouts.get(layout).map(|descriptor| descriptor.kind())
+    else { return true };
+    let Some(identity) = witchy_canonical_source::aggregates::canonical_owner_aggregate_identity(
+        source, records,
+    ) else { return false };
+    witchy_canonical_source::structural_identity::recursive_nominal_layout_key(&identity)
+        .is_some_and(|expected| *key == expected)
+}
+
 /// Check every node in the finite layout/source-type product. A revisited
 /// exact pair closes a recursive edge only: all other outgoing obligations
 /// still have to pass. Nominal resolution never replaces source validation.
@@ -266,6 +296,7 @@ pub(super) fn match_layout_graph(
     context: &mut CorrespondenceContext,
 ) -> bool {
     while let Some((layout, source)) = pending.pop() {
+        if !nominal_layout_matches_source_identity(layout, &source, layouts, records) { return false; }
         let Ok(layout) = layouts.resolve_nominal(layout) else { return false };
         let key = (layout, source.clone());
         match context.enter_layout(key.clone()) {
@@ -346,7 +377,7 @@ pub(super) fn enqueue_layout_children(
                 | witchy_canonical_source::carrier::CarrierElement::Dict(_, _)
                 | witchy_canonical_source::carrier::CarrierElement::Record { .. }
                 | witchy_canonical_source::carrier::CarrierElement::Sum { .. })
-                | StoragePlan::AggregateView(_)) {
+                | StoragePlan::AggregateView(_) | StoragePlan::AuthenticatedPlace(_)) {
             return false;
         }
         return enqueue_record_fields(layout, &shape.fields, shape.tagged, layouts, pending);
@@ -388,6 +419,11 @@ pub(super) fn enqueue_layout_children(
                     return matches!(element.kind(), LayoutKind::RuntimePointerValueSlot {
                         pointee, semantics: PointerSlot::Owned,
                     } if { pending.push((*pointee, plan.exact_signature().clone())); true });
+                }
+                ListElementProjection::AuthenticatedPlace(plan) => {
+                    return matches!(element.kind(), LayoutKind::RuntimePointerValueSlot {
+                        pointee, semantics: PointerSlot::Owned,
+                    } if { pending.push((*pointee, plan.source().clone())); true });
                 }
                 ListElementProjection::Refused => return false,
             }

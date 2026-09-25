@@ -780,6 +780,7 @@ const MAX_VIEW_CARRIER_DEPTH: usize = 8;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ViewCarrierPlan {
     Direct(crate::rooted_view::OwnerCarriedViewPlan),
+    DirectRetainedRoot(crate::rooted_view::RootedViewStorage),
     Aggregate { shape: ScalarAggregateShape, fields: Vec<ViewCarrierFieldPlan> },
 }
 
@@ -790,10 +791,22 @@ pub enum ViewCarrierFieldPlan {
 }
 
 impl ViewCarrierPlan {
+    pub fn requires_opaque_owner(&self) -> bool {
+        match self {
+            Self::Direct(_) => true,
+            Self::DirectRetainedRoot(_) => false,
+            Self::Aggregate { fields, .. } => fields.iter().any(|field| match field {
+                ViewCarrierFieldPlan::Plain => false,
+                ViewCarrierFieldPlan::Carried(plan) => plan.requires_opaque_owner(),
+            }),
+        }
+    }
+
     pub fn has_retained_projection(&self) -> bool {
         match self {
             Self::Direct(plan) => matches!(plan.admitted_storage(),
                 Some(crate::rooted_view::OwnerCarriedViewStorage::RetainedProjection(_))),
+            Self::DirectRetainedRoot(_) => false,
             Self::Aggregate { fields, .. } => fields.iter().any(|field| match field {
                 ViewCarrierFieldPlan::Plain => false,
                 ViewCarrierFieldPlan::Carried(plan) => plan.has_retained_projection(),
@@ -834,6 +847,12 @@ fn view_carrier_plan_at(
     if let Some(plan) = crate::rooted_view::OwnerCarriedViewPlan::classify(ty, definitions) {
         if plan.admitted_aggregate_field() { return Some(ViewCarrierPlan::Direct(plan)); }
     }
+    if let Type::Qualified(witchy_syntax::ast::TypeQual::View, payload) = ty
+        && let Some(plan @ crate::rooted_view::RootedViewStorage::RetainedRoot(_)) =
+            crate::rooted_view::RootedViewStorage::classify(payload, definitions, |_| Some(0))
+    {
+        return Some(ViewCarrierPlan::DirectRetainedRoot(plan));
+    }
     view_aggregate_plan_at(ty, definitions, depth)
 }
 
@@ -865,14 +884,17 @@ fn view_aggregate_plan_at(
         !is_direct_rooted_slice_view_syntax(field)
             && contains_rooted_slice_view_at(field, definitions, depth + 1)
     });
+    let direct_record = matches!(ty.unqualified(), Type::Named(name, arguments)
+        if arguments.is_empty() && definitions.get(name).is_some_and(|definition| {
+            matches!(definition.variants.as_slice(), [variant]
+                if !variant.fields.is_empty()
+                    && variant.field_names.len() == variant.fields.len())
+        }));
+    let direct_view_tuple = matches!(ty.unqualified(), Type::Tuple(_))
+        && shape.fields.iter().all(|field| matches!(field, Type::Qualified(witchy_syntax::ast::TypeQual::View, _)));
     if (direct_slice_count != 0 || nested_slice)
         && !(direct_slice_count == 1 && !nested_slice && !shape.tagged
-            && matches!(ty.unqualified(), Type::Named(name, arguments)
-                if arguments.is_empty() && definitions.get(name).is_some_and(|definition| {
-                    matches!(definition.variants.as_slice(), [variant]
-                        if !variant.fields.is_empty()
-                            && variant.field_names.len() == variant.fields.len())
-                })))
+            && (direct_record || direct_view_tuple))
     {
         return None;
     }
@@ -1250,8 +1272,8 @@ mod recursive_shape_tests {
             "an unrelated fixed view field cannot authorize a slice generic argument",
         );
         let tuple = Type::Tuple(vec![int_slice.clone()]);
+        assert!(is_rooted_int_view_aggregate(&tuple, &definitions));
         for shell in [
-            tuple.clone(),
             Type::Named("Option".into(), vec![tuple]),
             Type::Named("Result".into(), vec![int_slice.clone(), named("String")]),
         ] {

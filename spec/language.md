@@ -1075,6 +1075,12 @@ zero-leak evidence. Qualified or view-valued children without this ownership
 proof remain refused. Region-born roots cannot escape through these views;
 tuple-view closure capture remains unsupported.
 
+An owned `List(T)` requires an authenticated clone and release operation for
+`T`. `List(task.Handle)` is currently refused on the canonical route: list
+cloning can duplicate its must-consume handle, and no move-only list operation
+proof exists yet. This refusal also applies when a standard-library combinator
+constructs such a list internally.
+
 A non-packed declared record, sum, `Option`, or `Result` may hold a recursive
 `List(T)` child when the checked carrier proves every owned edge. Its rooted
 view keeps the aggregate snapshot, and SafeWIR checks the List headers and

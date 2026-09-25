@@ -19304,7 +19304,7 @@ fn source_value_type(
         && matches!(storage,
             StoragePlan::Owned(CarrierElement::Tuple(_) | CarrierElement::Dict(_, _)
                 | CarrierElement::Record { .. } | CarrierElement::Sum { .. })
-            | StoragePlan::AggregateView(_))
+            | StoragePlan::AggregateView(_) | StoragePlan::AuthenticatedPlace(_))
     {
         // A scalar aggregate (record, sum, scalar `Option`/`Result`) is one
         // owned reference; a packed record stays an inline aggregate, which
@@ -19326,7 +19326,8 @@ fn source_value_type(
             .copied()
             .map(ValueType::Ref)
             .ok_or_else(|| CanonicalLoweringError::UnsupportedType(source.clone())),
-        StoragePlan::Owned(CarrierElement::List(_)) => {
+        StoragePlan::Owned(CarrierElement::List(_)) | StoragePlan::RetainedGraphList(_)
+            | StoragePlan::RetainedCallableList(_) => {
             list_layout(source, layout_bundle, layouts, closure_layouts, definitions).map(|(layout, _, _, _)| ValueType::Ref(layout))
         }
         StoragePlan::Owned(CarrierElement::String | CarrierElement::Bytes) => {
@@ -19965,7 +19966,8 @@ fn list_layout(
         ListElementProjection::Owned(CarrierElement::Tuple(_)
             | CarrierElement::Dict(_, _)
             | CarrierElement::Record { .. }
-            | CarrierElement::Sum { .. }) => aggregate_element()?,
+            | CarrierElement::Sum { .. })
+        | ListElementProjection::AuthenticatedPlace(_) => aggregate_element()?,
         ListElementProjection::RetainedCallable(plan) => ValueType::Ref(
             *closure_layouts.get(plan.family())
                 .ok_or_else(|| CanonicalLoweringError::UnsupportedType(arguments[0].clone()))?,

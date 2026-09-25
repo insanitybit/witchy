@@ -365,9 +365,13 @@ pub(super) fn is_direct_rooted_scalar_place(source: &witchy_syntax::ast::Type) -
 /// an aggregate (`Option(&String)`, `(&String, Int)`, a record field) it has
 /// exactly the String layout.  The callable's own direct `&String` lanes keep
 /// their dedicated whole-root correspondence and are left as written.
-pub(super) fn erase_nested_byte_buffer_views(signature: &witchy_syntax::ast::Type) -> witchy_syntax::ast::Type {
+pub(super) fn erase_nested_byte_buffer_views(signature: &witchy_syntax::ast::Type, records: &ScalarRecordFields) -> witchy_syntax::ast::Type {
     use witchy_syntax::ast::Type;
     let lane = |ty: &Type| -> Type {
+        if matches!(witchy_canonical_source::storage::StoragePlan::classify(ty, records, |_| Some(0)),
+            witchy_canonical_source::storage::StoragePlan::AggregateView(_)) {
+            return ty.clone();
+        }
         match ty {
             Type::Named(name, arguments) => Type::Named(name.clone(), arguments.iter().map(erase_byte_buffer_view).collect()),
             Type::Tuple(items) => Type::Tuple(items.iter().map(erase_byte_buffer_view).collect()),
@@ -533,6 +537,8 @@ pub(super) fn direct_shared_int_matches(
 ) -> bool {
     let super::super::ValueType::Ref(layout) = actual else { return false };
     is_direct_shared_int(source)
+        && !matches!(layouts.get(layout).map(|descriptor| descriptor.kind()),
+            Some(crate::layout::LayoutKind::OpaqueNominal { .. }))
         && layouts.resolve_nominal(layout).ok()
             .and_then(|physical| layouts.get(physical))
             .is_some_and(|descriptor| descriptor.kind() == &crate::layout::LayoutKind::Scalar(crate::layout::ScalarKind::Int))

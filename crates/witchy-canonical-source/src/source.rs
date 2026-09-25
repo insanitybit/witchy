@@ -16,7 +16,7 @@ use crate::abi::{CanonicalCallableAbi, CanonicalCallableAbiManifest};
 use crate::access::AccessSignature;
 use crate::carrier::CarrierElement;
 use crate::closure::ClosureWitnessManifest;
-use crate::storage::StoragePlan;
+use crate::storage::{OpaqueOwnerEvidence, StoragePlan};
 use crate::specialization::LogicalSpecializationIdentity;
 
 /// Evidence that exact source bytes crossed the checked type-checking boundary.
@@ -253,6 +253,12 @@ impl<'s> CanonicalSourceView<'s> {
                 }
             })
         })
+    }
+
+    /// Checked closure captures and declared fields jointly determine which
+    /// aggregate families need opaque GC ownership.
+    pub fn opaque_owner_evidence(&self) -> Option<OpaqueOwnerEvidence<'s>> {
+        OpaqueOwnerEvidence::from_checked_source(self.type_definitions, self.closure_witness)
     }
 
     pub fn source_witness(&self) -> &'s CheckedSourceWitness { self.source_witness }

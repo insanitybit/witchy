@@ -269,6 +269,8 @@ pub(crate) fn carrier_element_layout_matches(
     if !carrier.within_resource_bounds() {
         return false;
     }
+    if matches!(layouts.get(layout).map(|descriptor| descriptor.kind()),
+        Some(crate::layout::LayoutKind::OpaqueNominal { .. })) { return false; }
     use crate::layout::{LayoutId, LayoutInterner, LayoutKind, PointerSlot, RcHeader, ScalarKind};
     use witchy_canonical_source::abi::CanonicalScalarKind;
     use witchy_canonical_source::carrier::{CarrierLayoutQuery, CarrierSlot};
@@ -283,6 +285,9 @@ pub(crate) fn carrier_element_layout_matches(
                 CarrierSlot::OwnedNullable => PointerSlot::OwnedNullable,
             };
             if *semantics != expected { return None; }
+            if matches!(self.0.get(*pointee)?.kind(), LayoutKind::OpaqueNominal { .. }) {
+                return None;
+            }
             self.0.resolve_nominal(*pointee).ok()
         }
     }

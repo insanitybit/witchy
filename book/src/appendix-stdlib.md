@@ -73,6 +73,10 @@ to_ms` finds `duration.to_milliseconds`.
 | `task` | the core task combinators `chan` builds on - `spawn`, `join`, `cancel` - over a deterministic executor implemented in Witchy |
 | `future` | `Future(a)` and the `await` surface |
 
+The canonical compiler currently refuses the `chan.par_map` and
+`chan.par_reduce` implementation because its scheduler constructs
+`List(task.Handle)` without a move-only list operation proof.
+
 `vm` runs capture-free work across isolated worker cores (`vm.par_map`); its
 `with_dir` / `serve` entry points thread a `Dir` / `Net` through to the workers.
 See the [Multi-Core](tour-vm.md) chapter.

@@ -177,6 +177,10 @@ never visible and the join is guaranteed. Prefer these over a raw `spawn`:
 - `chan.race(a, b)` returns the first result and cancels the loser.
 - `chan.scope(tasks)` runs a batch of side-effecting tasks and joins them all.
 
+The canonical compiler currently refuses `chan.par_map` and `chan.par_reduce`
+when their scheduler constructs `List(task.Handle)`. Its list clone operations
+do not yet prove that must-consume handles move exactly once.
+
 No task handle escapes any of these, so nothing leaks. And because the executor
 schedules deterministically - `par_map` reorders results back to input order, a
 `race` tie favours the first racer - the run is byte-identical on both backends.

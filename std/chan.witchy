@@ -338,6 +338,8 @@ fn par_build_into(items: List(a), i: Int, f: fn(a) -> Task(m), jobs: List(Task((
 // effect-free callable contract before assuming that reordering invocations is
 // unobservable (see RFC-0032). Results are of the message type `m` (they ride
 // channels), as with `gather`.
+// The canonical compiler currently refuses this implementation when its
+// scheduler constructs List(task.Handle); move-only list operations are needed.
 pub fn par_map(items: List(a), f: fn(a) -> Task(m)) -> Task(List(m)):
     and_then(par_build(items, f), fn(own built):
         let (jobs, rxs) = built

@@ -125,3 +125,16 @@ fn task_handles_must_be_joined_cancelled_or_returned_on_every_path() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
+#[test]
+fn affine_handle_list_has_no_cloneable_safewir_carrier() {
+    let checked = witchy::resolve_std_only_checked(r#"
+import chan
+async fn next(n: Int) -> Int:
+    n + 1
+async fn main(console: Console):
+    let values = chan.par_map([4], fn(n): next(n)).await
+    console.print("${values}")
+"#).expect("the task program remains checked source");
+    witchy::codegen::compile_checked_module_artifact(&checked)
+        .expect_unsupported("List(task.Handle) has no move-only SafeWIR carrier proof");
+}

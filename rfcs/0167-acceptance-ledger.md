@@ -811,6 +811,26 @@ String/List/slice/tuple runtime smoke (1 passed), and adversarial authority
 review passed. This is one layout correspondence consolidation, not new
 admission or A–O semantic closeout.
 
+Row G pooled recursive storage integration (implemented but unverified,
+2026-09-25): checked-source `StoragePlan` now composes scalar, owned graph,
+retained graph, callable, and direct-view aggregate storage. Layout projection,
+lowering, and SafeWIR compare the same structural plan; GC owner families for
+closure-carried aggregates additionally require `OpaqueOwnerEvidence` derived
+from checked closure captures through `CanonicalSourceView`. An invented
+candidate owner family cannot supply that evidence. Focused canonical-source
+compilation, 17 library tests, and existing GC-list, channel-view, closure,
+and affine-refusal smokes passed. Adversarial review exposed nominal-key
+bypasses in recursive aggregate roots and edges, carrier pointer slots, and
+shared-reference roots. The recursive nominal key is now derived once in
+canonical source and checked before physical resolution; nonaggregate paths
+refuse an opaque nominal key. The existing recursive-layout authority test,
+128 WIR unit cases, and the 33 previously regressed compiler cases passed
+after those checks. `List(task.Handle)`
+remains refused because list clone operations can duplicate a must-consume
+handle; move-only list operations need a separate proof. These compile and
+smoke results are implementation checks, not hand-computed admitted-Wasm and
+zero-leak evidence. No A–O row closes from this checkpoint.
+
 At `adf1d01c7` (2026-09-18), the integrated core smoke was **42/42 passed**: rooted views (13), unique/write-back (12), normal/opt interoperation (2), resource composition (5), and optimization readiness (10). This is core canonical-route evidence only; it does not include the source interpreter, full, end-to-end, or examples suites.
 
 At `2f62f4038` (2026-09-19), the newly integrated concrete `Option(&Int)` evidence is **6/6 passed**: four lower carrier/tamper/`var` checks, one exact authority payload-state check, and one production-runtime three-leg fixture (`790`, zero leaks). The three generic rooted-slice fixtures are **1 passed / 2 failed**: region-root escape rejects as expected, while both positive forms stop at the explicit missing authenticated slice-element projection. This is a live failure checkpoint, not an acceptance closeout.

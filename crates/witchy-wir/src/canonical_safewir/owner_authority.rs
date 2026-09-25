@@ -14,6 +14,8 @@ pub(super) fn validate<S: ModuleStage>(
     let (_, layouts) = crate::layout::LayoutBundle::decode_canonical(&candidate.layouts().canonical_bytes())
         .map_err(|_| CandidateAbiBindingError::MissingCanonicalLayouts)?;
     let witnesses = source.closure_witness().entries();
+    let opaque_evidence = source.opaque_owner_evidence()
+        .ok_or(CandidateAbiBindingError::MissingCanonicalLayouts)?;
     // Validate the entire checked witness set before comparing constructor
     // families. An unencodable signature must not disappear from a family.
     let witness_family_keys = witnesses.iter().map(|witness| {
@@ -38,6 +40,9 @@ pub(super) fn validate<S: ModuleStage>(
         }
         match &family.source {
             OwnerFamilySource::Aggregate(source_type) => {
+                if !opaque_evidence.requires_owner(source_type) {
+                    return Err(CandidateAbiBindingError::MissingCanonicalLayouts);
+                }
                 if !aggregate_types.insert(source_type.clone()) {
                     return Err(CandidateAbiBindingError::MissingCanonicalLayouts);
                 }
@@ -427,6 +432,8 @@ fn validate_shared_reference_family(
         let ValueType::Ref(root_layout) = root.value_type else { return Err(refuse()) };
         let CaptureStorage::EnvironmentField(root_field) = root.storage else { return Err(refuse()) };
         insert_compatible_environment_field(&mut expected_environment, root_field, root.value_type)?;
+        if matches!(layouts.get(root_layout).map(|descriptor| descriptor.kind()),
+            Some(crate::layout::LayoutKind::OpaqueNominal { .. })) { return Err(refuse()); }
         let physical = layouts.resolve_nominal(root_layout).map_err(|_| refuse())?;
         match kind {
             SharedReferenceConstructor::WholeIntCell { root } => {

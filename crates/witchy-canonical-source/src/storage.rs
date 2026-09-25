@@ -2,15 +2,17 @@
 //! and SafeWIR. A plan describes storage and ownership operations; it is not
 //! authority without a checked-source witness and physical layout match.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use witchy_syntax::ast::{Type, TypeDef, TypeQual};
 
 use crate::abi::CanonicalScalarKind;
-use crate::aggregates::{ViewCarrierPlan, view_carrier_plan};
+use crate::aggregates::{ScalarAggregateShape, ViewCarrierPlan, scalar_aggregate_shape, view_carrier_plan};
 use crate::carrier::CarrierElement;
 use crate::callable_storage::CallableStoragePlan;
-use crate::rooted_view::{OwnerCarriedViewPlan, OwnerCarriedViewStorage, RootedViewStorage};
+use crate::closure::ClosureWitnessManifest;
+use crate::rooted_view::{OwnerCarriedViewPlan, OwnerCarriedViewStorage, RetainedRootStorage, RootedViewStorage};
+use crate::structural_identity::SourceTypeKey;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StorageRefusal {
@@ -35,13 +37,25 @@ pub enum RetainedByteBufferKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StoragePlan {
     InlineScalar(CanonicalScalarKind),
+    /// A checked packed record whose fields are all inline scalar lanes.
+    InlineAggregate(ScalarAggregateShape),
     Owned(CarrierElement),
+    /// A checked finite aggregate graph whose recursive edges are retained
+    /// pointer or callable edges. Its layout and each owner operation still
+    /// require physical validation; it is not a slice carrier proof.
+    AuthenticatedPlace(AggregateGraphPlan),
     /// An owned closure record, whose exact source contract and normalized
     /// physical family must both match before any owner authority is granted.
     RetainedCallable(CallableStoragePlan),
     /// A list of authenticated scalar-place owner tokens. Projected-view
     /// lists need a different owner-family proof and remain refused.
     RetainedOwnerList(OwnerCarriedViewPlan),
+    /// A retained list whose element is a checked recursive aggregate graph.
+    RetainedGraphList(AggregateGraphPlan),
+    /// A retained list whose element has an authenticated closure family.
+    RetainedCallableList(CallableStoragePlan),
+    /// A typed GC list of cloneable opaque aggregate owners.
+    RetainedOpaqueAggregateList(AggregateGraphPlan),
     RootedView(RootedViewStorage),
     AggregateView(ViewCarrierPlan),
     Refused(StorageRefusal),
@@ -53,9 +67,162 @@ pub enum StoragePlan {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ListElementProjection {
     Owned(CarrierElement),
+    AuthenticatedPlace(AggregateGraphPlan),
     RetainedByteBuffer(RetainedByteBufferKind),
     RetainedCallable(CallableStoragePlan),
     Refused,
+}
+
+/// A finite checked aggregate graph, including callable and recursive
+/// nominal fields. `cloneable` is false when an affine or authority field
+/// prevents a generic collection from duplicating the graph.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AggregateGraphPlan {
+    source: Type,
+    shape: ScalarAggregateShape,
+    source_key: [u8; 32],
+    cloneable: bool,
+}
+
+impl AggregateGraphPlan {
+    pub fn source(&self) -> &Type { &self.source }
+    pub fn shape(&self) -> &ScalarAggregateShape { &self.shape }
+    pub fn source_key(&self) -> [u8; 32] { self.source_key }
+    pub fn cloneable(&self) -> bool { self.cloneable }
+
+    fn classify(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> Option<Self> {
+        if crate::capabilities::representation(ty, definitions).is_some() { return None; }
+        let shape = scalar_aggregate_shape(ty, definitions)?;
+        if shape.packed { return None; }
+        let source_key = SourceTypeKey { source: ty }.digest()?;
+        let mut remaining = 4_096;
+        let cloneable = graph_storage_operations(ty, definitions, &mut HashSet::new(), 0, &mut remaining)?;
+        Some(Self { source: ty.clone(), shape, source_key, cloneable })
+    }
+}
+
+/// Verify representation and ownership at every source edge. An aggregate
+/// back edge is guarded by its retained heap pointer; callable signatures
+/// carry an exact bounded key and receive separate SafeWIR ABI validation.
+fn graph_storage_operations(
+    ty: &Type,
+    definitions: &BTreeMap<String, TypeDef>,
+    active: &mut HashSet<Type>,
+    depth: usize,
+    remaining: &mut usize,
+) -> Option<bool> {
+    if depth > 128 || *remaining == 0 { return None; }
+    *remaining -= 1;
+    let child = |ty: &Type, active: &mut HashSet<Type>, remaining: &mut usize| {
+        graph_storage_operations(ty, definitions, active, depth + 1, remaining)
+    };
+    match ty {
+        Type::Qualified(TypeQual::Frozen, inner) => child(inner, active, remaining),
+        Type::Qualified(TypeQual::Unique, inner) => {
+            child(inner, active, remaining).map(|_| false)
+        }
+        Type::Qualified(TypeQual::View, payload) => match RootedViewStorage::classify(payload, definitions, |_| Some(0))? {
+            RootedViewStorage::InlineScalar(_) => Some(true),
+            RootedViewStorage::RetainedRoot(RetainedRootStorage::ByteBuffer
+                | RetainedRootStorage::Sequence(_)
+                | RetainedRootStorage::StructuralRecord(_)
+                | RetainedRootStorage::CheckedAggregate(_)) => Some(true),
+            RootedViewStorage::ScalarCell(_) | RootedViewStorage::RetainedProjection(_) => None,
+        },
+        Type::Qualified(_, _) | Type::Slice(_) | Type::Dyn(_, _) | Type::RecordCompose { .. } => None,
+        Type::Fn(_, _, _, qualifiers) => {
+            CallableStoragePlan::classify(ty, definitions).map(|_| !qualifiers.once)
+        }
+        Type::Named(name, arguments) if name == "List" => {
+            let [element] = arguments.as_slice() else { return None };
+            child(element, active, remaining).filter(|cloneable| *cloneable)
+        }
+        Type::Named(name, arguments) if name == "Dict" => {
+            let [key, value] = arguments.as_slice() else { return None };
+            (child(key, active, remaining)? && child(value, active, remaining)?)
+                .then_some(true)
+        }
+        Type::Named(_, _) | Type::Tuple(_) => {
+            if view_carrier_plan(ty, definitions).is_some_and(|plan| plan.requires_opaque_owner()) {
+                return Some(opaque_aggregate_cloneable(ty, definitions));
+            }
+            if let Some(element) = CarrierElement::from_checked_type(ty) {
+                return Some(matches!(element.ownership(), crate::carrier::CarrierOwnership::Copy
+                    | crate::carrier::CarrierOwnership::RetainCloneRelease));
+            }
+            if crate::capabilities::representation(ty, definitions).is_some() {
+                return Some(false);
+            }
+            let shape = scalar_aggregate_shape(ty, definitions)?;
+            if shape.packed { return None; }
+            if !active.insert(ty.clone()) { return Some(true); }
+            // Instantiated fields, not phantom generic arguments, determine
+            // storage operations. The source key still binds every argument.
+            let fields_cloneable = shape.fields.iter().try_fold(true, |all, field| {
+                    let proved = child(field, active, remaining)?;
+                    Some(all && proved)
+            });
+            active.remove(ty);
+            let must_consume = match ty {
+                Type::Named(name, _) => definitions.get(name).is_some_and(|definition| definition.must_consume),
+                _ => false,
+            };
+            fields_cloneable.map(|cloneable| cloneable && !must_consume)
+        }
+    }
+}
+
+fn opaque_aggregate_cloneable(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> bool {
+    let Some(shape) = scalar_aggregate_shape(ty, definitions) else { return false };
+    if shape.packed || matches!(ty, Type::Named(name, _) if definitions.get(name).is_some_and(|definition| definition.must_consume)) {
+        return false;
+    }
+    shape.fields.iter().all(|field| {
+        if let Type::Qualified(TypeQual::View, payload) = field {
+            return RootedViewStorage::classify(payload, definitions, |_| Some(0)).is_some();
+        }
+        crate::is_unit_type(field)
+            || CarrierElement::from_checked_type_with_definitions(field, definitions)
+                .is_some_and(|element| matches!(element.ownership(),
+                    crate::carrier::CarrierOwnership::Copy
+                        | crate::carrier::CarrierOwnership::RetainCloneRelease))
+            || matches!(field, Type::Fn(_, _, _, qualifiers) if !qualifiers.once)
+                && CallableStoragePlan::classify(field, definitions).is_some()
+    })
+}
+
+fn contains_gc_view_owner(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> Option<bool> {
+    fn walk(
+        ty: &Type,
+        definitions: &BTreeMap<String, TypeDef>,
+        active: &mut HashSet<Type>,
+        depth: usize,
+        remaining: &mut usize,
+    ) -> Option<bool> {
+        if depth > 128 || *remaining == 0 { return None; }
+        *remaining -= 1;
+        if !active.insert(ty.clone()) { return Some(false); }
+        let result = if view_carrier_plan(ty, definitions).is_some_and(|plan| plan.requires_opaque_owner()) {
+            Some(true)
+        } else {
+            let fields = if let Some(shape) = scalar_aggregate_shape(ty, definitions) {
+                shape.fields
+            } else {
+                match ty {
+                    Type::Named(_, arguments) | Type::Tuple(arguments) => arguments.clone(),
+                    Type::Qualified(_, inner) | Type::Slice(inner) => vec![*inner.clone()],
+                    _ => Vec::new(),
+                }
+            };
+            fields.iter().try_fold(false, |found, field| {
+                let child = walk(field, definitions, active, depth + 1, remaining)?;
+                Some(found || child)
+            })
+        };
+        active.remove(ty);
+        result
+    }
+    walk(ty, definitions, &mut HashSet::new(), 0, &mut 4_096)
 }
 
 /// The packed one-variant record layout class is selected from field storage,
@@ -71,13 +238,93 @@ pub fn is_inline_scalar_record(definition: &TypeDef) -> bool {
         })
 }
 
+/// Opaque aggregate membership derived from checked closure captures. A
+/// candidate owner family cannot create this evidence by naming itself.
+pub struct OpaqueOwnerEvidence<'a> {
+    definitions: &'a BTreeMap<String, TypeDef>,
+    opaque_callable_families: HashSet<Type>,
+}
+
+impl<'a> OpaqueOwnerEvidence<'a> {
+    pub fn from_checked_source(
+        definitions: &'a BTreeMap<String, TypeDef>,
+        witnesses: &ClosureWitnessManifest,
+    ) -> Option<Self> {
+        let families = witnesses.entries().iter().filter_map(|witness| {
+            witness.signature().map(|signature| {
+                let family = crate::callable_storage::bounded_closure_family_type(signature, definitions)?;
+                Some((family, witness.captures().iter().map(|capture| capture.checked_type()).collect::<Vec<_>>()))
+            })
+        }).collect::<Option<Vec<_>>>()?;
+        if families.len() > 4_096 { return None; }
+        let mut evidence = Self { definitions, opaque_callable_families: HashSet::new() };
+        loop {
+            let mut changed = false;
+            for (family, captures) in &families {
+                if captures.iter().any(|capture| evidence.requires_owner(capture)) {
+                    changed |= evidence.opaque_callable_families.insert(family.clone());
+                }
+            }
+            if !changed { break; }
+        }
+        Some(evidence)
+    }
+
+    pub fn requires_owner(&self, ty: &Type) -> bool {
+        self.requires_owner_at(ty, &mut HashSet::new(), 0, &mut 16_384) == Some(true)
+    }
+
+    fn requires_owner_at(
+        &self,
+        ty: &Type,
+        active: &mut HashSet<Type>,
+        depth: usize,
+        remaining: &mut usize,
+    ) -> Option<bool> {
+        if depth > 128 || *remaining == 0 { return None; }
+        *remaining -= 1;
+        if !active.insert(ty.clone()) { return Some(false); }
+        let result = if view_carrier_plan(ty, self.definitions)
+            .is_some_and(|plan| plan.requires_opaque_owner())
+            || crate::capabilities::representation(ty, self.definitions).is_some()
+        {
+            Some(true)
+        } else if matches!(ty.unqualified(), Type::Fn(..)) {
+            let family = crate::callable_storage::bounded_closure_family_type(ty, self.definitions)?;
+            Some(self.opaque_callable_families.contains(&family))
+        } else {
+            let children = if let Some(shape) = scalar_aggregate_shape(ty, self.definitions) {
+                shape.fields
+            } else {
+                match ty.unqualified() {
+                    Type::Named(name, arguments) if name == "List" && arguments.len() == 1 => arguments.clone(),
+                    Type::Named(name, arguments) if name == "Dict" && arguments.len() == 2 => arguments.clone(),
+                    Type::Tuple(items) => items.clone(),
+                    _ => Vec::new(),
+                }
+            };
+            children.iter().try_fold(false, |found, child| {
+                let required = self.requires_owner_at(child, active, depth + 1, remaining)?;
+                Some(found || required)
+            })
+        };
+        active.remove(ty);
+        result
+    }
+}
+
 impl ListElementProjection {
     pub fn classify(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> Self {
         match StoragePlan::classify(ty, definitions, |_| Some(0)) {
             StoragePlan::Owned(CarrierElement::Bytes) => {
                 Self::RetainedByteBuffer(RetainedByteBufferKind::Bytes)
             }
-            StoragePlan::RetainedCallable(plan) => Self::RetainedCallable(plan),
+            StoragePlan::RetainedCallable(plan)
+                if matches!(ty, Type::Fn(_, _, _, qualifiers) if !qualifiers.once) =>
+            {
+                Self::RetainedCallable(plan)
+            }
+            StoragePlan::AuthenticatedPlace(plan) if plan.cloneable() => Self::AuthenticatedPlace(plan),
             StoragePlan::Refused(_) if matches!(ty, Type::Fn(..)) => Self::Refused,
             plan => plan.into_carrier_element().map(Self::Owned).unwrap_or(Self::Refused),
         }
@@ -105,7 +352,7 @@ impl StoragePlan {
         // `view_carrier_plan` traverses checked nominal definitions before the
         // owned-carrier parser applies its own limits. Bound that traversal as
         // well, including repeated visits through distinct source branches.
-        let mut remaining = 4_096;
+        let mut remaining = 16_384;
         if !within_source_bounds(ty, definitions, &mut BTreeSet::new(), 0, &mut remaining) {
             return Self::Refused(StorageRefusal::ResourceLimit);
         }
@@ -119,6 +366,14 @@ impl StoragePlan {
         }
         if crate::is_unit_type(ty) {
             return Self::InlineScalar(CanonicalScalarKind::Unit);
+        }
+        if let Some(shape) = scalar_aggregate_shape(ty, definitions)
+            && shape.packed
+            && shape.fields.iter().all(|field| crate::is_unit_type(field)
+                || matches!(CarrierElement::from_checked_type(field),
+                    Some(CarrierElement::Scalar(_))))
+        {
+            return Self::InlineAggregate(shape);
         }
         if matches!(ty, Type::Fn(..)) {
             return CallableStoragePlan::classify(ty, definitions)
@@ -136,7 +391,27 @@ impl StoragePlan {
         {
             return Self::RetainedOwnerList(plan);
         }
-        if let Some(plan) = view_carrier_plan(ty, definitions) {
+        if let Type::Named(name, arguments) = ty
+            && name == "List"
+            && let [element] = arguments.as_slice()
+            && let Some(plan) = AggregateGraphPlan::classify(element, definitions)
+            && plan.cloneable()
+        {
+            return match contains_gc_view_owner(element, definitions) {
+                Some(true) => Self::RetainedOpaqueAggregateList(plan),
+                Some(false) => Self::RetainedGraphList(plan),
+                None => Self::Refused(StorageRefusal::ResourceLimit),
+            };
+        }
+        if let Type::Named(name, arguments) = ty
+            && name == "List"
+            && let [element] = arguments.as_slice()
+            && matches!(element, Type::Fn(_, _, _, qualifiers) if !qualifiers.once)
+            && let Some(plan) = CallableStoragePlan::classify(element, definitions)
+        {
+            return Self::RetainedCallableList(plan);
+        }
+        if let Some(plan) = view_carrier_plan(ty, definitions).filter(ViewCarrierPlan::requires_opaque_owner) {
             return Self::AggregateView(plan);
         }
         match CarrierElement::from_checked_type_with_definitions(ty, definitions) {
@@ -144,7 +419,9 @@ impl StoragePlan {
                 Self::InlineScalar(kind)
             }
             Some(plan) if plan.within_resource_bounds() => Self::Owned(plan),
-            _ => Self::Refused(StorageRefusal::UnprovedOwnership),
+            _ => AggregateGraphPlan::classify(ty, definitions)
+                .map(Self::AuthenticatedPlace)
+                .unwrap_or(Self::Refused(StorageRefusal::UnprovedOwnership)),
         }
     }
 }

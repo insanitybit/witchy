@@ -2838,6 +2838,7 @@ dependencies = [
  "blake3",
  "foldhash 0.2.0",
  "proc-macro2",
+ "sha2 0.11.0",
  "syn 2.0.117",
  "witchy-cap-model",
  "witchy-syntax",

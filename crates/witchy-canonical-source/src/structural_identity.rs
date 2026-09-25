@@ -6,6 +6,7 @@
 //! still validate the physical representation and checked-source witness.
 
 use witchy_syntax::ast::{Convention, Type, TypeQual};
+use sha2::{Digest, Sha256};
 
 use crate::aggregates::ScalarAggregateShape;
 
@@ -24,6 +25,16 @@ impl SourceTypeKey<'_> {
         encoder.ty(self.source, 0)?;
         (encoder.bytes.len() <= 1_048_576).then(|| *blake3::hash(&encoder.bytes).as_bytes())
     }
+}
+
+/// Layout catalog identity for a normalized recursive aggregate. The source
+/// key is shared with SafeWIR; neither side may supply a nominal ID by hand.
+pub fn recursive_nominal_layout_key(source: &Type) -> Option<[u8; 32]> {
+    let key = SourceTypeKey { source }.digest()?;
+    let mut digest = Sha256::new();
+    digest.update(b"witchy/canonical-layout/recursive-nominal-v2\0");
+    digest.update(key);
+    Some(digest.finalize().into())
 }
 
 /// A checked aggregate family after nominal normalization and shape validation.
