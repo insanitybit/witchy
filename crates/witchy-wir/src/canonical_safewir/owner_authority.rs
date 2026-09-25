@@ -14,6 +14,14 @@ pub(super) fn validate<S: ModuleStage>(
     let (_, layouts) = crate::layout::LayoutBundle::decode_canonical(&candidate.layouts().canonical_bytes())
         .map_err(|_| CandidateAbiBindingError::MissingCanonicalLayouts)?;
     let witnesses = source.closure_witness().entries();
+    // Validate the entire checked witness set before comparing constructor
+    // families. An unencodable signature must not disappear from a family.
+    let witness_family_keys = witnesses.iter().map(|witness| {
+        witness.signature().map(|signature| {
+            source_closure_family_key(signature, &records)
+                .ok_or(CandidateAbiBindingError::MissingCanonicalLayouts)
+        }).transpose()
+    }).collect::<Result<Vec<_>, _>>()?;
     let mut seen = BTreeSet::new();
     let mut family_keys = std::collections::HashSet::new();
     let mut aggregate_types = std::collections::HashSet::new();
@@ -61,9 +69,10 @@ pub(super) fn validate<S: ModuleStage>(
             let checked = SourceConstructor::from_checked(source, constructor.id).map_err(|_| refuse())?;
             let witness = checked.witness();
             let signature = witness.signature().cloned().ok_or_else(refuse)?;
-            let key = source_closure_family_key(&signature, &records);
-            if source_key.as_ref().is_some_and(|previous| previous != &key) { return Err(refuse()); }
-            source_key = Some(key.clone());
+            let key = witness_family_keys.get(closure as usize)
+                .and_then(Option::as_ref).ok_or_else(refuse)?;
+            if source_key.as_ref().is_some_and(|previous| previous != key) { return Err(refuse()); }
+            source_key = Some(key.to_owned());
             observed.insert(closure);
             if !candidate.closure_bindings().entries().iter().any(|b| b.function() == constructor.function && b.closure() == closure) {
                 return Err(refuse());
@@ -72,9 +81,9 @@ pub(super) fn validate<S: ModuleStage>(
             if !candidate_signature_matches_source_with_layouts(declaration, &signature, candidate, &records, &layouts)
                 || constructor.captures.len() != witness.captures().len()
             { return Err(refuse()); }
-            let related = witnesses.iter().enumerate().filter(|(_, w)| {
-                w.signature().cloned().is_some_and(|s| source_closure_family_key(&s, &records) == key)
-            }).collect::<Vec<_>>();
+            let related = witness_family_keys.iter().enumerate()
+                .filter(|(_, family)| family.as_ref() == Some(key))
+                .collect::<Vec<_>>();
             let position = related.iter().position(|(ordinal, _)| *ordinal == closure as usize).ok_or_else(refuse)?;
             if constructor.environment_tag != i64::try_from(position + 1).map_err(|_| refuse())? { return Err(refuse()); }
             let mut environment_field = 1 + related[..position].iter().map(|(ordinal, _)| {
@@ -146,10 +155,9 @@ pub(super) fn validate<S: ModuleStage>(
         }
         let key = source_key.ok_or(CandidateAbiBindingError::MissingCanonicalLayouts)?;
         if !family_keys.insert(key.clone()) { return Err(CandidateAbiBindingError::MissingCanonicalLayouts); }
-        let expected = witnesses.iter().enumerate().filter_map(|(index, witness)| {
-            witness.signature().cloned()
-                .filter(|s| source_closure_family_key(s, &records) == key).map(|_| index as u32)
-        }).collect::<BTreeSet<_>>();
+        let expected = witness_family_keys.iter().enumerate()
+            .filter_map(|(index, family)| (family.as_ref() == Some(&key)).then_some(index as u32))
+            .collect::<BTreeSet<_>>();
         // Opaque storage is required for managed owner captures as well as
         // capabilities. The loop above has already authenticated every
         // capture's source type, transfer, and storage class, so requiring an

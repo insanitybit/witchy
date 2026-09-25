@@ -6,8 +6,8 @@ use super::*;
 pub(crate) fn source_closure_family_key(
     source: &witchy_syntax::ast::Type,
     records: &ScalarRecordFields,
-) -> witchy_syntax::ast::Type {
-    witchy_canonical_source::callable_storage::canonical_closure_family_type(source, records)
+) -> Option<witchy_syntax::ast::Type> {
+    witchy_canonical_source::callable_storage::bounded_closure_family_type(source, records)
 }
 
 pub(super) const MAX_SOURCE_CORRESPONDENCE_PAIRS: usize = 65_536;

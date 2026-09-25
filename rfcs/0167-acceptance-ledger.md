@@ -55,6 +55,18 @@ is needed for soundness.
 
 ## Exact-tip evidence checkpoint
 
+Row G bounded closure-family authority (architecture implemented, semantic
+evidence pending, 2026-09-25): SafeWIR now requires both an exact checked
+callable type and its normalized physical closure family to fit the shared
+128-depth, 4,096-node structural encoding budget before grouping closure
+constructors or adapters. Both admission validators first check every
+signature-bearing witness, so an oversized witness cannot silently disappear
+from a constructor family or its environment tag. A missing key refuses the owner-family binding;
+the independent declaration-signature, capture, environment, and physical
+checks remain required. This closes a resource-bound gap in the authority
+path, not a semantic acceptance row. Existing callable forms still need the
+full admitted Wasm and zero-leak evidence.
+
 Row G SafeWIR aggregate-view and callable-family classification (architecture
 implemented, semantic evidence pending, 2026-09-25): the checked-source ABI
 gate now reads `StoragePlan::AggregateView` for tuple, record, sum, Option,
@@ -63,9 +75,8 @@ opaque owner-family, exact source, and physical layout checks; oversized
 source graphs can now refuse during the shared bounded preflight. SafeWIR's
 closure-family key now comes from the same canonical-source normalizer as
 layout projection rather than an independent recursive copy. The exact
-callable signature remains separately authenticated. Direct callers of that
-legacy family normalizer still need one explicit structural resource guard;
-this move does not add one. Borrow-alias result
+callable signature remains separately authenticated. A subsequent bounded
+authority-key guard refuses oversized direct callers. Borrow-alias result
 exceptions retain their access-result evidence and are not inferred from
 aggregate storage. No A–O row closes here.
 

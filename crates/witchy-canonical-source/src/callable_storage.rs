@@ -48,6 +48,15 @@ pub fn canonical_closure_family_type(ty: &Type, definitions: &BTreeMap<String, T
     })
 }
 
+/// Refuse a source or normalized family that cannot be encoded within the
+/// shared structural identity budget before using it as an authority key.
+pub fn bounded_closure_family_type(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> Option<Type> {
+    SourceTypeKey { source: ty }.digest()?;
+    let family = canonical_closure_family_type(ty, definitions);
+    SourceTypeKey { source: &family }.digest()?;
+    Some(family)
+}
+
 fn closure_family_at(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> Type {
     if let Some(view) = owner_carried_view_identity(ty, definitions) {
         return view;

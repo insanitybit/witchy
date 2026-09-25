@@ -178,6 +178,14 @@ pub(super) fn validate_candidate_abi_bindings<S: ModuleStage>(
     // owns a tagged environment record; captures are its checked scalar or
     // managed-reference payloads, never capabilities or an erased value.
     let closures = source.closure_witness().entries();
+    // A malformed checked signature cannot be omitted from a normalized
+    // family merely because its structural key exceeds the identity budget.
+    let closure_family_keys = closures.iter().map(|witness| {
+        witness.signature().map(|signature| {
+            source_closure_family_key(signature, &records)
+                .ok_or(CandidateAbiBindingError::MissingCanonicalLayouts)
+        }).transpose()
+    }).collect::<Result<Vec<_>, _>>()?;
     let closure_layout_catalog = &layouts;
     let mut closure_bound = BTreeMap::new();
     for binding in candidate.closure_bindings().entries() {
@@ -218,11 +226,12 @@ pub(super) fn validate_candidate_abi_bindings<S: ModuleStage>(
             }
             continue;
         }
-        let family_key = source_closure_family_key(&source_signature, &records);
-        let family = closures.iter().filter(|entry| {
-            entry.signature().cloned()
-                .is_some_and(|signature| source_closure_family_key(&signature, &records) == family_key)
-        }).collect::<Vec<_>>();
+        let family_key = closure_family_keys.get(binding.closure() as usize)
+            .and_then(Option::as_ref)
+            .ok_or(CandidateAbiBindingError::ClosureSignatureMismatch { closure: binding.closure() })?;
+        let family = closures.iter().zip(&closure_family_keys)
+            .filter_map(|(entry, key)| (key.as_ref() == Some(family_key)).then_some(entry))
+            .collect::<Vec<_>>();
         let Some(tag) = family.iter().position(|entry| entry.id() == witness.id()) else {
             return Err(CandidateAbiBindingError::ClosureSignatureMismatch { closure: binding.closure() });
         };
