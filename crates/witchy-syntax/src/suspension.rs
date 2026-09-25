@@ -177,9 +177,9 @@ pub fn source_callable_name(function: &Function) -> String {
     }
 }
 
-/// Free lexical bindings referenced by `expression`, in deterministic first-use
-/// order. Bindings introduced by nested blocks, patterns, loops, and lambdas are
-/// excluded from the result.
+/// Free lexical bindings read or assigned by `expression`, in deterministic
+/// first-use order. Bindings introduced by nested blocks, patterns, loops, and
+/// lambdas are excluded from the result.
 pub(crate) fn free_bindings(expression: &Expr) -> Vec<String> {
     free_bindings_with_bound(expression, &HashSet::new())
 }
@@ -367,7 +367,15 @@ fn visit_block(
                 pattern_binds(pattern, &mut names);
                 bound.extend(names);
             }
-            Stmt::Assign { value, .. } => visit_expr(value, &bound, seen, output),
+            Stmt::Assign { name, value, .. } => {
+                // A write still requires the existing binding, even when its
+                // previous value is never read. Continuations must carry that
+                // binding across suspension before performing the assignment.
+                if !bound.contains(name) && seen.insert(name.clone()) {
+                    output.push(name.clone());
+                }
+                visit_expr(value, &bound, seen, output);
+            }
             Stmt::Expr(expression) | Stmt::Yield(expression) => {
                 visit_expr(expression, &bound, seen, output);
             }
