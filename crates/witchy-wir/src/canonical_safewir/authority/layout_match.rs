@@ -373,7 +373,8 @@ pub(super) fn enqueue_layout_children(
             // Source List values are retained objects. An elided-header list
             // cannot satisfy their layout, including a DictRoot child list.
             let LayoutKind::PackedList { element, rc: RcHeader::Required } = descriptor.kind() else { return false };
-            let Some(element) = layouts.get(*element) else { return false };
+            let element_layout = *element;
+            let Some(element) = layouts.get(element_layout) else { return false };
             // A nested qualifier changes the source carrier. In particular,
             // List(&Int) uses its authenticated GC owner-list family; a plain
             // packed List(Int) layout cannot stand in for it. Preserve this
@@ -383,6 +384,18 @@ pub(super) fn enqueue_layout_children(
             }
             if is_unit_source_type(&arguments[0]) {
                 return matches!(element.kind(), LayoutKind::Scalar(ScalarKind::Unit));
+            }
+            if let Some(carrier) =
+                witchy_canonical_source::carrier::CarrierElement::from_checked_type_with_definitions(
+                    &arguments[0], records,
+                )
+            {
+                // One checked recursive proof covers the element's scalar
+                // kind, owned slot, RC body, and every nested release edge.
+                // A mismatch must not fall through to the legacy layout walk.
+                return super::super::closure_owner_contract::carrier_element_layout_matches(
+                    layouts, element_layout, &carrier,
+                );
             }
             match arguments[0].unqualified() {
                 witchy_syntax::ast::Type::Named(name, arguments) if name == "Int" && arguments.is_empty() => matches!(element.kind(), LayoutKind::Scalar(ScalarKind::Int)),
