@@ -3547,15 +3547,9 @@ impl Checker {
         {
             let element = self.resolve(&arguments[0]);
             if ty_to_ast(&element).as_ref().is_some_and(|ty| {
-                match witchy_canonical_source::storage::StoragePlan::classify(
+                witchy_canonical_source::storage::StoragePlan::classify(
                     ty, &self.canonical_definitions, |_| Some(0),
-                ) {
-                    witchy_canonical_source::storage::StoragePlan::Owned(_) => true,
-                    witchy_canonical_source::storage::StoragePlan::InlineScalar(kind) => {
-                        kind != witchy_canonical_source::abi::CanonicalScalarKind::Unit
-                    }
-                    _ => false,
-                }
+                ).into_carrier_element().is_some()
             })
                 || matches!(&element, Ty::Var(variable)
                     if self.current_typarams.values().any(|typaram| typaram == variable))

@@ -55,6 +55,14 @@ is needed for soundness.
 
 ## Exact-tip evidence checkpoint
 
+Row G shared owned-carrier projection (architecture implemented, semantic
+evidence unchanged, 2026-09-25): the canonical-source `StoragePlan` now exposes
+one conversion to the admitted recursive owned carrier. The slice `.owned()`
+type rule, rooted-slice layout projection, and rooted-slice lowering consume
+that conversion instead of separately matching scalar and owned variants.
+Unit, views, and opaque owner plans still refuse this conversion. No new
+admitted Wasm, zero-leak evidence, or A–O closure is claimed.
+
 Row K typed callable signature ordering (architecture implemented, semantic
 evidence unchanged, 2026-09-25): canonical lowering now orders checked callable
 types by the same bounded structural source-type key used by owner families.

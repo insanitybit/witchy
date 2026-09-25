@@ -75,13 +75,7 @@ fn rooted_slice_element_from_checked_definitions(
     element: &Type,
     definitions: &BTreeMap<String, TypeDef>,
 ) -> Option<CarrierElement> {
-    match StoragePlan::classify(element, definitions, |_| Some(0)) {
-        StoragePlan::InlineScalar(kind) if kind != witchy_canonical_source::abi::CanonicalScalarKind::Unit => {
-            Some(CarrierElement::Scalar(kind))
-        }
-        StoragePlan::Owned(plan) => Some(plan),
-        _ => None,
-    }
+    StoragePlan::classify(element, definitions, |_| Some(0)).into_carrier_element()
 }
 
 pub(crate) fn rooted_slice_element_type(element: &CarrierElement) -> Type {

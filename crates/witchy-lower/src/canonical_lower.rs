@@ -3456,13 +3456,7 @@ fn checked_rooted_slice_element(ty: &Ty, definitions: &BTreeMap<String, TypeDef>
 }
 
 fn classified_owned_carrier(element: &Type, definitions: &BTreeMap<String, TypeDef>) -> Option<CarrierElement> {
-    match StoragePlan::classify(element, definitions, |_| Some(0)) {
-        StoragePlan::InlineScalar(kind) if kind != CanonicalScalarKind::Unit => {
-            Some(CarrierElement::Scalar(kind))
-        }
-        StoragePlan::Owned(plan) => Some(plan),
-        _ => None,
-    }
+    StoragePlan::classify(element, definitions, |_| Some(0)).into_carrier_element()
 }
 
 fn rooted_slice_element_with_definitions(

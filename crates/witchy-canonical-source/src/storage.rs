@@ -36,6 +36,18 @@ pub enum StoragePlan {
 }
 
 impl StoragePlan {
+    /// The recursive owned carrier shared by checking and lowering. Unit has
+    /// no element slot; views and opaque owner plans need their own authority.
+    pub fn into_carrier_element(self) -> Option<CarrierElement> {
+        match self {
+            Self::InlineScalar(kind) if kind != CanonicalScalarKind::Unit => {
+                Some(CarrierElement::Scalar(kind))
+            }
+            Self::Owned(plan) => Some(plan),
+            _ => None,
+        }
+    }
+
     pub fn classify(
         ty: &Type,
         definitions: &BTreeMap<String, TypeDef>,
