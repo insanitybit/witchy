@@ -412,7 +412,7 @@ pub(super) fn compiler_optional_block_syntax_value(
     let Value::Ctor { name, fields } = value else {
         return err("meta.expr_if expected Option(BlockSyntax) else branch");
     };
-    match (name.rsplit_once('.').map_or(name.as_str(), |(_, tail)| tail), fields.as_slice()) {
+    match (name.rsplit_once('.').map_or(name.as_ref(), |(_, tail)| tail), fields.as_slice()) {
         ("Some", [body]) => Ok(Some(compiler_block_syntax_value(body, compiler_block_syntax)?)),
         ("None", []) => Ok(None),
         _ => err("meta.expr_if expected Option(BlockSyntax) else branch"),
