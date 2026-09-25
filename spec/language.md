@@ -1151,10 +1151,12 @@ write-back, or destruction order.
 
 The admitted whole-root `&List(List(Int))` carrier retains the outer list and
 its owned inner lists. A mutation to an inner element or a push to the outer
-`var` list leaves an earlier view's contents unchanged. This is an exact
-carrier family: a qualified inner list such as `List(unique List(Int))` has no
-admitted whole-root view carrier and is refused during canonical admission.
-Region-born outer roots cannot escape through this view.
+`var` list leaves an earlier view's contents unchanged. The compiler also
+recognizes this exact whole-root shape for inner `Float`, `Bool`, and
+`Duration` lists; those additional cases await semantic and leak evidence.
+A qualified inner list such as `List(unique List(Int))` has no admitted
+whole-root view carrier and is refused during canonical admission. Region-born
+outer roots cannot escape through this view.
 
 The compiler also recognizes exact `&[List(S)]` slice carriers for `S = Int`,
 `Float`, `Bool`, or `Duration`. The slice retains its outer list root, and a

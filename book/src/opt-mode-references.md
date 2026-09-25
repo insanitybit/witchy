@@ -156,8 +156,10 @@ unrelated value or reconstruct a place from source syntax.
 
 One admitted nested whole-root case is `&List(List(Int))`. It keeps both the
 outer list and its owned child lists alive while the original `var` list is
-changed. The admitted family is exact: `&List(unique List(Int))` is refused,
-and a region-born list cannot escape by wrapping it in a view.
+changed. The compiler also recognizes exact inner `Float`, `Bool`, and
+`Duration` lists, though those cases await semantic and leak evidence. A
+qualified child such as `&List(unique List(Int))` is refused, and a region-born
+list cannot escape by wrapping it in a view.
 
 An exact slice of owned lists, `&[List(S)]`, has a carrier when `S` is `Int`,
 `Float`, `Bool`, or `Duration`. The outer list remains rooted, and an indexed
