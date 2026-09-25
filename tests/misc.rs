@@ -83,8 +83,6 @@ mod policy_sealing;
 mod rfc0077_integration_grants;
 #[path = "misc/rfc0087_uniform_var.rs"]
 mod rfc0087_uniform_var;
-#[path = "misc/rfc0087_migration_census.rs"]
-mod rfc0087_migration_census;
 #[path = "misc/rfc0089_fip_contract.rs"]
 mod rfc0089_fip_contract;
 #[path = "misc/rfc0094_persistent_std_cache.rs"]

@@ -520,6 +520,64 @@ fn cargo_shim_restores_gate_dependencies_without_joining_the_agent_pool() {
 }
 
 #[test]
+fn cargo_shim_keeps_snapshot_tools_off_the_workspace_native_feature_graph() {
+    let repo = temp_repo();
+    let root = repo.path();
+    write(root, "scripts/bin/cargo", include_str!("../../../../scripts/bin/cargo"));
+    write(
+        root,
+        "scripts/feature-unification.sh",
+        include_str!("../../../../scripts/feature-unification.sh"),
+    );
+    let print_features = "#!/bin/sh\nprintf 'unification=%s resolver=%s channel=%s\\n' \"${WITCHY_FEATURE_UNIFICATION-unset}\" \"${CARGO_RESOLVER_FEATURE_UNIFICATION-unset}\" \"${__CARGO_TEST_CHANNEL_OVERRIDE_DO_NOT_USE_THIS-unset}\"\n";
+    write(root, "fake-bin/cargo", print_features);
+    write(root, "state/mbx/bin/mbx", print_features);
+    for executable in ["scripts/bin/cargo", "fake-bin/cargo", "state/mbx/bin/mbx"] {
+        let status = Command::new("chmod")
+            .args(["+x", executable])
+            .current_dir(root)
+            .status()
+            .expect("mark fixture executable");
+        assert!(status.success());
+    }
+    let path = std::env::join_paths(
+        std::iter::once(root.join("fake-bin"))
+            .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())),
+    )
+    .expect("fixture PATH");
+    let run = |package: &str| {
+        Command::new(root.join("scripts/bin/cargo"))
+            .args(["build", "-p", package])
+            .current_dir(root)
+            .env("PATH", &path)
+            .env("WITCHY_GATE_SCOPE", "all")
+            .env("MBX_STATS_REPORT", root.join("mbx-report.json"))
+            .env_remove("WITCHY_BUILD_CACHE")
+            .env_remove("WITCHY_CARGO_SHIM_ACTIVE")
+            .env_remove("WITCHY_FEATURE_UNIFICATION")
+            .env_remove("CARGO_UNSTABLE_FEATURE_UNIFICATION")
+            .env_remove("CARGO_RESOLVER_FEATURE_UNIFICATION")
+            .env_remove("__CARGO_TEST_CHANNEL_OVERRIDE_DO_NOT_USE_THIS")
+            .output()
+            .expect("run cargo shim feature fixture")
+    };
+
+    let snapshot = run("witchy-snapshot-tools");
+    assert!(snapshot.status.success(), "{}", String::from_utf8_lossy(&snapshot.stderr));
+    assert_eq!(
+        String::from_utf8_lossy(&snapshot.stdout),
+        "unification=off resolver=unset channel=unset\n"
+    );
+
+    let native = run("witchy");
+    assert!(native.status.success(), "{}", String::from_utf8_lossy(&native.stderr));
+    assert_eq!(
+        String::from_utf8_lossy(&native.stdout),
+        "unification=unset resolver=workspace channel=nightly\n"
+    );
+}
+
+#[test]
 fn cargo_shim_neutralizes_an_ambient_rustc_wrapper_for_plain_and_mbx_routes() {
     let repo = temp_repo();
     let root = repo.path();

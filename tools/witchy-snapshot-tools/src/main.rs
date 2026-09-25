@@ -6,8 +6,8 @@ use std::{
     sync::{Arc, Mutex, OnceLock},
 };
 
-use witchy::{ast, parser, pipeline};
-use witchy_syntax::{doc, linker};
+use witchy_interp::{comptime, pipeline};
+use witchy_syntax::{ast, doc, linker, parser};
 use witchy_types::migration::{Category, Census};
 
 fn main() {
@@ -35,9 +35,9 @@ fn render_stdlib_docs(files: impl Iterator<Item = String>) -> Result<(), String>
             .unwrap_or(&file);
         let source = std::fs::read_to_string(&file)
             .map_err(|error| format!("cannot read `{file}`: {error}"))?;
-        let mut module = parser::parse_module(&source).map_err(|error| format!("{file}: {error}"))?;
-        witchy_interp::comptime::expand(stem, &mut module)
-            .map_err(|error| format!("{file}: {error}"))?;
+        let mut module =
+            parser::parse_module(&source).map_err(|error| format!("{file}: {error}"))?;
+        comptime::expand(stem, &mut module).map_err(|error| format!("{file}: {error}"))?;
         output.push_str(
             &doc::render_module(stem, &source, &module)
                 .map_err(|error| format!("{file}: {error}"))?,
@@ -102,7 +102,10 @@ fn run() -> Result<(), String> {
         let source = std::fs::read_to_string(path)
             .map_err(|e| format!("cannot read `{}`: {e}", path.display()))?;
         for (index, snippet) in extract_witchy_blocks(&source).into_iter().enumerate() {
-            blocks.push((format!("{}#block-{}", display_from(root, path), index + 1), snippet));
+            blocks.push((
+                format!("{}#block-{}", display_from(root, path), index + 1),
+                snippet,
+            ));
         }
     }
     let markdown_blocks = blocks.len();
@@ -112,32 +115,36 @@ fn run() -> Result<(), String> {
         (0..job_count).map(|_| Mutex::new(None)).collect();
     std::thread::scope(|scope| {
         for _ in 0..census_jobs(job_count) {
-            scope.spawn(|| loop {
-                let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                if index >= job_count {
-                    break;
-                }
-                let report = match index.checked_sub(files.len()) {
-                    None => link_file(&files[index], &source_index, &parse_cache),
-                    Some(block) => {
-                        let (label, snippet) = &blocks[block];
-                        parser::parse_module(snippet)
-                            .map_err(|e| format!("{label}: {e}"))
-                            .and_then(|module| {
-                                pipeline::migration_census(
-                                    vec![("main".to_string(), module)],
-                                    "main",
-                                    &HashSet::new(),
-                                )
-                                .map_err(|e| format!("{label}: {e}"))
-                            })
+            scope.spawn(|| {
+                loop {
+                    let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    if index >= job_count {
+                        break;
                     }
-                };
-                *slots[index].lock().unwrap() = Some(report);
+                    let report = match index.checked_sub(files.len()) {
+                        None => link_file(&files[index], &source_index, &parse_cache),
+                        Some(block) => {
+                            let (label, snippet) = &blocks[block];
+                            parser::parse_module(snippet)
+                                .map_err(|e| format!("{label}: {e}"))
+                                .and_then(|module| {
+                                    pipeline::migration_census(
+                                        vec![("main".to_string(), module)],
+                                        "main",
+                                        &HashSet::new(),
+                                    )
+                                    .map_err(|e| format!("{label}: {e}"))
+                                })
+                        }
+                    };
+                    *slots[index].lock().unwrap() = Some(report);
+                }
             });
         }
     });
-    let mut reports = slots.into_iter().map(|slot| slot.into_inner().unwrap().expect("every job ran"));
+    let mut reports = slots
+        .into_iter()
+        .map(|slot| slot.into_inner().unwrap().expect("every job ran"));
     for path in &files {
         record_report(
             display_from(root, path),
@@ -218,7 +225,10 @@ fn record_report(
     } else {
         rejected.push(format!(
             "{label}: {}",
-            report.check_error.as_deref().unwrap_or("unknown check failure")
+            report
+                .check_error
+                .as_deref()
+                .unwrap_or("unknown check failure")
         ));
     }
     for (category, count) in report.counts() {
@@ -286,8 +296,8 @@ fn markdown_files(root: &Path, full_scan: bool) -> Result<Vec<PathBuf>, String> 
     ];
     for directory in ["spec", "book/src"] {
         let path = root.join(directory);
-        let entries =
-            std::fs::read_dir(&path).map_err(|e| format!("cannot read `{}`: {e}", path.display()))?;
+        let entries = std::fs::read_dir(&path)
+            .map_err(|e| format!("cannot read `{}`: {e}", path.display()))?;
         for entry in entries {
             let path = entry
                 .map_err(|e| format!("cannot read entry in `{}`: {e}", path.display()))?
@@ -324,7 +334,10 @@ fn source_index(files: &[PathBuf]) -> BTreeMap<String, Vec<PathBuf>> {
     let mut index: BTreeMap<String, Vec<PathBuf>> = BTreeMap::new();
     for path in files {
         if let Some(stem) = path.file_stem().and_then(|name| name.to_str()) {
-            index.entry(stem.to_string()).or_default().push(path.clone());
+            index
+                .entry(stem.to_string())
+                .or_default()
+                .push(path.clone());
         }
     }
     index
@@ -378,7 +391,10 @@ fn link_file(
         // once instead of redundantly in parallel.
         let cell = {
             let mut cache = parse_cache.lock().unwrap_or_else(|p| p.into_inner());
-            cache.entry(source.clone()).or_insert_with(|| Arc::new(OnceLock::new())).clone()
+            cache
+                .entry(source.clone())
+                .or_insert_with(|| Arc::new(OnceLock::new()))
+                .clone()
         };
         let error_context = source_path.display().to_string();
         let module = cell
@@ -397,12 +413,12 @@ fn link_file(
                 } else {
                     dependency_source(&source_path, import)?
                         .or_else(|| {
-                            source_index
-                                .get(import)
-                                .and_then(|candidates| match candidates.as_slice() {
+                            source_index.get(import).and_then(|candidates| {
+                                match candidates.as_slice() {
                                     [only] => Some(only.clone()),
                                     _ => None,
-                                })
+                                }
+                            })
                         })
                         .unwrap_or(sibling)
                 };
@@ -427,8 +443,8 @@ fn dependency_source(source: &Path, name: &str) -> Result<Option<PathBuf>, Strin
     };
     let text = std::fs::read_to_string(&manifest)
         .map_err(|e| format!("cannot read `{}`: {e}", manifest.display()))?;
-    let document: toml::Value = toml::from_str(&text)
-        .map_err(|e| format!("cannot parse `{}`: {e}", manifest.display()))?;
+    let document: toml::Value =
+        toml::from_str(&text).map_err(|e| format!("cannot parse `{}`: {e}", manifest.display()))?;
     let Some(path) = document
         .get("dependencies")
         .and_then(|dependencies| dependencies.get(name))
@@ -465,7 +481,10 @@ fn dependency_source(source: &Path, name: &str) -> Result<Option<PathBuf>, Strin
 }
 
 fn display_from(root: &Path, path: &Path) -> String {
-    path.strip_prefix(root).unwrap_or(path).display().to_string()
+    path.strip_prefix(root)
+        .unwrap_or(path)
+        .display()
+        .to_string()
 }
 
 #[cfg(test)]

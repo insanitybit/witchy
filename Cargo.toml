@@ -45,7 +45,7 @@ pkg-fmt = "tgz"
 # crates/. The root `witchy` package is itself a workspace member (the binary +
 # the not-yet-extracted stages); extracted crates are listed here.
 [workspace]
-members = ["crates/witchy-canonical-source", "crates/witchy-cap-model", "crates/witchy-caps", "crates/witchy-compiler-worker", "crates/witchy-confinement", "crates/witchy-interp", "crates/witchy-lower", "crates/witchy-runtime", "crates/witchy-syntax", "crates/witchy-test-host", "crates/witchy-testkit", "crates/witchy-types", "crates/witchy-wir", "crates/witchy-worker-protocol", "tools/merge-queue-tests", "tools/repo-tests"]
+members = ["crates/witchy-canonical-source", "crates/witchy-cap-model", "crates/witchy-caps", "crates/witchy-compiler-worker", "crates/witchy-confinement", "crates/witchy-interp", "crates/witchy-lower", "crates/witchy-runtime", "crates/witchy-syntax", "crates/witchy-test-host", "crates/witchy-testkit", "crates/witchy-types", "crates/witchy-wir", "crates/witchy-worker-protocol", "tools/merge-queue-tests", "tools/repo-tests", "tools/witchy-snapshot-tools"]
 
 [lib]
 name = "witchy"
@@ -60,19 +60,11 @@ name = "witchy"
 path = "src/main.rs"
 required-features = ["native"]
 
-[[bin]]
-name = "rfc0087-census"
-path = "src/bin/rfc0087-census.rs"
-required-features = ["census"]
-
 [features]
 # The full native toolchain (wasmtime sandbox, package manager, LSP). On by
 # default; the wasm playground builds the library alone with it OFF.
 default = ["native"]
-native = ["census", "dep:aws-lc-rs", "dep:wasmtime", "dep:wasmprinter", "dep:lsp-server", "dep:serde_json", "dep:serde", "dep:tiny_http", "dep:getrandom", "dep:blake3", "dep:witchy-testkit", "dep:mimalloc", "witchy-wir/native", "witchy-caps/native", "witchy-interp/test-fixtures", "witchy-runtime/test-fixtures"]
-# The migration census needs TOML parsing but no sandbox, TLS, package manager,
-# or language server. Queue snapshot preparation selects this feature alone.
-census = ["dep:toml"]
+native = ["dep:toml", "dep:aws-lc-rs", "dep:wasmtime", "dep:wasmprinter", "dep:lsp-server", "dep:serde_json", "dep:serde", "dep:tiny_http", "dep:getrandom", "dep:blake3", "dep:witchy-testkit", "dep:mimalloc", "witchy-wir/native", "witchy-caps/native", "witchy-interp/test-fixtures", "witchy-runtime/test-fixtures"]
 # The web/static-site commands (glamour, the docs site). Optional since
 # 2026-09-21: they are ~28% of the root crate and every build paid for them.
 web = []

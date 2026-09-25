@@ -1454,8 +1454,8 @@ fn prepare_rebaselines_stale_generated_snapshots_onto_the_gated_sha() {
     );
     assert_eq!(
         fs::read_to_string(&cargo_args).expect("read preparation Cargo arguments"),
-        "build --no-default-features --features census --bin rfc0087-census\n",
-        "snapshot preparation selected the native runtime graph",
+        "build -p witchy-snapshot-tools --bin rfc0087-census\n",
+        "snapshot preparation did not select the isolated generator package",
     );
     assert_eq!(
         git(&root, &["show", "master:rfcs/0087-migration-census.tsv"]),

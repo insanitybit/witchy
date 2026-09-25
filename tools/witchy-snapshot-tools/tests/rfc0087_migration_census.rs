@@ -8,7 +8,11 @@ fn repository_census_matches_the_checked_in_type_resolved_snapshot() {
         || std::env::var_os("WITCHY_NIGHTLY").is_some_and(|v| v == "1");
 
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_rfc0087-census"));
-    cmd.arg(super::manifest_dir());
+    let workspace = std::path::PathBuf::from(
+        std::env::var_os("CARGO_MANIFEST_DIR").expect("Cargo sets CARGO_MANIFEST_DIR for tests"),
+    )
+    .join("../..");
+    cmd.arg(workspace);
     if full_census {
         cmd.arg("--full");
     }
@@ -19,7 +23,7 @@ fn repository_census_matches_the_checked_in_type_resolved_snapshot() {
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8(output.stdout).expect("UTF-8 census output");
-    let committed = include_str!("../../rfcs/0087-migration-census.tsv");
+    let committed = include_str!("../../../rfcs/0087-migration-census.tsv");
     if full_census {
         assert_eq!(stdout, committed);
     } else {

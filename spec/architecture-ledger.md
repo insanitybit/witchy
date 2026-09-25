@@ -114,6 +114,7 @@ stage crates have this maximum direct-dependency graph:
 | `witchy-lower` | `canonical-source`, `syntax`, `types`, `wir` | KEEP | Lower typed source to WIR through explicit checked/type-information inputs. |
 | `witchy-runtime` | `cap-model`, `caps`, `confinement`, `syntax`, `test-host`, `testkit`, `wir` | EXTRACT | Derive one target-neutral outer policy from concrete runtime grants; keep platform providers outside the Wasmtime kernel. The optional fixture adapter consumes the authority-free test host and testkit; compiler implementation and Wasmtime bridging have distinct `native/compiler.rs` and `runtime/compiler.rs` seams. Inject the service implementation from above until post-compilation enforcement has no parser/type/WIR implementation dependency. |
 | `witchy-interp` | `caps`, `runtime`, `syntax`, `test-host`, `testkit`, `types` | NARROW | Consume runtime values and policy interfaces without importing the native Wasm sandbox. Its optional fixture adapter delegates to the same test host and testkit as Wasmtime. |
+| `witchy-snapshot-tools` | `interp`, `syntax`, `types` | KEEP | Keep checked-in snapshot generation on the smallest frontend graph. It must not depend on the root package, lowering, native WIR features, Wasmtime, or native crypto/TLS providers. |
 
 This graph describes allowed coupling, not desired coupling. In particular,
 the compiler-stage dependencies of `witchy-runtime` are transitional and must

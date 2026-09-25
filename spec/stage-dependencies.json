@@ -27,5 +27,6 @@
     "witchy-test-host",
     "witchy-testkit",
     "witchy-types"
-  ]
+  ],
+  "witchy-snapshot-tools": ["witchy-interp", "witchy-syntax", "witchy-types"]
 }

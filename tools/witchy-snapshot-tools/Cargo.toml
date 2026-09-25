@@ -1,0 +1,19 @@
+[package]
+name = "witchy-snapshot-tools"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "MIT OR Apache-2.0"
+description = "Lightweight generators for Witchy's checked-in compiler snapshots"
+
+[[bin]]
+name = "rfc0087-census"
+path = "src/main.rs"
+test = false
+doctest = false
+
+[dependencies]
+toml = "1.1.2"
+witchy-interp = { path = "../../crates/witchy-interp" }
+witchy-syntax = { path = "../../crates/witchy-syntax" }
+witchy-types = { path = "../../crates/witchy-types" }

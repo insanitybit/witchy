@@ -2343,7 +2343,7 @@ rebaseline_generated_snapshots() { # rebaseline_generated_snapshots <base> <bran
     # a detached daemon's sandbox EPERMs it, and a silently failing build here
     # would neuter the whole re-baseline path for daemon coordinators.
     if ! ( cd "$gate_wt" && env -u CARGO_INCREMENTAL PATH="$gate_wt/scripts/bin:$PATH" WITCHY_GATE_SCOPE=all "CARGO_TARGET_DIR=$rb_target" CARGO_PROFILE_TEST_STRIP=symbols RUSTC_WRAPPER= CARGO_BUILD_RUSTC_WRAPPER= \
-        cargo build --no-default-features --features census --bin rfc0087-census ) >/dev/null 2>&1; then
+        cargo build -p witchy-snapshot-tools --bin rfc0087-census ) >/dev/null 2>&1; then
         note "rebaseline: generator build failed; skipping regen (the gate adjudicates)"
         return 0
     fi

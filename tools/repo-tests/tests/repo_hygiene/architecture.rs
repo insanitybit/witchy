@@ -132,10 +132,26 @@ fn runtime_native_providers_are_optional() {
             "root production dependency {provider} must stay optional"
         );
     }
+    assert!(
+        root["features"].get("census").is_none(),
+        "snapshot generation belongs in witchy-snapshot-tools, not the root compiler package"
+    );
+
+    let snapshot_tools = packages
+        .iter()
+        .find(|package| package["name"] == "witchy-snapshot-tools")
+        .expect("witchy-snapshot-tools package");
+    let snapshot_dependencies: BTreeSet<_> = snapshot_tools["dependencies"]
+        .as_array()
+        .expect("snapshot tool dependencies")
+        .iter()
+        .filter(|dependency| dependency["kind"].is_null())
+        .map(|dependency| dependency["name"].as_str().expect("dependency name"))
+        .collect();
     assert_eq!(
-        root["features"]["census"],
-        serde_json::json!(["dep:toml"]),
-        "the census feature must not grow a native runtime dependency graph"
+        snapshot_dependencies,
+        BTreeSet::from(["toml", "witchy-interp", "witchy-syntax", "witchy-types"]),
+        "snapshot tools must stay on the smallest frontend graph"
     );
 }
 

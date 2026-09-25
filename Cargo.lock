@@ -2940,6 +2940,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "witchy-snapshot-tools"
+version = "0.1.0"
+dependencies = [
+ "toml 1.1.2+spec-1.1.0",
+ "witchy-interp",
+ "witchy-syntax",
+ "witchy-types",
+]
+
+[[package]]
 name = "witchy-syntax"
 version = "0.1.0"
 dependencies = [

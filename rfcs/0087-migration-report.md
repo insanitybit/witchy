@@ -81,7 +81,7 @@ their resolved declaration performs `var` write-back.
 
 ## Type-resolved verification
 
-`cargo run --bin rfc0087-census -- .` is the durable compiler census. It parses,
+`cargo run -p witchy-snapshot-tools --bin rfc0087-census -- .` is the durable compiler census. It parses,
 links, lowers methods/traits to their exact callee declarations, reads `var`
 conventions from those declarations, and type-checks 283 Witchy sources plus
 190 Witchy blocks from the README, spec, and book. Its complete stable output is
