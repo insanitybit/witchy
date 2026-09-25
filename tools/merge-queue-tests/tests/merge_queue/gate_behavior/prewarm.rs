@@ -247,7 +247,7 @@ while :; do /bin/sleep 1; done
         "taskpolicy".to_owned(),
         "cargo:target-prewarm:build --workspace".to_owned(),
         "cargo:target-prewarm:test --workspace --no-run".to_owned(),
-        "cargo:target-prewarm-check:check --workspace --all-targets".to_owned(),
+        "cargo:target-prewarm-check:check --workspace".to_owned(),
         "cache:warm-witchy-caches".to_owned(),
     ]);
     assert_eq!(seen, expected, "not every prewarm workload inherited utility QoS");

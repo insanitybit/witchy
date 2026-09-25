@@ -3417,7 +3417,7 @@ prewarm_gate() {
         export CARGO_TARGET_DIR="$inactive_target" CARGO_PROFILE_TEST_STRIP=symbols RUSTC_WRAPPER= CARGO_BUILD_RUSTC_WRAPPER=
         cargo build --workspace >/dev/null 2>&1
         cargo test --workspace --no-run >/dev/null 2>&1
-        CARGO_TARGET_DIR="${inactive_target}-check" cargo check --workspace --all-targets >/dev/null 2>&1
+        CARGO_TARGET_DIR="${inactive_target}-check" cargo check --workspace >/dev/null 2>&1
         [ ! -x scripts/warm-witchy-caches.sh ] || ./scripts/warm-witchy-caches.sh >/dev/null 2>&1
     ' prewarm "$gate_wt" "$reset_inactive" "$inactive_target" "$active_target" \
         "$here/scripts/worktree-warm.sh" ) &

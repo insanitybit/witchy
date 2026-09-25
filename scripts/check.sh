@@ -982,11 +982,11 @@ seed_cow_target() { # seed_cow_target <dir>
 }
 
 # The compile check is a background leg in the MERGE gate only (not --fast):
-# `cargo check --workspace
-# --all-targets` is the cheapest command that surfaces a plain rustc compile
-# error in ANY target (warm: 1-3 min), long before nextest's own test-profile
-# build reports it (observed t+1004s in a red gate). Combined with
-# run_watched's fail-fast, a compile error now kills the gate in minutes.
+# `cargo check` over the selected packages is the cheapest command that
+# surfaces a plain rustc error in production library and binary targets, long
+# before nextest's test-profile build reports it. Nextest already compiles the
+# selected test targets; `--all-targets` duplicated that work in a second Cargo
+# profile and linked unrelated root tests on broad compiler gates.
 # It runs in its own CoW-seeded target dir so it never serializes on cargo's
 # build lock against the tests.
 check_dir="${target_dir}-check"
@@ -994,9 +994,9 @@ launch_check_leg() {
     check_log="$(mktemp "${TMPDIR:-/tmp}/witchy-check-XXXXXX")"
     check_started=$(date +%s)
     if [ -n "${WITCHY_GATE_SCOPE+x}" ]; then
-        ( seed_cow_target "$check_dir" && background_leg env CARGO_BUILD_JOBS="${WITCHY_GATE_CHECK_BUILD_JOBS:-1}" CARGO_TARGET_DIR="$check_dir" cargo check "${compile_sel[@]}" --all-targets ${native_feature_args[@]+"${native_feature_args[@]}"} ) >"$check_log" 2>&1 &
+        ( seed_cow_target "$check_dir" && background_leg env CARGO_BUILD_JOBS="${WITCHY_GATE_CHECK_BUILD_JOBS:-1}" CARGO_TARGET_DIR="$check_dir" cargo check "${compile_sel[@]}" ${native_feature_args[@]+"${native_feature_args[@]}"} ) >"$check_log" 2>&1 &
     else
-        ( seed_cow_target "$check_dir" && background_leg env CARGO_TARGET_DIR="$check_dir" cargo check "${compile_sel[@]}" --all-targets ${native_feature_args[@]+"${native_feature_args[@]}"} ) >"$check_log" 2>&1 &
+        ( seed_cow_target "$check_dir" && background_leg env CARGO_TARGET_DIR="$check_dir" cargo check "${compile_sel[@]}" ${native_feature_args[@]+"${native_feature_args[@]}"} ) >"$check_log" 2>&1 &
     fi
     check_pid=$!
 }
