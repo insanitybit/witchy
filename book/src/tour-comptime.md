@@ -123,6 +123,14 @@ fn main(console: Console):
 42
 ```
 
+For typed suspended bodies, `meta.expr_await` builds an await expression and
+`meta.stmt_yield` builds a yield statement. `meta.block_region` annotates a
+typed region block, while `meta.function_async` and
+`meta.function_generator` wrap typed bodies in the corresponding function
+mode. The builders reject suspended `var` parameters, suspension in an
+ordinary nested lambda, and an await or yield outside its function mode.
+These compiler paths still await end-to-end runtime and leak evidence.
+
 Pattern templates follow the same rule. The compatibility-built `1` pattern is
 inserted into an owned alternation, and that pattern is then inserted into the
 generated match arm:
