@@ -172,6 +172,18 @@ sha2 = "0.11.0"
 debug = "line-tables-only"
 split-debuginfo = "unpacked"
 strip = "symbols"
+# No crate-local ThinLTO. With opt-level > 0 and several codegen units (every
+# incremental build: 256), rustc runs ThinLTO across the crate's CGUs on EVERY
+# build, re-reading the whole crate's bitcode even when one CGU changed. On
+# 2026-09-25 a one-line edit in witchy-types (opt-level 1, 168 CGUs, 10
+# re-codegened) spent 7.1 s of an 11.5 s rustc in LLVM_thinlto. Measured edit
+# -> `cargo test -p witchy-types --no-run`: codegen-visible edit ~19 -> ~7 CPU s,
+# optimized-away edit 12.7 -> 6.1 CPU s (8.0 -> 4.7 s wall). The compiler this
+# builds is not slower: `witchy check` best-of-5, gm_core 3.13 vs 3.21 s,
+# channels 12.49 vs 11.42 s, json/corpus identical (noise at load ~20). A cold
+# `cargo build --bin witchy` fell from 510 to 409 CPU s. The profile only
+# (not package overrides) can set `lto`, and `test` inherits it from here.
+lto = "off"
 
 # Every test build uses ONE profile. The merge gate, check.sh and agent-check
 # have always built tests with `CARGO_PROFILE_TEST_STRIP=symbols`; a plain
