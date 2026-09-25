@@ -419,6 +419,16 @@ The existing v4 structural ABI bytes, source admission, qualifier rules,
 and independent SafeWIR layout checks are preserved. This consolidation
 adds no new semantic evidence or A–O closure.
 
+Row G qualified record-root identity (implemented but unverified,
+2026-09-25): the checked record-root structural key now distinguishes
+`frozen` and `unique` children rather than erasing their source contracts.
+Closed callable manifests restore direct annotated rooted-view spelling only
+after a bounded match to the finalized erased type. Qualified children
+without an admitted carrier still fail closed, and nested or outer-wrapped
+qualified rooted views remain refused because their callable encoder cannot
+yet represent those qualifiers. One focused ABI authority pin covers direct
+key separation and both refusals. This closes no semantic acceptance row.
+
 At `adf1d01c7` (2026-09-18), the integrated core smoke was **42/42 passed**: rooted views (13), unique/write-back (12), normal/opt interoperation (2), resource composition (5), and optimization readiness (10). This is core canonical-route evidence only; it does not include the source interpreter, full, end-to-end, or examples suites.
 
 At `2f62f4038` (2026-09-19), the newly integrated concrete `Option(&Int)` evidence is **6/6 passed**: four lower carrier/tamper/`var` checks, one exact authority payload-state check, and one production-runtime three-leg fixture (`790`, zero leaks). The three generic rooted-slice fixtures are **1 passed / 2 failed**: region-root escape rejects as expected, while both positive forms stop at the explicit missing authenticated slice-element projection. This is a live failure checkpoint, not an acceptance closeout.
