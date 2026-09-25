@@ -28,7 +28,7 @@ getrandom = { version = "0.4.2", optional = true }
 # `tls:` client. Both build C and have no wasm32 support, so the wasm build keeps
 # the pure-Rust sha2/ed25519 path and omits TLS.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-aws-lc-rs = "1"
+aws-lc-rs = { version = "1", optional = true }
 # (RFC-0106) Native-only SHAKE XOF via AWS-LC's EVP interface, which aws-lc-rs's
 # safe digest API does not expose. Pinned to the same AWS-LC build aws-lc-rs
 # selects (transitive already), so no second crypto provider is introduced —
@@ -36,10 +36,10 @@ aws-lc-rs = "1"
 # duplicate build observed 2026-08-09). This drifts out of sync whenever
 # aws-lc-rs bumps its own aws-lc-sys requirement; check `cargo tree -i
 # aws-lc-sys` for a duplicate before assuming this pin is still current.
-aws-lc-sys = "0.41"
-rustls = { version = "0.23", default-features = false, features = ["std", "aws_lc_rs", "tls12", "logging"] }
-webpki-roots = "0.26"
-rustls-pemfile = "2"
+aws-lc-sys = { version = "0.41", optional = true }
+rustls = { version = "0.23", optional = true, default-features = false, features = ["std", "aws_lc_rs", "tls12", "logging"] }
+webpki-roots = { version = "0.26", optional = true }
+rustls-pemfile = { version = "2", optional = true }
 # RFC-0103: portable, descriptor/handle-anchored filesystem traversal. These are
 # native-only because the browser build has no host filesystem.
 cap-std = "4.0.2"
@@ -67,8 +67,8 @@ witchy-wir = { path = "../witchy-wir", features = ["native", "legacy-encoder-bri
 wasm-encoder = "0.251"
 
 [features]
-native = ["dep:wasmtime", "dep:getrandom", "dep:wasmparser"]
+native = ["dep:aws-lc-rs", "dep:aws-lc-sys", "dep:getrandom", "dep:rustls", "dep:wasmparser", "dep:wasmtime", "dep:webpki-roots", "dep:rustls-pemfile"]
 test-fixtures = ["native", "dep:witchy-test-host", "dep:witchy-testkit"]
 # Exposes the scoped TLS-root registry used by the root package's hermetic
 # integration tests. Normal builds cannot add trust anchors through this API.
-test-support = []
+test-support = ["native"]

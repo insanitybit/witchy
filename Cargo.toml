@@ -60,11 +60,19 @@ name = "witchy"
 path = "src/main.rs"
 required-features = ["native"]
 
+[[bin]]
+name = "rfc0087-census"
+path = "src/bin/rfc0087-census.rs"
+required-features = ["census"]
+
 [features]
 # The full native toolchain (wasmtime sandbox, package manager, LSP). On by
 # default; the wasm playground builds the library alone with it OFF.
 default = ["native"]
-native = ["dep:wasmtime", "dep:wasmprinter", "dep:lsp-server", "dep:serde_json", "dep:serde", "dep:toml", "dep:tiny_http", "dep:getrandom", "dep:blake3", "dep:witchy-testkit", "dep:mimalloc", "witchy-wir/native", "witchy-caps/native", "witchy-interp/test-fixtures", "witchy-runtime/test-fixtures"]
+native = ["census", "dep:aws-lc-rs", "dep:wasmtime", "dep:wasmprinter", "dep:lsp-server", "dep:serde_json", "dep:serde", "dep:tiny_http", "dep:getrandom", "dep:blake3", "dep:witchy-testkit", "dep:mimalloc", "witchy-wir/native", "witchy-caps/native", "witchy-interp/test-fixtures", "witchy-runtime/test-fixtures"]
+# The migration census needs TOML parsing but no sandbox, TLS, package manager,
+# or language server. Queue snapshot preparation selects this feature alone.
+census = ["dep:toml"]
 # The web/static-site commands (glamour, the docs site). Optional since
 # 2026-09-21: they are ~28% of the root crate and every build paid for them.
 web = []
@@ -128,19 +136,10 @@ blake3 = { version = "1.8.3", optional = true }
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom = { version = "0.2", features = ["js"] }
 
-# aws-lc-rs (the FIPS-capable AWS-LC binding) backs native crypto — SHA-256 and
-# Ed25519 here, FIPS-approved algorithms. It builds a C library (cmake), so it has
-# no wasm32 support; the wasm playground keeps the pure-Rust sha2/ed25519-dalek
-# path above (it never runs security-critical crypto). See native.rs `crypto`.
+# Developer-facing IdP key/token generation lives in the native CLI. Keep its
+# C crypto provider out of compiler-only tools such as the snapshot generator.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-aws-lc-rs = "1"
-# TLS client for the `tls:` address scheme (RFC-0009). rustls configured with the
-# aws_lc_rs provider keeps ALL crypto on aws-lc (FIPS) — NOT ring — while giving a safe
-# blocking `StreamOwned`. webpki-roots is the Mozilla CA trust anchor set; rustls-pemfile
-# reads any extra/custom roots (env `WITCHY_TLS_EXTRA_ROOTS`).
-rustls = { version = "0.23", default-features = false, features = ["std", "aws_lc_rs", "tls12", "logging"] }
-webpki-roots = "0.26"
-rustls-pemfile = "2"
+aws-lc-rs = { version = "1", optional = true }
 
 [dev-dependencies]
 proptest = "1.11.0"

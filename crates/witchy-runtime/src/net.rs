@@ -9,9 +9,9 @@
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
 use std::sync::Arc;
-#[cfg(all(not(target_arch = "wasm32"), any(test, feature = "test-support")))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native", any(test, feature = "test-support")))]
 use std::sync::{LazyLock, Mutex};
 
 /// A connected byte stream behind a socket handle. Plain `TcpStream` and TLS
@@ -39,10 +39,10 @@ fn shutdown_tcp(stream: &TcpStream) {
 
 // TLS (the `tls:` scheme) is native-only — rustls/aws-lc build C and have no
 // wasm32 support, and the browser playground has no raw sockets anyway.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
 type TlsStream = rustls::StreamOwned<rustls::ClientConnection, TcpStream>;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
 impl Stream for TlsStream {
     fn shutdown(&mut self) {
         self.conn.send_close_notify();
@@ -60,18 +60,18 @@ impl Stream for TlsStream {
 // the ONE implementation both backends call, so they cannot drift.
 
 /// A listener's server-side TLS state: the rustls config built once at listen
-/// time (unit on the wasm target, where TLS serving is unavailable).
-#[cfg(not(target_arch = "wasm32"))]
+/// time (unit when native runtime support is disabled).
+#[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
 pub type ServerTlsConfig = Arc<rustls::ServerConfig>;
-/// The wasm build has no rustls; the constructor below always errors there.
-#[cfg(target_arch = "wasm32")]
+/// Compiler-only and wasm builds have no rustls; the constructor errors there.
+#[cfg(any(target_arch = "wasm32", not(feature = "native")))]
 pub type ServerTlsConfig = ();
 
 /// The server half of a TLS stream (mirrors the client `TlsStream` above).
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
 type ServerTlsStream = rustls::StreamOwned<rustls::ServerConnection, TcpStream>;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
 impl Stream for ServerTlsStream {
     fn shutdown(&mut self) {
         self.conn.send_close_notify();
@@ -87,7 +87,7 @@ impl Stream for ServerTlsStream {
 /// does not match the certificate fails at listen time (startup), never at first
 /// connection — `with_single_cert` verifies the key's SubjectPublicKeyInfo
 /// against the end-entity certificate's.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
 pub fn server_tls_config(cert_pem: &str, key_bytes: &[u8]) -> Result<ServerTlsConfig, String> {
     let mut cert_reader = cert_pem.as_bytes();
     let certs: Vec<_> = rustls_pemfile::certs(&mut cert_reader)
@@ -114,11 +114,11 @@ pub fn server_tls_config(cert_pem: &str, key_bytes: &[u8]) -> Result<ServerTlsCo
     Ok(Arc::new(config))
 }
 
-/// TLS serving is native-only (rustls/aws-lc build C); the wasm build refuses at
-/// listen time — the same loud startup-failure shape as a bad key.
-#[cfg(target_arch = "wasm32")]
+/// TLS serving requires the native runtime feature; other builds refuse at
+/// listen time with the same loud startup-failure shape as a bad key.
+#[cfg(any(target_arch = "wasm32", not(feature = "native")))]
 pub fn server_tls_config(_cert_pem: &str, _key_bytes: &[u8]) -> Result<ServerTlsConfig, String> {
-    Err("serve_tls is unavailable in the wasm build".to_string())
+    Err("serve_tls is unavailable without native runtime support".to_string())
 }
 
 /// Complete a server-side TLS handshake on an accepted connection, returning the
@@ -127,7 +127,7 @@ pub fn server_tls_config(_cert_pem: &str, _key_bytes: &[u8]) -> Result<ServerTls
 /// surfaces now — the accept loop drops that connection and keeps serving, per
 /// RFC-0060's error policy: per-connection TLS failures are the network's
 /// weather, not program errors.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
 pub fn accept_tls(config: ServerTlsConfig, tcp: TcpStream) -> std::io::Result<Box<dyn Stream>> {
     let conn = rustls::ServerConnection::new(config).map_err(std::io::Error::other)?;
     let mut tls = rustls::StreamOwned::new(conn, tcp);
@@ -137,10 +137,10 @@ pub fn accept_tls(config: ServerTlsConfig, tcp: TcpStream) -> std::io::Result<Bo
     Ok(Box::new(tls))
 }
 
-/// No TLS listener can exist on wasm (`server_tls_config` refused already).
-#[cfg(target_arch = "wasm32")]
+/// No TLS listener can exist without native runtime support.
+#[cfg(any(target_arch = "wasm32", not(feature = "native")))]
 pub fn accept_tls(_config: ServerTlsConfig, _tcp: TcpStream) -> std::io::Result<Box<dyn Stream>> {
-    Err(std::io::Error::other("serve_tls is unavailable in the wasm build"))
+    Err(std::io::Error::other("serve_tls is unavailable without native runtime support"))
 }
 
 /// Split an optional `tls:` scheme off an address: `"tls:github.com:443"` →
@@ -214,7 +214,7 @@ pub fn authority(host: &str, port: i64) -> String {
 }
 
 /// The SNI / certificate name for a `host:port` (the host, without the port).
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
 fn server_name(host_port: &str) -> &str {
     host_port.rsplit_once(':').map(|(h, _)| h).unwrap_or(host_port)
 }
@@ -269,7 +269,7 @@ pub fn dial_with_timeout(
     if !tls {
         return Ok(Box::new(tcp));
     }
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
     {
         use std::io::{Error, ErrorKind};
         let sni = server_name(host_port).to_string();
@@ -279,29 +279,29 @@ pub fn dial_with_timeout(
             .map_err(|e| Error::other(format!("TLS setup failed: {e}")))?;
         Ok(Box::new(rustls::StreamOwned::new(conn, tcp)))
     }
-    // The browser has no raw TLS; `tls:` is a native-only scheme.
-    #[cfg(target_arch = "wasm32")]
+    // Compiler-only and browser builds have no TLS provider.
+    #[cfg(any(target_arch = "wasm32", not(feature = "native")))]
     {
         let _ = (host_port, tcp);
-        Err(std::io::Error::other("TLS (`tls:`) is unavailable in the wasm build"))
+        Err(std::io::Error::other("TLS (`tls:`) is unavailable without native runtime support"))
     }
 }
 
-#[cfg(all(not(target_arch = "wasm32"), any(test, feature = "test-support")))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native", any(test, feature = "test-support")))]
 static TEST_TLS_ROOTS: LazyLock<Mutex<std::collections::BTreeMap<u64, std::path::PathBuf>>> =
     LazyLock::new(|| Mutex::new(std::collections::BTreeMap::new()));
-#[cfg(all(not(target_arch = "wasm32"), any(test, feature = "test-support")))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native", any(test, feature = "test-support")))]
 static NEXT_TEST_TLS_ROOT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 /// RAII registration for a hermetic test CA. Unlike mutating
 /// `WITCHY_TLS_EXTRA_ROOTS`, this is safe under parallel test execution: every
 /// live fixture contributes its own root, and dropping the guard removes only
 /// that registration.
-#[cfg(all(not(target_arch = "wasm32"), any(test, feature = "test-support")))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native", any(test, feature = "test-support")))]
 #[doc(hidden)]
 pub struct TestTlsRootGuard(u64);
 
-#[cfg(all(not(target_arch = "wasm32"), any(test, feature = "test-support")))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native", any(test, feature = "test-support")))]
 #[doc(hidden)]
 pub fn register_test_tls_root(path: impl Into<std::path::PathBuf>) -> TestTlsRootGuard {
     use std::sync::atomic::Ordering;
@@ -313,7 +313,7 @@ pub fn register_test_tls_root(path: impl Into<std::path::PathBuf>) -> TestTlsRoo
     TestTlsRootGuard(id)
 }
 
-#[cfg(all(not(target_arch = "wasm32"), any(test, feature = "test-support")))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native", any(test, feature = "test-support")))]
 impl Drop for TestTlsRootGuard {
     fn drop(&mut self) {
         let removed = TEST_TLS_ROOTS
@@ -328,7 +328,7 @@ impl Drop for TestTlsRootGuard {
 /// by `WITCHY_TLS_EXTRA_ROOTS` (a custom/corporate CA). Tests can also register
 /// scoped roots when the non-default `test-support` feature is enabled. Built
 /// per dial — correctness over the micro-cost; the handshake dominates.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
 fn client_config() -> Arc<rustls::ClientConfig> {
     let mut roots = rustls::RootCertStore::empty();
     roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());

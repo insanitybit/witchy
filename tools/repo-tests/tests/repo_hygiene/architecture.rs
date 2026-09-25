@@ -80,6 +80,65 @@ fn stage_crates_follow_the_declared_dependency_dag() {
     }
 }
 
+/// Compiler-only tools use `witchy-interp` without the native runtime feature.
+/// Keep the two C-heavy providers behind that boundary so snapshot preparation
+/// and other frontend-only builds cannot compile Wasmtime or AWS-LC.
+#[test]
+fn runtime_native_providers_are_optional() {
+    let metadata = metadata();
+    let packages = metadata["packages"].as_array().expect("metadata packages");
+    let runtime = packages
+        .iter()
+        .find(|package| package["name"] == "witchy-runtime")
+        .expect("witchy-runtime package");
+    let dependencies = runtime["dependencies"].as_array().expect("runtime dependencies");
+
+    for provider in ["aws-lc-rs", "aws-lc-sys", "rustls", "wasmtime"] {
+        let dependency = dependencies
+            .iter()
+            .find(|dependency| dependency["name"] == provider)
+            .unwrap_or_else(|| panic!("witchy-runtime dependency {provider}"));
+        assert_eq!(
+            dependency["optional"], true,
+            "{provider} must stay optional so compiler-only builds avoid its native graph"
+        );
+    }
+
+    let native = runtime["features"]["native"]
+        .as_array()
+        .expect("witchy-runtime native feature");
+    for provider in ["aws-lc-rs", "aws-lc-sys", "rustls", "wasmtime"] {
+        let selector = format!("dep:{provider}");
+        assert!(
+            native.iter().any(|entry| entry.as_str() == Some(selector.as_str())),
+            "witchy-runtime native feature must select {provider}"
+        );
+    }
+
+    let root = packages
+        .iter()
+        .find(|package| package["name"] == "witchy")
+        .expect("witchy root package");
+    let root_dependencies = root["dependencies"].as_array().expect("root dependencies");
+    for provider in ["aws-lc-rs", "rustls", "wasmtime"] {
+        let production_edges: Vec<_> = root_dependencies
+            .iter()
+            .filter(|dependency| dependency["name"] == provider && dependency["kind"].is_null())
+            .collect();
+        assert!(
+            production_edges
+                .iter()
+                .all(|dependency| dependency["optional"] == true),
+            "root production dependency {provider} must stay optional"
+        );
+    }
+    assert_eq!(
+        root["features"]["census"],
+        serde_json::json!(["dep:toml"]),
+        "the census feature must not grow a native runtime dependency graph"
+    );
+}
+
 /// Every `tests/*.rs` file in the root package is a separately linked test
 /// binary that nextest must also discover. Discovery is not free: a measured
 /// full gate spent 240s before the first test ran -- 119s compiling and ~121s

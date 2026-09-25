@@ -1397,6 +1397,7 @@ fn prepare_rebaselines_stale_generated_snapshots_onto_the_gated_sha() {
     fs::create_dir(&bin).expect("create fake cargo dir");
     let cargo = bin.join("cargo");
     let incremental = fixture._temp.path().join("regen-cargo-incremental");
+    let cargo_args = fixture._temp.path().join("regen-cargo-args");
     let proof_marker = fixture._temp.path().join("census-proof-sha");
     let proof_gate = fixture._temp.path().join("capture-census-proof");
     fs::write(
@@ -1412,8 +1413,9 @@ fn prepare_rebaselines_stale_generated_snapshots_onto_the_gated_sha() {
     fs::write(
         &cargo,
         format!(
-            "#!/bin/sh\nprintf '%s' \"${{CARGO_INCREMENTAL-unset}}\" >{}\nexit 0\n",
+            "#!/bin/sh\nprintf '%s' \"${{CARGO_INCREMENTAL-unset}}\" >{}\nprintf '%s\\n' \"$*\" >{}\nexit 0\n",
             incremental.display(),
+            cargo_args.display(),
         ),
     )
     .expect("write fake cargo");
@@ -1449,6 +1451,11 @@ fn prepare_rebaselines_stale_generated_snapshots_onto_the_gated_sha() {
         fs::read_to_string(&incremental).expect("read preparation Cargo profile"),
         "unset",
         "preparation did not match the serialized gate incremental setting",
+    );
+    assert_eq!(
+        fs::read_to_string(&cargo_args).expect("read preparation Cargo arguments"),
+        "build --no-default-features --features census --bin rfc0087-census\n",
+        "snapshot preparation selected the native runtime graph",
     );
     assert_eq!(
         git(&root, &["show", "master:rfcs/0087-migration-census.tsv"]),

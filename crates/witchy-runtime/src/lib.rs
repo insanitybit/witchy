@@ -14,8 +14,8 @@
 pub mod confine;
 pub mod fetch;
 pub mod native;
-/// (RFC-0106) Native-only SHAKE XOF via AWS-LC; the browser build omits it.
-#[cfg(not(target_arch = "wasm32"))]
+/// (RFC-0106) Native-runtime-only SHAKE XOF via AWS-LC.
+#[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
 pub mod shake;
 pub mod net;
 pub mod rand;

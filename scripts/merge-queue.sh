@@ -2294,8 +2294,8 @@ submission_is_represented() { # submission_is_represented <submitted-sha>
         && ! printf '%s\n' "$cherry_status" | grep -c '^+' >/dev/null
 }
 
-# Deterministic generated snapshots (the RFC-0087 census TSV and the
-# `witchy doc`-rendered spec/stdlib.md) go stale whenever an unrelated branch
+# Deterministic generated snapshots (the RFC-0087 census TSV and
+# spec/stdlib.md) go stale whenever an unrelated branch
 # lands first: the candidate regenerated them against an older master, the
 # rebase keeps its now-incomplete snapshot, and the drift test turns a correct
 # change into a ~28-min red gate plus a resubmission. After the candidate (and
@@ -2311,10 +2311,10 @@ submission_is_represented() { # submission_is_represented <submitted-sha>
 #     census/stdlib drift: docs-safe diffs, example_tests-only, and crate-only
 #     compiler diffs (focused nextest does not run the snapshot tests).
 #     `src/`, `std/`, corpus trees, and Cargo/toolchain still pay the
-#     generator `cargo build` — that gate runs the freshness tests, and
-#     nextest needs the same dev-profile `witchy` bin. Match run_gate /
-#     check.sh (incremental on, test-strip=symbols): flipping those flags
-#     in one shared target invalidates the artifacts and rebuilds every crate.
+#     frontend-only generator build because that gate runs the freshness
+#     tests. Match run_gate / check.sh (incremental on, test-strip=symbols):
+#     flipping those flags in one shared target invalidates the artifacts and
+#     rebuilds every crate.
 rebaseline_generated_snapshots() { # rebaseline_generated_snapshots <base> <branch> <change-id> <attempt-id> <cargo-target>
     local rb_base="$1" rb_branch="$2" rb_change_id="$3" rb_attempt_id="$4"
     local rb_target="${5:-target}"
@@ -2343,7 +2343,7 @@ rebaseline_generated_snapshots() { # rebaseline_generated_snapshots <base> <bran
     # a detached daemon's sandbox EPERMs it, and a silently failing build here
     # would neuter the whole re-baseline path for daemon coordinators.
     if ! ( cd "$gate_wt" && env -u CARGO_INCREMENTAL PATH="$gate_wt/scripts/bin:$PATH" WITCHY_GATE_SCOPE=all "CARGO_TARGET_DIR=$rb_target" CARGO_PROFILE_TEST_STRIP=symbols RUSTC_WRAPPER= CARGO_BUILD_RUSTC_WRAPPER= \
-        cargo build --bin witchy --bin rfc0087-census ) >/dev/null 2>&1; then
+        cargo build --no-default-features --features census --bin rfc0087-census ) >/dev/null 2>&1; then
         note "rebaseline: generator build failed; skipping regen (the gate adjudicates)"
         return 0
     fi
@@ -2363,7 +2363,7 @@ rebaseline_generated_snapshots() { # rebaseline_generated_snapshots <base> <bran
         fi
     fi
     if [ -f "$gate_wt/spec/stdlib.md" ] && ls "$gate_wt"/std/*.witchy >/dev/null 2>&1 \
-        && ( cd "$gate_wt" && "./$rb_target/debug/witchy" doc std/*.witchy ) >"$tmp" 2>/dev/null \
+        && ( cd "$gate_wt" && "./$rb_target/debug/rfc0087-census" --stdlib-docs std/*.witchy ) >"$tmp" 2>/dev/null \
         && ! cmp -s "$tmp" "$gate_wt/spec/stdlib.md"; then
         cat "$tmp" >"$gate_wt/spec/stdlib.md"
         files="${files:+$files }spec/stdlib.md"

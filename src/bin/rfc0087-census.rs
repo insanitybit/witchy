@@ -7,14 +7,45 @@ use std::{
 };
 
 use witchy::{ast, parser, pipeline};
-use witchy_syntax::linker;
+use witchy_syntax::{doc, linker};
 use witchy_types::migration::{Category, Census};
 
 fn main() {
-    if let Err(error) = run() {
+    let result = if std::env::args().nth(1).as_deref() == Some("--stdlib-docs") {
+        render_stdlib_docs(std::env::args().skip(2))
+    } else {
+        run()
+    };
+    if let Err(error) = result {
         eprintln!("rfc0087-census: {error}");
         std::process::exit(1);
     }
+}
+
+fn render_stdlib_docs(files: impl Iterator<Item = String>) -> Result<(), String> {
+    let files: Vec<String> = files.collect();
+    if files.is_empty() {
+        return Err("usage: rfc0087-census --stdlib-docs <file.witchy>...".to_string());
+    }
+    let mut output = String::from("# API reference\n\n");
+    for file in files {
+        let stem = Path::new(&file)
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or(&file);
+        let source = std::fs::read_to_string(&file)
+            .map_err(|error| format!("cannot read `{file}`: {error}"))?;
+        let mut module = parser::parse_module(&source).map_err(|error| format!("{file}: {error}"))?;
+        witchy_interp::comptime::expand(stem, &mut module)
+            .map_err(|error| format!("{file}: {error}"))?;
+        output.push_str(
+            &doc::render_module(stem, &source, &module)
+                .map_err(|error| format!("{file}: {error}"))?,
+        );
+    }
+    output.truncate(output.trim_end_matches('\n').len());
+    println!("{output}");
+    Ok(())
 }
 
 fn run() -> Result<(), String> {

@@ -63,25 +63,25 @@ pub fn lookup(qualified: &str) -> Option<NativeFn> {
         intrinsics::CRYPTO_SIGN => Some(crypto::sign),
         intrinsics::CRYPTO_PUBLIC_KEY => Some(crypto::public_key),
         intrinsics::CRYPTO_REVEAL => Some(crypto::reveal),
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
         intrinsics::CRYPTO_ECDSA_P256_VERIFY_STATUS => Some(crypto::ecdsa_p256_verify_status),
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
         intrinsics::CRYPTO_ECDSA_P256_VERIFY_HEX_STATUS => {
             Some(crypto::ecdsa_p256_verify_hex_status)
         }
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
         intrinsics::CRYPTO_RSA_PKCS1_SHA256_VERIFY_STATUS => {
             Some(crypto::rsa_pkcs1_sha256_verify_status)
         }
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
         intrinsics::CRYPTO_SHA512 => Some(crypto::sha512),
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
         intrinsics::CRYPTO_SHA3_256 => Some(crypto::sha3_256),
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
         intrinsics::CRYPTO_HMAC_SHA256 => Some(crypto::hmac_sha256),
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
         intrinsics::CRYPTO_SHAKE128 => Some(crypto::shake128),
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
         intrinsics::CRYPTO_SHAKE256 => Some(crypto::shake256),
         // The compiler-service natives are installed from above the kernel
         // (`witchy-interp`) so this crate has no parser/type/caps dependency;
@@ -262,7 +262,7 @@ mod crypto {
     /// ASN.1-DER signature); `message` is the raw bytes the signature covers (the
     /// curve hashes it with SHA-256). Malformed input is a negative status; a bad
     /// signature is 0. Native-only: aws-lc-rs has no wasm32 build.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
     pub fn ecdsa_p256_verify_status(args: &[Value]) -> Result<Value, RuntimeError> {
         let [Value::Str(pk_hex), Value::Str(msg), Value::Str(sig_hex)] = args else {
             return Err(type_error(
@@ -293,7 +293,7 @@ mod crypto {
     /// `public_key` is the hex of a DER-encoded RSA public key (PKCS#1 `RSAPublicKey`);
     /// `signature` is hex; `message` is the raw signed bytes. Malformed input is a
     /// negative status; a bad signature is 0. (Native/aws-lc only.)
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
     pub fn rsa_pkcs1_sha256_verify_status(args: &[Value]) -> Result<Value, RuntimeError> {
         let [Value::Str(pk_hex), Value::Str(msg), Value::Str(sig_hex)] = args else {
             return Err(type_error(
@@ -322,7 +322,7 @@ mod crypto {
 
     /// Like `ecdsa_p256_verify` but the message is also hex — for binary messages
     /// such as WebAuthn's `authenticatorData ‖ SHA256(clientDataJSON)`.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
     pub fn ecdsa_p256_verify_hex_status(args: &[Value]) -> Result<Value, RuntimeError> {
         let [Value::Str(pk_hex), Value::Str(msg_hex), Value::Str(sig_hex)] = args else {
             return Err(type_error(
@@ -354,7 +354,7 @@ mod crypto {
 
     /// SHA-512 (FIPS 180-4) of a string's UTF-8 bytes, as 128 lowercase hex chars.
     /// Native-only (aws-lc-rs; not WASM-bridged).
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
     pub fn sha512(args: &[Value]) -> Result<Value, RuntimeError> {
         let [Value::Str(s)] = args else {
             return Err(type_error("crypto.sha512 expects a String"));
@@ -365,7 +365,7 @@ mod crypto {
 
     /// SHA3-256 (FIPS 202) of a string's UTF-8 bytes, as 64 lowercase hex chars.
     /// Native-only (aws-lc-rs; not WASM-bridged).
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
     pub fn sha3_256(args: &[Value]) -> Result<Value, RuntimeError> {
         let [Value::Str(s)] = args else {
             return Err(type_error("crypto.sha3_256 expects a String"));
@@ -376,7 +376,7 @@ mod crypto {
 
     /// HMAC-SHA256 (FIPS 198-1). `key` is hex (so binary keys are representable),
     /// `message` is raw bytes; returns the 64-hex-char tag. Native-only.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
     pub fn hmac_sha256(args: &[Value]) -> Result<Value, RuntimeError> {
         let [Value::Str(key_hex), Value::Str(msg)] = args else {
             return Err(type_error("crypto.hmac_sha256 expects (key_hex, message) strings"));
@@ -393,7 +393,7 @@ mod crypto {
     /// `output_len` bytes. `output_len` is pre-validated by the std wrapper to
     /// `0..=1048576`; the adapter re-checks and returns a typed error on any
     /// out-of-range value, which we surface as a runtime error. Native-only.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
     pub fn shake128(args: &[Value]) -> Result<Value, RuntimeError> {
         let [Value::Bytes(input), Value::Int(len)] = args else {
             return Err(type_error("crypto.shake128 expects (Bytes, Int)"));
@@ -404,7 +404,7 @@ mod crypto {
     }
 
     /// SHAKE256 (FIPS 202) XOF. See `shake128`. Native-only.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
     pub fn shake256(args: &[Value]) -> Result<Value, RuntimeError> {
         let [Value::Bytes(input), Value::Int(len)] = args else {
             return Err(type_error("crypto.shake256 expects (Bytes, Int)"));
@@ -433,12 +433,12 @@ mod crypto {
             .collect()
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
     fn is_sec1_p256_public_key(pk: &[u8]) -> bool {
         pk.len() == 65 && pk.first() == Some(&0x04)
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
     fn der_len(data: &[u8], pos: &mut usize) -> Option<usize> {
         let first = *data.get(*pos)?;
         *pos += 1;
@@ -460,7 +460,7 @@ mod crypto {
         Some(len)
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
     fn der_tlv<'a>(data: &'a [u8], pos: &mut usize, tag: u8) -> Option<&'a [u8]> {
         if *data.get(*pos)? != tag {
             return None;
@@ -473,7 +473,7 @@ mod crypto {
         Some(out)
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
     fn der_positive_int(data: &[u8]) -> bool {
         if data.is_empty() {
             return false;
@@ -487,7 +487,7 @@ mod crypto {
         true
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
     fn is_der_ecdsa_signature(sig: &[u8]) -> bool {
         let mut pos = 0;
         let Some(seq) = der_tlv(sig, &mut pos, 0x30) else {
@@ -506,7 +506,7 @@ mod crypto {
         inner == seq.len() && der_positive_int(r) && der_positive_int(s)
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
     fn is_rsa_pkcs1_public_key(der: &[u8]) -> bool {
         let mut pos = 0;
         let Some(seq) = der_tlv(der, &mut pos, 0x30) else {
@@ -544,25 +544,25 @@ mod crypto {
     // crypto) keeps the pure-Rust path. Outputs are byte-identical — both implement
     // FIPS 180-4 SHA-256 and RFC 8032 Ed25519 deterministically.
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
     fn sha256_digest(data: &[u8]) -> [u8; 32] {
         let d = aws_lc_rs::digest::digest(&aws_lc_rs::digest::SHA256, data);
         let mut out = [0u8; 32];
         out.copy_from_slice(d.as_ref());
         out
     }
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(any(target_arch = "wasm32", not(feature = "native")))]
     fn sha256_digest(data: &[u8]) -> [u8; 32] {
         use sha2::{Digest, Sha256};
         Sha256::digest(data).into()
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
     fn ed25519_verify_raw(pk: &[u8], msg: &[u8], sig: &[u8]) -> bool {
         use aws_lc_rs::signature::{UnparsedPublicKey, ED25519};
         UnparsedPublicKey::new(&ED25519, pk).verify(msg, sig).is_ok()
     }
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(any(target_arch = "wasm32", not(feature = "native")))]
     fn ed25519_verify_raw(pk: &[u8], msg: &[u8], sig: &[u8]) -> bool {
         use ed25519_dalek::{Signature, Verifier, VerifyingKey};
         (|| {
@@ -574,7 +574,7 @@ mod crypto {
         .unwrap_or(false)
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
     fn ed25519_sign_raw(seed: &[u8; 32], msg: &[u8]) -> [u8; 64] {
         use aws_lc_rs::signature::Ed25519KeyPair;
         let kp = Ed25519KeyPair::from_seed_unchecked(seed).expect("32-byte ed25519 seed");
@@ -582,13 +582,13 @@ mod crypto {
         out.copy_from_slice(kp.sign(msg).as_ref());
         out
     }
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(any(target_arch = "wasm32", not(feature = "native")))]
     fn ed25519_sign_raw(seed: &[u8; 32], msg: &[u8]) -> [u8; 64] {
         use ed25519_dalek::{Signer, SigningKey};
         SigningKey::from_bytes(seed).sign(msg).to_bytes()
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
     fn ed25519_public_raw(seed: &[u8; 32]) -> [u8; 32] {
         use aws_lc_rs::signature::{Ed25519KeyPair, KeyPair};
         let kp = Ed25519KeyPair::from_seed_unchecked(seed).expect("32-byte ed25519 seed");
@@ -596,7 +596,7 @@ mod crypto {
         out.copy_from_slice(kp.public_key().as_ref());
         out
     }
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(any(target_arch = "wasm32", not(feature = "native")))]
     fn ed25519_public_raw(seed: &[u8; 32]) -> [u8; 32] {
         use ed25519_dalek::SigningKey;
         *SigningKey::from_bytes(seed).verifying_key().as_bytes()
