@@ -77,8 +77,17 @@ impl OwnerCarriedViewPlan {
     }
 
     pub fn admitted_aggregate_field(&self) -> bool {
-        matches!(self.storage, OwnerCarriedViewStorage::AuthenticatedPlace(CanonicalScalarKind::Int))
-            || (!self.payload_frozen && matches!(self.storage, OwnerCarriedViewStorage::RetainedProjection(_)))
+        self.admitted_storage().is_some()
+    }
+
+    /// Storage that the current aggregate and callable owner-family paths
+    /// can authenticate. Frozen slices keep an identity but lack that path.
+    pub fn admitted_storage(&self) -> Option<&OwnerCarriedViewStorage> {
+        match (&self.storage, self.payload_frozen) {
+            (OwnerCarriedViewStorage::AuthenticatedPlace(CanonicalScalarKind::Int), _) => Some(&self.storage),
+            (OwnerCarriedViewStorage::RetainedProjection(_), false) => Some(&self.storage),
+            _ => None,
+        }
     }
 
     pub fn source_identity(&self) -> Type {

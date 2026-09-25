@@ -1,5 +1,5 @@
 use super::*;
-use witchy_canonical_source::rooted_view::{RetainedRootStorage, RootedViewStorage};
+use witchy_canonical_source::rooted_view::{OwnerCarriedViewPlan, OwnerCarriedViewStorage, RetainedRootStorage, RootedViewStorage};
 
 pub(crate) fn value_type_matches_source(
     actual: super::super::ValueType,
@@ -59,16 +59,17 @@ pub(crate) fn value_type_matches_source(
         if let super::super::closure_owner_contract::OwnerFamilySource::SharedReference(expected) = &family.source {
             // `List(&Int)` is the `&Int` family's owner list.
             if id == family.list_type {
-                return is_direct_rooted_view_int(expected)
+                return is_direct_rooted_scalar_place(expected)
                     && matches!(source.unqualified(), witchy_syntax::ast::Type::Named(name, arguments)
-                        if name == "List" && arguments.len() == 1 && is_direct_rooted_view_int(&arguments[0]));
+                        if name == "List" && arguments.len() == 1 && is_direct_rooted_scalar_place(&arguments[0]));
             }
             return id == family.owner_type
-                && ((is_direct_rooted_view_int(expected) && is_direct_rooted_view_int(source))
-                    || (is_direct_rooted_view_slice(expected, records)
+                && ((is_direct_rooted_scalar_place(expected) && is_direct_rooted_scalar_place(source))
+                    || (is_direct_rooted_projection(expected, records)
                         && family.slice_carrier.as_ref().is_some_and(|carrier| {
-                            witchy_canonical_source::carrier::CarrierElement::from_view_type_with_definitions(source, records)
-                                .as_ref() == Some(carrier)
+                            OwnerCarriedViewPlan::classify(source, records).is_some_and(|plan| {
+                                matches!(plan.admitted_storage(), Some(OwnerCarriedViewStorage::RetainedProjection(element)) if element == carrier)
+                            })
                         })));
         }
         if let super::super::closure_owner_contract::OwnerFamilySource::Aggregate(expected) = &family.source {

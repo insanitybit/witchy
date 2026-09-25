@@ -188,11 +188,10 @@ pub(crate) fn candidate_signature_matches_source_with_layouts<S: ModuleStage>(
     candidate_signature_matches_source_inner(actual, source, parameters, result, conventions, layouts, candidate.signatures(), &mut CorrespondenceContext::with_owners(candidate), records, candidate.closure_layouts())
 }
 
-/// `List(&Int)`: the `&Int` family's owner list. Each element is one retained,
-/// authenticated place carrier; the list itself is an ordinary owner list.
-pub(super) fn is_list_of_direct_int_views(ty: &witchy_syntax::ast::Type) -> bool {
+/// An owner list whose elements are authenticated rooted scalar places.
+pub(super) fn is_list_of_rooted_scalar_places(ty: &witchy_syntax::ast::Type) -> bool {
     matches!(ty.unqualified(), witchy_syntax::ast::Type::Named(name, arguments)
-        if name == "List" && arguments.len() == 1 && is_direct_rooted_view_int(&arguments[0]))
+        if name == "List" && arguments.len() == 1 && is_direct_rooted_scalar_place(&arguments[0]))
 }
 
 /// Check the original source graph before any ABI comparison erases wrappers.
@@ -213,8 +212,8 @@ pub(super) fn source_abi_qualifiers_supported(
     // the authenticated hidden write-back lane. It is deliberately not a
     // recursive qualifier exception.
     let mut pending = (!(is_direct_shared_reference(result)
-        || is_direct_rooted_view_int(result) || is_direct_rooted_view_slice(result, records)
-        || is_list_of_direct_int_views(result)
+        || is_direct_rooted_scalar_place(result) || is_direct_rooted_projection(result, records)
+        || is_list_of_rooted_scalar_places(result)
         || is_direct_rooted_view_whole_root(result, records)
         || is_direct_exclusive_reference(result)
         || is_aggregate_reference_carrier(result)
@@ -226,8 +225,8 @@ pub(super) fn source_abi_qualifiers_supported(
     pending.extend(parameters.iter().enumerate().filter_map(|(index, parameter)| {
         (!(
             is_direct_shared_reference(parameter)
-            || is_direct_rooted_view_int(parameter) || is_direct_rooted_view_slice(parameter, records)
-            || is_list_of_direct_int_views(parameter)
+            || is_direct_rooted_scalar_place(parameter) || is_direct_rooted_projection(parameter, records)
+            || is_list_of_rooted_scalar_places(parameter)
             || is_direct_rooted_view_whole_root(parameter, records)
             || is_direct_rooted_view_aggregate_carrier(parameter, records)
             || (matches!(conventions.get(index), Some(Convention::Let | Convention::Own))
@@ -253,7 +252,7 @@ pub(super) fn source_abi_qualifiers_supported(
             // qualifier itself is not a nested loan to refuse here.
             Type::Qualified(TypeQual::View, inner)
                 if !matches!(inner.as_ref(), Type::Qualified(qualifier, _) if *qualifier != TypeQual::Frozen)
-                    && (is_direct_rooted_view_int(ty) || is_direct_rooted_view_slice(ty, records)
+                    && (is_direct_rooted_scalar_place(ty) || is_direct_rooted_projection(ty, records)
                         || is_direct_rooted_view_whole_root(ty, records)) => {}
             Type::Qualified(_, _) => return false,
             Type::Fn(parameters, result, conventions, _) => {
@@ -317,15 +316,13 @@ pub(super) fn is_direct_shared_int(source: &witchy_syntax::ast::Type) -> bool {
                 if name == "Int" && arguments.is_empty()))
 }
 
-/// The initial RFC-0167 view carrier is deliberately narrower than the
-/// legacy reference ABI: only a lifetime-free `&Int` maps to the registered
-/// opaque root-plus-projection owner family.  This is an exact source-type
-/// match, not a representation or shape fallback.
-pub(super) fn is_direct_rooted_view_int(source: &witchy_syntax::ast::Type) -> bool {
-    matches!(source,
-        witchy_syntax::ast::Type::Qualified(witchy_syntax::ast::TypeQual::View, inner)
-            if matches!(inner.unqualified(), witchy_syntax::ast::Type::Named(name, arguments)
-                if name == "Int" && arguments.is_empty()))
+/// A checked scalar-place owner leaf; the shared classifier currently proves
+/// this representation only for an exact Int payload.
+pub(super) fn is_direct_rooted_scalar_place(source: &witchy_syntax::ast::Type) -> bool {
+    use witchy_canonical_source::rooted_view::{OwnerCarriedViewPlan, OwnerCarriedViewStorage};
+    OwnerCarriedViewPlan::classify(source, &BTreeMap::new()).is_some_and(|plan| {
+        matches!(plan.admitted_storage(), Some(OwnerCarriedViewStorage::AuthenticatedPlace(_)))
+    })
 }
 
 /// A `&String` view is its retained String token (`StringRoot`), so inside
@@ -415,12 +412,15 @@ pub(crate) fn is_direct_rooted_view_whole_root(source: &witchy_syntax::ast::Type
         Some(RootedViewStorage::InlineScalar(_) | RootedViewStorage::RetainedRoot(_)))
 }
 
-/// A direct `&[T]` rooted slice view of an admitted element (`ListSlice`).
-pub(super) fn is_direct_rooted_view_slice(
+/// A retained projection whose recursive element has checked ownership.
+pub(super) fn is_direct_rooted_projection(
     source: &witchy_syntax::ast::Type,
     records: &ScalarRecordFields,
 ) -> bool {
-    witchy_canonical_source::carrier::CarrierElement::from_view_type_with_definitions(source, records).is_some()
+    use witchy_canonical_source::rooted_view::{OwnerCarriedViewPlan, OwnerCarriedViewStorage};
+    OwnerCarriedViewPlan::classify(source, records).is_some_and(|plan| {
+        matches!(plan.admitted_storage(), Some(OwnerCarriedViewStorage::RetainedProjection(_)))
+    })
 }
 
 /// The only non-scalar reference carriers the current canonical ABI can move
@@ -555,7 +555,7 @@ pub(super) fn restore_source_abi_qualifiers(
     for (index, (parameter, declared)) in parameters.iter_mut().zip(&declaration.params).enumerate() {
         if let Some(ty) = &declared.ty
             && (is_direct_shared_reference(ty)
-                || is_direct_rooted_view_int(ty) || is_direct_rooted_view_slice(ty, records)
+                || is_direct_rooted_scalar_place(ty) || is_direct_rooted_projection(ty, records)
                 || is_direct_rooted_view_whole_root(ty, records)
                 || is_direct_rooted_view_aggregate_carrier(ty, records)
                 || (matches!(declared.convention,
@@ -576,7 +576,7 @@ pub(super) fn restore_source_abi_qualifiers(
     }
     if let Some(declared) = &declaration.ret
         && (is_direct_shared_reference(declared)
-            || is_direct_rooted_view_int(declared) || is_direct_rooted_view_slice(declared, records)
+            || is_direct_rooted_scalar_place(declared) || is_direct_rooted_projection(declared, records)
             || is_direct_rooted_view_whole_root(declared, records)
             || is_direct_exclusive_reference(declared)
             || is_aggregate_reference_carrier(declared)
