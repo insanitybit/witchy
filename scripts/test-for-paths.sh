@@ -693,7 +693,16 @@ for p in "${paths[@]}"; do
             add_pkg witchy-types
             add "cargo nextest run -p witchy-syntax -p witchy-types"
             ;;
-        crates/witchy-interp/* | crates/witchy-caps/*)
+        crates/witchy-interp/*)
+            any_rust=1
+            gate_need_conformance=1
+            add_pkg witchy-interp
+            # An interpreter edit cannot change witchy-caps' package tests.
+            # Root conformance still compiles the caps production dependency;
+            # reserving its feature-isolated test shard for caps edits avoids
+            # a second profile build before the native union build.
+            add "./scripts/nextest-admitted.sh witchy -- cargo nextest run -E 'test(/^example_tests::/)'" ;;
+        crates/witchy-caps/*)
             any_rust=1
             gate_need_conformance=1
             add_pkg witchy-interp

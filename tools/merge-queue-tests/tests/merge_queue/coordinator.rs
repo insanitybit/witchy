@@ -749,8 +749,8 @@ fn crate_plus_example_tests_batch_keeps_compile_legs_and_unions_nextest() {
         "crate+example_tests did not union the mapped crate with the touched module: {env}",
     );
     assert!(
-        env.contains("extra=[-p witchy-caps --lib"),
-        "enabled library tests were not propagated as a separate partition: {env}",
+        env.contains("extra=[]") && !env.contains("witchy-caps"),
+        "interpreter edit still selected the unchanged caps test partition: {env}",
     );
     assert!(
         !env.contains("expr=[package(witchy-interp) or package(witchy-caps) or test(/^example_tests::/)"),

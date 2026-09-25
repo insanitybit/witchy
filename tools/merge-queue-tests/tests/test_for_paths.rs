@@ -412,6 +412,19 @@ fn gate_nextest_crate_only_interp_does_not_attach_example_tests_matrix() {
         !output.contains("WORKSPACE"),
         "interp-only mapping fell back to WORKSPACE: {output}",
     );
+    assert!(
+        !output.contains("-p witchy-caps") && !output.contains("package(witchy-caps)"),
+        "interp-only mapping still rebuilt the unchanged caps test shard: {output}",
+    );
+}
+
+#[test]
+fn gate_nextest_caps_edit_keeps_the_feature_isolated_caps_tests() {
+    let output = gate_nextest(&["crates/witchy-caps/src/lib.rs"]);
+    assert!(
+        output.contains("-p witchy-caps --lib") && output.contains("package(witchy-caps)"),
+        "caps edit dropped its package tests: {output}",
+    );
 }
 
 #[test]
