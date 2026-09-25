@@ -17,6 +17,7 @@ pub enum CarrierElement {
     String,
     List(Box<Self>),
     Tuple(Vec<Self>),
+    Dict(Box<Self>, Box<Self>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -109,6 +110,13 @@ impl CarrierElement {
                     Self::from_checked_type_bounded(field, depth + 1, budget)
                 }).collect::<Option<Vec<_>>>()?))
             }
+            Type::Named(name, arguments) if name == "Dict" => {
+                let [key, value] = arguments.as_slice() else { return None };
+                Some(Self::Dict(
+                    Box::new(Self::from_checked_type_bounded(key, depth + 1, budget)?),
+                    Box::new(Self::from_checked_type_bounded(value, depth + 1, budget)?),
+                ))
+            }
             _ => None,
         }
     }
@@ -167,13 +175,16 @@ impl CarrierElement {
             Self::String => Type::Named("String".into(), Vec::new()),
             Self::List(child) => Type::Named("List".into(), vec![child.source_type()]),
             Self::Tuple(fields) => Type::Tuple(fields.iter().map(Self::source_type).collect()),
+            Self::Dict(key, value) => Type::Named(
+                "Dict".into(), vec![key.source_type(), value.source_type()],
+            ),
         }
     }
 
     pub fn ownership(&self) -> CarrierOwnership {
         match self {
             Self::Scalar(_) => CarrierOwnership::Copy,
-            Self::String | Self::List(_) | Self::Tuple(_) => CarrierOwnership::RetainCloneRelease,
+            Self::String | Self::List(_) | Self::Tuple(_) | Self::Dict(_, _) => CarrierOwnership::RetainCloneRelease,
         }
     }
 
@@ -214,6 +225,20 @@ impl CarrierElement {
                             field.matches_layout(query, slot)
                         });
                 }
+                Self::Dict(key, value) => {
+                    let Some(actual) = query.owned_record_fields(layout) else {
+                        return false;
+                    };
+                    let [keys, values] = actual.as_slice() else { return false };
+                    let Some(key_layout) = query.owned_retained_list_element(*keys) else {
+                        return false;
+                    };
+                    let Some(value_layout) = query.owned_retained_list_element(*values) else {
+                        return false;
+                    };
+                    return key.matches_layout(query, key_layout)
+                        && value.matches_layout(query, value_layout);
+                }
             }
         }
     }
@@ -239,6 +264,12 @@ impl CarrierElement {
                     bytes.extend_from_slice(&(fields.len() as u32).to_le_bytes());
                     for field in fields { encode(field, bytes); }
                     bytes.push(5);
+                }
+                CarrierElement::Dict(key, value) => {
+                    bytes.push(6);
+                    encode(key, bytes);
+                    encode(value, bytes);
+                    bytes.push(7);
                 }
             }
         }

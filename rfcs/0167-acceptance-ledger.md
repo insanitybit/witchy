@@ -135,6 +135,15 @@ Wasm with the hand-computed exit value 9; one canonical interpreter parity
 probe agreed. These probes have no recorded zero-leak audit or durable Wasm
 evidence, so they close no row G acceptance gap yet.
 
+Row G structural dictionary elements (implemented but unverified,
+2026-09-25): the same recursive carrier relation accepts `Dict(K, V)` only
+when its physical layout is an owned record of two retained List fields and
+both `K` and `V` have recursively valid ownership operations. Temporary
+admitted Wasm runs returned the hand-computed 8 for a shallow dictionary
+slice and its `.owned()` materialization, and 16 for a dictionary with a
+nested List value copied through `.owned()`. No durable hand-computed Wasm
+witness or recorded zero-leak audit closes the row yet.
+
 Row G whole-root scalar-list expansion (implemented but unverified,
 2026-09-24): the compiler now recognizes exact `&List(List(S))` for
 `S = Float`, `Bool`, or `Duration` through the shared source predicate,

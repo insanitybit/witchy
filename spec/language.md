@@ -1166,6 +1166,8 @@ type, physical layout, and ownership operations. Each `List` layer requires a
 retained header and an owned child pointer; scalar leaves match their exact
 layout, and String leaves own a byte buffer. A nonempty tuple requires an
 owned pointer to a packed record whose fields each satisfy that same relation.
+`Dict(K, V)` uses its canonical two-field record: an owned, retained key list
+and an owned, retained value list, with `K` and `V` checked recursively.
 The slice retains its outer list root, and reads retain managed children
 through the checked projection. Carrier proof has a compiler resource limit
 of 128 nested levels and 4,096 type nodes.
