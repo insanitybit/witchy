@@ -60,13 +60,13 @@ raw-encoder-test-api = []
 checked-source-test-api = []
 
 [dev-dependencies]
-# Every test build requests witchy-wir's full test feature set, so all
-# selections (-p witchy-wir, -p witchy-lower, --workspace, ...) share ONE
-# compiled witchy-wir and everything above it. Each distinct feature set was
-# a separate opt-level-2 build of witchy-wir plus every dependent crate in the
-# same target dir. Dev-dependency features never reach `cargo build`, so the
-# production boundary around the raw encoder is unchanged.
-witchy-wir = { path = ".", features = ["native", "legacy-encoder-bridge", "raw-encoder-test-api", "checked-source-test-api"] }
+# Keep test-only encoder/checker surfaces unified without forcing the native
+# execution graph onto structural integration targets. The mandatory WIR and
+# workspace campaigns pass `--features native` explicitly; a focused
+# `--test structural_contracts` therefore avoids Wasmtime and AWS-LC.
+# Dev-dependency features never reach `cargo build`, so the production
+# boundary around the raw encoder is unchanged.
+witchy-wir = { path = ".", features = ["legacy-encoder-bridge", "raw-encoder-test-api", "checked-source-test-api"] }
 syn = { version = "2", features = ["full", "visit"] }
 # No checker crate, not even here (RFC-0170 P4): a dev-dependency reaches every
 # test target, so a checker edit would rebuild them all. Cases that need a real

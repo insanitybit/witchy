@@ -122,29 +122,49 @@ if [ -n "$cross_target" ] && command -v rustup >/dev/null 2>&1; then
     fi
 fi
 
-# Lowerer-only and snapshot-tool-only selections must not inherit native oracle
-# features from unselected workspace packages. That inheritance pulls Wasmtime
-# and AWS-LC into otherwise frontend-only builds. Native/WIR/workspace
-# selections keep the single workspace feature graph; these isolated graphs
-# intentionally use their much smaller build identities.
+# Lowerer-only, snapshot-tool-only, and structural-WIR selections must not
+# inherit native oracle features from unselected workspace packages. That
+# inheritance pulls Wasmtime and AWS-LC into otherwise frontend-only builds.
+# Native WIR/workspace selections keep the single workspace feature graph;
+# these isolated graphs intentionally use their much smaller build identities.
 isolated_graph_selected=0
 native_owner_selected=0
+non_wir_native_owner_selected=0
+structural_wir_selected=0
 package_arg=0
+test_arg=0
 for arg in "$@"; do
     if [ "$package_arg" -eq 1 ]; then
         case "$arg" in
             witchy-lower | witchy-snapshot-tools) isolated_graph_selected=1 ;;
-            witchy | witchy-wir) native_owner_selected=1 ;;
+            witchy) native_owner_selected=1; non_wir_native_owner_selected=1 ;;
+            witchy-wir) native_owner_selected=1 ;;
         esac
         package_arg=0
+        continue
+    fi
+    if [ "$test_arg" -eq 1 ]; then
+        [ "$arg" != structural_contracts ] || structural_wir_selected=1
+        test_arg=0
         continue
     fi
     case "$arg" in
         -p | --package) package_arg=1 ;;
         --package=witchy-lower | --package=witchy-snapshot-tools) isolated_graph_selected=1 ;;
-        --package=witchy | --package=witchy-wir | --workspace) native_owner_selected=1 ;;
+        --package=witchy) native_owner_selected=1; non_wir_native_owner_selected=1 ;;
+        --package=witchy-wir) native_owner_selected=1 ;;
+        --workspace) native_owner_selected=1; non_wir_native_owner_selected=1 ;;
+        --test) test_arg=1 ;;
+        --test=structural_contracts) structural_wir_selected=1 ;;
     esac
 done
+# `--test structural_contracts` uniquely names witchy-wir's pure inspection
+# target. It may omit `-p witchy-wir`, so target identity is the authority;
+# only an accompanying root/workspace selection cancels the isolation.
+if [ "$structural_wir_selected" -eq 1 ] && [ "$non_wir_native_owner_selected" -eq 0 ]; then
+    isolated_graph_selected=1
+    native_owner_selected=0
+fi
 if [ -z "${WITCHY_FEATURE_UNIFICATION+x}" ] \
     && [ "$isolated_graph_selected" -eq 1 ] && [ "$native_owner_selected" -eq 0 ]; then
     export WITCHY_FEATURE_UNIFICATION=off

@@ -1062,8 +1062,25 @@ fn owned_slot_child_storage_edits_run_the_known_admission_probe_first() {
     ]);
     assert_eq!(
         commands,
-        ["cargo nextest run -p witchy-wir --features native --test structural_contracts -E 'test(=owned_slot_child_storage::owned_slots_require_managed_child_storage_before_consuming_move)'"],
+        ["cargo nextest run -p witchy-wir --test structural_contracts -E 'test(=owned_slot_child_storage::owned_slots_require_managed_child_storage_before_consuming_move)'"],
         "{commands:?}"
+    );
+}
+
+#[test]
+fn structural_wir_tests_land_without_the_native_dependency_graph() {
+    let output = gate_nextest(&[
+        "crates/witchy-wir/tests/structural_contracts/inline_aggregate.rs",
+    ]);
+    assert!(
+        output.lines().next().is_some_and(|line| line.contains("--test structural_contracts")),
+        "structural WIR edit lost its integration target: {output}",
+    );
+    assert!(
+        !output.contains("-p witchy-wir")
+            && !output.contains("witchy-wir/native")
+            && !output.contains("WORKSPACE"),
+        "structural WIR edit crossed into the native dependency graph: {output}",
     );
 }
 

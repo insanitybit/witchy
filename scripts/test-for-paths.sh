@@ -601,7 +601,7 @@ for p in "${paths[@]}"; do
             add_early "cargo nextest run --test cli_subcommands -E 'test(=source_nil_main_int_output_is_not_eaten_as_exit_code) or test(=sandbox_wasm_requires_explicit_dir_grant) or test(=fetch_root_requires_an_explicit_valid_origin_and_admitted_artifact)'"
             path_has_early=1 ;;
         crates/witchy-wir/tests/structural_contracts/owned_slot_child_storage.rs)
-            add_early "cargo nextest run -p witchy-wir --features native --test structural_contracts -E 'test(=owned_slot_child_storage::owned_slots_require_managed_child_storage_before_consuming_move)'"
+            add_early "cargo nextest run -p witchy-wir --test structural_contracts -E 'test(=owned_slot_child_storage::owned_slots_require_managed_child_storage_before_consuming_move)'"
             path_has_early=1 ;;
         crates/witchy-wir/src/wir_prelude.rs | \
         crates/witchy-wir/examples/abi_catalog.rs | \
@@ -627,6 +627,15 @@ for p in "${paths[@]}"; do
             path_has_early=1 ;;
     esac
     case "$p" in
+        crates/witchy-wir/tests/structural_contracts.rs | \
+        crates/witchy-wir/tests/structural_contracts/*)
+            any_rust=1
+            # These tests inspect SafeWIR and encoded structure only. Selecting
+            # their target directly keeps Wasmtime and AWS-LC out of the graph;
+            # native execution remains mandatory for WIR source changes.
+            add_gate_test structural_contracts
+            add "cargo nextest run -p witchy-wir --test structural_contracts"
+            ;;
         crates/witchy-canonical-source/*)
             any_rust=1
             gate_need_conformance=1

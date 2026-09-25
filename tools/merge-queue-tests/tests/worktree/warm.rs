@@ -584,7 +584,7 @@ fn cargo_shim_restores_gate_dependencies_without_joining_the_agent_pool() {
 }
 
 #[test]
-fn cargo_shim_keeps_snapshot_tools_off_the_workspace_native_feature_graph() {
+fn cargo_shim_keeps_isolated_targets_off_the_workspace_native_feature_graph() {
     let repo = temp_repo();
     let root = repo.path();
     write(root, "scripts/bin/cargo", include_str!("../../../../scripts/bin/cargo"));
@@ -609,9 +609,9 @@ fn cargo_shim_keeps_snapshot_tools_off_the_workspace_native_feature_graph() {
             .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())),
     )
     .expect("fixture PATH");
-    let run = |package: &str| {
+    let run = |args: &[&str]| {
         Command::new(root.join("scripts/bin/cargo"))
-            .args(["build", "-p", package])
+            .args(args)
             .current_dir(root)
             .env("PATH", &path)
             .env("WITCHY_GATE_SCOPE", "all")
@@ -626,14 +626,35 @@ fn cargo_shim_keeps_snapshot_tools_off_the_workspace_native_feature_graph() {
             .expect("run cargo shim feature fixture")
     };
 
-    let snapshot = run("witchy-snapshot-tools");
+    let snapshot = run(&["build", "-p", "witchy-snapshot-tools"]);
     assert!(snapshot.status.success(), "{}", String::from_utf8_lossy(&snapshot.stderr));
     assert_eq!(
         String::from_utf8_lossy(&snapshot.stdout),
         "unification=off resolver=unset channel=unset\n"
     );
 
-    let native = run("witchy");
+    let structural = run(&[
+        "nextest",
+        "run",
+        "-p",
+        "witchy-wir",
+        "--test",
+        "structural_contracts",
+    ]);
+    assert!(structural.status.success(), "{}", String::from_utf8_lossy(&structural.stderr));
+    assert_eq!(
+        String::from_utf8_lossy(&structural.stdout),
+        "unification=off resolver=unset channel=unset\n"
+    );
+
+    let native_wir = run(&["nextest", "run", "-p", "witchy-wir"]);
+    assert!(native_wir.status.success(), "{}", String::from_utf8_lossy(&native_wir.stderr));
+    assert_eq!(
+        String::from_utf8_lossy(&native_wir.stdout),
+        "unification=unset resolver=workspace channel=nightly\n"
+    );
+
+    let native = run(&["build", "-p", "witchy"]);
     assert!(native.status.success(), "{}", String::from_utf8_lossy(&native.stderr));
     assert_eq!(
         String::from_utf8_lossy(&native.stdout),
