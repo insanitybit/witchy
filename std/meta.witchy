@@ -355,6 +355,14 @@ pub fn expr_field(base: ExprSyntax, field: Ident) -> ExprSyntax:
 fn __meta_expr_field(base: ExprSyntax, field: Ident) -> ExprSyntax:
     __meta_expr_field(base, field)
 
+// Construct a subscript from sealed base and index expressions. Ordinary
+// checking keeps the index operation subject to its usual type and bounds rules.
+pub fn expr_index(base: ExprSyntax, index: ExprSyntax) -> ExprSyntax:
+    __meta_expr_index(base, index)
+
+fn __meta_expr_index(base: ExprSyntax, index: ExprSyntax) -> ExprSyntax:
+    __meta_expr_index(base, index)
+
 pub fn expr_int(n: Int) -> ExprSyntax:
     __meta_expr_leaf("int", "${n}")
 

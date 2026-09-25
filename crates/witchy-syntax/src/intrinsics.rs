@@ -89,6 +89,7 @@ pub enum IntrinsicId {
     MetaExprQualifiedCallPath,
     MetaExprDynamicDescriptor,
     MetaExprField,
+    MetaExprIndex,
     MetaExprBinary,
     MetaExprList,
     MetaExprTuple,
@@ -662,6 +663,7 @@ pub(crate) const META_EXPR_QUALIFIED_CALL: &str = "__meta_expr_qualified_call";
 pub(crate) const META_EXPR_QUALIFIED_CALL_PATH: &str = "__meta_expr_qualified_call_path";
 pub(crate) const META_EXPR_DYNAMIC_DESCRIPTOR: &str = "__meta_expr_dynamic_descriptor";
 pub(crate) const META_EXPR_FIELD: &str = "__meta_expr_field";
+pub(crate) const META_EXPR_INDEX: &str = "__meta_expr_index";
 pub(crate) const META_EXPR_BINARY: &str = "__meta_expr_binary";
 pub(crate) const META_EXPR_LIST: &str = "__meta_expr_list";
 pub(crate) const META_EXPR_TUPLE: &str = "__meta_expr_tuple";
@@ -1994,6 +1996,21 @@ pub const ALL: &[IntrinsicSpec] = &[
         dynamic_wir_helpers: false,
         wir_host_call: None,
         diagnostic_name: "meta.expr_field",
+        private_callers: META_BRIDGE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::MetaExprIndex,
+        name: META_EXPR_INDEX,
+        arity: 2,
+        signature: IntrinsicSignature::DeclaredInSource,
+        effect: IntrinsicEffect::Toolchain,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::FrontendGenerated,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: NO_HELPERS,
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: "meta.expr_index",
         private_callers: META_BRIDGE_CALLERS,
     },
     IntrinsicSpec {
@@ -4006,6 +4023,10 @@ pub fn is_meta_expr_dynamic_descriptor(name: &str) -> bool {
 
 pub fn is_meta_expr_field(name: &str) -> bool {
     lookup(name).is_some_and(|spec| spec.id == IntrinsicId::MetaExprField)
+}
+
+pub fn is_meta_expr_index(name: &str) -> bool {
+    lookup(name).is_some_and(|spec| spec.id == IntrinsicId::MetaExprIndex)
 }
 
 pub fn is_meta_expr_binary(name: &str) -> bool {

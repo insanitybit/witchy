@@ -1085,6 +1085,29 @@ impl Interpreter {
                 }
                 _ => err("meta.expr_field expects an ExprSyntax base and Ident field"),
             },
+            name if intrinsics::is_meta_expr_index(name) => match args {
+                [base, index] => {
+                    if self.fresh_ident_scope.is_none() {
+                        return err("meta.expr_index is available only during compile-time expansion");
+                    }
+                    let inputs = [base.clone(), index.clone()];
+                    let hole_ancestry = compiler_direct_hole_origins(
+                        &inputs,
+                        SyntaxCategory::Expr,
+                        "CompilerExprSyntax",
+                        &self.compiler_expr_origins,
+                        self.cur_line,
+                    );
+                    let base = compiler_expr_syntax_value(base, &self.compiler_expr_syntax)?;
+                    let index = compiler_expr_syntax_value(index, &self.compiler_expr_syntax)?;
+                    Ok(Some(self.store_compiler_expr_syntax(
+                        "expression-index",
+                        Expr::Index { base: Box::new(base), index: Box::new(index) },
+                        hole_ancestry,
+                    )?))
+                }
+                _ => err("meta.expr_index expects two ExprSyntax operands"),
+            },
             name if intrinsics::is_meta_expr_binary(name) => match args {
                 [Value::Str(op), lhs, rhs] => {
                     if self.fresh_ident_scope.is_none() {

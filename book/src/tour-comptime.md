@@ -138,6 +138,8 @@ refused.
 source-backed handles are refused.
 `meta.stmt_assign` assigns a compiler-owned expression to a compiler-owned
 local binding inside a generated block; it cannot forge a call-site binder.
+`meta.expr_index` builds a subscript from compiler-owned base and index
+expressions; ordinary checking still validates the indexed operation.
 These compiler paths still await end-to-end runtime and leak evidence.
 
 Pattern templates follow the same rule. The compatibility-built `1` pattern is

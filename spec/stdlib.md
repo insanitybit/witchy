@@ -2860,6 +2860,10 @@ A qualified call with a compiler-validated nominal path, such as `sibling.Child.
 
 #### `fn expr_field(base: ExprSyntax, field: Ident) -> ExprSyntax`
 
+#### `fn expr_index(base: ExprSyntax, index: ExprSyntax) -> ExprSyntax`
+
+Construct a subscript from sealed base and index expressions. Ordinary checking keeps the index operation subject to its usual type and bounds rules.
+
 #### `fn expr_int(n: Int) -> ExprSyntax`
 
 #### `fn expr_bool(b: Bool) -> ExprSyntax`
