@@ -143,8 +143,10 @@ for command, row in zip(commands, rows[:3]):
     assert actual.endswith(" and (" + original + ")"), (original, actual)
 PY
 rm -f "$receipt"
-# An explicit partial selection cannot mint a whole-diff receipt.
-run_agent crates/witchy-wir/src/canonical_interpreter.rs
+# An explicit partial selection cannot mint a whole-diff receipt. Keep this on
+# an actual native boundary: canonical-interpreter core edits now deliberately
+# use the pure WIR route and do not invoke this helper.
+run_agent crates/witchy-wir/src/canonical_safewir/build_read.rs
 [ ! -e "$receipt" ]
 # Dirty input never certifies the committed tip.
 printf '// dirty\n' >> crates/witchy-lower/src/canonical_lower.rs

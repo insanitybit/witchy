@@ -2164,6 +2164,42 @@ fn safewir_changes_stay_on_the_pure_compiler_graph() {
 }
 
 #[test]
+fn canonical_interpreter_core_changes_stay_off_the_native_graph() {
+    for changed in [
+        "crates/witchy-wir/src/canonical_interpreter.rs",
+        "crates/witchy-wir/src/canonical_interpreter/fetch.rs",
+    ] {
+        let output = gate_nextest(&[changed]);
+        let cargo_args = output.lines().next().unwrap_or_default();
+        assert!(
+            cargo_args.contains("-p witchy-wir")
+                && cargo_args.contains("--test unit")
+                && cargo_args.contains("--no-default-features"),
+            "{changed} did not select pure interpreter evidence: {output}",
+        );
+        assert!(
+            !output.contains("-p witchy ")
+                && !output.contains("witchy-runtime")
+                && !output.contains("witchy-wir/native"),
+            "{changed} crossed into Wasmtime/AWS-LC: {output}",
+        );
+    }
+
+    for changed in [
+        "crates/witchy-wir/src/canonical_interpreter/build_read.rs",
+        "crates/witchy-wir/src/canonical_interpreter/crypto.rs",
+        "crates/witchy-wir/src/canonical_interpreter/registry_host.rs",
+    ] {
+        let output = gate_nextest(&[changed]);
+        assert!(
+            output.contains("witchy-wir/native")
+                || output.contains("binary_id(/^witchy::rfc0/)"),
+            "{changed} lost native boundary evidence: {output}",
+        );
+    }
+}
+
+#[test]
 fn canonical_source_changes_use_the_same_pure_wir_boundary() {
     let output = gate_nextest(&["crates/witchy-canonical-source/src/lib.rs"]);
     let lines: Vec<_> = output.lines().collect();

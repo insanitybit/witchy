@@ -694,7 +694,11 @@ for p in "${paths[@]}"; do
             add "./scripts/nextest-admitted.sh witchy-lower -- cargo nextest run -p witchy-lower"
             ;;
         crates/witchy-wir/src/canonical_safewir/build_read.rs | \
-        crates/witchy-wir/src/canonical_safewir/crypto.rs)
+        crates/witchy-wir/src/canonical_safewir/crypto.rs | \
+        crates/witchy-wir/src/canonical_interpreter/build_read.rs | \
+        crates/witchy-wir/src/canonical_interpreter/crypto*.rs | \
+        crates/witchy-wir/src/canonical_interpreter/registry_host.rs | \
+        crates/witchy-wir/src/canonical_interpreter/registry_host_tests.rs)
             any_rust=1
             gate_native_wir=1
             gate_need_conformance=1
@@ -725,6 +729,18 @@ for p in "${paths[@]}"; do
             add_pkg witchy-lower
             add "cargo nextest run -p witchy-wir --test unit --test structural_contracts --test rfc0162_mutation_evidence --test rfc0165_route_gate --no-default-features"
             add "./scripts/nextest-admitted.sh witchy-lower -- cargo nextest run -p witchy-lower"
+            ;;
+        crates/witchy-wir/src/canonical_interpreter.rs | \
+        crates/witchy-wir/src/canonical_interpreter/*)
+            any_rust=1
+            gate_pure_wir=1
+            add_pkg witchy-wir
+            # The executable reference model has target-neutral semantics and
+            # pure-Rust implementations for its ordinary edit surface. Its
+            # unit and structural checks therefore need neither Wasmtime nor
+            # AWS-LC. Native crypto, registry, and build-recipe files are
+            # matched above and retain their cross-pipeline evidence.
+            add "cargo nextest run -p witchy-wir --test unit --test structural_contracts --test rfc0162_mutation_evidence --test rfc0165_route_gate --no-default-features"
             ;;
         crates/witchy-wir/*)
             any_rust=1
