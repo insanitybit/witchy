@@ -150,16 +150,17 @@ pub fn dict_string_scalar_root_payload(ty: &Type) -> Option<DictRootScalar> {
     }
 }
 
-/// The exact inline scalar in a retained `(S, String)` tuple root.
+/// The exact first value in a retained `(S, String)` tuple root.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TupleRootScalar {
     Int,
     Float,
     Bool,
     Duration,
+    String,
 }
 
-/// The tuple root whose first slot is one unqualified inline scalar and
+/// The tuple root whose first slot is one unqualified admitted value and
 /// whose second slot owns an exact String token. Other orders, qualifiers,
 /// and nested values have no TupleRoot authority.
 pub fn tuple_scalar_string_root_payload(ty: &Type) -> Option<TupleRootScalar> {
@@ -171,6 +172,7 @@ pub fn tuple_scalar_string_root_payload(ty: &Type) -> Option<TupleRootScalar> {
         "Float" => Some(TupleRootScalar::Float),
         "Bool" => Some(TupleRootScalar::Bool),
         "Duration" => Some(TupleRootScalar::Duration),
+        "String" => Some(TupleRootScalar::String),
         _ => None,
     }
 }

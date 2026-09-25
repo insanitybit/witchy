@@ -578,6 +578,7 @@ fn rooted_tuple_scalar_string_payload_key(kind: TupleRootScalar) -> CanonicalTyp
         TupleRootScalar::Float => b"witchy.canonical-rooted-view-payload.v1/tuple-float-string",
         TupleRootScalar::Bool => b"witchy.canonical-rooted-view-payload.v1/tuple-bool-string",
         TupleRootScalar::Duration => b"witchy.canonical-rooted-view-payload.v1/tuple-duration-string",
+        TupleRootScalar::String => b"witchy.canonical-rooted-view-payload.v1/tuple-string-string",
     };
     CanonicalTypeKey::from_digest(*blake3::hash(source).as_bytes())
 }
