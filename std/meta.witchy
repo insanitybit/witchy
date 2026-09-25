@@ -427,6 +427,12 @@ pub fn expr_if(cond: ExprSyntax, then_body: BlockSyntax, else_body: Option(Block
 fn __meta_expr_if(cond: ExprSyntax, then_body: BlockSyntax, else_body: Option(BlockSyntax)) -> ExprSyntax:
     __meta_expr_if(cond, then_body, else_body)
 
+pub fn expr_for(binding: Ident, iter: ExprSyntax, body: BlockSyntax) -> ExprSyntax:
+    __meta_expr_for(binding, iter, body)
+
+fn __meta_expr_for(binding: Ident, iter: ExprSyntax, body: BlockSyntax) -> ExprSyntax:
+    __meta_expr_for(binding, iter, body)
+
 // The generated function is checked as async before this suspension is lowered.
 pub fn expr_await(value: ExprSyntax) -> ExprSyntax:
     __meta_expr_await(value)

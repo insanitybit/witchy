@@ -2896,6 +2896,8 @@ Compiler-owned construction of an explicitly named record. The record head and l
 
 #### `fn expr_if(cond: ExprSyntax, then_body: BlockSyntax, else_body: Option(BlockSyntax)) -> ExprSyntax`
 
+#### `fn expr_for(binding: Ident, iter: ExprSyntax, body: BlockSyntax) -> ExprSyntax`
+
 #### `fn expr_await(value: ExprSyntax) -> ExprSyntax`
 
 The generated function is checked as async before this suspension is lowered.

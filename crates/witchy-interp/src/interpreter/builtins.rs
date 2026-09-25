@@ -1350,6 +1350,19 @@ impl Interpreter {
                 }
                 _ => err("meta.expr_if expects ExprSyntax, BlockSyntax, and Option(BlockSyntax)"),
             },
+            name if intrinsics::is_meta_expr_for(name) => match args {
+                [binding, iter, body] => {
+                    if self.fresh_ident_scope.is_none() {
+                        return err("meta.expr_for is available only during compile-time expansion");
+                    }
+                    let var = compiler_binding_ident_name(binding, "meta.expr_for")?;
+                    let iter = compiler_expr_syntax_value(iter, &self.compiler_expr_syntax)?;
+                    let body = compiler_block_syntax_value(body, &self.compiler_block_syntax)?;
+                    let expr = Expr::For { var, iter: Box::new(iter), body };
+                    Ok(Some(self.store_compiler_expr_syntax("expression-for", expr, Vec::new())?))
+                }
+                _ => err("meta.expr_for expects Ident, ExprSyntax, and BlockSyntax"),
+            },
             name if intrinsics::is_meta_expr_await(name) => match args {
                 [value] => {
                     if self.fresh_ident_scope.is_none() {
