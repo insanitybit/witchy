@@ -204,34 +204,6 @@ pub(crate) fn rooted_slice_layouts(
     projected_layouts(source).map(|(_, _, _, _, slice)| slice)
 }
 
-/// The identity of a `fn` type for closure purposes: the declared
-/// conventions spelled out (an empty list means every parameter is `let`)
-/// and the callable qualifiers dropped, so `fn(Int) -> Int` written at a
-/// parameter, a lambda, and a declaration share one closure layout.
-pub(crate) fn closure_key(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> Type {
-    if let Some(view) = witchy_canonical_source::aggregates::owner_carried_view_identity(ty, definitions) {
-        return view;
-    }
-    match ty.unqualified() {
-        Type::Fn(parameters, result, conventions, _) => {
-            let conventions = if conventions.is_empty() {
-                vec![ast::Convention::Let; parameters.len()]
-            } else {
-                conventions.clone()
-            };
-            Type::Fn(
-                parameters.iter().map(|parameter| closure_key(parameter, definitions)).collect(),
-                Box::new(closure_key(result, definitions)),
-                conventions,
-                ast::CallableQualifiers::default(),
-            )
-        }
-        Type::Named(name, arguments) => Type::Named(name.clone(), arguments.iter().map(|argument| closure_key(argument, definitions)).collect()),
-        Type::Tuple(items) => Type::Tuple(items.iter().map(|item| closure_key(item, definitions)).collect()),
-        other => other.clone(),
-    }
-}
-
 /// The closure identity in the same concrete declaration domain as physical
 /// layout projection. Callable conventions remain part of the identity; only
 /// nominal aliases and concrete aggregate arguments are normalized.
@@ -239,14 +211,7 @@ pub(crate) fn canonical_closure_key(
     ty: &Type,
     definitions: &BTreeMap<String, TypeDef>,
 ) -> Type {
-    // Lowering asks this of the same few `fn` and aggregate types for every
-    // list update and record rebuild of the std executor; neither identity
-    // normalization nor the key rewrite is otherwise memoized for `fn` types.
-    witchy_canonical_source::aggregates::memoize_derived_type("canonical_closure_key", ty, definitions, || {
-        let identity = concrete_aggregate_identity(ty, definitions)
-            .unwrap_or_else(|| ty.unqualified().clone());
-        closure_key(&identity, definitions)
-    })
+    witchy_canonical_source::callable_storage::canonical_closure_family_type(ty, definitions)
 }
 
 /// The exact capture variants of each `fn` family, ordered by the checked

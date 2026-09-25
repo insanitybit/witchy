@@ -55,6 +55,20 @@ is needed for soundness.
 
 ## Exact-tip evidence checkpoint
 
+Row G callable storage descriptor (architecture implemented, semantic evidence
+pending, 2026-09-25): the canonical-source contract now retains the exact
+bounded function signature and its separate normalized closure family as
+typed structural keys. Layout projection uses that same family normalizer,
+and list-element projection names a retained callable representation rather
+than a nameless layout exception. This descriptor alone grants no carrier
+authority: checked-source membership, physical closure record, callable ABI,
+and capture owner correspondence remain separate admission checks. Direct
+callable list elements with malformed conventions or signatures beyond the
+bounded structural resource limits now refuse at this earlier
+layout boundary; this conservative narrowing is not yet regression audited.
+Recursive callable slice carriers and `.owned()` are still refused, and no
+A–O row closes here.
+
 Row G recursive byte-buffer carrier (architecture implemented, semantic
 evidence pending, 2026-09-25): the shared carrier proof now distinguishes
 `Bytes` from `String` in source identity while using their common retained

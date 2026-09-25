@@ -17,6 +17,7 @@ pub mod access;
 pub mod aggregates;
 pub mod capabilities;
 pub mod carrier;
+pub mod callable_storage;
 pub mod closure;
 pub mod proper_tail;
 pub mod rooted_record;

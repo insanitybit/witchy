@@ -9,6 +9,7 @@ use witchy_syntax::ast::{Type, TypeDef, TypeQual};
 use crate::abi::CanonicalScalarKind;
 use crate::aggregates::{ViewCarrierPlan, is_v1_list_element_type, view_carrier_plan};
 use crate::carrier::CarrierElement;
+use crate::callable_storage::CallableStoragePlan;
 use crate::rooted_view::{OwnerCarriedViewPlan, OwnerCarriedViewStorage, RootedViewStorage};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -35,6 +36,9 @@ pub enum RetainedByteBufferKind {
 pub enum StoragePlan {
     InlineScalar(CanonicalScalarKind),
     Owned(CarrierElement),
+    /// An owned closure record, whose exact source contract and normalized
+    /// physical family must both match before any owner authority is granted.
+    RetainedCallable(CallableStoragePlan),
     /// A list of authenticated scalar-place owner tokens. Projected-view
     /// lists need a different owner-family proof and remain refused.
     RetainedOwnerList(OwnerCarriedViewPlan),
@@ -51,21 +55,19 @@ pub enum StoragePlan {
 pub enum ListElementProjection {
     Owned(CarrierElement),
     RetainedByteBuffer(RetainedByteBufferKind),
+    RetainedCallable(CallableStoragePlan),
     LayoutOnly,
     Refused,
 }
 
 impl ListElementProjection {
     pub fn classify(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> Self {
-        // The old callable exception is a layout graph edge, not a carrier
-        // proof. Its parameter and result types are visited separately.
-        if matches!(ty.unqualified(), Type::Fn(..)) {
-            return Self::LayoutOnly;
-        }
         match StoragePlan::classify(ty, definitions, |_| Some(0)) {
             StoragePlan::Owned(CarrierElement::Bytes) => {
                 Self::RetainedByteBuffer(RetainedByteBufferKind::Bytes)
             }
+            StoragePlan::RetainedCallable(plan) => Self::RetainedCallable(plan),
+            StoragePlan::Refused(_) if matches!(ty, Type::Fn(..)) => Self::Refused,
             plan => match plan.into_carrier_element() {
                 Some(plan) => Self::Owned(plan),
                 None if is_v1_list_element_type(ty, definitions) => Self::LayoutOnly,
@@ -110,6 +112,11 @@ impl StoragePlan {
         }
         if matches!(ty, Type::Tuple(fields) if fields.is_empty()) {
             return Self::InlineScalar(CanonicalScalarKind::Unit);
+        }
+        if matches!(ty, Type::Fn(..)) {
+            return CallableStoragePlan::classify(ty, definitions)
+                .map(Self::RetainedCallable)
+                .unwrap_or(Self::Refused(StorageRefusal::UnprovedOwnership));
         }
         if let Type::Named(name, arguments) = ty
             && name == "List"
