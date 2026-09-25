@@ -746,8 +746,8 @@ fn preserves_owner_view_identity(
     candidate: &Type,
     definitions: &BTreeMap<String, TypeDef>,
 ) -> bool {
-    if !is_rooted_int_view_carrier(candidate, definitions) { return false; }
-    if !contains_rooted_slice_view_at(candidate, definitions, 0) { return true; }
+    let Some(plan) = view_carrier_plan(candidate, definitions) else { return false };
+    if !plan.has_retained_projection() { return true; }
     // A slice argument is part of this owner only when it is the actual
     // authenticated direct field, not merely an unused generic argument of
     // an aggregate that happens to carry some other view.
@@ -790,13 +790,41 @@ pub fn is_record_root_payload(ty: &Type, definitions: &BTreeMap<String, TypeDef>
 /// carrier judgment diverge; anything deeper simply is not a carrier.
 const MAX_VIEW_CARRIER_DEPTH: usize = 8;
 
+/// The checked field relation for an aggregate owner carrying rooted views.
+/// Plain slots still require the separate physical layout check; only a
+/// carried field supplies rooted-view ownership here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ViewCarrierPlan {
+    Direct(crate::rooted_view::OwnerCarriedViewPlan),
+    Aggregate { shape: ScalarAggregateShape, fields: Vec<ViewCarrierFieldPlan> },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ViewCarrierFieldPlan {
+    Plain,
+    Carried(Box<ViewCarrierPlan>),
+}
+
+impl ViewCarrierPlan {
+    pub fn has_retained_projection(&self) -> bool {
+        match self {
+            Self::Direct(plan) => matches!(plan.admitted_storage(),
+                Some(crate::rooted_view::OwnerCarriedViewStorage::RetainedProjection(_))),
+            Self::Aggregate { fields, .. } => fields.iter().any(|field| match field {
+                ViewCarrierFieldPlan::Plain => false,
+                ViewCarrierFieldPlan::Carried(plan) => plan.has_retained_projection(),
+            }),
+        }
+    }
+}
+
 /// A direct authenticated `&Int` or proven `&[T]` owner, or an admitted
 /// non-packed aggregate of view owners. The existing `&Int` path covers tuple,
 /// record, sum, `Option`, and `Result` shells. A proven `&[T]` extends only a
 /// direct named record field; other slice-bearing shells remain unsupported.
 /// Every admitted shell is an opaque owner, so a view never enters linear memory.
 pub fn is_rooted_int_view_carrier(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> bool {
-    may_carry_view(ty, definitions) && view_carrier_at(ty, definitions, 0)
+    view_carrier_plan(ty, definitions).is_some()
 }
 
 /// An Option shell may reuse the established aggregate-view path, but a bare
@@ -807,13 +835,22 @@ pub fn is_rooted_int_option_payload_carrier(ty: &Type, definitions: &BTreeMap<St
 
 /// [`is_rooted_int_view_carrier`] minus the bare view: an aggregate owner.
 pub fn is_rooted_int_view_aggregate(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> bool {
-    may_carry_view(ty, definitions) && view_aggregate_at(ty, definitions, 0)
+    matches!(view_carrier_plan(ty, definitions), Some(ViewCarrierPlan::Aggregate { .. }))
 }
 
-fn view_carrier_at(ty: &Type, definitions: &BTreeMap<String, TypeDef>, depth: usize) -> bool {
-    crate::rooted_view::OwnerCarriedViewPlan::classify(ty, definitions)
-        .is_some_and(|plan| plan.admitted_aggregate_field())
-        || view_aggregate_at(ty, definitions, depth)
+pub fn view_carrier_plan(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> Option<ViewCarrierPlan> {
+    may_carry_view(ty, definitions).then(|| view_carrier_plan_at(ty, definitions, 0)).flatten()
+}
+
+fn view_carrier_plan_at(
+    ty: &Type,
+    definitions: &BTreeMap<String, TypeDef>,
+    depth: usize,
+) -> Option<ViewCarrierPlan> {
+    if let Some(plan) = crate::rooted_view::OwnerCarriedViewPlan::classify(ty, definitions) {
+        if plan.admitted_aggregate_field() { return Some(ViewCarrierPlan::Direct(plan)); }
+    }
+    view_aggregate_plan_at(ty, definitions, depth)
 }
 
 /// Every layout identity asks this question, and almost no type holds a
@@ -822,14 +859,18 @@ fn may_carry_view(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> bool {
     contains_view(ty, definitions, &mut BTreeSet::new())
 }
 
-fn view_aggregate_at(ty: &Type, definitions: &BTreeMap<String, TypeDef>, depth: usize) -> bool {
+fn view_aggregate_plan_at(
+    ty: &Type,
+    definitions: &BTreeMap<String, TypeDef>,
+    depth: usize,
+) -> Option<ViewCarrierPlan> {
     if depth >= MAX_VIEW_CARRIER_DEPTH
         || !matches!(ty.unqualified(), Type::Named(..) | Type::Tuple(_))
     {
-        return false;
+        return None;
     }
-    let Some(shape) = scalar_aggregate_shape(ty, definitions) else { return false };
-    if shape.packed { return false; }
+    let shape = scalar_aggregate_shape(ty, definitions)?;
+    if shape.packed { return None; }
     // The proven slice extension is an exact direct field of a declared
     // untagged record. A tuple, sum, builtin shell, or another record around
     // that field needs its own checked projection/owner witness. In
@@ -849,20 +890,20 @@ fn view_aggregate_at(ty: &Type, definitions: &BTreeMap<String, TypeDef>, depth: 
                             && variant.field_names.len() == variant.fields.len())
                 })))
     {
-        return false;
+        return None;
     }
     let mut carriers = 0usize;
-    let admitted = shape.fields.iter().all(|field| {
+    let mut fields = Vec::with_capacity(shape.fields.len());
+    for field in &shape.fields {
         if !may_carry_view(field, definitions) {
-            true
-        } else if view_carrier_at(field, definitions, depth + 1) {
-            carriers += 1;
-            true
+            fields.push(ViewCarrierFieldPlan::Plain);
         } else {
-            false
+            let plan = view_carrier_plan_at(field, definitions, depth + 1)?;
+            fields.push(ViewCarrierFieldPlan::Carried(Box::new(plan)));
+            carriers += 1;
         }
-    });
-    admitted && carriers > 0
+    }
+    (carriers > 0).then_some(ViewCarrierPlan::Aggregate { shape, fields })
 }
 
 fn contains_rooted_slice_view_at(
