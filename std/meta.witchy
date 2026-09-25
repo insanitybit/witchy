@@ -421,6 +421,13 @@ pub fn expr_match(scrutinee: ExprSyntax, arms: List(MatchArmSyntax)) -> ExprSynt
 pub fn expr_block(body: BlockSyntax) -> ExprSyntax:
     __meta_expr_block(body)
 
+// The generated function is checked as async before this suspension is lowered.
+pub fn expr_await(value: ExprSyntax) -> ExprSyntax:
+    __meta_expr_await(value)
+
+fn __meta_expr_await(value: ExprSyntax) -> ExprSyntax:
+    __meta_expr_await(value)
+
 fn __meta_expr_block(body: BlockSyntax) -> ExprSyntax:
     __meta_expr_block(body)
 
@@ -562,6 +569,13 @@ fn __meta_stmt_return(value: ExprSyntax) -> StmtSyntax:
 pub fn stmt_return_none() -> StmtSyntax:
     __meta_stmt_leaf("return")
 
+// The generated function is checked as a generator before this yield is lowered.
+pub fn stmt_yield(value: ExprSyntax) -> StmtSyntax:
+    __meta_stmt_yield(value)
+
+fn __meta_stmt_yield(value: ExprSyntax) -> StmtSyntax:
+    __meta_stmt_yield(value)
+
 // Compiler-owned statement construction for leaf statements without children.
 fn __meta_stmt_leaf(kind: String) -> StmtSyntax:
     __meta_stmt_leaf(kind)
@@ -575,6 +589,13 @@ pub fn block(stmts: List(StmtSyntax), tail: Option(ExprSyntax)) -> BlockSyntax:
 // expression are transferred directly instead of being projected to source.
 fn __meta_block(stmts: List(StmtSyntax), tail: Option(ExprSyntax)) -> BlockSyntax:
     __meta_block(stmts, tail)
+
+// Attach a typed copy-out annotation to an already compiler-owned block.
+pub fn block_region(body: BlockSyntax, result: Option(TypeSyntax)) -> BlockSyntax:
+    __meta_block_region(body, result)
+
+fn __meta_block_region(body: BlockSyntax, result: Option(TypeSyntax)) -> BlockSyntax:
+    __meta_block_region(body, result)
 
 // A function parameter and function item constructors. The single-expression
 // form now delegates to the block form so item generation has one body shape.

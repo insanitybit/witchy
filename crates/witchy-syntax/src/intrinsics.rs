@@ -95,11 +95,14 @@ pub enum IntrinsicId {
     MetaExprRecord,
     MetaExprMatch,
     MetaExprBlock,
+    MetaExprAwait,
     MetaMatchArm,
     MetaBlock,
+    MetaBlockRegion,
     MetaStmtExpr,
     MetaStmtReturn,
     MetaStmtLet,
+    MetaStmtYield,
     MetaParam,
     MetaFunctionBlock,
     MetaImplBlock,
@@ -661,11 +664,14 @@ pub(crate) const META_EXPR_TUPLE: &str = "__meta_expr_tuple";
 pub(crate) const META_EXPR_RECORD: &str = "__meta_expr_record";
 pub(crate) const META_EXPR_MATCH: &str = "__meta_expr_match";
 pub(crate) const META_EXPR_BLOCK: &str = "__meta_expr_block";
+pub(crate) const META_EXPR_AWAIT: &str = "__meta_expr_await";
 pub(crate) const META_MATCH_ARM: &str = "__meta_match_arm";
 pub(crate) const META_BLOCK: &str = "__meta_block";
+pub(crate) const META_BLOCK_REGION: &str = "__meta_block_region";
 pub(crate) const META_STMT_EXPR: &str = "__meta_stmt_expr";
 pub(crate) const META_STMT_RETURN: &str = "__meta_stmt_return";
 pub(crate) const META_STMT_LET: &str = "__meta_stmt_let";
+pub(crate) const META_STMT_YIELD: &str = "__meta_stmt_yield";
 pub(crate) const META_PARAM: &str = "__meta_param";
 pub(crate) const META_FUNCTION_BLOCK: &str = "__meta_function_block";
 pub(crate) const META_IMPL_BLOCK: &str = "__meta_impl_block";
@@ -2088,6 +2094,21 @@ pub const ALL: &[IntrinsicSpec] = &[
         private_callers: META_BRIDGE_CALLERS,
     },
     IntrinsicSpec {
+        id: IntrinsicId::MetaExprAwait,
+        name: META_EXPR_AWAIT,
+        arity: 1,
+        signature: IntrinsicSignature::DeclaredInSource,
+        effect: IntrinsicEffect::Toolchain,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::FrontendGenerated,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: NO_HELPERS,
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: "meta.expr_await",
+        private_callers: META_BRIDGE_CALLERS,
+    },
+    IntrinsicSpec {
         id: IntrinsicId::MetaStmtExpr,
         name: META_STMT_EXPR,
         arity: 1,
@@ -2115,6 +2136,21 @@ pub const ALL: &[IntrinsicSpec] = &[
         dynamic_wir_helpers: false,
         wir_host_call: None,
         diagnostic_name: "meta.stmt_return",
+        private_callers: META_BRIDGE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::MetaStmtYield,
+        name: META_STMT_YIELD,
+        arity: 1,
+        signature: IntrinsicSignature::DeclaredInSource,
+        effect: IntrinsicEffect::Toolchain,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::FrontendGenerated,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: NO_HELPERS,
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: "meta.stmt_yield",
         private_callers: META_BRIDGE_CALLERS,
     },
     IntrinsicSpec {
@@ -2160,6 +2196,21 @@ pub const ALL: &[IntrinsicSpec] = &[
         dynamic_wir_helpers: false,
         wir_host_call: None,
         diagnostic_name: "meta.block",
+        private_callers: META_BRIDGE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::MetaBlockRegion,
+        name: META_BLOCK_REGION,
+        arity: 2,
+        signature: IntrinsicSignature::DeclaredInSource,
+        effect: IntrinsicEffect::Toolchain,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::FrontendGenerated,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: NO_HELPERS,
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: "meta.block_region",
         private_callers: META_BRIDGE_CALLERS,
     },
     IntrinsicSpec {
@@ -3913,12 +3964,20 @@ pub fn is_meta_expr_block(name: &str) -> bool {
     lookup(name).is_some_and(|spec| spec.id == IntrinsicId::MetaExprBlock)
 }
 
+pub fn is_meta_expr_await(name: &str) -> bool {
+    lookup(name).is_some_and(|spec| spec.id == IntrinsicId::MetaExprAwait)
+}
+
 pub fn is_meta_match_arm(name: &str) -> bool {
     lookup(name).is_some_and(|spec| spec.id == IntrinsicId::MetaMatchArm)
 }
 
 pub fn is_meta_block(name: &str) -> bool {
     lookup(name).is_some_and(|spec| spec.id == IntrinsicId::MetaBlock)
+}
+
+pub fn is_meta_block_region(name: &str) -> bool {
+    lookup(name).is_some_and(|spec| spec.id == IntrinsicId::MetaBlockRegion)
 }
 
 pub fn is_meta_stmt_expr(name: &str) -> bool {
@@ -3931,6 +3990,10 @@ pub fn is_meta_item_with_imports(name: &str) -> bool {
 
 pub fn is_meta_stmt_return(name: &str) -> bool {
     lookup(name).is_some_and(|spec| spec.id == IntrinsicId::MetaStmtReturn)
+}
+
+pub fn is_meta_stmt_yield(name: &str) -> bool {
+    lookup(name).is_some_and(|spec| spec.id == IntrinsicId::MetaStmtYield)
 }
 
 pub fn is_meta_stmt_let(name: &str) -> bool {

@@ -1337,6 +1337,17 @@ impl Interpreter {
                 }
                 _ => err("meta.expr_block expects BlockSyntax"),
             },
+            name if intrinsics::is_meta_expr_await(name) => match args {
+                [value] => {
+                    if self.fresh_ident_scope.is_none() {
+                        return err("meta.expr_await is available only during compile-time expansion");
+                    }
+                    let value = compiler_expr_syntax_value(value, &self.compiler_expr_syntax)?;
+                    let expr = Expr::Unary { op: UnOp::Await, expr: Box::new(value) };
+                    Ok(Some(self.store_compiler_expr_syntax("expression-await", expr, Vec::new())?))
+                }
+                _ => err("meta.expr_await expects ExprSyntax"),
+            },
             name if intrinsics::is_meta_stmt_expr(name) => match args {
                 [expr] => {
                     if self.fresh_ident_scope.is_none() {
@@ -1368,6 +1379,16 @@ impl Interpreter {
                     )?))
                 }
                 _ => err("meta.stmt_return expects ExprSyntax"),
+            },
+            name if intrinsics::is_meta_stmt_yield(name) => match args {
+                [value] => {
+                    if self.fresh_ident_scope.is_none() {
+                        return err("meta.stmt_yield is available only during compile-time expansion");
+                    }
+                    let value = compiler_expr_syntax_value(value, &self.compiler_expr_syntax)?;
+                    Ok(Some(self.store_compiler_stmt_syntax("yield-statement", Stmt::Yield(value))?))
+                }
+                _ => err("meta.stmt_yield expects ExprSyntax"),
             },
             name if intrinsics::is_meta_stmt_let(name) => match args {
                 [Value::Bool(mutable), binding, ty, value] => {
@@ -1427,6 +1448,27 @@ impl Interpreter {
                     }))
                 }
                 _ => err("meta.block expects List(StmtSyntax) and Option(ExprSyntax)"),
+            },
+            name if intrinsics::is_meta_block_region(name) => match args {
+                [body, result] => {
+                    if self.fresh_ident_scope.is_none() {
+                        return err("meta.block_region is available only during compile-time expansion");
+                    }
+                    let mut body = compiler_block_syntax_value(body, &self.compiler_block_syntax)?;
+                    if body.region.is_some() {
+                        return err("meta.block_region cannot nest an annotation on the same block");
+                    }
+                    let ty = compiler_optional_type_syntax_value(result, &self.compiler_type_syntax)?;
+                    body.region = Some(RegionAnn { ty });
+                    let source = witchy_syntax::format::block_str(&body);
+                    let handle = self.next_compiler_syntax_handle("region-block")?;
+                    self.compiler_block_syntax.insert(handle.clone(), body);
+                    Ok(Some(Value::Ctor {
+                        name: "meta.CompilerBlockSyntax".into(),
+                        fields: Rc::new(vec![Value::str(handle), Value::str(source)]),
+                    }))
+                }
+                _ => err("meta.block_region expects BlockSyntax and Option(TypeSyntax)"),
             },
             name if intrinsics::is_meta_param(name) => match args {
                 [binding, ty] => {
