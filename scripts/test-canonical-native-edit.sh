@@ -99,7 +99,7 @@ assert len(rows) == 6, rows
 assert rows[0]["args"][0] == "metadata"
 assert rows[1]["args"][:2] == ["nextest", "list"]
 assert rows[1]["args"].count("-p") == 3
-assert all(p in rows[1]["args"] for p in ["witchy-wir", "witchy-lower", "witchy", "misc", "cli_subcommands", "rfc0165_route_gate"])
+assert all(p in rows[1]["args"] for p in ["witchy-wir", "witchy-lower", "witchy", "misc", "cli_subcommands", "rfc0165_route_gate", "codegen"])
 for row in rows:
     # This fixture has no live gate lock, so the focused compiler workflow is
     # foreground work. The dedicated agent-check QoS fixture separately pins
@@ -117,7 +117,7 @@ assert "--ignore-default-filter" not in rows[3]["args"]
 assert "--ignore-default-filter" in rows[4]["args"]
 expected_scopes = [
     "package(=witchy-wir) and kind(test) and (binary(=unit) or binary(=rfc0165_route_gate))",
-    "package(=witchy-lower) and kind(lib)",
+    "package(=witchy-lower) and (kind(lib) or (kind(test) and binary(=codegen)))",
     "package(=witchy) and ((kind(bin) and binary(=witchy)) or (kind(test) and binary(=misc)))",
 ]
 for row, scope in zip(rows[2:5], expected_scopes):
