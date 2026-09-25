@@ -50,8 +50,9 @@ pub(super) fn record_root_plans_in_signature(
                     payload, view.type_definitions(),
                 ) {
                     Some(true) if !matches!(
-                        view.rooted_view_storage(payload),
-                        Some(witchy_canonical_source::rooted_view::RootedViewStorage::RetainedRoot(
+                        view.storage_plan(ty),
+                        witchy_canonical_source::storage::StoragePlan::RootedView(
+                            witchy_canonical_source::rooted_view::RootedViewStorage::RetainedRoot(
                             witchy_canonical_source::rooted_view::RetainedRootStorage::CheckedAggregate(_)))
                     ) => return false,
                     None => return false,

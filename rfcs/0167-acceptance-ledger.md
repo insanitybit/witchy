@@ -55,6 +55,22 @@ is needed for soundness.
 
 ## Exact-tip evidence checkpoint
 
+Row G shared source-storage entry point (architecture implemented, semantic
+evidence unchanged, 2026-09-25): `StoragePlan` now composes checked scalar,
+recursive owned-carrier, rooted-view, and view-bearing aggregate plans from
+the same canonical-source module. `CanonicalSourceView` supplies its exact
+checked definitions and nominal ordinals; callers must still establish source
+membership and physical layout correspondence. The checker capture gate and
+WIR record-root signature gate consume this entry point. The classification
+refuses unsupported qualifiers, unproved ownership, and source/definition
+graphs exceeding 128 levels or 4096 visited nodes before aggregate traversal.
+This consolidates two call sites but does not yet make every type-checking,
+lowering, layout, and admission path consume one plan. Existing forms remain
+the admitted boundary. Focused canonical-source, checker, and WIR compilation
+and all 17 existing canonical-source unit tests passed; adversarial review
+found no remaining authority blocker. No new Wasm or zero-leak evidence or
+A–O closure is claimed.
+
 Row G aggregate view-carrier field plan (architecture implemented, semantic
 evidence unchanged, 2026-09-25): the recursive carrier admission walk now
 returns a typed plan with the checked aggregate shape and a plain or carried

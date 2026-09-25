@@ -24,6 +24,7 @@ pub mod rooted_view;
 pub mod scope;
 pub mod service;
 pub mod source;
+pub mod storage;
 pub mod specialization;
 
 /// The structural `()` spelling is canonical; legacy names remain accepted

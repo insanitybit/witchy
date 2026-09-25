@@ -16,7 +16,7 @@ use crate::abi::{CanonicalCallableAbi, CanonicalCallableAbiManifest};
 use crate::access::AccessSignature;
 use crate::carrier::CarrierElement;
 use crate::closure::ClosureWitnessManifest;
-use crate::rooted_view::RootedViewStorage;
+use crate::storage::StoragePlan;
 use crate::specialization::LogicalSpecializationIdentity;
 
 /// Evidence that exact source bytes crossed the checked type-checking boundary.
@@ -241,10 +241,11 @@ impl<'s> CanonicalSourceView<'s> {
 
     pub fn slice_carriers(&self) -> &'s [CarrierElement] { self.slice_carriers }
 
-    /// Classify a rooted-view payload against this checked module's source
-    /// definitions and nominal ordinals. Candidate syntax cannot mint it.
-    pub fn rooted_view_storage(&self, payload: &Type) -> Option<RootedViewStorage> {
-        RootedViewStorage::classify(payload, self.type_definitions, |name| {
+    /// Classify one type using this exact checked module's definitions and
+    /// nominal ordinals. The caller must still establish that the type comes
+    /// from checked source and match its physical SafeWIR layout.
+    pub fn storage_plan(&self, ty: &Type) -> StoragePlan {
+        StoragePlan::classify(ty, self.type_definitions, |name| {
             self.module.items.iter().enumerate().find_map(|(ordinal, item)| {
                 match item {
                     Item::Type(definition) if definition.name == name => u32::try_from(ordinal).ok(),

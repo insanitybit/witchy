@@ -431,21 +431,24 @@ impl Checker {
     /// scalar List accepted by the canonical carrier rules.
     fn admitted_view_capture(&self, payload: &Ty) -> bool {
         use witchy_canonical_source::rooted_view::{RetainedRootStorage, RootedViewStorage};
+        use witchy_canonical_source::storage::StoragePlan;
         let Some(payload) = ty_to_ast(payload) else { return false };
-        let Some(storage) = RootedViewStorage::classify(
-            &payload, &self.canonical_definitions, |_| Some(0),
+        let view = ast::Type::Qualified(ast::TypeQual::View, Box::new(payload));
+        let StoragePlan::RootedView(storage) = StoragePlan::classify(
+            &view, &self.canonical_definitions, |_| Some(0),
         ) else { return false };
+        let ast::Type::Qualified(_, payload) = &view else { unreachable!() };
         match storage {
             RootedViewStorage::ScalarCell(_)
             | RootedViewStorage::InlineScalar(_)
             | RootedViewStorage::RetainedRoot(RetainedRootStorage::ByteBuffer) => {
                 // The previous callable boundary admitted these direct
                 // values, but no qualified scalar or String payload.
-                !matches!(payload, ast::Type::Qualified(..))
+                !matches!(payload.as_ref(), ast::Type::Qualified(..))
             }
             RootedViewStorage::RetainedProjection(_) => {
                 // `Slice(T)` is the checker's private retained-view payload.
-                matches!(&payload, ast::Type::Named(name, arguments)
+                matches!(payload.as_ref(), ast::Type::Named(name, arguments)
                     if name == "Slice" && arguments.len() == 1)
             }
             RootedViewStorage::RetainedRoot(RetainedRootStorage::Sequence(_)
