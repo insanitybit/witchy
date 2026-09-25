@@ -121,7 +121,7 @@ pub fn dictionary_has_unadmitted_string_view_value(ty: &Type) -> bool {
                     if name == "String" && arguments.is_empty())))
 }
 
-/// The exact inline scalar carried by a retained `Dict(String, S)` root.
+/// The exact value carried by a retained `Dict(String, S)` root.
 /// Each kind has a distinct source ABI identity and physical value-list slot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DictRootScalar {
@@ -129,10 +129,11 @@ pub enum DictRootScalar {
     Bool,
     Float,
     Duration,
+    String,
 }
 
 /// A whole immutable dictionary view can retain its existing root only when
-/// the key is exactly String and the value is one unqualified inline scalar.
+/// the key is exactly String and the value is one unqualified admitted type.
 /// Nested or qualified values must not inherit this owner family.
 pub fn dict_string_scalar_root_payload(ty: &Type) -> Option<DictRootScalar> {
     let Type::Named(name, arguments) = ty else { return None };
@@ -144,6 +145,7 @@ pub fn dict_string_scalar_root_payload(ty: &Type) -> Option<DictRootScalar> {
         "Bool" => Some(DictRootScalar::Bool),
         "Float" => Some(DictRootScalar::Float),
         "Duration" => Some(DictRootScalar::Duration),
+        "String" => Some(DictRootScalar::String),
         _ => None,
     }
 }

@@ -566,6 +566,7 @@ fn rooted_dict_scalar_payload_key(kind: DictRootScalar) -> CanonicalTypeKey {
         DictRootScalar::Bool => b"witchy.canonical-rooted-view-payload.v1/dict-string-bool",
         DictRootScalar::Float => b"witchy.canonical-rooted-view-payload.v1/dict-string-float",
         DictRootScalar::Duration => b"witchy.canonical-rooted-view-payload.v1/dict-string-duration",
+        DictRootScalar::String => b"witchy.canonical-rooted-view-payload.v1/dict-string-string",
     };
     CanonicalTypeKey::from_digest(*blake3::hash(source).as_bytes())
 }

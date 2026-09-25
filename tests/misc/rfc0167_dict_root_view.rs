@@ -63,14 +63,12 @@ fn main() -> Int:
 
 #[test]
 fn other_dictionary_view_payloads_stay_outside_the_exact_carrier() {
-    let different_value = r#"
-fn count(v: &Dict(String, String)) -> Int:
+    let nested_value = r#"
+fn count(v: &Dict(String, List(String))) -> Int:
     (*v).length()
 
 fn main() -> Int:
-    var d: Dict(String, String) = dict.new()
-    let _ = d.insert("a", "value")
-    count(&d)
+    0
 "#;
     let nested_view = r#"
 fn count(v: &Dict(String, &Int)) -> Int:
@@ -79,7 +77,7 @@ fn count(v: &Dict(String, &Int)) -> Int:
 fn main() -> Int:
     0
 "#;
-    for source in [different_value, nested_view] {
+    for source in [nested_value, nested_view] {
         let checked = witchy::resolve_std_only_checked(source)
             .expect("near-miss dictionary view reaches canonical admission");
         let refusal = codegen::compile_checked_module_artifact(&checked)
