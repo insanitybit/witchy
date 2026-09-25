@@ -138,71 +138,6 @@ jobs:
       - name: Unit and integration tests
         run: cargo nextest run --workspace --features witchy-wir/native --profile ci --all-targets --locked
 
-  heap-check:
-    name: Checked heap differential fuzz
-    needs: version
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          ref: ${{ needs.version.outputs.commit }}
-          persist-credentials: false
-      - uses: ./.github/actions/install-rust
-      - uses: taiki-e/install-action@16b05812d776ae1dfaabc8277e421fb6d2506419 # v2.82.7
-        with:
-          tool: nextest
-      - name: Differential fuzzer under WITCHY_HEAP_CHECK
-        env:
-          WITCHY_HEAP_CHECK: "1"
-        run: cargo nextest run --profile ci --locked --test differential_fuzz
-
-  parity:
-    name: Backend parity sweep
-    needs: version
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          ref: ${{ needs.version.outputs.commit }}
-          persist-credentials: false
-      - uses: ./.github/actions/install-rust
-      - name: Build release binary
-        run: cargo build --release --locked
-      - name: Differential check every runnable example
-        run: |
-          set -uo pipefail
-          bin=./target/release/witchy
-          fail=0
-          files=0
-          compared=0
-          ctrl=""
-          for f in examples/*/src/*.witchy; do
-            grep -q 'fn main' "$f" || continue
-            [ -z "$ctrl" ] && ctrl="$f"
-            files=$((files + 1))
-            out=$("$bin" parity "$f" 2>&1)
-            code=$?
-            n=$(printf '%s\n' "$out" | grep '^parity-stats ' | tail -1 | sed -n 's/.*compared=\([0-9][0-9]*\).*/\1/p')
-            compared=$((compared + ${n:-0}))
-            if [ "$code" -ne 0 ]; then
-              echo "PARITY FAIL (exit $code): $f"
-              echo "$out"
-              fail=1
-            fi
-          done
-          test "$files" -gt 0 || { echo "parity sweep found no runnable files" >&2; exit 1; }
-          test "$compared" -gt 0 || { echo "parity sweep compared no output" >&2; exit 1; }
-          if WITCHY_SEEDED_DIVERGENCE=1 "$bin" parity "$ctrl" >/dev/null 2>&1; then
-            echo "seeded divergence did not fail parity" >&2
-            exit 1
-          fi
-          echo "parity-sweep: $files files, $compared compared lines, positive control OK"
-          exit "$fail"
-
   fmt:
     name: Witchy source formatting
     needs: version
@@ -225,7 +160,7 @@ jobs:
 
   build:
     name: Native artifact ${{ matrix.target }}
-    needs: [version, workflow-security, test, heap-check, parity, fmt]
+    needs: [version, workflow-security, test, fmt]
     runs-on: ${{ matrix.os }}
     permissions:
       contents: read

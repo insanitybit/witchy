@@ -514,8 +514,8 @@ footprint its `main` demands from the ambient environment - a convenience run
 for code you trust, not a boundary for code you don't. `witchy sandbox` is the
 explicit untrusted-code boundary: it grants nothing by default and links only the
 host functions named on its command line. The tree-walking interpreter isn't a
-user run path or a language-semantics oracle. The canonical SafeWIR interpreter
-and admitted Wasm are checked against independent expected results. The source
+user run path or a language-semantics oracle. Admitted Wasm is checked against
+independent expected results and focused structural contracts. The source
 walker remains temporarily for the `comptime` evaluator, in-language test
 runner, and build-step executor; it is not RFC-0167 acceptance evidence.
 

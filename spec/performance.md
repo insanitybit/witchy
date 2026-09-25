@@ -151,7 +151,7 @@ lowers to a loop. Recursive depth therefore adds no heap or control-stack work.
 the deterministic resource oracle. Fixed setup outside the kernel may allocate,
 so the contract requires equal counts as depth changes, not zero counts for the
 whole program. Independent expected values remain the semantic reference, while
-the canonical SafeWIR interpreter is the executable oracle; the source tree
+admitted unoptimized Wasm is the executable acceptance path; the source tree
 walker is not an oracle.
 
 The initial checked class rejects construction, non-final recursion, replacement

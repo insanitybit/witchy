@@ -1,7 +1,7 @@
 //! RFC-0167 row F: the frozen/view qualifier matrix at the canonical boundary.
 //!
 //! Every positive fixture uses an independent scalar expectation, the canonical
-//! SafeWIR interpreter, and admitted unoptimized Wasm, with a zero-leak audit on
+//! admitted unoptimized Wasm, with a zero-leak audit on
 //! both. The source interpreter is not consulted.
 //!
 //! Scope: rooted views admit the canonical `Int` carrier (row G records that
@@ -48,4 +48,3 @@ fn a_view_cannot_write_and_a_frozen_payload_cannot_be_mutated_in_place() {
         "cannot mutate through frozen value",
     );
 }
-

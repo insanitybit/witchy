@@ -459,8 +459,8 @@ message, not merely on the fact of erroring.
 - **Rust message text has one owner** in `crates/witchy-syntax/src/diag.rs`
   (`DiagTemplate`). `template` is the stable `DiagTemplate::id()` (part of the
   compiled ABI - don't renumber); `a`/`b` are integer holes and `str_ptr` is a
-  witchy-string pointer (or `0`). The interpreter and native host use the same
-  renderer. The dependency-free browser host mirrors the small table, pinned by
+  witchy-string pointer (or `0`). The native and browser hosts use the same
+  renderer, pinned by
   a compiled test matrix covering every diagnostic template.
 - **`__witchy_diagnostic_site` carries source location.** Modules with routed failures
   export one mutable `i64`: high 32 bits are a static witchy-string pointer to
@@ -469,9 +469,9 @@ message, not merely on the fact of erroring.
   writes the global only on its actual host edge. Successful nested calls
   and async interleavings therefore cannot stale an outer operation's location.
   Zero means unavailable.
-- **Exact error parity is enforced** by `witchy parity`: every both-error outcome
-  must have byte-for-byte identical complete diagnostics. A bare Wasm trap,
-  missing location, or backend-specific host error is a divergence.
+- **Exact errors are pinned** by compiled diagnostic tests: every routed abort
+  carries the complete byte-for-byte diagnostic. A bare Wasm trap or missing
+  location is a regression.
 - **`WITCHY_WASM_BACKTRACE`** - set this environment variable to also dump the
   full named-frame wasm backtrace beneath the message (the emitted name section
   makes frames readable). It's a debugging add-on for *frames*; the message

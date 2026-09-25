@@ -17,7 +17,6 @@ Environment they assume (override with `WITCHY_DEV_TARGET`):
 | `shards.sh edit` | the default inner loop: named root-driver budget, WIR prelude/ABI, prefix-ownership, lowering-publication, and admitted aggregate probes (`status/shards.log`, `status/shards.status`). `edit` is the default argument. The four WIR probes share one `witchy-wir --features native --lib` invocation after exact selection comparison; lowerer and production-root probes remain separate because their feature graphs differ. |
 | `shards.sh corpus` | all existing `rfc0165_` misc tests, including every admitted-example oracle partition. Use for family-completion checkpoints. |
 | `shards.sh landing` | the previous broad local sequence unchanged: all `rfc0165_` misc tests, ABI catalog, lower canonical, WIR native, types, and runtime native. This is a local checkpoint; the merge queue remains the authoritative landing set. |
-| `census.sh` | `witchy check` on every example and `witchy parity` on the ones whose `main` takes only Console/Dir/Env; prints check and agree counts, writes `status/census-fail.txt` and `status/census-parity.txt`. |
 | `queue-watch.sh <change-id>` | polls the merge-queue journal in the MAIN checkout for a terminal event on the change and writes it to `status/queue-watch.out`. |
 
 The WIR edit-probe consolidation was measured on 2026-09-12 from three warm

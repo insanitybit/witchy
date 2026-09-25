@@ -21,7 +21,7 @@ cargo clippy --workspace --all-targets -- -D clippy::correctness -D clippy::susp
 cargo nextest run --workspace
 ```
 
-The coordinator rebases, runs the full workspace/parity gate once, and
+The coordinator rebases, runs the full workspace gate once, and
 lands only the exact green commit. See `AGENTS.md` for shared-worktree target
 isolation, queue monitoring, and recovery commands. External contributors who
 do not use the coordinator may run `./scripts/check.sh`, but its result is local
@@ -56,22 +56,21 @@ Each substantial test group should have at least one concrete reason to exist:
 - **regression**: a demonstrated historical defect;
 - **independent oracle**: expected behavior is derived independently of the
   implementation under test;
-- **canonical conformance**: the SafeWIR interpreter and admitted Wasm are
-  compared to the same independent expectation; or
+- **canonical conformance**: admitted unoptimized Wasm is compared to an
+  independent expectation and the relevant structural contracts are pinned; or
 - **fixture support**: a small shared helper deletes more setup than it adds.
 
 Delete obsolete representation/compatibility tests and weaker duplicates.
-Prefer one independent expectation plus canonical conformance over
-executor-specific copies. Agreement cannot replace the expectation: both
-executors can share the same bug. Keep expected diagnostics, capability traces,
-ABI shapes, and source locations explicit.
+Prefer one independent expectation plus admitted execution over duplicated
+executor-specific copies. Keep expected diagnostics, capability traces, ABI
+shapes, and source locations explicit.
 
 The intended layers are:
 
-- parser, formatter, type checker, WIR, canonical-interpreter, and runtime unit
+- parser, formatter, type checker, WIR, and runtime unit
   tests for local contracts and fault localization;
 - `src/example_tests/` for independently expected language semantics and
-  canonical-interpreter/admitted-Wasm conformance;
+  admitted-Wasm conformance;
 - `tests/cli_subcommands.rs` and `tests/misc/` for real-process CLI,
   confinement, and capability boundaries; and
 - mutation/fault-injection tests for evidence that the retained oracles reject
@@ -88,12 +87,10 @@ macro DSL or test framework to save superficial lines.
 `scripts/test-for-paths.sh` is the authority mapping changed paths to focused
 shards. When moving or extracting tests, update that mapping in the same change
 and confirm `--run` selects every required shard. The merge coordinator remains
-the authority for the serialized full workspace, canonical-conformance, and
-compatibility-parity gate.
+the authority for the serialized full workspace gate.
 
 `scripts/e2e-full.sh` is the whole-system acceptance run: it builds from
-scratch, checks the canonical interpreter and admitted-Wasm result plus the
-temporary source-walker compatibility path, exercises the formatter, the
+scratch, checks the admitted-Wasm result, exercises the formatter, the
 in-language test framework, capability
 auditing (`caps`/`caps-diff`), sandbox enforcement (confinement + allowlist
 denials), and doc extraction. CI does not run it.
@@ -105,18 +102,17 @@ suite.
 RFC-0167 supersedes RFC-0135's dual source-runtime requirement. Checked
 canonical SafeWIR is the sole executable language contract. If you add
 observable stable behavior, state an independent expected result and prove it
-with both the canonical SafeWIR interpreter and admitted unoptimized Wasm. The
+with admitted unoptimized Wasm plus the relevant structural contracts. The
 source tree walker is frozen for language semantics; preserve only its temporary
 comptime/build compatibility duties and do not add new syntax or runtime
 semantics to it.
 
-Pure optimizations compare optimized Wasm with admitted unoptimized Wasm, the
-canonical interpreter, and the independent expectation. Capability,
+Pure optimizations compare optimized Wasm with admitted unoptimized Wasm and
+the independent expectation. Capability,
 confinement, and ABI security remain fail-closed on the canonical route. A
 silent split is always a bug.
 
-Behavior that errors on a supported path must error in both canonical
-executors, with the **same complete diagnostic**
+Behavior that errors on a supported path must preserve the **same complete diagnostic**
 ([RFC-0045](rfcs/0045-compiled-trap-diagnostics.md)): a
 runtime abort (out-of-bounds index, integer division/modulo failure,
 `string.to_int` junk, `NaN` ordering, `fail(msg)`) carries the canonical
@@ -176,9 +172,9 @@ the manifest marks non-runnable are recorded but not executed.
 
 See [spec/architecture.md](spec/architecture.md) for the pipeline and the
 workspace layout (the compiler is split into stage-aligned crates under
-`crates/`). Quick orientation: the canonical SafeWIR interpreter defines
-executable semantics; codegen
-(`crates/witchy-lower/src/codegen/`) must match it; typeck
+`crates/`). Quick orientation: independent expectations and checked SafeWIR
+contracts define semantics; codegen
+(`crates/witchy-lower/src/codegen/`) must match them; typeck
 (`crates/witchy-types/src/typeck.rs`) rejects what can't be made to agree; the
 wasmtime sandbox (`crates/witchy-runtime/src/runtime.rs`) is the security
 boundary (capability-gated host imports - anything you add there is part of the
@@ -209,7 +205,7 @@ Carry the authority change across the whole pipeline in one commit series:
 
 1. syntax/AST and formatter if the surface changes;
 2. type checking, including capability rights and trait/protocol obligations;
-3. checked canonical SafeWIR plus its canonical interpreter oracle;
+3. checked canonical SafeWIR plus authority and ownership contracts;
 4. lowering, WIR kind/layout helpers, and admitted-Wasm encoding;
 5. runtime host import or trap plumbing when authority or host state is involved;
 6. shared diagnostics/templates for any new error text;
@@ -219,7 +215,7 @@ Carry the authority change across the whole pipeline in one commit series:
 
 Use [spec/value-model.md](spec/value-model.md) as the compiled representation
 checklist. If the new semantic does not fit that table, update the table and
-make both canonical executors prove the new representation with tests.
+make admitted Wasm and the structural contracts prove the new representation.
 
 ## Generated and derived docs
 

@@ -3,7 +3,7 @@
 //! User programs run on the compiled (WASM) backend: `witchy run`, `witchy
 //! sandbox`, build steps, and the browser playground all go through `codegen`.
 //! It is not a production runtime or semantic oracle. Executable acceptance is
-//! independent expectation -> canonical SafeWIR interpreter -> admitted Wasm.
+//! independent expectation -> admitted Wasm with focused structural contracts.
 //! The source evaluator is reached only for temporary compatibility: `comptime`
 //! evaluation (compile-time blocks, zero capabilities), capability-sound
 //! executor for *effectful* build steps (BuildExec/BuildNet/BuildEnv, whose
@@ -2494,5 +2494,4 @@ impl Interpreter {
         }
     }
 }
-
 

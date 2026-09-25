@@ -86,35 +86,6 @@ use crate::{codegen, interpreter, parser};
     }
 
     #[test]
-    fn every_compilable_example_agrees_on_both_backends() {
-        // Differential guard: every example that compiles to WASM must produce
-        // identical output on the interpreter and the compiled backend. Examples
-        // that are interpreter-only (actors, networking, float/case formatting) or
-        // are libraries with no `main` cannot compile and are skipped — only a
-        // genuine divergence fails. (This would have caught the trailing-newline
-        // print divergence.)
-        let entries = example_entries();
-        let diverged: Vec<String> = std::thread::scope(|s| {
-            let handles: Vec<_> = entries.iter().map(|path| {
-                s.spawn(|| {
-                    let p = path.to_str().unwrap();
-                    if let crate::ParityOutcome::Diverge { message, .. } = crate::parity_check(p) {
-                        Some(message)
-                    } else {
-                        None
-                    }
-                })
-            }).collect();
-            handles.into_iter().filter_map(|h| h.join().unwrap()).collect()
-        });
-        assert!(
-            diverged.is_empty(),
-            "examples diverge across backends:\n{}",
-            diverged.join("\n")
-        );
-    }
-
-    #[test]
     fn detached_wasm_requires_admission_while_the_admitted_artifact_runs() {
         // Detached Wasm bytes no longer carry canonical admission authority.
         // Preserve both sides of that boundary: raw distribution fails closed,
@@ -279,4 +250,3 @@ use crate::{codegen, interpreter, parser};
             offenders.join("\n  ")
         );
     }
-

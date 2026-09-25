@@ -78,7 +78,6 @@ Or build from source:
 cargo build --release
 witchy=./target/release/witchy
 $witchy examples/hello/src/hello.witchy
-$witchy parity examples/hello/src/hello.witchy   # identical output on both backends
 ```
 
 ## The language in 30 seconds

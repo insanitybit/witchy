@@ -58,22 +58,20 @@ not close any of them.
 
 Checked canonical SafeWIR is the sole executable language contract. Production
 execution lowers checked source to canonical SafeWIR, validates it, encodes it
-to admitted Wasm, and runs that Wasm. The canonical SafeWIR interpreter executes
-the same validated program as a test oracle; it is not a second source-language
-implementation.
+to admitted Wasm, and runs that Wasm. There is no reference interpreter in the
+active build.
 
-Semantic acceptance uses a three-part witness, in this order:
+Semantic acceptance uses these witnesses, in this order:
 
 1. an independent expected value, diagnostic, effect trace, or structural
    invariant that is not computed by either execution engine;
-2. the validated canonical SafeWIR program executed by the canonical
-   interpreter; and
-3. the same validated program encoded as unoptimized admitted Wasm and executed
-   by the production runtime.
+2. the validated canonical SafeWIR program encoded as unoptimized admitted Wasm
+   and executed by the production runtime; and
+3. independent structural checks at the affected checker, authority, lowering,
+   ownership, ABI, or encoder boundary.
 
-Agreement between two engines is corroboration, not the expected result. A
-shared lowering or checker defect can make both engines agree incorrectly, so
-the independent expectation is primary. Optimized Wasm is an optional
+The independent expectation is primary because executing one artifact cannot
+detect every shared lowering or checker defect. Optimized Wasm is an optional
 additional comparison and cannot replace the unoptimized witness.
 
 The source tree-walking interpreter is frozen at this decision. It receives no
@@ -86,8 +84,9 @@ current compiler still depends on its bundled implementation:
 - linker and tooling pipeline support, which moves to a runtime-neutral crate.
 
 Production `run`, `sandbox`, `test`, and the playground execute admitted Wasm.
-`witchy parity` uses the canonical SafeWIR interpreter as its oracle; it never
-revives the source tree walker as a selectable backend.
+If a future independent executable oracle is justified, it belongs in a
+separate opt-in crate outside the routine workspace build and merge gate; it
+must not restore the source tree walker as a selectable backend.
 
 Compatibility and security fixes may keep those frozen uses operational, but
 must not turn the tree walker back into a production runtime or add a parallel

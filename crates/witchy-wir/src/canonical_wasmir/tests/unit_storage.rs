@@ -1,5 +1,4 @@
 use super::*;
-use crate::canonical_interpreter::{interpret_program, InterpreterConfig, InterpreterValue};
 use crate::canonical_safewir::{AllocationClass, CallArgument, InitialCheckError};
 
 const SENTINEL: i64 = 0x123456789abcdef;
@@ -80,9 +79,6 @@ fn execute(bytes: &[u8]) -> (i32, i64) {
 
 pub fn unit_storage_construct_call_native_oracle() {
     let checked = validated();
-    let oracle = interpret_program(&checked, FunctionId::new(101), vec![], InterpreterConfig::default()).unwrap();
-    assert_eq!(oracle.results, vec![InterpreterValue::Unit, InterpreterValue::Int(SENTINEL)]);
-    assert_eq!(oracle.leaked_objects, 0);
     let artifact = admit_canonical_for_test(checked).expect("Unit exact-byte plan admission");
     assert_eq!(execute(artifact.wasm()), (0, SENTINEL));
     let store = artifact.wasm().windows(3).position(|w| w == [0x41, 0, 0x36]).expect("Unit zero store");

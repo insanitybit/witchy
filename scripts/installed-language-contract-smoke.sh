@@ -60,15 +60,6 @@ run_witchy compile "$work/core.witchy" --out "$work/core.wasm" >/dev/null
     echo "installed-language-contract-smoke: canonical core program output mismatch" >&2
     exit 1
 }
-parity_output="$(run_witchy parity "$work/core.witchy")"
-case "$parity_output" in
-    *"interpreter and compiled WASM agree"*) ;;
-    *)
-        echo "installed-language-contract-smoke: public interpreter/Wasm parity did not report agreement: $parity_output" >&2
-        exit 1
-        ;;
-esac
-
 check_rejected() {
     local name="$1"; shift
     local expected="$1"; shift

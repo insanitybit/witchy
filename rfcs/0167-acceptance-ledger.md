@@ -7,6 +7,13 @@ Existing tests and historical reports remain useful evidence inputs, not blanket
 proof of this new contract. Optimization expansion is outside this cut;
 preserving the facts and representation freedom it requires is inside it.
 
+As of 2026-09-25, the canonical SafeWIR interpreter and `witchy parity` command
+are retired from the active build. Older entries below preserve the evidence
+recorded when that executor existed; they are historical evidence, not a current
+gate requirement. New and refreshed evidence uses an independent expected
+result, admitted unoptimized Wasm, and focused structural checks at the affected
+compiler and runtime boundaries.
+
 ## Dependency graph
 
 ```text
@@ -16,8 +23,8 @@ review/adopt contract
        -> optimization-readiness witnesses + fact-preserving summaries/IR
        -> normal/opt entry ABI -> canonical lowering + runtime
        -> validated canonical SafeWIR
-            -> canonical SafeWIR interpreter oracle
             -> admitted unoptimized Wasm production runtime
+            -> independent structural boundary checks
   -> independent expected-result, diagnostic, effect, and structural matrices
   -> freeze source tree walker
        -> preserve comptime/build temporarily

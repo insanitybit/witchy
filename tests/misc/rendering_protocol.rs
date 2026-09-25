@@ -55,15 +55,6 @@ fn main(console: Console):
             String::from_utf8_lossy(&output.stderr),
         );
         assert_eq!(String::from_utf8_lossy(&output.stdout), expected, "{path}");
-
-        let parity = run(&["parity", path]);
-        assert!(
-            parity.status.success()
-                && String::from_utf8_lossy(&parity.stdout).contains("outcome=agree"),
-            "{path}: {}{}",
-            String::from_utf8_lossy(&parity.stdout),
-            String::from_utf8_lossy(&parity.stderr),
-        );
     }
 
     std::fs::remove_dir_all(dir).unwrap();

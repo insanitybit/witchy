@@ -11,7 +11,7 @@ use crate::{
     format, idp, link_file_checked, load_signing_seed, lsp, opt, parser, pipeline,
     project_entry_file, report_capabilities, report_capability_diff, report_derived_csp,
     report_grant_check, report_grant_diff,
-    run_benchmarks, runtime, trusted_publisher, RUN_MEMORY_PAGES,
+    runtime, trusted_publisher, RUN_MEMORY_PAGES,
 };
 use witchy_syntax::linker;
 
@@ -639,9 +639,6 @@ pub(crate) fn run() -> wasmtime::Result<()> {
             }
         }
     }
-    if commands::execution::run_parity() {
-        return Ok(());
-    }
     // `witchy sandbox [--dir <root>] [--net <host:port>]... <file> [args...]`
     // compiles the program to WASM and runs it in the capability-sandboxed VM,
     // granted exactly its computed footprint. `--dir` picks the subtree backing
@@ -977,10 +974,6 @@ pub(crate) fn run() -> wasmtime::Result<()> {
             std::process::exit(1);
         }
         return Ok(());
-    }
-    // `witchy --bench` compares canonical SafeWIR interpretation with admitted Wasm.
-    if std::env::args().nth(1).as_deref() == Some("--bench") {
-        return run_benchmarks();
     }
     // Package-manager front-end verbs (`witchy add`, `build`, `publish`, ...) run
     // the EMBEDDED witchy front-end — the same program `witchy pm <verb>` runs,

@@ -423,10 +423,8 @@
     mod closures;
     mod collections;
     mod match_control;
-    mod mutation;
     mod structs;
     mod strings;
-    mod traits_generics;
     mod host_modules;
     mod misc_semantics;
     mod syntax_forms;
@@ -448,9 +446,6 @@
     mod examples_programs;
     mod modes;
     mod must_consume;
-    mod rfc0167_views;
-    mod rfc0167_callable_views;
-    mod rfc0167_rooted_slices;
 
     fn wasm_run(src: &str) -> Vec<String> {
         witchy_interp::compiler_natives::install();
@@ -744,39 +739,6 @@
         });
         let entries: Vec<serde_json::Value> = per_file.into_iter().flatten().collect();
         serde_json::to_string_pretty(&serde_json::Value::Array(entries)).unwrap() + "\n"
-    }
-
-    /// The oracle-based sweep run under an OPT-IN codegen lever: EVERY example — including the
-    /// capability-using ones (coven_check's `Dir[Read]`, networking, …) — must still agree
-    /// interpreter-vs-compiled with the lever on. The default `every_compilable_example_*` sweep
-    /// only exercises the DEFAULT-ON opts, so an opt-in lever's frees / layout changes go
-    /// unexercised on real programs — exactly how the free-at-overwrite alias-init use-after-free
-    /// hid for ~2 days (it only fired under `WITCHY_OPT=rc-floor`, which no sweep ran). Every
-    /// opt-in lever gets a sweep here so that class cannot recur. `set_for_tests` is thread-local,
-    /// so the lever is isolated from the parallel test threads.
-    fn assert_examples_agree_under(set: crate::opt::OptSet, lever: &str) {
-        let entries = example_entries();
-        let diverged: Vec<String> = std::thread::scope(|s| {
-            let handles: Vec<_> = entries.iter().map(|path| {
-                s.spawn(|| {
-                    crate::opt::set_for_tests(Some(set));
-                    let p = path.to_str().unwrap();
-                    let result = if let crate::ParityOutcome::Diverge { message, .. } = crate::parity_check(p) {
-                        Some(message)
-                    } else {
-                        None
-                    };
-                    crate::opt::set_for_tests(None);
-                    result
-                })
-            }).collect();
-            handles.into_iter().filter_map(|h| h.join().unwrap()).collect()
-        });
-        assert!(
-            diverged.is_empty(),
-            "examples diverge under WITCHY_OPT={lever} (a codegen bug the default sweep misses):\n{}",
-            diverged.join("\n")
-        );
     }
 
     /// End-to-end through the *compiled* path: type-check, compile to WASM, run

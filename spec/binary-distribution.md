@@ -7,14 +7,13 @@ is no WAT text stage and no `wat` crate. A compiled program is a portable `.wasm
 module that a trusted `witchy` host instantiates under a delegated capability
 grant - the same enforcement as `witchy sandbox`, frozen into an artifact.
 
-## The one run path, and the interpreter's roles
+## The one run path
 
 There is one user-program run path: the compiled WASM backend. `witchy <file>`,
 `witchy run`, and `witchy sandbox` all compile to a wasm binary and execute it
 under wasmtime, so dev == deploy by construction.
 
-The tree-walking interpreter is **not** a user run path. The canonical SafeWIR
-interpreter is the executable oracle (`witchy parity`), while `witchy test` executes
+There is no canonical interpreter in the active build. `witchy test` executes
 admitted Wasm. The source tree walker is frozen and retained temporarily only for
 `comptime:` evaluation and effectful build-step compatibility. Because comptime
 blocks still use `interpreter::run_module_budgeted` from `linker::link`, that
@@ -106,14 +105,13 @@ dependencies still receive authority only when the root passes a capability.
 
 ## Invariants
 
-- **Independent expectation + canonical executors.** Tests state an independent
-  expected result, then check the canonical SafeWIR interpreter and admitted
-  Wasm. Agreement between the two executors is necessary but not sufficient;
-  running the same Wasm on a second engine is not an independent expectation.
+- **Independent expectation + admitted execution.** Tests state an independent
+  expected result, execute admitted unoptimized Wasm, and pin checker, lowering,
+  authority, ownership, and encoder structure where the boundary requires it.
 - **One confinement implementation, shared.** The `Dir`/`Net` escape checks
   (`resolve`/`resolve_write`) live in one module,
-  `crates/witchy-runtime/src/confine.rs`, used by the wasmtime sandbox and the
-  interpreter alike - never a second copy. A capability-granting browser host
+  `crates/witchy-runtime/src/confine.rs`, used by the wasmtime sandbox - never a
+  second copy. A capability-granting browser host
   delegates path checks to the same code compiled to wasm.
 - **Authority is source-derived and host-mediated.** A program's authority is its
   host-import set plus the footprint from `capabilities::analyze`; wasmtime

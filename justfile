@@ -1,10 +1,10 @@
 # justfile — task runner for the witchy project.
-# Recipes mirror the CI jobs (.github/workflows/ci.yml), the helper scripts
-# under scripts/, and the `witchy` CLI subcommands. Run `just` for the list.
+# Recipes expose CI jobs, optional local tools, helper scripts, and `witchy`
+# CLI subcommands. Run `just` for the list.
 
 set shell := ["bash", "-uc"]
 
-# The release binary the parity/fmt recipes drive.
+# The release binary used by formatting and CLI passthrough recipes.
 bin := "./target/release/witchy"
 
 # Show the available recipes (default when you run bare `just`).
@@ -17,7 +17,7 @@ default:
 build:
     cargo build
 
-# Release build (used by the parity sweep, fmt check, scripts).
+# Release build used by formatting, CLI passthroughs, and helper scripts.
 build-release:
     cargo build --release
 
@@ -51,12 +51,7 @@ structure-health:
 test-ci:
     cargo nextest run --workspace --profile ci --all-targets
 
-# Checked-heap differential fuzz (CI `heap-check` job, RFC-0023): out-of-object
-# writes surface as redzone traps / a shadow-sweep failure.
-heap-check:
-    WITCHY_HEAP_CHECK=1 cargo nextest run --test differential_fuzz
-
-# Lint gate — CI runs this with -D warnings.
+# Optional local lint; Clippy is not part of the merge or CI gate.
 clippy:
     cargo clippy --workspace --all-targets -- -D warnings
 
@@ -81,10 +76,6 @@ run FILE *ARGS: build-release
 check FILE: build-release
     {{bin}} check {{FILE}}
 
-# Run a program on both backends and confirm identical output.
-parity FILE: build-release
-    {{bin}} parity {{FILE}}
-
 # Run in-language tests (`test_*` functions) in a file or directory.
 witchy-test TARGET: build-release
     {{bin}} test {{TARGET}}
@@ -101,56 +92,7 @@ sandbox FILE *ARGS: build-release
 lsp:
     cargo run -- lsp
 
-# --- Parity sweep & witchy formatting (mirror CI) ------------------------
-
-# Differential-check every runnable example on both backends (CI parity job).
-# FAIL-CLOSED on any non-zero parity exit (RFC-0058 §2, BUG-002): 0 = agree /
-# both-error-agree, 2 = unexpected-error (a compile/lower regression), 3 = diverge.
-# No `|| true`, no `grep DIVERGE` — classify on the exit code + the machine-readable
-# `parity-stats` line. Vacuity guard: assert we compared > 0 output lines. Positive
-# control: the seeded-divergence lever MUST fail parity, proving the gate can fail.
-parity-sweep: build-release
-    #!/usr/bin/env bash
-    set -uo pipefail
-    fail=0
-    files=0
-    compared=0
-    ctrl=""
-    for f in examples/*/src/*.witchy; do
-        # Discover RUNNABLE programs only: `parity` needs a `main`. Libraries and
-        # in-language `*_test.witchy` suites (no `main`) are covered by `witchy test`
-        # and example_tests — sweeping them would fail-closed on a legitimate
-        # "no main to run" (a reviewed skiplist rule, BUG-002 / RFC-0058 §4).
-        grep -q 'fn main' "$f" || continue
-        [ -z "$ctrl" ] && ctrl="$f"
-        files=$((files + 1))
-        out=$({{bin}} parity "$f" 2>&1)
-        code=$?
-        n=$(printf '%s\n' "$out" | grep '^parity-stats ' | tail -1 | sed -n 's/.*compared=\([0-9][0-9]*\).*/\1/p')
-        compared=$((compared + ${n:-0}))
-        if [ "$code" -ne 0 ]; then
-            echo "PARITY FAIL (exit $code): $f"
-            echo "$out"
-            fail=1
-        fi
-    done
-    if [ "$files" -eq 0 ]; then
-        echo "parity-sweep VACUOUS: no example files discovered (BUG-002)" >&2
-        exit 1
-    fi
-    if [ "$compared" -eq 0 ]; then
-        echo "parity-sweep VACUOUS: compared 0 output lines across $files files (BUG-002)" >&2
-        exit 1
-    fi
-    # Positive control (RFC-0058 §1): `ctrl` is a known-AGREEING runnable example
-    # (it passed above with exit 0). With the seeded-divergence lever armed, parity
-    # MUST now fail — a self-test that the gate can still detect a divergence.
-    if WITCHY_SEEDED_DIVERGENCE=1 {{bin}} parity "$ctrl" >/dev/null 2>&1; then
-        echo "parity-sweep POSITIVE CONTROL FAILED: seeded divergence did NOT fail parity on $ctrl" >&2
-        exit 1
-    fi
-    echo "parity-sweep: $files files, $compared compared lines, positive control OK"
-    exit $fail
+# --- Witchy formatting (mirrors CI) --------------------------------------
 
 # Format every std, example, and project witchy source in place.
 wfmt: build-release
@@ -208,18 +150,17 @@ playground:
 docs-build: build-release
     ./scripts/build-docs.sh dist
 
-# Build just the wasm interpreter the way CI does (no native deps).
+# Build the wasm library without native runtime dependencies.
 wasm:
     cargo build --release --lib --no-default-features --target wasm32-unknown-unknown
 
 # --- Aggregates -----------------------------------------------------------
 
-# The full local gate — mirrors the compiler jobs in ci.yml.
+# The full local gate mirrors the blocking compiler jobs in ci.yml.
 # See .github/workflows/ci.yml for the authoritative set.
-#   zizmor        -> zizmor       build/clippy/test -> build-all clippy test-ci
-#   heap-check    -> heap-check      parity            -> parity-sweep
-#   fmt           -> wfmt-check
-ci: build-all clippy test-ci heap-check parity-sweep wfmt-check zizmor
+# zizmor maps to `zizmor`, build/test to `build-all test-ci`, and fmt to
+# `wfmt-check`.
+ci: build-all test-ci wfmt-check zizmor
     @echo "✓ local CI gate passed (mirrors ci.yml)"
 
 # Remove build artifacts.

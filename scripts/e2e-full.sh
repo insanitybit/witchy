@@ -88,17 +88,8 @@ fn main(console: Console):
     console.print("${1500ms < 2s}")
 EOF
 WANT="$(printf 'total: 21\n22\ntrue\ntrue\n2\ntrue')"
-GOT_INTERP="$("$BIN" "$WORK/lang.witchy")"
-expect_eq "interpreter output" "$WANT" "$GOT_INTERP"
-# Classify parity by its EXIT CODE + the machine-readable `outcome=` token, not by a
-# substring of the human line (RFC-0058 §2): "agree" is a substring of "both error" /
-# "disagree" too, and a compile regression would still print it.
-set +e
-PARITY_OUT="$("$BIN" parity "$WORK/lang.witchy" 2>&1)"
-PARITY_CODE=$?
-set -e
-expect_eq "interpreter <-> WASM parity exits 0 (agree)" "0" "$PARITY_CODE"
-expect_contains "parity reports machine outcome=agree" "outcome=agree" "$PARITY_OUT"
+GOT_RUN="$("$BIN" "$WORK/lang.witchy")"
+expect_eq "admitted Wasm output" "$WANT" "$GOT_RUN"
 expect_contains "type-checks standalone" "" "$("$BIN" check "$WORK/lang.witchy" 2>&1)"
 test -n "$("$BIN" emit-wat "$WORK/lang.witchy")" && ok "emit-wat produces a module"
 

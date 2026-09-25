@@ -5,46 +5,6 @@
 //! functions, each driven here by a one-line wrapper. Module paths mirror the
 //! old in-crate test paths, so existing name filters keep selecting them.
 
-mod canonical_interpreter {
-    mod build_read {
-        mod tests {
-            #[test] fn build_env_oracle_keeps_denied_unset_empty_and_private_sessions_distinct() { witchy_wir::self_checks::canonical_interpreter_build_read::build_env_oracle_keeps_denied_unset_empty_and_private_sessions_distinct() }
-        }
-    }
-    mod capability_tests {
-        #[test] fn a_token_of_another_kind_cannot_serve_a_dir_operation() { witchy_wir::self_checks::canonical_interpreter_capability::a_token_of_another_kind_cannot_serve_a_dir_operation() }
-        #[test] fn entry_tokens_are_root_scoped() { witchy_wir::self_checks::canonical_interpreter_capability::entry_tokens_are_root_scoped() }
-        #[test] fn root_fallback_refuses_symlinks_and_non_files() { witchy_wir::self_checks::canonical_interpreter_capability::root_fallback_refuses_symlinks_and_non_files() }
-    }
-    #[cfg(feature = "native")]
-    mod crypto_rsa_tests {
-        #[test] fn crypto_rsa_oracle_known_answer_and_tampered_inputs() { witchy_wir::self_checks::canonical_interpreter_crypto_rsa::crypto_rsa_oracle_known_answer_and_tampered_inputs() }
-    }
-    mod registry_host {
-        mod tests {
-            #[test] fn registry_oracle_dir_write_refuses_explicit_directories_and_granted_root() { witchy_wir::self_checks::canonical_interpreter_registry_host::registry_oracle_dir_write_refuses_explicit_directories_and_granted_root() }
-            #[test] fn registry_oracle_launch_requires_explicit_grants_even_when_unused() { witchy_wir::self_checks::canonical_interpreter_registry_host::registry_oracle_launch_requires_explicit_grants_even_when_unused() }
-            #[test] fn registry_oracle_mints_bind_kind_scope_and_session() { witchy_wir::self_checks::canonical_interpreter_registry_host::registry_oracle_mints_bind_kind_scope_and_session() }
-            #[test] fn registry_oracle_mkdir_fallback_never_writes_or_follows_links() { witchy_wir::self_checks::canonical_interpreter_registry_host::registry_oracle_mkdir_fallback_never_writes_or_follows_links() }
-            mod installer_tests {
-                #[test] fn dir_installer_oracle_virtual_links_resolve_without_backing_and_stay_confined() { witchy_wir::self_checks::canonical_interpreter_registry_host::installer_tests::dir_installer_oracle_virtual_links_resolve_without_backing_and_stay_confined() }
-            }
-            mod storage_tests {
-                #[test] fn dir_storage_oracle_scoped_curdir_write_and_read_stay_under_grant() { witchy_wir::self_checks::canonical_interpreter_registry_host::storage_tests::dir_storage_oracle_scoped_curdir_write_and_read_stay_under_grant() }
-            }
-        }
-    }
-    mod tests {
-        #[test] fn reference_counts_trap_at_i32_maximum() { witchy_wir::self_checks::canonical_interpreter::reference_counts_trap_at_i32_maximum() }
-        #[test] fn signed_remainder_by_zero_traps() { witchy_wir::self_checks::canonical_interpreter::signed_remainder_by_zero_traps() }
-        #[test] fn validated_clone_and_two_drops_execute() { witchy_wir::self_checks::canonical_interpreter::validated_clone_and_two_drops_execute() }
-        #[test] fn validated_counted_element_store_and_load_execute() { witchy_wir::self_checks::canonical_interpreter::validated_counted_element_store_and_load_execute() }
-        #[test] fn validated_direct_call_executes_callee() { witchy_wir::self_checks::canonical_interpreter::validated_direct_call_executes_callee() }
-        #[test] fn validated_false_guard_traps() { witchy_wir::self_checks::canonical_interpreter::validated_false_guard_traps() }
-        #[test] fn validated_scalar_arithmetic_executes() { witchy_wir::self_checks::canonical_interpreter::validated_scalar_arithmetic_executes() }
-        #[test] fn validated_size_values_reject_values_wider_than_i32() { witchy_wir::self_checks::canonical_interpreter::validated_size_values_reject_values_wider_than_i32() }
-    }
-}
 mod canonical_safewir {
     mod authority {
         mod tests {

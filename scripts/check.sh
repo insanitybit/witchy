@@ -125,46 +125,6 @@ fi
 # binary there, not under ./target, so the fmt check must look there too.
 target_dir="${CARGO_TARGET_DIR:-target}"
 
-# Fuzz policy (WITCHY_GATE_FUZZ, default `full`) — set by the merge-queue
-# coordinator from the branch diff. Ordinary Rust tests are bounded deterministic
-# fixture contracts; the larger fixed regression corpus is an explicit nightly target.
-# This separates fast failure localization from breadth sampling without dropping either
-# correctness contract.
-#   full     the ordinary fixture tests in this workspace pass
-#   reduced  same ordinary smoke (retained for coordinator compatibility)
-#   skip     none — a docs/rfc/bug/config-only diff cannot change parity, so no
-#            fuzz seed could catch anything; skip the whole differential_fuzz binary
-gate_fuzz="${WITCHY_GATE_FUZZ:-full}"
-# `--full` forces ordinary fixture coverage regardless of diff-scoping. Exhaustive
-# fuzz campaigns are intentionally only scheduled/manual CI in nightly-fuzz.yml.
-[ "$full" -eq 1 ] && gate_fuzz="full"
-# A serialized path selector is more precise than the daemon's coarse diff
-# classification. In particular, an older daemon can classify a change to the
-# differential corpus as `skip` while still selecting that test binary. Honor
-# the explicit test selector and bound its cost with the ordinary reduced mode.
-if [ "$gate_fuzz" = "skip" ] && [ -n "${WITCHY_GATE_SCOPE+x}" ]; then
-    case " ${WITCHY_GATE_NEXTEST:-} " in
-        *" --test differential_fuzz "*)
-            gate_fuzz="reduced"
-            echo "check.sh: explicit differential_fuzz selector overrides fuzz skip (reduced corpus)"
-            ;;
-    esac
-fi
-# `reduced` deliberately uses the same bounded smoke corpus as `full`; the former
-# ten-seed setting made one ordinary test exceed the two-second ceiling. Keep the
-# selector as a compatibility spelling until the coordinator stops emitting it.
-fuzz_excl=""
-case "$gate_fuzz" in
-    # Keep focused/serialized fuzz selections bounded and reproducible. The
-    # exhaustive corpus is owned by nightly-fuzz.yml, but an explicit local
-    # selector still runs a useful reduced campaign instead of inheriting the
-    # full default corpus.
-    reduced) export WITCHY_FUZZ_PROGRAMS="${WITCHY_GATE_FUZZ_REDUCED:-10}" ;;
-    skip)    fuzz_excl="not binary(differential_fuzz)" ;;
-    full)    ;;
-    *) echo "check.sh: unknown WITCHY_GATE_FUZZ='$gate_fuzz' (want full|reduced|skip)" >&2; exit 2 ;;
-esac
-
 # NIGHTLY-DEFERRED PERF/BUILD/COMPILE-BOUND TESTS ----------------------------
 # scripts/gate-test-cost.py --runs 50 found every test costing
 # more than 2s that ran in essentially every gate (n=40-41 of 50 mined logs).
@@ -188,7 +148,7 @@ esac
 #      fix. Read each one before adding it here: none scales a loop count or
 #      message count that a smaller value would shrink without weakening the
 #      assertion (see git blame on this block for the per-test audit). RFC-0135
-#      already scopes "stays in the inner loop" to focused `witchy parity
+#      already scopes "stays in the inner loop" to focused admitted-Wasm
 #      <file>` runs on the tests a developer is touching, not to every fixture
 #      re-running on every unrelated merge; the full corpus is explicitly
 #      stabilization/release/periodic-CI, not every gate. Real fix is a shared
@@ -347,9 +307,6 @@ if cargo nextest --version >/dev/null 2>&1; then
         printf 'check.sh: reusing exact RFC-0087 census proof for %.12s\n' "$census_proof_sha"
     fi
     [ "$full" -eq 0 ] && excl="$excl and $nightly_excl"
-    if [ -n "$fuzz_excl" ]; then
-        excl="${excl:+$excl and }$fuzz_excl"
-    fi
     if [ -n "$deferred_excl" ]; then
         excl="${excl:+$excl and }$deferred_excl"
     fi
@@ -476,14 +433,6 @@ if cargo nextest --version >/dev/null 2>&1; then
         nextest_cmd+=(-j "$gate_test_jobs")
     fi
     nextest_cmd+=("${nextest_sel[@]}")
-    # The ordinary profile excludes the exhaustive differential-fuzz binary.
-    # An explicit selector is an intentional opt-in (used by the focused
-    # shard and nightly jobs), so bypass that default filter instead of
-    # silently turning the shard into a zero-test run.
-    if [[ " ${nextest_sel[*]} " == *" --test differential_fuzz "* ]]; then
-        nextest_cmd+=(--ignore-default-filter --profile nightly)
-    fi
-
     # RFC-0165 A1: witchy-wir's native canonical/adapter tests must be part of
     # the ordinary workspace gate.  The package feature is not enabled merely
     # because the root package's default feature enables it as a dependency;
@@ -1060,9 +1009,6 @@ else
     run "Rust-class paired correctness" rust_class_check
 fi
 if [ "$full" -eq 1 ]; then
-    # Full differential-fuzz campaigns are explicit, non-blocking nightly CI targets.
-    # `.github/workflows/nightly-fuzz.yml` preserves their legacy corpus sizes and sanitizer
-    # modes; neither ordinary nor --full local gates execute them.
     # RFC-0030 bench/soak. The deterministic guards — the never-OOM soak and the
     # per-optimization counter assertions (src/stats.rs) — are HARD-gated in the
     # workspace test step above. The wall-clock benchmarks below are TREND only:

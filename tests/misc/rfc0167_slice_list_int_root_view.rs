@@ -56,7 +56,7 @@ fn main() -> Int:
 
 #[test]
 fn a_qualified_list_child_cannot_borrow_slice_authority() {
-    let checked = witchy::resolve_std_only_checked(
+    let refusal = witchy::resolve_std_only_checked(
         r#"
 fn relay(rows: &[unique List(Int)]) -> &[unique List(Int)]:
     rows
@@ -66,7 +66,9 @@ fn main() -> Int:
     relay(&rows[0..2]).length()
 "#,
     )
-    .expect("qualified slice source type-checks before canonical admission");
-    codegen::compile_checked_module_artifact(&checked)
-        .expect_unsupported("qualified child has no exact slice carrier");
+    .expect_err("qualified child has no exact checked callable ABI");
+    assert_eq!(
+        refusal.to_string(),
+        "type error: canonical callable ABI is invalid: qualified rooted view differs from finalized checked type"
+    );
 }

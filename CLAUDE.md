@@ -101,8 +101,8 @@ full gate yourself. After committing the exact tip you intend to submit, run
 diff and records the commit-keyed receipt consumed by the merge queue. For a
 compiler-crate edit it runs a fixed 1/8 hash slice of the 311 example tests
 (`WITCHY_EDIT_EXAMPLES=full` runs all of them); the landing gate runs the
-complete matrix. The coordinator owns the serialized full gate. CI (`.github/workflows/ci.yml`) runs
-build/nextest, canonical-conformance sweep, heap-check fuzz, and fmt.
+complete matrix. The coordinator owns the serialized full gate. CI
+(`.github/workflows/ci.yml`) runs build/nextest and fmt.
 
 ## Why the optimization zoo stays (RFC-0016 / RFC-0051)
 

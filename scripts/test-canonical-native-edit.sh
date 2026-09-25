@@ -144,8 +144,8 @@ for command, row in zip(commands, rows[:3]):
 PY
 rm -f "$receipt"
 # An explicit partial selection cannot mint a whole-diff receipt. Keep this on
-# an actual native boundary: canonical-interpreter core edits now deliberately
-# use the pure WIR route and do not invoke this helper.
+# an actual native boundary: pure WIR edits deliberately use the cheaper route
+# and do not invoke this helper.
 run_agent crates/witchy-wir/src/canonical_safewir/build_read.rs
 [ ! -e "$receipt" ]
 # Dirty input never certifies the committed tip.
@@ -166,8 +166,8 @@ for failure in metadata build empty malformed missing-unit missing-rfc0165_route
 done
 
 # Recipe additions remain selected; standalone runtime-native is NOT absorbed
-# into root's fixture-enabled union. Crypto retains the same rule.
-for path in crates/witchy-wir/src/canonical_safewir/build_read.rs crates/witchy-wir/src/canonical_interpreter/crypto_rsa_tests.rs; do
+# into root's fixture-enabled union.
+for path in crates/witchy-wir/src/canonical_safewir/build_read.rs; do
     run_agent "$path"
     python3 - "$MOCK_LOG" <<'PY'
 import json, pathlib, sys

@@ -455,7 +455,6 @@ for p in "${paths[@]}"; do
         crates/witchy-canonical-source/src/* | \
         crates/witchy-wir/src/canonical*)
             canonical_rewrite=1 ;;
-        tests/misc/rfc0165_oracle.rs | \
         tests/misc/rfc0165_build_env_project.rs | \
         tests/misc/rfc0165_build_read_project.rs) ;;
         tests/misc/rfc0165_*.rs)
@@ -476,7 +475,6 @@ for p in "${paths[@]}"; do
             canonical_build_recipe=1 ;;
         crates/witchy-types/src/pipeline/build_recipe.rs)
             canonical_build_recipe=1 ;;
-        crates/witchy-wir/src/canonical_interpreter/build_read.rs | \
         crates/witchy-wir/src/canonical_safewir/build_read.rs)
             canonical_build_recipe=1
             canonical_rewrite=1 ;;
@@ -485,9 +483,7 @@ for p in "${paths[@]}"; do
         crates/witchy-lower/src/canonical_crypto.rs)
             canonical_crypto=1 ;;
         crates/witchy-runtime/src/runtime/host/crypto*.rs | \
-        crates/witchy-wir/src/canonical_interpreter/crypto*.rs | \
-        crates/witchy-wir/src/canonical_safewir/crypto.rs | \
-        tests/misc/rfc0165_crypto*.rs)
+        crates/witchy-wir/src/canonical_safewir/crypto.rs)
             canonical_crypto=1
             canonical_rewrite=1 ;;
     esac
@@ -527,8 +523,7 @@ for p in "${paths[@]}"; do
         crates/witchy-runtime/src/runtime/console_fixtures.rs | \
         crates/witchy-test-host/src/lib.rs | \
         crates/witchy-types/src/pipeline/test_driver/console_fixture.rs | \
-        crates/witchy-types/src/pipeline/test_driver/console_fixture/arguments.rs | \
-        src/commands/test_runner/canonical_console_fixture.rs)
+        crates/witchy-types/src/pipeline/test_driver/console_fixture/arguments.rs)
             canonical_fixture_rewrite=1 ;;
     esac
     case "$p" in
@@ -537,8 +532,7 @@ for p in "${paths[@]}"; do
         crates/witchy-test-host/src/lib.rs | \
         crates/witchy-types/src/pipeline/test_driver/console_fixture.rs | \
         crates/witchy-types/src/pipeline/test_driver/console_fixture/arguments.rs | \
-        scripts/rfc0165-deferred-tests.txt | \
-        src/commands/test_runner/canonical_console_fixture.rs) ;;
+        scripts/rfc0165-deferred-tests.txt) ;;
         *) canonical_fixture_rewrite_paths_only=0 ;;
     esac
     case "$p" in
@@ -559,18 +553,6 @@ for p in "${paths[@]}"; do
         src/commands/project_resolver_tests.rs | \
         src/source.rs | src/source/package_inputs.rs)
             add_early "cargo nextest run --test cli_subcommands -E 'test(=compile_accepts_complete_authenticated_package_owners)'" ;;
-        src/source/build_recipe_tests.rs)
-            add_early "./scripts/nextest-admitted.sh witchy -- cargo nextest run --bin witchy -E 'test(/^source::build_recipe_tests::/)'"
-            path_has_early=1 ;;
-        src/source/build_net_recipe_tests.rs)
-            add_early "./scripts/nextest-admitted.sh witchy -- cargo nextest run --bin witchy -E 'test(/^source::build_recipe_tests::build_net_recipe_tests::/)'"
-            path_has_early=1 ;;
-        src/source/build_env_recipe_tests.rs)
-            add_early "./scripts/nextest-admitted.sh witchy -- cargo nextest run --bin witchy -E 'test(/^source::build_recipe_tests::build_env_recipe_tests::/)'"
-            path_has_early=1 ;;
-        src/source/build_exec_recipe_tests.rs)
-            add_early "./scripts/nextest-admitted.sh witchy -- cargo nextest run --bin witchy -E 'test(/^source::build_recipe_tests::build_exec_recipe_tests::/)'"
-            path_has_early=1 ;;
         crates/witchy-runtime/src/runtime/host/build_read.rs | \
         crates/witchy-runtime/src/runtime/host/build_read_tests.rs)
             add_early "cargo nextest run -p witchy-runtime --features native --lib -E 'test(/^runtime::host::build_read_tests::/) or test(=runtime::host::closure_owner::tests::build_read_captures_authenticate_kind_session_projection_and_cleanup)'"
@@ -590,18 +572,12 @@ for p in "${paths[@]}"; do
         tests/misc/rfc0165_build_env_project.rs)
             add_early "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test misc -E 'test(/^rfc0165_build_env_project::/)'"
             path_has_early=1 ;;
-        crates/witchy-types/src/pipeline/test_driver/integration.rs | \
-        src/commands/test_runner/canonical_integration.rs)
-            add_early "cargo nextest run -p witchy --features witchy-wir/native --bin witchy --test misc -E 'test(=wasm_abi_catalog::native_host_links_every_catalog_import_with_the_declared_signature) or test(=rfc0077_integration_grants::source_integration_recipe_runs_selected_console_capture_and_reports_abort) or test(/^commands::test_runner::canonical_integration_tests::/)'"
+        crates/witchy-types/src/pipeline/test_driver/integration.rs)
+            add_early "cargo nextest run -p witchy --features witchy-wir/native --test misc -E 'test(=wasm_abi_catalog::native_host_links_every_catalog_import_with_the_declared_signature) or test(=rfc0077_integration_grants::source_integration_recipe_runs_selected_console_capture_and_reports_abort)'"
             path_has_early=1 ;;
         crates/witchy-types/src/pipeline/test_driver.rs | \
-        crates/witchy-types/src/pipeline/test_driver/*.rs | \
-        src/commands/test_runner/canonical_bare.rs | \
-        src/commands/test_runner/canonical_console_fixture.rs)
+        crates/witchy-types/src/pipeline/test_driver/*.rs)
             add_early "cargo nextest run --test misc -E 'test(=wasm_abi_catalog::native_host_links_every_catalog_import_with_the_declared_signature)'"
-            path_has_early=1 ;;
-        tests/misc/rfc0165_oracle.rs)
-            add_early "WITCHY_ORACLE_EXAMPLE=calc cargo nextest run -p witchy --features witchy-wir/native --test misc --ignore-default-filter -E 'test(=rfc0165_oracle::oracle_agrees_on_the_admitted_examples_shard_3)'"
             path_has_early=1 ;;
         tests/misc/rfc0165_owner_adapters.rs)
             # This admission-boundary assertion previously failed only after
@@ -648,7 +624,7 @@ for p in "${paths[@]}"; do
             add_early "cargo nextest run -p witchy-lower --test codegen -E 'test(=tests::grantful_build_primitives_compile_to_build_imports_only)'"
             path_has_early=1 ;;
         tests/misc/rfc0165_admitted_launch.rs)
-            add_early "cargo nextest run -p witchy --features witchy-wir/native --test misc --ignore-default-filter -E 'test(rfc0165_admitted_launch::admitted_aggregates_render_structurally_as_the_interpreter_prints_them)'"
+            add_early "cargo nextest run -p witchy --features witchy-wir/native --test misc --ignore-default-filter -E 'test(rfc0165_admitted_launch::admitted_aggregates_render_structurally_as_expected)'"
             path_has_early=1 ;;
     esac
     case "$p" in
@@ -694,11 +670,7 @@ for p in "${paths[@]}"; do
             add "./scripts/nextest-admitted.sh witchy-lower -- cargo nextest run -p witchy-lower"
             ;;
         crates/witchy-wir/src/canonical_safewir/build_read.rs | \
-        crates/witchy-wir/src/canonical_safewir/crypto.rs | \
-        crates/witchy-wir/src/canonical_interpreter/build_read.rs | \
-        crates/witchy-wir/src/canonical_interpreter/crypto*.rs | \
-        crates/witchy-wir/src/canonical_interpreter/registry_host.rs | \
-        crates/witchy-wir/src/canonical_interpreter/registry_host_tests.rs)
+        crates/witchy-wir/src/canonical_safewir/crypto.rs)
             any_rust=1
             gate_native_wir=1
             gate_need_conformance=1
@@ -729,18 +701,6 @@ for p in "${paths[@]}"; do
             add_pkg witchy-lower
             add "cargo nextest run -p witchy-wir --test unit --test structural_contracts --test rfc0162_mutation_evidence --test rfc0165_route_gate --no-default-features"
             add "./scripts/nextest-admitted.sh witchy-lower -- cargo nextest run -p witchy-lower"
-            ;;
-        crates/witchy-wir/src/canonical_interpreter.rs | \
-        crates/witchy-wir/src/canonical_interpreter/*)
-            any_rust=1
-            gate_pure_wir=1
-            add_pkg witchy-wir
-            # The executable reference model has target-neutral semantics and
-            # pure-Rust implementations for its ordinary edit surface. Its
-            # unit and structural checks therefore need neither Wasmtime nor
-            # AWS-LC. Native crypto, registry, and build-recipe files are
-            # matched above and retain their cross-pipeline evidence.
-            add "cargo nextest run -p witchy-wir --test unit --test structural_contracts --test rfc0162_mutation_evidence --test rfc0165_route_gate --no-default-features"
             ;;
         crates/witchy-wir/*)
             any_rust=1
@@ -799,7 +759,7 @@ for p in "${paths[@]}"; do
         src/main.rs | src/cli.rs | src/source.rs)
             gate_workspace=1
             add "cargo check -p witchy --all-targets"
-            add "./scripts/nextest-admitted.sh witchy -- cargo nextest run --bin witchy -E 'test(/^(checked_cli_pipeline_tests|cli::|runtime_parity_tests|source::tests|test_mode_link_tests)::/)'"
+            add "./scripts/nextest-admitted.sh witchy -- cargo nextest run --bin witchy -E 'test(/^(checked_cli_pipeline_tests|cli::|source::tests|test_mode_link_tests)::/)'"
             add "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test cli_subcommands"
             add "cargo nextest run -p witchy-syntax" ;;
         src/example_tests.rs)
@@ -894,17 +854,9 @@ for p in "${paths[@]}"; do
             any_rust=1
             add_early "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test misc -E 'test(/^url_components::/)'"
             path_has_early=1 ;;
-        tests/misc/canonical_net_fixture.rs)
-            any_rust=1
-            add_early "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test misc -E 'test(/^canonical_net_fixture::/)'"
-            path_has_early=1 ;;
         tests/misc/http_url_fallible.rs)
             any_rust=1
             add_early "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test misc -E 'test(/^http_url_fallible::/)'"
-            path_has_early=1 ;;
-        tests/misc/rfc0087_uniform_var.rs)
-            any_rust=1
-            add_early "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test misc -E 'test(/^rfc0087_uniform_var::/)'"
             path_has_early=1 ;;
         tests/misc/rfc0087_migration_census.rs)
             any_rust=1
@@ -926,10 +878,6 @@ for p in "${paths[@]}"; do
         tests/misc/rfc0152_semantic_matrix.rs)
             any_rust=1
             add_early "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test misc -E 'test(/^rfc0152_semantic_matrix::/)'"
-            path_has_early=1 ;;
-        tests/misc/rfc0167_mode_interop.rs)
-            any_rust=1
-            add_early "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test misc -E 'test(=rfc0167_mode_interop::reference_free_normal_opt_chain_preserves_modes_and_aliased_snapshot_without_opts)'"
             path_has_early=1 ;;
         tests/misc.rs | tests/misc/*)
             any_rust=1
@@ -1167,42 +1115,28 @@ fi
 # such as Witchy source formatting.
 if [ "$edit_loop" -eq 1 ] && [ "${#paths[@]}" -eq 1 ]; then
     case "${paths[0]}" in
-        tests/misc/rfc0165_fetch.rs)
-            # A direct edit to the Fetch fixture can run its complete three-test
-            # module. Mixed compiler/RFC edits keep the broader checkpoint below.
-            cmds=("./scripts/nextest-admitted.sh witchy -- cargo nextest run --test misc -E 'test(/^rfc0165_fetch::/)'" ) ;;
-        tests/misc/rfc0165_messages.rs)
-            cmds=("./scripts/nextest-admitted.sh witchy -- cargo nextest run --test misc -E 'test(/^rfc0165_messages::/)'" ) ;;
-        tests/misc/rfc0165_corpus.rs)
-            cmds=("./scripts/nextest-admitted.sh witchy -- cargo nextest run --test misc -E 'test(/^rfc0165_corpus::/)'" ) ;;
         tests/misc/rfc0165_project_run.rs)
             cmds=("./scripts/nextest-admitted.sh witchy -- cargo nextest run --test misc -E 'test(/^rfc0165_project_run::/)'" ) ;;
         tests/misc/rfc0165_owner_adapters.rs)
             cmds=("cargo nextest run -p witchy --features witchy-wir/native --test misc --ignore-default-filter -E 'test(=rfc0165_owner_adapters::server_workers_reject_raw_wasm_even_with_genuine_entry_metadata)'") ;;
-        tests/misc/rfc0167_mode_interop.rs)
-            cmds=("./scripts/nextest-admitted.sh witchy -- cargo nextest run --test misc -E 'test(=rfc0167_mode_interop::reference_free_normal_opt_chain_preserves_modes_and_aliased_snapshot_without_opts)'") ;;
         *) ;;
     esac
 fi
 if [ "$edit_loop" -eq 1 ] && [ "${#cmds[@]}" -gt 0 ] \
     && [ "${#paths[@]}" -eq 1 ] \
-    && { [ "${paths[0]}" = "tests/misc/rfc0165_fetch.rs" ] \
-        || [ "${paths[0]}" = "tests/misc/rfc0165_messages.rs" ] \
-        || [ "${paths[0]}" = "tests/misc/rfc0165_corpus.rs" ] \
-        || [ "${paths[0]}" = "tests/misc/rfc0165_project_run.rs" ] \
+    && { [ "${paths[0]}" = "tests/misc/rfc0165_project_run.rs" ] \
         || [ "${paths[0]}" = "tests/misc/rfc0165_owner_adapters.rs" ]; }; then
     : # Keep the exact direct-file module route selected above.
 elif [ "$edit_loop" -eq 1 ] && [ "$canonical_fixture_rewrite" -eq 1 ] \
     && [ "$canonical_fixture_rewrite_paths_only" -eq 1 ]; then
-    # Console-fixture plumbing spans the checked driver, interpreter, host,
-    # native runtime, and CLI. Combining those paths used to select seven
+    # Console-fixture plumbing spans the checked driver, interpreter, host, and
+    # native runtime. Combining those paths used to select seven
     # commands, including every example, every command test, and the Wasm
     # shard. Keep the edit loop on the three contracts the slice changes; the
-    # complete crate, example, command, and Wasm coverage remains in landing.
+    # complete crate, example, and Wasm coverage remains in landing.
     cmds=(
         "cargo nextest run --test misc -E 'test(=wasm_abi_catalog::native_host_links_every_catalog_import_with_the_declared_signature)'"
         "cargo nextest run -p witchy-test-host -p witchy-runtime -E 'test(/^(tests::|runtime::console_fixtures::tests::)/)'"
-        "./scripts/nextest-admitted.sh witchy -- cargo nextest run --bin witchy -E 'test(/^commands::test_runner::canonical_console_fixture_tests::/)'"
     )
 elif [ "$edit_loop" -eq 1 ] && [ "$canonical_rewrite" -eq 1 ] \
     && [ "$canonical_rewrite_paths_only" -eq 1 ] \
@@ -1223,9 +1157,9 @@ elif [ "$edit_loop" -eq 1 ] && [ "$canonical_rewrite" -eq 1 ] \
     canonical_crypto_wir_expr=""
     canonical_crypto_app_expr=""
     if [ "$canonical_build_recipe" -eq 1 ]; then
-        canonical_build_recipe_wir_expr=" or test(canonical_safewir::build_read::tests::build_env_catalog_authenticates_root_and_keeps_presence_internal) or test(canonical_interpreter::build_read::tests::build_env_oracle_keeps_denied_unset_empty_and_private_sessions_distinct)"
+        canonical_build_recipe_wir_expr=" or test(canonical_safewir::build_read::tests::build_env_catalog_authenticates_root_and_keeps_presence_internal)"
         canonical_build_recipe_lower_expr=" or test(=tests::grantful_build_primitives_compile_to_build_imports_only)"
-        canonical_build_recipe_app_expr=" or test(/^source::build_recipe_tests::/) or test(/^source::build_env_recipe_tests::/) or test(/^rfc0103_build_step_confinement::/) or test(/^rfc0165_build_read_project::/) or test(/^rfc0165_build_env_project::/)"
+        canonical_build_recipe_app_expr=" or test(/^rfc0103_build_step_confinement::/) or test(/^rfc0165_build_read_project::/) or test(/^rfc0165_build_env_project::/)"
     fi
     canonical_wasmir_tail_expr=""
     if [ "$canonical_wasmir_tail" -eq 1 ]; then
@@ -1236,13 +1170,9 @@ elif [ "$edit_loop" -eq 1 ] && [ "$canonical_rewrite" -eq 1 ] \
         # probes. This changes frequency, never coverage at landing.
         canonical_wasmir_tail_expr=" or test(=canonical_wasmir::tests::packed_scalar_collection_oob_guard_traps_in_wasmtime) or test(=canonical_wasmir::tests::share_at_max_refcount_traps_before_destination_or_refcount_write)"
     fi
-    if [ "$canonical_crypto" -eq 1 ]; then
-        canonical_crypto_wir_expr=" or test(canonical_interpreter::crypto_rsa_tests::)"
-        canonical_crypto_app_expr=" or test(/^rfc0165_crypto(_rsa)?::/)"
-    fi
-    canonical_native_wir_expr="test(canonical_safewir::build_read::tests::build_read_catalog_separates_root_authority_from_bounded_responses) or test(canonical_safewir::check::tests::scalar_checker_refuses_non_total_backend_combinations) or test(constant_prefix_publication_rejects_gaps_and_missing_children) or test(scalar_move_range_is_bounds_checked_and_admitted) or test(scalar_clone_range_is_ownership_safe_and_admitted) or test(dynamic_pointer_prefix_cannot_hide_an_unaccounted_child_slot) or test(canonical_capabilities_lower_only_to_externref) or test(canonical_interpreter::capability_tests::a_token_of_another_kind_cannot_serve_a_dir_operation) or test(=validated_safewir_has_one_checker_owned_construction_surface) or test(canonical_wasm_encoding_is_private_and_requires_final_authority)${canonical_wasmir_tail_expr}${canonical_build_recipe_wir_expr}${canonical_crypto_wir_expr}"
+    canonical_native_wir_expr="test(canonical_safewir::build_read::tests::build_read_catalog_separates_root_authority_from_bounded_responses) or test(canonical_safewir::check::tests::scalar_checker_refuses_non_total_backend_combinations) or test(constant_prefix_publication_rejects_gaps_and_missing_children) or test(scalar_move_range_is_bounds_checked_and_admitted) or test(scalar_clone_range_is_ownership_safe_and_admitted) or test(dynamic_pointer_prefix_cannot_hide_an_unaccounted_child_slot) or test(canonical_capabilities_lower_only_to_externref) or test(=validated_safewir_has_one_checker_owned_construction_surface) or test(canonical_wasm_encoding_is_private_and_requires_final_authority)${canonical_wasmir_tail_expr}${canonical_build_recipe_wir_expr}"
     canonical_native_lower_expr="test(canonical_pipeline::list_string_)${canonical_build_recipe_lower_expr}"
-    canonical_native_app_expr="test(wasm_abi_catalog::native_host_links_every_catalog_import_with_the_declared_signature) or test(wasm_abi_catalog::public_spec_contains_the_generated_complete_catalog) or test(wasm_abi_catalog::capability_imports_name_their_authority_family) or test(wasm_abi_catalog::precompiled_runner_authority_rows_are_cataloged) or test(rfc0077_integration_grants::source_integration_recipe_runs_selected_console_capture_and_reports_abort) or test(rfc0087_uniform_var::list_pop_projected_coordinates_and_nested_payloads_on_three_legs) or test(rfc0165_admitted_launch::admitted_entry_without_a_console_grant_is_refused_before_it_runs) or test(rfc0165_admitted_launch::admitted_guard_near_misses_trap_exactly_at_the_boundary) or test(rfc0165_admitted_launch::admitted_aggregates_render_structurally_as_the_interpreter_prints_them) or test(rfc0165_owner_adapters::server_pool_oracle::/) or test(=rfc0165_owner_adapters::server_workers_reject_raw_wasm_even_with_genuine_entry_metadata) or test(=semantic_conformance::independent_expectation_rejects_a_shared_semantic_mutation) or test(/^commands::test_runner::canonical_integration_tests::/) or test(/^rfc0165_enum_equality::/) or test(=rfc0165_oracle::admitted_observer_is_not_called_on_refusal) or test(=rfc0165_oracle::oracle_agrees_on_the_admitted_examples_shard_3) or test(/^example_tests::rfc0/)${canonical_build_recipe_app_expr}${canonical_crypto_app_expr}"
+    canonical_native_app_expr="test(wasm_abi_catalog::native_host_links_every_catalog_import_with_the_declared_signature) or test(wasm_abi_catalog::public_spec_contains_the_generated_complete_catalog) or test(wasm_abi_catalog::capability_imports_name_their_authority_family) or test(wasm_abi_catalog::precompiled_runner_authority_rows_are_cataloged) or test(rfc0077_integration_grants::source_integration_recipe_runs_selected_console_capture_and_reports_abort) or test(rfc0165_admitted_launch::admitted_entry_without_a_console_grant_is_refused_before_it_runs) or test(rfc0165_admitted_launch::admitted_guard_near_misses_trap_exactly_at_the_boundary) or test(rfc0165_admitted_launch::admitted_aggregates_render_structurally_as_expected) or test(=rfc0165_owner_adapters::server_workers_reject_raw_wasm_even_with_genuine_entry_metadata) or test(=semantic_conformance::independent_expectation_rejects_a_shared_semantic_mutation) or test(/^example_tests::rfc0/)${canonical_build_recipe_app_expr}"
     canonical_native_batch=("$canonical_native_wir_expr" "$canonical_native_lower_expr" "$canonical_native_app_expr" "$canonical_build_recipe")
     cmds=(
         "cargo nextest run -p witchy-wir --features native --test unit --test rfc0165_route_gate -E '${canonical_native_wir_expr}'"

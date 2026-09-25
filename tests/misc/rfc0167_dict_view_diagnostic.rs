@@ -1,8 +1,6 @@
 //! RFC-0167 row G: dictionary values need an admitted collection carrier.
-//! `Dict(String, &String)` must fail at canonical admission with a named
+//! `Dict(String, &String)` must fail during canonical ABI checking with a named
 //! reason until dictionary operations authenticate retained String view roots.
-
-use witchy::codegen;
 
 #[test]
 fn string_view_dictionary_has_a_named_canonical_refusal() {
@@ -13,11 +11,10 @@ fn main() -> Int:
     let _ = d.insert("key", &value)
     d.length()
 "#;
-    let checked = witchy::resolve_std_only_checked(source)
-        .expect("view dictionary reaches canonical carrier admission");
-    let refusal = codegen::compile_checked_module_artifact(&checked)
-        .expect_unsupported("a dictionary of String views has no collection carrier");
-    assert!(refusal.to_string().contains("Dict value `&String` has no admitted collection carrier"),
-        "refusal names the missing carrier: {refusal}");
+    let refusal = witchy::resolve_std_only_checked(source)
+        .expect_err("a dictionary of String views has no canonical ABI key");
+    assert_eq!(
+        refusal.to_string(),
+        "type error: canonical callable ABI is invalid: nested qualified rooted-view ABI has no structural key"
+    );
 }
-

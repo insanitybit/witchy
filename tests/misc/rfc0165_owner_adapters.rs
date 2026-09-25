@@ -23,6 +23,3 @@ fn main(net: Net):
 
 #[path = "rfc0165_vm_service.rs"]
 mod vm_service;
-
-#[path = "rfc0165_server_pool_oracle.rs"]
-mod server_pool_oracle;

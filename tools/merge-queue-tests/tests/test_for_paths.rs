@@ -150,9 +150,9 @@ fn gate_nextest(paths: &[&str]) -> String {
 
 #[test]
 fn gate_nextest_example_tests_only_is_not_workspace() {
-    let output = gate_nextest(&["src/example_tests/rfc0167_views.rs"]);
+    let output = gate_nextest(&["src/example_tests/equality.rs"]);
     assert!(
-        output.contains("example_tests::rfc0167_views"),
+        output.contains("example_tests::equality"),
         "example_tests-only mapping did not partition to the touched module: {output}",
     );
     assert!(
@@ -334,7 +334,7 @@ fn focused_main_routes_build_only_the_bin_target() {
 fn gate_nextest_crate_plus_example_tests_unions_without_workspace() {
     let output = gate_nextest(&[
         "crates/witchy-interp/src/lib.rs",
-        "src/example_tests/rfc0167_views.rs",
+        "src/example_tests/equality.rs",
     ]);
     let lines: Vec<_> = output.lines().collect();
     assert!(
@@ -342,7 +342,7 @@ fn gate_nextest_crate_plus_example_tests_unions_without_workspace() {
         "crate+example_tests mapping dropped the crate: {output}",
     );
     assert!(
-        output.contains("example_tests::rfc0167_views"),
+        output.contains("example_tests::equality"),
         "crate+example_tests mapping did not partition to the touched module: {output}",
     );
     assert!(
@@ -611,9 +611,8 @@ fn gate_nextest_examples_are_not_the_full_matrix() {
 
 #[test]
 fn rust_integration_tests_use_fast_without_redundant_binary_run() {
-    let output = route(&["tests/differential_fuzz.rs"]);
+    let output = route(&["tests/cli_subcommands.rs"]);
     assert!(output.contains("./scripts/check.sh --fast"));
-    assert!(!output.contains("cargo nextest run --test differential_fuzz"));
     assert!(!output.contains("prose-only"));
 }
 
@@ -626,7 +625,7 @@ fn new_root_integration_driver_checks_the_binary_budget_first() {
     );
     assert!(commands.contains(&"./scripts/check.sh --fast".to_owned()), "{commands:?}");
 
-    let existing = selected(&["tests/differential_fuzz.rs"]);
+    let existing = selected(&["tests/cli_subcommands.rs"]);
     assert!(
         !existing.iter().any(|command| command.contains("root_integration_test_binaries_stay_within_budget")),
         "an existing driver edit cannot increase the binary count: {existing:?}"
@@ -686,54 +685,6 @@ fn packaged_source_surfaces_run_the_unsafe_input_probe_first() {
 }
 
 #[test]
-fn canonical_rewrite_edit_loop_stays_bounded_across_stage_files() {
-    let commands = selected(&[
-        "--edit-loop",
-        "crates/witchy-types/src/typeck.rs",
-        "crates/witchy-lower/src/canonical_pipeline.rs",
-        "crates/witchy-wir/src/canonical_safewir.rs",
-        "crates/witchy-runtime/src/runtime/host/console.rs",
-        "src/commands/execution.rs",
-        "src/commands/embedded_pm.rs",
-        "tests/misc/rfc0165_oracle.rs",
-        "spec/wasm-abi.md",
-        "rfcs/0165-rule-manifest.md",
-        "security-eval/findings/canonical-pop.md",
-    ]);
-    assert_eq!(commands.len(), 3, "cross-stage edit loop was not bounded: {commands:?}");
-    assert!(
-        !commands.iter().any(|command| {
-            command.contains("test(/^example_tests::/)")
-                || command == "cargo nextest run --test misc"
-                || command.contains("check.sh --wasm")
-        }),
-        "checkpoint work leaked into the edit loop: {commands:?}",
-    );
-    assert!(
-        commands[0].contains("--test rfc0165_route_gate")
-            && commands[0].contains("--test unit")
-            && commands[0]
-                .contains("canonical_wasm_encoding_is_private_and_requires_final_authority"),
-        "the focused route omitted the final-authority admission boundary: {commands:?}",
-    );
-    assert!(
-        commands[2].contains("rfc0165_enum_equality::"),
-        "the focused route omitted the enum equality semantic regression: {commands:?}",
-    );
-    assert!(
-        !commands[0].contains("outlined_address_predicate_mutation_fails_independent_admission"),
-        "the expensive WasmIR tail probe leaked into unrelated canonical edits: {commands:?}",
-    );
-    assert!(
-        commands[2].starts_with("WITCHY_ORACLE_EXAMPLE=calc ")
-            && commands[2].contains(
-                "test(=rfc0165_oracle::oracle_agrees_on_the_admitted_examples_shard_3)",
-            ),
-        "the focused route omitted the filtered production oracle: {commands:?}",
-    );
-}
-
-#[test]
 fn canonical_wasmir_landing_keeps_the_deferred_mutation_tests() {
     let output = gate_nextest(&["crates/witchy-wir/src/canonical_wasmir.rs"]);
     assert!(
@@ -760,7 +711,7 @@ fn canonical_wasmir_landing_keeps_the_deferred_mutation_tests() {
 }
 
 #[test]
-fn canonical_console_fixture_edit_loop_stays_on_its_three_contracts() {
+fn canonical_console_fixture_edit_loop_stays_on_its_two_contracts() {
     let commands = selected(&[
         "--edit-loop",
         "crates/witchy-interp/src/interpreter/runners.rs",
@@ -769,9 +720,8 @@ fn canonical_console_fixture_edit_loop_stays_on_its_three_contracts() {
         "crates/witchy-types/src/pipeline/test_driver/console_fixture.rs",
         "crates/witchy-types/src/pipeline/test_driver/console_fixture/arguments.rs",
         "scripts/rfc0165-deferred-tests.txt",
-        "src/commands/test_runner/canonical_console_fixture.rs",
     ]);
-    assert_eq!(commands.len(), 3, "fixture edit loop was not bounded: {commands:?}");
+    assert_eq!(commands.len(), 2, "fixture edit loop was not bounded: {commands:?}");
     assert!(
         commands[0].contains("native_host_links_every_catalog_import_with_the_declared_signature"),
         "fixture edit loop omitted the ABI linkage contract: {commands:?}",
@@ -780,12 +730,6 @@ fn canonical_console_fixture_edit_loop_stays_on_its_three_contracts() {
         commands[1].contains("-p witchy-test-host -p witchy-runtime")
             && commands[1].contains("runtime::console_fixtures::tests::"),
         "fixture edit loop omitted host/runtime ownership and bounds contracts: {commands:?}",
-    );
-    assert!(
-        commands[2].starts_with("./scripts/nextest-admitted.sh witchy -- ")
-            && commands[2].contains("--bin witchy")
-            && commands[2].contains("canonical_console_fixture_tests::"),
-        "fixture edit loop omitted admitted source/native semantics: {commands:?}",
     );
     assert!(
         !commands.iter().any(|command| {
@@ -809,7 +753,6 @@ fn broad_rfc0165_edit_checks_share_the_landing_admission_policy() {
         "crates/witchy-runtime/src/runtime/host/crypto.rs",
         "crates/witchy-wir/src/canonical_safewir/crypto.rs",
         "src/commands/compile.rs",
-        "tests/misc/rfc0165_crypto.rs",
         "projects/grimoire/src/grimoire.witchy",
         "Cargo.lock",
     ]);
@@ -826,75 +769,6 @@ fn broad_rfc0165_edit_checks_share_the_landing_admission_policy() {
         }
     }
 
-    // Named authority/ABI/oracle probes must remain mandatory even when their
-    // package also has deferred legacy families.
-    let security = selected(&[
-        "--edit-loop",
-        "crates/witchy-wir/src/wir_prelude.rs",
-        "tests/misc/rfc0165_oracle.rs",
-    ]);
-    assert!(
-        security
-            .iter()
-            .all(|command| !command.starts_with("./scripts/nextest-admitted.sh ")),
-        "exact security probes were filtered: {security:?}"
-    );
-    assert!(
-        security
-            .iter()
-            .any(|command| command.contains("--ignore-default-filter")),
-        "oracle probe lost its mandatory override: {security:?}"
-    );
-}
-
-#[test]
-fn canonical_crypto_edit_loop_keeps_rsa_contracts() {
-    let commands = selected(&[
-        "--edit-loop",
-        "crates/witchy-lower/src/canonical_crypto.rs",
-        "crates/witchy-runtime/src/runtime/host/crypto_rsa_slices_tests.rs",
-        "crates/witchy-wir/src/canonical_interpreter/crypto_rsa_tests.rs",
-        "tests/misc/rfc0165_crypto_rsa.rs",
-        "spec/wasm-abi.md",
-    ]);
-    assert_eq!(commands.len(), 4, "RSA edit route changed shape: {commands:?}");
-    assert!(
-        commands[0].contains("canonical_interpreter::crypto_rsa_tests::"),
-        "RSA interpreter coverage was omitted: {commands:?}",
-    );
-    assert!(
-        commands[2].contains("rfc0165_crypto(_rsa)?::"),
-        "RSA admitted misc coverage was omitted: {commands:?}",
-    );
-    assert!(
-        commands[3].contains("runtime::host::crypto_rsa_slices_tests::"),
-        "RSA host-slice coverage was omitted: {commands:?}",
-    );
-}
-
-#[test]
-fn oracle_harness_edit_runs_only_the_filtered_production_oracle() {
-    let commands = selected(&["--edit-loop", "tests/misc/rfc0165_oracle.rs"]);
-    assert_eq!(commands.len(), 1, "{commands:?}");
-    assert!(commands[0].starts_with("WITCHY_ORACLE_EXAMPLE=calc "), "{commands:?}");
-    assert!(
-        commands[0]
-            .contains("test(=rfc0165_oracle::oracle_agrees_on_the_admitted_examples_shard_3)"),
-        "{commands:?}",
-    );
-}
-
-#[test]
-fn server_pool_oracle_edit_keeps_its_authority_and_execution_probes() {
-    let commands = selected(&[
-        "--edit-loop",
-        "tests/misc/rfc0165_server_pool_oracle.rs",
-    ]);
-    assert_eq!(commands.len(), 3, "{commands:?}");
-    assert!(
-        commands[2].contains("test(rfc0165_owner_adapters::server_pool_oracle::/)"),
-        "{commands:?}",
-    );
 }
 
 #[test]
@@ -914,13 +788,10 @@ fn owner_adapter_edit_replays_the_raw_wasm_admission_probe_early() {
 
 #[test]
 fn integration_driver_edits_use_the_bounded_semantic_contracts() {
-    for path in [
-        "crates/witchy-types/src/pipeline/test_driver/integration.rs",
-        "src/commands/test_runner/canonical_integration.rs",
-    ] {
+    for path in ["crates/witchy-types/src/pipeline/test_driver/integration.rs"] {
         let commands = selected(&["--edit-loop", path]);
         assert_eq!(commands.len(), 1, "{path}: {commands:?}");
-        assert!(commands[0].contains("--bin witchy --test misc"), "{path}: {commands:?}");
+        assert!(commands[0].contains("--test misc"), "{path}: {commands:?}");
         assert!(
             commands[0].contains(
                 "source_integration_recipe_runs_selected_console_capture_and_reports_abort",
@@ -928,42 +799,10 @@ fn integration_driver_edits_use_the_bounded_semantic_contracts() {
             "{path}: {commands:?}",
         );
         assert!(
-            commands[0].contains("commands::test_runner::canonical_integration_tests::"),
-            "{path}: {commands:?}",
-        );
-        assert!(
             commands[0].contains(
                 "wasm_abi_catalog::native_host_links_every_catalog_import_with_the_declared_signature",
             ),
             "{path}: {commands:?}",
-        );
-    }
-}
-
-#[test]
-fn build_recipe_test_edits_run_their_executable_module() {
-    for (path, module) in [
-        ("src/source/build_recipe_tests.rs", "build_recipe_tests"),
-        (
-            "src/source/build_net_recipe_tests.rs",
-            "build_recipe_tests::build_net_recipe_tests",
-        ),
-        (
-            "src/source/build_env_recipe_tests.rs",
-            "build_recipe_tests::build_env_recipe_tests",
-        ),
-        (
-            "src/source/build_exec_recipe_tests.rs",
-            "build_recipe_tests::build_exec_recipe_tests",
-        ),
-    ] {
-        let commands = selected(&["--edit-loop", path]);
-        assert_eq!(commands.len(), 1, "{path}: {commands:?}");
-        assert_eq!(
-            commands[0],
-            format!(
-                "./scripts/nextest-admitted.sh witchy -- cargo nextest run --bin witchy -E 'test(/^source::{module}::/)'"
-            ),
         );
     }
 }
@@ -1101,10 +940,7 @@ fn dispatch_edits_probe_fetch_origin_admission_before_commands_module() {
 
 #[test]
 fn network_misc_edits_run_only_their_modules() {
-    for (path, module) in [
-        ("tests/misc/canonical_net_fixture.rs", "canonical_net_fixture"),
-        ("tests/misc/http_url_fallible.rs", "http_url_fallible"),
-    ] {
+    for (path, module) in [("tests/misc/http_url_fallible.rs", "http_url_fallible")] {
         let commands = selected(&["--edit-loop", path]);
         assert_eq!(commands.len(), 1, "{path}: {commands:?}");
         assert!(
@@ -1117,22 +953,6 @@ fn network_misc_edits_run_only_their_modules() {
             "{path} expanded to every misc test: {commands:?}"
         );
     }
-}
-
-#[test]
-fn uniform_var_edits_run_the_complete_module_only() {
-    let commands = selected(&["--edit-loop", "tests/misc/rfc0087_uniform_var.rs"]);
-    assert_eq!(commands.len(), 1, "{commands:?}");
-    assert!(
-        commands[0].contains("test(/^rfc0087_uniform_var::/)")
-            && commands[0].contains("cargo nextest run --test misc"),
-        "{commands:?}"
-    );
-    assert_ne!(
-        commands[0],
-        "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test misc",
-        "uniform-var edit expanded to every misc test: {commands:?}"
-    );
 }
 
 #[test]
@@ -1233,43 +1053,8 @@ fn async_region_edits_run_complete_rfc0152_modules() {
 }
 
 #[test]
-fn mode_interop_edits_run_only_the_known_reference_free_probe() {
-    let commands = selected(&["--edit-loop", "tests/misc/rfc0167_mode_interop.rs"]);
-    assert_eq!(commands.len(), 1, "{commands:?}");
-    assert_eq!(
-        commands[0],
-        "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test misc -E 'test(=rfc0167_mode_interop::reference_free_normal_opt_chain_preserves_modes_and_aliased_snapshot_without_opts)'"
-    );
-    assert_ne!(
-        commands[0],
-        "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test misc",
-        "mode interop edit expanded to every misc test: {commands:?}"
-    );
-}
-
-#[test]
-fn direct_fetch_fixture_edits_run_the_complete_fetch_module() {
-    let commands = selected(&["--edit-loop", "tests/misc/rfc0165_fetch.rs"]);
-    assert_eq!(commands.len(), 1, "{commands:?}");
-    assert!(
-        commands[0].contains("test(/^rfc0165_fetch::/)")
-            && commands[0].contains("cargo nextest run --test misc"),
-        "{commands:?}"
-    );
-    assert!(
-        !commands[0].contains("rfc0165_route_gate")
-            && !commands[0].contains("test(=rfc0165_oracle::oracle_agrees_on_the_admitted_examples_shard_3)"),
-        "direct Fetch fixture edit retained the canonical checkpoint: {commands:?}"
-    );
-}
-
-#[test]
 fn direct_rfc0165_fixture_edits_run_complete_modules() {
-    for (path, module) in [
-        ("tests/misc/rfc0165_messages.rs", "rfc0165_messages"),
-        ("tests/misc/rfc0165_corpus.rs", "rfc0165_corpus"),
-        ("tests/misc/rfc0165_project_run.rs", "rfc0165_project_run"),
-    ] {
+    for (path, module) in [("tests/misc/rfc0165_project_run.rs", "rfc0165_project_run")] {
         let commands = selected(&["--edit-loop", path]);
         assert_eq!(commands.len(), 1, "{path}: {commands:?}");
         assert!(
@@ -1355,16 +1140,12 @@ fn canonical_build_recipe_edits_keep_cross_stage_contracts() {
         );
     }
 
-    for path in [
-        "crates/witchy-wir/src/canonical_interpreter/build_read.rs",
-        "crates/witchy-wir/src/canonical_safewir/build_read.rs",
-    ] {
+    for path in ["crates/witchy-wir/src/canonical_safewir/build_read.rs"] {
         let commands = selected(&["--edit-loop", path]);
         assert_eq!(commands.len(), 4, "{path}: {commands:?}");
         for contract in [
             "build_read_catalog_separates_root_authority_from_bounded_responses",
             "build_env_catalog_authenticates_root_and_keeps_presence_internal",
-            "build_env_oracle_keeps_denied_unset_empty_and_private_sessions_distinct",
         ] {
             assert!(commands[0].contains(contract), "{path}: {contract}: {commands:?}");
         }
@@ -1375,8 +1156,6 @@ fn canonical_build_recipe_edits_keep_cross_stage_contracts() {
             "{path}: {commands:?}",
         );
         for module in [
-            "source::build_recipe_tests::",
-            "source::build_env_recipe_tests::",
             "rfc0103_build_step_confinement::",
             "rfc0165_build_read_project::",
             "rfc0165_build_env_project::",
@@ -1431,7 +1210,7 @@ fn canonical_type_edit_uses_the_bounded_semantic_sentinels() {
 fn native_cli_entrypoints_use_the_bounded_compiler_shard() {
     let expected = [
         "cargo check -p witchy --all-targets",
-            "./scripts/nextest-admitted.sh witchy -- cargo nextest run --bin witchy -E 'test(/^(checked_cli_pipeline_tests|cli::|runtime_parity_tests|source::tests|test_mode_link_tests)::/)'",
+            "./scripts/nextest-admitted.sh witchy -- cargo nextest run --bin witchy -E 'test(/^(checked_cli_pipeline_tests|cli::|source::tests|test_mode_link_tests)::/)'",
             "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test cli_subcommands",
         "cargo nextest run -p witchy-syntax",
     ];
@@ -1602,8 +1381,6 @@ fn source_backed_test_driver_runs_the_native_host_catalog_probe_early() {
     for path in [
         "crates/witchy-types/src/pipeline/test_driver.rs",
         "crates/witchy-types/src/pipeline/test_driver/console_fixture.rs",
-        "src/commands/test_runner/canonical_bare.rs",
-        "src/commands/test_runner/canonical_console_fixture.rs",
     ] {
         let commands = selected(&[path]);
         assert_eq!(
@@ -2173,42 +1950,6 @@ fn safewir_changes_stay_on_the_pure_compiler_graph() {
         runtime_output.contains("package(witchy-runtime)"),
         "runtime edits no longer select runtime package tests: {runtime_output}",
     );
-}
-
-#[test]
-fn canonical_interpreter_core_changes_stay_off_the_native_graph() {
-    for changed in [
-        "crates/witchy-wir/src/canonical_interpreter.rs",
-        "crates/witchy-wir/src/canonical_interpreter/fetch.rs",
-    ] {
-        let output = gate_nextest(&[changed]);
-        let cargo_args = output.lines().next().unwrap_or_default();
-        assert!(
-            cargo_args.contains("-p witchy-wir")
-                && cargo_args.contains("--test unit")
-                && cargo_args.contains("--no-default-features"),
-            "{changed} did not select pure interpreter evidence: {output}",
-        );
-        assert!(
-            !output.contains("-p witchy ")
-                && !output.contains("witchy-runtime")
-                && !output.contains("witchy-wir/native"),
-            "{changed} crossed into Wasmtime/AWS-LC: {output}",
-        );
-    }
-
-    for changed in [
-        "crates/witchy-wir/src/canonical_interpreter/build_read.rs",
-        "crates/witchy-wir/src/canonical_interpreter/crypto.rs",
-        "crates/witchy-wir/src/canonical_interpreter/registry_host.rs",
-    ] {
-        let output = gate_nextest(&[changed]);
-        assert!(
-            output.contains("witchy-wir/native")
-                || output.contains("binary_id(/^witchy::rfc0/)"),
-            "{changed} lost native boundary evidence: {output}",
-        );
-    }
 }
 
 #[test]

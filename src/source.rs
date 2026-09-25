@@ -8,9 +8,6 @@ pub(crate) use package_inputs::{
 };
 use package_inputs::{AmbientFiles, SourceFiles};
 
-#[cfg(test)]
-#[path = "source/build_recipe_tests.rs"]
-mod build_recipe_tests;
 
 use witchy_syntax::{ast, format, parser};
 #[cfg(test)]

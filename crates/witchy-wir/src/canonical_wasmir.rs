@@ -4046,19 +4046,6 @@ pub mod self_checks {
     #[cfg(feature = "native")]
     pub fn pointer_clone_range_retains_executes_and_recursively_releases() {
         let (validated, expected_reclaimed) = checked_pointer_clone_range_execution();
-        let interpreted = crate::canonical_interpreter::interpret_program(
-            &validated,
-            FunctionId::new(166),
-            Vec::new(),
-            Default::default(),
-        )
-        .expect("pointer CloneRange executes in the independent interpreter");
-        assert_eq!(
-            interpreted.results,
-            vec![crate::canonical_interpreter::InterpreterValue::Size(1)]
-        );
-        assert_eq!(interpreted.leaked_objects, 0);
-
         let artifact = admit_canonical_for_test(validated)
             .expect("pointer CloneRange admits through exact-byte matching");
         wasmparser::validate(artifact.wasm()).expect("admitted pointer CloneRange is valid Wasm");

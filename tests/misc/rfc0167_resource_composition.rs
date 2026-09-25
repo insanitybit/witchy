@@ -2,7 +2,7 @@
 //! suspension retain one composition contract in normal and opt source.
 //!
 //! The executable evidence is the RFC-0167 triad: an independent expected
-//! result, the canonical SafeWIR interpreter, and admitted unoptimized Wasm.
+//! result, admitted unoptimized Wasm, and focused structural contracts.
 //! The source tree-walker interpreter is deliberately not an acceptance oracle.
 
 fn assert_rejected(label: &str, source: &str, needles: &[&str]) {

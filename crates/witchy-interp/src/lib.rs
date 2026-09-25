@@ -3,7 +3,7 @@
 //!
 //! RFC-0167 freezes `interpreter`: it is not a production runtime, semantic
 //! oracle, or destination for new language features. Executable acceptance is
-//! independent expectation -> canonical SafeWIR interpreter -> admitted Wasm.
+//! independent expectation -> admitted Wasm with focused structural contracts.
 //! `comptime` + `tagged` temporarily continue to evaluate `comptime:` blocks
 //! and `tag"…"` literals here, while `pipeline` still wires expansion into the
 //! linker. Those services must migrate to canonical execution or a

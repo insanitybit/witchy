@@ -13,7 +13,6 @@ use crate::{codegen, interpreter, parser};
         assert_eq!(link_run(src), expected, "interp");
         assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");
     }
-
     /// (RFC-0032) Cross-VM channels: `vm.serve(init, requests, handler)` runs a stateful
     /// service on a long-lived isolated worker VM — it threads `state` through the request
     /// stream (here a running byte concatenation) and emits each new state. Lock-step and
@@ -169,23 +168,4 @@ use crate::{codegen, interpreter, parser};
             "the raw wasmtime backtrace must not leak to the user, got: {err}"
         );
         let _ = std::fs::remove_dir_all(&root);
-    }
-
-    /// (RFC-0045) `witchy parity` on an aborting program passes only when both
-    /// backends produce the same complete location-prefixed diagnostic.
-    #[test]
-    fn parity_file_agrees_on_matching_aborts() {
-        let path = std::env::temp_dir().join(format!("witchy_verify_abort_{}.witchy", std::process::id()));
-        std::fs::write(
-            &path,
-            "import list\nfn main(console: Console):\n    let xs = [1, 2]\n    console.print(\"${list.at(xs, 9)}\")\n",
-        )
-        .unwrap();
-        let outcome = crate::parity_check(path.to_str().unwrap());
-        assert!(
-            matches!(outcome, crate::ParityOutcome::BothErrorAgree { .. }),
-            "both backends must abort with the same complete diagnostic: {}",
-            outcome.message()
-        );
-        let _ = std::fs::remove_file(&path);
     }

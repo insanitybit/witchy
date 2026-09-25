@@ -40,7 +40,6 @@ static GLOBAL_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 // RFC-0018: AST→WIR lowering (codegen) + its uniqueness analysis live in the
 // `witchy-lower` crate.
 pub use witchy_lower::codegen;
-pub mod compiler_oracle;
 // RFC-0018: the front-end + AST-level base layer lives in the `witchy-syntax`
 // crate; re-export so the rest of the compiler keeps using
 // `crate::{ast,parser,…}::…` paths unchanged.
@@ -60,8 +59,8 @@ pub mod trusted_publisher;
 // (wasm-safe); the wasmtime sandbox `runtime` is native-only.
 #[cfg(feature = "native")]
 pub use witchy_runtime::runtime;
-// RFC-0018: the reference interpreter (parity oracle) + compile-time evaluation
-// live in the `witchy-interp` crate.
+// RFC-0018: the frozen source evaluator used temporarily for compile-time
+// evaluation lives in the `witchy-interp` crate.
 pub use witchy_interp::{comptime, interpreter, pipeline};
 // RFC-0018: type checking + trait resolution live in the `witchy-types` crate.
 pub use witchy_types::typeck;

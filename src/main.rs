@@ -50,8 +50,6 @@ pub(crate) use commands::capabilities::{
 pub(crate) use commands::compile::{emit_wasm_file, emit_wat_file};
 use commands::execution::run_checked_compiled;
 #[cfg(test)]
-pub(crate) use commands::execution::{parity_check, ParityOutcome};
-#[cfg(test)]
 pub(crate) use commands::frontend::check_file;
 use runtime::Runtime;
 pub(crate) use source::{
@@ -73,70 +71,6 @@ fn main() -> wasmtime::Result<()> {
 /// (transitively), link, type-check, then run with root capabilities (Console
 /// and a Dir rooted at the file's directory). Returns the program's output or a
 /// diagnostic.
-/// Time the canonical SafeWIR interpreter against admitted Wasm on a few workloads.
-fn run_benchmarks() -> wasmtime::Result<()> {
-    use std::time::Instant;
-    use witchy_wir::canonical_interpreter::{interpret_program, InterpreterConfig};
-    use witchy_wir::canonical_safewir::FunctionId;
-
-    let fib = r#"
-fn fib(n: Int) -> Int:
-    if (n < 2):
-        n
-    else:
-        (fib((n - 1)) + fib((n - 2)))
-
-fn main() -> Int:
-    fib(30)
-"#;
-    // Keep the accumulator bounded so this measures loop execution rather than
-    // overflow handling.
-    let loop_sum = r#"
-fn main() -> Int:
-    var sum = 0
-    var i = 0
-    while (i < 1000000):
-        sum = ((sum + i) % 1000000)
-        i = (i + 1)
-    sum
-"#;
-
-    println!("== witchy benchmarks (avg ms/run) ==");
-    for (name, src, runs) in [("fib(30)", fib, 5u32), ("loop_sum(1e6)", loop_sum, 5u32)] {
-        let checked = witchy::resolve_std_only_checked(src).expect("resolve and check benchmark");
-        let artifact = codegen::compile_checked_module_artifact(&checked)
-            .expect_lowered("the canonical path lowers this benchmark");
-        let validated = codegen::validate_checked_module_for_oracle(&checked)
-            .expect("validate benchmark for the canonical interpreter");
-        let entry = artifact.entry().expect("benchmark entry");
-        let function = FunctionId::new(
-            entry.export().strip_prefix('f').expect("canonical entry export")
-                .parse().expect("canonical function id"),
-        );
-
-        let canonical_start = Instant::now();
-        for _ in 0..runs {
-            interpret_program(&validated, function, Vec::new(), InterpreterConfig::default())
-                .expect("canonical benchmark run");
-        }
-        let canonical_ms = canonical_start.elapsed().as_secs_f64() * 1000.0 / runs as f64;
-
-        let mut runtime = Runtime::new().expect("runtime");
-        let wasm_start = Instant::now();
-        for _ in 0..runs {
-            let mut vm = spawn_benchmark_iteration(&mut runtime, &artifact).expect("spawn");
-            vm.run().expect("run");
-        }
-        let wasm_ms = wasm_start.elapsed().as_secs_f64() * 1000.0 / runs as f64;
-        println!(
-            "{name:14}  canonical {canonical_ms:8.2} ms   wasm {wasm_ms:8.3} ms   ({:.0}x)",
-            canonical_ms / wasm_ms
-        );
-    }
-    Ok(())
-}
-
-
 /// Preserve the sealed entry and owner bridges for each fresh benchmark VM.
 fn spawn_benchmark_iteration(
     runtime: &mut Runtime,
@@ -235,9 +169,8 @@ pub(crate) fn execute_file_exit(
     }
 
     // One run path: the compiled (WASM) backend. `witchy run` and `witchy sandbox`
-    // share one runtime, so dev == deploy by construction. The interpreter is only
-    // the differential oracle (`witchy parity`) and the comptime evaluator — never
-    // a user-program run path.
+    // share one runtime, so dev == deploy by construction. The frozen source
+    // evaluator remains only for comptime compatibility.
     run_checked_compiled(
         &checked,
         Vec::new(),

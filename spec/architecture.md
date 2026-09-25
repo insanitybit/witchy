@@ -20,17 +20,16 @@ source ──lexer/parser──> per-module AST
                          checked lowering
                                 │
                       canonical SafeWIR
-                         ┌──────┴──────┐
-              canonical interpreter  admitted wasm-encoder
-                    (oracle)                 │
-                                      wasmtime execution
+                                │
+                       admitted wasm-encoder
+                                │
+                       wasmtime execution
 ```
 
 `witchy-types::pipeline::CheckedModule` is the production proof boundary. The
 checked-link service in `witchy-interp::pipeline` supplies the compile-time
 expander to `witchy-types::pipeline`, which owns the link/source-check/type-check
-sequence. Production lowering, compilation, and interpreter runners accept that
-proof rather than a bare AST. Raw-module sinks used by compiler rejection tests
+sequence. Production lowering and compilation accept that proof rather than a bare AST. Raw-module sinks used by compiler rejection tests
 are absent from normal builds and exist only behind explicit test features.
 
 `CheckedModule::module()` is a read-only compiler-stage view, not a capability
@@ -41,9 +40,7 @@ that a transformed AST remains checked.
 
 There is **one user-program run path: the compiled WASM backend.** `witchy
 <file>`, `witchy run`, and `witchy sandbox` all compile to a wasm binary and
-execute it under wasmtime, so dev == deploy by construction. Semantic evidence
-flows from an independent expected result to the canonical SafeWIR interpreter
-and then to admitted unoptimized Wasm. The source tree walker is frozen and is
+execute it under wasmtime, so dev == deploy by construction. Semantic evidence flows from an independent expected result to admitted unoptimized Wasm, with checker and backend structure inspected independently. The source tree walker is frozen and is
 not a language oracle. It remains only as a temporary implementation detail for
 `comptime:` and effectful build evaluation until those paths use canonical
 lowering too.
@@ -70,7 +67,7 @@ are tracked in the [architecture and redundancy ledger](architecture-ledger.md).
 |---|---|---|
 | `witchy-cap-model` | dependency-bottom capability catalog | Canonical capability names, classes, arities, rights, and host-operation vocabulary shared by compiler, analyzers, fixtures, and runtime without depending on syntax or policy. |
 | `witchy-testkit` | `basic`, `engine`, `filesystem`, `fetch`, `exec`, `secret`, `model`, `validate` | Backend-neutral deterministic fixture plans, provider state machines, expectations, and transcripts. It carries no compiler or runtime authority. |
-| `witchy-test-host` | opaque fixture-session dispatch | The shared fixture host used by interpreter, Wasmtime, and browser adapters; backend adapters consume it rather than reimplementing fixture semantics. |
+| `witchy-test-host` | opaque fixture-session dispatch | The shared fixture host used by Wasmtime and browser adapters; backend adapters consume it rather than reimplementing fixture semantics. |
 | `witchy-syntax` | `lexer`, `parser`, `ast`, `format`, `origin`, + the AST-level base passes (`aliases`, `consts`, `fmt`, `async_lower`, `generators`, `optimize`, `reflect`, `derive`, `records`, `doc`, `linker`, `lambda_scan`, `build_entry`) | Source → AST (off-side layout, interpolation, duration literals; Pratt-core parser + sugar lowering), the canonical formatter, and the front-end/base layer every later stage builds on. `origin` defines the typed generated-node/span side table; `linker` combines modules into one flat module with qualified names + bundles the std library (`include_str!`). |
 | `witchy-types` | `pipeline`, `typeck`, `traits`, `runtime_type` | The checked front-end proof boundary; annotation-driven checking + HM unification (occurs-checked), capability rights, exhaustiveness; trait desugaring to plain functions + monomorphization; authenticated runtime declaration identities and closed shapes. The canonical checked source (RFC-0165) also binds the launch contract computed by `witchy-caps` into its identity, the one place the type stage consumes the capability analyzer. |
 | `witchy-wir` | `layout`, `wir`, `wir_opt`, `wir_prelude`, `wir_encode` | Canonical specialized layout descriptors and transport, the structured IR (typed expression tree, named lexical `Block`/`Loop` labels, no relooper), the peephole pass, the precompiled runtime-helper prelude, and the `wasm-encoder` backend. The canonical SafeWIR authority (RFC-0165) authenticates a lowered candidate against the checked source in `witchy-types`, the one place the IR stage consumes the type stage. |
@@ -84,59 +81,35 @@ are tracked in the [architecture and redundancy ledger](architecture-ledger.md).
 `std/` is the standard library, written in witchy; `projects/grimoire`, `projects/coven`
 are the package manager and registry, self-hosted in witchy.
 
-## The parity discipline
+## The conformance discipline
 
 Stable observable semantics converge before support
 ([RFC-0135](../rfcs/0135-stable-semantics-converge.md)). Independent expected
-results adjudicate correctness. Canonical SafeWIR interpretation and admitted
-unoptimized Wasm must each match that expectation. Agreement between those two
-executors proves consistency, not correctness by itself. A silent split is a
-bug; a loud fail-closed refusal is the only acceptable state for an unfinished
-surface.
+results adjudicate correctness. Admitted unoptimized Wasm must match those
+expectations, and structural tests independently pin the checker, lowering,
+authority, ownership, and encoder contracts. A silent mismatch is a bug; a loud
+fail-closed refusal is the only acceptable state for an unfinished surface.
 
-The compiled backend is the user run path. The canonical SafeWIR interpreter
-is the executable semantic oracle. The frozen source tree walker does not
-participate in language acceptance and must not gain new language features.
+There is no executable reference interpreter in the active build. The compiled
+backend is both the user run path and the executable acceptance path. The frozen
+source tree walker does not participate in language acceptance and must not gain
+new language features.
 
 Verification, by kind of work:
 
-- **Stable language semantics** land in canonical lowering, match an
-  independent expected result in the canonical SafeWIR interpreter, and match
-  it again in admitted unoptimized Wasm.
-- **Experimental runtime representations** (unsettled carriers, ABIs, host
-  layouts) fail closed until both canonical execution legs admit them. They do
-  not create source-interpreter feature debt.
-- **Pure optimizations** (SIMD, SROA, bounds elision, local pruning)
-  exist only on compiled Wasm. Compare optimized Wasm to scalar Wasm and
-  to the expected result. Do not implement them in the interpreter.
-- **Capability, confinement, and ABI security** keep strict differential
-  coverage. No interpreter debt.
-- **The full parity corpus** runs at stabilization, release, and
-  periodic CI. It is not the default check on every experimental slice.
+- Stable language semantics state an independent observable result or diagnostic,
+  then execute the admitted unoptimized-Wasm artifact.
+- Representation and ABI work also carries focused checker, authority, lowering,
+  encoder, and heap or ownership audits at the boundary being changed.
+- Pure optimizations compare optimized Wasm with admitted unoptimized Wasm and
+  the independent expectation.
+- Capability and confinement work uses adversarial host-boundary tests and exact
+  source-derived grants; it does not require a second language executor.
 
-Enforced by:
-
-- Focused oracle fixtures state the expected value or rejection independently,
-  then run the canonical SafeWIR interpreter and the admitted Wasm artifact.
-  An error/value split, different errors, or a missing compiled source location
-  is a reported divergence.
-- Canonical interpreter/Wasm unit tests plus property-based tests (proptest).
-- A CI sweep lowers and executes the admitted example corpus through both
-  canonical execution legs.
-- `tests/misc/semantic_conformance.rs`: independently stated exact values,
-  rejection diagnostics, and capability footprints. Its positive control
-  injects a shared semantic mutation that both canonical executors agree on and
-  proves the external expectation still rejects it.
-
-The canonical interpreter and compiled backend share parsing, linking, type
-checking, and canonical lowering, so a common-mode defect can preserve
-agreement. New supported semantics therefore need an independent expected
-result or rejection in addition to executor agreement. The conformance corpus
-is deliberately small and reviewable; broad generated coverage stays in the
-differential and property suites.
-[RFC-0058](../rfcs/0058-differential-harness-integrity.md) still governs the
-corpus when it runs: fail-closed classification, vacuity guards, and seeded
-divergence controls.
+This removes a large duplicate semantic implementation from the hot
+`witchy-wir` crate while retaining the production path and its fail-closed
+contracts. If an independent executable oracle is needed again, it belongs in a
+separate opt-in crate outside the routine workspace gate.
 
 ## The WASM value model
 

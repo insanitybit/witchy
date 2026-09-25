@@ -20,14 +20,12 @@ witchy stats::tests::sroa_eliminates_confined_aggregate_allocation
 witchy stats::tests::stats_grants_clock_for_in_program_benchmark_kernels
 witchy-lower::codegen tests::dynamic_descriptor_exact_decode_and_mismatch_match_the_interpreter
 witchy-lower::codegen tests::forced_copy_dict_update_does_not_reference_an_ownership_token
-witchy::bin/witchy commands::execution::runtime_parity_tests::parity_authenticates_user_dynamic_declarations
 witchy::bin/witchy example_tests::capabilities::capability_rights_example_runs_and_audits
 witchy::bin/witchy example_tests::capabilities::sandbox_grants_full_footprint
 witchy::bin/witchy example_tests::example_sweeps::all_example_rune_tests_pass
 witchy::bin/witchy example_tests::example_sweeps::documentation_examples_are_valid
 witchy::bin/witchy example_tests::examples_programs::data_oriented_examples_match_golden_output
 witchy::bin/witchy example_tests::examples_programs::minigrep_lines_survive_source_container_sec_037
-witchy::bin/witchy example_tests::sandbox_vm::parity_file_agrees_on_matching_aborts
 witchy::bin/witchy example_tests::sandbox_vm::sandbox_confinement_error_is_clean
 witchy::cli_subcommands an_env_injected_secret_is_stripped_from_the_environment
 witchy::cli_subcommands check_rejects_programs_the_compiled_backend_cannot_accept

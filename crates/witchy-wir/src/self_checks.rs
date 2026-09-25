@@ -1,11 +1,6 @@
 //! One path per in-crate self-check module, so `tests/unit.rs` can reach checks
 //! that need private internals without the lib compiling a cfg(test) copy.
 
-pub use crate::canonical_interpreter::self_checks as canonical_interpreter;
-pub use crate::canonical_interpreter::capability_self_checks as canonical_interpreter_capability;
-pub use crate::canonical_interpreter::build_read::self_checks as canonical_interpreter_build_read;
-pub use crate::canonical_interpreter::crypto::rsa_self_checks as canonical_interpreter_crypto_rsa;
-pub use crate::canonical_interpreter::registry_host::self_checks as canonical_interpreter_registry_host;
 pub use crate::canonical_safewir::self_checks as canonical_safewir_catalog;
 pub use crate::canonical_safewir::authority::self_checks as canonical_safewir_authority;
 pub use crate::canonical_safewir::build_read::self_checks as canonical_safewir_build_read;

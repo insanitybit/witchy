@@ -208,13 +208,6 @@ fn crypto_verify_malformed_inputs_are_result_errors() {
         "Ed25519 public key is malformed\nECDSA P-256 message is malformed\n"
     );
 
-    let parity = run(&["parity", &src]);
-    assert!(
-        parity.status.success() && String::from_utf8_lossy(&parity.stdout).contains("outcome=agree"),
-        "parity failed: {}{}",
-        String::from_utf8_lossy(&parity.stdout),
-        String::from_utf8_lossy(&parity.stderr)
-    );
 }
 
 // A file that violates `mode opt` (a heap parameter with no ownership convention).
@@ -457,11 +450,11 @@ fn fetch_root_requires_an_explicit_valid_origin_and_admitted_artifact() {
 
 #[test]
 fn secretstore_main_runs_without_a_secret() {
-    // BUG-112: a `main(Console, SecretStore)` runs on both backends with an empty
-    // store, so `run`/`sandbox` must NOT demand `--secret`; align with `parity`.
+    // BUG-112: a `main(Console, SecretStore)` runs with an empty store, so
+    // `run`/`sandbox` must NOT demand `--secret`.
     let dir = workdir("secretstore");
     let src = write(&dir, "s.witchy", "fn main(console: Console, store: SecretStore):\n    console.print(\"hi\")\n");
-    for args in [vec![src.as_str()], vec!["sandbox", "--dir", dir.to_str().unwrap(), src.as_str()], vec!["parity", src.as_str()]] {
+    for args in [vec![src.as_str()], vec!["sandbox", "--dir", dir.to_str().unwrap(), src.as_str()]] {
         let out = run(&args);
         assert_eq!(out.status.code(), Some(0), "{args:?} should exit 0: {}", String::from_utf8_lossy(&out.stderr));
     }
@@ -619,7 +612,7 @@ fn mode_opt_enforced_across_subcommands() {
     let grants = write(&dir, "empty.grants.toml", "");
     // `check` is the reference: it rejects.
     assert!(!run(&["check", &bad]).status.success(), "check must reject the mode-opt violation");
-    // BUG-163 artifact paths, BUG-119 parity, BUG-177 stats + test must all reject too.
+    // BUG-163 artifact paths and BUG-177 stats + test must all reject too.
     assert!(
         !run(&["compile", &bad, "--out", compiled.to_str().unwrap()]).status.success(),
         "BUG-163: compile must enforce mode opt",
@@ -630,7 +623,6 @@ fn mode_opt_enforced_across_subcommands() {
         !run(&["sandbox", "--grants", &grants, "--accept-grants", &bad]).status.success(),
         "BUG-163: grant-document sandbox must enforce mode opt",
     );
-    assert!(!run(&["parity", &bad]).status.success(), "BUG-119: parity must enforce mode opt");
     assert!(!run(&["stats", &bad]).status.success(), "BUG-177: stats must enforce mode opt");
     assert!(!run(&["test", &bad]).status.success(), "BUG-177: test must enforce mode opt");
 }

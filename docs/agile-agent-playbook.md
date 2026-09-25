@@ -16,8 +16,8 @@ one boundary whenever possible.
 3. **Diagnostics** (`crates/witchy-types`): explicit error expectations and
    message-level intent.
 4. **Canonical conformance** (`crates/witchy-lower`, `crates/witchy-wir`,
-   `src/example_tests.rs`): independent expectation, canonical SafeWIR
-   interpretation, and admitted-Wasm execution.
+   `src/example_tests.rs`): independent expectation, focused structural
+   contracts, and admitted-Wasm execution.
 5. **Docs/spec and tests** (`spec/*`, `book/*`, `rfcs/*`, `README.md`): update
    runnable examples and acceptance notes at the same time as behavior changes.
 
@@ -28,8 +28,8 @@ Boundary ownership is explicit in every task handoff:
   `crates/witchy-syntax` + `crates/witchy-types`.
 - `typeck`: `crates/witchy-types` type relation and error surface.
 - `lower`: `crates/witchy-lower` lowering and ABI boundaries.
-- `canonical-interp`: `crates/witchy-wir` SafeWIR interpreter behavior and
-  canonical-runtime acceptance evidence.
+- `canonical-wir`: `crates/witchy-wir` SafeWIR checker, authority, ownership,
+  and admitted-Wasm correspondence evidence.
 - `source-interp`: frozen `crates/witchy-interp` compiler-service compatibility
   only; never a new language-semantics implementation or acceptance oracle.
 - `spec`: `spec/*` and runnable docs artifacts.
@@ -42,8 +42,7 @@ SafeWIR is the sole executable language contract; every semantic
 slice carries:
 
 - an independently derived observable result or expected diagnostic;
-- a focused canonical SafeWIR interpreter check;
-- an admitted unoptimized-Wasm check; and
+- an admitted unoptimized-Wasm check;
 - heap, authority, provenance, or structural audits required by the boundary.
 
 The source tree walker is frozen for language semantics. Compatibility and
@@ -52,8 +51,8 @@ but new syntax and runtime behavior must not be implemented there. Eventually
 comptime/build evaluation lowers through the canonical route too; until then,
 any source-walker debt is compiler-service debt, not language-semantics debt.
 
-Pure optimizations compare optimized Wasm with admitted unoptimized Wasm, the
-canonical interpreter, and the independent expectation. Capability,
+Pure optimizations compare optimized Wasm with admitted unoptimized Wasm and
+the independent expectation. Capability,
 confinement, and ABI security remain fail-closed on the canonical route.
 
 ## 2) Required artifacts per task
@@ -198,13 +197,13 @@ Rejection is only terminal when it has:
   with `./scripts/agent-check.sh syntax` green and a targeted negative test.
 - Rewrite/link change in syntax+types with required `target --package witchy-types`
   check and a regression fixture in `src/example_tests.rs` when behavior is visible.
-- Stable semantic change with a matching independent expectation, canonical
-  SafeWIR interpreter check, admitted-Wasm check, and required boundary audits.
+- Stable semantic change with a matching independent expectation,
+  admitted-Wasm check, and required boundary audits.
 
 ### Rejected
 
-- Changing `crates/witchy-lower` without canonical validation/interpreter and
-  admitted-Wasm evidence for the affected semantic boundary.
+- Changing `crates/witchy-lower` without canonical validation and admitted-Wasm
+  evidence for the affected semantic boundary.
 - Editing multiple ownership boundaries without updating the handoff block.
 - Running only docs edits and skipping merge-queue submission while the branch is
   already green.

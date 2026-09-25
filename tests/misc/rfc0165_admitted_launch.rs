@@ -10,12 +10,8 @@
 use witchy::codegen;
 use witchy::runtime::{Capabilities, Runtime};
 
-#[path = "rfc0165_launch_arguments.rs"]
-mod launch_arguments;
 #[path = "rfc0165_nullable_capabilities.rs"]
 mod nullable_capabilities;
-#[path = "rfc0165_compiler_services.rs"]
-mod compiler_services;
 
 /// Run an admitted program and report a runtime trap instead of panicking,
 /// for fixtures whose expected outcome is the trap.
@@ -432,7 +428,7 @@ fn admitted_nested_constructor_patterns_test_payloads_behind_the_tag() {
 }
 
 #[test]
-fn admitted_aggregates_render_structurally_as_the_interpreter_prints_them() {
+fn admitted_aggregates_render_structurally_as_expected() {
     // `"${x}"` on a sum, record, tuple, or list renders structurally: a
     // sum dispatches on its tag into per-variant arms that join on string
     // lanes, a payload-free variant is its bare name, a list folds its
@@ -678,4 +674,3 @@ fn admitted_entry_without_a_dir_or_env_grant_is_refused_before_it_runs() {
     );
     assert!(refused.is_err(), "{refused:?}");
 }
-

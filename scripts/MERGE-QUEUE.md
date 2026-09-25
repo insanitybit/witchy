@@ -316,20 +316,6 @@ the snapshot byte-for-byte, the coordinator passes the exact candidate SHA to
 mismatch, or change to the proof protocol keeps the ordinary test. The first
 gate that changes the protocol therefore proves the slow path, never itself.
 
-**Diff-scoped fuzzing.** Ordinary fuzz tests are bounded deterministic fixture
-contracts; the fixed-seed CLI parity corpora live in the explicitly named
-`differential_fuzz_campaigns` target, so an ordinary test never exceeds the
-two-second ceiling. `process_one` still
-classifies the batch diff (`base..sha`) and passes `WITCHY_GATE_FUZZ` to
-`check.sh`: `skip` when nothing under the parity surface changed (`crates/`,
-`std/`, `src/`, `examples/`, `tests/differential_fuzz.rs`, `build.rs`,
-`Cargo.*` — a docs/rfc/bug/config-only merge cannot change backend behavior),
-and `full` on any doubt (git error / empty diff — fail-safe). The complete
-former corpus runs in the scheduled/manual non-blocking
-`.github/workflows/nightly-fuzz.yml`; it is excluded by nextest's default
-filter, not `#[ignore]`. This changes where the expensive regression net
-executes, not its seed counts, optimizer matrix, or sanitizer coverage.
-
 **Diff-scoped gate (docs-only).** The same classification also sets
 `WITCHY_GATE_SCOPE`: when EVERY changed path in the batch diff is documentation
 no test or gate stage reads — `rfcs/` (except `rfcs/0167-witchy-language-contract.md`,

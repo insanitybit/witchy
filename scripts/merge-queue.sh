@@ -2859,35 +2859,12 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
 
     local sha; sha="$(git -C "$gate_wt" rev-parse HEAD)"
 
-    # Fuzz policy from the diff (see check.sh's WITCHY_GATE_FUZZ). The differential
-    # fuzzer is a fixed-seed parity REGRESSION suite, so it can only catch a bug in
-    # a change that could alter backend behavior. Classify the whole batch's diff
-    # (base..sha covers every batched branch): if nothing under the parity surface
-    # changed, skip it; if the surface changed, run a reduced 10-seed sample (the
-    # full 30 still run post-merge on CI under the checked heap, and in `--full`).
-    # Fail SAFE: any doubt (git error, empty diff) -> full.
-    #
-    # Parity surface (reduced): compiler crates, std library, src/, examples,
-    # build infrastructure (Cargo.toml/lock, .cargo/, build.rs, rust-toolchain).
-    # Non-parity (skip): rfcs/, bugs/, docs, scripts/, projects/ (witchy apps
-    # that exercise the compiler but can't change its behavior), book/.
-    # --no-renames: with rename detection, `--name-only` reports only the
-    # POST-image path — a `git mv std/foo.witchy rfcs/bar.md` would show up as
-    # nothing but an rfcs/ file and classify as a docs-only diff while
-    # deleting code from master. Listing both sides makes the delete visible.
-    # (`grep -c … >/dev/null` instead of `grep -q`: -q exits at the first
-    # match, and under `set -o pipefail` a >64KiB $changed can then SIGPIPE
-    # the echo — status 141 — misclassifying a matching diff as non-matching.
-    # -c always reads all input.)
-    local fuzz_mode="full"
-    local changed
-    if changed="$(git -C "$gate_wt" diff --name-only --no-renames "$base..$sha" 2>/dev/null)" && [ -n "$changed" ]; then
-        if echo "$changed" | grep -cE '^(crates/|std/|src/|examples/|tests/differential_fuzz\.rs$|build\.rs|Cargo\.(toml|lock)|\.cargo/|rust-toolchain)' >/dev/null; then
-            fuzz_mode="reduced"
-        else
-            fuzz_mode="skip"
-        fi
-    fi
+    # Positional compatibility for coordinators started before the canonical
+    # interpreter and its differential corpus were retired.
+    local fuzz_mode="none"
+    local changed=""
+    changed="$(git -C "$gate_wt" diff --name-only --no-renames \
+        "$base..$sha" 2>/dev/null)" || changed=""
 
     # Gate scope from the same diff (see check.sh's WITCHY_GATE_SCOPE): if EVERY
     # changed path is documentation that no test or gate stage reads, the heavy

@@ -85,7 +85,7 @@ fn main(console: Console):
 
 **Rendering values to strings.** Reach for interpolation first: `"${x}"` renders
 ordinary data values - scalars, record fields, lists, tuples, records, sum types,
-dicts, and their supported nesting - identically in both canonical executors. Function
+dicts, and their supported nesting - through admitted Wasm. Function
 values aren't data rendering targets and are rejected before runtime. `Show`
 is preluded, so interpolation always honors a relevant implementation; imports
 never select rendering semantics. Thus
@@ -907,8 +907,8 @@ fn cancel(own completion: Completion):
 ```
 
 `pure` and `once` are erased from the physical closure representation after
-checking. The canonical SafeWIR interpreter and admitted Wasm use the same function-value
-layout and invocation ABI for all four qualified forms; the qualifiers remain
+checking. Admitted Wasm uses one function-value layout and invocation ABI for
+all four qualified forms; the qualifiers remain
 observable only through checked logical type and reflection identity.
 
 Function values preserve the concrete runtime kinds in their signatures. A
@@ -1750,11 +1750,10 @@ fn main(console: Console):
         Err(e) -> console.print(e)
 ```
 
-Unexpected failure is **loud in every canonical executor**: out-of-bounds indexing,
+Unexpected failure is **loud in admitted execution**: out-of-bounds indexing,
 division by zero, unparseable `string.to_int`, NaN ordering, and the `fail(msg)`
-primitive all abort (a canonical-interpreter error, an admitted-Wasm trap). The
-conformance invariant covers these too: a program that errors in one canonical
-executor errors in both. An abort is terminal for that VM instance: it cannot
+primitive all abort. The conformance matrix pins the complete diagnostic. An
+abort is terminal for that VM instance: it cannot
 be resumed after a partially unwound call. Structured `return` and `?` paths aren't aborts and run
 their ordinary ownership cleanup.
 
@@ -2054,8 +2053,8 @@ until driven. `chan.spawn` starts a task concurrently, and a `chan.channel` is a
 first-class value you create and pass to whichever tasks share it - spawning and
 channels are *independent* (no task has an implicit mailbox). Tasks share no
 memory, so there are no locks or data races, and the round-robin schedule is
-deterministic - the independent expected result, canonical SafeWIR interpreter,
-and admitted WebAssembly must produce identical output.
+deterministic - the independent expected result and admitted WebAssembly must
+produce identical output.
 
 ```witchy
 from chan import Sender
@@ -2110,8 +2109,8 @@ grants or the ability to construct fixture records.
 
 ## 16. Semantics guarantees (the canonical conformance contract)
 
-The full behavioral surface below matches an independent expectation in both
-the canonical SafeWIR interpreter and admitted unoptimized Wasm:
+The full behavioral surface below matches an independent expectation in
+admitted unoptimized Wasm:
 
 - Integer arithmetic wraps; division/modulo by zero errors; shifts mask.
 - Float formatting is shortest-round-trip everywhere; NaN/±infinity behave

@@ -101,7 +101,7 @@ impl TestOptions {
                         "wasm" => TestBackend::Wasm,
                         "interpreter" | "both" => {
                             return Err(format!(
-                                "test backend `{value}` was retired: checked admitted Wasm is the sole production runtime; use `witchy parity` for canonical SafeWIR oracle comparison"
+                                "test backend `{value}` was retired: checked admitted Wasm is the sole production runtime"
                             ));
                         }
                         _ => {
@@ -981,7 +981,6 @@ mod test_mode_link_tests {
             ])
             .expect_err("the source-language test backend is retired");
             assert!(error.contains("sole production runtime"), "{error}");
-            assert!(error.contains("witchy parity"), "{error}");
         }
         let error = TestOptions::parse([
             "--fixtures".to_string(),
@@ -1484,15 +1483,3 @@ pub(crate) fn run_tests(options: &TestOptions) -> Result<bool, String> {
     }
     Ok(total_fail == 0)
 }
-
-#[cfg(test)]
-#[path = "test_runner/canonical_bare.rs"]
-mod canonical_bare_tests;
-
-#[cfg(test)]
-#[path = "test_runner/canonical_console_fixture.rs"]
-mod canonical_console_fixture_tests;
-
-#[cfg(test)]
-#[path = "test_runner/canonical_integration.rs"]
-mod canonical_integration_tests;

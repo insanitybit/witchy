@@ -54,7 +54,7 @@ pub fn run_build_step_sandboxed(
 /// confined by the same host-side grant tables as the canonical runtime.
 ///
 /// This is the production build-step path. Semantic evidence uses independent
-/// expectations, the canonical SafeWIR interpreter, and admitted Wasm; the
+/// expectations, admitted Wasm, and focused structural contracts; the
 /// frozen source evaluator is only temporary comptime/build compatibility.
 #[cfg(test)]
 pub fn run_build_step_compiled(

@@ -1,7 +1,7 @@
 //! RFC-0167 row D: `own` on a view carrier consumes the carrier, not the payload.
 //!
 //! Positive fixtures use an independent scalar expectation, the canonical
-//! SafeWIR interpreter, and admitted unoptimized Wasm, with a zero-leak audit on
+//! admitted unoptimized Wasm, with a zero-leak audit on
 //! both. The source interpreter is not consulted.
 //!
 //! The distinction the row is about: `own value: &T` is an affine hold on the

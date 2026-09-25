@@ -21,26 +21,25 @@ master moves under you mid-task. §3 has the mechanics; the rule of thumb is
 
 Stable observable semantics converge before support. RFC-0167 supersedes the
 dual source-runtime rule in RFC-0135: checked canonical SafeWIR is the single
-language implementation, its canonical interpreter is the executable oracle,
-and admitted Wasm is the production runtime. Independent expected results
-adjudicate correctness. Agreement between the two canonical executors only
-proves that they match.
+language implementation and admitted Wasm is the production runtime.
+Independent expected results adjudicate correctness.
 
-- **Stable language semantics:** an independent expected result, the canonical
-  SafeWIR interpreter, and admitted unoptimized Wasm must agree.
+- **Stable language semantics:** an independent expected result must agree with
+  admitted unoptimized Wasm, with focused structural checks at the affected
+  compiler and runtime boundaries.
 - **Source tree walker:** frozen for language semantics. Preserve its temporary
   comptime/build duties, but do not add RFC-0167 views or new runtime semantics.
 - **Pure optimizations** (SIMD, SROA, bounds elision): compare optimized Wasm to
-  admitted unoptimized Wasm, the canonical interpreter, and the expected result.
+  admitted unoptimized Wasm and the expected result.
 - **Capability, confinement, ABI security:** strict differential
   coverage. No debt.
 - **Full canonical conformance corpus:** stabilization, release, and periodic
   CI, not every experimental slice.
 
 Disagreement is a **loud compile or runtime error, never a different answer.**
-If you add user-visible stable behavior, add an independent expected result and
-exercise both the canonical SafeWIR interpreter and admitted Wasm. Do not use
-the source interpreter as RFC-0167 acceptance evidence.
+If you add user-visible stable behavior, add an independent expected result,
+exercise admitted unoptimized Wasm, and pin the affected structural contracts.
+Do not use the source interpreter as RFC-0167 acceptance evidence.
 
 ## 1. witchy the language — the 90% rundown
 
@@ -152,8 +151,8 @@ module-qualified alias (`list.map(xs, f)`). A module's `pub` types are qualified
 
 **Concurrency** is Go/CSP: `async`/`await`, `chan.spawn`, first-class typed
 channels, on a cooperative executor written in witchy. Tasks share no memory, so
-no locks and no data races, and the round-robin schedule is **deterministic** —
-identical output in the canonical interpreter and admitted Wasm. Concurrency
+no locks and no data races, and the round-robin schedule is **deterministic** in
+admitted Wasm. Concurrency
 stays *inside* one VM; isolating
 untrusted code means running it as its own sandboxed program, not as a task.
 
@@ -193,7 +192,7 @@ code belongs in the owning crate.**
 | `witchy-testkit` / `witchy-test-host` | backend-neutral fixture plans; the shared fixture host |
 | `witchy-syntax` | lexer, parser, AST, formatter, linker, AST-level passes |
 | `witchy-types` | typeck (HM unification), traits + monomorphization, runtime types |
-| `witchy-wir` | canonical SafeWIR and its interpreter, layouts, structured IR, peephole, wasm encoder |
+| `witchy-wir` | canonical SafeWIR, layouts, structured IR, peephole, wasm encoder |
 | `witchy-lower` | `codegen` (AST → WIR) and `analysis` (uniqueness / cap tokens) |
 | `witchy-confinement` | target-neutral confinement policy + platform providers |
 | `witchy-runtime` | runtime `Value`, native registry, Wasmtime sandbox |
@@ -209,7 +208,7 @@ target-neutral crate and let platform-specific adapters consume it — never the
 other way around. Two exemplars already in the tree: `witchy-confinement`
 defines normalized policy and the Linux Landlock/seccomp provider consumes it
 without depending on compiler stages or Wasmtime; `witchy-testkit` defines
-backend-neutral plans and canonical-interpreter/Wasmtime/browser adapters consume
+backend-neutral plans and Wasmtime/browser adapters consume
 `witchy-test-host` rather than reimplementing fixture semantics. Follow that
 shape: policy and contracts point *down* the dependency DAG, enforcement points
 *up*.

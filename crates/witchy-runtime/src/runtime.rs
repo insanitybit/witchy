@@ -892,7 +892,7 @@ pub struct Capabilities {
     pub console_input: Option<Vec<String>>,
     /// May print an integer via `witchy.print_int` (used by compiled witchy).
     pub print_int: bool,
-    /// Capture output without echoing it to stdout (used by `witchy parity`,
+    /// Capture output without echoing it to stdout (used by tests,
     /// which compares the captured lines rather than showing them).
     pub quiet: bool,
     /// Stream Console output live to stdout as each line is printed, cleanly

@@ -38,16 +38,6 @@ fn run_witchy_test(slug: &str, source: &str, expected_lines: &[&str]) {
         expected,
         "{slug}: output mismatch"
     );
-
-    let parity = run(&["parity", path]);
-    assert!(
-        parity.status.success()
-            && String::from_utf8_lossy(&parity.stdout).contains("outcome=agree"),
-        "{slug}: parity failed\n{}\n{}",
-        String::from_utf8_lossy(&parity.stdout),
-        String::from_utf8_lossy(&parity.stderr),
-    );
-
     std::fs::remove_dir_all(dir).unwrap();
 }
 
@@ -339,4 +329,3 @@ fn main(console: Console):
         ],
     );
 }
-

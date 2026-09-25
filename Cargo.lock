@@ -2996,7 +2996,6 @@ dependencies = [
 name = "witchy-wir"
 version = "0.1.0"
 dependencies = [
- "aws-lc-rs",
  "blake3",
  "ed25519-dalek",
  "foldhash 0.2.0",

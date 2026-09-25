@@ -16,8 +16,6 @@ mod temp_dir;
 #[path = "support/precompiled_registry.rs"]
 mod precompiled_registry;
 
-#[path = "misc/rfc0165_bounded_heap.rs"]
-mod rfc0165_bounded_heap;
 
 #[path = "misc/rfc0165_packaged_source.rs"]
 mod rfc0165_packaged_source;
@@ -31,25 +29,11 @@ mod rfc0165_build_read_project;
 #[path = "misc/rfc0165_build_env_project.rs"]
 mod rfc0165_build_env_project;
 
-#[path = "misc/rfc0165_messages.rs"]
-mod rfc0165_messages;
-
-#[path = "misc/rfc0165_registry_hosts.rs"]
-mod rfc0165_registry_hosts;
-
-#[path = "misc/rfc0165_dir_storage.rs"]
-mod rfc0165_dir_storage;
-#[path = "misc/rfc0165_enum_equality.rs"]
-mod rfc0165_enum_equality;
 
 
-#[path = "misc/rfc0165_net.rs"]
-mod rfc0165_net;
 
-#[path = "misc/canonical_net_fixture.rs"]
-mod canonical_net_fixture;
-#[path = "misc/canonical_net_read_profile.rs"]
-mod canonical_net_read_profile;
+
+
 
 #[path = "misc/examples_index.rs"]
 mod examples_index;
@@ -81,8 +65,6 @@ mod rfc0130_adapter_collection;
 mod policy_sealing;
 #[path = "misc/rfc0077_integration_grants.rs"]
 mod rfc0077_integration_grants;
-#[path = "misc/rfc0087_uniform_var.rs"]
-mod rfc0087_uniform_var;
 #[path = "misc/rfc0089_fip_contract.rs"]
 mod rfc0089_fip_contract;
 #[path = "misc/rfc0094_persistent_std_cache.rs"]
@@ -105,8 +87,6 @@ mod rfc0152_async_region_formation;
 mod typed_errors;
 #[path = "misc/vm_worker_isolation.rs"]
 mod vm_worker_isolation;
-#[path = "misc/vm_service_runtime.rs"]
-mod vm_service_runtime;
 #[path = "misc/wasm_abi_catalog.rs"]
 mod wasm_abi_catalog;
 #[path = "misc/rfc0102_console.rs"]
@@ -115,34 +95,10 @@ mod rfc0102_console;
 mod rfc0103_build_step_confinement;
 #[path = "misc/rfc0165_admitted_launch.rs"]
 mod rfc0165_admitted_launch;
-#[path = "misc/rfc0165_oracle.rs"]
-mod rfc0165_oracle;
-#[path = "misc/rfc0165_corpus.rs"]
-mod rfc0165_corpus;
-#[path = "misc/rfc0165_encoding.rs"]
-mod rfc0165_encoding;
-#[path = "misc/rfc0165_crypto_extensions.rs"]
-mod rfc0165_crypto_extensions;
-#[path = "misc/rfc0165_chars_allocation.rs"]
-mod rfc0165_chars_allocation;
-#[path = "misc/rfc0165_regex_spans.rs"]
-mod rfc0165_regex_spans;
-#[path = "misc/rfc0165_dictionary_mutation.rs"]
-mod rfc0165_dictionary_mutation;
 #[path = "misc/rfc0165_list_push_value.rs"]
 mod rfc0165_list_push_value;
-#[path = "misc/rfc0165_file_capability.rs"]
-mod rfc0165_file_capability;
-#[path = "misc/rfc0165_recursive_generic.rs"]
-mod rfc0165_recursive_generic;
-#[path = "misc/rfc0165_recursive_render.rs"]
-mod rfc0165_recursive_render;
-#[path = "misc/rfc0167_mode_interop.rs"]
-mod rfc0167_mode_interop;
 #[path = "misc/rfc0167_try_context_and_leading_minus.rs"]
 mod rfc0167_try_context_and_leading_minus;
-#[path = "misc/rfc0167_exact_core_parity.rs"]
-mod rfc0167_exact_core_parity;
 #[path = "misc/rfc0167_opt_callable_provenance.rs"]
 mod rfc0167_opt_callable_provenance;
 #[path = "misc/rfc0167_precompiled_run_source.rs"]
@@ -153,12 +109,8 @@ mod rfc0167_unit_results;
 mod rfc0167_views_through_views;
 #[path = "misc/rfc0165_owner_adapters.rs"]
 mod rfc0165_owner_adapters;
-#[path = "misc/rfc0167_ownership_parity.rs"]
-mod rfc0167_ownership_parity;
 #[path = "misc/rfc0167_reference_carrier_repros.rs"]
 mod rfc0167_reference_carrier_repros;
-#[path = "misc/rfc0167_callable_reference_carrier.rs"]
-mod rfc0167_callable_reference_carrier;
 #[path = "misc/rfc0167_optimization_readiness.rs"]
 mod rfc0167_optimization_readiness;
 #[path = "misc/rfc0167_reference_contract_matrix.rs"]
@@ -167,10 +119,6 @@ mod rfc0167_reference_contract_matrix;
 mod rfc0167_resource_composition;
 #[path = "misc/rfc0167_unique_writeback_matrix.rs"]
 mod rfc0167_unique_writeback_matrix;
-#[path = "misc/rfc0167_unit_discard_matrix.rs"]
-mod rfc0167_unit_discard_matrix;
-#[path = "misc/rfc0167_view_carrier_transport.rs"]
-mod rfc0167_view_carrier_transport;
 #[path = "misc/rfc0167_async_view.rs"]
 mod rfc0167_async_view;
 #[path = "misc/rfc0167_async_view_results.rs"]
@@ -179,10 +127,6 @@ mod rfc0167_async_view_results;
 mod rfc0167_views_through_channels_and_generators;
 #[path = "misc/rfc0167_installed_workflow.rs"]
 mod rfc0167_installed_workflow;
-#[path = "misc/rfc0167_list_view.rs"]
-mod rfc0167_list_view;
-#[path = "misc/rfc0167_record_view.rs"]
-mod rfc0167_record_view;
 #[path = "misc/rfc0167_normal_view_bearing_types.rs"]
 mod rfc0167_normal_view_bearing_types;
 #[path = "misc/rfc0167_slice_record_field.rs"]
@@ -191,24 +135,12 @@ mod rfc0167_slice_record_field;
 mod rfc0167_try_int_view_payload;
 #[path = "misc/rfc0167_var_view_parameters.rs"]
 mod rfc0167_var_view_parameters;
-#[path = "misc/rfc0167_generic_slice_view.rs"]
-mod rfc0167_generic_slice_view;
-#[path = "misc/rfc0167_for_over_slice.rs"]
-mod rfc0167_for_over_slice;
 #[path = "misc/rfc0167_view_locals_across_await.rs"]
 mod rfc0167_view_locals_across_await;
 #[path = "misc/rfc0167_await_in_nested_expressions.rs"]
 mod rfc0167_await_in_nested_expressions;
 #[path = "misc/rfc0167_region_parent_view_results.rs"]
 mod rfc0167_region_parent_view_results;
-#[path = "misc/rfc0167_mixed_var_write_back.rs"]
-mod rfc0167_mixed_var_write_back;
-#[path = "misc/rfc0167_field_view.rs"]
-mod rfc0167_field_view;
-#[path = "misc/rfc0167_string_view_carrier.rs"]
-mod rfc0167_string_view_carrier;
-#[path = "misc/rfc0167_nested_option_view.rs"]
-mod rfc0167_nested_option_view;
 #[path = "misc/rfc0167_own_view_consumption.rs"]
 mod rfc0167_own_view_consumption;
 #[path = "misc/rfc0167_frozen_view_matrix.rs"]
@@ -223,34 +155,14 @@ mod rfc0167_dict_view_diagnostic;
 mod rfc0167_tuple_root_view;
 #[path = "misc/rfc0167_nested_list_root_view.rs"]
 mod rfc0167_nested_list_root_view;
-#[path = "misc/rfc0167_normal_unique.rs"]
-mod rfc0167_normal_unique;
-#[path = "misc/rfc0167_scalar_value_view.rs"]
-mod rfc0167_scalar_value_view;
-#[path = "misc/rfc0167_aggregate_reference_carriers.rs"]
-mod rfc0167_aggregate_reference_carriers;
 #[path = "misc/rfc0167_dict_root_view.rs"]
 mod rfc0167_dict_root_view;
-#[path = "misc/rfc0167_generic_view_instantiation.rs"]
-mod rfc0167_generic_view_instantiation;
 #[path = "misc/rfc0167_indirect_list_view.rs"]
 mod rfc0167_indirect_list_view;
-#[path = "misc/rfc0167_indirect_var_aggregate.rs"]
-mod rfc0167_indirect_var_aggregate;
 #[path = "misc/rfc0167_list_of_int_views.rs"]
 mod rfc0167_list_of_int_views;
-#[path = "misc/rfc0167_mode_transport.rs"]
-mod rfc0167_mode_transport;
-#[path = "misc/rfc0167_opt_callable_cross_module.rs"]
-mod rfc0167_opt_callable_cross_module;
-#[path = "misc/rfc0167_region_qualifier_matrix.rs"]
-mod rfc0167_region_qualifier_matrix;
-#[path = "misc/rfc0167_result_reference_carriers.rs"]
-mod rfc0167_result_reference_carriers;
 #[path = "misc/rfc0167_scalar_views_across_await.rs"]
 mod rfc0167_scalar_views_across_await;
-#[path = "misc/rfc0167_slice_index_read.rs"]
-mod rfc0167_slice_index_read;
 #[path = "misc/rfc0167_slice_owned_materialization.rs"]
 mod rfc0167_slice_owned_materialization;
 #[path = "misc/rfc0167_slice_subscript_in_async.rs"]

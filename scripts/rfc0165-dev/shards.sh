@@ -18,7 +18,7 @@ edit)
     # graphs differ, so combining them can hide an activation mistake.
     run wir-prelude-and-prefix cargo nextest run -p witchy-wir --features native --test unit -E 'test(constant_prefix_publication_rejects_gaps_and_missing_children)'
     run lower-publication cargo nextest run -p witchy-lower --features witchy-wir/native --test codegen -E 'test(canonical_pipeline::list_string_)'
-    run admitted-abi cargo nextest run -p witchy --features witchy-wir/native --test misc --ignore-default-filter -E 'test(architecture::root_integration_test_binaries_stay_within_budget) or test(wasm_abi_catalog::public_spec_contains_the_generated_complete_catalog) or test(rfc0165_admitted_launch::admitted_aggregates_render_structurally_as_the_interpreter_prints_them)'
+    run admitted-abi cargo nextest run -p witchy --features witchy-wir/native --test misc --ignore-default-filter -E 'test(architecture::root_integration_test_binaries_stay_within_budget) or test(wasm_abi_catalog::public_spec_contains_the_generated_complete_catalog) or test(rfc0165_admitted_launch::admitted_aggregates_render_structurally_as_expected)'
     ;;
 corpus)
     run launch cargo test --test misc rfc0165_
