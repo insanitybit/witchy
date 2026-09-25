@@ -19,11 +19,18 @@ use crate::rooted_record::RecordRootPlan;
 pub enum RootedViewStorage {
     ScalarCell(CanonicalScalarKind),
     InlineScalar(CanonicalScalarKind),
-    RetainedString,
-    ProjectedRetainedList(CarrierElement),
-    RetainedList(CarrierElement),
-    RetainedAggregate(CarrierElement),
-    RetainedRecord(RecordRootPlan),
+    RetainedProjection(CarrierElement),
+    RetainedRoot(RetainedRootStorage),
+}
+
+/// The physical object behind a retained whole-root view. The child plan is
+/// checked source data; SafeWIR still verifies its independent layout walk.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RetainedRootStorage {
+    ByteBuffer,
+    Sequence(CarrierElement),
+    StructuralRecord(CarrierElement),
+    CheckedAggregate(RecordRootPlan),
 }
 
 impl RootedViewStorage {
@@ -46,16 +53,16 @@ impl RootedViewStorage {
         }
         if matches!(bare, Type::Tuple(_)) || matches!(bare, Type::Named(name, _) if name == "Dict")
         {
-            return Some(Self::RetainedAggregate(
+            return Some(Self::RetainedRoot(RetainedRootStorage::StructuralRecord(
                 CarrierElement::retained_structural_root(payload, definitions)?,
-            ));
+            )));
         }
         match bare {
             Type::Named(name, args) if args.is_empty() && name == "Int" => {
                 Some(Self::ScalarCell(CanonicalScalarKind::Int))
             }
             Type::Named(name, args) if args.is_empty() && name == "String" => {
-                Some(Self::RetainedString)
+                Some(Self::RetainedRoot(RetainedRootStorage::ByteBuffer))
             }
             Type::Named(name, args)
                 if args.is_empty() && matches!(name.as_str(), "Float" | "Bool" | "Duration") =>
@@ -67,14 +74,14 @@ impl RootedViewStorage {
                 };
                 Some(Self::InlineScalar(kind))
             }
-            Type::Slice(element) => Some(Self::ProjectedRetainedList(
+            Type::Slice(element) => Some(Self::RetainedProjection(
                 CarrierElement::from_checked_type_with_definitions(element, definitions)?,
             )),
             Type::Named(name, args) if name == "Slice" => {
                 let [element] = args.as_slice() else {
                     return None;
                 };
-                Some(Self::ProjectedRetainedList(
+                Some(Self::RetainedProjection(
                     CarrierElement::from_checked_type_with_definitions(element, definitions)?,
                 ))
             }
@@ -83,16 +90,16 @@ impl RootedViewStorage {
                     payload,
                     definitions,
                 )?;
-                Some(Self::RetainedList(element))
+                Some(Self::RetainedRoot(RetainedRootStorage::Sequence(element)))
             }
             Type::Named(..)
                 if crate::rooted_record::has_record_root_head(payload, definitions)? =>
             {
-                Some(Self::RetainedRecord(RecordRootPlan::from_checked_type(
+                Some(Self::RetainedRoot(RetainedRootStorage::CheckedAggregate(RecordRootPlan::from_checked_type(
                     payload,
                     definitions,
                     nominal,
-                )?))
+                )?)))
             }
             _ => None,
         }
@@ -125,11 +132,7 @@ impl RootedViewStorage {
                 bytes.push(*kind as u8);
                 CanonicalRootedViewCarrier::InlineScalar
             }
-            Self::RetainedString => {
-                bytes.extend_from_slice(&[3, 0]);
-                CanonicalRootedViewCarrier::RetainedRoot
-            }
-            Self::ProjectedRetainedList(element) => {
+            Self::RetainedProjection(element) => {
                 if !element.within_resource_bounds() {
                     return None;
                 }
@@ -137,30 +140,26 @@ impl RootedViewStorage {
                 bytes.extend_from_slice(&element.identity());
                 CanonicalRootedViewCarrier::RetainedProjection
             }
-            Self::RetainedList(element) => {
-                if !element.within_resource_bounds() {
-                    return None;
-                }
-                bytes.extend_from_slice(&[3, 1]);
-                bytes.extend_from_slice(&element.identity());
-                CanonicalRootedViewCarrier::RetainedRoot
-            }
-            Self::RetainedAggregate(element) => {
-                if !element.within_resource_bounds() {
-                    return None;
-                }
-                match element {
-                    CarrierElement::Tuple(_) | CarrierElement::Dict(_, _) => {}
-                    _ => return None,
-                }
-                bytes.extend_from_slice(&[3, 2]);
-                bytes.extend_from_slice(&element.identity());
-                CanonicalRootedViewCarrier::RetainedRoot
-            }
-            Self::RetainedRecord(plan) => {
-                bytes.extend_from_slice(&[3, 3]);
-                if !plan.identity.append_identity_bytes(&mut bytes) {
-                    return None;
+            Self::RetainedRoot(root) => {
+                match root {
+                    RetainedRootStorage::ByteBuffer => bytes.extend_from_slice(&[3, 0]),
+                    RetainedRootStorage::Sequence(element) => {
+                        if !element.within_resource_bounds() { return None; }
+                        bytes.extend_from_slice(&[3, 1]);
+                        bytes.extend_from_slice(&element.identity());
+                    }
+                    RetainedRootStorage::StructuralRecord(element) => {
+                        if !element.within_resource_bounds()
+                            || !matches!(element, CarrierElement::Tuple(_) | CarrierElement::Dict(_, _)) {
+                            return None;
+                        }
+                        bytes.extend_from_slice(&[3, 2]);
+                        bytes.extend_from_slice(&element.identity());
+                    }
+                    RetainedRootStorage::CheckedAggregate(plan) => {
+                        bytes.extend_from_slice(&[3, 3]);
+                        if !plan.identity.append_identity_bytes(&mut bytes) { return None; }
+                    }
                 }
                 CanonicalRootedViewCarrier::RetainedRoot
             }

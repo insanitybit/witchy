@@ -51,7 +51,8 @@ pub(super) fn record_root_plans_in_signature(
                 ) {
                     Some(true) if !matches!(
                         view.rooted_view_storage(payload),
-                        Some(witchy_canonical_source::rooted_view::RootedViewStorage::RetainedRecord(_))
+                        Some(witchy_canonical_source::rooted_view::RootedViewStorage::RetainedRoot(
+                            witchy_canonical_source::rooted_view::RetainedRootStorage::CheckedAggregate(_)))
                     ) => return false,
                     None => return false,
                     _ => {}
@@ -411,11 +412,7 @@ pub(crate) fn is_direct_rooted_view_whole_root(source: &witchy_syntax::ast::Type
     use witchy_canonical_source::rooted_view::RootedViewStorage;
     let witchy_syntax::ast::Type::Qualified(witchy_syntax::ast::TypeQual::View, payload) = source else { return false };
     matches!(RootedViewStorage::classify(payload, records, |_| Some(0)),
-        Some(RootedViewStorage::InlineScalar(_)
-            | RootedViewStorage::RetainedString
-            | RootedViewStorage::RetainedList(_)
-            | RootedViewStorage::RetainedAggregate(_)
-            | RootedViewStorage::RetainedRecord(_)))
+        Some(RootedViewStorage::InlineScalar(_) | RootedViewStorage::RetainedRoot(_)))
 }
 
 /// A direct `&[T]` rooted slice view of an admitted element (`ListSlice`).

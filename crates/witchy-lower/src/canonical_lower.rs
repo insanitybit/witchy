@@ -51,7 +51,7 @@ use write_back::{PreparedWriteBack, source_place_root};
 use witchy_syntax::ast::{BinOp, Convention, Expr, Item, Pattern, Stmt, Type, TypeDef, TypeQual, UnOp};
 use witchy_canonical_source::aggregates::{canonical_owner_aggregate_identity, concrete_aggregate_identity, dictionary_as_tuple, scalar_aggregate_shape, ScalarAggregateShape, ScalarVariant};
 use witchy_canonical_source::carrier::CarrierElement;
-use witchy_canonical_source::rooted_view::RootedViewStorage;
+use witchy_canonical_source::rooted_view::{RetainedRootStorage, RootedViewStorage};
 use witchy_canonical_source::abi::CanonicalScalarKind;
 use witchy_canonical_source::access::{
     AccessIdentityKey, AccessKind, AccessSignature, CheckedPlaceStep,
@@ -2920,8 +2920,8 @@ fn has_checked_direct_carrier(ty: &Type, definitions: &BTreeMap<String, TypeDef>
         match RootedViewStorage::classify(payload, definitions, |_| Some(0)) {
             // The projected carrier has no qualifier shell between `&` and
             // `[T]`; a whole List root permits only its proven Frozen shell.
-            Some(RootedViewStorage::ProjectedRetainedList(_)) => is_direct_slice_payload(payload),
-            Some(RootedViewStorage::RetainedList(_)) => true,
+            Some(RootedViewStorage::RetainedProjection(_)) => is_direct_slice_payload(payload),
+            Some(RootedViewStorage::RetainedRoot(RetainedRootStorage::Sequence(_))) => true,
             _ => false,
         }
     })
@@ -2942,7 +2942,7 @@ fn is_direct_view_payload(inner: &Type, definitions: &BTreeMap<String, TypeDef>)
         return false;
     }
     match RootedViewStorage::classify(inner, definitions, |_| Some(0)) {
-        Some(RootedViewStorage::ProjectedRetainedList(_)) => is_direct_slice_payload(inner),
+        Some(RootedViewStorage::RetainedProjection(_)) => is_direct_slice_payload(inner),
         Some(_) => true,
         None => false,
     }

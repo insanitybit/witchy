@@ -1,5 +1,5 @@
 use super::*;
-use witchy_canonical_source::rooted_view::RootedViewStorage;
+use witchy_canonical_source::rooted_view::{RetainedRootStorage, RootedViewStorage};
 
 pub(crate) fn value_type_matches_source(
     actual: super::super::ValueType,
@@ -21,7 +21,7 @@ pub(crate) fn value_type_matches_source(
         if record_head.is_none() { return false; }
         let storage = RootedViewStorage::classify(payload, records, |_| Some(0));
         if record_head == Some(true) {
-            let Some(RootedViewStorage::RetainedRecord(plan)) = storage else { return false };
+            let Some(RootedViewStorage::RetainedRoot(RetainedRootStorage::CheckedAggregate(plan))) = storage else { return false };
             let super::super::ValueType::Ref(layout) = actual else { return false };
             return record_layout_matches_with_closures(
                 layout, &plan.shape.fields, plan.shape.tagged, layouts, records,
@@ -29,13 +29,13 @@ pub(crate) fn value_type_matches_source(
             );
         }
         match storage {
-            Some(RootedViewStorage::RetainedAggregate(plan)) => {
+            Some(RootedViewStorage::RetainedRoot(RetainedRootStorage::StructuralRecord(plan))) => {
                 let super::super::ValueType::Ref(layout) = actual else { return false };
                 return super::super::closure_owner_contract::retained_structural_root_layout_matches(
                     layouts, layout, &plan,
                 );
             }
-            Some(RootedViewStorage::RetainedList(carrier)) => {
+            Some(RootedViewStorage::RetainedRoot(RetainedRootStorage::Sequence(carrier))) => {
                 // Every nested element still needs an owned slot and RC list.
                 let super::super::ValueType::Ref(layout) = actual else { return false };
                 let Ok(physical) = layouts.resolve_nominal(layout) else { return false };
