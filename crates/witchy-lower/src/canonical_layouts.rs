@@ -13,6 +13,7 @@ use witchy_canonical_source::aggregates::{
     dictionary_has_unadmitted_string_view_value, is_scalar_type, is_v1_list_element_type,
     scalar_aggregate_shape, shape_from_definition,
 };
+use witchy_canonical_source::abi::CanonicalScalarKind;
 use witchy_canonical_source::carrier::CarrierElement;
 use witchy_canonical_source::storage::StoragePlan;
 use witchy_syntax::ast::{self, Item, Type, TypeDef};
@@ -32,17 +33,28 @@ pub(crate) struct SharedIntReferenceLayout {
     pub list_root: Option<LayoutId>,
 }
 
-/// Allocate one collision-free pair of owner/list IDs per checked rooted
-/// carrier in this module. Slice identities are sorted by their full
-/// recursive element, followed by the distinct shared `&Int` place family.
-/// The namespace base separates these owners from closures and aggregates;
-/// it is never itself a carrier identity.
-fn rooted_view_owner_type(ordinal: usize) -> Result<GcTypeId, CanonicalLayoutError> {
-    let id = u32::try_from(ordinal).ok().and_then(|n| n.checked_mul(2))
-        .and_then(|n| n.checked_add(0xc300_0000))
-        .filter(|n| *n < 0xc400_0000)
-        .ok_or_else(|| CanonicalLayoutError::InvalidLayout("rooted view owner ID overflow".into()))?;
-    Ok(GcTypeId::new(id))
+/// Derive each rooted owner/list pair from the checked recursive carrier.
+/// The domain and even-ID namespace distinguish this family. The caller
+/// rejects truncated-ID collisions; SafeWIR also checks all owner families
+/// together before admission.
+enum RootedOwnerKey<'a> {
+    ScalarPlace(CanonicalScalarKind),
+    RetainedProjection(&'a CarrierElement),
+}
+
+fn rooted_view_owner_type(key: RootedOwnerKey<'_>) -> GcTypeId {
+    let mut digest = Sha256::new();
+    digest.update(b"witchy/rooted-view-owner-family-v2\0");
+    match key {
+        RootedOwnerKey::RetainedProjection(element) => {
+            digest.update([1]);
+            digest.update(element.identity());
+        }
+        RootedOwnerKey::ScalarPlace(kind) => digest.update([0, kind as u8]),
+    }
+    let digest: [u8; 32] = digest.finalize().into();
+    let lower = u32::from_le_bytes([digest[0], digest[1], digest[2], digest[3]]);
+    GcTypeId::new(0xc300_0000 | ((lower & 0x007f_ffff) << 1))
 }
 
 /// Canonical storage for an immutable `&[T]`: a retained list root and its
@@ -850,6 +862,7 @@ impl LayoutProjection {
         // A `&[Int]` carrier forms `&Int` element views (`&xs[i]`, and the
         // by-value read `xs[i]` through one), so it needs the shared Int
         // reference family even where no `&Int` is written.
+        let mut rooted_owner_ids = HashSet::new();
         let shared_int_reference = if self.rooted_slices_requested.contains(&CarrierElement::Scalar(witchy_canonical_source::abi::CanonicalScalarKind::Int)) || self.roots.iter().any(|ty| {
             matches!(ty.unqualified(), Type::Named(name, arguments)
                 if name == "Int" && arguments.is_empty())
@@ -880,20 +893,24 @@ impl LayoutProjection {
             let environment = interner.intern_packed_record(children)
                 .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?;
             roots.insert(environment);
-            let owner_type = rooted_view_owner_type(self.rooted_slices_requested.len())?;
+            let owner_type = rooted_view_owner_type(RootedOwnerKey::ScalarPlace(CanonicalScalarKind::Int));
+            if !rooted_owner_ids.insert(owner_type.get()) {
+                return Err(CanonicalLayoutError::InvalidLayout("rooted view owner structural ID collision".into()));
+            }
             Some(SharedIntReferenceLayout { owner_type, environment, scalar_root, list_root })
         } else {
             None
         };
         let mut rooted_slices = Vec::new();
-        for (ordinal, element) in self.rooted_slices_requested.iter().enumerate() {
+        for element in &self.rooted_slices_requested {
             let element_type = rooted_slice_element_type(element);
-            // Full checked element ordering gives each slice a disjoint pair
-            // of owner/list IDs, including the shared place family above.
-            let owner_type = rooted_view_owner_type(ordinal)?;
             let list_type = Type::Named("List".into(), vec![element_type]);
             if !self.roots.iter().any(|ty| canonical_layout_type(ty, &self.definitions) == list_type) {
                 continue;
+            }
+            let owner_type = rooted_view_owner_type(RootedOwnerKey::RetainedProjection(element));
+            if !rooted_owner_ids.insert(owner_type.get()) {
+                return Err(CanonicalLayoutError::InvalidLayout("rooted view owner structural ID collision".into()));
             }
             let list_root = intern_v1_layout(
                 &mut interner, &list_type, &self.definitions, &recursive_types, &closure_layouts,

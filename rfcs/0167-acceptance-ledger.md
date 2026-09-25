@@ -77,6 +77,17 @@ Adversarial review found no authority widening. This consolidates one checker
 gate, and a focused `witchy-types` compile passed. Admitted Wasm, zero-leak
 evidence, and A–O status are unchanged.
 
+Row G structural rooted owner identities (architecture implemented, semantic
+evidence unchanged, 2026-09-25): the scalar-place and rooted-slice owner/list
+ID pairs now derive from a domain-separated digest of the typed storage class
+and recursive `CarrierElement` identity, rather than from their position in
+a sorted list. A truncated-ID collision between materialized families fails
+layout construction; SafeWIR also checks owner-ID uniqueness across family
+classes. Adversarial review found no new authority path or assumption that
+rooted IDs are contiguous. Existing closure and aggregate owner allocators
+remain ordinal and are a separate structural-identity gap. The change has no
+new admitted Wasm or zero-leak evidence and closes no A–O row.
+
 Row G rooted-slice layout request (architecture implemented, semantic
 evidence unchanged, 2026-09-25): layout projection now asks the shared
 `StoragePlan` for a checked slice element's recursive owned carrier, or a
