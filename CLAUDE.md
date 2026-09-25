@@ -93,8 +93,10 @@ Clippy runs **bug-lint tiers only** — `correctness` + `suspicious` +
 never block (see `CLIPPY_GATE_LINTS` in the script). Do not run the full gate
 yourself. After committing the exact tip you intend to submit, run
 `./scripts/agent-check.sh edit`; it selects focused checks from the committed
-diff and records the commit-keyed receipt consumed by the merge queue. The
-coordinator owns the serialized full gate. CI (`.github/workflows/ci.yml`) runs
+diff and records the commit-keyed receipt consumed by the merge queue. For a
+compiler-crate edit it runs a fixed 1/8 hash slice of the 311 example tests
+(`WITCHY_EDIT_EXAMPLES=full` runs all of them); the landing gate runs the
+complete matrix. The coordinator owns the serialized full gate. CI (`.github/workflows/ci.yml`) runs
 build/clippy/nextest, canonical-conformance sweep, heap-check fuzz, and fmt.
 
 ## Why the optimization zoo stays (RFC-0016 / RFC-0051)

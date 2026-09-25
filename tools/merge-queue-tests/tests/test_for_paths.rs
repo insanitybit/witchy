@@ -166,6 +166,29 @@ fn gate_nextest_example_tests_only_is_not_workspace() {
 }
 
 #[test]
+fn compiler_edit_loop_runs_one_example_slice_and_landing_runs_all() {
+    let sliced = selected(&["--edit-loop", "crates/witchy-types/src/typeck.rs"]);
+    assert!(
+        sliced.iter().any(|c| c.contains("--partition hash:1/8")
+            && c.contains("test(/^example_tests::/)")),
+        "compiler edit loop did not slice the example matrix: {sliced:?}",
+    );
+    let output = Command::new("bash")
+        .arg(workspace_root().join("scripts/test-for-paths.sh"))
+        .args(["--edit-loop", "crates/witchy-types/src/typeck.rs"])
+        .env("WITCHY_EDIT_EXAMPLES", "full")
+        .output()
+        .expect("run test-for-paths.sh");
+    let full = String::from_utf8(output.stdout).expect("router output is UTF-8");
+    assert!(
+        full.contains("test(/^example_tests::/)") && !full.contains("--partition"),
+        "WITCHY_EDIT_EXAMPLES=full did not restore the complete matrix: {full}",
+    );
+    let landing = gate_nextest(&["crates/witchy-types/src/typeck.rs"]);
+    assert!(!landing.contains("--partition"), "landing gate sliced the examples: {landing}");
+}
+
+#[test]
 fn root_example_tests_edit_builds_only_the_main_bin() {
     let commands = selected(&["--edit-loop", "src/example_tests.rs"]);
     assert_eq!(commands.len(), 1, "{commands:?}");

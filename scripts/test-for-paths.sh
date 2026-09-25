@@ -996,6 +996,23 @@ if [ "$edit_loop" -eq 1 ]; then
     done
 fi
 
+# The complete example matrix (311 compile-heavy tests) was 100-164s of a
+# 200-295s witchy-types edit loop on 2026-09-24. The edit loop runs one fixed
+# hash slice of it -- about 1/8, spread across every example module -- and the
+# serialized landing gate still runs all of it. WITCHY_EDIT_EXAMPLES=full
+# restores the complete matrix locally.
+edit_example_slice=hash:1/8
+if [ "$edit_loop" -eq 1 ] && [ "${WITCHY_EDIT_EXAMPLES:-slice}" != full ]; then
+    for i in "${!cmds[@]}"; do
+        case "${cmds[$i]}" in
+            "./scripts/nextest-admitted.sh witchy -- cargo nextest run -E 'test(/^example_tests::/)'")
+                cmds[$i]="./scripts/nextest-admitted.sh witchy -- cargo nextest run --partition $edit_example_slice -E 'test(/^example_tests::/)'" ;;
+            "./scripts/nextest-admitted.sh witchy -- cargo nextest run --bin witchy -E 'test(/^example_tests::/)'")
+                cmds[$i]="./scripts/nextest-admitted.sh witchy -- cargo nextest run --bin witchy --partition $edit_example_slice -E 'test(/^example_tests::/)'" ;;
+        esac
+    done
+fi
+
 # Any Rust change means the fast gate already runs every workspace nextest test.
 # Drop narrower nextest selections it subsumes, but retain independent shards
 # such as Witchy source formatting.
