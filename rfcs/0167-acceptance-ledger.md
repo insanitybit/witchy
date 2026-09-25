@@ -55,6 +55,13 @@ is needed for soundness.
 
 ## Exact-tip evidence checkpoint
 
+Row G WIR whole-root source predicate (architecture implemented, semantic
+evidence unchanged, 2026-09-25): SafeWIR's direct rooted whole-root source
+predicate now consumes the shared `StoragePlan` and requires its inline-scalar
+or retained-root class. The checked witness and physical layout checks still
+bind the source to the candidate. Admitted Wasm, zero-leak evidence, and A–O
+status remain unchanged.
+
 Row G list of authenticated scalar-place owners (architecture implemented,
 semantic evidence unchanged, 2026-09-25): `StoragePlan` now has a typed
 retained-owner-list class for `List(T)` whose element is an admitted

@@ -410,9 +410,9 @@ pub(super) fn erase_record_string_views(records: &ScalarRecordFields) -> ScalarR
 /// place remain separate physical classes.
 pub(crate) fn is_direct_rooted_view_whole_root(source: &witchy_syntax::ast::Type, records: &ScalarRecordFields) -> bool {
     use witchy_canonical_source::rooted_view::RootedViewStorage;
-    let witchy_syntax::ast::Type::Qualified(witchy_syntax::ast::TypeQual::View, payload) = source else { return false };
-    matches!(RootedViewStorage::classify(payload, records, |_| Some(0)),
-        Some(RootedViewStorage::InlineScalar(_) | RootedViewStorage::RetainedRoot(_)))
+    use witchy_canonical_source::storage::StoragePlan;
+    matches!(StoragePlan::classify(source, records, |_| Some(0)),
+        StoragePlan::RootedView(RootedViewStorage::InlineScalar(_) | RootedViewStorage::RetainedRoot(_)))
 }
 
 /// A retained projection whose recursive element has checked ownership.
