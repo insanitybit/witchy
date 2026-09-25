@@ -49,7 +49,10 @@ pub(super) fn record_root_plans_in_signature(
                 match witchy_canonical_source::rooted_record::has_record_root_head(
                     payload, view.type_definitions(),
                 ) {
-                    Some(true) if view.record_root_plan(payload).is_none() => return false,
+                    Some(true) if !matches!(
+                        view.rooted_view_storage(payload),
+                        Some(witchy_canonical_source::rooted_view::RootedViewStorage::RetainedRecord(_))
+                    ) => return false,
                     None => return false,
                     _ => {}
                 }

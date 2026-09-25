@@ -11,8 +11,6 @@ use witchy_syntax::ast::{self, Convention, Item, Type};
 
 use crate::typeck::{Ty, TypedModule};
 use witchy_canonical_source::abi::*;
-use witchy_canonical_source::carrier::CarrierElement;
-use witchy_canonical_source::rooted_record::RecordRootIdentity;
 
 
 /// Exposed for the ABI-security pins in `tests/typeck/capabilities.rs`.
@@ -67,6 +65,9 @@ pub(crate) fn canonical_checked_ty_bytes(
     typed: &TypedModule,
     ty: &Ty,
 ) -> Result<Vec<u8>, CanonicalAbiError> {
+    if !within_canonical_abi_type_budget(ty) {
+        return Err(CanonicalAbiError::Unsupported("checked type exceeds canonical ABI bounds".into()));
+    }
     let context = Context::from_module(typed.module());
     let mut bytes = Vec::new();
     encode_ty(ty, &context, &mut bytes)?;
@@ -77,6 +78,9 @@ pub(crate) fn canonical_ast_type_bytes(
     typed: &TypedModule,
     ty: &Type,
 ) -> Result<Vec<u8>, CanonicalAbiError> {
+    if !within_canonical_abi_ast_budget(ty) {
+        return Err(CanonicalAbiError::Unsupported("source type exceeds canonical ABI bounds".into()));
+    }
     let context = Context::from_module(typed.module());
     let mut bytes = Vec::new();
     encode_ast(ty, &context, &mut bytes)?;
@@ -266,6 +270,9 @@ fn convention(convention: Convention) -> CanonicalParameterConvention {
 }
 
 fn value_from_ty(ty: &Ty, context: &Context) -> Result<CanonicalValueKind, CanonicalAbiError> {
+    if !within_canonical_abi_type_budget(ty) {
+        return Err(CanonicalAbiError::Unsupported("checked type exceeds canonical ABI bounds".into()));
+    }
     let mut bytes = Vec::new();
     encode_ty(ty, context, &mut bytes)?;
     let key = CanonicalTypeKey::from_digest(*blake3::hash(&bytes).as_bytes());
@@ -297,6 +304,9 @@ fn value_from_ty(ty: &Ty, context: &Context) -> Result<CanonicalValueKind, Canon
 }
 
 fn value_from_ast(ty: &Type, context: &Context) -> Result<CanonicalValueKind, CanonicalAbiError> {
+    if !within_canonical_abi_ast_budget(ty) {
+        return Err(CanonicalAbiError::Unsupported("source type exceeds canonical ABI bounds".into()));
+    }
     if let Type::Qualified(ast::TypeQual::View, payload) = ty {
         return Ok(CanonicalValueKind::Reference(rooted_view_from_ast(payload, context)?));
     }
@@ -327,80 +337,58 @@ pub fn rooted_view_from_ty(
     payload: &Ty,
     context: &Context,
 ) -> Result<CanonicalReferenceKind, CanonicalAbiError> {
-    if let Some(plan @ CarrierElement::Tuple(_)) = crate::typeck::ty_to_ast(payload)
-        .as_ref().and_then(|ty| CarrierElement::retained_structural_root(ty, &context.definitions)) {
-        return Ok(CanonicalReferenceKind::RootedView {
-            payload: rooted_structural_payload_key(&plan),
-            carrier: CanonicalRootedViewCarrier::TupleRoot,
-        });
+    if !within_canonical_abi_type_budget(payload) {
+        return Err(CanonicalAbiError::Unsupported("rooted view payload exceeds canonical ABI bounds".into()));
     }
-    if let Some(plan @ CarrierElement::Dict(_, _)) = crate::typeck::ty_to_ast(payload)
-        .as_ref().and_then(|ty| CarrierElement::retained_structural_root(ty, &context.definitions)) {
-        return Ok(CanonicalReferenceKind::RootedView {
-            payload: rooted_structural_payload_key(&plan),
-            carrier: CanonicalRootedViewCarrier::DictRoot,
-        });
-    }
-    match payload {
-        Ty::Int => Ok(CanonicalReferenceKind::RootedView {
-            payload: rooted_scalar_payload_key(CanonicalScalarKind::Int),
-            carrier: CanonicalRootedViewCarrier::IntScalarRoot,
-        }),
-        Ty::Named(name, arguments)
-            if name.as_ref() == "Slice"
-                && arguments.len() == 1
-                && arguments.first().and_then(|element| slice_element_carrier_ty(element, context)).is_some() =>
-        {
-            let element = arguments.first().and_then(|element| slice_element_carrier_ty(element, context)).expect("matched above");
-            Ok(CanonicalReferenceKind::RootedView {
-                payload: rooted_slice_payload_key(&element),
-                carrier: CanonicalRootedViewCarrier::ListSliceRoot,
-            })
-        }
-        Ty::String => Ok(CanonicalReferenceKind::RootedView {
-            payload: rooted_string_payload_key(),
-            carrier: CanonicalRootedViewCarrier::StringRoot,
-        }),
-        Ty::Float | Ty::Bool | Ty::Duration => Ok(CanonicalReferenceKind::RootedView {
-            payload: rooted_scalar_value_payload_key(match payload {
-                Ty::Float => CanonicalScalarKind::Float,
-                Ty::Bool => CanonicalScalarKind::Bool,
-                _ => CanonicalScalarKind::Duration,
-            }),
-            carrier: CanonicalRootedViewCarrier::ScalarValue,
-        }),
-        Ty::List(element) => {
-            let element = crate::typeck::ty_to_ast(element)
-                .as_ref()
-                .and_then(|element| witchy_canonical_source::carrier::CarrierElement::from_checked_type_with_definitions(element, &context.definitions))
-                .ok_or_else(|| CanonicalAbiError::Unsupported(
-                    "rooted view payload has no admitted authenticated carrier".into(),
-                ))?;
-            Ok(rooted_list_view(&element))
-        }
-        Ty::Named(..) => {
-            if !crate::typeck::ty_to_ast(payload).is_some_and(|payload| {
-                witchy_canonical_source::aggregates::is_record_root_payload(&payload, &context.definitions)
-            }) {
-                return Err(CanonicalAbiError::Unsupported(
-                    "rooted view payload has no admitted authenticated carrier".into(),
-                ));
+    let source = crate::typeck::ty_to_ast(payload).ok_or_else(|| CanonicalAbiError::Unsupported(
+        "rooted view payload has no concrete checked type".into(),
+    ))?;
+    rooted_view_from_ast(&source, context)
+}
+
+fn within_canonical_abi_type_budget(root: &Ty) -> bool {
+    let mut pending = vec![(root, 0usize)];
+    let mut remaining = 4_096usize;
+    while let Some((ty, depth)) = pending.pop() {
+        if depth > 128 || remaining == 0 { return false; }
+        remaining -= 1;
+        match ty {
+            Ty::List(child) | Ty::View(child) => pending.push((child, depth + 1)),
+            Ty::Tuple(children) | Ty::Named(_, children) | Ty::Dyn(_, children) => {
+                pending.extend(children.iter().map(|child| (child, depth + 1)));
             }
-            let identity = rooted_record_identity(
-                &crate::typeck::ty_to_ast(payload).ok_or_else(|| CanonicalAbiError::Unsupported(
-                    "rooted view payload has no concrete checked type".into(),
-                ))?,
-                context,
-            )?;
-            Ok(CanonicalReferenceKind::RootedView {
-                payload: rooted_record_payload_key(&identity),
-                carrier: CanonicalRootedViewCarrier::RecordRoot,
-            })
+            Ty::Fn(parameters, result, _, _, _) => {
+                pending.extend(parameters.iter().map(|parameter| (parameter, depth + 1)));
+                pending.push((result, depth + 1));
+            }
+            _ => {}
         }
-        _ => Err(CanonicalAbiError::Unsupported(
-            "rooted view payload has no admitted authenticated carrier".into(),
-        )),
     }
+    true
+}
+
+fn within_canonical_abi_ast_budget(root: &Type) -> bool {
+    let mut pending = vec![(root, 0usize)];
+    let mut remaining = 4_096usize;
+    while let Some((ty, depth)) = pending.pop() {
+        if depth > 128 || remaining == 0 { return false; }
+        remaining -= 1;
+        match ty {
+            Type::Qualified(_, inner) | Type::Slice(inner) => pending.push((inner, depth + 1)),
+            Type::Named(_, children) | Type::Dyn(_, children) | Type::Tuple(children) => {
+                pending.extend(children.iter().map(|child| (child, depth + 1)));
+            }
+            Type::Fn(parameters, result, _, _) => {
+                pending.extend(parameters.iter().map(|parameter| (parameter, depth + 1)));
+                pending.push((result, depth + 1));
+            }
+            Type::RecordCompose { base, fields } => {
+                pending.push((base, depth + 1));
+                pending.extend(fields.iter().map(|(_, field)| (field, depth + 1)));
+            }
+        }
+    }
+    true
 }
 
 /// Exposed for the ABI-security pins in `tests/typeck/capabilities.rs`.
@@ -409,160 +397,18 @@ pub fn rooted_view_from_ast(
     payload: &Type,
     context: &Context,
 ) -> Result<CanonicalReferenceKind, CanonicalAbiError> {
-    if let Some(plan @ CarrierElement::Tuple(_)) = CarrierElement::retained_structural_root(payload, &context.definitions) {
-        return Ok(CanonicalReferenceKind::RootedView {
-            payload: rooted_structural_payload_key(&plan),
-            carrier: CanonicalRootedViewCarrier::TupleRoot,
-        });
+    if !within_canonical_abi_ast_budget(payload) {
+        return Err(CanonicalAbiError::Unsupported("rooted view payload exceeds canonical ABI bounds".into()));
     }
-    if let Some(plan @ CarrierElement::Dict(_, _)) = CarrierElement::retained_structural_root(payload, &context.definitions) {
-        return Ok(CanonicalReferenceKind::RootedView {
-            payload: rooted_structural_payload_key(&plan),
-            carrier: CanonicalRootedViewCarrier::DictRoot,
-        });
-    }
-    match payload.unqualified() {
-        Type::Named(name, arguments) if name == "Int" && arguments.is_empty() => Ok(CanonicalReferenceKind::RootedView {
-            payload: rooted_scalar_payload_key(CanonicalScalarKind::Int),
-            carrier: CanonicalRootedViewCarrier::IntScalarRoot,
-        }),
-        Type::Slice(element) if slice_element_carrier_ast(element, context).is_some() => {
-            Ok(CanonicalReferenceKind::RootedView {
-                payload: rooted_slice_payload_key(&slice_element_carrier_ast(element, context).expect("matched above")),
-                carrier: CanonicalRootedViewCarrier::ListSliceRoot,
-            })
-        }
-        Type::Named(name, arguments)
-            if name == "Slice"
-                && matches!(arguments.as_slice(), [element] if slice_element_carrier_ast(element, context).is_some()) =>
-        {
-            Ok(CanonicalReferenceKind::RootedView {
-                payload: rooted_slice_payload_key(&slice_element_carrier_ast(&arguments[0], context).expect("matched above")),
-                carrier: CanonicalRootedViewCarrier::ListSliceRoot,
-            })
-        }
-        Type::Named(name, arguments) if name == "String" && arguments.is_empty() => Ok(CanonicalReferenceKind::RootedView {
-            payload: rooted_string_payload_key(),
-            carrier: CanonicalRootedViewCarrier::StringRoot,
-        }),
-        Type::Named(name, arguments)
-            if arguments.is_empty() && matches!(name.as_str(), "Float" | "Bool" | "Duration") =>
-        {
-            Ok(CanonicalReferenceKind::RootedView {
-                payload: rooted_scalar_value_payload_key(match name.as_str() {
-                    "Float" => CanonicalScalarKind::Float,
-                    "Bool" => CanonicalScalarKind::Bool,
-                    _ => CanonicalScalarKind::Duration,
-                }),
-                carrier: CanonicalRootedViewCarrier::ScalarValue,
-            })
-        }
-        Type::Named(name, arguments) if name == "List" && arguments.len() == 1 => {
-            let element = witchy_canonical_source::carrier::CarrierElement::from_list_root_payload_type_with_definitions(
-                payload, &context.definitions,
-            )
-                .ok_or_else(|| CanonicalAbiError::Unsupported(
-                    "rooted view payload has no admitted authenticated carrier".into(),
-                ))?;
-            Ok(rooted_list_view(&element))
-        }
-        Type::Named(name, arguments)
-            if !(arguments.is_empty() && matches!(name.as_str(), "Int" | "Float" | "Duration" | "Bool" | "String")) =>
-        {
-            // A record root is a head; scalar and String leaves appear only as
-            // its type arguments.
-            if !witchy_canonical_source::aggregates::is_record_root_payload(payload.unqualified(), &context.definitions) {
-                return Err(CanonicalAbiError::Unsupported(
-                    "rooted view payload has no admitted authenticated carrier".into(),
-                ));
-            }
-            let identity = rooted_record_identity(payload, context)?;
-            Ok(CanonicalReferenceKind::RootedView {
-                payload: rooted_record_payload_key(&identity),
-                carrier: CanonicalRootedViewCarrier::RecordRoot,
-            })
-        }
-        _ => Err(CanonicalAbiError::Unsupported(
-            "rooted view payload has no admitted authenticated carrier".into(),
-        )),
-    }
-}
-
-/// Rooted views need one payload identity regardless of whether the caller
-/// reached the boundary through a checked HM type or a checked declaration
-/// annotation. Those encodings deliberately differ elsewhere, so never hash
-/// either representation here. Structural roots use the shared recursive
-/// carrier identity, with a separate domain for this local ABI migration.
-fn rooted_scalar_payload_key(kind: CanonicalScalarKind) -> CanonicalTypeKey {
-    let mut bytes = b"witchy.canonical-rooted-view-payload.v1".to_vec();
-    bytes.push(kind as u8);
-    CanonicalTypeKey::from_digest(*blake3::hash(&bytes).as_bytes())
-}
-
-fn rooted_record_payload_key(identity: &[u8]) -> CanonicalTypeKey {
-    let mut bytes = b"witchy.canonical-rooted-view-payload.v3/record".to_vec();
-    bytes.extend_from_slice(identity);
-    CanonicalTypeKey::from_digest(*blake3::hash(&bytes).as_bytes())
-}
-
-fn rooted_structural_payload_key(plan: &CarrierElement) -> CanonicalTypeKey {
-    let mut bytes = b"witchy.canonical-rooted-view-payload.v2/structural\0".to_vec();
-    bytes.extend_from_slice(&plan.identity());
-    CanonicalTypeKey::from_digest(*blake3::hash(&bytes).as_bytes())
-}
-
-/// Both checked HM types and source annotations use this shared typed plan.
-/// The frontend supplies the checked nominal table; the source contract owns
-/// the recursive structural encoding and its explicit refusal boundary.
-fn rooted_record_identity(ty: &Type, context: &Context) -> Result<Vec<u8>, CanonicalAbiError> {
-    let plan = RecordRootIdentity::from_checked_type(ty, &context.definitions, |name| {
-        context.declares_type(name).then(|| context.nominal(name).ok()).flatten()
-    }).ok_or_else(|| CanonicalAbiError::Unsupported(
+    witchy_canonical_source::rooted_view::RootedViewStorage::classify(
+        payload,
+        &context.definitions,
+        |name| context.declares_type(name).then(|| context.nominal(name).ok()).flatten(),
+    )
+    .and_then(|plan| plan.canonical_reference())
+    .ok_or_else(|| CanonicalAbiError::Unsupported(
         "rooted view payload has no admitted authenticated carrier".into(),
-    ))?;
-    let mut bytes = Vec::new();
-    if !plan.append_identity_bytes(&mut bytes) {
-        return Err(CanonicalAbiError::Unsupported(
-            "rooted view payload has no admitted authenticated carrier".into(),
-        ));
-    }
-    Ok(bytes)
-}
-
-/// Whole-list identity is derived from the same recursive canonical element
-/// used for slice owners, with a separate domain for this ABI carrier.
-fn rooted_list_view(element: &witchy_canonical_source::carrier::CarrierElement) -> CanonicalReferenceKind {
-    let mut bytes = b"witchy.canonical-rooted-view-payload.v3/list\0".to_vec();
-    bytes.extend_from_slice(&element.identity());
-    CanonicalReferenceKind::RootedView {
-        payload: CanonicalTypeKey::from_digest(*blake3::hash(&bytes).as_bytes()),
-        carrier: CanonicalRootedViewCarrier::ListRoot,
-    }
-}
-
-fn rooted_scalar_value_payload_key(kind: CanonicalScalarKind) -> CanonicalTypeKey {
-    let mut bytes = b"witchy.canonical-rooted-view-payload.v1/scalar-value".to_vec();
-    bytes.push(kind as u8);
-    CanonicalTypeKey::from_digest(*blake3::hash(&bytes).as_bytes())
-}
-
-fn rooted_string_payload_key() -> CanonicalTypeKey {
-    CanonicalTypeKey::from_digest(*blake3::hash(b"witchy.canonical-rooted-view-payload.v1/string").as_bytes())
-}
-
-fn slice_element_carrier_ty(element: &Ty, context: &Context) -> Option<witchy_canonical_source::carrier::CarrierElement> {
-    crate::typeck::ty_to_ast(element).as_ref()
-        .and_then(|element| witchy_canonical_source::carrier::CarrierElement::from_checked_type_with_definitions(element, &context.definitions))
-}
-
-fn slice_element_carrier_ast(element: &Type, context: &Context) -> Option<witchy_canonical_source::carrier::CarrierElement> {
-    witchy_canonical_source::carrier::CarrierElement::from_checked_type_with_definitions(element, &context.definitions)
-}
-
-/// The checked recursive element is the payload identity, independent of
-/// display spelling or a fixed catalog of concrete nested types.
-fn rooted_slice_payload_key(element: &witchy_canonical_source::carrier::CarrierElement) -> CanonicalTypeKey {
-    CanonicalTypeKey::from_digest(element.identity())
+    ))
 }
 
 fn contains_rooted_view(ty: &Ty) -> bool {

@@ -16,7 +16,7 @@ use crate::abi::{CanonicalCallableAbi, CanonicalCallableAbiManifest};
 use crate::access::AccessSignature;
 use crate::carrier::CarrierElement;
 use crate::closure::ClosureWitnessManifest;
-use crate::rooted_record::RecordRootPlan;
+use crate::rooted_view::RootedViewStorage;
 use crate::specialization::LogicalSpecializationIdentity;
 
 /// Evidence that exact source bytes crossed the checked type-checking boundary.
@@ -241,11 +241,10 @@ impl<'s> CanonicalSourceView<'s> {
 
     pub fn slice_carriers(&self) -> &'s [CarrierElement] { self.slice_carriers }
 
-    /// Classify a record-root payload against this exact checked module's
-    /// definitions and nominal ordinals. SafeWIR must use the payload from a
-    /// checked source fact or signature; a candidate's own type is not proof.
-    pub fn record_root_plan(&self, payload: &Type) -> Option<RecordRootPlan> {
-        RecordRootPlan::from_checked_type(payload, self.type_definitions, |name| {
+    /// Classify a rooted-view payload against this checked module's source
+    /// definitions and nominal ordinals. Candidate syntax cannot mint it.
+    pub fn rooted_view_storage(&self, payload: &Type) -> Option<RootedViewStorage> {
+        RootedViewStorage::classify(payload, self.type_definitions, |name| {
             self.module.items.iter().enumerate().find_map(|(ordinal, item)| {
                 match item {
                     Item::Type(definition) if definition.name == name => u32::try_from(ordinal).ok(),

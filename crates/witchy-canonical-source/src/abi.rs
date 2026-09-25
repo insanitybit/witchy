@@ -69,40 +69,18 @@ pub enum CanonicalReferenceKind {
     },
 }
 
-/// Physical family selected for an authenticated rooted view.  New payloads
-/// require a new explicit carrier family; they may not reuse the scalar cell.
+/// Physical representation of an authenticated rooted view. The structural
+/// payload key binds the exact checked source type within each class.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum CanonicalRootedViewCarrier {
-    IntScalarRoot,
-    /// Retained `List(T)` root plus checked `{start, len}` projection, for a
-    /// `&[T]` whose element is one scalar kind or String. It is not an open
-    /// List ABI: the element is read only through the checked projection.
-    ListSliceRoot,
-    /// A whole immutable `String` value.  The carrier is the retained
-    /// reference-counted String object itself: a whole-value view has no
-    /// projection, and the String representation is already immutable and
-    /// shared by retain, so the view is a value-semantic snapshot of its root.
-    StringRoot,
-    /// A whole immutable user record or sum (argument-less nominal).  Like
-    /// `StringRoot`, the carrier is the retained aggregate object itself: a
-    /// record is an immutable value shared by retain, so the token is the
-    /// snapshot.  The payload identity is the declaration's nominal ordinal.
-    RecordRoot,
-    /// A whole immutable `List(T)` with a recursive checked element proof.
-    /// The carrier is the retained list object, so a later owner mutation
-    /// preserves the view's snapshot.
-    ListRoot,
-    /// A view of an immutable `Float`, `Bool`, or `Duration` value is carried
-    /// as that value: an immutable scalar read at formation is exactly what the
-    /// view observes, the RFC's proven-equivalent representation.  `&Int`
-    /// keeps its `IntScalarRoot` cell, which also carries list element views.
-    ScalarValue,
-    /// A whole dictionary view with recursively proven key and value
-    /// storage. Its payload key is derived from that structural proof.
-    DictRoot,
-    /// A whole tuple view with recursively proven fields retains its
-    /// immutable aggregate root.
-    TupleRoot,
+    /// An authenticated scalar place carrying an Int snapshot.
+    ScalarPlace,
+    /// An immutable scalar copied at view formation.
+    InlineScalar,
+    /// A retained List object and an authenticated start/length projection.
+    RetainedProjection,
+    /// A retained immutable String, List, tuple, dictionary, or record root.
+    RetainedRoot,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]

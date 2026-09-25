@@ -51,7 +51,7 @@ impl CarrierElement {
         ty: &Type,
         definitions: &BTreeMap<String, TypeDef>,
     ) -> Option<Self> {
-        if ty != ty.unqualified() {
+        if matches!(ty, Type::Qualified(_, _)) {
             return None;
         }
         let plan = Self::from_checked_type_with_definitions(ty, definitions)?;

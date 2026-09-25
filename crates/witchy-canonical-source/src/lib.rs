@@ -20,6 +20,7 @@ pub mod carrier;
 pub mod closure;
 pub mod proper_tail;
 pub mod rooted_record;
+pub mod rooted_view;
 pub mod scope;
 pub mod service;
 pub mod source;

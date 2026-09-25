@@ -3308,7 +3308,7 @@ fn is_direct_shared_int(ty: &Type) -> bool {
 }
 
 /// A whole immutable `&String` view.  Its carrier is the retained String
-/// object token itself (`CanonicalRootedViewCarrier::StringRoot`): the
+/// object token itself (`CanonicalRootedViewCarrier::RetainedRoot`): the
 /// payload is immutable and shared by retain, so the token is the snapshot.
 fn is_rooted_string(ty: &Type) -> bool {
     matches!(ty.unqualified(), Type::Named(name, arguments) if name == "String" && arguments.is_empty())
@@ -3583,7 +3583,7 @@ fn ordinary_own_type_supported(ty: &Type) -> bool {
         // ABI, so list elements deliberately use the unqualified helper.
         Type::Qualified(TypeQual::Unique, inner) => inner.as_ref(),
         // A `&Float`/`&Bool`/`&Duration` view is carried as the immutable
-        // scalar value itself (`ScalarValue`), so consuming one is a plain
+        // scalar value itself (`InlineScalar`), so consuming one is a plain
         // copy of that value. Async lowering carries live views into
         // continuation segments as `own` parameters.
         Type::Qualified(TypeQual::View, inner)
@@ -14697,7 +14697,7 @@ impl FunctionLowerer<'_> {
             }
             (UnOp::Deref, ValueType::Ref(_)) => self.clone_reference_token(operand),
             // A `&Float`/`&Bool`/`&Duration` view is the scalar value itself
-            // (`ScalarValue`); `&Int` is a GC cell handled above.
+            // (`InlineScalar`); `&Int` is a GC cell handled above.
             (UnOp::Deref, ValueType::Float | ValueType::Bool | ValueType::Int) if scalar_value_view => Ok(operand),
             (UnOp::Deref, _) => Err(CanonicalLoweringError::UnsupportedExpression("dereference operand")),
             // Checked source establishes consumption; SafeWIR forwards the same token,
@@ -19269,7 +19269,7 @@ fn source_value_type(
     closure_layouts: &ClosureValueLayouts,
     definitions: &BTreeMap<String, TypeDef>,
 ) -> Result<ValueType, CanonicalLoweringError> {
-    // A whole record view (`RecordRoot`) is carried as the record's own
+    // A whole record view (`RetainedRoot`) is carried as the record's own
     // retained object token.
     if let Type::Qualified(TypeQual::View, inner) = source
         && (witchy_canonical_source::aggregates::is_record_root_payload(inner, definitions)
