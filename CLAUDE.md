@@ -189,10 +189,16 @@ carries the build policy (workspace-root remapping, so a crate rebuilt in one
 worktree still hits in the others). `agent-check.sh` and the
 scripts it drives already use the shim; for ad hoc commands put
 `scripts/bin` first on `PATH` or call `./scripts/bin/cargo build ...`.
-`WITCHY_BUILD_CACHE=off` is the kill switch. Workspace crates are cached and
-shared across worktrees too; mbx learns which crate you are editing and
-compiles that one incrementally (`WITCHY_MBX_MODE=incremental` restores the old
-every-member-incremental policy, which shared only third-party crates). The
+`WITCHY_BUILD_CACHE=off` is the kill switch. In a cold target, workspace crates
+are cached and shared across worktrees too; mbx learns which crate you are
+editing and compiles that one incrementally. A target seeded from the gate
+(every pool worktree: `.witchy-mbx-incremental-seed`) instead stays
+Cargo-incremental, and mbx bypasses its workspace crates, so the store never
+holds master's. Their shared source is the build seed: before each build the
+shim runs `scripts/build-seed.py refresh`, which swaps in the current seed's
+copy of every workspace unit whose sources and dependencies match it. After a
+rebase or a pool claim, only the crates your branch changed and their
+dependents compile (`WITCHY_SEED_REFRESH=off` disables it). The
 serialized gate uses that incremental mode with mbx scheduling disabled: it
 keeps its own full parallelism while restoring stable dependencies such as
 Wasmtime and AWS-LC from the shared cache. Every shim build leaves a small JSON

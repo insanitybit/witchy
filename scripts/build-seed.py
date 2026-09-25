@@ -43,6 +43,7 @@ interrupted apply leaves every source at its checkout time):
     build-seed.py publish <gate-checkout> <gate-target> <seed-root>  # locked
     build-seed.py finish <seed-root>                                 # unlocked
     build-seed.py apply <seed-dir> <worktree> [<target-dir>]
+    build-seed.py refresh <seed-dir> <worktree> [<target-dir>]  # scripts/bin/cargo
 """
 
 import fcntl, hashlib, json, os, re, shutil, struct, subprocess, sys, time
@@ -414,20 +415,71 @@ def foreign_path(path, roots):
     return path.startswith(b"/") and not any(path.startswith(root) for root in roots)
 
 
+def allowed_roots(new_root):
+    """Absolute path prefixes a worktree's dep-info may name: the worktree,
+    the cargo home, the toolchain and the system."""
+    cargo_home = os.environ.get("CARGO_HOME") or os.path.expanduser("~/.cargo")
+    sysroot = subprocess.run(["rustc", "--print", "sysroot"], capture_output=True,
+                             text=True).stdout.strip()
+    allowed = [os.fsencode(new_root.rstrip("/")) + b"/"]
+    allowed += [os.fsencode(os.path.realpath(p).rstrip("/")) + b"/"
+                for p in (cargo_home, sysroot) if p]
+    allowed += [b"/opt/homebrew/", b"/usr/", b"/Library/", b"/System/", b"/Applications/"]
+    # A dependency the gate restored through mbx reads its build script's
+    # generated sources from the shared, content-addressed store under the
+    # main checkout's state/mbx/ (e.g. cranelift-codegen's out-dirs). Dropping
+    # those units rebuilt cranelift and wasmtime in every seeded worktree.
+    common = subprocess.run(["git", "-C", new_root, "rev-parse", "--path-format=absolute",
+                             "--git-common-dir"], capture_output=True, text=True).stdout.strip()
+    if common:
+        mbx = os.path.join(os.path.dirname(os.path.realpath(common)), "state", "mbx")
+        allowed.append(os.fsencode(mbx) + b"/")
+    return allowed
+
+
+def rebase_unit(unit_dir, old, new, allowed):
+    """Rebase one fingerprint unit's dep-info from prefix old to new (bytes,
+    '/'-terminated). Drops the unit, and returns "dropped", when a dep-info
+    file cannot be decoded exactly or would still name a foreign path;
+    otherwise "rewritten" or "unchanged". Each file is replaced atomically."""
+    result = "unchanged"
+    for name in os.listdir(unit_dir):
+        if not name.startswith("dep-"):
+            continue
+        path = os.path.join(unit_dir, name)
+        with open(path, "rb") as f:
+            data = f.read()
+        decoded = decode_dep_info(data)
+        if decoded is None or encode_dep_info(*decoded) != data:
+            if b"/" in data:  # cannot vouch for what it names
+                shutil.rmtree(unit_dir, ignore_errors=True)
+                return "dropped"
+            continue
+        files = [(kind, new + p[len(old):] if p.startswith(old) else p)
+                 for kind, p in decoded[0]]
+        if any(foreign_path(p, allowed) for _, p in files):
+            shutil.rmtree(unit_dir, ignore_errors=True)  # cargo rebuilds it
+            return "dropped"
+        if files == decoded[0]:
+            continue
+        stat = os.stat(path)
+        tmp = f"{path}.seed-{os.getpid()}"
+        with open(tmp, "wb") as f:
+            f.write(encode_dep_info(files, decoded[1]))
+        os.utime(tmp, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+        os.replace(tmp, path)
+        result = "rewritten"
+    return result
+
+
 def rebase_dep_info(target, old_root, new_root):
     """Point absolute dep-info paths under old_root at new_root, and drop the
     fingerprint of any unit that would still name a file outside this
     worktree, the cargo home or the toolchain (e.g. the gate checkout spelled
-    another way). Each file is replaced atomically. Returns (rewritten,
-    dropped) unit counts."""
+    another way). Returns (rewritten, dropped) unit counts."""
     old = os.fsencode(old_root.rstrip("/")) + b"/"
     new = os.fsencode(new_root.rstrip("/")) + b"/"
-    cargo_home = os.environ.get("CARGO_HOME") or os.path.expanduser("~/.cargo")
-    sysroot = subprocess.run(["rustc", "--print", "sysroot"], capture_output=True,
-                             text=True).stdout.strip()
-    allowed = [new] + [os.fsencode(os.path.realpath(p).rstrip("/")) + b"/"
-                       for p in (cargo_home, sysroot) if p]
-    allowed += [b"/opt/homebrew/", b"/usr/", b"/Library/", b"/System/", b"/Applications/"]
+    allowed = allowed_roots(new_root)
     rewritten = dropped = 0
     for top, dirs, _ in os.walk(target):
         dirs[:] = [d for d in dirs if d != "incremental"]
@@ -435,35 +487,9 @@ def rebase_dep_info(target, old_root, new_root):
             continue
         units, dirs[:] = list(dirs), []
         for unit in units:
-            unit_dir = os.path.join(top, unit)
-            for name in os.listdir(unit_dir):
-                if not name.startswith("dep-"):
-                    continue
-                path = os.path.join(unit_dir, name)
-                with open(path, "rb") as f:
-                    data = f.read()
-                decoded = decode_dep_info(data)
-                if decoded is None or encode_dep_info(*decoded) != data:
-                    if b"/" in data:  # cannot vouch for what it names
-                        shutil.rmtree(unit_dir, ignore_errors=True)
-                        dropped += 1
-                        break
-                    continue
-                files = [(kind, new + p[len(old):] if p.startswith(old) else p)
-                         for kind, p in decoded[0]]
-                if any(foreign_path(p, allowed) for _, p in files):
-                    shutil.rmtree(unit_dir, ignore_errors=True)  # cargo rebuilds it
-                    dropped += 1
-                    break
-                if files == decoded[0]:
-                    continue
-                stat = os.stat(path)
-                tmp = f"{path}.seed-{os.getpid()}"
-                with open(tmp, "wb") as f:
-                    f.write(encode_dep_info(files, decoded[1]))
-                os.utime(tmp, ns=(stat.st_atime_ns, stat.st_mtime_ns))
-                os.replace(tmp, path)
-                rewritten += 1
+            outcome = rebase_unit(os.path.join(top, unit), old, new, allowed)
+            rewritten += outcome == "rewritten"
+            dropped += outcome == "dropped"
     return rewritten, dropped
 
 
@@ -531,6 +557,440 @@ def apply(seed, worktree, target_dir=None):
     return 0
 
 
+UNIT_DIR = re.compile(r"^(.+)-([0-9a-f]{16})$")
+REFRESH_STAMP = ".witchy-seed-refresh"
+# Files whose change alters every unit's identity or the build environment;
+# a worktree that differs from the seed in any of them is not refreshed.
+GLOBAL_INPUTS = ("Cargo.toml", "Cargo.lock", ".cargo/config.toml",
+                 "rust-toolchain", "rust-toolchain.toml")
+
+
+def fingerprint_units(debug):
+    """{unit dir name: {"files": [...], "hashes": {hex}, "json": [...]}}.
+    A unit's hash file (lib-<crate>, test-lib-<crate>, ...) holds its
+    fingerprint hash as little-endian hex; dependents name it in their json."""
+    units = {}
+    root = os.path.join(debug, ".fingerprint")
+    try:
+        names = os.listdir(root)
+    except FileNotFoundError:
+        return units
+    for unit in names:
+        unit_dir = os.path.join(root, unit)
+        try:
+            files = os.listdir(unit_dir)
+        except (NotADirectoryError, FileNotFoundError):
+            continue
+        info = {"files": files, "hashes": set(), "json": []}
+        for name in files:
+            path = os.path.join(unit_dir, name)
+            if name.endswith(".json"):
+                try:
+                    with open(path) as f:
+                        info["json"].append(json.load(f))
+                except (OSError, ValueError):
+                    info["json"].append(None)
+            elif not name.startswith(("dep-", "output-")) and name != "invoked.timestamp" \
+                    and ".seed-" not in name:
+                try:
+                    with open(path) as f:
+                        info["hashes"].add(f.read().strip())
+                except (OSError, UnicodeDecodeError):
+                    pass
+        units[unit] = info
+    return units
+
+
+def dep_hashes(info):
+    """Fingerprint hashes of a unit's dependencies, in hash-file form, or
+    None when a fingerprint cannot be read."""
+    hashes = set()
+    for fp in info["json"]:
+        if not isinstance(fp, dict):
+            return None
+        for dep in fp.get("deps", []):
+            try:
+                hashes.add(struct.pack("<Q", int(dep[-1])).hex())
+            except (TypeError, ValueError, IndexError, struct.error):
+                return None
+    return hashes
+
+
+def index_deps(debug):
+    """{unit hash: [deps/ file names carrying it]}"""
+    index = {}
+    try:
+        names = os.listdir(os.path.join(debug, "deps"))
+    except FileNotFoundError:
+        return index
+    for name in names:
+        match = re.search(r"-([0-9a-f]{16})(?:\.|$)", name)
+        if match and not name.endswith(".rcgu.o"):
+            index.setdefault(match.group(1), []).append(name)
+    return index
+
+
+def unit_outputs(debug, unit, deps_index):
+    """Profile-relative outputs of one unit: deps/*-<hash>[.*] and build/<unit>/**."""
+    outputs = [os.path.join("deps", n) for n in deps_index.get(unit.rsplit("-", 1)[1], [])]
+    build = os.path.join(debug, "build", unit)
+    if os.path.isdir(build):
+        for top, _, names in os.walk(build):
+            outputs += [os.path.relpath(os.path.join(top, n), debug) for n in names]
+    return outputs
+
+
+def write_stamp(path, key):
+    try:
+        with open(path, "w") as f:
+            f.write(key)
+    except OSError:
+        pass
+    return 0
+
+
+def refresh(seed, worktree, target_dir=None):
+    """Bring a seeded target's unedited workspace units up to the CURRENT seed.
+
+    A worktree is seeded once, from the master of its creation, and a pool
+    worktree is recycled with whatever its previous task built. After master
+    moves (a rebase, a pool claim), every workspace crate that changed
+    between the two masters used to recompile in every worktree, although the
+    gate had already built exactly those sources and the seed holds the
+    result. This replaces such a unit with the seed's copy when it is
+    provably the unit cargo would build here:
+
+      * every file its dep-info (or rerun-if-changed path) names in the
+        checkout hashes, as it is on disk now, to the manifest's blob, and no
+        untracked file sits under a rerun-if-changed path;
+      * it was fresh against those sources in the gate (no named source is
+        newer than its dep-info), so a stale leftover unit is never revived;
+      * every workspace unit it depends on qualifies too, and every
+        third-party unit it depends on is present here with the same hash.
+
+    Source mtimes are NEVER touched: other target directories of the same
+    worktree judge freshness by them. Instead each copied unit (fingerprint
+    and outputs) is stamped with an instant taken before the hashing, and
+    every file it reads must be older than that instant, so an edit made at
+    any later time is newer than the stamp and rebuilds it. Cargo calls a
+    unit stale when a source is newer than its dep-info, or a dependency's
+    output newer than its own; stamping every refreshed unit with the same
+    instant satisfies both, and any unit here the refresh did not stamp
+    (an edited crate, its dependents) sees newer dependencies and rebuilds.
+    A unit that already is the seed's and fresh here is left alone, so its
+    dependents are not disturbed. Units are swapped fingerprint-first: an
+    interrupted refresh costs rebuilds, never a stale answer. The target's
+    cargo lock is held throughout, and a busy target is skipped.
+    Third-party units this target lacks entirely are copied too.
+
+    It only serves identities the gate built: a feature set or profile the
+    gate never compiled (e.g. the shim's lowerer-only selection) still
+    compiles here. Measured 2026-09-25, `nextest run -p witchy --no-run` in
+    a target last built at a master two landings behind the seed (syntax,
+    types, interp changed), HEAD at the seed's master: 282 CPU-s / 150 s wall
+    before (nine workspace crates compiled), 49 CPU-s / 30 s after (only the
+    root crate, whose units the gate had not built fresh against these
+    sources), load 20-26; the refresh took 1.8 s. WITCHY_SEED_REFRESH_DRY_RUN=1
+    prints what it would copy, restamp and leave alone, per package, without
+    changing anything."""
+    seed = os.path.realpath(seed)
+    worktree = os.path.realpath(worktree)
+    target = os.path.realpath(target_dir or os.path.join(worktree, "target"))
+    debug = os.path.join(target, "debug")
+    seed_debug = os.path.join(seed, "target", "debug")
+    if not os.path.isdir(os.path.join(debug, ".fingerprint")):
+        return 0
+    head = subprocess.run(["git", "-C", worktree, "rev-parse", "HEAD"], check=True,
+                          capture_output=True, text=True).stdout.strip()
+    # Seed directories are never reused, so name + HEAD identify the work;
+    # every build between two landings pays only this check.
+    key = f"{os.path.basename(seed)} {head}\n"
+    stamp_path = os.path.join(target, REFRESH_STAMP)
+    try:
+        with open(stamp_path) as f:
+            if f.read() == key:
+                return 0
+    except OSError:
+        pass
+    manifest = load_manifest(seed)
+    lock = open(os.path.join(debug, ".cargo-lock"), "a")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        print("build-seed: target busy; not refreshing", file=sys.stderr)
+        return 0
+    started = time.time()
+
+    # Every file a refreshed unit reads must be older than this instant; the
+    # refreshed units are then stamped with it. An edit made from now on is
+    # newer than the stamp, and one made before is caught by the hash.
+    stamp_ns = time.time_ns()
+    files = tracked(worktree)
+    untracked = [os.fsdecode(e) for e in subprocess.run(
+        ["git", "-C", worktree, "ls-files", "-z", "--others", "--exclude-standard"],
+        check=True, capture_output=True).stdout.split(b"\0") if e]
+    known, known_dirs = manifest["files"], manifest["dirs"]
+    our_dirs = directories(files)
+    hashed = {}
+
+    def hash_files(rels):
+        """Blob ids of the WORKING files (not the index, which neither sees
+        an unstaged edit under assume-unchanged nor a save racing git)."""
+        todo = sorted(r for r in rels if r not in hashed)
+        present = [r for r in todo if os.path.isfile(os.path.join(worktree, r))]
+        for r in todo:
+            hashed[r] = None
+        if present:
+            out = subprocess.run(["git", "-C", worktree, "hash-object", "--stdin-paths"],
+                                 input="\n".join(present) + "\n", check=True,
+                                 capture_output=True, text=True).stdout.split()
+            hashed.update(zip(present, out))
+
+    def same(rel):
+        entry = known.get(rel)
+        if entry is None or hashed.get(rel) != entry[0]:
+            return False
+        try:
+            return os.lstat(os.path.join(worktree, rel)).st_mtime_ns < stamp_ns
+        except FileNotFoundError:
+            return False
+
+    hash_files(r for r in GLOBAL_INPUTS if r in files or r in known)
+    if not all(same(rel) for rel in GLOBAL_INPUTS if rel in files or rel in known):
+        print(f"build-seed: Cargo manifests or config differ from seed "
+              f"{manifest['head'][:9]}; not refreshing", file=sys.stderr)
+        return write_stamp(stamp_path, key)
+
+    packages = workspace_package_roots(worktree)
+    gate = manifest["checkout"].rstrip("/") + "/"
+    gate_target = os.path.realpath(manifest["target"]).rstrip("/") + "/"
+    allowed = allowed_roots(worktree)
+    path_bound = {os.path.basename(u) for u in manifest.get("path_bound_units", [])}
+    seed_units = fingerprint_units(seed_debug)
+    ours = fingerprint_units(debug)
+
+    def package_of(unit):
+        match = UNIT_DIR.match(unit)
+        return match.group(1) if match and match.group(1) in packages else None
+
+    by_hash = {}
+    for unit, info in seed_units.items():
+        for h in info["hashes"]:
+            by_hash.setdefault(h, unit)
+
+    def sources(unit, info):
+        """(checkout files, directories) the unit's freshness reads, or None
+        unless it was fresh against them in the gate."""
+        root = os.path.relpath(packages[package_of(unit)], worktree)
+        pkg_gate = os.path.normpath(os.path.join(gate, root))
+        names, dirs, reference = set(), set(), None
+        for local in info["json"][0].get("local", []):
+            if "CheckDepInfo" in local:
+                dep = os.path.join(seed, "target", local["CheckDepInfo"]["dep_info"])
+                try:
+                    with open(dep, "rb") as f:
+                        decoded = decode_dep_info(f.read())
+                    ref = os.stat(dep).st_mtime_ns
+                except OSError:
+                    return None
+                if decoded is None:
+                    return None
+                for kind, encoded in decoded[0]:
+                    p = os.fsdecode(encoded)
+                    if not os.path.isabs(p):
+                        p = os.path.join(pkg_gate if kind == 0 else seed_debug, p)
+                    p = os.path.normpath(p)
+                    if p.startswith(gate_target) or p.startswith(seed + "/"):
+                        continue  # generated: owned by a dependency unit
+                    elif p.startswith(gate):
+                        names.add(os.path.relpath(p, gate))
+                    elif foreign_path(os.fsencode(p), allowed):
+                        return None
+            elif "RerunIfChanged" in local:
+                rerun = local["RerunIfChanged"]
+                try:
+                    ref = os.stat(os.path.join(seed, "target", rerun["output"])).st_mtime_ns
+                except OSError:
+                    return None
+                for path in rerun["paths"]:
+                    prefix = os.path.normpath(os.path.join(root, path))
+                    under = [r for r in files if r == prefix or r.startswith(prefix + "/")]
+                    if not under or any(u == prefix or u.startswith(prefix + "/")
+                                        for u in untracked):
+                        return None
+                    names.update(under)
+                    subdirs = {d for d in set(known_dirs) | set(our_dirs)
+                               if d == prefix or d.startswith(prefix + "/")}
+                    if any(our_dirs.get(d) != known_dirs.get(d, [None])[0] for d in subdirs):
+                        return None  # a file added or removed under it
+                    dirs.update(subdirs)
+            elif "RerunIfEnvChanged" in local:
+                continue  # cargo compares the variable itself
+            else:
+                return None
+            reference = ref if reference is None else min(reference, ref)
+        if reference is None or any(rel not in known or known[rel][1] > reference
+                                    for rel in names):
+            return None
+        return names, dirs
+
+    # Candidates: workspace units that were fresh in the gate, and
+    # third-party units this target lacks entirely (registry sources never
+    # change under a version; a feature or lockfile change names a new unit).
+    candidates = {}
+    for unit, info in seed_units.items():
+        if unit in path_bound or len(info["json"]) != 1 \
+                or not isinstance(info["json"][0], dict) or len(info["hashes"]) != 1:
+            continue
+        if package_of(unit) is None:
+            reads = (set(), set()) if unit not in ours and UNIT_DIR.match(unit) else None
+        else:
+            reads = sources(unit, info)
+        deps = dep_hashes(info)
+        if reads is not None and deps is not None:
+            candidates[unit] = (reads, deps)
+    hash_files(set().union(*(reads[0] for reads, _ in candidates.values())))
+
+    def reads_match(reads):
+        names, dirs = reads
+        if not all(same(rel) for rel in names):
+            return False
+        for d in dirs:
+            try:
+                if os.stat(os.path.join(worktree, d)).st_mtime_ns >= stamp_ns:
+                    return False
+            except FileNotFoundError:
+                return False
+        return True
+
+    good = {u for u, (reads, _) in candidates.items() if reads_match(reads)}
+
+    def dep_ready(h):
+        unit = by_hash.get(h)
+        if unit is None:
+            return False
+        if unit in good:
+            return True
+        mine = ours.get(unit)
+        return package_of(unit) is None and mine is not None and h in mine["hashes"]
+
+    changed = True
+    while changed:
+        changed = False
+        for unit in list(good):
+            if not all(dep_ready(h) for h in candidates[unit][1]):
+                good.discard(unit)
+                changed = True
+
+    seed_index, our_index = index_deps(seed_debug), index_deps(debug)
+
+    def identical(unit):
+        """This target already holds the seed's copy (same clone lineage)."""
+        mine = ours.get(unit)
+        if mine is None or mine["hashes"] != seed_units[unit]["hashes"] \
+                or sorted(mine["files"]) != sorted(seed_units[unit]["files"]):
+            return False
+        seed_out = sorted(unit_outputs(seed_debug, unit, seed_index))
+        if seed_out != sorted(unit_outputs(debug, unit, our_index)):
+            return False
+        for rel in seed_out:
+            try:
+                a, b = os.stat(os.path.join(seed_debug, rel)), os.stat(os.path.join(debug, rel))
+            except OSError:
+                return False
+            if (a.st_size, a.st_mtime_ns) != (b.st_size, b.st_mtime_ns):
+                return False
+        return True
+
+    def fresh_here(unit):
+        """Cargo would already find this target's unit fresh against the
+        worktree's sources (so leaving it alone rebuilds nothing)."""
+        (names, dirs), _ = candidates[unit]
+        refs = []
+        for local in ours[unit]["json"][0].get("local", []) if isinstance(
+                ours[unit]["json"][0], dict) else [None]:
+            if not isinstance(local, dict):
+                return False
+            if "CheckDepInfo" in local:
+                refs.append(os.path.join(target, local["CheckDepInfo"]["dep_info"]))
+            elif "RerunIfChanged" in local:
+                refs.append(os.path.join(target, local["RerunIfChanged"]["output"]))
+        try:
+            reference = min(os.stat(r).st_mtime_ns for r in refs) if refs else None
+            newest = max((os.stat(os.path.join(worktree, r)).st_mtime_ns
+                          for r in names | dirs), default=0)
+        except (OSError, ValueError):
+            return False
+        return reference is not None and newest <= reference
+
+    # A unit is left alone when it is already the seed's and fresh here;
+    # otherwise it is copied (unless identical) and stamped. Stamping moves
+    # its outputs forward, so every good unit above it is stamped too.
+    copy = {u for u in good if not identical(u)}
+    stamp = set(copy) | {u for u in good - copy if package_of(u) and not fresh_here(u)}
+    changed = True
+    while changed:
+        changed = False
+        stamped_hashes = set().union(*(seed_units[u]["hashes"] for u in stamp)) \
+            if stamp else set()
+        for unit in good - stamp:
+            if candidates[unit][1] & stamped_hashes:
+                stamp.add(unit)
+                changed = True
+    if os.environ.get("WITCHY_SEED_REFRESH_DRY_RUN"):
+        for label, units in (("copy", copy), ("stamp only", stamp - copy),
+                             ("left alone", good - stamp)):
+            by_package = {}
+            for unit in units:
+                name = package_of(unit) or "third-party"
+                by_package[name] = by_package.get(name, 0) + 1
+            print(f"{label}: {dict(sorted(by_package.items(), key=str))}")
+        return 0
+
+    # Swap: the old fingerprint goes first, so an interrupted swap leaves no
+    # unit cargo would trust; the new one is renamed in only when complete.
+    old = os.fsencode(gate)
+    new = os.fsencode(worktree.rstrip("/") + "/")
+    scratch = os.path.join(debug, f".seed-refresh-{os.getpid()}")
+    copied = 0
+    for unit in copy:
+        shutil.rmtree(os.path.join(debug, ".fingerprint", unit), ignore_errors=True)
+        for rel in unit_outputs(debug, unit, our_index):
+            try:
+                os.unlink(os.path.join(debug, rel))
+            except FileNotFoundError:
+                pass
+        shutil.rmtree(os.path.join(debug, "build", unit), ignore_errors=True)
+        for rel in unit_outputs(seed_debug, unit, seed_index):
+            clone(os.path.join(seed_debug, rel), os.path.join(debug, rel))
+        tmp = os.path.join(scratch, unit)
+        for name in seed_units[unit]["files"]:
+            clone(os.path.join(seed_debug, ".fingerprint", unit, name), os.path.join(tmp, name))
+        if rebase_unit(tmp, old, new, allowed) != "dropped":
+            os.rename(tmp, os.path.join(debug, ".fingerprint", unit))
+            copied += 1
+    shutil.rmtree(scratch, ignore_errors=True)
+    # One instant for every stamped unit: cargo's dependency check is "a
+    # dependency's output is NEWER than ours", so equal times are fresh, and
+    # a source is stale only when newer than the dep-info.
+    now_index = index_deps(debug)
+    for unit in stamp:
+        paths = [os.path.join(debug, rel) for rel in unit_outputs(debug, unit, now_index)
+                 if not os.path.islink(os.path.join(debug, rel))]
+        fingerprint = os.path.join(debug, ".fingerprint", unit)
+        paths += [os.path.join(fingerprint, n) for n in os.listdir(fingerprint)] \
+            if os.path.isdir(fingerprint) else []
+        for path in paths:
+            try:
+                os.utime(path, ns=(stamp_ns, stamp_ns))
+            except FileNotFoundError:
+                pass
+    write_stamp(stamp_path, key)
+    print(f"build-seed: refreshed {copied} unit(s) from seed {manifest['head'][:9]} "
+          f"({len(stamp) - len(copy)} restamped, {len(good - stamp)} already current) in "
+          f"{time.time() - started:.1f}s", file=sys.stderr)
+    return 0
+
 if __name__ == "__main__":
     if len(sys.argv) == 5 and sys.argv[1] == "publish":
         sys.exit(publish(*sys.argv[2:]))
@@ -538,5 +998,7 @@ if __name__ == "__main__":
         sys.exit(finish(sys.argv[2]))
     if len(sys.argv) in (4, 5) and sys.argv[1] == "apply":
         sys.exit(apply(*sys.argv[2:]))
+    if len(sys.argv) in (4, 5) and sys.argv[1] == "refresh":
+        sys.exit(refresh(*sys.argv[2:]))
     print(__doc__, file=sys.stderr)
     sys.exit(2)

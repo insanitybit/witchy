@@ -32,6 +32,15 @@
 #     cloned gate artifacts are already the cross-worktree baseline. Replacing
 #     those warm units with mbx's non-incremental shareable profile made an
 #     identical web test build take 2,247s instead of 76s (2026-09-24).
+#     mbx bypasses workspace crates in that mode, so the store never holds
+#     master's; the gate's build seed does. Before each build in such a target
+#     `build-seed.py refresh` swaps in the CURRENT seed's copy of every
+#     workspace unit whose sources (and dependencies' sources) match it, so
+#     after a rebase or a pool claim only the crates the branch changed, and
+#     their dependents, compile: 282 -> 49 CPU-s for a stale pool target's
+#     `nextest run -p witchy --no-run` (2026-09-25; the refresh docstring in
+#     scripts/build-seed.py has the conditions). It serves only identities
+#     the gate builds.
 #   - Cold targets cache and share workspace crates like dependencies, and mbx
 #     LEARNS which crate you are editing (MBX_LEARNED_INCREMENTAL): a crate
 #     that keeps missing with changed content compiles incrementally from
@@ -217,21 +226,46 @@ export MBX_SCHEDULER_PRIORITY="${MBX_SCHEDULER_PRIORITY:-low}"
 # optimized workspace crate before it can cache them. CARGO_TARGET_DIR is
 # relative to the caller's current directory, while Cargo's default target is
 # rooted at the workspace.
+if [ -n "${CARGO_TARGET_DIR:-}" ]; then
+    case "$CARGO_TARGET_DIR" in
+        /*) effective_target="$CARGO_TARGET_DIR" ;;
+        *) effective_target="$PWD/$CARGO_TARGET_DIR" ;;
+    esac
+else
+    effective_target="$repo_root/target"
+fi
+seeded_target=0
+[ ! -f "$effective_target/.witchy-mbx-incremental-seed" ] || seeded_target=1
 mbx_mode="${WITCHY_MBX_MODE:-}"
 if [ -z "$mbx_mode" ]; then
-    if [ -n "${CARGO_TARGET_DIR:-}" ]; then
-        case "$CARGO_TARGET_DIR" in
-            /*) effective_target="$CARGO_TARGET_DIR" ;;
-            *) effective_target="$PWD/$CARGO_TARGET_DIR" ;;
-        esac
-    else
-        effective_target="$repo_root/target"
-    fi
-    if [ -f "$effective_target/.witchy-mbx-incremental-seed" ]; then
+    if [ "$seeded_target" = 1 ]; then
         mbx_mode="incremental"
     else
         mbx_mode="learned"
     fi
+fi
+
+# A seeded target describes the master it was seeded from (or, for a recycled
+# pool worktree, whatever the previous task built). Once master moves, every
+# workspace crate that changed in between would recompile here although the
+# gate already built those exact sources. `build-seed.py refresh` replaces
+# each unit whose sources, and whose dependencies' sources, are identical to
+# the current seed's with the seed's copy; crates this branch edited, and
+# their dependents, compile incrementally as before. It is a no-op (a stamp
+# check, ~0.1 s) until the seed or HEAD changes, and never fails the build.
+# WITCHY_SEED_REFRESH=off disables it. It only touches that target's files,
+# never sources, so other target directories are unaffected; a build naming
+# its target some other way (--target-dir, CARGO_BUILD_TARGET_DIR) is skipped.
+explicit_target=0
+[ -z "${CARGO_BUILD_TARGET_DIR:-}" ] || explicit_target=1
+for arg in "$@"; do
+    case "$arg" in --target-dir | --target-dir=*) explicit_target=1 ;; esac
+done
+if [ "$seeded_target" = 1 ] && [ "$explicit_target" = 0 ] && [ -z "${WITCHY_GATE_SCOPE+x}" ] \
+    && [ "${WITCHY_SEED_REFRESH:-on}" != "off" ] \
+    && seed_dir="$(cd "$state_root/state/build-seed/current" 2>/dev/null && pwd -P)" \
+    && [ -f "$seed_dir/manifest.json" ]; then
+    python3 "$self_dir/../build-seed.py" refresh "$seed_dir" "$repo_root" "$effective_target" >&2 || true
 fi
 
 # One small versioned JSON report per build (mbx's MBX_STATS_REPORT), named

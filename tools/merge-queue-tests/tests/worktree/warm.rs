@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use super::support::{TempRepo, git, workspace_root, write};
@@ -751,4 +751,135 @@ fn dep_info(files: &[(u8, &str)]) -> Vec<u8> {
     }
     out.extend(0u32.to_le_bytes());
     out
+}
+
+/// Real Cargo in `dir`, building into `dir/<target>`; returns stderr.
+fn seed_cargo(dir: &Path, target: &str, args: &[&str]) -> String {
+    let output = Command::new("cargo")
+        .args(args)
+        .current_dir(dir)
+        .env("CARGO_TARGET_DIR", dir.join(target))
+        .env("CARGO_BUILD_RUSTC_WRAPPER", "")
+        .env("CARGO_TERM_COLOR", "never")
+        .env_remove("RUSTC_WRAPPER")
+        .env_remove("CARGO_INCREMENTAL")
+        .env_remove("CARGO_BUILD_TARGET_DIR")
+        .output()
+        .expect("run cargo");
+    assert!(output.status.success(), "cargo {args:?}: {}", String::from_utf8_lossy(&output.stderr));
+    String::from_utf8_lossy(&output.stderr).into_owned()
+}
+
+fn run_bin(dir: &Path, target: &str) -> String {
+    let run = Command::new(dir.join(target).join("debug/bin")).output().expect("run bin");
+    String::from_utf8_lossy(&run.stdout).into_owned()
+}
+
+/// A two-crate workspace (`bin` depends on `dep`) whose master then changes
+/// `dep`: the gate builds it and publishes the seed. The returned worktree
+/// built `target` at the old master, committed its own edit to `bin`, and
+/// `before_rebase` runs just before it rebases onto the new master.
+fn seed_refresh_fixture(before_rebase: impl FnOnce(&Path)) -> (TempRepo, PathBuf, PathBuf) {
+    let repo = TempRepo::new("seed-refresh", |_| {});
+    let gate = repo.path().join("gate");
+    std::fs::create_dir(&gate).expect("create gate checkout");
+    git(&gate, &["init", "--quiet"]);
+    git(&gate, &["config", "user.email", "worktree-test@witchy.invalid"]);
+    git(&gate, &["config", "user.name", "Witchy Worktree Test"]);
+    write(&gate, ".gitignore", "/target*\n/state\n/Cargo.lock\n");
+    write(&gate, "Cargo.toml", "[workspace]\nmembers = [\"dep\", \"bin\"]\nresolver = \"2\"\n");
+    write(&gate, "dep/Cargo.toml", "[package]\nname = \"dep\"\nversion = \"0.1.0\"\nedition = \"2021\"\n");
+    write(&gate, "dep/src/lib.rs", "pub fn value() -> u32 { 1 }\n");
+    write(
+        &gate,
+        "bin/Cargo.toml",
+        "[package]\nname = \"bin\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\ndep = { path = \"../dep\" }\n",
+    );
+    write(&gate, "bin/src/main.rs", "fn main() { println!(\"{} base\", dep::value()); }\n");
+    git(&gate, &["add", "."]);
+    git(&gate, &["commit", "--quiet", "-m", "base"]);
+    let base = git(&gate, &["rev-parse", "HEAD"]);
+
+    let wt = repo.path().join("wt");
+    git(&gate, &["worktree", "add", "--quiet", "-b", "topic", wt.to_str().expect("utf8"), &base]);
+    seed_cargo(&wt, "target", &["build", "--offline"]);
+    write(&wt, "bin/src/main.rs", "fn main() { println!(\"{} topic\", dep::value()); }\n");
+    git(&wt, &["commit", "--quiet", "-am", "topic edit"]);
+
+    write(&gate, "dep/src/lib.rs", "pub fn value() -> u32 { 2 }\n");
+    git(&gate, &["commit", "--quiet", "-am", "master moves dep"]);
+    seed_cargo(&gate, "target", &["build", "--offline"]);
+    let scripts = workspace_root().join("scripts");
+    for args in [&["publish", ".", "target", "state/build-seed"][..], &["finish", "state/build-seed"]] {
+        let output = Command::new("python3")
+            .arg(scripts.join("build-seed.py"))
+            .args(args)
+            .current_dir(&gate)
+            .output()
+            .expect("run build-seed.py");
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    }
+    before_rebase(&wt);
+    git(&wt, &["rebase", "--quiet", &git(&gate, &["rev-parse", "HEAD"])]);
+    let seed = std::fs::canonicalize(gate.join("state/build-seed/current")).expect("seed");
+    (repo, wt, seed)
+}
+
+fn seed_refresh(seed: &Path, wt: &Path) -> String {
+    let output = Command::new("python3")
+        .arg(workspace_root().join("scripts/build-seed.py"))
+        .arg("refresh")
+        .arg(seed)
+        .arg(wt)
+        .output()
+        .expect("run build-seed.py refresh");
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert!(output.status.success(), "{stderr}");
+    stderr
+}
+
+/// `refresh` serves the unedited `dep` from the seed (Cargo reports it
+/// Fresh) while `bin` still compiles, and a later edit to `dep` rebuilds it.
+/// A second target directory built on the old base, after the gate built
+/// the new one, must not be fooled into reusing its old `dep`: refresh never
+/// moves a source's mtime.
+#[test]
+fn build_seed_refresh_serves_unedited_crates_from_the_current_seed() {
+    let (_repo, wt, seed) = seed_refresh_fixture(|wt| {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        seed_cargo(wt, "target-other", &["build", "--offline"]);
+        assert_eq!(run_bin(wt, "target-other"), "1 topic\n");
+    });
+    let refreshed = seed_refresh(&seed, &wt);
+    assert!(refreshed.contains("refreshed 1 unit(s)"), "{refreshed}");
+    // Unchanged seed and HEAD: the stamp makes a second call a no-op.
+    assert!(seed_refresh(&seed, &wt).is_empty());
+
+    let built = seed_cargo(&wt, "target", &["build", "--offline", "-v"]);
+    assert!(built.contains("Fresh dep"), "{built}");
+    assert!(built.contains("Compiling bin"), "{built}");
+    assert_eq!(run_bin(&wt, "target"), "2 topic\n");
+
+    let other = seed_cargo(&wt, "target-other", &["build", "--offline", "-v"]);
+    assert!(other.contains("Compiling dep"), "{other}");
+    assert_eq!(run_bin(&wt, "target-other"), "2 topic\n");
+
+    // An edit after the refresh is newer than the refreshed unit.
+    write(&wt, "dep/src/lib.rs", "pub fn value() -> u32 { 3 }\n");
+    let rebuilt = seed_cargo(&wt, "target", &["build", "--offline", "-v"]);
+    assert!(rebuilt.contains("Compiling dep"), "{rebuilt}");
+    assert_eq!(run_bin(&wt, "target"), "3 topic\n");
+}
+
+/// An uncommitted edit made before the refresh (the index still matches the
+/// seed) keeps its crate out of the refresh, and it compiles.
+#[test]
+fn build_seed_refresh_leaves_an_uncommitted_edit_to_compile() {
+    let (_repo, wt, seed) = seed_refresh_fixture(|_| {});
+    write(&wt, "dep/src/lib.rs", "pub fn value() -> u32 { 7 }\n");
+    let refreshed = seed_refresh(&seed, &wt);
+    assert!(refreshed.contains("refreshed 0 unit(s)"), "{refreshed}");
+    let built = seed_cargo(&wt, "target", &["build", "--offline", "-v"]);
+    assert!(built.contains("Compiling dep"), "{built}");
+    assert_eq!(run_bin(&wt, "target"), "7 topic\n");
 }
