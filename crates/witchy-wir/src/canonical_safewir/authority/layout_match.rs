@@ -12,6 +12,14 @@ pub(crate) fn value_type_matches_source(
     if is_unit_source_type(source) {
         return actual == super::super::ValueType::Unit;
     }
+    if let witchy_syntax::ast::Type::Qualified(witchy_syntax::ast::TypeQual::View, payload) = source
+        && let Some(plan) = witchy_canonical_source::carrier::CarrierElement::retained_structural_root(payload, records)
+    {
+        let super::super::ValueType::Ref(layout) = actual else { return false };
+        return super::super::closure_owner_contract::retained_structural_root_layout_matches(
+            layouts, layout, &plan,
+        );
+    }
     // A checked whole-list view carries the retained list object. Its
     // element must satisfy the same recursive ownership relation as a rooted
     // slice, including an owned pointer and RC list at every managed edge.

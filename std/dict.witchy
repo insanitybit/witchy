@@ -9,12 +9,12 @@
 // The canonical backend currently refuses `Dict(String, &String)` values:
 // `&String` has no admitted dictionary collection carrier. Use owned String
 // values until that carrier is implemented.
-// Whole `&Dict(String, Int)`, `&Dict(String, Bool)`, and
-// `&Dict(String, Float)` views have distinct admitted root identities: each
-// keeps its snapshot when the owner is updated. Other dictionary root-view
-// shapes still need carrier evidence. The same exact scalar-root path is
-// implemented for `&Dict(String, Duration)` with a distinct identity, but
-// admitted Wasm snapshot and zero-leak evidence is pending for that form.
+// A whole `&Dict(K, V)` view retains its root when both element types pass
+// the recursive owned-list carrier proof and SafeWIR validates their physical
+// slots. The existing String-key scalar witnesses keep their snapshots after
+// owner updates. Newly generic shapes, including `&Dict(String, List(Int))`,
+// remain implemented but unverified pending durable admitted-Wasm and
+// zero-leak evidence.
 
 // --- native primitives ---
 

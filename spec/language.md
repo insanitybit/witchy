@@ -1063,21 +1063,17 @@ The current canonical implementation refuses `Dict(String, &String)` because
 dictionary values do not yet have an authenticated `&String` collection carrier.
 The refusal also applies when that dictionary is a field of a record or crosses
 a public record boundary. Ordinary `Dict(String, String)` remains admitted.
-The exact whole-root views `&Dict(String, Int)`, `&Dict(String, Bool)`, and
-`&Dict(String, Float)` are admitted for direct transport. Each retains its
-dictionary root, so a later update of the owner does not change the view's
-snapshot. Closure capture of a dictionary view and other dictionary-root view
-shapes remain unsupported.
-The same exact whole-root path is implemented for `&Dict(String, Duration)`
-and `&Dict(String, String)`, each with a distinct source ABI identity. Duration
-uses its value-list layout; String values remain owned pointer children of the
-retained dictionary. Their runtime snapshot and zero-leak evidence is pending;
-these forms are not yet proven admitted carriers. Nested, qualified, and
-view-valued dictionary values remain outside this path.
-The exact whole-root view `&(Int, String)` also retains its tuple root. A
-later replacement of the owning tuple leaves both fields of the view at their
-earlier values. Other whole tuple-root shapes have no carrier here. This exact
-tuple view cannot escape a region-born root or be captured by a closure.
+Whole-root dictionary and tuple views use a recursive checked carrier plan for
+their children. A dictionary key and value must each have valid owned List
+storage; every tuple field must have a valid scalar or owned slot. SafeWIR
+checks the retained root's record layout and each child slot against that plan.
+The already proven `&Dict(String, Int)`, `&Dict(String, Bool)`,
+`&Dict(String, Float)`, and `&(Int, String)` witnesses retain their snapshots.
+Other structurally proven forms, including `&Dict(String, List(Int))` and
+`&(List(Int), String)`, are implemented but await durable admitted-Wasm and
+zero-leak evidence. Qualified or view-valued children without this ownership
+proof remain refused. Region-born roots cannot escape through these views;
+tuple-view closure capture remains unsupported.
 
 ```witchy
 fn first[a](items: &[a]) -> Option(&a):
@@ -1184,11 +1180,11 @@ range into a fresh `List(T)` using that same relation. Generic recursive forms
 remain implemented but unverified until admitted unoptimized Wasm and zero-leak
 evidence is recorded for them in the acceptance ledger.
 
-The compiler recognizes exact whole-root `&(S, String)` tuple views for
-unqualified `S = Int`, `Float`, `Bool`, `Duration`, or `String`. The tuple root
-retains its owned String children. The `Int` case has admitted Wasm and
-zero-leak evidence; the other cases await that verification. Reordered or
-qualified fields and closure capture of these tuple views remain unsupported.
+Whole-root tuple views use the same recursive carrier proof for every field.
+The retained tuple root owns its managed children. The original
+`&(Int, String)` case has admitted Wasm and zero-leak evidence; newly admitted
+field combinations remain implemented but unverified. Qualifiers inside a
+field and closure capture of tuple views remain unsupported.
 
 Eligible non-packed whole-root `Option`, `Result`, and declared user aggregate
 views can carry an exact direct `List(S)` child for unqualified `S = Int`,

@@ -43,6 +43,21 @@ pub trait CarrierLayoutQuery {
 }
 
 impl CarrierElement {
+    /// A whole structural aggregate whose immutable view is the retained
+    /// object token. This uses the same recursive element and ownership
+    /// judgment as a slice element; qualifiers and unproved children cannot
+    /// turn into root authority through a matching outer name.
+    pub fn retained_structural_root(
+        ty: &Type,
+        definitions: &BTreeMap<String, TypeDef>,
+    ) -> Option<Self> {
+        if ty != ty.unqualified() {
+            return None;
+        }
+        let plan = Self::from_checked_type_with_definitions(ty, definitions)?;
+        matches!(plan, Self::Tuple(_) | Self::Dict(_, _)).then_some(plan)
+    }
+
     /// Slice carriers explicitly present in one finalized checked callable
     /// signature. An inbound closed-local parameter can name a carrier even
     /// when no borrow formation appears in this function body.

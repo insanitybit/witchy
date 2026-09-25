@@ -11,8 +11,7 @@ use witchy_syntax::ast::{self, Convention, Item, Type};
 
 use crate::typeck::{Ty, TypedModule};
 use witchy_canonical_source::abi::*;
-use witchy_canonical_source::aggregates::DictRootScalar;
-use witchy_canonical_source::aggregates::TupleRootScalar;
+use witchy_canonical_source::carrier::CarrierElement;
 
 
 /// Exposed for the ABI-security pins in `tests/typeck/capabilities.rs`.
@@ -327,22 +326,17 @@ pub fn rooted_view_from_ty(
     payload: &Ty,
     context: &Context,
 ) -> Result<CanonicalReferenceKind, CanonicalAbiError> {
-    if matches!(payload, Ty::Tuple(_))
-        && let Some(kind) = crate::typeck::ty_to_ast(payload)
-            .as_ref()
-            .and_then(witchy_canonical_source::aggregates::tuple_scalar_string_root_payload)
-    {
+    if let Some(plan @ CarrierElement::Tuple(_)) = crate::typeck::ty_to_ast(payload)
+        .as_ref().and_then(|ty| CarrierElement::retained_structural_root(ty, &context.definitions)) {
         return Ok(CanonicalReferenceKind::RootedView {
-            payload: rooted_tuple_scalar_string_payload_key(kind),
+            payload: rooted_structural_payload_key(&plan),
             carrier: CanonicalRootedViewCarrier::TupleRoot,
         });
     }
-    if let Some(kind) = crate::typeck::ty_to_ast(payload)
-        .as_ref()
-        .and_then(witchy_canonical_source::aggregates::dict_string_scalar_root_payload)
-    {
+    if let Some(plan @ CarrierElement::Dict(_, _)) = crate::typeck::ty_to_ast(payload)
+        .as_ref().and_then(|ty| CarrierElement::retained_structural_root(ty, &context.definitions)) {
         return Ok(CanonicalReferenceKind::RootedView {
-            payload: rooted_dict_scalar_payload_key(kind),
+            payload: rooted_structural_payload_key(&plan),
             carrier: CanonicalRootedViewCarrier::DictRoot,
         });
     }
@@ -410,24 +404,19 @@ pub fn rooted_view_from_ast(
     payload: &Type,
     context: &Context,
 ) -> Result<CanonicalReferenceKind, CanonicalAbiError> {
-    if let Some(kind) = witchy_canonical_source::aggregates::tuple_scalar_string_root_payload(payload) {
+    if let Some(plan @ CarrierElement::Tuple(_)) = CarrierElement::retained_structural_root(payload, &context.definitions) {
         return Ok(CanonicalReferenceKind::RootedView {
-            payload: rooted_tuple_scalar_string_payload_key(kind),
+            payload: rooted_structural_payload_key(&plan),
             carrier: CanonicalRootedViewCarrier::TupleRoot,
         });
     }
+    if let Some(plan @ CarrierElement::Dict(_, _)) = CarrierElement::retained_structural_root(payload, &context.definitions) {
+        return Ok(CanonicalReferenceKind::RootedView {
+            payload: rooted_structural_payload_key(&plan),
+            carrier: CanonicalRootedViewCarrier::DictRoot,
+        });
+    }
     match payload.unqualified() {
-        exact if payload == exact
-            && witchy_canonical_source::aggregates::dict_string_scalar_root_payload(exact).is_some() =>
-        {
-            Ok(CanonicalReferenceKind::RootedView {
-                payload: rooted_dict_scalar_payload_key(
-                    witchy_canonical_source::aggregates::dict_string_scalar_root_payload(exact)
-                        .expect("matched exact scalar dictionary"),
-                ),
-                carrier: CanonicalRootedViewCarrier::DictRoot,
-            })
-        }
         Type::Named(name, arguments) if name == "Int" && arguments.is_empty() => Ok(CanonicalReferenceKind::RootedView {
             payload: rooted_scalar_payload_key(CanonicalScalarKind::Int),
             carrier: CanonicalRootedViewCarrier::IntScalarRoot,
@@ -499,9 +488,9 @@ pub fn rooted_view_from_ast(
 
 /// Rooted views need one payload identity regardless of whether the caller
 /// reached the boundary through a checked HM type or a checked declaration
-/// annotation.  Those encodings deliberately differ elsewhere, so never hash
-/// either representation here.  Each admitted carrier family gets an explicit
-/// source-level payload identity instead.
+/// annotation. Those encodings deliberately differ elsewhere, so never hash
+/// either representation here. Structural roots use the shared recursive
+/// carrier identity, with a separate domain for this local ABI migration.
 fn rooted_scalar_payload_key(kind: CanonicalScalarKind) -> CanonicalTypeKey {
     let mut bytes = b"witchy.canonical-rooted-view-payload.v1".to_vec();
     bytes.push(kind as u8);
@@ -523,30 +512,10 @@ fn rooted_record_payload_key(identity: &[u8]) -> CanonicalTypeKey {
     CanonicalTypeKey::from_digest(*blake3::hash(&bytes).as_bytes())
 }
 
-fn rooted_dict_scalar_payload_key(kind: DictRootScalar) -> CanonicalTypeKey {
-    // Keep the three published v1 digests unchanged when sharing the minting
-    // path. Duration receives its own identity even though its runtime scalar
-    // value uses an Int lane; its list element layout is Duration.
-    let source: &[u8] = match kind {
-        DictRootScalar::Int => b"witchy.canonical-rooted-view-payload.v1/dict-string-int",
-        DictRootScalar::Bool => b"witchy.canonical-rooted-view-payload.v1/dict-string-bool",
-        DictRootScalar::Float => b"witchy.canonical-rooted-view-payload.v1/dict-string-float",
-        DictRootScalar::Duration => b"witchy.canonical-rooted-view-payload.v1/dict-string-duration",
-        DictRootScalar::String => b"witchy.canonical-rooted-view-payload.v1/dict-string-string",
-    };
-    CanonicalTypeKey::from_digest(*blake3::hash(source).as_bytes())
-}
-
-fn rooted_tuple_scalar_string_payload_key(kind: TupleRootScalar) -> CanonicalTypeKey {
-    // The Int identity is an existing local ABI; keep its digest input exact.
-    let source: &[u8] = match kind {
-        TupleRootScalar::Int => b"witchy.canonical-rooted-view-payload.v1/tuple-int-string",
-        TupleRootScalar::Float => b"witchy.canonical-rooted-view-payload.v1/tuple-float-string",
-        TupleRootScalar::Bool => b"witchy.canonical-rooted-view-payload.v1/tuple-bool-string",
-        TupleRootScalar::Duration => b"witchy.canonical-rooted-view-payload.v1/tuple-duration-string",
-        TupleRootScalar::String => b"witchy.canonical-rooted-view-payload.v1/tuple-string-string",
-    };
-    CanonicalTypeKey::from_digest(*blake3::hash(source).as_bytes())
+fn rooted_structural_payload_key(plan: &CarrierElement) -> CanonicalTypeKey {
+    let mut bytes = b"witchy.canonical-rooted-view-payload.v2/structural\0".to_vec();
+    bytes.extend_from_slice(&plan.identity());
+    CanonicalTypeKey::from_digest(*blake3::hash(&bytes).as_bytes())
 }
 
 /// Record-root payload identity, written identically from a checked type and

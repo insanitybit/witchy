@@ -121,62 +121,6 @@ pub fn dictionary_has_unadmitted_string_view_value(ty: &Type) -> bool {
                     if name == "String" && arguments.is_empty())))
 }
 
-/// The exact value carried by a retained `Dict(String, S)` root.
-/// Each kind has a distinct source ABI identity and physical value-list slot.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DictRootScalar {
-    Int,
-    Bool,
-    Float,
-    Duration,
-    String,
-}
-
-/// A whole immutable dictionary view can retain its existing root only when
-/// the key is exactly String and the value is one unqualified admitted type.
-/// Nested or qualified values must not inherit this owner family.
-pub fn dict_string_scalar_root_payload(ty: &Type) -> Option<DictRootScalar> {
-    let Type::Named(name, arguments) = ty else { return None };
-    if name != "Dict" { return None; }
-    let [Type::Named(key, key_args), Type::Named(value, value_args)] = arguments.as_slice() else { return None };
-    if key != "String" || !key_args.is_empty() || !value_args.is_empty() { return None; }
-    match value.as_str() {
-        "Int" => Some(DictRootScalar::Int),
-        "Bool" => Some(DictRootScalar::Bool),
-        "Float" => Some(DictRootScalar::Float),
-        "Duration" => Some(DictRootScalar::Duration),
-        "String" => Some(DictRootScalar::String),
-        _ => None,
-    }
-}
-
-/// The exact first value in a retained `(S, String)` tuple root.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TupleRootScalar {
-    Int,
-    Float,
-    Bool,
-    Duration,
-    String,
-}
-
-/// The tuple root whose first slot is one unqualified admitted value and
-/// whose second slot owns an exact String token. Other orders, qualifiers,
-/// and nested values have no TupleRoot authority.
-pub fn tuple_scalar_string_root_payload(ty: &Type) -> Option<TupleRootScalar> {
-    let Type::Tuple(items) = ty else { return None };
-    let [Type::Named(first, first_args), Type::Named(second, second_args)] = items.as_slice() else { return None };
-    if !first_args.is_empty() || second != "String" || !second_args.is_empty() { return None; }
-    match first.as_str() {
-        "Int" => Some(TupleRootScalar::Int),
-        "Float" => Some(TupleRootScalar::Float),
-        "Bool" => Some(TupleRootScalar::Bool),
-        "Duration" => Some(TupleRootScalar::Duration),
-        "String" => Some(TupleRootScalar::String),
-        _ => None,
-    }
-}
-
 const MAX_AGGREGATE_SHAPE_EXPANSION: usize = 64;
 /// Total instantiated AST nodes examined while recognizing one shape. This
 /// bounds changing generic recursion before it clones its next expanded field.

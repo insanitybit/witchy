@@ -182,12 +182,12 @@ refused. The exact previously evidenced cases remain recorded in the RFC-0167
 ledger; newly generic depths await semantic and leak evidence. `.owned()`
 materializes the checked range as a fresh `List(T)`.
 
-An exact whole-root tuple view `&(S, String)` is recognized for unqualified
-`S = Int`, `Float`, `Bool`, `Duration`, or `String`. The view retains the tuple
-root and its owned String children. The `Int` case has admitted Wasm and
-zero-leak evidence; the other cases are implemented but await semantic and
-leak evidence. Reordered or qualified tuple fields and capturing such a view
-in a closure are refused.
+Whole-root tuple views use a recursive checked ownership proof for every
+field. The view retains the tuple root and its managed children. The original
+`&(Int, String)` case has admitted Wasm and zero-leak evidence; newly generic
+field combinations remain implemented but unverified. Qualified or
+view-valued fields without a carrier, and closure capture of tuple views,
+remain refused.
 
 Eligible non-packed `Option`, `Result`, and declared user aggregate roots can
 carry an exact direct `List(S)` child for unqualified `S = Int`, `Float`,
@@ -289,21 +289,18 @@ For example, `Dict(String, &String)` currently fails canonical admission with a
 missing collection-carrier diagnostic, including when nested in a record.
 Store an owned `String` value if the dictionary must execute today.
 
-Whole `&Dict(String, Int)`, `&Dict(String, Bool)`, and
-`&Dict(String, Float)` views have admitted root carriers for direct calls.
-Each retains its dictionary snapshot: inserting or replacing a value in the
-owner after the view forms does not change what the view reads. Closure capture
-of a dictionary view and views of other dictionary shapes remain unsupported.
-The compiler also recognizes exact `&Dict(String, Duration)` and
-`&Dict(String, String)` whole-root paths, but their admitted Wasm snapshot and
-leak evidence is pending. The String value is an owned child of the retained
-dictionary root. Treat these forms as implemented but unverified; nested,
-qualified, and view-valued dictionary values do not inherit this carrier.
+Whole `&Dict(K, V)` views have a retained-root carrier when both element types
+pass the recursive owned-list proof and SafeWIR validates their physical
+slots. Existing String-key scalar witnesses retain their snapshots after
+owner updates. Newly generic combinations such as `&Dict(String, List(Int))`
+remain implemented but unverified. Qualified or view-valued children without
+an ownership proof, region-born root escape, and dictionary-view closure
+capture remain refused.
 
-An exact whole `&(Int, String)` view keeps the old tuple after its owner is
-replaced, including the String field. This carrier covers direct calls and
-returns. Other tuple shapes, region-born root escape, and closure capture of
-this tuple view remain unsupported.
+Whole tuple views likewise retain their old root after the owner is replaced.
+The proven `&(Int, String)` case covers direct calls and returns; newly generic
+field combinations await durable semantic and leak evidence. Region-born root
+escape and tuple-view closure capture remain refused.
 
 Normal source may use the same view syntax and call view-bearing exports. When
 a separately compiled boundary lacks authenticated carrier metadata, it fails

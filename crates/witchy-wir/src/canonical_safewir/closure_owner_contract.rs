@@ -319,6 +319,34 @@ pub(crate) fn carrier_element_layout_matches(
     carrier.matches_layout(&Query(layouts), layout)
 }
 
+/// A whole tuple or dictionary view retains the aggregate object itself,
+/// while its children still use the recursive owned-slot relation above.
+/// Matching the root's physical record separately prevents a raw pointer
+/// slot from being mistaken for an authenticated retained object token.
+pub(crate) fn retained_structural_root_layout_matches(
+    layouts: &crate::layout::LayoutInterner,
+    layout: crate::layout::LayoutId,
+    carrier: &witchy_canonical_source::carrier::CarrierElement,
+) -> bool {
+    use crate::layout::LayoutKind;
+    use witchy_canonical_source::carrier::CarrierElement;
+    if !carrier.within_resource_bounds() { return false; }
+    let Ok(physical) = layouts.resolve_nominal(layout) else { return false };
+    let Some(LayoutKind::PackedRecord { fields }) = layouts.get(physical).map(|item| item.kind()) else {
+        return false;
+    };
+    match carrier {
+        CarrierElement::Tuple(children) => fields.len() == children.len()
+            && children.iter().zip(fields).all(|(child, slot)| carrier_element_layout_matches(layouts, *slot, child)),
+        CarrierElement::Dict(key, value) => {
+            let [keys, values] = fields.as_slice() else { return false };
+            carrier_element_layout_matches(layouts, *keys, &CarrierElement::List(key.clone()))
+                && carrier_element_layout_matches(layouts, *values, &CarrierElement::List(value.clone()))
+        }
+        _ => false,
+    }
+}
+
 /// Static interpretation of a shared-reference constructor. This is derived
 /// exclusively from the registered constructor schema; it is never encoded as
 /// a guest tag, pointer, layout ID, or projection selector.

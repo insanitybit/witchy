@@ -371,8 +371,7 @@ pub(crate) fn is_direct_rooted_view_whole_root(source: &witchy_syntax::ast::Type
             witchy_syntax::ast::Type::Qualified(witchy_syntax::ast::TypeQual::View, inner)
                 if witchy_canonical_source::aggregates::is_record_root_payload(inner, records)
                     || witchy_canonical_source::carrier::CarrierElement::from_list_root_payload_type_with_definitions(inner, records).is_some()
-                    || witchy_canonical_source::aggregates::dict_string_scalar_root_payload(inner).is_some()
-                    || witchy_canonical_source::aggregates::tuple_scalar_string_root_payload(inner).is_some()
+                    || witchy_canonical_source::carrier::CarrierElement::retained_structural_root(inner, records).is_some()
                     || witchy_canonical_source::aggregates::is_scalar_value_view_payload(inner))
 }
 

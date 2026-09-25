@@ -144,6 +144,20 @@ slice and its `.owned()` materialization, and 16 for a dictionary with a
 nested List value copied through `.owned()`. No durable hand-computed Wasm
 witness or recorded zero-leak audit closes the row yet.
 
+Row G structural whole-root tuple and dictionary views (implemented but
+unverified, 2026-09-25): checked ABI identity, lowering, and witnessed SafeWIR
+now use the recursive `CarrierElement` relation for whole tuple and dictionary
+roots. SafeWIR requires a retained packed-record root and recursively checks
+each field, including owned retained List slots for dictionary keys and
+values. Temporary admitted-Wasm programs returned the hand-computed 14 for
+the existing `&(Int, String)` case, 6 for `&(List(Int), String)`, and 21 for
+`&Dict(String, List(Int))`. A tuple containing `&String` still refused at
+canonical lowering. These smokes have no durable zero-leak audit, so they
+close no additional row G gap. The local tuple and dictionary rooted-view ABI
+payload keys now use a versioned structural digest; stale compiled ABI
+sidecars with the earlier exact-shape digests must be rebuilt and cannot bind
+as authority against the new checked manifest.
+
 Row G carrier proof transport (architecture implemented, 2026-09-25):
 each rooted-slice owner family now carries its recursive candidate element
 proof. The source-independent SafeWIR checker bounds that proof and matches

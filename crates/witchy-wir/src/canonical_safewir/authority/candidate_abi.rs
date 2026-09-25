@@ -273,7 +273,8 @@ pub(super) fn validate_candidate_abi_bindings<S: ModuleStage>(
                         && is_direct_rooted_view_whole_root(capture.checked_type(), &records)
                         && !matches!(capture.checked_type(),
                             witchy_syntax::ast::Type::Qualified(witchy_syntax::ast::TypeQual::View, inner)
-                                if witchy_canonical_source::aggregates::tuple_scalar_string_root_payload(inner).is_some())
+                                if matches!(witchy_canonical_source::carrier::CarrierElement::retained_structural_root(inner, &records),
+                                    Some(witchy_canonical_source::carrier::CarrierElement::Tuple(_))))
                         && !matches!(capture.checked_type(),
                             witchy_syntax::ast::Type::Qualified(witchy_syntax::ast::TypeQual::View, inner)
                                 if witchy_canonical_source::aggregates::is_scalar_value_view_payload(inner))

@@ -2933,8 +2933,7 @@ fn is_direct_view_payload(inner: &Type, definitions: &BTreeMap<String, TypeDef>)
             || is_rooted_string(inner)
             || witchy_canonical_source::aggregates::is_record_root_payload(inner, definitions)
             || CarrierElement::from_list_root_payload_type_with_definitions(inner, definitions).is_some()
-            || witchy_canonical_source::aggregates::dict_string_scalar_root_payload(inner).is_some()
-            || witchy_canonical_source::aggregates::tuple_scalar_string_root_payload(inner).is_some()
+            || CarrierElement::retained_structural_root(inner, definitions).is_some()
             || witchy_canonical_source::aggregates::is_scalar_value_view_payload(inner))
 }
 
@@ -14304,8 +14303,7 @@ impl FunctionLowerer<'_> {
         let record_root = matches!(fact.payload(), Ty::Named(..) | Ty::Tuple(..))
             && witchy_types::typeck::ty_to_ast(fact.payload()).is_some_and(|payload| {
                 witchy_canonical_source::aggregates::is_record_root_payload(&payload, self.definitions)
-                    || witchy_canonical_source::aggregates::dict_string_scalar_root_payload(&payload).is_some()
-                    || witchy_canonical_source::aggregates::tuple_scalar_string_root_payload(&payload).is_some()
+                    || CarrierElement::retained_structural_root(&payload, self.definitions).is_some()
             });
         if matches!(fact.payload(), Ty::Float | Ty::Bool | Ty::Duration) {
             // A scalar-value view is the value read at formation: a whole
@@ -19275,8 +19273,7 @@ fn source_value_type(
     // retained object token.
     if let Type::Qualified(TypeQual::View, inner) = source
         && (witchy_canonical_source::aggregates::is_record_root_payload(inner, definitions)
-            || witchy_canonical_source::aggregates::dict_string_scalar_root_payload(inner).is_some()
-            || witchy_canonical_source::aggregates::tuple_scalar_string_root_payload(inner).is_some()
+            || CarrierElement::retained_structural_root(inner, definitions).is_some()
             || witchy_canonical_source::aggregates::is_scalar_value_view_payload(inner))
     {
         return source_value_type(inner, layout_bundle, layouts, closure_layouts, definitions);

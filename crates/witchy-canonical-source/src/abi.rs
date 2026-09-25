@@ -88,20 +88,20 @@ pub enum CanonicalRootedViewCarrier {
     /// record is an immutable value shared by retain, so the token is the
     /// snapshot.  The payload identity is the declaration's nominal ordinal.
     RecordRoot,
-    /// A whole immutable `List` of scalars or `String`s.  The carrier is the
-    /// retained list object: a later mutation of the owner finds it shared and
-    /// copies, so the view keeps its snapshot.
+    /// A whole immutable `List(T)` with a recursive checked element proof.
+    /// The carrier is the retained list object, so a later owner mutation
+    /// preserves the view's snapshot.
     ListRoot,
     /// A view of an immutable `Float`, `Bool`, or `Duration` value is carried
     /// as that value: an immutable scalar read at formation is exactly what the
     /// view observes, the RFC's proven-equivalent representation.  `&Int`
     /// keeps its `IntScalarRoot` cell, which also carries list element views.
     ScalarValue,
-    /// A whole `Dict(String, Int)` view retains the dictionary's immutable
-    /// root token. Its payload key is distinct from record and list roots.
+    /// A whole dictionary view with recursively proven key and value
+    /// storage. Its payload key is derived from that structural proof.
     DictRoot,
-    /// A whole two-field `(Int, String)` tuple view retains its immutable
-    /// aggregate root. Other tuple shapes require their own carrier proof.
+    /// A whole tuple view with recursively proven fields retains its
+    /// immutable aggregate root.
     TupleRoot,
 }
 
