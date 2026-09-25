@@ -39,7 +39,7 @@ pub(super) fn validate_candidate_abi_bindings<S: ModuleStage>(
     let records = source.type_definitions();
     // Signature correspondence reads a `&String` field as its String token;
     // computed once, used only by the two layout-correspondence matches.
-    let string_view_records = erase_record_string_views(&records);
+    let byte_buffer_view_records = erase_record_byte_buffer_views(&records);
     let access_facts = source.access_facts()
         .ok_or(CandidateAbiBindingError::MissingCanonicalLayouts)?;
     // A direct exclusive ABI has no syntax-only fallback: a stale or absent
@@ -96,6 +96,19 @@ pub(super) fn validate_candidate_abi_bindings<S: ModuleStage>(
             });
         }
         let source_declaration = source.closed_callable_declaration(binding.source_declaration_ordinal());
+        // The checked callable ABI erases unsupported legacy loan spelling.
+        // Check every original annotation before comparing a candidate to it.
+        if source_declaration.is_some_and(|declaration| {
+            declaration.ret.as_ref().is_some_and(|result|
+                original_type_has_unchecked_loan(result, &records))
+                || declaration.params.iter().any(|parameter| parameter.ty.as_ref()
+                    .is_some_and(|ty| original_type_has_unchecked_loan(ty, &records)))
+        })
+        {
+            return Err(CandidateAbiBindingError::MissingCheckedReferenceRelation {
+                source_declaration: binding.source_declaration_ordinal(),
+            });
+        }
         if source_declaration.is_some_and(|declaration| {
             generic_shared_relay_template_candidate(source, &declaration.name)
                 && !exact_generic_shared_relay_binding(source, source_signature, declaration, signature)
@@ -135,12 +148,12 @@ pub(super) fn validate_candidate_abi_bindings<S: ModuleStage>(
             access_facts,
             &records,
         );
-        let source_signature = erase_scalar_value_views(&erase_nested_string_views(&source_signature));
+        let source_signature = erase_scalar_value_views(&erase_nested_byte_buffer_views(&source_signature));
         let source_matches = candidate_signature_matches_source_with_layouts(
             signature,
             &source_signature,
             candidate,
-            &string_view_records,
+            &byte_buffer_view_records,
             &layouts,
         );
         let fresh_list_push_matches = !source_matches
@@ -162,7 +175,7 @@ pub(super) fn validate_candidate_abi_bindings<S: ModuleStage>(
                     &source_shaped,
                     &source_signature,
                     candidate,
-                    &string_view_records,
+                    &byte_buffer_view_records,
                     &layouts,
                 )
             };
@@ -291,7 +304,7 @@ pub(super) fn validate_candidate_abi_bindings<S: ModuleStage>(
                                     Some(witchy_canonical_source::carrier::CarrierElement::Tuple(_))))
                         && !matches!(capture.checked_type(),
                             witchy_syntax::ast::Type::Qualified(witchy_syntax::ast::TypeQual::View, inner)
-                                if witchy_canonical_source::aggregates::is_scalar_value_view_payload(inner))
+                                if witchy_canonical_source::aggregates::is_inline_scalar_view_payload(inner))
                 ) || (
                     // A `&Float`/`&Bool`/`&Duration` view is its value
                     // (`ScalarValue`), so its capture is a copied scalar slot.
@@ -299,7 +312,7 @@ pub(super) fn validate_candidate_abi_bindings<S: ModuleStage>(
                         && matches!(capture.transfer(), witchy_canonical_source::closure::ClosureCaptureTransfer::RootedViewByValue)
                         && matches!(capture.checked_type(),
                             witchy_syntax::ast::Type::Qualified(witchy_syntax::ast::TypeQual::View, inner)
-                                if witchy_canonical_source::aggregates::is_scalar_value_view_payload(inner))
+                                if witchy_canonical_source::aggregates::is_inline_scalar_view_payload(inner))
                 );
                 (transfer_matches && value_type_matches_source(
                     actual, capture.checked_type(), closure_layout_catalog, candidate.signatures(), &mut correspondence,

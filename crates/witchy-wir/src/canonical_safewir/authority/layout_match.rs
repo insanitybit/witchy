@@ -126,71 +126,47 @@ pub(crate) fn value_type_matches_source(
                 if actual_kind == kind
         );
     }
-    match source.unqualified() {
-        // `Dir` carries its rights as type arguments (`Dir[Read]`), and the
-        // rights live in the host's authority object behind the token, so
-        // every spelling is the one fixed ABI kind. This arm precedes the
-        // argument-free one because `Dir` may appear with no arguments too.
-        witchy_syntax::ast::Type::Named(name, _) if name == "Dir" => {
-            actual == super::super::ValueType::Capability(super::super::DIR_CAPABILITY_KIND)
+    match StoragePlan::classify(source.unqualified(), records, |_| Some(0)) {
+        StoragePlan::InlineScalar(kind) | StoragePlan::Owned(witchy_canonical_source::carrier::CarrierElement::Scalar(kind)) => {
+            use witchy_canonical_source::abi::CanonicalScalarKind;
+            actual == match kind {
+                CanonicalScalarKind::Unit => super::super::ValueType::Unit,
+                CanonicalScalarKind::Int | CanonicalScalarKind::Duration => super::super::ValueType::Int,
+                CanonicalScalarKind::Float => super::super::ValueType::Float,
+                CanonicalScalarKind::Bool => super::super::ValueType::Bool,
+            }
         }
-        witchy_syntax::ast::Type::Named(name, arguments) if arguments.is_empty() => match name.as_str() {
-            "Int" | "Duration" => actual == super::super::ValueType::Int,
-            "Float" => actual == super::super::ValueType::Float,
-            "Bool" => actual == super::super::ValueType::Bool,
-            "Nil" | "Unit" => actual == super::super::ValueType::Unit,
-            // Canonical lowering assigns the authenticated prelude Console
-            // capability the fixed ABI kind 0; no candidate-selected kind is
-            // accepted at this source boundary.
-            "Console" => actual == super::super::ValueType::Capability(super::super::CapabilityKindId::new(0)),
-            // The process environment grant, the one `Env` token.
-            "Env" => actual == super::super::ValueType::Capability(super::super::ENV_CAPABILITY_KIND),
-            // `Bytes` is the same raw-byte buffer under its own source type.
-            "String" | "Bytes" => matches!(actual, super::super::ValueType::Ref(layout) if layout_matches_source_with_closures(layout, source, layouts, records, closure_layouts, signatures, context)),
-            // A scalar aggregate: one reference to a fixed layout whose slots
-            // are exactly the shape's fields, in order.
-            _ => witchy_canonical_source::aggregates::scalar_aggregate_shape(source, records).is_some_and(|shape| {
-                matches!(actual, super::super::ValueType::Ref(layout) if record_layout_matches_with_closures(layout, &shape.fields, shape.tagged, layouts, records, closure_layouts, signatures, context))
-            }),
-        },
-        // A dictionary is its canonical tuple of the key list and the value
-        // list, so it matches by that shape like any other aggregate.
-        witchy_syntax::ast::Type::Named(name, arguments)
-            if matches!(name.as_str(), "Option" | "Result") || (name == "Dict" && arguments.len() == 2) =>
-        {
+        StoragePlan::Owned(
+            witchy_canonical_source::carrier::CarrierElement::Tuple(_)
+            | witchy_canonical_source::carrier::CarrierElement::Dict(_, _)
+            | witchy_canonical_source::carrier::CarrierElement::Record { .. }
+            | witchy_canonical_source::carrier::CarrierElement::Sum { .. }
+        ) | StoragePlan::AggregateView(_) => {
             witchy_canonical_source::aggregates::scalar_aggregate_shape(source, records).is_some_and(|shape| {
                 matches!(actual, super::super::ValueType::Ref(layout) if record_layout_matches_with_closures(layout, &shape.fields, shape.tagged, layouts, records, closure_layouts, signatures, context))
             })
         }
-        witchy_syntax::ast::Type::Tuple(_) => {
-            witchy_canonical_source::aggregates::scalar_aggregate_shape(source, records).is_some_and(|shape| {
-                matches!(actual, super::super::ValueType::Ref(layout) if record_layout_matches_with_closures(layout, &shape.fields, shape.tagged, layouts, records, closure_layouts, signatures, context))
-            })
-        }
-        witchy_syntax::ast::Type::Named(name, arguments) if name == "List" && arguments.len() == 1 => matches!(actual, super::super::ValueType::Ref(layout) if layout_matches_source_with_closures(layout, source, layouts, records, closure_layouts, signatures, context)),
-        // Concrete user generics use the same independently matched field
-        // graph as other aggregates. A type name or its arguments alone never
-        // grant a candidate reference its layout authority.
-        witchy_syntax::ast::Type::Named(_, _) => matches!(actual, super::super::ValueType::Ref(layout) if layout_matches_source_with_closures(layout, source, layouts, records, closure_layouts, signatures, context)),
-        // A `fn` value is a closure record: a reference to a layout the
-        // module registered with a closure signature, which, past its
-        // environment parameter, is the source signature.
-        witchy_syntax::ast::Type::Fn(parameters, result, _, _) => match actual {
+        StoragePlan::Owned(
+            witchy_canonical_source::carrier::CarrierElement::String
+            | witchy_canonical_source::carrier::CarrierElement::Bytes
+            | witchy_canonical_source::carrier::CarrierElement::List(_)
+        ) => matches!(actual, super::super::ValueType::Ref(layout) if layout_matches_source_with_closures(layout, source, layouts, records, closure_layouts, signatures, context)),
+        StoragePlan::RetainedCallable(_) => match actual {
             super::super::ValueType::Ref(layout) => {
+                let witchy_syntax::ast::Type::Fn(parameters, result, conventions, _) = source.unqualified() else { return false };
                 let Some(&id) = closure_layouts.get(&layout) else { return false };
                 let matched = signatures
                     .iter()
                     .find(|signature| signature.id == id)
                     .and_then(|signature| strip_closure_environment_with(signature, closure_layouts))
                     .is_some_and(|declaration| {
-                        let witchy_syntax::ast::Type::Fn(_, _, conventions, _) = source.unqualified() else { return false };
                         candidate_signature_matches_source_inner(&declaration, source, parameters, result, conventions, layouts, signatures, context, records, closure_layouts)
                     });
                 matched
             }
             _ => false,
         },
-        _ => false,
+        StoragePlan::RootedView(_) | StoragePlan::RetainedOwnerList(_) | StoragePlan::Refused(_) => false,
     }
 }
 
@@ -365,6 +341,14 @@ pub(super) fn enqueue_layout_children(
     // An aggregate (record, sum, tuple, scalar Option/Result) is a fixed
     // record of its shape's slots.
     if let Some(shape) = witchy_canonical_source::aggregates::scalar_aggregate_shape(source, records) {
+        if !matches!(StoragePlan::classify(source.unqualified(), records, |_| Some(0)),
+            StoragePlan::Owned(witchy_canonical_source::carrier::CarrierElement::Tuple(_)
+                | witchy_canonical_source::carrier::CarrierElement::Dict(_, _)
+                | witchy_canonical_source::carrier::CarrierElement::Record { .. }
+                | witchy_canonical_source::carrier::CarrierElement::Sum { .. })
+                | StoragePlan::AggregateView(_)) {
+            return false;
+        }
         return enqueue_record_fields(layout, &shape.fields, shape.tagged, layouts, pending);
     }
     match source.unqualified() {
@@ -385,9 +369,6 @@ pub(super) fn enqueue_layout_children(
             if list_element_needs_owner_carrier(&arguments[0], records) {
                 return false;
             }
-            if is_unit_source_type(&arguments[0]) {
-                return matches!(element.kind(), LayoutKind::Scalar(ScalarKind::Unit));
-            }
             match ListElementProjection::classify(&arguments[0], records) {
                 ListElementProjection::Owned(carrier) => {
                     // The same source plan used by layout projection supplies
@@ -403,19 +384,12 @@ pub(super) fn enqueue_layout_children(
                         &witchy_canonical_source::carrier::CarrierElement::Bytes,
                     );
                 }
-                ListElementProjection::Refused => return false,
-                ListElementProjection::RetainedCallable(_) | ListElementProjection::LayoutOnly => {}
-            }
-            match arguments[0].unqualified() {
-                witchy_syntax::ast::Type::Named(name, arguments) if name == "Int" && arguments.is_empty() => matches!(element.kind(), LayoutKind::Scalar(ScalarKind::Int)),
-                witchy_syntax::ast::Type::Named(name, inner_arguments) if name == "Duration" && inner_arguments.is_empty() => {
-                    matches!(&arguments[0], witchy_syntax::ast::Type::Named(name, arguments) if name == "Duration" && arguments.is_empty())
-                        && matches!(element.kind(), LayoutKind::Scalar(ScalarKind::Duration))
+                ListElementProjection::RetainedCallable(plan) => {
+                    return matches!(element.kind(), LayoutKind::RuntimePointerValueSlot {
+                        pointee, semantics: PointerSlot::Owned,
+                    } if { pending.push((*pointee, plan.exact_signature().clone())); true });
                 }
-                witchy_syntax::ast::Type::Named(name, arguments) if name == "Float" && arguments.is_empty() => matches!(element.kind(), LayoutKind::Scalar(ScalarKind::Float)),
-                witchy_syntax::ast::Type::Named(name, arguments) if name == "Bool" && arguments.is_empty() => matches!(element.kind(), LayoutKind::Scalar(ScalarKind::Bool)),
-                witchy_syntax::ast::Type::Named(name, arguments) if matches!(name.as_str(), "Nil" | "Unit") && arguments.is_empty() => matches!(element.kind(), LayoutKind::Scalar(ScalarKind::Unit)),
-                inner => matches!(element.kind(), LayoutKind::RuntimePointerValueSlot { pointee, semantics: PointerSlot::Owned } if { pending.push((*pointee, inner.unqualified().clone())); true }),
+                ListElementProjection::Refused => return false,
             }
         }
         witchy_syntax::ast::Type::Fn(..) => {

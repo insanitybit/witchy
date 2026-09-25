@@ -140,7 +140,7 @@ pub(super) fn validate<S: ModuleStage>(
                                         Some(witchy_canonical_source::carrier::CarrierElement::Tuple(_))))
                             && !matches!(original.checked_type(),
                                 witchy_syntax::ast::Type::Qualified(witchy_syntax::ast::TypeQual::View, inner)
-                                    if witchy_canonical_source::aggregates::is_scalar_value_view_payload(inner))
+                                    if witchy_canonical_source::aggregates::is_inline_scalar_view_payload(inner))
                         // A `&Float`/`&Bool`/`&Duration` view is its value
                         // (`ScalarValue`), so its capture is a copied scalar
                         // environment field, as in the plain closure check.
@@ -149,7 +149,7 @@ pub(super) fn validate<S: ModuleStage>(
                              CaptureStorage::EnvironmentField(_), CaptureTransfer::CopyScalar))
                             && matches!(original.checked_type(),
                                 witchy_syntax::ast::Type::Qualified(witchy_syntax::ast::TypeQual::View, inner)
-                                    if witchy_canonical_source::aggregates::is_scalar_value_view_payload(inner)))
+                                    if witchy_canonical_source::aggregates::is_inline_scalar_view_payload(inner)))
                 { return Err(refuse()); }
             }
         }

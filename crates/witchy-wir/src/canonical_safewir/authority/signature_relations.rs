@@ -68,7 +68,7 @@ pub(super) fn candidate_signature_matches_source_inner(
             // release.  `aggregate_reference_result_relation_is_checked`
             // separately proves the source relation product; a matching Ref
             // layout or parameter spelling is never sufficient.
-            return actual.ownership == if is_aggregate_reference_carrier(result) {
+            return actual.ownership == if is_direct_rooted_view_aggregate_carrier(result, records) {
                 super::super::ParameterOwnership::Shared
             } else {
                 super::super::ParameterOwnership::Value
@@ -239,30 +239,20 @@ pub(super) fn direct_exclusive_result_contract_matches(
     }
 }
 
-/// The aggregate shell is an independently owned, shared result token.  The
-/// leaf-to-owner proof lives in the retained source `BorrowRelation` product;
-/// this SafeWIR-side check merely refuses to let that proven carrier degrade
-/// into a fresh/value result with the same physical layout.
+/// A rooted-view aggregate needs its source-derived opaque owner result.
+/// Matching physical record slots alone cannot stand in for that owner.
 pub(super) fn aggregate_reference_result_contract_matches(
     actual: &super::super::FunctionSignature,
     result: &witchy_syntax::ast::Type,
     records: &ScalarRecordFields,
 ) -> bool {
-    if !(is_aggregate_reference_carrier(result)
-        || is_direct_rooted_view_aggregate_carrier(result, records)) {
+    if !is_direct_rooted_view_aggregate_carrier(result, records) {
         return true;
-    }
-    if is_direct_rooted_view_aggregate_carrier(result, records) {
-        return matches!(
-            (actual.results.first(), actual.contract.results.first()),
-            (Some(super::super::ValueType::Gc(owner)), Some(super::super::ResultContract::Value(super::super::ValueType::Gc(contract_owner))))
-                if owner == contract_owner
-        );
     }
     matches!(
         (actual.results.first(), actual.contract.results.first()),
-        (Some(super::super::ValueType::Ref(value_layout)), Some(super::super::ResultContract::Shared { layout }))
-            if value_layout == layout
+        (Some(super::super::ValueType::Gc(owner)), Some(super::super::ResultContract::Value(super::super::ValueType::Gc(contract_owner))))
+            if owner == contract_owner
     )
 }
 
@@ -499,8 +489,7 @@ pub(super) fn direct_reference_binding_is_checked(
         || declaration.is_some_and(|declaration| {
             direct_exclusive_result_relation_is_checked(declaration, access, records)
         });
-    let aggregate_result_ok = !(is_aggregate_reference_carrier(result)
-        || is_direct_rooted_view_aggregate_carrier(result, records))
+    let aggregate_result_ok = !is_direct_rooted_view_aggregate_carrier(result, records)
         || declaration.is_some_and(|declaration| {
             aggregate_reference_result_relation_is_checked(declaration, access, records)
         });
@@ -510,11 +499,8 @@ pub(super) fn direct_reference_binding_is_checked(
     )
 }
 
-/// Authenticate the bounded aggregate result carrier from the checker-owned
-/// relation product.  A tuple has one exact output slot per reference leaf;
-/// a homogeneous shared list has one `AnyIndex` slot whose complete owner set
-/// is explicit.  No aggregate layout, field name, or matching physical Ref is
-/// ever treated as an owner relation.
+/// Authenticate a rooted-view aggregate result from the checked positional
+/// ownership state. Legacy borrowed aggregate aliases have no admission path.
 pub(super) fn aggregate_reference_result_relation_is_checked(
     declaration: &witchy_syntax::ast::Function,
     access: Option<&witchy_canonical_source::access::AccessSignature>,
@@ -540,128 +526,7 @@ pub(super) fn aggregate_reference_result_relation_is_checked(
             || witchy_canonical_source::access::ownership_state_class(result).ok().flatten().as_ref()
                 == access.result().ownership_output();
     }
-    if let witchy_syntax::ast::Type::Named(name, arguments) = result.unqualified()
-        && name == "Result"
-        && arguments.len() == 2
-    {
-        let (ok, error) = (&arguments[0], &arguments[1]);
-        // The first `Result` alternative is the exact `Ok` tag.  The access
-        // catalog represents builtin positional constructor payloads by their
-        // constructor field index, so both the tag and inner tuple slot must
-        // be present in order.  A missing, swapped, or stale relation cannot
-        // authorize this carrier.
-        return is_string_source_type(error)
-            && aggregate_tuple_reference_result_relation_is_checked(
-                declaration,
-                access,
-                ok,
-                &[witchy_canonical_source::access::LoanProjectionStep::Tuple(0)],
-            );
-    }
-    match result.unqualified() {
-        witchy_syntax::ast::Type::Tuple(_) => {
-            aggregate_tuple_reference_result_relation_is_checked(declaration, access, result, &[])
-        }
-        witchy_syntax::ast::Type::Named(name, arguments)
-            if name == "List" && arguments.len() == 1 =>
-        {
-            let Some((lifetime, referent, kind)) = aggregate_reference_leaf(&arguments[0]) else {
-                return false;
-            };
-            if kind != witchy_canonical_source::access::BorrowKind::Shared {
-                return false;
-            }
-            matches!(access.borrow_relations(), [relation]
-                if relation.lifetime() == lifetime
-                    && relation.kind() == kind
-                    && relation.storage_type().unqualified() == referent.unqualified()
-                    && relation.output_projection().steps
-                        == [witchy_canonical_source::access::LoanProjectionStep::AnyIndex]
-                    && aggregate_relation_owners_match(declaration, relation.owners(), lifetime, referent, kind))
-        }
-        _ => false,
-    }
-}
-
-/// Match the complete, ordered leaf-to-owner relation product for one tuple
-/// carrier.  `prefix` is empty for a bare tuple and `[Tuple(0)]` for the
-/// builtin `Result` `Ok` payload.  It is supplied by the caller rather than
-/// inferred from physical layout so a tagged Result cannot be mistaken for a
-/// bare aggregate with the same reference fields.
-pub(super) fn aggregate_tuple_reference_result_relation_is_checked(
-    declaration: &witchy_syntax::ast::Function,
-    access: &witchy_canonical_source::access::AccessSignature,
-    payload: &witchy_syntax::ast::Type,
-    prefix: &[witchy_canonical_source::access::LoanProjectionStep],
-) -> bool {
-    let witchy_syntax::ast::Type::Tuple(items) = payload.unqualified() else {
-        return false;
-    };
-    !items.is_empty()
-        && items.iter().all(|item| is_direct_shared_owned_reference(item) || is_direct_exclusive_reference(item))
-        // The access product is itself the complete result authority for this
-        // carrier.  Compare its full ordered multiset against the source
-        // slots: accepting an `any` match here would let a duplicate relation
-        // satisfy two slots, or let an unrelated relation survive.
-        && access.borrow_relations().len() == items.len()
-        && access.borrow_relations().iter().zip(items).enumerate().all(|(slot, (relation, item))| {
-            let Some((lifetime, referent, kind)) = aggregate_reference_leaf(item) else {
-                return false;
-            };
-            let [owner] = relation.owners() else { return false };
-            let Some(parameter) = declaration.params.get(owner.position()) else {
-                return false;
-            };
-            let mut expected_projection = prefix.to_vec();
-            expected_projection.push(witchy_canonical_source::access::LoanProjectionStep::Tuple(slot));
-            relation.lifetime() == lifetime
-                && relation.kind() == kind
-                && relation.storage_type().unqualified() == referent.unqualified()
-                && relation.output_projection().steps == expected_projection
-                && owner.input_projection().steps.is_empty()
-                && parameter.ty.as_ref().and_then(aggregate_reference_leaf)
-                    .is_some_and(|(candidate_lifetime, candidate_referent, candidate_kind)| {
-                        candidate_lifetime == lifetime
-                            && candidate_referent.unqualified() == referent.unqualified()
-                            && candidate_kind == kind
-                    })
-        })
-}
-
-/// Relation owner positions are source declarations, not type-shaped aliases.
-/// The checker publishes them in declaration order; require a strictly
-/// increasing distinct sequence so a duplicated or reordered owner cannot
-/// manufacture a list carrier authority.
-pub(super) fn aggregate_relation_owners_match(
-    declaration: &witchy_syntax::ast::Function,
-    owners: &[witchy_canonical_source::access::BorrowOwnerRelation],
-    lifetime: &str,
-    referent: &witchy_syntax::ast::Type,
-    kind: witchy_canonical_source::access::BorrowKind,
-) -> bool {
-    !owners.is_empty()
-        && owners.windows(2).all(|pair| pair[0].position() < pair[1].position())
-        && owners.iter().all(|owner| {
-            owner.input_projection().steps.is_empty()
-                && declaration.params.get(owner.position())
-                    .and_then(|parameter| parameter.ty.as_ref())
-                    .and_then(aggregate_reference_leaf)
-                    .is_some_and(|(candidate_lifetime, candidate_referent, candidate_kind)| {
-                        candidate_lifetime == lifetime
-                            && candidate_referent.unqualified() == referent.unqualified()
-                            && candidate_kind == kind
-                    })
-        })
-}
-
-pub(super) fn aggregate_reference_leaf(
-    source: &witchy_syntax::ast::Type,
-) -> Option<(&str, &witchy_syntax::ast::Type, witchy_canonical_source::access::BorrowKind)> {
-    if let Some((lifetime, referent)) = direct_shared_reference_parts(source) {
-        return Some((lifetime, referent, witchy_canonical_source::access::BorrowKind::Shared));
-    }
-    direct_exclusive_reference_parts(source)
-        .map(|(lifetime, referent)| (lifetime, referent, witchy_canonical_source::access::BorrowKind::Exclusive))
+    false
 }
 
 /// A generic shared return may use the ordinary `AliasesParameter` contract
@@ -960,41 +825,18 @@ pub(super) fn ordinary_own_source_type_supported(source: &witchy_syntax::ast::Ty
         witchy_syntax::ast::Type::Qualified(witchy_syntax::ast::TypeQual::Unique, inner) => inner.as_ref(),
         _ => source,
     };
-    ordinary_unqualified_own_source_type_supported(source)
-}
-
-pub(super) fn ordinary_unqualified_own_source_type_supported(source: &witchy_syntax::ast::Type) -> bool {
-    if is_unit_source_type(source) {
-        return true;
-    }
-    match source {
-        // This admits the convention, not a signature or pointer claim:
-        // value_type_matches_source independently checks the closure record
-        // and its complete registered callable signature.
-        witchy_syntax::ast::Type::Fn(..) => true,
-        // A capability token is a scalar-like value: copied on pass, never
-        // released, so every convention carries it. `Dir` names its rights in
-        // type arguments, which change no ABI fact about the token.
-        witchy_syntax::ast::Type::Named(name, _) if matches!(name.as_str(), "Dir" | "File" | "Net") => true,
-        witchy_syntax::ast::Type::Named(name, arguments) if arguments.is_empty() => {
-            matches!(name.as_str(), "Int" | "Float" | "Duration" | "Bool" | "Nil" | "Unit" | "String" | "Bytes" | "Console" | "Env" | "Listener" | "Socket")
-        }
-        witchy_syntax::ast::Type::Named(name, arguments) if name == "List" && arguments.len() == 1 => {
-            ordinary_unqualified_own_source_type_supported(&arguments[0])
-        }
-        _ => false,
-    }
+    matches!(witchy_canonical_source::storage::StoragePlan::classify(
+        source, &BTreeMap::new(), |_| None,
+    ),
+        witchy_canonical_source::storage::StoragePlan::InlineScalar(_)
+            | witchy_canonical_source::storage::StoragePlan::Owned(_)
+            | witchy_canonical_source::storage::StoragePlan::RetainedCallable(_))
+        || witchy_canonical_source::capabilities::representation(source, &BTreeMap::new()).is_some()
 }
 
 /// The canonical `()` spelling is structurally an empty tuple.  Keep legacy
 /// names accepted at this compatibility boundary, but never require them for
 /// a zero-lane result or parameter correspondence.
 pub(super) fn is_unit_source_type(source: &witchy_syntax::ast::Type) -> bool {
-    match source.unqualified() {
-        witchy_syntax::ast::Type::Named(name, arguments) => {
-            (name == "Nil" || name == "Unit") && arguments.is_empty()
-        }
-        witchy_syntax::ast::Type::Tuple(items) => items.is_empty(),
-        _ => false,
-    }
+    witchy_canonical_source::is_unit_type(source)
 }

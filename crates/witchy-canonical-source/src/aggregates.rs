@@ -83,16 +83,9 @@ pub fn is_scalar_type(ty: &Type) -> bool {
     }
 }
 
-/// A v1 list element: a scalar (a `Bool` element is one byte), a string,
-/// a list of those, or an aggregate.
-pub fn is_v1_list_element_type(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> bool {
-    field_type_ok(ty, definitions, &mut BTreeSet::new())
-}
-
-/// A field an aggregate may carry: a scalar in its slot, or a string,
-/// list, tuple, aggregate, or checked function. The catalog chooses linear
-/// pointer slots or typed opaque-owner fields; this predicate grants neither.
-pub fn is_v1_field_type(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> bool {
+/// Syntax-only aggregate field shape guard. Storage, ownership, and admission
+/// require the separate recursive `StoragePlan` and physical correspondence.
+pub fn aggregate_field_shape_well_formed(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> bool {
     field_type_ok(ty, definitions, &mut BTreeSet::new())
 }
 
@@ -108,17 +101,6 @@ pub fn dictionary_as_tuple(ty: &Type) -> Option<Type> {
         Type::Named("List".into(), vec![arguments[0].clone()]),
         Type::Named("List".into(), vec![arguments[1].clone()]),
     ]))
-}
-
-/// Dictionary values use list storage, but the dictionary operations do not
-/// yet authenticate a `&String` value's retained root. Detect this before
-/// layout identity erases the nested view qualifier.
-pub fn dictionary_has_unadmitted_string_view_value(ty: &Type) -> bool {
-    matches!(ty.unqualified(), Type::Named(name, arguments)
-        if name == "Dict"
-            && matches!(arguments.as_slice(), [_, Type::Qualified(witchy_syntax::ast::TypeQual::View, payload)]
-                if matches!(payload.as_ref(), Type::Named(name, arguments)
-                    if name == "String" && arguments.is_empty())))
 }
 
 const MAX_AGGREGATE_SHAPE_EXPANSION: usize = 64;
@@ -521,13 +503,14 @@ pub fn concrete_aggregate_identity(
     ty: &Type,
     definitions: &BTreeMap<String, TypeDef>,
 ) -> Option<Type> {
+    let mut remaining = MAX_AGGREGATE_SHAPE_NODES;
     if !shape_memo::worth_memoizing(ty, definitions) {
-        return concrete_identity_at(ty, definitions, 0, &mut MAX_AGGREGATE_SHAPE_NODES);
+        return concrete_identity_at(ty, definitions, 0, &mut remaining);
     }
     if let Some(known) = shape_memo::identity(definitions, ty) {
         return known;
     }
-    let identity = concrete_identity_at(ty, definitions, 0, &mut MAX_AGGREGATE_SHAPE_NODES);
+    let identity = concrete_identity_at(ty, definitions, 0, &mut remaining);
     shape_memo::remember_identity(definitions, ty, &identity);
     identity
 }
@@ -758,11 +741,12 @@ fn preserves_owner_view_identity(
         })
 }
 
-/// A `&Float`, `&Bool`, or `&Duration` view (`ScalarValue`): carried as the
-/// immutable scalar value itself.
-pub fn is_scalar_value_view_payload(ty: &Type) -> bool {
-    matches!(ty.unqualified(), Type::Named(name, arguments)
-        if arguments.is_empty() && matches!(name.as_str(), "Float" | "Bool" | "Duration"))
+/// Whether a whole view uses its immutable scalar value as physical storage.
+pub fn is_inline_scalar_view_payload(ty: &Type) -> bool {
+    let view = Type::Qualified(witchy_syntax::ast::TypeQual::View, Box::new(ty.clone()));
+    matches!(crate::storage::StoragePlan::classify(&view, &BTreeMap::new(), |_| None),
+        crate::storage::StoragePlan::RootedView(
+            crate::rooted_view::RootedViewStorage::InlineScalar(_)))
 }
 
 /// A whole `&List(T)` view (`ListRoot`) uses the recursive checked carrier
@@ -942,7 +926,6 @@ fn contains_view(ty: &Type, definitions: &BTreeMap<String, TypeDef>, active: &mu
             || fields.iter().any(|(_, field)| contains_view(field, definitions, active)),
         Type::Fn(parameters, result, _, _) => parameters.iter().any(|parameter| contains_view(parameter, definitions, active))
             || contains_view(result, definitions, active),
-        _ => false,
     }
 }
 
@@ -1328,10 +1311,10 @@ mod recursive_shape_tests {
             let option = Type::Named("Option".into(), vec![unit.clone()]);
             assert_eq!(scalar_aggregate_shape(&option, &definitions).unwrap().fields,
                 vec![named("Int"), unit.clone()]);
-            assert!(is_v1_list_element_type(&unit, &definitions));
+            assert!(aggregate_field_shape_well_formed(&unit, &definitions));
         }
-        assert!(!is_v1_field_type(&named("Missing"), &definitions));
-        assert!(is_v1_field_type(&named("Console"), &definitions));
+        assert!(!aggregate_field_shape_well_formed(&named("Missing"), &definitions));
+        assert!(aggregate_field_shape_well_formed(&named("Console"), &definitions));
     }
 
     #[test]
@@ -1340,8 +1323,8 @@ mod recursive_shape_tests {
         let definitions = BTreeMap::from([("Tree".into(), tree.clone())]);
         let shape = scalar_aggregate_shape(&named("Tree"), &definitions).unwrap();
         assert_eq!(shape.fields, tree.variants[0].fields);
-        assert!(is_v1_field_type(&Type::Named("Option".into(), vec![named("Tree")]), &definitions));
-        assert!(is_v1_list_element_type(&named("Tree"), &definitions));
+        assert!(aggregate_field_shape_well_formed(&Type::Named("Option".into(), vec![named("Tree")]), &definitions));
+        assert!(aggregate_field_shape_well_formed(&named("Tree"), &definitions));
 
         let self_slice = Type::Qualified(
             witchy_syntax::ast::TypeQual::View,
@@ -1440,8 +1423,8 @@ mod recursive_shape_tests {
         ]);
         assert!(scalar_aggregate_shape(&named("A"), &definitions).is_some());
         assert!(scalar_aggregate_shape(&named("B"), &definitions).is_some());
-        assert!(!is_v1_field_type(&Type::Named("Option".into(), vec![named("A"), named("B")]), &definitions));
-        assert!(!is_v1_field_type(&Type::Named("Result".into(), vec![named("A")]), &definitions));
+        assert!(!aggregate_field_shape_well_formed(&Type::Named("Option".into(), vec![named("A"), named("B")]), &definitions));
+        assert!(!aggregate_field_shape_well_formed(&Type::Named("Result".into(), vec![named("A")]), &definitions));
     }
 
     #[test]
@@ -1508,8 +1491,8 @@ mod recursive_shape_tests {
         let holder = applied("model.Holder", signature.clone());
         assert_eq!(scalar_aggregate_shape(&holder, &definitions).unwrap().fields, vec![signature.clone()]);
         assert_eq!(concrete_aggregate_identity(&holder, &definitions), Some(holder.clone()));
-        assert!(is_v1_list_element_type(&signature, &definitions));
-        assert!(is_v1_field_type(&thunk(named("Nil")), &definitions));
+        assert!(aggregate_field_shape_well_formed(&signature, &definitions));
+        assert!(aggregate_field_shape_well_formed(&thunk(named("Nil")), &definitions));
         let consuming = Type::Fn(vec![cursor.clone()], Box::new(named("Int")), vec![Convention::Own], CallableQualifiers::new(true, false));
         let borrowing = Type::Fn(vec![cursor], Box::new(named("Int")), vec![Convention::Borrow], CallableQualifiers::default());
         for callable in [&consuming, &borrowing] {
@@ -1526,7 +1509,7 @@ mod recursive_shape_tests {
             Type::Fn(vec![named("Missing")], Box::new(named("Int")), Vec::new(), CallableQualifiers::default()),
             Type::Fn(vec![named("Int")], Box::new(named("Int")), vec![Convention::Let, Convention::Own], CallableQualifiers::default()),
         ] {
-            assert!(!is_v1_field_type(&invalid, &definitions), "{invalid:?}");
+            assert!(!aggregate_field_shape_well_formed(&invalid, &definitions), "{invalid:?}");
             let generic = applied("model.Holder", invalid);
             assert!(scalar_aggregate_shape(&generic, &definitions).is_none());
             assert!(concrete_aggregate_identity(&generic, &definitions).is_none());
@@ -1569,7 +1552,7 @@ fn scalar_aggregate_shape_uncached(
     }
     // A tuple is an anonymous one-variant record of its items.
     if let Type::Tuple(items) = ty.unqualified() {
-        if items.is_empty() || !items.iter().all(|item| is_v1_field_type(item, definitions)) {
+        if items.is_empty() || !items.iter().all(|item| aggregate_field_shape_well_formed(item, definitions)) {
             return None;
         }
         return Some(ScalarAggregateShape {
@@ -1584,7 +1567,7 @@ fn scalar_aggregate_shape_uncached(
     if let Some(variants) = witchy_syntax::synthetic_names::anon_union_synthetic_variants(name) {
         let expected = variants.iter().map(|(_, arity)| *arity).sum::<usize>();
         if expected != arguments.len()
-            || !arguments.iter().all(|argument| is_v1_field_type(argument, definitions))
+            || !arguments.iter().all(|argument| aggregate_field_shape_well_formed(argument, definitions))
         {
             return None;
         }
@@ -1613,7 +1596,7 @@ fn scalar_aggregate_shape_uncached(
         });
     }
     match (name.as_str(), arguments.as_slice()) {
-        ("Option", [payload]) if is_v1_field_type(payload, definitions) => Some(ScalarAggregateShape {
+        ("Option", [payload]) if aggregate_field_shape_well_formed(payload, definitions) => Some(ScalarAggregateShape {
             name: "Option".into(),
             fields: vec![int_type(), payload.clone()],
             variants: vec![
@@ -1623,7 +1606,7 @@ fn scalar_aggregate_shape_uncached(
             tagged: true,
             packed: false,
         }),
-        ("Result", [value, error]) if is_v1_field_type(value, definitions) && is_v1_field_type(error, definitions) => Some(ScalarAggregateShape {
+        ("Result", [value, error]) if aggregate_field_shape_well_formed(value, definitions) && aggregate_field_shape_well_formed(error, definitions) => Some(ScalarAggregateShape {
             name: "Result".into(),
             fields: vec![int_type(), value.clone(), error.clone()],
             variants: vec![

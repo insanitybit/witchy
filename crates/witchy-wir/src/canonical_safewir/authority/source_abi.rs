@@ -12,6 +12,59 @@ pub(crate) fn source_closure_family_key(
 
 pub(super) const MAX_SOURCE_CORRESPONDENCE_PAIRS: usize = 65_536;
 
+/// The closed checked signature loses nested legacy borrow spelling. Inspect
+/// the original declaration, including nominal fields, before comparing a
+/// candidate to that signature. Expansion is bounded independently of the
+/// ordinary storage proof.
+pub(super) fn original_type_has_unchecked_loan(
+    original: &witchy_syntax::ast::Type,
+    definitions: &ScalarRecordFields,
+) -> bool {
+    use witchy_syntax::ast::{Type, TypeQual};
+    let mut pending = vec![(original, true, 0usize)];
+    let mut expanded = HashSet::new();
+    let mut visited = 0usize;
+    while let Some((ty, root, depth)) = pending.pop() {
+        visited += 1;
+        if visited > 4_096 || depth > 128 { return true; }
+        match ty {
+            Type::Qualified(
+                TypeQual::Borrow(_) | TypeQual::BorrowMut(_) | TypeQual::LegacyBorrow(_),
+                inner,
+            ) => {
+                if !root || !(is_direct_shared_reference(ty) || is_direct_exclusive_reference(ty)) {
+                    return true;
+                }
+                pending.push((inner, false, depth + 1));
+            }
+            Type::Qualified(_, inner) | Type::Slice(inner) => {
+                pending.push((inner, false, depth + 1));
+            }
+            Type::Named(name, arguments) => {
+                pending.extend(arguments.iter().map(|argument| (argument, false, depth + 1)));
+                if let Some(definition) = definitions.get(name)
+                    && expanded.insert(name.as_str())
+                {
+                    pending.extend(definition.variants.iter().flat_map(|variant|
+                        variant.fields.iter().map(|field| (field, false, depth + 1))));
+                }
+            }
+            Type::Dyn(_, arguments) | Type::Tuple(arguments) => {
+                pending.extend(arguments.iter().map(|argument| (argument, false, depth + 1)));
+            }
+            Type::Fn(parameters, result, _, _) => {
+                pending.extend(parameters.iter().map(|parameter| (parameter, false, depth + 1)));
+                pending.push((result, false, depth + 1));
+            }
+            Type::RecordCompose { base, fields } => {
+                pending.push((base, false, depth + 1));
+                pending.extend(fields.iter().map(|(_, field)| (field, false, depth + 1)));
+            }
+        }
+    }
+    false
+}
+
 /// A source signature can grant a record-root ABI only when the checked view
 /// can derive its typed, nominally bound plan. This walk reads source facts;
 /// candidate syntax never supplies the plan or the nominal table.
@@ -190,7 +243,7 @@ pub(super) fn source_abi_qualifiers_supported(
     use witchy_syntax::ast::{Convention, Type, TypeQual};
     let Type::Fn(parameters, result, conventions, _) = source.unqualified() else { return false };
     // The direct shared-reference slice carries an already-addressable
-    // reference-counted shell (String/Bytes/List(Int)) or the separately
+    // reference-counted shell (String/Bytes) or the separately
     // authenticated scalar-place owner. Direct exclusive references are a
     // second shallow exception: only a plain declaration parameter receives
     // the authenticated hidden write-back lane. It is deliberately not a
@@ -200,7 +253,6 @@ pub(super) fn source_abi_qualifiers_supported(
         || is_list_of_rooted_scalar_places(result)
         || is_direct_rooted_view_whole_root(result, records)
         || is_direct_exclusive_reference(result)
-        || is_aggregate_reference_carrier(result)
         || is_direct_rooted_view_aggregate_carrier(result, records)
         || witchy_syntax::ast::is_direct_unique_result_ok_collection(result)))
         .then_some((result.as_ref(), true))
@@ -313,12 +365,12 @@ pub(super) fn is_direct_rooted_scalar_place(source: &witchy_syntax::ast::Type) -
 /// an aggregate (`Option(&String)`, `(&String, Int)`, a record field) it has
 /// exactly the String layout.  The callable's own direct `&String` lanes keep
 /// their dedicated whole-root correspondence and are left as written.
-pub(super) fn erase_nested_string_views(signature: &witchy_syntax::ast::Type) -> witchy_syntax::ast::Type {
+pub(super) fn erase_nested_byte_buffer_views(signature: &witchy_syntax::ast::Type) -> witchy_syntax::ast::Type {
     use witchy_syntax::ast::Type;
     let lane = |ty: &Type| -> Type {
         match ty {
-            Type::Named(name, arguments) => Type::Named(name.clone(), arguments.iter().map(erase_string_view).collect()),
-            Type::Tuple(items) => Type::Tuple(items.iter().map(erase_string_view).collect()),
+            Type::Named(name, arguments) => Type::Named(name.clone(), arguments.iter().map(erase_byte_buffer_view).collect()),
+            Type::Tuple(items) => Type::Tuple(items.iter().map(erase_byte_buffer_view).collect()),
             other => other.clone(),
         }
     };
@@ -340,7 +392,10 @@ pub(super) fn erase_scalar_value_views(ty: &witchy_syntax::ast::Type) -> witchy_
     use witchy_syntax::ast::Type;
     match ty {
         Type::Qualified(witchy_syntax::ast::TypeQual::View, inner)
-            if witchy_canonical_source::aggregates::is_scalar_value_view_payload(inner) =>
+            if matches!(witchy_canonical_source::storage::StoragePlan::classify(
+                ty, &BTreeMap::new(), |_| None,
+            ), witchy_canonical_source::storage::StoragePlan::RootedView(
+                witchy_canonical_source::rooted_view::RootedViewStorage::InlineScalar(_))) =>
         {
             inner.unqualified().clone()
         }
@@ -357,29 +412,33 @@ pub(super) fn erase_scalar_value_views(ty: &witchy_syntax::ast::Type) -> witchy_
     }
 }
 
-/// Read every `&String` in `ty` as `String`: the view's carrier is the token.
-pub(super) fn erase_string_view(ty: &witchy_syntax::ast::Type) -> witchy_syntax::ast::Type {
+/// Read a byte-buffer view as its retained buffer token in nested storage.
+pub(super) fn erase_byte_buffer_view(ty: &witchy_syntax::ast::Type) -> witchy_syntax::ast::Type {
     use witchy_syntax::ast::Type;
     match ty {
         Type::Qualified(witchy_syntax::ast::TypeQual::View, inner)
-            if matches!(inner.unqualified(), Type::Named(name, arguments) if name == "String" && arguments.is_empty()) =>
+            if matches!(witchy_canonical_source::storage::StoragePlan::classify(
+                ty, &BTreeMap::new(), |_| None,
+            ), witchy_canonical_source::storage::StoragePlan::RootedView(
+                witchy_canonical_source::rooted_view::RootedViewStorage::RetainedRoot(
+                    witchy_canonical_source::rooted_view::RetainedRootStorage::ByteBuffer))) =>
         {
-            Type::Named("String".into(), Vec::new())
+            inner.unqualified().clone()
         }
-        Type::Qualified(qualifier, inner) => Type::Qualified(qualifier.clone(), Box::new(erase_string_view(inner))),
-        Type::Named(name, arguments) => Type::Named(name.clone(), arguments.iter().map(erase_string_view).collect()),
-        Type::Tuple(items) => Type::Tuple(items.iter().map(erase_string_view).collect()),
+        Type::Qualified(qualifier, inner) => Type::Qualified(qualifier.clone(), Box::new(erase_byte_buffer_view(inner))),
+        Type::Named(name, arguments) => Type::Named(name.clone(), arguments.iter().map(erase_byte_buffer_view).collect()),
+        Type::Tuple(items) => Type::Tuple(items.iter().map(erase_byte_buffer_view).collect()),
         other => other.clone(),
     }
 }
 
 /// The same reading for record and sum fields, used only for signature
-/// correspondence: a `&String` field is laid out as a String field.
-pub(super) fn erase_record_string_views(records: &ScalarRecordFields) -> ScalarRecordFields {
+/// correspondence: a retained byte-buffer view uses its buffer field.
+pub(super) fn erase_record_byte_buffer_views(records: &ScalarRecordFields) -> ScalarRecordFields {
     records.iter().map(|(name, definition)| {
         let mut definition = definition.clone();
         for variant in &mut definition.variants {
-            variant.fields = variant.fields.iter().map(erase_string_view).collect();
+            variant.fields = variant.fields.iter().map(erase_byte_buffer_view).collect();
         }
         (name.clone(), definition)
     }).collect()
@@ -417,53 +476,11 @@ pub(super) fn is_direct_shared_owned_reference(source: &witchy_syntax::ast::Type
         witchy_syntax::ast::Type::Qualified(witchy_syntax::ast::TypeQual::Borrow(_), inner)
             if matches!(inner.unqualified(),
                 witchy_syntax::ast::Type::Named(name, arguments)
-                    if (matches!(name.as_str(), "String" | "Bytes") && arguments.is_empty())
-                        || (name == "List" && arguments.len() == 1
-                            && matches!(arguments[0].unqualified(),
-                                witchy_syntax::ast::Type::Named(element, element_arguments)
-                                    if element == "Int" && element_arguments.is_empty()))))
+                    if matches!(name.as_str(), "String" | "Bytes") && arguments.is_empty()))
 }
 
 pub(super) fn is_direct_shared_reference(source: &witchy_syntax::ast::Type) -> bool {
     is_direct_shared_int(source) || is_direct_shared_owned_reference(source)
-}
-
-/// The physical aggregate ABI can store only these bounded reference leaves.
-/// This deliberately proves no alias authority by itself: a declaration must
-/// also pass `aggregate_reference_result_relation_is_checked` against its
-/// pointer-bound access facts before this structural exception is usable.
-pub(super) fn is_aggregate_reference_carrier(source: &witchy_syntax::ast::Type) -> bool {
-    match source.unqualified() {
-        witchy_syntax::ast::Type::Tuple(items) => !items.is_empty()
-            && items.iter().all(|item| {
-                is_direct_shared_owned_reference(item) || is_direct_exclusive_reference(item)
-            }),
-        witchy_syntax::ast::Type::Named(name, arguments)
-            if name == "List" && arguments.len() == 1 =>
-        {
-            is_direct_shared_owned_reference(&arguments[0])
-        }
-        // `Result` carries a tagged owned shell.  The only aggregate Result
-        // admitted by this ABI is an `Ok` tuple of direct shared roots with a
-        // String `Err` lane.  Its tag and every payload projection are then
-        // checked below against the retained source relation product.
-        witchy_syntax::ast::Type::Named(name, arguments)
-            if name == "Result" && arguments.len() == 2 =>
-        {
-            is_shared_reference_tuple_carrier(&arguments[0])
-                && is_string_source_type(&arguments[1])
-        }
-        // `Option(&Int)` has one rooted-view payload in `Some` and no payload
-        // in `None`.  Its opaque aggregate owner is checked against the exact
-        // source identity below; do not erase it into the linear Option(Int)
-        // physical layout.
-        witchy_syntax::ast::Type::Named(name, arguments)
-            if name == "Option" && arguments.len() == 1 =>
-        {
-            witchy_canonical_source::aggregates::is_rooted_int_option_payload_carrier(&arguments[0], &BTreeMap::new())
-        }
-        _ => false,
-    }
 }
 
 /// A non-packed aggregate of `&Int` views, or a named record with one direct
@@ -483,16 +500,6 @@ pub(super) fn is_direct_rooted_view_aggregate_carrier(
             witchy_canonical_source::aggregates::ViewCarrierPlan::Aggregate { .. }
         )
     )
-}
-
-pub(super) fn is_shared_reference_tuple_carrier(source: &witchy_syntax::ast::Type) -> bool {
-    matches!(source.unqualified(), witchy_syntax::ast::Type::Tuple(items)
-        if !items.is_empty() && items.iter().all(is_direct_shared_owned_reference))
-}
-
-pub(super) fn is_string_source_type(source: &witchy_syntax::ast::Type) -> bool {
-    matches!(source.unqualified(), witchy_syntax::ast::Type::Named(name, arguments)
-        if name == "String" && arguments.is_empty())
 }
 
 pub(super) fn is_direct_exclusive_referent(source: &witchy_syntax::ast::Type) -> bool {
@@ -570,7 +577,6 @@ pub(super) fn restore_source_abi_qualifiers(
             || is_direct_rooted_scalar_place(declared) || is_direct_rooted_projection(declared, records)
             || is_direct_rooted_view_whole_root(declared, records)
             || is_direct_exclusive_reference(declared)
-            || is_aggregate_reference_carrier(declared)
             || is_direct_rooted_view_aggregate_carrier(declared, records)
             || is_root_unique(declared))
     {

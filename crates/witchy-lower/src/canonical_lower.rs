@@ -49,10 +49,10 @@ use write_back::{PreparedWriteBack, source_place_root};
 
 
 use witchy_syntax::ast::{BinOp, Convention, Expr, Item, Pattern, Stmt, Type, TypeDef, TypeQual, UnOp};
-use witchy_canonical_source::aggregates::{canonical_owner_aggregate_identity, concrete_aggregate_identity, dictionary_as_tuple, scalar_aggregate_shape, ScalarAggregateShape, ScalarVariant};
+use witchy_canonical_source::aggregates::{canonical_owner_aggregate_identity, concrete_aggregate_identity, scalar_aggregate_shape, ScalarAggregateShape, ScalarVariant};
 use witchy_canonical_source::carrier::CarrierElement;
 use witchy_canonical_source::rooted_view::{RetainedRootStorage, RootedViewStorage};
-use witchy_canonical_source::storage::{ListElementProjection, StoragePlan};
+use witchy_canonical_source::storage::{ListElementProjection, StoragePlan, is_inline_scalar_record};
 use witchy_canonical_source::structural_identity::SourceTypeKey;
 use witchy_canonical_source::abi::CanonicalScalarKind;
 use witchy_canonical_source::access::{
@@ -299,7 +299,7 @@ pub fn lower_typed_module(
     // keeps its bare source name. Key both spellings to the one definition.
     let entry_module = typed.module().linked_entry.as_deref();
     let packed_records = typed.module().items.iter().filter_map(|item| match item {
-        Item::Type(definition) if is_v1_scalar_record(definition) => Some(definition),
+        Item::Type(definition) if is_inline_scalar_record(definition) => Some(definition),
         _ => None,
     }).flat_map(|definition| {
         let qualified = entry_module
@@ -2114,7 +2114,7 @@ fn checked_signature(
     let mut result_contracts = checked_signature.contract.results;
     let mut parameter_effects = checked_signature.contract.parameter_effects;
     if let Some(result) = function.ret.as_ref().filter(|result| {
-        is_direct_rooted_int_view_aggregate_carrier(result, definitions)
+        is_direct_rooted_view_aggregate_carrier(result, definitions)
     })
     {
         let value_type = source_value_type(result, layout_bundle, layouts, closure_layouts, definitions)?;
@@ -2129,12 +2129,13 @@ fn checked_signature(
     // source inputs therefore enter with a tracked shared token.  This is
     // deliberately conditioned on the bounded aggregate result; the ordinary
     // direct `&T -> &T` alias contract remains a non-owning Value lane.
-    let aggregate_reference_result = function.ret.as_ref().is_some_and(is_aggregate_reference_carrier);
+    let aggregate_reference_result = function.ret.as_ref()
+        .is_some_and(|result| is_direct_rooted_view_aggregate_carrier(result, definitions));
     for (parameter_index, ((parameter, source), convention)) in
         parameters.iter().zip(&function.params).zip(&conventions).enumerate()
     {
         if source.ty.as_ref().is_some_and(|source_type| {
-            is_direct_rooted_int_view_aggregate_carrier(source_type, definitions)
+            is_direct_rooted_view_aggregate_carrier(source_type, definitions)
                 && rooted_gc_view_owner_type(source_type, closure_layouts, definitions).is_none()
         }) {
             let source_type = source.ty.as_ref().expect("checked rooted-view aggregate type");
@@ -2774,7 +2775,7 @@ fn contains_deferred_v1_qualifier(ty: &Type, definitions: &BTreeMap<String, Type
     // keeps the bounded physical layout representable; checked_signature and
     // the canonical authority binding independently require the complete
     // source-owned BorrowRelation product before it can be admitted.
-    if is_aggregate_reference_carrier(ty) {
+    if is_direct_rooted_view_aggregate_carrier(ty, definitions) {
         return false;
     }
     // Callable values are closure records, so this narrowly bounded shape has
@@ -2854,76 +2855,14 @@ fn is_callable_reference_carrier(ty: &Type) -> bool {
     exclusive_write_back || rooted_view
 }
 
-/// The sole nested-reference physical shapes this phase can represent.  This
-/// is intentionally only a layout prefilter: it neither names an owner nor
-/// grants an alias or write-back right.  Those facts remain in the exact
-/// source access signature and are verified at the canonical authority
-/// boundary.
-fn is_aggregate_reference_carrier(ty: &Type) -> bool {
-    match ty.unqualified() {
-        Type::Tuple(items) => !items.is_empty()
-            && items.iter().all(|item| {
-                shared_reference_parts(item)
-                    .is_some_and(|(_, inner)| is_direct_shared_owned_object(inner))
-                    || exclusive_reference_parts(item)
-                        .is_some_and(|(_, inner)| is_direct_exclusive_owned_object(inner))
-            }),
-        Type::Named(name, arguments) if name == "List" && arguments.len() == 1 => {
-            shared_reference_parts(&arguments[0])
-                .is_some_and(|(_, inner)| is_direct_shared_owned_object(inner))
-        }
-        // `Option(&Int)` owns one tagged aggregate shell. Its active `Some`
-        // field is the existing authenticated rooted-view carrier; `None`
-        // has no carrier payload at all. Do not treat the payload as a linear
-        // scalar or synthesize an inactive value.
-        Type::Named(name, arguments) if name == "Option" && arguments.len() == 1 => {
-            is_view_or_option_view_carrier(&arguments[0])
-        }
-        // `Result` has an owned tagged shell.  This bounded carrier admits
-        // only the checked `Ok` tuple of direct shared roots; a mutable,
-        // projected, generic, or non-String error lane remains outside the
-        // aggregate ABI.  The source authority checker independently binds
-        // each tuple slot to its exact `Ok` projection and owner relation.
-        Type::Named(name, arguments) if name == "Result" && arguments.len() == 2 => {
-            is_shared_reference_tuple_carrier(&arguments[0])
-                && is_string_type(&arguments[1])
-        }
-        _ => false,
-    }
-}
-
-/// An established `&Int` Option payload or nested carrier. A bare `&[Int]`
-/// needs a separate authenticated Option projection and is refused here.
-/// Definition-free: used only where a builtin shell names its payload directly.
-fn is_view_or_option_view_carrier(ty: &Type) -> bool {
-    witchy_canonical_source::aggregates::is_rooted_int_option_payload_carrier(ty, &BTreeMap::new())
-}
-
-/// An admitted aggregate of `&Int` views, or a named record with one direct
-/// exact `&[Int]` field, uses a source-derived opaque owner family. The checked
-/// callable ABI erases view fields to their scalar payloads, so declaration
-/// sites must recover this exact source shape before accepting the aggregate
-/// as a `Gc` value. A field holding a view outside that recursive carrier
-/// shape keeps the whole aggregate fail-closed.
-fn is_direct_rooted_int_view_aggregate_carrier(
+/// An aggregate with an authenticated rooted-view field needs the checked
+/// source's opaque owner family rather than an erased linear record.
+fn is_direct_rooted_view_aggregate_carrier(
     ty: &Type,
     definitions: &BTreeMap<String, TypeDef>,
 ) -> bool {
-    witchy_canonical_source::aggregates::is_rooted_int_view_aggregate(ty, definitions)
-}
-
-fn is_shared_reference_tuple_carrier(ty: &Type) -> bool {
-    matches!(ty.unqualified(), Type::Tuple(items)
-        if !items.is_empty()
-            && items.iter().all(|item| {
-                shared_reference_parts(item)
-                    .is_some_and(|(_, inner)| is_direct_shared_owned_object(inner))
-            }))
-}
-
-fn is_string_type(ty: &Type) -> bool {
-    matches!(ty.unqualified(), Type::Named(name, arguments)
-        if name == "String" && arguments.is_empty())
+    matches!(StoragePlan::classify(ty.unqualified(), definitions, |_| Some(0)),
+        StoragePlan::AggregateView(witchy_canonical_source::aggregates::ViewCarrierPlan::Aggregate { .. }))
 }
 
 fn shared_reference_parts(ty: &Type) -> Option<(&str, &Type)> {
@@ -3639,7 +3578,7 @@ fn ordinary_own_type_supported(ty: &Type) -> bool {
         // copy of that value. Async lowering carries live views into
         // continuation segments as `own` parameters.
         Type::Qualified(TypeQual::View, inner)
-            if witchy_canonical_source::aggregates::is_scalar_value_view_payload(inner) => return true,
+            if witchy_canonical_source::aggregates::is_inline_scalar_view_payload(inner) => return true,
         _ => ty,
     };
     ordinary_unqualified_own_type_supported(ty)
@@ -14625,7 +14564,7 @@ impl FunctionLowerer<'_> {
         let scalar_value_view = operator == UnOp::Deref
             && self.expression_type(operand).is_ok_and(|ty| matches!(&ty,
                 Type::Qualified(TypeQual::View, inner)
-                    if witchy_canonical_source::aggregates::is_scalar_value_view_payload(inner)));
+                    if witchy_canonical_source::aggregates::is_inline_scalar_view_payload(inner)));
         let direct_mut_root = operator == UnOp::BorrowMut && matches!(operand, Expr::Var(_));
         let direct_mut_projected_field = operator == UnOp::BorrowMut
             && self.authenticated_direct_projected_exclusive_handle_open(operand)?;
@@ -19301,17 +19240,15 @@ const RENDER_MINUS_SIGN: &str = "-";
 const RENDER_BOOL_TABLE: &str = "falsetrue";
 
 fn scalar_type(source: &Type) -> Result<ValueType, CanonicalLoweringError> {
-    match source.unqualified() {
-        Type::Named(name, arguments) if arguments.is_empty() => match name.as_str() {
-            "Int" | "Duration" => Ok(ValueType::Int),
-            "Float" => Ok(ValueType::Float),
-            "Bool" => Ok(ValueType::Bool),
-            "Nil" | "Unit" => Ok(ValueType::Unit),
-            _ => Err(CanonicalLoweringError::UnsupportedType(source.clone())),
-        },
-        Type::Tuple(items) if items.is_empty() => Ok(ValueType::Unit),
-        _ => Err(CanonicalLoweringError::UnsupportedType(source.clone())),
-    }
+    let StoragePlan::InlineScalar(kind) = StoragePlan::classify(source.unqualified(), &BTreeMap::new(), |_| None) else {
+        return Err(CanonicalLoweringError::UnsupportedType(source.clone()));
+    };
+    Ok(match kind {
+        CanonicalScalarKind::Unit => ValueType::Unit,
+        CanonicalScalarKind::Int | CanonicalScalarKind::Duration => ValueType::Int,
+        CanonicalScalarKind::Float => ValueType::Float,
+        CanonicalScalarKind::Bool => ValueType::Bool,
+    })
 }
 
 fn source_value_type(
@@ -19326,7 +19263,7 @@ fn source_value_type(
     if let Type::Qualified(TypeQual::View, inner) = source
         && (witchy_canonical_source::aggregates::is_record_root_payload(inner, definitions)
             || CarrierElement::retained_structural_root(inner, definitions).is_some()
-            || witchy_canonical_source::aggregates::is_scalar_value_view_payload(inner))
+            || witchy_canonical_source::aggregates::is_inline_scalar_view_payload(inner))
     {
         return source_value_type(inner, layout_bundle, layouts, closure_layouts, definitions);
     }
@@ -19361,8 +19298,13 @@ fn source_value_type(
             CapabilityRepresentation::Nullable(_) => ValueType::NullableCapability(kind),
         });
     }
+    let storage = StoragePlan::classify(source.unqualified(), definitions, |_| Some(0));
     if let Some(shape) = scalar_aggregate_shape(source, definitions)
         && !shape.packed
+        && matches!(storage,
+            StoragePlan::Owned(CarrierElement::Tuple(_) | CarrierElement::Dict(_, _)
+                | CarrierElement::Record { .. } | CarrierElement::Sum { .. })
+            | StoragePlan::AggregateView(_))
     {
         // A scalar aggregate (record, sum, scalar `Option`/`Result`) is one
         // owned reference; a packed record stays an inline aggregate, which
@@ -19378,35 +19320,20 @@ fn source_value_type(
         )
             .map(ValueType::Ref);
     }
-    match source.unqualified() {
-        // A `fn` value is a closure record.
-        Type::Fn(..) => closure_layouts
+    match storage {
+        StoragePlan::RetainedCallable(_) => closure_layouts
             .get(&crate::canonical_layouts::canonical_closure_key(source, definitions))
             .copied()
             .map(ValueType::Ref)
             .ok_or_else(|| CanonicalLoweringError::UnsupportedType(source.clone())),
-        Type::Named(name, arguments) if name == "List" && arguments.len() == 1 => {
+        StoragePlan::Owned(CarrierElement::List(_)) => {
             list_layout(source, layout_bundle, layouts, closure_layouts, definitions).map(|(layout, _, _, _)| ValueType::Ref(layout))
         }
-        Type::Named(name, arguments) if name == "Dict" && arguments.len() == 2 => {
-            let tuple = dictionary_as_tuple(source).expect("a two-argument Dict has a tuple form");
-            source_value_type(&tuple, layout_bundle, layouts, closure_layouts, definitions)
-        }
-        // `Bytes` shares the raw-byte buffer layout; only its source type
-        // (and the operations the lowering admits on it) differ.
-        Type::Named(name, arguments) if matches!(name.as_str(), "String" | "Bytes") && arguments.is_empty() => {
+        StoragePlan::Owned(CarrierElement::String | CarrierElement::Bytes) => {
             string_layout(&Type::Named("String".into(), Vec::new()), layout_bundle, layouts).map(ValueType::Ref)
         }
-        Type::Named(name, arguments) if name == "Console" && arguments.is_empty() => {
-            Ok(ValueType::Capability(witchy_wir::canonical_safewir::CapabilityKindId::new(0)))
-        }
-        // A `Dir` token of any rights (`Dir[Read]`, `Dir[Write]`) is kind 1;
-        // the rights live in the host's authority object. `Env` is kind 2.
-        Type::Named(name, _) if name == "Dir" => Ok(ValueType::Capability(witchy_wir::canonical_safewir::DIR_CAPABILITY_KIND)),
-        Type::Named(name, arguments) if name == "Env" && arguments.is_empty() => {
-            Ok(ValueType::Capability(witchy_wir::canonical_safewir::ENV_CAPABILITY_KIND))
-        }
-        _ => scalar_type(source),
+        StoragePlan::InlineScalar(_) | StoragePlan::Owned(CarrierElement::Scalar(_)) => scalar_type(source),
+        _ => Err(CanonicalLoweringError::UnsupportedType(source.clone())),
     }
 }
 
@@ -19502,34 +19429,11 @@ fn aggregate_layout(
 ) -> Result<witchy_wir::layout::LayoutId, CanonicalLoweringError> {
     let mut expected = Vec::with_capacity(expected_fields.len());
     for field in expected_fields {
-        let slot = if let Ok(scalar) = scalar_type(field) {
-            (Some(scalar), None)
-        } else {
-            let pointee = match field.unqualified() {
-                Type::Named(name, arguments) if matches!(name.as_str(), "String" | "Bytes") && arguments.is_empty() => {
-                    string_layout(&Type::Named("String".into(), Vec::new()), layout_bundle, layouts)?
-                }
-                Type::Named(name, arguments) if name == "List" && arguments.len() == 1 => {
-                    list_layout(field, layout_bundle, layouts, closure_layouts, definitions)?.0
-                }
-                Type::Fn(..) => closure_layouts
-                    .get(&crate::canonical_layouts::canonical_closure_key(field, definitions))
-                    .copied()
-                    .ok_or_else(|| CanonicalLoweringError::UnsupportedType(field.clone()))?,
-                _ => match scalar_aggregate_shape(field, definitions) {
-                    Some(shape) if !shape.packed => aggregate_layout_for_source(
-                        field,
-                        &shape.fields,
-                        shape.tagged,
-                        layout_bundle,
-                        layouts,
-                        closure_layouts,
-                        definitions,
-                    )?,
-                    _ => return Err(CanonicalLoweringError::UnsupportedType(field.clone())),
-                },
-            };
-            (None, Some(pointee))
+        let slot = match source_value_type(field, layout_bundle, layouts, closure_layouts, definitions)? {
+            scalar @ (ValueType::Int | ValueType::Float | ValueType::Bool | ValueType::Unit) =>
+                (Some(scalar), None),
+            ValueType::Ref(pointee) => (None, Some(pointee)),
+            _ => return Err(CanonicalLoweringError::UnsupportedType(field.clone())),
         };
         expected.push(slot);
     }
@@ -19602,26 +19506,6 @@ fn packed_scalar_layout(
         [] => Err(CanonicalLoweringError::UnsupportedExpression("packed scalar record layout")),
         _ => Err(CanonicalLoweringError::UnsupportedExpression("ambiguous packed scalar record layout")),
     }
-}
-
-/// A one-variant record with scalar fields: inline when `packed`, otherwise
-/// an immutable reference-counted heap aggregate.
-fn is_v1_scalar_record(definition: &TypeDef) -> bool {
-    definition.params.is_empty()
-        && definition.variants.len() == 1
-        && definition.variants[0].fields.iter().all(|field| matches!(field.unqualified(),
-            Type::Named(name, arguments) if arguments.is_empty() && matches!(name.as_str(), "Int" | "Float" | "Duration" | "Bool" | "Nil" | "Unit")
-        ))
-}
-
-#[allow(dead_code)]
-fn is_v1_packed_scalar_record(definition: &TypeDef) -> bool {
-    definition.packed
-        && definition.params.is_empty()
-        && definition.variants.len() == 1
-        && definition.variants[0].fields.iter().all(|field| matches!(field.unqualified(),
-            Type::Named(name, arguments) if arguments.is_empty() && matches!(name.as_str(), "Int" | "Float" | "Duration" | "Bool" | "Nil" | "Unit")
-        ))
 }
 
 fn is_indirect_scalar(value_type: ValueType) -> bool {
@@ -20048,12 +19932,10 @@ fn list_layout(
     if matches!(projection, ListElementProjection::Refused) {
         return Err(CanonicalLoweringError::UnsupportedListElement(source.clone()));
     }
-    // `Duration` uses the Int value lane but a distinct physical scalar.
     let duration_element = matches!(
         &projection,
         ListElementProjection::Owned(CarrierElement::Scalar(CanonicalScalarKind::Duration))
-    ) || matches!(arguments[0].unqualified(),
-        Type::Named(element, args) if element == "Duration" && args.is_empty());
+    );
     let aggregate_element = || -> Result<ValueType, CanonicalLoweringError> {
         let Some(shape) = scalar_aggregate_shape(&arguments[0], definitions).filter(|shape| !shape.packed) else {
             return Err(CanonicalLoweringError::UnsupportedListElement(source.clone()));
@@ -20088,24 +19970,6 @@ fn list_layout(
             *closure_layouts.get(plan.family())
                 .ok_or_else(|| CanonicalLoweringError::UnsupportedType(arguments[0].clone()))?,
         ),
-        ListElementProjection::LayoutOnly => match arguments[0].unqualified() {
-            Type::Named(element, args) if element == "Int" && args.is_empty() => ValueType::Int,
-            _ if duration_element => ValueType::Int,
-            Type::Named(element, args) if element == "Float" && args.is_empty() => ValueType::Float,
-            Type::Named(element, args) if element == "Bool" && args.is_empty() => ValueType::Bool,
-            Type::Named(element, args) if matches!(element.as_str(), "Nil" | "Unit") && args.is_empty() => ValueType::Unit,
-            Type::Tuple(items) if items.is_empty() => ValueType::Unit,
-            Type::Named(element, args) if matches!(element.as_str(), "String" | "Bytes") && args.is_empty() => byte_buffer_element()?,
-            Type::Named(element, _) if element == "List" => {
-                ValueType::Ref(list_layout(&arguments[0], layout_bundle, layouts, closure_layouts, definitions)?.0)
-            }
-            Type::Fn(..) => ValueType::Ref(
-                *closure_layouts
-                    .get(&crate::canonical_layouts::canonical_closure_key(&arguments[0], definitions))
-                    .ok_or_else(|| CanonicalLoweringError::UnsupportedType(arguments[0].clone()))?,
-            ),
-            _ => aggregate_element()?,
-        },
         ListElementProjection::Refused => unreachable!("checked above"),
     };
 
@@ -20139,79 +20003,6 @@ fn list_layout(
         [] => Err(CanonicalLoweringError::MissingLayout(source.clone())),
         [candidate] => Ok(*candidate),
         _ => Err(CanonicalLoweringError::AmbiguousLayout(source.clone())),
-    }
-}
-
-fn dictionary_layout(
-    source: &Type,
-    layout_bundle: &LayoutBundle,
-    layouts: &LayoutInterner,
-) -> Result<(witchy_wir::layout::LayoutId, ValueType, ValueType), CanonicalLoweringError> {
-    let Type::Named(name, arguments) = source.unqualified() else {
-        return Err(CanonicalLoweringError::UnsupportedType(source.clone()));
-    };
-    if name != "Dict" || arguments.len() != 2 {
-        return Err(CanonicalLoweringError::UnsupportedType(source.clone()));
-    }
-    let key_type = dictionary_slot_type(&arguments[0], layout_bundle, layouts)?;
-    let value_type = dictionary_slot_type(&arguments[1], layout_bundle, layouts)?;
-    let mut candidates = Vec::new();
-    for root in layout_bundle.roots() {
-        let Some(descriptor) = physical_layout_descriptor(layouts, *root) else { continue };
-        let LayoutKind::RuntimeDictionaryBody { key, value, .. } = descriptor.kind() else {
-            continue;
-        };
-        if dictionary_slot_matches(*key, key_type, &arguments[0], layouts)
-            && dictionary_slot_matches(*value, value_type, &arguments[1], layouts)
-        {
-            candidates.push(*root);
-        }
-    }
-    match candidates.as_slice() {
-        [] => Err(CanonicalLoweringError::MissingLayout(source.clone())),
-        [candidate] => Ok((*candidate, key_type, value_type)),
-        _ => Err(CanonicalLoweringError::AmbiguousLayout(source.clone())),
-    }
-}
-
-fn dictionary_slot_type(
-    source: &Type,
-    layout_bundle: &LayoutBundle,
-    layouts: &LayoutInterner,
-) -> Result<ValueType, CanonicalLoweringError> {
-    match source.unqualified() {
-        Type::Named(name, arguments) if name == "String" && arguments.is_empty() => {
-            string_layout(source, layout_bundle, layouts).map(ValueType::Ref)
-        }
-        _ => scalar_type(source),
-    }
-}
-
-fn dictionary_slot_matches(
-    layout: witchy_wir::layout::LayoutId,
-    value_type: ValueType,
-    source_type: &Type,
-    layouts: &LayoutInterner,
-) -> bool {
-    let Some(descriptor) = physical_layout_descriptor(layouts, layout) else { return false };
-    // Duration and Int share a value lane, but their physical layouts and
-    // authenticated dictionary roots remain distinct.
-    let duration = matches!(source_type.unqualified(),
-        Type::Named(name, arguments) if name == "Duration" && arguments.is_empty());
-    match (descriptor.kind(), value_type) {
-        (LayoutKind::Scalar(ScalarKind::Int), ValueType::Int) if !duration => true,
-        (LayoutKind::Scalar(ScalarKind::Duration), ValueType::Int) if duration => true,
-        (LayoutKind::Scalar(ScalarKind::Float), ValueType::Float)
-        | (LayoutKind::Scalar(ScalarKind::Unit), ValueType::Unit)
-        | (LayoutKind::Scalar(ScalarKind::BoolValueSlot), ValueType::Bool) => true,
-        (
-            LayoutKind::RuntimePointerValueSlot {
-                pointee,
-                semantics: PointerSlot::Owned,
-            },
-            ValueType::Ref(value_layout),
-        ) => *pointee == value_layout,
-        _ => false,
     }
 }
 

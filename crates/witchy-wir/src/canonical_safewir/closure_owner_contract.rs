@@ -72,7 +72,7 @@ impl<'a> SourceConstructor<'a> {
             // scalar value (`ScalarValue`): it has no carrier to retain.
             ClosureCaptureTransfer::RootedViewByValue if matches!(capture.checked_type(),
                 witchy_syntax::ast::Type::Qualified(witchy_syntax::ast::TypeQual::View, inner)
-                    if witchy_canonical_source::aggregates::is_scalar_value_view_payload(inner)) =>
+                    if witchy_canonical_source::aggregates::is_inline_scalar_view_payload(inner)) =>
             {
                 Ok(CaptureTransfer::CopyScalar)
             }
@@ -291,6 +291,7 @@ pub(crate) fn carrier_element_layout_matches(
 
         fn scalar(&self, layout: LayoutId) -> Option<CanonicalScalarKind> {
             match self.0.get(layout)?.kind() {
+                LayoutKind::Scalar(ScalarKind::Unit) => Some(CanonicalScalarKind::Unit),
                 LayoutKind::Scalar(ScalarKind::Int) => Some(CanonicalScalarKind::Int),
                 LayoutKind::Scalar(ScalarKind::Float) => Some(CanonicalScalarKind::Float),
                 LayoutKind::Scalar(ScalarKind::Bool) => Some(CanonicalScalarKind::Bool),

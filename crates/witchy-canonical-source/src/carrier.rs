@@ -227,7 +227,9 @@ impl CarrierElement {
         }
         *budget -= 1;
         match ty {
+            Type::Tuple(fields) if fields.is_empty() => Some(Self::Scalar(CanonicalScalarKind::Unit)),
             Type::Named(name, arguments) if arguments.is_empty() => match name.as_str() {
+                "Nil" | "Unit" => Some(Self::Scalar(CanonicalScalarKind::Unit)),
                 "Int" => Some(Self::Scalar(CanonicalScalarKind::Int)),
                 "Float" => Some(Self::Scalar(CanonicalScalarKind::Float)),
                 "Bool" => Some(Self::Scalar(CanonicalScalarKind::Bool)),
@@ -354,13 +356,14 @@ impl CarrierElement {
 
     pub fn source_type(&self) -> Type {
         match self {
+            Self::Scalar(CanonicalScalarKind::Unit) => Type::Tuple(Vec::new()),
             Self::Scalar(kind) => Type::Named(
                 match kind {
                     CanonicalScalarKind::Int => "Int",
                     CanonicalScalarKind::Float => "Float",
                     CanonicalScalarKind::Bool => "Bool",
                     CanonicalScalarKind::Duration => "Duration",
-                    CanonicalScalarKind::Unit => "Nil",
+                    CanonicalScalarKind::Unit => unreachable!("Unit has structural tuple spelling"),
                 }
                 .into(),
                 Vec::new(),
@@ -410,7 +413,6 @@ impl CarrierElement {
             remaining -= 1;
             maximum_depth = maximum_depth.max(depth);
             match element {
-                Self::Scalar(crate::abi::CanonicalScalarKind::Unit) => return None,
                 Self::Scalar(_) | Self::String | Self::Bytes => {}
                 Self::List(child) => pending.push((child, depth + 1)),
                 Self::Tuple(fields) => {

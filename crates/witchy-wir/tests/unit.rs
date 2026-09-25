@@ -13,7 +13,7 @@ mod canonical_safewir {
             #[test] fn initial_checker_rejects_an_independent_tail_manifest_mismatch() { witchy_wir::self_checks::canonical_safewir_authority::initial_checker_rejects_an_independent_tail_manifest_mismatch() }
             #[test] fn optimized_authority_refuses_a_mutated_output_module() { witchy_wir::self_checks::canonical_safewir_authority::optimized_authority_refuses_a_mutated_output_module() }
             #[test] fn source_generic_layout_graph_checks_instantiated_payload_types() { witchy_wir::self_checks::canonical_safewir_authority::source_generic_layout_graph_checks_instantiated_payload_types() }
-            #[test] fn source_recursive_layout_graph_checks_every_pair_and_child() { witchy_wir::self_checks::canonical_safewir_authority::source_recursive_layout_graph_checks_every_pair_and_child() }
+            #[test] fn source_recursive_layout_graph_refuses_unproved_cycles_and_mismatched_children() { witchy_wir::self_checks::canonical_safewir_authority::source_recursive_layout_graph_refuses_unproved_cycles_and_mismatched_children() }
         }
     }
     mod build_read {

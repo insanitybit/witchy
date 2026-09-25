@@ -74,6 +74,25 @@ checks remain required. This closes a resource-bound gap in the authority
 path, not a semantic acceptance row. Existing callable forms still need the
 full admitted Wasm and zero-leak evidence.
 
+Row G pooled recursive storage rewrite (in progress, unverified, 2026-09-25):
+the integration branch removes the `LayoutOnly` List fallback and the
+concrete scalar/pointer admission tables. Unit has a recursive copy leaf
+with canonical `()` identity. Dictionary children, tuple and nominal
+aggregate roots, List elements, aggregate fields, ordinary own conventions,
+and the lowerer/SafeWIR value ABI now read `StoragePlan` and its recursive
+carrier proof. An unproved child refuses. The retired direct
+`Borrow(List(Int))` path refuses rather than retaining a compatibility
+exception. SafeWIR checks original parameter and result loan spelling before
+the checked signature can erase it; unsupported nested or legacy loans
+refuse under explicit node and depth bounds. Adversarial review found the
+erasure gap and Unit physical mismatch, verified their fixes, and found no
+remaining concrete authority widening in the revised ABI/layout dispatch.
+Focused compiler checks pass. Nine existing narrow smoke cases pass across
+dictionary, tuple, List, nested List, Result, slice materialization, bounds,
+and unsupported-view refusal. They found and drove one Unit layout-catalog
+fix. The full hand-computed admitted-Wasm and zero-leak evidence remains
+pending; no A–O row closes from this architecture checkpoint.
+
 Row G SafeWIR aggregate-view and callable-family classification (architecture
 implemented, semantic evidence pending, 2026-09-25): the checked-source ABI
 gate now reads `StoragePlan::AggregateView` for tuple, record, sum, Option,

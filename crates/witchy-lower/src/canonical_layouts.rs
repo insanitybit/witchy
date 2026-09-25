@@ -10,12 +10,12 @@ use std::fmt;
 use sha2::{Digest, Sha256};
 use witchy_canonical_source::aggregates::{
     aggregate_key, canonical_owner_aggregate_identity, concrete_aggregate_identity,
-    dictionary_has_unadmitted_string_view_value, is_scalar_type,
+    is_scalar_type,
     scalar_aggregate_shape, shape_from_definition,
 };
 use witchy_canonical_source::abi::CanonicalScalarKind;
 use witchy_canonical_source::carrier::CarrierElement;
-use witchy_canonical_source::storage::{ListElementProjection, StoragePlan};
+use witchy_canonical_source::storage::{ListElementProjection, StoragePlan, is_inline_scalar_record};
 use witchy_canonical_source::structural_identity::{AggregateOwnerKey, ClosureOwnerKey, SourceTypeKey};
 use witchy_syntax::ast::{self, Item, Type, TypeDef};
 use witchy_types::pipeline::CanonicalCheckedSource;
@@ -497,9 +497,12 @@ impl LayoutProjection {
     }
 
     fn visit_type(&mut self, ty: &Type) -> Result<(), CanonicalLayoutError> {
-        if dictionary_has_unadmitted_string_view_value(ty) {
+        if matches!(ty.unqualified(), Type::Named(name, _) if name == "Dict")
+            && !matches!(StoragePlan::classify(ty.unqualified(), &self.definitions, |_| Some(0)),
+                StoragePlan::Owned(CarrierElement::Dict(_, _)))
+        {
             return Err(CanonicalLayoutError::UnsupportedType(
-                "Dict value `&String` has no admitted collection carrier".into(),
+                "Dict children lack a recursive checked storage and ownership proof".into(),
             ));
         }
         // Qualifiers are intentionally erased from ordinary physical layout
@@ -551,20 +554,18 @@ impl LayoutProjection {
         }
         match ty {
             Type::Qualified(_, inner) => self.visit_type(inner),
+            Type::Tuple(fields) if fields.is_empty()
+                && matches!(StoragePlan::classify(ty, &self.definitions, |_| Some(0)),
+                    StoragePlan::InlineScalar(CanonicalScalarKind::Unit)) => Ok(()),
             // A tuple is an anonymous heap aggregate; its reference fields
             // are roots of their own.
-            Type::Tuple(fields) if scalar_aggregate_shape(ty, &self.definitions).is_some() => {
+            Type::Tuple(fields) if scalar_aggregate_shape(ty, &self.definitions).is_some()
+                && matches!(StoragePlan::classify(ty, &self.definitions, |_| Some(0)),
+                    StoragePlan::Owned(CarrierElement::Tuple(_)) | StoragePlan::AggregateView(_)) => {
                 for field in fields {
-                    if !is_scalar_type(field) {
+                    if !layout_field_is_inline(field, &self.definitions) {
                         self.visit_type(field)?;
                     }
-                }
-                self.roots.push(ty.clone());
-                Ok(())
-            }
-            Type::Tuple(fields) => {
-                for field in fields {
-                    self.visit_type(field)?;
                 }
                 self.roots.push(ty.clone());
                 Ok(())
@@ -584,41 +585,29 @@ impl LayoutProjection {
             // `Option`/`Result`) is a root; its reference fields are roots of
             // their own.
             Type::Named(..)
-                if scalar_aggregate_shape(ty, &self.definitions).is_some_and(|shape| !shape.packed) =>
+                if scalar_aggregate_shape(ty, &self.definitions).is_some_and(|shape| !shape.packed)
+                    && matches!(StoragePlan::classify(ty, &self.definitions, |_| Some(0)),
+                        StoragePlan::Owned(CarrierElement::Record { .. } | CarrierElement::Sum { .. })
+                            | StoragePlan::AggregateView(_)) =>
             {
                 let shape = scalar_aggregate_shape(ty, &self.definitions).expect("checked above");
                 for field in &shape.fields {
-                    if !is_scalar_type(field) {
+                    if !layout_field_is_inline(field, &self.definitions) {
                         self.visit_type(field)?;
                     }
                 }
                 self.roots.push(ty.clone());
                 Ok(())
             }
-            // A `Dir` token carries its rights as type arguments; like every
-            // capability it has no layout (an externref minted by the host).
-            Type::Named(name, _) if name == "Dir" => Ok(()),
-            Type::Named(name, arguments) if arguments.is_empty() => match name.as_str() {
-                "Int" | "Float" | "Duration" | "Bool" | "Nil" | "Unit" | "Console" | "Env" | "BuildOut" | "Exec" => Ok(()),
-                "String" | "Bytes" => {
-                    self.roots.push(ty.clone());
-                    Ok(())
-                }
-                _ if scalar_aggregate_shape(ty, &self.definitions).is_some() => {
+            Type::Named(name, arguments) if arguments.is_empty() =>
+                match StoragePlan::classify(ty, &self.definitions, |_| Some(0)) {
+                StoragePlan::InlineScalar(_) => Ok(()),
+                StoragePlan::Owned(CarrierElement::String | CarrierElement::Bytes) => {
                     self.roots.push(ty.clone());
                     Ok(())
                 }
                 _ => Err(CanonicalLayoutError::UnsupportedType(name.clone())),
             },
-            // A scalar `Option`/`Result` instantiation is a tagged scalar
-            // aggregate behind one reference.
-            Type::Named(name, _)
-                if matches!(name.as_str(), "Option" | "Result")
-                    && scalar_aggregate_shape(ty, &self.definitions).is_some() =>
-            {
-                self.roots.push(ty.clone());
-                Ok(())
-            }
             Type::Named(name, arguments) if name == "List" => {
                 if arguments.len() != 1 || matches!(
                     ListElementProjection::classify(&arguments[0], &self.definitions),
@@ -1329,7 +1318,15 @@ fn intern_v1_layout_fields(
         && name == "List"
         && arguments.len() == 1
     {
-        let element = if let Some(scalar) = scalar_kind_of(&arguments[0]) {
+        let projection = ListElementProjection::classify(&arguments[0], definitions);
+        if matches!(projection, ListElementProjection::Refused) {
+            return Err(CanonicalLayoutError::UnsupportedType(format!("{ty:?}")));
+        }
+        let inline = matches!(projection, ListElementProjection::Owned(CarrierElement::Scalar(_)));
+        let element = if inline {
+            let scalar = scalar_kind_of(&arguments[0]).ok_or_else(|| {
+                CanonicalLayoutError::UnsupportedType(format!("{ty:?}"))
+            })?;
             interner
                 .intern_scalar(scalar)
                 .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?
@@ -1338,7 +1335,7 @@ fn intern_v1_layout_fields(
                 interner, &arguments[0], definitions, recursive_types, active, closure_layouts,
             )?
         };
-        let element = if !is_scalar_type(&arguments[0]) {
+        let element = if !inline {
             interner
                 .intern_runtime_pointer_value_slot(element, PointerSlot::Owned)
                 .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?
@@ -1543,31 +1540,29 @@ fn intern_dictionary_slot(
         .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))
 }
 
+fn layout_field_is_inline(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> bool {
+    matches!(StoragePlan::classify(ty, definitions, |_| Some(0)),
+        StoragePlan::InlineScalar(_)
+            | StoragePlan::RootedView(
+                witchy_canonical_source::rooted_view::RootedViewStorage::InlineScalar(_)))
+}
+
 fn scalar_kind_of(ty: &Type) -> Option<ScalarKind> {
-    match ty.unqualified() {
-        // The parser/type checker retain `()` as an empty tuple, while the
-        // canonical value ABI carries it as Unit. Closure and aggregate
-        // environments must use that same scalar lane rather than a distinct
-        // zero-field record layout.
-        Type::Tuple(items) if items.is_empty() => Some(ScalarKind::Unit),
-        Type::Named(name, arguments) if arguments.is_empty() => match name.as_str() {
-            "Int" => Some(ScalarKind::Int),
-            "Float" => Some(ScalarKind::Float),
-            "Duration" => Some(ScalarKind::Duration),
-            "Bool" => Some(ScalarKind::Bool),
-            "Nil" | "Unit" => Some(ScalarKind::Unit),
-            _ => None,
-        },
-        _ => None,
-    }
+    let StoragePlan::InlineScalar(kind) = StoragePlan::classify(ty.unqualified(), &BTreeMap::new(), |_| None) else {
+        return None;
+    };
+    Some(match kind {
+        CanonicalScalarKind::Unit => ScalarKind::Unit,
+        CanonicalScalarKind::Int => ScalarKind::Int,
+        CanonicalScalarKind::Float => ScalarKind::Float,
+        CanonicalScalarKind::Duration => ScalarKind::Duration,
+        CanonicalScalarKind::Bool => ScalarKind::Bool,
+    })
 }
 
 fn is_byte_buffer_type(ty: &Type) -> bool {
-    matches!(
-        ty.unqualified(),
-        Type::Named(name, arguments)
-            if matches!(name.as_str(), "String" | "Bytes") && arguments.is_empty()
-    )
+    matches!(StoragePlan::classify(ty.unqualified(), &BTreeMap::new(), |_| None),
+        StoragePlan::Owned(CarrierElement::String | CarrierElement::Bytes))
 }
 
 
@@ -1650,22 +1645,11 @@ impl ClosedTypeResolver for V1Resolver<'_> {
                 self.packed_views
                     .get(name)
                     .or_else(|| key.as_deref().and_then(|key| self.packed_views.get(key)))
-                    .or_else(|| self.definitions.get(name).filter(|definition| is_v1_scalar_record(definition)))
+                    .or_else(|| self.definitions.get(name).filter(|definition| is_inline_scalar_record(definition)))
                     .map(ResolvedNamed::PackedRecord)
             }
         }
     }
-}
-
-/// A one-variant record whose fields are all scalars. Declared `packed` it is
-/// an inline aggregate; otherwise it is an immutable reference-counted heap
-/// aggregate with the same field layout.
-pub(crate) fn is_v1_scalar_record(definition: &TypeDef) -> bool {
-    definition.params.is_empty()
-        && definition.variants.len() == 1
-        && definition.variants[0].fields.iter().all(|field| matches!(field.unqualified(),
-            Type::Named(name, arguments) if arguments.is_empty() && matches!(name.as_str(), "Int" | "Float" | "Duration" | "Bool" | "Nil" | "Unit")
-        ))
 }
 
 /// Layout invariants that need private layout internals, compiled always so

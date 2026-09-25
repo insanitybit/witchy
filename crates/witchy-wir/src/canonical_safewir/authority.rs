@@ -1081,7 +1081,7 @@ pub mod self_checks {
 
 
 
-    pub fn source_recursive_layout_graph_checks_every_pair_and_child() {
+    pub fn source_recursive_layout_graph_refuses_unproved_cycles_and_mismatched_children() {
         use crate::layout::{LayoutInterner, PointerSlot, ScalarKind};
         use witchy_syntax::ast::Type;
         use witchy_canonical_source::aggregates::ScalarAggregateShape;
@@ -1104,7 +1104,8 @@ pub mod self_checks {
         let physical = layouts.intern_packed_record(vec![slot, int]).unwrap();
         assert!(!layout_matches_source(nominal, &named("Tree"), &layouts, &records), "an unbound identity cannot close a recursive obligation");
         layouts.bind_nominal(nominal, physical).unwrap();
-        assert!(layout_matches_source(nominal, &named("Tree"), &layouts, &records));
+        assert!(!layout_matches_source(nominal, &named("Tree"), &layouts, &records),
+            "a bounded structural carrier cannot prove this recursive nominal cycle");
         assert!(!layout_matches_source(nominal, &named("Other"), &layouts, &records), "a cycle does not excuse a mismatched sibling field");
         let pair = layouts.intern_packed_record(vec![slot, slot]).unwrap();
         assert!(!layout_matches_source(pair, &Type::Tuple(vec![named("Tree"), named("Other")]), &layouts, &records), "visited keys must include the source type, not just the layout");

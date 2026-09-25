@@ -293,8 +293,9 @@ unsupported carrier, root or projection obligation, and the operation that
 would lose it. The repair is usually to keep the view in an admitted carrier,
 pass an owned value, or materialize explicitly with `.owned()`.
 
-For example, `Dict(String, &String)` currently fails canonical admission with a
-missing collection-carrier diagnostic, including when nested in a record.
+For example, `Dict(String, &String)` fails at the checked-source carrier
+boundary because its retained-view child has no collection ownership proof,
+including when nested in a record.
 Store an owned `String` value if the dictionary must execute today.
 
 Whole `&Dict(K, V)` views have a retained-root carrier when both element types

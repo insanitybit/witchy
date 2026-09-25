@@ -1059,8 +1059,8 @@ projection, so it may be returned, stored in an aggregate, passed through a
 generic or trait boundary, and captured by a callable without a lifetime
 parameter.
 
-The current canonical implementation refuses `Dict(String, &String)` because
-dictionary values do not yet have an authenticated `&String` collection carrier.
+The current checked-source boundary refuses `Dict(String, &String)` because
+dictionary values do not yet have an authenticated retained-view collection carrier.
 The refusal also applies when that dictionary is a field of a record or crosses
 a public record boundary. Ordinary `Dict(String, String)` remains admitted.
 Whole-root dictionary and tuple views use a recursive checked carrier plan for

@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use witchy_syntax::ast::{Type, TypeDef, TypeQual};
 
 use crate::abi::CanonicalScalarKind;
-use crate::aggregates::{ViewCarrierPlan, is_v1_list_element_type, view_carrier_plan};
+use crate::aggregates::{ViewCarrierPlan, view_carrier_plan};
 use crate::carrier::CarrierElement;
 use crate::callable_storage::CallableStoragePlan;
 use crate::rooted_view::{OwnerCarriedViewPlan, OwnerCarriedViewStorage, RootedViewStorage};
@@ -48,16 +48,27 @@ pub enum StoragePlan {
 }
 
 /// Source-backed list-element projection used by the layout catalog. The
-/// recursive owned class has a complete carrier proof. `LayoutOnly` preserves
-/// older admitted layout forms while their ownership paths are migrated; it
-/// must never be treated as SafeWIR carrier authority.
+/// recursive owned class has a complete carrier proof. A missing proof
+/// refuses layout projection as well as SafeWIR carrier admission.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ListElementProjection {
     Owned(CarrierElement),
     RetainedByteBuffer(RetainedByteBufferKind),
     RetainedCallable(CallableStoragePlan),
-    LayoutOnly,
     Refused,
+}
+
+/// The packed one-variant record layout class is selected from field storage,
+/// without duplicating a source-type name table in each compiler stage.
+pub fn is_inline_scalar_record(definition: &TypeDef) -> bool {
+    definition.params.is_empty()
+        && definition.variants.len() == 1
+        && definition.variants[0].fields.iter().all(|field| {
+            matches!(
+                StoragePlan::classify(field.unqualified(), &BTreeMap::new(), |_| None),
+                StoragePlan::InlineScalar(_)
+            )
+        })
 }
 
 impl ListElementProjection {
@@ -68,21 +79,17 @@ impl ListElementProjection {
             }
             StoragePlan::RetainedCallable(plan) => Self::RetainedCallable(plan),
             StoragePlan::Refused(_) if matches!(ty, Type::Fn(..)) => Self::Refused,
-            plan => match plan.into_carrier_element() {
-                Some(plan) => Self::Owned(plan),
-                None if is_v1_list_element_type(ty, definitions) => Self::LayoutOnly,
-                None => Self::Refused,
-            },
+            plan => plan.into_carrier_element().map(Self::Owned).unwrap_or(Self::Refused),
         }
     }
 }
 
 impl StoragePlan {
-    /// The recursive owned carrier shared by checking and lowering. Unit has
-    /// no element slot; views and opaque owner plans need their own authority.
+    /// The recursive owned carrier shared by checking and lowering. Views and
+    /// opaque owner plans need their own authority.
     pub fn into_carrier_element(self) -> Option<CarrierElement> {
         match self {
-            Self::InlineScalar(kind) if kind != CanonicalScalarKind::Unit => {
+            Self::InlineScalar(kind) => {
                 Some(CarrierElement::Scalar(kind))
             }
             Self::Owned(plan) => Some(plan),
@@ -110,7 +117,7 @@ impl StoragePlan {
         if matches!(ty, Type::Qualified(..)) {
             return Self::Refused(StorageRefusal::UnprovedQualifier);
         }
-        if matches!(ty, Type::Tuple(fields) if fields.is_empty()) {
+        if crate::is_unit_type(ty) {
             return Self::InlineScalar(CanonicalScalarKind::Unit);
         }
         if matches!(ty, Type::Fn(..)) {
