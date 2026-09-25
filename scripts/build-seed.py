@@ -700,11 +700,20 @@ def refresh(seed, worktree, target_dir=None):
     seed_debug = os.path.join(seed, "target", "debug")
     if not os.path.isdir(os.path.join(debug, ".fingerprint")):
         return 0
-    head = subprocess.run(["git", "-C", worktree, "rev-parse", "HEAD"], check=True,
+    # Seed directories are never reused, so name + the branch's merge-base
+    # with master identify the work. The branch's own commits leave that base
+    # alone: every edit loop commits before agent-check, and keying on HEAD
+    # re-hashed every source per edit (3 s idle, 7-10 s under load, a quarter
+    # of a 24 s loop on 2026-09-25) to find nothing new, since what the branch
+    # itself changed never matches the seed. A rebase moves the base and a
+    # landing publishes a new seed, and both refresh again. Skipping a refresh
+    # only forgoes reuse; Cargo still decides freshness.
+    base = subprocess.run(["git", "-C", worktree, "merge-base", "HEAD", "refs/heads/master"],
                           capture_output=True, text=True).stdout.strip()
-    # Seed directories are never reused, so name + HEAD identify the work;
-    # every build between two landings pays only this check.
-    key = f"{os.path.basename(seed)} {head}\n"
+    if not base:
+        base = subprocess.run(["git", "-C", worktree, "rev-parse", "HEAD"], check=True,
+                              capture_output=True, text=True).stdout.strip()
+    key = f"{os.path.basename(seed)} {base}\n"
     stamp_path = os.path.join(target, REFRESH_STAMP)
     try:
         with open(stamp_path) as f:

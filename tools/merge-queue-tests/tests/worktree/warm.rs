@@ -1029,6 +1029,25 @@ fn build_seed_refresh_serves_unedited_crates_from_the_current_seed() {
     assert_eq!(run_bin(&wt, "target"), "3 topic\n");
 }
 
+/// The refresh stamp is keyed on the seed and the branch's merge-base with
+/// master, so the branch's own commits (every edit loop commits before
+/// agent-check) skip the re-hash, while the build still sees the edit.
+#[test]
+fn build_seed_refresh_skips_the_branchs_own_commits() {
+    let (_repo, wt, seed) = seed_refresh_fixture(|_| {});
+    let master = git(&wt, &["rev-parse", "HEAD~1"]);
+    git(&wt, &["update-ref", "refs/heads/master", &master]);
+    let refreshed = seed_refresh(&seed, &wt);
+    assert!(refreshed.contains("refreshed 1 unit(s)"), "{refreshed}");
+
+    write(&wt, "bin/src/main.rs", "fn main() { println!(\"{} second\", dep::value()); }\n");
+    git(&wt, &["commit", "--quiet", "-am", "second topic edit"]);
+    assert!(seed_refresh(&seed, &wt).is_empty(), "a branch-only commit must not re-hash");
+    let built = seed_cargo(&wt, "target", &["build", "--offline", "-v"]);
+    assert!(built.contains("Compiling bin"), "{built}");
+    assert_eq!(run_bin(&wt, "target"), "2 second\n");
+}
+
 /// An uncommitted edit made before the refresh (the index still matches the
 /// seed) keeps its crate out of the refresh, and it compiles.
 #[test]
