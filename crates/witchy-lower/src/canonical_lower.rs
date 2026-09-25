@@ -92,7 +92,7 @@ struct ClosureValueLayouts {
     owners: HashMap<Type, GcTypeId>,
     aggregate_owners: HashMap<Type, (GcTypeId, GcTypeId)>,
     slice_owners: HashMap<CarrierElement, GcTypeId>,
-    shared_int_reference: GcTypeId,
+    shared_int_reference: Option<GcTypeId>,
 }
 
 impl std::ops::Deref for ClosureValueLayouts {
@@ -103,7 +103,7 @@ impl std::ops::Deref for ClosureValueLayouts {
 impl ClosureValueLayouts {
     fn opaque_type(&self, source: &Type, definitions: &BTreeMap<String, TypeDef>) -> Option<GcTypeId> {
         if rooted_view_inner(source).is_some_and(is_direct_shared_int) {
-            return Some(self.shared_int_reference);
+            return self.shared_int_reference;
         }
         if let Some(element) = rooted_view_inner(source)
             .and_then(|inner| rooted_slice_element_with_definitions(inner, definitions)) {
@@ -117,7 +117,7 @@ impl ClosureValueLayouts {
                 // A list of `&Int` views is an owner list of the shared place
                 // family: each element is one retained, authenticated carrier.
                 if rooted_view_inner(&args[0]).is_some_and(is_direct_shared_int) {
-                    return Some(GcTypeId::new(self.shared_int_reference.get() + 1));
+                    return self.shared_int_reference.map(|owner| GcTypeId::new(owner.get() + 1));
                 }
                 if matches!(args[0].unqualified(), Type::Fn(..)) {
                     return self.owners
@@ -326,7 +326,7 @@ pub fn lower_typed_module(
             (source.clone(), (family.owner_type, family.list_type))).collect(),
         slice_owners: rooted_slice_layouts.iter().map(|layout|
             (layout.element.clone(), layout.owner_type)).collect(),
-        shared_int_reference: crate::canonical_layouts::shared_int_reference_owner_type(),
+        shared_int_reference: shared_reference_layout.as_ref().map(|layout| layout.owner_type),
     };
     let abort_sites = abort::sites(typed.module(), source.is_console_fixture())?;
     let (registry_imports, requires_secret) = registry_hosts::collect_imports(typed.module());
@@ -805,7 +805,7 @@ pub fn lower_typed_module(
         });
     }
     if let Some(shared_layout) = shared_reference_layout {
-        let shared_reference_owner = crate::canonical_layouts::shared_int_reference_owner_type();
+        let shared_reference_owner = shared_layout.owner_type;
         let shared_reference_token = FunctionSignatureId::new(shared_reference_owner.get());
         let whole_constructor = ConstructorId(next_constructor);
         next_constructor = next_constructor.checked_add(1).ok_or(CanonicalLoweringError::IdOverflow)?;
@@ -3431,7 +3431,7 @@ fn rooted_gc_view_owner_type(
 ) -> Option<GcTypeId> {
     let inner = rooted_view_inner(ty)?;
     if is_direct_shared_int(inner) {
-        Some(layouts.shared_int_reference)
+        layouts.shared_int_reference
     } else {
         let element = CarrierElement::from_view_type_with_definitions(ty, definitions)?;
         layouts.slice_owners.get(&element).copied()

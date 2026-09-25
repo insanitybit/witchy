@@ -23,18 +23,25 @@ use witchy_wir::layout::{
     ResolvedNamed, ScalarKind,
 };
 
-/// Stable opaque identity for the v1 shared `&Int` place carrier. The carrier
-/// owns an authenticated root plus constructor-specific projection operands;
-/// it is deliberately disjoint from closure and aggregate owner namespaces.
-pub(crate) fn shared_int_reference_owner_type() -> GcTypeId {
-    GcTypeId::new(0xc300_0000)
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SharedIntReferenceLayout {
+    pub owner_type: GcTypeId,
     pub environment: LayoutId,
     pub scalar_root: LayoutId,
     pub list_root: Option<LayoutId>,
+}
+
+/// Allocate one collision-free pair of owner/list IDs per checked rooted
+/// carrier in this module. Slice identities are sorted by their full
+/// recursive element, followed by the distinct shared `&Int` place family.
+/// The namespace base separates these owners from closures and aggregates;
+/// it is never itself a carrier identity.
+fn rooted_view_owner_type(ordinal: usize) -> Result<GcTypeId, CanonicalLayoutError> {
+    let id = u32::try_from(ordinal).ok().and_then(|n| n.checked_mul(2))
+        .and_then(|n| n.checked_add(0xc300_0000))
+        .filter(|n| *n < 0xc400_0000)
+        .ok_or_else(|| CanonicalLayoutError::InvalidLayout("rooted view owner ID overflow".into()))?;
+    Ok(GcTypeId::new(id))
 }
 
 /// Canonical storage for an immutable `&[T]`: a retained list root and its
@@ -866,21 +873,17 @@ impl LayoutProjection {
             let environment = interner.intern_packed_record(children)
                 .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?;
             roots.insert(environment);
-            Some(SharedIntReferenceLayout { environment, scalar_root, list_root })
+            let owner_type = rooted_view_owner_type(self.rooted_slices_requested.len())?;
+            Some(SharedIntReferenceLayout { owner_type, environment, scalar_root, list_root })
         } else {
             None
         };
         let mut rooted_slices = Vec::new();
         for (ordinal, element) in self.rooted_slices_requested.iter().enumerate() {
             let element_type = rooted_slice_element_type(element);
-            // Structural ordering assigns collision-free IDs in the reserved
-            // slice namespace. Each family also reserves the odd successor
-            // for its catalog list type, even though slices do not expose it.
-            let id = u32::try_from(ordinal).ok().and_then(|n| n.checked_mul(2))
-                .and_then(|n| n.checked_add(0xc300_0002))
-                .filter(|n| *n < 0xc400_0000)
-                .ok_or_else(|| CanonicalLayoutError::InvalidLayout("rooted slice owner ID overflow".into()))?;
-            let owner_type = GcTypeId::new(id);
+            // Full checked element ordering gives each slice a disjoint pair
+            // of owner/list IDs, including the shared place family above.
+            let owner_type = rooted_view_owner_type(ordinal)?;
             let list_type = Type::Named("List".into(), vec![element_type]);
             if !self.roots.iter().any(|ty| canonical_layout_type(ty, &self.definitions) == list_type) {
                 continue;
