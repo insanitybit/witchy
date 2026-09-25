@@ -263,11 +263,15 @@ fn gate_nextest_docs_plus_integration_test_keeps_both_target_kinds() {
 fn gate_nextest_does_not_narrow_past_the_bin_target() {
     // A crate package plus the rfc0* conformance binaries.
     // It may name `--bin witchy` (for `example_tests::rfc0*`) only inside the
-    // explicit union of every target: `--lib` plus each test binary.
+    // explicit union of every test target. These compiler crates disable lib
+    // tests, so that union deliberately has no `--lib`.
     let compiler = gate_nextest(&["crates/witchy-lower/src/codegen/mod.rs"]);
     assert!(
         !compiler.contains("--bin witchy")
-            || (compiler.contains(" --lib") && compiler.contains("--test misc")),
+            || (!compiler.contains(" --lib")
+                && compiler.contains("--test codegen")
+                && compiler.contains("--test typeck")
+                && compiler.contains("--test misc")),
         "a compiler-stage change narrowed away its crate and conformance tests: {compiler}",
     );
     for path in ["src/lsp.rs", "src/diagnostic_golden_tests.rs", "src/commands/test.rs"] {
@@ -706,25 +710,21 @@ fn canonical_wasmir_landing_keeps_the_deferred_mutation_tests() {
         output.lines().next().is_some_and(|line| line.contains("-p witchy-wir")),
         "canonical WasmIR landing did not retain the full WIR package: {output}",
     );
-    // Package-wide means EVERY witchy-wir target, not "no target flags". The
-    // gate now names every target of every selected package (target filters
-    // union, so that keeps the exact test set while skipping unneeded root
-    // binaries). What must never happen is naming a SUBSET: either no target
-    // flags at all, or `--lib` plus every integration target on disk.
+    // Package-wide means every witchy-wir TEST target, not examples and other
+    // targets that nextest cannot run. witchy-wir has `test = false`, so the
+    // sound narrow form omits `--lib` and names every integration test.
     let selection = output.lines().next().unwrap_or_default();
-    if selection.contains("--lib") || selection.contains("--test ") {
-        assert!(selection.contains("--lib"), "WIR unit tests dropped: {output}");
-        let tests = workspace_root().join("crates/witchy-wir/tests");
-        for entry in std::fs::read_dir(tests).expect("list witchy-wir tests") {
-            let path = entry.expect("dir entry").path();
-            if path.extension().is_some_and(|extension| extension == "rs") {
-                let name = path.file_stem().unwrap().to_string_lossy().into_owned();
-                assert!(
-                    selection.split_whitespace().collect::<Vec<_>>().windows(2)
-                        .any(|pair| pair == ["--test", name.as_str()]),
-                    "canonical WasmIR landing was narrowed away from `{name}`: {output}",
-                );
-            }
+    assert!(!selection.contains("--lib"), "empty WIR lib test was selected: {output}");
+    let tests = workspace_root().join("crates/witchy-wir/tests");
+    for entry in std::fs::read_dir(tests).expect("list witchy-wir tests") {
+        let path = entry.expect("dir entry").path();
+        if path.extension().is_some_and(|extension| extension == "rs") {
+            let name = path.file_stem().unwrap().to_string_lossy().into_owned();
+            assert!(
+                selection.split_whitespace().collect::<Vec<_>>().windows(2)
+                    .any(|pair| pair == ["--test", name.as_str()]),
+                "canonical WasmIR landing was narrowed away from `{name}`: {output}",
+            );
         }
     }
 }
@@ -1940,19 +1940,31 @@ fn script_rules_gate_on_the_binary_their_focused_check_names() {
 fn gate_never_names_the_lib_of_a_crate_without_lib_tests() {
     // An explicit `--lib` compiles the empty cfg(test) copy of a `[lib] test =
     // false` crate: one full compile of a 40-100k-line compiler crate each.
-    // Such selections take the whole-package form, which honors `test = false`
-    // and still builds every integration test of every selected package.
-    for path in [
-        "crates/witchy-types/src/typeck.rs",
-        "crates/witchy-runtime/src/lib.rs",
-        "crates/witchy-canonical-source/src/lib.rs",
-    ] {
+    // An all-disabled compiler selection names every integration test without
+    // `--lib`, avoiding both empty lib copies and unrelated examples.
+    let compiler = gate_nextest(&["crates/witchy-types/src/typeck.rs"]);
+    let selection = compiler.lines().next().unwrap_or_default();
+    assert!(!selection.contains("--lib"), "compiler selection names an empty lib: {compiler}");
+    for target in ["typeck", "unit", "codegen"] {
+        assert!(
+            selection.contains(&format!("--test {target}")),
+            "compiler selection omitted integration test {target}: {compiler}",
+        );
+    }
+    assert!(
+        !selection.contains("--example abi_catalog"),
+        "compiler selection retained a non-test WIR example: {compiler}",
+    );
+
+    // A mixed enabled/disabled selection cannot express per-package `--lib`,
+    // so it safely keeps the whole-package form.
+    for path in ["crates/witchy-runtime/src/lib.rs", "crates/witchy-canonical-source/src/lib.rs"] {
         let output = gate_nextest(&[path]);
         let selection = output.lines().next().unwrap_or_default();
         let words: Vec<&str> = selection.split_whitespace().collect();
         assert!(words.contains(&"witchy-types"), "{path} no longer selects witchy-types: {output}");
         assert!(!words.contains(&"--lib"), "{path} compiles a test = false lib: {output}");
-        assert!(!words.contains(&"--test"), "{path} narrowed the target set: {output}");
+        assert!(!words.contains(&"--test"), "{path} unsafely mixed target modes: {output}");
     }
 }
 

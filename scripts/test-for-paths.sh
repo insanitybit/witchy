@@ -289,27 +289,47 @@ emit_gate_nextest() {
     #   - a crate has a bin or explicit [[test]]/[[bin]]/auto* targets, which
     #     `--lib` + `tests/*.rs` would silently miss
     #   - a package directory cannot be resolved
-    #   - a crate sets `[lib] test = false`: an explicit `--lib` still compiles
-    #     its (empty) cfg(test) copy, one full compile of a 40-100k-line
-    #     compiler crate per selected crate. The whole-package form skips it
-    #     and adds only the few root tests/*.rs binaries not named here.
+    #   - selected crates mix normal lib tests with `[lib] test = false`:
+    #     `--lib` is global, so it cannot retain one package's unit tests
+    #     without compiling another package's empty cfg(test) copy. When ALL
+    #     selected crate libs have tests disabled, omit `--lib` and name their
+    #     integration tests. That avoids both empty lib tests and unrelated
+    #     examples/binaries from the whole-package form.
     # The root bin is safe in the explicit target union: `--bin witchy` joins
     # every selected package's named lib/test targets instead of replacing
     # them. Free-form root test names still fail safe unless they are known
     # main.rs module families.
-    local name_targets=0 targets="" pkg dir file
+    local name_targets=0 targets="" pkg dir file mode="" pkg_mode has_types=0
+    local target_pkgs=(${gate_pkgs[0]+"${gate_pkgs[@]}"})
+    # The std-roots pin can add witchy-types outside gate_pkgs. It participates
+    # in the target-mode proof just like a mapped package; otherwise a runtime
+    # package (lib tests enabled) could be mixed unsafely with types (disabled).
+    if [ "$gate_need_std_roots" -eq 1 ] && [[ " $args " == *" -p witchy-types "* ]]; then
+        for pkg in ${target_pkgs[0]+"${target_pkgs[@]}"}; do
+            [ "$pkg" != witchy-types ] || has_types=1
+        done
+        [ "$has_types" -eq 1 ] || target_pkgs+=(witchy-types)
+    fi
     if [ "$need_witchy" -eq 1 ] && [ "${#gate_pkgs[@]}" -gt 0 ] \
         && [ "$witchy_tests_all_bin" -eq 1 ] \
         && [[ " $args " != *" --bin "* ]]; then
         name_targets=1
-        for pkg in "${gate_pkgs[@]}"; do
+        for pkg in "${target_pkgs[@]}"; do
             dir="$(gate_package_dir "$pkg")"
             if [ ! -f "$dir/Cargo.toml" ] || [ -e "$dir/src/main.rs" ] || [ -d "$dir/src/bin" ] \
-                || grep -qE '^\[\[(test|bin|bench|example)\]\]|^auto(tests|bins)' "$dir/Cargo.toml" \
-                || sed -n '/^\[lib\]/,/^\[/p' "$dir/Cargo.toml" | grep -qE '^test *= *false'; then
+                || grep -qE '^\[\[(test|bin|bench|example)\]\]|^auto(tests|bins)' "$dir/Cargo.toml"; then
                 name_targets=0
                 break
             fi
+            pkg_mode=enabled
+            if sed -n '/^\[lib\]/,/^\[/p' "$dir/Cargo.toml" | grep -qE '^test *= *false'; then
+                pkg_mode=disabled
+            fi
+            if [ -n "$mode" ] && [ "$mode" != "$pkg_mode" ]; then
+                name_targets=0
+                break
+            fi
+            mode="$pkg_mode"
             for file in "$dir"/tests/*.rs; do
                 [ -f "$file" ] || continue
                 file="${file##*/}"
@@ -337,10 +357,6 @@ emit_gate_nextest() {
             fi
         done
     fi
-    # The std-roots pin above adds `-p witchy-types` outside gate_pkgs.
-    if [ "$name_targets" -eq 1 ] && [[ " $args " == *" -p witchy-types "* ]]; then
-        name_targets=0
-    fi
     if [ "$name_targets" -eq 1 ]; then
         if [ "$gate_need_examples" -eq 1 ] \
             || [ "${#gate_example_mods[@]}" -gt 0 ] \
@@ -361,7 +377,11 @@ emit_gate_nextest() {
         if [ "$gate_need_std_roots" -eq 1 ] && [[ " $targets " != *" --test typeck "* ]]; then
             targets="$targets --test typeck"
         fi
-        args="$args --lib$targets"
+        if [ "$mode" = enabled ]; then
+            args="$args --lib$targets"
+        else
+            args="$args$targets"
+        fi
     fi
     [ -n "$args" ] || { printf 'WORKSPACE\n'; return 0; }
     printf '%s\n' "$args"
