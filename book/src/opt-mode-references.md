@@ -160,15 +160,16 @@ changed. The compiler also recognizes exact inner `Float`, `Bool`, `Duration`,
 and `String` lists, though those cases await semantic and leak evidence. A
 qualified child such as `&List(unique List(Int))` is refused, and a region-born
 list cannot escape by wrapping it in a view.
-The inner `List(String)` owns its String children; this whole-root form does
-not admit `&[List(String)]` slices.
+The inner `List(String)` owns its String children; an exact slice of these
+inner lists also has a separate carrier, pending semantic and leak evidence.
 
 An exact slice of owned lists, `&[List(S)]`, has a carrier when `S` is `Int`,
-`Float`, `Bool`, or `Duration`. The outer list remains rooted, and an indexed
-inner list is retained as a child. Qualified or deeper list elements are
-refused. The `Int` case is verified on admitted Wasm; the other scalar cases
-are implemented but await semantic and leak evidence. These slices do not yet
-support `.owned()` materialization.
+`Float`, `Bool`, `Duration`, or `String`. The outer list remains rooted, and an
+indexed inner list is retained as a child. The String case also retains each
+String child of that inner list. Qualified or deeper list elements are refused.
+The `Int` case is verified on admitted Wasm; the other cases are implemented
+but await semantic and leak evidence. These slices do not yet support
+`.owned()` materialization.
 
 An exact whole-root tuple view `&(S, String)` is recognized for unqualified
 `S = Int`, `Float`, `Bool`, or `Duration`. The view retains the tuple's String

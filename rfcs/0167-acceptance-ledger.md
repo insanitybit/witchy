@@ -80,9 +80,17 @@ Row G whole-root String-child list expansion (implemented but unverified,
 2026-09-24): exact `&List(List(String))` now has a distinct shared checked/source
 ListRoot identity. Both retained List headers and each owned String child
 remain subject to SafeWIR layout correspondence. Qualified children, deeper
-List shells, forged nominal spellings, and `&[List(String)]` remain refused.
+List shells and forged nominal spellings remain refused.
 No hand-computed result, admitted unoptimized Wasm run, or zero-leak audit has
 been recorded for this new shape; row G remains open.
+
+Row G String-child list slice expansion (implemented but unverified,
+2026-09-24): exact `&[List(String)]` has a distinct checked/source slice
+identity and a retained outer root. SafeWIR requires an owned pointer to a
+retained inner List header, then owned String pointers to runtime buffers.
+Qualified and deeper child lists, slice `.owned()` materialization, and
+closure capture remain refused. No hand-computed result, admitted unoptimized
+Wasm run, or zero-leak audit has been recorded; row G remains open.
 
 Row G tuple scalar/String expansion (implemented but unverified,
 2026-09-24): the compiler recognizes exact whole-root `&(S, String)` for

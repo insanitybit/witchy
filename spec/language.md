@@ -1158,15 +1158,16 @@ A qualified inner list such as `List(unique List(Int))` has no admitted
 whole-root view carrier and is refused during canonical admission. Region-born
 outer roots cannot escape through this view.
 For the inner `List(String)` case, the inner list owns each String child; both
-List layers require retained headers. A slice `&[List(String)]` still has no
-admitted carrier.
+List layers require retained headers. An exact `&[List(String)]` slice uses a
+separate carrier, pending semantic and leak evidence.
 
 The compiler also recognizes exact `&[List(S)]` slice carriers for `S = Int`,
-`Float`, `Bool`, or `Duration`. The slice retains its outer list root, and a
-read of an inner list retains that owned child through the checked projection.
+`Float`, `Bool`, `Duration`, or `String`. The slice retains its outer list root,
+and a read of an inner list retains that owned child through the checked
+projection. The String case also retains the inner list's String children.
 Nested or qualified child lists have no carrier and are refused. The `Int`
-case has admitted Wasm and zero-leak evidence; the other scalar cases still
-await that verification. `.owned()` on a slice of lists remains unsupported.
+case has admitted Wasm and zero-leak evidence; the other cases still await
+that verification. `.owned()` on a slice of lists remains unsupported.
 
 The compiler recognizes exact whole-root `&(S, String)` tuple views for
 unqualified `S = Int`, `Float`, `Bool`, or `Duration`. The tuple root retains
