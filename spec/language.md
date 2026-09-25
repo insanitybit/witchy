@@ -1099,7 +1099,7 @@ parsing reject them.
 
 The compiler-known `(&[T]).owned()` operation materializes the exact retained
 slice range as a fresh `List(T)` for `T = Int`, `Float`, `Bool`, `Duration`,
-`String`, or exact `List(Int)`.
+`String`, or exact `List(S)` where `S` is `Int`, `Float`, `Bool`, or `Duration`.
 Generic uses are admitted after specialization to one of these types. Other
 element types fail closed. A declared `owned` method has ordinary method
 resolution precedence over this operation.
@@ -1169,8 +1169,9 @@ and a read of an inner list retains that owned child through the checked
 projection. The String case also retains the inner list's String children.
 Nested or qualified child lists have no carrier and are refused. The `Int`
 case has admitted Wasm and zero-leak evidence; the other cases still await
-that verification. `.owned()` materializes exact `&[List(Int)]` as a fresh
-`List(List(Int))`; the other list element families remain unsupported.
+that verification. `.owned()` materializes exact `&[List(S)]` as a fresh
+`List(List(S))` for `S = Int`, `Float`, `Bool`, or `Duration`; other list element
+families remain unsupported.
 
 The compiler recognizes exact whole-root `&(S, String)` tuple views for
 unqualified `S = Int`, `Float`, `Bool`, `Duration`, or `String`. The tuple root
