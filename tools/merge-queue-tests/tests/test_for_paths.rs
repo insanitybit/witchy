@@ -1945,7 +1945,7 @@ fn gate_never_names_the_lib_of_a_crate_without_lib_tests() {
     let compiler = gate_nextest(&["crates/witchy-types/src/typeck.rs"]);
     let selection = compiler.lines().next().unwrap_or_default();
     assert!(!selection.contains("--lib"), "compiler selection names an empty lib: {compiler}");
-    for target in ["typeck", "unit", "codegen"] {
+    for target in ["typeck", "codegen", "safewir_checked_source"] {
         assert!(
             selection.contains(&format!("--test {target}")),
             "compiler selection omitted integration test {target}: {compiler}",
@@ -2039,7 +2039,7 @@ fn a_compiler_crate_change_runs_its_downstream_compiler_crates_tests() {
     // `canonical_pipeline::tests::mixed_var_list_write_back_origins_fail_closed`.
     for (changed, downstream) in [
         ("crates/witchy-syntax/src/lib.rs", &["witchy-types", "witchy-wir", "witchy-lower"][..]),
-        ("crates/witchy-types/src/lib.rs", &["witchy-wir", "witchy-lower"][..]),
+        ("crates/witchy-types/src/lib.rs", &["witchy-lower"][..]),
         ("crates/witchy-wir/src/canonical_safewir/check.rs", &["witchy-lower"][..]),
     ] {
         let output = gate_nextest(&[changed]);

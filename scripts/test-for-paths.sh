@@ -618,12 +618,13 @@ for p in "${paths[@]}"; do
             any_rust=1
             gate_need_conformance=1
             add_pkg witchy-types
-            # Downstream compiler crates consume this one, and their own tests
-            # (e.g. witchy-lower's canonical_pipeline admission tests) observe a
-            # change here that this crate's tests cannot. bd239ce55 changed the
-            # checker in witchy-wir, gated green without witchy-lower's tests,
-            # and left master red on one of them.
-            add_pkg witchy-wir
+            # RFC-0170 put the checked-source contract below both the checker
+            # and SafeWIR. WIR no longer consumes witchy-types, even in its test
+            # graph, so selecting its eleven integration binaries here defeats
+            # the dependency cut without observing the checker edit. The lower
+            # crate remains downstream of types and owns the moved real-source
+            # SafeWIR cases in safewir_checked_source.rs, as well as the
+            # canonical-pipeline admission regressions that caught bd239ce55.
             add_pkg witchy-lower
             add "cargo nextest run -p witchy-types"
             add "./scripts/nextest-admitted.sh witchy -- cargo nextest run -E 'test(/^example_tests::/)'" ;;
