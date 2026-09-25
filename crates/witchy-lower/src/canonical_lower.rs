@@ -19236,12 +19236,15 @@ fn source_value_type(
     closure_layouts: &ClosureValueLayouts,
     definitions: &BTreeMap<String, TypeDef>,
 ) -> Result<ValueType, CanonicalLoweringError> {
-    // A whole record view (`RetainedRoot`) is carried as the record's own
-    // retained object token.
+    // A whole structural or checked aggregate view uses its proved retained
+    // root token; an inline scalar view uses the scalar lane. Other rooted
+    // representation classes have distinct projection or owner ABIs below.
     if let Type::Qualified(TypeQual::View, inner) = source
-        && (witchy_canonical_source::aggregates::is_record_root_payload(inner, definitions)
-            || CarrierElement::retained_structural_root(inner, definitions).is_some()
-            || witchy_canonical_source::aggregates::is_inline_scalar_view_payload(inner))
+        && matches!(StoragePlan::classify(source, definitions, |_| Some(0)),
+            StoragePlan::RootedView(RootedViewStorage::InlineScalar(_)
+                | RootedViewStorage::RetainedRoot(
+                    RetainedRootStorage::StructuralRecord(_)
+                        | RetainedRootStorage::CheckedAggregate(_))))
     {
         return source_value_type(inner, layout_bundle, layouts, closure_layouts, definitions);
     }

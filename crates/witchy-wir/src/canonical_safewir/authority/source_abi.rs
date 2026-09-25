@@ -249,11 +249,8 @@ pub(super) fn source_abi_qualifiers_supported(
     // the authenticated hidden write-back lane. It is deliberately not a
     // recursive qualifier exception.
     let mut pending = (!(is_direct_shared_reference(result)
-        || is_direct_rooted_scalar_place(result) || is_direct_rooted_projection(result, records)
-        || is_list_of_rooted_scalar_places(result)
-        || is_direct_rooted_view_whole_root(result, records)
+        || is_storage_backed_direct_view_carrier(result, records)
         || is_direct_exclusive_reference(result)
-        || is_direct_rooted_view_aggregate_carrier(result, records)
         || witchy_syntax::ast::is_direct_unique_result_ok_collection(result)))
         .then_some((result.as_ref(), true))
         .into_iter()
@@ -261,10 +258,7 @@ pub(super) fn source_abi_qualifiers_supported(
     pending.extend(parameters.iter().enumerate().filter_map(|(index, parameter)| {
         (!(
             is_direct_shared_reference(parameter)
-            || is_direct_rooted_scalar_place(parameter) || is_direct_rooted_projection(parameter, records)
-            || is_list_of_rooted_scalar_places(parameter)
-            || is_direct_rooted_view_whole_root(parameter, records)
-            || is_direct_rooted_view_aggregate_carrier(parameter, records)
+            || is_storage_backed_direct_view_carrier(parameter, records)
             || (matches!(conventions.get(index), Some(Convention::Let | Convention::Own))
                 && is_direct_exclusive_reference(parameter))
             || projected_exclusive_signature_parameter(parameters, result, conventions) == Some(index)
@@ -288,8 +282,7 @@ pub(super) fn source_abi_qualifiers_supported(
             // qualifier itself is not a nested loan to refuse here.
             Type::Qualified(TypeQual::View, inner)
                 if !matches!(inner.as_ref(), Type::Qualified(qualifier, _) if *qualifier != TypeQual::Frozen)
-                    && (is_direct_rooted_scalar_place(ty) || is_direct_rooted_projection(ty, records)
-                        || is_direct_rooted_view_whole_root(ty, records)) => {}
+                    && is_storage_backed_rooted_view(ty, records) => {}
             Type::Qualified(_, _) => return false,
             Type::Fn(parameters, result, conventions, _) => {
                 // A callable value can carry the one direct mutable String
@@ -328,6 +321,38 @@ pub(super) fn source_abi_qualifiers_supported(
     true
 }
 
+/// A direct view keeps its checked representation class. Aggregate and list
+/// owners are admitted only at the callable boundary; a nested view must
+/// prove its own root or projection instead of inheriting that exception.
+fn is_storage_backed_direct_view_carrier(
+    source: &witchy_syntax::ast::Type,
+    records: &ScalarRecordFields,
+) -> bool {
+    use witchy_canonical_source::storage::StoragePlan;
+    is_storage_backed_rooted_view(source, records)
+        || matches!(StoragePlan::classify(source.unqualified(), records, |_| Some(0)),
+            StoragePlan::RetainedOwnerList(_)
+                | StoragePlan::AggregateView(witchy_canonical_source::aggregates::ViewCarrierPlan::Aggregate { .. }))
+}
+
+fn is_storage_backed_rooted_view(
+    source: &witchy_syntax::ast::Type,
+    records: &ScalarRecordFields,
+) -> bool {
+    use witchy_canonical_source::rooted_view::{OwnerCarriedViewPlan, OwnerCarriedViewStorage, RootedViewStorage};
+    use witchy_canonical_source::storage::StoragePlan;
+    match StoragePlan::classify(source, records, |_| Some(0)) {
+        StoragePlan::RootedView(RootedViewStorage::InlineScalar(_) | RootedViewStorage::RetainedRoot(_)) => true,
+        StoragePlan::RootedView(RootedViewStorage::ScalarCell(_) | RootedViewStorage::RetainedProjection(_)) => {
+            OwnerCarriedViewPlan::classify(source, records).is_some_and(|plan| matches!(
+                plan.admitted_storage(),
+                Some(OwnerCarriedViewStorage::AuthenticatedPlace(_) | OwnerCarriedViewStorage::RetainedProjection(_))
+            ))
+        }
+        _ => false,
+    }
+}
+
 /// The only nested callable ABI whose hidden write-back lane is presently
 /// authenticated by canonical lowering and the adapter binding checker.
 /// This is intentionally structural *only after* the outer source declaration
@@ -346,10 +371,12 @@ pub(super) fn is_direct_callable_writeback_carrier(ty: &witchy_syntax::ast::Type
 }
 
 pub(super) fn is_direct_shared_int(source: &witchy_syntax::ast::Type) -> bool {
+    use witchy_canonical_source::abi::CanonicalScalarKind;
+    use witchy_canonical_source::storage::StoragePlan;
     matches!(source,
         witchy_syntax::ast::Type::Qualified(witchy_syntax::ast::TypeQual::Borrow(_), inner)
-            if matches!(inner.unqualified(), witchy_syntax::ast::Type::Named(name, arguments)
-                if name == "Int" && arguments.is_empty()))
+            if matches!(StoragePlan::classify(inner.unqualified(), &BTreeMap::new(), |_| None),
+                StoragePlan::InlineScalar(CanonicalScalarKind::Int)))
 }
 
 /// A checked scalar-place owner leaf; the shared classifier currently proves
@@ -476,11 +503,12 @@ pub(super) fn is_direct_rooted_projection(
 /// contract; this predicate is intentionally shallow so a borrowed field,
 /// aggregate, callable, or mutable handle cannot inherit the exception.
 pub(super) fn is_direct_shared_owned_reference(source: &witchy_syntax::ast::Type) -> bool {
+    use witchy_canonical_source::carrier::CarrierElement;
+    use witchy_canonical_source::storage::StoragePlan;
     matches!(source,
         witchy_syntax::ast::Type::Qualified(witchy_syntax::ast::TypeQual::Borrow(_), inner)
-            if matches!(inner.unqualified(),
-                witchy_syntax::ast::Type::Named(name, arguments)
-                    if matches!(name.as_str(), "String" | "Bytes") && arguments.is_empty()))
+            if matches!(StoragePlan::classify(inner.unqualified(), &BTreeMap::new(), |_| None),
+                StoragePlan::Owned(CarrierElement::String | CarrierElement::Bytes)))
 }
 
 pub(super) fn is_direct_shared_reference(source: &witchy_syntax::ast::Type) -> bool {
@@ -507,9 +535,11 @@ pub(super) fn is_direct_rooted_view_aggregate_carrier(
 }
 
 pub(super) fn is_direct_exclusive_referent(source: &witchy_syntax::ast::Type) -> bool {
-    matches!(source.unqualified(),
-        witchy_syntax::ast::Type::Named(name, arguments)
-            if arguments.is_empty() && matches!(name.as_str(), "String" | "Int"))
+    use witchy_canonical_source::abi::CanonicalScalarKind;
+    use witchy_canonical_source::carrier::CarrierElement;
+    use witchy_canonical_source::storage::StoragePlan;
+    matches!(StoragePlan::classify(source.unqualified(), &BTreeMap::new(), |_| None),
+        StoragePlan::InlineScalar(CanonicalScalarKind::Int) | StoragePlan::Owned(CarrierElement::String))
 }
 
 // This is a leaf prefilter only.  Projected return authority is minted below

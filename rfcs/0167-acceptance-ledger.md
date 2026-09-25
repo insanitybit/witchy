@@ -842,6 +842,17 @@ copy proof. Focused compiler checks and existing `.owned()` and scalar-view
 smokes passed. This does not supply hand-computed admitted-Wasm or zero-leak
 evidence, so no acceptance row closes.
 
+Row G ABI representation consumers (implemented but unverified, 2026-09-25):
+direct rooted-view, owner-list, and view-bearing aggregate qualifier checks
+now use the shared storage plan and owner-carried representation class. Legacy
+direct shared/exclusive reference leaves retain their exact conventions while
+their referents use scalar or owned storage classes. Lowering unwraps only
+proved inline scalar and retained structural/checked aggregate view roots.
+The exact Result(unique collection) and callable write-back source grammars
+remain closed pending their separate authority contract. Focused compiler and
+existing view smokes plus an adversarial authority read passed; admitted-Wasm
+expected-result and zero-leak evidence remain outstanding, so no row closes.
+
 At `adf1d01c7` (2026-09-18), the integrated core smoke was **42/42 passed**: rooted views (13), unique/write-back (12), normal/opt interoperation (2), resource composition (5), and optimization readiness (10). This is core canonical-route evidence only; it does not include the source interpreter, full, end-to-end, or examples suites.
 
 At `2f62f4038` (2026-09-19), the newly integrated concrete `Option(&Int)` evidence is **6/6 passed**: four lower carrier/tamper/`var` checks, one exact authority payload-state check, and one production-runtime three-leg fixture (`790`, zero leaks). The three generic rooted-slice fixtures are **1 passed / 2 failed**: region-root escape rejects as expected, while both positive forms stop at the explicit missing authenticated slice-element projection. This is a live failure checkpoint, not an acceptance closeout.
