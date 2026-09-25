@@ -16,7 +16,7 @@ use witchy_canonical_source::aggregates::{
 use witchy_canonical_source::abi::CanonicalScalarKind;
 use witchy_canonical_source::carrier::CarrierElement;
 use witchy_canonical_source::storage::StoragePlan;
-use witchy_canonical_source::structural_identity::{AggregateOwnerKey, ClosureOwnerKey};
+use witchy_canonical_source::structural_identity::{AggregateOwnerKey, ClosureOwnerKey, SourceTypeKey};
 use witchy_syntax::ast::{self, Item, Type, TypeDef};
 use witchy_types::pipeline::CanonicalCheckedSource;
 use witchy_types::typeck;
@@ -1401,13 +1401,15 @@ fn intern_recursive_nominal(
     interner: &mut LayoutInterner,
     ty: &Type,
 ) -> Result<LayoutId, CanonicalLayoutError> {
-    let key = aggregate_key(ty).ok_or_else(|| {
+    aggregate_key(ty).ok_or_else(|| {
         CanonicalLayoutError::UnsupportedType(format!("recursive nominal layout {ty:?}"))
     })?;
+    let key = SourceTypeKey { source: ty }.digest().ok_or_else(|| {
+        CanonicalLayoutError::InvalidLayout("recursive nominal identity exceeds bounds".into())
+    })?;
     let mut digest = Sha256::new();
-    digest.update(b"witchy/canonical-layout/recursive-nominal-v1\0");
-    digest.update((key.len() as u64).to_le_bytes());
-    digest.update(key.as_bytes());
+    digest.update(b"witchy/canonical-layout/recursive-nominal-v2\0");
+    digest.update(key);
     interner
         .intern_opaque_nominal(digest.finalize().into())
         .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))

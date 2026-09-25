@@ -75,6 +75,13 @@ found no authority widening. No new admitted Wasm, zero-leak evidence, or
 A–O closure is claimed. The five existing `List(&Int)` positive and negative
 smoke cases passed on this branch.
 
+Row G recursive nominal ABI identity (architecture implemented, semantic
+evidence unchanged, 2026-09-25): recursive aggregate layout IDs now use the
+bounded structural encoding of their normalized checked type. The existing
+aggregate-shape gate, checked-source witness, nominal body binding, and SafeWIR
+layout correspondence remain. Admitted Wasm, zero-leak evidence, and A–O
+status remain unchanged.
+
 Row K closure owner-family identity (architecture implemented, semantic
 evidence unchanged, 2026-09-25): opaque closure owner IDs now derive from a
 bounded typed encoding of the normalized callable signature, checked capture

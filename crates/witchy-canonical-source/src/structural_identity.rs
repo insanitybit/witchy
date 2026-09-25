@@ -9,6 +9,23 @@ use witchy_syntax::ast::{Convention, Type, TypeQual};
 
 use crate::aggregates::ScalarAggregateShape;
 
+/// Structural identity of a normalized checked source type. Callers still
+/// establish checked-source membership and physical layout correspondence.
+pub struct SourceTypeKey<'a> {
+    pub source: &'a Type,
+}
+
+impl SourceTypeKey<'_> {
+    pub fn digest(&self) -> Option<[u8; 32]> {
+        let mut encoder = Encoder {
+            bytes: b"witchy/source-type-key/v1\0".to_vec(),
+            remaining: 4_096,
+        };
+        encoder.ty(self.source, 0)?;
+        (encoder.bytes.len() <= 1_048_576).then(|| *blake3::hash(&encoder.bytes).as_bytes())
+    }
+}
+
 /// A checked aggregate family after nominal normalization and shape validation.
 pub struct AggregateOwnerKey<'a> {
     pub source: &'a Type,
