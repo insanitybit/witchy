@@ -153,6 +153,20 @@ agreement with the parsed source type and membership in
 oversized proof fail closed. This adds no new admitted source form and closes
 no acceptance evidence gap by itself.
 
+Row G declared record slice elements (implemented but unverified,
+2026-09-25): the shared carrier contract now derives a one-variant heap
+record's identity and instantiated fields from checked type definitions.
+Every field recursively needs a valid carrier and an owned physical slot;
+tagged, packed, must-consume, capability-bearing, recursive, and unproved
+forms remain fail-closed. The raw SafeWIR check bounds and matches a
+candidate's source syntax and layout, while witnessed binding independently
+rederives its exact fields from `CanonicalSourceView` and requires manifest
+membership. Temporary `&[Point]` and whole `&List(Point)` `.owned()` programs
+passed `witchy check` and each exited admitted Wasm with the hand-computed
+value 9.
+This smoke does not close row G: its durable Wasm and zero-leak evidence
+remain outstanding.
+
 Row G whole-root scalar-list expansion (implemented but unverified,
 2026-09-24): the compiler now recognizes exact `&List(List(S))` for
 `S = Float`, `Bool`, or `Duration` through the shared source predicate,

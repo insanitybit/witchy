@@ -105,7 +105,8 @@ impl ClosureValueLayouts {
         if rooted_view_inner(source).is_some_and(is_direct_shared_int) {
             return Some(self.shared_int_reference);
         }
-        if let Some(element) = rooted_view_inner(source).and_then(rooted_slice_element) {
+        if let Some(element) = rooted_view_inner(source)
+            .and_then(|inner| rooted_slice_element_with_definitions(inner, definitions)) {
             return self.slice_owners.get(&element).copied();
         }
         match source.unqualified() {
@@ -276,12 +277,16 @@ pub fn lower_typed_module(
                 parameter.ty.as_ref().and_then(|ty| {
                     let physical = parameter_physical_type(ty, parameter.convention);
                     (projected_parameter != Some(index)
+                        && !has_checked_direct_carrier(&physical, &definitions)
                         && contains_deferred_v1_qualifier(&physical))
                         .then_some(physical)
                 })
             })
             .chain(function.ret.iter().map(result_physical_type))
-            .find(contains_deferred_v1_qualifier)
+            .find(|ty| {
+                !has_checked_direct_carrier(ty, &definitions)
+                    && contains_deferred_v1_qualifier(ty)
+            })
             .or_else(|| deferred_v1_qualifier_in_block(&function.body))
         {
             return Err(CanonicalLoweringError::UnsupportedType(unsupported));
@@ -2100,6 +2105,7 @@ fn checked_signature(
     {
         if source.ty.as_ref().is_some_and(|source_type| {
             is_direct_rooted_int_view_aggregate_carrier(source_type, definitions)
+                && !is_admitted_rooted_gc_view(source_type, closure_layouts)
         }) {
             let source_type = source.ty.as_ref().expect("checked rooted-view aggregate type");
             let value_type = source_value_type(
@@ -2128,7 +2134,7 @@ fn checked_signature(
                 vec![MemoryEffect::Read, MemoryEffect::Retain, MemoryEffect::Release],
             );
         }
-        if source.ty.as_ref().is_some_and(is_admitted_rooted_gc_view) {
+        if source.ty.as_ref().is_some_and(|ty| is_admitted_rooted_gc_view(ty, closure_layouts)) {
             let value_type = ValueType::Gc(rooted_gc_view_owner_type(
                 source.ty.as_ref().expect("checked rooted view type"), closure_layouts,
             ).expect("admitted rooted view owner"));
@@ -2546,11 +2552,15 @@ fn signature_from_type(
         .map(|(index, (ty, convention))| {
             let physical = parameter_physical_type(ty, *convention);
             (projected_parameter == Some(index)).then_some(false)
-                .unwrap_or_else(|| contains_deferred_v1_qualifier(&physical))
+                .unwrap_or_else(|| {
+                    !has_checked_direct_carrier(&physical, definitions)
+                        && contains_deferred_v1_qualifier(&physical)
+                })
                 .then_some(physical)
         })
         .chain(std::iter::once(
-            contains_deferred_v1_qualifier(&result_physical_type(result))
+            (!has_checked_direct_carrier(&result_physical_type(result), definitions)
+                && contains_deferred_v1_qualifier(&result_physical_type(result)))
                 .then_some(result_physical_type(result)),
         ))
         .flatten()
@@ -2581,7 +2591,7 @@ fn signature_from_type(
         // the v1 owned-reference ABI it is one owned token like `let`/`own`.
         let ownership = match (value_type, convention) {
             (ValueType::Gc(_), Convention::Let | Convention::Borrow)
-                if is_admitted_rooted_gc_view(parameter) =>
+                if is_admitted_rooted_gc_view(parameter, closure_layouts) =>
             {
                 ParameterOwnership::Shared
             }
@@ -2897,6 +2907,13 @@ fn shared_reference_parts(ty: &Type) -> Option<(&str, &Type)> {
 fn rooted_view_inner(ty: &Type) -> Option<&Type> {
     let Type::Qualified(TypeQual::View, inner) = ty else { return None };
     Some(inner)
+}
+
+fn has_checked_direct_carrier(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> bool {
+    CarrierElement::from_view_type_with_definitions(ty, definitions).is_some()
+        || rooted_view_inner(ty).is_some_and(|payload| {
+            CarrierElement::from_list_root_payload_type_with_definitions(payload, definitions).is_some()
+        })
 }
 
 fn exclusive_reference_parts(ty: &Type) -> Option<(&str, &Type)> {
@@ -3415,18 +3432,33 @@ fn check_field_view_source(
 }
 
 /// The admitted element of a checked `Slice(T)` view payload.
-fn checked_rooted_slice_element(ty: &Ty) -> Option<CarrierElement> {
+fn checked_rooted_slice_element(ty: &Ty, definitions: &BTreeMap<String, TypeDef>) -> Option<CarrierElement> {
     let Ty::Named(name, arguments) = ty else { return None };
     if name.as_ref() != "Slice" || arguments.len() != 1 {
         return None;
     }
     witchy_types::typeck::ty_to_ast(arguments.first()?)
-        .as_ref().and_then(CarrierElement::from_checked_type)
+        .as_ref().and_then(|element| CarrierElement::from_checked_type_with_definitions(element, definitions))
+}
+
+fn rooted_slice_element_with_definitions(
+    ty: &Type,
+    definitions: &BTreeMap<String, TypeDef>,
+) -> Option<CarrierElement> {
+    match ty.unqualified() {
+        Type::Slice(element) => CarrierElement::from_checked_type_with_definitions(element, definitions),
+        Type::Named(name, arguments) if name == "Slice" => {
+            let [element] = arguments.as_slice() else { return None };
+            CarrierElement::from_checked_type_with_definitions(element, definitions)
+        }
+        _ => None,
+    }
 }
 
 /// A view carried as an opaque GC owner: the `&Int` cell or any `&[T]` slice.
-fn is_admitted_rooted_gc_view(ty: &Type) -> bool {
-    rooted_view_inner(ty).is_some_and(|inner| is_direct_shared_int(inner) || is_rooted_slice(inner))
+fn is_admitted_rooted_gc_view(ty: &Type, layouts: &ClosureValueLayouts) -> bool {
+    rooted_view_inner(ty).is_some_and(|inner| is_direct_shared_int(inner))
+        || layouts.slice_owners.keys().any(|element| element.matches_view_source_syntax(ty))
 }
 
 fn rooted_gc_view_owner_type(ty: &Type, layouts: &ClosureValueLayouts) -> Option<GcTypeId> {
@@ -3436,7 +3468,9 @@ fn rooted_gc_view_owner_type(ty: &Type, layouts: &ClosureValueLayouts) -> Option
     } else if let Some(element) = rooted_slice_element(inner) {
         layouts.slice_owners.get(&element).copied()
     } else {
-        None
+        layouts.slice_owners.iter().find_map(|(element, owner)| {
+            element.matches_view_source_syntax(ty).then_some(*owner)
+        })
     }
 }
 
@@ -4772,8 +4806,8 @@ impl<'a> FunctionLowerer<'a> {
     /// The registered `&[T]` family for a checked structural element.
     fn rooted_slice_family(&self, element: &CarrierElement) -> Result<&OwnerFamily, CanonicalLoweringError> {
         self.closures.owners.iter().find(|family| {
-            matches!(&family.source, OwnerFamilySource::SharedReference(source)
-                if rooted_view_inner(source).and_then(rooted_slice_element).as_ref() == Some(element))
+            matches!(&family.source, OwnerFamilySource::SharedReference(_))
+                && family.slice_carrier.as_ref() == Some(element)
         }).ok_or(CanonicalLoweringError::UnsupportedExpression("rooted slice reference family"))
     }
 
@@ -4781,8 +4815,8 @@ impl<'a> FunctionLowerer<'a> {
     fn rooted_slice_view_family(&self, value: ValueId) -> Option<(&OwnerFamily, CarrierElement)> {
         let ValueType::Gc(owner_type) = self.values.get(&value)? else { return None };
         self.closures.owners.iter().find_map(|family| match &family.source {
-            OwnerFamilySource::SharedReference(source) if family.owner_type == *owner_type => {
-                rooted_view_inner(source).and_then(rooted_slice_element).map(|element| (family, element))
+            OwnerFamilySource::SharedReference(_) if family.owner_type == *owner_type => {
+                family.slice_carrier.clone().map(|element| (family, element))
             }
             _ => None,
         })
@@ -4865,7 +4899,7 @@ impl<'a> FunctionLowerer<'a> {
         let Type::Qualified(TypeQual::View, inner) = &source_type else {
             return Err(CanonicalLoweringError::UnsupportedExpression(".owned() slice receiver"));
         };
-        let element = rooted_slice_element(inner)
+        let element = rooted_slice_element_with_definitions(inner, self.definitions)
             .ok_or(CanonicalLoweringError::UnsupportedExpression(".owned() slice element"))?;
         let result_type = self.expression_type(expression)?;
         let element_source_type = element.source_type();
@@ -8869,7 +8903,9 @@ impl FunctionLowerer<'_> {
         // A `&[T]` view iterates `0..length`, reading each element by value
         // through the same checked projection as `xs[i]`. The carrier is
         // immutable, so it dominates the loop without becoming loop state.
-        if rooted_view_inner(&logical_type).is_some_and(|inner| is_rooted_int_slice(inner) || is_rooted_slice(inner)) {
+        if rooted_view_inner(&logical_type).is_some_and(|inner| {
+            is_rooted_int_slice(inner) || rooted_slice_element_with_definitions(inner, self.definitions).is_some()
+        }) {
             use witchy_wir::canonical_safewir::closure_owner_contract::SharedSliceField;
             let slice = self.lower_expr(iterable)?;
             let length = self.read_rooted_slice(slice, SharedSliceField::Length)?;
@@ -14358,7 +14394,9 @@ impl FunctionLowerer<'_> {
         }
         let list_root = witchy_types::typeck::ty_to_ast(fact.payload())
             .as_ref()
-            .and_then(witchy_canonical_source::carrier::CarrierElement::from_list_root_payload_type)
+            .and_then(|payload| witchy_canonical_source::carrier::CarrierElement::from_list_root_payload_type_with_definitions(
+                payload, self.definitions,
+            ))
             .is_some();
         let record_root = record_root || list_root;
         if (matches!(fact.payload(), Ty::String) || record_root)
@@ -14413,7 +14451,7 @@ impl FunctionLowerer<'_> {
             return self.clone_reference_token(root);
         }
         let admitted_payload = matches!(fact.payload(), Ty::Int)
-            || checked_rooted_slice_element(fact.payload()).is_some();
+            || checked_rooted_slice_element(fact.payload(), self.definitions).is_some();
         if !admitted_payload {
             return Err(CanonicalLoweringError::UnsupportedExpression(
                 "rooted view payload is outside the canonical Int carrier",
@@ -14464,7 +14502,7 @@ impl FunctionLowerer<'_> {
                             "immutable view fact dynamic range does not match its retained source nodes".to_string(),
                         ));
                     }
-                    let Some(element) = checked_rooted_slice_element(fact.payload()) else {
+                    let Some(element) = checked_rooted_slice_element(fact.payload(), self.definitions) else {
                         return Err(CanonicalLoweringError::InvalidCheckedViewFacts(
                             "dynamic range formation does not produce a rooted slice".to_string(),
                         ));
@@ -14514,7 +14552,7 @@ impl FunctionLowerer<'_> {
                         "immutable slice fact static endpoints do not match retained source".to_string(),
                     ));
                 }
-                let Some(element) = checked_rooted_slice_element(fact.payload()) else {
+                let Some(element) = checked_rooted_slice_element(fact.payload(), self.definitions) else {
                     return Err(CanonicalLoweringError::InvalidCheckedViewFacts(
                         "static range formation does not produce a rooted slice".to_string(),
                     ));

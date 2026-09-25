@@ -16,7 +16,7 @@ pub(crate) fn value_type_matches_source(
     // element must satisfy the same recursive ownership relation as a rooted
     // slice, including an owned pointer and RC list at every managed edge.
     if let witchy_syntax::ast::Type::Qualified(witchy_syntax::ast::TypeQual::View, payload) = source
-        && let Some(carrier) = witchy_canonical_source::carrier::CarrierElement::from_list_root_payload_type(payload)
+        && let Some(carrier) = witchy_canonical_source::carrier::CarrierElement::from_list_root_payload_type_with_definitions(payload, records)
     {
         let super::super::ValueType::Ref(layout) = actual else { return false };
         let Ok(physical) = layouts.resolve_nominal(layout) else { return false };
@@ -43,9 +43,11 @@ pub(crate) fn value_type_matches_source(
             }
             return id == family.owner_type
                 && ((is_direct_rooted_view_int(expected) && is_direct_rooted_view_int(source))
-                    || (is_direct_rooted_view_slice(expected)
-                        && super::super::closure_owner_contract::rooted_slice_carrier(expected)
-                            == super::super::closure_owner_contract::rooted_slice_carrier(source)));
+                    || (is_direct_rooted_view_slice(expected, records)
+                        && family.slice_carrier.as_ref().is_some_and(|carrier| {
+                            witchy_canonical_source::carrier::CarrierElement::from_view_type_with_definitions(source, records)
+                                .as_ref() == Some(carrier)
+                        })));
         }
         if let super::super::closure_owner_contract::OwnerFamilySource::Aggregate(expected) = &family.source {
             let aggregate = if id == family.list_type {

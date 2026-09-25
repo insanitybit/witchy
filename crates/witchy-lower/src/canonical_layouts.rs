@@ -54,6 +54,13 @@ pub(crate) fn rooted_slice_element_name(element: &Type) -> Option<CarrierElement
     CarrierElement::from_checked_type(element)
 }
 
+fn rooted_slice_element_from_checked_definitions(
+    element: &Type,
+    definitions: &BTreeMap<String, TypeDef>,
+) -> Option<CarrierElement> {
+    CarrierElement::from_checked_type_with_definitions(element, definitions)
+}
+
 pub(crate) fn rooted_slice_element_type(element: &CarrierElement) -> Type {
     element.source_type()
 }
@@ -499,7 +506,8 @@ impl LayoutProjection {
         // expression may turn that internal identity into slice-carrier
         // authority; later variable/method uses merely reuse the layout.
         if matches!(expression, ast::Expr::Unary { op: ast::UnOp::Borrow, .. })
-            && let Some(element) = rooted_slice_element(&source_type).and_then(rooted_slice_element_name)
+            && let Some(element) = rooted_slice_element(&source_type)
+                .and_then(|element| rooted_slice_element_from_checked_definitions(element, &self.definitions))
         {
             self.rooted_slices_requested.insert(element);
         }
@@ -525,7 +533,7 @@ impl LayoutProjection {
         if let Type::Qualified(ast::TypeQual::View, inner) = ty
             && let Some(element) = rooted_slice_element(inner)
         {
-            if let Some(element) = rooted_slice_element_name(element) {
+            if let Some(element) = rooted_slice_element_from_checked_definitions(element, &self.definitions) {
                 self.rooted_slices_requested.insert(element);
             }
             return self.visit_type(&Type::Named("List".into(), vec![element.clone()]));
@@ -972,7 +980,7 @@ fn type_requires_opaque_owner(
     if matches!(ty, Type::Qualified(ast::TypeQual::View, inner)
         if matches!(inner.unqualified(), Type::Named(name, arguments)
             if name == "Int" && arguments.is_empty()))
-        || witchy_wir::canonical_safewir::closure_owner_contract::rooted_slice_carrier(ty).is_some()
+        || CarrierElement::from_view_type_with_definitions(ty, definitions).is_some()
     {
         return true;
     }
@@ -1096,7 +1104,7 @@ fn type_has_opaque_owner(
     }
     // A captured `&[T]` retains its rooted-slice owner, one family per
     // admitted element; the carrier is never unpacked into its root.
-    if witchy_wir::canonical_safewir::closure_owner_contract::rooted_slice_carrier(ty).is_some() {
+    if CarrierElement::from_view_type_with_definitions(ty, definitions).is_some() {
         return true;
     }
     if matches!(ty.unqualified(), Type::Fn(..)) {

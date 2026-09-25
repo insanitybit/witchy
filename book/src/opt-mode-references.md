@@ -170,6 +170,9 @@ owned pointer and a retained List header. A String leaf owns its byte buffer.
 Nonempty tuple elements use an owned packed record, with the same ownership
 proof applied to every field. Dictionary elements use two owned, retained
 lists for their keys and values, with the same proof applied to each element.
+A declared one-variant heap record is admitted when every instantiated field
+has that proof and an owned physical slot. Tagged, packed, must-consume,
+capability-bearing, and recursive records remain unsupported as slice elements.
 Carrier proof is bounded at 128 nested levels
 and 4,096 type nodes.
 Qualified children and elements without a complete ownership proof are

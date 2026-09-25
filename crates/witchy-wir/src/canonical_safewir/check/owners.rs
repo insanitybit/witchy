@@ -27,7 +27,9 @@ impl<'a> Registry<'a> {
             }
             if match &family.source {
                 OwnerFamilySource::SharedReference(source) =>
-                    family.slice_carrier != rooted_slice_carrier(source),
+                    family.slice_carrier.as_ref().is_some_and(|carrier| {
+                        !carrier.matches_view_source_syntax(source)
+                    }) || family.slice_carrier.is_none() && rooted_slice_carrier(source).is_some(),
                 _ => family.slice_carrier.is_some(),
             } {
                 return Err(InitialCheckError::UnsupportedMemorySignature { signature: family.signature });

@@ -37,7 +37,9 @@ pub(super) fn validate<S: ModuleStage>(
                 continue;
             }
             OwnerFamilySource::SharedReference(source_type) => {
-                let checked = rooted_slice_carrier(source_type);
+                let checked = witchy_canonical_source::carrier::CarrierElement::from_view_type_with_definitions(
+                    source_type, &records,
+                );
                 if family.slice_carrier != checked
                     || checked.as_ref().is_some_and(|element| !source.admits_slice_carrier(element)) {
                     return Err(CandidateAbiBindingError::MissingCanonicalLayouts);
@@ -330,7 +332,7 @@ pub(super) fn validate<S: ModuleStage>(
                     Operation::ClosureOwner(OwnerOperation::ReadSharedSlice { family, .. }) => {
                         if candidate.owner_families().iter().find(|entry| entry.signature == *family)
                             .is_none_or(|entry| !matches!(&entry.source,
-                                OwnerFamilySource::SharedReference(source) if rooted_slice_carrier(source).is_some()))
+                                OwnerFamilySource::SharedReference(_) if entry.slice_carrier.is_some()))
                         {
                             return Err(CandidateAbiBindingError::MissingCanonicalLayouts);
                         }
@@ -378,7 +380,7 @@ fn validate_shared_reference_family(
     layouts: &crate::layout::LayoutInterner,
 ) -> Result<(), CandidateAbiBindingError> {
     let refuse = || CandidateAbiBindingError::MissingCanonicalLayouts;
-    if !(is_shared_int_reference(source_type) || rooted_slice_carrier(source_type).is_some())
+    if !(is_shared_int_reference(source_type) || family.slice_carrier.is_some())
         || family.constructors.is_empty()
     {
         return Err(refuse());
@@ -458,8 +460,8 @@ fn validate_shared_reference_family(
                 else { return Err(refuse()) };
                 // The backing list's element representation must be exactly
                 // the family's checked `&[T]` element.
-                if !rooted_slice_carrier(source_type)
-                        .is_some_and(|carrier| carrier_element_layout_matches(layouts, *element, &carrier))
+                if !family.slice_carrier.as_ref()
+                        .is_some_and(|carrier| carrier_element_layout_matches(layouts, *element, carrier))
                     || root.0 != 0 || start.0 != 1 || length.0 != 2 || !kinds.insert(2_u8)
                 {
                     return Err(refuse());

@@ -4,7 +4,8 @@
 //! in `CanonicalSourceView` and SafeWIR independently matches the recursive
 //! physical layout. This description cannot grant authority on its own.
 
-use witchy_syntax::ast::{Type, TypeQual};
+use std::collections::BTreeMap;
+use witchy_syntax::ast::{Type, TypeDef, TypeQual};
 
 use crate::abi::CanonicalScalarKind;
 
@@ -18,6 +19,9 @@ pub enum CarrierElement {
     List(Box<Self>),
     Tuple(Vec<Self>),
     Dict(Box<Self>, Box<Self>),
+    /// A checked, one-variant heap record. The declared identity and every
+    /// instantiated field are part of the proof, including unused parameters.
+    Record { name: String, arguments: Vec<Self>, fields: Vec<Self> },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,6 +47,22 @@ impl CarrierElement {
     /// signature. An inbound closed-local parameter can name a carrier even
     /// when no borrow formation appears in this function body.
     pub fn in_checked_signature(signature: &Type) -> Vec<Self> {
+        Self::in_checked_signature_with(signature, Self::from_view_type)
+    }
+
+    pub fn in_checked_signature_with_definitions(
+        signature: &Type,
+        definitions: &BTreeMap<String, TypeDef>,
+    ) -> Vec<Self> {
+        Self::in_checked_signature_with(signature, |ty| {
+            Self::from_view_type_with_definitions(ty, definitions)
+        })
+    }
+
+    fn in_checked_signature_with(
+        signature: &Type,
+        parse: impl Fn(&Type) -> Option<Self>,
+    ) -> Vec<Self> {
         let mut found = Vec::new();
         let mut pending = vec![signature];
         let mut visited = 0usize;
@@ -51,7 +71,7 @@ impl CarrierElement {
             if visited > 4_096 {
                 return Vec::new();
             }
-            if let Some(carrier) = Self::from_view_type(ty) {
+            if let Some(carrier) = parse(ty) {
                 found.push(carrier);
             }
             match ty {
@@ -77,6 +97,71 @@ impl CarrierElement {
     /// carrier merely because their storage happens to resemble one.
     pub fn from_checked_type(ty: &Type) -> Option<Self> {
         Self::from_checked_type_bounded(ty, 0, &mut 4_096)
+    }
+
+    /// Extend the structural grammar using checked source definitions. A
+    /// nominal record is admitted only when its instantiated fields have the
+    /// same recursive ownership proof; recursive and tagged declarations
+    /// remain outside this carrier until their operations can be proved.
+    pub fn from_checked_type_with_definitions(
+        ty: &Type,
+        definitions: &BTreeMap<String, TypeDef>,
+    ) -> Option<Self> {
+        let mut budget = 4_096;
+        Self::from_checked_type_with_definitions_at(ty, definitions, 0, &mut budget)
+    }
+
+    fn from_checked_type_with_definitions_at(
+        ty: &Type,
+        definitions: &BTreeMap<String, TypeDef>,
+        depth: usize,
+        budget: &mut usize,
+    ) -> Option<Self> {
+        if depth > 128 || *budget == 0 {
+            return None;
+        }
+        *budget -= 1;
+        match ty {
+            Type::Named(name, arguments) if definitions.contains_key(name) => {
+                let definition = definitions.get(name)?;
+                if definition.must_consume || definition.is_capability || name.len() > 1_024
+                    || arguments.len() > 128 {
+                    None
+                } else {
+                    let shape = crate::aggregates::scalar_aggregate_shape(ty, definitions)?;
+                    if shape.tagged || shape.packed || shape.fields.is_empty() || shape.fields.len() > 128 {
+                        None
+                    } else {
+                        let arguments = arguments.iter().map(|argument| {
+                            Self::from_checked_type_with_definitions_at(argument, definitions, depth + 1, budget)
+                        }).collect::<Option<Vec<_>>>()?;
+                        let fields = shape.fields.iter().map(|field| {
+                            Self::from_checked_type_with_definitions_at(field, definitions, depth + 1, budget)
+                        }).collect::<Option<Vec<_>>>()?;
+                        Some(Self::Record { name: name.clone(), arguments, fields })
+                    }
+                }
+            }
+            Type::Named(name, arguments) if name == "List" => {
+                let [child] = arguments.as_slice() else { return None };
+                Some(Self::List(Box::new(Self::from_checked_type_with_definitions_at(
+                    child, definitions, depth + 1, budget,
+                )?)))
+            }
+            Type::Named(name, arguments) if name == "Dict" => {
+                let [key, value] = arguments.as_slice() else { return None };
+                Some(Self::Dict(
+                    Box::new(Self::from_checked_type_with_definitions_at(key, definitions, depth + 1, budget)?),
+                    Box::new(Self::from_checked_type_with_definitions_at(value, definitions, depth + 1, budget)?),
+                ))
+            }
+            Type::Tuple(fields) if !fields.is_empty() && fields.len() <= 128 => {
+                Some(Self::Tuple(fields.iter().map(|field| {
+                    Self::from_checked_type_with_definitions_at(field, definitions, depth + 1, budget)
+                }).collect::<Option<Vec<_>>>()?))
+            }
+            _ => Self::from_checked_type_bounded(ty, depth, budget),
+        }
     }
 
     fn from_checked_type_bounded(ty: &Type, depth: usize, budget: &mut usize) -> Option<Self> {
@@ -128,6 +213,31 @@ impl CarrierElement {
         Self::from_slice_payload_type(payload)
     }
 
+    pub fn from_view_type_with_definitions(
+        ty: &Type,
+        definitions: &BTreeMap<String, TypeDef>,
+    ) -> Option<Self> {
+        let Type::Qualified(TypeQual::View, payload) = ty else { return None };
+        Self::from_slice_payload_type_with_definitions(payload, definitions)
+    }
+
+    /// Raw candidate consistency only. This does not authenticate nominal
+    /// fields: witnessed SafeWIR must reconstruct this proof from checked
+    /// definitions and require membership in CanonicalSourceView.
+    pub fn matches_view_source_syntax(&self, ty: &Type) -> bool {
+        if !self.within_resource_bounds() { return false; }
+        let Type::Qualified(TypeQual::View, payload) = ty else { return false };
+        let element = match payload.as_ref() {
+            Type::Slice(element) => element.as_ref(),
+            Type::Named(name, arguments) if name == "Slice" => {
+                let [element] = arguments.as_slice() else { return false };
+                element
+            }
+            _ => return false,
+        };
+        *element == self.source_type()
+    }
+
     /// The checker's private `Slice(T)` payload of a retained formation fact.
     pub fn from_slice_payload_type(payload: &Type) -> Option<Self> {
         let element = match payload {
@@ -141,6 +251,21 @@ impl CarrierElement {
             _ => return None,
         };
         Self::from_checked_type(element)
+    }
+
+    pub fn from_slice_payload_type_with_definitions(
+        payload: &Type,
+        definitions: &BTreeMap<String, TypeDef>,
+    ) -> Option<Self> {
+        let element = match payload {
+            Type::Slice(element) => element.as_ref(),
+            Type::Named(name, arguments) if name == "Slice" => {
+                let [element] = arguments.as_slice() else { return None };
+                element
+            }
+            _ => return None,
+        };
+        Self::from_checked_type_with_definitions(element, definitions)
     }
 
     /// Element of a whole rooted `&List(T)` view. Only an outer `frozen`
@@ -157,6 +282,18 @@ impl CarrierElement {
             return None;
         };
         (name == "List").then(|| Self::from_checked_type(element)).flatten()
+    }
+
+    pub fn from_list_root_payload_type_with_definitions(
+        mut payload: &Type,
+        definitions: &BTreeMap<String, TypeDef>,
+    ) -> Option<Self> {
+        while let Type::Qualified(TypeQual::Frozen, inner) = payload {
+            payload = inner;
+        }
+        let Type::Named(name, arguments) = payload else { return None };
+        let [element] = arguments.as_slice() else { return None };
+        (name == "List").then(|| Self::from_checked_type_with_definitions(element, definitions)).flatten()
     }
 
     pub fn source_type(&self) -> Type {
@@ -178,13 +315,16 @@ impl CarrierElement {
             Self::Dict(key, value) => Type::Named(
                 "Dict".into(), vec![key.source_type(), value.source_type()],
             ),
+            Self::Record { name, arguments, .. } => Type::Named(
+                name.clone(), arguments.iter().map(Self::source_type).collect(),
+            ),
         }
     }
 
     pub fn ownership(&self) -> CarrierOwnership {
         match self {
             Self::Scalar(_) => CarrierOwnership::Copy,
-            Self::String | Self::List(_) | Self::Tuple(_) | Self::Dict(_, _) => CarrierOwnership::RetainCloneRelease,
+            Self::String | Self::List(_) | Self::Tuple(_) | Self::Dict(_, _) | Self::Record { .. } => CarrierOwnership::RetainCloneRelease,
         }
     }
 
@@ -201,6 +341,7 @@ impl CarrierElement {
             }
             remaining -= 1;
             match element {
+                Self::Scalar(crate::abi::CanonicalScalarKind::Unit) => return false,
                 Self::Scalar(_) | Self::String => {}
                 Self::List(child) => pending.push((child, depth + 1)),
                 Self::Tuple(fields) => {
@@ -212,6 +353,12 @@ impl CarrierElement {
                 Self::Dict(key, value) => {
                     pending.push((key, depth + 1));
                     pending.push((value, depth + 1));
+                }
+                Self::Record { name, arguments, fields } => {
+                    if name.len() > 1_024 || arguments.len() > 128 || fields.is_empty() || fields.len() > 128 {
+                        return false;
+                    }
+                    pending.extend(arguments.iter().chain(fields).map(|field| (field, depth + 1)));
                 }
             }
         }
@@ -269,6 +416,11 @@ impl CarrierElement {
                     return key.matches_layout(query, key_layout)
                         && value.matches_layout(query, value_layout);
                 }
+                Self::Record { fields, .. } => {
+                    let Some(actual) = query.owned_record_fields(layout) else { return false };
+                    return actual.len() == fields.len()
+                        && fields.iter().zip(actual).all(|(field, slot)| field.matches_layout(query, slot));
+                }
             }
         }
     }
@@ -300,6 +452,16 @@ impl CarrierElement {
                     encode(key, bytes);
                     encode(value, bytes);
                     bytes.push(7);
+                }
+                CarrierElement::Record { name, arguments, fields } => {
+                    bytes.push(8);
+                    bytes.extend_from_slice(&(name.len() as u32).to_le_bytes());
+                    bytes.extend_from_slice(name.as_bytes());
+                    bytes.extend_from_slice(&(arguments.len() as u32).to_le_bytes());
+                    for argument in arguments { encode(argument, bytes); }
+                    bytes.extend_from_slice(&(fields.len() as u32).to_le_bytes());
+                    for field in fields { encode(field, bytes); }
+                    bytes.push(9);
                 }
             }
         }

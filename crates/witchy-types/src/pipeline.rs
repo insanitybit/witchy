@@ -821,11 +821,15 @@ fn attach_canonical_source(
     let mut slice_carriers = typed.view_facts().ok().into_iter()
         .flat_map(|facts| facts.iter())
         .filter_map(|fact| typeck::ty_to_ast(fact.payload()))
-        .filter_map(|payload| witchy_canonical_source::carrier::CarrierElement::from_slice_payload_type(&payload))
+        .filter_map(|payload| witchy_canonical_source::carrier::CarrierElement::from_slice_payload_type_with_definitions(
+            &payload, &type_definitions,
+        ))
         .collect::<Vec<_>>();
-    slice_carriers.extend(callable_witness.signatures.values().flat_map(
-        witchy_canonical_source::carrier::CarrierElement::in_checked_signature,
-    ));
+    slice_carriers.extend(callable_witness.signatures.values().flat_map(|signature| {
+        witchy_canonical_source::carrier::CarrierElement::in_checked_signature_with_definitions(
+            signature, &type_definitions,
+        )
+    }));
     slice_carriers.sort_by_key(|element| element.identity());
     slice_carriers.dedup();
     checked.canonical_source = Some(CanonicalCheckedSource {

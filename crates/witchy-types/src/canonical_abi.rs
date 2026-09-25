@@ -354,9 +354,9 @@ pub fn rooted_view_from_ty(
         Ty::Named(name, arguments)
             if name.as_ref() == "Slice"
                 && arguments.len() == 1
-                && arguments.first().and_then(slice_element_carrier_ty).is_some() =>
+                && arguments.first().and_then(|element| slice_element_carrier_ty(element, context)).is_some() =>
         {
-            let element = arguments.first().and_then(slice_element_carrier_ty).expect("matched above");
+            let element = arguments.first().and_then(|element| slice_element_carrier_ty(element, context)).expect("matched above");
             Ok(CanonicalReferenceKind::RootedView {
                 payload: rooted_slice_payload_key(&element),
                 carrier: CanonicalRootedViewCarrier::ListSliceRoot,
@@ -377,7 +377,7 @@ pub fn rooted_view_from_ty(
         Ty::List(element) => {
             let element = crate::typeck::ty_to_ast(element)
                 .as_ref()
-                .and_then(witchy_canonical_source::carrier::CarrierElement::from_checked_type)
+                .and_then(|element| witchy_canonical_source::carrier::CarrierElement::from_checked_type_with_definitions(element, &context.definitions))
                 .ok_or_else(|| CanonicalAbiError::Unsupported(
                     "rooted view payload has no admitted authenticated carrier".into(),
                 ))?;
@@ -432,18 +432,18 @@ pub fn rooted_view_from_ast(
             payload: rooted_scalar_payload_key(CanonicalScalarKind::Int),
             carrier: CanonicalRootedViewCarrier::IntScalarRoot,
         }),
-        Type::Slice(element) if slice_element_carrier_ast(element).is_some() => {
+        Type::Slice(element) if slice_element_carrier_ast(element, context).is_some() => {
             Ok(CanonicalReferenceKind::RootedView {
-                payload: rooted_slice_payload_key(&slice_element_carrier_ast(element).expect("matched above")),
+                payload: rooted_slice_payload_key(&slice_element_carrier_ast(element, context).expect("matched above")),
                 carrier: CanonicalRootedViewCarrier::ListSliceRoot,
             })
         }
         Type::Named(name, arguments)
             if name == "Slice"
-                && matches!(arguments.as_slice(), [element] if slice_element_carrier_ast(element).is_some()) =>
+                && matches!(arguments.as_slice(), [element] if slice_element_carrier_ast(element, context).is_some()) =>
         {
             Ok(CanonicalReferenceKind::RootedView {
-                payload: rooted_slice_payload_key(&slice_element_carrier_ast(&arguments[0]).expect("matched above")),
+                payload: rooted_slice_payload_key(&slice_element_carrier_ast(&arguments[0], context).expect("matched above")),
                 carrier: CanonicalRootedViewCarrier::ListSliceRoot,
             })
         }
@@ -464,7 +464,9 @@ pub fn rooted_view_from_ast(
             })
         }
         Type::Named(name, arguments) if name == "List" && arguments.len() == 1 => {
-            let element = witchy_canonical_source::carrier::CarrierElement::from_list_root_payload_type(payload)
+            let element = witchy_canonical_source::carrier::CarrierElement::from_list_root_payload_type_with_definitions(
+                payload, &context.definitions,
+            )
                 .ok_or_else(|| CanonicalAbiError::Unsupported(
                     "rooted view payload has no admitted authenticated carrier".into(),
                 ))?;
@@ -685,13 +687,13 @@ fn rooted_string_payload_key() -> CanonicalTypeKey {
     CanonicalTypeKey::from_digest(*blake3::hash(b"witchy.canonical-rooted-view-payload.v1/string").as_bytes())
 }
 
-fn slice_element_carrier_ty(element: &Ty) -> Option<witchy_canonical_source::carrier::CarrierElement> {
+fn slice_element_carrier_ty(element: &Ty, context: &Context) -> Option<witchy_canonical_source::carrier::CarrierElement> {
     crate::typeck::ty_to_ast(element).as_ref()
-        .and_then(witchy_canonical_source::carrier::CarrierElement::from_checked_type)
+        .and_then(|element| witchy_canonical_source::carrier::CarrierElement::from_checked_type_with_definitions(element, &context.definitions))
 }
 
-fn slice_element_carrier_ast(element: &Type) -> Option<witchy_canonical_source::carrier::CarrierElement> {
-    witchy_canonical_source::carrier::CarrierElement::from_checked_type(element)
+fn slice_element_carrier_ast(element: &Type, context: &Context) -> Option<witchy_canonical_source::carrier::CarrierElement> {
+    witchy_canonical_source::carrier::CarrierElement::from_checked_type_with_definitions(element, &context.definitions)
 }
 
 /// The checked recursive element is the payload identity, independent of

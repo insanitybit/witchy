@@ -1168,10 +1168,14 @@ layout, and String leaves own a byte buffer. A nonempty tuple requires an
 owned pointer to a packed record whose fields each satisfy that same relation.
 `Dict(K, V)` uses its canonical two-field record: an owned, retained key list
 and an owned, retained value list, with `K` and `V` checked recursively.
+A declared one-variant heap record uses its checked instantiated fields in
+declaration order; every field needs that same recursive proof and an owned
+physical slot. Tagged, packed, must-consume, capability-bearing, and recursive
+records have no slice-element carrier yet.
 The slice retains its outer list root, and reads retain managed children
 through the checked projection. Carrier proof has a compiler resource limit
 of 128 nested levels and 4,096 type nodes.
-Qualifiers, arbitrary nominal lookalikes, capabilities, and elements without
+Qualifiers, nominal lookalikes without checked definitions, capabilities, and elements without
 a complete ownership proof are refused. `.owned()` copies the authenticated
 range into a fresh `List(T)` using that same relation. Generic recursive forms
 remain implemented but unverified until admitted unoptimized Wasm and zero-leak

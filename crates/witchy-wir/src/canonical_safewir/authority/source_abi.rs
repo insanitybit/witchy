@@ -168,7 +168,7 @@ pub(super) fn source_abi_qualifiers_supported(
     // the authenticated hidden write-back lane. It is deliberately not a
     // recursive qualifier exception.
     let mut pending = (!(is_direct_shared_reference(result)
-        || is_direct_rooted_view_int(result) || is_direct_rooted_view_slice(result)
+        || is_direct_rooted_view_int(result) || is_direct_rooted_view_slice(result, records)
         || is_list_of_direct_int_views(result)
         || is_direct_rooted_view_whole_root(result, records)
         || is_direct_exclusive_reference(result)
@@ -181,7 +181,7 @@ pub(super) fn source_abi_qualifiers_supported(
     pending.extend(parameters.iter().enumerate().filter_map(|(index, parameter)| {
         (!(
             is_direct_shared_reference(parameter)
-            || is_direct_rooted_view_int(parameter) || is_direct_rooted_view_slice(parameter)
+            || is_direct_rooted_view_int(parameter) || is_direct_rooted_view_slice(parameter, records)
             || is_list_of_direct_int_views(parameter)
             || is_direct_rooted_view_whole_root(parameter, records)
             || is_direct_rooted_view_aggregate_carrier(parameter, records)
@@ -208,7 +208,7 @@ pub(super) fn source_abi_qualifiers_supported(
             // qualifier itself is not a nested loan to refuse here.
             Type::Qualified(TypeQual::View, inner)
                 if !matches!(inner.as_ref(), Type::Qualified(qualifier, _) if *qualifier != TypeQual::Frozen)
-                    && (is_direct_rooted_view_int(ty) || is_direct_rooted_view_slice(ty)
+                    && (is_direct_rooted_view_int(ty) || is_direct_rooted_view_slice(ty, records)
                         || is_direct_rooted_view_whole_root(ty, records)) => {}
             Type::Qualified(_, _) => return false,
             Type::Fn(parameters, result, conventions, _) => {
@@ -370,7 +370,7 @@ pub(crate) fn is_direct_rooted_view_whole_root(source: &witchy_syntax::ast::Type
         || matches!(source,
             witchy_syntax::ast::Type::Qualified(witchy_syntax::ast::TypeQual::View, inner)
                 if witchy_canonical_source::aggregates::is_record_root_payload(inner, records)
-                    || witchy_canonical_source::aggregates::is_list_root_payload(inner)
+                    || witchy_canonical_source::carrier::CarrierElement::from_list_root_payload_type_with_definitions(inner, records).is_some()
                     || witchy_canonical_source::aggregates::dict_string_scalar_root_payload(inner).is_some()
                     || witchy_canonical_source::aggregates::tuple_scalar_string_root_payload(inner).is_some()
                     || witchy_canonical_source::aggregates::is_scalar_value_view_payload(inner))
@@ -386,8 +386,11 @@ pub(super) fn is_direct_rooted_view_string(source: &witchy_syntax::ast::Type) ->
 }
 
 /// A direct `&[T]` rooted slice view of an admitted element (`ListSlice`).
-pub(super) fn is_direct_rooted_view_slice(source: &witchy_syntax::ast::Type) -> bool {
-    super::super::closure_owner_contract::rooted_slice_carrier(source).is_some()
+pub(super) fn is_direct_rooted_view_slice(
+    source: &witchy_syntax::ast::Type,
+    records: &ScalarRecordFields,
+) -> bool {
+    witchy_canonical_source::carrier::CarrierElement::from_view_type_with_definitions(source, records).is_some()
 }
 
 /// The only non-scalar reference carriers the current canonical ABI can move
@@ -522,7 +525,7 @@ pub(super) fn restore_source_abi_qualifiers(
     for (index, (parameter, declared)) in parameters.iter_mut().zip(&declaration.params).enumerate() {
         if let Some(ty) = &declared.ty
             && (is_direct_shared_reference(ty)
-                || is_direct_rooted_view_int(ty) || is_direct_rooted_view_slice(ty)
+                || is_direct_rooted_view_int(ty) || is_direct_rooted_view_slice(ty, records)
                 || is_direct_rooted_view_whole_root(ty, records)
                 || is_direct_rooted_view_aggregate_carrier(ty, records)
                 || (matches!(declared.convention,
@@ -543,7 +546,7 @@ pub(super) fn restore_source_abi_qualifiers(
     }
     if let Some(declared) = &declaration.ret
         && (is_direct_shared_reference(declared)
-            || is_direct_rooted_view_int(declared) || is_direct_rooted_view_slice(declared)
+            || is_direct_rooted_view_int(declared) || is_direct_rooted_view_slice(declared, records)
             || is_direct_rooted_view_whole_root(declared, records)
             || is_direct_exclusive_reference(declared)
             || is_aggregate_reference_carrier(declared)

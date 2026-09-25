@@ -110,12 +110,15 @@ fn is_admitted_view_carrier(payload: &Ty) -> bool {
 /// `&[T]` over an admitted slice element (the checker spells the slice
 /// payload as the private `Slice(T)` nominal).  Its carrier is the
 /// rooted-slice owner family: an opaque owner retaining its backing list.
-fn is_admitted_slice_view(ty: &Ty) -> bool {
+fn is_admitted_slice_view(
+    ty: &Ty,
+    definitions: &std::collections::BTreeMap<String, ast::TypeDef>,
+) -> bool {
     let Ty::Named(name, arguments) = ty else { return false };
     name.as_ref() == "Slice"
         && matches!(&arguments[..], [element]
             if ty_to_ast(element).as_ref()
-                .and_then(witchy_canonical_source::carrier::CarrierElement::from_checked_type)
+                .and_then(|ty| witchy_canonical_source::carrier::CarrierElement::from_checked_type_with_definitions(ty, definitions))
                 .is_some())
 }
 
@@ -456,10 +459,12 @@ impl Checker {
             // `&[T]` over an admitted slice element is the rooted-slice owner
             // family: an opaque carrier retaining its backing list, captured
             // into an owner field exactly like the `&Int` place owner.
-            || is_admitted_slice_view(payload)
+            || is_admitted_slice_view(payload, &self.canonical_definitions)
             || ty_to_ast(payload).is_some_and(|payload| {
                 witchy_canonical_source::aggregates::is_record_root_payload(&payload, &self.canonical_definitions)
-                    || witchy_canonical_source::aggregates::is_list_root_payload(&payload)
+                    || witchy_canonical_source::carrier::CarrierElement::from_list_root_payload_type_with_definitions(
+                        &payload, &self.canonical_definitions,
+                    ).is_some()
             })
     }
 
@@ -3553,7 +3558,7 @@ impl Checker {
         {
             let element = self.resolve(&arguments[0]);
             if ty_to_ast(&element).as_ref()
-                .and_then(witchy_canonical_source::carrier::CarrierElement::from_checked_type)
+                .and_then(|ty| witchy_canonical_source::carrier::CarrierElement::from_checked_type_with_definitions(ty, &self.canonical_definitions))
                 .is_some()
                 || matches!(&element, Ty::Var(variable)
                     if self.current_typarams.values().any(|typaram| typaram == variable))
