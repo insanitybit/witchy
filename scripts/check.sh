@@ -424,11 +424,13 @@ if cargo nextest --version >/dev/null 2>&1; then
     # inclusion expression with the existing exclusions.
     gate_nextest="${WITCHY_GATE_NEXTEST:-}"
     gate_nextest_expr="${WITCHY_GATE_NEXTEST_EXPR:-}"
+    gate_nextest_extra="${WITCHY_GATE_NEXTEST_EXTRA:-}"
     queue_nextest_args=""
-    [ "$full" -eq 1 ] && { gate_nextest=""; gate_nextest_expr=""; }
+    [ "$full" -eq 1 ] && { gate_nextest=""; gate_nextest_expr=""; gate_nextest_extra=""; }
     if [ -z "${WITCHY_GATE_SCOPE+x}" ]; then
         gate_nextest=""
         gate_nextest_expr=""
+        gate_nextest_extra=""
     fi
     case "$gate_nextest" in
         '' | WORKSPACE) gate_nextest="" ;;
@@ -437,6 +439,19 @@ if cargo nextest --version >/dev/null 2>&1; then
             echo "check.sh: ignoring unusable WITCHY_GATE_NEXTEST='$gate_nextest' (want -p/-test selectors or WORKSPACE)" >&2
             gate_nextest=""
             gate_nextest_expr=""
+            gate_nextest_extra=""
+            ;;
+    esac
+    case "$gate_nextest_extra" in
+        '' | -p\ * | --test\ *) ;;
+        *)
+            # A malformed secondary partition cannot be dropped safely: its
+            # tests are absent from the primary by construction. Fail safe to
+            # the ordinary workspace selection instead.
+            echo "check.sh: ignoring unusable WITCHY_GATE_NEXTEST_EXTRA='$gate_nextest_extra'" >&2
+            gate_nextest=""
+            gate_nextest_expr=""
+            gate_nextest_extra=""
             ;;
     esac
     nextest_sel=()
@@ -483,6 +498,11 @@ if cargo nextest --version >/dev/null 2>&1; then
     else
         nextest_sel=(--workspace)
     fi
+    nextest_extra_sel=()
+    if [ -n "$gate_nextest_extra" ]; then
+        # shellcheck disable=SC2206 -- mapper emits validated Cargo selectors.
+        nextest_extra_sel=($gate_nextest_extra)
+    fi
     nextest_cmd=(cargo nextest run "$max_fail")
     if [ -n "$gate_test_jobs" ]; then
         nextest_cmd+=(-j "$gate_test_jobs")
@@ -508,6 +528,16 @@ if cargo nextest --version >/dev/null 2>&1; then
             nextest_cmd+=(--features witchy-wir/native)
             ;;
     esac
+    nextest_extra_cmd=()
+    if [ "${#nextest_extra_sel[@]}" -gt 0 ]; then
+        nextest_extra_cmd=(cargo nextest run "$max_fail")
+        [ -z "$gate_test_jobs" ] || nextest_extra_cmd+=(-j "$gate_test_jobs")
+        nextest_extra_cmd+=("${nextest_extra_sel[@]}" --profile gate-partition)
+        case " ${nextest_extra_sel[*]} " in
+            *" -p witchy-wir "* | *" -p witchy-lower "*)
+                nextest_extra_cmd+=(--features witchy-wir/native) ;;
+        esac
+    fi
     # The slow-test ratchet confirms candidates with exactly this selection and
     # feature set (minus --max-fail and -j), so its one confirmation run reuses
     # the binaries this stage built instead of building a --workspace set.
@@ -518,6 +548,12 @@ if cargo nextest --version >/dev/null 2>&1; then
         if [ "$ratchet_arg" = "-j" ]; then ratchet_skip_next=1; continue; fi
         ratchet_nextest_args+=("$ratchet_arg")
     done
+    if [ "${#nextest_extra_sel[@]}" -gt 0 ]; then
+        # Confirmation is rare and runs only after a >5s observation. A
+        # workspace selector can replay candidates from either partition;
+        # neither partition's target flags alone can name both safely.
+        ratchet_nextest_args=(--workspace --features witchy-wir/native)
+    fi
     # The workspace stage ALWAYS excludes `package(merge-queue-tests)` (see
     # $excl above) because those fixtures run in their own isolated shard. So
     # a diff whose entire selection belongs to that package leaves this stage
@@ -614,7 +650,7 @@ if cargo nextest --version >/dev/null 2>&1; then
             if [ "$preflight_target_valid" -eq 1 ]; then
                 if ! { { [ "${#nextest_sel[@]}" -eq 1 ] \
                     && [ "${nextest_sel[0]}" = "--workspace" ]; } \
-                    || printf ' %s ' "$gate_nextest" \
+                    || printf ' %s ' "$gate_nextest $gate_nextest_extra" \
                         | grep -Fq " -p $preflight_package "; }; then
                     preflight_target_valid=0
                 fi
@@ -666,9 +702,17 @@ if cargo nextest --version >/dev/null 2>&1; then
         # the owning package selected.
         preflight_cmd=()
         test_cmd=(true)
+        test_cmd_extra=()
     else
         test_cmd=("${nextest_cmd[@]}")
         [ -z "$main_expr" ] || test_cmd+=(-E "$main_expr")
+        test_cmd_extra=()
+        if [ "${#nextest_extra_cmd[@]}" -gt 0 ]; then
+            # macOS Bash 3.2 treats an empty-array expansion as unbound under
+            # `set -u`, even after the array has been initialized above.
+            test_cmd_extra=("${nextest_extra_cmd[@]}")
+            [ -z "$main_expr" ] || test_cmd_extra+=(-E "$main_expr")
+        fi
     fi
 
     # Every queue fixture owns a distinct temporary repository, state root, and
@@ -708,6 +752,7 @@ else
     # Without this explicit feature, witchy-wir's native security tests are
     # compiled out while cargo still reports a green workspace test run.
     test_cmd=(cargo test --workspace --features witchy-wir/native)
+    test_cmd_extra=()
     queue_infra_cmd=(cargo test -p merge-queue-tests --test merge_queue --test test_for_paths --test worktree -- --test-threads=1)
     repo_contracts_cmd=(cargo test -p repo-tests --test repo_hygiene)
     # Plain Cargo accepts only one substring filter, which cannot express the
@@ -715,6 +760,13 @@ else
     # the complete shard in this uncommon fallback.
     queue_infra_edit_cmd=("${queue_infra_cmd[@]}")
 fi
+
+run_product_tests() {
+    if [ "${#test_cmd_extra[@]}" -gt 0 ]; then
+        "${test_cmd_extra[@]}" || return
+    fi
+    "${test_cmd[@]}"
+}
 
 # Progress channel for the bounded macOS list phase: the list wrapper appends
 # one line per test binary it starts (scripts/nextest-list-wrapper.sh), and
@@ -1164,7 +1216,7 @@ if [ "$fast" -eq 1 ]; then
     if [ "${#preflight_cmd[@]}" -gt 0 ]; then
         run_watched "preflight (tests that red the last attempt)" "${preflight_cmd[@]}"
     fi
-    run_watched "tests (workspace)" "${test_cmd[@]}"
+    run_watched "tests (workspace)" run_product_tests
     # Product discovery already builds the excluded merge_queue test binary.
     # Run its hermetic shard after all product work so it reuses that artifact
     # and no background compiler load can distort process/timing assertions.
@@ -1220,7 +1272,7 @@ if [ "${#preflight_cmd[@]}" -gt 0 ]; then
     run_watched "preflight (tests that red the last attempt)" "${preflight_cmd[@]}"
 fi
 ratchet_since="$(date +%s)"
-run_watched "tests (workspace)"        "${test_cmd[@]}"
+run_watched "tests (workspace)"        run_product_tests
 # The 2-second-per-test target, enforced as a ratchet: a test over 5s in this
 # run that is not nightly-deferred or on scripts/slow-test-debt.txt is re-run
 # ALONE, and the gate fails only if it is still over 3s. See the script.
@@ -1229,6 +1281,7 @@ if [ -n "${WITCHY_GATE_SCOPE+x}" ] && [ "$gate_scope" = "all" ] && [ "$full" -eq
         --since "$ratchet_since" \
         --nextest-args "${ratchet_nextest_args[*]:-}" \
         --junit "${CARGO_TARGET_DIR:-target}/nextest/default/junit.xml" \
+        --junit "${CARGO_TARGET_DIR:-target}/nextest/gate-partition/junit.xml" \
         --junit target/nextest/default/junit.xml
 fi
 if [ "$gate_skip_fmt" -eq 1 ]; then

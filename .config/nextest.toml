@@ -85,6 +85,15 @@ path = "junit.xml"
 [profile.default.junit]
 path = "junit.xml"
 
+# A mixed serialized gate runs lib-test packages separately from compiler/root
+# targets whose libraries disable unit tests. Keep identical scheduling and
+# exclusions while writing a distinct JUnit file for the slow-test ratchet.
+[profile.gate-partition]
+inherits = "default"
+
+[profile.gate-partition.junit]
+path = "junit.xml"
+
 [test-groups]
 perf-serial = { max-threads = 1 }
 wasm-heavy = { max-threads = 2 }

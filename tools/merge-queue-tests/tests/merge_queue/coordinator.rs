@@ -703,10 +703,11 @@ fn crate_plus_example_tests_batch_keeps_compile_legs_and_unions_nextest() {
     fixture.mq_ok(&["submit", "a"], "true");
     let env_log = fixture._temp.path().join("gate-env");
     let gate = format!(
-        "printf 'skip_rust=%s skip_compile=%s skip_wasm=%s nextest=[%s] expr=[%s] check=[%s]\\n' \
+        "printf 'skip_rust=%s skip_compile=%s skip_wasm=%s nextest=[%s] extra=[%s] expr=[%s] check=[%s]\\n' \
          \"${{WITCHY_GATE_SKIP_RUST_CLASS:-}}\" \"${{WITCHY_GATE_SKIP_COMPILE:-}}\" \
          \"${{WITCHY_GATE_SKIP_WASM:-}}\" \"${{WITCHY_GATE_NEXTEST:-}}\" \
-         \"${{WITCHY_GATE_NEXTEST_EXPR:-}}\" \"${{WITCHY_GATE_CHECK_PACKAGES:-}}\" >{}",
+         \"${{WITCHY_GATE_NEXTEST_EXTRA:-}}\" \"${{WITCHY_GATE_NEXTEST_EXPR:-}}\" \
+         \"${{WITCHY_GATE_CHECK_PACKAGES:-}}\" >{}",
         env_log.display(),
     );
     fixture.mq_ok(&["run", "--once"], &gate);
@@ -718,6 +719,10 @@ fn crate_plus_example_tests_batch_keeps_compile_legs_and_unions_nextest() {
     assert!(
         env.contains("-p witchy-interp") && env.contains("rfc0167_views"),
         "crate+example_tests did not union the mapped crate with the touched module: {env}",
+    );
+    assert!(
+        env.contains("extra=[-p witchy-caps --lib"),
+        "enabled library tests were not propagated as a separate partition: {env}",
     );
     assert!(
         !env.contains("expr=[package(witchy-interp) or package(witchy-caps) or test(/^example_tests::/)"),

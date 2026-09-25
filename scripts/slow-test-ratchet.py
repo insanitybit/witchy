@@ -101,16 +101,20 @@ def main():
         print("slow-test-ratchet: WARNING -- no JUnit written during this run at any of "
               + ", ".join(a.junit) + "; the ratchet checked NOTHING")
         return 0
-    junit = max(fresh, key=os.path.getmtime)
     exempt = set().union(*(names(p) for p in a.exempt))
-    candidates = []
-    cases = list(ET.parse(junit).getroot().iter("testcase"))
-    print(f"slow-test-ratchet: {len(cases)} tests in {junit}")
+    cases = []
+    for junit in fresh:
+        cases.extend(ET.parse(junit).getroot().iter("testcase"))
+    print(f"slow-test-ratchet: {len(cases)} tests in {', '.join(fresh)}")
+    candidate_by_test = {}
     for case in cases:
         name, binary = case.get("name", ""), case.get("classname", "")
         seconds = float(case.get("time") or 0)
         if seconds > a.detect and name not in exempt:
-            candidates.append((seconds, binary, name))
+            key = (binary, name)
+            candidate_by_test[key] = max(seconds, candidate_by_test.get(key, 0.0))
+    candidates = [(seconds, binary, name)
+                  for (binary, name), seconds in candidate_by_test.items()]
     if not candidates:
         print(f"slow-test-ratchet: no un-exempt test over {a.detect:g}s")
         return 0

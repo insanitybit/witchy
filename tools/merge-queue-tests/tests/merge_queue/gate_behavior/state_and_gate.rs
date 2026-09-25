@@ -753,10 +753,14 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
                 .env("PATH", &path)
                 .env("CARGO_TARGET_DIR", temp.path().join("target-focused"))
                 .env("WITCHY_GATE_SCOPE", "all")
-                .env("WITCHY_GATE_NEXTEST", "-p witchy-types -p witchy")
+                .env(
+                    "WITCHY_GATE_NEXTEST",
+                    "-p witchy-types -p witchy --test typeck --bin witchy",
+                )
+                .env("WITCHY_GATE_NEXTEST_EXTRA", "-p witchy-caps --lib")
                 .env(
                     "WITCHY_GATE_NEXTEST_EXPR",
-                    "package(witchy-types) or test(/^example_tests::/)",
+                    "package(witchy-types) or package(witchy-caps) or test(/^example_tests::/)",
                 )
                 .env("FAKE_CARGO_ARGS_FILE", &cargo_args_file)
                 .env("WITCHY_FAILFAST_POLL", "0.05")
@@ -778,6 +782,15 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
                         && !line.contains("--workspace")
                 }),
                 "types-only serialized nextest still used unfiltered --workspace: {focused_args}",
+            );
+            assert!(
+                focused_args.lines().any(|line| {
+                    line.contains("nextest run")
+                        && line.contains("-p witchy-caps --lib")
+                        && line.contains("--profile gate-partition")
+                        && line.contains("package(witchy-caps)")
+                }),
+                "secondary lib-test partition did not run with the shared filter: {focused_args}",
             );
 
             fs::write(&cargo_args_file, "").expect("clear fake cargo arguments");

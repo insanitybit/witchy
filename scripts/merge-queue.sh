@@ -1459,6 +1459,7 @@ run_gate() { # run_gate <log> [fuzz-mode] [gate-scope] [queue-infra] [queue-infr
     local skip_wasm="${15:-0}"
     local check_packages="${16:-}"
     local skip_fmt="${17:-0}"
+    local nextest_extra="${18:-}"
     local selected_gate_cmd="$gate_cmd"
     if [ "$queue_infra_only" -eq 1 ] && [ "$gate_cmd_is_default" -eq 1 ]; then
         selected_gate_cmd="./scripts/check.sh --queue-infra"
@@ -1492,7 +1493,7 @@ run_gate() { # run_gate <log> [fuzz-mode] [gate-scope] [queue-infra] [queue-infr
         gate_awake=(caffeinate -i)
     fi
     rm -f "$progress_file"
-    ( cd "$gate_wt" && exec "${gate_awake[@]}" env -u CARGO_INCREMENTAL PATH="$gate_wt/scripts/bin:$PATH" "CARGO_TARGET_DIR=$cargo_target_dir" CARGO_PROFILE_TEST_STRIP=symbols RUSTC_WRAPPER= CARGO_BUILD_RUSTC_WRAPPER= NEXTEST_STATUS_LEVEL=pass "WITCHY_GATE_PROGRESS_FILE=$progress_file" "WITCHY_GATE_FUZZ=$fuzz_mode" "WITCHY_GATE_SCOPE=$gate_scope" "WITCHY_GATE_QUEUE_INFRA=$queue_infra" "WITCHY_GATE_QUEUE_INFRA_ONLY=$queue_infra_only" "WITCHY_GATE_CENSUS_PROOF_SHA=$census_proof_sha" "WITCHY_GATE_UNGATED=$ungated" "WITCHY_GATE_PREFLIGHT_EXPR=$gate_preflight_expr" "WITCHY_GATE_PREFLIGHT_NEXTEST=$gate_preflight_nextest" "WITCHY_GATE_SKIP_SWEEPS=$skip_sweeps" "WITCHY_GATE_SKIP_BOOK=$skip_book" "WITCHY_GATE_NEXTEST=$nextest_args" "WITCHY_GATE_NEXTEST_EXPR=$nextest_expr" "WITCHY_GATE_SKIP_RUST_CLASS=$skip_rust_class" "WITCHY_GATE_SKIP_COMPILE=$skip_compile" "WITCHY_GATE_SKIP_WASM=$skip_wasm" "WITCHY_GATE_SKIP_FMT=$skip_fmt" "WITCHY_GATE_CHECK_PACKAGES=$check_packages" bash -c "$selected_gate_cmd" ) >"$log" 2>&1 &
+    ( cd "$gate_wt" && exec "${gate_awake[@]}" env -u CARGO_INCREMENTAL PATH="$gate_wt/scripts/bin:$PATH" "CARGO_TARGET_DIR=$cargo_target_dir" CARGO_PROFILE_TEST_STRIP=symbols RUSTC_WRAPPER= CARGO_BUILD_RUSTC_WRAPPER= NEXTEST_STATUS_LEVEL=pass "WITCHY_GATE_PROGRESS_FILE=$progress_file" "WITCHY_GATE_FUZZ=$fuzz_mode" "WITCHY_GATE_SCOPE=$gate_scope" "WITCHY_GATE_QUEUE_INFRA=$queue_infra" "WITCHY_GATE_QUEUE_INFRA_ONLY=$queue_infra_only" "WITCHY_GATE_CENSUS_PROOF_SHA=$census_proof_sha" "WITCHY_GATE_UNGATED=$ungated" "WITCHY_GATE_PREFLIGHT_EXPR=$gate_preflight_expr" "WITCHY_GATE_PREFLIGHT_NEXTEST=$gate_preflight_nextest" "WITCHY_GATE_SKIP_SWEEPS=$skip_sweeps" "WITCHY_GATE_SKIP_BOOK=$skip_book" "WITCHY_GATE_NEXTEST=$nextest_args" "WITCHY_GATE_NEXTEST_EXPR=$nextest_expr" "WITCHY_GATE_NEXTEST_EXTRA=$nextest_extra" "WITCHY_GATE_SKIP_RUST_CLASS=$skip_rust_class" "WITCHY_GATE_SKIP_COMPILE=$skip_compile" "WITCHY_GATE_SKIP_WASM=$skip_wasm" "WITCHY_GATE_SKIP_FMT=$skip_fmt" "WITCHY_GATE_CHECK_PACKAGES=$check_packages" bash -c "$selected_gate_cmd" ) >"$log" 2>&1 &
     local gpid=$!
     active_gate_pgid="$gpid"
     if [ "$holding_lock" -eq 1 ] \
@@ -2884,7 +2885,7 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
     # binary mapping. Fail-safe to an unfiltered --workspace on any doubt
     # (old mapper, empty output, unknown path). --full / standalone ignore
     # this and keep the complete suite.
-    local nextest_args="" nextest_expr="" nextest_sel="" check_packages="" mapper
+    local nextest_args="" nextest_expr="" nextest_extra="" nextest_sel="" check_packages="" mapper
     mapper="$gate_wt/scripts/test-for-paths.sh"
     [ -f "$mapper" ] || mapper="$here/scripts/test-for-paths.sh"
     if [ -n "$changed" ] && [ -f "$mapper" ]; then
@@ -2895,11 +2896,13 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
             nextest_args="$(printf '%s\n' "$nextest_sel" | sed -n '1p')"
             nextest_expr="$(printf '%s\n' "$nextest_sel" | sed -n '2p')"
             check_packages="$(printf '%s\n' "$nextest_sel" | sed -n '3p')"
+            nextest_extra="$(printf '%s\n' "$nextest_sel" | sed -n '4p')"
             ;;
         *)
             nextest_args=""
             nextest_expr=""
             check_packages=""
+            nextest_extra=""
             ;;
     esac
 
@@ -3019,14 +3022,14 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
         gate_preflight_nextest="$(preflight_nextest_for "$change_id" || true)"
     fi
     [ -n "$gate_preflight_expr" ] && note "preflight: replaying last attempt's failures first"
-    note "gating $branch (rebased to $sha on $base; target=$cargo_target_dir; fuzz=$fuzz_mode; scope=$gate_scope; queue-infra=$queue_infra; queue-infra-only=$queue_infra_only; ungated=[$ungated]; skip-sweeps=$skip_sweeps; skip-book=$skip_book; skip-rust-class=$skip_rust_class; skip-compile=$skip_compile; skip-wasm=$skip_wasm; skip-fmt=$skip_fmt; nextest=[${nextest_args:-workspace}]); log: $log"
+    note "gating $branch (rebased to $sha on $base; target=$cargo_target_dir; fuzz=$fuzz_mode; scope=$gate_scope; queue-infra=$queue_infra; queue-infra-only=$queue_infra_only; ungated=[$ungated]; skip-sweeps=$skip_sweeps; skip-book=$skip_book; skip-rust-class=$skip_rust_class; skip-compile=$skip_compile; skip-wasm=$skip_wasm; skip-fmt=$skip_fmt; nextest=[${nextest_args:-workspace}]${nextest_extra:+ extra=[$nextest_extra]}); log: $log"
     local gate_started; gate_started="$(date +%s)"
     gate_load_start="$(load1)"
     run_gate "$log" "$fuzz_mode" "$gate_scope" "$queue_infra" "$queue_infra_only" \
         "$cargo_target_dir" "$census_proof_sha" "$ungated" "$skip_sweeps" \
         "$skip_book" "$nextest_args" "$nextest_expr" \
         "$skip_rust_class" "$skip_compile" "$skip_wasm" "$check_packages" \
-        "$skip_fmt"
+        "$skip_fmt" "$nextest_extra"
     local gate_finished; gate_finished="$(date +%s)"
     gate_load_end="$(load1)"
     local gate_took=$((gate_finished - gate_started))

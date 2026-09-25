@@ -242,7 +242,7 @@ fn gate_nextest_docs_plus_integration_test_keeps_both_target_kinds() {
     let args = output.lines().next().unwrap_or_default();
     assert!(args.contains("-p witchy"), "root package was omitted: {output}");
     assert!(args.contains("-p repo-tests"), "repository contracts were omitted: {output}");
-    for required in ["--lib", "--test repo_hygiene", "--bin witchy"] {
+    for required in ["--test repo_hygiene", "--bin witchy"] {
         assert!(
             args.contains(required),
             "explicit target union omitted {required}: {output}",
@@ -1956,24 +1956,33 @@ fn gate_never_names_the_lib_of_a_crate_without_lib_tests() {
         "compiler selection retained a non-test WIR example: {compiler}",
     );
 
-    // A mixed enabled/disabled selection cannot express per-package `--lib`,
-    // so it safely keeps the whole-package form.
+    // A mixed enabled/disabled selection uses two globally valid Cargo target
+    // modes: compiler/root targets first, then enabled library tests. The
+    // primary must not compile an empty compiler cfg(test) copy, and the
+    // secondary must not pull every target from its package.
     for path in ["crates/witchy-runtime/src/lib.rs", "crates/witchy-canonical-source/src/lib.rs"] {
         let output = gate_nextest(&[path]);
-        let selection = output.lines().next().unwrap_or_default();
+        let mut lines = output.lines();
+        let selection = lines.next().unwrap_or_default();
+        let _expression = lines.next();
+        let _compile_packages = lines.next();
+        let enabled = lines.next().unwrap_or_default();
         let words: Vec<&str> = selection.split_whitespace().collect();
         assert!(words.contains(&"witchy-types"), "{path} no longer selects witchy-types: {output}");
         assert!(!words.contains(&"--lib"), "{path} compiles a test = false lib: {output}");
-        assert!(!words.contains(&"--test"), "{path} unsafely mixed target modes: {output}");
+        assert!(words.contains(&"--test"), "{path} did not name compiler/root targets: {output}");
+        assert!(
+            enabled.contains("--lib") && enabled.starts_with("-p "),
+            "{path} did not isolate enabled library tests: {output}",
+        );
     }
 }
 
 #[test]
 fn repository_contracts_select_their_tool_package() {
-    // repo-tests lives under tools/, not crates/. The batch includes
-    // witchy-types (`[lib] test = false`), so it takes the whole-package form:
-    // naming `--lib` would compile the compiler crates' empty cfg(test) copies,
-    // which costs more than linking the few root binaries the named form skips.
+    // repo-tests lives under tools/ and has integration tests only, so it can
+    // share the explicit-target partition with `[lib] test = false` compiler
+    // crates without naming `--lib` or building unrelated root targets.
     let output = gate_nextest(&[
         "crates/witchy-types/src/typeck.rs",
         "std/dict.witchy",

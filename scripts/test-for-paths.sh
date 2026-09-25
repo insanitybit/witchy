@@ -88,11 +88,9 @@ add_early() { local c="$1"; local x; for x in ${early_cmds[0]+"${early_cmds[@]}"
 # witchy-lower entirely and the gate would go green having skipped 2,172
 # tests. Do not narrow the build this way.
 #
-# The only correct route is to split the tests stage into TWO nextest
-# invocations (one per package scope) so neither needs `--test` to cross a
-# package boundary. That is a real redesign: check.sh's fail-fast
-# (--max-fail=1:immediate), the workspace test budget, the preflight replay
-# and the serial test-groups all currently assume a single invocation.
+# Mixed lib-test and explicit-target scopes are emitted as two nextest
+# partitions below. Each invocation has one globally valid Cargo target mode;
+# check.sh runs them inside the same fail-fast stage and gate budget.
 gate_pkgs=()
 gate_tests=()
 gate_need_examples=0
@@ -289,17 +287,17 @@ emit_gate_nextest() {
     #   - a crate has a bin or explicit [[test]]/[[bin]]/auto* targets, which
     #     `--lib` + `tests/*.rs` would silently miss
     #   - a package directory cannot be resolved
-    #   - selected crates mix normal lib tests with `[lib] test = false`:
-    #     `--lib` is global, so it cannot retain one package's unit tests
-    #     without compiling another package's empty cfg(test) copy. When ALL
-    #     selected crate libs have tests disabled, omit `--lib` and name their
-    #     integration tests. That avoids both empty lib tests and unrelated
-    #     examples/binaries from the whole-package form.
+    # A mixed set is partitioned: normal lib-test packages use `--lib` plus
+    # their named integration tests, while `[lib] test = false` and
+    # integration-only packages join the explicitly named root targets. This
+    # avoids both empty compiler cfg(test) copies and package-wide root builds.
     # The root bin is safe in the explicit target union: `--bin witchy` joins
     # every selected package's named lib/test targets instead of replacing
     # them. Free-form root test names still fail safe unless they are known
     # main.rs module families.
-    local name_targets=0 targets="" pkg dir file mode="" pkg_mode has_types=0
+    local name_targets=0 pkg dir file pkg_mode has_types=0
+    local enabled_args="" explicit_args="" enabled_targets="" explicit_targets=""
+    local root_targets="" extra_args=""
     local target_pkgs=(${gate_pkgs[0]+"${gate_pkgs[@]}"})
     # The std-roots pin can add witchy-types outside gate_pkgs. It participates
     # in the target-mode proof just like a mapped package; otherwise a runtime
@@ -322,18 +320,23 @@ emit_gate_nextest() {
                 break
             fi
             pkg_mode=enabled
-            if sed -n '/^\[lib\]/,/^\[/p' "$dir/Cargo.toml" | grep -qE '^test *= *false'; then
-                pkg_mode=disabled
+            if [ ! -f "$dir/src/lib.rs" ] \
+                || sed -n '/^\[lib\]/,/^\[/p' "$dir/Cargo.toml" | grep -qE '^test *= *false'; then
+                pkg_mode=explicit
             fi
-            if [ -n "$mode" ] && [ "$mode" != "$pkg_mode" ]; then
-                name_targets=0
-                break
+            if [ "$pkg_mode" = enabled ]; then
+                enabled_args="${enabled_args:+$enabled_args }-p $pkg"
+            else
+                explicit_args="${explicit_args:+$explicit_args }-p $pkg"
             fi
-            mode="$pkg_mode"
             for file in "$dir"/tests/*.rs; do
                 [ -f "$file" ] || continue
                 file="${file##*/}"
-                targets="$targets --test ${file%.rs}"
+                if [ "$pkg_mode" = enabled ]; then
+                    enabled_targets="$enabled_targets --test ${file%.rs}"
+                else
+                    explicit_targets="$explicit_targets --test ${file%.rs}"
+                fi
             done
         done
     fi
@@ -350,7 +353,7 @@ emit_gate_nextest() {
                 merge_queue | test_for_paths) continue ;;
             esac
             if [ -f "tests/$t.rs" ]; then
-                targets="$targets --test $t"
+                root_targets="$root_targets --test $t"
             else
                 name_targets=0
                 break
@@ -362,25 +365,37 @@ emit_gate_nextest() {
             || [ "${#gate_example_mods[@]}" -gt 0 ] \
             || [ "$gate_need_stdlib_docs" -eq 1 ] \
             || [ "${#gate_witchy_tests[@]}" -gt 0 ]; then
-            targets="$targets --bin witchy"
+            root_targets="$root_targets --bin witchy"
         fi
         if [ "$gate_need_conformance" -eq 1 ]; then
             # `--bin witchy` carries `example_tests::rfc0*` (see above).
-            case " $targets " in *" --bin witchy "*) ;; *) targets="$targets --bin witchy" ;; esac
-            case " $targets " in *" --test misc "*) ;; *) targets="$targets --test misc" ;; esac
+            case " $root_targets " in *" --bin witchy "*) ;; *) root_targets="$root_targets --bin witchy" ;; esac
+            case " $root_targets " in *" --test misc "*) ;; *) root_targets="$root_targets --test misc" ;; esac
             for file in tests/rfc0*.rs; do
                 [ -f "$file" ] || continue
                 file="${file##*/}"
-                targets="$targets --test ${file%.rs}"
+                root_targets="$root_targets --test ${file%.rs}"
             done
         fi
-        if [ "$gate_need_std_roots" -eq 1 ] && [[ " $targets " != *" --test typeck "* ]]; then
-            targets="$targets --test typeck"
+        if [ "$gate_need_std_roots" -eq 1 ] \
+            && [[ " $explicit_targets " != *" --test typeck "* ]]; then
+            explicit_targets="$explicit_targets --test typeck"
         fi
-        if [ "$mode" = enabled ]; then
-            args="$args --lib$targets"
+        if [ -n "$enabled_args" ] && { [ -n "$explicit_args" ] || [ "$need_witchy" -eq 1 ]; }; then
+            # Primary: explicit compiler/integration targets plus root
+            # conformance. Secondary: packages whose unit tests require the
+            # global --lib selector. The inclusion expression is safe for both;
+            # unavailable packages simply match nothing in that partition.
+            args="$explicit_args"
+            [ "$need_witchy" -eq 0 ] || args="${args:+$args }-p witchy"
+            args="$args$explicit_targets$root_targets"
+            extra_args="$enabled_args --lib$enabled_targets"
+        elif [ -n "$enabled_args" ]; then
+            args="$enabled_args --lib$enabled_targets$root_targets"
         else
-            args="$args$targets"
+            args="$explicit_args"
+            [ "$need_witchy" -eq 0 ] || args="${args:+$args }-p witchy"
+            args="$args$explicit_targets$root_targets"
         fi
     fi
     [ -n "$args" ] || { printf 'WORKSPACE\n'; return 0; }
@@ -396,6 +411,9 @@ emit_gate_nextest() {
         done
         printf '%s\n' "$cargs"
     fi
+    # Fourth line: an optional second target-safe nextest partition. It shares
+    # the inclusion expression on line two and the same serialized gate budget.
+    [ -z "$extra_args" ] || printf '%s\n' "$extra_args"
 }
 
 any_rust=0
