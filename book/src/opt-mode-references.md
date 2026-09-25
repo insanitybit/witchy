@@ -159,6 +159,13 @@ outer list and its owned child lists alive while the original `var` list is
 changed. The admitted family is exact: `&List(unique List(Int))` is refused,
 and a region-born list cannot escape by wrapping it in a view.
 
+An exact slice of owned lists, `&[List(S)]`, has a carrier when `S` is `Int`,
+`Float`, `Bool`, or `Duration`. The outer list remains rooted, and an indexed
+inner list is retained as a child. Qualified or deeper list elements are
+refused. The `Int` case is verified on admitted Wasm; the other scalar cases
+are implemented but await semantic and leak evidence. These slices do not yet
+support `.owned()` materialization.
+
 The same rule applies to destructuring, field access, indexing, iteration,
 `Option`, `Result`, tuples, and supported nested aggregates: transport the
 carrier and its proof, or reject the operation. A displayed field name or

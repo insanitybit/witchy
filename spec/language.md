@@ -1156,6 +1156,13 @@ carrier family: a qualified inner list such as `List(unique List(Int))` has no
 admitted whole-root view carrier and is refused during canonical admission.
 Region-born outer roots cannot escape through this view.
 
+The compiler also recognizes exact `&[List(S)]` slice carriers for `S = Int`,
+`Float`, `Bool`, or `Duration`. The slice retains its outer list root, and a
+read of an inner list retains that owned child through the checked projection.
+Nested or qualified child lists have no carrier and are refused. The `Int`
+case has admitted Wasm and zero-leak evidence; the other scalar cases still
+await that verification. `.owned()` on a slice of lists remains unsupported.
+
 ## 8. Generics and traits
 
 ```witchy
