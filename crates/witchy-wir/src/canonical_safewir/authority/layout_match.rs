@@ -1,4 +1,5 @@
 use super::*;
+use witchy_canonical_source::rooted_view::RootedViewStorage;
 
 pub(crate) fn value_type_matches_source(
     actual: super::super::ValueType,
@@ -12,42 +13,38 @@ pub(crate) fn value_type_matches_source(
     if is_unit_source_type(source) {
         return actual == super::super::ValueType::Unit;
     }
-    // The source-independent layout walk consumes the same typed record-root
-    // classification as the checked ABI. Final binding also requires the
-    // nominally bound plan from CanonicalSourceView for this source signature.
+    // Classify the source view once, then independently match its physical
+    // representation. Final binding separately requires the nominally bound
+    // plan from CanonicalSourceView for checked record-root signatures.
     if let witchy_syntax::ast::Type::Qualified(witchy_syntax::ast::TypeQual::View, payload) = source {
         let record_head = witchy_canonical_source::rooted_record::has_record_root_head(payload, records);
         if record_head.is_none() { return false; }
+        let storage = RootedViewStorage::classify(payload, records, |_| Some(0));
         if record_head == Some(true) {
-            let Some(plan) = witchy_canonical_source::rooted_record::RecordRootPlan::from_checked_type(
-                payload, records, |_| Some(0),
-            ) else { return false };
+            let Some(RootedViewStorage::RetainedRecord(plan)) = storage else { return false };
             let super::super::ValueType::Ref(layout) = actual else { return false };
             return record_layout_matches_with_closures(
                 layout, &plan.shape.fields, plan.shape.tagged, layouts, records,
                 closure_layouts, signatures, context,
             );
         }
-    }
-    if let witchy_syntax::ast::Type::Qualified(witchy_syntax::ast::TypeQual::View, payload) = source
-        && let Some(plan) = witchy_canonical_source::carrier::CarrierElement::retained_structural_root(payload, records)
-    {
-        let super::super::ValueType::Ref(layout) = actual else { return false };
-        return super::super::closure_owner_contract::retained_structural_root_layout_matches(
-            layouts, layout, &plan,
-        );
-    }
-    // A checked whole-list view carries the retained list object. Its
-    // element must satisfy the same recursive ownership relation as a rooted
-    // slice, including an owned pointer and RC list at every managed edge.
-    if let witchy_syntax::ast::Type::Qualified(witchy_syntax::ast::TypeQual::View, payload) = source
-        && let Some(carrier) = witchy_canonical_source::carrier::CarrierElement::from_list_root_payload_type_with_definitions(payload, records)
-    {
-        let super::super::ValueType::Ref(layout) = actual else { return false };
-        let Ok(physical) = layouts.resolve_nominal(layout) else { return false };
-        let Some(crate::layout::LayoutKind::PackedList { element, rc: crate::layout::RcHeader::Required }) =
-            layouts.get(physical).map(|descriptor| descriptor.kind()) else { return false };
-        return super::super::closure_owner_contract::carrier_element_layout_matches(layouts, *element, &carrier);
+        match storage {
+            Some(RootedViewStorage::RetainedAggregate(plan)) => {
+                let super::super::ValueType::Ref(layout) = actual else { return false };
+                return super::super::closure_owner_contract::retained_structural_root_layout_matches(
+                    layouts, layout, &plan,
+                );
+            }
+            Some(RootedViewStorage::RetainedList(carrier)) => {
+                // Every nested element still needs an owned slot and RC list.
+                let super::super::ValueType::Ref(layout) = actual else { return false };
+                let Ok(physical) = layouts.resolve_nominal(layout) else { return false };
+                let Some(crate::layout::LayoutKind::PackedList { element, rc: crate::layout::RcHeader::Required }) =
+                    layouts.get(physical).map(|descriptor| descriptor.kind()) else { return false };
+                return super::super::closure_owner_contract::carrier_element_layout_matches(layouts, *element, &carrier);
+            }
+            _ => {}
+        }
     }
     // A rooted scalar or slice view aggregate is an opaque owner family, including when it
     // enters as a parameter. Its ordinary record fields may happen to look
