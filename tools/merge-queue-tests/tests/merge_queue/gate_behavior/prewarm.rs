@@ -138,24 +138,6 @@ exec "$@"
     fs::set_permissions(&taskpolicy, fs::Permissions::from_mode(0o755))
         .expect("chmod fake taskpolicy");
 
-    let rustup = bin.join("rustup");
-    fs::write(
-        &rustup,
-        r#"#!/bin/sh
-pgid="$(perl -e 'print getpgrp(0)')"
-printf 'rustup|%s|%s|%s\n' "${WITCHY_PREWARM_QOS_FIXTURE:-normal}" "$pgid" "$*" >>"__LOG__"
-case "$1" in
-  target) exit 0 ;;
-  which) printf '__BIN__/rustc\n'; exit 0 ;;
-esac
-exit 1
-"#
-        .replace("__LOG__", &workload_log.display().to_string())
-        .replace("__BIN__", &bin.display().to_string()),
-    )
-    .expect("write fake priority rustup");
-    fs::set_permissions(&rustup, fs::Permissions::from_mode(0o755))
-        .expect("chmod fake priority rustup");
 
     let cargo = bin.join("cargo");
     fs::write(
@@ -250,10 +232,6 @@ while :; do /bin/sleep 1; done
                 assert_eq!(pgid.parse::<i32>().unwrap(), prewarm_pgid);
                 seen.insert("taskpolicy".to_owned());
             }
-            ["rustup", "utility", pgid, args] => {
-                assert_eq!(pgid.parse::<i32>().unwrap(), prewarm_pgid);
-                seen.insert(format!("rustup:{args}"));
-            }
             ["cargo", "utility", pgid, target, args] => {
                 assert_eq!(pgid.parse::<i32>().unwrap(), prewarm_pgid);
                 seen.insert(format!("cargo:{target}:{args}"));
@@ -267,12 +245,8 @@ while :; do /bin/sleep 1; done
     }
     let expected = BTreeSet::from([
         "taskpolicy".to_owned(),
-        "rustup:target add wasm32-unknown-unknown".to_owned(),
-        "rustup:which --toolchain stable rustc".to_owned(),
         "cargo:target-prewarm:build --workspace".to_owned(),
         "cargo:target-prewarm:test --workspace --no-run".to_owned(),
-        "cargo:target-prewarm:build --lib --no-default-features --target wasm32-unknown-unknown"
-            .to_owned(),
         "cargo:target-prewarm-clippy:clippy --workspace --all-targets -- -D clippy::correctness -D clippy::suspicious -D unused_must_use".to_owned(),
         "cargo:target-prewarm-check:check --workspace --all-targets".to_owned(),
         "cache:warm-witchy-caches".to_owned(),
@@ -311,14 +285,14 @@ while :; do /bin/sleep 1; done
 
 #[test]
 fn queued_work_preempts_an_idle_prewarm_process_group() {
-    // Keep rustup blocked before Cargo: the production stall occurred when
-    // this setup ran synchronously before the cancellable prewarm PGID existed.
+    // Keep the first Cargo build blocked: queued work must cancel the whole
+    // prewarm process group, not wait for the warm build to finish.
     let fixture = fixture_with_gate_worktree();
     let bin = fixture._temp.path().join("prewarm-bin");
     fs::create_dir(&bin).expect("create fake prewarm bin");
     let started = fixture._temp.path().join("prewarm-started");
     let cancelled = fixture._temp.path().join("prewarm-cancelled");
-    let rustup_pid_file = fixture._temp.path().join("prewarm-rustup-pid");
+    let cargo_pid_file = fixture._temp.path().join("prewarm-cargo-pid");
     let cargo_env = fixture._temp.path().join("prewarm-cargo-env");
     let gate_ran = fixture._temp.path().join("gate-ran");
     let gate_proceed = fixture._temp.path().join("gate-proceed");
@@ -326,28 +300,18 @@ fn queued_work_preempts_an_idle_prewarm_process_group() {
     fs::write(
         &cargo,
         format!(
-            "#!/bin/sh\nif [ -e \"{}\" ]; then\n  printf '%s|%s|%s|%s' \"${{CARGO_INCREMENTAL-unset}}\" \"${{RUSTC_WRAPPER-unset}}\" \"${{CARGO_BUILD_RUSTC_WRAPPER-unset}}\" \"${{CARGO_PROFILE_TEST_STRIP-unset}}\" >\"{}\"\nfi\nexit 0\n",
+            "#!/bin/sh\nif [ -e \"{}\" ]; then\n  printf '%s|%s|%s|%s' \"${{CARGO_INCREMENTAL-unset}}\" \"${{RUSTC_WRAPPER-unset}}\" \"${{CARGO_BUILD_RUSTC_WRAPPER-unset}}\" \"${{CARGO_PROFILE_TEST_STRIP-unset}}\" >\"{}\"\n  exit 0\nfi\nif [ ! -e \"{}\" ]; then\n  trap 'printf cancelled >\"{}\"; exit 143' TERM INT\n  printf '%s' \"$$\" >\"{}\"\n  printf started >\"{}\"\n  while :; do /bin/sleep 1; done\nfi\nexit 0\n",
             gate_proceed.display(),
             cargo_env.display(),
-        ),
-    )
-    .expect("write fake prewarm cargo");
-    fs::set_permissions(&cargo, fs::Permissions::from_mode(0o755))
-        .expect("chmod fake cargo");
-    let rustup = bin.join("rustup");
-    fs::write(
-        &rustup,
-        format!(
-            "#!/bin/sh\nif [ \"$1\" = target ] && [ ! -e \"{}\" ]; then\n  trap 'printf cancelled >\"{}\"; exit 143' TERM INT\n  printf '%s' \"$$\" >\"{}\"\n  printf started >\"{}\"\n  while :; do /bin/sleep 1; done\nfi\ncase \"$1\" in\n  target) exit 0 ;;\n  which) printf '/usr/bin/rustc\\n'; exit 0 ;;\nesac\nexit 1\n",
             started.display(),
             cancelled.display(),
-            rustup_pid_file.display(),
+            cargo_pid_file.display(),
             started.display(),
         ),
     )
-    .expect("write blocking rustup");
-    fs::set_permissions(&rustup, fs::Permissions::from_mode(0o755))
-        .expect("chmod fake rustup");
+    .expect("write blocking prewarm cargo");
+    fs::set_permissions(&cargo, fs::Permissions::from_mode(0o755))
+        .expect("chmod fake cargo");
 
     let queue_script = workspace_root().join("scripts/merge-queue.sh");
     let path = format!(
@@ -390,11 +354,11 @@ fn queued_work_preempts_an_idle_prewarm_process_group() {
         thread::sleep(Duration::from_millis(25));
     }
     assert!(started.exists(), "coordinator never entered prewarm");
-    let rustup_pid = fs::read_to_string(&rustup_pid_file)
-        .expect("read blocking rustup pid")
+    let cargo_pid = fs::read_to_string(&cargo_pid_file)
+        .expect("read blocking cargo pid")
         .parse::<i32>()
-        .expect("parse blocking rustup pid");
-    let prewarm_guard = ProcessGroupGuard(process_group(rustup_pid));
+        .expect("parse blocking cargo pid");
+    let prewarm_guard = ProcessGroupGuard(process_group(cargo_pid));
     assert!(
         fixture.state.join("gate.lock").exists(),
         "prewarm did not retain the serialized gate lock"
@@ -470,17 +434,6 @@ fn queued_work_cancels_inactive_prewarm_and_preserves_active_generation() {
     .expect("write blocking inactive prewarm Cargo");
     fs::set_permissions(&cargo, fs::Permissions::from_mode(0o755))
         .expect("chmod blocking inactive prewarm Cargo");
-    let rustup = bin.join("rustup");
-    fs::write(
-        &rustup,
-        format!(
-            "#!/bin/sh\ncase \"$1\" in\n  target) exit 0 ;;\n  which) printf '{}/rustc\\n'; exit 0 ;;\nesac\nexit 1\n",
-            bin.display(),
-        ),
-    )
-    .expect("write fake prewarm rustup");
-    fs::set_permissions(&rustup, fs::Permissions::from_mode(0o755))
-        .expect("chmod fake prewarm rustup");
 
     let queue_script = workspace_root().join("scripts/merge-queue.sh");
     let path = format!(
@@ -689,17 +642,6 @@ fn successful_prewarm_promotes_inactive_generation_for_next_gate() {
     .expect("write successful fake prewarm Cargo");
     fs::set_permissions(&cargo, fs::Permissions::from_mode(0o755))
         .expect("chmod successful fake prewarm Cargo");
-    let rustup = bin.join("rustup");
-    fs::write(
-        &rustup,
-        format!(
-            "#!/bin/sh\ncase \"$1\" in\n  target) exit 0 ;;\n  which) printf '{}/rustc\\n'; exit 0 ;;\nesac\nexit 1\n",
-            bin.display(),
-        ),
-    )
-    .expect("write fake promoting rustup");
-    fs::set_permissions(&rustup, fs::Permissions::from_mode(0o755))
-        .expect("chmod fake promoting rustup");
 
     let queue_script = workspace_root().join("scripts/merge-queue.sh");
     let path = format!(

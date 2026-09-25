@@ -1373,15 +1373,6 @@ diff_rust_class_surface() {
         | grep -E '^(bench/rust-class/|src/|std/|build\.rs|Cargo\.(toml|lock)|\.cargo/|rust-toolchain)' || true
 }
 
-# Wasm playground is `cargo build --lib --target wasm32` of the browser
-# shim. Native compiler crates (lower/syntax/types/interp) are checked by
-# package-scoped clippy; only the runtime crate and web/book inputs move
-# that artifact's compile.
-diff_wasm_surface() {
-    diff_without_example_tests "$1" \
-        | grep -E '^(crates/witchy-runtime/|web/|book/|src/|std/|build\.rs|Cargo\.(toml|lock)|\.cargo/|rust-toolchain)' || true
-}
-
 # Census TSV / spec/stdlib.md freshness tests live in the witchy package
 # (tests/misc, example_sweeps). A crate-only nextest cannot observe that
 # drift; regenerate only when this gate would run those tests or when the
@@ -3399,22 +3390,11 @@ prewarm_gate() {
                 fi
             fi
         done
-        tc_bin=""
-        if command -v rustup >/dev/null 2>&1; then
-            rustup target add wasm32-unknown-unknown >/dev/null 2>&1 || true
-            tc_bin="$(dirname "$(rustup which --toolchain stable rustc)")"
-        fi
         unset CARGO_INCREMENTAL
         [ ! -f scripts/feature-unification.sh ] || . scripts/feature-unification.sh
         export CARGO_TARGET_DIR="$inactive_target" CARGO_PROFILE_TEST_STRIP=symbols RUSTC_WRAPPER= CARGO_BUILD_RUSTC_WRAPPER=
         cargo build --workspace >/dev/null 2>&1
         cargo test --workspace --no-run >/dev/null 2>&1
-        if [ -n "$tc_bin" ]; then
-            env -u RUSTC -u RUSTFLAGS PATH="$tc_bin:$PATH" \
-                cargo build --lib --no-default-features --target wasm32-unknown-unknown >/dev/null 2>&1
-        else
-            cargo build --lib --no-default-features --target wasm32-unknown-unknown >/dev/null 2>&1
-        fi
         CARGO_TARGET_DIR="${inactive_target}-clippy" cargo clippy --workspace --all-targets -- -D clippy::correctness -D clippy::suspicious -D unused_must_use >/dev/null 2>&1
         CARGO_TARGET_DIR="${inactive_target}-check" cargo check --workspace --all-targets >/dev/null 2>&1
         [ ! -x scripts/warm-witchy-caches.sh ] || ./scripts/warm-witchy-caches.sh >/dev/null 2>&1

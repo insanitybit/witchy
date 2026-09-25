@@ -293,9 +293,9 @@ run the same shard directly with `./scripts/check.sh --queue-infra`, or force it
 into an exact-master baseline with `WITCHY_GATE_QUEUE_INFRA=1 ./scripts/check.sh`.
 
 **Gate fail-fast (check.sh).** The merge-gate profile runs the tests as the
-only foreground stage with three background legs — `cargo check --workspace
---all-targets` (surfaces plain compile errors in minutes), clippy, and the
-wasm playground build — each in a target dir derived from the snapshotted
+only foreground stage with two background legs — `cargo check --workspace
+--all-targets` (surfaces plain compile errors in minutes) and clippy — each
+in a target dir derived from the snapshotted
 active generation (`<target>-check`, `<target>-clippy`). While the tests run, check.sh polls the
 legs' logs (`WITCHY_FAILFAST_POLL`, default 5s) and, the moment a leg records
 a failure, ABORTS the foreground tests, prints the red leg's full output, and
@@ -391,10 +391,9 @@ the backstop.
 Unknown or empty mappings fail safe to `--workspace`. `--full`, CI, and
 standalone `check.sh` keep the complete suite.
 
-**Diff-scoped rust-class, compile legs, wasm, fmt, and snapshot regen.**
+**Diff-scoped rust-class, compile legs, fmt, and snapshot regen.**
 `src/example_tests/**` is compiled by the focused nextest selection. It
-cannot change rust-class results, `cargo check` / clippy answers, the wasm
-playground artifact, `witchy fmt` over std/examples/projects, or the census
+cannot change rust-class results, `cargo check` / clippy answers, `witchy fmt` over std/examples/projects, or the census
 / `spec/stdlib.md` snapshots. The coordinator sets
 `WITCHY_GATE_SKIP_RUST_CLASS`, `WITCHY_GATE_SKIP_COMPILE`,
 `WITCHY_GATE_SKIP_WASM`, and `WITCHY_GATE_SKIP_FMT` when the remaining diff
