@@ -19,8 +19,10 @@
 #   - Queue-tooling tests use mbx too. Since scheduler.tests is enabled, their
 #     process-heavy daemon fixtures hold global permits instead of several
 #     agents running six fixtures each and turning timing assertions flaky.
-#     Focused agent-check runs use normal priority, so they retain a permit
-#     ahead of ordinary low-priority background work.
+#     mbx schedules the command, not nextest's internal worker fanout, so the
+#     shim also defaults non-gate nextest and Rust test harnesses to two
+#     workers. Focused agent-check runs use normal priority, so they retain a
+#     permit ahead of ordinary low-priority background work.
 #   - WITCHY_BUILD_CACHE=off is the kill switch. MBX_DISABLE=1 (mbx's own)
 #     also works.
 #   - The store lives in the repo (state/mbx/store-<version>): an agent
@@ -131,6 +133,20 @@ done
 export PATH="$stripped_path"
 export WITCHY_CARGO_SHIM_ACTIVE=1
 export CARGO="$real_cargo"
+
+# mbx's test scheduling admits the top-level command, but nextest owns its own
+# worker pool after admission. On 2026-09-24 an mbx-routed focused run still
+# launched ten CPU-heavy Witchy binaries and pushed a 10-core host above load
+# 48 while compiler processes starved. Agent-check already uses two workers;
+# apply the same default to every repo-shim invocation, including the plain
+# Cargo fallback. The serialized gate stays deliberately full-width, and
+# explicit caller choices always win.
+if [ -z "${WITCHY_GATE_SCOPE+x}" ]; then
+    case "${1:-}" in
+        nextest) export NEXTEST_TEST_THREADS="${NEXTEST_TEST_THREADS:-2}" ;;
+        test|t) export RUST_TEST_THREADS="${RUST_TEST_THREADS:-2}" ;;
+    esac
+fi
 
 [ "${WITCHY_BUILD_CACHE:-mbx}" != "off" ] || passthrough "$@"
 [ "${MBX_DISABLE:-0}" != "1" ] || passthrough "$@"

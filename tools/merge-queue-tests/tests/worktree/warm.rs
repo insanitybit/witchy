@@ -618,6 +618,94 @@ fn cargo_shim_schedules_queue_tooling_through_mbx() {
 }
 
 #[test]
+fn cargo_shim_bounds_direct_agent_test_fanout_but_not_the_serialized_gate() {
+    let repo = temp_repo();
+    let root = repo.path();
+    write(root, "scripts/bin/cargo", include_str!("../../../../scripts/bin/cargo"));
+    write(
+        root,
+        "scripts/feature-unification.sh",
+        include_str!("../../../../scripts/feature-unification.sh"),
+    );
+    let print_fanout =
+        "#!/bin/sh\nprintf 'nextest=%s rust=%s\\n' \"${NEXTEST_TEST_THREADS-unset}\" \"${RUST_TEST_THREADS-unset}\"\n";
+    write(root, "fake-bin/cargo", print_fanout);
+    write(
+        root,
+        "state/mbx/bin/mbx",
+        print_fanout,
+    );
+    for executable in ["scripts/bin/cargo", "fake-bin/cargo", "state/mbx/bin/mbx"] {
+        let status = Command::new("chmod")
+            .args(["+x", executable])
+            .current_dir(root)
+            .status()
+            .expect("mark fixture executable");
+        assert!(status.success());
+    }
+    let path = std::env::join_paths(
+        std::iter::once(root.join("fake-bin"))
+            .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())),
+    )
+    .expect("fixture PATH");
+    let run = |subcommand: &str, gate: bool, explicit: bool| {
+        let mut command = Command::new(root.join("scripts/bin/cargo"));
+        command
+            .args([subcommand, "run"])
+            .current_dir(root)
+            .env("PATH", &path)
+            .env("MBX_STATS_REPORT", root.join("mbx-report.json"))
+            .env_remove("WITCHY_BUILD_CACHE")
+            .env_remove("WITCHY_CARGO_SHIM_ACTIVE")
+            .env_remove("NEXTEST_TEST_THREADS")
+            .env_remove("RUST_TEST_THREADS");
+        if gate {
+            command.env("WITCHY_GATE_SCOPE", "rust");
+        } else {
+            command.env_remove("WITCHY_GATE_SCOPE");
+        }
+        if explicit {
+            command.env("NEXTEST_TEST_THREADS", "7").env("RUST_TEST_THREADS", "5");
+        }
+        command.output().expect("run cargo shim fanout fixture")
+    };
+
+    for (subcommand, expected) in [
+        ("nextest", "nextest=2 rust=unset\n"),
+        ("test", "nextest=unset rust=2\n"),
+    ] {
+        let output = run(subcommand, false, false);
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        assert_eq!(String::from_utf8_lossy(&output.stdout), expected);
+    }
+
+    let explicit = run("nextest", false, true);
+    assert!(explicit.status.success(), "{}", String::from_utf8_lossy(&explicit.stderr));
+    assert_eq!(String::from_utf8_lossy(&explicit.stdout), "nextest=7 rust=5\n");
+
+    let gate = run("nextest", true, false);
+    assert!(gate.status.success(), "{}", String::from_utf8_lossy(&gate.stderr));
+    assert_eq!(
+        String::from_utf8_lossy(&gate.stdout),
+        "nextest=unset rust=unset\n",
+    );
+
+    let plain = Command::new(root.join("scripts/bin/cargo"))
+        .args(["nextest", "run"])
+        .current_dir(root)
+        .env("PATH", &path)
+        .env("WITCHY_BUILD_CACHE", "off")
+        .env_remove("WITCHY_CARGO_SHIM_ACTIVE")
+        .env_remove("WITCHY_GATE_SCOPE")
+        .env_remove("NEXTEST_TEST_THREADS")
+        .env_remove("RUST_TEST_THREADS")
+        .output()
+        .expect("run plain cargo shim fanout fixture");
+    assert!(plain.status.success(), "{}", String::from_utf8_lossy(&plain.stderr));
+    assert_eq!(String::from_utf8_lossy(&plain.stdout), "nextest=2 rust=unset\n");
+}
+
+#[test]
 fn build_seed_finish_never_moves_current_back_to_an_older_snapshot() {
     let repo = temp_repo();
     let root = repo.path();
