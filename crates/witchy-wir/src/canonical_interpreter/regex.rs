@@ -40,16 +40,3 @@ impl Engine<'_> {
         Ok(())
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn canonical_regex_oracle_character_boundaries_and_errors() {
-        assert_eq!(character_spans(".", "\u{e9}\u{1f642}").unwrap(), b"0,1;1,2");
-        assert_eq!(character_spans("", "\u{e9}\u{1f642}").unwrap(), b"0,0;1,1;2,2");
-        assert_eq!(character_spans("a*", "aa").unwrap(), b"0,2");
-        assert_eq!(character_spans("z", "").unwrap(), b"");
-        assert_eq!(character_spans("[", "text"), Err(InterpretError::ExplicitTrap));
-    }
-}

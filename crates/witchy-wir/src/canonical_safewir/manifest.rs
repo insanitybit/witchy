@@ -814,7 +814,7 @@ fn cite(tests: &[TestRef]) -> String {
 pub fn render_markdown() -> String {
     let mut out = String::new();
     out.push_str("# RFC-0165 rule manifest (generated)\n\n");
-    out.push_str("Generated from `crates/witchy-wir/src/canonical_safewir/manifest.rs`; the test\n`manifest_document_is_current` fails when this file drifts. Regenerate with\n`WITCHY_BLESS_RULE_MANIFEST=1 cargo test -p witchy-wir --lib --features native manifest`.\n\n");
+    out.push_str("Generated from `crates/witchy-wir/src/canonical_safewir/manifest.rs`; the test\n`manifest_document_is_current` fails when this file drifts. Regenerate with\n`WITCHY_BLESS_RULE_MANIFEST=1 cargo test -p witchy-wir --test unit manifest`.\n\n");
     out.push_str("Evidence files: check = `");
     out.push_str(Check.path());
     out.push_str("`, memory = `");
@@ -971,12 +971,12 @@ pub fn all_rfc_kernels() -> Vec<RfcKernelId> {
     ordered.to_vec()
 }
 
-#[cfg(test)]
-mod tests {
+#[cfg(feature = "raw-encoder-test-api")]
+#[doc(hidden)]
+pub mod self_checks {
     use super::*;
 
-    #[test]
-    fn backend_column_is_the_reviewed_mapping() {
+    pub fn backend_column_is_the_reviewed_mapping() {
         for entry in RULES {
             assert_eq!(
                 entry.backend,
@@ -991,8 +991,7 @@ mod tests {
         assert_eq!(refused, vec![CanonicalRuleId::Retain]);
     }
 
-    #[test]
-    fn every_rule_cites_admitting_evidence_or_is_refused() {
+    pub fn every_rule_cites_admitting_evidence_or_is_refused() {
         for entry in RULES {
             if !matches!(entry.backend, RuleBackend::Refused) {
                 assert!(!entry.admits.is_empty(), "{:?}: an admitted rule needs admitting evidence", entry.rule);
@@ -1014,8 +1013,7 @@ mod tests {
         }
     }
 
-    #[test]
-    fn every_cited_test_exists_in_its_file() {
+    pub fn every_cited_test_exists_in_its_file() {
         for entry in RULES {
             assert_cited_tests_exist(entry.admits, &format!("{:?} admits", entry.rule));
             assert_cited_tests_exist(entry.refuses, &format!("{:?} refuses", entry.rule));
@@ -1028,8 +1026,7 @@ mod tests {
         }
     }
 
-    #[test]
-    fn manifest_document_is_current() {
+    pub fn manifest_document_is_current() {
         let path = std::path::PathBuf::from(
             std::env::var_os("CARGO_MANIFEST_DIR").expect("Cargo sets CARGO_MANIFEST_DIR for tests"),
         )

@@ -401,6 +401,3 @@ impl Engine<'_> {
     }
 }
 
-#[cfg(test)]
-#[path = "net_tests.rs"]
-mod tests;

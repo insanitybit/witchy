@@ -352,6 +352,7 @@ fn ed25519_bytes(seed: &[u8; 32], message: Option<&[u8]>) -> Result<Vec<u8>, Int
     Ok(match message { Some(message) => key.sign(message).to_bytes().to_vec(), None => key.verifying_key().to_bytes().to_vec() })
 }
 
-#[cfg(test)]
+#[cfg(feature = "raw-encoder-test-api")]
+#[doc(hidden)]
 #[path = "registry_host_tests.rs"]
-mod tests;
+pub mod self_checks;

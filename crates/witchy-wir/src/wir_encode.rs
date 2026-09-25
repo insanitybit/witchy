@@ -959,7 +959,7 @@ fn load_align(kind: Kind) -> u32 {
 /// cap-carrying GC struct definitions (RFC-0005); they are laid after the
 /// reserved scalar closure-signature band and before other function signatures.
 /// Pass `&[]` when the module lowers no cap-carrying aggregates.
-#[cfg(any(test, feature = "raw-encoder-test-api"))]
+#[cfg(feature = "raw-encoder-test-api")]
 pub fn encode(module: &WirModule, structs: &[WirStructDef]) -> Vec<u8> {
     encode_with_gc(module, structs, &[])
 }
@@ -1004,7 +1004,7 @@ pub fn try_encode_validated_with_source_map(
 /// reference/slot crossing. The structural preflight mirrors every encoder
 /// panic precondition so it also works on aborting wasm targets; `catch_unwind`
 /// is a final native containment net for an unforeseen encoder defect.
-#[cfg(any(test, feature = "raw-encoder-test-api"))]
+#[cfg(feature = "raw-encoder-test-api")]
 pub fn try_encode_with_gc(
     module: &WirModule,
     structs: &[WirStructDef],
@@ -1028,7 +1028,7 @@ pub fn try_encode_with_gc(
 /// [`try_encode_validated_with_source_map`]. Ordinary callers should not use it;
 /// raw byte-only entrypoints remain feature-gated.
 #[doc(hidden)]
-#[cfg(any(test, feature = "legacy-encoder-bridge"))]
+#[cfg(feature = "legacy-encoder-bridge")]
 pub fn try_encode_with_gc_source_map(
     module: &WirModule,
     structs: &[WirStructDef],
@@ -1065,7 +1065,7 @@ pub fn try_encode_with_gc_source_map(
 /// the struct-only compatibility entrypoint leaves the production lowering
 /// source-neutral until reference-bearing collections are ready to consume the
 /// array substrate.
-#[cfg(any(test, feature = "raw-encoder-test-api"))]
+#[cfg(feature = "raw-encoder-test-api")]
 pub(crate) fn encode_with_gc(
     module: &WirModule,
     structs: &[WirStructDef],
@@ -2233,7 +2233,3 @@ fn binop_instr(op: BinOp, kind: Kind) -> Instruction<'static> {
     }
 }
 
-#[cfg(test)]
-#[cfg(feature = "native")]
-#[path = "wir_encode_tests.rs"]
-mod tests;

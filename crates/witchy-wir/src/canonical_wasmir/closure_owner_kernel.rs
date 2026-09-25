@@ -136,13 +136,13 @@ pub(super) fn emit_final_release(
     emit_cleanup_worklist(body, local, function, layouts, payload_local, environment, index, binding)
 }
 
-#[cfg(test)]
-mod tests {
+#[cfg(feature = "raw-encoder-test-api")]
+#[doc(hidden)]
+pub mod self_checks {
     use super::*;
     use std::sync::Mutex;
 
-    #[test]
-    fn opaque_owner_cleanup_reclaims_once_and_rejects_unknown_family() -> Result<(), Box<dyn std::error::Error>> {
+    pub fn opaque_owner_cleanup_reclaims_once_and_rejects_unknown_family() -> Result<(), Box<dyn std::error::Error>> {
         let mut layouts = LayoutInterner::new();
         let byte = layouts.intern_scalar(ScalarKind::RawByte)?;
         let string = layouts.intern_runtime_buffer(byte)?;

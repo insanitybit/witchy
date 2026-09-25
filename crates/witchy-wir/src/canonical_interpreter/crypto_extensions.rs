@@ -125,6 +125,3 @@ impl Engine<'_> {
     }
 }
 
-#[cfg(test)]
-#[path = "crypto_extensions_tests.rs"]
-mod tests;

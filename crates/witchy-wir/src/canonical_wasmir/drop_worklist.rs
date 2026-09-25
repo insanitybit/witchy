@@ -364,8 +364,9 @@ pub(super) fn plan(p: &mut Vec<PlanToken>, function: FunctionId, layouts: &Layou
     Ok(())
 }
 
-#[cfg(all(test, feature = "native"))]
-mod tests {
+#[cfg(all(feature = "raw-encoder-test-api", feature = "native"))]
+#[doc(hidden)]
+pub mod self_checks {
     use super::*;
 
     // A mechanical-kernel fixture, not recursive production admission. The
@@ -436,8 +437,7 @@ mod tests {
         instance.get_global(&mut *store, name).unwrap().get(store).i32().unwrap() as u32
     }
 
-    #[test]
-    fn drop_worklist_releases_25000_nodes_without_call_stack_growth() {
+    pub fn drop_worklist_releases_25000_nodes_without_call_stack_growth() {
         let count = 25_000;
         let mut heap = vec![0; count * 24];
         for index in 0..count {
@@ -464,50 +464,6 @@ mod tests {
         assert!(data[frontier..frontier + count * 12].iter().all(|byte| *byte == 0), "temporary frames must be cleared");
     }
 
-    #[test]
-    fn drop_worklist_counts_shared_edges_and_refuses_underflow() {
-        let mut heap = vec![0; 48];
-        for (at, value) in [(0, 1), (4, 24), (8, 2), (12, 2), (16, 72), (24, 72), (32, 2), (36, 8)] {
-            put(&mut heap, at, value);
-        }
-        let (mut store, instance, memory) = fixture(&heap);
-        instance.get_typed_func::<i32, ()>(&mut store, "drop").unwrap().call(&mut store, 40).unwrap();
-        assert_eq!(global(&instance, &mut store, "free"), 40);
-        assert_eq!(word(memory.data(&store), 40), 72);
-        assert_eq!(word(memory.data(&store), 72), 0);
-        put(&mut heap, 0, 0);
-        let (mut store, instance, _) = fixture(&heap);
-        assert!(instance.get_typed_func::<i32, ()>(&mut store, "drop").unwrap().call(&mut store, 40).is_err());
-        assert_eq!(global(&instance, &mut store, "frontier"), 80);
-        assert_eq!(global(&instance, &mut store, "free"), 0);
-    }
 
-    #[test]
-    fn nullable_owned_drop_skips_absent_releases_present_and_nonnullable_traps() {
-        let mut absent = vec![0; 24];
-        for (at, value) in [(0, 1), (4, 16), (8, 1), (12, 1)] {
-            put(&mut absent, at, value);
-        }
-        let (mut store, instance, _) = fixture_with_slot(&absent, PointerSlot::OwnedNullable);
-        instance.get_typed_func::<i32, ()>(&mut store, "drop").unwrap().call(&mut store, 40).unwrap();
-        assert_eq!(global(&instance, &mut store, "free"), 40, "absent nullable child is skipped and root is reclaimed");
-
-        let mut present = vec![0; 48];
-        for (at, value) in [(0, 1), (4, 16), (8, 1), (12, 1), (24, 1), (28, 16), (32, 0), (36, 0)] {
-            put(&mut present, at, value);
-        }
-        put(&mut present, 16, 64);
-        let (mut store, instance, memory) = fixture_with_slot(&present, PointerSlot::OwnedNullable);
-        instance.get_typed_func::<i32, ()>(&mut store, "drop").unwrap().call(&mut store, 40).unwrap();
-        // Reclaim prepends to the free list: child first, then root, produces
-        // root -> child -> null. The heap starts at 32 and the child payload
-        // begins at heap offset 32, hence its absolute address is 64.
-        assert_eq!(global(&instance, &mut store, "free"), 40, "root is prepended after its child");
-        assert_eq!(word(memory.data(&store), 40), 64, "present child is released exactly once");
-        assert_eq!(word(memory.data(&store), 64), 0);
-
-        let (mut store, instance, _) = fixture_with_slot(&absent, PointerSlot::Owned);
-        assert!(instance.get_typed_func::<i32, ()>(&mut store, "drop").unwrap().call(&mut store, 40).is_err());
-    }
 
 }

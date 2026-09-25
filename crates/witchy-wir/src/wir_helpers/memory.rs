@@ -529,11 +529,6 @@ pub(crate) fn rc_free_helper() -> WirFunc {
     rc_free_helper_with_checks(uaf_check_enabled(), heap_check_enabled())
 }
 
-#[cfg(test)]
-pub(crate) fn rc_free_helper_for_test(uaf_check: bool, heap_check: bool) -> WirFunc {
-    rc_free_helper_with_checks(uaf_check, heap_check)
-}
-
 #[cfg(feature = "raw-encoder-test-api")]
 #[doc(hidden)]
 pub fn rc_allocator_helpers_for_test(heap_check: bool, uaf_check: bool) -> Vec<WirFunc> {

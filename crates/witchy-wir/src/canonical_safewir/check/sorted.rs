@@ -53,7 +53,7 @@ impl<K: Ord, V> SortedMap<K, V> {
     }
 
     /// Fixture setup only: production facts are dropped with their state.
-    #[cfg(test)]
+    #[cfg(feature = "raw-encoder-test-api")]
     pub(crate) fn clear(&mut self) {
         self.entries.clear();
     }
@@ -261,12 +261,6 @@ impl<T: Ord> SortedSet<T> {
 
     pub(crate) fn is_empty(&self) -> bool {
         self.items.is_empty()
-    }
-
-    /// Fixture setup only: production facts are dropped with their state.
-    #[cfg(test)]
-    pub(crate) fn clear(&mut self) {
-        self.items.clear();
     }
 
     pub(crate) fn contains<Q>(&self, item: &Q) -> bool

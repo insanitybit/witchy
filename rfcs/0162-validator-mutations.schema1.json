@@ -35,7 +35,7 @@
       "semantic_weakening": "Invert the exactly-one checked-source-entry predicate so a zero-entry candidate passes the report-mode sentinel.",
       "mutant_name": "crates/witchy-wir/src/safewir_validate.rs:429:47: replace != with == in Validator<'_>::validate_module",
       "selector": "429:47: replace != with == in Validator",
-      "cargo_test_args": ["--lib", "safewir_validate::tests::report_mode_rule_diagnostics_have_forged_fixtures", "--", "--exact"],
+      "cargo_test_args": ["--test", "unit", "safewir_validate::tests::report_mode_rule_diagnostics_have_forged_fixtures", "--", "--exact"],
       "focused_test_command": "./scripts/rfc0162-validator-mutations.sh run SWIR-MOD-001",
       "observed_outcome": "CaughtMutant"
     },
@@ -48,7 +48,7 @@
       "semantic_weakening": "Delete canonical descriptor-to-object extent validation, admitting a reuse result whose byte extent contradicts its LayoutId.",
       "mutant_name": "crates/witchy-wir/src/safewir_validate.rs:2881:9: replace Validator<'_>::validate_extent_against_layout -> Result<(), ValidationError> with Ok(())",
       "selector": "2881:9: replace Validator<'_>::validate_extent_against_layout",
-      "cargo_test_args": ["--lib", "safewir_validate::tests::reuse_extent_is_rejected_at_the_reuse_operation", "--", "--exact"],
+      "cargo_test_args": ["--test", "unit", "safewir_validate::tests::reuse_extent_is_rejected_at_the_reuse_operation", "--", "--exact"],
       "focused_test_command": "./scripts/rfc0162-validator-mutations.sh run SWIR-LAY-001",
       "observed_outcome": "CaughtMutant"
     },
@@ -74,7 +74,7 @@
       "semantic_weakening": "Invert allocation freshness enforcement so a non-fresh allocation result is no longer rejected at the allocation boundary.",
       "mutant_name": "crates/witchy-wir/src/safewir_validate.rs:1220:20: delete ! in Validator<'_>::validate_operation",
       "selector": "1220:20: delete ! in Validator",
-      "cargo_test_args": ["--lib", "safewir_validate::tests::report_mode_rule_diagnostics_have_forged_fixtures", "--", "--exact"],
+      "cargo_test_args": ["--test", "unit", "safewir_validate::tests::report_mode_rule_diagnostics_have_forged_fixtures", "--", "--exact"],
       "focused_test_command": "./scripts/rfc0162-validator-mutations.sh run SWIR-OWN-001",
       "observed_outcome": "CaughtMutant"
     },
@@ -87,7 +87,7 @@
       "semantic_weakening": "Delete alias-group consumption propagation, leaving aliases live after one member is consumed.",
       "mutant_name": "crates/witchy-wir/src/safewir_validate.rs:3207:9: replace Validator<'_>::consume_alias_group with ()",
       "selector": "3207:9: replace Validator<'_>::consume_alias_group",
-      "cargo_test_args": ["--lib", "safewir_validate::tests::consuming_one_alias_invalidates_the_entire_group", "--", "--exact"],
+      "cargo_test_args": ["--test", "unit", "safewir_validate::tests::consuming_one_alias_invalidates_the_entire_group", "--", "--exact"],
       "focused_test_command": "./scripts/rfc0162-validator-mutations.sh run SWIR-OWN-002",
       "observed_outcome": "CaughtMutant"
     },
@@ -113,7 +113,7 @@
       "semantic_weakening": "Invert the checked-u32 upper-bound comparison so values above the Wasm address domain pass narrowing.",
       "mutant_name": "crates/witchy-wir/src/safewir_validate.rs:3061:26: replace > with < in Validator<'_>::evaluate_size",
       "selector": "3061:26: replace > with < in Validator",
-      "cargo_test_args": ["--lib", "safewir_validate::tests::report_mode_rule_diagnostics_have_forged_fixtures", "--", "--exact"],
+      "cargo_test_args": ["--test", "unit", "safewir_validate::tests::report_mode_rule_diagnostics_have_forged_fixtures", "--", "--exact"],
       "focused_test_command": "./scripts/rfc0162-validator-mutations.sh run SWIR-RNG-001",
       "observed_outcome": "CaughtMutant"
     },
@@ -126,7 +126,7 @@
       "semantic_weakening": "Invert checked-index object-generation equality, allowing the range witness and accessed place to name different objects.",
       "mutant_name": "crates/witchy-wir/src/safewir_validate.rs:1264:42: replace != with == in Validator<'_>::validate_operation",
       "selector": "1264:42: replace != with == in Validator",
-      "cargo_test_args": ["--lib", "safewir_validate::tests::report_mode_rule_diagnostics_have_forged_fixtures", "--", "--exact"],
+      "cargo_test_args": ["--test", "unit", "safewir_validate::tests::report_mode_rule_diagnostics_have_forged_fixtures", "--", "--exact"],
       "focused_test_command": "./scripts/rfc0162-validator-mutations.sh run SWIR-RNG-002",
       "observed_outcome": "CaughtMutant"
     },
@@ -139,7 +139,7 @@
       "semantic_weakening": "Replace conservative state intersection and ownership join with an empty default state.",
       "mutant_name": "crates/witchy-wir/src/safewir_validate.rs:1836:9: replace Validator<'_>::join_states -> Result<State, ValidationError> with Ok(Default::default())",
       "selector": "1836:9: replace Validator<'_>::join_states",
-      "cargo_test_args": ["--lib", "safewir_validate::tests::block_exit_accumulator_never_resurrects_consumed_authority", "--", "--exact"],
+      "cargo_test_args": ["--test", "unit", "safewir_validate::tests::block_exit_accumulator_never_resurrects_consumed_authority", "--", "--exact"],
       "focused_test_command": "./scripts/rfc0162-validator-mutations.sh run SWIR-CTL-001",
       "observed_outcome": "CaughtMutant"
     },
@@ -166,7 +166,7 @@
       "source_file": "crates/witchy-wir/src/safewir_call.rs",
       "mutant_name": "crates/witchy-wir/src/safewir_call.rs:684:5: replace check_declared_contract -> Result<(), ValidationError> with Ok(())",
       "selector": "684:5: replace check_declared_contract",
-      "cargo_test_args": ["--lib", "rfc0162_mutation_evidence_tests::callable_checker_recomputes_parameter_effects", "--", "--exact"],
+      "cargo_test_args": ["--test", "unit", "rfc0162_mutation_evidence_tests::callable_checker_recomputes_parameter_effects", "--", "--exact"],
       "focused_test_command": "./scripts/rfc0162-validator-mutations.sh run SWIR-CALL-001",
       "observed_outcome": "CaughtMutant"
     },
@@ -192,7 +192,7 @@
       "semantic_weakening": "Delete mathematical byte-range-versus-object-extent validation.",
       "mutant_name": "crates/witchy-wir/src/safewir_validate.rs:2923:9: replace Validator<'_>::validate_range -> Result<(), ValidationError> with Ok(())",
       "selector": "2923:9: replace Validator<'_>::validate_range",
-      "cargo_test_args": ["--lib", "safewir_validate::tests::report_mode_rule_diagnostics_have_forged_fixtures", "--", "--exact"],
+      "cargo_test_args": ["--test", "unit", "safewir_validate::tests::report_mode_rule_diagnostics_have_forged_fixtures", "--", "--exact"],
       "focused_test_command": "./scripts/rfc0162-validator-mutations.sh run SWIR-MEM-001",
       "observed_outcome": "CaughtMutant"
     },
@@ -205,7 +205,7 @@
       "semantic_weakening": "Delete projected scalar width and representation validation for loads and stores.",
       "mutant_name": "crates/witchy-wir/src/safewir_validate.rs:2808:9: replace Validator<'_>::validate_memory_width -> Result<(), ValidationError> with Ok(())",
       "selector": "2808:9: replace Validator<'_>::validate_memory_width",
-      "cargo_test_args": ["--lib", "safewir_validate::tests::scalar_memory_width_and_representation_are_not_interchangeable", "--", "--exact"],
+      "cargo_test_args": ["--test", "unit", "safewir_validate::tests::scalar_memory_width_and_representation_are_not_interchangeable", "--", "--exact"],
       "focused_test_command": "./scripts/rfc0162-validator-mutations.sh run SWIR-MEM-002",
       "observed_outcome": "CaughtMutant"
     },
@@ -257,7 +257,7 @@
       "semantic_weakening": "Require both raw-memory and raw-body attestations before rejection, allowing either forbidden form alone.",
       "mutant_name": "crates/witchy-wir/src/safewir_validate.rs:435:44: replace || with && in Validator<'_>::validate_module",
       "selector": "435:44:",
-      "cargo_test_args": ["--lib", "safewir_validate::tests::report_mode_rule_diagnostics_have_forged_fixtures", "--", "--exact"],
+      "cargo_test_args": ["--test", "unit", "safewir_validate::tests::report_mode_rule_diagnostics_have_forged_fixtures", "--", "--exact"],
       "focused_test_command": "./scripts/rfc0162-validator-mutations.sh run SWIR-KERN-001",
       "observed_outcome": "CaughtMutant"
     },
@@ -270,7 +270,7 @@
       "semantic_weakening": "Invert the post-validation transform whitelist so arbitrary transforms pass the report-mode sentinel.",
       "mutant_name": "crates/witchy-wir/src/safewir_validate.rs:442:13: replace != with == in Validator<'_>::validate_module",
       "selector": "442:13: replace != with == in Validator",
-      "cargo_test_args": ["--lib", "safewir_validate::tests::report_mode_rule_diagnostics_have_forged_fixtures", "--", "--exact"],
+      "cargo_test_args": ["--test", "unit", "safewir_validate::tests::report_mode_rule_diagnostics_have_forged_fixtures", "--", "--exact"],
       "focused_test_command": "./scripts/rfc0162-validator-mutations.sh run SWIR-ENC-001",
       "observed_outcome": "CaughtMutant"
     },

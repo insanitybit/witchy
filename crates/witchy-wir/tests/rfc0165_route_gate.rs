@@ -403,24 +403,23 @@ fn raw_wir_byte_entrypoints_are_sealed_or_are_the_documented_bridge() {
 
     let encode = named(&file, "encode");
     assert!(takes(encode, "WirModule"));
-    assert!(has_cfg(encode, "test"));
     assert!(has_cfg(encode, "raw-encoder-test-api"));
 
     let raw = named(&file, "try_encode_with_gc");
     assert!(takes(raw, "WirModule"));
-    assert!(has_cfg(raw, "test"));
     assert!(has_cfg(raw, "raw-encoder-test-api"));
 
     let gc = named(&file, "encode_with_gc");
     assert!(takes(gc, "WirModule"));
     assert!(!is_public(gc), "the raw GC helper must remain crate-private");
-    assert!(has_cfg(gc, "test"));
     assert!(has_cfg(gc, "raw-encoder-test-api"));
 
     let bridge = named(&file, "try_encode_with_gc_source_map");
     assert!(is_public(bridge));
     assert!(takes(bridge, "WirModule"));
-    assert!(has_cfg(bridge, "test"));
+    // The lib has no cfg(test) copy (`[lib] test = false`), so the bridge is
+    // reachable only through its own feature.
+    assert!(!has_cfg(bridge, "test"));
     assert!(has_cfg(bridge, "legacy-encoder-bridge"));
     assert!(!has_cfg(bridge, "raw-encoder-test-api"));
 

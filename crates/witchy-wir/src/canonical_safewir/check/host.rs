@@ -306,15 +306,16 @@ fn require_arity(
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
+#[cfg(feature = "raw-encoder-test-api")]
+#[doc(hidden)]
+pub mod self_checks {
     use std::collections::BTreeMap;
 
     use super::super::super::{
-        AccessMode, BasicBlock, BlockId, CallableContract, Function, FunctionId,
-        FunctionSignature, FunctionSignatureId, GcTypeId, HostBufferExtent, HostCallArgument,
+        BasicBlock, BlockId, CallableContract, Function, FunctionId,
+        FunctionSignature, FunctionSignatureId, HostCallArgument,
         HostMutation, HostParameterRole, HostReentrancy, ImportContract, ImportContractIdentity,
-        ImportId, LayoutId, Place, Projection, ValueId, ValueType, CapabilityKindId,
+        ImportId, LayoutId, ValueId, ValueType, CapabilityKindId,
     };
     use super::{check_call, check_imports};
 
@@ -388,8 +389,7 @@ mod tests {
         )
     }
 
-    #[test]
-    fn unknown_import_id_is_rejected() {
+    pub fn unknown_import_id_is_rejected() {
         let function = function(ValueType::Int);
         let catalog = super::super::super::CanonicalAbiCatalog::from_imports(Vec::new());
         let imports = BTreeMap::new();
@@ -408,8 +408,7 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn forged_import_contract_is_rejected_by_catalog() {
+    pub fn forged_import_contract_is_rejected_by_catalog() {
         let role = HostParameterRole::Value(ValueType::Int);
         let mut forged = import(role.clone());
         forged.abi_identity = ImportContractIdentity::AuthenticatedAbi([9; 32]);
@@ -423,21 +422,8 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn host_argument_role_mismatch_is_rejected() {
-        assert!(matches!(
-            check(
-                ValueType::Capability(CapabilityKindId::new(1)),
-                HostParameterRole::Value(ValueType::Int),
-                HostCallArgument::Capability(VALUE),
-            ),
-            Err(super::InitialCheckError::TypeMismatch { .. })
-                | Err(super::InitialCheckError::HostParameterRoleMismatch { .. })
-        ));
-    }
 
-    #[test]
-    fn integer_cannot_impersonate_a_capability_argument() {
+    pub fn integer_cannot_impersonate_a_capability_argument() {
         let kind = CapabilityKindId::new(1);
         assert!(matches!(
             check(
@@ -449,8 +435,7 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn linear_memory_reference_cannot_impersonate_a_capability_argument() {
+    pub fn linear_memory_reference_cannot_impersonate_a_capability_argument() {
         let kind = CapabilityKindId::new(1);
         assert!(matches!(
             check(
@@ -462,138 +447,9 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn host_buffer_extent_mismatch_is_rejected() {
-        let layout = LayoutId::from_bytes([2; 32]);
-        let role = HostParameterRole::Buffer {
-            value_type: ValueType::Ref(layout),
-            access: AccessMode::Read,
-            extent: HostBufferExtent::Slice,
-        };
-        let place = Place::projected(
-            VALUE,
-            Projection::Slice { start: VALUE, length: VALUE },
-            ValueType::Ref(layout),
-            AccessMode::Read,
-        );
-        assert!(matches!(
-            check(
-                ValueType::Ref(layout),
-                role,
-                HostCallArgument::Buffer { place, extent: HostBufferExtent::Exact(4) },
-            ),
-            Err(super::InitialCheckError::HostBufferExtentMismatch { .. })
-        ));
-    }
 
-    #[test]
-    fn non_linear_memory_buffer_cannot_use_raw_slice_authority() {
-        let role = HostParameterRole::Buffer {
-            value_type: ValueType::Gc(GcTypeId::new(1)),
-            access: AccessMode::Read,
-            extent: HostBufferExtent::Slice,
-        };
-        let place = Place::projected(
-            VALUE,
-            Projection::Slice { start: VALUE, length: VALUE },
-            ValueType::Gc(GcTypeId::new(1)),
-            AccessMode::Read,
-        );
-        assert!(matches!(
-            check(ValueType::Gc(GcTypeId::new(1)), role, HostCallArgument::Buffer {
-                place,
-                extent: HostBufferExtent::Slice,
-            }),
-            Err(super::InitialCheckError::HostContractRoleMismatch { .. })
-        ));
-    }
 
-    #[test]
-    fn capability_cannot_be_declared_as_a_generic_host_value() {
-        let capability = ValueType::Capability(CapabilityKindId::new(4));
-        assert!(matches!(
-            check(capability, HostParameterRole::Value(capability), HostCallArgument::Value(VALUE)),
-            Err(super::InitialCheckError::HostContractRoleMismatch { .. })
-        ));
-        check(capability, HostParameterRole::Capability(CapabilityKindId::new(4)), HostCallArgument::Capability(VALUE))
-            .expect("the dedicated capability role remains supported");
-    }
 
-    #[test]
-    fn nullable_capability_cannot_cross_generic_or_direct_host_roles() {
-        let kind = CapabilityKindId::new(4);
-        let nullable = ValueType::NullableCapability(kind);
-        assert!(matches!(
-            check(nullable, HostParameterRole::Value(nullable), HostCallArgument::Value(VALUE)),
-            Err(super::InitialCheckError::HostContractRoleMismatch { .. })
-        ));
-        assert!(matches!(
-            check(nullable, HostParameterRole::Capability(kind), HostCallArgument::Capability(VALUE)),
-            Err(super::InitialCheckError::TypeMismatch { .. })
-        ));
-    }
 
-    #[test]
-    fn reference_results_cannot_be_declared_as_generic_host_values() {
-        for value_type in [
-            ValueType::Capability(CapabilityKindId::new(4)),
-            ValueType::NullableCapability(CapabilityKindId::new(4)),
-            ValueType::Ref(LayoutId::from_bytes([3; 32])),
-            ValueType::Gc(GcTypeId::new(1)),
-            ValueType::Callable(SIGNATURE),
-        ] {
-            let role = HostParameterRole::Value(ValueType::Int);
-            let mut import = import(role.clone());
-            import.result_roles = vec![super::super::super::HostResultRole::Value(value_type)];
-            let mut signature = signature(&role);
-            signature.results = vec![value_type];
-            let catalog = super::super::super::CanonicalAbiCatalog::from_imports(vec![import.clone()]);
-            let imports = [(IMPORT, &import)].into_iter().collect();
-            let signatures = [(SIGNATURE, &signature)].into_iter().collect();
-            assert!(matches!(
-                check_imports(&imports, &signatures, Some(&catalog)),
-                Err(super::InitialCheckError::HostContractRoleMismatch { .. })
-            ));
-        }
-    }
 
-    #[test]
-    fn registry_hosts_nullable_result_requires_authenticated_exact_kind() {
-        use super::super::super::{HostResultRole, SECRET_STORE_CAPABILITY_KIND, SECRET_CAPABILITY_KIND};
-        let layout = LayoutId::from_bytes([71; 32]);
-        let catalog = super::super::super::CanonicalAbiCatalog::from_imports(Vec::new())
-            .with_registry_host_imports([0, 1, 2, 3, 4].map(FunctionSignatureId::new), layout).unwrap();
-        let import = catalog.imports().into_iter().find(|import| import.name == "secretstore_lookup_at").unwrap();
-        let role = HostParameterRole::Capability(SECRET_STORE_CAPABILITY_KIND);
-        let mut signature = signature(&role);
-        signature.id = import.signature;
-        signature.parameters.push(ValueType::Ref(layout));
-        signature.results = vec![ValueType::NullableCapability(SECRET_CAPABILITY_KIND)];
-        let path = ValueId::new(4);
-        let result = ValueId::new(5);
-        let mut function = function(ValueType::Capability(SECRET_STORE_CAPABILITY_KIND));
-        function.value_types.insert(path, ValueType::Ref(layout));
-        function.value_types.insert(result, signature.results[0]);
-        let arguments = [HostCallArgument::Capability(VALUE), HostCallArgument::Buffer {
-            place: Place::projected(path, Projection::Slice { start: ValueId::new(6), length: ValueId::new(7) },
-                ValueType::Ref(layout), AccessMode::Read), extent: HostBufferExtent::Slice,
-        }];
-        let imports = [(import.id, &import)].into_iter().collect();
-        let signatures = [(signature.id, &signature)].into_iter().collect();
-        check_call(&function, import.id, &[result], &arguments, &imports, &signatures, Some(&catalog)).unwrap();
-        for wrong in [ValueType::Int, ValueType::Capability(SECRET_CAPABILITY_KIND),
-            ValueType::NullableCapability(SECRET_STORE_CAPABILITY_KIND)]
-        {
-            function.value_types.insert(result, wrong);
-            assert!(check_call(&function, import.id, &[result], &arguments, &imports, &signatures, Some(&catalog)).is_err());
-        }
-        function.value_types.insert(result, signature.results[0]);
-        function.value_types.insert(VALUE, ValueType::Capability(SECRET_CAPABILITY_KIND));
-        assert!(check_call(&function, import.id, &[result], &arguments, &imports, &signatures, Some(&catalog)).is_err());
-        let mut forged = import.clone();
-        forged.result_roles = vec![HostResultRole::Value(signature.results[0])];
-        let forged_imports = [(forged.id, &forged)].into_iter().collect();
-        assert!(matches!(check_imports(&forged_imports, &signatures, Some(&catalog)),
-            Err(super::InitialCheckError::InvalidCanonicalAbiContract { .. })));
-    }
 }

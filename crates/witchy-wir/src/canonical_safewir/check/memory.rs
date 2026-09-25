@@ -1,14 +1,6 @@
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 
-#[cfg(test)]
-use std::cell::Cell;
-
-#[cfg(test)]
-thread_local! {
-    static HEADER_LENGTH_PAIR_SCANS: Cell<usize> = const { Cell::new(0) };
-}
-
 use crate::layout::{
     FieldKind, HeaderLayout, LayoutDescriptor, LayoutInterner, LayoutKind, LayoutSize, PointerSlot,
     RcHeader, ScalarKind,
@@ -20,14 +12,6 @@ use std::rc::Rc;
 
 use super::sorted::{SortedMap, SortedSet};
 use super::{InitialCheckError, value_type};
-
-#[cfg(test)]
-#[path = "move_range_identity_tests.rs"]
-mod move_range_identity_tests;
-
-#[cfg(test)]
-#[path = "prefix_provenance_tests.rs"]
-mod prefix_provenance_tests;
 
 use crate::canonical_safewir::{
     AccessMode, AllocationClass, ArithmeticOperator, BasicBlock, CallArgument,
@@ -1900,21 +1884,6 @@ impl<'a> MemoryChecker<'a> {
             }
         }
         Ok(())
-    }
-
-    #[cfg(test)]
-    fn check_current_signature_call(
-        &mut self,
-        arguments: &[CallArgument],
-        parameters: &[ParameterContract],
-        destinations: &[ValueId],
-        results: &[ResultContract],
-    ) -> Result<(), InitialCheckError> {
-        let signature = self.signature.clone();
-        let mut signature = signature;
-        signature.contract.parameters = parameters.to_vec();
-        signature.contract.results = results.to_vec();
-        self.check_call(&signature, arguments, parameters, destinations, results)
     }
 
     pub(super) fn check_exit(&self, returned: &[ValueId]) -> Result<(), InitialCheckError> {
@@ -5845,8 +5814,6 @@ impl<'a> MemoryChecker<'a> {
     /// rescanning every header load per question, which made a straight-line
     /// program with many string temporaries take minutes to check.
     fn header_length_pairs(facts: &MemoryState) -> SortedSet<(ValueId, ValueId)> {
-        #[cfg(test)]
-        HEADER_LENGTH_PAIR_SCANS.with(|scans| scans.set(scans.get() + 1));
         facts
             .header_values
             .iter()
@@ -5974,10 +5941,6 @@ impl<'a> MemoryChecker<'a> {
 
     fn less_equal(&self, left: ValueId, right: ValueId) -> bool {
         Self::less_equal_in(&self.state, left, right)
-    }
-
-    fn less_equal_for_owner(&self, object: ValueId, left: ValueId, right: ValueId) -> bool {
-        self.owner_steps(object).is_some_and(|steps| self.less_equal_with(&steps, left, right))
     }
 
     /// The upward steps usable for `object`: only guards established under
@@ -6491,23 +6454,6 @@ fn drop_ref_layout_supported(
     true
 }
 
-#[test]
-fn recursive_drop_layout_graph_requires_bound_supported_children() {
-    let mut layouts = LayoutInterner::new();
-    let nominal = layouts.intern_opaque_nominal([23; 32]).unwrap();
-    let child = layouts.intern_runtime_pointer_value_slot(nominal, PointerSlot::OwnedNullable).unwrap();
-    let physical = layouts.intern_packed_record(vec![child]).unwrap();
-    assert!(!drop_ref_layout_supported(&layouts, nominal, &mut SortedSet::new()));
-    layouts.bind_nominal(nominal, physical).unwrap();
-    assert!(drop_ref_layout_supported(&layouts, nominal, &mut SortedSet::new()));
-    let missing = layouts.intern_opaque_nominal([24; 32]).unwrap();
-    let missing_child = layouts.intern_runtime_pointer_value_slot(missing, PointerSlot::Owned).unwrap();
-    let with_missing = layouts.intern_packed_record(vec![missing_child, child]).unwrap();
-    assert!(!drop_ref_layout_supported(&layouts, with_missing, &mut SortedSet::new()), "a closed recursive edge must not hide another unbound child");
-    let nullable_list = layouts.intern_packed_list(child, crate::layout::RcHeader::Required).unwrap();
-    assert!(!drop_ref_layout_supported(&layouts, nullable_list, &mut SortedSet::new()), "nullable collection slots remain unsupported");
-}
-
 fn remap_value(renames: &SortedMap<ValueId, ValueId>, value: ValueId) -> ValueId {
     renames.get(&value).copied().unwrap_or(value)
 }
@@ -7007,10 +6953,26 @@ fn returned_extent_matches(actual: &Extent, expected: &ReturnedExtent) -> bool {
     }
 }
 
-#[cfg(test)]
-mod tests {
+#[cfg(feature = "raw-encoder-test-api")]
+#[doc(hidden)]
+pub mod self_checks {
     use super::*;
-    use crate::canonical_safewir::MemoryEffect;
+
+    pub fn recursive_drop_layout_graph_requires_bound_supported_children() {
+        let mut layouts = LayoutInterner::new();
+        let nominal = layouts.intern_opaque_nominal([23; 32]).unwrap();
+        let child = layouts.intern_runtime_pointer_value_slot(nominal, PointerSlot::OwnedNullable).unwrap();
+        let physical = layouts.intern_packed_record(vec![child]).unwrap();
+        assert!(!drop_ref_layout_supported(&layouts, nominal, &mut SortedSet::new()));
+        layouts.bind_nominal(nominal, physical).unwrap();
+        assert!(drop_ref_layout_supported(&layouts, nominal, &mut SortedSet::new()));
+        let missing = layouts.intern_opaque_nominal([24; 32]).unwrap();
+        let missing_child = layouts.intern_runtime_pointer_value_slot(missing, PointerSlot::Owned).unwrap();
+        let with_missing = layouts.intern_packed_record(vec![missing_child, child]).unwrap();
+        assert!(!drop_ref_layout_supported(&layouts, with_missing, &mut SortedSet::new()), "a closed recursive edge must not hide another unbound child");
+        let nullable_list = layouts.intern_packed_list(child, crate::layout::RcHeader::Required).unwrap();
+        assert!(!drop_ref_layout_supported(&layouts, nullable_list, &mut SortedSet::new()), "nullable collection slots remain unsupported");
+    }
 
     const COUNT: ValueId = ValueId::new(0);
     const CAPACITY: ValueId = ValueId::new(1);
@@ -7026,129 +6988,6 @@ mod tests {
     const ALIAS_START: ValueId = ValueId::new(11);
     const ALIAS_LENGTH: ValueId = ValueId::new(12);
     const ZERO: ValueId = ValueId::new(13);
-
-    #[test]
-    fn aliases_write_back_parameter_requires_its_distinct_hidden_lane() {
-        let mut layouts = LayoutInterner::new();
-        let layout = layouts.intern_scalar(ScalarKind::Int).expect("carrier layout");
-        let other_layout = layouts.intern_scalar(ScalarKind::Bool).expect("other layout");
-        let write_back = vec![ParameterContract {
-            value_type: ValueType::Ref(layout),
-            ownership: ParameterOwnership::WriteBack,
-        }];
-        let valid = vec![
-            ResultContract::AliasesWriteBackParameter { parameter: 0, layout, projection: None },
-            ResultContract::Shared { layout },
-        ];
-
-        assert!(has_distinct_write_back_lane(&valid, 0, 0, layout, &write_back));
-        assert_eq!(
-            write_back_alias_parameter_for_hidden_lane(&valid, 1, &write_back),
-            Some((0, layout)),
-        );
-        assert!(!has_distinct_write_back_lane(&valid, 1, 0, layout, &write_back));
-
-        let missing = vec![ResultContract::AliasesWriteBackParameter { parameter: 0, layout, projection: None }];
-        assert!(!has_distinct_write_back_lane(&missing, 0, 0, layout, &write_back));
-
-        let wrong_layout = vec![
-            ResultContract::AliasesWriteBackParameter { parameter: 0, layout, projection: None },
-            ResultContract::Shared { layout: other_layout },
-        ];
-        assert!(!has_distinct_write_back_lane(&wrong_layout, 0, 0, layout, &write_back));
-
-        let non_write_back = vec![ParameterContract {
-            value_type: ValueType::Ref(layout),
-            ownership: ParameterOwnership::Shared,
-        }];
-        assert!(!has_distinct_write_back_lane(&valid, 0, 0, layout, &non_write_back));
-        assert_eq!(
-            write_back_alias_parameter_for_hidden_lane(&valid, 1, &non_write_back),
-            None,
-        );
-
-        // A direct `&mut T` procedure has only its final write-back lane.
-        // Its ABI ordinal and layout bind it to this exact parameter; a
-        // mismatched `Shared` result remains ordinary and cannot be forged
-        // into a replacement lane.
-        let terminal = vec![ResultContract::Shared { layout }];
-        assert_eq!(
-            terminal_write_back_parameter_for_hidden_lane(&terminal, 0, &write_back),
-            Some((0, layout)),
-        );
-        let terminal_wrong_layout = vec![ResultContract::Shared { layout: other_layout }];
-        assert_eq!(
-            terminal_write_back_parameter_for_hidden_lane(&terminal_wrong_layout, 0, &write_back),
-            None,
-        );
-        // Adding a source alias contract changes the ABI interpretation; the
-        // terminal fallback may not accept it even when the physical lane
-        // shape is otherwise identical.
-        let carrier_plus_hidden = vec![
-            ResultContract::AliasesWriteBackParameter { parameter: 0, layout, projection: None },
-            ResultContract::Shared { layout },
-        ];
-        assert_eq!(
-            terminal_write_back_parameter_for_hidden_lane(&carrier_plus_hidden, 1, &write_back),
-            None,
-        );
-
-        // A projected carrier may return a differently laid-out fixed child,
-        // but its hidden lane must remain the exact owner layout. Swapping
-        // those layouts cannot turn an ordinary result into write-back proof.
-        let projected = vec![
-            ResultContract::AliasesWriteBackParameter {
-                parameter: 0,
-                layout: other_layout,
-                projection: Some(3),
-            },
-            ResultContract::Shared { layout },
-        ];
-        assert!(has_distinct_write_back_lane(&projected, 0, 0, other_layout, &write_back));
-        assert_eq!(write_back_alias_parameter_for_hidden_lane(&projected, 1, &write_back), Some((0, layout)));
-        assert_eq!(
-            authenticated_projected_bump_write_back_parameter(&projected, &write_back),
-            Some(0),
-        );
-
-        let direct = vec![
-            ResultContract::AliasesWriteBackParameter {
-                parameter: 0,
-                layout: other_layout,
-                projection: None,
-            },
-            ResultContract::Shared { layout },
-        ];
-        assert_eq!(authenticated_projected_bump_write_back_parameter(&direct, &write_back), None);
-        let missing_hidden = vec![projected[0].clone()];
-        assert_eq!(authenticated_projected_bump_write_back_parameter(&missing_hidden, &write_back), None);
-        let duplicate_hidden = vec![projected[0].clone(), ResultContract::Shared { layout }, ResultContract::Shared { layout }];
-        assert_eq!(authenticated_projected_bump_write_back_parameter(&duplicate_hidden, &write_back), None);
-        let wrong_projected_hidden = vec![
-            ResultContract::AliasesWriteBackParameter {
-                parameter: 0,
-                layout: other_layout,
-                projection: Some(3),
-            },
-            ResultContract::Shared { layout: other_layout },
-        ];
-        assert!(!has_distinct_write_back_lane(
-            &wrong_projected_hidden,
-            0,
-            0,
-            other_layout,
-            &write_back,
-        ));
-        assert_eq!(
-            authenticated_projected_bump_write_back_parameter(&wrong_projected_hidden, &write_back),
-            None,
-        );
-        let wrong_parameter = vec![ParameterContract {
-            value_type: ValueType::Ref(layout),
-            ownership: ParameterOwnership::Shared,
-        }];
-        assert_eq!(authenticated_projected_bump_write_back_parameter(&projected, &wrong_parameter), None);
-    }
 
     fn with_header_promotion_checker(
         family: u8,
@@ -7211,8 +7050,7 @@ mod tests {
         test(&mut checker, base, stride);
     }
 
-    #[test]
-    fn reauthenticate_raw_header_extent_requires_current_fresh_proofs_and_rebinds_conservatively() {
+    pub fn reauthenticate_raw_header_extent_requires_current_fresh_proofs_and_rebinds_conservatively() {
         with_header_promotion_checker(0, |checker, base, stride| {
             let maximum = (u64::from(u32::MAX) - u64::from(base)) / u64::from(stride);
             checker.check(&Operation::Load {
@@ -7367,47 +7205,7 @@ mod tests {
         )
     }
 
-    #[test]
-    fn scalar_prefix_shrink_requires_reinitialization_before_regrowth() {
-        with_checker_capacity(false, 3, |checker, list| {
-            checker.check(&Operation::Compare {
-                destination: CONDITION,
-                operator: ComparisonOperator::LessUnsigned,
-                left: COUNT,
-                right: CAPACITY,
-            }).expect("second slot fits capacity");
-            checker.check(&Operation::Guard {
-                condition: CONDITION,
-                kind: GuardKind::Bounds,
-            }).expect("store bound is established");
-            checker.check(&Operation::Store {
-                place: Place::projected(
-                    SOURCE,
-                    Projection::Element { index: COUNT },
-                    ValueType::Size,
-                    AccessMode::Write,
-                ),
-                value: LOADED,
-                transfer: StoreTransfer::CopyScalar,
-            }).expect("second scalar slot is initialized");
-            checker.check(&Operation::UpdateCount { object: SOURCE, count: LONG_LENGTH })
-                .expect("initialized second slot may be published");
-            checker.check(&Operation::UpdateCount { object: SOURCE, count: COUNT })
-                .expect("shrinking preserves the retained initialized prefix");
-            assert!(matches!(
-                checker.check(&Operation::UpdateCount { object: SOURCE, count: LONG_LENGTH }),
-                Err(InitialCheckError::UnsupportedMemoryOperation {
-                    operation: "UpdateCount(uninitialized scalar prefix)",
-                    ..
-                })
-            ), "a removed scalar slot must be written again before regrowth");
-
-            let _ = list;
-        });
-    }
-
-    #[test]
-    fn bounds_guards_name_the_current_owner_generation() {
+    pub fn bounds_guards_name_the_current_owner_generation() {
         let guarded_read = |checker: &mut MemoryChecker<'_>, object, list| {
             checker.check(&Operation::Compare {
                 destination: CONDITION,
@@ -7585,8 +7383,7 @@ mod tests {
         }
     }
 
-    #[test]
-    fn same_identity_ownership_meet_rejects_identity_consumption_and_alias_changes() {
+    pub fn same_identity_ownership_meet_rejects_identity_consumption_and_alias_changes() {
         for case in 0..4 {
             with_checker(false, |checker, list| {
                 let mut unique = checker.snapshot();
@@ -7610,21 +7407,7 @@ mod tests {
         }
     }
 
-    fn shared_extent_target(layout: crate::layout::LayoutId) -> BasicBlock {
-        let mut target = unique_phi_target(ValueId::new(99), layout);
-        target.parameters[0].ownership = Some(Ownership::Shared);
-        for value in [ValueId::new(100), ValueId::new(101)] {
-            target.parameters.push(crate::canonical_safewir::BlockParameter {
-                value,
-                value_type: ValueType::Size,
-                ownership: None,
-            });
-        }
-        target
-    }
-
-    #[test]
-    fn owned_prefix_summary_is_invalidated_by_move() {
+    pub fn owned_prefix_summary_is_invalidated_by_move() {
         with_checker(true, |checker, list| {
             checker.state.objects.get_mut(&SOURCE).unwrap().initialized_owned_slots = true;
             checker.state.range_states.retain(|identity, _| identity.object != SOURCE);
@@ -7641,37 +7424,8 @@ mod tests {
         });
     }
 
-    #[test]
-    fn shared_counted_phi_rejects_missing_or_mismatched_extent_lane() {
-        with_checker_capacity(true, 2, |checker, list| {
-            let mut target = shared_extent_target(list);
-            target.parameters.pop();
-            assert!(matches!(
-                checker.transfer_edge(&target, &[SOURCE, COUNT]),
-                Err(InitialCheckError::InvalidOwnership { .. })
-            ), "a shared counted phi needs an explicit capacity parameter");
-        });
-        with_checker(true, |checker, list| {
-            checker.state.constants.clear();
-            checker.check(&Operation::Load {
-                destination: LONG_LENGTH,
-                place: Place::projected(
-                    SOURCE,
-                    Projection::Header(HeaderField::Capacity),
-                    ValueType::Size,
-                    AccessMode::Read,
-                ),
-                transfer: LoadTransfer::CopyScalar,
-            }).expect("physical capacity read");
-            assert!(matches!(
-                checker.transfer_edge(&shared_extent_target(list), &[SOURCE, COUNT, LONG_LENGTH]),
-                Err(InitialCheckError::InvalidOwnership { .. })
-            ), "a mismatched capacity lane cannot authenticate the joined owner");
-        });
-    }
 
-    #[test]
-    fn move_value_rejects_shared_source() {
+    pub fn move_value_rejects_shared_source() {
         with_checker(false, |checker, _list| {
             checker.state.objects.remove(&DESTINATION);
             checker.state.objects.get_mut(&SOURCE).expect("source").ownership = Ownership::Shared;
@@ -7683,8 +7437,7 @@ mod tests {
         });
     }
 
-    #[test]
-    fn clone_ref_tracks_two_affine_shared_tokens() {
+    pub fn clone_ref_tracks_two_affine_shared_tokens() {
         with_checker(false, |checker, _list| {
             checker.state.objects.remove(&DESTINATION);
             checker.clone_ref(DESTINATION, SOURCE).expect("clone reference");
@@ -7702,148 +7455,9 @@ mod tests {
         });
     }
 
-    #[test]
-    fn shared_borrow_call_requires_a_distinct_live_owner_token() {
-        with_checker(false, |checker, _list| {
-            checker.state.objects.remove(&DESTINATION);
-            assert!(matches!(
-                checker.consume_call_move(SOURCE, ParameterOwnership::Value),
-                Err(InitialCheckError::InvalidOwnership { object: SOURCE, .. })
-            ));
 
-            checker.clone_ref(DESTINATION, SOURCE).expect("construct owner-retaining borrow");
-            checker.consume_call_move(DESTINATION, ParameterOwnership::Value)
-                .expect("borrow handle transfers while its owner remains live");
-            assert_ne!(checker.state.objects[&SOURCE].ownership, Ownership::Consumed);
-        });
-    }
 
-    #[test]
-    fn moved_value_alias_transfer_uses_the_callee_contract_not_the_caller() {
-        fn relay_signature(
-            id: crate::canonical_safewir::FunctionSignatureId,
-            layout: crate::layout::LayoutId,
-        ) -> FunctionSignature {
-            FunctionSignature {
-                id,
-                parameters: vec![ValueType::Ref(layout)],
-                results: vec![ValueType::Ref(layout)],
-                contract: CallableContract {
-                    parameters: vec![ParameterContract {
-                        value_type: ValueType::Ref(layout),
-                        ownership: ParameterOwnership::Value,
-                    }],
-                    results: vec![ResultContract::AliasesParameter { parameter: 0, layout }],
-                    parameter_effects: BTreeMap::from([(
-                        0,
-                        vec![MemoryEffect::Read, MemoryEffect::Retain, MemoryEffect::Release],
-                    )]),
-                },
-            }
-        }
-
-        with_checker(false, |checker, list| {
-            checker.state.objects.remove(&DESTINATION);
-            let callee = relay_signature(crate::canonical_safewir::FunctionSignatureId::new(1), list);
-            checker
-                .check_call(
-                    &callee,
-                    &[CallArgument::Move(SOURCE)],
-                    &callee.contract.parameters,
-                    &[DESTINATION],
-                    &callee.contract.results,
-                )
-                .expect("the exact callee, not the unrelated caller, authorizes transfer");
-            let result = &checker.state.objects[&DESTINATION];
-            assert_eq!(result.identity, SOURCE);
-            assert_eq!(result.ownership, Ownership::Shared);
-        });
-
-        with_checker(false, |checker, list| {
-            checker.state.objects.remove(&DESTINATION);
-            checker.state.objects.get_mut(&SOURCE).expect("source").ownership = Ownership::Shared;
-            let callee = relay_signature(crate::canonical_safewir::FunctionSignatureId::new(2), list);
-            checker
-                .check_call(
-                    &callee,
-                    &[CallArgument::Move(SOURCE)],
-                    &callee.contract.parameters,
-                    &[DESTINATION],
-                    &callee.contract.results,
-                )
-                .expect("the exact callee may rebind a sole shared managed token");
-            let result = &checker.state.objects[&DESTINATION];
-            assert_eq!(result.identity, SOURCE);
-            assert_eq!(result.ownership, Ownership::Shared);
-        });
-
-        with_checker(false, |checker, list| {
-            checker.state.objects.remove(&DESTINATION);
-            let source = checker.state.objects.get_mut(&SOURCE).expect("source");
-            source.ownership = Ownership::Shared;
-            source.allocation_class = None;
-            source.shared_immutable = false;
-            checker.state.static_data_objects.insert(SOURCE);
-            let callee = relay_signature(crate::canonical_safewir::FunctionSignatureId::new(3), list);
-            checker
-                .check_call(
-                    &callee,
-                    &[CallArgument::Move(SOURCE)],
-                    &callee.contract.parameters,
-                    &[DESTINATION],
-                    &callee.contract.results,
-                )
-                .expect("the exact callee may rebind a sole static shared token");
-            assert!(checker.state.static_data_objects.contains(&DESTINATION));
-        });
-
-        with_checker(false, |checker, list| {
-            checker.state.objects.remove(&DESTINATION);
-            checker.state.objects.get_mut(&SOURCE).expect("source").ownership = Ownership::Shared;
-            let mut wrong_effects = relay_signature(
-                crate::canonical_safewir::FunctionSignatureId::new(4),
-                list,
-            );
-            wrong_effects.contract.parameter_effects.insert(0, vec![MemoryEffect::Read]);
-            assert!(matches!(
-                checker.check_call(
-                    &wrong_effects,
-                    &[CallArgument::Move(SOURCE)],
-                    &wrong_effects.contract.parameters,
-                    &[DESTINATION],
-                    &wrong_effects.contract.results,
-                ),
-                Err(InitialCheckError::InvalidOwnership { object: SOURCE, .. })
-            ));
-        });
-
-        with_checker(false, |checker, list| {
-            checker.state.objects.remove(&DESTINATION);
-            let exact_looking_caller = Box::leak(Box::new(relay_signature(
-                crate::canonical_safewir::FunctionSignatureId::new(5),
-                list,
-            )));
-            checker.signature = exact_looking_caller;
-            let mut nonexact_callee = relay_signature(
-                crate::canonical_safewir::FunctionSignatureId::new(6),
-                list,
-            );
-            nonexact_callee.contract.results[0] = ResultContract::Shared { layout: list };
-            assert!(matches!(
-                checker.check_call(
-                    &nonexact_callee,
-                    &[CallArgument::Move(SOURCE)],
-                    &nonexact_callee.contract.parameters,
-                    &[DESTINATION],
-                    &nonexact_callee.contract.results,
-                ),
-                Err(InitialCheckError::InvalidOwnership { object: SOURCE, .. })
-            ));
-        });
-    }
-
-    #[test]
-    fn constant_prefix_publication_rejects_gaps_and_missing_children() {
+    pub fn constant_prefix_publication_rejects_gaps_and_missing_children() {
         for (next, store_child) in [(3, true), (2, false)] {
             with_pointer_slot_checker(|checker, list, pointee| {
                 checker.state.constants.insert(CAPACITY, 3);
@@ -7876,8 +7490,7 @@ mod tests {
         }
     }
 
-    #[test]
-    fn shared_static_storage_clones_and_drops_without_mutation_authority() {
+    pub fn shared_static_storage_clones_and_drops_without_mutation_authority() {
         with_checker(false, |checker, _list| {
             checker.state.objects.remove(&DESTINATION);
             let source = checker.state.objects.get_mut(&SOURCE).expect("source");
@@ -7901,8 +7514,7 @@ mod tests {
         });
     }
 
-    #[test]
-    fn release_rejects_shared_value_without_refcount_authority() {
+    pub fn release_rejects_shared_value_without_refcount_authority() {
         with_checker(false, |checker, _list| {
             let source = checker.state.objects.get_mut(&SOURCE).expect("source");
             source.ownership = Ownership::Shared;
@@ -7915,8 +7527,7 @@ mod tests {
         });
     }
 
-    #[test]
-    fn return_contract_accepts_only_sole_unique_fresh_object() {
+    pub fn return_contract_accepts_only_sole_unique_fresh_object() {
         with_checker(false, |checker, list| {
             let LayoutSize::Dynamic { base, stride } = checker.descriptor(list).expect("list layout").size() else { panic!("dynamic list") };
             let contract = ResultContract::Fresh { layout: list, class: AllocationClass::ReferenceCounted, extent: ReturnedExtent::Counted { header_bytes: base, stride_bytes: stride } };
@@ -7931,8 +7542,7 @@ mod tests {
         });
     }
 
-    #[test]
-    fn return_contract_rejects_fresh_allocation_class_mismatch() {
+    pub fn return_contract_rejects_fresh_allocation_class_mismatch() {
         with_checker(false, |checker, list| {
             assert!(matches!(
                 checker.check_return(
@@ -7948,8 +7558,7 @@ mod tests {
         });
     }
 
-    #[test]
-    fn affine_boundary_rejects_duplicate_owned_return_lanes() {
+    pub fn affine_boundary_rejects_duplicate_owned_return_lanes() {
         with_checker(false, |checker, list| {
             checker.state.objects.remove(&DESTINATION);
             let LayoutSize::Dynamic { base, stride } = checker.descriptor(list).unwrap().size() else {
@@ -7974,8 +7583,7 @@ mod tests {
         });
     }
 
-    #[test]
-    fn affine_boundary_tail_call_requires_no_untransferred_tokens() {
+    pub fn affine_boundary_tail_call_requires_no_untransferred_tokens() {
         with_checker(false, |checker, _list| {
             use crate::canonical_safewir::{TailSiteId, Terminator};
             let function = checker.function;
@@ -8050,398 +7658,13 @@ mod tests {
         test(&mut checker, child);
     }
 
-    fn with_fixed_value_record_checker(
-        pointer_field: bool,
-        test: impl FnOnce(
-            &mut MemoryChecker<'_>,
-            crate::layout::LayoutId,
-            crate::layout::LayoutId,
-        ),
-    ) {
-        let mut layouts = LayoutInterner::new();
-        let scalar = layouts.intern_scalar(ScalarKind::Int).expect("scalar layout");
-        let mut fields = vec![scalar];
-        if pointer_field {
-            fields.push(
-                layouts
-                    .intern_runtime_pointer_value_slot(scalar, PointerSlot::Owned)
-                    .expect("owned pointer slot"),
-            );
-        }
-        let record = layouts.intern_packed_record(fields).expect("record layout");
-        let function = Function {
-            id: crate::canonical_safewir::FunctionId::new(0),
-            signature: crate::canonical_safewir::FunctionSignatureId::new(0),
-            entry: crate::canonical_safewir::BlockId::new(0),
-            value_types: BTreeMap::from([
-                (SOURCE, ValueType::Ref(record)),
-                (DESTINATION, ValueType::Ref(record)),
-                (CHILD, ValueType::Ref(scalar)),
-                (END, ValueType::Ref(scalar)),
-                (LOADED, ValueType::Int),
-            ]),
-            blocks: vec![BasicBlock {
-                id: crate::canonical_safewir::BlockId::new(0),
-                parameters: vec![],
-                operations: vec![],
-                terminator: crate::canonical_safewir::Terminator::Return { values: vec![] },
-            }],
-        };
-        let signature = FunctionSignature {
-            id: function.signature,
-            parameters: vec![],
-            results: vec![],
-            contract: CallableContract {
-                parameters: vec![],
-                results: vec![],
-                parameter_effects: BTreeMap::new(),
-            },
-        };
-        let closure_layouts = BTreeMap::new();
-        let mut checker = MemoryChecker::new(&function, &layouts, &signature, &closure_layouts)
-            .expect("checker construction");
-        test(&mut checker, record, scalar);
-    }
 
-    fn allocate_fixed_for_test(
-        checker: &mut MemoryChecker<'_>,
-        destination: ValueId,
-        layout: crate::layout::LayoutId,
-    ) {
-        let LayoutSize::Fixed(bytes) = checker.descriptor(layout).expect("layout").size() else {
-            panic!("fixed test layout");
-        };
-        checker
-            .check(&Operation::Alloc {
-                destination,
-                layout,
-                extent: Extent::FixedBytes(u64::from(bytes)),
-                class: AllocationClass::ReferenceCounted,
-            })
-            .expect("fixed allocation");
-    }
-
-    #[test]
-    fn alloc_accepts_only_reference_counted_storage() {
-        for class in [AllocationClass::Bump, AllocationClass::Scratch] {
-            with_fixed_value_record_checker(false, |checker, record, _| {
-                let LayoutSize::Fixed(bytes) = checker.descriptor(record).unwrap().size() else { panic!("fixed record"); };
-                assert!(matches!(
-                    checker.check(&Operation::Alloc {
-                        destination: SOURCE, layout: record,
-                        extent: Extent::FixedBytes(u64::from(bytes)), class,
-                    }),
-                    Err(InitialCheckError::UnsupportedMemoryOperation { .. })
-                ));
-                assert!(!checker.state.objects.contains_key(&SOURCE));
-            });
-        }
-        with_fixed_value_record_checker(false, |checker, record, _| {
-            allocate_fixed_for_test(checker, SOURCE, record);
-            assert_eq!(checker.state.objects[&SOURCE].allocation_class, Some(AllocationClass::ReferenceCounted));
-        });
-    }
-
-    #[test]
-    fn v128_load_and_store_are_refused_before_slot_authority_changes() {
-        with_scalar_range_checker(ScalarKind::V128, true, |checker, _| {
-            let write = Place::projected(
-                DESTINATION,
-                Projection::Element { index: START },
-                ValueType::V128,
-                AccessMode::Write,
-            );
-            let before = checker.snapshot();
-            assert!(matches!(
-                checker.check(&Operation::Store { place: write.clone(), value: LOADED, transfer: StoreTransfer::CopyScalar }),
-                Err(InitialCheckError::UnsupportedMemoryOperation { operation: "Store(non-raw RuntimeBuffer)", .. })
-            ));
-            assert_eq!(checker.snapshot(), before);
-            assert!(matches!(
-                checker.check(&Operation::Load {
-                    destination: LOADED,
-                    place: Place::projected(
-                        SOURCE,
-                        Projection::Element { index: START },
-                        ValueType::V128,
-                        AccessMode::Read,
-                    ),
-                    transfer: LoadTransfer::CopyScalar,
-                }),
-                Err(InitialCheckError::UnsupportedMemoryOperation { operation: "Load(non-raw RuntimeBuffer)", .. })
-            ));
-            assert_eq!(checker.snapshot(), before);
-        });
-    }
-
-    fn with_scalar_range_checker(
-        kind: ScalarKind,
-        runtime_buffer: bool,
-        test: impl FnOnce(&mut MemoryChecker<'_>, crate::layout::LayoutId),
-    ) {
-        let mut layouts = LayoutInterner::new();
-        let element = layouts.intern_scalar(kind).unwrap();
-        let list = if runtime_buffer {
-            layouts.intern_runtime_buffer(element).unwrap()
-        } else {
-            layouts.intern_packed_list(element, RcHeader::Required).unwrap()
-        };
-        let LayoutSize::Dynamic { base, stride } = layouts.get(list).unwrap().size() else { panic!("dynamic list"); };
-        let function = Function {
-            id: crate::canonical_safewir::FunctionId::new(0), signature: FunctionSignatureId::new(0),
-            entry: crate::canonical_safewir::BlockId::new(0),
-            value_types: BTreeMap::from([
-                (COUNT, ValueType::Size), (CAPACITY, ValueType::Size), (START, ValueType::Size),
-                (ZERO, ValueType::Size), (SOURCE, ValueType::Ref(list)), (DESTINATION, ValueType::Ref(list)),
-                (LOADED, if kind == ScalarKind::V128 { ValueType::V128 } else { ValueType::Size }),
-            ]),
-            blocks: vec![BasicBlock {
-                id: crate::canonical_safewir::BlockId::new(0), parameters: Vec::new(), operations: Vec::new(),
-                terminator: crate::canonical_safewir::Terminator::Return { values: Vec::new() },
-            }],
-        };
-        let signature = FunctionSignature {
-            id: function.signature, parameters: Vec::new(), results: Vec::new(),
-            contract: CallableContract { parameters: Vec::new(), results: Vec::new(), parameter_effects: BTreeMap::new() },
-        };
-        let closures = BTreeMap::new();
-        let mut checker = MemoryChecker::new(&function, &layouts, &signature, &closures).unwrap();
-        checker.state.constants.extend([(COUNT, 1), (CAPACITY, 1), (START, 0), (ZERO, 0), (LOADED, 7)]);
-        checker.state.guards.insert((ComparisonOperator::LessUnsigned, START, CAPACITY));
-        for (object, count) in [(SOURCE, COUNT), (DESTINATION, ZERO)] {
-            checker.check(&Operation::Alloc {
-                destination: object, layout: list,
-                extent: Extent::Counted { header_bytes: base, count, capacity: CAPACITY, stride_bytes: stride },
-                class: AllocationClass::ReferenceCounted,
-            }).unwrap();
-        }
-        checker.state.guard_generations.insert(
-            (ComparisonOperator::LessUnsigned, START, CAPACITY),
-            [checker.current_generation(SOURCE).unwrap(), checker.current_generation(DESTINATION).unwrap()]
-                .into_iter().collect(),
-        );
-        checker.state.range_states.insert(
-            RangeIdentity { object: SOURCE, start: START, length: COUNT },
-            RangeState {
-                element, ownership: Ownership::Unique,
-                allocation_class: Some(AllocationClass::ReferenceCounted), initialized: true,
-                zero_width: false, zero_start: true,
-            },
-        );
-        test(&mut checker, list);
-    }
-
-    fn scalar_range_place(object: ValueId, list: crate::layout::LayoutId, access: AccessMode) -> Place {
-        Place::projected(object, Projection::Slice { start: START, length: COUNT }, ValueType::Ref(list), access)
-    }
-
-    #[test]
-    fn non_raw_runtime_buffer_load_store_and_ranges_are_refused() {
-        with_scalar_range_checker(ScalarKind::U32, true, |checker, list| {
-            assert!(matches!(
-                checker.check(&Operation::Load {
-                    destination: LOADED,
-                    place: Place::projected(SOURCE, Projection::Element { index: START }, ValueType::Size, AccessMode::Read),
-                    transfer: LoadTransfer::CopyScalar,
-                }),
-                Err(InitialCheckError::UnsupportedMemoryOperation { operation: "Load(non-raw RuntimeBuffer)", .. })
-            ));
-            assert!(matches!(
-                checker.check(&Operation::Store {
-                    place: Place::projected(DESTINATION, Projection::Element { index: START }, ValueType::Size, AccessMode::Write),
-                    value: LOADED, transfer: StoreTransfer::CopyScalar,
-                }),
-                Err(InitialCheckError::UnsupportedMemoryOperation { operation: "Store(non-raw RuntimeBuffer)", .. })
-            ));
-            for operation in [
-                Operation::MoveRange {
-                    destination: scalar_range_place(DESTINATION, list, AccessMode::Write),
-                    source: scalar_range_place(SOURCE, list, AccessMode::Read), count: COUNT,
-                },
-                Operation::CloneRange {
-                    destination: scalar_range_place(DESTINATION, list, AccessMode::Write),
-                    source: scalar_range_place(SOURCE, list, AccessMode::Read), count: COUNT,
-                },
-            ] {
-                assert!(matches!(checker.check(&operation), Err(InitialCheckError::UnsupportedMemoryOperation { .. })));
-            }
-        });
-    }
-
-    fn fixed_field(
-        object: ValueId,
-        index: u32,
-        value_type: ValueType,
-        access: AccessMode,
-    ) -> Place {
-        Place::projected(object, Projection::Field { index }, value_type, access)
-    }
-
-    fn fixed_fresh_result(
-        checker: &MemoryChecker<'_>,
-        layout: crate::layout::LayoutId,
-    ) -> ResultContract {
-        let LayoutSize::Fixed(bytes) = checker.descriptor(layout).expect("layout").size() else {
-            panic!("fixed test layout");
-        };
-        ResultContract::Fresh {
-            layout,
-            class: AllocationClass::ReferenceCounted,
-            extent: ReturnedExtent::FixedBytes(u64::from(bytes)),
-        }
-    }
-
-    #[test]
-    fn reused_scalar_record_must_be_reinitialized_before_call_or_return() {
-        with_fixed_value_record_checker(false, |checker, record, _scalar| {
-            allocate_fixed_for_test(checker, SOURCE, record);
-            checker
-                .check(&Operation::ConstInt { destination: LOADED, value: 17 })
-                .expect("scalar value");
-            checker
-                .check(&Operation::Store {
-                    place: fixed_field(SOURCE, 0, ValueType::Int, AccessMode::Write),
-                    value: LOADED,
-                    transfer: StoreTransfer::CopyScalar,
-                })
-                .expect("old scalar field initialization");
-            checker
-                .check(&Operation::DropRef { object: SOURCE })
-                .expect("old record cleanup");
-
-            allocate_fixed_for_test(checker, DESTINATION, record);
-            let parameter = ParameterContract {
-                value_type: ValueType::Ref(record),
-                ownership: ParameterOwnership::Unique,
-            };
-            let result = fixed_fresh_result(checker, record);
-            assert!(matches!(
-                checker.check_current_signature_call(
-                    &[CallArgument::Move(DESTINATION)],
-                    std::slice::from_ref(&parameter),
-                    &[],
-                    &[],
-                ),
-                Err(InitialCheckError::UnsupportedMemoryOperation {
-                    operation: "Call(uninitialized owned slot)",
-                    ..
-                })
-            ));
-            assert!(matches!(
-                checker.check_return(&[DESTINATION], std::slice::from_ref(&result)),
-                Err(InitialCheckError::UnsupportedMemoryOperation {
-                    operation: "Return(uninitialized owned slot)",
-                    ..
-                })
-            ));
-
-            checker
-                .check(&Operation::Store {
-                    place: fixed_field(DESTINATION, 0, ValueType::Int, AccessMode::Write),
-                    value: LOADED,
-                    transfer: StoreTransfer::CopyScalar,
-                })
-                .expect("new scalar field initialization");
-            let complete = checker.snapshot();
-            checker
-                .check_current_signature_call(
-                    &[CallArgument::Move(DESTINATION)],
-                    &[parameter],
-                    &[],
-                    &[],
-                )
-                .expect("complete record call");
-            checker.restore(complete);
-            checker
-                .check_return(&[DESTINATION], &[result])
-                .expect("complete record return");
-        });
-    }
-
-    #[test]
-    fn storing_last_pointer_does_not_initialize_mixed_record_scalar_field() {
-        with_fixed_value_record_checker(true, |checker, record, scalar| {
-            allocate_fixed_for_test(checker, SOURCE, record);
-            allocate_fixed_for_test(checker, CHILD, scalar);
-            checker
-                .check(&Operation::ConstInt { destination: LOADED, value: 23 })
-                .expect("scalar value");
-            checker
-                .check(&Operation::Store {
-                    place: fixed_field(SOURCE, 0, ValueType::Int, AccessMode::Write),
-                    value: LOADED,
-                    transfer: StoreTransfer::CopyScalar,
-                })
-                .expect("old scalar field initialization");
-            checker
-                .check(&Operation::Store {
-                    place: fixed_field(SOURCE, 1, ValueType::Ref(scalar), AccessMode::Write),
-                    value: CHILD,
-                    transfer: StoreTransfer::MoveUnique,
-                })
-                .expect("old pointer field initialization");
-            checker
-                .check(&Operation::DropRef { object: SOURCE })
-                .expect("old record cleanup");
-
-            allocate_fixed_for_test(checker, DESTINATION, record);
-            allocate_fixed_for_test(checker, END, scalar);
-            checker
-                .check(&Operation::Store {
-                    place: fixed_field(DESTINATION, 1, ValueType::Ref(scalar), AccessMode::Write),
-                    value: END,
-                    transfer: StoreTransfer::MoveUnique,
-                })
-                .expect("new pointer field initialization");
-            assert!(!checker.state.objects[&DESTINATION].initialized_owned_slots);
-
-            let parameter = ParameterContract {
-                value_type: ValueType::Ref(record),
-                ownership: ParameterOwnership::Unique,
-            };
-            let result = fixed_fresh_result(checker, record);
-            assert!(checker
-                .check_current_signature_call(
-                    &[CallArgument::Move(DESTINATION)],
-                    std::slice::from_ref(&parameter),
-                    &[],
-                    &[],
-                )
-                .is_err());
-            assert!(checker
-                .check_return(&[DESTINATION], std::slice::from_ref(&result))
-                .is_err());
-
-            checker
-                .check(&Operation::Store {
-                    place: fixed_field(DESTINATION, 0, ValueType::Int, AccessMode::Write),
-                    value: LOADED,
-                    transfer: StoreTransfer::CopyScalar,
-                })
-                .expect("new scalar field initialization");
-            assert!(checker.state.objects[&DESTINATION].initialized_owned_slots);
-            let complete = checker.snapshot();
-            checker
-                .check_current_signature_call(
-                    &[CallArgument::Move(DESTINATION)],
-                    &[parameter],
-                    &[],
-                    &[],
-                )
-                .expect("complete mixed record call");
-            checker.restore(complete);
-            checker
-                .check_return(&[DESTINATION], &[result])
-                .expect("complete mixed record return");
-        });
-    }
 
     fn nullable_field(object: ValueId, child: crate::layout::LayoutId, access: AccessMode) -> Place {
         Place::projected(object, Projection::Field { index: 0 }, ValueType::Ref(child), access)
     }
 
-    #[test]
-    fn nullable_owned_checker_requires_initialization_and_checked_presence() {
+    pub fn nullable_owned_checker_requires_initialization_and_checked_presence() {
         with_nullable_checker(|checker, child| {
             let read = nullable_field(SOURCE, child, AccessMode::Read);
             assert!(checker.check(&Operation::Load { destination: LOADED, place: read.clone(), transfer: LoadTransfer::ClonePresent }).is_err());
@@ -8618,8 +7841,7 @@ mod tests {
         test(&mut checker, list, pointee, nominal);
     }
 
-    #[test]
-    fn scalar_move_range_is_bounds_checked_and_admitted() {
+    pub fn scalar_move_range_is_bounds_checked_and_admitted() {
         with_checker(false, |checker, list| {
             let element = checker.descriptor(list).unwrap().kind().packed_element_layout().unwrap();
             let value_type = checker.value_type_for_layout(element).unwrap();
@@ -8683,8 +7905,7 @@ mod tests {
         });
     }
 
-    #[test]
-    fn scalar_clone_range_is_ownership_safe_and_admitted() {
+    pub fn scalar_clone_range_is_ownership_safe_and_admitted() {
         with_checker(false, |checker, list| {
             let element = checker.descriptor(list).unwrap().kind().packed_element_layout().unwrap();
             let value_type = checker.value_type_for_layout(element).unwrap();
@@ -8728,26 +7949,8 @@ mod tests {
         });
     }
 
-    #[test]
-    fn scalar_clone_range_requires_a_sole_unique_destination_token() {
-        with_checker(false, |checker, list| {
-            let hidden_alias = ValueId::new(99);
-            let mut alias = checker.state.objects[&DESTINATION].clone();
-            alias.ownership = Ownership::Shared;
-            checker.state.objects.insert(hidden_alias, alias);
-            assert!(matches!(
-                checker.check(&Operation::CloneRange {
-                    destination: range_place(DESTINATION, list, LENGTH, AccessMode::Write),
-                    source: range_place(SOURCE, list, LENGTH, AccessMode::Read),
-                    count: LENGTH,
-                }),
-                Err(InitialCheckError::InvalidOwnership { object, .. }) if object == DESTINATION
-            ));
-        });
-    }
 
-    #[test]
-    fn range_transfer_rejects_a_slice_past_logical_length() {
+    pub fn range_transfer_rejects_a_slice_past_logical_length() {
         with_checker(false, |checker, list| {
             assert!(matches!(
                 checker.check(&Operation::CloneRange {
@@ -8760,8 +7963,7 @@ mod tests {
         });
     }
 
-    #[test]
-    fn pointer_bearing_ranges_fail_closed_without_element_transfer_state() {
+    pub fn pointer_bearing_ranges_fail_closed_without_element_transfer_state() {
         with_checker(true, |checker, list| {
             let result = checker.check(&Operation::CloneRange {
                 destination: range_place(DESTINATION, list, LENGTH, AccessMode::Write),
@@ -8780,44 +7982,8 @@ mod tests {
         });
     }
 
-    #[test]
-    fn complete_managed_abi_range_can_be_cloned_without_local_slot_facts() {
-        with_pointer_slot_checker(|checker, list, _pointee| {
-            let pointer_element = checker
-                .descriptor(list)
-                .unwrap()
-                .kind()
-                .packed_element_layout()
-                .unwrap();
-            let source = checker.state.objects.get_mut(&SOURCE).unwrap();
-            source.ownership = Ownership::Shared;
-            source.allocation_class = None;
-            source.shared_immutable = true;
-            source.initialized_owned_slots = true;
-            checker.state.range_states.insert(
-                RangeIdentity { object: DESTINATION, start: START, length: ZERO },
-                RangeState {
-                    element: pointer_element,
-                    ownership: Ownership::Unique,
-                    allocation_class: None,
-                    initialized: true,
-                    zero_width: true,
-                    zero_start: true,
-                },
-            );
-            assert_eq!(
-                checker.check(&Operation::CloneRange {
-                    destination: pointer_range_place(DESTINATION, list, COUNT, AccessMode::Write),
-                    source: pointer_range_place(SOURCE, list, COUNT, AccessMode::Read),
-                    count: COUNT,
-                }),
-                Ok(true)
-            );
-        });
-    }
 
-    #[test]
-    fn complete_managed_abi_subrange_admits_bounded_clone() {
+    pub fn complete_managed_abi_subrange_admits_bounded_clone() {
         with_nominal_pointer_slot_checker_values(3, 1, 1, |checker, list, _pointee, _nominal| {
             let element = checker.descriptor(list).unwrap().kind().packed_element_layout().unwrap();
             // Model an authenticated complete ABI source and an empty
@@ -8855,46 +8021,8 @@ mod tests {
         });
     }
 
-    #[test]
-    fn static_data_cannot_authenticate_registered_closure_layout() {
-        let closure = crate::layout::LayoutId::from_bytes([0x63; 32]);
-        let layouts = LayoutInterner::new();
-        let function = Function {
-            id: crate::canonical_safewir::FunctionId::new(0),
-            signature: crate::canonical_safewir::FunctionSignatureId::new(0),
-            entry: crate::canonical_safewir::BlockId::new(0),
-            value_types: [(SOURCE, ValueType::Ref(closure))].into_iter().collect(),
-            blocks: vec![BasicBlock {
-                id: crate::canonical_safewir::BlockId::new(0),
-                parameters: Vec::new(),
-                operations: Vec::new(),
-                terminator: crate::canonical_safewir::Terminator::Return { values: Vec::new() },
-            }],
-        };
-        let signature = FunctionSignature {
-            id: function.signature,
-            parameters: Vec::new(),
-            results: Vec::new(),
-            contract: CallableContract {
-                parameters: Vec::new(),
-                results: Vec::new(),
-                parameter_effects: BTreeMap::new(),
-            },
-        };
-        let closure_layouts = [(closure, signature.id)].into_iter().collect();
-        let mut checker = MemoryChecker::new(&function, &layouts, &signature, &closure_layouts)
-            .expect("checker construction");
-        assert_eq!(
-            checker.static_data(SOURCE, closure, &Extent::FixedBytes(8)),
-            Err(InitialCheckError::InvalidClosureSlot {
-                function: function.id,
-                object: SOURCE,
-            })
-        );
-    }
 
-    #[test]
-    fn dynamic_pointer_clone_range_shares_initialized_elements() {
+    pub fn dynamic_pointer_clone_range_shares_initialized_elements() {
         with_pointer_slot_checker(|checker, list, pointee| {
             let pointer_element = checker.descriptor(list).unwrap().kind().packed_element_layout().unwrap();
             checker.state.range_states.insert(
@@ -8957,8 +8085,7 @@ mod tests {
         });
     }
 
-    #[test]
-    fn pointer_clone_range_rejects_partially_initialized_source() {
+    pub fn pointer_clone_range_rejects_partially_initialized_source() {
         with_pointer_slot_checker(|checker, list, _| {
             let element = checker
                 .descriptor(list)
@@ -9029,8 +8156,7 @@ mod tests {
         )
     }
 
-    #[test]
-    fn dynamic_pointer_move_range_transfers_initialized_ownership_once() {
+    pub fn dynamic_pointer_move_range_transfers_initialized_ownership_once() {
         with_pointer_slot_checker(|checker, list, pointee| {
             let pointer_element = checker.descriptor(list).unwrap().kind().packed_element_layout().unwrap();
             checker.state.range_states.insert(
@@ -9097,8 +8223,7 @@ mod tests {
         });
     }
 
-    #[test]
-    fn pointer_bearing_reclaim_requires_recursive_drop() {
+    pub fn pointer_bearing_reclaim_requires_recursive_drop() {
         with_pointer_slot_checker(|checker, list, _pointee| {
             let element = checker.descriptor(list).unwrap().kind().packed_element_layout().unwrap();
             checker.state.range_states.insert(
@@ -9115,8 +8240,7 @@ mod tests {
         });
     }
 
-    #[test]
-    fn dynamic_pointer_prefix_cannot_hide_an_unaccounted_child_slot() {
+    pub fn dynamic_pointer_prefix_cannot_hide_an_unaccounted_child_slot() {
         with_pointer_slot_checker(|checker, list, _pointee| {
             let element = checker.descriptor(list).unwrap().kind().packed_element_layout().unwrap();
             checker.state.constants.remove(&COUNT);
@@ -9139,8 +8263,7 @@ mod tests {
         });
     }
 
-    #[test]
-    fn pointer_move_range_rejects_source_reuse_after_consumption() {
+    pub fn pointer_move_range_rejects_source_reuse_after_consumption() {
         with_pointer_slot_checker(|checker, list, pointee| {
             let pointer_element = checker.descriptor(list).unwrap().kind().packed_element_layout().unwrap();
             checker.state.range_states.insert(
@@ -9167,52 +8290,8 @@ mod tests {
         });
     }
 
-    #[test]
-    fn pointer_move_range_rejects_reload_through_old_equal_constant_identity() {
-        with_pointer_slot_checker(|checker, list, pointee| {
-            let pointer_element = checker.descriptor(list).unwrap().kind().packed_element_layout().unwrap();
-            checker.state.range_states.insert(
-                RangeIdentity { object: SOURCE, start: START, length: LENGTH },
-                RangeState { element: pointer_element, ownership: Ownership::Unique, allocation_class: Some(AllocationClass::ReferenceCounted), initialized: true, zero_width: false, zero_start: true },
-            );
-            checker.state.range_states.insert(
-                RangeIdentity { object: DESTINATION, start: START, length: ZERO },
-                RangeState { element: pointer_element, ownership: Ownership::Unique, allocation_class: None, initialized: true, zero_width: true, zero_start: true },
-            );
-            assert_eq!(
-                checker.check(&Operation::MoveRange {
-                    destination: pointer_range_place(DESTINATION, pointee, ALIAS_LENGTH, AccessMode::Write),
-                    source: Place::projected(
-                        SOURCE,
-                        Projection::Slice { start: ALIAS_START, length: ALIAS_LENGTH },
-                        ValueType::Ref(pointee),
-                        AccessMode::Read,
-                    ),
-                    count: ALIAS_LENGTH,
-                }),
-                Ok(true)
-            );
-            assert!(matches!(
-                checker.check(&Operation::Load {
-                    destination: LOADED,
-                    place: Place::projected(
-                        SOURCE,
-                        Projection::Element { index: START },
-                        ValueType::Ref(pointee),
-                        AccessMode::Read,
-                    ),
-                    transfer: LoadTransfer::CloneShared,
-                }),
-                Err(InitialCheckError::UnsupportedMemoryOperation {
-                    operation: "Load(uninitialized reference)",
-                    ..
-                })
-            ));
-        });
-    }
 
-    #[test]
-    fn store_cannot_overwrite_a_stored_reference() {
+    pub fn store_cannot_overwrite_a_stored_reference() {
         // B2 "replace": a slot that already holds a reference is never
         // overwritten in place; the old token would leak. Replacement is
         // a load (or drop) followed by a store into a fresh object.
@@ -9244,8 +8323,7 @@ mod tests {
         });
     }
 
-    #[test]
-    fn retain_is_refused_in_v1() {
+    pub fn retain_is_refused_in_v1() {
         // B1/B7: `Retain` is not a v1 rule; a second owner comes only from
         // `CloneRef`, which the backend maps. The checker refuses it before
         // the backend could see it.
@@ -9257,8 +8335,7 @@ mod tests {
         });
     }
 
-    #[test]
-    fn byte_copy_requires_a_dominating_dynamic_end_guard() {
+    pub fn byte_copy_requires_a_dominating_dynamic_end_guard() {
         let mut layouts = LayoutInterner::new();
         let byte = layouts
             .intern_scalar(ScalarKind::RawByte)

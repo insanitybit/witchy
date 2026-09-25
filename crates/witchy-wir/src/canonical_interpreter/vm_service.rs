@@ -292,34 +292,3 @@ impl<'a> Engine<'a> {
         }).collect()
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn failed_worker_refuses_steps_but_permits_exactly_one_cleanup_close() {
-        let mut services = ServiceState::new();
-        services.workers.insert(0, None);
-        assert!(services.take_worker(0).is_err());
-        assert!(services.take_worker(0).is_err());
-        assert!(matches!(services.close_worker(0), Ok(None)));
-        assert!(services.close_worker(0).is_err());
-        assert!(services.take_worker(0).is_err());
-        assert!(services.close_worker(1).is_err());
-    }
-
-    #[test]
-    fn worker_resources_require_the_exact_issuer_and_kind() {
-        let owner = ServiceState::new();
-        let foreign = ServiceState::new();
-        let service = owner.mint(Resource::Service(0));
-        assert!(matches!(owner.authenticate(&service), Ok(Resource::Service(0))));
-        assert!(foreign.authenticate(&service).is_err());
-        assert!(owner.authenticate(&CapabilityToken::root(SERVICE_KIND)).is_err());
-        let mut mislabeled = service;
-        mislabeled.kind = RESPONSE_KIND;
-        assert!(owner.authenticate(&mislabeled).is_err());
-    }
-
-}

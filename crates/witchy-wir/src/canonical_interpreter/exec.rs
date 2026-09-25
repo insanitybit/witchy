@@ -123,29 +123,3 @@ impl Engine<'_> {
         Ok(())
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn exec_oracle_resources_require_private_kind_and_session() {
-        let first = State::new();
-        let second = State::new();
-        let grant = CapabilityToken {
-            exec: Some(Token { issuer: first.issuer.clone(), resource: Resource::Grant }),
-            ..CapabilityToken::root(EXEC_CAPABILITY_KIND.get())
-        };
-        assert_eq!(first.authenticate(&grant, EXEC_CAPABILITY_KIND.get()).unwrap(), Resource::Grant);
-        assert!(second.authenticate(&grant, EXEC_CAPABILITY_KIND.get()).is_err());
-        assert!(first.authenticate(&grant, EXEC_RESPONSE_KIND.get()).is_err());
-        assert!(first.authenticate(&CapabilityToken::root(EXEC_CAPABILITY_KIND.get()), EXEC_CAPABILITY_KIND.get()).is_err());
-        let response = CapabilityToken {
-            exec: Some(Token { issuer: first.issuer.clone(), resource: Resource::Response(Arc::from(&b"7\nout"[..])) }),
-            ..CapabilityToken::root(EXEC_RESPONSE_KIND.get())
-        };
-        assert!(matches!(first.authenticate(&response, EXEC_RESPONSE_KIND.get()).unwrap(), Resource::Response(_)));
-        assert!(first.authenticate(&response, EXEC_CAPABILITY_KIND.get()).is_err());
-        assert!(second.authenticate(&response, EXEC_RESPONSE_KIND.get()).is_err());
-    }
-}

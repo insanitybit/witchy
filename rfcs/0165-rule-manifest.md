@@ -2,7 +2,7 @@
 
 Generated from `crates/witchy-wir/src/canonical_safewir/manifest.rs`; the test
 `manifest_document_is_current` fails when this file drifts. Regenerate with
-`WITCHY_BLESS_RULE_MANIFEST=1 cargo test -p witchy-wir --lib --features native manifest`.
+`WITCHY_BLESS_RULE_MANIFEST=1 cargo test -p witchy-wir --test unit manifest`.
 
 Evidence files: check = `crates/witchy-wir/src/canonical_safewir/check.rs`, memory = `crates/witchy-wir/src/canonical_safewir/check/memory.rs`, interpreter = `crates/witchy-wir/src/canonical_interpreter.rs`, backend = `crates/witchy-wir/src/canonical_wasmir.rs`, launch = `tests/misc/rfc0165_admitted_launch.rs`, authority = `crates/witchy-wir/src/canonical_safewir/authority.rs`, owner checker = `crates/witchy-wir/src/canonical_safewir/check/owners.rs`, owner backend = `crates/witchy-wir/src/canonical_wasmir/closure_owner_kernel.rs`, owner launch = `tests/misc/rfc0165_oracle.rs`, owner runtime = `crates/witchy-runtime/src/runtime/host/closure_owner.rs`.
 

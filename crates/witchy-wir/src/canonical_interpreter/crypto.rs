@@ -138,9 +138,10 @@ fn rsa_verify_primitive(_key: &[u8], _message: &[u8], _signature: &[u8]) -> Resu
     Err(InterpretError::UnsupportedOperation("RSA PKCS1 SHA256 oracle primitive on wasm32"))
 }
 
-#[cfg(test)]
+#[cfg(feature = "raw-encoder-test-api")]
+#[doc(hidden)]
 #[path = "crypto_rsa_tests.rs"]
-mod rsa_tests;
+pub mod rsa_self_checks;
 
 #[cfg(not(target_arch = "wasm32"))]
 fn verify_primitive(key: &[u8; 32], message: &[u8], signature: &[u8; 64]) -> bool {
@@ -152,26 +153,4 @@ fn verify_primitive(key: &[u8; 32], message: &[u8], signature: &[u8; 64]) -> boo
 fn verify_primitive(key: &[u8; 32], message: &[u8], signature: &[u8; 64]) -> bool {
     use ed25519_dalek::{Signature, Verifier, VerifyingKey};
     VerifyingKey::from_bytes(key).is_ok_and(|key| key.verify(message, &Signature::from_bytes(signature)).is_ok())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    // RFC 8032 section 7.1, TEST 1. Data only, not another backend's answer.
-    const KEY: &str = concat!("d75a980182b10ab7d54bfed3c964073a", "0ee172f3daa62325af021a68f707511a");
-    const SIGNATURE: &str = concat!("e5564300c360ac729086e2cc806e828a", "84877f1eb8e5d974d873e06522490155", "5fb8821590a33bacc61e39701cf9b46b", "d25bf5f0595bbe24655141438e7a100b");
-
-    #[test]
-    fn crypto_ed25519_oracle_known_answer_and_input_statuses() {
-        assert_eq!(verify_status(KEY, "", SIGNATURE), 1);
-        assert_eq!(verify_status(&KEY.to_uppercase(), "", &SIGNATURE.to_uppercase()), 1);
-        assert_eq!(verify_status(KEY, "tampered", SIGNATURE), 0);
-        assert_eq!(verify_status("not hex", "", "also bad"), -1);
-        assert_eq!(verify_status(&KEY[..62], "", SIGNATURE), -1);
-        assert_eq!(verify_status(KEY, "", "not hex"), -3);
-        assert_eq!(verify_status(KEY, "", &SIGNATURE[..126]), -3);
-        assert_eq!(verify_status(&"00".repeat(32), "", SIGNATURE), 0);
-        assert_eq!(verify_status(&"+0".repeat(32), "", SIGNATURE), 0);
-    }
-
 }

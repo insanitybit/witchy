@@ -6,6 +6,12 @@ publish = false            # internal workspace crate — not published standalo
 license = "MIT OR Apache-2.0"
 description = "witchy compiler — the WIR intermediate representation, peephole opt, runtime-helper prelude, and wasm encoder"
 
+# No cfg(test) copy of this crate: its in-crate checks are `self_checks`
+# modules behind `raw-encoder-test-api`, driven from `tests/unit.rs`.
+[lib]
+test = false
+doctest = false
+
 [build-dependencies]
 # build.rs stamps the checker's persistent verdict store with a source digest.
 blake3 = "1.8.3"

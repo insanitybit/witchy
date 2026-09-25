@@ -78,13 +78,12 @@ fn execute(bytes: &[u8]) -> (i32, i64) {
     output
 }
 
-#[test]
-fn unit_storage_construct_call_native_oracle() {
+pub fn unit_storage_construct_call_native_oracle() {
     let checked = validated();
     let oracle = interpret_program(&checked, FunctionId::new(101), vec![], InterpreterConfig::default()).unwrap();
     assert_eq!(oracle.results, vec![InterpreterValue::Unit, InterpreterValue::Int(SENTINEL)]);
     assert_eq!(oracle.leaked_objects, 0);
-    let artifact = admit_canonical(checked).expect("Unit exact-byte plan admission");
+    let artifact = admit_canonical_for_test(checked).expect("Unit exact-byte plan admission");
     assert_eq!(execute(artifact.wasm()), (0, SENTINEL));
     let store = artifact.wasm().windows(3).position(|w| w == [0x41, 0, 0x36]).expect("Unit zero store");
     let mut poisoned = artifact.wasm().to_vec();
@@ -93,8 +92,7 @@ fn unit_storage_construct_call_native_oracle() {
     assert!(admit_canonical_with_bytes_for_test(validated(), poisoned).is_err(), "expected-byte plan binds the zero store");
 }
 
-#[test]
-fn unit_storage_rejects_type_layout_initialization_and_bounds() {
+pub fn unit_storage_rejects_type_layout_initialization_and_bounds() {
     for fault in [Fault::WrongStore, Fault::BoolStore, Fault::Layout, Fault::Uninitialized, Fault::Oob, Fault::ShortExtent, Fault::Dead, Fault::Literal] {
         assert!(check_initial_with_test_witness(candidate(fault)).is_err());
     }

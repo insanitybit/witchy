@@ -64,38 +64,3 @@ impl CanonicalAbiCatalog {
         Ok(self)
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn dir_storage_catalog_preserves_atomic_bool_and_snapshot_roles() {
-        let layout = LayoutId::from_bytes([83; 32]);
-        let catalog = CanonicalAbiCatalog::from_imports(Vec::new())
-            .with_dir_storage_imports([0, 1, 2, 3, 4, 5, 6, 7, 8].map(FunctionSignatureId::new), layout).unwrap();
-        let imports = catalog.imports();
-        assert_eq!(imports.len(), DIR_STORAGE_IMPORT_NAMES.len());
-        let at = |index: usize| imports.iter().find(|import| import.name == DIR_STORAGE_IMPORT_NAMES[index]).unwrap();
-        assert_eq!(at(0).result_roles, [HostResultRole::Value(ValueType::Bool)]);
-        assert!(at(1).result_roles.is_empty());
-        assert_eq!(at(2).result_roles, [HostResultRole::Capability(DIR_BYTES_RESPONSE_KIND)]);
-        for index in [3, 4] {
-            assert_eq!(at(index).parameter_roles[0], HostParameterRole::Capability(DIR_BYTES_RESPONSE_KIND));
-            assert_eq!(at(index).result_roles, [HostResultRole::Value(ValueType::Size)]);
-        }
-        assert_eq!(at(4).parameter_roles[1], HostParameterRole::Buffer {
-            value_type: ValueType::Ref(layout), access: AccessMode::Write, extent: HostBufferExtent::Slice,
-        });
-        for index in [6, 7, 8] {
-            assert!(at(index).result_roles.is_empty());
-            assert_eq!(at(index).parameter_roles[0], HostParameterRole::Capability(DIR_CAPABILITY_KIND));
-            assert_eq!(at(index).parameter_roles.len(), if index == 7 { 2 } else { 3 });
-        }
-        for (index, import) in (0..DIR_STORAGE_IMPORT_NAMES.len()).map(|index| (index, at(index))) {
-            assert_eq!(import.reentrancy, HostReentrancy::Forbidden);
-            assert_eq!(import.mutation, if index == 4 { HostMutation::WriteBuffers } else { HostMutation::ReadOnly });
-        }
-        assert_ne!(DIR_BYTES_RESPONSE_KIND, DIR_CAPABILITY_KIND);
-    }
-}

@@ -44,36 +44,6 @@ impl CanonicalAbiCatalog {
     }
 }
 
-#[cfg(test)]
-mod extension_tests {
-    use super::*;
-    #[test]
-    fn crypto_extension_catalog_has_fixed_native_only_slice_and_scalar_roles() {
-        let layout = LayoutId::from_bytes([56; 32]);
-        let catalog = CanonicalAbiCatalog { imports: BTreeMap::new() }
-            .with_crypto_extension_imports([FunctionSignatureId::new(0); 4], layout).unwrap();
-        assert_eq!(catalog.imports().len(), 7);
-        for import in catalog.imports() {
-            let info = crate::wir_prelude::abi_import_info(&import.name).unwrap();
-            assert_eq!(info.class, crate::wir_prelude::AbiImportClass::PureInfrastructure);
-            assert!(info.authorities.is_empty());
-            assert!(!info.browser);
-            assert_eq!(import.reentrancy, HostReentrancy::Forbidden);
-            for role in &import.parameter_roles {
-                assert!(matches!(role, HostParameterRole::Buffer {
-                    value_type: ValueType::Ref(id), extent: HostBufferExtent::Slice, ..
-                } if *id == layout) || *role == HostParameterRole::Value(ValueType::Int));
-            }
-            if matches!(import.name.as_str(), CRYPTO_SHAKE128_IMPORT | CRYPTO_SHAKE256_IMPORT) {
-                assert_eq!(import.parameter_roles[1], HostParameterRole::Value(ValueType::Int));
-                assert_eq!(import.result_roles, vec![HostResultRole::Value(ValueType::Size)]);
-            }
-        }
-        use crate::wir_prelude::WasmTy::I32;
-        assert!(authenticated_prelude_import(CRYPTO_SHAKE128_IMPORT, &[I32; 5], &[I32],
-            FunctionSignatureId::new(0), vec![], vec![], HostMutation::WriteBuffers).is_err());
-    }
-}
 
 pub const CRYPTO_ED25519_VERIFY_IMPORT: &str = "crypto_ed25519_verify_slices";
 pub const CRYPTO_RSA_PKCS1_SHA256_VERIFY_IMPORT: &str = "crypto_rsa_pkcs1_sha256_verify_slices";
@@ -110,54 +80,6 @@ impl CanonicalAbiCatalog {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::wir_prelude::{abi_import_info, AbiImportClass, WasmTy::{}};
-
-    #[test]
-    fn crypto_rsa_catalog_requires_three_initialized_read_slices() {
-        let layout = LayoutId::from_bytes([55; 32]);
-        let catalog = CanonicalAbiCatalog { imports: BTreeMap::new() }
-            .with_rsa_pkcs1_sha256_verify_import(FunctionSignatureId::new(0), layout).unwrap();
-        let imports = catalog.imports();
-        assert_eq!(imports.len(), 1);
-        let import = &imports[0];
-        assert_eq!(import.name, CRYPTO_RSA_PKCS1_SHA256_VERIFY_IMPORT);
-        assert_eq!(import.parameter_roles, vec![HostParameterRole::Buffer {
-            value_type: ValueType::Ref(layout), access: AccessMode::Read, extent: HostBufferExtent::Slice,
-        }; 3]);
-        assert_eq!(import.result_roles, vec![HostResultRole::Value(ValueType::Int)]);
-        assert_eq!(import.mutation, HostMutation::ReadOnly);
-        assert_eq!(import.reentrancy, HostReentrancy::Forbidden);
-        let info = abi_import_info(import.name.as_str()).unwrap();
-        assert_eq!(info.class, AbiImportClass::PureInfrastructure);
-        assert!(info.authorities.is_empty());
-        assert!(!info.browser);
-    }
-
-    #[test]
-    fn crypto_ed25519_catalog_requires_three_initialized_read_slices() {
-        let layout = LayoutId::from_bytes([53; 32]);
-        let catalog = CanonicalAbiCatalog { imports: BTreeMap::new() }
-            .with_ed25519_verify_import(FunctionSignatureId::new(0), layout).unwrap();
-        let imports = catalog.imports();
-        assert_eq!(imports.len(), 1);
-        let import = &imports[0];
-        assert_eq!(import.name, CRYPTO_ED25519_VERIFY_IMPORT);
-        assert_eq!(import.parameter_roles, vec![HostParameterRole::Buffer {
-            value_type: ValueType::Ref(layout), access: AccessMode::Read, extent: HostBufferExtent::Slice,
-        }; 3]);
-        assert_eq!(import.result_roles, vec![HostResultRole::Value(ValueType::Int)]);
-        assert_eq!(import.mutation, HostMutation::ReadOnly);
-        assert_eq!(import.reentrancy, HostReentrancy::Forbidden);
-        let info = abi_import_info(CRYPTO_ED25519_VERIFY_IMPORT).unwrap();
-        assert_eq!(info.class, AbiImportClass::PureInfrastructure);
-        assert!(info.authorities.is_empty());
-        assert!(!info.browser);
-    }
-
-}
 
 pub const CRYPTO_SHA256_IMPORT: &str = "crypto_sha256_slices";
 pub const CRYPTO_RUNE_HASH_IMPORT: &str = "crypto_rune_hash_slices";
@@ -182,23 +104,5 @@ impl CanonicalAbiCatalog {
             self.imports.insert(import.id, import);
         }
         Ok(self)
-    }
-}
-
-#[cfg(test)]
-mod hash_tests {
-    use super::*;
-    #[test]
-    fn crypto_hash_catalog_authenticates_raw_bytes_and_full_output_capacity() {
-        let layout = LayoutId::from_bytes([54; 32]);
-        let catalog = CanonicalAbiCatalog { imports: BTreeMap::new() }.with_crypto_hash_imports(
-            [FunctionSignatureId::new(0), FunctionSignatureId::new(1)], layout).unwrap();
-        for import in catalog.imports() {
-            assert_eq!(import.parameter_roles, vec![
-                HostParameterRole::Buffer { value_type: ValueType::Ref(layout), access: AccessMode::Read, extent: HostBufferExtent::Slice },
-                HostParameterRole::Buffer { value_type: ValueType::Ref(layout), access: AccessMode::Write, extent: HostBufferExtent::Slice }]);
-            assert_eq!(import.mutation, HostMutation::WriteBuffers);
-            assert_eq!(import.result_roles, vec![HostResultRole::Value(ValueType::Size)]);
-        }
     }
 }

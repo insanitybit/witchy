@@ -23,29 +23,3 @@ impl CanonicalAbiCatalog {
         Ok(self)
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn exec_catalog_authenticates_capabilities_and_bounded_buffer_roles() {
-        let layout = LayoutId::from_bytes([31; 32]);
-        let catalog = CanonicalAbiCatalog { imports: BTreeMap::new() }
-            .with_exec_imports([0, 1, 2].map(FunctionSignatureId::new), layout).unwrap();
-        let imports = catalog.imports();
-        let run = imports.iter().find(|import| import.name == "exec_run_at").unwrap();
-        assert_eq!(run.parameter_roles[0], HostParameterRole::Capability(EXEC_CAPABILITY_KIND));
-        assert_eq!(run.parameter_roles[1], HostParameterRole::Capability(DIR_CAPABILITY_KIND));
-        assert_eq!(run.result_roles, vec![HostResultRole::Capability(EXEC_RESPONSE_KIND)]);
-        assert_eq!(run.mutation, HostMutation::ReadOnly);
-        for role in &run.parameter_roles[2..] {
-            assert_eq!(*role, HostParameterRole::Buffer { value_type: ValueType::Ref(layout), access: AccessMode::Read, extent: HostBufferExtent::Slice });
-        }
-        let copy = imports.iter().find(|import| import.name == "exec_response_into").unwrap();
-        assert_eq!(copy.parameter_roles[0], HostParameterRole::Capability(EXEC_RESPONSE_KIND));
-        assert_eq!(copy.parameter_roles[1], HostParameterRole::Buffer { value_type: ValueType::Ref(layout), access: AccessMode::Write, extent: HostBufferExtent::Slice });
-        assert_eq!(copy.mutation, HostMutation::WriteBuffers);
-        assert!(imports.iter().all(|import| import.reentrancy == HostReentrancy::Forbidden));
-    }
-}

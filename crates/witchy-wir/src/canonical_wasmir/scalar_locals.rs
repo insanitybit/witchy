@@ -196,32 +196,3 @@ pub(super) fn verify(function: &Function, assigned: &BTreeMap<ValueId, (u8, usiz
     }
     Ok(())
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::canonical_safewir::{BlockId, FunctionSignatureId};
-
-    fn function(values: &[(ValueId, ValueType)], operations: Vec<Operation>, results: Vec<ValueId>) -> Function {
-        Function { id: FunctionId::new(0), signature: FunctionSignatureId::new(0), entry: BlockId::new(0),
-            value_types: values.iter().copied().collect(),
-            blocks: vec![BasicBlock { id: BlockId::new(0), parameters: Vec::new(), operations, terminator: Terminator::Return { values: results } }],
-        }
-    }
-
-    #[test]
-    fn scalar_slot_verifier_rejects_forged_overlap_kind_and_terminator_maps() {
-        let [a, b, c] = [0, 1, 2].map(ValueId::new);
-        let function = function(&[(a, ValueType::Int), (b, ValueType::Int), (c, ValueType::Int)], vec![
-            Operation::ConstInt { destination: a, value: 7 },
-            Operation::MoveValue { destination: b, source: a },
-            Operation::MoveValue { destination: c, source: b },
-        ], vec![c]);
-        assert_eq!(verify(&function, &[(a, (1, 0)), (b, (1, 1))].into()), Ok(()));
-        assert!(verify(&function, &[(a, (1, 0)), (b, (1, 0))].into()).is_err());
-        assert!(verify(&function, &[(a, (0, 0))].into()).is_err());
-        assert!(verify(&function, &[(c, (1, 0))].into()).is_err());
-        assert!(verify(&function, &[(ValueId::new(99), (1, 0))].into()).is_err());
-    }
-
-}

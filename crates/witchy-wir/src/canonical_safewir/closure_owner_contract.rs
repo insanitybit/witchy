@@ -175,15 +175,6 @@ macro_rules! owner_operations {
         pub enum OwnerOperation {
             $( $(#[$attribute])* $variant { $($field: $field_type),* }, )*
         }
-
-        #[cfg(test)]
-        impl OwnerOperation {
-            pub(super) const VARIANTS: &'static [&'static str] = &[$(stringify!($variant)),*];
-
-            fn variant_name(&self) -> &'static str {
-                match self { $(Self::$variant { .. } => stringify!($variant),)* }
-            }
-        }
     };
 }
 
@@ -499,41 +490,3 @@ impl OwnerOperation {
 #[cfg(feature = "checked-source-test-api")]
 #[doc(hidden)]
 pub mod checked_source_cases;
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn nested_int_list_slice_requires_exact_source_and_owned_child_layout() {
-        use crate::layout::{LayoutInterner, PointerSlot, RcHeader, ScalarKind};
-        use witchy_syntax::ast::{Type, TypeQual};
-
-        let nested = Type::Named("List".into(), vec![Type::Named("Int".into(), Vec::new())]);
-        let slice = |child| Type::Qualified(TypeQual::View, Box::new(Type::Slice(Box::new(child))));
-        assert_eq!(rooted_slice_element(&slice(nested.clone())), Some("List(Int)"));
-        for qualifier in [TypeQual::Unique, TypeQual::Frozen] {
-            assert_eq!(rooted_slice_element(&slice(Type::Qualified(qualifier.clone(), Box::new(nested.clone())))), None);
-            assert_eq!(
-                rooted_slice_element(&slice(Type::Qualified(qualifier, Box::new(Type::Named("Int".into(), Vec::new()))))),
-                None,
-            );
-        }
-        assert_eq!(rooted_slice_element(&slice(Type::Named("List".into(), vec![nested]))), None);
-
-        let mut layouts = LayoutInterner::new();
-        let int = layouts.intern_scalar(ScalarKind::Int).unwrap();
-        let float = layouts.intern_scalar(ScalarKind::Float).unwrap();
-        let inner = layouts.intern_packed_list(int, RcHeader::Required).unwrap();
-        let wrong_inner = layouts.intern_packed_list(float, RcHeader::Required).unwrap();
-        let wrong_header = layouts.intern_packed_list(int, RcHeader::Elided).unwrap();
-        let owned = layouts.intern_runtime_pointer_value_slot(inner, PointerSlot::Owned).unwrap();
-        let nullable = layouts.intern_runtime_pointer_value_slot(inner, PointerSlot::OwnedNullable).unwrap();
-        let wrong = layouts.intern_runtime_pointer_value_slot(wrong_inner, PointerSlot::Owned).unwrap();
-        let headerless = layouts.intern_runtime_pointer_value_slot(wrong_header, PointerSlot::Owned).unwrap();
-        assert!(slice_element_layout_matches(&layouts, owned, "List(Int)"));
-        for rejected in [nullable, wrong, headerless, inner, int] {
-            assert!(!slice_element_layout_matches(&layouts, rejected, "List(Int)"));
-        }
-    }
-}

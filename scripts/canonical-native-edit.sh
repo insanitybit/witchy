@@ -24,7 +24,7 @@ temporary="$(mktemp -d "${TMPDIR:-/tmp}/witchy-canonical-edit.XXXXXX")"
 trap 'rm -rf "$temporary"' EXIT
 cargo_metadata="$temporary/cargo.json"
 binaries_metadata="$temporary/binaries.json"
-targets=(--lib --bin witchy --test rfc0165_route_gate --test misc --test cli_subcommands)
+targets=(--lib --bin witchy --test unit --test rfc0165_route_gate --test misc --test cli_subcommands)
 lower_scope='package(=witchy-lower) and kind(lib)'
 if [ "$recipe" -eq 1 ]; then
     targets+=(--test codegen)
@@ -59,7 +59,7 @@ require_binary() {
         exit 1
     }
 }
-require_binary witchy-wir lib ''
+require_binary witchy-wir test unit
 require_binary witchy-wir test rfc0165_route_gate
 require_binary witchy-lower lib ''
 require_binary witchy bin witchy
@@ -71,7 +71,7 @@ reuse=(--cargo-metadata "$cargo_metadata" --binaries-metadata "$binaries_metadat
 # Keep the two default-filter intersections, and root's explicit override.
 # No shared -E union: identically named tests in another binary cannot leak in.
 env -u WITCHY_ORACLE_EXAMPLE cargo nextest run "${reuse[@]}" \
-    -E "package(=witchy-wir) and (kind(lib) or (kind(test) and binary(=rfc0165_route_gate))) and ($wir_filter)"
+    -E "package(=witchy-wir) and kind(test) and (binary(=unit) or binary(=rfc0165_route_gate)) and ($wir_filter)"
 env -u WITCHY_ORACLE_EXAMPLE cargo nextest run "${reuse[@]}" \
     -E "$lower_scope and ($lower_filter)"
 WITCHY_ORACLE_EXAMPLE=calc cargo nextest run "${reuse[@]}" --ignore-default-filter \

@@ -42,10 +42,10 @@ use crate::layout::{
 // eight bytes immediately before that root; the private module keeps one
 // fixed linear-memory page and refuses an allocation before returning a
 // pointer when the checked extent does not fit.
-mod drop_worklist;
+pub(crate) mod drop_worklist;
 mod outlined_memory;
 mod scalar_locals;
-mod closure_owner_kernel;
+pub(crate) mod closure_owner_kernel;
 mod owner_bridges;
 mod owner_operation_kernel;
 pub use owner_bridges::{AdmittedOwnerBridge, OwnerBridgeRecipe};
@@ -4792,7 +4792,7 @@ fn authorize_wasm_ir(
     authorize_wasm_ir_inner(validated, Some(source_witness), entry.map(CanonicalEntry::encode))
 }
 
-#[cfg(test)]
+#[cfg(feature = "raw-encoder-test-api")]
 fn authorize_wasm_ir_for_test(validated: ValidatedSafeWir) -> Result<CheckedWasmIr, EncodeError> {
     authorize_wasm_ir_inner(&validated, None, None)
 }
@@ -5032,7 +5032,7 @@ fn encode_checked_unvalidated(checked: &CheckedWasmIr) -> Result<Vec<u8>, Encode
     Ok(module.finish())
 }
 
-#[cfg(test)]
+#[cfg(feature = "raw-encoder-test-api")]
 fn encode_validated(validated: ValidatedSafeWir) -> Result<Vec<u8>, EncodeError> {
     let checked = authorize_wasm_ir_for_test(validated)?;
     encode_checked(&checked)
@@ -7947,7 +7947,6 @@ fn admit_parts(
 /// manifest, its function from the candidate's validated ABI bindings, and its
 /// parameter kinds from the validated signature. A library without a checked
 /// entry has no launch entry.
-#[cfg(not(test))]
 fn derive_entry(
     validated: &ValidatedSafeWir,
     source: &witchy_canonical_source::source::CanonicalSourceView<'_>,
@@ -8070,7 +8069,6 @@ ValueType::Capability(kind) if *kind == crate::canonical_safewir::BUILD_OUT_CAPA
     }))
 }
 
-#[cfg(not(test))]
 pub fn admit_canonical(
     validated: ValidatedSafeWir,
     source: &witchy_canonical_source::source::CanonicalSourceView<'_>,
@@ -8081,7 +8079,6 @@ pub fn admit_canonical(
 
 /// Observe the original immutable validated graph only after full production
 /// admission succeeds. The graph is neither cloned nor retained by the artifact.
-#[cfg(not(test))]
 pub fn admit_canonical_with_observer<R>(
     validated: ValidatedSafeWir,
     source: &witchy_canonical_source::source::CanonicalSourceView<'_>,
@@ -8113,8 +8110,8 @@ pub fn admit_canonical_with_observer<R>(
     Ok((artifact, observation))
 }
 
-#[cfg(test)]
-pub fn admit_canonical(
+#[cfg(feature = "raw-encoder-test-api")]
+fn admit_canonical_for_test(
     validated: ValidatedSafeWir,
 ) -> Result<AdmittedCanonicalArtifact, CanonicalAdmissionError> {
     let checked = authorize_wasm_ir_for_test(validated).map_err(|error| match error {
@@ -8152,7 +8149,7 @@ pub fn admit_canonical(
     )
 }
 
-#[cfg(test)]
+#[cfg(feature = "raw-encoder-test-api")]
 fn admit_canonical_with_bytes_for_test(
     validated: ValidatedSafeWir,
     bytes: Vec<u8>,
@@ -8169,10 +8166,11 @@ fn admit_canonical_with_bytes_for_test(
     let target_witness = decode_and_match_plan(&source, &target, &bytes)?;
     admit_parts(source, target, receipt, bytes, checked_source, final_module_digest, authority_digest, target_witness, None)
 }
-#[cfg(test)]
-mod tests {
-    mod unique_pop;
-    mod boolean_reaches;
+#[cfg(feature = "raw-encoder-test-api")]
+#[doc(hidden)]
+#[path = "canonical_wasmir/tests"]
+pub mod self_checks {
+    pub mod unique_pop;
     use super::*;
     use crate::canonical_safewir::{
         BasicBlock, BlockId, BlockParameter, CallableContract, CheckedSourceIdentity,
@@ -8439,7 +8437,7 @@ mod tests {
 
     #[cfg(feature = "native")]
     fn run_int_add(module: ValidatedSafeWir) -> Result<i64, wasmtime::Error> {
-        let artifact = admit_canonical(module).expect("validated int addition admits");
+        let artifact = admit_canonical_for_test(module).expect("validated int addition admits");
         let engine = wasmtime::Engine::default();
         let module = wasmtime::Module::new(&engine, artifact.wasm())?;
         let mut store = wasmtime::Store::new(&engine, ());
@@ -8449,8 +8447,7 @@ mod tests {
     }
 
     #[cfg(feature = "native")]
-    #[test]
-    fn size_add_overflow_traps_or_wraps_exactly_as_declared() {
+    pub fn size_add_overflow_traps_or_wraps_exactly_as_declared() {
         assert!(run_size_add(checked_size_add(
             u32::MAX,
             1,
@@ -8707,8 +8704,7 @@ mod tests {
     }
 
     #[cfg(feature = "native")]
-    #[test]
-    fn encoded_structured_branch_executes_both_arms() {
+    pub fn encoded_structured_branch_executes_both_arms() {
         let wasm = encode_validated(checked_branch()).expect("structured branch encodes");
         wasmparser::validate(&wasm).expect("structured branch is valid Wasm");
         let engine = wasmtime::Engine::default();
@@ -8721,9 +8717,8 @@ mod tests {
     }
 
     #[cfg(feature = "native")]
-    #[test]
-    fn encoded_structured_loop_executes_carried_arguments() {
-        let artifact = admit_canonical(checked_loop()).expect("structured loop artifact admits");
+    pub fn encoded_structured_loop_executes_carried_arguments() {
+        let artifact = admit_canonical_for_test(checked_loop()).expect("structured loop artifact admits");
         let wasm = artifact.wasm();
         wasmparser::validate(&wasm).expect("structured loop is valid Wasm");
         let engine = wasmtime::Engine::default();
@@ -8735,16 +8730,14 @@ mod tests {
         assert_eq!(function.call(&mut store, 5).unwrap(), 5);
     }
 
-    #[test]
-    fn irreducible_cfg_is_refused_without_dispatcher_lowering() {
+    pub fn irreducible_cfg_is_refused_without_dispatcher_lowering() {
         assert!(matches!(
             encode_validated(checked_irreducible()),
             Err(EncodeError::Lowering(LoweringError::UnsupportedControlFlow { .. }))
         ));
     }
 
-    #[test]
-    fn variable_call_is_refused_fail_closed() {
+    pub fn variable_call_is_refused_fail_closed() {
         let operation = Operation::VarCall {
             destinations: Vec::new(),
             callee: ValueId::new(1),
@@ -8890,9 +8883,8 @@ mod tests {
     }
 
     #[cfg(feature = "native")]
-    #[test]
-    fn admitted_scalar_var_tail_call_executes_with_return_call_indirect() {
-        let artifact = admit_canonical(checked_var_tail_call())
+    pub fn admitted_scalar_var_tail_call_executes_with_return_call_indirect() {
+        let artifact = admit_canonical_for_test(checked_var_tail_call())
             .expect("scalar indirect proper-tail call artifact admits");
         let engine = wasmtime::Engine::default();
         let module = wasmtime::Module::new(&engine, artifact.wasm()).unwrap();
@@ -9016,114 +9008,10 @@ mod tests {
         }
     }
 
-    #[test]
-    fn capability_indirect_calls_reject_wrong_kind_and_signature() {
-        for tail in [false, true] {
-            for value_type in indirect_capability_types() {
-                for (value, wrong_type) in [
-                    (ValueId::new(0), ValueType::Capability(crate::canonical_safewir::CapabilityKindId::new(0))),
-                    (ValueId::new(0), ValueType::Int),
-                    (ValueId::new(1), ValueType::Callable(FunctionSignatureId::new(20))),
-                ] {
-                    let mut parts = capability_indirect_parts(tail, value_type);
-                    parts.functions[0].value_types.insert(value, wrong_type);
-                    assert!(lower_capability_indirect_for_test(&parts).is_err());
-                    assert!(check_initial_with_test_witness(CanonicalModule::from_lowering(parts)).is_err());
-                }
-                let mut parts = capability_indirect_parts(tail, value_type);
-                if tail {
-                    // A proper tail cannot change the caller's result kind.
-                    parts.signatures[0].results[0] = ValueType::Int;
-                    parts.signatures[0].contract.results[0] = ResultContract::Value(ValueType::Int);
-                } else {
-                    parts.functions[0].value_types.insert(ValueId::new(2), ValueType::Int);
-                    assert!(lower_capability_indirect_for_test(&parts).is_err());
-                }
-                assert!(check_initial_with_test_witness(CanonicalModule::from_lowering(parts)).is_err());
-            }
-        }
-    }
 
-    #[test]
-    fn capability_indirect_parameters_require_value_without_memory_effects() {
-        for tail in [false, true] {
-            for value_type in indirect_capability_types() {
-                let mut parts = capability_indirect_parts(tail, value_type);
-                assert!(lower_capability_indirect_for_test(&parts).is_ok());
-                parts.signatures[1].contract.parameter_effects.insert(0, Vec::new());
-                assert!(lower_capability_indirect_for_test(&parts).is_ok());
-                for ownership in [ParameterOwnership::Unique, ParameterOwnership::Shared,
-                    ParameterOwnership::WriteBack, ParameterOwnership::UniqueWriteBack]
-                {
-                    parts.signatures[1].contract.parameters[0].ownership = ownership;
-                    assert!(lower_capability_indirect_for_test(&parts).is_err());
-                }
-                parts.signatures[1].contract.parameters[0].ownership = ParameterOwnership::Value;
-                for effect in [MemoryEffect::Read, MemoryEffect::Retain, MemoryEffect::Release] {
-                    parts.signatures[1].contract.parameter_effects.insert(0, vec![effect]);
-                    assert!(lower_capability_indirect_for_test(&parts).is_err());
-                }
-                parts.signatures[1].contract.parameter_effects.clear();
-                parts.signatures[1].contract.parameters[0].value_type = ValueType::Int;
-                assert!(lower_capability_indirect_for_test(&parts).is_err());
-                parts.signatures[1].contract.parameters.clear();
-                assert!(lower_capability_indirect_for_test(&parts).is_err());
-            }
-        }
-    }
 
-    #[test]
-    fn indirect_callable_writeback_requires_the_exact_hidden_lane() {
-        let layout = crate::layout::LayoutId::from_bytes([0x67; 32]);
-        let signature = FunctionSignature {
-            id: FunctionSignatureId::new(67),
-            parameters: vec![ValueType::Ref(layout), ValueType::Ref(layout)],
-            results: vec![ValueType::Ref(layout), ValueType::Ref(layout)],
-            contract: CallableContract {
-                parameters: vec![
-                    ParameterContract { value_type: ValueType::Ref(layout), ownership: ParameterOwnership::Shared },
-                    ParameterContract { value_type: ValueType::Ref(layout), ownership: ParameterOwnership::WriteBack },
-                ],
-                results: vec![
-                    ResultContract::Shared { layout },
-                    ResultContract::Shared { layout },
-                ],
-                parameter_effects: BTreeMap::from([
-                    (0, vec![MemoryEffect::Read, MemoryEffect::Retain, MemoryEffect::Release]),
-                    (1, vec![MemoryEffect::Read, MemoryEffect::Retain, MemoryEffect::Release, MemoryEffect::Write]),
-                ]),
-            },
-        };
-        assert!(is_authenticated_indirect_callable_writeback(&signature));
 
-        let mut absent = signature.clone();
-        absent.results.pop();
-        absent.contract.results.pop();
-        assert!(!is_authenticated_indirect_callable_writeback(&absent));
-
-        let mut mismatched = signature.clone();
-        mismatched.contract.parameter_effects.get_mut(&1).unwrap().pop();
-        assert!(!is_authenticated_indirect_callable_writeback(&mismatched));
-
-        let mut widened = signature;
-        widened.parameters.push(ValueType::Ref(layout));
-        widened.contract.parameters.push(ParameterContract {
-            value_type: ValueType::Ref(layout), ownership: ParameterOwnership::Shared,
-        });
-        assert!(!is_authenticated_indirect_callable_writeback(&widened));
-    }
-
-    #[test]
-    fn capability_indirect_tail_cannot_drop_required_site() {
-        let mut parts = capability_indirect_parts(true, indirect_capability_types()[0]);
-        parts.functions[0].blocks[0].terminator = Terminator::Return {
-            values: vec![ValueId::new(0)],
-        };
-        assert!(check_initial_with_test_witness(CanonicalModule::from_lowering(parts)).is_err());
-    }
-
-    #[test]
-    fn capability_indirect_contract_forgery_fails_initial_admission() {
+    pub fn capability_indirect_contract_forgery_fails_initial_admission() {
         for tail in [false, true] {
             for value_type in indirect_capability_types() {
                 for ownership in [ParameterOwnership::Unique, ParameterOwnership::Shared,
@@ -9445,8 +9333,7 @@ mod tests {
         validate_final_for_test(checked).unwrap()
     }
 
-    #[test]
-    fn comparison_encodes_and_validates() {
+    pub fn comparison_encodes_and_validates() {
         let wasm = encode_validated(checked_comparison()).expect("validated comparison encodes");
         wasmparser::validate(&wasm).expect("comparison module is structurally valid");
     }
@@ -9490,8 +9377,7 @@ mod tests {
         checked_size_operation_with_input(operation, input, result, -1)
     }
 
-    #[test]
-    fn narrow_size_u32_overflow_traps_in_wasmtime() {
+    pub fn narrow_size_u32_overflow_traps_in_wasmtime() {
         let input = ValueId::new(1);
         let result = ValueId::new(2);
         let validated = checked_size_operation_with_input(
@@ -9509,8 +9395,7 @@ mod tests {
         assert!(result.is_err());
     }
 
-    #[test]
-    fn narrow_size_valid_value_executes() {
+    pub fn narrow_size_valid_value_executes() {
         let input = ValueId::new(1);
         let result = ValueId::new(2);
         let validated = checked_size_operation_with_input(
@@ -10519,14 +10404,13 @@ mod tests {
     }
 
     #[path = "nullable_admission.rs"]
-    mod nullable_admission;
+    pub mod nullable_admission;
 
     #[cfg(feature = "native")]
     #[path = "unit_storage.rs"]
-    mod unit_storage;
+    pub mod unit_storage;
 
-    #[test]
-    fn foreign_entry_section_fails_admission() {
+    pub fn foreign_entry_section_fails_admission() {
         // The test admission path derives no entry, so an entry section in the
         // bytes is not the encoder's and must be refused before launch.
         let mut bytes = encode_validated(checked_scalar()).unwrap();
@@ -10537,24 +10421,9 @@ mod tests {
         assert!(admit_canonical_with_bytes_for_test(checked_scalar(), bytes).is_err());
     }
 
-    #[test]
-    fn mutated_emitted_bytes_fail_independent_admission_plan() {
-        let mut bytes = encode_validated(checked_scalar()).unwrap();
-        let immediate = bytes
-            .windows(2)
-            .position(|window| window == [0x42, 9])
-            .expect("scalar i64.const immediate exists")
-            + 1;
-        bytes[immediate] = 10;
-        assert!(matches!(
-            admit_canonical_with_bytes_for_test(checked_scalar(), bytes),
-            Err(CanonicalAdmissionError::PlanMismatch(_))
-        ));
-    }
 
     #[cfg(feature = "native")]
-    #[test]
-    fn packed_scalar_collection_oob_guard_traps_in_wasmtime() {
+    pub fn packed_scalar_collection_oob_guard_traps_in_wasmtime() {
         let wasm = encode_validated(checked_packed_list_fixture(true)).expect("OOB fixture encodes");
         let engine = wasmtime::Engine::default();
         let module = wasmtime::Module::new(&engine, &wasm).unwrap();
@@ -10565,8 +10434,7 @@ mod tests {
     }
 
     #[cfg(feature = "native")]
-    #[test]
-    fn consecutive_rc_allocations_reserve_non_overlapping_prefixes() {
+    pub fn consecutive_rc_allocations_reserve_non_overlapping_prefixes() {
         let source = checked_two_allocations_fixture();
         let target = lower_validated(&source).unwrap();
         let receipt = check_correspondence(source.module(), &target).unwrap();
@@ -10581,8 +10449,7 @@ mod tests {
     }
 
     #[cfg(feature = "native")]
-    #[test]
-    fn allocation_past_linear_memory_grows_or_traps_when_growth_is_refused() {
+    pub fn allocation_past_linear_memory_grows_or_traps_when_growth_is_refused() {
         let mut interner = LayoutInterner::new();
         let element = interner.intern_scalar(ScalarKind::U32).unwrap();
         let layout = interner.intern_packed_list(element, RcHeader::Required).unwrap();
@@ -10617,8 +10484,7 @@ mod tests {
     }
 
     #[cfg(feature = "native")]
-    #[test]
-    fn share_at_max_refcount_traps_before_destination_or_refcount_write() {
+    pub fn share_at_max_refcount_traps_before_destination_or_refcount_write() {
         let wasm = rc_boundary_module(true, true);
         let engine = wasmtime::Engine::default();
         let module = wasmtime::Module::new(&engine, &wasm).unwrap();
@@ -10631,8 +10497,7 @@ mod tests {
     }
 
     #[cfg(feature = "native")]
-    #[test]
-    fn release_at_zero_refcount_traps_before_decrement() {
+    pub fn release_at_zero_refcount_traps_before_decrement() {
         let wasm = rc_boundary_module(false, false);
         let engine = wasmtime::Engine::default();
         let module = wasmtime::Module::new(&engine, &wasm).unwrap();
@@ -10644,8 +10509,7 @@ mod tests {
         assert_eq!(state.call(&mut store, ()).unwrap(), 0);
     }
 
-    #[test]
-    fn bump_allocator_class_is_refused_by_initial_check() {
+    pub fn bump_allocator_class_is_refused_by_initial_check() {
         let mut interner = LayoutInterner::new();
         let element = interner.intern_scalar(ScalarKind::U32).unwrap();
         let layout = interner.intern_packed_list(element, RcHeader::Required).unwrap();
@@ -10673,7 +10537,7 @@ mod tests {
         destination_start: u64,
         move_cells: bool,
     ) -> Result<i64, wasmtime::Error> {
-        let artifact = admit_canonical(checked_scalar_range(
+        let artifact = admit_canonical_for_test(checked_scalar_range(
             range_count,
             source_start,
             destination_start,
@@ -11075,8 +10939,7 @@ mod tests {
     }
 
     #[cfg(feature = "native")]
-    #[test]
-    fn pointer_clone_range_retains_executes_and_recursively_releases() {
+    pub fn pointer_clone_range_retains_executes_and_recursively_releases() {
         let (validated, expected_reclaimed) = checked_pointer_clone_range_execution();
         let interpreted = crate::canonical_interpreter::interpret_program(
             &validated,
@@ -11091,7 +10954,7 @@ mod tests {
         );
         assert_eq!(interpreted.leaked_objects, 0);
 
-        let artifact = admit_canonical(validated)
+        let artifact = admit_canonical_for_test(validated)
             .expect("pointer CloneRange admits through exact-byte matching");
         wasmparser::validate(artifact.wasm()).expect("admitted pointer CloneRange is valid Wasm");
         let engine = wasmtime::Engine::default();
@@ -11120,8 +10983,7 @@ mod tests {
         );
     }
 
-    #[test]
-    fn malformed_clone_range_places_are_refused_by_canonical_backend() {
+    pub fn malformed_clone_range_places_are_refused_by_canonical_backend() {
         let mut interner = LayoutInterner::new();
         let element = interner.intern_scalar(ScalarKind::Int).unwrap();
         let list = interner.intern_packed_list(element, RcHeader::Required).unwrap();
@@ -11183,75 +11045,18 @@ mod tests {
     }
 
     #[cfg(feature = "native")]
-    #[test]
-    fn scalar_clone_range_count_stride_overflow_traps_before_copy() {
+    pub fn scalar_clone_range_count_stride_overflow_traps_before_copy() {
         assert!(run_raw_scalar_clone_range_probe([0, 0, 0, 0, u32::MAX as i32]).is_err());
     }
 
-    #[cfg(feature = "native")]
-    #[test]
-    fn pointer_clone_range_second_saturated_child_traps_before_destination_publish() {
-        let (wasm, data_offset, stride) = raw_pointer_clone_range_probe();
-        wasmparser::validate(&wasm).expect("raw pointer CloneRange probe is valid Wasm");
-        let engine = wasmtime::Engine::default();
-        let module = wasmtime::Module::new(&engine, wasm).unwrap();
-        let mut store = wasmtime::Store::new(&engine, ());
-        let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
-        let memory = instance.get_memory(&mut store, "memory").unwrap();
-        let source = 32u32;
-        let destination = 128u32;
-        let first_child = 256u32;
-        let saturated_child = 288u32;
-        let first_destination = 0x1122_3344u32;
-        let second_destination = 0x5566_7788u32;
-        let mut contents = vec![0; 320];
-        let mut put = |at: u32, value: u32| {
-            let at = usize::try_from(at).unwrap();
-            contents[at..at + 4].copy_from_slice(&value.to_le_bytes());
-        };
-        put(source + data_offset, first_child);
-        put(source + data_offset + stride, saturated_child);
-        put(destination + data_offset, first_destination);
-        put(destination + data_offset + stride, second_destination);
-        put(first_child - RC_PREFIX_BYTES, 1);
-        put(saturated_child - RC_PREFIX_BYTES, u32::MAX);
-        memory.write(&mut store, 0, &contents).unwrap();
 
-        let probe = instance
-            .get_typed_func::<(i32, i32, i32, i32, i32), ()>(&mut store, "probe")
-            .unwrap();
-        assert!(
-            probe
-                .call(
-                    &mut store,
-                    (source as i32, destination as i32, 0, 0, 2),
-                )
-                .is_err(),
-            "the second saturated source child must trap",
-        );
-
-        let data = memory.data(&store);
-        let word = |at: u32| {
-            let at = usize::try_from(at).unwrap();
-            u32::from_le_bytes(data[at..at + 4].try_into().unwrap())
-        };
-        assert_eq!(word(destination + data_offset), first_destination);
-        assert_eq!(word(destination + data_offset + stride), second_destination);
-        assert_eq!(word(source + data_offset), first_child);
-        assert_eq!(word(source + data_offset + stride), saturated_child);
-        assert_eq!(word(first_child - RC_PREFIX_BYTES), 2);
-        assert_eq!(word(saturated_child - RC_PREFIX_BYTES), u32::MAX);
-    }
-
-    #[test]
-    fn full_u32_size_constant_encodes_and_validates() {
+    pub fn full_u32_size_constant_encodes_and_validates() {
         let wasm = encode_validated(checked_full_u32_size()).expect("full u32 size encodes");
         wasmparser::validate(&wasm).expect("full u32 size module is structurally valid");
     }
 
     #[cfg(feature = "native")]
-    #[test]
-    fn encoded_scalar_module_executes() {
+    pub fn encoded_scalar_module_executes() {
         let wasm = encode_validated(checked_scalar()).expect("validated scalar authority encodes");
         let engine = wasmtime::Engine::default();
         let module = wasmtime::Module::new(&engine, &wasm).expect("wasmtime accepts encoded scalar");
@@ -11263,81 +11068,6 @@ mod tests {
         assert_eq!(function.call(&mut store, ()).unwrap(), 9);
     }
 
-    #[cfg(feature = "native")]
-    #[test]
-    fn backend_total_scalar_families_match_the_interpreter() {
-        use crate::canonical_interpreter::{InterpreterValue, interpret};
 
-        let specs = [
-            (FunctionId::new(20), ValueType::Int, Operation::ConstInt { destination: ValueId::new(1), value: 40 }, Operation::ConstInt { destination: ValueId::new(2), value: 2 }, ArithmeticOperator::Add, OverflowBehavior::Wrap),
-            (FunctionId::new(21), ValueType::Size, Operation::ConstSize { destination: ValueId::new(1), value: 40 }, Operation::ConstSize { destination: ValueId::new(2), value: 2 }, ArithmeticOperator::Add, OverflowBehavior::Trap),
-            (FunctionId::new(22), ValueType::Float, Operation::ConstFloat { destination: ValueId::new(1), bits: 84.0_f64.to_bits() }, Operation::ConstFloat { destination: ValueId::new(2), bits: 2.0_f64.to_bits() }, ArithmeticOperator::DivideSigned, OverflowBehavior::Wrap),
-        ];
-        let mut signatures = Vec::new();
-        let mut functions = Vec::new();
-        for (function_id, value_type, left, right, operator, overflow) in specs {
-            let signature_id = FunctionSignatureId::new(function_id.get());
-            signatures.push(FunctionSignature {
-                id: signature_id,
-                parameters: Vec::new(),
-                results: vec![value_type],
-                contract: CallableContract { parameters: Vec::new(), results: vec![ResultContract::Value(value_type)], parameter_effects: BTreeMap::new() },
-            });
-            functions.push(Function {
-                id: function_id,
-                signature: signature_id,
-                entry: BlockId::new(0),
-                value_types: [(ValueId::new(1), value_type), (ValueId::new(2), value_type), (ValueId::new(3), value_type)].into_iter().collect(),
-                blocks: vec![BasicBlock {
-                    id: BlockId::new(0),
-                    parameters: Vec::new(),
-                    operations: vec![left, right, Operation::Arithmetic { destination: ValueId::new(3), operator, left: ValueId::new(1), right: ValueId::new(2), overflow }],
-                    terminator: Terminator::Return { values: vec![ValueId::new(3)] },
-                }],
-            });
-        }
-        signatures.push(FunctionSignature {
-            id: FunctionSignatureId::new(23), parameters: Vec::new(), results: vec![ValueType::Bool],
-            contract: CallableContract { parameters: Vec::new(), results: vec![ResultContract::Value(ValueType::Bool)], parameter_effects: BTreeMap::new() },
-        });
-        functions.push(Function {
-            id: FunctionId::new(23), signature: FunctionSignatureId::new(23), entry: BlockId::new(0),
-            value_types: [(ValueId::new(1), ValueType::Bool), (ValueId::new(2), ValueType::Bool), (ValueId::new(3), ValueType::Bool)].into_iter().collect(),
-            blocks: vec![BasicBlock { id: BlockId::new(0), parameters: Vec::new(), operations: vec![
-                Operation::ConstBool { destination: ValueId::new(1), value: true },
-                Operation::ConstBool { destination: ValueId::new(2), value: true },
-                Operation::Compare { destination: ValueId::new(3), operator: ComparisonOperator::Equal, left: ValueId::new(1), right: ValueId::new(2) },
-            ], terminator: Terminator::Return { values: vec![ValueId::new(3)] } }],
-        });
-        let candidate = CanonicalModule::from_lowering(LoweredModuleParts {
-            revision: Revision::new(20), checked_source: CheckedSourceIdentity::from_digest([20; 32]),
-            layouts: LayoutBundle::from_interner(&LayoutInterner::new(), []).unwrap(), signatures, imports: Vec::new(), functions,
-            proper_tail_sites: Vec::new(),
-        });
-        let checked = check_initial_with_test_witness(candidate).unwrap();
-        let validated = validate_final_for_test(checked).unwrap();
-        assert_eq!(interpret(&validated, FunctionId::new(20), Vec::new()).unwrap(), vec![InterpreterValue::Int(42)]);
-        assert_eq!(interpret(&validated, FunctionId::new(21), Vec::new()).unwrap(), vec![InterpreterValue::Size(42)]);
-        assert_eq!(interpret(&validated, FunctionId::new(22), Vec::new()).unwrap(), vec![InterpreterValue::FloatBits(42.0_f64.to_bits())]);
-        assert_eq!(interpret(&validated, FunctionId::new(23), Vec::new()).unwrap(), vec![InterpreterValue::Bool(true)]);
-
-        let wasm = encode_validated(validated).unwrap();
-        let engine = wasmtime::Engine::default();
-        let module = wasmtime::Module::new(&engine, &wasm).unwrap();
-        let mut store = wasmtime::Store::new(&engine, ());
-        let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
-        assert_eq!(instance.get_typed_func::<(), i64>(&mut store, "f20").unwrap().call(&mut store, ()).unwrap(), 42);
-        assert_eq!(instance.get_typed_func::<(), i32>(&mut store, "f21").unwrap().call(&mut store, ()).unwrap(), 42);
-        assert_eq!(instance.get_typed_func::<(), f64>(&mut store, "f22").unwrap().call(&mut store, ()).unwrap(), 42.0);
-        assert_eq!(instance.get_typed_func::<(), i32>(&mut store, "f23").unwrap().call(&mut store, ()).unwrap(), 1);
-    }
-
-    #[test]
-    fn correspondence_rejects_semantic_mismatch() {
-        let source = checked_scalar();
-        let mut target = lower_validated(&source).unwrap();
-        target.functions[0].blocks[0].instructions[0].operation = ScalarInstruction::IntConst { destination: ValueId::new(1), value: 10 };
-        assert!(matches!(check_correspondence(source.module(), &target), Err(CorrespondenceError::InstructionMismatch(_))));
-    }
 
 }

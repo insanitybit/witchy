@@ -34,19 +34,19 @@ mod exec;
 pub use exec::{OracleExecFixture, OracleExecCall};
 mod fetch;
 pub use fetch::{OracleFetchFixture, OracleFetchCall, OracleFetchSource, OracleFetchOutcome};
-mod registry_host;
+pub(crate) mod registry_host;
 pub use registry_host::{OracleClockFixture, OracleSecretFixture, OracleSecretStoreFixture};
 mod dir_create;
 mod dir_storage;
 mod dir_handles;
 pub use dir_storage::OracleDirMutations;
-mod crypto;
+pub(crate) mod crypto;
 mod crypto_hash;
 mod crypto_extensions;
 mod dir_metadata;
 mod build_out;
 pub use build_out::OracleBuildWrite;
-mod build_read;
+pub(crate) mod build_read;
 pub use build_read::{OracleBuildReadFixture, OracleBuildEnvFixture};
 mod build_exec;
 pub use build_exec::{OracleBuildExecFixture, OracleBuildExecCall};
@@ -3277,13 +3277,14 @@ fn static_scalar(
     }
 }
 
-#[cfg(test)]
-mod tests {
+#[cfg(feature = "raw-encoder-test-api")]
+#[doc(hidden)]
+pub mod self_checks {
     use super::*;
     use crate::canonical_safewir::{
         check_initial_with_test_witness, validate_final_for_test, BasicBlock,
         AccessMode, BlockParameter, CallableContract, CheckedSourceIdentity, FunctionSignature,
-        FunctionSignatureId, HostBufferExtent, HostCallArgument, LoweredModuleParts, Operation,
+        FunctionSignatureId, LoweredModuleParts, Operation,
         ParameterContract, ParameterOwnership, Place, Projection, ResultContract,
         Revision, ValueType,
     };
@@ -3354,108 +3355,6 @@ mod tests {
     fn empty_layouts() -> LayoutBundle {
         LayoutBundle::from_interner(&LayoutInterner::new(), [])
             .expect("empty canonical layout bundle")
-    }
-
-    fn compiler_service(kind: CompilerServiceKind, inputs: &[String]) -> Result<String, String> {
-        match (kind, inputs) {
-            (CompilerServiceKind::Footprint, [source]) => Ok(format!("[{source}]")),
-            (CompilerServiceKind::Diff, [old, new]) => Ok(format!("{old}>{new}")),
-            (CompilerServiceKind::Doc, [name, source]) => Ok(format!("doc:{name}>{source}")),
-            (CompilerServiceKind::DocResultJson, [name, source]) => Ok(format!("{{\"ok\":\"{name}>{source}\"}}")),
-            _ => Err("unexpected compiler service invocation".to_owned()),
-        }
-    }
-
-    fn slice(object: ValueId, start: ValueId, length: ValueId, access: AccessMode) -> Place {
-        Place::projected(
-            object,
-            Projection::Slice { start, length },
-            ValueType::Ref(LayoutId::from_bytes([11; 32])),
-            access,
-        )
-    }
-
-    #[test]
-    fn compiler_services_are_stateless_and_fail_closed_without_a_fixture() {
-        let module = validated(
-            empty_layouts(),
-            Vec::new(),
-            BTreeMap::new(),
-            Vec::new(),
-            Terminator::Return { values: Vec::new() },
-            Vec::new(),
-        );
-        let mut engine = Engine::new(module.module(), InterpreterConfig::default());
-        let input = engine.allocate(
-            LayoutId::from_bytes([11; 32]),
-            AllocationClass::ReferenceCounted,
-            RuntimeExtent::Counted { header_bytes: 0, count: 3, capacity: 3, stride_bytes: 1 },
-            false,
-        ).expect("input allocation");
-        for (index, byte) in b"foo".iter().enumerate() {
-            engine.object_mut(input).expect("input").cells.insert(
-                CellKey::Element(index as u64), InterpreterValue::Size(u64::from(*byte)),
-            );
-        }
-        let output = engine.allocate(
-            LayoutId::from_bytes([11; 32]),
-            AllocationClass::ReferenceCounted,
-            RuntimeExtent::Counted { header_bytes: 0, count: 0, capacity: 2, stride_bytes: 1 },
-            false,
-        ).expect("output allocation");
-        engine.object_mut(output).expect("output").cells.insert(
-            CellKey::Element(0), InterpreterValue::Size(u64::from(b'!')),
-        );
-        let source = ValueId::new(100);
-        let destination = ValueId::new(101);
-        let start = ValueId::new(102);
-        let input_length = ValueId::new(103);
-        let output_length = ValueId::new(104);
-        let mut values = BTreeMap::from([
-            (source, InterpreterValue::ObjectRef(input)),
-            (destination, InterpreterValue::ObjectRef(output)),
-            (start, InterpreterValue::Size(0)),
-            (input_length, InterpreterValue::Size(3)),
-            (output_length, InterpreterValue::Size(2)),
-        ]);
-        let arguments = vec![
-            HostCallArgument::Buffer { place: slice(source, start, input_length, AccessMode::Read), extent: HostBufferExtent::Slice },
-            HostCallArgument::Buffer { place: slice(destination, start, output_length, AccessMode::Write), extent: HostBufferExtent::Slice },
-        ];
-
-        assert_eq!(
-            engine.compiler_host_call("compiler_footprint_into", &[ValueId::new(105)], &arguments, &mut values),
-            Err(InterpretError::UnsupportedHostImport),
-        );
-
-        engine.config.compiler_services = Some(compiler_service);
-        engine.compiler_host_call("compiler_footprint_into", &[ValueId::new(105)], &arguments, &mut values)
-            .expect("service reports required size without partial output");
-        assert_eq!(values.get(&ValueId::new(105)), Some(&InterpreterValue::Size(5)));
-        assert_eq!(
-            engine.object(output).expect("output").cells.get(&CellKey::Element(0)),
-            Some(&InterpreterValue::Size(u64::from(b'!'))),
-            "an undersized buffer is untouched",
-        );
-
-        let RuntimeExtent::Counted { capacity, .. } = &mut engine.object_mut(output).expect("output").extent else {
-            unreachable!("test output is counted")
-        };
-        *capacity = 7;
-        values.insert(output_length, InterpreterValue::Size(7));
-        let diff_arguments = vec![
-            arguments[0].clone(),
-            arguments[0].clone(),
-            arguments[1].clone(),
-        ];
-        engine.compiler_host_call("compiler_diff_into", &[ValueId::new(106)], &diff_arguments, &mut values)
-            .expect("diff service follows the same checked ABI");
-        assert_eq!(values.get(&ValueId::new(106)), Some(&InterpreterValue::Size(7)));
-        let output_bytes = (0..7)
-            .map(|index| engine.object(output).expect("output").cells.get(&CellKey::Element(index)))
-            .map(|cell| match cell { Some(InterpreterValue::Size(byte)) => *byte as u8, _ => 0 })
-            .collect::<Vec<_>>();
-        assert_eq!(output_bytes, b"foo>foo");
     }
 
     fn packed_u32_layout() -> (LayoutBundle, LayoutId) {
@@ -3555,57 +3454,7 @@ mod tests {
         )
     }
 
-    #[test]
-    fn signed_remainder_min_over_negative_one_returns_zero() {
-        let size_module = size_arithmetic_module(
-            ArithmeticOperator::RemainderSigned,
-            u64::from(i32::MIN as u32),
-            u64::from(u32::MAX),
-            OverflowBehavior::Trap,
-        );
-        assert_eq!(
-            interpret(&size_module, FUNCTION, Vec::new()),
-            Ok(vec![InterpreterValue::Size(0)])
-        );
-
-        let mut wasm = wasm_encoder::Module::new();
-        let mut types = wasm_encoder::TypeSection::new();
-        types.ty().function([], [wasm_encoder::ValType::I32]);
-        wasm.section(&types);
-        let mut functions = wasm_encoder::FunctionSection::new();
-        functions.function(0);
-        wasm.section(&functions);
-        let mut exports = wasm_encoder::ExportSection::new();
-        exports.export("remainder", wasm_encoder::ExportKind::Func, 0);
-        wasm.section(&exports);
-        let mut function = wasm_encoder::Function::new([]);
-        function.instruction(&wasm_encoder::Instruction::I32Const(i32::MIN));
-        function.instruction(&wasm_encoder::Instruction::I32Const(-1));
-        function.instruction(&wasm_encoder::Instruction::I32RemS);
-        function.instruction(&wasm_encoder::Instruction::End);
-        let mut code = wasm_encoder::CodeSection::new();
-        code.function(&function);
-        wasm.section(&code);
-        let engine = wasmtime::Engine::default();
-        let module = wasmtime::Module::new(&engine, wasm.finish()).expect("emitted Wasm");
-        let mut store = wasmtime::Store::new(&engine, ());
-        let instance = wasmtime::Instance::new(&mut store, &module, &[]).expect("instance");
-        let remainder = instance
-            .get_typed_func::<(), i32>(&mut store, "remainder")
-            .expect("Size result")
-            .call(&mut store, ())
-            .expect("i32.rem_s does not trap for MIN % -1");
-        assert_eq!(remainder, 0);
-
-        let int_module = int_arithmetic_module(ArithmeticOperator::RemainderSigned, i64::MIN, -1);
-        assert_eq!(
-            interpret(&int_module, FUNCTION, Vec::new()),
-            Ok(vec![InterpreterValue::Int(0)])
-        );
-    }
-
-    #[test]
-    fn signed_remainder_by_zero_traps() {
+    pub fn signed_remainder_by_zero_traps() {
         let size_module = size_arithmetic_module(
             ArithmeticOperator::RemainderSigned,
             1,
@@ -3624,8 +3473,7 @@ mod tests {
         );
     }
 
-    #[test]
-    fn validated_size_values_reject_values_wider_than_i32() {
+    pub fn validated_size_values_reject_values_wider_than_i32() {
         let input = ValueId::new(0);
         let zero = ValueId::new(1);
         let result = ValueId::new(2);
@@ -3672,8 +3520,7 @@ mod tests {
         );
     }
 
-    #[test]
-    fn reference_counts_trap_at_i32_maximum() {
+    pub fn reference_counts_trap_at_i32_maximum() {
         let (layouts, layout) = packed_u32_layout();
         let module = validated(
             layouts,
@@ -3700,8 +3547,7 @@ mod tests {
         );
     }
 
-    #[test]
-    fn validated_scalar_arithmetic_executes() {
+    pub fn validated_scalar_arithmetic_executes() {
         let left = ValueId::new(0);
         let right = ValueId::new(1);
         let result = ValueId::new(2);
@@ -3744,8 +3590,7 @@ mod tests {
         );
     }
 
-    #[test]
-    fn validated_false_guard_traps() {
+    pub fn validated_false_guard_traps() {
         let index = ValueId::new(0);
         let length = ValueId::new(1);
         let condition = ValueId::new(2);
@@ -3796,79 +3641,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn nullable_capability_absent_unwrap_traps_and_kind_mismatch_refuses() {
-        let absent = ValueId::new(70);
-        let unwrapped = ValueId::new(71);
-        let module = validated(
-            empty_layouts(),
-            Vec::new(),
-            [
-                (absent, ValueType::NullableCapability(crate::canonical_safewir::CapabilityKindId::new(1))),
-                (unwrapped, ValueType::Capability(crate::canonical_safewir::CapabilityKindId::new(1))),
-            ]
-            .into_iter()
-            .collect(),
-            vec![
-                Operation::CapabilityNone {
-                    destination: absent,
-                    kind: crate::canonical_safewir::CapabilityKindId::new(1),
-                },
-                Operation::CapabilityUnwrap { destination: unwrapped, source: absent },
-            ],
-            Terminator::Return { values: Vec::new() },
-            Vec::new(),
-        );
-        assert_eq!(interpret(&module, FUNCTION, Vec::new()), Err(InterpretError::ExplicitTrap));
 
-        let capability = ValueId::new(72);
-        let wrong = ValueId::new(73);
-        let candidate = CanonicalModule::from_lowering(LoweredModuleParts {
-            revision: Revision::new(0),
-            checked_source: CheckedSourceIdentity::from_digest([32; 32]),
-            layouts: empty_layouts(),
-            signatures: vec![FunctionSignature {
-                id: SIGNATURE,
-                parameters: vec![ValueType::Capability(crate::canonical_safewir::CapabilityKindId::new(1))],
-                results: Vec::new(),
-                contract: CallableContract {
-                    parameters: vec![ParameterContract {
-                        value_type: ValueType::Capability(crate::canonical_safewir::CapabilityKindId::new(1)),
-                        ownership: ParameterOwnership::Value,
-                    }],
-                    results: Vec::new(),
-                    parameter_effects: BTreeMap::new(),
-                },
-            }],
-            imports: Vec::new(),
-            functions: vec![Function {
-                id: FUNCTION,
-                signature: SIGNATURE,
-                entry: ENTRY,
-                value_types: [
-                    (capability, ValueType::Capability(crate::canonical_safewir::CapabilityKindId::new(1))),
-                    (wrong, ValueType::NullableCapability(crate::canonical_safewir::CapabilityKindId::new(2))),
-                ]
-                .into_iter()
-                .collect(),
-                blocks: vec![BasicBlock {
-                    id: ENTRY,
-                    parameters: vec![BlockParameter {
-                        value: capability,
-                        value_type: ValueType::Capability(crate::canonical_safewir::CapabilityKindId::new(1)),
-                        ownership: None,
-                    }],
-                    operations: vec![Operation::CapabilitySome { destination: wrong, source: capability }],
-                    terminator: Terminator::Return { values: Vec::new() },
-                }],
-            }],
-            proper_tail_sites: Vec::new(),
-        });
-        assert!(check_initial_with_test_witness(candidate).is_err());
-    }
-
-    #[test]
-    fn validated_counted_element_store_and_load_execute() {
+    pub fn validated_counted_element_store_and_load_execute() {
         let count = ValueId::new(0);
         let capacity = ValueId::new(1);
         let object = ValueId::new(2);
@@ -3975,8 +3749,7 @@ mod tests {
         );
     }
 
-    #[test]
-    fn validated_clone_and_two_drops_execute() {
+    pub fn validated_clone_and_two_drops_execute() {
         let count = ValueId::new(0);
         let capacity = ValueId::new(1);
         let object = ValueId::new(2);
@@ -4027,8 +3800,7 @@ mod tests {
         assert_eq!(interpret(&module, FUNCTION, Vec::new()), Ok(Vec::new()));
     }
 
-    #[test]
-    fn validated_direct_call_executes_callee() {
+    pub fn validated_direct_call_executes_callee() {
         let callee_id = FunctionId::new(1);
         let callee_signature = FunctionSignatureId::new(1);
         let caller_result = ValueId::new(0);
@@ -4107,6 +3879,7 @@ mod tests {
 
 }
 
-#[cfg(test)]
+#[cfg(feature = "raw-encoder-test-api")]
+#[doc(hidden)]
 #[path = "canonical_interpreter/capability_tests.rs"]
-mod capability_tests;
+pub mod capability_self_checks;

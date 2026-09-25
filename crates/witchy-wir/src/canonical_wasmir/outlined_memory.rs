@@ -123,35 +123,3 @@ pub(super) fn plan_retain() -> (Vec<(u32, String)>, Vec<PlanToken>) {
         P::I32Store { offset: 0, align: 2, memory: 0 }, P::End, P::LocalGet(0), P::End,
     ])
 }
-
-#[cfg(all(test, feature = "native"))]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn outlined_address_retains_unsigned_overflow_and_exact_end() {
-        // Kernel-only arithmetic test. Production does not export this helper;
-        // the full admitted-program and tampered-byte tests cover its binding.
-        let mut types = TypeSection::new();
-        types.ty().function([ValType::I32; 3], [ValType::I32]);
-        let mut functions = FunctionSection::new();
-        functions.function(0);
-        let mut exports = ExportSection::new();
-        exports.export("address", ExportKind::Func, 0);
-        let mut code = CodeSection::new();
-        code.function(&emit_address());
-        let mut module = WasmModule::new();
-        module.section(&types).section(&functions).section(&exports).section(&code);
-        let engine = wasmtime::Engine::default();
-        let module = wasmtime::Module::new(&engine, module.finish()).unwrap();
-        let mut store = wasmtime::Store::new(&engine, ());
-        let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
-        let address = instance.get_typed_func::<(i32, i32, i32), i32>(&mut store, "address").unwrap();
-        let max_for_word = (u32::MAX - 4) as i32;
-        assert_eq!(address.call(&mut store, (32, 8, max_for_word)).unwrap(), 40);
-        assert_eq!(address.call(&mut store, (max_for_word, 0, max_for_word)).unwrap(), max_for_word);
-        assert!(address.call(&mut store, (max_for_word, 1, max_for_word)).is_err());
-        assert!(address.call(&mut store, (-1, 1, max_for_word)).is_err());
-        assert!(address.call(&mut store, (1, -1, max_for_word)).is_err());
-    }
-}

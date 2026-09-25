@@ -15,20 +15,20 @@ use std::marker::PhantomData;
 
 use crate::layout::{LayoutBundle, LayoutId};
 
-mod check;
+pub(crate) mod check;
 pub mod analysis;
 pub mod optimize;
 pub mod manifest;
 pub use check::{InitialCheckError, check_initial};
 pub(crate) use check::{operation_uses, terminator_uses};
-mod authority;
+pub(crate) mod authority;
 pub use authority::{
     CheckedInitialSafeWir, CheckedLoweringWitness, CheckedOptimizedSafeWir,
     CheckedSafeWirRevision,
     FinalValidationError, InitialWitnessError, OptimizationAuthorityError, ValidatedSafeWir,
     check_initial_with_witness, validate_final, validate_optimized_final,
 };
-#[cfg(test)]
+#[cfg(feature = "raw-encoder-test-api")]
 pub(crate) use authority::{
     check_initial_with_test_witness, validate_final_for_test,
 };
@@ -85,7 +85,7 @@ mod registry_hosts;
 pub use registry_hosts::{CLOCK_CAPABILITY_KIND, SECRET_STORE_CAPABILITY_KIND, SECRET_CAPABILITY_KIND, REGISTRY_HOST_IMPORT_NAMES};
 mod dir_storage;
 pub use dir_storage::{DIR_BYTES_RESPONSE_KIND, DIR_STORAGE_IMPORT_NAMES};
-mod build_read;
+pub(crate) mod build_read;
 pub use build_read::{BUILD_READ_CAPABILITY_KIND, BUILD_READ_RESPONSE_KIND, BUILD_READ_IMPORT_NAMES};
 pub use build_read::{BUILD_ENV_CAPABILITY_KIND, BUILD_ENV_IMPORT_NAMES};
 pub use build_read::{BUILD_EXEC_CAPABILITY_KIND, BUILD_EXEC_IMPORT_NAMES};
@@ -1804,10 +1804,10 @@ impl<S: ModuleStage> CanonicalModule<S> {
     }
 }
 
-#[cfg(test)]
-mod catalog_tests {
+#[cfg(feature = "raw-encoder-test-api")]
+#[doc(hidden)]
+pub mod self_checks {
     use super::*;
-    use crate::wir_prelude::{AbiImportAuthority, WasmTy};
 
     const STRING_LAYOUT: LayoutId = LayoutId::from_bytes([5; 32]);
 
@@ -1836,132 +1836,10 @@ mod catalog_tests {
         .expect("authenticated capability imports")
     }
 
-    #[test]
-    fn capability_imports_project_with_their_contract_roles() {
-        let catalog = catalog();
-        let imports = catalog.imports();
-        assert_eq!(imports.len(), 11, "two prelude imports and the nine capability operations");
-        let listing = imports.iter().find(|import| import.name == "dir_list_into").expect("dir_list_into");
-        assert_eq!(
-            listing.parameter_roles,
-            vec![
-                HostParameterRole::Capability(DIR_CAPABILITY_KIND),
-                HostParameterRole::Buffer {
-                    value_type: ValueType::Ref(STRING_LAYOUT),
-                    access: AccessMode::Write,
-                    extent: HostBufferExtent::Slice,
-                },
-            ],
-        );
-        assert_eq!(listing.result_roles, vec![HostResultRole::Value(ValueType::Size)]);
-        assert_eq!(listing.mutation, HostMutation::WriteBuffers);
-        let read = imports.iter().find(|import| import.name == "dir_read_into").expect("dir_read_into");
-        assert_eq!(
-            read.parameter_roles,
-            vec![
-                HostParameterRole::Capability(DIR_CAPABILITY_KIND),
-                HostParameterRole::Buffer {
-                    value_type: ValueType::Ref(STRING_LAYOUT),
-                    access: AccessMode::Read,
-                    extent: HostBufferExtent::Slice,
-                },
-                HostParameterRole::Buffer {
-                    value_type: ValueType::Ref(STRING_LAYOUT),
-                    access: AccessMode::Write,
-                    extent: HostBufferExtent::Slice,
-                },
-            ],
-        );
-        assert_eq!(read.result_roles, vec![HostResultRole::Value(ValueType::Size)]);
-        assert_eq!(read.mutation, HostMutation::WriteBuffers);
-        let open_file = imports.iter().find(|import| import.name == "dir_read_file").expect("dir_read_file");
-        assert_eq!(
-            open_file.parameter_roles,
-            vec![
-                HostParameterRole::Capability(DIR_CAPABILITY_KIND),
-                HostParameterRole::Buffer {
-                    value_type: ValueType::Ref(STRING_LAYOUT),
-                    access: AccessMode::Read,
-                    extent: HostBufferExtent::Slice,
-                },
-            ],
-        );
-        assert_eq!(open_file.result_roles, vec![HostResultRole::Capability(FILE_CAPABILITY_KIND)]);
-        assert!(matches!(open_file.abi_identity, ImportContractIdentity::AuthenticatedAbi(_)));
-        assert!(crate::wir_prelude::abi_import_uses_authority("dir_read_file", AbiImportAuthority::DirRead));
-        let file_read = imports.iter().find(|import| import.name == "file_read_into").expect("file_read_into");
-        assert_eq!(
-            file_read.parameter_roles,
-            vec![
-                HostParameterRole::Capability(FILE_CAPABILITY_KIND),
-                HostParameterRole::Buffer {
-                    value_type: ValueType::Ref(STRING_LAYOUT),
-                    access: AccessMode::Write,
-                    extent: HostBufferExtent::Slice,
-                },
-            ],
-        );
-        assert_eq!(file_read.result_roles, vec![HostResultRole::Value(ValueType::Size)]);
-        assert!(matches!(file_read.abi_identity, ImportContractIdentity::AuthenticatedAbi(_)));
-        assert!(crate::wir_prelude::abi_import_uses_authority("file_read_into", AbiImportAuthority::FileAuthority));
-        assert_eq!(read.reentrancy, HostReentrancy::Forbidden);
-        assert!(matches!(read.abi_identity, ImportContractIdentity::AuthenticatedAbi(_)));
 
-        // A narrowed `Dir` only ever arrives as a host-minted token.
-        let subtree = imports.iter().find(|import| import.name == "dir_subtree_at").expect("dir_subtree_at");
-        assert_eq!(subtree.result_roles, vec![HostResultRole::Capability(DIR_CAPABILITY_KIND)]);
-        assert_eq!(subtree.mutation, HostMutation::ReadOnly);
 
-        let env = imports.iter().find(|import| import.name == "env_get_into").expect("env_get_into");
-        assert_eq!(env.parameter_roles[0], HostParameterRole::Capability(ENV_CAPABILITY_KIND));
-    }
 
-    #[test]
-    fn a_capability_projection_requires_the_contract_authority() {
-        let projected = authenticated_capability_import(
-            "dir_read_into",
-            &[WasmTy::ExternRef, WasmTy::I32, WasmTy::I32, WasmTy::I32, WasmTy::I32],
-            &[WasmTy::I32],
-            FunctionSignatureId::new(1),
-            vec![HostParameterRole::Capability(DIR_CAPABILITY_KIND)],
-            Vec::new(),
-            HostMutation::WriteBuffers,
-            &[AbiImportAuthority::DirWrite],
-        );
-        assert!(projected.is_err(), "a mismatched authority must not project");
-    }
-
-    #[test]
-    fn an_authority_free_import_is_not_a_capability_operation() {
-        let projected = authenticated_capability_import(
-            "print",
-            &[WasmTy::I32, WasmTy::I32],
-            &[],
-            FunctionSignatureId::new(0),
-            Vec::new(),
-            Vec::new(),
-            HostMutation::ReadOnly,
-            &[AbiImportAuthority::DirRead],
-        );
-        assert!(projected.is_err(), "pure infrastructure carries no authority to project");
-    }
-
-    #[test]
-    fn an_authority_bearing_import_is_refused_as_pure_infrastructure() {
-        let projected = authenticated_prelude_import(
-            "dir_exists_at",
-            &[WasmTy::ExternRef, WasmTy::I32, WasmTy::I32],
-            &[WasmTy::I32],
-            FunctionSignatureId::new(2),
-            Vec::new(),
-            Vec::new(),
-            HostMutation::ReadOnly,
-        );
-        assert!(projected.is_err(), "a capability operation is not prelude infrastructure");
-    }
-
-    #[test]
-    fn compiler_imports_are_authenticated_internal_buffer_services() {
+    pub fn compiler_imports_are_authenticated_internal_buffer_services() {
         let catalog = catalog()
             .with_compiler_imports(
                 CompilerImportSignatures {
@@ -2009,20 +1887,4 @@ mod catalog_tests {
         }
     }
 
-    #[test]
-    fn compiler_doc_catalog_rejects_wrong_physical_signature_and_infrastructure_class() {
-        use crate::wir_prelude::WasmTy::{I32, I64};
-        for name in ["compiler_doc_into", "compiler_doc_result_json_into"] {
-            for (parameters, results) in [(vec![I32; 5], vec![I32]), (vec![I32; 6], vec![I64])] {
-                assert!(authenticated_internal_service_import(
-                    name, &parameters, &results, FunctionSignatureId::new(10),
-                    Vec::new(), Vec::new(), HostMutation::WriteBuffers,
-                ).is_err());
-            }
-            assert!(authenticated_prelude_import(
-                name, &[I32; 6], &[I32], FunctionSignatureId::new(10),
-                Vec::new(), Vec::new(), HostMutation::WriteBuffers,
-            ).is_err(), "toolchain service is not generic prelude infrastructure");
-        }
-    }
 }

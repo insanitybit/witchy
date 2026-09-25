@@ -65,16 +65,18 @@ repeat the rules; consult it when you're working inside one of these areas.
   `-p witchy-lower` and `--workspace` share one witchy-wir build instead of
   compiling it once per selection. Plain `cargo -p ...` does not.
 - **`spec/stdlib.md` drift** is caught by the `stdlib_docs_are_current` test.
-- **No in-crate tests in `witchy-types`, `witchy-syntax`, `witchy-lower`, `witchy-interp`.**
+- **No in-crate tests in `witchy-types`, `witchy-syntax`, `witchy-lower`, `witchy-interp`, `witchy-wir`.**
   Their Cargo.toml sets `[lib] test = false`: compiling a second `cfg(test)` copy
   of a 40-80k-line crate for a few unit tests cost far more than the tests
   (deleting 56% of all tests cut the test build only 14%). Put a test in the
   crate's integration binary (`crates/witchy-types/tests/typeck.rs`,
-  `crates/witchy-syntax/tests/syntax.rs`, `crates/witchy-lower/tests/codegen.rs`),
+  `crates/witchy-syntax/tests/syntax.rs`, `crates/witchy-lower/tests/codegen.rs`,
+  `crates/witchy-wir/tests/unit.rs`),
   exposing an internal as `#[doc(hidden)] pub` if it must. A check that needs
   deep private internals lives in the crate as a `#[doc(hidden)] pub mod
   self_checks` of panicking functions, driven by one-line integration tests (see
-  `witchy_lower::canonical_layout_self_checks`). The repo-hygiene test
+  `witchy_lower::canonical_layout_self_checks`; witchy-wir gathers its modules,
+  gated on `raw-encoder-test-api`, under `witchy_wir::self_checks`). The repo-hygiene test
   `crates_without_a_lib_test_target_carry_no_in_crate_tests` fails on a
   `#[test]` or `#[cfg(test)]` under such a crate's `src/`.
 - **`witchy-runtime`'s hidden modules** are `runtime.rs` +

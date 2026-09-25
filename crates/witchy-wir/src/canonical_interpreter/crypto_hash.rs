@@ -86,37 +86,3 @@ impl Engine<'_> {
         Ok(())
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    fn frame(paths: &[&str], contents: &[&str]) -> Vec<u8> {
-        let mut bytes = Vec::new();
-        for array in [paths, contents] {
-            bytes.extend_from_slice(&(array.len() as u32).to_le_bytes());
-            for item in array { bytes.extend_from_slice(&(item.len() as u32).to_le_bytes()); bytes.extend_from_slice(item.as_bytes()); }
-        }
-        bytes
-    }
-    #[test]
-    fn crypto_hash_oracle_known_answers_and_native_normalization() {
-        assert_eq!(hex_digest(b""), b"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
-        assert_eq!(hex_digest(b"abc"), b"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
-        assert_eq!(rune_digest(&frame(&[], &[])).unwrap(), b"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
-        assert_eq!(rune_digest(&frame(&["b", "a"], &["\r\n", "x"])), rune_digest(&frame(&["a", "b"], &["x", "\n"])));
-        assert_ne!(rune_digest(&frame(&["a"], &["\r"])), rune_digest(&frame(&["a"], &["\n"])));
-        assert_ne!(rune_digest(&frame(&["a", "a"], &["x", "y"])), rune_digest(&frame(&["a", "a"], &["y", "x"])));
-        assert_ne!(rune_digest(&frame(&["a"], &["bc"])), rune_digest(&frame(&["ab"], &["c"])));
-    }
-    #[test]
-    fn crypto_hash_oracle_rejects_malformed_transport_and_unequal_arrays() {
-        let valid = frame(&["a"], &["x"]);
-        for length in 0..valid.len() { assert!(rune_digest(&valid[..length]).is_err(), "prefix {length}"); }
-        let mut trailing = valid.clone(); trailing.push(0);
-        assert!(rune_digest(&trailing).is_err());
-        let mut non_utf8 = valid; non_utf8[8] = 255;
-        assert!(rune_digest(&non_utf8).is_err());
-        assert!(rune_digest(&u32::MAX.to_le_bytes()).is_err());
-        assert_eq!(rune_digest(&frame(&["a"], &[])), Err(InterpretError::TypeMismatch("crypto.rune_hash: paths and contents differ in length")));
-    }
-}

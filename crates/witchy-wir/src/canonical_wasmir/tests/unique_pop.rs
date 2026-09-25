@@ -188,8 +188,7 @@ fn candidate(pointer: bool, mutation: Option<u8>) -> CanonicalModule<LoweredCand
     })
 }
 
-#[test]
-fn unique_pop_checker_refuses_shared_container_missing_bounds_and_non_tail() {
+pub fn unique_pop_checker_refuses_shared_container_missing_bounds_and_non_tail() {
     for pointer in [false, true] {
         check_initial_with_test_witness(candidate(pointer, None)).expect("positive initial check");
         for mutation in 0..3 {
@@ -199,8 +198,7 @@ fn unique_pop_checker_refuses_shared_container_missing_bounds_and_non_tail() {
     }
 }
 
-#[test]
-fn unique_pop_rejects_live_prefix_overwrite_direct_moved_and_unknown() {
+pub fn unique_pop_rejects_live_prefix_overwrite_direct_moved_and_unknown() {
     for mutation in [3, 4, 7] {
         let result = check_initial_with_test_witness(candidate(true, Some(mutation)));
         let error = match result {

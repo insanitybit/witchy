@@ -35,7 +35,7 @@ elif a[:2] == ["nextest", "list"]:
     if mode == "malformed":
         print("not-json")
         sys.exit(0)
-    rows = [("witchy-wir", "lib", "witchy_wir"), ("witchy-wir", "test", "rfc0165_route_gate"),
+    rows = [("witchy-wir", "test", "unit"), ("witchy-wir", "test", "rfc0165_route_gate"),
             ("witchy-lower", "lib", "witchy_lower"), ("witchy", "bin", "witchy"),
             ("witchy", "test", "misc"), ("witchy", "test", "cli_subcommands"),
             ("witchy", "lib", "witchy")]
@@ -116,7 +116,7 @@ assert "--ignore-default-filter" not in rows[2]["args"]
 assert "--ignore-default-filter" not in rows[3]["args"]
 assert "--ignore-default-filter" in rows[4]["args"]
 expected_scopes = [
-    "package(=witchy-wir) and (kind(lib) or (kind(test) and binary(=rfc0165_route_gate)))",
+    "package(=witchy-wir) and kind(test) and (binary(=unit) or binary(=rfc0165_route_gate))",
     "package(=witchy-lower) and kind(lib)",
     "package(=witchy) and ((kind(bin) and binary(=witchy)) or (kind(test) and binary(=misc)))",
 ]
@@ -153,7 +153,7 @@ git add .
 git commit -qm dirty-fixture-change
 sha="$(git rev-parse HEAD)"
 receipt="$tmp/state/receipts/$sha.json"
-for failure in metadata build empty malformed missing-witchy_wir missing-rfc0165_route_gate missing-witchy_lower missing-witchy missing-misc wir lower root head-change; do
+for failure in metadata build empty malformed missing-unit missing-rfc0165_route_gate missing-witchy_lower missing-witchy missing-misc wir lower root head-change; do
     if MOCK_FAIL="$failure" run_agent; then
         echo "unexpected success for $failure" >&2
         exit 1

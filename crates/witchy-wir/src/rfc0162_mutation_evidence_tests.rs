@@ -36,8 +36,7 @@ impl ClosedTypeResolver for Resolver {
     }
 }
 
-#[test]
-fn callable_checker_recomputes_parameter_effects() {
+pub fn callable_checker_recomputes_parameter_effects() {
     let mut interner = LayoutInterner::new();
     let layout = interner
         .intern_type(&Type::Named("Int".into(), Vec::new()), &Resolver)

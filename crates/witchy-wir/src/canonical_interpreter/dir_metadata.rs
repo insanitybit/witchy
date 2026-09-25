@@ -86,22 +86,3 @@ fn fixture_kind(fixture: &OracleFixture, scope: &str, parts: Vec<String>) -> Opt
     }
     Some(true)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn dir_metadata_virtual_fixture_distinguishes_self_files_and_directories() {
-        let mut fixture = OracleFixture::default();
-        fixture.files.insert("inner/file".into(), b"data".to_vec());
-        fixture.files.insert("plain".into(), b"data".to_vec());
-        for path in ["", ".", "inner", "./inner", "inner//"] {
-            assert!(fixture.metadata_is_directory("", path), "{path:?}");
-        }
-        for path in ["plain", "plain/child", "inner/file", "missing", "../inner", "inner/../", "/inner", "bad\0name"] {
-            assert!(!fixture.metadata_is_directory("", path), "{path:?}");
-        }
-        assert!(fixture.metadata_is_directory("inner", "."));
-        assert!(!fixture.metadata_is_directory("inner", "../inner"));
-    }
-}

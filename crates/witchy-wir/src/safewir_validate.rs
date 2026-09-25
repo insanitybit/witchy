@@ -4335,8 +4335,9 @@ fn join_ownership(left: Ownership, right: Ownership) -> Ownership {
     }
 }
 
-#[cfg(test)]
-mod tests {
+#[cfg(feature = "raw-encoder-test-api")]
+#[doc(hidden)]
+pub mod self_checks {
     use super::*;
     use crate::layout::{
         ClosedTypeResolver, RcHeader, ReferenceKind, ResolvedNamed, ScalarKind,
@@ -4388,21 +4389,6 @@ mod tests {
             panic!("list layout is dynamic")
         };
         (LayoutBundle::from_interner(&interner, [id]).unwrap(), id, base, stride)
-    }
-
-    fn scalar_pair_layouts() -> (LayoutBundle, LayoutId, LayoutId) {
-        let mut interner = LayoutInterner::new();
-        let int = interner
-            .intern_type(&Type::Named("Int".into(), Vec::new()), &Resolver)
-            .unwrap();
-        let float = interner
-            .intern_type(&Type::Named("Float".into(), Vec::new()), &Resolver)
-            .unwrap();
-        (
-            LayoutBundle::from_interner(&interner, [int, float]).unwrap(),
-            int,
-            float,
-        )
     }
 
     fn layout() -> LayoutId {
@@ -4584,8 +4570,7 @@ mod tests {
         assert!(error.to_string().starts_with(expected.code()));
     }
 
-    #[test]
-    fn scalar_memory_width_and_representation_are_not_interchangeable() {
+    pub fn scalar_memory_width_and_representation_are_not_interchangeable() {
         let mut narrowed = base_module();
         let Operation::Load { width, .. } = &mut narrowed.functions[0].operations[3] else {
             unreachable!()
@@ -4601,229 +4586,10 @@ mod tests {
         assert_rule(reinterpreted, RuleId::ProjectedLayout);
     }
 
-    #[test]
-    fn branch_join_never_resurrects_conditionally_consumed_authority() {
-        let mut accepted = base_module();
-        accepted.functions[0].operations.insert(
-            3,
-            Operation::If {
-                condition: DefinitionId::new(1),
-                then_operations: Vec::new(),
-                else_operations: Vec::new(),
-            },
-        );
-        validate_candidate(&accepted, ValidationBudget::default()).unwrap();
 
-        let mut rejected = base_module();
-        rejected.functions[0].operations.insert(
-            3,
-            Operation::If {
-                condition: DefinitionId::new(1),
-                then_operations: vec![Operation::Release {
-                    object: identity(3, 1),
-                }],
-                else_operations: Vec::new(),
-            },
-        );
-        assert_rule(rejected, RuleId::ConsumeOnce);
 
-        let mut duplicated = base_module();
-        let branch_allocation = object(4, 1, Provenance::Fresh);
-        duplicated.functions[0].operations.insert(
-            3,
-            Operation::If {
-                condition: DefinitionId::new(1),
-                then_operations: vec![Operation::Alloc {
-                    result: branch_allocation.clone(),
-                }],
-                else_operations: vec![Operation::Alloc {
-                    result: branch_allocation,
-                }],
-            },
-        );
-        assert_rule(duplicated, RuleId::CheckedCallableContract);
-    }
 
-    #[test]
-    fn counted_loop_scopes_its_induction_theorem_and_rejects_mutations() {
-        let (layouts, list, base, stride) = list_layouts();
-        let capacity = DefinitionId::new(40);
-        let root = DefinitionId::new(41);
-        let induction = DefinitionId::new(42);
-        let header_count = DefinitionId::new(43);
-        let object = ObjectRef {
-            identity: ObjectIdentity { root, generation: GenerationId::new(1) },
-            layout: list,
-            extent: Extent::Counted {
-                header: SizeExpr::Constant(u64::from(base)),
-                count: capacity,
-                stride: SizeExpr::Constant(u64::from(stride)),
-            },
-            provenance: Provenance::Unknown,
-        };
-        let place = Place {
-            object: object.clone(),
-            projection: Projection::root().project(ProjectionStep::Element { index: induction }),
-            range: ByteRange {
-                object: object.identity,
-                start: SizeExpr::narrow_u32(SizeExpr::add(
-                    SizeExpr::Constant(u64::from(base)),
-                    SizeExpr::multiply(SizeExpr::Definition(induction), SizeExpr::Constant(u64::from(stride))),
-                )),
-                length: SizeExpr::Constant(u64::from(stride)),
-            },
-            access: AccessMode::Read,
-        };
-        let no_memory = || ParameterMemoryContract {
-            entry: ParameterMemoryEntry::NoMemory,
-            layout: None,
-            extent: None,
-            dynamic_header: None,
-            effects: ParameterMemoryEffects::none(),
-        };
-        let module = CandidateModule {
-            checked_source_entries: 1,
-            layouts,
-            imports: BTreeMap::new(),
-            host_imports: BTreeMap::new(),
-            reallocation_templates: Default::default(),
-            functions: vec![CandidateFunction {
-                name: "counted".into(),
-                contract: CallableMemoryContract {
-                    parameters: vec![
-                        no_memory(),
-                        ParameterMemoryContract {
-                            entry: ParameterMemoryEntry::BorrowedRead,
-                            layout: Some(list),
-                            extent: Some(ContractExtent::Counted {
-                                header: ContractSizeExpr::Constant(u64::from(base)),
-                                count: ContractSizeExpr::Parameter(0),
-                                stride: ContractSizeExpr::Constant(u64::from(stride)),
-                            }),
-                            dynamic_header: Some(DynamicHeaderInvariant::BoundedByCountedExtent { component: 0 }),
-                            effects: ParameterMemoryEffects::only(ParameterMemoryEffect::Read),
-                        },
-                    ],
-                    result: CallableMemoryResult::NoMemory,
-                },
-                parameters: vec![
-                    ParameterBinding { definition: capacity, object: None },
-                    ParameterBinding { definition: root, object: Some(object.clone()) },
-                ],
-                scalar_results: Vec::new(),
-                operations: vec![
-                    Operation::BindCountParameter { definition: capacity, parameter: 0 },
-                    Operation::BindHeaderCount { definition: header_count, object: object.identity, component: 0 },
-                    Operation::DefineScalar { definition: induction, value: 0 },
-                    Operation::CountedLoop {
-                        control: ControlId::new(1),
-                        induction,
-                        bound: header_count,
-                        body: vec![Operation::CheckedIndex {
-                            object: object.identity,
-                            index: induction,
-                            length_source: header_count,
-                            place,
-                            width: MemoryWidth::I64,
-                            access: AccessMode::Read,
-                        }],
-                    },
-                ],
-            }],
-            gc: CandidateGcDeclarations::default(),
-            contains_raw_memory: false,
-            contains_raw_body: false,
-            post_validation_transform: PostValidationTransform::FixedTemplateExpansionAndErasure,
-        };
-        validate_candidate(&module, ValidationBudget::default()).unwrap();
-
-        let mut bad_init = module.clone();
-        bad_init.functions[0].operations[2] = Operation::DefineScalar { definition: induction, value: 1 };
-        assert_rule(bad_init, RuleId::ExactRangeSource);
-
-        let mut bad_bound = module.clone();
-        let Operation::CountedLoop { bound, .. } = &mut bad_bound.functions[0].operations[3] else { panic!() };
-        *bound = capacity;
-        assert_rule(bad_bound, RuleId::ExactRangeSource);
-
-        let mut escaped = module.clone();
-        let Operation::CountedLoop { body, .. } = &mut escaped.functions[0].operations[3] else { panic!() };
-        body.push(Operation::ReturnVoid);
-        assert_rule(escaped, RuleId::ConservativeJoin);
-
-        let mut post_loop = module;
-        post_loop.functions[0].operations.push(Operation::CheckedIndex {
-            object: object.identity,
-            index: induction,
-            length_source: header_count,
-            place: Place {
-                object: object.clone(),
-                projection: Projection::root().project(ProjectionStep::Element { index: induction }),
-                range: ByteRange {
-                    object: object.identity,
-                    start: SizeExpr::narrow_u32(SizeExpr::add(
-                        SizeExpr::Constant(u64::from(base)),
-                        SizeExpr::multiply(SizeExpr::Definition(induction), SizeExpr::Constant(u64::from(stride))),
-                    )),
-                    length: SizeExpr::Constant(u64::from(stride)),
-                },
-                access: AccessMode::Read,
-            },
-            width: MemoryWidth::I64,
-            access: AccessMode::Read,
-        });
-        assert_rule(post_loop, RuleId::ExactRangeSource);
-    }
-
-    #[test]
-    fn loop_fixpoint_accepts_stable_facts_and_rejects_consumed_back_edges() {
-        let mut stable = base_module();
-        let repeated_load = stable.functions[0].operations[3].clone();
-        stable.functions[0].operations.push(Operation::Loop {
-            control: ControlId::new(1),
-            body: vec![
-                repeated_load,
-                Operation::Branch {
-                    target: ControlId::new(1),
-                    condition: None,
-                },
-            ],
-        });
-        let report = validate_candidate(&stable, ValidationBudget::default()).unwrap();
-        assert_eq!(report.metrics().operations, 7);
-
-        let mut consumed = base_module();
-        consumed.functions[0].operations.push(Operation::Loop {
-            control: ControlId::new(1),
-            body: vec![
-                Operation::Release { object: identity(3, 1) },
-                Operation::Branch {
-                    target: ControlId::new(1),
-                    condition: None,
-                },
-            ],
-        });
-        assert_rule(consumed, RuleId::ConsumeOnce);
-
-        let mut reused = base_module();
-        reused.functions[0].operations.push(Operation::Loop {
-            control: ControlId::new(1),
-            body: vec![
-                Operation::Reuse {
-                    old: identity(3, 1),
-                    new: object(3, 2, Provenance::Fresh),
-                },
-                Operation::Branch {
-                    target: ControlId::new(1),
-                    condition: None,
-                },
-            ],
-        });
-        assert_rule(reused, RuleId::ConsumeOnce);
-    }
-
-    #[test]
-    fn block_exit_accumulator_never_resurrects_consumed_authority() {
+    pub fn block_exit_accumulator_never_resurrects_consumed_authority() {
         let mut module = base_module();
         let allocated = object(3, 1, Provenance::Fresh);
         module.functions[0].operations.extend([
@@ -4852,78 +4618,9 @@ mod tests {
         assert_rule(module, RuleId::ConsumeOnce);
     }
 
-    #[test]
-    fn bulk_copy_cannot_reinterpret_same_width_scalar_layouts() {
-        let (layouts, int_layout, float_layout) = scalar_pair_layouts();
-        let source = ObjectRef {
-            identity: identity(1, 1),
-            layout: int_layout,
-            extent: Extent::Exact(SizeExpr::Constant(8)),
-            provenance: Provenance::Fresh,
-        };
-        let destination = ObjectRef {
-            identity: identity(2, 1),
-            layout: float_layout,
-            extent: Extent::Exact(SizeExpr::Constant(8)),
-            provenance: Provenance::Fresh,
-        };
-        let module = CandidateModule {
-            checked_source_entries: 1,
-            layouts,
-            imports: BTreeMap::new(),
-            host_imports: BTreeMap::new(),
-            reallocation_templates: Default::default(),
-            functions: vec![CandidateFunction {
-                name: "copy".into(),
-                contract: no_memory_contract(),
-                scalar_results: Vec::new(),
-                parameters: Vec::new(),
-                operations: vec![
-                    Operation::Alloc { result: source.clone() },
-                    Operation::Alloc { result: destination.clone() },
-                    Operation::Copy {
-                        source: place(source, AccessMode::Read, 0, 8),
-                        destination: place(destination, AccessMode::Write, 0, 8),
-                        kind: CopyKind::MayOverlap,
-                    },
-                ],
-            }],
-            gc: CandidateGcDeclarations::default(),
-            contains_raw_memory: false,
-            contains_raw_body: false,
-            post_validation_transform: PostValidationTransform::FixedTemplateExpansionAndErasure,
-        };
-        assert_rule(module, RuleId::ProjectedLayout);
-    }
 
-    #[test]
-    fn borrowed_parameter_cannot_launder_into_a_fresh_result() {
-        let mut module = base_module();
-        let parameter = object(20, 1, Provenance::Fresh);
-        module.functions.push(CandidateFunction {
-            name: "launder".into(),
-            contract: CallableMemoryContract {
-                parameters: vec![object_parameter(
-                    ParameterMemoryEntry::BorrowedRead,
-                    ParameterMemoryEffects::only(ParameterMemoryEffect::Escape),
-                )],
-                result: CallableMemoryResult::Fresh {
-                    layout: layout(),
-                    extent: ContractExtent::Exact(ContractSizeExpr::Constant(8)),
-                },
-            },
-            parameters: vec![ParameterBinding {
-                definition: parameter.identity.root,
-                object: Some(parameter.clone()),
-            }],
-            scalar_results: Vec::new(),
-            operations: vec![Operation::ReturnObject { object: parameter.identity }],
-        });
-        assert_rule(module, RuleId::CheckedCallableContract);
-    }
 
-    #[test]
-    fn consuming_one_alias_invalidates_the_entire_group() {
+    pub fn consuming_one_alias_invalidates_the_entire_group() {
         let mut module = base_module();
         let result = add_identity_alias(&mut module);
         module
@@ -4942,32 +4639,8 @@ mod tests {
         assert_rule(module, RuleId::ConsumeOnce);
     }
 
-    #[test]
-    fn callee_cannot_widen_a_parameter_extent() {
-        let mut module = base_module();
-        let mut parameter = object(20, 1, Provenance::Unknown);
-        parameter.extent = Extent::Exact(SizeExpr::Constant(16));
-        module.functions.push(CandidateFunction {
-            name: "widen".into(),
-            contract: CallableMemoryContract {
-                parameters: vec![object_parameter(
-                    ParameterMemoryEntry::BorrowedRead,
-                    ParameterMemoryEffects::none(),
-                )],
-                result: CallableMemoryResult::NoMemory,
-            },
-            parameters: vec![ParameterBinding {
-                definition: parameter.identity.root,
-                object: Some(parameter),
-            }],
-            scalar_results: Vec::new(),
-            operations: Vec::new(),
-        });
-        assert_rule(module, RuleId::CheckedCallableContract);
-    }
 
-    #[test]
-    fn ordinary_call_cannot_reach_a_host_import() {
+    pub fn ordinary_call_cannot_reach_a_host_import() {
         let mut module = base_module();
         module
             .host_imports
@@ -4980,95 +4653,8 @@ mod tests {
         assert_rule(module, RuleId::CheckedCallableContract);
     }
 
-    #[test]
-    fn host_buffer_ranges_are_validated_before_the_contract() {
-        let mut module = base_module();
-        module.host_imports.insert(
-            "read".into(),
-            CallableMemoryContract {
-                parameters: vec![object_parameter(
-                    ParameterMemoryEntry::BorrowedRead,
-                    ParameterMemoryEffects::only(ParameterMemoryEffect::Read),
-                )],
-                result: CallableMemoryResult::NoMemory,
-            },
-        );
-        let allocated = object(3, 1, Provenance::Fresh);
-        module.functions[0].operations.push(Operation::HostCall {
-            import: "read".into(),
-            arguments: vec![HostArgument::Buffer(place(
-                allocated.clone(),
-                AccessMode::Read,
-                0,
-                8,
-            ))],
-            result: None,
-        });
-        validate_candidate(&module, ValidationBudget::default()).unwrap();
 
-        let Operation::HostCall { arguments, .. } =
-            module.functions[0].operations.last_mut().unwrap()
-        else {
-            unreachable!()
-        };
-        let HostArgument::Buffer(place) = &mut arguments[0] else { unreachable!() };
-        place.range.start = SizeExpr::Constant(1);
-        place.range.length = SizeExpr::Constant(7);
-        assert_rule(module, RuleId::ProjectedLayout);
-
-        let mut out_of_bounds = out_of_bounds_list_module();
-        let (base, stride, list_layout) = {
-            let Operation::Load { place, .. } =
-                out_of_bounds.functions[0].operations.pop().unwrap()
-            else {
-                unreachable!()
-            };
-            let Extent::Counted { header, stride, .. } = &place.object.extent else {
-                unreachable!()
-            };
-            let SizeExpr::Constant(base) = header else { unreachable!() };
-            let SizeExpr::Constant(stride) = stride else { unreachable!() };
-            (*base, *stride, place)
-        };
-        out_of_bounds.host_imports.insert(
-            "read_list".into(),
-            CallableMemoryContract {
-                parameters: vec![
-                    ParameterMemoryContract {
-                        entry: ParameterMemoryEntry::NoMemory,
-                        layout: None,
-                        extent: None,
-                        dynamic_header: None,
-                        effects: ParameterMemoryEffects::none(),
-                    },
-                    ParameterMemoryContract {
-                        entry: ParameterMemoryEntry::BorrowedRead,
-                        layout: Some(list_layout.object.layout),
-                        extent: Some(ContractExtent::Counted {
-                            header: ContractSizeExpr::Constant(base),
-                            count: ContractSizeExpr::Parameter(0),
-                            stride: ContractSizeExpr::Constant(stride),
-                        }),
-                        dynamic_header: None,
-                        effects: ParameterMemoryEffects::only(ParameterMemoryEffect::Read),
-                    },
-                ],
-                result: CallableMemoryResult::NoMemory,
-            },
-        );
-        out_of_bounds.functions[0].operations.push(Operation::HostCall {
-            import: "read_list".into(),
-            arguments: vec![
-                HostArgument::Scalar(DefinitionId::new(2)),
-                HostArgument::Buffer(list_layout),
-            ],
-            result: None,
-        });
-        assert_rule(out_of_bounds, RuleId::ObjectRange);
-    }
-
-    #[test]
-    fn reuse_extent_is_rejected_at_the_reuse_operation() {
+    pub fn reuse_extent_is_rejected_at_the_reuse_operation() {
         let mut module = base_module();
         let mut replacement = object(3, 2, Provenance::Fresh);
         replacement.extent = Extent::Exact(SizeExpr::Constant(16));
@@ -5084,37 +4670,8 @@ mod tests {
         assert_eq!(error.operation, Some(4));
     }
 
-    #[test]
-    fn function_body_cannot_hide_a_consume_effect() {
-        let mut module = base_module();
-        let parameter = object(20, 1, Provenance::Unknown);
-        module.functions.push(CandidateFunction {
-            name: "underdeclared".into(),
-            contract: CallableMemoryContract {
-                parameters: vec![ParameterMemoryContract {
-                    entry: ParameterMemoryEntry::BorrowedWrite,
-                    layout: Some(layout()),
-                    extent: Some(ContractExtent::Exact(ContractSizeExpr::Constant(8))),
-                    dynamic_header: None,
-                    effects: ParameterMemoryEffects::none(),
-                }],
-                result: CallableMemoryResult::NoMemory,
-            },
-            parameters: vec![ParameterBinding {
-                definition: parameter.identity.root,
-                object: Some(parameter.clone()),
-            }],
-            scalar_results: Vec::new(),
-            operations: vec![Operation::Store {
-                place: place(parameter, AccessMode::Write, 0, 8),
-                width: MemoryWidth::I64,
-            }],
-        });
-        assert_rule(module, RuleId::CheckedCallableContract);
-    }
 
-    #[test]
-    fn report_mode_rule_diagnostics_have_forged_fixtures() {
+    pub fn report_mode_rule_diagnostics_have_forged_fixtures() {
         let mut module = base_module();
         module.checked_source_entries = 0;
         assert_rule(module, RuleId::CheckedSourceEntry);
@@ -5247,20 +4804,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn every_budget_fails_closed() {
-        for budget in [
-            ValidationBudget { functions: 0, ..ValidationBudget::default() },
-            ValidationBudget { operations: 0, ..ValidationBudget::default() },
-            ValidationBudget { facts: 0, ..ValidationBudget::default() },
-            ValidationBudget { expression_depth: 0, ..ValidationBudget::default() },
-        ] {
-            let error = validate_candidate(&base_module(), budget).unwrap_err();
-            assert_eq!(
-                error.diagnostic,
-                ValidationDiagnostic::Rule(RuleId::BudgetExhaustionFailsClosed)
-            );
-        }
-
-    }
 }

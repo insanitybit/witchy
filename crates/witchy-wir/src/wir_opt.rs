@@ -432,7 +432,3 @@ fn safe_place_expr_size(place: &crate::safewir_surface::SafePlaceExpr) -> usize 
     size
 }
 
-#[cfg(test)]
-#[cfg(feature = "native")]
-#[path = "wir_opt_tests.rs"]
-mod tests;

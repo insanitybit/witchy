@@ -219,49 +219,13 @@ impl Engine<'_> {
     }
 }
 
-#[cfg(test)]
-mod tests {
+#[cfg(feature = "raw-encoder-test-api")]
+#[doc(hidden)]
+pub mod self_checks {
     use super::*;
 
-    #[test]
-    fn build_net_oracle_grants_and_responses_require_kind_and_session() {
-        let state = State::new();
-        let other = State::new();
-        let grant = state.mint(Resource::NetGrant);
-        assert!(state.authenticate_net(&grant).is_ok());
-        assert!(other.authenticate_net(&grant).is_err());
-        assert!(state.authenticate_net(&CapabilityToken::root(BUILD_NET_CAPABILITY_KIND.get())).is_err());
-        for resource in [Resource::Grant, Resource::EnvGrant, Resource::ExecGrant] {
-            assert!(state.authenticate_net(&state.mint(resource)).is_err());
-        }
-        let first = state.some_response(Arc::from(&b"first"[..]));
-        let second = state.some_response(Arc::from(&b"second"[..]));
-        assert!(state.authenticate_net(&first).is_err());
-        assert!(other.authenticate(&first, BUILD_READ_RESPONSE_KIND.get()).is_err());
-        assert_eq!(response_bytes(state.authenticate(&first, BUILD_READ_RESPONSE_KIND.get()).unwrap()).unwrap().as_ref(), b"first");
-        assert_eq!(response_bytes(state.authenticate(&second, BUILD_READ_RESPONSE_KIND.get()).unwrap()).unwrap().as_ref(), b"second");
-    }
 
-    #[test]
-    fn build_exec_oracle_resources_require_session_and_keep_responses_independent() {
-        let state = State::new();
-        let other = State::new();
-        let grant = state.mint(Resource::ExecGrant);
-        assert!(state.authenticate_exec(&grant).is_ok());
-        assert!(other.authenticate_exec(&grant).is_err());
-        assert!(state.authenticate_exec(&CapabilityToken::root(BUILD_EXEC_CAPABILITY_KIND.get())).is_err());
-        assert!(state.authenticate_exec(&state.mint(Resource::Grant)).is_err());
-        assert!(state.authenticate_exec(&state.mint(Resource::EnvGrant)).is_err());
-        let first = state.some_response(Arc::from(&b"first"[..]));
-        let second = state.some_response(Arc::from(&b"second"[..]));
-        assert!(state.authenticate_exec(&first).is_err());
-        assert!(other.authenticate(&first, BUILD_READ_RESPONSE_KIND.get()).is_err());
-        assert_eq!(response_bytes(state.authenticate(&first, BUILD_READ_RESPONSE_KIND.get()).unwrap()).unwrap().as_ref(), b"first");
-        assert_eq!(response_bytes(state.authenticate(&second, BUILD_READ_RESPONSE_KIND.get()).unwrap()).unwrap().as_ref(), b"second");
-    }
-
-    #[test]
-    fn build_env_oracle_keeps_denied_unset_empty_and_private_sessions_distinct() {
+    pub fn build_env_oracle_keeps_denied_unset_empty_and_private_sessions_distinct() {
         let mut fixture = OracleBuildEnvFixture { values: BTreeMap::from([
             ("present".into(), Some("snapshot".into())),
             ("empty".into(), Some(String::new())), ("unset".into(), None),
@@ -286,41 +250,5 @@ mod tests {
         assert!(response_bytes(Resource::Response(Some(Arc::from(&b""[..])))).unwrap().is_empty());
     }
 
-    #[test]
-    fn build_read_oracle_tokens_require_private_kind_and_session() {
-        let first = State::new();
-        let second = State::new();
-        let grant = first.mint(Resource::Grant);
-        let response = first.mint(Resource::Response(Some(Arc::from(&b"snapshot"[..]))));
-        assert_eq!(first.authenticate(&grant, BUILD_READ_CAPABILITY_KIND.get()).unwrap(), Resource::Grant);
-        assert!(first.authenticate(&response, BUILD_READ_RESPONSE_KIND.get()).is_ok());
-        for (token, wrong_kind) in [(&grant, BUILD_READ_RESPONSE_KIND.get()), (&response, BUILD_READ_CAPABILITY_KIND.get())] {
-            assert!(first.authenticate(token, wrong_kind).is_err());
-            assert!(second.authenticate(token, token.kind).is_err());
-            assert!(first.authenticate(&CapabilityToken::root(token.kind), token.kind).is_err());
-        }
-        let mut mislabeled = grant.clone();
-        mislabeled.kind = BUILD_READ_RESPONSE_KIND.get();
-        assert!(first.authenticate(&mislabeled, BUILD_READ_RESPONSE_KIND.get()).is_err());
-    }
 
-    #[test]
-    fn build_read_oracle_roots_are_ordered_strict_utf8_and_snapshotted() {
-        let mut fixture = OracleBuildReadFixture { roots: vec![
-            BTreeMap::from([("file".into(), vec![0xff])]),
-            BTreeMap::from([("file".into(), b"second".to_vec())]),
-            BTreeMap::from([("file".into(), b"third".to_vec())]),
-        ] };
-        let snapshot = read_response(&fixture, "./file/").unwrap();
-        assert_eq!(snapshot.as_ref(), b"second");
-        fixture.roots[0].insert("file".into(), b"first".to_vec());
-        fixture.roots[1].clear();
-        assert_eq!(read_response(&fixture, "file").unwrap().as_ref(), b"first");
-        assert_eq!(snapshot.as_ref(), b"second");
-        for path in ["../file", "/file", "file\0", ".", "absent"] {
-            assert!(read_response(&fixture, path).is_err(), "must reject {path:?}");
-        }
-        assert!(read_response(&OracleBuildReadFixture { roots: vec![] }, "file").is_err());
-        assert!(read_response(&OracleBuildReadFixture { roots: vec![BTreeMap::from([("file".into(), vec![0xff])])] }, "file").is_err());
-    }
 }

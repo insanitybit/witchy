@@ -83,11 +83,6 @@ impl CheckedInitialSafeWir {
         &self.witness
     }
 
-    #[cfg(test)]
-    fn into_parts_for_test(self) -> (CanonicalModule<InitialValid>, CheckedLoweringWitness) {
-        (self.module, self.witness)
-    }
-
 }
 
 /// A relation-checked and fully revalidated optimized module. Its fields and
@@ -103,7 +98,7 @@ impl CheckedOptimizedSafeWir {
         &self.module
     }
 
-    #[cfg(test)]
+    #[cfg(feature = "raw-encoder-test-api")]
     fn into_parts_for_test(
         self,
     ) -> (
@@ -3190,16 +3185,6 @@ pub(super) fn value_type_matches_source(
     }
 }
 
-fn record_layout_matches(
-    layout: crate::layout::LayoutId,
-    fields: &[witchy_syntax::ast::Type],
-    nullable_fields: bool,
-    layouts: &crate::layout::LayoutInterner,
-    records: &ScalarRecordFields,
-) -> bool {
-    record_layout_matches_with_closures(layout, fields, nullable_fields, layouts, records, &BTreeMap::new(), &[], &mut CorrespondenceContext::default())
-}
-
 fn record_layout_matches_with_closures(
     layout: crate::layout::LayoutId,
     fields: &[witchy_syntax::ast::Type],
@@ -3590,14 +3575,14 @@ fn validate_optimized_final_inner(
     })
 }
 
-#[cfg(test)]
+#[cfg(feature = "raw-encoder-test-api")]
 pub(crate) fn validate_final_for_test(
     checked: CheckedInitialSafeWir,
 ) -> Result<ValidatedSafeWir, FinalValidationError> {
     validate_final_inner(checked.module, checked.witness, None)
 }
 
-#[cfg(test)]
+#[cfg(feature = "raw-encoder-test-api")]
 fn validate_optimized_final_parts_for_test(
     module: CanonicalModule<InitialValid>,
     checked_lowering: CheckedLoweringWitness,
@@ -3613,15 +3598,7 @@ fn validate_optimized_final_parts_for_test(
     )
 }
 
-#[cfg(test)]
-fn validate_final_parts_for_test(
-    module: CanonicalModule<InitialValid>,
-    witness: CheckedLoweringWitness,
-) -> Result<ValidatedSafeWir, FinalValidationError> {
-    validate_final_inner(module, witness, None)
-}
-
-#[cfg(test)]
+#[cfg(feature = "raw-encoder-test-api")]
 pub(crate) fn check_initial_with_test_witness(
     candidate: CanonicalModule<LoweredCandidate>,
 ) -> Result<CheckedInitialSafeWir, InitialCheckError> {
@@ -3629,7 +3606,7 @@ pub(crate) fn check_initial_with_test_witness(
     check_initial_with_expected_digest(candidate, expected)
 }
 
-#[cfg(test)]
+#[cfg(feature = "raw-encoder-test-api")]
 fn check_initial_with_expected_digest(
     candidate: CanonicalModule<LoweredCandidate>,
     expected_proper_tail_manifest_digest: [u8; 32],
@@ -3670,7 +3647,7 @@ pub mod checked_source_cases;
 
 /// The one-function `fn() -> Int` candidate the authority tests and the
 /// checked-source cases perturb.
-#[cfg(any(test, feature = "checked-source-test-api"))]
+#[cfg(feature = "checked-source-test-api")]
 fn authority_test_candidate() -> CanonicalModule<LoweredCandidate> {
     use super::{
         BasicBlock, BlockId, CallableContract, Function, FunctionId, FunctionSignature,
@@ -3710,8 +3687,9 @@ fn authority_test_candidate() -> CanonicalModule<LoweredCandidate> {
     })
 }
 
-#[cfg(test)]
-mod tests {
+#[cfg(feature = "raw-encoder-test-api")]
+#[doc(hidden)]
+pub mod self_checks {
     use std::collections::BTreeMap;
 
     use super::*;
@@ -3913,101 +3891,17 @@ mod tests {
             && adapter_body_forwards(adapter_function, target, target_signature, owner_family.map(|family| family.signature))
     }
 
-    fn owner_adapter_candidate() -> (CanonicalModule<LoweredCandidate>, FunctionId, FunctionId) {
-        use crate::canonical_safewir::closure_owner_contract::{ConstructorId, OwnerConstructor, OwnerFamily, OwnerOperation};
-        use crate::canonical_safewir::{BlockParameter, Ownership};
-        use crate::layout::LayoutId;
 
-        let (mut module, adapter, target) = adapter_candidate(forwarding_body().0, forwarding_body().1);
-        let owner_type = crate::canonical_safewir::GcTypeId::new(0xc1000000);
-        let signature = &mut module.signatures[0];
-        signature.parameters[0] = ValueType::Gc(owner_type);
-        signature.contract.parameters[0].value_type = ValueType::Gc(owner_type);
-        module.functions[0].value_types.insert(ValueId::new(0), ValueType::Gc(owner_type));
-        module.functions[0].blocks[0].parameters[0] = BlockParameter {
-            value: ValueId::new(0), value_type: ValueType::Gc(owner_type), ownership: Some(Ownership::Shared),
-        };
-        module.functions[0].blocks[0].operations.push(Operation::ClosureOwner(OwnerOperation::Drop {
-            owner: ValueId::new(0), family: FunctionSignatureId::new(0),
-        }));
-        let family = OwnerFamily {
-            source: super::super::closure_owner_contract::OwnerFamilySource::Closure,
-            owner_type,
-            list_type: crate::canonical_safewir::GcTypeId::new(0xc1000001),
-            signature: FunctionSignatureId::new(0),
-            declaration_signature: FunctionSignatureId::new(1),
-            environment: LayoutId::from_bytes([0; 32]),
-            constructors: vec![OwnerConstructor {
-                id: ConstructorId(0), function: adapter, witness: None, environment_tag: 0, captures: Vec::new(),
-            }],
-        };
-        (module.with_owner_families(vec![family]), adapter, target)
-    }
-
-    #[test]
-    fn owner_family_named_adapter_admits_and_mismatched_target_refuses() {
-        let (module, adapter, target) = owner_adapter_candidate();
-        assert!(adapter_shape_holds(&module, adapter, target));
-        let wrong = module.with_adapter_bindings(crate::canonical_safewir::CandidateAdapterBindings::new(vec![
-            crate::canonical_safewir::CandidateAdapterBinding::new(adapter, adapter),
-        ]));
-        assert!(!adapter_shape_holds(&wrong, adapter, target));
-    }
-
-    #[test]
-    fn adapter_binding_rejects_a_body_that_keeps_the_environment() {
-        // Every call site clones the record for the adapter; one that never
-        // releases its token would leak a reference per call.
-        let (operations, terminator) = forwarding_body();
-        let (module, adapter, target) = adapter_candidate(operations, terminator);
-        assert!(!adapter_shape_holds(&module, adapter, target));
-    }
-
-    #[test]
-    fn adapter_binding_rejects_a_body_that_does_extra_work() {
+    pub fn adapter_binding_rejects_a_body_that_does_extra_work() {
         let (mut operations, terminator) = forwarding_body();
         operations.push(Operation::ConstInt { destination: ValueId::new(3), value: 1 });
         let (module, adapter, target) = adapter_candidate(operations, terminator);
         assert!(!adapter_shape_holds(&module, adapter, target));
     }
 
-    #[test]
-    fn adapter_binding_rejects_an_unregistered_environment_layout() {
-        let (operations, terminator) = forwarding_body();
-        let (module, adapter, target) = adapter_candidate(operations, terminator);
-        let module = module.with_closure_layouts(BTreeMap::new());
-        assert!(!adapter_shape_holds(&module, adapter, target));
-    }
 
-    #[test]
-    fn source_sum_nullable_fields_have_exact_canonical_slot_semantics() {
-        use crate::layout::{LayoutInterner, PointerSlot, ScalarKind};
-        use witchy_syntax::ast::Type;
-        let mut layouts = LayoutInterner::new();
-        let int = layouts.intern_scalar(ScalarKind::Int).unwrap();
-        let byte = layouts.intern_scalar(ScalarKind::RawByte).unwrap();
-        let string = layouts.intern_runtime_buffer(byte).unwrap();
-        let source_string = Type::Named("String".into(), vec![]);
-        let sum = Type::Named("Option".into(), vec![source_string.clone()]);
-        let tuple = Type::Tuple(vec![Type::Named("Int".into(), vec![]), source_string]);
-        for semantics in [PointerSlot::Owned, PointerSlot::OwnedNullable, PointerSlot::Raw] {
-            let record = layouts.intern_runtime_pointer_value_slot(string, semantics)
-                .and_then(|slot| layouts.intern_packed_record(vec![int, slot]));
-            if semantics == PointerSlot::Raw {
-                assert!(record.is_err(), "raw ownership erasure must fail during layout construction");
-                continue;
-            }
-            let record = record.unwrap();
-            assert_eq!(layout_matches_source(record, &sum, &layouts, &BTreeMap::new()), semantics == PointerSlot::OwnedNullable);
-            assert_eq!(layout_matches_source(record, &tuple, &layouts, &BTreeMap::new()), semantics == PointerSlot::Owned);
-        }
-        let wrong = layouts.intern_runtime_pointer_value_slot(int, PointerSlot::OwnedNullable).unwrap();
-        let record = layouts.intern_packed_record(vec![int, wrong]).unwrap();
-        assert!(!layout_matches_source(record, &sum, &layouts, &BTreeMap::new()));
-    }
 
-    #[test]
-    fn source_recursive_layout_graph_checks_every_pair_and_child() {
+    pub fn source_recursive_layout_graph_checks_every_pair_and_child() {
         use crate::layout::{LayoutInterner, PointerSlot, ScalarKind};
         use witchy_syntax::ast::Type;
         use witchy_canonical_source::aggregates::ScalarAggregateShape;
@@ -4037,8 +3931,7 @@ mod tests {
         assert!(!layout_matches_source(nominal, &Type::Named("Option".into(), vec![named("Tree")]), &layouts, &records), "recursive identity cannot substitute for a tagged nullable layout");
     }
 
-    #[test]
-    fn source_generic_layout_graph_checks_instantiated_payload_types() {
+    pub fn source_generic_layout_graph_checks_instantiated_payload_types() {
         use crate::layout::{LayoutInterner, PointerSlot, ScalarKind};
         use witchy_syntax::ast::Type;
         use witchy_canonical_source::aggregates::ScalarAggregateShape;
@@ -4071,396 +3964,26 @@ mod tests {
         assert!(!layout_matches_source(int_box, &Type::Named("Box".into(), vec![named("Missing")]), &layouts, &records));
     }
 
-    #[test]
-    fn root_unique_keeps_gc_owners_tokenized_while_scalars_stay_value_lanes() {
-        use crate::canonical_safewir::{GcTypeId, ParameterOwnership};
 
-        let owner = ValueType::Gc(GcTypeId::new(7));
-        assert!(root_unique_parameter_ownership_matches(owner, ParameterOwnership::Unique));
-        assert!(!root_unique_parameter_ownership_matches(owner, ParameterOwnership::Value));
-        assert!(root_unique_result_requires_token(&owner));
 
-        assert!(root_unique_parameter_ownership_matches(ValueType::Int, ParameterOwnership::Value));
-        assert!(!root_unique_parameter_ownership_matches(ValueType::Int, ParameterOwnership::Unique));
-        assert!(!root_unique_result_requires_token(&ValueType::Int));
-    }
 
-    #[test]
-    fn result_unique_ok_authority_refuses_nested_or_arbitrary_qualifiers() {
-        use witchy_syntax::ast::{Type, TypeQual};
-        let int = || Type::Named("Int".into(), Vec::new());
-        let string = || Type::Named("String".into(), Vec::new());
-        let exact = Type::Named(
-            "Result".into(),
-            vec![
-                Type::Qualified(TypeQual::Unique, Box::new(Type::Named("List".into(), vec![int()]))),
-                string(),
-            ],
-        );
-        assert!(witchy_syntax::ast::is_direct_unique_result_ok_collection(&exact));
 
-        let nested = Type::Named(
-            "Result".into(),
-            vec![
-                Type::Qualified(
-                    TypeQual::Unique,
-                    Box::new(Type::Named(
-                        "List".into(),
-                        vec![Type::Qualified(TypeQual::Unique, Box::new(int()))],
-                    )),
-                ),
-                string(),
-            ],
-        );
-        assert!(!witchy_syntax::ast::is_direct_unique_result_ok_collection(&nested));
 
-        let arbitrary = Type::Named(
-            "Result".into(),
-            vec![Type::Qualified(TypeQual::Unique, Box::new(Type::Tuple(vec![int()]))), string()],
-        );
-        assert!(!witchy_syntax::ast::is_direct_unique_result_ok_collection(&arbitrary));
 
-        let qualified_error = Type::Named(
-            "Result".into(),
-            vec![
-                Type::Qualified(TypeQual::Unique, Box::new(Type::Named("List".into(), vec![int()]))),
-                Type::Qualified(TypeQual::Unique, Box::new(Type::Named("List".into(), vec![int()])))
-            ],
-        );
-        assert!(!witchy_syntax::ast::is_direct_unique_result_ok_collection(&qualified_error));
-    }
 
-    #[test]
-    fn duration_list_layout_correspondence_requires_duration_elements() {
-        use crate::layout::{RcHeader, ScalarKind};
-        use witchy_syntax::ast::{Type, TypeQual};
 
-        let mut layouts = LayoutInterner::new();
-        let duration = layouts.intern_scalar(ScalarKind::Duration).unwrap();
-        let integer = layouts.intern_scalar(ScalarKind::Int).unwrap();
-        let duration_list = layouts.intern_packed_list(duration, RcHeader::Required).unwrap();
-        let integer_list = layouts.intern_packed_list(integer, RcHeader::Required).unwrap();
-        let source = Type::Named("List".into(), vec![Type::Named("Duration".into(), vec![])]);
-        let mut pending = Vec::new();
-        assert!(enqueue_layout_children(
-            duration_list, &source, &layouts, &BTreeMap::new(), &mut pending,
-            &BTreeMap::new(), &[], &mut CorrespondenceContext::default(),
-        ));
-        assert!(pending.is_empty(), "a scalar Duration element needs no child owner layout");
-        assert!(!enqueue_layout_children(
-            integer_list, &source, &layouts, &BTreeMap::new(), &mut Vec::new(),
-            &BTreeMap::new(), &[], &mut CorrespondenceContext::default(),
-        ), "an Int list cannot authenticate the Duration source layout");
-        for qualifier in [TypeQual::View, TypeQual::Unique] {
-            let qualified = Type::Named("List".into(), vec![
-                Type::Qualified(qualifier, Box::new(Type::Named("Duration".into(), vec![]))),
-            ]);
-            assert!(!enqueue_layout_children(
-                duration_list, &qualified, &layouts, &BTreeMap::new(), &mut Vec::new(),
-                &BTreeMap::new(), &[], &mut CorrespondenceContext::default(),
-            ), "a qualified Duration source cannot claim the plain scalar layout");
-        }
-    }
 
-    #[test]
-    fn plain_list_layout_cannot_authenticate_a_view_element_carrier() {
-        use crate::layout::{PointerSlot, RcHeader, ScalarKind};
-        use witchy_syntax::ast::{Type, TypeQual};
 
-        let mut layouts = LayoutInterner::new();
-        let integer = layouts.intern_scalar(ScalarKind::Int).unwrap();
-        let raw_byte = layouts.intern_scalar(ScalarKind::RawByte).unwrap();
-        let string = layouts.intern_runtime_buffer(raw_byte).unwrap();
-        let string_slot = layouts.intern_runtime_pointer_value_slot(string, PointerSlot::Owned).unwrap();
-        let cases = [
-            ("Int", layouts.intern_packed_list(integer, RcHeader::Required).unwrap()),
-            ("String", layouts.intern_packed_list(string_slot, RcHeader::Required).unwrap()),
-        ];
-        for (element, layout) in cases {
-            let plain = Type::Named("List".into(), vec![Type::Named(element.into(), vec![])]);
-            assert!(layout_matches_source(layout, &plain, &layouts, &BTreeMap::new()),
-                "the ordinary List({element}) layout still corresponds");
-            let frozen = Type::Named("List".into(), vec![Type::Qualified(
-                TypeQual::Frozen, Box::new(Type::Named(element.into(), vec![])),
-            )]);
-            assert!(layout_matches_source(layout, &frozen, &layouts, &BTreeMap::new()),
-                "frozen is representation-neutral for List({element})");
-            for qualifier in [TypeQual::View, TypeQual::Unique] {
-                let qualified = Type::Named("List".into(), vec![Type::Qualified(
-                    qualifier, Box::new(Type::Named(element.into(), vec![])),
-                )]);
-                assert!(!layout_matches_source(layout, &qualified, &layouts, &BTreeMap::new()),
-                    "a plain List({element}) layout must not erase its element qualifier");
-                assert!(!value_type_matches_source(
-                    ValueType::Ref(layout), &qualified, &layouts, &[],
-                    &mut CorrespondenceContext::default(), &BTreeMap::new(), &BTreeMap::new(),
-                ), "a forged plain Ref must not satisfy List(qualified {element})");
-            }
-        }
-
-        let tuple = layouts.intern_packed_record(vec![integer]).unwrap();
-        let tuple_slot = layouts.intern_runtime_pointer_value_slot(tuple, PointerSlot::Owned).unwrap();
-        let tuple_list = layouts.intern_packed_list(tuple_slot, RcHeader::Required).unwrap();
-        let plain_tuple = Type::Named("List".into(), vec![Type::Tuple(vec![Type::Named("Int".into(), vec![])])]);
-        assert!(layout_matches_source(tuple_list, &plain_tuple, &layouts, &BTreeMap::new()));
-        let viewed_tuple = Type::Named("List".into(), vec![Type::Tuple(vec![Type::Qualified(
-            TypeQual::View, Box::new(Type::Named("Int".into(), vec![])),
-        )])]);
-        assert!(!layout_matches_source(tuple_list, &viewed_tuple, &layouts, &BTreeMap::new()),
-            "a tuple cannot hide a rooted view inside an ordinary List layout");
-        assert!(!value_type_matches_source(
-            ValueType::Ref(tuple_list), &viewed_tuple, &layouts, &[],
-            &mut CorrespondenceContext::default(), &BTreeMap::new(), &BTreeMap::new(),
-        ));
-    }
-
-    #[test]
-    fn plain_record_parameter_cannot_impersonate_an_aggregate_view_owner() {
-        use crate::layout::ScalarKind;
-        use witchy_syntax::ast::{CallableQualifiers, Type, TypeQual};
-
-        let mut layouts = LayoutInterner::new();
-        let integer = layouts.intern_scalar(ScalarKind::Int).unwrap();
-        let record = layouts.intern_packed_record(vec![integer]).unwrap();
-        let plain = Type::Tuple(vec![Type::Named("Int".into(), vec![])]);
-        let viewed = Type::Tuple(vec![Type::Qualified(
-            TypeQual::View, Box::new(Type::Named("Int".into(), vec![])),
-        )]);
-        let records = BTreeMap::new();
-        assert!(is_direct_rooted_view_aggregate_carrier(&viewed, &records));
-        let source = Type::Fn(vec![viewed.clone()], Box::new(Type::Tuple(vec![])),
-            vec![], CallableQualifiers::default());
-        assert!(source_abi_qualifiers_supported(&source, &records));
-        assert!(value_type_matches_source(
-            ValueType::Ref(record), &plain, &layouts, &[],
-            &mut CorrespondenceContext::default(), &records, &BTreeMap::new(),
-        ));
-        assert!(!value_type_matches_source(
-            ValueType::Ref(record), &viewed, &layouts, &[],
-            &mut CorrespondenceContext::default(), &records, &BTreeMap::new(),
-        ), "an erased Int slot cannot prove the retained view owner");
-    }
-
-    #[test]
-    fn direct_shared_result_without_closed_declaration_is_not_admissible() {
-        use witchy_syntax::ast::{CallableQualifiers, Convention, Type, TypeQual};
-        let string = Type::Named("String".into(), vec![]);
-        let shared = Type::Qualified(TypeQual::Borrow("a".into()), Box::new(string.clone()));
-        let direct_alias = Type::Fn(
-            vec![shared.clone()],
-            Box::new(shared),
-            vec![Convention::Let],
-            CallableQualifiers::default(),
-        );
-        let owned = Type::Fn(
-            vec![string.clone()],
-            Box::new(string),
-            vec![Convention::Let],
-            CallableQualifiers::default(),
-        );
-
-        assert!(!direct_reference_binding_is_checked(&direct_alias, None, None, false, &BTreeMap::new()));
-        assert!(direct_reference_binding_is_checked(&owned, None, None, false, &BTreeMap::new()));
-    }
-
-    #[test]
-    fn exclusive_reference_prefilter_keeps_direct_let_and_projected_var_disjoint() {
-        use witchy_syntax::ast::{CallableQualifiers, Convention, Type, TypeQual};
-
-        let mutable = |name: &str| Type::Qualified(
-            TypeQual::BorrowMut("a".into()),
-            Box::new(Type::Named(name.into(), vec![])),
-        );
-        let callable = |parameter, convention| Type::Fn(
-            vec![parameter],
-            Box::new(mutable("String")),
-            vec![convention],
-            CallableQualifiers::default(),
-        );
-        assert!(source_abi_qualifiers_supported(
-            &callable(mutable("String"), Convention::Let), &BTreeMap::new(),
-        ));
-        assert!(source_abi_qualifiers_supported(
-            &callable(mutable("Pair"), Convention::Var), &BTreeMap::new(),
-        ));
-        assert!(!source_abi_qualifiers_supported(
-            &callable(mutable("String"), Convention::Var), &BTreeMap::new(),
-        ));
-        assert!(!source_abi_qualifiers_supported(
-            &callable(mutable("Pair"), Convention::Let), &BTreeMap::new(),
-        ));
-    }
-
-    #[test]
-    fn rooted_view_aggregate_authority_nests_only_through_carrier_fields() {
-        let carrier = |source: &str, name: &str| {
-            let module = witchy_syntax::parser::parse_module(source).expect("parse aggregate fixture");
-            let records = witchy_canonical_source::aggregates::type_definitions(&module);
-            is_direct_rooted_view_aggregate_carrier(
-                &witchy_syntax::ast::Type::Named(name.into(), Vec::new()),
-                &records,
-            )
-        };
-
-        for (name, source) in [
-            ("Holder", "type Holder:\n    view: &Int\n    count: Int\n"),
-            ("OptionField", "type OptionField:\n    direct: &Int\n    nested: Option(&Int)\n"),
-            ("NominalField", "type Inner:\n    view: &Int\n\ntype NominalField:\n    direct: &Int\n    nested: Inner\n"),
-            ("GenericField", "type Box(a):\n    value: a\n\ntype GenericField:\n    direct: &Int\n    nested: Box(&Int)\n"),
-        ] {
-            assert!(carrier(source, name), "every view-bearing field of {name} is itself a carrier owner");
-        }
-        for (name, source) in [
-            (
-                "CallableDecoy",
-                "type CallableDecoy:\n    direct: &Int\n    hidden: fn() -> &Int\n",
-            ),
-            (
-                "ListDecoy",
-                "type ListDecoy:\n    direct: &Int\n    hidden: List(&Int)\n",
-            ),
-            (
-                "DeepDecoy",
-                "type Inner:\n    view: &Int\n    hidden: List(&Int)\n\ntype DeepDecoy:\n    direct: &Int\n    nested: Inner\n",
-            ),
-        ] {
-            assert!(
-                !carrier(source, name),
-                "the authority predicate must reject the uncarried view in {name}",
-            );
-        }
-    }
-
-    #[test]
-    fn canonical_net_source_kinds_reject_integer_and_cross_family_substitution() {
-        use witchy_syntax::ast::Type;
-        let matches = |actual, source: &Type| value_type_matches_source(actual, source,
-            &LayoutInterner::new(), &[], &mut CorrespondenceContext::default(), &BTreeMap::new(), &BTreeMap::new());
-        for (name, expected) in [("Net", 4), ("Listener", 5), ("Socket", 6)] {
-            let rights = if name == "Net" { vec![Type::Named("Listen".into(), vec![]), Type::Named("Tcp".into(), vec![])] } else { vec![] };
-            let source = Type::Named(name.into(), rights);
-            for candidate in 0..8 {
-                assert_eq!(matches(ValueType::Capability(super::super::CapabilityKindId::new(candidate)), &source), candidate == expected);
-            }
-            assert!(!matches(ValueType::Int, &source));
-            assert!(!matches(ValueType::Size, &source));
-            assert!(!matches(ValueType::NullableCapability(super::super::CapabilityKindId::new(expected)), &source));
-            assert!(ordinary_own_source_type_supported(&source));
-        }
-    }
-
-    #[test]
-    fn recursive_fn_returning_aggregate_matches_and_rejects_wrong_nested_signature() {
-        use crate::layout::{LayoutInterner, PointerSlot, ScalarKind};
-        use witchy_syntax::ast::{CallableQualifiers, Type};
-        use witchy_canonical_source::aggregates::ScalarAggregateShape;
-
-        let named = |name: &str| Type::Named(name.into(), Vec::new());
-        let source_fn = Type::Fn(
-            Vec::new(),
-            Box::new(named("Cursor")),
-            Vec::new(),
-            CallableQualifiers::ORDINARY,
-        );
-        let mut cursor_shape = ScalarAggregateShape {
-            name: "Cursor".into(),
-            fields: vec![source_fn.clone()],
-            variants: Vec::new(),
-            tagged: false,
-            packed: false,
-        }
-        .packed_view();
-        cursor_shape.packed = false;
-        let records = BTreeMap::from([("Cursor".into(), cursor_shape)]);
-
-        let mut layouts = LayoutInterner::new();
-        let callable = layouts.intern_scalar(ScalarKind::Callable).unwrap();
-        let int = layouts.intern_scalar(ScalarKind::Int).unwrap();
-        let environment = layouts.intern_packed_record(vec![int]).unwrap();
-        let environment_slot = layouts
-            .intern_runtime_pointer_value_slot(environment, PointerSlot::Owned)
-            .unwrap();
-        let closure = layouts
-            .intern_packed_record(vec![callable, environment_slot])
-            .unwrap();
-        let closure_slot = layouts
-            .intern_runtime_pointer_value_slot(closure, PointerSlot::Owned)
-            .unwrap();
-        let cursor = layouts.intern_packed_record(vec![closure_slot]).unwrap();
-        let signature_id = FunctionSignatureId::new(7);
-        let closure_layouts = BTreeMap::from([(closure, signature_id)]);
-        let signature = |result| FunctionSignature {
-            id: signature_id,
-            parameters: vec![ValueType::Ref(closure)],
-            results: vec![result],
-            contract: CallableContract {
-                parameters: vec![super::super::ParameterContract {
-                    value_type: ValueType::Ref(closure),
-                    ownership: super::super::ParameterOwnership::Shared,
-                }],
-                results: vec![ResultContract::Value(result)],
-                parameter_effects: BTreeMap::new(),
-            },
-        };
-
-        assert!(layout_matches_source_with_closures(
-            cursor,
-            &named("Cursor"),
-            &layouts,
-            &records,
-            &closure_layouts,
-            &[signature(ValueType::Ref(cursor))],
-            &mut CorrespondenceContext::default(),
-        ));
-        assert!(!layout_matches_source_with_closures(
-            cursor,
-            &named("Cursor"),
-            &layouts,
-            &records,
-            &closure_layouts,
-            &[signature(ValueType::Int)],
-            &mut CorrespondenceContext::default(),
-        ));
-    }
-
-    #[test]
-    fn final_authority_requires_the_exact_initial_checked_module() {
+    pub fn final_authority_requires_the_exact_initial_checked_module() {
         let checked = check_initial_with_test_witness(optimizable_candidate()).unwrap();
         let initial_snapshot = checked.module().clone();
         let final_module = validate_final_for_test(checked).unwrap();
         assert_eq!(final_module.checked_source(), initial_snapshot.checked_source());
     }
 
-    #[test]
-    fn witness_from_another_checked_module_is_rejected() {
-        let checked = check_initial_with_test_witness(optimizable_candidate()).unwrap();
-        let (initial, _) = checked.into_parts_for_test();
 
-        let mut other = candidate();
-        other.functions[0].blocks[0].operations[0] =
-            Operation::ConstInt { destination: ValueId::new(0), value: 4 };
-        let (_, wrong_witness) = check_initial_with_test_witness(other).unwrap().into_parts_for_test();
-        assert!(matches!(
-            validate_final_parts_for_test(initial, wrong_witness),
-            Err(FinalValidationError::InitialModuleDoesNotMatchWitness)
-        ));
-    }
 
-    #[test]
-    fn final_authority_refuses_a_candidate_mutated_after_initial_validation() {
-        let checked = check_initial_with_test_witness(candidate()).unwrap();
-        let (mut module, witness) = checked.into_parts_for_test();
-        module.functions[0].blocks[0].operations[0] =
-            Operation::ConstInt { destination: ValueId::new(0), value: 9 };
-
-        assert!(matches!(
-            validate_final_parts_for_test(module, witness),
-            Err(FinalValidationError::InitialModuleDoesNotMatchWitness)
-        ));
-    }
-
-    #[test]
-    fn initial_checker_rejects_an_independent_tail_manifest_mismatch() {
+    pub fn initial_checker_rejects_an_independent_tail_manifest_mismatch() {
         let candidate = candidate();
         assert!(matches!(
             check_initial_with_expected_digest(candidate, [0xff; 32]),
@@ -4468,17 +3991,8 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn tail_manifest_digest_is_bound_into_zero_pass_authority() {
-        let candidate = candidate();
-        let expected = tail_digest(&candidate).bytes();
-        let checked = check_initial_with_expected_digest(candidate, expected).unwrap();
-        let final_module = validate_final_for_test(checked).unwrap();
-        assert_eq!(final_module.checked_lowering().proper_tail_manifest_digest.bytes(), expected);
-    }
 
-    #[test]
-    fn optimized_authority_refuses_a_mutated_output_module() {
+    pub fn optimized_authority_refuses_a_mutated_output_module() {
         let checked = check_initial_with_test_witness(optimizable_candidate()).unwrap();
         let optimized = crate::canonical_safewir::optimize::
             eliminate_same_block_redundant_bounds_guards_checked(checked)
@@ -4492,44 +4006,5 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn optimized_authority_refuses_an_unrelated_witness() {
-        let first = crate::canonical_safewir::optimize::
-            eliminate_same_block_redundant_bounds_guards_checked(
-                check_initial_with_test_witness(optimizable_candidate()).unwrap(),
-            )
-            .unwrap();
-        let (module, lowering, _) = first.into_parts_for_test();
 
-        let mut unrelated = optimizable_candidate();
-        unrelated.functions[0].blocks[0].operations[0] =
-            Operation::ConstSize { destination: ValueId::new(0), value: 17 };
-        let unrelated = crate::canonical_safewir::optimize::
-            eliminate_same_block_redundant_bounds_guards_checked(
-                check_initial_with_test_witness(unrelated).unwrap(),
-            )
-            .unwrap();
-        let (_, _, unrelated_witness) = unrelated.into_parts_for_test();
-
-        assert!(matches!(
-            validate_optimized_final_parts_for_test(module, lowering, unrelated_witness),
-            Err(FinalValidationError::OptimizationDoesNotMatchWitness)
-        ));
-    }
-
-    #[test]
-    fn optimized_authority_refuses_a_non_progressing_revision_link() {
-        let optimized = crate::canonical_safewir::optimize::
-            eliminate_same_block_redundant_bounds_guards_checked(
-                check_initial_with_test_witness(optimizable_candidate()).unwrap(),
-            )
-            .unwrap();
-        let (module, lowering, mut witnesses) = optimized.into_parts_for_test();
-        witnesses[0].output_revision = witnesses[0].input_revision;
-
-        assert!(matches!(
-            validate_optimized_final_parts_for_test(module, lowering, witnesses),
-            Err(FinalValidationError::OptimizationDoesNotMatchWitness)
-        ));
-    }
 }

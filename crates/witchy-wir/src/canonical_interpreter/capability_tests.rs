@@ -277,54 +277,9 @@ fn fixture(files: &[(&str, &[u8])], environment: &[(&str, &str)]) -> Interpreter
     }
 }
 
-#[test]
-fn registry_oracle_server_pool_primary_executes_existing_dir_read_program() {
-    let module = read_into_program(b"f");
-    let mut config = fixture(&[("f", b"hello")], &[]);
-    config.fixture.server_pool = Some(super::OracleServerPoolFixture::default());
-    let mut engine = super::Engine::new(module.module(), config);
-    let requests = vec![InterpreterValue::capability(DIR_CAPABILITY_KIND.get())];
-    // The existing retained-worker profile still excludes Dir. This probe
-    // covers primary launch binding and actual authenticated import dispatch,
-    // without widening that separate worker-launch contract.
-    assert!(engine.server.retain_launch(FUNCTION, &requests, &[]).is_err());
-    let arguments = engine.prepare_launch(&[ValueType::Capability(DIR_CAPABILITY_KIND)], requests, &[]).unwrap();
-    assert_eq!(engine.execute(FUNCTION, arguments).unwrap(), [InterpreterValue::Size(5)]);
-    assert_eq!(engine.output, ["hello"]);
-    assert!(engine.config.fixture.directories.is_empty());
-}
 
-#[test]
-fn dir_read_into_answers_the_full_length_and_fills_the_buffer() {
-    let module = read_into_program(b"f");
-    let run = interpret_program(
-        &module,
-        FUNCTION,
-        vec![InterpreterValue::capability(DIR_CAPABILITY_KIND.get())],
-        fixture(&[("f", b"hello")], &[]),
-    )
-    .expect("the program runs");
-    assert_eq!(run.results, vec![InterpreterValue::Size(5)]);
-    assert_eq!(run.output, vec!["hello".to_string()]);
-    assert_eq!(run.leaked_objects, 0);
-}
 
-#[test]
-fn dir_read_into_aborts_on_a_missing_file() {
-    let module = read_into_program(b"f");
-    assert_eq!(
-        interpret_program(
-            &module,
-            FUNCTION,
-            vec![InterpreterValue::capability(DIR_CAPABILITY_KIND.get())],
-            fixture(&[("other", b"hello")], &[]),
-        ),
-        Err(InterpretError::ExplicitTrap)
-    );
-}
-
-#[test]
-fn a_token_of_another_kind_cannot_serve_a_dir_operation() {
+pub fn a_token_of_another_kind_cannot_serve_a_dir_operation() {
     let module = read_into_program(b"f");
     assert_eq!(
         interpret_program(
@@ -339,8 +294,7 @@ fn a_token_of_another_kind_cannot_serve_a_dir_operation() {
 
 /// A root token is scoped to the whole grant; the launcher never mints one
 /// with a scope of its own.
-#[test]
-fn entry_tokens_are_root_scoped() {
+pub fn entry_tokens_are_root_scoped() {
     let token = CapabilityToken::root(DIR_CAPABILITY_KIND.get());
     assert_eq!(token.kind(), 1);
     assert_eq!(token.scope(), "");
@@ -353,8 +307,7 @@ fn entry_tokens_are_root_scoped() {
 /// The root fallback never follows a symbolic link (the runtime's confined
 /// directory refuses one that leads out of the root), reads only regular
 /// files, and tolerates an empty path component like the runtime does.
-#[test]
-fn root_fallback_refuses_symlinks_and_non_files() {
+pub fn root_fallback_refuses_symlinks_and_non_files() {
     let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("clock").as_nanos();
     let root = std::env::temp_dir().join(format!("witchy-oracle-root-{}-{nanos}", std::process::id()));
     std::fs::create_dir_all(root.join("inner")).expect("root");

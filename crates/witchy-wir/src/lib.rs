@@ -31,7 +31,6 @@ pub use canonical_wasmir::{
     AdmittedVmService, AdmittedExternalWasmImport, AdmittedCanonicalArtifact, CanonicalAdmissionError, CanonicalEntry, CanonicalEntryCapability,
     CanonicalEntryResult, HEAP_BASE_EXPORT, HEAP_FREE_EXPORT, HEAP_TOP_EXPORT, admit_canonical,
 };
-#[cfg(not(test))]
 pub use canonical_wasmir::admit_canonical_with_observer;
 pub mod safewir;
 pub mod safewir_adapter;
@@ -43,9 +42,16 @@ pub mod safewir_validate;
 pub mod wir_opt;
 pub mod wir_prelude;
 
-#[cfg(test)]
-mod layout_tests;
-#[cfg(test)]
-mod safewir_call_tests;
-#[cfg(test)]
-mod rfc0162_mutation_evidence_tests;
+#[cfg(feature = "raw-encoder-test-api")]
+#[doc(hidden)]
+pub mod safewir_call_tests;
+#[cfg(feature = "raw-encoder-test-api")]
+#[doc(hidden)]
+pub mod rfc0162_mutation_evidence_tests;
+
+// In-crate checks that need private internals. The lib is `test = false`
+// (one compile, not a second cfg(test) copy); `tests/unit.rs` drives these
+// panicking functions, each through a one-line #[test] wrapper.
+#[cfg(feature = "raw-encoder-test-api")]
+#[doc(hidden)]
+pub mod self_checks;

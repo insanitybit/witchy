@@ -421,20 +421,11 @@ fn remember(key: FunctionCheckKey, discharged: Discharged) {
     }
 }
 
-/// Lifetime (hits, misses) of this process's memo; a store hit counts as a hit.
-#[cfg(test)]
-pub(super) fn stats() -> (u64, u64) {
-    (
-        HITS.load(Ordering::Relaxed) + STORE_HITS.load(Ordering::Relaxed),
-        MISSES.load(Ordering::Relaxed),
-    )
-}
-
 /// Verdict files: `<dir>/<source stamp>/<key hex>`, written whole under a
 /// temporary name and renamed into place, so a reader sees a complete file
 /// or none. Concurrent writers of one key race benignly: same bytes.
 #[cfg(not(target_arch = "wasm32"))]
-mod store {
+pub(crate) mod store {
     use std::collections::BTreeSet;
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -577,8 +568,9 @@ mod store {
         }
     }
 
-    #[cfg(test)]
-    mod tests {
+    #[cfg(feature = "raw-encoder-test-api")]
+    #[doc(hidden)]
+    pub mod self_checks {
         use std::collections::BTreeSet;
         use std::fs;
 
@@ -593,8 +585,7 @@ mod store {
             dir
         }
 
-        #[test]
-        fn verdict_files_round_trip_and_reject_damage() {
+        pub fn verdict_files_round_trip_and_reject_damage() {
             let root = scratch("roundtrip");
             let dir = stamp_dir(&root);
             let key = FunctionCheckKey([7; 32]);

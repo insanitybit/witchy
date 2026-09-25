@@ -80,9 +80,8 @@ fn validated(present: bool) -> ValidatedSafeWir {
     validate_final_for_test(initial).expect("final nullable check")
 }
 
-#[test]
-fn nullable_admission_rejects_valid_but_mutated_bytes() {
-    let artifact = admit_canonical(validated(true)).unwrap();
+pub fn nullable_admission_rejects_valid_but_mutated_bytes() {
+    let artifact = admit_canonical_for_test(validated(true)).unwrap();
     let mut bytes = artifact.wasm().to_vec();
     let literal = bytes.windows(2).position(|bytes| bytes == [0x42, 42]).expect("i64.const 42");
     bytes[literal + 1] = 43;
