@@ -10,12 +10,12 @@ use std::fmt;
 use sha2::{Digest, Sha256};
 use witchy_canonical_source::aggregates::{
     aggregate_key, canonical_owner_aggregate_identity, concrete_aggregate_identity,
-    dictionary_has_unadmitted_string_view_value, is_scalar_type, is_v1_list_element_type,
+    dictionary_has_unadmitted_string_view_value, is_scalar_type,
     scalar_aggregate_shape, shape_from_definition,
 };
 use witchy_canonical_source::abi::CanonicalScalarKind;
 use witchy_canonical_source::carrier::CarrierElement;
-use witchy_canonical_source::storage::StoragePlan;
+use witchy_canonical_source::storage::{ListElementProjection, StoragePlan};
 use witchy_canonical_source::structural_identity::{AggregateOwnerKey, ClosureOwnerKey, SourceTypeKey};
 use witchy_syntax::ast::{self, Item, Type, TypeDef};
 use witchy_types::pipeline::CanonicalCheckedSource;
@@ -655,8 +655,10 @@ impl LayoutProjection {
                 Ok(())
             }
             Type::Named(name, arguments) if name == "List" => {
-                if arguments.len() != 1 || (!matches!(arguments[0].unqualified(), Type::Fn(..))
-                    && !is_v1_list_element_type(&arguments[0], &self.definitions)) {
+                if arguments.len() != 1 || matches!(
+                    ListElementProjection::classify(&arguments[0], &self.definitions),
+                    ListElementProjection::Refused,
+                ) {
                     return Err(CanonicalLayoutError::UnsupportedType(format!("{ty:?}")));
                 }
                 self.visit_type(&arguments[0])?;

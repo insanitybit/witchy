@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use witchy_syntax::ast::{Type, TypeDef, TypeQual};
 
 use crate::abi::CanonicalScalarKind;
-use crate::aggregates::{ViewCarrierPlan, view_carrier_plan};
+use crate::aggregates::{ViewCarrierPlan, is_v1_list_element_type, view_carrier_plan};
 use crate::carrier::CarrierElement;
 use crate::rooted_view::{OwnerCarriedViewPlan, OwnerCarriedViewStorage, RootedViewStorage};
 
@@ -33,6 +33,34 @@ pub enum StoragePlan {
     RootedView(RootedViewStorage),
     AggregateView(ViewCarrierPlan),
     Refused(StorageRefusal),
+}
+
+/// Source-backed list-element projection used by the layout catalog. The
+/// recursive owned class has a complete carrier proof. `LayoutOnly` preserves
+/// older admitted layout forms while their ownership paths are migrated; it
+/// must never be treated as SafeWIR carrier authority.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ListElementProjection {
+    Owned(CarrierElement),
+    LayoutOnly,
+    Refused,
+}
+
+impl ListElementProjection {
+    pub fn classify(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> Self {
+        // The old callable exception is a layout graph edge, not a carrier
+        // proof. Its parameter and result types are visited separately.
+        if matches!(ty.unqualified(), Type::Fn(..)) {
+            return Self::LayoutOnly;
+        }
+        if !is_v1_list_element_type(ty, definitions) {
+            return Self::Refused;
+        }
+        match StoragePlan::classify(ty, definitions, |_| Some(0)).into_carrier_element() {
+            Some(plan) => Self::Owned(plan),
+            None => Self::LayoutOnly,
+        }
+    }
 }
 
 impl StoragePlan {

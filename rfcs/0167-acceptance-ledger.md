@@ -55,6 +55,16 @@ is needed for soundness.
 
 ## Exact-tip evidence checkpoint
 
+Row G typed list-element layout projection (architecture implemented, semantic
+evidence unchanged, 2026-09-25): the layout catalog now reads one
+canonical-source `ListElementProjection`. It distinguishes a recursive owned
+carrier proof from layout-only legacy forms and explicit refusal. The legacy
+branch preserves the prior callable exception and field-shape gate exactly;
+it is not SafeWIR carrier authority. Remaining byte, capability, callable,
+view-bearing, and recursive nominal forms still need representation-class
+proofs before that branch can be retired. No new admitted Wasm, zero-leak
+evidence, or A–O closure is claimed.
+
 Row G shared owned-carrier projection (architecture implemented, semantic
 evidence unchanged, 2026-09-25): the canonical-source `StoragePlan` now exposes
 one conversion to the admitted recursive owned carrier. The slice `.owned()`
