@@ -1713,7 +1713,7 @@ pub mod self_checks {
 
     pub fn rooted_slice_layout_requires_explicit_view_slice_request() {
         for forged in ["List(Int)", "List(Float)", "List(Bool)", "List(Duration)"] {
-            assert_eq!(rooted_slice_element_name(&named(forged)), None,
+            assert_eq!(super::rooted_slice_element_name(&named(forged)), None,
                 "only a structural List child mints a rooted-slice family");
         }
         let list = Type::Named("List".into(), vec![named("Int")]);
