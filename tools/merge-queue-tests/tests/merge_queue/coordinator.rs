@@ -2376,11 +2376,35 @@ fn sweep_recycles_a_landed_pool_worktree_in_place() {
     fs::create_dir_all(state.parent().unwrap()).expect("create slot target");
     fs::write(&state, "incremental\n").expect("write incremental state");
     fs::write(dirty.join("stray.txt"), "unfinished\n").expect("dirty the second slot");
+    // Landed after the gate resolved a conflict: its commit is not
+    // patch-equivalent to anything on master, but it is still exactly the
+    // submitted tip the journal says merged. One more commit makes the
+    // fourth slot's tip newer than what landed, so it must be kept.
+    let resolved = pool.join("pool-02");
+    let advanced = pool.join("pool-03");
+    for (slot, branch) in [(&resolved, "d"), (&advanced, "e")] {
+        run_git(&fixture.root, &["branch", branch, "master"]);
+        run_git(&fixture.root, &["worktree", "add", slot.to_str().unwrap(), branch]);
+        fs::write(slot.join("conflicted.txt"), "resolved differently on master\n").expect("write");
+        run_git(slot, &["add", "conflicted.txt"]);
+        run_git(slot, &["commit", "-m", "landed with a conflict resolution"]);
+    }
+    let landed_tip = |slot: &std::path::Path| {
+        String::from_utf8_lossy(&git_output(slot, &["rev-parse", "HEAD"]).stdout).trim().to_owned()
+    };
+    let (resolved_tip, advanced_tip) = (landed_tip(&resolved), landed_tip(&advanced));
+    fs::write(advanced.join("later.txt"), "after submission\n").expect("write");
+    run_git(&advanced, &["add", "later.txt"]);
+    run_git(&advanced, &["commit", "-m", "work after the landed submission"]);
 
     fixture.mq_ok(&["status"], "true");
     fs::write(
         fixture.state.join("journal.jsonl"),
-        "{\"event\":\"merged\",\"branch\":\"a\"}\n{\"event\":\"merged\",\"branch\":\"c\"}\n",
+        format!(
+            "{{\"event\":\"merged\",\"branch\":\"a\"}}\n{{\"event\":\"merged\",\"branch\":\"c\"}}\n\
+             {{\"event\":\"merged\",\"branch\":\"d\",\"submitted_sha\":\"{resolved_tip}\"}}\n\
+             {{\"event\":\"merged\",\"branch\":\"e\",\"submitted_sha\":\"{advanced_tip}\"}}\n"
+        ),
     )
     .expect("write merged branch history");
     // Ready work defers the full sweep; a busy queue is when agents claim
@@ -2413,6 +2437,14 @@ fn sweep_recycles_a_landed_pool_worktree_in_place() {
     let dirty_head = git_output(&dirty, &["branch", "--show-current"]);
     assert_eq!(String::from_utf8_lossy(&dirty_head.stdout).trim(), "c");
     assert!(!witchy_state.join("worktree-pool/free/01").exists(), "a dirty slot was marked free");
+    assert!(
+        witchy_state.join("worktree-pool/free/02").is_file(),
+        "a slot still at its landed submission was not recycled",
+    );
+    assert!(
+        !witchy_state.join("worktree-pool/free/03").exists(),
+        "a slot with work after its landed submission was recycled",
+    );
 }
 
 #[test]

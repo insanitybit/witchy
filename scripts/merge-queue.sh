@@ -3720,6 +3720,11 @@ cmd_sweep() {
     # check below because submit may race this function.
     local merged_branches
     merged_branches="$(jq -r 'select(.event=="merged" or .event=="already_merged") | .branch' "$journal" | sort -u)"
+    # The exact tips that landed ("<branch> <submitted sha>"). A worktree still
+    # AT its landed submission added nothing after it, even when the gate's
+    # rebase resolved a conflict and `git cherry` no longer sees the patch.
+    local merged_tips
+    merged_tips="$(jq -r 'select(.event=="merged" and .submitted_sha != null) | "\(.branch) \(.submitted_sha)"' "$journal" | sort -u)"
     local swept=0 sweep_probe=0
     while IFS= read -r wt; do
         if [ "$pool_only" -eq 1 ]; then
@@ -3745,7 +3750,8 @@ cmd_sweep() {
         # sha, so the original commits are often not ancestors — `git cherry`
         # treats patch-equivalent commits (all "-") as merged too.
         [ -z "$(git -C "$wt" status --porcelain 2>/dev/null)" ] || continue
-        if [ "$(git -C "$wt" rev-list --count "master..HEAD" 2>/dev/null || echo 1)" != "0" ]; then
+        if [ "$(git -C "$wt" rev-list --count "master..HEAD" 2>/dev/null || echo 1)" != "0" ] \
+            && ! grep -Fqx -- "$branch $(git -C "$wt" rev-parse HEAD 2>/dev/null)" <<<"$merged_tips"; then
             git -C "$wt" cherry master HEAD 2>/dev/null | grep -q '^+' && continue
         fi
         # RFC-0171: a pool worktree is recycled in place (detached at master,
