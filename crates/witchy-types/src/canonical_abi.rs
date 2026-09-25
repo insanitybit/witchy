@@ -523,7 +523,9 @@ pub fn rooted_view_from_ast(
                 ));
             }
             let mut identity = Vec::new();
-            record_identity_ast(payload.unqualified(), context, &mut identity)?;
+            // Keep the outer source qualifier visible to the exact List-child
+            // guard. The encoder itself normalizes existing non-List roots.
+            record_identity_ast(payload, context, &mut identity)?;
             Ok(CanonicalReferenceKind::RootedView {
                 payload: rooted_record_payload_key(&identity),
                 carrier: CanonicalRootedViewCarrier::RecordRoot,
