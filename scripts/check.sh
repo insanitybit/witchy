@@ -992,7 +992,10 @@ seed_cow_target() { # seed_cow_target <dir>
     # recompiling native dependencies under a different unit hash. The helper
     # validates that gate-target did not change while it cloned; on any miss or
     # promotion race, retain the existing safe fallback below.
-    if [ -n "$profile" ] && [ -x scripts/worktree-warm.sh ] \
+    # WITCHY_GATE_PROFILE_SEED=off skips the lookup: the fake-tool gate
+    # fixtures time their legs to the second and have no gate generation.
+    if [ -n "$profile" ] && [ "${WITCHY_GATE_PROFILE_SEED:-on}" != off ] \
+        && [ -x scripts/worktree-warm.sh ] \
         && scripts/worktree-warm.sh --profile-target-dir "$profile" "$dir"; then
         return 0
     fi

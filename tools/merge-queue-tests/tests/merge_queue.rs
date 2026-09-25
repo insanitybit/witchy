@@ -127,6 +127,9 @@ fn check_sh(root: &Path, args: &[&str]) -> Command {
             command.env_remove(&key);
         }
     }
+    // The fake tools have no coordinator profile generation to reuse, and the
+    // lookup's process startup lands inside the per-second leg timings.
+    command.env("WITCHY_GATE_PROFILE_SEED", "off");
     command
 }
 
