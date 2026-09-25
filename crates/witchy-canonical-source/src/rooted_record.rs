@@ -3,7 +3,7 @@
 //! The checked frontend supplies nominal ordinals. This module only describes
 //! the finite structural relation; it cannot mint a checked-source witness.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 
 use witchy_syntax::ast::{Type, TypeDef, TypeQual};
 
@@ -57,7 +57,7 @@ pub enum RecordRootIdentity {
     Qualified { qualifier: RecordRootQualifier, inner: Box<Self> },
     Option(Box<Self>),
     Result(Box<Self>, Box<Self>),
-    Nominal { ordinal: u32, arguments: Vec<Self>, shape: [u8; 32] },
+    Nominal { ordinal: u32, arguments: Vec<Self>, storage: Box<CarrierElement> },
 }
 
 /// Only storage qualifiers accepted by the checked record-root grammar.
@@ -129,12 +129,21 @@ impl RecordRootIdentity {
                     children.push(child);
                     contains_list |= child_list;
                 }
-                let shape = nominal_shape_identity(unqualified, definitions, depth + 1, budget)?;
+                let storage = CarrierElement::from_checked_type_with_definitions(unqualified, definitions)?;
+                if !matches!(storage, CarrierElement::Record { .. } | CarrierElement::Sum { .. }) {
+                    return None;
+                }
+                let (nodes, relative_depth) = storage.bounded_resource_shape()?;
+                if depth.checked_add(relative_depth)? > 128 {
+                    return None;
+                }
+                *budget = (*budget).checked_sub(nodes.saturating_sub(1))?;
+                contains_list |= carrier_contains_list(&storage);
                 (
                     Self::Nominal {
                         ordinal,
                         arguments: children,
-                        shape,
+                        storage: Box::new(storage),
                     },
                     contains_list,
                 )
@@ -152,15 +161,6 @@ impl RecordRootIdentity {
                 let contains_list = carrier_contains_list(&plan);
                 (Self::Leaf(plan), contains_list)
             }
-        };
-        // A nominal can hide a fixed List field even when it has no type
-        // arguments. Require the same recursive ownership proof before a
-        // qualified root can claim to be free of retained Lists.
-        let contains_list = if !qualifiers.is_empty() && matches!(identity, Self::Nominal { .. }) {
-            let plan = CarrierElement::from_checked_type_with_definitions(unqualified, definitions)?;
-            contains_list || carrier_contains_list(&plan)
-        } else {
-            contains_list
         };
         if !qualifiers.is_empty() && contains_list { return None; }
         let identity = qualifiers.into_iter().rev().fold(identity, |inner, qualifier| {
@@ -205,7 +205,7 @@ impl RecordRootIdentity {
                     return false;
                 }
             }
-            Self::Nominal { ordinal, arguments, shape } => {
+            Self::Nominal { ordinal, arguments, storage } => {
                 bytes.push(USER_SHAPE);
                 bytes.extend_from_slice(&ordinal.to_le_bytes());
                 bytes.extend_from_slice(&(arguments.len() as u32).to_le_bytes());
@@ -214,7 +214,8 @@ impl RecordRootIdentity {
                         return false;
                     }
                 }
-                bytes.extend_from_slice(shape);
+                if !storage.within_resource_bounds() { return false; }
+                bytes.extend_from_slice(&storage.identity());
             }
         }
         true
@@ -234,61 +235,6 @@ fn carrier_contains_list(plan: &CarrierElement) -> bool {
         }
         CarrierElement::Scalar(_) | CarrierElement::String | CarrierElement::Bytes => false,
     }
-}
-
-/// Bind a nominal's instantiated declaration shape without treating a
-/// matching physical record as source authority. Both the checked frontend
-/// and SafeWIR obtain this from the same checked-source definitions.
-fn nominal_shape_identity(
-    ty: &Type,
-    definitions: &BTreeMap<String, TypeDef>,
-    depth: usize,
-    budget: &mut usize,
-) -> Option<[u8; 32]> {
-    let mut active = HashSet::new();
-    active.insert(ty.clone());
-    let mut bytes = b"witchy.record-root-nominal-shape.v1\0".to_vec();
-    append_nominal_shape(ty, definitions, &mut bytes, depth, budget, &mut active)?;
-    Some(*blake3::hash(&bytes).as_bytes())
-}
-
-fn append_nominal_shape(
-    ty: &Type,
-    definitions: &BTreeMap<String, TypeDef>,
-    bytes: &mut Vec<u8>,
-    depth: usize,
-    budget: &mut usize,
-    active: &mut HashSet<Type>,
-) -> Option<()> {
-    if depth > 128 || *budget == 0 { return None; }
-    *budget -= 1;
-    let shape = crate::aggregates::scalar_aggregate_shape(ty, definitions)?;
-    if shape.variants.is_empty() || shape.variants.len() > 128 || shape.name.len() > 1_024 {
-        return None;
-    }
-    append_text(bytes, &shape.name)?;
-    bytes.extend_from_slice(&[u8::from(shape.tagged), u8::from(shape.packed)]);
-    bytes.extend_from_slice(&(shape.variants.len() as u32).to_le_bytes());
-    let mut next_field = usize::from(shape.tagged);
-    if shape.tagged && !matches!(shape.fields.first(), Some(Type::Named(name, arguments))
-        if name == "Int" && arguments.is_empty()) {
-        return None;
-    }
-    for variant in &shape.variants {
-        if variant.first_field != next_field || variant.name.len() > 1_024 {
-            return None;
-        }
-        let end = next_field.checked_add(variant.arity)?;
-        let fields = shape.fields.get(next_field..end)?;
-        append_text(bytes, &variant.name)?;
-        bytes.extend_from_slice(&(fields.len() as u32).to_le_bytes());
-        for field in fields {
-            append_field_type(field, definitions, bytes, depth + 1, budget, active)?;
-        }
-        next_field = end;
-    }
-    if next_field != shape.fields.len() { return None; }
-    Some(())
 }
 
 #[cfg(test)]
@@ -315,95 +261,4 @@ mod tests {
         let frozen_dict = Type::Qualified(TypeQual::Frozen, Box::new(dict));
         assert!(RecordRootIdentity::from_checked_type(&frozen_dict, &definitions, |_| Some(0)).is_none());
     }
-}
-
-fn append_text(bytes: &mut Vec<u8>, value: &str) -> Option<()> {
-    if value.len() > 1_024 { return None; }
-    bytes.extend_from_slice(&u32::try_from(value.len()).ok()?.to_le_bytes());
-    bytes.extend_from_slice(value.as_bytes());
-    Some(())
-}
-
-/// A bounded, tagged source-type encoding for instantiated field identities.
-/// The caller has already proved the aggregate shape; this binds its source
-/// meaning and grants no ownership or layout operation by itself.
-fn append_field_type(
-    ty: &Type,
-    definitions: &BTreeMap<String, TypeDef>,
-    bytes: &mut Vec<u8>,
-    depth: usize,
-    budget: &mut usize,
-    active: &mut HashSet<Type>,
-) -> Option<()> {
-    if depth > 128 || *budget == 0 { return None; }
-    *budget -= 1;
-    match ty {
-        Type::Named(name, arguments) => {
-            bytes.push(0);
-            append_text(bytes, name)?;
-            bytes.extend_from_slice(&u32::try_from(arguments.len()).ok()?.to_le_bytes());
-            for argument in arguments {
-                append_field_type(argument, definitions, bytes, depth + 1, budget, active)?;
-            }
-            if definitions.contains_key(name) {
-                if active.insert(ty.clone()) {
-                    bytes.push(1);
-                    let result = append_nominal_shape(ty, definitions, bytes, depth + 1, budget, active);
-                    active.remove(ty);
-                    result?;
-                } else {
-                    // The exact named type above is the bounded back edge.
-                    bytes.push(2);
-                }
-            } else {
-                bytes.push(0);
-            }
-        }
-        Type::Tuple(fields) => {
-            bytes.push(1);
-            bytes.extend_from_slice(&u32::try_from(fields.len()).ok()?.to_le_bytes());
-            for field in fields {
-                append_field_type(field, definitions, bytes, depth + 1, budget, active)?;
-            }
-        }
-        Type::Slice(element) => {
-            bytes.push(2);
-            append_field_type(element, definitions, bytes, depth + 1, budget, active)?;
-        }
-        Type::Qualified(qualifier, inner) => {
-            bytes.push(3);
-            bytes.push(match qualifier {
-                TypeQual::Frozen => 0,
-                TypeQual::Unique => 1,
-                _ => return None,
-            });
-            append_field_type(inner, definitions, bytes, depth + 1, budget, active)?;
-        }
-        Type::Fn(parameters, result, conventions, qualifiers) => {
-            if !conventions.is_empty() && conventions.len() != parameters.len() { return None; }
-            bytes.push(4);
-            bytes.extend_from_slice(&u32::try_from(parameters.len()).ok()?.to_le_bytes());
-            for (index, parameter) in parameters.iter().enumerate() {
-                bytes.push(match conventions.get(index).copied().unwrap_or_default() {
-                    witchy_syntax::ast::Convention::Let => 0,
-                    witchy_syntax::ast::Convention::Borrow => 1,
-                    witchy_syntax::ast::Convention::Var => 2,
-                    witchy_syntax::ast::Convention::Own => 3,
-                });
-                append_field_type(parameter, definitions, bytes, depth + 1, budget, active)?;
-            }
-            append_field_type(result, definitions, bytes, depth + 1, budget, active)?;
-            bytes.extend_from_slice(&[u8::from(qualifiers.pure), u8::from(qualifiers.once)]);
-        }
-        Type::Dyn(name, arguments) => {
-            bytes.push(5);
-            append_text(bytes, name)?;
-            bytes.extend_from_slice(&u32::try_from(arguments.len()).ok()?.to_le_bytes());
-            for argument in arguments {
-                append_field_type(argument, definitions, bytes, depth + 1, budget, active)?;
-            }
-        }
-        Type::RecordCompose { .. } => return None,
-    }
-    Some(())
 }

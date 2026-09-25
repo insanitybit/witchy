@@ -941,6 +941,20 @@ and verified those two qualifier-guard repairs. A production CLI smoke of
 heap audit was taken. These instances and the broader row G matrix remain
 unverified under the full admitted-Wasm and zero-leak evidence standard.
 
+Row G nominal root storage identity consolidation (architecture implemented,
+semantic evidence unchanged, 2026-09-25): declared record and sum root keys
+now contain the same recursive `CarrierElement` proof used for checked carrier
+storage. The separate AST declaration-shape walker and its digest are removed.
+Nominal ordinals, instantiated arguments, constructor names, and field labels
+remain in the structural key; SafeWIR independently validates the physical
+layout against checked source. The existing ABI test now also distinguishes
+one-constructor and field-label renames. Focused compilation and that test
+passed, and adversarial review found no new collision or authority widening.
+Recursive, callable, and qualified nominal fields currently refuse when the
+shared proof cannot classify them. These forms remain an unresolved language
+semantics gap, and no A–O row closes without admitted unoptimized Wasm and a
+zero-leak audit.
+
 At `adf1d01c7` (2026-09-18), the integrated core smoke was **42/42 passed**: rooted views (13), unique/write-back (12), normal/opt interoperation (2), resource composition (5), and optimization readiness (10). This is core canonical-route evidence only; it does not include the source interpreter, full, end-to-end, or examples suites.
 
 At `2f62f4038` (2026-09-19), the newly integrated concrete `Option(&Int)` evidence is **6/6 passed**: four lower carrier/tamper/`var` checks, one exact authority payload-state check, and one production-runtime three-leg fixture (`790`, zero leaks). The three generic rooted-slice fixtures are **1 passed / 2 failed**: region-root escape rejects as expected, while both positive forms stop at the explicit missing authenticated slice-element projection. This is a live failure checkpoint, not an acceptance closeout.

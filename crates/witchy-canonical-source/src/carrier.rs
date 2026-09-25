@@ -22,7 +22,7 @@ pub enum CarrierElement {
     Dict(Box<Self>, Box<Self>),
     /// A checked, one-variant heap record. The declared identity and every
     /// instantiated field are part of the proof, including unused parameters.
-    Record { name: String, arguments: Vec<Self>, fields: Vec<Self> },
+    Record { name: String, constructor: String, field_names: Vec<String>, arguments: Vec<Self>, fields: Vec<Self> },
     /// A checked tagged heap aggregate. Variant payloads occupy flattened
     /// nullable slots; only the active variant's slots are populated.
     Sum { name: String, arguments: Vec<Self>, variants: Vec<CarrierVariant> },
@@ -33,6 +33,7 @@ pub enum CarrierElement {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CarrierVariant {
     pub name: String,
+    pub field_names: Vec<String>,
     pub fields: Vec<CarrierElement>,
 }
 
@@ -179,20 +180,23 @@ impl CarrierElement {
                         }).collect::<Option<Vec<_>>>()?;
                         if shape.tagged {
                             if shape.variants.len() < 2 { return None; }
-                            let variants = shape.variants.iter().map(|variant| {
+                            let variants = shape.variants.iter().enumerate().map(|(index, variant)| {
                                 let end = variant.first_field.checked_add(variant.arity)?;
                                 let fields = shape.fields.get(variant.first_field..end)?.iter().map(|field| {
                                     Self::from_checked_type_with_definitions_at(field, definitions, depth + 1, budget)
                                 }).collect::<Option<Vec<_>>>()?;
-                                Some(CarrierVariant { name: variant.name.clone(), fields })
+                                let field_names = checked_variant_field_names(name, index, variant, definitions)?;
+                                Some(CarrierVariant { name: variant.name.clone(), field_names, fields })
                             }).collect::<Option<Vec<_>>>()?;
                             Some(Self::Sum { name: name.clone(), arguments, variants })
                         } else {
                             if shape.fields.is_empty() { return None; }
+                            let [variant] = shape.variants.as_slice() else { return None };
+                            let field_names = checked_variant_field_names(name, 0, variant, definitions)?;
                             let fields = shape.fields.iter().map(|field| {
                                 Self::from_checked_type_with_definitions_at(field, definitions, depth + 1, budget)
                             }).collect::<Option<Vec<_>>>()?;
-                            Some(Self::Record { name: name.clone(), arguments, fields })
+                            Some(Self::Record { name: name.clone(), constructor: variant.name.clone(), field_names, arguments, fields })
                         }
                     }
                 }
@@ -425,15 +429,19 @@ impl CarrierElement {
                     pending.push((key, depth + 1));
                     pending.push((value, depth + 1));
                 }
-                Self::Record { name, arguments, fields } => {
-                    if name.len() > 1_024 || arguments.len() > 128 || fields.is_empty() || fields.len() > 128 {
+                Self::Record { name, constructor, field_names, arguments, fields } => {
+                    if name.len() > 1_024 || constructor.len() > 1_024 || arguments.len() > 128 || fields.is_empty() || fields.len() > 128
+                        || (!field_names.is_empty() && field_names.len() != fields.len())
+                        || field_names.iter().any(|field| field.len() > 1_024) {
                         return None;
                     }
                     pending.extend(arguments.iter().chain(fields).map(|field| (field, depth + 1)));
                 }
                 Self::Sum { name, arguments, variants } => {
                     if name.len() > 1_024 || arguments.len() > 128 || variants.len() < 2 || variants.len() > 128
-                        || variants.iter().any(|variant| variant.name.len() > 1_024)
+                        || variants.iter().any(|variant| variant.name.len() > 1_024
+                            || (!variant.field_names.is_empty() && variant.field_names.len() != variant.fields.len())
+                            || variant.field_names.iter().any(|field| field.len() > 1_024))
                         || !variants.iter().try_fold(0usize, |count, variant| count.checked_add(variant.fields.len())).is_some_and(|count| count <= 127) {
                         return None;
                     }
@@ -521,6 +529,13 @@ impl CarrierElement {
     /// layout allocator assigns compact, collision-free local IDs by sorting
     /// these full keys; their truncated digest is never used as an ID.
     pub fn identity(&self) -> [u8; 32] {
+        fn encode_field_names(names: &[String], bytes: &mut Vec<u8>) {
+            bytes.extend_from_slice(&(names.len() as u32).to_le_bytes());
+            for name in names {
+                bytes.extend_from_slice(&(name.len() as u32).to_le_bytes());
+                bytes.extend_from_slice(name.as_bytes());
+            }
+        }
         fn encode(element: &CarrierElement, bytes: &mut Vec<u8>) {
             match element {
                 CarrierElement::Scalar(kind) => {
@@ -546,12 +561,15 @@ impl CarrierElement {
                     encode(value, bytes);
                     bytes.push(7);
                 }
-                CarrierElement::Record { name, arguments, fields } => {
+                CarrierElement::Record { name, constructor, field_names, arguments, fields } => {
                     bytes.push(8);
                     bytes.extend_from_slice(&(name.len() as u32).to_le_bytes());
                     bytes.extend_from_slice(name.as_bytes());
+                    bytes.extend_from_slice(&(constructor.len() as u32).to_le_bytes());
+                    bytes.extend_from_slice(constructor.as_bytes());
                     bytes.extend_from_slice(&(arguments.len() as u32).to_le_bytes());
                     for argument in arguments { encode(argument, bytes); }
+                    encode_field_names(field_names, bytes);
                     bytes.extend_from_slice(&(fields.len() as u32).to_le_bytes());
                     for field in fields { encode(field, bytes); }
                     bytes.push(9);
@@ -566,6 +584,7 @@ impl CarrierElement {
                     for variant in variants {
                         bytes.extend_from_slice(&(variant.name.len() as u32).to_le_bytes());
                         bytes.extend_from_slice(variant.name.as_bytes());
+                        encode_field_names(&variant.field_names, bytes);
                         bytes.extend_from_slice(&(variant.fields.len() as u32).to_le_bytes());
                         for field in &variant.fields { encode(field, bytes); }
                     }
@@ -577,6 +596,23 @@ impl CarrierElement {
         encode(self, &mut bytes);
         *blake3::hash(&bytes).as_bytes()
     }
+}
+
+fn checked_variant_field_names(
+    name: &str,
+    index: usize,
+    variant: &crate::aggregates::ScalarVariant,
+    definitions: &BTreeMap<String, TypeDef>,
+) -> Option<Vec<String>> {
+    let Some(definition) = definitions.get(name) else { return Some(Vec::new()) };
+    let declared = definition.variants.get(index)?;
+    if declared.name != variant.name || declared.fields.len() != variant.arity
+        || (!declared.field_names.is_empty() && declared.field_names.len() != variant.arity)
+        || declared.field_names.iter().any(|field| field.len() > 1_024)
+    {
+        return None;
+    }
+    Some(declared.field_names.clone())
 }
 
 fn nominal_graph_acyclic(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> bool {

@@ -86,6 +86,14 @@ mod canonical_abi {
             "a constructor rename cannot inherit the old nominal root key");
         assert_ne!(original_sum.digest(), changed_field.digest(),
             "a changed field type cannot inherit the old nominal root key");
+        let original_record = manifest("type Boxed:\n    Original(Int)\nfn relay(view: &Boxed) -> &Boxed:\n    view\n");
+        let renamed_record = manifest("type Boxed:\n    Renamed(Int)\nfn relay(view: &Boxed) -> &Boxed:\n    view\n");
+        assert_ne!(original_record.digest(), renamed_record.digest(),
+            "a one-constructor rename cannot inherit the old nominal root key");
+        let original_label = manifest("type Holder:\n    first: Int\nfn relay(view: &Holder) -> &Holder:\n    view\n");
+        let renamed_label = manifest("type Holder:\n    second: Int\nfn relay(view: &Holder) -> &Holder:\n    view\n");
+        assert_ne!(original_label.digest(), renamed_label.digest(),
+            "a field-label rename cannot inherit the old nominal root key");
         let nested = manifest("type Inner:\n    Value(Int)\ntype Outer:\n    Wrap(Inner)\nfn relay(view: &Outer) -> &Outer:\n    view\n");
         let changed_nested = manifest("type Inner:\n    Value(String)\ntype Outer:\n    Wrap(Inner)\nfn relay(view: &Outer) -> &Outer:\n    view\n");
         assert_ne!(nested.digest(), changed_nested.digest(),
