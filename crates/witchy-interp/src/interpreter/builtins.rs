@@ -1508,11 +1508,32 @@ impl Interpreter {
                     }
                     let name = compiler_binding_ident_name(name, "meta.function_block")?;
                     let params = compiler_params(params, &self.compiler_param_syntax)?;
+                    if (*is_async || *is_gen)
+                        && let Some(param) = params.iter().find(|param| param.convention == Convention::Var)
+                    {
+                        return err(format!(
+                            "meta.function_block cannot give suspended function a `var` parameter `{}`",
+                            param.name,
+                        ));
+                    }
                     let ret = compiler_optional_type_syntax_value(
                         ret,
                         &self.compiler_type_syntax,
                     )?;
                     let body = compiler_block_syntax_value(body, &self.compiler_block_syntax)?;
+                    if body.region.is_some() {
+                        return err("meta.function_block expects an ordinary function body; use meta.expr_block for a region expression");
+                    }
+                    let (has_await, has_yield, nested_callable_suspension) = generated_suspension_forms(&body);
+                    if nested_callable_suspension {
+                        return err("meta.function_block cannot place `await` or `yield` inside a nested lambda");
+                    }
+                    if has_await && !*is_async {
+                        return err("meta.function_block cannot place `await` outside an async function");
+                    }
+                    if has_yield && !*is_gen {
+                        return err("meta.function_block cannot place `yield` outside a generator function");
+                    }
                     let item = Item::Function(Function {
                         // Preserve the old fixed skeleton's declaration line.
                         line: 1,
@@ -4462,9 +4483,65 @@ fn compiler_impl_methods(
         let Item::Function(function) = item else {
             return err("meta.impl_block accepts function items only");
         };
+        if function.is_async || function.is_gen {
+            return err("meta.impl_block cannot attach async or generator methods to a trait implementation");
+        }
         methods.push(function);
     }
     Ok(methods)
+}
+
+/// Generated AST bypasses the parser's `in_async`/`in_gen` state. Inspect its
+/// structural children before issuing an ItemSyntax handle; tagged holes are
+/// compiler-owned expression AST too, so include them in the same check.
+fn generated_suspension_forms(body: &Block) -> (bool, bool, bool) {
+    fn direct_yield(block: &Block) -> bool {
+        block.stmts.iter().any(|stmt| matches!(stmt, Stmt::Yield(_)))
+    }
+    fn collect(
+        expr: &Expr,
+        has_await: &mut bool,
+        has_yield: &mut bool,
+        nested_callable_suspension: &mut bool,
+        holes: &mut Vec<Expr>,
+    ) {
+        *has_await |= matches!(expr, Expr::Unary { op: UnOp::Await, .. });
+        match expr {
+            Expr::Lambda { body: block, .. } => {
+                let (awaited, yielded, nested) = generated_suspension_forms(block);
+                *nested_callable_suspension |= awaited || yielded || nested;
+            }
+            Expr::Block(block) | Expr::While { body: block, .. } | Expr::For { body: block, .. }
+            | Expr::WhileLet { body: block, .. } => *has_yield |= direct_yield(block),
+            Expr::If { then_block, else_block, .. } => {
+                *has_yield |= direct_yield(then_block);
+                *has_yield |= else_block.as_ref().is_some_and(direct_yield);
+            }
+            Expr::TaggedLit { holes: tagged_holes, .. } => {
+                for hole in tagged_holes {
+                    let TaggedHole::Owned(expr) = hole;
+                    holes.push((**expr).clone());
+                }
+            }
+            _ => {}
+        }
+    }
+    let (mut has_await, mut has_yield, mut nested_callable_suspension) = (false, direct_yield(body), false);
+    let mut holes = Vec::new();
+    let mut visit = |expr: &Expr| -> Result<(), ()> {
+        collect(expr, &mut has_await, &mut has_yield, &mut nested_callable_suspension, &mut holes);
+        Ok(())
+    };
+    let _ = witchy_syntax::ast::visit::visit_block(body, &mut visit);
+    drop(visit);
+    while let Some(hole) = holes.pop() {
+        let mut visit = |expr: &Expr| -> Result<(), ()> {
+            collect(expr, &mut has_await, &mut has_yield, &mut nested_callable_suspension, &mut holes);
+            Ok(())
+        };
+        let _ = witchy_syntax::ast::visit::visit_expr(&hole, &mut visit);
+    }
+    (has_await, has_yield, nested_callable_suspension)
 }
 
 fn compiler_impl_bounds(value: &Value) -> Result<Vec<(String, String, Vec<Type>)>, RuntimeError> {
