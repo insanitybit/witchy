@@ -19,7 +19,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use std::fmt;
 
-use witchy_syntax::ast::{Module, Type};
+use witchy_syntax::ast::{Module, Type, TypeQual};
 use witchy_syntax::linker::{
     self, ComptimeExpander, LinkError, LinkMode, LinkedModule, SourceCheckError,
     SourceLinkError,
@@ -35,6 +35,8 @@ use crate::runtime_type::{
 use crate::canonical_abi;
 use witchy_canonical_source::abi::{CanonicalCallableAbi, CanonicalCallableAbiManifest, CanonicalTargetPolicy};
 use witchy_canonical_source::closure::ClosureWitnessManifest;
+use witchy_canonical_source::rooted_view::RootedViewStorage;
+use witchy_canonical_source::storage::StoragePlan;
 use witchy_canonical_source::source::{
     CanonicalSourceParts, CanonicalSourceView, CheckedAccessQuery, CheckedSourceDigests,
     CheckedSourceWitness, PrecompiledExport,
@@ -821,9 +823,21 @@ fn attach_canonical_source(
     let mut slice_carriers = typed.view_facts().ok().into_iter()
         .flat_map(|facts| facts.iter())
         .filter_map(|fact| typeck::ty_to_ast(fact.payload()))
-        .filter_map(|payload| witchy_canonical_source::carrier::CarrierElement::from_slice_payload_type_with_definitions(
-            &payload, &type_definitions,
-        ))
+        .filter_map(|payload| {
+            // Preserve the exact direct-slice syntax accepted by the old
+            // carrier extractor; an outer qualifier must not mint a second
+            // projection path by being stripped during storage planning.
+            match &payload {
+                Type::Slice(_) => {}
+                Type::Named(name, arguments) if name == "Slice" && arguments.len() == 1 => {}
+                _ => return None,
+            }
+            let view = Type::Qualified(TypeQual::View, Box::new(payload));
+            match StoragePlan::classify(&view, &type_definitions, |_| None) {
+                StoragePlan::RootedView(RootedViewStorage::RetainedProjection(element)) => Some(element),
+                _ => None,
+            }
+        })
         .collect::<Vec<_>>();
     slice_carriers.extend(callable_witness.signatures.values().flat_map(|signature| {
         witchy_canonical_source::carrier::CarrierElement::in_checked_signature_with_definitions(

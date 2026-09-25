@@ -62,6 +62,14 @@ or retained-root class. The checked witness and physical layout checks still
 bind the source to the candidate. Admitted Wasm, zero-leak evidence, and A–O
 status remain unchanged.
 
+Row G checked slice carrier inventory (architecture implemented, semantic
+evidence unchanged, 2026-09-25): the frontend now derives carrier elements
+from the shared `StoragePlan` when recording checked direct-slice view facts.
+The prior direct-slice syntax boundary remains; unsupported and over-budget
+elements do not enter the authenticated carrier inventory. Callable-signature
+traversal still has its existing bounded extractor. Admitted Wasm, zero-leak
+evidence, and A–O status remain unchanged.
+
 Row G list of authenticated scalar-place owners (architecture implemented,
 semantic evidence unchanged, 2026-09-25): `StoragePlan` now has a typed
 retained-owner-list class for `List(T)` whose element is an admitted
