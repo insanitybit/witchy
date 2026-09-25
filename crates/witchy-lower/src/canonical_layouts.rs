@@ -191,8 +191,8 @@ pub(crate) fn rooted_slice_layouts(
 /// conventions spelled out (an empty list means every parameter is `let`)
 /// and the callable qualifiers dropped, so `fn(Int) -> Int` written at a
 /// parameter, a lambda, and a declaration share one closure layout.
-pub(crate) fn closure_key(ty: &Type) -> Type {
-    if let Some(view) = witchy_canonical_source::aggregates::owner_carried_view_identity(ty) {
+pub(crate) fn closure_key(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> Type {
+    if let Some(view) = witchy_canonical_source::aggregates::owner_carried_view_identity(ty, definitions) {
         return view;
     }
     match ty.unqualified() {
@@ -203,14 +203,14 @@ pub(crate) fn closure_key(ty: &Type) -> Type {
                 conventions.clone()
             };
             Type::Fn(
-                parameters.iter().map(closure_key).collect(),
-                Box::new(closure_key(result)),
+                parameters.iter().map(|parameter| closure_key(parameter, definitions)).collect(),
+                Box::new(closure_key(result, definitions)),
                 conventions,
                 ast::CallableQualifiers::default(),
             )
         }
-        Type::Named(name, arguments) => Type::Named(name.clone(), arguments.iter().map(closure_key).collect()),
-        Type::Tuple(items) => Type::Tuple(items.iter().map(closure_key).collect()),
+        Type::Named(name, arguments) => Type::Named(name.clone(), arguments.iter().map(|argument| closure_key(argument, definitions)).collect()),
+        Type::Tuple(items) => Type::Tuple(items.iter().map(|item| closure_key(item, definitions)).collect()),
         other => other.clone(),
     }
 }
@@ -228,7 +228,7 @@ pub(crate) fn canonical_closure_key(
     witchy_canonical_source::aggregates::memoize_derived_type("canonical_closure_key", ty, definitions, || {
         let identity = concrete_aggregate_identity(ty, definitions)
             .unwrap_or_else(|| ty.unqualified().clone());
-        closure_key(&identity)
+        closure_key(&identity, definitions)
     })
 }
 

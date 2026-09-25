@@ -278,16 +278,16 @@ pub fn lower_typed_module(
                     let physical = parameter_physical_type(ty, parameter.convention);
                     (projected_parameter != Some(index)
                         && !has_checked_direct_carrier(&physical, &definitions)
-                        && contains_deferred_v1_qualifier(&physical))
+                        && contains_deferred_v1_qualifier(&physical, &definitions))
                         .then_some(physical)
                 })
             })
             .chain(function.ret.iter().map(result_physical_type))
             .find(|ty| {
                 !has_checked_direct_carrier(ty, &definitions)
-                    && contains_deferred_v1_qualifier(ty)
+                    && contains_deferred_v1_qualifier(ty, &definitions)
             })
-            .or_else(|| deferred_v1_qualifier_in_block(&function.body))
+            .or_else(|| deferred_v1_qualifier_in_block(&function.body, &definitions))
         {
             return Err(CanonicalLoweringError::UnsupportedType(unsupported));
         }
@@ -2554,13 +2554,13 @@ fn signature_from_type(
             (projected_parameter == Some(index)).then_some(false)
                 .unwrap_or_else(|| {
                     !has_checked_direct_carrier(&physical, definitions)
-                        && contains_deferred_v1_qualifier(&physical)
+                        && contains_deferred_v1_qualifier(&physical, definitions)
                 })
                 .then_some(physical)
         })
         .chain(std::iter::once(
             (!has_checked_direct_carrier(&result_physical_type(result), definitions)
-                && contains_deferred_v1_qualifier(&result_physical_type(result)))
+                && contains_deferred_v1_qualifier(&result_physical_type(result), definitions))
                 .then_some(result_physical_type(result)),
         ))
         .flatten()
@@ -2738,7 +2738,7 @@ fn is_root_unique(ty: &Type) -> bool {
     matches!(ty, Type::Qualified(TypeQual::Unique, _))
 }
 
-fn contains_deferred_v1_qualifier(ty: &Type) -> bool {
+fn contains_deferred_v1_qualifier(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> bool {
     // An aggregate carrier is not an erased reference just because its
     // references occur below a tuple or list shell.  This syntactic gate only
     // keeps the bounded physical layout representable; checked_signature and
@@ -2755,8 +2755,8 @@ fn contains_deferred_v1_qualifier(ty: &Type) -> bool {
         return false;
     }
     match ty {
-        Type::Qualified(TypeQual::Frozen, inner) => contains_deferred_v1_qualifier(inner),
-        Type::Qualified(TypeQual::View, inner) if is_direct_view_payload(inner) => false,
+        Type::Qualified(TypeQual::Frozen, inner) => contains_deferred_v1_qualifier(inner, definitions),
+        Type::Qualified(TypeQual::View, inner) if is_direct_view_payload(inner, definitions) => false,
         Type::Qualified(TypeQual::View, _) => true,
         // The canonical direct-call ABI already transports an owned object
         // token.  For a named `&mut String` that token is the authenticated
@@ -2781,25 +2781,25 @@ fn contains_deferred_v1_qualifier(ty: &Type) -> bool {
                 // direct admission by recursively walking a wrapper.
                 matches!(argument, Type::Qualified(TypeQual::View, inner)
                     if matches!(inner.unqualified(), Type::Named(name, _) if name == "Dict"))
-                    || contains_deferred_v1_qualifier(argument)
+                    || contains_deferred_v1_qualifier(argument, definitions)
             })
         }
-        Type::Slice(inner) => contains_deferred_v1_qualifier(inner),
+        Type::Slice(inner) => contains_deferred_v1_qualifier(inner, definitions),
         Type::RecordCompose { base, fields } => {
-            contains_deferred_v1_qualifier(base)
-                || fields.iter().any(|(_, field)| contains_deferred_v1_qualifier(field))
+            contains_deferred_v1_qualifier(base, definitions)
+                || fields.iter().any(|(_, field)| contains_deferred_v1_qualifier(field, definitions))
         }
         // This slice admits shared references only on direct-call signatures.
         // Callable values and indirect calls require a separate authenticated
         // ABI rather than recursively inheriting direct-call authority.
         Type::Fn(parameters, result, conventions, _) => {
-            parameters.iter().any(contains_indirect_reference_qualifier)
-                || contains_indirect_reference_qualifier(result)
+            parameters.iter().any(|parameter| contains_indirect_reference_qualifier(parameter, definitions))
+                || contains_indirect_reference_qualifier(result, definitions)
                 || parameters.iter().enumerate().any(|(index, parameter)| {
                     let convention = conventions.get(index).copied().unwrap_or_default();
-                    contains_deferred_v1_qualifier(&parameter_physical_type(parameter, convention))
+                    contains_deferred_v1_qualifier(&parameter_physical_type(parameter, convention), definitions)
                 })
-                || contains_deferred_v1_qualifier(&result_physical_type(result))
+                || contains_deferred_v1_qualifier(&result_physical_type(result), definitions)
         }
     }
 }
@@ -2924,12 +2924,15 @@ fn exclusive_reference_parts(ty: &Type) -> Option<(&str, &Type)> {
 /// A direct RFC-0167 view payload with an authenticated retained-root
 /// carrier: the `&Int` place owner, a rooted slice owner, the retained String
 /// token, a record or scalar-List root token, or a scalar value view.
-fn is_direct_view_payload(inner: &Type) -> bool {
+fn is_direct_view_payload(inner: &Type, definitions: &BTreeMap<String, TypeDef>) -> bool {
     // `&frozen T` is the same immutable payload; any other qualifier nested
     // under the view (`&(&mut T)`, `&unique T`) is not a direct view.
     !matches!(inner, Type::Qualified(qualifier, _) if *qualifier != TypeQual::Frozen)
-        && (is_direct_shared_int(inner) || is_rooted_slice(inner) || is_rooted_string(inner)
-            || is_rooted_user_record(inner) || witchy_canonical_source::aggregates::is_list_root_payload(inner)
+        && (is_direct_shared_int(inner)
+            || CarrierElement::from_slice_payload_type_with_definitions(inner, definitions).is_some()
+            || is_rooted_string(inner)
+            || is_rooted_user_record(inner)
+            || CarrierElement::from_list_root_payload_type_with_definitions(inner, definitions).is_some()
             || witchy_canonical_source::aggregates::dict_string_scalar_root_payload(inner).is_some()
             || witchy_canonical_source::aggregates::tuple_scalar_string_root_payload(inner).is_some()
             || witchy_canonical_source::aggregates::is_scalar_value_view_payload(inner))
@@ -2941,21 +2944,21 @@ fn is_direct_view_payload(inner: &Type) -> bool {
 /// indirect call transfers a carrier value exactly as a direct call does, and
 /// no callee-selected provenance relation is involved.  Retired borrows,
 /// `&mut`, and views without a carrier stay behind the separate callable ABI.
-fn contains_indirect_reference_qualifier(ty: &Type) -> bool {
+fn contains_indirect_reference_qualifier(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> bool {
     match ty {
-        Type::Qualified(TypeQual::View, inner) if is_direct_view_payload(inner) => false,
+        Type::Qualified(TypeQual::View, inner) if is_direct_view_payload(inner, definitions) => false,
         Type::Qualified(TypeQual::View | TypeQual::Borrow(_) | TypeQual::BorrowMut(_), _) => true,
-        Type::Qualified(_, inner) | Type::Slice(inner) => contains_indirect_reference_qualifier(inner),
+        Type::Qualified(_, inner) | Type::Slice(inner) => contains_indirect_reference_qualifier(inner, definitions),
         Type::Tuple(items) | Type::Named(_, items) | Type::Dyn(_, items) => {
-            items.iter().any(contains_indirect_reference_qualifier)
+            items.iter().any(|item| contains_indirect_reference_qualifier(item, definitions))
         }
         Type::RecordCompose { base, fields } => {
-            contains_indirect_reference_qualifier(base)
-                || fields.iter().any(|(_, field)| contains_indirect_reference_qualifier(field))
+            contains_indirect_reference_qualifier(base, definitions)
+                || fields.iter().any(|(_, field)| contains_indirect_reference_qualifier(field, definitions))
         }
         Type::Fn(parameters, result, _, _) => {
-            parameters.iter().any(contains_indirect_reference_qualifier)
-                || contains_indirect_reference_qualifier(result)
+            parameters.iter().any(|parameter| contains_indirect_reference_qualifier(parameter, definitions))
+                || contains_indirect_reference_qualifier(result, definitions)
         }
     }
 }
@@ -3474,15 +3477,18 @@ fn rooted_gc_view_owner_type(ty: &Type, layouts: &ClosureValueLayouts) -> Option
     }
 }
 
-fn deferred_v1_qualifier_in_block(block: &witchy_syntax::ast::Block) -> Option<Type> {
+fn deferred_v1_qualifier_in_block(
+    block: &witchy_syntax::ast::Block,
+    definitions: &BTreeMap<String, TypeDef>,
+) -> Option<Type> {
     if let Some(ty) = block.region.as_ref().and_then(|region| region.ty.as_ref())
-        && contains_deferred_v1_qualifier(ty)
+        && contains_deferred_v1_qualifier(ty, definitions)
     {
         return Some(ty.clone());
     }
     for statement in &block.stmts {
         if let Stmt::Let { ty: Some(ty), .. } = statement
-            && contains_deferred_v1_qualifier(binding_physical_layout_type(ty))
+            && contains_deferred_v1_qualifier(binding_physical_layout_type(ty), definitions)
         {
             return Some(ty.clone());
         }
@@ -3511,12 +3517,12 @@ fn deferred_v1_qualifier_in_block(block: &witchy_syntax::ast::Block) -> Option<T
                 | Expr::ExistentialCall { ty, .. } => vec![ty],
                 _ => Vec::new(),
             };
-            if let Some(ty) = types.into_iter().find(|ty| contains_deferred_v1_qualifier(ty)) {
+            if let Some(ty) = types.into_iter().find(|ty| contains_deferred_v1_qualifier(ty, definitions)) {
                 unsupported = Some(ty.clone());
                 return Err(());
             }
             if let Expr::Lambda { body, .. } | Expr::Block(body) = expression
-                && let Some(ty) = deferred_v1_qualifier_in_block(body)
+                && let Some(ty) = deferred_v1_qualifier_in_block(body, definitions)
             {
                 unsupported = Some(ty);
                 return Err(());

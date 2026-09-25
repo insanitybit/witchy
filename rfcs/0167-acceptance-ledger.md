@@ -167,6 +167,15 @@ value 9.
 This smoke does not close row G: its durable Wasm and zero-leak evidence
 remain outstanding.
 
+Row G record slice callable transport (implemented but unverified,
+2026-09-25): a checked `fn(&[Point]) -> Int` value can now pass through an
+indirect callable parameter while the slice's recursive record carrier keeps
+its source type, closure layout, and ownership operations aligned. Closure
+identity derives the slice element from checked definitions instead of a
+scalar or nested-list name list. A temporary `Point(Int, String)` program
+passed `witchy check` and exited admitted Wasm with the hand-computed value
+9. No durable zero-leak audit or A–O closure is claimed for this path.
+
 Row G whole-root scalar-list expansion (implemented but unverified,
 2026-09-24): the compiler now recognizes exact `&List(List(S))` for
 `S = Float`, `Bool`, or `Duration` through the shared source predicate,

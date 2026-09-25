@@ -8,25 +8,25 @@ pub(crate) fn source_closure_family_key(
     records: &ScalarRecordFields,
 ) -> witchy_syntax::ast::Type {
     use witchy_syntax::ast::{CallableQualifiers, Convention, Type};
-    fn normalize(source: &Type) -> Type {
-        if let Some(view) = witchy_canonical_source::aggregates::owner_carried_view_identity(source) {
+    fn normalize(source: &Type, records: &ScalarRecordFields) -> Type {
+        if let Some(view) = witchy_canonical_source::aggregates::owner_carried_view_identity(source, records) {
             return view;
         }
         match source.unqualified() {
             Type::Fn(parameters, result, conventions, _) => Type::Fn(
-                parameters.iter().map(normalize).collect(),
-                Box::new(normalize(result)),
+                parameters.iter().map(|parameter| normalize(parameter, records)).collect(),
+                Box::new(normalize(result, records)),
                 if conventions.is_empty() { vec![Convention::Let; parameters.len()] }
                 else { conventions.clone() },
                 CallableQualifiers::default(),
             ),
-            Type::Named(name, arguments) => Type::Named(name.clone(), arguments.iter().map(normalize).collect()),
-            Type::Tuple(fields) => Type::Tuple(fields.iter().map(normalize).collect()),
+            Type::Named(name, arguments) => Type::Named(name.clone(), arguments.iter().map(|argument| normalize(argument, records)).collect()),
+            Type::Tuple(fields) => Type::Tuple(fields.iter().map(|field| normalize(field, records)).collect()),
             other => other.clone(),
         }
     }
     normalize(&witchy_canonical_source::aggregates::concrete_aggregate_identity(source, records)
-        .unwrap_or_else(|| source.unqualified().clone()))
+        .unwrap_or_else(|| source.unqualified().clone()), records)
 }
 
 pub(super) const MAX_SOURCE_CORRESPONDENCE_PAIRS: usize = 65_536;

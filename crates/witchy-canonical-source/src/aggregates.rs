@@ -245,7 +245,7 @@ fn field_type_ok_at_with_dependencies(
     // can describe that field without granting a representation to arbitrary
     // views (in particular, not `&mut`, region, or projected views). A
     // `&[T]` over an admitted element is the rooted-slice owner field.
-    if is_direct_rooted_int_view(ty) || owner_carried_view_identity(ty).is_some() {
+    if is_direct_rooted_int_view(ty) || owner_carried_view_identity(ty, definitions).is_some() {
         return true;
     }
     // This recognizes source fields, not linear-memory slots. Capability
@@ -1019,7 +1019,7 @@ fn concrete_identity_at(
     // never its payload's representation, so erasing it here would give
     // `Task(&Int)` and `Task(Int)` (and their callables) one identity with two
     // physical carriers. Token-carried views share their payload's layout.
-    if let Some(view) = owner_carried_view_identity(ty) {
+    if let Some(view) = owner_carried_view_identity(ty, definitions) {
         return Some(view);
     }
     match ty.unqualified() {
@@ -1070,7 +1070,10 @@ fn concrete_identity_at(
 /// identity, closure family keys in lowering and in authority) keeps exactly
 /// these views: each has its own opaque owner family, so erasing one would
 /// alias two distinct physical carriers under one identity.
-pub fn owner_carried_view_identity(ty: &Type) -> Option<Type> {
+pub fn owner_carried_view_identity(
+    ty: &Type,
+    definitions: &BTreeMap<String, TypeDef>,
+) -> Option<Type> {
     let Type::Qualified(witchy_syntax::ast::TypeQual::View, inner) = ty else { return None };
     // An outer frozen payload preserves the view identity. Slice elements
     // themselves must have one of the exact admitted, unqualified shapes.
@@ -1078,26 +1081,12 @@ pub fn owner_carried_view_identity(ty: &Type) -> Option<Type> {
         Type::Qualified(witchy_syntax::ast::TypeQual::Frozen, inner) => inner.as_ref().clone(),
         other => other.clone(),
     };
-    let slice_element = |ty: &Type| {
-        if matches!(ty, Type::Named(name, arguments)
-            if arguments.is_empty() && matches!(name.as_str(), "Int" | "Float" | "Bool" | "Duration" | "String")) {
-            return Some(ty.clone());
-        }
-        matches!(ty, Type::Named(name, arguments)
-            if name == "List" && matches!(arguments.as_slice(), [Type::Named(inner, inner_arguments)]
-                if inner_arguments.is_empty()
-                    && matches!(inner.as_str(), "Int" | "Float" | "Bool" | "Duration" | "String")))
-            .then(|| ty.clone())
-    };
     let payload = match &payload_of(inner) {
         Type::Named(name, arguments) if name == "Int" && arguments.is_empty() => payload_of(inner),
-        Type::Slice(element) if slice_element(element).is_some() => {
-            Type::Slice(Box::new(slice_element(element).expect("matched above")))
-        }
-        Type::Named(name, arguments) if name == "Slice" && arguments.len() == 1 && slice_element(&arguments[0]).is_some() => {
-            Type::Slice(Box::new(slice_element(&arguments[0]).expect("matched above")))
-        }
-        _ => return None,
+        slice => Type::Slice(Box::new(
+            crate::carrier::CarrierElement::from_slice_payload_type_with_definitions(slice, definitions)?
+                .source_type(),
+        )),
     };
     Some(Type::Qualified(witchy_syntax::ast::TypeQual::View, Box::new(payload)))
 }
@@ -1111,7 +1100,7 @@ fn concrete_callable_lane_identity_at(
     if depth >= MAX_AGGREGATE_SHAPE_EXPANSION || !consume_shape_nodes(budget, 1) {
         return None;
     }
-    if let Some(view) = owner_carried_view_identity(ty) {
+    if let Some(view) = owner_carried_view_identity(ty, definitions) {
         return Some(view);
     }
     if let Type::Qualified(qualifier, inner) = ty {
@@ -1264,11 +1253,12 @@ mod recursive_shape_tests {
             Box::new(Type::Slice(Box::new(element))),
         );
         let exact = view(child.clone());
-        assert_eq!(owner_carried_view_identity(&exact), Some(exact));
+        assert_eq!(owner_carried_view_identity(&exact, &BTreeMap::new()), Some(exact));
         for qualifier in [witchy_syntax::ast::TypeQual::Unique, witchy_syntax::ast::TypeQual::Frozen] {
-            assert!(owner_carried_view_identity(&view(Type::Qualified(qualifier, Box::new(child.clone())))).is_none());
+            assert!(owner_carried_view_identity(&view(Type::Qualified(qualifier, Box::new(child.clone()))), &BTreeMap::new()).is_none());
         }
-        assert!(owner_carried_view_identity(&view(Type::Named("List".into(), vec![child]))).is_none());
+        let nested = view(Type::Named("List".into(), vec![child]));
+        assert_eq!(owner_carried_view_identity(&nested, &BTreeMap::new()), Some(nested));
     }
 
     #[test]

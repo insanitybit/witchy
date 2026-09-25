@@ -2279,6 +2279,13 @@ fn compare_type(
             compare_type_lists(left_args, right_args, lifetimes)
         }
         (Type::Tuple(left), Type::Tuple(right)) => compare_type_lists(left, right, lifetimes),
+        (Type::Slice(left), Type::Slice(right)) => compare_type(left, right, lifetimes),
+        (Type::Slice(left), Type::Named(name, args)) if name == "Slice" && args.len() == 1 => {
+            compare_type(left, &args[0], lifetimes)
+        }
+        (Type::Named(name, args), Type::Slice(right)) if name == "Slice" && args.len() == 1 => {
+            compare_type(&args[0], right, lifetimes)
+        }
         (
             Type::RecordCompose { base: left_base, fields: left_fields },
             Type::RecordCompose { base: right_base, fields: right_fields },
