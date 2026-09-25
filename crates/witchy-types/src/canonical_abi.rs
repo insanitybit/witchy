@@ -108,6 +108,11 @@ pub fn checked_declaration_signature(typed: &TypedModule, name: &str) -> Result<
         return Err(CanonicalAbiError::InvalidCallable("checked declaration parameter arity".into()));
     }
     for (index, (parameter, declared)) in parameters.iter_mut().zip(&declaration.params).enumerate() {
+        if let Some(source) = declared.ty.as_ref()
+            && qualified_rooted_view(source)
+        {
+            restore_qualified_rooted_view(parameter, source)?;
+        }
         if declared.convention == Convention::Var
             && matches!(&declared.ty, Some(Type::Qualified(ast::TypeQual::Unique, _)))
         {
@@ -126,7 +131,89 @@ pub fn checked_declaration_signature(typed: &TypedModule, name: &str) -> Result<
         // canonical ABI needs to authenticate the returned owned wrapper.
         *result = Box::new(declared.clone());
     }
+    if let Some(source) = declaration.ret.as_ref()
+        && qualified_rooted_view(source)
+    {
+        restore_qualified_rooted_view(result, source)?;
+    }
     Ok(signature)
+}
+
+/// A finalized HM type erases nested storage qualifiers. Restore a direct
+/// rooted view's exact source spelling after proving the same erased physical
+/// type. The source classifier then admits it or refuses it without an erased
+/// qualifier silently granting a different carrier.
+fn restore_qualified_rooted_view(finalized: &mut Type, source: &Type) -> Result<(), CanonicalAbiError> {
+    if !matches!(source, Type::Qualified(ast::TypeQual::View, _)) {
+        return Err(CanonicalAbiError::InvalidCallable(
+            "nested qualified rooted-view ABI has no structural key".into(),
+        ));
+    }
+    if !within_canonical_abi_ast_budget(source)
+        || erase_storage_qualifiers(source, 0, &mut 4_096).as_ref() != Some(finalized)
+    {
+        return Err(CanonicalAbiError::InvalidCallable(
+            "qualified rooted view differs from finalized checked type".into(),
+        ));
+    }
+    *finalized = source.clone();
+    Ok(())
+}
+
+fn qualified_rooted_view(ty: &Type) -> bool {
+    if !within_canonical_abi_ast_budget(ty) { return true; }
+    fn visit(ty: &Type, storage_qualifier_above: bool) -> bool {
+        match ty {
+            Type::Qualified(ast::TypeQual::Frozen | ast::TypeQual::Unique, inner) =>
+                visit(inner, true),
+            Type::Qualified(ast::TypeQual::View, payload) =>
+                storage_qualifier_above || has_storage_qualifier(payload) || visit(payload, false),
+            Type::Qualified(_, inner) | Type::Slice(inner) => visit(inner, storage_qualifier_above),
+            Type::Named(_, arguments) | Type::Tuple(arguments) | Type::Dyn(_, arguments) =>
+                arguments.iter().any(|item| visit(item, storage_qualifier_above)),
+            Type::Fn(parameters, result, _, _) =>
+                parameters.iter().any(|item| visit(item, storage_qualifier_above)) || visit(result, storage_qualifier_above),
+            Type::RecordCompose { base, fields } =>
+                visit(base, storage_qualifier_above) || fields.iter().any(|(_, field)| visit(field, storage_qualifier_above)),
+        }
+    }
+    visit(ty, false)
+}
+
+fn has_storage_qualifier(ty: &Type) -> bool {
+    match ty {
+        Type::Qualified(ast::TypeQual::Frozen | ast::TypeQual::Unique, _) => true,
+        Type::Qualified(_, inner) | Type::Slice(inner) => has_storage_qualifier(inner),
+        Type::Named(_, arguments) | Type::Tuple(arguments) | Type::Dyn(_, arguments) =>
+            arguments.iter().any(has_storage_qualifier),
+        Type::Fn(parameters, result, _, _) =>
+            parameters.iter().any(has_storage_qualifier) || has_storage_qualifier(result),
+        Type::RecordCompose { base, fields } =>
+            has_storage_qualifier(base) || fields.iter().any(|(_, field)| has_storage_qualifier(field)),
+    }
+}
+
+fn erase_storage_qualifiers(ty: &Type, depth: usize, budget: &mut usize) -> Option<Type> {
+    if depth > 128 || *budget == 0 { return None; }
+    *budget -= 1;
+    let child = |inner: &Type, budget: &mut usize| erase_storage_qualifiers(inner, depth + 1, budget);
+    match ty {
+        Type::Qualified(ast::TypeQual::Frozen | ast::TypeQual::Unique, inner) => child(inner, budget),
+        Type::Qualified(qualifier, inner) =>
+            Some(Type::Qualified(qualifier.clone(), Box::new(child(inner, budget)?))),
+        Type::Slice(inner) => Some(Type::Slice(Box::new(child(inner, budget)?))),
+        Type::Named(name, arguments) => Some(Type::Named(name.clone(), arguments.iter().map(|item| child(item, budget)).collect::<Option<Vec<_>>>()?)),
+        Type::Tuple(items) => Some(Type::Tuple(items.iter().map(|item| child(item, budget)).collect::<Option<Vec<_>>>()?)),
+        Type::Dyn(name, arguments) => Some(Type::Dyn(name.clone(), arguments.iter().map(|item| child(item, budget)).collect::<Option<Vec<_>>>()?)),
+        Type::Fn(parameters, result, conventions, qualifiers) => Some(Type::Fn(
+            parameters.iter().map(|item| child(item, budget)).collect::<Option<Vec<_>>>()?,
+            Box::new(child(result, budget)?), conventions.clone(), qualifiers.clone(),
+        )),
+        Type::RecordCompose { base, fields } => Some(Type::RecordCompose {
+            base: Box::new(child(base, budget)?),
+            fields: fields.iter().map(|(name, field)| Some((name.clone(), child(field, budget)?))).collect::<Option<Vec<_>>>()?,
+        }),
+    }
 }
 
 pub fn derive_manifest(

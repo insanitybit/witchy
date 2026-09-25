@@ -5,7 +5,7 @@
 
 use std::collections::BTreeMap;
 
-use witchy_syntax::ast::{Type, TypeDef};
+use witchy_syntax::ast::{Type, TypeDef, TypeQual};
 
 use crate::abi::CanonicalScalarKind;
 use crate::carrier::CarrierElement;
@@ -55,10 +55,16 @@ pub enum RecordRootIdentity {
     Scalar(CanonicalScalarKind),
     String,
     List(CarrierElement),
+    Qualified { qualifier: RecordRootQualifier, inner: Box<Self> },
     Option(Box<Self>),
     Result(Box<Self>, Box<Self>),
     Nominal { ordinal: u32, arguments: Vec<Self> },
 }
+
+/// Only storage qualifiers accepted by the checked record-root grammar.
+/// Views and retired borrow syntax have separate authenticated carriers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecordRootQualifier { Frozen, Unique }
 
 impl RecordRootIdentity {
     pub fn from_checked_type(
@@ -82,15 +88,19 @@ impl RecordRootIdentity {
         }
         *budget -= 1;
         let mut unqualified = ty;
-        let mut qualified = false;
+        let mut qualifiers = Vec::new();
         let mut depth = depth;
-        while let Type::Qualified(_, inner) = unqualified {
+        while let Type::Qualified(qualifier, inner) = unqualified {
             if depth >= 128 || *budget == 0 {
                 return None;
             }
+            qualifiers.push(match qualifier {
+                TypeQual::Frozen => RecordRootQualifier::Frozen,
+                TypeQual::Unique => RecordRootQualifier::Unique,
+                _ => return None,
+            });
             *budget -= 1;
             depth += 1;
-            qualified = true;
             unqualified = inner;
         }
         let Type::Named(name, arguments) = unqualified else {
@@ -146,19 +156,24 @@ impl RecordRootIdentity {
             }
             _ => return None,
         };
-        // Existing scalar-root identities normalize qualifiers. Never erase a
-        // qualifier on or above a newly admitted recursive List child.
-        (!qualified || !contains_list).then_some((identity, contains_list))
+        // Preserve the existing refusal for a qualified recursive List edge.
+        if !qualifiers.is_empty() && contains_list { return None; }
+        let identity = qualifiers.into_iter().rev().fold(identity, |inner, qualifier| {
+            Self::Qualified { qualifier, inner: Box::new(inner) }
+        });
+        Some((identity, contains_list))
     }
 
-    /// Deterministic structural bytes, preserving the currently admitted
-    /// v3 record-root ABI payloads.
+    /// Deterministic structural bytes. Unqualified payloads keep their prior
+    /// encoding; checked storage qualifiers receive distinct keys.
     pub fn append_identity_bytes(&self, bytes: &mut Vec<u8>) -> bool {
         const USER: u8 = 1;
         const OPTION: u8 = 2;
         const RESULT: u8 = 3;
         const LEAF: u8 = 4;
         const LIST: u8 = 5;
+        const QUALIFIED: u8 = 6;
+        const QUALIFIED_END: u8 = 7;
         match self {
             Self::Scalar(kind) => {
                 let tag = match kind {
@@ -174,6 +189,14 @@ impl RecordRootIdentity {
             Self::List(plan) => {
                 bytes.push(LIST);
                 bytes.extend_from_slice(&plan.identity());
+            }
+            Self::Qualified { qualifier, inner } => {
+                bytes.extend_from_slice(&[QUALIFIED, match qualifier {
+                    RecordRootQualifier::Frozen => 0,
+                    RecordRootQualifier::Unique => 1,
+                }]);
+                if !inner.append_identity_bytes(bytes) { return false; }
+                bytes.push(QUALIFIED_END);
             }
             Self::Option(child) => {
                 bytes.push(OPTION);
