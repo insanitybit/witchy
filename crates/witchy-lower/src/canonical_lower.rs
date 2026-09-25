@@ -53,6 +53,7 @@ use witchy_canonical_source::aggregates::{canonical_owner_aggregate_identity, co
 use witchy_canonical_source::carrier::CarrierElement;
 use witchy_canonical_source::rooted_view::{RetainedRootStorage, RootedViewStorage};
 use witchy_canonical_source::storage::StoragePlan;
+use witchy_canonical_source::structural_identity::SourceTypeKey;
 use witchy_canonical_source::abi::CanonicalScalarKind;
 use witchy_canonical_source::access::{
     AccessIdentityKey, AccessKind, AccessSignature, CheckedPlaceStep,
@@ -422,8 +423,24 @@ pub fn lower_typed_module(
     // in the monomorphized module, but their projected closure layouts still
     // require the same authenticated declaration and closure signatures.
     callable_types.extend(closure_families.keys().cloned());
-    callable_types.sort_by_key(|ty| format!("{ty:?}"));
-    callable_types.dedup();
+    let mut keyed_callable_types = callable_types.into_iter().map(|ty| {
+        let key = SourceTypeKey { source: &ty }.digest().ok_or_else(|| {
+            CanonicalLoweringError::UnsupportedCanonicalObligation(
+                "callable type exceeds structural identity limits".to_string(),
+            )
+        })?;
+        Ok((key, ty))
+    }).collect::<Result<Vec<_>, CanonicalLoweringError>>()?;
+    keyed_callable_types.sort_by_key(|(key, _)| *key);
+    for pair in keyed_callable_types.windows(2) {
+        if pair[0].0 == pair[1].0 && pair[0].1 != pair[1].1 {
+            return Err(CanonicalLoweringError::UnsupportedCanonicalObligation(
+                "distinct callable types share a structural identity".to_string(),
+            ));
+        }
+    }
+    keyed_callable_types.dedup_by(|left, right| left.1 == right.1);
+    let callable_types = keyed_callable_types.into_iter().map(|(_, ty)| ty).collect::<Vec<_>>();
     let function_types = callable_types
         .iter()
         .enumerate()
@@ -471,6 +488,17 @@ pub fn lower_typed_module(
         // closure layout and needs no closure signature.
         let Some(&layout) = closure_layouts.get(&key) else { continue };
         if let Some(&id) = closure_signatures.get(&key) {
+            let candidate = closure_signature(
+                id,
+                layout,
+                &signatures[declaration_id.get() as usize],
+                closure_layouts.owners.get(&key).copied(),
+            )?;
+            if signatures[id.get() as usize] != candidate {
+                return Err(CanonicalLoweringError::UnsupportedCanonicalObligation(
+                    "callable types share a closure layout but have different ownership contracts".to_string(),
+                ));
+            }
             closure_signatures.insert(ty.clone(), id);
             continue;
         }

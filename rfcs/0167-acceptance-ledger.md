@@ -55,6 +55,17 @@ is needed for soundness.
 
 ## Exact-tip evidence checkpoint
 
+Row K typed callable signature ordering (architecture implemented, semantic
+evidence unchanged, 2026-09-25): canonical lowering now orders checked callable
+types by the same bounded structural source-type key used by owner families.
+Equal checked types deduplicate; a digest collision between distinct types or
+an over-budget type refuses before signature allocation. If two source types
+normalize to one closure layout, lowering now requires their complete closure
+signatures, including ownership and effects, to agree before sharing it.
+Signature IDs remain dense catalog indices and are still independently checked
+at admission. This changes catalog ordering, so old artifacts fail closed. No new admitted Wasm,
+zero-leak evidence, or A–O closure is claimed.
+
 Row G typed aggregate family inventory (architecture implemented, semantic
 evidence unchanged, 2026-09-25): the layout projection now orders normalized
 checked aggregate types by a bounded structural key instead of their debug
