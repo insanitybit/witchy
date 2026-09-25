@@ -838,27 +838,6 @@ pub fn is_list_root_payload(ty: &Type) -> bool {
                     && matches!(element.as_str(), "Int" | "Float" | "Duration" | "Bool" | "String"))))
 }
 
-/// An exact heap `Option(List(S))` root whose list owns direct scalar or String
-/// elements. The nested List is an owned child, never a view carrier. Do not
-/// erase qualifiers here: a qualified or nested child needs another layout
-/// and cannot borrow this RecordRoot identity.
-pub fn option_list_scalar_root_payload(ty: &Type) -> Option<&'static str> {
-    let Type::Named(option, arguments) = ty else { return None };
-    if option != "Option" { return None; }
-    let [Type::Named(list, elements)] = arguments.as_slice() else { return None };
-    if list != "List" { return None; }
-    let [Type::Named(element, element_arguments)] = elements.as_slice() else { return None };
-    if !element_arguments.is_empty() { return None; }
-    match element.as_str() {
-        "Int" => Some("Int"),
-        "Float" => Some("Float"),
-        "Bool" => Some("Bool"),
-        "Duration" => Some("Duration"),
-        "String" => Some("String"),
-        _ => None,
-    }
-}
-
 /// A whole view of this value is a `RecordRoot`: the retained aggregate
 /// object is the snapshot.  Admitted for a declared user record or sum, or
 /// builtin `Option`/`Result`, with a non-packed heap shape that holds no view

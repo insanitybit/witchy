@@ -346,16 +346,6 @@ pub fn rooted_view_from_ty(
             carrier: CanonicalRootedViewCarrier::DictRoot,
         });
     }
-    if let Some(element) = crate::typeck::ty_to_ast(payload).as_ref().and_then(|source| {
-        witchy_canonical_source::aggregates::is_record_root_payload(source, &context.definitions)
-            .then(|| witchy_canonical_source::aggregates::option_list_scalar_root_payload(source))
-            .flatten()
-    }) {
-        return Ok(CanonicalReferenceKind::RootedView {
-            payload: rooted_option_list_scalar_payload_key(element),
-            carrier: CanonicalRootedViewCarrier::RecordRoot,
-        });
-    }
     match payload {
         Ty::Int => Ok(CanonicalReferenceKind::RootedView {
             payload: rooted_scalar_payload_key(CanonicalScalarKind::Int),
@@ -437,14 +427,6 @@ pub fn rooted_view_from_ast(
         return Ok(CanonicalReferenceKind::RootedView {
             payload: rooted_tuple_scalar_string_payload_key(kind),
             carrier: CanonicalRootedViewCarrier::TupleRoot,
-        });
-    }
-    if witchy_canonical_source::aggregates::is_record_root_payload(payload, &context.definitions)
-        && let Some(element) = witchy_canonical_source::aggregates::option_list_scalar_root_payload(payload)
-    {
-        return Ok(CanonicalReferenceKind::RootedView {
-            payload: rooted_option_list_scalar_payload_key(element),
-            carrier: CanonicalRootedViewCarrier::RecordRoot,
         });
     }
     match payload.unqualified() {
@@ -606,26 +588,14 @@ fn rooted_tuple_scalar_string_payload_key(kind: TupleRootScalar) -> CanonicalTyp
 /// Record-root payload identity, written identically from a checked type and
 /// from a declaration annotation (the general encoders deliberately differ).
 /// A head is a declared user type (its nominal ordinal) or builtin `Option` /
-/// `Result`; an argument is a scalar, `String`, or another such head. Anything
-/// else has no admitted record-root identity.
+/// `Result`; an argument is a scalar, `String`, another such head, or one
+/// exact `List(S)` with an unqualified scalar or String element. Anything else
+/// has no admitted record-root identity.
 const RECORD_IDENTITY_USER: u8 = 1;
 const RECORD_IDENTITY_OPTION: u8 = 2;
 const RECORD_IDENTITY_RESULT: u8 = 3;
 const RECORD_IDENTITY_LEAF: u8 = 4;
 const RECORD_IDENTITY_LIST: u8 = 5;
-
-/// A new record-root identity node for one exact owned List child. Existing
-/// record-root identity bytes stay unchanged; checked and source paths call
-/// this same encoder after the shared exact-shape judgment.
-fn rooted_option_list_scalar_payload_key(element: &str) -> CanonicalTypeKey {
-    let mut bytes = vec![RECORD_IDENTITY_OPTION];
-    bytes.extend_from_slice(&1u32.to_le_bytes());
-    bytes.push(RECORD_IDENTITY_LIST);
-    bytes.extend_from_slice(&1u32.to_le_bytes());
-    let encoded = record_leaf(element, &mut bytes);
-    debug_assert!(encoded, "the exact Option(List(S)) predicate admits only scalar or String S");
-    rooted_record_payload_key(&bytes)
-}
 
 fn record_head(name: &str, arity: usize, context: &Context, bytes: &mut Vec<u8>) -> Result<(), CanonicalAbiError> {
     match (name, arity) {
@@ -659,6 +629,18 @@ fn record_identity_ty(ty: &Ty, context: &Context, bytes: &mut Vec<u8>) -> Result
         Ty::Duration => { record_leaf("Duration", bytes); }
         Ty::Bool => { record_leaf("Bool", bytes); }
         Ty::String => { record_leaf("String", bytes); }
+        Ty::List(element) => {
+            let name = match element.as_ref() {
+                Ty::Int => "Int", Ty::Float => "Float", Ty::Bool => "Bool",
+                Ty::Duration => "Duration", Ty::String => "String",
+                _ => return Err(CanonicalAbiError::Unsupported(
+                    "rooted view payload has no admitted authenticated carrier".into(),
+                )),
+            };
+            bytes.push(RECORD_IDENTITY_LIST);
+            bytes.extend_from_slice(&1u32.to_le_bytes());
+            record_leaf(name, bytes);
+        }
         Ty::Named(name, arguments) => {
             record_head(name, arguments.len(), context, bytes)?;
             for argument in arguments.iter() {
@@ -673,6 +655,14 @@ fn record_identity_ty(ty: &Ty, context: &Context, bytes: &mut Vec<u8>) -> Result
 }
 
 fn record_identity_ast(ty: &Type, context: &Context, bytes: &mut Vec<u8>) -> Result<(), CanonicalAbiError> {
+    // Older record identities accepted qualified scalar arguments after
+    // normalization. Keep their bytes, but never erase a qualifier on or
+    // above a newly admitted List child.
+    if matches!(ty, Type::Qualified(..)) && record_identity_contains_list(ty) {
+        return Err(CanonicalAbiError::Unsupported(
+            "rooted view payload has no admitted authenticated carrier".into(),
+        ));
+    }
     let Type::Named(name, arguments) = ty.unqualified() else {
         return Err(CanonicalAbiError::Unsupported(
             "rooted view payload has no admitted authenticated carrier".into(),
@@ -681,11 +671,35 @@ fn record_identity_ast(ty: &Type, context: &Context, bytes: &mut Vec<u8>) -> Res
     if arguments.is_empty() && record_leaf(name, bytes) {
         return Ok(());
     }
+    if name == "List" {
+        let [Type::Named(element, element_arguments)] = arguments.as_slice() else {
+            return Err(CanonicalAbiError::Unsupported(
+                "rooted view payload has no admitted authenticated carrier".into(),
+            ));
+        };
+        if !element_arguments.is_empty() || !matches!(element.as_str(), "Int" | "Float" | "Bool" | "Duration" | "String") {
+            return Err(CanonicalAbiError::Unsupported(
+                "rooted view payload has no admitted authenticated carrier".into(),
+            ));
+        }
+        bytes.push(RECORD_IDENTITY_LIST);
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        record_leaf(element, bytes);
+        return Ok(());
+    }
     record_head(name, arguments.len(), context, bytes)?;
     for argument in arguments {
         record_identity_ast(argument, context, bytes)?;
     }
     Ok(())
+}
+
+fn record_identity_contains_list(ty: &Type) -> bool {
+    match ty {
+        Type::Qualified(_, inner) => record_identity_contains_list(inner),
+        Type::Named(name, arguments) => name == "List" || arguments.iter().any(record_identity_contains_list),
+        _ => false,
+    }
 }
 
 /// A `ListRoot` view of a list whose elements are one scalar kind or String.
