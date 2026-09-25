@@ -5,7 +5,7 @@
 
 use std::collections::BTreeMap;
 
-use witchy_syntax::ast::{Type, TypeDef};
+use witchy_syntax::ast::{Type, TypeDef, TypeQual};
 
 use crate::abi::{
     CanonicalReferenceKind, CanonicalRootedViewCarrier, CanonicalScalarKind, CanonicalTypeKey,
@@ -31,6 +31,56 @@ pub enum RetainedRootStorage {
     Sequence(CarrierElement),
     StructuralRecord(CarrierElement),
     CheckedAggregate(RecordRootPlan),
+}
+
+/// The source-authenticated owner leaf carried by an aggregate field. The
+/// payload qualifier remains visible so aggregate admission cannot silently
+/// inherit a projection path established only for an unqualified slice.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwnerCarriedViewPlan {
+    storage: OwnerCarriedViewStorage,
+    payload_frozen: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OwnerCarriedViewStorage {
+    AuthenticatedPlace(CanonicalScalarKind),
+    RetainedProjection(CarrierElement),
+}
+
+impl OwnerCarriedViewPlan {
+    pub fn classify(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> Option<Self> {
+        let Type::Qualified(TypeQual::View, payload) = ty else { return None };
+        let (payload, payload_frozen) = match payload.as_ref() {
+            Type::Qualified(TypeQual::Frozen, inner) => (inner.as_ref(), true),
+            other => (other, false),
+        };
+        if matches!(payload, Type::Qualified(..)) { return None; }
+        let storage = match RootedViewStorage::classify(payload, definitions, |_| None)? {
+            RootedViewStorage::ScalarCell(CanonicalScalarKind::Int) => {
+                OwnerCarriedViewStorage::AuthenticatedPlace(CanonicalScalarKind::Int)
+            }
+            RootedViewStorage::RetainedProjection(child) => OwnerCarriedViewStorage::RetainedProjection(child),
+            _ => return None,
+        };
+        Some(Self { storage, payload_frozen })
+    }
+
+    pub fn admitted_aggregate_field(&self) -> bool {
+        matches!(self.storage, OwnerCarriedViewStorage::AuthenticatedPlace(CanonicalScalarKind::Int))
+            || (!self.payload_frozen && matches!(self.storage, OwnerCarriedViewStorage::RetainedProjection(_)))
+    }
+
+    pub fn source_identity(&self) -> Type {
+        let payload = match &self.storage {
+            OwnerCarriedViewStorage::AuthenticatedPlace(CanonicalScalarKind::Int) => {
+                Type::Named("Int".into(), Vec::new())
+            }
+            OwnerCarriedViewStorage::RetainedProjection(child) => Type::Slice(Box::new(child.source_type())),
+            _ => unreachable!("only Int has an authenticated scalar place"),
+        };
+        Type::Qualified(TypeQual::View, Box::new(payload))
+    }
 }
 
 impl RootedViewStorage {

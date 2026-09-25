@@ -189,7 +189,7 @@ fn field_type_ok_at_with_dependencies(
     // can describe that field without granting a representation to arbitrary
     // views (in particular, not `&mut`, region, or projected views). A
     // `&[T]` over an admitted element is the rooted-slice owner field.
-    if is_direct_rooted_int_view(ty) || owner_carried_view_identity(ty, definitions).is_some() {
+    if owner_carried_view_identity(ty, definitions).is_some() {
         return true;
     }
     // This recognizes source fields, not linear-memory slots. Capability
@@ -811,8 +811,8 @@ pub fn is_rooted_int_view_aggregate(ty: &Type, definitions: &BTreeMap<String, Ty
 }
 
 fn view_carrier_at(ty: &Type, definitions: &BTreeMap<String, TypeDef>, depth: usize) -> bool {
-    is_direct_rooted_int_view(ty)
-        || crate::carrier::CarrierElement::from_view_type_with_definitions(ty, definitions).is_some()
+    crate::rooted_view::OwnerCarriedViewPlan::classify(ty, definitions)
+        .is_some_and(|plan| plan.admitted_aggregate_field())
         || view_aggregate_at(ty, definitions, depth)
 }
 
@@ -903,12 +903,6 @@ fn contains_view(ty: &Type, definitions: &BTreeMap<String, TypeDef>, active: &mu
             || contains_view(result, definitions, active),
         _ => false,
     }
-}
-
-fn is_direct_rooted_int_view(ty: &Type) -> bool {
-    matches!(ty, Type::Qualified(witchy_syntax::ast::TypeQual::View, inner)
-        if matches!(inner.unqualified(), Type::Named(name, arguments)
-            if name == "Int" && arguments.is_empty()))
 }
 
 fn is_direct_rooted_slice_view_syntax(ty: &Type) -> bool {
@@ -1017,21 +1011,7 @@ pub fn owner_carried_view_identity(
     ty: &Type,
     definitions: &BTreeMap<String, TypeDef>,
 ) -> Option<Type> {
-    let Type::Qualified(witchy_syntax::ast::TypeQual::View, inner) = ty else { return None };
-    // An outer frozen payload preserves the view identity. Slice elements
-    // themselves must have one of the exact admitted, unqualified shapes.
-    let payload_of = |ty: &Type| match ty {
-        Type::Qualified(witchy_syntax::ast::TypeQual::Frozen, inner) => inner.as_ref().clone(),
-        other => other.clone(),
-    };
-    let payload = match &payload_of(inner) {
-        Type::Named(name, arguments) if name == "Int" && arguments.is_empty() => payload_of(inner),
-        slice => Type::Slice(Box::new(
-            crate::carrier::CarrierElement::from_slice_payload_type_with_definitions(slice, definitions)?
-                .source_type(),
-        )),
-    };
-    Some(Type::Qualified(witchy_syntax::ast::TypeQual::View, Box::new(payload)))
+    Some(crate::rooted_view::OwnerCarriedViewPlan::classify(ty, definitions)?.source_identity())
 }
 
 fn concrete_callable_lane_identity_at(
