@@ -1158,6 +1158,7 @@ fn full_gate_fail_fast_aborts_tests_when_a_background_leg_goes_red() {
     let red = check_sh(&root, &[])
         .env("PATH", &path)
         .env("CARGO_TARGET_DIR", &target_red)
+        .env("WITCHY_GATE_NEXTEST_EXTRA", "-p witchy-caps --lib")
         .env("WITCHY_STAGE_HEARTBEAT_INTERVAL", "0")
         .env("WITCHY_FAILFAST_POLL", "1")
         .env("FAKE_CARGO_FAIL_CHECK", "1")

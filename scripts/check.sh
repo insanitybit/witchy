@@ -763,9 +763,21 @@ fi
 
 run_product_tests() {
     if [ "${#test_cmd_extra[@]}" -gt 0 ]; then
-        "${test_cmd_extra[@]}" || return
+        # run_watched signals this function's subshell on a background-leg
+        # failure. Forward that signal while the first partition owns a child;
+        # otherwise Cargo/nextest survives its wrapper and the gate waits for
+        # the entire test timeout. The primary below uses exec, preserving the
+        # original one-process cancellation boundary.
+        local child="" command_status=0
+        trap 'kill "${child:-}" 2>/dev/null || true; wait "${child:-}" 2>/dev/null || true; exit 143' TERM INT
+        "${test_cmd_extra[@]}" &
+        child=$!
+        wait "$child" || command_status=$?
+        child=""
+        trap - TERM INT
+        [ "$command_status" -eq 0 ] || return "$command_status"
     fi
-    "${test_cmd[@]}"
+    exec "${test_cmd[@]}"
 }
 
 # Progress channel for the bounded macOS list phase: the list wrapper appends
