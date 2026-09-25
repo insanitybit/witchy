@@ -2105,7 +2105,7 @@ fn checked_signature(
     {
         if source.ty.as_ref().is_some_and(|source_type| {
             is_direct_rooted_int_view_aggregate_carrier(source_type, definitions)
-                && !is_admitted_rooted_gc_view(source_type, closure_layouts)
+                && rooted_gc_view_owner_type(source_type, closure_layouts, definitions).is_none()
         }) {
             let source_type = source.ty.as_ref().expect("checked rooted-view aggregate type");
             let value_type = source_value_type(
@@ -2134,10 +2134,10 @@ fn checked_signature(
                 vec![MemoryEffect::Read, MemoryEffect::Retain, MemoryEffect::Release],
             );
         }
-        if source.ty.as_ref().is_some_and(|ty| is_admitted_rooted_gc_view(ty, closure_layouts)) {
-            let value_type = ValueType::Gc(rooted_gc_view_owner_type(
-                source.ty.as_ref().expect("checked rooted view type"), closure_layouts,
-            ).expect("admitted rooted view owner"));
+        if let Some(owner_type) = source.ty.as_ref().and_then(|ty| {
+            rooted_gc_view_owner_type(ty, closure_layouts, definitions)
+        }) {
+            let value_type = ValueType::Gc(owner_type);
             value_parameters[parameter_index] = value_type;
             let write_back = *convention == Convention::Var;
             contract_parameters[parameter_index] = ParameterContract {
@@ -2591,7 +2591,7 @@ fn signature_from_type(
         // the v1 owned-reference ABI it is one owned token like `let`/`own`.
         let ownership = match (value_type, convention) {
             (ValueType::Gc(_), Convention::Let | Convention::Borrow)
-                if is_admitted_rooted_gc_view(parameter, closure_layouts) =>
+                if rooted_gc_view_owner_type(parameter, closure_layouts, definitions).is_some() =>
             {
                 ParameterOwnership::Shared
             }
@@ -3308,21 +3308,6 @@ fn is_direct_shared_int(ty: &Type) -> bool {
     )
 }
 
-/// The definition-free portion of a `[T]` slice payload. Named record fields
-/// require the checked-definitions version below before admission.
-fn rooted_slice_element(ty: &Type) -> Option<CarrierElement> {
-    match ty.unqualified() {
-        Type::Slice(element) => crate::canonical_layouts::rooted_slice_element_name(element),
-        // The checker preserves the private slice identity as a nominal in
-        // finalized callable signatures. It is the same checked payload as
-        // the surface `&[T]`, not a second source-level carrier.
-        Type::Named(name, arguments) if name == "Slice" && arguments.len() == 1 => {
-            crate::canonical_layouts::rooted_slice_element_name(&arguments[0])
-        }
-        _ => None,
-    }
-}
-
 /// A whole immutable `&String` view.  Its carrier is the retained String
 /// object token itself (`CanonicalRootedViewCarrier::StringRoot`): the
 /// payload is immutable and shared by retain, so the token is the snapshot.
@@ -3437,22 +3422,19 @@ fn rooted_slice_element_with_definitions(
     }
 }
 
-/// A view carried as an opaque GC owner: the `&Int` cell or any `&[T]` slice.
-fn is_admitted_rooted_gc_view(ty: &Type, layouts: &ClosureValueLayouts) -> bool {
-    rooted_view_inner(ty).is_some_and(|inner| is_direct_shared_int(inner))
-        || layouts.slice_owners.keys().any(|element| element.matches_view_source_syntax(ty))
-}
-
-fn rooted_gc_view_owner_type(ty: &Type, layouts: &ClosureValueLayouts) -> Option<GcTypeId> {
+/// Resolve an opaque view owner from its checked element proof and the
+/// registered family. The `&Int` place family is separate from slice owners.
+fn rooted_gc_view_owner_type(
+    ty: &Type,
+    layouts: &ClosureValueLayouts,
+    definitions: &BTreeMap<String, TypeDef>,
+) -> Option<GcTypeId> {
     let inner = rooted_view_inner(ty)?;
     if is_direct_shared_int(inner) {
         Some(layouts.shared_int_reference)
-    } else if let Some(element) = rooted_slice_element(inner) {
-        layouts.slice_owners.get(&element).copied()
     } else {
-        layouts.slice_owners.iter().find_map(|(element, owner)| {
-            element.matches_view_source_syntax(ty).then_some(*owner)
-        })
+        let element = CarrierElement::from_view_type_with_definitions(ty, definitions)?;
+        layouts.slice_owners.get(&element).copied()
     }
 }
 

@@ -50,10 +50,6 @@ pub(crate) struct RootedSliceLayout {
     pub list_root: LayoutId,
 }
 
-pub(crate) fn rooted_slice_element_name(element: &Type) -> Option<CarrierElement> {
-    CarrierElement::from_checked_type(element)
-}
-
 fn rooted_slice_element_from_checked_definitions(
     element: &Type,
     definitions: &BTreeMap<String, TypeDef>,
@@ -1670,7 +1666,7 @@ pub mod self_checks {
 
     pub fn rooted_slice_layout_requires_explicit_view_slice_request() {
         for forged in ["List(Int)", "List(Float)", "List(Bool)", "List(Duration)"] {
-            assert_eq!(super::rooted_slice_element_name(&named(forged)), None,
+            assert_eq!(CarrierElement::from_checked_type(&named(forged)), None,
                 "only a structural List child mints a rooted-slice family");
         }
         let list = Type::Named("List".into(), vec![named("Int")]);
