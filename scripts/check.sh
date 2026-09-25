@@ -497,7 +497,12 @@ if cargo nextest --version >/dev/null 2>&1; then
             nextest_cmd+=(--features witchy-wir/native,witchy-lower/native-test-runtime)
             ;;
         *" -p witchy-wir "*)
-            nextest_cmd+=(--features witchy-wir/native)
+            # A mapper-selected --no-default-features WIR partition is the
+            # audited pure SafeWIR route. Its explicit targets deliberately
+            # omit the native-gate binary; full workspace and ordinary WIR
+            # selections retain the mandatory native campaign.
+            [[ " ${nextest_sel[*]} " == *" --no-default-features "* ]] \
+                || nextest_cmd+=(--features witchy-wir/native)
             ;;
     esac
     nextest_extra_cmd=()
@@ -507,7 +512,8 @@ if cargo nextest --version >/dev/null 2>&1; then
         nextest_extra_cmd+=("${nextest_extra_sel[@]}" --profile gate-partition)
         case " ${nextest_extra_sel[*]} " in
             *" -p witchy-wir "*)
-                nextest_extra_cmd+=(--features witchy-wir/native) ;;
+                [[ " ${nextest_extra_sel[*]} " == *" --no-default-features "* ]] \
+                    || nextest_extra_cmd+=(--features witchy-wir/native) ;;
         esac
     fi
     # The workspace stage ALWAYS excludes `package(merge-queue-tests)` (see
@@ -635,7 +641,11 @@ if cargo nextest --version >/dev/null 2>&1; then
                 preflight_base_cmd+=("${preflight_target[@]}")
                 case "$preflight_package" in
                     witchy | witchy-wir)
-                        preflight_base_cmd+=(--features witchy-wir/native) ;;
+                        if [ "$preflight_package" != witchy-wir ] \
+                            || [[ " ${nextest_sel[*]} " != *" --no-default-features "* ]]; then
+                            preflight_base_cmd+=(--features witchy-wir/native)
+                        fi
+                        ;;
                     witchy-lower)
                         if [ "${#nextest_sel[@]}" -eq 1 ] \
                             && [ "${nextest_sel[0]}" = "--workspace" ]; then

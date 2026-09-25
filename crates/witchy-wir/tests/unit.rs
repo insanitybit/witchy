@@ -16,6 +16,7 @@ mod canonical_interpreter {
         #[test] fn entry_tokens_are_root_scoped() { witchy_wir::self_checks::canonical_interpreter_capability::entry_tokens_are_root_scoped() }
         #[test] fn root_fallback_refuses_symlinks_and_non_files() { witchy_wir::self_checks::canonical_interpreter_capability::root_fallback_refuses_symlinks_and_non_files() }
     }
+    #[cfg(feature = "native")]
     mod crypto_rsa_tests {
         #[test] fn crypto_rsa_oracle_known_answer_and_tampered_inputs() { witchy_wir::self_checks::canonical_interpreter_crypto_rsa::crypto_rsa_oracle_known_answer_and_tampered_inputs() }
     }
@@ -178,37 +179,53 @@ mod canonical_safewir {
     }
 }
 mod canonical_wasmir {
+    #[cfg(feature = "native")]
     mod closure_owner_kernel {
         mod tests {
             #[test] fn opaque_owner_cleanup_reclaims_once_and_rejects_unknown_family() { witchy_wir::self_checks::canonical_wasmir_closure_owner_kernel::opaque_owner_cleanup_reclaims_once_and_rejects_unknown_family().unwrap() }
         }
     }
+    #[cfg(feature = "native")]
     mod drop_worklist {
         mod tests {
             #[test] fn drop_worklist_releases_25000_nodes_without_call_stack_growth() { witchy_wir::self_checks::canonical_wasmir_drop_worklist::drop_worklist_releases_25000_nodes_without_call_stack_growth() }
         }
     }
     mod tests {
+        #[cfg(feature = "native")]
         #[test] fn admitted_scalar_var_tail_call_executes_with_return_call_indirect() { witchy_wir::self_checks::canonical_wasmir::admitted_scalar_var_tail_call_executes_with_return_call_indirect() }
+        #[cfg(feature = "native")]
         #[test] fn allocation_past_linear_memory_grows_or_traps_when_growth_is_refused() { witchy_wir::self_checks::canonical_wasmir::allocation_past_linear_memory_grows_or_traps_when_growth_is_refused() }
         #[test] fn bump_allocator_class_is_refused_by_initial_check() { witchy_wir::self_checks::canonical_wasmir::bump_allocator_class_is_refused_by_initial_check() }
         #[test] fn capability_indirect_contract_forgery_fails_initial_admission() { witchy_wir::self_checks::canonical_wasmir::capability_indirect_contract_forgery_fails_initial_admission() }
         #[test] fn comparison_encodes_and_validates() { witchy_wir::self_checks::canonical_wasmir::comparison_encodes_and_validates() }
+        #[cfg(feature = "native")]
         #[test] fn consecutive_rc_allocations_reserve_non_overlapping_prefixes() { witchy_wir::self_checks::canonical_wasmir::consecutive_rc_allocations_reserve_non_overlapping_prefixes() }
+        #[cfg(feature = "native")]
         #[test] fn encoded_scalar_module_executes() { witchy_wir::self_checks::canonical_wasmir::encoded_scalar_module_executes() }
+        #[cfg(feature = "native")]
         #[test] fn encoded_structured_branch_executes_both_arms() { witchy_wir::self_checks::canonical_wasmir::encoded_structured_branch_executes_both_arms() }
+        #[cfg(feature = "native")]
         #[test] fn encoded_structured_loop_executes_carried_arguments() { witchy_wir::self_checks::canonical_wasmir::encoded_structured_loop_executes_carried_arguments() }
         #[test] fn foreign_entry_section_fails_admission() { witchy_wir::self_checks::canonical_wasmir::foreign_entry_section_fails_admission() }
         #[test] fn full_u32_size_constant_encodes_and_validates() { witchy_wir::self_checks::canonical_wasmir::full_u32_size_constant_encodes_and_validates() }
         #[test] fn irreducible_cfg_is_refused_without_dispatcher_lowering() { witchy_wir::self_checks::canonical_wasmir::irreducible_cfg_is_refused_without_dispatcher_lowering() }
         #[test] fn malformed_clone_range_places_are_refused_by_canonical_backend() { witchy_wir::self_checks::canonical_wasmir::malformed_clone_range_places_are_refused_by_canonical_backend() }
+        #[cfg(feature = "native")]
         #[test] fn narrow_size_u32_overflow_traps_in_wasmtime() { witchy_wir::self_checks::canonical_wasmir::narrow_size_u32_overflow_traps_in_wasmtime() }
+        #[cfg(feature = "native")]
         #[test] fn narrow_size_valid_value_executes() { witchy_wir::self_checks::canonical_wasmir::narrow_size_valid_value_executes() }
+        #[cfg(feature = "native")]
         #[test] fn packed_scalar_collection_oob_guard_traps_in_wasmtime() { witchy_wir::self_checks::canonical_wasmir::packed_scalar_collection_oob_guard_traps_in_wasmtime() }
+        #[cfg(feature = "native")]
         #[test] fn pointer_clone_range_retains_executes_and_recursively_releases() { witchy_wir::self_checks::canonical_wasmir::pointer_clone_range_retains_executes_and_recursively_releases() }
+        #[cfg(feature = "native")]
         #[test] fn release_at_zero_refcount_traps_before_decrement() { witchy_wir::self_checks::canonical_wasmir::release_at_zero_refcount_traps_before_decrement() }
+        #[cfg(feature = "native")]
         #[test] fn scalar_clone_range_count_stride_overflow_traps_before_copy() { witchy_wir::self_checks::canonical_wasmir::scalar_clone_range_count_stride_overflow_traps_before_copy() }
+        #[cfg(feature = "native")]
         #[test] fn share_at_max_refcount_traps_before_destination_or_refcount_write() { witchy_wir::self_checks::canonical_wasmir::share_at_max_refcount_traps_before_destination_or_refcount_write() }
+        #[cfg(feature = "native")]
         #[test] fn size_add_overflow_traps_or_wraps_exactly_as_declared() { witchy_wir::self_checks::canonical_wasmir::size_add_overflow_traps_or_wraps_exactly_as_declared() }
         #[test] fn variable_call_is_refused_fail_closed() { witchy_wir::self_checks::canonical_wasmir::variable_call_is_refused_fail_closed() }
         mod nullable_admission {
@@ -218,6 +235,7 @@ mod canonical_wasmir {
             #[test] fn unique_pop_checker_refuses_shared_container_missing_bounds_and_non_tail() { witchy_wir::self_checks::canonical_wasmir::unique_pop::unique_pop_checker_refuses_shared_container_missing_bounds_and_non_tail() }
             #[test] fn unique_pop_rejects_live_prefix_overwrite_direct_moved_and_unknown() { witchy_wir::self_checks::canonical_wasmir::unique_pop::unique_pop_rejects_live_prefix_overwrite_direct_moved_and_unknown() }
         }
+        #[cfg(feature = "native")]
         mod unit_storage {
             #[test] fn unit_storage_construct_call_native_oracle() { witchy_wir::self_checks::canonical_wasmir::unit_storage::unit_storage_construct_call_native_oracle() }
             #[test] fn unit_storage_rejects_type_layout_initialization_and_bounds() { witchy_wir::self_checks::canonical_wasmir::unit_storage::unit_storage_rejects_type_layout_initialization_and_bounds() }

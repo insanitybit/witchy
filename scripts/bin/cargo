@@ -131,6 +131,7 @@ isolated_graph_selected=0
 native_owner_selected=0
 non_wir_native_owner_selected=0
 structural_wir_selected=0
+no_default_features=0
 package_arg=0
 test_arg=0
 for arg in "$@"; do
@@ -154,6 +155,7 @@ for arg in "$@"; do
         --package=witchy) native_owner_selected=1; non_wir_native_owner_selected=1 ;;
         --package=witchy-wir) native_owner_selected=1 ;;
         --workspace) native_owner_selected=1; non_wir_native_owner_selected=1 ;;
+        --no-default-features) no_default_features=1 ;;
         --test) test_arg=1 ;;
         --test=structural_contracts) structural_wir_selected=1 ;;
     esac
@@ -162,6 +164,16 @@ done
 # target. It may omit `-p witchy-wir`, so target identity is the authority;
 # only an accompanying root/workspace selection cancels the isolation.
 if [ "$structural_wir_selected" -eq 1 ] && [ "$non_wir_native_owner_selected" -eq 0 ]; then
+    isolated_graph_selected=1
+    native_owner_selected=0
+fi
+# The serialized pure SafeWIR route explicitly names WIR test targets and
+# disables default features. Workspace-wide feature unification would still
+# import the root package's native WIR feature, defeating that boundary and
+# compiling Wasmtime/AWS-LC. Explicit --features native continues to work: this
+# only changes feature unification, never the caller's requested features.
+if [ "$no_default_features" -eq 1 ] && [ "$native_owner_selected" -eq 1 ] \
+    && [ "$non_wir_native_owner_selected" -eq 0 ]; then
     isolated_graph_selected=1
     native_owner_selected=0
 fi

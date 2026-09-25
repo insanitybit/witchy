@@ -1811,7 +1811,7 @@ fn a_deleted_integration_test_selects_the_budget_census_not_its_own_binary() {
 /// says what the programs it admits should do.
 #[test]
 fn gate_nextest_compiler_stage_changes_select_semantic_conformance() {
-    for path in ["crates/witchy-wir/src/canonical_safewir/check/memory.rs"] {
+    for path in ["crates/witchy-wir/src/canonical_wasmir.rs"] {
         let out = gate_nextest(&[path]);
         assert!(
             out.contains("test(/^semantic_conformance::/)"),
@@ -2009,13 +2009,25 @@ fn gate_never_names_the_lib_of_a_crate_without_lib_tests() {
         let _compile_packages = lines.next();
         let enabled = lines.next().unwrap_or_default();
         let words: Vec<&str> = selection.split_whitespace().collect();
-        assert!(words.contains(&"witchy-types"), "{path} no longer selects witchy-types: {output}");
+        assert!(output.contains("-p witchy-types"), "{path} no longer selects witchy-types: {output}");
         assert!(!words.contains(&"--lib"), "{path} compiles a test = false lib: {output}");
         assert!(words.contains(&"--test"), "{path} did not name compiler/root targets: {output}");
-        assert!(
-            enabled.contains("--lib") && enabled.starts_with("-p "),
-            "{path} did not isolate enabled library tests: {output}",
-        );
+        if path.contains("witchy-canonical-source") {
+            // The pure WIR partition consumes the first target mode. The
+            // downstream package partition is still safe: canonical-source
+            // has only its enabled lib target, while types/lower declare
+            // `test = false` and contribute only named integration targets.
+            assert!(
+                enabled.starts_with("-p witchy-canonical-source")
+                    && !enabled.contains("witchy-wir"),
+                "{path} did not isolate the pure downstream packages: {output}",
+            );
+        } else {
+            assert!(
+                enabled.contains("--lib") && enabled.starts_with("-p "),
+                "{path} did not isolate enabled library tests: {output}",
+            );
+        }
     }
 }
 
@@ -2112,33 +2124,58 @@ fn a_compiler_crate_change_runs_its_downstream_compiler_crates_tests() {
 }
 
 #[test]
-fn wir_changes_compile_production_runtime_without_selecting_its_native_test_package() {
+fn safewir_changes_stay_on_the_pure_compiler_graph() {
     let output = gate_nextest(&["crates/witchy-wir/src/canonical_safewir/check.rs"]);
     let mut lines = output.lines();
     let cargo_args = lines.next().unwrap_or_default();
     let expression = lines.next().unwrap_or_default();
     let compile_args = lines.next().unwrap_or_default();
+    let downstream_args = lines.next().unwrap_or_default();
 
-    assert!(cargo_args.contains("-p witchy"), "root conformance targets were dropped: {output}");
     assert!(
-        expression.contains("binary_id(/^witchy::rfc0/)")
-            && expression.contains("test(/^semantic_conformance::/)"),
-        "WIR changes lost their independent root conformance evidence: {output}",
+        cargo_args.contains("-p witchy-wir")
+            && cargo_args.contains("--test unit")
+            && cargo_args.contains("--no-default-features"),
+        "SafeWIR did not select the pure WIR targets: {output}",
     );
-    for selection in [cargo_args, expression, compile_args] {
+    assert!(expression.contains("package(witchy-lower)"), "downstream lower tests were dropped: {output}");
+    assert!(downstream_args.contains("-p witchy-lower"), "lower tests lack their own target-safe partition: {output}");
+    for selection in [cargo_args, expression, compile_args, downstream_args] {
         assert!(
-            !selection.contains("witchy-runtime"),
-            "WIR-only edit still selects the native runtime test package: {output}",
+            !selection.contains("-p witchy ")
+                && !selection.contains("witchy-runtime")
+                && !selection.contains("witchy-wir/native"),
+            "SafeWIR edit crossed into the native runtime graph: {output}",
         );
     }
 
-    // A runtime implementation edit still owns and runs the complete native
-    // runtime package. Only compiler-only WIR edits get the cheaper boundary.
+    // Encoder and runtime implementations still own native execution evidence.
+    let encoder_output = gate_nextest(&["crates/witchy-wir/src/canonical_wasmir.rs"]);
+    assert!(
+        encoder_output.contains("binary_id(/^witchy::rfc0/)")
+            && encoder_output.contains("test(/^semantic_conformance::/)"),
+        "Wasm encoder edits lost independent native conformance: {encoder_output}",
+    );
     let runtime_output = gate_nextest(&["crates/witchy-runtime/src/lib.rs"]);
     assert!(
         runtime_output.contains("package(witchy-runtime)"),
         "runtime edits no longer select runtime package tests: {runtime_output}",
     );
+}
+
+#[test]
+fn canonical_source_changes_use_the_same_pure_wir_boundary() {
+    let output = gate_nextest(&["crates/witchy-canonical-source/src/lib.rs"]);
+    let lines: Vec<_> = output.lines().collect();
+    assert!(lines[0].contains("--test unit") && lines[0].contains("--no-default-features"), "{output}");
+    for package in ["witchy-canonical-source", "witchy-types", "witchy-wir", "witchy-lower"] {
+        assert!(lines[1].contains(&format!("package({package})")), "{package} omitted: {output}");
+    }
+    assert!(
+        output.contains("-p witchy-canonical-source -p witchy-types -p witchy-lower --no-default-features"),
+        "contract consumers lack a pure downstream partition: {output}",
+    );
+    assert!(!output.contains("-p witchy ") && !output.contains("witchy-wir/native"), "{output}");
 }
 
 /// The RFC-pinned example modules (`example_tests::rfc0*`) are language

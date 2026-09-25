@@ -101,6 +101,8 @@ gate_example_mods=()
 gate_witchy_tests=()
 gate_need_conformance=0
 gate_need_std_roots=0
+gate_pure_wir=0
+gate_native_wir=0
 add_pkg() {
     local p="$1" x
     for x in ${gate_pkgs[0]+"${gate_pkgs[@]}"}; do [ "$x" = "$p" ] && return; done
@@ -140,6 +142,29 @@ emit_gate_nextest() {
     local p t args="" expr="" m need_witchy=0
     if [ "$gate_workspace" -eq 1 ]; then
         printf 'WORKSPACE\n'
+        return 0
+    fi
+    # SafeWIR and the checker/WIR contract are target-neutral compiler
+    # surfaces. Their WIR unit checks encode and validate Wasm with wasmparser;
+    # they do not need to execute it under Wasmtime or use the native AWS-LC
+    # provider. Keep this partition explicit so Cargo does not compile the
+    # native-gate integration target, and put downstream compiler packages in
+    # a second invocation because Cargo target filters are intersections.
+    # Full CI retains the native execution campaign. Any mixed path that owns
+    # native WIR evidence falls through to the ordinary fail-safe route.
+    if [ "$gate_pure_wir" -eq 1 ] && [ "$gate_native_wir" -eq 0 ] \
+        && [ "$gate_need_conformance" -eq 0 ]; then
+        local pure_expr="" pure_extra="" pure_checks="" pure_pkg
+        for pure_pkg in "${gate_pkgs[@]}"; do
+            pure_expr="${pure_expr:+$pure_expr or }package($pure_pkg)"
+            pure_checks="${pure_checks:+$pure_checks }-p $pure_pkg"
+            [ "$pure_pkg" = witchy-wir ] \
+                || pure_extra="${pure_extra:+$pure_extra }-p $pure_pkg"
+        done
+        printf '%s\n' '-p witchy-wir --test unit --test structural_contracts --test rfc0162_mutation_evidence --test rfc0165_route_gate --no-default-features'
+        printf '%s\n' "$pure_expr"
+        printf '%s\n' "$pure_checks --no-default-features"
+        [ -z "$pure_extra" ] || printf '%s\n' "$pure_extra --no-default-features"
         return 0
     fi
     if [ "${#gate_pkgs[@]}" -eq 0 ] && [ "${#gate_tests[@]}" -eq 0 ] \
@@ -638,15 +663,17 @@ for p in "${paths[@]}"; do
             ;;
         crates/witchy-canonical-source/*)
             any_rust=1
-            gate_need_conformance=1
+            gate_pure_wir=1
             # The checked-source contract (RFC-0170) sits under the checker,
-            # SafeWIR and lowering; each of them observes its judgments.
+            # SafeWIR and lowering; each of them observes its judgments. None
+            # of those checks needs the native Wasm engine or crypto provider.
             add_pkg witchy-canonical-source
             add_pkg witchy-types
             add_pkg witchy-wir
             add_pkg witchy-lower
             add "cargo nextest run -p witchy-canonical-source -p witchy-types"
-            add "./scripts/nextest-admitted.sh witchy -- cargo nextest run -E 'test(/^example_tests::/)'" ;;
+            add "cargo nextest run -p witchy-wir --test unit --test structural_contracts --test rfc0162_mutation_evidence --test rfc0165_route_gate --no-default-features"
+            add "./scripts/nextest-admitted.sh witchy-lower -- cargo nextest run -p witchy-lower" ;;
         crates/witchy-types/*)
             any_rust=1
             add_pkg witchy-types
@@ -666,8 +693,42 @@ for p in "${paths[@]}"; do
             # before these fast tests can start.
             add "./scripts/nextest-admitted.sh witchy-lower -- cargo nextest run -p witchy-lower"
             ;;
+        crates/witchy-wir/src/canonical_safewir/build_read.rs | \
+        crates/witchy-wir/src/canonical_safewir/crypto.rs)
+            any_rust=1
+            gate_native_wir=1
+            gate_need_conformance=1
+            add_pkg witchy-wir
+            # Downstream compiler crates consume this one, and their own tests
+            # (e.g. witchy-lower's canonical_pipeline admission tests) observe a
+            # change here that this crate's tests cannot. bd239ce55 changed the
+            # checker in witchy-wir, gated green without witchy-lower's tests,
+            # and left master red on one of them.
+            add_pkg witchy-lower
+            # Do not select witchy-runtime's package tests here. The root
+            # conformance targets below still compile the production runtime
+            # against the changed WIR, while `package(witchy-runtime)` also
+            # builds its 174-test cfg(test) copy. Runtime source edits select
+            # that package in their own route. Keeping the native host suite
+            # off a compiler-only edit is the boundary: WIR correctness is
+            # adjudicated by WIR/lower/root conformance, and runtime internals
+            # remain covered when they actually change.
+            add "cargo nextest run -p witchy-wir --features witchy-wir/native"
+            add "./scripts/nextest-admitted.sh witchy -- cargo nextest run -E 'test(/^example_tests::/)'"
+            ;;
+        crates/witchy-wir/src/canonical_safewir.rs | \
+        crates/witchy-wir/src/canonical_safewir/* | \
+        crates/witchy-wir/src/safewir_validate.rs)
+            any_rust=1
+            gate_pure_wir=1
+            add_pkg witchy-wir
+            add_pkg witchy-lower
+            add "cargo nextest run -p witchy-wir --test unit --test structural_contracts --test rfc0162_mutation_evidence --test rfc0165_route_gate --no-default-features"
+            add "./scripts/nextest-admitted.sh witchy-lower -- cargo nextest run -p witchy-lower"
+            ;;
         crates/witchy-wir/*)
             any_rust=1
+            gate_native_wir=1
             gate_need_conformance=1
             add_pkg witchy-wir
             # Downstream compiler crates consume this one, and their own tests
@@ -689,6 +750,7 @@ for p in "${paths[@]}"; do
             ;;
         crates/witchy-runtime/*)
             any_rust=1
+            gate_native_wir=1
             gate_need_conformance=1
             add_pkg witchy-runtime
             add "cargo nextest run -p witchy-runtime"
@@ -1126,7 +1188,9 @@ elif [ "$edit_loop" -eq 1 ] && [ "$canonical_fixture_rewrite" -eq 1 ] \
         "./scripts/nextest-admitted.sh witchy -- cargo nextest run --bin witchy -E 'test(/^commands::test_runner::canonical_console_fixture_tests::/)'"
     )
 elif [ "$edit_loop" -eq 1 ] && [ "$canonical_rewrite" -eq 1 ] \
-    && [ "$canonical_rewrite_paths_only" -eq 1 ]; then
+    && [ "$canonical_rewrite_paths_only" -eq 1 ] \
+    && { [ "$gate_pure_wir" -eq 0 ] || [ "$gate_native_wir" -eq 1 ] \
+         || [ "$gate_need_conformance" -eq 1 ]; }; then
     # A cross-stage canonical compiler edit previously expanded to crate suites,
     # the complete example matrix twice, all misc tests, Wasm, check, and
     # clippy. That is a checkpoint workload and discouraged exact-tip receipts.

@@ -647,6 +647,21 @@ fn cargo_shim_keeps_isolated_targets_off_the_workspace_native_feature_graph() {
         "unification=off resolver=unset channel=unset\n"
     );
 
+    let pure_wir = run(&[
+        "nextest",
+        "run",
+        "-p",
+        "witchy-wir",
+        "--test",
+        "unit",
+        "--no-default-features",
+    ]);
+    assert!(pure_wir.status.success(), "{}", String::from_utf8_lossy(&pure_wir.stderr));
+    assert_eq!(
+        String::from_utf8_lossy(&pure_wir.stdout),
+        "unification=off resolver=unset channel=unset\n"
+    );
+
     let native_wir = run(&["nextest", "run", "-p", "witchy-wir"]);
     assert!(native_wir.status.success(), "{}", String::from_utf8_lossy(&native_wir.stderr));
     assert_eq!(
