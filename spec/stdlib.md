@@ -2876,6 +2876,14 @@ A compiler-owned string literal. The value is stored as an `Expr::Str`, so quote
 
 A compiler-owned binary expression. `op` is admitted by the compiler's fixed source-operator whitelist; it is never parsed as a source fragment.
 
+#### `fn expr_unary(op: String, value: ExprSyntax) -> ExprSyntax`
+
+Builds a compiler-owned unary expression for exactly `-`, `!`, or `~`. Other operators, including ownership and suspension operators, are refused. The operand must be a sealed expression handle.
+
+#### `fn expr_range(lo: ExprSyntax, hi: ExprSyntax, inclusive: Bool) -> ExprSyntax`
+
+Builds a half-open or inclusive integer range from sealed bound expressions. Ordinary checking validates the resulting expression.
+
 #### `fn expr_list(elements: List(ExprSyntax)) -> ExprSyntax`
 
 A compiler-owned list expression. Each element stays a typed expression node; the bridge never joins their rendered source.

@@ -1155,6 +1155,56 @@ impl Interpreter {
                 }
                 _ => err("meta.expr_binary expects an operator and two ExprSyntax operands"),
             },
+            name if intrinsics::is_meta_expr_unary(name) => match args {
+                [Value::Str(op), value] => {
+                    if self.fresh_ident_scope.is_none() {
+                        return err("meta.expr_unary is available only during compile-time expansion");
+                    }
+                    let op = match op.as_str() {
+                        "-" => UnOp::Neg,
+                        "!" => UnOp::Not,
+                        "~" => UnOp::BitNot,
+                        _ => return err(format!("meta.expr_unary: unsupported operator `{op}`")),
+                    };
+                    let hole_ancestry = compiler_direct_hole_origins(
+                        std::slice::from_ref(value),
+                        SyntaxCategory::Expr,
+                        "CompilerExprSyntax",
+                        &self.compiler_expr_origins,
+                        self.cur_line,
+                    );
+                    let value = compiler_expr_syntax_value(value, &self.compiler_expr_syntax)?;
+                    Ok(Some(self.store_compiler_expr_syntax(
+                        "expression-unary",
+                        Expr::Unary { op, expr: Box::new(value) },
+                        hole_ancestry,
+                    )?))
+                }
+                _ => err("meta.expr_unary expects an operator and ExprSyntax operand"),
+            },
+            name if intrinsics::is_meta_expr_range(name) => match args {
+                [lo, hi, Value::Bool(inclusive)] => {
+                    if self.fresh_ident_scope.is_none() {
+                        return err("meta.expr_range is available only during compile-time expansion");
+                    }
+                    let inputs = [lo.clone(), hi.clone()];
+                    let hole_ancestry = compiler_direct_hole_origins(
+                        &inputs,
+                        SyntaxCategory::Expr,
+                        "CompilerExprSyntax",
+                        &self.compiler_expr_origins,
+                        self.cur_line,
+                    );
+                    let lo = compiler_expr_syntax_value(lo, &self.compiler_expr_syntax)?;
+                    let hi = compiler_expr_syntax_value(hi, &self.compiler_expr_syntax)?;
+                    Ok(Some(self.store_compiler_expr_syntax(
+                        "expression-range",
+                        witchy_syntax::parser::desugar_range(lo, hi, *inclusive),
+                        hole_ancestry,
+                    )?))
+                }
+                _ => err("meta.expr_range expects two ExprSyntax bounds and a Bool"),
+            },
             name if intrinsics::is_meta_expr_list(name) => match args {
                 [Value::List(elements)] => {
                     if self.fresh_ident_scope.is_none() {

@@ -91,6 +91,8 @@ pub enum IntrinsicId {
     MetaExprField,
     MetaExprIndex,
     MetaExprBinary,
+    MetaExprUnary,
+    MetaExprRange,
     MetaExprList,
     MetaExprTuple,
     MetaExprRecord,
@@ -665,6 +667,8 @@ pub(crate) const META_EXPR_DYNAMIC_DESCRIPTOR: &str = "__meta_expr_dynamic_descr
 pub(crate) const META_EXPR_FIELD: &str = "__meta_expr_field";
 pub(crate) const META_EXPR_INDEX: &str = "__meta_expr_index";
 pub(crate) const META_EXPR_BINARY: &str = "__meta_expr_binary";
+pub(crate) const META_EXPR_UNARY: &str = "__meta_expr_unary";
+pub(crate) const META_EXPR_RANGE: &str = "__meta_expr_range";
 pub(crate) const META_EXPR_LIST: &str = "__meta_expr_list";
 pub(crate) const META_EXPR_TUPLE: &str = "__meta_expr_tuple";
 pub(crate) const META_EXPR_RECORD: &str = "__meta_expr_record";
@@ -2041,6 +2045,36 @@ pub const ALL: &[IntrinsicSpec] = &[
         dynamic_wir_helpers: false,
         wir_host_call: None,
         diagnostic_name: "meta.expr_binary",
+        private_callers: META_BRIDGE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::MetaExprUnary,
+        name: META_EXPR_UNARY,
+        arity: 2,
+        signature: IntrinsicSignature::DeclaredInSource,
+        effect: IntrinsicEffect::Toolchain,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::FrontendGenerated,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: NO_HELPERS,
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: "meta.expr_unary",
+        private_callers: META_BRIDGE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::MetaExprRange,
+        name: META_EXPR_RANGE,
+        arity: 3,
+        signature: IntrinsicSignature::DeclaredInSource,
+        effect: IntrinsicEffect::Toolchain,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::FrontendGenerated,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: NO_HELPERS,
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: "meta.expr_range",
         private_callers: META_BRIDGE_CALLERS,
     },
     IntrinsicSpec {
@@ -4031,6 +4065,14 @@ pub fn is_meta_expr_index(name: &str) -> bool {
 
 pub fn is_meta_expr_binary(name: &str) -> bool {
     lookup(name).is_some_and(|spec| spec.id == IntrinsicId::MetaExprBinary)
+}
+
+pub fn is_meta_expr_unary(name: &str) -> bool {
+    lookup(name).is_some_and(|spec| spec.id == IntrinsicId::MetaExprUnary)
+}
+
+pub fn is_meta_expr_range(name: &str) -> bool {
+    lookup(name).is_some_and(|spec| spec.id == IntrinsicId::MetaExprRange)
 }
 
 pub fn is_meta_expr_list(name: &str) -> bool {

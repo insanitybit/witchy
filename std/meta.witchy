@@ -385,6 +385,23 @@ pub fn expr_binary(op: String, lhs: ExprSyntax, rhs: ExprSyntax) -> ExprSyntax:
 fn __meta_expr_binary(op: String, lhs: ExprSyntax, rhs: ExprSyntax) -> ExprSyntax:
     __meta_expr_binary(op, lhs, rhs)
 
+// Builds a compiler-owned unary expression for exactly `-`, `!`, or `~`.
+// Other operators, including ownership and suspension operators, are refused.
+// The operand must be a sealed expression handle.
+pub fn expr_unary(op: String, value: ExprSyntax) -> ExprSyntax:
+    __meta_expr_unary(op, value)
+
+fn __meta_expr_unary(op: String, value: ExprSyntax) -> ExprSyntax:
+    __meta_expr_unary(op, value)
+
+// Builds a half-open or inclusive integer range from sealed bound expressions.
+// Ordinary checking validates the resulting expression.
+pub fn expr_range(lo: ExprSyntax, hi: ExprSyntax, inclusive: Bool) -> ExprSyntax:
+    __meta_expr_range(lo, hi, inclusive)
+
+fn __meta_expr_range(lo: ExprSyntax, hi: ExprSyntax, inclusive: Bool) -> ExprSyntax:
+    __meta_expr_range(lo, hi, inclusive)
+
 // A compiler-owned list expression. Each element stays a typed expression node;
 // the bridge never joins their rendered source.
 pub fn expr_list(elements: List(ExprSyntax)) -> ExprSyntax:

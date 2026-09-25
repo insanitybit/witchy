@@ -140,6 +140,9 @@ source-backed handles are refused.
 local binding inside a generated block; it cannot forge a call-site binder.
 `meta.expr_index` builds a subscript from compiler-owned base and index
 expressions; ordinary checking still validates the indexed operation.
+`meta.expr_unary` builds only the fixed `-`, `!`, and `~` operators from a
+compiler-owned operand. `meta.expr_range` builds a half-open or inclusive range
+from compiler-owned bounds. Ordinary checking validates both resulting forms.
 These compiler paths still await end-to-end runtime and leak evidence.
 
 Pattern templates follow the same rule. The compatibility-built `1` pattern is
