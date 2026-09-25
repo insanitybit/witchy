@@ -55,6 +55,18 @@ is needed for soundness.
 
 ## Exact-tip evidence checkpoint
 
+Row G aggregate view-carrier field plan (architecture implemented, semantic
+evidence unchanged, 2026-09-25): the recursive carrier admission walk now
+returns a typed plan with the checked aggregate shape and a plain or carried
+classification for each field. Owner identity consumes the plan to find
+retained projections instead of repeating a separate slice search. The
+existing packed-layout refusal, eight-level bound, direct-slice record rule,
+view containment check, and independent SafeWIR layout validation remain.
+A canonical-source compile, its 19 existing tests, and a lowerer compile
+passed; adversarial review found no new authority path. Boolean callers now
+allocate the small field plan, so compiler cost should be monitored. No
+new admitted form, Wasm evidence, or A–O closure is claimed.
+
 Row M typed view and dereference unary builders (implemented but unverified,
 2026-09-25): the sealed `meta.expr_unary` constructor now admits exactly `&`
 and `*` alongside its existing arithmetic/logical operators. A fresh
