@@ -176,6 +176,7 @@ plan and report the bottleneck.
 ## Per-agent target dirs and the build cache
 
 ```sh
+export PATH="$PWD/scripts/bin:$PATH"
 CARGO_TARGET_DIR=target-claude cargo nextest run --workspace
 CARGO_TARGET_DIR=target-codex cargo test --workspace
 ```
@@ -189,6 +190,8 @@ carries the build policy (workspace-root remapping, so a crate rebuilt in one
 worktree still hits in the others). `agent-check.sh` and the
 scripts it drives already use the shim; for ad hoc commands put
 `scripts/bin` first on `PATH` or call `./scripts/bin/cargo build ...`.
+Plain system `cargo` bypasses both MBX artifact sharing and the global agent
+permit pool, so do not use it for repo builds.
 `WITCHY_BUILD_CACHE=off` is the kill switch. In a cold target, workspace crates
 are cached and shared across worktrees too; mbx learns which crate you are
 editing and compiles that one incrementally. A target seeded from the gate

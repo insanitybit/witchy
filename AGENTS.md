@@ -16,8 +16,13 @@ When another agent or developer is active in the same checkout:
 
 ```sh
 ./scripts/worktree-warm.sh --target-dir target-codex
+export PATH="$PWD/scripts/bin:$PATH"
 CARGO_TARGET_DIR=target-codex cargo test --workspace
 ```
+
+Keep `scripts/bin` first on `PATH` for every Cargo build or test in this repo.
+That routes the command through the shared MBX cache and global agent permit
+pool; plain system `cargo` bypasses both and can starve the serialized gate.
 
 - Clean up only artifacts you created, such as your own `target-codex/`.
 - Do not kill Cargo, dev-server, or test processes unless you started them or
