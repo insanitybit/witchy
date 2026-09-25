@@ -24,12 +24,8 @@ temporary="$(mktemp -d "${TMPDIR:-/tmp}/witchy-canonical-edit.XXXXXX")"
 trap 'rm -rf "$temporary"' EXIT
 cargo_metadata="$temporary/cargo.json"
 binaries_metadata="$temporary/binaries.json"
-targets=(--lib --bin witchy --test unit --test rfc0165_route_gate --test misc --test cli_subcommands)
-lower_scope='package(=witchy-lower) and kind(lib)'
-if [ "$recipe" -eq 1 ]; then
-    targets+=(--test codegen)
-    lower_scope='package(=witchy-lower) and (kind(lib) or (kind(test) and binary(=codegen)))'
-fi
+targets=(--lib --bin witchy --test unit --test rfc0165_route_gate --test misc --test cli_subcommands --test codegen)
+lower_scope='package(=witchy-lower) and (kind(lib) or (kind(test) and binary(=codegen)))'
 
 # One Cargo test build, with the union of the three existing feature sets.
 # --lib also builds root's lib test target; execution below explicitly excludes
@@ -65,7 +61,7 @@ require_binary witchy-lower lib ''
 require_binary witchy bin witchy
 require_binary witchy test misc
 require_binary witchy test cli_subcommands
-if [ "$recipe" -eq 1 ]; then require_binary witchy-lower test codegen; fi
+require_binary witchy-lower test codegen
 
 reuse=(--cargo-metadata "$cargo_metadata" --binaries-metadata "$binaries_metadata")
 # Keep the two default-filter intersections, and root's explicit override.
