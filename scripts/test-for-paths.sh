@@ -866,10 +866,12 @@ for p in "${paths[@]}"; do
             add "find projects -type f -path '*/src/*.witchy' -exec \"\${CARGO_TARGET_DIR:-target}/debug/witchy\" fmt --check {} +" ;;
         tools/merge-queue-tests/Cargo.toml | \
         tools/merge-queue-tests/tests/merge_queue.rs | \
-        tools/merge-queue-tests/tests/test_for_paths.rs | \
         tools/merge-queue-tests/tests/merge_queue/*.rs | \
         tools/merge-queue-tests/tests/merge_queue/**/*.rs)
             add_gate_test merge_queue
+            add "./scripts/check.sh --queue-infra" ;;
+        tools/merge-queue-tests/tests/test_for_paths.rs)
+            add_gate_test test_for_paths
             add "./scripts/check.sh --queue-infra" ;;
         tools/merge-queue-tests/tests/worktree.rs | \
         tools/merge-queue-tests/tests/worktree/*.rs)
@@ -1052,7 +1054,6 @@ for p in "${paths[@]}"; do
         scripts/test-for-paths.sh | scripts/test-path-receipts.sh | scripts/test-impact.py | \
         scripts/nextest-admitted.sh | scripts/test-nextest-admitted.sh)
             add_gate_test test_for_paths
-            add_gate_test merge_queue
             add "for f in scripts/*.sh scripts/bin/*; do bash -n \"\$f\"; done"
             add "./scripts/test-path-receipts.sh"
             add "./scripts/test-nextest-admitted.sh"

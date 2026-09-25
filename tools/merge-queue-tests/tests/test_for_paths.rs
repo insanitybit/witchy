@@ -1497,6 +1497,18 @@ fn router_changes_run_router_regressions() {
             .any(|command| command == "./scripts/check.sh --queue-infra-edit"),
         "missing queue edit shard: {edit_commands:?}",
     );
+
+    for path in [
+        "scripts/test-for-paths.sh",
+        "tools/merge-queue-tests/tests/test_for_paths.rs",
+    ] {
+        let gate = gate_nextest(&[path]);
+        assert!(gate.contains("--test test_for_paths"), "{path}: {gate}");
+        assert!(
+            !gate.contains("--test merge_queue") && !gate.contains("--test worktree"),
+            "router-only change selected unrelated queue fixtures: {path}: {gate}",
+        );
+    }
 }
 
 #[test]
