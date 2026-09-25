@@ -3350,7 +3350,7 @@ fn enqueue_layout_children(
     signatures: &[super::FunctionSignature],
     context: &mut CorrespondenceContext,
 ) -> bool {
-    use crate::layout::{LayoutKind, PointerSlot, ScalarKind};
+    use crate::layout::{LayoutKind, PointerSlot, RcHeader, ScalarKind};
     let Ok(layout) = layouts.resolve_nominal(layout) else { return false };
     let Some(descriptor) = layouts.get(layout) else { return false };
     // An aggregate (record, sum, tuple, scalar Option/Result) is a fixed
@@ -3364,7 +3364,9 @@ fn enqueue_layout_children(
             layouts.get(*element).is_some_and(|element| matches!(element.kind(), LayoutKind::Scalar(ScalarKind::RawByte)))
         }
         witchy_syntax::ast::Type::Named(name, arguments) if name == "List" && arguments.len() == 1 => {
-            let LayoutKind::PackedList { element, .. } = descriptor.kind() else { return false };
+            // Source List values are retained objects. An elided-header list
+            // cannot satisfy their layout, including a DictRoot child list.
+            let LayoutKind::PackedList { element, rc: RcHeader::Required } = descriptor.kind() else { return false };
             let Some(element) = layouts.get(*element) else { return false };
             // A nested qualifier changes the source carrier. In particular,
             // List(&Int) uses its authenticated GC owner-list family; a plain
@@ -3932,7 +3934,7 @@ pub mod self_checks {
     }
 
     pub fn source_generic_layout_graph_checks_instantiated_payload_types() {
-        use crate::layout::{LayoutInterner, PointerSlot, ScalarKind};
+        use crate::layout::{LayoutInterner, PointerSlot, RcHeader, ScalarKind};
         use witchy_syntax::ast::Type;
         use witchy_canonical_source::aggregates::ScalarAggregateShape;
         let named = |name: &str| Type::Named(name.into(), vec![]);
@@ -3962,6 +3964,12 @@ pub mod self_checks {
             ));
         }
         assert!(!layout_matches_source(int_box, &Type::Named("Box".into(), vec![named("Missing")]), &layouts, &records));
+        let source_list = Type::Named("List".into(), vec![named("Int")]);
+        let retained_list = layouts.intern_packed_list(int, RcHeader::Required).unwrap();
+        let headerless_list = layouts.intern_packed_list(int, RcHeader::Elided).unwrap();
+        assert!(layout_matches_source(retained_list, &source_list, &layouts, &records));
+        assert!(!layout_matches_source(headerless_list, &source_list, &layouts, &records),
+            "source List correspondence requires a retained header");
     }
 
 
