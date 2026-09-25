@@ -17,7 +17,6 @@ When another agent or developer is active in the same checkout:
 ```sh
 ./scripts/worktree-warm.sh --target-dir target-codex
 CARGO_TARGET_DIR=target-codex cargo test --workspace
-CARGO_TARGET_DIR=target-codex cargo clippy --workspace --all-targets -- -D clippy::correctness -D clippy::suspicious -D unused_must_use
 ```
 
 - Clean up only artifacts you created, such as your own `target-codex/`.
@@ -126,7 +125,7 @@ load-flaky under overlap) and a merge landing mid-gate invalidates that gate.
   overlapped agent builds. Run long builds/tests at reduced priority so the
   gate stays ~3min: `taskpolicy -c utility cargo …` / `taskpolicy -c utility
   cargo nextest …`. Hold off on the heavy `--examples` shard
-  until the gate finishes; build/clippy/`--fast` are fine anytime.
+  until the gate finishes; short builds and `--fast` are fine anytime.
 - If `submit` or `./scripts/merge-queue.sh doctor` says NO COORDINATOR RUNNING,
   start the detached one: `./scripts/merge-queue.sh daemon` (survives your
   session; log in `state/merge-queue/coordinator.log`).

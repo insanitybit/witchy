@@ -89,17 +89,16 @@ repeat the rules; consult it when you're working inside one of these areas.
 
 ## The gate in detail
 
-`./scripts/check.sh` = build + clippy + `nextest --workspace`.
-Clippy runs **bug-lint tiers only** — `correctness` + `suspicious` +
-`unused_must_use`, **not** `-D warnings`; style/perf/pedantic lints print but
-never block (see `CLIPPY_GATE_LINTS` in the script). Do not run the full gate
-yourself. After committing the exact tip you intend to submit, run
+`./scripts/check.sh` = path-scoped `nextest`, a non-test `cargo check`, and
+the applicable formatting and repository contracts. Clippy is optional local
+tooling and does not block the merge gate, CI, or a release. Do not run the
+full gate yourself. After committing the exact tip you intend to submit, run
 `./scripts/agent-check.sh edit`; it selects focused checks from the committed
 diff and records the commit-keyed receipt consumed by the merge queue. For a
 compiler-crate edit it runs a fixed 1/8 hash slice of the 311 example tests
 (`WITCHY_EDIT_EXAMPLES=full` runs all of them); the landing gate runs the
 complete matrix. The coordinator owns the serialized full gate. CI (`.github/workflows/ci.yml`) runs
-build/clippy/nextest, canonical-conformance sweep, heap-check fuzz, and fmt.
+build/nextest, canonical-conformance sweep, heap-check fuzz, and fmt.
 
 ## Why the optimization zoo stays (RFC-0016 / RFC-0051)
 
@@ -175,7 +174,6 @@ plan and report the bottleneck.
 ```sh
 CARGO_TARGET_DIR=target-claude cargo nextest run --workspace
 CARGO_TARGET_DIR=target-codex cargo test --workspace
-CARGO_TARGET_DIR=target-codex cargo clippy --workspace --all-targets -- -D clippy::correctness -D clippy::suspicious -D unused_must_use
 ```
 
 Compiler outputs are shared across worktrees and target dirs by the
@@ -251,8 +249,8 @@ it before debugging or extending the queue.
 
 - Why the two invariants exist: concurrent full gates stretch each other's
   long-tail tests, and a merge mid-gate invalidates that gate.
-- `--fast` overlaps clippy in the background, so a lint failure surfaces at the
-  collect stage *after* tests.
+- `--fast` runs the test build without the full gate's formatting and
+  repository-contract stages.
 - A `submit --after <parent>` change reports as waiting/blocked until the stable
   parent lands; the queue can gate a ready dependency stack at its tip once.
 - `run` rebases in the dedicated warm worktree `.claude/worktrees/merge-gate`.
