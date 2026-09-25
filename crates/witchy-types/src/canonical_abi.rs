@@ -370,8 +370,17 @@ pub fn rooted_view_from_ty(
             carrier: CanonicalRootedViewCarrier::ScalarValue,
         }),
         Ty::List(element) => {
-            if matches!(element.as_ref(), Ty::List(inner) if matches!(inner.as_ref(), Ty::Int)) {
-                return Ok(rooted_nested_int_list_view());
+            if let Ty::List(inner) = element.as_ref() {
+                let scalar = match inner.as_ref() {
+                    Ty::Int => Some(CanonicalScalarKind::Int),
+                    Ty::Float => Some(CanonicalScalarKind::Float),
+                    Ty::Bool => Some(CanonicalScalarKind::Bool),
+                    Ty::Duration => Some(CanonicalScalarKind::Duration),
+                    _ => None,
+                };
+                if let Some(scalar) = scalar {
+                    return Ok(rooted_nested_scalar_list_view(scalar));
+                }
             }
             let name = match element.as_ref() {
                 Ty::Int => "Int", Ty::Float => "Float", Ty::Duration => "Duration",
@@ -465,12 +474,28 @@ pub fn rooted_view_from_ast(
             })
         }
         Type::Named(name, arguments) if name == "List" && arguments.len() == 1 => {
-            if matches!(&arguments[0], Type::Named(nested, nested_arguments)
-                if nested == "List" && matches!(nested_arguments.as_slice(), [inner]
-                    if matches!(inner, Type::Named(name, arguments)
-                        if name == "Int" && arguments.is_empty())))
-            {
-                return Ok(rooted_nested_int_list_view());
+            if !witchy_canonical_source::aggregates::is_list_root_payload(payload) {
+                return Err(CanonicalAbiError::Unsupported(
+                    "rooted view payload has no admitted authenticated carrier".into(),
+                ));
+            }
+            if let Type::Named(nested, nested_arguments) = &arguments[0] {
+                if nested == "List" {
+                    if let [Type::Named(name, scalar_arguments)] = nested_arguments.as_slice() {
+                        if scalar_arguments.is_empty() {
+                            let scalar = match name.as_str() {
+                                "Int" => Some(CanonicalScalarKind::Int),
+                                "Float" => Some(CanonicalScalarKind::Float),
+                                "Bool" => Some(CanonicalScalarKind::Bool),
+                                "Duration" => Some(CanonicalScalarKind::Duration),
+                                _ => None,
+                            };
+                            if let Some(scalar) = scalar {
+                                return Ok(rooted_nested_scalar_list_view(scalar));
+                            }
+                        }
+                    }
+                }
             }
             let Type::Named(element, element_arguments) = arguments[0].unqualified() else {
                 return Err(CanonicalAbiError::Unsupported(
@@ -637,13 +662,19 @@ fn rooted_list_view(element: &str) -> Result<CanonicalReferenceKind, CanonicalAb
     })
 }
 
-/// Distinct from every scalar-element `ListRoot` key and from deeper lists.
+/// Distinct from scalar-element `ListRoot` keys and deeper lists. The Int
+/// identity retains its original bytes for ABI compatibility.
 /// Checked HM types and source annotations call this same constructor.
-fn rooted_nested_int_list_view() -> CanonicalReferenceKind {
+fn rooted_nested_scalar_list_view(scalar: CanonicalScalarKind) -> CanonicalReferenceKind {
+    let bytes: &[u8] = match scalar {
+        CanonicalScalarKind::Int => b"witchy.canonical-rooted-view-payload.v2/list-of-list-int",
+        CanonicalScalarKind::Float => b"witchy.canonical-rooted-view-payload.v2/list-of-list-float",
+        CanonicalScalarKind::Bool => b"witchy.canonical-rooted-view-payload.v2/list-of-list-bool",
+        CanonicalScalarKind::Duration => b"witchy.canonical-rooted-view-payload.v2/list-of-list-duration",
+        _ => unreachable!("only exact nested scalar lists reach this constructor"),
+    };
     CanonicalReferenceKind::RootedView {
-        payload: CanonicalTypeKey::from_digest(*blake3::hash(
-            b"witchy.canonical-rooted-view-payload.v2/list-of-list-int",
-        ).as_bytes()),
+        payload: CanonicalTypeKey::from_digest(*blake3::hash(bytes).as_bytes()),
         carrier: CanonicalRootedViewCarrier::ListRoot,
     }
 }

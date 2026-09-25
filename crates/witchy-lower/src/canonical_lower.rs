@@ -14364,7 +14364,8 @@ impl FunctionLowerer<'_> {
         }
         let list_root = matches!(fact.payload(), Ty::List(element)
             if matches!(element.as_ref(), Ty::Int | Ty::Float | Ty::Duration | Ty::Bool | Ty::String)
-                || matches!(element.as_ref(), Ty::List(inner) if matches!(inner.as_ref(), Ty::Int)));
+                || matches!(element.as_ref(), Ty::List(inner)
+                    if matches!(inner.as_ref(), Ty::Int | Ty::Float | Ty::Bool | Ty::Duration)));
         let record_root = record_root || list_root;
         if (matches!(fact.payload(), Ty::String) || record_root)
             && !fact.place().steps().is_empty()

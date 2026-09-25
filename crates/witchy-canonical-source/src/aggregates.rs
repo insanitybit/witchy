@@ -803,16 +803,22 @@ pub fn is_scalar_value_view_payload(ty: &Type) -> bool {
 }
 
 /// A whole `&List(T)` view (`ListRoot`): elements are one scalar kind, String,
-/// or exactly `List(Int)`. The latter has an owned nested-list pointer layout;
-/// broader owner-bearing elements still require their own carrier judgment.
+/// or exactly `List(S)` for an unqualified inline scalar `S`. The latter has
+/// an owned nested-list pointer layout; broader owner-bearing elements still
+/// require their own carrier judgment.
 pub fn is_list_root_payload(ty: &Type) -> bool {
-    matches!(ty.unqualified(), Type::Named(name, arguments)
+    let mut payload = ty;
+    while let Type::Qualified(witchy_syntax::ast::TypeQual::Frozen, inner) = payload {
+        payload = inner;
+    }
+    matches!(payload, Type::Named(name, arguments)
         if name == "List" && matches!(arguments.as_slice(), [element]
             if matches!(element, Type::Named(nested, nested_arguments)
                 if nested == "List" && matches!(nested_arguments.as_slice(), [inner]
                     if matches!(inner, Type::Named(name, arguments)
-                        if name == "Int" && arguments.is_empty())))
-            || matches!(element.unqualified(), Type::Named(element, element_arguments)
+                        if matches!(name.as_str(), "Int" | "Float" | "Bool" | "Duration")
+                            && arguments.is_empty())))
+            || matches!(element, Type::Named(element, element_arguments)
                 if element_arguments.is_empty()
                     && matches!(element.as_str(), "Int" | "Float" | "Duration" | "Bool" | "String"))))
 }
