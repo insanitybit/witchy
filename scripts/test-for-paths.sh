@@ -450,6 +450,12 @@ for p in "${paths[@]}"; do
         *) canonical_fixture_rewrite_paths_only=0 ;;
     esac
     case "$p" in
+        .mbx.toml)
+            # Build-cache and scheduler policy is exercised by the cargo-shim
+            # and worktree-warming fixtures. It cannot alter Witchy semantics,
+            # so never fall through to a native workspace build here.
+            add_gate_test worktree
+            add "cargo nextest run -p merge-queue-tests --test worktree" ;;
         src/source.rs | \
         src/source/package_inputs* | \
         src/trusted_publisher/source_inputs.rs | \

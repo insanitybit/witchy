@@ -1863,6 +1863,19 @@ fn extensionless_script_shims_are_syntax_checked() {
 }
 
 #[test]
+fn mbx_policy_runs_only_the_worktree_cache_contracts() {
+    let commands = selected(&[".mbx.toml"]);
+    assert_eq!(
+        commands,
+        ["cargo nextest run -p merge-queue-tests --test worktree"],
+        "MBX policy selected unrelated product work: {commands:?}",
+    );
+    let gate = gate_nextest(&[".mbx.toml"]);
+    assert!(gate.contains("--test worktree"), "MBX gate missed worktree contracts: {gate}");
+    assert!(!gate.contains("WORKSPACE"), "MBX policy fell through to workspace: {gate}");
+}
+
+#[test]
 fn script_rules_gate_on_the_binary_their_focused_check_names() {
     // These rules already knew which binary covers them: each ran
     // `cargo nextest run -p merge-queue-tests --test worktree` (or the

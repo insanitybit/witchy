@@ -574,6 +574,29 @@ fn queue_script_batch_is_queue_infra_only_not_workspace_nextest() {
 }
 
 #[test]
+fn mbx_policy_batch_is_queue_infra_only_not_workspace_nextest() {
+    let fixture = QueueFixture::stack(&[".mbx.toml"]);
+    fixture.mq_ok(&["submit", "a"], "true");
+    let env_log = fixture._temp.path().join("gate-env");
+    let gate = format!(
+        "printf 'infra=%s infra_only=%s nextest=[%s] skip_compile=%s\\n' \
+         \"${{WITCHY_GATE_QUEUE_INFRA:-}}\" \"${{WITCHY_GATE_QUEUE_INFRA_ONLY:-}}\" \
+         \"${{WITCHY_GATE_NEXTEST:-}}\" \"${{WITCHY_GATE_SKIP_COMPILE:-}}\" >{}",
+        env_log.display(),
+    );
+    fixture.mq_ok(&["run", "--once"], &gate);
+    let env = fs::read_to_string(&env_log).expect("read classified gate env");
+    assert!(
+        env.contains("infra=1") && env.contains("infra_only=1"),
+        "MBX policy batch was not queue-infra-only: {env}",
+    );
+    assert!(
+        env.contains("nextest=[--test worktree") && !env.contains("nextest=[--workspace"),
+        "MBX policy batch selected product tests: {env}",
+    );
+}
+
+#[test]
 fn example_tests_only_batch_classifies_focused_nextest_and_skips_heavy_legs() {
     let fixture = QueueFixture::stack(&["src/example_tests/rfc0167_views.rs"]);
     fixture.mq_ok(&["submit", "a"], "true");
