@@ -382,6 +382,14 @@ layout, or required-header packed List with recursively matched elements.
 The separate scalar, slice, and nested owner-family correspondence branches
 remain to consolidate. This refactor does not close a semantic acceptance row.
 
+Row G SafeWIR source-shape admission (implemented but unverified,
+2026-09-25): the whole-root signature and capture predicate now asks the
+shared `RootedViewStorage` classifier for inline scalar or retained-root
+representation instead of enumerating String, List, tuple, dictionary, and
+record heads itself. Scalar-place and slice-projection views still use their
+separate authenticated paths. Checked-source nominal ordinals remain required
+at final ABI binding. No new carrier behavior or A–O evidence is claimed.
+
 At `adf1d01c7` (2026-09-18), the integrated core smoke was **42/42 passed**: rooted views (13), unique/write-back (12), normal/opt interoperation (2), resource composition (5), and optimization readiness (10). This is core canonical-route evidence only; it does not include the source interpreter, full, end-to-end, or examples suites.
 
 At `2f62f4038` (2026-09-19), the newly integrated concrete `Option(&Int)` evidence is **6/6 passed**: four lower carrier/tamper/`var` checks, one exact authority payload-state check, and one production-runtime three-leg fixture (`790`, zero leaks). The three generic rooted-slice fixtures are **1 passed / 2 failed**: region-root escape rejects as expected, while both positive forms stop at the explicit missing authenticated slice-element projection. This is a live failure checkpoint, not an acceptance closeout.

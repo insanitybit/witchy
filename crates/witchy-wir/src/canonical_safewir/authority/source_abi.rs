@@ -403,29 +403,19 @@ pub(super) fn erase_record_string_views(records: &ScalarRecordFields) -> ScalarR
     }).collect()
 }
 
-/// A whole-root view carried as the retained object token: `&String`
-/// (`StringRoot`) or a view of a declared, non-packed, argument-less user
-/// record or sum (`RecordRoot`), exact `Dict(String, S)` with an admitted
-/// unqualified inline scalar or String `S` (`DictRoot`), or
-/// exact `(S, String)` for admitted inline scalar or String `S` (`TupleRoot`).
-/// None has a projection.
+/// A direct view whose checked storage plan is an inline scalar or retained
+/// whole root. The structural payload proof chooses the exact String, List,
+/// tuple, dictionary, record, or sum identity; a slice projection and scalar
+/// place remain separate physical classes.
 pub(crate) fn is_direct_rooted_view_whole_root(source: &witchy_syntax::ast::Type, records: &ScalarRecordFields) -> bool {
-    is_direct_rooted_view_string(source)
-        || matches!(source,
-            witchy_syntax::ast::Type::Qualified(witchy_syntax::ast::TypeQual::View, inner)
-                if witchy_canonical_source::aggregates::is_record_root_payload(inner, records)
-                    || witchy_canonical_source::carrier::CarrierElement::from_list_root_payload_type_with_definitions(inner, records).is_some()
-                    || witchy_canonical_source::carrier::CarrierElement::retained_structural_root(inner, records).is_some()
-                    || witchy_canonical_source::aggregates::is_scalar_value_view_payload(inner))
-}
-
-/// A whole immutable `&String` view: carried as the retained String token
-/// itself (`StringRoot`), so it corresponds to the plain String layout.
-pub(super) fn is_direct_rooted_view_string(source: &witchy_syntax::ast::Type) -> bool {
-    matches!(source,
-        witchy_syntax::ast::Type::Qualified(witchy_syntax::ast::TypeQual::View, inner)
-            if matches!(inner.unqualified(), witchy_syntax::ast::Type::Named(name, arguments)
-                if name == "String" && arguments.is_empty()))
+    use witchy_canonical_source::rooted_view::RootedViewStorage;
+    let witchy_syntax::ast::Type::Qualified(witchy_syntax::ast::TypeQual::View, payload) = source else { return false };
+    matches!(RootedViewStorage::classify(payload, records, |_| Some(0)),
+        Some(RootedViewStorage::InlineScalar(_)
+            | RootedViewStorage::RetainedString
+            | RootedViewStorage::RetainedList(_)
+            | RootedViewStorage::RetainedAggregate(_)
+            | RootedViewStorage::RetainedRecord(_)))
 }
 
 /// A direct `&[T]` rooted slice view of an admitted element (`ListSlice`).
