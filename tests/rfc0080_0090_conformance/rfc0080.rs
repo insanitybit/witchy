@@ -32,13 +32,13 @@ fn assert_compiled_output(
     assert_eq!(actor.output(), expected, "{label}");
 }
 
-#[path = "rfc0080/fresh_ident.rs"]
+#[path = "../rfc0080/fresh_ident.rs"]
 mod fresh_ident;
-#[path = "rfc0080/expansion_diagnostics.rs"]
+#[path = "../rfc0080/expansion_diagnostics.rs"]
 mod expansion_diagnostics;
-#[path = "rfc0080/owned_expr_syntax.rs"]
+#[path = "../rfc0080/owned_expr_syntax.rs"]
 mod owned_expr_syntax;
-#[path = "rfc0080/qualified_identities.rs"]
+#[path = "../rfc0080/qualified_identities.rs"]
 mod qualified_identities;
-#[path = "rfc0080/derive_boundary_witnesses.rs"]
+#[path = "../rfc0080/derive_boundary_witnesses.rs"]
 mod derive_boundary_witnesses;

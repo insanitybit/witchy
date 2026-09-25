@@ -4,5 +4,5 @@
 //! Files live in `tests/rfc0090/` (a subdir is not auto-compiled as its own
 //! binary) and are attached here via `#[path]` since a test crate root
 //! resolves bare `mod` names against `tests/`, not the subdir.
-#[path = "rfc0090/tail_positions.rs"]
+#[path = "../rfc0090/tail_positions.rs"]
 mod tail_positions;
