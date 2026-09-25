@@ -2319,7 +2319,7 @@ fn sweep_caches_merged_history_but_keeps_queue_admission_live() {
 
 #[test]
 fn sweep_recycles_a_landed_pool_worktree_in_place() {
-    let fixture = QueueFixture::stack(&["a.txt"]);
+    let fixture = QueueFixture::stack(&["a.txt", "b.txt"]);
     run_git(&fixture.root, &["merge", "--ff-only", "a"]);
     fs::write(fixture.root.join(".git/info/exclude"), "target/\nstate/\n.claude/\n")
         .expect("ignore build caches like the real checkout");
@@ -2340,6 +2340,9 @@ fn sweep_recycles_a_landed_pool_worktree_in_place() {
         "{\"event\":\"merged\",\"branch\":\"a\"}\n{\"event\":\"merged\",\"branch\":\"c\"}\n",
     )
     .expect("write merged branch history");
+    // Ready work defers the full sweep; a busy queue is when agents claim
+    // slots, so recycling must not wait for it to drain.
+    fixture.mq_ok(&["submit", "b"], "true");
     let witchy_state = fixture._temp.path().join("witchy-state");
     let output = fixture
         .mq_command(&["sweep"], "true")

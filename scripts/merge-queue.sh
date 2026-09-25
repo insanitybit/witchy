@@ -3678,10 +3678,18 @@ cmd_run() {
 # removal frees a multi-GB target/.
 cmd_sweep() {
     if [ ! -f "$journal" ]; then note "sweep: no journal; nothing merged yet"; return 0; fi
+    # With ready work pending, defer the full walk but still recycle RFC-0171
+    # pool slots: at most WITCHY_WORKTREE_POOL_MAX of them, each a cheap
+    # detach, and a busy queue is exactly when agents are claiming slots.
+    local pool_only=0
     if queue_has_ready_change; then
         deferred_sweep=1
-        note "sweep: ready queue work is pending; deferring cleanup"
-        return 0
+        declare -F worktree_pool_release >/dev/null || {
+            note "sweep: ready queue work is pending; deferring cleanup"
+            return 0
+        }
+        note "sweep: ready queue work is pending; deferring cleanup except pool slots"
+        pool_only=1
     fi
     # The journal is append-only and this singleton coordinator cannot append
     # another merge while it is sweeping. Parse the merged branch set once.
@@ -3693,8 +3701,11 @@ cmd_sweep() {
     merged_branches="$(jq -r 'select(.event=="merged" or .event=="already_merged") | .branch' "$journal" | sort -u)"
     local swept=0 sweep_probe=0
     while IFS= read -r wt; do
+        if [ "$pool_only" -eq 1 ]; then
+            case "$wt" in */.claude/worktrees/pool-[0-9][0-9]) ;; *) continue ;; esac
+        fi
         sweep_probe=$((sweep_probe + 1))
-        if [ "$((sweep_probe % 16))" -eq 0 ] && queue_has_ready_change; then
+        if [ "$pool_only" -eq 0 ] && [ "$((sweep_probe % 16))" -eq 0 ] && queue_has_ready_change; then
             deferred_sweep=1
             note "sweep: ready queue work arrived; deferring remaining cleanup after $swept worktree(s)"
             return 0
@@ -3736,6 +3747,7 @@ cmd_sweep() {
             note "sweep: git worktree remove refused $wt; leaving it"
         fi
     done < <(git -C "$root" worktree list --porcelain | awk '/^worktree /{print $2}')
+    [ "$pool_only" -eq 0 ] || return 0
     if queue_has_ready_change; then
         deferred_sweep=1
         note "sweep: ready queue work arrived; deferring historical branch cleanup"
