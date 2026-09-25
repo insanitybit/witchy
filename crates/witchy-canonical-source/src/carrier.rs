@@ -9,13 +9,14 @@ use witchy_syntax::ast::{Type, TypeQual};
 use crate::abi::CanonicalScalarKind;
 
 /// The value and ownership shape of one slice element. A scalar is copied;
-/// String and List values use owned, reference-counted storage and therefore
-/// require retain, clone and release at every containing List level.
+/// managed values and nonempty tuples use owned storage and require retain,
+/// clone and release at every containing edge.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum CarrierElement {
     Scalar(CanonicalScalarKind),
     String,
     List(Box<Self>),
+    Tuple(Vec<Self>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,6 +34,7 @@ pub trait CarrierLayoutQuery {
     fn scalar(&self, layout: Self::Layout) -> Option<CanonicalScalarKind>;
     fn owned_string(&self, layout: Self::Layout) -> bool;
     fn owned_retained_list_element(&self, layout: Self::Layout) -> Option<Self::Layout>;
+    fn owned_record_fields(&self, layout: Self::Layout) -> Option<Vec<Self::Layout>>;
 }
 
 impl CarrierElement {
@@ -73,16 +75,16 @@ impl CarrierElement {
     /// aliases, capabilities and arbitrary nominal types do not acquire a
     /// carrier merely because their storage happens to resemble one.
     pub fn from_checked_type(ty: &Type) -> Option<Self> {
-        Self::from_checked_type_bounded(ty, 0)
+        Self::from_checked_type_bounded(ty, 0, &mut 4_096)
     }
 
-    fn from_checked_type_bounded(ty: &Type, depth: usize) -> Option<Self> {
-        // Bound compiler work on hostile source. The same limit applies to
-        // identity encoding and physical validation because only admitted
-        // elements can reach either path.
-        if depth > 128 {
+    fn from_checked_type_bounded(ty: &Type, depth: usize, budget: &mut usize) -> Option<Self> {
+        // Bound both width and depth before identity encoding or physical
+        // validation can visit a hostile source type.
+        if depth > 128 || *budget == 0 {
             return None;
         }
+        *budget -= 1;
         match ty {
             Type::Named(name, arguments) if arguments.is_empty() => match name.as_str() {
                 "Int" => Some(Self::Scalar(CanonicalScalarKind::Int)),
@@ -99,7 +101,13 @@ impl CarrierElement {
                 Some(Self::List(Box::new(Self::from_checked_type_bounded(
                     child,
                     depth + 1,
+                    budget,
                 )?)))
+            }
+            Type::Tuple(fields) if !fields.is_empty() && fields.len() <= 128 => {
+                Some(Self::Tuple(fields.iter().map(|field| {
+                    Self::from_checked_type_bounded(field, depth + 1, budget)
+                }).collect::<Option<Vec<_>>>()?))
             }
             _ => None,
         }
@@ -158,13 +166,14 @@ impl CarrierElement {
             ),
             Self::String => Type::Named("String".into(), Vec::new()),
             Self::List(child) => Type::Named("List".into(), vec![child.source_type()]),
+            Self::Tuple(fields) => Type::Tuple(fields.iter().map(Self::source_type).collect()),
         }
     }
 
     pub fn ownership(&self) -> CarrierOwnership {
         match self {
             Self::Scalar(_) => CarrierOwnership::Copy,
-            Self::String | Self::List(_) => CarrierOwnership::RetainCloneRelease,
+            Self::String | Self::List(_) | Self::Tuple(_) => CarrierOwnership::RetainCloneRelease,
         }
     }
 
@@ -193,6 +202,18 @@ impl CarrierElement {
                     layout = next;
                     current = child;
                 }
+                Self::Tuple(fields) => {
+                    if current.ownership() != CarrierOwnership::RetainCloneRelease {
+                        return false;
+                    }
+                    let Some(actual) = query.owned_record_fields(layout) else {
+                        return false;
+                    };
+                    return actual.len() == fields.len()
+                        && fields.iter().zip(actual).all(|(field, slot)| {
+                            field.matches_layout(query, slot)
+                        });
+                }
             }
         }
     }
@@ -212,6 +233,12 @@ impl CarrierElement {
                     bytes.push(2);
                     encode(child, bytes);
                     bytes.push(3);
+                }
+                CarrierElement::Tuple(fields) => {
+                    bytes.push(4);
+                    bytes.extend_from_slice(&(fields.len() as u32).to_le_bytes());
+                    for field in fields { encode(field, bytes); }
+                    bytes.push(5);
                 }
             }
         }

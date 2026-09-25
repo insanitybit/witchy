@@ -167,7 +167,9 @@ inner lists also has a separate carrier, pending semantic and leak evidence.
 Slices of owned lists use the same recursive carrier at every supported depth.
 The outer list remains rooted, and each managed child is retained through an
 owned pointer and a retained List header. A String leaf owns its byte buffer.
-Carrier proof is bounded at 128 nested `List` layers.
+Nonempty tuple elements use an owned packed record, with the same ownership
+proof applied to every field. Carrier proof is bounded at 128 nested levels
+and 4,096 type nodes.
 Qualified children and elements without a complete ownership proof are
 refused. The exact previously evidenced cases remain recorded in the RFC-0167
 ledger; newly generic depths await semantic and leak evidence. `.owned()`

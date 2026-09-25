@@ -1164,9 +1164,11 @@ proven exact cases are implemented but await admitted Wasm and leak evidence.
 Slice carriers use one recursive checked-source relation for their element
 type, physical layout, and ownership operations. Each `List` layer requires a
 retained header and an owned child pointer; scalar leaves match their exact
-layout, and String leaves own a byte buffer. The slice retains its outer list
-root, and reads retain managed children through the checked projection.
-Carrier proof has a compiler resource limit of 128 nested `List` layers.
+layout, and String leaves own a byte buffer. A nonempty tuple requires an
+owned pointer to a packed record whose fields each satisfy that same relation.
+The slice retains its outer list root, and reads retain managed children
+through the checked projection. Carrier proof has a compiler resource limit
+of 128 nested levels and 4,096 type nodes.
 Qualifiers, arbitrary nominal lookalikes, capabilities, and elements without
 a complete ownership proof are refused. `.owned()` copies the authenticated
 range into a fresh `List(T)` using that same relation. Generic recursive forms

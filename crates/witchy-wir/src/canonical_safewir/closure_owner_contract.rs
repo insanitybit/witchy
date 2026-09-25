@@ -302,6 +302,16 @@ pub(crate) fn carrier_element_layout_matches(
                 self.0.get(physical)?.kind() else { return None };
             Some(*element)
         }
+
+        fn owned_record_fields(&self, layout: LayoutId) -> Option<Vec<LayoutId>> {
+            let LayoutKind::RuntimePointerValueSlot { pointee, semantics: PointerSlot::Owned } =
+                self.0.get(layout)?.kind() else { return None };
+            let physical = self.0.resolve_nominal(*pointee).ok()?;
+            let LayoutKind::PackedRecord { fields } = self.0.get(physical)?.kind() else {
+                return None;
+            };
+            Some(fields.clone())
+        }
     }
     carrier.matches_layout(&Query(layouts), layout)
 }
