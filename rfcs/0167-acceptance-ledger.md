@@ -55,6 +55,16 @@ is needed for soundness.
 
 ## Exact-tip evidence checkpoint
 
+Row G retained byte-buffer layout class (architecture implemented, semantic
+evidence unchanged, 2026-09-25): the shared source-storage projection now
+classifies exact `Bytes` as a retained raw-byte buffer, and the list-element
+projection carries that typed class after the unchanged v1 field gate. The
+layout catalog and SafeWIR still validate the owned pointer and raw-byte
+buffer independently. Qualified or nested byte-buffer carriers remain on
+their previous layout-only or refusal paths. The class does not enter the
+recursive slice carrier or `.owned()` conversion. No new admitted Wasm,
+zero-leak evidence, or A–O closure is claimed.
+
 Row G typed list-element layout projection (architecture implemented, semantic
 evidence unchanged, 2026-09-25): the layout catalog now reads one
 canonical-source `ListElementProjection`. It distinguishes a recursive owned

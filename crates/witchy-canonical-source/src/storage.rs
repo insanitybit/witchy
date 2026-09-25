@@ -19,6 +19,13 @@ pub enum StorageRefusal {
     UnprovedOwnership,
 }
 
+/// A retained raw-byte object. This is a layout class only until the recursive
+/// carrier has its own checked clone and release proof.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RetainedByteBufferKind {
+    Bytes,
+}
+
 /// A finite source-derived proof for the storage classes the canonical route
 /// currently understands. An owned value retains, clones, and releases its
 /// recursive `CarrierElement`; a view or view-bearing aggregate has its own
@@ -27,6 +34,7 @@ pub enum StorageRefusal {
 pub enum StoragePlan {
     InlineScalar(CanonicalScalarKind),
     Owned(CarrierElement),
+    RetainedByteBuffer(RetainedByteBufferKind),
     /// A list of authenticated scalar-place owner tokens. Projected-view
     /// lists need a different owner-family proof and remain refused.
     RetainedOwnerList(OwnerCarriedViewPlan),
@@ -42,6 +50,7 @@ pub enum StoragePlan {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ListElementProjection {
     Owned(CarrierElement),
+    RetainedByteBuffer(RetainedByteBufferKind),
     LayoutOnly,
     Refused,
 }
@@ -56,9 +65,12 @@ impl ListElementProjection {
         if !is_v1_list_element_type(ty, definitions) {
             return Self::Refused;
         }
-        match StoragePlan::classify(ty, definitions, |_| Some(0)).into_carrier_element() {
-            Some(plan) => Self::Owned(plan),
-            None => Self::LayoutOnly,
+        match StoragePlan::classify(ty, definitions, |_| Some(0)) {
+            StoragePlan::RetainedByteBuffer(kind) => Self::RetainedByteBuffer(kind),
+            plan => match plan.into_carrier_element() {
+                Some(plan) => Self::Owned(plan),
+                None => Self::LayoutOnly,
+            },
         }
     }
 }
@@ -98,6 +110,9 @@ impl StoragePlan {
         }
         if matches!(ty, Type::Tuple(fields) if fields.is_empty()) {
             return Self::InlineScalar(CanonicalScalarKind::Unit);
+        }
+        if matches!(ty, Type::Named(name, arguments) if name == "Bytes" && arguments.is_empty()) {
+            return Self::RetainedByteBuffer(RetainedByteBufferKind::Bytes);
         }
         if let Type::Named(name, arguments) = ty
             && name == "List"
