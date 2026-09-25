@@ -49,10 +49,10 @@ members = ["crates/witchy-canonical-source", "crates/witchy-cap-model", "crates/
 
 [lib]
 name = "witchy"
-# rlib: linked by the `witchy` binary. cdylib: the wasm module for the
-# in-browser playground (`cargo build --lib --no-default-features
-# --target wasm32-unknown-unknown`).
-crate-type = ["rlib", "cdylib"]
+# Native binaries and tests consume only the rlib. The browser build asks
+# rustc for a cdylib explicitly in scripts/build-playground.sh; listing both
+# here makes every native root compile emit and link an unused dynamic library.
+crate-type = ["rlib"]
 doctest = false
 
 [[bin]]
