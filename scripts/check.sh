@@ -44,6 +44,11 @@ cd "$(dirname "$0")/.."
 if [ -n "${WITCHY_GATE_SCOPE+x}" ]; then
     export RUSTC_WRAPPER=
     export CARGO_BUILD_RUSTC_WRAPPER=
+    # Integration tests already require Cargo's normal `witchy` executable.
+    # Embed the candidate identity in that build so the later Rust-class leg
+    # can authenticate and reuse it instead of compiling a second feature
+    # graph solely to add the commit string.
+    export WITCHY_BUILD_COMMIT="$(git rev-parse --verify HEAD)"
     # nextest discovers tests by executing every test binary. macOS otherwise
     # pages large local-symbol tables into memory before any test runs. The
     # workspace Cargo.toml now strips `dev` and `test` for everyone (so every
@@ -819,9 +824,8 @@ witchy_fmt_check() {
 # embedded, then make the harness authenticate that identity before it accepts
 # the results.
 rust_class_check() {
-    local head witchy_bin rust_build_dir
+    local head witchy_bin rust_build_dir witchy_version=""
     head=$(git rev-parse --verify HEAD)
-    WITCHY_BUILD_COMMIT="$head" cargo build -p witchy --quiet
     case "$target_dir" in
         /*)
             witchy_bin="$target_dir/debug/witchy"
@@ -831,6 +835,13 @@ rust_class_check() {
             witchy_bin="$PWD/$target_dir/debug/witchy"
             rust_build_dir="$PWD/$target_dir/rust-class"
             ;;
+    esac
+    if [ -x "$witchy_bin" ]; then
+        witchy_version=$("$witchy_bin" --version 2>/dev/null | head -1 || true)
+    fi
+    case "$witchy_version" in
+        *"(commit $head)"*) ;;
+        *) WITCHY_BUILD_COMMIT="$head" cargo build -p witchy --bin witchy --quiet ;;
     esac
     WITCHY="$witchy_bin" WITCHY_RUST_BUILD_DIR="$rust_build_dir" \
         ./bench/rust-class/run.sh --check
