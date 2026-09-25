@@ -5,6 +5,7 @@
 
 use std::collections::BTreeMap;
 
+use sha2::{Digest, Sha256};
 use witchy_syntax::ast::{Type, TypeDef, TypeQual};
 
 use crate::abi::{
@@ -103,6 +104,25 @@ impl OwnerCarriedViewPlan {
 }
 
 impl RootedViewStorage {
+    /// Structural owner-family ID for the two GC-backed rooted projections.
+    /// The bounded source plan supplies identity; checked-source membership
+    /// and the physical family still need independent SafeWIR validation.
+    pub fn owner_family_id(&self) -> Option<u32> {
+        let mut digest = Sha256::new();
+        digest.update(b"witchy/rooted-view-owner-family-v2\0");
+        match self {
+            Self::ScalarCell(CanonicalScalarKind::Int) => digest.update([0, CanonicalScalarKind::Int as u8]),
+            Self::RetainedProjection(element) if element.within_resource_bounds() => {
+                digest.update([1]);
+                digest.update(element.identity());
+            }
+            _ => return None,
+        }
+        let digest: [u8; 32] = digest.finalize().into();
+        let lower = u32::from_le_bytes([digest[0], digest[1], digest[2], digest[3]]);
+        Some(0xc300_0000 | ((lower & 0x007f_ffff) << 1))
+    }
+
     /// Admit only checked storage shapes with a finite recursive proof. The
     /// caller supplies nominal ordinals from its checked declaration table.
     pub fn classify(

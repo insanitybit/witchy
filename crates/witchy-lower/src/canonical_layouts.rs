@@ -16,6 +16,7 @@ use witchy_canonical_source::aggregates::{
 use witchy_canonical_source::abi::CanonicalScalarKind;
 use witchy_canonical_source::carrier::CarrierElement;
 use witchy_canonical_source::storage::{StoragePlan, StorageRefusal, is_inline_scalar_record};
+use witchy_canonical_source::rooted_view::RootedViewStorage;
 use witchy_canonical_source::structural_identity::{AggregateOwnerKey, ClosureOwnerKey, SourceTypeKey};
 use witchy_syntax::ast::{self, Item, Type, TypeDef};
 use witchy_types::pipeline::CanonicalCheckedSource;
@@ -32,30 +33,6 @@ pub(crate) struct SharedIntReferenceLayout {
     pub environment: LayoutId,
     pub scalar_root: LayoutId,
     pub list_root: Option<LayoutId>,
-}
-
-/// Derive each rooted owner/list pair from the checked recursive carrier.
-/// The domain and even-ID namespace distinguish this family. The caller
-/// rejects truncated-ID collisions; SafeWIR also checks all owner families
-/// together before admission.
-enum RootedOwnerKey<'a> {
-    ScalarPlace(CanonicalScalarKind),
-    RetainedProjection(&'a CarrierElement),
-}
-
-fn rooted_view_owner_type(key: RootedOwnerKey<'_>) -> GcTypeId {
-    let mut digest = Sha256::new();
-    digest.update(b"witchy/rooted-view-owner-family-v2\0");
-    match key {
-        RootedOwnerKey::RetainedProjection(element) => {
-            digest.update([1]);
-            digest.update(element.identity());
-        }
-        RootedOwnerKey::ScalarPlace(kind) => digest.update([0, kind as u8]),
-    }
-    let digest: [u8; 32] = digest.finalize().into();
-    let lower = u32::from_le_bytes([digest[0], digest[1], digest[2], digest[3]]);
-    GcTypeId::new(0xc300_0000 | ((lower & 0x007f_ffff) << 1))
 }
 
 /// Canonical storage for an immutable `&[T]`: a retained list root and its
@@ -919,7 +896,8 @@ impl LayoutProjection {
             let environment = interner.intern_packed_record(children)
                 .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?;
             roots.insert(environment);
-            let owner_type = rooted_view_owner_type(RootedOwnerKey::ScalarPlace(CanonicalScalarKind::Int));
+            let owner_type = GcTypeId::new(RootedViewStorage::ScalarCell(CanonicalScalarKind::Int)
+                .owner_family_id().ok_or_else(|| CanonicalLayoutError::InvalidLayout("unproved scalar-view owner family".into()))?);
             if !rooted_owner_ids.insert(owner_type.get()) {
                 return Err(CanonicalLayoutError::InvalidLayout("rooted view owner structural ID collision".into()));
             }
@@ -934,7 +912,8 @@ impl LayoutProjection {
             if !self.roots.iter().any(|ty| canonical_layout_type(ty, &self.definitions) == list_type) {
                 continue;
             }
-            let owner_type = rooted_view_owner_type(RootedOwnerKey::RetainedProjection(element));
+            let owner_type = GcTypeId::new(RootedViewStorage::RetainedProjection(element.clone())
+                .owner_family_id().ok_or_else(|| CanonicalLayoutError::InvalidLayout("unproved slice-view owner family".into()))?);
             if !rooted_owner_ids.insert(owner_type.get()) {
                 return Err(CanonicalLayoutError::InvalidLayout("rooted view owner structural ID collision".into()));
             }

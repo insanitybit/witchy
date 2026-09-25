@@ -110,6 +110,14 @@ pub fn exact_int_slice_record_field_rejects_erased_and_wrong_owner_carriers(chec
         witchy_syntax::ast::TypeQual::View,
         Box::new(Type::Slice(Box::new(Type::Named(element.into(), Vec::new())))),
     );
+    let slice_id = |element: &str| {
+        let witchy_canonical_source::storage::StoragePlan::RootedView(plan) =
+            witchy_canonical_source::storage::StoragePlan::classify(&slice_view(element), &records, |_| Some(0))
+        else { panic!("checked slice source has no rooted-view plan") };
+        plan.owner_family_id().expect("checked slice owner family")
+    };
+    let int_slice_id = slice_id("Int");
+    let float_slice_id = slice_id("Float");
     let mut layouts = LayoutInterner::new();
     let tag = layouts.intern_scalar(ScalarKind::Int).expect("tag layout");
     let environment = layouts.intern_packed_record(vec![tag]).expect("record environment");
@@ -128,21 +136,24 @@ pub fn exact_int_slice_record_field_rejects_erased_and_wrong_owner_carriers(chec
             witness: None,
             environment_tag: 0,
             captures: vec![OwnerCapture {
-                value_type: ValueType::Gc(GcTypeId::new(710)),
+                value_type: ValueType::Gc(GcTypeId::new(int_slice_id)),
                 storage: CaptureStorage::OwnerField(2),
                 transfer: CaptureTransfer::CloneManaged,
             }],
         }],
     };
-    let slice_family = |element: &str, id| OwnerFamily {
-        source: OwnerFamilySource::SharedReference(slice_view(element)),
-        slice_carrier: witchy_canonical_source::carrier::CarrierElement::from_view_type(&slice_view(element)),
-        owner_type: GcTypeId::new(id),
-        list_type: GcTypeId::new(id + 1),
-        signature: FunctionSignatureId::new(id + 2),
-        declaration_signature: FunctionSignatureId::new(id + 3),
-        environment,
-        constructors: Vec::new(),
+    let slice_family = |element: &str| {
+        let id = slice_id(element);
+        OwnerFamily {
+            source: OwnerFamilySource::SharedReference(slice_view(element)),
+            slice_carrier: witchy_canonical_source::carrier::CarrierElement::from_view_type(&slice_view(element)),
+            owner_type: GcTypeId::new(id),
+            list_type: GcTypeId::new(id + 1),
+            signature: FunctionSignatureId::new(id + 2),
+            declaration_signature: FunctionSignatureId::new(id + 3),
+            environment,
+            constructors: Vec::new(),
+        }
     };
     let candidate = CanonicalModule::from_lowering(LoweredModuleParts {
         revision: Revision::new(1),
@@ -152,7 +163,7 @@ pub fn exact_int_slice_record_field_rejects_erased_and_wrong_owner_carriers(chec
         imports: Vec::new(),
         functions: Vec::new(),
         proper_tail_sites: Vec::new(),
-    }).with_owner_families(vec![family.clone(), slice_family("Int", 710), slice_family("Float", 720)]);
+    }).with_owner_families(vec![family.clone(), slice_family("Int"), slice_family("Float")]);
 
     validate_aggregate_family(&candidate, &family, &packet, &records, &layouts)
         .expect("exact rooted Int slice occupies an owner field");
@@ -170,7 +181,7 @@ pub fn exact_int_slice_record_field_rejects_erased_and_wrong_owner_carriers(chec
         "a slice owner must remain in the authenticated owner field");
 
     let mut wrong_family = family;
-    wrong_family.constructors[0].captures[0].value_type = ValueType::Gc(GcTypeId::new(720));
+    wrong_family.constructors[0].captures[0].value_type = ValueType::Gc(GcTypeId::new(float_slice_id));
     assert!(matches!(validate_aggregate_family(&candidate, &wrong_family, &packet, &records, &layouts),
         Err(CandidateAbiBindingError::MissingCanonicalLayouts)),
         "the Float slice owner cannot claim an Int slice field");

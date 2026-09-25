@@ -864,6 +864,15 @@ recursive-layout correspondence cases, and adversarial authority review
 passed. Independent admitted-Wasm results and zero-leak evidence are still
 needed before row G can close.
 
+Row G rooted-owner structural family check (implemented but unverified,
+2026-09-25): the scalar-place and retained-slice owner IDs derive from the
+shared bounded rooted-view storage plan. SafeWIR recomputes the ID from the
+checked source and requires both owner and list IDs to match before applying
+the existing exact carrier and physical layout checks. An adversarial review
+found no authority widening; the established hash encoding is unchanged.
+Existing rooted-view smoke results remain implementation checks, not broader
+row G evidence.
+
 Row G list-element projection adapter removal (implemented but unverified,
 2026-09-25): the secondary `ListElementProjection` and Bytes-only marker
 are deleted. Layout construction, lowering, and SafeWIR now inspect the

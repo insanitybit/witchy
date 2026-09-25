@@ -66,6 +66,14 @@ pub(crate) fn value_type_matches_source(
     if let super::super::ValueType::Gc(id) = actual {
         let Some(family) = context.owner_families.iter().find(|f| f.owner_type == id || f.list_type == id).cloned() else { return false };
         if let super::super::closure_owner_contract::OwnerFamilySource::SharedReference(expected) = &family.source {
+            let expected_id = match StoragePlan::classify(expected, records, |_| Some(0)) {
+                StoragePlan::RootedView(plan) => plan.owner_family_id(),
+                _ => None,
+            };
+            if !expected_id.is_some_and(|expected_id| family.owner_type.get() == expected_id
+                && family.list_type.get() == expected_id + 1) {
+                return false;
+            }
             // `List(&Int)` is the `&Int` family's owner list.
             if id == family.list_type {
                 return is_direct_rooted_scalar_place(expected)
