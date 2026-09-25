@@ -1211,12 +1211,14 @@ The retained tuple root owns its managed children. The original
 field combinations remain implemented but unverified. Qualifiers inside a
 field and closure capture of tuple views remain unsupported.
 
-Eligible non-packed whole-root `Option`, `Result`, and declared user aggregate
-views can carry an exact direct `List(S)` child for unqualified `S = Int`,
-`Float`, `Bool`, `Duration`, or `String`. The retained outer root owns that
-List child. Qualified, nested, or owner-bearing List elements have no admitted
-identity. These new cases await hand-computed results, admitted Wasm execution,
-and zero-leak audits.
+Non-packed whole-root `Option`, `Result`, and declared aggregate views derive
+their identity from recursively proved carrier leaves and their checked
+declaration shape. A leaf may use scalar, byte-buffer, list, tuple, or
+dictionary storage when its ownership proof is complete. A qualified root
+containing a retained list, including a dictionary's key or value list, is
+refused. SafeWIR also checks the exact physical layout. Newly admitted
+combinations await hand-computed results, admitted Wasm execution, and
+zero-leak audits.
 
 ## 8. Generics and traits
 

@@ -207,11 +207,13 @@ field combinations remain implemented but unverified. Qualified or
 view-valued fields without a carrier, and closure capture of tuple views,
 remain refused.
 
-Eligible non-packed `Option`, `Result`, and declared user aggregate roots can
-carry an exact direct `List(S)` child for unqualified `S = Int`, `Float`,
-`Bool`, `Duration`, or `String`; `&Option(List(Int))` is one example. The outer
-view retains its owned child. Qualified or nested List elements are refused;
-these new cases await admitted Wasm and leak evidence.
+Non-packed `Option`, `Result`, and declared aggregate roots derive their view
+identity from recursive storage proofs and the exact checked declaration
+shape. Proved scalar, byte-buffer, list, tuple, and dictionary leaves can be
+carried when SafeWIR also matches their physical layouts. The outer view
+retains its owned children. Qualified roots containing a retained list,
+including a dictionary's internal lists, are refused. Newly admitted
+combinations still await admitted Wasm and leak evidence.
 
 The same rule applies to destructuring, field access, indexing, iteration,
 `Option`, `Result`, tuples, and supported nested aggregates: transport the
