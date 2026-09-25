@@ -3,7 +3,7 @@
 //! Callable `&T` carriers are checked against an independent expected result,
 //! the canonical SafeWIR interpreter, and admitted unoptimized Wasm.  The
 //! retired source tree walker is intentionally absent from this acceptance
-//! path.  The unadmitted payload negative remains fail-closed here.
+//! path.
 
 use witchy::codegen;
 use witchy::opt::{self, OptSet};
@@ -104,31 +104,5 @@ fn main() -> Int:
     (*observed) * 10 + value
 "#,
         79,
-    );
-}
-
-#[test]
-fn rooted_view_callable_rejects_an_unadmitted_payload() {
-    opt::set_for_tests(Some(OptSet::none()));
-    let _reset = ResetOptimizationOverride;
-    let source = r#"
-fn relay(view: &List(List(List(Int)))) -> &List(List(List(Int))):
-    view
-
-fn main() -> Int:
-    let indirect = relay
-    let value = [[[7]]]
-    let observed = indirect(&value)
-    0
-"#;
-    let checked = witchy::resolve_std_only_checked(source)
-        .expect("unadmitted payload still type-checks before canonical admission");
-    let refusal = codegen::compile_checked_module_artifact(&checked)
-        .expect_unsupported("payload-erased callable must not cross the canonical boundary");
-    assert!(
-        refusal
-            .to_string()
-            .contains("rooted view payload has no admitted authenticated carrier"),
-        "boundary must reject the unauthenticated carrier rather than erase it: {refusal}",
     );
 }

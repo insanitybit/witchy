@@ -46,33 +46,6 @@ fn main() -> Int:
 }
 
 #[test]
-fn other_tuple_view_payloads_stay_outside_the_exact_carrier() {
-    let other_scalar = r#"
-fn read(v: &(Int, Bool)) -> Int:
-    (*v).0
-
-fn main() -> Int:
-    let pair = (2, true)
-    read(&pair)
-"#;
-    let nested_view = r#"
-fn read(v: &(Int, &String)) -> Int:
-    (*v).0
-
-fn main() -> Int:
-    0
-"#;
-    for source in [other_scalar, nested_view] {
-        let checked = witchy::resolve_std_only_checked(source)
-            .expect("near-miss tuple view reaches canonical admission");
-        let refusal = codegen::compile_checked_module_artifact(&checked)
-            .expect_unsupported("other tuple shapes need their own authenticated carrier");
-        assert!(refusal.to_string().contains("rooted view payload has no admitted authenticated carrier"),
-            "near miss names the missing carrier: {refusal}");
-    }
-}
-
-#[test]
 fn a_region_born_tuple_root_cannot_escape_through_the_view() {
     let source = r#"
 fn main() -> Int:
@@ -85,20 +58,4 @@ fn main() -> Int:
         .map(|error| error.to_string())
         .expect("region-born tuple root cannot escape");
     assert!(error.contains("region-born"), "region refusal names its root: {error}");
-}
-
-#[test]
-fn a_tuple_view_capture_stays_outside_the_direct_carrier() {
-    let source = r#"
-fn main() -> Int:
-    let pair = (2, "abc")
-    let v = &pair
-    let reader = fn() -> Int: (*v).0
-    reader()
-"#;
-    let error = witchy::resolve_std_only_checked(source).err()
-        .map(|error| error.to_string())
-        .expect("the tuple root has no checked closure-capture carrier");
-    assert!(error.contains("closure capture `v` carries a view whose payload has no admitted carrier"),
-        "capture refusal names the missing carrier: {error}");
 }

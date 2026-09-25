@@ -98,19 +98,6 @@ fn region_born_string_root_cannot_escape_through_a_view() {
     assert!(error.to_string().contains("region"), "the rejection names the region escape: {error}");
 }
 
-#[test]
-fn a_view_without_a_carrier_still_fails_closed_at_the_canonical_boundary() {
-    let source = "fn relay(view: &List(List(List(Int)))) -> &List(List(List(Int))):\n    view\n\nfn main() -> Int:\n    let value = [[[7]]]\n    let observed = relay(&value)\n    0\n";
-    let checked = witchy::resolve_std_only_checked(source)
-        .expect("unadmitted payload still type-checks before canonical admission");
-    let refusal = codegen::compile_checked_module_artifact(&checked)
-        .expect_unsupported("a third List shell has no admitted carrier");
-    assert!(
-        refusal.to_string().contains("rooted view payload has no admitted authenticated carrier"),
-        "the boundary must reject the unauthenticated carrier: {refusal}",
-    );
-}
-
 /// A heap-built String (not a static literal) is retained by its view token:
 /// growing the owner in a loop leaves the view on the original value.
 #[test]

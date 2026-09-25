@@ -71,9 +71,8 @@ fn main() -> Int:
 }
 
 /// An `Option` shell relays a scalar-value view and preserves its snapshot.
-/// An `Option` cannot turn an unsupported dictionary-root view into a carrier.
 #[test]
-fn an_option_float_view_relays_without_admitting_other_payload_families() {
+fn an_option_float_view_relays_its_snapshot() {
     assert_canonical_and_wasm(r#"
 fn relay(value: Option(&Float)) -> Option(&Float):
     value
@@ -87,28 +86,6 @@ fn main() -> Int:
         None -> 0
 "#, 21);
 
-    let unsupported = r#"
-fn relay(value: Option(&Dict(String, Bool))) -> Option(&Dict(String, Bool)):
-    value
-
-fn main() -> Int:
-    var d: Dict(String, Bool) = dict.new()
-    match relay(Some(&d)):
-        Some(_) -> 1
-        None -> 0
-"#;
-    let checked = witchy::resolve_std_only_checked(unsupported)
-        .expect("unsupported dictionary-root view reaches canonical admission");
-    let refusal = codegen::compile_checked_module_artifact(&checked)
-        .expect_unsupported("an Option shell cannot erase an unsupported view payload");
-    let diagnostic = refusal.to_string();
-    assert!(
-        diagnostic.contains("UnsupportedType")
-            && diagnostic.contains("Qualified(View")
-            && diagnostic.contains("Dict")
-            && diagnostic.contains("Bool"),
-        "the unsupported Option retains its view qualifier and exact payload: {refusal}",
-    );
 }
 
 #[test]

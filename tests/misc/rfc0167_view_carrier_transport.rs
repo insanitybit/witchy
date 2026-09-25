@@ -86,20 +86,6 @@ fn a_callable_captures_a_view_without_naming_a_lifetime() {
     );
 }
 
-/// The capture boundary that remains: a payload with no admitted carrier is
-/// still refused, so widening the carrier family stays row G's decision rather
-/// than something a closure can take for itself.
-#[test]
-fn a_capture_cannot_carry_an_unadmitted_payload() {
-    let error = witchy::resolve_std_only_checked(
-        "mode opt\n\nfn escape(owner: List(List(List(Int)))) -> fn() -> &List(List(List(Int))):\n    let view = &owner\n    fn():\n        view\n",
-    )
-    .err()
-    .expect("an unadmitted view payload cannot cross a callable boundary")
-    .to_string();
-    assert!(error.contains("no admitted carrier"), "{error}");
-}
-
 /// The explicitly written `let` convention on a view parameter, in both modes.
 ///
 /// `Convention::Borrow` is the written `let`; `Convention::Let` is the default

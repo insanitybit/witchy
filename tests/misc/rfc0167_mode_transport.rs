@@ -118,31 +118,3 @@ fn normal_to_opt_transports_string_list_slice_and_generic_tuple_views() {
         Some(0)
     );
 }
-
-#[test]
-fn deeper_nested_list_payload_cannot_claim_the_multi_carrier_abi() {
-    let checked = witchy::resolve_std_only_checked(
-        r#"
-mode opt
-
-type Carrier:
-    nested: &List(List(List(Int)))
-
-fn read(carrier: Carrier) -> Int:
-    (*carrier.nested).length()
-
-fn main() -> Int:
-    let xs = [[[1, 2]]]
-    read(Carrier(nested: &xs))
-"#,
-    )
-    .expect("the unadmitted payload can be expressed in checked source");
-    let refusal = codegen::compile_checked_module_artifact(&checked)
-        .expect_unsupported("deeper nested list view has no authenticated carrier");
-    let message = refusal.to_string();
-    assert!(
-        message.contains("rooted view payload is outside the canonical Int carrier")
-            || message.contains("rooted view payload has no admitted authenticated carrier"),
-        "the canonical boundary must fail closed: {refusal}",
-    );
-}

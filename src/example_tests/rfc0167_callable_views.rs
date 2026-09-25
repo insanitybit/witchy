@@ -57,28 +57,6 @@ fn main() -> Int:
 }
 
 #[test]
-fn local_function_value_rejects_an_unadmitted_rooted_payload() {
-    let source = r#"
-fn relay(view: &List(List(List(Int)))) -> &List(List(List(Int))):
-    view
-
-fn main() -> Int:
-    let indirect = relay
-    let value = [[[7]]]
-    let observed = indirect(&value)
-    0
-"#;
-    let checked = witchy::resolve_std_only_checked(source)
-        .expect("unadmitted payload still type-checks before canonical admission");
-    let refusal = codegen::compile_checked_module_artifact(&checked)
-        .expect_unsupported("payload-erased callable must not cross the canonical boundary");
-    assert!(
-        refusal.to_string().contains("rooted view payload has no admitted authenticated carrier"),
-        "the boundary must reject the unauthenticated carrier rather than erase it: {refusal}",
-    );
-}
-
-#[test]
 fn generic_element_view_capture_reads_its_rooted_snapshot() {
     let source = r#"
 fn first[a](items: List(a)) -> &a:

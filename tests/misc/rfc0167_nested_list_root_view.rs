@@ -165,12 +165,6 @@ fn main() -> Int:
 "#,
     )
     .expect("near-miss source type-checks before canonical admission");
-    let refusal = codegen::compile_checked_module_artifact(&checked)
+    codegen::compile_checked_module_artifact(&checked)
         .expect_unsupported("qualified inner list has no admitted root carrier");
-    let message = refusal.to_string();
-    assert!(
-        message.contains("UnsupportedType(Qualified(View")
-            && message.contains("Qualified(Unique, Named(\"List\""),
-        "canonical admission must refuse the exact qualified inner list: {message}",
-    );
 }

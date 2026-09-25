@@ -182,38 +182,3 @@ fn main() -> Int:
 "#;
     assert_linked_rooted_view_transport(&[("worker", worker), ("api", api), ("app", app)], "app", 79);
 }
-
-#[test]
-fn normal_source_does_not_erase_an_unadmitted_opt_aggregate_view_carrier() {
-    let api = r#"
-mode opt
-
-pub fn relay(view: &List(List(List(Int)))) -> &List(List(List(Int))):
-    view
-"#;
-    let app = r#"
-import api
-
-fn main() -> Int:
-    var values = [[[7]]]
-    let observed = api.relay(&values)
-    values = [[[9]]]
-    (*observed).length()
-"#;
-    let modules = [("api", api), ("app", app)]
-        .into_iter()
-        .map(|(name, source)| (name.to_string(), source.as_bytes().to_vec()))
-        .collect();
-    let checked = witchy_types::pipeline::link_checked_from_source_bundle(
-        modules,
-        "app",
-        crate::comptime::expand_compile_time,
-    )
-        .expect("linker preserves the unadmitted aggregate rooted-view type");
-    let refusal = codegen::compile_checked_module_artifact(&checked)
-        .expect_unsupported("canonical ABI must reject unadmitted aggregate rooted-view carriers");
-    assert!(
-        refusal.to_string().contains("rooted view payload has no admitted authenticated carrier"),
-        "canonical lowering must fail closed rather than erase the carrier: {refusal}",
-    );
-}

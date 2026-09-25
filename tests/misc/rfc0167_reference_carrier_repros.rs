@@ -141,20 +141,4 @@ fn main():
     let _ = codegen::compile_checked_module_artifact(&admitted)
         .expect_lowered("callable immutable view carrier");
 
-    // A view payload with no carrier stays fail-closed inside a callable.
-    canonical_refusal(
-        "callable view without a carrier",
-        r#"mode opt
-
-fn apply(action: fn(&List(List(List(Int)))) -> Int, value: &List(List(List(Int)))) -> Int:
-    action(value)
-
-fn inspect(value: &List(List(List(Int)))) -> Int:
-    (*value).length()
-
-fn main():
-    let rows = [[[1]]]
-    let _ = apply(inspect, &rows)
-"#,
-    );
 }

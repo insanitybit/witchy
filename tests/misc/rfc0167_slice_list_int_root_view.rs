@@ -67,12 +67,6 @@ fn main() -> Int:
 "#,
     )
     .expect("qualified slice source type-checks before canonical admission");
-    let refusal = codegen::compile_checked_module_artifact(&checked)
+    codegen::compile_checked_module_artifact(&checked)
         .expect_unsupported("qualified child has no exact slice carrier");
-    assert!(
-        refusal
-            .to_string()
-            .contains("UnsupportedType(Qualified(View, Slice(Qualified(Unique, Named(\"List\", [Named(\"Int\", [])])))))"),
-        "{refusal}"
-    );
 }

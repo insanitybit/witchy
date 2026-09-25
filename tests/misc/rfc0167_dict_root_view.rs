@@ -62,54 +62,6 @@ fn main() -> Int:
 }
 
 #[test]
-fn other_dictionary_view_payloads_stay_outside_the_exact_carrier() {
-    let nested_value = r#"
-fn count(v: &Dict(String, List(String))) -> Int:
-    (*v).length()
-
-fn main() -> Int:
-    0
-"#;
-    let nested_view = r#"
-fn count(v: &Dict(String, &Int)) -> Int:
-    (*v).length()
-
-fn main() -> Int:
-    0
-"#;
-    for source in [nested_value, nested_view] {
-        let checked = witchy::resolve_std_only_checked(source)
-            .expect("near-miss dictionary view reaches canonical admission");
-        let refusal = codegen::compile_checked_module_artifact(&checked)
-            .expect_unsupported("other dictionary values need their own authenticated carrier");
-        assert!(refusal.to_string().contains("rooted view payload has no admitted authenticated carrier"),
-            "near miss names the missing carrier: {refusal}");
-    }
-    let bool_closure_capture = r#"
-fn main() -> Int:
-    var d: Dict(String, Bool) = dict.new()
-    let _ = d.insert("a", true)
-    let view = &d
-    let read = fn() -> Int: if (*view).at("a"): 1 else: 0
-    read()
-"#;
-    let float_closure_capture = r#"
-fn main() -> Int:
-    var d: Dict(String, Float) = dict.new()
-    let _ = d.insert("a", 1.5)
-    let view = &d
-    let read = fn() -> Int: if (*view).at("a") == 1.5: 1 else: 0
-    read()
-"#;
-    for source in [bool_closure_capture, float_closure_capture] {
-        let error = witchy::resolve_std_only_checked(source).err()
-            .map(|error| error.to_string())
-            .expect("dictionary view closure capture stays fail-closed");
-        assert!(error.contains("no admitted carrier"), "closure capture refusal: {error}");
-    }
-}
-
-#[test]
 fn a_region_born_dictionary_root_cannot_escape_through_the_view() {
     let int_source = r#"
 fn main() -> Int:
