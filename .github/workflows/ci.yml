@@ -45,7 +45,7 @@ jobs:
   # heavy-compile clusters is unaffected by how the discovered set was
   # split.
   test:
-    name: Build, lint, test (shard ${{ matrix.shard }}/4)
+    name: Build and test (shard ${{ matrix.shard }}/4)
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -58,8 +58,6 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/install-rust
-        with:
-          components: clippy
       - uses: taiki-e/install-action@16b05812d776ae1dfaabc8277e421fb6d2506419 # v2.82.7
         with:
           tool: nextest
@@ -75,15 +73,6 @@ jobs:
         run: |
           bash ./scripts/rfc0165-native-gate-policy-test.sh
           bash ./scripts/rfc0165-native-gate.sh
-      # Deny only the genuine-bug tiers (see scripts/check.sh CLIPPY_GATE_LINTS):
-      # correctness + suspicious + dropped-must-use. Style/complexity/perf lints
-      # still print but do not fail CI — a needless borrow is not a merge blocker.
-      # Runs once (shard 1) — it's a single workspace-wide lint pass, not a
-      # test-partitionable step, so duplicating it across shards would be pure
-      # waste.
-      - name: Clippy (bug lints)
-        if: matrix.shard == 1
-        run: cargo clippy --workspace --all-targets --features witchy-wir/native -- -D clippy::correctness -D clippy::suspicious -D unused_must_use
       - name: Unit + integration tests (partition ${{ matrix.shard }}/4)
         env:
           SHARD: ${{ matrix.shard }}

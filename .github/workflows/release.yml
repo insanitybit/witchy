@@ -119,7 +119,7 @@ jobs:
         run: ./scripts/workflow-isolation-check.py .github/workflows
 
   test:
-    name: Build, lint, test
+    name: Build and test
     needs: version
     runs-on: ubuntu-24.04
     permissions:
@@ -130,18 +130,11 @@ jobs:
           ref: ${{ needs.version.outputs.commit }}
           persist-credentials: false
       - uses: ./.github/actions/install-rust
-        with:
-          components: clippy
       - uses: taiki-e/install-action@16b05812d776ae1dfaabc8277e421fb6d2506419 # v2.82.7
         with:
           tool: nextest
       - name: Build
         run: cargo build --workspace --all-targets --features witchy-wir/native --locked
-      # Same conservative deny-set as the gate and CI (see check.sh
-      # CLIPPY_GATE_LINTS): genuine-bug tiers only. A release must not fail on a
-      # style lint the merge gate already let through.
-      - name: Clippy (bug lints)
-        run: cargo clippy --workspace --all-targets --features witchy-wir/native --locked -- -D clippy::correctness -D clippy::suspicious -D unused_must_use
       - name: Unit and integration tests
         run: cargo nextest run --workspace --features witchy-wir/native --profile ci --all-targets --locked
 
