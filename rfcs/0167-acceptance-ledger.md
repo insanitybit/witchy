@@ -83,6 +83,14 @@ found no authority widening. No new admitted Wasm, zero-leak evidence, or
 A–O closure is claimed. The five existing `List(&Int)` positive and negative
 smoke cases passed on this branch.
 
+Row K typed closure family inventory (architecture implemented, semantic
+evidence unchanged, 2026-09-25): the layout projection now groups callable
+families by normalized checked `Type` rather than a debug-formatted string.
+It orders families by their bounded structural type key and rejects a digest
+collision before layout construction. Capture variants, checked witnesses,
+physical storage checks, admitted Wasm, zero-leak evidence, and A–O status
+remain unchanged.
+
 Row G recursive nominal ABI identity (architecture implemented, semantic
 evidence unchanged, 2026-09-25): recursive aggregate layout IDs now use the
 bounded structural encoding of their normalized checked type. The existing

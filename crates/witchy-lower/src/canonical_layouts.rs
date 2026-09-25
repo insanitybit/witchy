@@ -399,7 +399,7 @@ fn project_layouts(
         roots: Vec::new(),
         rooted_slices_requested: BTreeSet::new(),
         definitions,
-        closures: BTreeMap::new(),
+        closures: HashMap::new(),
         capture_variants,
         visiting: HashSet::new(),
         visited: HashSet::new(),
@@ -473,9 +473,9 @@ struct LayoutProjection {
     // Shared so the walk can hold a shape-memo scope on the map while it
     // mutates the rest of the projection (see `with_shape_memo`).
     definitions: std::rc::Rc<BTreeMap<String, TypeDef>>,
-    /// Every `fn` type reached, keyed by its rendering, with its exact
-    /// source-witness environment variants.
-    closures: BTreeMap<String, (Type, Vec<(u32, Vec<Type>)>)>,
+    /// Every `fn` type reached, keyed by its normalized checked type, with
+    /// its exact source-witness environment variants.
+    closures: HashMap<Type, Vec<(u32, Vec<Type>)>>,
     capture_variants: HashMap<Type, Vec<(u32, Vec<Type>)>>,
     visiting: HashSet<Type>,
     visited: HashSet<Type>,
@@ -615,7 +615,7 @@ impl LayoutProjection {
             Type::Fn(parameters, result, _, _) => {
                 let fn_type = canonical_closure_key(ty, &self.definitions);
                 let variants = self.capture_variants.get(&fn_type).cloned().unwrap_or_default();
-                self.closures.insert(format!("{fn_type:?}"), (fn_type, variants));
+                self.closures.insert(fn_type, variants);
                 for parameter in parameters {
                     self.visit_type(parameter)?;
                 }
@@ -716,7 +716,19 @@ impl LayoutProjection {
         // family), so constructing one environment before reserving the
         // others would recurse through physical bodies and lose the checked
         // callable identity.
-        let closure_specs = self.closures.into_values().collect::<Vec<_>>();
+        let mut keyed_closures = self.closures.into_iter().map(|(signature, variants)| {
+            let key = SourceTypeKey { source: &signature }.digest().ok_or_else(|| {
+                CanonicalLayoutError::InvalidLayout("closure family type key exceeds bounds".into())
+            })?;
+            Ok((key, signature, variants))
+        }).collect::<Result<Vec<_>, CanonicalLayoutError>>()?;
+        keyed_closures.sort_by_key(|(key, _, _)| *key);
+        if keyed_closures.windows(2).any(|pair| pair[0].0 == pair[1].0) {
+            return Err(CanonicalLayoutError::InvalidLayout("closure family type key collision".into()));
+        }
+        let closure_specs = keyed_closures.into_iter().map(|(_, signature, variants)| {
+            (signature, variants)
+        }).collect::<Vec<_>>();
         // A family has one value ABI, including its named adapters. Only
         // families whose checked captures require opaque storage change ABI.
         // These ids identify candidate types; the independent checker binds
