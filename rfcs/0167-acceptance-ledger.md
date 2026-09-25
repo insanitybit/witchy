@@ -897,6 +897,21 @@ unoptimized Wasm with zero canonical heap leaks, while `List(Console)` at
 the same generic `.owned()` boundary refuses authority. This proves those
 exact instances, not the broader row G matrix or A–O closeout.
 
+Row G recursive aggregate view owners (architecture implemented, broader
+forms unverified, 2026-09-25): the checked aggregate field walk now composes
+proved slice owners through non-packed tuples, records, sums, `Option`, and
+`Result` within its eight-level view-carrier limit. It replaces the earlier
+direct-slice record restriction described above. Owner-family identity uses
+the same normalized structural identity as the concrete aggregate; the
+separate owner-identity rewrite and cache are removed. Coalescing a proved
+`Option` or `Result` reads its success payload through the authenticated
+opaque-aggregate path. The exact `Result(Option(&[Int]), String)` and
+`Option(&[Int])` program has hand-computed result 129 in admitted unoptimized
+Wasm and zero canonical heap leaks; its region-born `Option(&[Int])` negative
+refuses escape. This proves those instances only. Other field classes,
+cross-mode transport, and the A–O matrix remain open pending independent
+expected results, admitted Wasm, and zero-leak audits.
+
 At `adf1d01c7` (2026-09-18), the integrated core smoke was **42/42 passed**: rooted views (13), unique/write-back (12), normal/opt interoperation (2), resource composition (5), and optimization readiness (10). This is core canonical-route evidence only; it does not include the source interpreter, full, end-to-end, or examples suites.
 
 At `2f62f4038` (2026-09-19), the newly integrated concrete `Option(&Int)` evidence is **6/6 passed**: four lower carrier/tamper/`var` checks, one exact authority payload-state check, and one production-runtime three-leg fixture (`790`, zero leaks). The three generic rooted-slice fixtures are **1 passed / 2 failed**: region-root escape rejects as expected, while both positive forms stop at the explicit missing authenticated slice-element projection. This is a live failure checkpoint, not an acceptance closeout.

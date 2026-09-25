@@ -1189,9 +1189,10 @@ Every payload field needs the recursive proof; managed payload fields require
 nullable owned pointer slots because inactive variants leave them empty.
 Packed, must-consume, capability-bearing, and recursive aggregates have no
 slice-element carrier yet.
-One direct `&[T]` field in a declared untagged record can carry the same
-proved slice owner through that record. Nested slice fields and tagged shells
-remain outside this aggregate-view carrier.
+Non-packed records, tuples, sums, `Option`, and `Result` can compose proved
+view owners through their checked fields, including nested `&[T]` projections.
+Each containing owner must keep the exact normalized source identity and
+pass SafeWIR's owner-family and physical slot checks. Unproved fields refuse.
 The slice retains its outer list root, and reads retain managed children
 through the checked projection. Carrier proof has a compiler resource limit
 of 128 nested levels and 4,096 type nodes.

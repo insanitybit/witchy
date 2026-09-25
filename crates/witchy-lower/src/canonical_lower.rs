@@ -11424,23 +11424,37 @@ impl FunctionLowerer<'_> {
 
     /// `value ?? default`: the payload of `Some`/`Ok`, otherwise the
     /// default, evaluated only on the `None`/`Err` edge. Both checked
-    /// aggregate layouts put the success variant first, with payload slot 1.
+    /// aggregate layouts put the success variant first. The checked shape
+    /// selects its payload slot, including opaque owner-carried aggregates.
     fn lower_coalesce(&mut self, left: &Expr, right: &Expr) -> Result<ValueId, CanonicalLoweringError> {
         let left_type = self.expression_type(left)?;
         let shape = scalar_aggregate_shape(&left_type, self.definitions)
             .filter(|shape| matches!(shape.name.as_str(), "Option" | "Result"))
             .ok_or(CanonicalLoweringError::UnsupportedExpression("coalesce operand"))?;
+        let success_name = if shape.name == "Option" { "Some" } else { "Ok" };
+        let (success_index, success) = shape.variant(success_name)
+            .ok_or(CanonicalLoweringError::UnsupportedExpression("coalesce success variant"))?;
+        if success.arity != 1 {
+            return Err(CanonicalLoweringError::UnsupportedExpression("coalesce success payload"));
+        }
+        let success_field = success.first_field;
         let object = self.lower_expr(left)?;
-        let payload_type = self.field_value_type(&shape.fields[1])?;
-        let tag = self.load_record_field(object, 0, ValueType::Int)?;
-        let some_tag = self.push_const_int(0)?;
+        let payload_type = self.field_value_type(&shape.fields[success_field])?;
+        let tag = if matches!(self.values[&object], ValueType::Gc(_)) {
+            self.opaque_aggregate_tag(object, &left_type)?
+        } else {
+            self.load_record_field(object, 0, ValueType::Int)?
+        };
+        let some_tag = self.push_const_int(i64::try_from(success_index).map_err(|_| CanonicalLoweringError::IdOverflow)?)?;
         let is_some = self.push_compare(ComparisonOperator::Equal, tag, some_tag)?;
         // The lazy default may write back any ordinary var argument. Use the
         // same per-edge binding, ownership, and extent join as if/short-circuit
         // expressions instead of joining only the expression's result.
         self.lower_conditional_branches(is_some, |this| {
             // Never read the success payload on the None/Err edge.
-            let payload = this.load_record_field(object, 1, payload_type)?;
+            let payload = this.load_source_aggregate_field(
+                object, &left_type, success_index, 0, success_field, payload_type,
+            )?;
             Ok(Some(this.detach_bound_result(payload)?))
         }, |this| {
             let default = this.lower_expr(right)?;

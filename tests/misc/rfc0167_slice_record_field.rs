@@ -65,3 +65,48 @@ fn bad() -> Packet:
         "cannot copy out a region aggregate carrying immutable views without per-field parent-root provenance"
     ), "{error}");
 }
+
+#[test]
+fn nested_slice_owners_keep_one_snapshot_and_refuse_region_escape() {
+    opt::set_for_tests(Some(OptSet::none()));
+    let _reset = ResetOptimizationOverride;
+    let source = r#"
+fn wrap(items: &[Int]) -> Option(&[Int]):
+    Some(items)
+
+fn nest(items: &[Int]) -> Result(Option(&[Int]), String):
+    Ok(wrap(items))
+
+fn main() -> Int:
+    var xs = [1, 2]
+    let nested = nest(&xs[0..2])
+    let chosen = wrap(&xs[0..2]) ?? &xs[0..1]
+    xs[0] = 9
+    let original = match nested:
+        Ok(Some(items)) -> items[0]
+        Ok(None) -> 0
+        Err(_) -> 0
+    original * 100 + chosen.length() * 10 + xs[0]
+"#;
+    // Both wrappers retain [1, 2] after xs[0] becomes 9: 100 + 20 + 9.
+    let checked = witchy::resolve_std_only_checked(source).expect("recursive view owners type-check");
+    let artifact = witchy::codegen::compile_checked_module_artifact(&checked)
+        .expect_lowered("recursive view owners pass SafeWIR admission");
+    let mut runtime = Runtime::batch().expect("runtime");
+    let mut vm = runtime.spawn_admitted(
+        &artifact,
+        Capabilities { print_int: true, quiet: true, ..Capabilities::none() },
+        128,
+    ).expect("admitted unoptimized Wasm instance");
+    vm.run().expect("admitted Wasm execution");
+    assert_eq!(vm.output(), vec!["129"]);
+    assert_eq!(vm.canonical_heap_leaks().expect("canonical heap audit"), Some(0));
+
+    let escaped = witchy::resolve_std_only_checked(r#"
+fn bad() -> Option(&[Int]):
+    region -> Option(&[Int]):
+        let local = [1, 2]
+        Some(&local[0..2])
+"#).expect_err("a region-born slice cannot escape inside an Option");
+    assert!(escaped.to_string().contains("cannot copy out a region aggregate carrying immutable views"), "{escaped}");
+}

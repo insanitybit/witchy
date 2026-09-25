@@ -544,7 +544,6 @@ mod shape_memo {
         definitions: usize,
         shapes: HashMap<Type, Option<ScalarAggregateShape>>,
         identities: HashMap<Type, Option<Type>>,
-        owner_identities: HashMap<Type, Option<Type>>,
         derived: HashMap<&'static str, HashMap<Type, Type>>,
     }
 
@@ -581,7 +580,6 @@ mod shape_memo {
                 definitions: wanted,
                 shapes: HashMap::default(),
                 identities: HashMap::default(),
-                owner_identities: HashMap::default(),
                 derived: HashMap::default(),
             });
         });
@@ -636,15 +634,6 @@ mod shape_memo {
         });
     }
 
-    pub(super) fn owner_identity(definitions: &BTreeMap<String, TypeDef>, ty: &Type) -> Option<Option<Type>> {
-        with_scope(definitions, |scope| scope.owner_identities.get(ty).cloned()).flatten()
-    }
-
-    pub(super) fn remember_owner_identity(definitions: &BTreeMap<String, TypeDef>, ty: &Type, identity: &Option<Type>) {
-        with_scope(definitions, |scope| {
-            scope.owner_identities.insert(ty.clone(), identity.clone());
-        });
-    }
 }
 
 /// Memoize `derive(ty)` in the open shape-memo scope for `definitions`,
@@ -667,78 +656,14 @@ pub fn memoize_derived_type(
 
 /// The aggregate identity that authorizes typed opaque owner fields.
 ///
-/// Ordinary aggregates use the concrete physical identity.  A non-packed
-/// aggregate with a direct `&Int` or exact `&[Int]` field is the bounded
-/// exception: that field carries an authenticated rooted-view owner, so erasing the nested `View`
-/// qualifier would change the carrier into linear storage.  Preserve the
-/// qualifier at direct aggregate arguments and through `Option` nesting of
-/// such a carrier (`Option(Option(&Int))`), whose every shell is itself an
-/// opaque owner; other nested carriers remain outside this ABI until they
-/// have their own provenance contract.
+/// The bounded concrete identity retains each authenticated owner-carried
+/// view while canonicalizing its slice spelling and every nested argument.
+/// The owner family and ordinary layout must use that same structural key.
 pub fn canonical_owner_aggregate_identity(
     ty: &Type,
     definitions: &BTreeMap<String, TypeDef>,
 ) -> Option<Type> {
-    // Layout projection, lowering and both authority checks ask this for the
-    // same few types thousands of times; the view walk behind it is not
-    // itself memoized.
-    if !matches!(ty.unqualified(), Type::Named(..) | Type::Tuple(_)) {
-        return canonical_owner_aggregate_identity_uncached(ty, definitions);
-    }
-    if let Some(known) = shape_memo::owner_identity(definitions, ty) {
-        return known;
-    }
-    let identity = canonical_owner_aggregate_identity_uncached(ty, definitions);
-    shape_memo::remember_owner_identity(definitions, ty, &identity);
-    identity
-}
-
-fn canonical_owner_aggregate_identity_uncached(
-    ty: &Type,
-    definitions: &BTreeMap<String, TypeDef>,
-) -> Option<Type> {
-    let identity = concrete_aggregate_identity(ty, definitions)?;
-    let carries_direct_rooted_view = scalar_aggregate_shape(ty, definitions).is_some_and(|shape| {
-        !shape.packed && shape.fields.iter().any(|field| preserves_owner_view_identity(ty, field, definitions))
-    });
-    if !carries_direct_rooted_view {
-        return Some(identity);
-    }
-    match (ty.unqualified(), identity) {
-        (Type::Named(_, source_arguments), Type::Named(name, arguments))
-            if source_arguments.len() == arguments.len() =>
-        {
-            Some(Type::Named(name, source_arguments.iter().zip(arguments).map(|(source, identity)| {
-                if preserves_owner_view_identity(ty, source, definitions) { source.clone() } else { identity }
-            }).collect()))
-        }
-        (Type::Tuple(source_items), Type::Tuple(items)) if source_items.len() == items.len() => {
-            Some(Type::Tuple(source_items.iter().zip(items).map(|(source, identity)| {
-                if preserves_owner_view_identity(ty, source, definitions) { source.clone() } else { identity }
-            }).collect()))
-        }
-        // A nominal declaration can carry a direct rooted view in one of its
-        // fields even though its outer identity has no type argument.  The
-        // normalized declaration identity is already exact in that case.
-        (_, identity) => Some(identity),
-    }
-}
-
-fn preserves_owner_view_identity(
-    aggregate: &Type,
-    candidate: &Type,
-    definitions: &BTreeMap<String, TypeDef>,
-) -> bool {
-    let Some(plan) = view_carrier_plan(candidate, definitions) else { return false };
-    if !plan.has_retained_projection() { return true; }
-    // A slice argument is part of this owner only when it is the actual
-    // authenticated direct field, not merely an unused generic argument of
-    // an aggregate that happens to carry some other view.
-    is_direct_rooted_slice_view_syntax(candidate)
-        && is_rooted_int_view_aggregate(aggregate, definitions)
-        && scalar_aggregate_shape(aggregate, definitions).is_some_and(|shape| {
-            shape.fields.iter().any(|field| field == candidate)
-        })
+    concrete_aggregate_identity(ty, definitions)
 }
 
 /// Whether a whole view uses its immutable scalar value as physical storage.
@@ -802,17 +727,6 @@ impl ViewCarrierPlan {
         }
     }
 
-    pub fn has_retained_projection(&self) -> bool {
-        match self {
-            Self::Direct(plan) => matches!(plan.admitted_storage(),
-                Some(crate::rooted_view::OwnerCarriedViewStorage::RetainedProjection(_))),
-            Self::DirectRetainedRoot(_) => false,
-            Self::Aggregate { fields, .. } => fields.iter().any(|field| match field {
-                ViewCarrierFieldPlan::Plain => false,
-                ViewCarrierFieldPlan::Carried(plan) => plan.has_retained_projection(),
-            }),
-        }
-    }
 }
 
 /// A direct authenticated `&Int` or proven `&[T]` owner, or an admitted
@@ -874,30 +788,6 @@ fn view_aggregate_plan_at(
     }
     let shape = scalar_aggregate_shape(ty, definitions)?;
     if shape.packed { return None; }
-    // The proven slice extension is an exact direct field of a declared
-    // untagged record. A tuple, sum, builtin shell, or another record around
-    // that field needs its own checked projection/owner witness. In
-    // particular, treating compiler-generated Option<&[T]> async state as
-    // an ordinary aggregate owner fails canonical ABI authentication.
-    let direct_slice_count = shape.fields.iter().filter(|field| is_direct_rooted_slice_view_syntax(field)).count();
-    let nested_slice = shape.fields.iter().any(|field| {
-        !is_direct_rooted_slice_view_syntax(field)
-            && contains_rooted_slice_view_at(field, definitions, depth + 1)
-    });
-    let direct_record = matches!(ty.unqualified(), Type::Named(name, arguments)
-        if arguments.is_empty() && definitions.get(name).is_some_and(|definition| {
-            matches!(definition.variants.as_slice(), [variant]
-                if !variant.fields.is_empty()
-                    && variant.field_names.len() == variant.fields.len())
-        }));
-    let direct_view_tuple = matches!(ty.unqualified(), Type::Tuple(_))
-        && shape.fields.iter().all(|field| matches!(field, Type::Qualified(witchy_syntax::ast::TypeQual::View, _)));
-    if (direct_slice_count != 0 || nested_slice)
-        && !(direct_slice_count == 1 && !nested_slice && !shape.tagged
-            && (direct_record || direct_view_tuple))
-    {
-        return None;
-    }
     let mut carriers = 0usize;
     let mut fields = Vec::with_capacity(shape.fields.len());
     for field in &shape.fields {
@@ -910,20 +800,6 @@ fn view_aggregate_plan_at(
         }
     }
     (carriers > 0).then_some(ViewCarrierPlan::Aggregate { shape, fields })
-}
-
-fn contains_rooted_slice_view_at(
-    ty: &Type,
-    definitions: &BTreeMap<String, TypeDef>,
-    depth: usize,
-) -> bool {
-    if is_direct_rooted_slice_view_syntax(ty) { return true; }
-    // Unresolved depth is treated as a possible nested slice, so the narrow
-    // record extension cannot authorize a recursive or over-deep carrier.
-    if depth >= MAX_VIEW_CARRIER_DEPTH { return true; }
-    scalar_aggregate_shape(ty, definitions).is_some_and(|shape| {
-        shape.fields.iter().any(|field| contains_rooted_slice_view_at(field, definitions, depth + 1))
-    })
 }
 
 /// Whether any view hides in `ty`, through generic arguments, tuples, named
@@ -1256,7 +1132,7 @@ mod recursive_shape_tests {
     }
 
     #[test]
-    fn record_slice_carrier_requires_proven_element() {
+    fn recursive_slice_carrier_requires_proven_element_and_actual_fields() {
         let view_slice = |element| Type::Qualified(
             witchy_syntax::ast::TypeQual::View,
             Box::new(Type::Slice(Box::new(element))),
@@ -1273,15 +1149,18 @@ mod recursive_shape_tests {
             Box::new(Type::Named("Slice".into(), vec![named("Int")])),
         );
         assert!(is_rooted_int_view_carrier(&normalized_int_slice, &definitions));
-        assert!(!is_rooted_int_view_aggregate(
-            &Type::Named("Option".into(), vec![int_slice.clone()]),
-            &definitions,
-        ));
         let option_slice = Type::Named("Option".into(), vec![int_slice.clone()]);
+        assert!(is_rooted_int_view_aggregate(&option_slice, &definitions));
         assert_eq!(
             canonical_owner_aggregate_identity(&option_slice, &definitions),
-            concrete_aggregate_identity(&option_slice, &definitions),
-            "an unsupported slice shell must keep its concrete identity",
+            Some(option_slice.clone()),
+            "an actual projected-view field keeps its checked owner identity",
+        );
+        let private_slice_spelling = Type::Named("Option".into(), vec![normalized_int_slice]);
+        assert_eq!(
+            canonical_owner_aggregate_identity(&private_slice_spelling, &definitions),
+            Some(option_slice.clone()),
+            "surface and checked private slice spellings share one owner key",
         );
         let int_view = Type::Qualified(
             witchy_syntax::ast::TypeQual::View, Box::new(named("Int")),
@@ -1302,21 +1181,21 @@ mod recursive_shape_tests {
             Type::Named("Option".into(), vec![tuple]),
             Type::Named("Result".into(), vec![int_slice.clone(), named("String")]),
         ] {
-            assert!(!is_rooted_int_view_aggregate(&shell, &definitions));
+            assert!(is_rooted_int_view_aggregate(&shell, &definitions));
         }
         let mut nested = definitions.clone();
         nested.insert("Outer".into(), definition("Outer", vec![packet.clone()], false));
-        assert!(!is_rooted_int_view_aggregate(&named("Outer"), &nested));
+        assert!(is_rooted_int_view_aggregate(&named("Outer"), &nested));
         let mut sum = definition("Choice", vec![int_slice.clone()], false);
         let mut other = sum.variants[0].clone();
         other.name = "Other".into();
         sum.variants.push(other);
         let sum_definitions = BTreeMap::from([("Choice".into(), sum)]);
-        assert!(!is_rooted_int_view_aggregate(&named("Choice"), &sum_definitions));
+        assert!(is_rooted_int_view_aggregate(&named("Choice"), &sum_definitions));
         let mut positional = definition("Positional", vec![int_slice.clone()], false);
         positional.variants[0].field_names.clear();
         let positional_definitions = BTreeMap::from([("Positional".into(), positional)]);
-        assert!(!is_rooted_int_view_aggregate(&named("Positional"), &positional_definitions));
+        assert!(is_rooted_int_view_aggregate(&named("Positional"), &positional_definitions));
 
         for element in [named("Float"), Type::Named("List".into(), vec![named("Int")])] {
             let admitted = view_slice(element);

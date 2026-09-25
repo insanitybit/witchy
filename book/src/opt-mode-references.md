@@ -185,8 +185,10 @@ checked declared sums are admitted when each variant payload has that proof;
 managed payloads use nullable owned slots because inactive variants leave
 those slots empty. Packed, must-consume, capability-bearing, and recursive
 aggregates remain unsupported as slice elements.
-An untagged record may also hold one direct `&[T]` field when `T` has that
-proof. Nested slice fields and tagged wrappers of slice fields remain unsupported.
+Non-packed records, tuples, sums, `Option`, and `Result` can carry proved
+view owners in their checked fields, including nested `&[T]` projections.
+The containing owner must keep the exact source type and pass the physical
+owner-family checks; unproved fields are rejected.
 Carrier proof is bounded at 128 nested levels
 and 4,096 type nodes.
 Qualified children and elements without a complete ownership proof are
