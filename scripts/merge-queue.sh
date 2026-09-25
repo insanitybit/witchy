@@ -2544,6 +2544,26 @@ evict_candidate_index() { # evict_candidate_index <log> <base>; echoes "<index> 
     printf '%s %s\n' "$best_index" "$best"
 }
 
+# An explicit --front submission is an operator signal that the queued change
+# is more urgent than work which has not started its gate yet. Candidate replay
+# and snapshot preparation deliberately happen without gate.lock and can take
+# minutes, so rescan the live queue at the two admission boundaries below.
+# Ordinary FIFO arrivals never preempt preparation.
+ready_front_before() { # ready_front_before <selected-queue-file>
+    local selected="$1" qf name branch
+    while IFS= read -r qf; do
+        [ "$qf" = "$selected" ] && return 1
+        name="$(basename "$qf")"
+        case "$name" in 00front-* | 0front-*) ;; *) continue ;; esac
+        [ "$(queue_readiness "$qf")" = ready ] || continue
+        branch="$(jq -r '.branch // empty' "$qf")"
+        [ -n "$branch" ] || continue
+        printf '%s\n' "$branch"
+        return 0
+    done < <(find "$queue_dir" -maxdepth 1 -name '*.json' -print | sort)
+    return 1
+}
+
 process_one() { # process_one <queue-file>; returns 0 if the file was consumed
     local f="$1"
     # --front and resubmission may rename or replace a selected path. Rescan
@@ -2653,6 +2673,16 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
             submitted_sha "$submitted_sha" sha "$submitted_sha" \
             reason "main master checkout has tracked changes before gate"
         return 2
+    fi
+
+    local urgent_branch=""
+    if urgent_branch="$(ready_front_before "$f")"; then
+        note "urgent front submission $urgent_branch arrived during replay; deferring $branch before claim"
+        record requeued "$branch" change_id "$change_id" attempt_id "$attempt_id" \
+            submitted_sha "$submitted_sha" sha "$submitted_sha" \
+            reason "urgent front submission arrived during preparation" \
+            urgent_branch "$urgent_branch"
+        return 1
     fi
 
     # Preparation can take long enough for an operator drop or resubmission to
@@ -2802,6 +2832,27 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
     census_proof_ready=0
     rebaseline_generated_snapshots "$base" "$branch" "$change_id" "$attempt_id" \
         "$cargo_target_dir" || true
+
+    # Snapshot generation is the longest unlocked preparation step. A newly
+    # submitted --front change must not sit behind it and the ensuing gate.
+    # Return every claimed member to queued before yielding to the urgent item.
+    if urgent_branch="$(ready_front_before "$f")"; then
+        note "urgent front submission $urgent_branch arrived during snapshot preparation; deferring ${batch_branches[*]}"
+        local front_i
+        for front_i in "${!batch_ids[@]}"; do
+            if set_change_state "${batch_ids[$front_i]}" queued \
+                "${batch_submitted_shas[$front_i]}" "${batch_attempt_ids[$front_i]}"; then
+                record requeued "${batch_branches[$front_i]}" \
+                    change_id "${batch_ids[$front_i]}" \
+                    attempt_id "${batch_attempt_ids[$front_i]}" \
+                    submitted_sha "${batch_submitted_shas[$front_i]}" \
+                    sha "${batch_submitted_shas[$front_i]}" \
+                    reason "urgent front submission arrived during preparation" \
+                    urgent_branch "$urgent_branch"
+            fi
+        done
+        return 1
+    fi
 
     local sha; sha="$(git -C "$gate_wt" rev-parse HEAD)"
 

@@ -1082,6 +1082,83 @@ fn front_resubmission_moves_an_existing_change_to_the_actual_queue_head() {
 }
 
 #[test]
+fn urgent_front_submission_preempts_snapshot_preparation() {
+    let fixture = QueueFixture::stack(&["std/a.witchy"]);
+    run_git(&fixture.root, &["switch", "-c", "b", "master"]);
+    fs::create_dir_all(fixture.root.join("scripts")).expect("create script directory");
+    fs::write(fixture.root.join("scripts/merge-queue.sh"), "urgent\n")
+        .expect("write urgent queue change");
+    run_git(&fixture.root, &["add", "scripts/merge-queue.sh"]);
+    run_git(&fixture.root, &["commit", "-m", "urgent queue fix"]);
+    run_git(&fixture.root, &["switch", "master"]);
+    fixture.mq_ok(&["submit", "a"], "true");
+
+    let fake_bin = fixture._temp.path().join("fake-cargo");
+    let preparation_started = fixture._temp.path().join("preparation-started");
+    let preparation_release = fixture._temp.path().join("preparation-release");
+    fs::create_dir(&fake_bin).expect("create fake cargo directory");
+    let cargo = fake_bin.join("cargo");
+    fs::write(
+        &cargo,
+        format!(
+            "#!/bin/sh\ntouch '{}'\nwhile [ ! -f '{}' ]; do sleep 0.01; done\nexit 1\n",
+            preparation_started.display(),
+            preparation_release.display(),
+        ),
+    )
+    .expect("write paused cargo");
+    fs::set_permissions(&cargo, fs::Permissions::from_mode(0o755))
+        .expect("chmod paused cargo");
+    let path = format!(
+        "{}:{}",
+        fake_bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let gate_order = fixture._temp.path().join("gate-order");
+    let gate = format!(
+        "if [ -f std/a.witchy ]; then printf 'a\\n'; else printf 'b\\n'; fi >>'{}'",
+        gate_order.display(),
+    );
+    let runner = fixture
+        .mq_command(&["run", "--once"], &gate)
+        .env("PATH", path)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("start queue during snapshot preparation");
+
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !preparation_started.exists() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert!(
+        preparation_started.exists(),
+        "candidate did not reach snapshot preparation"
+    );
+    fixture.mq_ok(&["submit", "--front", "b"], "true");
+    fs::write(&preparation_release, "go\n").expect("release snapshot preparation");
+
+    let output = runner.wait_with_output().expect("wait for preempting queue run");
+    assert!(
+        output.status.success(),
+        "queue run failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert_eq!(
+        fs::read_to_string(&gate_order).expect("read gate order"),
+        "b\na\n",
+        "the already-prepared normal candidate gated before the urgent front submission"
+    );
+    assert!(fixture.journal().iter().any(|event| {
+        event["event"] == "requeued"
+            && event["branch"] == "a"
+            && event["reason"] == "urgent front submission arrived during preparation"
+            && event["urgent_branch"] == "b"
+    }));
+}
+
+#[test]
 fn reused_branch_gets_a_new_change_id_without_forgetting_old_dependencies() {
     let fixture = QueueFixture::stack(&["a.txt", "b.txt"]);
     fixture.mq_ok(&["submit", "a"], "true");
