@@ -55,6 +55,16 @@ is needed for soundness.
 
 ## Exact-tip evidence checkpoint
 
+Row G shared list-layout correspondence (architecture implemented, semantic
+evidence pending, 2026-09-25): SafeWIR's ordinary packed-List layout walk now
+consumes the same typed `ListElementProjection` as the checked layout catalog.
+A recursive owned element must pass the complete carrier-to-physical-layout
+relation; an explicit refusal cannot fall through to legacy pointer matching.
+Callable and other layout-only elements still require their existing physical
+and callable-ABI checks, and the nested owner-family guard remains before this
+walk. This has not yet received admitted Wasm and zero-leak evidence for the
+full list grammar; no A–O row closes here.
+
 Row G callable storage descriptor (architecture implemented, semantic evidence
 pending, 2026-09-25): the canonical-source contract now retains the exact
 bounded function signature and its separate normalized closure family as

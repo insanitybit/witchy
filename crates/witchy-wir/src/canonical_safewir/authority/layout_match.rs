@@ -1,6 +1,6 @@
 use super::*;
 use witchy_canonical_source::rooted_view::{OwnerCarriedViewPlan, OwnerCarriedViewStorage, RetainedRootStorage, RootedViewStorage};
-use witchy_canonical_source::storage::StoragePlan;
+use witchy_canonical_source::storage::{ListElementProjection, StoragePlan};
 
 pub(crate) fn value_type_matches_source(
     actual: super::super::ValueType,
@@ -388,17 +388,23 @@ pub(super) fn enqueue_layout_children(
             if is_unit_source_type(&arguments[0]) {
                 return matches!(element.kind(), LayoutKind::Scalar(ScalarKind::Unit));
             }
-            if let Some(carrier) =
-                witchy_canonical_source::carrier::CarrierElement::from_checked_type_with_definitions(
-                    &arguments[0], records,
-                )
-            {
-                // One checked recursive proof covers the element's scalar
-                // kind, owned slot, RC body, and every nested release edge.
-                // A mismatch must not fall through to the legacy layout walk.
-                return super::super::closure_owner_contract::carrier_element_layout_matches(
-                    layouts, element_layout, &carrier,
-                );
+            match ListElementProjection::classify(&arguments[0], records) {
+                ListElementProjection::Owned(carrier) => {
+                    // The same source plan used by layout projection supplies
+                    // the recursive ownership proof. A physical mismatch
+                    // cannot fall through to the older layout walk.
+                    return super::super::closure_owner_contract::carrier_element_layout_matches(
+                        layouts, element_layout, &carrier,
+                    );
+                }
+                ListElementProjection::RetainedByteBuffer(_) => {
+                    return super::super::closure_owner_contract::carrier_element_layout_matches(
+                        layouts, element_layout,
+                        &witchy_canonical_source::carrier::CarrierElement::Bytes,
+                    );
+                }
+                ListElementProjection::Refused => return false,
+                ListElementProjection::RetainedCallable(_) | ListElementProjection::LayoutOnly => {}
             }
             match arguments[0].unqualified() {
                 witchy_syntax::ast::Type::Named(name, arguments) if name == "Int" && arguments.is_empty() => matches!(element.kind(), LayoutKind::Scalar(ScalarKind::Int)),
