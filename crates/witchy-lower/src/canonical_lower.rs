@@ -52,7 +52,7 @@ use witchy_syntax::ast::{BinOp, Convention, Expr, Item, Pattern, Stmt, Type, Typ
 use witchy_canonical_source::aggregates::{canonical_owner_aggregate_identity, concrete_aggregate_identity, scalar_aggregate_shape, ScalarAggregateShape, ScalarVariant};
 use witchy_canonical_source::carrier::CarrierElement;
 use witchy_canonical_source::rooted_view::{RetainedRootStorage, RootedViewStorage};
-use witchy_canonical_source::storage::{ListElementProjection, StoragePlan, is_inline_scalar_record};
+use witchy_canonical_source::storage::{StoragePlan, is_inline_scalar_record};
 use witchy_canonical_source::structural_identity::SourceTypeKey;
 use witchy_canonical_source::abi::CanonicalScalarKind;
 use witchy_canonical_source::access::{
@@ -19910,13 +19910,14 @@ fn list_layout(
     if name != "List" || arguments.len() != 1 {
         return Err(CanonicalLoweringError::UnsupportedType(source.clone()));
     }
-    let projection = ListElementProjection::classify(&arguments[0], definitions);
-    if matches!(projection, ListElementProjection::Refused) {
+    let element_storage = StoragePlan::classify(&arguments[0], definitions, |_| Some(0));
+    if !element_storage.admits_list_element(&arguments[0]) {
         return Err(CanonicalLoweringError::UnsupportedListElement(source.clone()));
     }
     let duration_element = matches!(
-        &projection,
-        ListElementProjection::Owned(CarrierElement::Scalar(CanonicalScalarKind::Duration))
+        &element_storage,
+        StoragePlan::InlineScalar(CanonicalScalarKind::Duration)
+            | StoragePlan::Owned(CarrierElement::Scalar(CanonicalScalarKind::Duration))
     );
     let aggregate_element = || -> Result<ValueType, CanonicalLoweringError> {
         let Some(shape) = scalar_aggregate_shape(&arguments[0], definitions).filter(|shape| !shape.packed) else {
@@ -19932,28 +19933,27 @@ fn list_layout(
             &Type::Named("String".into(), Vec::new()), layout_bundle, layouts,
         )?))
     };
-    let expected_element = match projection {
-        ListElementProjection::Owned(CarrierElement::Scalar(kind)) => match kind {
+    let expected_element = match element_storage {
+        StoragePlan::InlineScalar(kind) | StoragePlan::Owned(CarrierElement::Scalar(kind)) => match kind {
             CanonicalScalarKind::Int | CanonicalScalarKind::Duration => ValueType::Int,
             CanonicalScalarKind::Float => ValueType::Float,
             CanonicalScalarKind::Bool => ValueType::Bool,
             CanonicalScalarKind::Unit => ValueType::Unit,
         },
-        ListElementProjection::Owned(CarrierElement::String | CarrierElement::Bytes)
-        | ListElementProjection::RetainedByteBuffer(_) => byte_buffer_element()?,
-        ListElementProjection::Owned(CarrierElement::List(_)) => {
+        StoragePlan::Owned(CarrierElement::String | CarrierElement::Bytes) => byte_buffer_element()?,
+        StoragePlan::Owned(CarrierElement::List(_)) => {
             ValueType::Ref(list_layout(&arguments[0], layout_bundle, layouts, closure_layouts, definitions)?.0)
         }
-        ListElementProjection::Owned(CarrierElement::Tuple(_)
+        StoragePlan::Owned(CarrierElement::Tuple(_)
             | CarrierElement::Dict(_, _)
             | CarrierElement::Record { .. }
             | CarrierElement::Sum { .. })
-        | ListElementProjection::AuthenticatedPlace(_) => aggregate_element()?,
-        ListElementProjection::RetainedCallable(plan) => ValueType::Ref(
+        | StoragePlan::AuthenticatedPlace(_) => aggregate_element()?,
+        StoragePlan::RetainedCallable(plan) => ValueType::Ref(
             *closure_layouts.get(plan.family())
                 .ok_or_else(|| CanonicalLoweringError::UnsupportedType(arguments[0].clone()))?,
         ),
-        ListElementProjection::Refused => unreachable!("checked above"),
+        _ => unreachable!("checked list-element eligibility above"),
     };
 
     let mut candidates = Vec::new();

@@ -15,7 +15,7 @@ use witchy_canonical_source::aggregates::{
 };
 use witchy_canonical_source::abi::CanonicalScalarKind;
 use witchy_canonical_source::carrier::CarrierElement;
-use witchy_canonical_source::storage::{ListElementProjection, StoragePlan, StorageRefusal, is_inline_scalar_record};
+use witchy_canonical_source::storage::{StoragePlan, StorageRefusal, is_inline_scalar_record};
 use witchy_canonical_source::structural_identity::{AggregateOwnerKey, ClosureOwnerKey, SourceTypeKey};
 use witchy_syntax::ast::{self, Item, Type, TypeDef};
 use witchy_types::pipeline::CanonicalCheckedSource;
@@ -621,10 +621,9 @@ impl LayoutProjection {
                 let admitted = matches!(
                     storage,
                     StoragePlan::RetainedOwnerList(_) | StoragePlan::RetainedOpaqueAggregateList(_),
-                ) || arguments.len() == 1 && !matches!(
-                    ListElementProjection::classify(&arguments[0], &self.definitions),
-                    ListElementProjection::Refused,
-                );
+                ) || arguments.len() == 1 && StoragePlan::classify(
+                    &arguments[0], &self.definitions, |_| Some(0),
+                ).admits_list_element(&arguments[0]);
                 if !admitted {
                     if matches!(storage, StoragePlan::Refused(StorageRefusal::UnprovedAuthority)) {
                         return Err(CanonicalLayoutError::UnsupportedType(format!("capability-bearing {ty:?}")));
@@ -1334,11 +1333,12 @@ fn intern_v1_layout_fields(
         && name == "List"
         && arguments.len() == 1
     {
-        let projection = ListElementProjection::classify(&arguments[0], definitions);
-        if matches!(projection, ListElementProjection::Refused) {
+        let element_storage = StoragePlan::classify(&arguments[0], definitions, |_| Some(0));
+        if !element_storage.admits_list_element(&arguments[0]) {
             return Err(CanonicalLayoutError::UnsupportedType(format!("{ty:?}")));
         }
-        let inline = matches!(projection, ListElementProjection::Owned(CarrierElement::Scalar(_)));
+        let inline = matches!(element_storage,
+            StoragePlan::InlineScalar(_) | StoragePlan::Owned(CarrierElement::Scalar(_)));
         let element = if inline {
             let scalar = scalar_kind_of(&arguments[0]).ok_or_else(|| {
                 CanonicalLayoutError::UnsupportedType(format!("{ty:?}"))

@@ -1,6 +1,6 @@
 use super::*;
 use witchy_canonical_source::rooted_view::{OwnerCarriedViewPlan, OwnerCarriedViewStorage, RetainedRootStorage, RootedViewStorage};
-use witchy_canonical_source::storage::{ListElementProjection, StoragePlan};
+use witchy_canonical_source::storage::StoragePlan;
 
 pub(crate) fn value_type_matches_source(
     actual: super::super::ValueType,
@@ -405,8 +405,16 @@ pub(super) fn enqueue_layout_children(
             if list_element_needs_owner_carrier(source_element, records) {
                 return false;
             }
-            match ListElementProjection::classify(source_element, records) {
-                ListElementProjection::Owned(carrier) => {
+            let element_storage = StoragePlan::classify(source_element, records, |_| Some(0));
+            if !element_storage.admits_list_element(source_element) { return false; }
+            match element_storage {
+                StoragePlan::InlineScalar(kind) => {
+                    return super::super::closure_owner_contract::carrier_element_layout_matches(
+                        layouts, element_layout,
+                        &witchy_canonical_source::carrier::CarrierElement::Scalar(kind),
+                    );
+                }
+                StoragePlan::Owned(carrier) => {
                     // The same source plan used by layout projection supplies
                     // the recursive ownership proof. A physical mismatch
                     // cannot fall through to the older layout walk.
@@ -414,23 +422,17 @@ pub(super) fn enqueue_layout_children(
                         layouts, element_layout, &carrier,
                     );
                 }
-                ListElementProjection::RetainedByteBuffer(_) => {
-                    return super::super::closure_owner_contract::carrier_element_layout_matches(
-                        layouts, element_layout,
-                        &witchy_canonical_source::carrier::CarrierElement::Bytes,
-                    );
-                }
-                ListElementProjection::RetainedCallable(plan) => {
+                StoragePlan::RetainedCallable(plan) => {
                     return matches!(element.kind(), LayoutKind::RuntimePointerValueSlot {
                         pointee, semantics: PointerSlot::Owned,
                     } if { pending.push((*pointee, plan.exact_signature().clone())); true });
                 }
-                ListElementProjection::AuthenticatedPlace(plan) => {
+                StoragePlan::AuthenticatedPlace(plan) => {
                     return matches!(element.kind(), LayoutKind::RuntimePointerValueSlot {
                         pointee, semantics: PointerSlot::Owned,
                     } if { pending.push((*pointee, plan.source().clone())); true });
                 }
-                ListElementProjection::Refused => return false,
+                _ => return false,
             }
         }
         StoragePlan::RetainedCallable(_) => {

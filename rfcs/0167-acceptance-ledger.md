@@ -864,6 +864,17 @@ recursive-layout correspondence cases, and adversarial authority review
 passed. Independent admitted-Wasm results and zero-leak evidence are still
 needed before row G can close.
 
+Row G list-element projection adapter removal (implemented but unverified,
+2026-09-25): the secondary `ListElementProjection` and Bytes-only marker
+are deleted. Layout construction, lowering, and SafeWIR now inspect the
+same recursive `StoragePlan` result, with one shared eligibility rule for
+ordinary packed-list elements. That rule keeps once-callables, uncloneable
+graphs, owner-carried views, and opaque aggregate GC lists out of the RC
+list path. Existing nested-list, slice materialization, and must-consume
+handle smokes passed (12/12); the lowerer compiled and adversarial review
+found no authority widening. Admitted-Wasm expected-result and zero-leak
+evidence is still pending, so row G remains open.
+
 At `adf1d01c7` (2026-09-18), the integrated core smoke was **42/42 passed**: rooted views (13), unique/write-back (12), normal/opt interoperation (2), resource composition (5), and optimization readiness (10). This is core canonical-route evidence only; it does not include the source interpreter, full, end-to-end, or examples suites.
 
 At `2f62f4038` (2026-09-19), the newly integrated concrete `Option(&Int)` evidence is **6/6 passed**: four lower carrier/tamper/`var` checks, one exact authority payload-state check, and one production-runtime three-leg fixture (`790`, zero leaks). The three generic rooted-slice fixtures are **1 passed / 2 failed**: region-root escape rejects as expected, while both positive forms stop at the explicit missing authenticated slice-element projection. This is a live failure checkpoint, not an acceptance closeout.

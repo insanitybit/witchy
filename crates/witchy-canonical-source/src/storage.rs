@@ -23,14 +23,6 @@ pub enum StorageRefusal {
     UnprovedOwnership,
 }
 
-/// The raw-byte representation of an owned `Bytes` list element. Its recursive
-/// ownership proof is `StoragePlan::Owned(CarrierElement::Bytes)`; this label
-/// keeps the physical class visible to the layout projection.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RetainedByteBufferKind {
-    Bytes,
-}
-
 /// A finite source-derived proof for the storage classes the canonical route
 /// currently understands. An owned value retains, clones, and releases its
 /// recursive `CarrierElement`; a view or view-bearing aggregate has its own
@@ -60,18 +52,6 @@ pub enum StoragePlan {
     RootedView(RootedViewStorage),
     AggregateView(ViewCarrierPlan),
     Refused(StorageRefusal),
-}
-
-/// Source-backed list-element projection used by the layout catalog. The
-/// recursive owned class has a complete carrier proof. A missing proof
-/// refuses layout projection as well as SafeWIR carrier admission.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ListElementProjection {
-    Owned(CarrierElement),
-    AuthenticatedPlace(AggregateGraphPlan),
-    RetainedByteBuffer(RetainedByteBufferKind),
-    RetainedCallable(CallableStoragePlan),
-    Refused,
 }
 
 /// A finite checked aggregate graph, including callable and recursive
@@ -354,25 +334,20 @@ impl<'a> OpaqueOwnerEvidence<'a> {
     }
 }
 
-impl ListElementProjection {
-    pub fn classify(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> Self {
-        match StoragePlan::classify(ty, definitions, |_| Some(0)) {
-            StoragePlan::Owned(CarrierElement::Bytes) => {
-                Self::RetainedByteBuffer(RetainedByteBufferKind::Bytes)
-            }
-            StoragePlan::RetainedCallable(plan)
-                if matches!(ty, Type::Fn(_, _, _, qualifiers) if !qualifiers.once) =>
-            {
-                Self::RetainedCallable(plan)
-            }
-            StoragePlan::AuthenticatedPlace(plan) if plan.cloneable() => Self::AuthenticatedPlace(plan),
-            StoragePlan::Refused(_) if matches!(ty, Type::Fn(..)) => Self::Refused,
-            plan => plan.into_carrier_element().map(Self::Owned).unwrap_or(Self::Refused),
+impl StoragePlan {
+    /// A list can duplicate initialized elements. Require a copyable owned
+    /// carrier, a non-once callable, or a cloneable authenticated graph.
+    /// Other storage plans retain their own representation but cannot become
+    /// an ordinary packed-list element through a second shape table.
+    pub fn admits_list_element(&self, ty: &Type) -> bool {
+        match self {
+            Self::InlineScalar(_) | Self::Owned(_) => true,
+            Self::RetainedCallable(_) => matches!(ty, Type::Fn(_, _, _, qualifiers) if !qualifiers.once),
+            Self::AuthenticatedPlace(plan) => plan.cloneable(),
+            _ => false,
         }
     }
-}
 
-impl StoragePlan {
     /// The recursive owned carrier shared by checking and lowering. Views and
     /// opaque owner plans need their own authority.
     pub fn into_carrier_element(self) -> Option<CarrierElement> {
