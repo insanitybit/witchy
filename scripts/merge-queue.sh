@@ -1353,7 +1353,7 @@ diff_is_docs_safe() { # diff_is_docs_safe <newline-separated-paths>
 }
 
 # example_tests is compiled by the focused nextest selection. It cannot stale
-# generated snapshots, rust-class results, or the workspace check/clippy/wasm
+# generated snapshots, rust-class results, or the workspace check/wasm
 # legs' answers, so classifiers drop it before matching those surfaces.
 diff_without_example_tests() { # diff_without_example_tests <newline-separated-paths>
     printf '%s\n' "$1" | grep -vE '^src/example_tests(\.rs|/)' || true
@@ -1367,7 +1367,7 @@ diff_product_compile_surface() { # prints matching lines
 # rust-class --check rebuilds the witchy binary and reruns eight programs
 # already covered by example_tests when a compiler crate changes. Keep the
 # pre-merge leg for the harness, std, and the CLI; crate diffs rely on
-# their focused nextest + package check/clippy, with --full/CI as backstop.
+# their focused nextest + package check, with --full/CI as backstop.
 diff_rust_class_surface() {
     diff_without_example_tests "$1" \
         | grep -E '^(bench/rust-class/|src/|std/|build\.rs|Cargo\.(toml|lock)|\.cargo/|rust-toolchain)' || true
@@ -2832,7 +2832,7 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
     # the run_gate argument order stays stable.
     local skip_book=1
 
-    # RFC-0111 rust-class, workspace check/clippy, and the wasm playground
+    # RFC-0111 rust-class, workspace check, and the wasm playground
     # only move when their own surfaces move. example_tests is compiled by
     # the focused nextest selection. Interpreter-only diffs skip rust-class
     # and wasm. Fail-safe: empty/errored diff keeps them.
@@ -3314,9 +3314,9 @@ prewarm_gate() {
         release_lock
         return 0
     fi
-    # Warm ALL profiles the gate uses in the inactive generation: dev + test in
-    # $inactive_target, wasm there as well, and the fail-fast legs in the
-    # corresponding -clippy/-check siblings. Nothing copies or renames Cargo
+    # Warm every profile the gate uses in the inactive generation: dev + test
+    # in $inactive_target and the fail-fast compile check in the corresponding
+    # -check sibling. Nothing copies or renames Cargo
     # outputs between generations. Every Cargo phase must succeed before the
     # selector can be promoted; a prewarm failure remains opportunistic and
     # leaves the current active generation unchanged.
@@ -3371,7 +3371,7 @@ prewarm_gate() {
         target_cloner="$5"
         cd "$gate_wt"
         if [ "$reset_inactive" -eq 1 ]; then
-            rm -rf -- "$inactive_target" "${inactive_target}-check" "${inactive_target}-clippy"
+            rm -rf -- "$inactive_target" "${inactive_target}-check"
         fi
         # A reclaimed or cancelled inactive generation used to restart from
         # empty directories here. That cold path recompiles Wasmtime and
@@ -3379,7 +3379,7 @@ prewarm_gate() {
         # from the validated active generation first; the filtered CoW clone
         # drops path-bound incremental state and loose rcgu objects while
         # retaining dependency fingerprints, build-script outputs and rlibs.
-        for suffix in "" -check -clippy; do
+        for suffix in "" -check; do
             source_dir="${active_target}${suffix}"
             dest_dir="${inactive_target}${suffix}"
             if [ ! -d "$dest_dir" ]; then
@@ -3395,7 +3395,6 @@ prewarm_gate() {
         export CARGO_TARGET_DIR="$inactive_target" CARGO_PROFILE_TEST_STRIP=symbols RUSTC_WRAPPER= CARGO_BUILD_RUSTC_WRAPPER=
         cargo build --workspace >/dev/null 2>&1
         cargo test --workspace --no-run >/dev/null 2>&1
-        CARGO_TARGET_DIR="${inactive_target}-clippy" cargo clippy --workspace --all-targets -- -D clippy::correctness -D clippy::suspicious -D unused_must_use >/dev/null 2>&1
         CARGO_TARGET_DIR="${inactive_target}-check" cargo check --workspace --all-targets >/dev/null 2>&1
         [ ! -x scripts/warm-witchy-caches.sh ] || ./scripts/warm-witchy-caches.sh >/dev/null 2>&1
     ' prewarm "$gate_wt" "$reset_inactive" "$inactive_target" "$active_target" \

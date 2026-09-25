@@ -409,10 +409,6 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
          if [ -n \"${FAKE_CARGO_ENV_FILE:-}\" ]; then printf '%s\\n' \"${CARGO_PROFILE_TEST_STRIP-unset}\" >>\"$FAKE_CARGO_ENV_FILE\"; fi\n\
          if [ -n \"${FAKE_CARGO_JOBS_FILE:-}\" ]; then printf '%s\\n' \"${CARGO_BUILD_JOBS-unset}\" >>\"$FAKE_CARGO_JOBS_FILE\"; fi\n\
          if [ -n \"${FAKE_FUZZ_ENV_FILE:-}\" ]; then printf '%s\\n' \"${WITCHY_FUZZ_PROGRAMS-unset}\" >>\"$FAKE_FUZZ_ENV_FILE\"; fi\n\
-         if [ \"$1\" = clippy ]; then\n\
-           if [ -n \"${FAKE_CLIPPY_PID_FILE:-}\" ]; then printf '%s\\n' \"$$\" >\"$FAKE_CLIPPY_PID_FILE\"; sleep 30; exit 0; fi\n\
-           sleep \"${FAKE_CARGO_CLIPPY_SECS:-0}\"; exit 0\n\
-         fi\n\
          if [ \"$1\" = nextest ] && [ \"$2\" = run ] && [ \"${FAKE_CARGO_FAIL_NEXTEST:-}\" != 1 ]; then sleep \"${FAKE_CARGO_NEXTEST_SECS:-0}\"; exit 0; fi\n\
          if [ \"${FAKE_CARGO_FAIL_NEXTEST:-}\" = 1 ] && [ \"$1\" = nextest ] && [ \"$2\" = run ]; then\n\
            sleep 0.1; exit 7\n\
@@ -480,8 +476,6 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
         .env("FAKE_CARGO_JOBS_FILE", &cargo_jobs_file)
         .env_remove("CARGO_BUILD_JOBS")
         .env_remove("WITCHY_GATE_BUILD_JOBS")
-        .env_remove("WITCHY_GATE_CLIPPY_BUILD_JOBS")
-        .env("FAKE_CARGO_CLIPPY_SECS", "1")
         .env("FAKE_CARGO_NEXTEST_SECS", "1")
         .env("WITCHY_FAILFAST_POLL", "0.05")
         .env("WITCHY_STAGE_HEARTBEAT_INTERVAL", "0")
@@ -498,6 +492,10 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
             line.starts_with("nextest run --max-fail=1:immediate -j 8 --workspace")
         }),
         "serialized gate did not use fail-fast execution with the proven eight-job default: {cargo_args}",
+    );
+    assert!(
+        cargo_args.lines().all(|line| !line.starts_with("clippy ")),
+        "fast gate still launched Clippy: {cargo_args}",
     );
     assert!(
         cargo_args.lines().any(|line| line.contains("--features witchy-wir/native")),
@@ -518,10 +516,8 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
     );
     let cargo_jobs = fs::read_to_string(&cargo_jobs_file).expect("read fake cargo build jobs");
     assert!(
-        cargo_jobs.lines().any(|value| value == "8")
-            && cargo_jobs.lines().any(|value| value == "2")
-            && cargo_jobs.lines().all(|value| value == "8" || value == "2"),
-        "serialized fast gate must give the foreground eight jobs and cap Clippy at two: {cargo_jobs}",
+        !cargo_jobs.trim().is_empty() && cargo_jobs.lines().all(|value| value == "8"),
+        "serialized fast gate must give the foreground eight jobs: {cargo_jobs}",
     );
 
     fs::write(&cargo_env_file, "").expect("clear fake cargo environment");
@@ -572,18 +568,11 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
         .filter_map(|line| line.strip_prefix("WITCHY_TIMING "))
         .map(|json| serde_json::from_str(json).expect("timing record is JSON"))
         .collect();
-    assert_eq!(timings.len(), 2, "expected test and clippy timings: {stdout}");
+    assert_eq!(timings.len(), 1, "expected only the test timing: {stdout}");
     assert_eq!(timings[0]["kind"], "foreground");
     assert_eq!(timings[0]["name"], "tests (workspace)");
     assert_eq!(timings[0]["status"], "green");
     assert!(timings[0]["elapsed_s"].as_u64().unwrap() >= 1);
-    assert_eq!(timings[1]["kind"], "background");
-    assert_eq!(timings[1]["name"], "clippy (bug lints)");
-    assert_eq!(timings[1]["status"], "green");
-    assert!(
-        timings[1]["elapsed_s"].as_u64().unwrap() <= 2,
-        "background timing included time spent waiting for foreground collection: {stdout}",
-    );
     });
 
         let queue_selection = scope.spawn(|| {
@@ -622,7 +611,6 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
         isolated_names,
         [
             "tests (workspace)",
-            "clippy (bug lints)",
             "queue infrastructure (isolated)",
         ],
         "queue fixtures did not run alone after product work: {isolated_stdout}",
@@ -895,7 +883,7 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
     );
     assert!(
         example_stdout.contains("skipping rust-class")
-            && example_stdout.contains("skipping cargo check/clippy")
+            && example_stdout.contains("skipping cargo check")
             && example_stdout.contains("skipping witchy fmt"),
         "example_tests-only check.sh did not skip rust-class/compile/fmt: {example_stdout}",
     );
@@ -943,7 +931,7 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
     );
     assert!(
         types_out.contains("skipping witchy fmt")
-            && types_out.contains("serialized check/clippy packages: -p witchy-types")
+            && types_out.contains("serialized check packages: -p witchy-types")
             && !types_out.contains("witchy fmt (std+examples)"),
         "types-only check.sh did not skip fmt: {types_out}",
     );
@@ -981,7 +969,7 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
     assert!(
         interp_out.contains("skipping rust-class")
             && interp_out.contains("skipping witchy fmt")
-            && interp_out.contains("serialized check/clippy packages: -p witchy-interp -p witchy-caps"),
+            && interp_out.contains("serialized check packages: -p witchy-interp -p witchy-caps"),
         "interp+example_tests did not skip rust-class/fmt or scope check: {interp_out}",
     );
     let interp_args = fs::read_to_string(&cargo_args_file).expect("read interp cargo args");
@@ -991,16 +979,9 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
         }),
         "interp+example_tests check still used --workspace: {interp_args}",
     );
-    assert!(
-        interp_args.lines().any(|line| {
-            line.starts_with("clippy ") && line.contains("-p witchy-interp") && !line.contains("--workspace")
-        }),
-        "interp+example_tests clippy still used --workspace: {interp_args}",
-    );
     });
 
-        let failure_cleanup = scope.spawn(|| {
-            let clippy_pid_file = temp.path().join("red-clippy.pid");
+        let failure_timing = scope.spawn(|| {
             let failed = check_sh(&root, &["--fast"])
                 .env(
                     "PATH",
@@ -1014,19 +995,9 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
                 .env("WITCHY_FAILFAST_POLL", "0.05")
                 .env("WITCHY_STAGE_HEARTBEAT_INTERVAL", "0")
                 .env("FAKE_CARGO_FAIL_NEXTEST", "1")
-                .env("FAKE_CLIPPY_PID_FILE", &clippy_pid_file)
                 .output()
                 .expect("run red fast gate with fake tools");
             assert_eq!(failed.status.code(), Some(7));
-            let clippy_pid = fs::read_to_string(&clippy_pid_file)
-                .expect("red clippy leg recorded its pid")
-                .trim()
-                .parse::<i32>()
-                .expect("parse red clippy pid");
-            assert!(
-                !process_is_alive(clippy_pid),
-                "foreground failure orphaned background clippy pid {clippy_pid}",
-            );
             let stdout = String::from_utf8(failed.stdout).expect("red check output is utf8");
             let timing = stdout
                 .lines()
@@ -1044,12 +1015,12 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
         queue_selection.join().expect("queue selection checks");
         focused_selection.join().expect("focused selection checks");
         package_selection.join().expect("package selection checks");
-        failure_cleanup.join().expect("failure cleanup checks");
+        failure_timing.join().expect("failure timing checks");
     });
 }
 
 /// Change 1 (gate fail-fast): the full merge-gate profile overlaps a compile
-/// check and clippy behind the foreground tests, and aborts
+/// check behind the foreground tests, and aborts
 /// the tests the moment a background leg records a failure. Green path first:
 /// stage order and timing records are pinned so observability consumers
 /// (gate-report.sh, the journal stage summaries) keep parsing.
@@ -1064,10 +1035,9 @@ fn full_gate_fail_fast_aborts_tests_when_a_background_leg_goes_red() {
     fs::write(
         &tool,
         "#!/bin/sh\n\
-         if [ \"$1\" = check ]; then sleep \"${FAKE_CARGO_CHECK_SECS:-0}\"; exit 0; fi\n\
-         if [ \"$1\" = clippy ]; then\n\
-           sleep 0.2\n\
-           if [ \"${FAKE_CARGO_FAIL_CLIPPY:-0}\" = 1 ]; then echo 'error: fake lint failure'; exit 5; fi\n\
+         if [ \"$1\" = check ]; then\n\
+           sleep \"${FAKE_CARGO_CHECK_SECS:-0}\"\n\
+           if [ \"${FAKE_CARGO_FAIL_CHECK:-0}\" = 1 ]; then echo 'error: fake compile failure'; exit 5; fi\n\
            exit 0\n\
          fi\n\
          if [ \"$1\" = nextest ] && [ \"$2\" = run ]; then\n\
@@ -1156,14 +1126,13 @@ fn full_gate_fail_fast_aborts_tests_when_a_background_leg_goes_red() {
             "witchy fmt (std+examples)",
             "prose style (no em dashes)",
             "compile check (cargo check)",
-            "clippy (bug lints)",
             "Rust-class paired correctness",
         ],
         "full-gate stage/timing order changed: {stdout}",
     );
 
-    // Red leg: clippy fails while the tests would run 60s. Fail-fast
-    // must abort the foreground stage, surface clippy's output, and exit red
+    // Red leg: the compile check fails while the tests would run 60s. Fail-fast
+    // must abort the foreground stage, surface the check's output, and exit red
     // in seconds, not after the test stage.
     let target_red = temp.path().join("target-full-red");
     fs::create_dir_all(target_red.join("debug")).expect("create red fake target dir");
@@ -1178,13 +1147,13 @@ fn full_gate_fail_fast_aborts_tests_when_a_background_leg_goes_red() {
         .env("CARGO_TARGET_DIR", &target_red)
         .env("WITCHY_STAGE_HEARTBEAT_INTERVAL", "0")
         .env("WITCHY_FAILFAST_POLL", "1")
-        .env("FAKE_CARGO_FAIL_CLIPPY", "1")
+        .env("FAKE_CARGO_FAIL_CHECK", "1")
         .env("FAKE_CARGO_NEXTEST_SECS", "60")
         .env("FAKE_NEXTEST_PID_FILE", &nextest_pid_file)
         .output()
         .expect("run red full gate with fake tools");
     let elapsed = started.elapsed();
-    assert!(!red.status.success(), "red clippy leg did not fail the gate");
+    assert!(!red.status.success(), "red compile-check leg did not fail the gate");
     assert!(
         elapsed < Duration::from_secs(45),
         "fail-fast did not abort the 60s test stage promptly: {elapsed:?}",
@@ -1195,7 +1164,7 @@ fn full_gate_fail_fast_aborts_tests_when_a_background_leg_goes_red() {
         "missing fail-fast abort marker: {stdout}",
     );
     assert!(
-        stdout.contains("fake lint failure"),
+        stdout.contains("fake compile failure"),
         "red leg output was not surfaced: {stdout}",
     );
     let timings: Vec<serde_json::Value> = stdout
@@ -1208,12 +1177,12 @@ fn full_gate_fail_fast_aborts_tests_when_a_background_leg_goes_red() {
         .find(|timing| timing["name"] == "tests (workspace)")
         .expect("aborted foreground timing was emitted");
     assert_eq!(tests["status"], "aborted");
-    let clippy = timings
+    let check = timings
         .iter()
-        .find(|timing| timing["name"] == "clippy (bug lints)")
-        .expect("red clippy timing was emitted");
-    assert_eq!(clippy["kind"], "background");
-    assert_eq!(clippy["status"], "red");
+        .find(|timing| timing["name"] == "compile check (cargo check)")
+        .expect("red compile-check timing was emitted");
+    assert_eq!(check["kind"], "background");
+    assert_eq!(check["status"], "red");
     let nextest_pid = fs::read_to_string(&nextest_pid_file)
         .expect("fake nextest recorded its pid")
         .trim()

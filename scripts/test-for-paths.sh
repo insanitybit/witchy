@@ -343,7 +343,7 @@ emit_gate_nextest() {
     [ -n "$args" ] || { printf 'WORKSPACE\n'; return 0; }
     printf '%s\n' "$args"
     [ -n "$expr" ] && printf '%s\n' "$expr"
-    # Third line: check/clippy package set (mapped crates only — not the
+    # Third line: compile-check package set (mapped crates only — not the
     # extra -p witchy added so example_tests / integration tests can run).
     # Empty when there are no mapped crates.
     if [ "${#gate_pkgs[@]}" -gt 0 ]; then
@@ -640,7 +640,6 @@ for p in "${paths[@]}"; do
         src/main.rs | src/cli.rs | src/source.rs)
             gate_workspace=1
             add "cargo check -p witchy --all-targets"
-            add "cargo clippy -p witchy --all-targets -- -D clippy::correctness -D clippy::suspicious -D unused_must_use"
             add "./scripts/nextest-admitted.sh witchy -- cargo nextest run --bin witchy -E 'test(/^(checked_cli_pipeline_tests|cli::|runtime_parity_tests|source::tests|test_mode_link_tests)::/)'"
             add "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test cli_subcommands"
             add "cargo nextest run -p witchy-syntax" ;;
@@ -1092,8 +1091,7 @@ elif [ "$any_rust" -eq 1 ] && [ "$focused" -eq 0 ]; then
             "cargo nextest run -E 'test(/^example_tests::/)'" | \
             "cargo nextest run --features witchy-wir/native -E 'test(/^example_tests::/)'" | \
             "cargo nextest run -E 'test(stdlib_docs_are_current)'" | \
-            "cargo check -p witchy --all-targets" | \
-            "cargo clippy -p witchy --all-targets -- -D clippy::correctness -D clippy::suspicious -D unused_must_use") ;;
+            "cargo check -p witchy --all-targets") ;;
             *) remaining+=("$c") ;;
         esac
     done

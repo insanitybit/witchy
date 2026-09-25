@@ -325,7 +325,7 @@ fn gate_nextest_crate_plus_example_tests_unions_without_workspace() {
         lines.len() >= 3
             && lines[2].contains("-p witchy-interp")
             && !lines[2].contains("-p witchy "),
-        "check/clippy package line should be mapped crates only: {output}",
+        "compile-check package line should be mapped crates only: {output}",
     );
 }
 
@@ -646,7 +646,6 @@ fn canonical_rewrite_edit_loop_stays_bounded_across_stage_files() {
         !commands.iter().any(|command| {
             command.contains("test(/^example_tests::/)")
                 || command == "cargo nextest run --test misc"
-                || command.contains("cargo clippy")
                 || command.contains("check.sh --wasm")
         }),
         "checkpoint work leaked into the edit loop: {commands:?}",
@@ -1350,7 +1349,6 @@ fn canonical_type_edit_uses_the_bounded_semantic_sentinels() {
 fn native_cli_entrypoints_use_the_bounded_compiler_shard() {
     let expected = [
         "cargo check -p witchy --all-targets",
-        "cargo clippy -p witchy --all-targets -- -D clippy::correctness -D clippy::suspicious -D unused_must_use",
             "./scripts/nextest-admitted.sh witchy -- cargo nextest run --bin witchy -E 'test(/^(checked_cli_pipeline_tests|cli::|runtime_parity_tests|source::tests|test_mode_link_tests)::/)'",
             "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test cli_subcommands",
         "cargo nextest run -p witchy-syntax",

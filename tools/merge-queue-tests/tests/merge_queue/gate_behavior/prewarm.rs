@@ -247,7 +247,6 @@ while :; do /bin/sleep 1; done
         "taskpolicy".to_owned(),
         "cargo:target-prewarm:build --workspace".to_owned(),
         "cargo:target-prewarm:test --workspace --no-run".to_owned(),
-        "cargo:target-prewarm-clippy:clippy --workspace --all-targets -- -D clippy::correctness -D clippy::suspicious -D unused_must_use".to_owned(),
         "cargo:target-prewarm-check:check --workspace --all-targets".to_owned(),
         "cache:warm-witchy-caches".to_owned(),
     ]);
@@ -588,12 +587,8 @@ fn successful_prewarm_promotes_inactive_generation_for_next_gate() {
     fs::create_dir_all(&fixture.state).expect("create generation state");
     fs::create_dir_all(fixture.gate_worktree.join("target"))
         .expect("create active gate target");
-    fs::create_dir_all(fixture.gate_worktree.join("target-clippy"))
-        .expect("create active clippy target");
     fs::create_dir_all(fixture.gate_worktree.join("target-check"))
         .expect("create active check target");
-    fs::create_dir_all(fixture.gate_worktree.join("target-prewarm-clippy"))
-        .expect("create inactive clippy target");
     fs::create_dir_all(fixture.gate_worktree.join("target-prewarm-check"))
         .expect("create inactive check target");
     fs::write(
@@ -727,10 +722,6 @@ fn successful_prewarm_promotes_inactive_generation_for_next_gate() {
     assert!(
         targets.lines().any(|target| target == "target-prewarm"),
         "main prewarm did not use target-prewarm: {targets}",
-    );
-    assert!(
-        targets.lines().any(|target| target == "target-prewarm-clippy"),
-        "clippy prewarm did not use the inactive suffix: {targets}",
     );
     assert!(
         targets.lines().any(|target| target == "target-prewarm-check"),

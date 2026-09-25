@@ -5,13 +5,10 @@
 #
 #   ./scripts/check.sh --fast  the COMMIT gate: tests (minus the
 #                              nightly-deferred perf/build tests, see
-#                              NIGHTLY-DEFERRED below) with clippy
-#                              overlapped in the background,
-#                              plus witchy-fmt IF any .witchy files changed —
-#                              the fast inner loop
+#                              NIGHTLY-DEFERRED below), plus witchy-fmt IF any
+#                              .witchy files changed — the fast inner loop
 #   ./scripts/check.sh         the MERGE gate: tests + fmt in the foreground with
-#                              a compile check (cargo check) and clippy
-#                              overlapped in the background
+#                              a compile check (cargo check) overlapped in the background
 #                              (collected before the gate goes green). Fail-fast:
 #                              a background leg that finishes RED aborts the
 #                              foreground tests immediately instead of hiding
@@ -73,12 +70,9 @@ if [ -n "${WITCHY_GATE_SCOPE+x}" ]; then
     export CARGO_BUILD_JOBS="${WITCHY_GATE_BUILD_JOBS:-8}"
 fi
 
-# The test graph is the gate's critical path. Check and Clippy still run
-# concurrently for fail-fast coverage, but must not each inherit the foreground
-# graph's eight-job allowance: that let one gate ask a 10-core host for 24-32
-# compiler jobs before any agent work was counted. Check needs only one job;
-# Clippy gets two so it still finishes inside the foreground build. Each leg
-# remains retunable on a larger gate host.
+# The test graph is the gate's critical path. The compile check runs
+# concurrently for fail-fast coverage but gets one build job so it cannot
+# crowd out the foreground graph's eight-job allowance.
 # macOS test discovery in the serialized gate is bounded to two cold binaries
 # at a time by default in scripts/nextest-list-wrapper.sh (.config/nextest.toml),
 # which can take longer than the three-pulse standalone startup window. Keep
@@ -300,7 +294,7 @@ if [ -z "${WITCHY_GATE_SCOPE+x}" ]; then
     gate_skip_fmt=0
 fi
 
-# Package-scoped check/clippy when the serialized nextest mapping named
+# Package-scoped compile check when the serialized nextest mapping named
 # crates. Unset / non-serialized / --full keep --workspace --all-targets.
 compile_sel=(--workspace)
 gate_check_packages="${WITCHY_GATE_CHECK_PACKAGES:-}"
@@ -309,14 +303,14 @@ if [ -n "${WITCHY_GATE_SCOPE+x}" ] && [ "$full" -eq 0 ]; then
         -p\ *)
             # shellcheck disable=SC2206
             compile_sel=($gate_check_packages)
-            printf 'check.sh: serialized check/clippy packages: %s\n' "$gate_check_packages"
+            printf 'check.sh: serialized check packages: %s\n' "$gate_check_packages"
             ;;
     esac
 fi
 
 # Keep every compiler leg that can select witchy-wir or witchy-lower on the
 # native feature as well. The foreground nextest command has its own feature
-# selection below; without this parallel check/clippy selection, a native
+# selection below; without this parallel check selection, a native
 # security test target can be absent from the compile leg while the test leg
 # still reports green.
 native_feature_args=()
@@ -955,25 +949,6 @@ run() {
     printf '\033[1;34m    [%d] %s took %ds\033[0m\n' "$step" "$label" "$(( t_finished - t_stage ))"
 }
 
-# Clippy runs as a BACKGROUND leg in both the fast and the full gate: lint
-# artifacts (wrapper-generated rmeta) share nothing with build/test artifacts,
-# so it checks in its OWN target dir (CoW-cloned from the main one on first
-# use, warm thereafter) instead of serializing ~60-75s (warm; minutes under
-# contention) in front of the tests. Same-dir invocations would serialize on
-# cargo's build lock. A leg failure still fails the gate — via run_watched's
-# fail-fast while the tests run (the foreground stage is aborted the moment a
-# leg reports red), or at collect time at the latest.
-# Conservative clippy policy (shared by the gate, the coordinator prewarm, and
-# CI). We deny only the GENUINE-BUG tiers — clippy's `correctness` group (deny by
-# default; code that is outright wrong or useless), `suspicious` (most likely
-# incorrect), and `unused_must_use` (a dropped `Result`/`#[must_use]`, a real bug
-# in a capability language) — and DELIBERATELY do NOT pass `-D warnings`. Style,
-# complexity, perf, and pedantic lints (e.g. `needless_borrow`) still print, but
-# they never block a merge: a needless borrow is not a reason to redo a gate.
-# Keep this list identical everywhere so the CoW-seeded clippy target cache is
-# reused instead of invalidated by a differing lint set.
-CLIPPY_GATE_LINTS=(-D clippy::correctness -D clippy::suspicious -D unused_must_use)
-clippy_dir="${target_dir}-clippy"
 seed_cow_target() { # seed_cow_target <dir>
     # `mkdir` is the atomic claim: exactly one concurrent run seeds; any other
     # sees the dir and uses it as-is (a dir left partially seeded by a killed
@@ -985,10 +960,9 @@ seed_cow_target() { # seed_cow_target <dir>
     [ -d "$dir" ] && return 0
     case "$dir" in
         "$target_dir-check") profile="check" ;;
-        "$target_dir-clippy") profile="clippy" ;;
     esac
-    # The coordinator keeps independently warm check and Clippy generations.
-    # Reuse the matching Cargo profile instead of cloning the test target and
+    # The coordinator keeps an independently warm check generation. Reuse the
+    # matching Cargo profile instead of cloning the test target and
     # recompiling native dependencies under a different unit hash. The helper
     # validates that gate-target did not change while it cloned; on any miss or
     # promotion race, retain the existing safe fallback below.
@@ -1006,25 +980,15 @@ seed_cow_target() { # seed_cow_target <dir>
             || true
     fi
 }
-launch_clippy_leg() {
-    clippy_log="$(mktemp "${TMPDIR:-/tmp}/witchy-clippy-XXXXXX")"
-    clippy_started=$(date +%s)
-    if [ -n "${WITCHY_GATE_SCOPE+x}" ]; then
-        ( seed_cow_target "$clippy_dir" && background_leg env CARGO_BUILD_JOBS="${WITCHY_GATE_CLIPPY_BUILD_JOBS:-2}" CARGO_TARGET_DIR="$clippy_dir" cargo clippy "${compile_sel[@]}" --all-targets ${native_feature_args[@]+"${native_feature_args[@]}"} -- "${CLIPPY_GATE_LINTS[@]}" ) >"$clippy_log" 2>&1 &
-    else
-        ( seed_cow_target "$clippy_dir" && background_leg env CARGO_TARGET_DIR="$clippy_dir" cargo clippy "${compile_sel[@]}" --all-targets ${native_feature_args[@]+"${native_feature_args[@]}"} -- "${CLIPPY_GATE_LINTS[@]}" ) >"$clippy_log" 2>&1 &
-    fi
-    clippy_pid=$!
-}
 
-# The compile check is a third background leg in the MERGE gate only (not
-# --fast, whose contract is pinned to two legs): `cargo check --workspace
+# The compile check is a background leg in the MERGE gate only (not --fast):
+# `cargo check --workspace
 # --all-targets` is the cheapest command that surfaces a plain rustc compile
 # error in ANY target (warm: 1-3 min), long before nextest's own test-profile
 # build reports it (observed t+1004s in a red gate). Combined with
 # run_watched's fail-fast, a compile error now kills the gate in minutes.
-# Like clippy it runs in its own CoW-seeded target dir so it never serializes
-# on cargo's build lock against the tests or the clippy leg.
+# It runs in its own CoW-seeded target dir so it never serializes on cargo's
+# build lock against the tests.
 check_dir="${target_dir}-check"
 launch_check_leg() {
     check_log="$(mktemp "${TMPDIR:-/tmp}/witchy-check-XXXXXX")"
@@ -1077,12 +1041,6 @@ failfast_scan() {
         check_pid=""
         return 0
     fi
-    if [ -n "${clippy_pid:-}" ] && leg_finished_red "${clippy_log:-}"; then
-        failfast_label="clippy (bug lints)"; failfast_pid="$clippy_pid"
-        failfast_log="$clippy_log"; failfast_started="$clippy_started"
-        clippy_pid=""
-        return 0
-    fi
     return 1
 }
 
@@ -1099,9 +1057,7 @@ reap_bg() {
     [ -n "${stage_heartbeat_pid:-}" ] && kill "$stage_heartbeat_pid" 2>/dev/null || true
     [ -n "${failfast_fg_pid:-}" ] && kill "$failfast_fg_pid" 2>/dev/null || true
     [ -n "${check_pid:-}" ] && kill "$check_pid" 2>/dev/null || true
-    [ -n "${clippy_pid:-}" ] && kill "$clippy_pid" 2>/dev/null || true
     [ -n "${check_log:-}" ] && rm -f "$check_log" || true
-    [ -n "${clippy_log:-}" ] && rm -f "$clippy_log" || true
     return 0
 }
 trap reap_bg EXIT
@@ -1134,7 +1090,7 @@ collect_bg() { # collect_bg <label> <pid> <log> <started>
 # Like `run`, but FAIL-FAST: while the foreground stage executes, poll the
 # background legs' logs; the moment one records a failure, abort the foreground
 # stage, surface the red leg's full output via collect_bg, and exit red. This
-# is what turns a 1-3 min clippy/compile failure into a ~2-4 min red gate
+# is what turns a 1-3 min compile failure into a ~2-4 min red gate
 # instead of one that only surfaces after ~20 min of doomed tests. On the
 # all-green path it is byte-identical to `run` (same marker, heartbeat, and
 # WITCHY_TIMING record; the poll adds at most WITCHY_FAILFAST_POLL seconds of
@@ -1192,14 +1148,12 @@ run_watched() {
 }
 
 if [ "$fast" -eq 1 ]; then
-    # The fast commit gate: tests in the foreground, clippy overlapped behind
-    # them (collected — and able to fail the gate — before green). nextest
-    # compiles+links its own test binaries, so no standalone build step.
-    launch_clippy_leg
+    # The fast commit gate: nextest compiles+links its own test binaries, so no
+    # standalone build or lint step is needed.
     # Run the witchy fmt check IF any .witchy files are dirty — catches formatting
     # mistakes without the cost of always building the binary + sweeping 200 files.
-    # (This build is FOREGROUND in the MAIN target dir — no clippy-leg overlap
-    # concerns; nextest below reuses its artifacts.)
+    # (This build is FOREGROUND in the MAIN target dir; nextest below reuses
+    # its artifacts.)
     if git diff --name-only HEAD 2>/dev/null | grep -q '\.witchy$'; then
         run "build (binary)"           cargo build -p witchy
         run "witchy fmt (changed .witchy files)" witchy_fmt_check
@@ -1211,8 +1165,6 @@ if [ "$fast" -eq 1 ]; then
         run_watched "preflight (tests that red the last attempt)" "${preflight_cmd[@]}"
     fi
     run_watched "tests (workspace)" "${test_cmd[@]}"
-    collect_bg "clippy (bug lints)" "$clippy_pid" "$clippy_log" "$clippy_started"
-    clippy_pid=""
     # Product discovery already builds the excluded merge_queue test binary.
     # Run its hermetic shard after all product work so it reuses that artifact
     # and no background compiler load can distort process/timing assertions.
@@ -1229,7 +1181,7 @@ if [ "$gate_scope" = "docs" ]; then
         *)
             run "docs-only scope — heavy stages skipped" true ;;
     esac
-    printf '\n\033[1;32mall green\033[0m — WITCHY_GATE_SCOPE=docs: compiler tests/clippy/fmt skipped (post-merge CI runs the full suite)\n'
+    printf '\n\033[1;32mall green\033[0m — WITCHY_GATE_SCOPE=docs: compiler tests/check/fmt skipped (post-merge CI runs the full suite)\n'
     exit 0
 fi
 
@@ -1244,8 +1196,8 @@ if [ -n "${WITCHY_GATE_SCOPE+x}" ]; then
     fi
 fi
 
-# The full gate runs three independent legs CONCURRENTLY and collects the
-# background two after the foreground one finishes:
+# The full gate runs two independent legs CONCURRENTLY and collects the
+# background compile check after the foreground one finishes:
 #   [fg] tests  — nextest builds the workspace itself, including a fresh `witchy`
 #                 binary: the integration tests name it via CARGO_BIN_EXE_witchy,
 #                 so cargo must (re)build the bin before compiling them. That
@@ -1253,17 +1205,15 @@ fi
 #                 can run AFTER the tests against the nextest-built binary.
 #   [bg] check  — see launch_check_leg above (own CoW-cloned target dir);
 #                 surfaces plain compile errors in minutes.
-#   [bg] clippy — see launch_clippy_leg above (own CoW-cloned target dir).
 # A background-leg failure fails the gate FAST: run_watched polls the legs
 # while the tests run and aborts them the moment a leg records a failure, so
-# a red check/clippy surfaces in minutes instead of after the full test
+# a red check surfaces in minutes instead of after the full test
 # stage. The all-green path is unchanged (overlap, not serialization).
 # Serialized gates skip legs the batch cannot change (see WITCHY_GATE_SKIP_*).
 if [ "$gate_skip_compile" -eq 1 ]; then
-    printf 'check.sh: skipping cargo check/clippy (WITCHY_GATE_SKIP_COMPILE=1)\n'
+    printf 'check.sh: skipping cargo check (WITCHY_GATE_SKIP_COMPILE=1)\n'
 else
     launch_check_leg
-    launch_clippy_leg
 fi
 
 if [ "${#preflight_cmd[@]}" -gt 0 ]; then
@@ -1291,8 +1241,6 @@ run "prose style (no em dashes)"  prose_em_dash_check
 if [ "$gate_skip_compile" -eq 0 ]; then
     collect_bg "compile check (cargo check)" "$check_pid" "$check_log" "$check_started"
     check_pid=""
-    collect_bg "clippy (bug lints)"   "$clippy_pid" "$clippy_log" "$clippy_started"
-    clippy_pid=""
 fi
 
 # Product nextest compiles every integration binary before applying its

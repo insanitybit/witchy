@@ -682,7 +682,7 @@ fn crate_plus_example_tests_batch_keeps_compile_legs_and_unions_nextest() {
     );
     assert!(
         env.contains("check=[-p witchy-interp") && !env.contains("check=[-p witchy]"),
-        "check/clippy packages should be mapped crates, not the witchy umbrella: {env}",
+        "compile-check packages should be mapped crates, not the witchy umbrella: {env}",
     );
     assert!(
         !env.contains("nextest=[--workspace") && !env.contains("nextest=[]"),
@@ -737,7 +737,7 @@ fn crate_plus_integration_test_unions_without_workspace() {
     );
     assert!(
         env.contains("check=[-p witchy-lower") && !env.contains("check=[-p witchy]"),
-        "check/clippy packages should stay mapped crates: {env}",
+        "compile-check packages should stay mapped crates: {env}",
     );
     assert!(
         !env.contains("nextest=[--workspace") && !env.contains("nextest=[]"),
