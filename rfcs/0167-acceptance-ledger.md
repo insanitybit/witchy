@@ -439,6 +439,17 @@ no new authority path: missing or different child state still refuses, while
 the independent owner-family and source-ABI checks remain. No new admitted
 form, zero-leak witness, or A–O row closure is claimed.
 
+Row G owner-carried view storage class (architecture implemented, semantic
+evidence unchanged, 2026-09-25): aggregate field recognition and canonical
+owner-view identity now consume one source-typed `OwnerCarriedViewPlan` built
+from `RootedViewStorage`. Its authenticated scalar-place and retained
+projection cases retain their separate physical requirements. An outer
+`frozen` slice can still normalize for identity but cannot enter the
+aggregate-field admission path; extra nested qualifiers now refuse instead
+of passing the old scalar syntax shortcut. Existing canonical-source tests
+(19), a lowerer compile, and the slice-record smoke (2) passed; adversarial
+review found no new authority path. No new form or A–O evidence is claimed.
+
 At `adf1d01c7` (2026-09-18), the integrated core smoke was **42/42 passed**: rooted views (13), unique/write-back (12), normal/opt interoperation (2), resource composition (5), and optimization readiness (10). This is core canonical-route evidence only; it does not include the source interpreter, full, end-to-end, or examples suites.
 
 At `2f62f4038` (2026-09-19), the newly integrated concrete `Option(&Int)` evidence is **6/6 passed**: four lower carrier/tamper/`var` checks, one exact authority payload-state check, and one production-runtime three-leg fixture (`790`, zero leaks). The three generic rooted-slice fixtures are **1 passed / 2 failed**: region-root escape rejects as expected, while both positive forms stop at the explicit missing authenticated slice-element projection. This is a live failure checkpoint, not an acceptance closeout.
