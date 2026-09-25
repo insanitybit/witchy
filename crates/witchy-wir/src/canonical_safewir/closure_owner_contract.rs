@@ -289,7 +289,15 @@ pub fn rooted_slice_element(source_type: &witchy_syntax::ast::Type) -> Option<&'
     if !arguments.is_empty() {
         return None;
     }
-    ROOTED_SLICE_ELEMENTS.iter().copied().find(|admitted| *admitted == name)
+    // A nominal called `List(Float)` is not the structural `List(Float)` type.
+    match name.as_str() {
+        "Int" => Some("Int"),
+        "Float" => Some("Float"),
+        "Bool" => Some("Bool"),
+        "Duration" => Some("Duration"),
+        "String" => Some("String"),
+        _ => None,
+    }
 }
 
 /// Whether `element` (the element layout of a slice's backing `PackedList`)

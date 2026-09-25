@@ -91,8 +91,15 @@ pub(crate) fn rooted_slice_element_name(element: &Type) -> Option<&'static str> 
     if !arguments.is_empty() {
         return None;
     }
-    witchy_wir::canonical_safewir::closure_owner_contract::ROOTED_SLICE_ELEMENTS
-        .into_iter().find(|admitted| admitted == name)
+    // Nested List names are admitted only through the structural branch above.
+    match name.as_str() {
+        "Int" => Some("Int"),
+        "Float" => Some("Float"),
+        "Bool" => Some("Bool"),
+        "Duration" => Some("Duration"),
+        "String" => Some("String"),
+        _ => None,
+    }
 }
 
 pub(crate) fn rooted_slice_element_type(element: &str) -> Option<Type> {
@@ -1705,6 +1712,10 @@ pub mod self_checks {
     }
 
     pub fn rooted_slice_layout_requires_explicit_view_slice_request() {
+        for forged in ["List(Int)", "List(Float)", "List(Bool)", "List(Duration)"] {
+            assert_eq!(rooted_slice_element_name(&named(forged)), None,
+                "only a structural List child mints a rooted-slice family");
+        }
         let list = Type::Named("List".into(), vec![named("Int")]);
         let mut ordinary = LayoutProjection::default();
         ordinary.visit_type(&list).expect("ordinary List(Int) projects");
