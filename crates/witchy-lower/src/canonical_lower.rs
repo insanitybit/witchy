@@ -2931,7 +2931,7 @@ fn is_direct_view_payload(inner: &Type, definitions: &BTreeMap<String, TypeDef>)
         && (is_direct_shared_int(inner)
             || CarrierElement::from_slice_payload_type_with_definitions(inner, definitions).is_some()
             || is_rooted_string(inner)
-            || is_rooted_user_record(inner)
+            || witchy_canonical_source::aggregates::is_record_root_payload(inner, definitions)
             || CarrierElement::from_list_root_payload_type_with_definitions(inner, definitions).is_some()
             || witchy_canonical_source::aggregates::dict_string_scalar_root_payload(inner).is_some()
             || witchy_canonical_source::aggregates::tuple_scalar_string_root_payload(inner).is_some()
@@ -3330,18 +3330,6 @@ fn rooted_slice_element(ty: &Type) -> Option<CarrierElement> {
         }
         _ => None,
     }
-}
-
-/// A whole view of an argument-less user record or sum (`RecordRoot`): the
-/// retained aggregate object token is the snapshot, exactly as for String.
-/// Lowering still requires the root to be a heap `Ref` (not packed inline).
-fn is_rooted_user_record(ty: &Type) -> bool {
-    matches!(ty.unqualified(), Type::Named(name, _)
-        if name.rsplit('.').next().and_then(|segment| segment.chars().next()).is_some_and(char::is_uppercase)
-            && !matches!(name.as_str(), "List" | "Dict" | "Slice")
-            && !matches!(name.as_str(), "Int" | "Float" | "Duration" | "Bool" | "Nil" | "Unit"
-                | "String" | "Bytes" | "SecretStore")
-            && witchy_canonical_source::capabilities::representation(ty, &BTreeMap::new()).is_none())
 }
 
 /// A whole immutable `&String` view.  Its carrier is the retained String
@@ -19331,7 +19319,7 @@ fn source_value_type(
     // A whole record view (`RecordRoot`) is carried as the record's own
     // retained object token.
     if let Type::Qualified(TypeQual::View, inner) = source
-        && (is_rooted_user_record(inner)
+        && (witchy_canonical_source::aggregates::is_record_root_payload(inner, definitions)
             || witchy_canonical_source::aggregates::dict_string_scalar_root_payload(inner).is_some()
             || witchy_canonical_source::aggregates::tuple_scalar_string_root_payload(inner).is_some()
             || witchy_canonical_source::aggregates::is_scalar_value_view_payload(inner))
