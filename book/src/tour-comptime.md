@@ -136,6 +136,8 @@ expression, and body block. Source-backed handles and call-site binders are
 refused.
 `meta.expr_while` builds a loop from compiler-owned condition and body handles;
 source-backed handles are refused.
+`meta.stmt_assign` assigns a compiler-owned expression to a compiler-owned
+local binding inside a generated block; it cannot forge a call-site binder.
 These compiler paths still await end-to-end runtime and leak evidence.
 
 Pattern templates follow the same rule. The compatibility-built `1` pattern is

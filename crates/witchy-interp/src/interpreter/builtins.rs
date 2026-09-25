@@ -1451,6 +1451,20 @@ impl Interpreter {
                     "meta.stmt_let expects Bool, Ident, Option(TypeSyntax), and ExprSyntax",
                 ),
             },
+            name if intrinsics::is_meta_stmt_assign(name) => match args {
+                [binding, value] => {
+                    if self.fresh_ident_scope.is_none() {
+                        return err("meta.stmt_assign is available only during compile-time expansion");
+                    }
+                    let name = compiler_binding_ident_name(binding, "meta.stmt_assign")?;
+                    let value = compiler_expr_syntax_value(value, &self.compiler_expr_syntax)?;
+                    Ok(Some(self.store_compiler_stmt_syntax(
+                        "assign-statement",
+                        Stmt::Assign { name, value, place_depth: 0 },
+                    )?))
+                }
+                _ => err("meta.stmt_assign expects Ident and ExprSyntax"),
+            },
             name if intrinsics::is_meta_block(name) => match args {
                 [Value::List(stmts), tail] => {
                     if self.fresh_ident_scope.is_none() {

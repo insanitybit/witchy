@@ -1547,6 +1547,9 @@ quote retains its enclosing template AST across hole substitution; typed
 builders retain their compiler-owned children as well.
 The structural `meta.expr_if`, `meta.expr_for`, and `meta.expr_while` builders
 retain sealed expression and block children; the loop binder is also sealed.
+`meta.stmt_assign` retains a sealed local name and value expression and emits an
+ordinary reassignment to an existing mutable local. It does not construct a
+field or index place assignment.
 `quote type:` covers named, generic, module-qualified, tuple, function,
 ownership-qualified, capability-right, anonymous structural, and reference
 types.

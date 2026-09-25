@@ -2962,6 +2962,10 @@ An or-pattern. Every alternative must bind the same names when type-checked.
 
 Compiler-owned statement and block syntax retain AST nodes through block-shaped generators.
 
+#### `fn stmt_assign(name: Ident, value: ExprSyntax) -> StmtSyntax`
+
+Construct an assignment to an existing mutable local from a sealed name and expression. Field and index assignments are not supported.
+
 #### `fn stmt_expr(expr: ExprSyntax) -> StmtSyntax`
 
 #### `fn stmt_return(value: ExprSyntax) -> StmtSyntax`

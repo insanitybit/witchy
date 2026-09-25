@@ -570,6 +570,14 @@ pub fn stmt_let(mutable: Bool, name: Ident, ty: Option(TypeSyntax), value: ExprS
 fn __meta_stmt_let(mutable: Bool, name: Ident, ty: Option(TypeSyntax), value: ExprSyntax) -> StmtSyntax:
     __meta_stmt_let(mutable, name, ty, value)
 
+// Construct an assignment to an existing mutable local from a sealed name
+// and expression. Field and index assignments are not supported.
+pub fn stmt_assign(name: Ident, value: ExprSyntax) -> StmtSyntax:
+    __meta_stmt_assign(name, value)
+
+fn __meta_stmt_assign(name: Ident, value: ExprSyntax) -> StmtSyntax:
+    __meta_stmt_assign(name, value)
+
 pub fn stmt_expr(expr: ExprSyntax) -> StmtSyntax:
     __meta_stmt_expr(expr)
 
