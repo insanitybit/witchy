@@ -346,7 +346,9 @@ week (117 MB free). If a worktree's own `target` is not enough, CoW-clone a
 warm one (`cp -c -R .claude/worktrees/merge-gate/target-prewarm
 /private/tmp/witchy-<task>-target`; it shares blocks until you build), keep the
 `witchy-<task>-target` name so it is recognisable, and delete it when your
-branch lands. `scripts/reclaim-build-caches.sh` (dry run by default) reclaims
+branch lands. A debug `witchy` built into a target outside the checkout
+reads std from disk and cannot find it, so run it by hand with
+`WITCHY_STD_DIR=<checkout>/std` (tests get it via `CARGO_MANIFEST_DIR`). `scripts/reclaim-build-caches.sh` (dry run by default) reclaims
 what gets left behind: worktree caches by branch state, and standalone
 `/private/tmp/witchy-*` caches once they are 48 hours idle with no open
 handle. Judge by `df`, never `du` — a clone reports its full size.

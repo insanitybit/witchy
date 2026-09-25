@@ -859,78 +859,228 @@ fn levenshtein(a: &str, b: &str) -> usize {
 /// playground experiments. Import resolution uses this so a program may
 /// `import glamour`, while `std_source` stays a pure standard-library registry.
 pub fn bundled_source(name: &str) -> Option<&'static str> {
-    std_source(name).or(match name {
-        "glamour" => Some(include_str!("../../../projects/glamour/src/glamour.witchy")),
-        "markdown" => Some(include_str!("../../../projects/glamour/src/markdown.witchy")),
-        "highlight" => Some(include_str!("../../../projects/glamour/src/highlight.witchy")),
-        _ => None,
-    })
+    std_source(name).or_else(|| playground_source(name))
 }
 
 /// Source for a bundled STANDARD-LIBRARY module (`std/*.witchy`). Does NOT
 /// include playground experiments; use [`bundled_source`] when those are legal.
 pub fn std_source(name: &str) -> Option<&'static str> {
-    match name {
-        "list" => Some(include_str!("../../../std/list.witchy")),
-        "string" => Some(include_str!("../../../std/string.witchy")),
-        "math" => Some(include_str!("../../../std/math.witchy")),
-        "result" => Some(include_str!("../../../std/result.witchy")),
-        "option" => Some(include_str!("../../../std/option.witchy")),
-        "func" => Some(include_str!("../../../std/func.witchy")),
-        "convert" => Some(include_str!("../../../std/convert.witchy")),
-        "cmp" => Some(include_str!("../../../std/cmp.witchy")),
-        "testing" => Some(include_str!("../../../std/testing.witchy")),
-        "ascii" => Some(include_str!("../../../std/ascii.witchy")),
-        "set" => Some(include_str!("../../../std/set.witchy")),
-        "server" => Some(include_str!("../../../std/server.witchy")),
-        "show" => Some(include_str!("../../../std/show.witchy")),
-        "http" => Some(include_str!("../../../std/http.witchy")),
-        "json" => Some(include_str!("../../../std/json.witchy")),
-        "url" => Some(include_str!("../../../std/url.witchy")),
-        "duration" => Some(include_str!("../../../std/duration.witchy")),
-        "prng" => Some(include_str!("../../../std/prng.witchy")),
-        "rand" => Some(include_str!("../../../std/rand.witchy")),
-        "regex" => Some(include_str!("../../../std/regex.witchy")),
-        "crypto" => Some(include_str!("../../../std/crypto.witchy")),
-        "secretstore" => Some(include_str!("../../../std/secretstore.witchy")),
-        "webauthn" => Some(include_str!("../../../std/webauthn.witchy")),
-        "compiler" => Some(include_str!("../../../std/compiler.witchy")),
-        "toml" => Some(include_str!("../../../std/toml.witchy")),
-        "iter" => Some(include_str!("../../../std/iter.witchy")),
-        "semver" => Some(include_str!("../../../std/semver.witchy")),
-        "rights" => Some(include_str!("../../../std/rights.witchy")),
-        "fs" => Some(include_str!("../../../std/fs.witchy")),
-        "dict" => Some(include_str!("../../../std/dict.witchy")),
-        "time" => Some(include_str!("../../../std/time.witchy")),
-        "encoding" => Some(include_str!("../../../std/encoding.witchy")),
-        "path" => Some(include_str!("../../../std/path.witchy")),
-        "future" => Some(include_str!("../../../std/future.witchy")),
-        "task" => Some(include_str!("../../../std/task.witchy")),
-        "chan" => Some(include_str!("../../../std/chan.witchy")),
-        "reflect" => Some(include_str!("../../../std/reflect.witchy")),
-        "dynamic" => Some(include_str!("../../../std/dynamic.witchy")),
-        "meta" => Some(include_str!("../../../std/meta.witchy")),
-        "exec" => Some(include_str!("../../../std/exec.witchy")),
-        "policy" => Some(include_str!("../../../std/policy.witchy")),
-        "jwt" => Some(include_str!("../../../std/jwt.witchy")),
-        "oauth" => Some(include_str!("../../../std/oauth.witchy")),
-        "vm" => Some(include_str!("../../../std/vm.witchy")),
-        "bytes" => Some(include_str!("../../../std/bytes.witchy")),
-        "error" => Some(include_str!("../../../std/error.witchy")),
-        "cbor" => Some(include_str!("../../../std/cbor.witchy")),
-        "public_state" => Some(include_str!("../../../std/public_state.witchy")),
-        "transaction" => Some(include_str!("../../../std/transaction.witchy")),
-        // (RFC-0041) `glamour` is a published RUNE, not std — deliberately ABSENT from
-        // `STD_MODULES` so it is not advertised as std and a project still declares it as a
-        // dependency (the PM/footprint treat it as external). But its source is bundled here so
-        // its PURE render surface (`element`/`text`/`to_html`) is importable in a STANDALONE
-        // SNIPPET — the browser playground and the book's runnable cells — where there is no
-        // filesystem to resolve the rune. Authority-neutral: importing it only exposes types;
-        // a `UiRoot`/`UiFetch` can still be minted only by the host, never obtained in a cell.
-        // `markdown` rides on glamour's bundling rationale above: a glamour-provided PURE
-        // module (it imports only `glamour`), bundled so `import markdown` resolves in a
-        // standalone snippet and in the glamour examples / `projects/docs`.
-        _ => None,
+    std_table_source(name)
+}
+
+/// One name table, two backends. Each entry maps a bundled module to its file,
+/// relative to the `std/` directory and without the `.witchy` extension (a
+/// `"module.name"` literal would read as a std reference to the pruning-root
+/// census). A release (or wasm32) build embeds every
+/// file with `include_str!`, so the shipped binary is self-contained. A dev or
+/// test build (`debug_assertions`) reads the same files from disk at run time
+/// instead: embedding made every `std/*.witchy` edit an input of
+/// `witchy-syntax`, and so recompiled every compiler crate in every agent
+/// (~10 CPU-minutes) for a change no Rust code can observe. Both backends
+/// expand from this one list, so the set of known modules is identical.
+macro_rules! bundled_source_table {
+    ($lookup:ident, $paths:ident { $($name:literal => $path:literal,)* }) => {
+        #[cfg(any(not(debug_assertions), target_arch = "wasm32"))]
+        fn $lookup(name: &str) -> Option<&'static str> {
+            match name {
+                $($name => Some(include_str!(concat!("../../../std/", $path, ".witchy"))),)*
+                _ => None,
+            }
+        }
+
+        #[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
+        const $paths: &[&str] = &[$(concat!($path, ".witchy"),)*];
+
+        #[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
+        fn $lookup(name: &str) -> Option<&'static str> {
+            match name {
+                $($name => Some(bundled_sources_on_disk::read(concat!($path, ".witchy"))),)*
+                _ => None,
+            }
+        }
+    };
+}
+
+bundled_source_table!(std_table_source, STD_SOURCE_PATHS {
+    "list" => "list",
+    "string" => "string",
+    "math" => "math",
+    "result" => "result",
+    "option" => "option",
+    "func" => "func",
+    "convert" => "convert",
+    "cmp" => "cmp",
+    "testing" => "testing",
+    "ascii" => "ascii",
+    "set" => "set",
+    "server" => "server",
+    "show" => "show",
+    "http" => "http",
+    "json" => "json",
+    "url" => "url",
+    "duration" => "duration",
+    "prng" => "prng",
+    "rand" => "rand",
+    "regex" => "regex",
+    "crypto" => "crypto",
+    "secretstore" => "secretstore",
+    "webauthn" => "webauthn",
+    "compiler" => "compiler",
+    "toml" => "toml",
+    "iter" => "iter",
+    "semver" => "semver",
+    "rights" => "rights",
+    "fs" => "fs",
+    "dict" => "dict",
+    "time" => "time",
+    "encoding" => "encoding",
+    "path" => "path",
+    "future" => "future",
+    "task" => "task",
+    "chan" => "chan",
+    "reflect" => "reflect",
+    "dynamic" => "dynamic",
+    "meta" => "meta",
+    "exec" => "exec",
+    "policy" => "policy",
+    "jwt" => "jwt",
+    "oauth" => "oauth",
+    "vm" => "vm",
+    "bytes" => "bytes",
+    "error" => "error",
+    "cbor" => "cbor",
+    "public_state" => "public_state",
+    "transaction" => "transaction",
+});
+
+// (RFC-0041) `glamour` is a published RUNE, not std — deliberately ABSENT from
+// `STD_MODULES` so it is not advertised as std and a project still declares it as a
+// dependency (the PM/footprint treat it as external). But its source is bundled here so
+// its PURE render surface (`element`/`text`/`to_html`) is importable in a STANDALONE
+// SNIPPET — the browser playground and the book's runnable cells — where there is no
+// filesystem to resolve the rune. Authority-neutral: importing it only exposes types;
+// a `UiRoot`/`UiFetch` can still be minted only by the host, never obtained in a cell.
+// `markdown` rides on glamour's bundling rationale above: a glamour-provided PURE
+// module (it imports only `glamour`), bundled so `import markdown` resolves in a
+// standalone snippet and in the glamour examples / `projects/docs`.
+bundled_source_table!(playground_source, PLAYGROUND_SOURCE_PATHS {
+    "glamour" => "../projects/glamour/src/glamour",
+    "markdown" => "../projects/glamour/src/markdown",
+    "highlight" => "../projects/glamour/src/highlight",
+});
+
+/// The `std/` directory this dev/test build reads bundled sources from, or
+/// `None` when the build embeds them. A process that re-executes `witchy` with
+/// a cleared environment forwards it as `WITCHY_STD_DIR`, so the child reads
+/// the same files even when its executable lives outside the checkout.
+pub fn bundled_source_dir() -> Option<&'static std::path::Path> {
+    #[cfg(any(not(debug_assertions), target_arch = "wasm32"))]
+    return None;
+    #[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
+    return Some(bundled_sources_on_disk::std_dir());
+}
+
+/// Dev/test backend of the bundled-source tables.
+///
+/// The directory is resolved at RUN time, never baked in at compile time:
+/// compiled `witchy-syntax` units are shared across worktrees (the mbx cache
+/// remaps the workspace root; the build seed copies the gate checkout's units
+/// into agent targets), so a compile-time path would make one worktree read
+/// another's std — silently stale code. Each file is read once per process and
+/// leaked, keeping `&'static str` sources and the process-constant premise of
+/// the pulled-std expansion cache.
+#[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
+mod bundled_sources_on_disk {
+    use std::collections::HashMap;
+    use std::path::{Path, PathBuf};
+    use std::sync::{Mutex, OnceLock};
+
+    /// Modules whose files identify a witchy `std/` directory.
+    const MARKERS: &[&str] = &["list", "option", "string"];
+
+    fn is_std_dir(dir: &Path) -> bool {
+        MARKERS.iter().all(|marker| dir.join(marker).with_extension("witchy").is_file())
+    }
+
+    fn resolve() -> PathBuf {
+        if let Some(dir) = std::env::var_os("WITCHY_STD_DIR").filter(|dir| !dir.is_empty()) {
+            let dir = PathBuf::from(dir);
+            assert!(
+                is_std_dir(&dir),
+                "WITCHY_STD_DIR={} is not a witchy std/ directory (it lacks one of the {} modules)",
+                dir.display(),
+                MARKERS.join(", "),
+            );
+            return dir;
+        }
+        // The executable (`<checkout>/target*/debug/witchy`, or a test binary
+        // under `target*/debug/deps`) names the checkout it was built from, so
+        // it wins over an inherited CARGO_MANIFEST_DIR that may belong to
+        // another checkout. CARGO_MANIFEST_DIR (set by `cargo run` and for test
+        // processes, inherited by the `witchy` binaries a test spawns) covers a
+        // target dir outside the checkout. The current directory is never
+        // consulted: a shell sitting in another checkout would silently pair
+        // this compiler with that checkout's std.
+        let exe = std::env::current_exe().ok();
+        let canonical_exe = exe.as_deref().and_then(|exe| exe.canonicalize().ok());
+        let manifest = std::env::var_os("CARGO_MANIFEST_DIR").map(PathBuf::from);
+        [exe, canonical_exe, manifest]
+            .into_iter()
+            .flatten()
+            .find_map(|start| {
+                start.ancestors().map(|dir| dir.join("std")).find(|dir| is_std_dir(dir))
+            })
+            .unwrap_or_else(|| {
+                panic!(
+                    "this debug build of witchy reads the standard library from disk, but no \
+                     std/ directory was found above the executable or CARGO_MANIFEST_DIR; set \
+                     WITCHY_STD_DIR to the std/ directory of the checkout it was built from, \
+                     or use a release build"
+                )
+            })
+    }
+
+    pub(super) fn std_dir() -> &'static Path {
+        static DIR: OnceLock<PathBuf> = OnceLock::new();
+        DIR.get_or_init(resolve)
+    }
+
+    /// The contents of `relative` (a bundled-source table path), read once.
+    pub(super) fn read(relative: &'static str) -> &'static str {
+        static SOURCES: OnceLock<Mutex<HashMap<&'static str, &'static str>>> = OnceLock::new();
+        let mut sources = SOURCES
+            .get_or_init(|| Mutex::new(HashMap::new()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *sources.entry(relative).or_insert_with(|| {
+            let path = std_dir().join(relative);
+            let text = std::fs::read_to_string(&path).unwrap_or_else(|error| {
+                panic!(
+                    "reading bundled source {}: {error} (WITCHY_STD_DIR overrides the std/ directory)",
+                    path.display()
+                )
+            });
+            Box::leak(text.into_boxed_str())
+        })
+    }
+
+    /// Digest of every bundled source. The persistent std-expansion cache keys
+    /// its entries by executable identity, which no longer changes when a std
+    /// file does, so this build adds the sources themselves to that key.
+    pub(super) fn digest() -> &'static [u8; 32] {
+        static DIGEST: OnceLock<[u8; 32]> = OnceLock::new();
+        DIGEST.get_or_init(|| {
+            let mut hasher = blake3::Hasher::new();
+            hasher.update(b"witchy-syntax/bundled-sources/v1\0");
+            for path in super::STD_SOURCE_PATHS.iter().chain(super::PLAYGROUND_SOURCE_PATHS) {
+                let text = read(path);
+                hasher.update(path.as_bytes());
+                hasher.update(&[0]);
+                hasher.update(&(text.len() as u64).to_le_bytes());
+                hasher.update(text.as_bytes());
+            }
+            *hasher.finalize().as_bytes()
+        })
     }
 }
 
@@ -981,7 +1131,7 @@ impl LinkedModule {
 /// reflect/semver) runs comptime programs that recursively link — ~200ms per
 /// link that imports `semver` — and recomputes byte-identical results every
 /// time, because the inputs are process-constants: the bundled sources are
-/// compiled-in `&'static str`s, comptime programs are zero-capability and
+/// `&'static str`s compiled in or read once per process, comptime programs are zero-capability and
 /// deterministic, and a std module's imports resolve std-only (user modules
 /// cannot claim reserved names). The single sibling-reading pass — tagged-
 /// literal expansion — is excluded by construction: a std source that even
@@ -1106,6 +1256,8 @@ fn persistent_std_cache_path(expand: ComptimeExpander, name: &str) -> Option<std
     identity.update(&metadata.len().to_le_bytes());
     identity.update(&modified.to_le_bytes());
     identity.update(&expander_offset.to_le_bytes());
+    #[cfg(debug_assertions)]
+    identity.update(bundled_sources_on_disk::digest());
     let identity = identity.finalize().to_hex();
 
     Some(root.join("v1").join(identity.as_str()).join(format!("{name}.wstd")))

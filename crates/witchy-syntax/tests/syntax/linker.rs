@@ -502,3 +502,111 @@
         assert!(err.contains("sealed type") && err.contains("BoxData") && err.contains("helper"), "{err}");
     }
 
+
+    /// A dev/test build reads bundled sources from THIS checkout's `std/`,
+    /// located at run time, never from a path baked into a shared compiled unit.
+    #[test]
+    fn bundled_sources_come_from_this_checkout() {
+        let std_dir = std::path::PathBuf::from(
+            std::env::var_os("CARGO_MANIFEST_DIR").expect("Cargo sets CARGO_MANIFEST_DIR for tests"),
+        )
+        .join("../../std");
+        let on_disk = std::fs::read_to_string(std_dir.join("list").with_extension("witchy")).expect("std list");
+        assert_eq!(std_source("list"), Some(on_disk.as_str()));
+        if std::env::var_os("WITCHY_STD_DIR").is_none() {
+            if let Some(dir) = bundled_source_dir() {
+                assert_eq!(dir.canonicalize().unwrap(), std_dir.canonicalize().unwrap());
+            }
+        }
+    }
+
+    /// The executable outranks an inherited CARGO_MANIFEST_DIR, and the current
+    /// directory is never consulted. Each probe re-runs this test binary with a
+    /// decoy checkout as its current directory or its CARGO_MANIFEST_DIR; the
+    /// decoy must lose to the checkout the executable lives in, and a copy of
+    /// the executable outside any checkout must fail rather than take the cwd's.
+    #[test]
+    fn bundled_source_dir_prefers_the_executable_and_ignores_the_cwd() {
+        if let Some(expected) = std::env::var_os("WITCHY_STD_RESOLVE_PROBE") {
+            let dir = bundled_source_dir().expect("disk-backed build");
+            assert_eq!(dir.canonicalize().unwrap(), std::path::PathBuf::from(expected));
+            assert!(!std_source("list").unwrap().contains("decoy"));
+            return;
+        }
+        if std::env::var_os("WITCHY_STD_DIR").is_some() || bundled_source_dir().is_none() {
+            return; // an explicit override, or a build that embeds std
+        }
+        let std_dir = std::path::PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap())
+            .join("../../std")
+            .canonicalize()
+            .unwrap();
+        let exe = std::env::current_exe().unwrap();
+        if !exe.canonicalize().unwrap().starts_with(std_dir.parent().unwrap()) {
+            return; // a target dir outside the checkout: only CARGO_MANIFEST_DIR can find std
+        }
+        let decoy = std::env::temp_dir().join(format!("witchy-std-decoy-{}", std::process::id()));
+        std::fs::create_dir_all(decoy.join("std")).unwrap();
+        std::fs::create_dir_all(decoy.join("crates/witchy-syntax")).unwrap();
+        for module in ["list", "option", "string"] {
+            std::fs::write(decoy.join("std").join(module).with_extension("witchy"), "// decoy
+").unwrap();
+        }
+        let outside = std::env::temp_dir().join(format!("witchy-std-outside-{}", std::process::id()));
+        std::fs::create_dir_all(&outside).unwrap();
+        let copied = outside.join("syntax-probe");
+        std::fs::copy(&exe, &copied).unwrap();
+        let probe = |exe: &std::path::Path, manifest: Option<std::path::PathBuf>| {
+            let mut command = std::process::Command::new(exe);
+            command
+                .args(["--exact", "linker::bundled_source_dir_prefers_the_executable_and_ignores_the_cwd"])
+                .current_dir(&decoy)
+                .env_remove("WITCHY_STD_DIR")
+                .env_remove("CARGO_MANIFEST_DIR")
+                .env("WITCHY_STD_RESOLVE_PROBE", &std_dir);
+            if let Some(manifest) = manifest {
+                command.env("CARGO_MANIFEST_DIR", manifest);
+            }
+            command.output().unwrap()
+        };
+        let outputs = [probe(&exe, None), probe(&exe, Some(decoy.join("crates/witchy-syntax")))];
+        let stranded = probe(&copied, None);
+        let _ = std::fs::remove_dir_all(&decoy);
+        let _ = std::fs::remove_dir_all(&outside);
+        let report = format!("{}{}", String::from_utf8_lossy(&stranded.stdout), String::from_utf8_lossy(&stranded.stderr));
+        assert!(!stranded.status.success() && report.contains("set WITCHY_STD_DIR"), "{report}");
+        for output in outputs {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(output.status.success(), "{stdout}{}", String::from_utf8_lossy(&output.stderr));
+            assert!(stdout.contains("1 passed"), "the probe did not run: {stdout}");
+        }
+    }
+
+    /// `WITCHY_STD_DIR` overrides where a dev/test build reads std from. The
+    /// directory is resolved once per process, so the override runs in a child.
+    #[test]
+    fn witchy_std_dir_overrides_bundled_sources() {
+        if let Some(expected) = std::env::var_os("WITCHY_STD_DIR_PROBE") {
+            assert_eq!(std_source("list"), expected.to_str());
+            assert_eq!(std_source("option"), Some("// option\n"));
+            return;
+        }
+        if bundled_source_dir().is_none() {
+            return; // this build embeds std; there is no directory to override
+        }
+        let dir = std::env::temp_dir().join(format!("witchy-std-dir-probe-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let list = "// a list module that is not this checkout's\n";
+        for (module, text) in [("list", list), ("option", "// option\n"), ("string", "")] {
+            std::fs::write(dir.join(module).with_extension("witchy"), text).unwrap();
+        }
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "linker::witchy_std_dir_overrides_bundled_sources", "--test-threads=1"])
+            .env("WITCHY_STD_DIR", &dir)
+            .env("WITCHY_STD_DIR_PROBE", list)
+            .output()
+            .unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(output.status.success(), "{stdout}{}", String::from_utf8_lossy(&output.stderr));
+        assert!(stdout.contains("1 passed"), "the probe did not run: {stdout}");
+    }

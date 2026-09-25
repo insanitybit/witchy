@@ -312,6 +312,11 @@ fn run_build_step_child_process(request: &BuildChildRequest) -> Result<Vec<Strin
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    // A debug compiler reads std from disk; the cleared environment would hide
+    // how this process found it from a child outside the checkout.
+    if let Some(std_dir) = witchy_syntax::linker::bundled_source_dir() {
+        command.env("WITCHY_STD_DIR", std_dir);
+    }
     for (name, value) in &request.grants.env {
         if let Some(value) = value {
             command.env(name, value);

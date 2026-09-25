@@ -377,7 +377,10 @@ fn run_case(
         .env("TMPDIR", &tmp)
         .env("WITCHY_OPT", opts)
         .env("WITCHY_REQUIRE_PINNED_BINARYEN", "1")
-        .env("WIRDIAG", "1");
+        .env("WIRDIAG", "1")
+        // A debug `witchy` reads std from disk; name this checkout's std/
+        // explicitly since the cleared environment drops CARGO_MANIFEST_DIR.
+        .env("WITCHY_STD_DIR", Path::new(&std::env::var_os("CARGO_MANIFEST_DIR").unwrap()).join("std"));
     if case.uaf_check {
         command.env("WITCHY_UAF_CHECK", "1");
     }
