@@ -66,6 +66,14 @@ Signature IDs remain dense catalog indices and are still independently checked
 at admission. This changes catalog ordering, so old artifacts fail closed. No new admitted Wasm,
 zero-leak evidence, or A–O closure is claimed.
 
+Row G recursive nominal reservation order (architecture implemented, semantic
+evidence unchanged, 2026-09-25): layout projection now reserves recursive
+nominal cycle breakers in bounded structural source-type order rather than
+debug text order. An over-budget type or structural digest collision refuses
+before reservation. The existing checked shape and physical body binding
+remain required; this ordering change adds no source authority. No new
+admitted Wasm, zero-leak evidence, or A–O closure is claimed.
+
 Row G typed aggregate family inventory (architecture implemented, semantic
 evidence unchanged, 2026-09-25): the layout projection now orders normalized
 checked aggregate types by a bounded structural key instead of their debug

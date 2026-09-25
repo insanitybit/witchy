@@ -877,12 +877,20 @@ impl LayoutProjection {
         // A structural root such as List(Tree) may be visited before Tree;
         // following its pointee must not recursively rebuild that list while
         // the list's content-derived descriptor is still being constructed.
-        let mut recursive = recursive_types.iter().collect::<Vec<_>>();
-        recursive.sort_by_key(|ty| format!("{ty:?}"));
-        for ty in &recursive {
+        let mut recursive = recursive_types.iter().map(|ty| {
+            let key = SourceTypeKey { source: ty }.digest().ok_or_else(|| {
+                CanonicalLayoutError::InvalidLayout("recursive nominal identity exceeds bounds".into())
+            })?;
+            Ok((key, ty))
+        }).collect::<Result<Vec<_>, CanonicalLayoutError>>()?;
+        recursive.sort_by_key(|(key, _)| *key);
+        if recursive.windows(2).any(|pair| pair[0].0 == pair[1].0) {
+            return Err(CanonicalLayoutError::InvalidLayout("recursive nominal identity collision".into()));
+        }
+        for (_, ty) in &recursive {
             intern_recursive_nominal(&mut interner, ty)?;
         }
-        for ty in recursive {
+        for (_, ty) in recursive {
             let nominal = intern_recursive_nominal(&mut interner, ty)?;
             let body = intern_v1_layout_fields(
                 &mut interner, ty, &self.definitions, &recursive_types,
