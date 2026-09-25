@@ -219,10 +219,12 @@ fn gate_nextest_docs_plus_integration_test_keeps_both_target_kinds() {
     let args = output.lines().next().unwrap_or_default();
     assert!(args.contains("-p witchy"), "root package was omitted: {output}");
     assert!(args.contains("-p repo-tests"), "repository contracts were omitted: {output}");
-    assert!(
-        !args.contains("--bin witchy"),
-        "bin narrowing excluded the mixed package selection: {output}",
-    );
+    for required in ["--lib", "--test repo_hygiene", "--bin witchy"] {
+        assert!(
+            args.contains(required),
+            "explicit target union omitted {required}: {output}",
+        );
+    }
     assert!(
         output.contains("package(repo-tests)")
             && output.contains("documentation_examples_are_valid"),
@@ -1936,6 +1938,34 @@ fn gate_names_every_target_of_every_selected_package() {
     }
     assert!(named("misc"), "semantic_conformance lives in misc: {output}");
     assert!(!named("glamour") && !named("e2e"), "feature-gated targets named: {output}");
+}
+
+#[test]
+fn repository_contracts_do_not_disable_named_compiler_targets() {
+    // repo-tests lives under tools/, not crates/. Treating every workspace
+    // package as crates/<name> made this sound target-union optimization fail
+    // closed to whole packages. A compiler + std + contract batch then linked
+    // every root integration binary even though the expression ran a subset.
+    let output = gate_nextest(&[
+        "crates/witchy-types/src/typeck.rs",
+        "std/dict.witchy",
+        "tools/repo-tests/tests/repo_hygiene/architecture.rs",
+    ]);
+    let selection = output.lines().next().unwrap_or_default();
+    for required in [
+        "--lib",
+        "--test typeck",
+        "--test repo_hygiene",
+        "--bin witchy",
+        "--test misc",
+    ] {
+        assert!(
+            selection.contains(required),
+            "named target union omitted {required}: {output}",
+        );
+    }
+    assert_eq!(selection.matches("--bin witchy").count(), 1, "{output}");
+    assert_eq!(selection.matches("--test misc").count(), 1, "{output}");
 }
 
 #[test]

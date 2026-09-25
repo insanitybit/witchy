@@ -108,6 +108,13 @@ add_pkg() {
     for x in ${gate_pkgs[0]+"${gate_pkgs[@]}"}; do [ "$x" = "$p" ] && return; done
     gate_pkgs+=("$p")
 }
+gate_package_dir() { # gate_package_dir <workspace package>
+    case "$1" in
+        merge-queue-tests | repo-tests) printf 'tools/%s\n' "$1" ;;
+        witchy) printf '.\n' ;;
+        *) printf 'crates/%s\n' "$1" ;;
+    esac
+}
 add_gate_test() {
     local t="$1" x
     # `case` globs treat `*` as matching `/`, so the generic `tests/*.rs`
@@ -279,20 +286,20 @@ emit_gate_nextest() {
     #
     # Fail SAFE to the whole-package form whenever the target set is not
     # provably complete from the filesystem:
-    #   - the bin target is needed (example_tests, stdlib docs, `--bin`)
     #   - a crate has a bin or explicit [[test]]/[[bin]]/auto* targets, which
     #     `--lib` + `tests/*.rs` would silently miss
     #   - a package directory cannot be resolved
+    # The root bin is safe in the explicit target union: `--bin witchy` joins
+    # every selected package's named lib/test targets instead of replacing
+    # them. Free-form root test names still fail safe unless they are known
+    # main.rs module families.
     local name_targets=0 targets="" pkg dir file
     if [ "$need_witchy" -eq 1 ] && [ "${#gate_pkgs[@]}" -gt 0 ] \
-        && [ "$gate_need_examples" -eq 0 ] \
-        && [ "${#gate_example_mods[@]}" -eq 0 ] \
-        && [ "$gate_need_stdlib_docs" -eq 0 ] \
-        && [ "${#gate_witchy_tests[@]}" -eq 0 ] \
+        && [ "$witchy_tests_all_bin" -eq 1 ] \
         && [[ " $args " != *" --bin "* ]]; then
         name_targets=1
         for pkg in "${gate_pkgs[@]}"; do
-            dir="crates/$pkg"
+            dir="$(gate_package_dir "$pkg")"
             if [ ! -f "$dir/Cargo.toml" ] || [ -e "$dir/src/main.rs" ] || [ -d "$dir/src/bin" ] \
                 || grep -qE '^\[\[(test|bin|bench|example)\]\]|^auto(tests|bins)' "$dir/Cargo.toml"; then
                 name_targets=0
@@ -326,9 +333,16 @@ emit_gate_nextest() {
         done
     fi
     if [ "$name_targets" -eq 1 ]; then
+        if [ "$gate_need_examples" -eq 1 ] \
+            || [ "${#gate_example_mods[@]}" -gt 0 ] \
+            || [ "$gate_need_stdlib_docs" -eq 1 ] \
+            || [ "${#gate_witchy_tests[@]}" -gt 0 ]; then
+            targets="$targets --bin witchy"
+        fi
         if [ "$gate_need_conformance" -eq 1 ]; then
             # `--bin witchy` carries `example_tests::rfc0*` (see above).
-            targets="$targets --bin witchy --test misc"
+            case " $targets " in *" --bin witchy "*) ;; *) targets="$targets --bin witchy" ;; esac
+            case " $targets " in *" --test misc "*) ;; *) targets="$targets --test misc" ;; esac
             for file in tests/rfc0*.rs; do
                 [ -f "$file" ] || continue
                 file="${file##*/}"
