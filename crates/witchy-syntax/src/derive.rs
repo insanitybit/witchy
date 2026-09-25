@@ -3,9 +3,8 @@
 //! The per-trait code generation is NOT here anymore: a `derive(X)` becomes a
 //! `comptime:` block `emit_item(meta.derive_<x>(typeInfo_of_T))`
 //! (built-ins live in `std/meta`; a user derive routes to a bare `derive_<x>`
-//! they define and is source-wrapped for compatibility). Built-ins now return
-//! `meta.ItemSyntax`; user derives may keep returning source text during the
-//! migration.
+//! they define or import). Generators return `meta.ItemSyntax` or
+//! `List(meta.ItemSyntax)`; source text is not an emission channel.
 
 use crate::ast::*;
 // foldhash: compiler-internal keys only — see witchy-types/src/typeck.rs.
@@ -13,9 +12,10 @@ use foldhash::{HashMap, HashSet};
 
 #[derive(Clone, Copy)]
 enum UserDeriveOutput {
-    SourceString,
     ItemSyntax,
     ItemSyntaxList,
+    SourceText,
+    NonComptime,
 }
 
 fn contains_concrete_float(ty: &Type) -> bool {
@@ -119,24 +119,31 @@ fn is_item_syntax_list_type(ty: &Type) -> bool {
     matches!(ty, Type::Named(name, args) if name == "List" && matches!(args.as_slice(), [inner] if is_item_syntax_type(inner)))
 }
 
+fn is_source_text_type(ty: &Type) -> bool {
+    matches!(ty, Type::Named(name, args)
+        if (name == "String" && args.is_empty())
+            || (name == "List" && matches!(args.as_slice(), [Type::Named(inner, fields)]
+                if inner == "String" && fields.is_empty())))
+}
+
 fn user_derive_outputs(module: &Module) -> HashMap<String, UserDeriveOutput> {
     let mut outputs = HashMap::default();
     for item in &module.items {
         let Item::Function(f) = item else { continue };
-        if !f.comptime_only || !f.name.starts_with("derive_") {
+        if !f.name.starts_with("derive_") {
             continue;
         }
-        let Some(ret) = &f.ret else { continue };
-        let output = if is_item_syntax_type(ret) {
-            Some(UserDeriveOutput::ItemSyntax)
-        } else if is_item_syntax_list_type(ret) {
-            Some(UserDeriveOutput::ItemSyntaxList)
-        } else {
-            None
+        let output = match (f.comptime_only, f.ret.as_ref()) {
+            (false, _) => UserDeriveOutput::NonComptime,
+            (true, Some(ret)) if is_item_syntax_type(ret) => UserDeriveOutput::ItemSyntax,
+            (true, Some(ret)) if is_item_syntax_list_type(ret) => UserDeriveOutput::ItemSyntaxList,
+            (true, Some(ret)) if is_source_text_type(ret) => UserDeriveOutput::SourceText,
+            // Aliases are expanded after derive desugaring. Leave all other
+            // return types to the typed `emit_item` boundary so a valid alias
+            // for ItemSyntax keeps working.
+            _ => continue,
         };
-        if let Some(output) = output {
-            outputs.insert(f.name.clone(), output);
-        }
+        outputs.insert(f.name.clone(), output);
     }
     outputs
 }
@@ -298,27 +305,23 @@ pub fn expand(module: &mut Module) -> Result<(), String> {
                 }
                 // A user-defined derive: route to the witchy generator
                 // `derive_<name>` (lowercased) — which the program defines or imports
-                // and which returns the impl source for the type. Anyone can add a
-                // derive this way; the per-trait codegen is no longer Rust-only.
+                // and which returns compiler-owned item syntax. An imported
+                // generator is checked by the typed `emit_item` boundary.
                 other => {
                     let generator = format!("derive_{}", other.to_lowercase());
-                    generated.push(
-                        match user_derive_outputs
-                            .get(&generator)
-                            .copied()
-                            .unwrap_or(UserDeriveOutput::SourceString)
-                        {
-                            UserDeriveOutput::SourceString => {
-                                derive_source_via_comptime(&generator, &derive_type)
-                            }
-                            UserDeriveOutput::ItemSyntax => {
-                                derive_item_via_comptime(&generator, &derive_type)
-                            }
-                            UserDeriveOutput::ItemSyntaxList => {
-                                derive_items_via_comptime(&generator, &derive_type)
-                            }
-                        },
-                    );
+                    let item = match user_derive_outputs.get(&generator).copied() {
+                        Some(UserDeriveOutput::SourceText | UserDeriveOutput::NonComptime) => return Err(format!(
+                            "type `{}`: derive({other}) generator `{generator}` must be a comptime function returning ItemSyntax or List(ItemSyntax)",
+                            t.name,
+                        )),
+                        Some(UserDeriveOutput::ItemSyntaxList) => {
+                            derive_items_via_comptime(&generator, &derive_type)
+                        }
+                        Some(UserDeriveOutput::ItemSyntax) | None => {
+                            derive_item_via_comptime(&generator, &derive_type)
+                        }
+                    };
+                    generated.push(item);
                 }
             }
         }
@@ -368,24 +371,6 @@ pub fn expand(module: &mut Module) -> Result<(), String> {
 /// Desugar a built-in derive into a `comptime:` block that calls the witchy
 /// generator `generator(typeInfo)` and emits the returned `meta.ItemSyntax`.
 fn derive_item_via_comptime(generator: &str, t: &TypeDef) -> Item {
-    let emit = Expr::Call {
-        name: "emit_item".into(),
-        args: vec![Expr::Call {
-            name: generator.into(),
-            args: vec![crate::reflect::type_info_expr(t)],
-        }],
-    };
-    Item::Comptime(Block {
-        stmts: vec![Stmt::Expr(emit)],
-        lines: vec![0],
-        region: None,
-    })
-}
-
-/// Desugar a user-defined derive through the typed item contract. A generator
-/// that still returns source text is rejected by the typed `emit_item` call;
-/// there is deliberately no parser bridge here.
-fn derive_source_via_comptime(generator: &str, t: &TypeDef) -> Item {
     let emit = Expr::Call {
         name: "emit_item".into(),
         args: vec![Expr::Call {
