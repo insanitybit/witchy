@@ -55,15 +55,25 @@ is needed for soundness.
 
 ## Exact-tip evidence checkpoint
 
+Row G recursive byte-buffer carrier (architecture implemented, semantic
+evidence pending, 2026-09-25): the shared carrier proof now distinguishes
+`Bytes` from `String` in source identity while using their common retained
+raw-byte physical representation and owned-pointer clone/release rules.
+`List(Bytes)` and composites can use the recursive carrier relation only when
+the checked source inventory and SafeWIR's independent layout walk agree.
+Direct whole-root `&Bytes` remains refused because its current byte-buffer
+view key would conflate the two source types. This widens the carrier grammar;
+admitted Wasm and zero-leak evidence are required before any A–O claim.
+
 Row G retained byte-buffer layout class (architecture implemented, semantic
 evidence unchanged, 2026-09-25): the shared source-storage projection now
 classifies exact `Bytes` as a retained raw-byte buffer, and the list-element
 projection carries that typed class after the unchanged v1 field gate. The
 layout catalog and SafeWIR still validate the owned pointer and raw-byte
-buffer independently. Qualified or nested byte-buffer carriers remain on
-their previous layout-only or refusal paths. The class does not enter the
-recursive slice carrier or `.owned()` conversion. No new admitted Wasm,
-zero-leak evidence, or A–O closure is claimed.
+buffer independently. This checkpoint preceded the recursive byte-buffer
+carrier above; qualified byte-buffer forms retain their prior behavior and
+gain no recursive carrier proof.
+No A–O closure was claimed by this classification alone.
 
 Row G typed list-element layout projection (architecture implemented, semantic
 evidence unchanged, 2026-09-25): the layout catalog now reads one

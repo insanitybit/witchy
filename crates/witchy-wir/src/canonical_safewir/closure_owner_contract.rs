@@ -299,7 +299,7 @@ pub(crate) fn carrier_element_layout_matches(
             }
         }
 
-        fn owned_string(&self, layout: LayoutId, slot: CarrierSlot) -> bool {
+        fn owned_byte_buffer(&self, layout: LayoutId, slot: CarrierSlot) -> bool {
             let Some(physical) = self.owned_pointee(layout, slot) else { return false };
             let Some(LayoutKind::RuntimeBuffer { element: byte }) =
                 self.0.get(physical).map(|descriptor| descriptor.kind()) else { return false };

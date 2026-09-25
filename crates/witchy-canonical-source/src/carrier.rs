@@ -16,6 +16,7 @@ use crate::abi::CanonicalScalarKind;
 pub enum CarrierElement {
     Scalar(CanonicalScalarKind),
     String,
+    Bytes,
     List(Box<Self>),
     Tuple(Vec<Self>),
     Dict(Box<Self>, Box<Self>),
@@ -56,7 +57,7 @@ pub trait CarrierLayoutQuery {
     type Layout: Copy;
 
     fn scalar(&self, layout: Self::Layout) -> Option<CanonicalScalarKind>;
-    fn owned_string(&self, layout: Self::Layout, slot: CarrierSlot) -> bool;
+    fn owned_byte_buffer(&self, layout: Self::Layout, slot: CarrierSlot) -> bool;
     fn owned_retained_list_element(&self, layout: Self::Layout, slot: CarrierSlot) -> Option<Self::Layout>;
     fn owned_record_fields(&self, layout: Self::Layout, slot: CarrierSlot) -> Option<Vec<Self::Layout>>;
     /// Require an Int tag followed by the flattened variant field slots.
@@ -232,6 +233,7 @@ impl CarrierElement {
                 "Bool" => Some(Self::Scalar(CanonicalScalarKind::Bool)),
                 "Duration" => Some(Self::Scalar(CanonicalScalarKind::Duration)),
                 "String" => Some(Self::String),
+                "Bytes" => Some(Self::Bytes),
                 _ => None,
             },
             Type::Named(name, arguments) if name == "List" => {
@@ -364,6 +366,7 @@ impl CarrierElement {
                 Vec::new(),
             ),
             Self::String => Type::Named("String".into(), Vec::new()),
+            Self::Bytes => Type::Named("Bytes".into(), Vec::new()),
             Self::List(child) => Type::Named("List".into(), vec![child.source_type()]),
             Self::Tuple(fields) => Type::Tuple(fields.iter().map(Self::source_type).collect()),
             Self::Dict(key, value) => Type::Named(
@@ -381,7 +384,7 @@ impl CarrierElement {
     pub fn ownership(&self) -> CarrierOwnership {
         match self {
             Self::Scalar(_) => CarrierOwnership::Copy,
-            Self::String | Self::List(_) | Self::Tuple(_) | Self::Dict(_, _) | Self::Record { .. } | Self::Sum { .. } => CarrierOwnership::RetainCloneRelease,
+            Self::String | Self::Bytes | Self::List(_) | Self::Tuple(_) | Self::Dict(_, _) | Self::Record { .. } | Self::Sum { .. } => CarrierOwnership::RetainCloneRelease,
         }
     }
 
@@ -408,7 +411,7 @@ impl CarrierElement {
             maximum_depth = maximum_depth.max(depth);
             match element {
                 Self::Scalar(crate::abi::CanonicalScalarKind::Unit) => return None,
-                Self::Scalar(_) | Self::String => {}
+                Self::Scalar(_) | Self::String | Self::Bytes => {}
                 Self::List(child) => pending.push((child, depth + 1)),
                 Self::Tuple(fields) => {
                     if fields.is_empty() || fields.len() > 128 {
@@ -454,9 +457,9 @@ impl CarrierElement {
                     return current.ownership() == CarrierOwnership::Copy
                         && query.scalar(layout) == Some(*kind);
                 }
-                Self::String => {
+                Self::String | Self::Bytes => {
                     return current.ownership() == CarrierOwnership::RetainCloneRelease
-                        && query.owned_string(layout, slot);
+                        && query.owned_byte_buffer(layout, slot);
                 }
                 Self::List(child) => {
                     if current.ownership() != CarrierOwnership::RetainCloneRelease {
@@ -523,6 +526,7 @@ impl CarrierElement {
                     bytes.push(*kind as u8);
                 }
                 CarrierElement::String => bytes.push(1),
+                CarrierElement::Bytes => bytes.push(12),
                 CarrierElement::List(child) => {
                     bytes.push(2);
                     encode(child, bytes);

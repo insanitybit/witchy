@@ -156,6 +156,9 @@ impl RootedViewStorage {
                 CarrierElement::String => {
                     return Some(Self::RetainedRoot(RetainedRootStorage::ByteBuffer));
                 }
+                // The current whole-root byte-buffer key does not carry the
+                // String/Bytes source distinction. Keep direct &Bytes closed.
+                CarrierElement::Bytes => return None,
                 CarrierElement::List(_) => return None,
                 plan @ (CarrierElement::Tuple(_) | CarrierElement::Dict(_, _)) => {
                     if matches!(payload, Type::Qualified(_, _)) { return None; }
