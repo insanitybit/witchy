@@ -3246,6 +3246,32 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
             ;;
     esac
 
+    # Submission remains concurrent with the gate itself. A branch can be
+    # amended after the pre-gate identity check while its old tip is green.
+    # Re-check before ANY landing work so the validated but superseded tip
+    # cannot reach master (or be journaled as merged) ahead of its replacement.
+    local post_gate_stale=0
+    for qi in "${!batch_files[@]}"; do
+        queue_entry_matches "${batch_files[$qi]}" "${batch_ids[$qi]}" \
+            "${batch_submitted_shas[$qi]}" "${batch_attempt_ids[$qi]}" \
+            || post_gate_stale=1
+    done
+    if [ "$post_gate_stale" -eq 1 ]; then
+        note "$branch or a batched member was resubmitted during its green gate; refusing to land the superseded candidate"
+        local post_gate_requeued; post_gate_requeued="$(date +%s)"
+        record_attempt requeued "$branch" "$attempt_start" "$prepare_finished" \
+            "$lock_acquired" "$gate_started" "$gate_finished" "$post_gate_requeued" \
+            change_id "$change_id" attempt_id "$attempt_id" submitted_sha "$submitted_sha" \
+            sha "$sha" log "$log" reason "submission changed during gate" \
+            stages "$(stage_summary "$log")"
+        for qi in "${!batch_ids[@]}"; do
+            set_change_state "${batch_ids[$qi]}" queued "${batch_submitted_shas[$qi]}" \
+                "${batch_attempt_ids[$qi]}" || true
+        done
+        release_lock
+        return 1
+    fi
+
     # TEST-MODE SAFETY: an isolated state dir isolates the queue/journal but
     # NOT the merge target — without this guard a harness test would ff the
     # REAL master (it did, once). Tests must opt in explicitly to merging.

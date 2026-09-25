@@ -1206,6 +1206,7 @@ fn resubmission_during_gate_is_not_deleted_or_falsely_marked_merged() {
     let fixture = QueueFixture::stack(&["a.txt"]);
     fixture.mq_ok(&["submit", "a"], "true");
     let change_id = fixture.change("a")["change_id"].clone();
+    let first_attempt = fixture.change("a")["current_attempt"].clone();
     let started = fixture._temp.path().join("gate-started");
     let proceed = fixture._temp.path().join("gate-proceed");
     let gate = format!(
@@ -1236,6 +1237,8 @@ fn resubmission_during_gate_is_not_deleted_or_falsely_marked_merged() {
     run_git(&fixture.root, &["switch", "master"]);
     fixture.mq_ok(&["submit", "a"], "true");
     assert_eq!(fixture.change("a")["change_id"], change_id);
+    let second_attempt = fixture.change("a")["current_attempt"].clone();
+    assert_ne!(second_attempt, first_attempt);
     fs::write(&proceed, "go\n").expect("release paused gate");
 
     let output = runner.wait_with_output().expect("wait for queue drain");
@@ -1245,14 +1248,31 @@ fn resubmission_during_gate_is_not_deleted_or_falsely_marked_merged() {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
     );
-    assert!(run_git(&fixture.root, &["show", "master:a2.txt"]).status.success());
+    assert!(
+        run_git(&fixture.root, &["show", "master:a2.txt"])
+            .status
+            .success()
+    );
     assert_eq!(fixture.change("a")["state"], "merged");
-    let merged = fixture
-        .journal()
-        .into_iter()
+    let journal = fixture.journal();
+    let merged: Vec<_> = journal
+        .iter()
         .filter(|event| event["event"] == "merged" && event["branch"] == "a")
-        .count();
-    assert_eq!(merged, 2, "updated SHA did not receive its own gate attempt");
+        .collect();
+    assert_eq!(
+        merged.len(),
+        1,
+        "superseded and updated attempts both landed"
+    );
+    assert_eq!(merged[0]["attempt_id"], second_attempt);
+    assert!(
+        journal.iter().any(|event| {
+            event["event"] == "requeued"
+                && event["attempt_id"] == first_attempt
+                && event["reason"] == "submission changed during gate"
+        }),
+        "superseded green attempt was not rejected before landing: {journal:?}",
+    );
 }
 
 #[test]
