@@ -76,5 +76,17 @@ fn cancellation_cannot_drop_live_must_or_once_task_captures() {
             &format!("{mode}import chan\n\nasync fn child(own callback: once fn() -> ()):\n    chan.yield_now().await\n    callback()\n\nasync fn main():\n    let parent = chan.spawn(child(once fn(): ())).await\n    chan.cancel(parent).await\n"),
             &["once-callable", "replayable Task recipe", "affine"],
         );
+
+        assert_rejected(
+            "a replayable recipe cannot capture unique storage hidden in a record",
+            &format!("{mode}type Envelope:\n    values: unique List(Int)\n\nasync fn child(own envelope: Envelope) -> Int:\n    envelope.values.length()\n\nasync fn main():\n    let answer = child(Envelope([1])).await\n"),
+            &["affine unique storage", "replayable Task recipe"],
+        );
+
+        assert_rejected(
+            "a lazy recipe cannot retain call-scoped access",
+            &format!("{mode}async fn child(let items: List(Int)) -> Int:\n    items.length()\n\nasync fn main():\n    let answer = child([1]).await\n"),
+            &["call-scoped `let` parameter", "lazy Task recipe"],
+        );
     }
 }

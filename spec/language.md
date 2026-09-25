@@ -2073,6 +2073,14 @@ memory, so there are no locks or data races, and the round-robin schedule is
 deterministic - the independent expected result and admitted WebAssembly must
 produce identical output.
 
+The lazy task recipe retains its arguments after the call. A source `async fn`
+therefore cannot capture an explicit call-scoped `let` parameter. Pass an
+ordinary owned value or explicitly materialize an independent copy before
+constructing the task. The checked capture rule also refuses `unique` storage
+inside an instantiated aggregate: one affine owner cannot supply repeated
+recipe executions. Ordinary copyable data and eligible immutable view
+snapshots remain available as task inputs.
+
 ```witchy
 from chan import Sender
 

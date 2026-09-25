@@ -62,6 +62,30 @@ is needed for soundness.
 
 ## Exact-tip evidence checkpoint
 
+Rows J/K lazy task capture clarification (implemented but unverified,
+2026-09-25): the checker now rejects an explicit call-scoped `let` parameter
+of a source `async fn`, since calling it creates a persistent recipe. It also
+uses the existing recursive unique-storage judgment to reject an affine owner
+inside a recipe parameter's instantiated aggregate. The existing resource
+composition refusal test passes in normal and opt modes for borrowed and
+nested-unique captures, alongside its must/once checks. This is a focused
+checker result, not hand-computed admitted-Wasm or zero-leak evidence.
+
+Structural gaps under the 2026-09-25 composition clarification remain distinct:
+the current general `let` escape check recognizes bare returned parameters but
+does not yet carry access provenance through renamed values, derived views,
+wrappers, and callbacks; resource-view eligibility still needs a shared proof
+for lawful callable snapshots without admitting retained resource obligations;
+normal-to-opt copy preparation and transitive callback contracts require
+cross-boundary representative checks; task execution-mode provenance and
+per-execution ownership have not been reconciled through generic and indirect
+transport; and cancellation disposition for live `must` resources remains
+partial. The existing opt channel benchmark still declares a call-scoped
+`let` sender for a lazy task. A trial `own` migration compiled but its separate
+structural probe could not identify `main` because canonical admitted Wasm has
+no function-name section; that performance fixture needs migration and a
+valid structural probe before it counts as evidence. No A–O row closes here.
+
 Row G bounded closure-family authority (architecture implemented, semantic
 evidence pending, 2026-09-25): SafeWIR now requires both an exact checked
 callable type and its normalized physical closure family to fit the shared

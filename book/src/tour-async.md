@@ -10,13 +10,19 @@ Concurrency here is **cooperative async tasks** and **channels**. An
 drives. Start one with `chan.spawn`; create channels with `chan.channel` and pass
 them to the tasks that communicate. Tasks have separate memory, and the
 single-threaded deterministic schedule produces the same output on the
-interpreter and compiled WebAssembly backends.
+admitted WebAssembly runtime for the same inputs.
 
 ## `async` and `await`
 
 An `async fn` is a function that can suspend at an `await`. Awaiting another async
 call runs it and yields its value. An `async fn main` is the program's entry into
 the executor - it's driven to completion automatically.
+
+The call creates a reusable task recipe. An explicit `let` parameter only
+grants access for the call, so an `async fn` cannot capture it in that recipe.
+Pass an ordinary owned value, or explicitly materialize an independent value
+before the call. An async recipe also cannot capture `unique` storage, even
+when it is nested inside an aggregate.
 
 ```witchy
 async fn double(n: Int) -> Int:

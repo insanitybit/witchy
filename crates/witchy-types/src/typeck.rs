@@ -10263,6 +10263,28 @@ impl Checker {
             attribute == witchy_syntax::suspension::FRAME_FUNCTION_ATTRIBUTE
         });
         for (param, ty) in func.params.iter().zip(&params) {
+            if func.is_async && param.convention == Convention::Borrow {
+                return terr(format!(
+                    "async function `{}` cannot capture call-scoped `let` parameter `{}` in a lazy Task recipe; pass an ordinary owned value or materialize one explicitly",
+                    diagnostic_callable_name(&source_callable),
+                    param.name,
+                ));
+            }
+            // A source async call constructs a reusable recipe before the body
+            // runs. Its capture must be reproducible for every execution,
+            // including unique storage nested in an instantiated aggregate.
+            // The checked qualifier/field judgment sees both source qualifiers
+            // and fields whose qualifiers were erased from `Ty`.
+            if func.is_async
+                && (param.ty.as_ref().is_some_and(|declared| self.declared_type_carries_unique_storage(declared))
+                    || self.ty_carries_unique_storage(ty))
+            {
+                return terr(format!(
+                    "async function `{}` cannot capture affine unique storage in parameter `{}` into its replayable Task recipe; materialize copyable data before constructing the task",
+                    diagnostic_callable_name(&source_callable),
+                    param.name,
+                ));
+            }
             // `var` replaces the parameter handle and `own` transfers it; neither
             // is a field/deep mutation of a frozen payload.
             self.define(
