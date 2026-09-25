@@ -2369,7 +2369,7 @@ pub const ALL: &[IntrinsicSpec] = &[
     IntrinsicSpec {
         id: IntrinsicId::MetaParam,
         name: META_PARAM,
-        arity: 2,
+        arity: 3,
         signature: IntrinsicSignature::DeclaredInSource,
         effect: IntrinsicEffect::Toolchain,
         capability_effect: CapabilityEffect::None,

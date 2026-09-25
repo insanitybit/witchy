@@ -3022,6 +3022,18 @@ Attach a typed copy-out annotation to an already compiler-owned block.
 
 A function parameter and function item constructors. The single-expression form now delegates to the block form so item generation has one body shape.
 
+#### `fn param_let(name: Ident, ty: TypeSyntax) -> ParamSyntax`
+
+Construct an explicit `let` parameter. The checker enforces its no-escape borrow rule after the generated item is linked.
+
+#### `fn param_var(name: Ident, ty: TypeSyntax) -> ParamSyntax`
+
+Construct a `var` parameter with an ordinary write-back lane. Suspended generated functions reject `var` before an item handle is issued.
+
+#### `fn param_own(name: Ident, ty: TypeSyntax) -> ParamSyntax`
+
+Construct an `own` parameter, consuming the caller's binding.
+
 #### `fn function(public: Bool, name: Ident, params: List(ParamSyntax), ret: Option(TypeSyntax), body: ExprSyntax) -> ItemSyntax`
 
 #### `fn function_block(public: Bool, name: Ident, params: List(ParamSyntax), ret: Option(TypeSyntax), body: BlockSyntax) -> ItemSyntax`

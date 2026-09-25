@@ -1505,7 +1505,10 @@ call them.
 `std/meta` exposes structural syntax builders such as `ident`, `type_named`,
 `expr_call`, `pattern_anon_ctor`, `match_arm`, `stmt_let`, `block`, `param`,
 and `function_block`; they transfer typed child nodes directly and validate
-identifier spelling. Typed builders also form `await` expressions, `yield`
+identifier spelling. `param` builds a default value parameter;
+`param_let`, `param_var`, and `param_own` build the corresponding explicit
+conventions, preserving their borrow, write-back, and consumption rules through
+generated function checking. Typed builders also form `await` expressions, `yield`
 statements, region blocks, and async or generator functions through
 `expr_await`, `stmt_yield`, `block_region`, `function_async`, and
 `function_generator`. The function builders reject suspended `var` parameters,

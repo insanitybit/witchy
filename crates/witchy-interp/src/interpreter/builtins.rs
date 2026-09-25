@@ -1643,20 +1643,27 @@ impl Interpreter {
                 _ => err("meta.block_region expects BlockSyntax and Option(TypeSyntax)"),
             },
             name if intrinsics::is_meta_param(name) => match args {
-                [binding, ty] => {
+                [Value::Str(convention), binding, ty] => {
                     if self.fresh_ident_scope.is_none() {
                         return err("meta.param is available only during compile-time expansion");
                     }
+                    let (convention, prefix) = match convention.as_str() {
+                        "default" => (Convention::Let, ""),
+                        "let" => (Convention::Borrow, "let "),
+                        "var" => (Convention::Var, "var "),
+                        "own" => (Convention::Own, "own "),
+                        _ => return err("meta.param: unsupported parameter convention"),
+                    };
                     let name = compiler_binding_ident_name(binding, "meta.param")?;
                     let ty = compiler_type_syntax_value(ty, &self.compiler_type_syntax)?;
                     let source = format!(
-                        "{name}: {}",
+                        "{prefix}{name}: {}",
                         witchy_syntax::format::type_str(&ty),
                     );
                     let param = Param {
                         name,
                         ty: Some(ty),
-                        convention: Convention::Let,
+                        convention,
                         default: None,
                     };
                     let handle = self.next_compiler_syntax_handle("parameter")?;
@@ -1666,7 +1673,7 @@ impl Interpreter {
                         fields: Rc::new(vec![Value::str(handle), Value::str(source)]),
                     }))
                 }
-                _ => err("meta.param expects Ident and TypeSyntax"),
+                _ => err("meta.param expects a supported convention, Ident, and TypeSyntax"),
             },
             name if intrinsics::is_meta_function_block(name) => match args {
                 [Value::Bool(public), Value::Bool(is_async), Value::Bool(is_gen), name, params, ret, body] => {

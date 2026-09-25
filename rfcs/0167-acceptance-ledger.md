@@ -89,6 +89,16 @@ and `run` of two generated functions printed the hand-computed 11. No
 admitted unoptimized Wasm witness with a zero-leak audit has been recorded,
 so row M remains open.
 
+Row M typed parameter conventions (implemented but unverified, 2026-09-25):
+`meta.param_let`, `meta.param_var`, and `meta.param_own` construct sealed
+parameter handles with the exact source convention; the private bridge accepts
+only fixed convention tokens. Generated function checking preserves explicit
+`let` no-escape and refuses suspended `var` parameters. A temporary generated
+program printed the hand-computed `5/6/3` for `var` write-back, `own`, and
+explicit `let`, and canonical interpretation agreed with admitted Wasm. The
+temporary smoke has no zero-leak audit or durable witness, so row M remains
+open.
+
 Row G bounded nested-list carrier (2026-09-24):
 `tests/misc/rfc0167_nested_list_root_view.rs` pins three distinct whole-root
 `&List(List(Int))` paths with hand-computed results: direct relay and nested
