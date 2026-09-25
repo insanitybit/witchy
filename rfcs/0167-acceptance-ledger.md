@@ -67,6 +67,17 @@ passed; adversarial review found no new authority path. Boolean callers now
 allocate the small field plan, so compiler cost should be monitored. No
 new admitted form, Wasm evidence, or A–O closure is claimed.
 
+Row G callable view capture through shared storage classification
+(architecture implemented, semantic evidence unchanged, 2026-09-25): the
+checker now asks `RootedViewStorage` for the checked payload class instead
+of keeping separate scalar, slice, record, and List admission predicates.
+The class gate preserves the prior refusal of qualified scalar/String,
+direct tuple/dictionary, and non-private slice payloads. A focused checker
+compile and one existing recursive-list closure test passed; adversarial
+review found no widened capture path. The diagnostic now names recursive
+slice carriers accurately. No new semantic form, admitted Wasm evidence,
+or A–O closure is claimed.
+
 Row M typed view and dereference unary builders (implemented but unverified,
 2026-09-25): the sealed `meta.expr_unary` constructor now admits exactly `&`
 and `*` alongside its existing arithmetic/logical operators. A fresh
