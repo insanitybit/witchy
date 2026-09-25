@@ -320,7 +320,14 @@ def finish(seed_root):
         os.rename(staging, final)
         finished = final
     if finished is None:
-        return 0
+        # The coordinator may pause for low disk after the last publication.
+        # Prune expired predecessors even when there is no newly staged seed;
+        # otherwise the next gate cannot start to trigger another finish.
+        try:
+            finished = os.path.realpath(link)
+            load_manifest(finished)
+        except (OSError, ValueError, TypeError, AttributeError):
+            return 0
     # `publish` runs under the gate lock, but `finish` deliberately runs after
     # releasing it. A slow older finalizer can therefore acquire this lock
     # after a newer seed is already current. Never move the pointer backward:
