@@ -350,6 +350,15 @@ pub fn rooted_view_from_ty(
                 carrier: CanonicalRootedViewCarrier::DictRoot,
             })
         }
+        Ty::Named(name, arguments)
+            if name.as_ref() == "Dict"
+                && matches!(arguments.as_ref(), [Ty::String, Ty::Float]) =>
+        {
+            Ok(CanonicalReferenceKind::RootedView {
+                payload: rooted_dict_string_float_payload_key(),
+                carrier: CanonicalRootedViewCarrier::DictRoot,
+            })
+        }
         Ty::Int => Ok(CanonicalReferenceKind::RootedView {
             payload: rooted_scalar_payload_key(CanonicalScalarKind::Int),
             carrier: CanonicalRootedViewCarrier::IntScalarRoot,
@@ -439,6 +448,14 @@ pub fn rooted_view_from_ast(
         {
             Ok(CanonicalReferenceKind::RootedView {
                 payload: rooted_dict_string_bool_payload_key(),
+                carrier: CanonicalRootedViewCarrier::DictRoot,
+            })
+        }
+        exact if witchy_canonical_source::aggregates::is_dict_string_float_root_payload(exact)
+            && payload == exact =>
+        {
+            Ok(CanonicalReferenceKind::RootedView {
+                payload: rooted_dict_string_float_payload_key(),
                 carrier: CanonicalRootedViewCarrier::DictRoot,
             })
         }
@@ -555,6 +572,12 @@ fn rooted_dict_string_int_payload_key() -> CanonicalTypeKey {
 fn rooted_dict_string_bool_payload_key() -> CanonicalTypeKey {
     CanonicalTypeKey::from_digest(
         *blake3::hash(b"witchy.canonical-rooted-view-payload.v1/dict-string-bool").as_bytes(),
+    )
+}
+
+fn rooted_dict_string_float_payload_key() -> CanonicalTypeKey {
+    CanonicalTypeKey::from_digest(
+        *blake3::hash(b"witchy.canonical-rooted-view-payload.v1/dict-string-float").as_bytes(),
     )
 }
 

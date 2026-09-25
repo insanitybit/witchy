@@ -142,6 +142,16 @@ pub fn is_dict_string_bool_root_payload(ty: &Type) -> bool {
                     && value == "Bool" && value_args.is_empty()))
 }
 
+/// The Float-valued dictionary root keeps the same retained-token shape,
+/// with a payload identity distinct from the Int and Bool roots.
+pub fn is_dict_string_float_root_payload(ty: &Type) -> bool {
+    matches!(ty, Type::Named(name, arguments)
+        if name == "Dict" && matches!(arguments.as_slice(),
+            [Type::Named(key, key_args), Type::Named(value, value_args)]
+                if key == "String" && key_args.is_empty()
+                    && value == "Float" && value_args.is_empty()))
+}
+
 /// The exact tuple root whose heap representation and child String token are
 /// authenticated by the canonical whole-root view carrier.
 pub fn is_tuple_int_string_root_payload(ty: &Type) -> bool {

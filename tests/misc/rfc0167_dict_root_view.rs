@@ -1,5 +1,5 @@
-//! RFC-0167 row G: whole `&Dict(String, Int)` and `&Dict(String, Bool)`
-//! views retain their exact dictionary roots. This witness uses admitted
+//! RFC-0167 row G: whole `&Dict(String, Int)`, `&Dict(String, Bool)`, and
+//! `&Dict(String, Float)` views retain their exact roots. This witness uses admitted
 //! unoptimized Wasm and a zero-leak audit.
 
 use witchy::codegen;
@@ -15,16 +15,20 @@ impl Drop for ResetOptimizationOverride {
 }
 
 #[test]
-fn string_int_and_bool_dictionary_views_keep_old_roots_after_owner_mutation() {
+fn string_scalar_dictionary_views_keep_old_roots_after_owner_mutation() {
     // The Int view has one entry while its owner has two: 1 * 10 + 2 = 12.
     // The Bool view still reads true (100) after its owner replaces it with
-    // false (0). The independent result is 12 + 100 + 0 = 112.
+    // false (0). The Float view still reads 1.5 (1000) after its owner stores
+    // 9.5 (0). The independent result is 12 + 100 + 1000 + 0 = 1112.
     let source = r#"
 fn count(v: &Dict(String, Int)) -> Int:
     (*v).length()
 
 fn old_bool(v: &Dict(String, Bool)) -> Int:
     if (*v).at("a"): 100 else: 0
+
+fn old_float(v: &Dict(String, Float)) -> Int:
+    if (*v).at("a") == 1.5: 1000 else: 0
 
 fn main() -> Int:
     var d: Dict(String, Int) = dict.new()
@@ -35,7 +39,11 @@ fn main() -> Int:
     let _ = flags.insert("a", true)
     let old_flags = &flags
     let _ = flags.insert("a", false)
-    count(v) * 10 + d.length() + old_bool(old_flags) + (if flags.at("a"): 1000 else: 0)
+    var measures: Dict(String, Float) = dict.new()
+    let _ = measures.insert("a", 1.5)
+    let old_measures = &measures
+    let _ = measures.insert("a", 9.5)
+    count(v) * 10 + d.length() + old_bool(old_flags) + old_float(old_measures) + (if flags.at("a"): 10000 else: 0) + (if measures.at("a") == 9.5: 0 else: 10000)
 "#;
     opt::set_for_tests(Some(OptSet::none()));
     let _reset = ResetOptimizationOverride;
@@ -49,19 +57,19 @@ fn main() -> Int:
         128,
     ).expect("admitted Wasm instance");
     vm.run().expect("admitted Wasm execution");
-    assert_eq!(vm.output(), vec!["112".to_string()], "hand-computed retained roots and Bool value");
+    assert_eq!(vm.output(), vec!["1112".to_string()], "hand-computed scalar dictionary snapshots");
     assert_eq!(vm.canonical_heap_leaks().expect("canonical heap audit"), Some(0));
 }
 
 #[test]
 fn other_dictionary_view_payloads_stay_outside_the_exact_carrier() {
     let different_value = r#"
-fn count(v: &Dict(String, Float)) -> Int:
+fn count(v: &Dict(String, Duration)) -> Int:
     (*v).length()
 
 fn main() -> Int:
-    var d: Dict(String, Float) = dict.new()
-    let _ = d.insert("a", 1.5)
+    var d: Dict(String, Duration) = dict.new()
+    let _ = d.insert("a", 1s)
     count(&d)
 "#;
     let nested_view = r#"
@@ -79,7 +87,7 @@ fn main() -> Int:
         assert!(refusal.to_string().contains("rooted view payload has no admitted authenticated carrier"),
             "near miss names the missing carrier: {refusal}");
     }
-    let closure_capture = r#"
+    let bool_closure_capture = r#"
 fn main() -> Int:
     var d: Dict(String, Bool) = dict.new()
     let _ = d.insert("a", true)
@@ -87,10 +95,20 @@ fn main() -> Int:
     let read = fn() -> Int: if (*view).at("a"): 1 else: 0
     read()
 "#;
-    let error = witchy::resolve_std_only_checked(closure_capture).err()
-        .map(|error| error.to_string())
-        .expect("Bool dictionary view closure capture stays fail-closed");
-    assert!(error.contains("no admitted carrier"), "closure capture refusal: {error}");
+    let float_closure_capture = r#"
+fn main() -> Int:
+    var d: Dict(String, Float) = dict.new()
+    let _ = d.insert("a", 1.5)
+    let view = &d
+    let read = fn() -> Int: if (*view).at("a") == 1.5: 1 else: 0
+    read()
+"#;
+    for source in [bool_closure_capture, float_closure_capture] {
+        let error = witchy::resolve_std_only_checked(source).err()
+            .map(|error| error.to_string())
+            .expect("dictionary view closure capture stays fail-closed");
+        assert!(error.contains("no admitted carrier"), "closure capture refusal: {error}");
+    }
 }
 
 #[test]
@@ -111,7 +129,15 @@ fn main() -> Int:
         &d
     0
 "#;
-    for source in [int_source, bool_source] {
+    let float_source = r#"
+fn main() -> Int:
+    let v = region -> &Dict(String, Float):
+        var d: Dict(String, Float) = dict.new()
+        let _ = d.insert("a", 1.5)
+        &d
+    0
+"#;
+    for source in [int_source, bool_source, float_source] {
         let error = witchy::resolve_std_only_checked(source).err()
             .map(|error| error.to_string())
             .expect("region-born dictionary root cannot escape");

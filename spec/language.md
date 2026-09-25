@@ -1063,10 +1063,11 @@ The current canonical implementation refuses `Dict(String, &String)` because
 dictionary values do not yet have an authenticated `&String` collection carrier.
 The refusal also applies when that dictionary is a field of a record or crosses
 a public record boundary. Ordinary `Dict(String, String)` remains admitted.
-The exact whole-root views `&Dict(String, Int)` and `&Dict(String, Bool)` are
-admitted for direct transport. Each retains its dictionary root, so a later
-update of the owner does not change the view's snapshot. Closure capture of a
-dictionary view and other dictionary-root view shapes remain unsupported.
+The exact whole-root views `&Dict(String, Int)`, `&Dict(String, Bool)`, and
+`&Dict(String, Float)` are admitted for direct transport. Each retains its
+dictionary root, so a later update of the owner does not change the view's
+snapshot. Closure capture of a dictionary view and other dictionary-root view
+shapes remain unsupported.
 The exact whole-root view `&(Int, String)` also retains its tuple root. A
 later replacement of the owning tuple leaves both fields of the view at their
 earlier values. Other whole tuple-root shapes have no carrier here. This exact
