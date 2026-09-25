@@ -1472,7 +1472,9 @@ an `await` or `yield` in the wrong function mode, suspension in an ordinary
 nested lambda, and async or generator trait methods. These generated forms do
 not pass through a source parser. `expr_if` directly constructs a conditional
 from compiler-owned expression and block handles, with an optional sealed else
-block; source-backed or forged handles are refused. Their end-to-end runtime
+block. `expr_for` directly constructs a loop from a compiler-owned binding
+identifier, iterator expression, and body block. Source-backed or forged
+handles and call-site binders are refused. Their end-to-end runtime
 evidence remains pending. `meta.fresh(hint)`
 returns a deterministic compiler-owned `Ident` for generated bindings. Repeated
 calls and separate comptime blocks or tagged-literal invocations produce distinct

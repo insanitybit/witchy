@@ -286,6 +286,7 @@ pub const COMPILER_STD_NAMES: &[&str] = &[
     "meta.expr_call",
     "meta.expr_dynamic_descriptor",
     "meta.expr_field",
+    "meta.expr_for",
     "meta.expr_if",
     "meta.expr_hole",
     "meta.expr_lambda",
