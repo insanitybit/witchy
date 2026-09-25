@@ -55,6 +55,18 @@ is needed for soundness.
 
 ## Exact-tip evidence checkpoint
 
+Row G lowerer storage-plan consumption (architecture implemented, semantic
+evidence unchanged, 2026-09-25): the direct rooted-view gate and checked
+slice-element extraction now consume `StoragePlan` from canonical-source.
+The lowerer preserves the direct-slice syntax and frozen-payload checks and
+converts only proven owned or non-Unit inline scalar elements into slice
+carriers; Unit remains refused. Adversarial review found and corrected that
+Unit near miss and found no other changed admission in direct views, nested
+records, qualifiers, or generic slices. A focused `witchy-lower` compile
+passed. This does not yet replace the
+remaining layout, checker, and SafeWIR classification sites; A–O evidence
+and row status are unchanged.
+
 Row G shared source-storage entry point (architecture implemented, semantic
 evidence unchanged, 2026-09-25): `StoragePlan` now composes checked scalar,
 recursive owned-carrier, rooted-view, and view-bearing aggregate plans from

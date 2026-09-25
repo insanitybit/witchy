@@ -52,6 +52,7 @@ use witchy_syntax::ast::{BinOp, Convention, Expr, Item, Pattern, Stmt, Type, Typ
 use witchy_canonical_source::aggregates::{canonical_owner_aggregate_identity, concrete_aggregate_identity, dictionary_as_tuple, scalar_aggregate_shape, ScalarAggregateShape, ScalarVariant};
 use witchy_canonical_source::carrier::CarrierElement;
 use witchy_canonical_source::rooted_view::{RetainedRootStorage, RootedViewStorage};
+use witchy_canonical_source::storage::StoragePlan;
 use witchy_canonical_source::abi::CanonicalScalarKind;
 use witchy_canonical_source::access::{
     AccessIdentityKey, AccessKind, AccessSignature, CheckedPlaceStep,
@@ -2915,9 +2916,17 @@ fn is_direct_slice_payload(payload: &Type) -> bool {
         || matches!(payload, Type::Named(name, _) if name == "Slice")
 }
 
+fn classified_view_storage(payload: &Type, definitions: &BTreeMap<String, TypeDef>) -> Option<RootedViewStorage> {
+    let view = Type::Qualified(TypeQual::View, Box::new(payload.clone()));
+    match StoragePlan::classify(&view, definitions, |_| Some(0)) {
+        StoragePlan::RootedView(plan) => Some(plan),
+        _ => None,
+    }
+}
+
 fn has_checked_direct_carrier(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> bool {
     rooted_view_inner(ty).is_some_and(|payload| {
-        match RootedViewStorage::classify(payload, definitions, |_| Some(0)) {
+        match classified_view_storage(payload, definitions) {
             // The projected carrier has no qualifier shell between `&` and
             // `[T]`; a whole List root permits only its proven Frozen shell.
             Some(RootedViewStorage::RetainedProjection(_)) => is_direct_slice_payload(payload),
@@ -2941,7 +2950,7 @@ fn is_direct_view_payload(inner: &Type, definitions: &BTreeMap<String, TypeDef>)
     if matches!(inner, Type::Qualified(qualifier, _) if *qualifier != TypeQual::Frozen) {
         return false;
     }
-    match RootedViewStorage::classify(inner, definitions, |_| Some(0)) {
+    match classified_view_storage(inner, definitions) {
         Some(RootedViewStorage::RetainedProjection(_)) => is_direct_slice_payload(inner),
         Some(_) => true,
         None => false,
@@ -3415,7 +3424,17 @@ fn checked_rooted_slice_element(ty: &Ty, definitions: &BTreeMap<String, TypeDef>
         return None;
     }
     witchy_types::typeck::ty_to_ast(arguments.first()?)
-        .as_ref().and_then(|element| CarrierElement::from_checked_type_with_definitions(element, definitions))
+        .as_ref().and_then(|element| classified_owned_carrier(element, definitions))
+}
+
+fn classified_owned_carrier(element: &Type, definitions: &BTreeMap<String, TypeDef>) -> Option<CarrierElement> {
+    match StoragePlan::classify(element, definitions, |_| Some(0)) {
+        StoragePlan::InlineScalar(kind) if kind != CanonicalScalarKind::Unit => {
+            Some(CarrierElement::Scalar(kind))
+        }
+        StoragePlan::Owned(plan) => Some(plan),
+        _ => None,
+    }
 }
 
 fn rooted_slice_element_with_definitions(
@@ -3423,10 +3442,10 @@ fn rooted_slice_element_with_definitions(
     definitions: &BTreeMap<String, TypeDef>,
 ) -> Option<CarrierElement> {
     match ty.unqualified() {
-        Type::Slice(element) => CarrierElement::from_checked_type_with_definitions(element, definitions),
+        Type::Slice(element) => classified_owned_carrier(element, definitions),
         Type::Named(name, arguments) if name == "Slice" => {
             let [element] = arguments.as_slice() else { return None };
-            CarrierElement::from_checked_type_with_definitions(element, definitions)
+            classified_owned_carrier(element, definitions)
         }
         _ => None,
     }
