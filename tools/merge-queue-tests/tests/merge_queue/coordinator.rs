@@ -597,6 +597,34 @@ fn mbx_policy_batch_is_queue_infra_only_not_workspace_nextest() {
 }
 
 #[test]
+fn nextest_config_batch_does_not_append_queue_fixtures() {
+    let fixture = QueueFixture::stack(&[".config/nextest.toml"]);
+    fixture.mq_ok(&["submit", "a"], "true");
+    let env_log = fixture._temp.path().join("gate-env");
+    let gate = format!(
+        "printf 'infra=%s infra_only=%s scope=%s nextest=[%s]\n' \
+         \"${{WITCHY_GATE_QUEUE_INFRA:-}}\" \"${{WITCHY_GATE_QUEUE_INFRA_ONLY:-}}\" \
+         \"${{WITCHY_GATE_SCOPE:-}}\" \"${{WITCHY_GATE_NEXTEST:-}}\" >{}",
+        env_log.display(),
+    );
+    let output = fixture.mq_ok(&["run", "--once"], &gate);
+    let env = fs::read_to_string(&env_log).expect("read classified gate env");
+    assert!(
+        env.contains("infra=0") && env.contains("infra_only=0") && env.contains("scope=all"),
+        "nextest config did not stay on the product-only gate: {env}",
+    );
+    assert!(
+        env.contains("nextest=[]"),
+        "nextest config must exercise the workspace selection: {env}",
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("queue-infra=0"),
+        "gating note still requested queue fixtures: {}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+}
+
+#[test]
 fn opportunistic_batches_do_not_mix_queue_infra_and_product_scopes() {
     let fixture = QueueFixture::stack(&["scripts/check.sh"]);
     run_git(&fixture.root, &["switch", "-c", "product", "master"]);

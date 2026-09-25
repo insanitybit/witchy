@@ -1334,7 +1334,10 @@ group_is_busy() { # group_is_busy <pgid>
 # include_str!'d into the witchy binary, so deleting or renaming one breaks
 # the build and must still be gated.
 GATE_NO_TEST_PATHS='^(rfcs/|wiki/|bugs/|docs/|external-refs/|scratch/|security-eval/|\.claude/|\.codex/|CLAUDE\.md$|AGENTS\.md$|tests/glamour\.rs$|tests/glamour/|src/example_tests/glamour\.rs$|src/example_tests/pm_coven\.rs$|src/source/package_inputs/registry_replay_tests\.rs$|src/commands/project_resolver_tests\.rs$|projects/coven-web/)'
-QUEUE_INFRA_PATHS='^(\.mbx\.toml|\.config/nextest\.toml|scripts/(check|gate-report|merge-queue|nextest-list-wrapper|state-paths|test-for-paths|test-impact|worktree-status|worktree-warm)\.(sh|py)|tools/merge-queue-tests/)'
+# The product nextest invocation parses and exercises `.config/nextest.toml`.
+# It cannot change queue process/lock behavior, so do not append the unrelated
+# queue fixture suite merely because test scheduling changed.
+QUEUE_INFRA_PATHS='^(\.mbx\.toml|scripts/(check|gate-report|merge-queue|nextest-list-wrapper|state-paths|test-for-paths|test-impact|worktree-status|worktree-warm)\.(sh|py)|tools/merge-queue-tests/)'
 QUEUE_INFRA_CORE_PATHS='^(\.mbx\.toml|scripts/(merge-queue|state-paths|check|test-for-paths|test-impact|gate-report)\.(sh|py)|tools/merge-queue-tests/)'
 
 # Docs-safe path set, matching check.sh's WITCHY_GATE_SCOPE=docs classifier.
