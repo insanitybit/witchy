@@ -97,31 +97,6 @@ fn type_is_exclusive_reference(ty: &ast::Type) -> bool {
 /// independent owned value (`view.owned()`). It needs no import.
 pub(crate) const OWNED_MATERIALIZATION: &str = "owned";
 
-/// The one view payload with an admitted canonical carrier today. Row G of the
-/// RFC-0167 acceptance ledger records this boundary and the `&Float` refusal
-/// that shares it.
-fn is_admitted_view_carrier(payload: &Ty) -> bool {
-    // `&Int` is the scalar root carrier; `&String` is the retained String
-    // token itself (RFC-0167 StringRoot), so it crosses a callable boundary
-    // exactly as a captured String does.
-    matches!(payload, Ty::Int | Ty::String | Ty::Float | Ty::Bool | Ty::Duration)
-}
-
-/// `&[T]` over an admitted slice element (the checker spells the slice
-/// payload as the private `Slice(T)` nominal).  Its carrier is the
-/// rooted-slice owner family: an opaque owner retaining its backing list.
-fn is_admitted_slice_view(
-    ty: &Ty,
-    definitions: &std::collections::BTreeMap<String, ast::TypeDef>,
-) -> bool {
-    let Ty::Named(name, arguments) = ty else { return false };
-    name.as_ref() == "Slice"
-        && matches!(&arguments[..], [element]
-            if ty_to_ast(element).as_ref()
-                .and_then(|ty| witchy_canonical_source::carrier::CarrierElement::from_checked_type_with_definitions(ty, definitions))
-                .is_some())
-}
-
 fn type_is_explicit_reference(ty: &ast::Type) -> bool {
     match ty {
         ast::Type::Qualified(
@@ -455,17 +430,28 @@ impl Checker {
     /// scalar and `&String` carriers, or a record/sum/`Option`/`Result` or
     /// scalar List accepted by the canonical carrier rules.
     fn admitted_view_capture(&self, payload: &Ty) -> bool {
-        is_admitted_view_carrier(payload)
-            // `&[T]` over an admitted slice element is the rooted-slice owner
-            // family: an opaque carrier retaining its backing list, captured
-            // into an owner field exactly like the `&Int` place owner.
-            || is_admitted_slice_view(payload, &self.canonical_definitions)
-            || ty_to_ast(payload).is_some_and(|payload| {
-                witchy_canonical_source::aggregates::is_record_root_payload(&payload, &self.canonical_definitions)
-                    || witchy_canonical_source::carrier::CarrierElement::from_list_root_payload_type_with_definitions(
-                        &payload, &self.canonical_definitions,
-                    ).is_some()
-            })
+        use witchy_canonical_source::rooted_view::{RetainedRootStorage, RootedViewStorage};
+        let Some(payload) = ty_to_ast(payload) else { return false };
+        let Some(storage) = RootedViewStorage::classify(
+            &payload, &self.canonical_definitions, |_| Some(0),
+        ) else { return false };
+        match storage {
+            RootedViewStorage::ScalarCell(_)
+            | RootedViewStorage::InlineScalar(_)
+            | RootedViewStorage::RetainedRoot(RetainedRootStorage::ByteBuffer) => {
+                // The previous callable boundary admitted these direct
+                // values, but no qualified scalar or String payload.
+                !matches!(payload, ast::Type::Qualified(..))
+            }
+            RootedViewStorage::RetainedProjection(_) => {
+                // `Slice(T)` is the checker's private retained-view payload.
+                matches!(&payload, ast::Type::Named(name, arguments)
+                    if name == "Slice" && arguments.len() == 1)
+            }
+            RootedViewStorage::RetainedRoot(RetainedRootStorage::Sequence(_)
+                | RetainedRootStorage::CheckedAggregate(_)) => true,
+            RootedViewStorage::RetainedRoot(RetainedRootStorage::StructuralRecord(_)) => false,
+        }
     }
 
     fn fresh(&mut self) -> Ty {
@@ -8137,7 +8123,7 @@ impl Checker {
                         )
                     {
                         return terr(format!(
-                            "closure capture `{capture}` carries a view whose payload has no admitted carrier; only scalar, `&String`, record, scalar-List, and scalar/String slice views cross a callable boundary"
+                            "closure capture `{capture}` carries a view whose payload has no admitted carrier; callable capture requires a checked scalar, String, List, aggregate, or recursive slice carrier"
                         ));
                     }
                     if let Some(borrowed) = self.borrowed_nominal_name(&captured_ty) {
