@@ -20,5 +20,11 @@ share_workspace_root = true
 # against the gate's 27%.
 # scripts/bin/cargo marks ordinary agent builds low priority, leaving one
 # permit available when a normal-priority agent-check presubmit is waiting.
+# Test binaries must use the same pool too. Nextest processes do not hold a
+# compile permit after their binary is linked; without this setting, several
+# agents can each start their own test threads and push a 10-core host above
+# load 100 while the serialized gate is running. The gate uses plain Cargo and
+# remains outside this four-CPU agent pool.
 [scheduler]
 cpus = 4
+tests = true
