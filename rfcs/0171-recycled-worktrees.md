@@ -1,7 +1,7 @@
 ---
 rfc: 0171
 title: Recycle agent worktrees so incremental state survives between tasks
-status: accepted
+status: implemented
 created: 2026-09-24
 tracking:
 ---
@@ -183,6 +183,22 @@ Landed with this status change:
   eviction, concurrent claims) and `merge_queue::coordinator`
   `sweep_recycles_a_landed_pool_worktree_in_place`.
 
-The status moves to `implemented` once the timing acceptance criterion, the
-first edit in a recycled slot within 2x of the second edit, is measured on a
-recycled slot.
+Follow-ups: the sweep recycles pool slots even while ready work is queued
+(it previously deferred everything), and trusts a worktree still at the exact
+`submitted_sha` of a merged attempt, since a gate-resolved conflict leaves
+`git cherry` unable to match the landed patch.
+
+**Timing acceptance, measured 2026-09-24** in recycled slot `pool-01` (last
+used for a witchy-types branch), with `cargo build -p witchy-types` and the
+mbx cache off so the times are rustc's, at load 17-24:
+
+| step | wall | CPU |
+|---|---|---|
+| catch-up to current master | 97s | 173s |
+| first body edit in typeck.rs | 29s | 52s |
+| second body edit | 15s | 25s |
+
+The first edit is 1.9x the second (wall), inside the 2x criterion. The same
+first edit in a fresh worktree took 256s. What remains is catch-up: master
+moves between tasks, so the first build in a recycled slot recompiles whatever
+landed in the meantime.
