@@ -3517,9 +3517,12 @@ impl Checker {
     /// value. A view `&T` materializes its referent `T`; an owned value is
     /// its own materialization. Only lawfully copyable payloads qualify: no
     /// authority, no `must` obligation, no once-callable, and no nested view
-    /// (an aggregate holding a view is not deeply owned). An admitted scalar
-    /// slice explicitly materializes its projection as a fresh `List(T)`.
+    /// (an aggregate holding a view is not deeply owned). An admitted slice
+    /// explicitly materializes its projection as a fresh `List(T)`.
     fn owned_materialization_ty(&mut self, receiver: &Ty) -> Result<Ty, TypeError> {
+        use witchy_canonical_source::rooted_view::RootedViewStorage;
+        use witchy_canonical_source::storage::StoragePlan;
+
         let payload = match self.resolve(receiver) {
             Ty::View(payload) => self.resolve(&payload),
             // A `dyn` receiver resolves `.owned()` only through its trait
@@ -3546,10 +3549,13 @@ impl Checker {
             && arguments.len() == 1
         {
             let element = self.resolve(&arguments[0]);
-            if ty_to_ast(&element).as_ref().is_some_and(|ty| {
-                witchy_canonical_source::storage::StoragePlan::classify(
-                    ty, &self.canonical_definitions, |_| Some(0),
-                ).into_carrier_element().is_some()
+            if ty_to_ast(&payload).is_some_and(|ty| {
+                let view = ast::Type::Qualified(ast::TypeQual::View, Box::new(ty));
+                matches!(
+                    StoragePlan::classify(&view, &self.canonical_definitions, |_| Some(0)),
+                    StoragePlan::RootedView(RootedViewStorage::RetainedProjection(element))
+                        if element.within_resource_bounds()
+                )
             })
                 || matches!(&element, Ty::Var(variable)
                     if self.current_typarams.values().any(|typaram| typaram == variable))
@@ -3580,6 +3586,33 @@ impl Checker {
             return terr(format!(
                 "`.owned()` cannot materialize `{payload}`: it contains an immutable view, and \
                  `.owned()` does not make nested views deeply owned; map the aggregate explicitly"
+            ));
+        }
+        // A declared type parameter is checked again after specialization.
+        // All concrete copies need an owned source-storage proof; in particular,
+        // an unknown nominal or unsupported callable must not inherit one from
+        // the absence of the hazards above.
+        if !matches!(&payload, Ty::Var(variable)
+            if self.current_typarams.values().any(|typaram| typaram == variable))
+            && !ty_to_ast(&payload).as_ref().is_some_and(|ty| {
+                match StoragePlan::classify(ty, &self.canonical_definitions, |_| Some(0)) {
+                    StoragePlan::InlineScalar(_)
+                    | StoragePlan::InlineAggregate(_)
+                    | StoragePlan::Owned(_)
+                    | StoragePlan::RetainedCallable(_)
+                    | StoragePlan::RetainedCallableList(_) => true,
+                    StoragePlan::AuthenticatedPlace(plan)
+                    | StoragePlan::RetainedGraphList(plan)
+                    | StoragePlan::RetainedOpaqueAggregateList(plan) => plan.cloneable(),
+                    StoragePlan::RetainedOwnerList(_)
+                    | StoragePlan::RootedView(_)
+                    | StoragePlan::AggregateView(_)
+                    | StoragePlan::Refused(_) => false,
+                }
+            })
+        {
+            return terr(format!(
+                "`.owned()` cannot materialize `{payload}`: its owned storage has no recursive checked copy proof"
             ));
         }
         Ok(payload)

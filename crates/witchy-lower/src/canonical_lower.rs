@@ -2213,7 +2213,7 @@ fn checked_signature(
             }
         }
         if matches!(convention, Convention::Own)
-            && !ordinary_own_type_supported(parameter)
+            && !ordinary_own_scalar_supported(parameter, definitions)
             && !matches!(value_parameters[parameter_index], ValueType::Ref(_) | ValueType::Gc(_) | ValueType::Capability(_))
         {
             return Err(CanonicalLoweringError::UnsupportedConvention {
@@ -2608,7 +2608,7 @@ fn signature_from_type(
         // succeed before a reference can authorize this convention.
         let value_type = source_value_type(parameter, layout_bundle, layouts, closure_layouts, definitions)?;
         if matches!(convention, Convention::Own)
-            && !ordinary_own_type_supported(parameter)
+            && !ordinary_own_scalar_supported(parameter, definitions)
             && !matches!(value_type, ValueType::Ref(_) | ValueType::Gc(_) | ValueType::Capability(_))
         {
             return Err(CanonicalLoweringError::UnsupportedConvention {
@@ -3562,42 +3562,20 @@ fn lambda_physical_layout_type(ty: &Type) -> &Type {
     }
 }
 
-/// v1 represents scalar consumption and one existing owned token for ordinary
-/// String, callable, and recursively supported List values. `()` is the
-/// canonical source spelling of the Unit scalar, including when a generic
-/// `own a` is specialized. Explicit qualifier state, capabilities, and other
-/// reference state remain fail-closed.
-fn ordinary_own_type_supported(ty: &Type) -> bool {
+/// Only inline scalar storage can pass the scalar `own` ABI preflight.
+/// Reference, GC, and capability lanes have separate physical ownership
+/// checks at the call sites. The shared source plan decides scalar storage
+/// recursively, including checked generic specializations.
+fn ordinary_own_scalar_supported(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> bool {
     let ty = match ty {
-        // Only this outer qualifier is a source ownership fact. Recursing
-        // through nested `unique` would silently erase a future element-token
-        // ABI, so list elements deliberately use the unqualified helper.
+        // A root unique qualifier changes the source ownership fact, not the
+        // physical scalar lane. Nested qualifiers remain in the shared plan.
         Type::Qualified(TypeQual::Unique, inner) => inner.as_ref(),
-        // A `&Float`/`&Bool`/`&Duration` view is carried as the immutable
-        // scalar value itself (`InlineScalar`), so consuming one is a plain
-        // copy of that value. Async lowering carries live views into
-        // continuation segments as `own` parameters.
-        Type::Qualified(TypeQual::View, inner)
-            if witchy_canonical_source::aggregates::is_inline_scalar_view_payload(inner) => return true,
         _ => ty,
     };
-    ordinary_unqualified_own_type_supported(ty)
-}
-
-fn ordinary_unqualified_own_type_supported(ty: &Type) -> bool {
-    match ty {
-        // Callable values use the same owned closure-record token as other
-        // references. source_value_type still requires its registered layout.
-        Type::Fn(..) => true,
-        Type::Named(name, arguments) if arguments.is_empty() => {
-            matches!(name.as_str(), "Int" | "Float" | "Duration" | "Bool" | "Nil" | "Unit" | "String")
-        }
-        Type::Named(name, arguments) if name == "List" && arguments.len() == 1 => {
-            ordinary_unqualified_own_type_supported(&arguments[0])
-        }
-        Type::Tuple(items) if items.is_empty() => true,
-        _ => false,
-    }
+    matches!(StoragePlan::classify(ty, definitions, |_| Some(0)),
+        StoragePlan::InlineScalar(_)
+            | StoragePlan::RootedView(RootedViewStorage::InlineScalar(_)))
 }
 
 fn write_back_count(signature: &FunctionSignature) -> usize {
