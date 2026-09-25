@@ -54,6 +54,29 @@ No unresolved objection remains from that review. Rows B-Q still require
 current production-route implementation and evidence; this status change does
 not close any of them.
 
+### Composition clarification, 2026-09-25
+
+The user-authorized clarification below selects the remaining composition rules
+for call-scoped access, resource-bearing views, and lazy task preparation. It
+preserves snapshot values, immutable views, `var` write-back, and transitive opt
+contracts. The new accepted/rejected examples specify the target; they are not
+claims of current compiler support or new acceptance evidence. Rows G, I, J, K,
+and P must account for these cases before their full contracts are closed.
+
+The usability target is Go-like ease for ordinary normal-mode data programming
+and at most Rust-like ownership friction for explicitly selected opt code.
+These are usability goals, not adoption of either language's semantics. Normal
+mode manages retention, copying, and write-back for copyable data automatically.
+Opt mode requires proofs or explicit operations where the declared contract
+forbids implicit ownership repair. Both modes preserve the same values, effects,
+evaluation order, and resource obligations whenever both accept a program.
+
+Normal mode does not silently undo `own`, duplicate affine resources, discard
+`must` obligations, or resolve conflicting mutable arguments by choosing a
+write-back order. Such errors should identify the source value and operation,
+not require the programmer to understand SafeWIR carriers. Unsupported compiler
+representations are implementation gaps, not additional language semantics.
+
 ### Runtime authority and executable evidence
 
 Checked canonical SafeWIR is the sole executable language contract. Production
@@ -235,6 +258,45 @@ values cannot be duplicated just because ordinary data can be.
 | `var x: T` | Caller supplies a mutable place; the call exclusively takes its current value and writes the final value back on structured completion. |
 | `own x: T` | Caller transfers its binding's value; the source becomes unusable unless reinitialized, in both source modes. |
 
+### Call-scoped access and retained results
+
+`let` on a parameter promises that access obtained through that parameter does
+not survive the call. This includes a view derived from it, a copy of a borrowed
+view carrier, and any aggregate, closure, task, or message containing that access.
+Renaming the parameter or passing it through a generic, trait, or indirect call
+cannot weaken the promise. Temporary local views are allowed while their access
+remains within the call. Returning a computed scalar does not retain access.
+
+To return or store a retained view, take an ordinary owned input (including an
+ordinary `&T` or `&[T]` input), or use explicit lawful `.owned()` materialization
+to establish an independent value first. A materialized value still obeys region
+escape and resource rules. Normal mode does not silently turn a `let` parameter
+into an escaping owner. This keeps its nonescape promise usable by opt callers
+and separately compiled code without changing its meaning by caller mode.
+
+```text
+// Accepted target: ordinary input permits retention of its snapshot.
+fn first(xs: List(Int)) -> &Int:
+    &xs[0]
+
+// Accepted target: explicit materialization establishes an independent value.
+fn copied_first(let xs: List(Int)) -> &Int:
+    let independent = xs.owned()
+    &independent[0]
+
+// Rejected: the returned view retains access borrowed for this call only.
+fn escaping_first(let xs: List(Int)) -> &Int:
+    &xs[0]
+```
+
+The examples assume a nonempty list; ordinary bounds failures still apply.
+An optimizer may elide physical materialization only while preserving the
+independent value and the caller's nonescape contract. For `let view: &T`, the
+borrowed object is the carrier: an explicit copy of a copyable referent can
+escape, but an implicit retained copy of that carrier cannot.
+
+### Transfers and write-back
+
 `move x` explicitly transfers a value at an expression site. `own` is a callee
 contract; `move` is a caller operation, not another type qualifier. `own` does
 not assert unique backing storage: earlier ordinary snapshots can still exist.
@@ -405,6 +467,51 @@ resources or authority lacking a lawful copy operation, and it cannot erase a
 nested view by pretending an aggregate is deeply owned; such conversions require
 an explicit checked mapping.
 
+### Views and noncopyable storage
+
+An unrestricted retained snapshot view requires a backing value whose observed
+data can be preserved without duplicating a resource or disposition obligation.
+This amendment does not introduce persistent views of `must` values,
+once-callables, capability authority, or aggregates whose retained storage owns
+such contents. Those forms are rejected in both modes. Call-scoped `let` access
+remains available under the payload's ordinary authority and consumption rules;
+it cannot consume a borrowed resource or escape as a retained view.
+
+Eligibility follows instantiated stored fields and variants recursively, not
+just the selected field, a container name, or every syntactic type argument.
+An unused phantom argument does not store a resource. A callback signature
+mentioning a capability is not itself a captured capability. Copyable ordinary
+callbacks retain their declared invocation contract; an immutable view does
+not make an effectful callback pure or snapshot the external state it accesses.
+
+```text
+must type Ticket:
+    Ticket(Int)
+
+// Accepted target: borrow the ticket to inspect it without taking its obligation.
+fn inspect(let ticket: Ticket) -> Int:
+    match ticket:
+        Ticket(n) -> n
+
+// Rejected: a persistent view cannot outlive consumption of this obligation.
+fn retain_ticket(let ticket: Ticket) -> &Ticket:
+    &ticket
+
+// Also rejected with an owned parameter; removing `let` does not make Ticket
+// eligible for persistent views or discharge the callee's obligation.
+fn retain_owned_ticket(own ticket: Ticket) -> &Ticket:
+    &ticket
+```
+
+`unique` data ownership remains distinct from resource noncopyability. The
+existing `&unique T` rule allows observation of otherwise snapshot-capable
+data; it never duplicates a unique owning handle. An independent data copy
+must establish its own ownership proof. While a view observes the old data,
+normal mutation may detach only when that is lawful, and opt mutation requires
+proof or explicit materialization. No rule permits copying a unique wrapper to
+duplicate noncopyable contents. Similarly, `frozen` never repairs ineligible
+resource storage.
+
 ### Removed borrow spellings
 
 `View(T, 'a)`, lifetime parameters, `&'a T`, `&'a mut T`, `&mut place`,
@@ -485,6 +592,44 @@ an opt dependency does not opt the normal root into stricter syntax. The runtime
 carrier ABI must preserve these facts without relying on optional inlining,
 specialization, ownership extraction, or bounds-check elimination.
 
+### Callback compatibility is an API contract
+
+The transitive rule deliberately favors a compositional opt guarantee over
+accepting every normal callback. Normal-side argument copying cannot establish
+how a callback behaves when invoked. `pure` does not establish opt compatibility:
+pure code may allocate and perform ownership repair. Trait implementations and
+nested callable results preserve the same requirement as direct callbacks.
+
+```text
+// fast.witchy
+mode opt
+pub fn apply(f: fn(Int) -> Int, x: Int) -> Int:
+    f(x)
+pub fn twice(x: Int) -> Int:
+    x + x
+
+// main.witchy, normal mode
+import fast
+fn ordinary(x: Int) -> Int:
+    x + x
+
+// Accepted target: the supplied callable has a checked opt contract.
+fn accepted() -> Int:
+    fast.apply(fast.twice, 3)
+
+// Rejected: ordinary's identical arithmetic does not declare that contract.
+fn rejected() -> Int:
+    fast.apply(ordinary, 3)
+```
+
+Changing a public module to opt may strengthen its callback and trait-witness
+requirements even when printed value types look unchanged. Treat that change
+as API compatibility work, not merely a backend optimization. Exported metadata
+and diagnostics must expose the requirement. Normal orchestration may call opt
+kernels without becoming opt itself. Conditional callback-effect contracts or
+an exception for ordinary callbacks require a separate language decision; this
+amendment adds neither.
+
 ## 7. Resources, effects, and suspension
 
 `must type T` makes disposition an obligation. No live instance may be dropped,
@@ -529,6 +674,68 @@ VM, owned messages, bounded-channel backpressure, and explicit cancellation/join
 semantics. Quiescence, not last-sender destruction, governs channel closure.
 True parallel work uses explicitly isolated worker VMs, serialization, and
 explicit capability grants. Cooperative `par_map` is not CPU parallelism.
+
+### Task capture, preparation, and execution
+
+Constructing a lazy task evaluates source arguments once in written order and
+captures their then-current values or view snapshots. An `own` argument consumes
+its source binding at construction, not at the first await. The async body and
+its effects run only when driven. Replaying a recipe does not re-evaluate the
+original argument expressions or observe subsequent rebinding of those inputs.
+Each execution receives its own logical invocation state; it cannot consume or
+mutate the reusable recipe's captures on behalf of a later execution.
+
+Capture preparation and execution preparation are distinct. A normal constructor
+may prepare copyable captures lawfully, but a once-established unique root cannot
+be promised to every replay. Preconditions needed by the body must hold for each
+execution. If executing a normal recipe calls opt code, any necessary normal-side
+repair occurs at that call within each execution and belongs to its cost. An opt
+recipe may not hide such repair in a generated resume or replay adapter; it must
+establish the contract without implicit repair or use explicit materialization.
+Replayable recipes cannot capture affine unique owners, once-callables, or `must`
+values. Copyable owned data and eligible immutable views remain valid captures.
+
+The construction site's source mode cannot change the async body's declaration
+mode. Conversely, awaiting a normal recipe from opt code cannot upgrade its
+execution contract. Opt execution requires checked opt-compatible task execution
+metadata, preserved through aggregates, generics, trait returns, and scheduler
+adapters. A task result type alone does not establish this property. This extends
+the existing transitive callable rule to deferred execution without adding a
+surface effect qualifier or granting a scheduler blanket authority to erase it.
+
+```text
+// Accepted target: replay observes the captured snapshot twice, producing 22.
+async fn size(items: &List(Int)) -> Int:
+    (*items).length()
+
+async fn demo() -> Int:
+    var items = [1, 2]
+    let recipe = size(&items)
+    items.push(3)
+    let first = recipe.await
+    let second = recipe.await
+    first * 10 + second
+
+// Rejected: a replayable recipe cannot own this affine capture.
+async fn affine_capture(own items: unique List(Int)) -> Int:
+    items.length()
+
+// Rejected: construction would store call-scoped access past that call.
+async fn borrowed_capture(let items: List(Int)) -> Int:
+    items.length()
+```
+
+These are target examples. A normal caller may instead pass an ordinary copyable
+value; a generic wrapper must preserve the same capture eligibility. Cancellation
+of an execution releases ordinary retained data, but is not permission to discard
+an outstanding `must` obligation. A resource created inside the body must be
+consumed, transferred, or covered by a checked cancellation disposition path at
+every suspension where cancellation can occur. Otherwise that suspension is
+rejected in both modes. An error result or an unexecuted cleanup callback does
+not by itself discharge an obligation. This selects no new cleanup syntax or
+single-use task type.
+
+### Scheduling and suspension boundaries
 
 The proposed RFC-0161 changes to must-start Task values, scoped Child types,
 explicit channel-owner close, and selectable-operation syntax are not selected
@@ -717,3 +924,25 @@ preparation as part of end-to-end cost; do not report only a fast opt body while
 excluding its boundary copies. Runtime timing, allocation, cache, I/O, SIMD, and
 concurrency measurements are inapplicable to this documentation amendment; no
 production code or performance result changes here.
+
+## 11. Composition clarification follow-through
+
+The 2026-09-25 decisions are accepted target rules, with implementation and
+semantic evidence pending. Existing broad row labels do not establish these
+additional cases. Keep changes to the implementation and current-behavior spec
+separate from this decision record until their behavior is established.
+
+| Contract | Required representative acceptance and refusal | Ledger rows |
+|---|---|---|
+| Call-scoped access | Return a view from an ordinary input or independent materialization; reject borrowed access escaping through a renamed value, wrapper, or callback. | G, J, P |
+| Resource-view eligibility | Permit ordinary data views and nonescaping resource inspection; reject retained roots containing a resource obligation, including through generic stored fields. | G, K |
+| Mode boundary | Preserve an existing snapshot across normal-to-opt `var` repair; reject the corresponding opt call without proof or explicit materialization. | I, P |
+| Higher-order boundary | Admit an opt-compatible callback from a normal caller; reject incompatible provenance through direct, generic, trait, and indirect interfaces. | I, J |
+| Deferred execution | Replay a captured ordinary snapshot independently; reject affine or borrowed recipe captures and loss of execution-mode metadata. | J, K |
+| Cancellation | Release ordinary view roots; require disposition for every live `must` obligation or reject the suspension. | K |
+
+Use shared recursive type/storage judgments and dataflow rules for these
+obligations. The table calls for representative semantic witnesses, not separate
+compiler implementations or exhaustive concrete-type tests for every nesting.
+Neither the table nor this documentation change claims a completed acceptance
+row, an allocation bound, or measured performance.
