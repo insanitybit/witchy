@@ -507,6 +507,18 @@ compile and its 19 existing tests passed; adversarial review found no new
 authority path after a depth-bound regression was corrected. No new
 admitted form, Wasm evidence, or A–O closure is claimed.
 
+Row G plain List element layout through the recursive carrier proof
+(architecture implemented, semantic evidence unchanged, 2026-09-25):
+SafeWIR's plain List layout correspondence now consumes `CarrierElement`
+when the checked element has a recursive scalar or managed proof. A proven
+element must match its exact scalar kind or owned pointer slot, RC-required
+nested Lists, and recursive record/sum fields; a physical mismatch cannot
+fall through to the older layout walk. Unit and unclassified elements keep
+their prior fail-closed path. A focused WIR compile, an existing normal-to-opt
+String/List/slice/tuple runtime smoke (1 passed), and adversarial authority
+review passed. This is one layout correspondence consolidation, not new
+admission or A–O semantic closeout.
+
 At `adf1d01c7` (2026-09-18), the integrated core smoke was **42/42 passed**: rooted views (13), unique/write-back (12), normal/opt interoperation (2), resource composition (5), and optimization readiness (10). This is core canonical-route evidence only; it does not include the source interpreter, full, end-to-end, or examples suites.
 
 At `2f62f4038` (2026-09-19), the newly integrated concrete `Option(&Int)` evidence is **6/6 passed**: four lower carrier/tamper/`var` checks, one exact authority payload-state check, and one production-runtime three-leg fixture (`790`, zero leaks). The three generic rooted-slice fixtures are **1 passed / 2 failed**: region-root escape rejects as expected, while both positive forms stop at the explicit missing authenticated slice-element projection. This is a live failure checkpoint, not an acceptance closeout.
