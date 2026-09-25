@@ -348,20 +348,29 @@ impl CarrierElement {
     /// matching, using an iterative walk so hostile depth cannot overflow the
     /// checker's own stack.
     pub fn within_resource_bounds(&self) -> bool {
+        self.bounded_resource_shape().is_some()
+    }
+
+    /// Node count and maximum relative depth for a checked carrier proof.
+    /// Composite source identities use these totals to share one budget with
+    /// nested carrier plans rather than restarting a budget for every List.
+    pub fn bounded_resource_shape(&self) -> Option<(usize, usize)> {
         let mut pending = vec![(self, 0usize)];
         let mut remaining = 4_096usize;
+        let mut maximum_depth = 0usize;
         while let Some((element, depth)) = pending.pop() {
             if depth > 128 || remaining == 0 {
-                return false;
+                return None;
             }
             remaining -= 1;
+            maximum_depth = maximum_depth.max(depth);
             match element {
-                Self::Scalar(crate::abi::CanonicalScalarKind::Unit) => return false,
+                Self::Scalar(crate::abi::CanonicalScalarKind::Unit) => return None,
                 Self::Scalar(_) | Self::String => {}
                 Self::List(child) => pending.push((child, depth + 1)),
                 Self::Tuple(fields) => {
                     if fields.is_empty() || fields.len() > 128 {
-                        return false;
+                        return None;
                     }
                     pending.extend(fields.iter().map(|field| (field, depth + 1)));
                 }
@@ -371,13 +380,13 @@ impl CarrierElement {
                 }
                 Self::Record { name, arguments, fields } => {
                     if name.len() > 1_024 || arguments.len() > 128 || fields.is_empty() || fields.len() > 128 {
-                        return false;
+                        return None;
                     }
                     pending.extend(arguments.iter().chain(fields).map(|field| (field, depth + 1)));
                 }
             }
         }
-        true
+        Some((4_096 - remaining, maximum_depth))
     }
 
     /// The single recursive relation between checked element, physical

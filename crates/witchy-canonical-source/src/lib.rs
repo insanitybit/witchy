@@ -19,6 +19,7 @@ pub mod capabilities;
 pub mod carrier;
 pub mod closure;
 pub mod proper_tail;
+pub mod rooted_record;
 pub mod scope;
 pub mod service;
 pub mod source;

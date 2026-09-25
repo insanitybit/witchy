@@ -12,6 +12,7 @@ use witchy_syntax::ast::{self, Convention, Item, Type};
 use crate::typeck::{Ty, TypedModule};
 use witchy_canonical_source::abi::*;
 use witchy_canonical_source::carrier::CarrierElement;
+use witchy_canonical_source::rooted_record::RecordRootIdentity;
 
 
 /// Exposed for the ABI-security pins in `tests/typeck/capabilities.rs`.
@@ -385,8 +386,12 @@ pub fn rooted_view_from_ty(
                     "rooted view payload has no admitted authenticated carrier".into(),
                 ));
             }
-            let mut identity = Vec::new();
-            record_identity_ty(payload, context, &mut identity)?;
+            let identity = rooted_record_identity(
+                &crate::typeck::ty_to_ast(payload).ok_or_else(|| CanonicalAbiError::Unsupported(
+                    "rooted view payload has no concrete checked type".into(),
+                ))?,
+                context,
+            )?;
             Ok(CanonicalReferenceKind::RootedView {
                 payload: rooted_record_payload_key(&identity),
                 carrier: CanonicalRootedViewCarrier::RecordRoot,
@@ -471,10 +476,7 @@ pub fn rooted_view_from_ast(
                     "rooted view payload has no admitted authenticated carrier".into(),
                 ));
             }
-            let mut identity = Vec::new();
-            // Keep the outer source qualifier visible to the exact List-child
-            // guard. The encoder itself normalizes existing non-List roots.
-            record_identity_ast(payload, context, &mut identity)?;
+            let identity = rooted_record_identity(payload, context)?;
             Ok(CanonicalReferenceKind::RootedView {
                 payload: rooted_record_payload_key(&identity),
                 carrier: CanonicalRootedViewCarrier::RecordRoot,
@@ -497,15 +499,6 @@ fn rooted_scalar_payload_key(kind: CanonicalScalarKind) -> CanonicalTypeKey {
     CanonicalTypeKey::from_digest(*blake3::hash(&bytes).as_bytes())
 }
 
-/// Builtin heads and capabilities are never record roots; only a declared
-/// user type (resolved through the nominal ordinal table) is.
-fn is_user_record_name(name: &str) -> bool {
-    !matches!(name, "Int" | "Float" | "Duration" | "Bool" | "Nil" | "Unit" | "String" | "Bytes"
-        | "List" | "Dict" | "Option" | "Result" | "Slice" | "SecretStore")
-        && !is_capability_name(name)
-        && witchy_syntax::synthetic_names::anon_union_synthetic_variants(name).is_none()
-}
-
 fn rooted_record_payload_key(identity: &[u8]) -> CanonicalTypeKey {
     let mut bytes = b"witchy.canonical-rooted-view-payload.v3/record".to_vec();
     bytes.extend_from_slice(identity);
@@ -518,118 +511,22 @@ fn rooted_structural_payload_key(plan: &CarrierElement) -> CanonicalTypeKey {
     CanonicalTypeKey::from_digest(*blake3::hash(&bytes).as_bytes())
 }
 
-/// Record-root payload identity, written identically from a checked type and
-/// from a declaration annotation (the general encoders deliberately differ).
-/// A head is a declared user type (its nominal ordinal) or builtin `Option` /
-/// `Result`; an argument is a scalar, `String`, another such head, or one
-/// recursive `List(T)` whose element has a checked carrier proof. Anything
-/// else has no admitted record-root identity.
-const RECORD_IDENTITY_USER: u8 = 1;
-const RECORD_IDENTITY_OPTION: u8 = 2;
-const RECORD_IDENTITY_RESULT: u8 = 3;
-const RECORD_IDENTITY_LEAF: u8 = 4;
-const RECORD_IDENTITY_LIST: u8 = 5;
-
-fn record_head(name: &str, arity: usize, context: &Context, bytes: &mut Vec<u8>) -> Result<(), CanonicalAbiError> {
-    match (name, arity) {
-        ("Option", 1) => bytes.push(RECORD_IDENTITY_OPTION),
-        ("Result", 2) => bytes.push(RECORD_IDENTITY_RESULT),
-        _ if is_user_record_name(name) && context.declares_type(name) => {
-            bytes.push(RECORD_IDENTITY_USER);
-            bytes.extend_from_slice(&context.nominal(name)?.to_le_bytes());
-        }
-        _ => return Err(CanonicalAbiError::Unsupported(
-            "rooted view payload has no admitted authenticated carrier".into(),
-        )),
-    }
-    bytes.extend_from_slice(&(arity as u32).to_le_bytes());
-    Ok(())
-}
-
-fn record_leaf(name: &str, bytes: &mut Vec<u8>) -> bool {
-    let tag = match name {
-        "Int" => 1, "Float" => 2, "Duration" => 3, "Bool" => 4, "String" => 5,
-        _ => return false,
-    };
-    bytes.extend_from_slice(&[RECORD_IDENTITY_LEAF, tag]);
-    true
-}
-
-fn record_list_identity(
-    ty: &Type,
-    context: &Context,
-    bytes: &mut Vec<u8>,
-) -> Result<(), CanonicalAbiError> {
-    let Some(plan @ CarrierElement::List(_)) =
-        CarrierElement::from_checked_type_with_definitions(ty, &context.definitions)
-    else {
-        return Err(CanonicalAbiError::Unsupported(
-            "rooted view payload has no admitted authenticated carrier".into(),
-        ));
-    };
-    bytes.push(RECORD_IDENTITY_LIST);
-    bytes.extend_from_slice(&plan.identity());
-    Ok(())
-}
-
-fn record_identity_ty(ty: &Ty, context: &Context, bytes: &mut Vec<u8>) -> Result<(), CanonicalAbiError> {
-    match ty {
-        Ty::Int => { record_leaf("Int", bytes); }
-        Ty::Float => { record_leaf("Float", bytes); }
-        Ty::Duration => { record_leaf("Duration", bytes); }
-        Ty::Bool => { record_leaf("Bool", bytes); }
-        Ty::String => { record_leaf("String", bytes); }
-        Ty::List(element) => {
-            let ty = crate::typeck::ty_to_ast(element).ok_or_else(||
-                CanonicalAbiError::Unsupported("rooted view payload has no concrete List child".into()))?;
-            record_list_identity(&Type::Named("List".into(), vec![ty]), context, bytes)?;
-        }
-        Ty::Named(name, arguments) => {
-            record_head(name, arguments.len(), context, bytes)?;
-            for argument in arguments.iter() {
-                record_identity_ty(argument, context, bytes)?;
-            }
-        }
-        _ => return Err(CanonicalAbiError::Unsupported(
-            "rooted view payload has no admitted authenticated carrier".into(),
-        )),
-    }
-    Ok(())
-}
-
-fn record_identity_ast(ty: &Type, context: &Context, bytes: &mut Vec<u8>) -> Result<(), CanonicalAbiError> {
-    // Older record identities accepted qualified scalar arguments after
-    // normalization. Keep their bytes, but never erase a qualifier on or
-    // above a newly admitted List child.
-    if matches!(ty, Type::Qualified(..)) && record_identity_contains_list(ty) {
+/// Both checked HM types and source annotations use this shared typed plan.
+/// The frontend supplies the checked nominal table; the source contract owns
+/// the recursive structural encoding and its explicit refusal boundary.
+fn rooted_record_identity(ty: &Type, context: &Context) -> Result<Vec<u8>, CanonicalAbiError> {
+    let plan = RecordRootIdentity::from_checked_type(ty, &context.definitions, |name| {
+        context.declares_type(name).then(|| context.nominal(name).ok()).flatten()
+    }).ok_or_else(|| CanonicalAbiError::Unsupported(
+        "rooted view payload has no admitted authenticated carrier".into(),
+    ))?;
+    let mut bytes = Vec::new();
+    if !plan.append_identity_bytes(&mut bytes) {
         return Err(CanonicalAbiError::Unsupported(
             "rooted view payload has no admitted authenticated carrier".into(),
         ));
     }
-    let Type::Named(name, arguments) = ty.unqualified() else {
-        return Err(CanonicalAbiError::Unsupported(
-            "rooted view payload has no admitted authenticated carrier".into(),
-        ));
-    };
-    if arguments.is_empty() && record_leaf(name, bytes) {
-        return Ok(());
-    }
-    if name == "List" {
-        return record_list_identity(ty, context, bytes);
-    }
-    record_head(name, arguments.len(), context, bytes)?;
-    for argument in arguments {
-        record_identity_ast(argument, context, bytes)?;
-    }
-    Ok(())
-}
-
-fn record_identity_contains_list(ty: &Type) -> bool {
-    match ty {
-        Type::Qualified(_, inner) => record_identity_contains_list(inner),
-        Type::Named(name, arguments) => name == "List" || arguments.iter().any(record_identity_contains_list),
-        _ => false,
-    }
+    Ok(bytes)
 }
 
 /// Whole-list identity is derived from the same recursive canonical element

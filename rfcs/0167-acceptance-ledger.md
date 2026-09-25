@@ -167,6 +167,16 @@ agreement with the parsed source type and membership in
 oversized proof fail closed. This adds no new admitted source form and closes
 no acceptance evidence gap by itself.
 
+Row G typed record-root ABI identity (architecture implemented, 2026-09-25):
+checked types and source annotations now build one bounded structural
+`RecordRootIdentity` in `witchy-canonical-source`. Its scalar, String, List,
+Option, Result, and declared nominal nodes replace the two handwritten
+record-root encoders in the checker. Nominal ordinals still come from the
+checked frontend; List nodes use the shared recursive carrier proof. The
+encoding preserves admitted v3 record-root keys and adds no source form.
+SafeWIR record layout and ownership checks remain separate consumers to
+consolidate, so this change closes no row G evidence gap.
+
 Row G declared record slice elements (implemented but unverified,
 2026-09-25): the shared carrier contract now derives a one-variant heap
 record's identity and instantiated fields from checked type definitions.
