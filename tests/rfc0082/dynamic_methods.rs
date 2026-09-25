@@ -161,4 +161,3 @@ fn main():
     assert!(stdout.contains("fetch"), "{stdout}");
     assert!(stdout.contains("Net[Connect, Tcp]"), "{stdout}");
 }
-

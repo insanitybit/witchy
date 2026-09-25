@@ -493,7 +493,10 @@ fn gate_nextest_nested_integration_modules_use_root_targets() {
         "crates/witchy-types/src/typeck.rs",
         "tests/rfc0082/dynamic_methods.rs",
     ]);
-    assert!(output.contains("binary(rfc0082)"), "missing rfc0082 root target: {output}");
+    assert!(
+        output.contains("binary(rfc0080_0130_conformance)"),
+        "missing consolidated RFC root target: {output}",
+    );
     assert!(!output.contains("rfc0082/dynamic_methods"), "nested path became a binary selector: {output}");
 }
 

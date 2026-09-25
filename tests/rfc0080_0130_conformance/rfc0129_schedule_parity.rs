@@ -4,7 +4,7 @@
 use witchy::runtime::{Capabilities, Runtime};
 use witchy::{codegen, interpreter};
 
-const SCHEDULE: &str = include_str!("fixtures/rfc0129_deterministic_schedule.witchy");
+const SCHEDULE: &str = include_str!("../fixtures/rfc0129_deterministic_schedule.witchy");
 
 const EXPECTED: [&str; 13] = [
     "bounded Some(10) Some(20) Some(30)",

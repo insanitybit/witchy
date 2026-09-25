@@ -855,6 +855,9 @@ for p in "${paths[@]}"; do
             # modules only when their sibling root integration target exists;
             # otherwise retain the fail-safe broad selection below.
             case "$test_name" in
+                rfc0082/* | rfc0130_generator/*)
+                    test_name="rfc0080_0130_conformance"
+                    ;;
                 */*)
                     root_test_name="${test_name%%/*}"
                     if [ -f "tests/$root_test_name.rs" ]; then
