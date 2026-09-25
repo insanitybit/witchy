@@ -1075,6 +1075,12 @@ zero-leak evidence. Qualified or view-valued children without this ownership
 proof remain refused. Region-born roots cannot escape through these views;
 tuple-view closure capture remains unsupported.
 
+A non-packed declared record, sum, `Option`, or `Result` may hold a recursive
+`List(T)` child when the checked carrier proves every owned edge. Its rooted
+view keeps the aggregate snapshot, and SafeWIR checks the List headers and
+owned child slots against that same structural plan. This broader case awaits
+durable admitted-Wasm and zero-leak evidence.
+
 ```witchy
 fn first[a](items: &[a]) -> Option(&a):
     if items.length() == 0:

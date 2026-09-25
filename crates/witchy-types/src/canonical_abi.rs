@@ -507,7 +507,7 @@ fn is_user_record_name(name: &str) -> bool {
 }
 
 fn rooted_record_payload_key(identity: &[u8]) -> CanonicalTypeKey {
-    let mut bytes = b"witchy.canonical-rooted-view-payload.v2/record".to_vec();
+    let mut bytes = b"witchy.canonical-rooted-view-payload.v3/record".to_vec();
     bytes.extend_from_slice(identity);
     CanonicalTypeKey::from_digest(*blake3::hash(&bytes).as_bytes())
 }
@@ -522,8 +522,8 @@ fn rooted_structural_payload_key(plan: &CarrierElement) -> CanonicalTypeKey {
 /// from a declaration annotation (the general encoders deliberately differ).
 /// A head is a declared user type (its nominal ordinal) or builtin `Option` /
 /// `Result`; an argument is a scalar, `String`, another such head, or one
-/// exact `List(S)` with an unqualified scalar or String element. Anything else
-/// has no admitted record-root identity.
+/// recursive `List(T)` whose element has a checked carrier proof. Anything
+/// else has no admitted record-root identity.
 const RECORD_IDENTITY_USER: u8 = 1;
 const RECORD_IDENTITY_OPTION: u8 = 2;
 const RECORD_IDENTITY_RESULT: u8 = 3;
@@ -555,6 +555,23 @@ fn record_leaf(name: &str, bytes: &mut Vec<u8>) -> bool {
     true
 }
 
+fn record_list_identity(
+    ty: &Type,
+    context: &Context,
+    bytes: &mut Vec<u8>,
+) -> Result<(), CanonicalAbiError> {
+    let Some(plan @ CarrierElement::List(_)) =
+        CarrierElement::from_checked_type_with_definitions(ty, &context.definitions)
+    else {
+        return Err(CanonicalAbiError::Unsupported(
+            "rooted view payload has no admitted authenticated carrier".into(),
+        ));
+    };
+    bytes.push(RECORD_IDENTITY_LIST);
+    bytes.extend_from_slice(&plan.identity());
+    Ok(())
+}
+
 fn record_identity_ty(ty: &Ty, context: &Context, bytes: &mut Vec<u8>) -> Result<(), CanonicalAbiError> {
     match ty {
         Ty::Int => { record_leaf("Int", bytes); }
@@ -563,16 +580,9 @@ fn record_identity_ty(ty: &Ty, context: &Context, bytes: &mut Vec<u8>) -> Result
         Ty::Bool => { record_leaf("Bool", bytes); }
         Ty::String => { record_leaf("String", bytes); }
         Ty::List(element) => {
-            let name = match element.as_ref() {
-                Ty::Int => "Int", Ty::Float => "Float", Ty::Bool => "Bool",
-                Ty::Duration => "Duration", Ty::String => "String",
-                _ => return Err(CanonicalAbiError::Unsupported(
-                    "rooted view payload has no admitted authenticated carrier".into(),
-                )),
-            };
-            bytes.push(RECORD_IDENTITY_LIST);
-            bytes.extend_from_slice(&1u32.to_le_bytes());
-            record_leaf(name, bytes);
+            let ty = crate::typeck::ty_to_ast(element).ok_or_else(||
+                CanonicalAbiError::Unsupported("rooted view payload has no concrete List child".into()))?;
+            record_list_identity(&Type::Named("List".into(), vec![ty]), context, bytes)?;
         }
         Ty::Named(name, arguments) => {
             record_head(name, arguments.len(), context, bytes)?;
@@ -605,20 +615,7 @@ fn record_identity_ast(ty: &Type, context: &Context, bytes: &mut Vec<u8>) -> Res
         return Ok(());
     }
     if name == "List" {
-        let [Type::Named(element, element_arguments)] = arguments.as_slice() else {
-            return Err(CanonicalAbiError::Unsupported(
-                "rooted view payload has no admitted authenticated carrier".into(),
-            ));
-        };
-        if !element_arguments.is_empty() || !matches!(element.as_str(), "Int" | "Float" | "Bool" | "Duration" | "String") {
-            return Err(CanonicalAbiError::Unsupported(
-                "rooted view payload has no admitted authenticated carrier".into(),
-            ));
-        }
-        bytes.push(RECORD_IDENTITY_LIST);
-        bytes.extend_from_slice(&1u32.to_le_bytes());
-        record_leaf(element, bytes);
-        return Ok(());
+        return record_list_identity(ty, context, bytes);
     }
     record_head(name, arguments.len(), context, bytes)?;
     for argument in arguments {

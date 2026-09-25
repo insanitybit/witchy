@@ -155,14 +155,19 @@ surface is accepted by the current frontend. Where a carrier is not yet
 admitted, the compiler must reject it rather than silently materialize an
 unrelated value or reconstruct a place from source syntax.
 
-One admitted nested whole-root case is `&List(List(Int))`. It keeps both the
+One proven nested whole-root case is `&List(List(Int))`. It keeps both the
 outer list and its owned child lists alive while the original `var` list is
-changed. The compiler also recognizes exact inner `Float`, `Bool`, `Duration`,
-and `String` lists, though those cases await semantic and leak evidence. A
-qualified child such as `&List(unique List(Int))` is refused, and a region-born
-list cannot escape by wrapping it in a view.
-The inner `List(String)` owns its String children; an exact slice of these
-inner lists also has a separate carrier, pending semantic and leak evidence.
+changed. The compiler also accepts recursively proven List children; the
+broader family awaits semantic and leak evidence. A qualified child such as
+`&List(unique List(Int))` is refused, and a region-born list cannot escape by
+wrapping it in a view. A List of String owns its String children; slices of
+these inner lists use the same recursive carrier.
+
+An eligible non-packed record, sum, `Option`, or `Result` may contain a
+recursive `List(T)` child when its checked carrier proves every owned edge.
+The record view retains the whole root and SafeWIR checks each physical child
+slot. The wider family has implementation smoke coverage but still awaits
+durable semantic and zero-leak evidence.
 
 Slices of owned lists use the same recursive carrier at every supported depth.
 The outer list remains rooted, and each managed child is retained through an
