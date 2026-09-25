@@ -78,6 +78,18 @@ mod canonical_abi {
         let nested = typed("fn accept(f: fn(&Option(frozen String)) -> Int) -> Int:\n    0\n");
         assert!(derive_manifest(&nested, &["accept".into()]).is_err(),
             "a nested qualified rooted-view callable needs a structural ABI key");
+
+        let original_sum = manifest("type Shade:\n    Bright(Int)\n    Dark(String)\nfn relay(view: &Shade) -> &Shade:\n    view\n");
+        let renamed_tag = manifest("type Shade:\n    Light(Int)\n    Dark(String)\nfn relay(view: &Shade) -> &Shade:\n    view\n");
+        let changed_field = manifest("type Shade:\n    Bright(Duration)\n    Dark(String)\nfn relay(view: &Shade) -> &Shade:\n    view\n");
+        assert_ne!(original_sum.digest(), renamed_tag.digest(),
+            "a constructor rename cannot inherit the old nominal root key");
+        assert_ne!(original_sum.digest(), changed_field.digest(),
+            "a changed field type cannot inherit the old nominal root key");
+        let nested = manifest("type Inner:\n    Value(Int)\ntype Outer:\n    Wrap(Inner)\nfn relay(view: &Outer) -> &Outer:\n    view\n");
+        let changed_nested = manifest("type Inner:\n    Value(String)\ntype Outer:\n    Wrap(Inner)\nfn relay(view: &Outer) -> &Outer:\n    view\n");
+        assert_ne!(nested.digest(), changed_nested.digest(),
+            "a nested declaration change must change the outer root key");
     }
 }
 
