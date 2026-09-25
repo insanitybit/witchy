@@ -88,10 +88,11 @@ fn copy_for_storage(let view: &String) -> String:
     view.owned()
 ```
 
-For a slice view whose element is `Int`, `Float`, `Bool`, `Duration`, or `String`,
+For a slice view whose element is `Int`, `Float`, `Bool`, `Duration`, `String`,
+or exact `List(Int)`,
 `view.owned()` copies the viewed range into a fresh `List` of that element
 type. A generic `&[a]` can use this operation when specialization resolves
-`a` to one of those five types. The method reads the retained snapshot, even
+`a` to one of those types. The method reads the retained snapshot, even
 if the original list was changed after the view formed. Other element types
 are rejected until their copy and layout contracts are implemented. A declared
 `owned` method takes precedence over this compiler-known operation.

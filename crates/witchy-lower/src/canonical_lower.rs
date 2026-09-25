@@ -4871,10 +4871,12 @@ impl<'a> FunctionLowerer<'a> {
             return Err(CanonicalLoweringError::UnsupportedExpression(".owned() slice receiver"));
         };
         let element = rooted_slice_element(inner)
-            .filter(|element| matches!(*element, "Int" | "Float" | "Bool" | "Duration" | "String"))
+            .filter(|element| matches!(*element, "Int" | "Float" | "Bool" | "Duration" | "String" | "List(Int)"))
             .ok_or(CanonicalLoweringError::UnsupportedExpression(".owned() slice element"))?;
         let result_type = self.expression_type(expression)?;
-        let expected = Type::Named("List".into(), vec![Type::Named(element.into(), Vec::new())]);
+        let element_source_type = crate::canonical_layouts::rooted_slice_element_type(element)
+            .ok_or(CanonicalLoweringError::UnsupportedExpression(".owned() slice element"))?;
+        let expected = Type::Named("List".into(), vec![element_source_type]);
         if result_type != expected {
             return Err(CanonicalLoweringError::UnsupportedExpression(".owned() slice result"));
         }
@@ -4882,7 +4884,7 @@ impl<'a> FunctionLowerer<'a> {
             &expected, self.layout_bundle, self.layouts, &self.closures.layouts, self.definitions,
         )?;
         if matches!(element_type, ValueType::Gc(_))
-            || (matches!(element_type, ValueType::Ref(_)) && element != "String")
+            || (matches!(element_type, ValueType::Ref(_)) && !matches!(element, "String" | "List(Int)"))
         {
             return Err(CanonicalLoweringError::UnsupportedExpression(".owned() slice pointer element"));
         }

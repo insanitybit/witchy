@@ -98,20 +98,51 @@ fn main() -> Int:
 }
 
 #[test]
-fn unsupported_slice_elements_fail_closed_while_checking() {
+fn nested_int_list_slice_materializes_and_unsupported_elements_fail_closed() {
+    opt::set_for_tests(Some(OptSet::none()));
+    let _reset = ResetOptimizationOverride;
     let source = r#"
 fn copy[a](xs: &[a]) -> List(a):
     xs.owned()
 
 fn main() -> Int:
-    let nested = [[1], [2]]
-    let copied = copy(&nested[0..2])
+    var nested = [[1, 2], [3, 4], [5, 6]]
+    let view = &nested[1..3]
+    var copied = copy(view)
+    nested[1][0] = 30
+    copied[0][1] = 40
+    view[0][0] * 1000 + copied[0][1] * 100 + nested[1][0] * 10 + copied[1][1]
+"#;
+    // Old view = 3, materialized element = 40, current owner = 30, final = 6.
+    let expected = 7_306;
+    let checked = witchy::resolve_std_only_checked(source).expect("nested-list slice materialization checks");
+    let (artifact, ()) = codegen::compile_checked_module_artifact_with_observer(&checked, |_, _| ())
+        .expect_lowered("canonical SafeWIR admits the exact List(Int) projection copy");
+    let mut runtime = Runtime::batch().expect("runtime");
+    let mut vm = runtime
+        .spawn_admitted(
+            &artifact,
+            Capabilities { print_int: true, quiet: true, ..Capabilities::none() },
+            128,
+        )
+        .expect("admitted Wasm instance");
+    vm.run().expect("admitted Wasm execution");
+    assert_eq!(vm.output(), vec![expected.to_string()]);
+    assert_eq!(vm.canonical_heap_leaks().expect("heap audit"), Some(0));
+
+    let other_list_source = r#"
+fn copy[a](xs: &[a]) -> List(a):
+    xs.owned()
+
+fn main() -> Int:
+    let nested = [[1.0], [2.0]]
+    let copied = copy(&nested[0..1])
     copied.length()
 "#;
-    let error = witchy::resolve_std_only_checked(source)
-        .err().expect("nested List element copy is outside the admitted slice materialization")
+    let error = witchy::resolve_std_only_checked(other_list_source)
+        .err().expect("List(Float) elements remain outside the materialization boundary")
         .to_string();
-    assert!(error.contains("only Int, Float, Bool, Duration, and String elements"), "{error}");
+    assert!(error.contains("List(Float)") && error.contains("List(Int)"), "{error}");
 
     let must_source = r#"
 must type Ticket:
@@ -125,5 +156,5 @@ fn main() -> Int:
     let error = witchy::resolve_std_only_checked(must_source)
         .err().expect("must element cannot become a copyable slice")
         .to_string();
-    assert!(error.contains("Ticket") && error.contains("only Int, Float, Bool, Duration, and String elements"), "{error}");
+    assert!(error.contains("Ticket") && error.contains("only Int, Float, Bool, Duration, String, and List(Int) elements"), "{error}");
 }
