@@ -97,6 +97,10 @@ reads the retained snapshot, even if the original list was changed after the
 view formed. Unsupported element types are rejected. A declared `owned`
 method takes precedence over this compiler-known operation.
 
+A generic whole-list view `&List(a)` can also call `.owned()`. The compiler
+checks each concrete specialization before it can copy the retained list;
+unproved or authority-bearing element types are refused.
+
 ## Ownership, `own`, `unique`, and `frozen`
 
 The view carrier retains its backing root while any view copy can still reach

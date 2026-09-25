@@ -2,9 +2,9 @@
 //! value. It is compiler-known (no import): on a view `&T` it reads the
 //! referent exactly as `*view` does, and on an owned copyable value it is
 //! identity. The result carries no view, so later mutation of either the root
-//! or the copy is invisible to the other. Scalar slices materialize a fresh
-//! list; other slice elements, authority, `must` payloads, and view-bearing
-//! aggregates are refused while checking.
+//! or the copy is invisible to the other. Slices with a proved element
+//! carrier materialize a fresh list; authority, `must` payloads, and
+//! view-bearing aggregates are refused while checking.
 //! Independent expectation, admitted unoptimized Wasm, zero leaks.
 
 use witchy::codegen;
@@ -66,6 +66,33 @@ fn main() -> Int:
 }
 
 #[test]
+fn a_generic_list_view_materializes_only_after_a_concrete_storage_proof() {
+    // The copy has [4,5,7], the mutated owner has [4,5,6], and the view
+    // retains the original two-element root: 4000 + 300 + 30 + 2.
+    assert_wasm(r#"
+fn copy[a](items: &List(a)) -> List(a):
+    items.owned()
+
+fn main() -> Int:
+    var items = [4, 5]
+    let view = &items
+    var copy = copy(view)
+    items.push(6)
+    copy.push(7)
+    copy[0] * 1000 + copy.length() * 100 + items.length() * 10 + (*view).length()
+"#, 4332);
+
+    assert_refused(r#"
+fn copy[a](items: List(a)) -> List(a):
+    items.owned()
+
+fn main(console: Console):
+    let copied = copy([console])
+    copied[0].print("x")
+"#, "`.owned()` cannot copy authority");
+}
+
+#[test]
 fn authority_is_refused() {
     assert_refused(r#"
 fn main(console: Console):
@@ -90,4 +117,3 @@ fn main() -> Int:
     finish(copy)
 "#, "`.owned()` cannot copy must-consume");
 }
-

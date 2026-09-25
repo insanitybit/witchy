@@ -3513,6 +3513,46 @@ impl Checker {
         Ok(())
     }
 
+    fn is_declared_type_parameter_representative(&self, variable: u32) -> bool {
+        self.current_typarams.values().any(|parameter| {
+            matches!(self.resolve(&Ty::Var(*parameter)), Ty::Var(representative)
+                if representative == variable)
+        })
+    }
+
+    /// Defer a generic `.owned()` storage proof only when every unresolved
+    /// variable is one of the function's declared type parameters. Such
+    /// templates have no executable fallback and their concrete bodies are
+    /// checked again after specialization.
+    fn has_only_declared_deferred_parameters(&self, ty: &Ty) -> bool {
+        let mut pending = vec![(ty.clone(), 0usize)];
+        let mut found_parameter = false;
+        let mut visited = 0usize;
+        while let Some((ty, depth)) = pending.pop() {
+            visited += 1;
+            if visited > 4_096 || depth > 128 { return false; }
+            let child_depth = depth + 1;
+            match self.resolve(&ty) {
+                Ty::Var(variable) => {
+                    if !self.is_declared_type_parameter_representative(variable) {
+                        return false;
+                    }
+                    found_parameter = true;
+                }
+                Ty::View(inner) | Ty::List(inner) => pending.push((inner.as_ref().clone(), child_depth)),
+                Ty::Tuple(items) | Ty::Named(_, items) | Ty::Dyn(_, items) => {
+                    pending.extend(items.iter().cloned().map(|item| (item, child_depth)));
+                }
+                Ty::Fn(parameters, result, _, _, _) => {
+                    pending.extend(parameters.iter().cloned().map(|item| (item, child_depth)));
+                    pending.push((result.as_ref().clone(), child_depth));
+                }
+                _ => {}
+            }
+        }
+        found_parameter
+    }
+
     /// RFC-0167 §5 `.owned()`: the result type of explicitly materializing a
     /// value. A view `&T` materializes its referent `T`; an owned value is
     /// its own materialization. Only lawfully copyable payloads qualify: no
@@ -3538,7 +3578,7 @@ impl Checker {
         // type, so an inference variable (not a declared type parameter)
         // must be pinned first rather than judged copyable by default.
         if let Ty::Var(variable) = payload
-            && !self.current_typarams.values().any(|typaram| *typaram == variable)
+            && !self.is_declared_type_parameter_representative(variable)
         {
             return terr(
                 "`.owned()` needs the receiver's type to be known here; annotate the receiver",
@@ -3558,7 +3598,7 @@ impl Checker {
                 )
             })
                 || matches!(&element, Ty::Var(variable)
-                    if self.current_typarams.values().any(|typaram| typaram == variable))
+                    if self.is_declared_type_parameter_representative(*variable))
             {
                 return Ok(Ty::List(Rc::new(element)));
             }
@@ -3592,8 +3632,7 @@ impl Checker {
         // All concrete copies need an owned source-storage proof; in particular,
         // an unknown nominal or unsupported callable must not inherit one from
         // the absence of the hazards above.
-        if !matches!(&payload, Ty::Var(variable)
-            if self.current_typarams.values().any(|typaram| typaram == variable))
+        if !self.has_only_declared_deferred_parameters(&payload)
             && !ty_to_ast(&payload).as_ref().is_some_and(|ty| {
                 match StoragePlan::classify(ty, &self.canonical_definitions, |_| Some(0)) {
                     StoragePlan::InlineScalar(_)

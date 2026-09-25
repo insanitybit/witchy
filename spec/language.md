@@ -1113,6 +1113,11 @@ uses are admitted after specialization proves their concrete element type.
 Other elements fail closed. A declared `owned` method has ordinary method
 resolution precedence over this operation.
 
+A generic whole-root `&List(a)` may likewise call `.owned()` to copy the
+retained list. Its generic body has no executable fallback: each concrete
+specialization must prove the list element's storage and ownership operations.
+An unproved or authority-bearing element is refused.
+
 #### Roots, projections, and snapshots
 
 Taking `&place` records the exact checked root and projection. Field and index
