@@ -253,10 +253,10 @@ pub enum SharedSliceField {
 }
 
 /// The exact element names a rooted slice carrier admits: scalar kinds carried
-/// inline, or String and exact List(scalar) children behind owned pointer slots.
-pub const ROOTED_SLICE_ELEMENTS: [&str; 9] = [
+/// inline, or String and exact List(scalar or String) children behind owned pointer slots.
+pub const ROOTED_SLICE_ELEMENTS: [&str; 10] = [
     "Int", "Float", "Bool", "Duration", "String", "List(Int)",
-    "List(Float)", "List(Bool)", "List(Duration)",
+    "List(Float)", "List(Bool)", "List(Duration)", "List(String)",
 ];
 
 /// The element name of an exact `&[T]` rooted slice source type, if `T` is an
@@ -282,6 +282,7 @@ pub fn rooted_slice_element(source_type: &witchy_syntax::ast::Type) -> Option<&'
             "Float" => Some("List(Float)"),
             "Bool" => Some("List(Bool)"),
             "Duration" => Some("List(Duration)"),
+            "String" => Some("List(String)"),
             _ => None,
         };
     }
@@ -340,6 +341,23 @@ pub(crate) fn slice_element_layout_matches(
             };
             matches!(layouts.get(*inner).map(|descriptor| descriptor.kind()),
                 Some(LayoutKind::Scalar(actual)) if *actual == scalar)
+        }
+        "List(String)" => {
+            let Some(LayoutKind::RuntimePointerValueSlot { pointee, semantics: PointerSlot::Owned }) = kind else {
+                return false;
+            };
+            let Ok(physical) = layouts.resolve_nominal(*pointee) else { return false };
+            let Some(LayoutKind::PackedList { element: inner, rc: RcHeader::Required }) = layouts.get(physical).map(|descriptor| descriptor.kind()) else {
+                return false;
+            };
+            let Some(LayoutKind::RuntimePointerValueSlot { pointee: string, semantics: PointerSlot::Owned }) = layouts.get(*inner).map(|descriptor| descriptor.kind()) else {
+                return false;
+            };
+            let Ok(physical_string) = layouts.resolve_nominal(*string) else { return false };
+            let Some(LayoutKind::RuntimeBuffer { element: byte }) = layouts.get(physical_string).map(|descriptor| descriptor.kind()) else {
+                return false;
+            };
+            matches!(layouts.get(*byte).map(|descriptor| descriptor.kind()), Some(LayoutKind::Scalar(ScalarKind::RawByte)))
         }
         _ => false,
     }

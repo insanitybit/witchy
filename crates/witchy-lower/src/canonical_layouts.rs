@@ -63,6 +63,7 @@ pub(crate) fn rooted_slice_owner_type(element: &str) -> Option<GcTypeId> {
         "List(Float)" => 0xe,
         "List(Bool)" => 0x10,
         "List(Duration)" => 0x12,
+        "List(String)" => 0x14,
         _ => return None,
     };
     Some(GcTypeId::new(0xc300_0000 + offset))
@@ -84,6 +85,7 @@ pub(crate) fn rooted_slice_element_name(element: &Type) -> Option<&'static str> 
             "Float" => Some("List(Float)"),
             "Bool" => Some("List(Bool)"),
             "Duration" => Some("List(Duration)"),
+            "String" => Some("List(String)"),
             _ => None,
         };
     }
@@ -111,6 +113,7 @@ pub(crate) fn rooted_slice_element_type(element: &str) -> Option<Type> {
         "List(Float)" => Some(Type::Named("List".into(), vec![Type::Named("Float".into(), Vec::new())])),
         "List(Bool)" => Some(Type::Named("List".into(), vec![Type::Named("Bool".into(), Vec::new())])),
         "List(Duration)" => Some(Type::Named("List".into(), vec![Type::Named("Duration".into(), Vec::new())])),
+        "List(String)" => Some(Type::Named("List".into(), vec![Type::Named("String".into(), Vec::new())])),
         _ => None,
     }
 }

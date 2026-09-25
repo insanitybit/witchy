@@ -741,7 +741,7 @@ fn rooted_string_payload_key() -> CanonicalTypeKey {
 }
 
 /// The element of a `ListSliceRoot` carrier: one scalar kind carried inline,
-/// immutable String, or an owned List of one exact inline scalar kind.
+/// immutable String, or an owned List of one exact scalar kind or String.
 fn slice_element_name_ty(element: &Ty) -> Option<&'static str> {
     match element {
         Ty::Int => Some("Int"),
@@ -753,6 +753,7 @@ fn slice_element_name_ty(element: &Ty) -> Option<&'static str> {
         Ty::List(inner) if matches!(inner.as_ref(), Ty::Float) => Some("List(Float)"),
         Ty::List(inner) if matches!(inner.as_ref(), Ty::Bool) => Some("List(Bool)"),
         Ty::List(inner) if matches!(inner.as_ref(), Ty::Duration) => Some("List(Duration)"),
+        Ty::List(inner) if matches!(inner.as_ref(), Ty::String) => Some("List(String)"),
         _ => None,
     }
 }
@@ -768,6 +769,7 @@ fn slice_element_name_ast(element: &Type) -> Option<&'static str> {
             "Float" => Some("List(Float)"),
             "Bool" => Some("List(Bool)"),
             "Duration" => Some("List(Duration)"),
+            "String" => Some("List(String)"),
             _ => None,
         };
     }

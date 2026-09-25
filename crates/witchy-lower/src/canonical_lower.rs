@@ -3423,6 +3423,7 @@ fn checked_rooted_slice_element(ty: &Ty) -> Option<&'static str> {
         Ty::List(inner) if matches!(inner.as_ref(), Ty::Float) => Some("List(Float)"),
         Ty::List(inner) if matches!(inner.as_ref(), Ty::Bool) => Some("List(Bool)"),
         Ty::List(inner) if matches!(inner.as_ref(), Ty::Duration) => Some("List(Duration)"),
+        Ty::List(inner) if matches!(inner.as_ref(), Ty::String) => Some("List(String)"),
         _ => None,
     }
 }
@@ -4821,7 +4822,7 @@ impl<'a> FunctionLowerer<'a> {
     /// `xs[i]` on a `&[T]` view for a non-`Int` element: the index is checked
     /// against the slice's own length, offset by its checked start, and read
     /// from the retained backing root behind that root's own live bounds
-    /// check. A scalar element is the value; a String or admitted List(scalar)
+    /// check. A scalar element is the value; a String or admitted List child
     /// element is a retained child reference.
     fn read_rooted_slice_element(
         &mut self,
