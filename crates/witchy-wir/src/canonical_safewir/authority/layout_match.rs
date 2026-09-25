@@ -369,10 +369,11 @@ pub(super) fn enqueue_layout_children(
     use crate::layout::{LayoutKind, PointerSlot, RcHeader, ScalarKind};
     let Ok(layout) = layouts.resolve_nominal(layout) else { return false };
     let Some(descriptor) = layouts.get(layout) else { return false };
+    let storage = StoragePlan::classify(source.unqualified(), records, |_| Some(0));
     // An aggregate (record, sum, tuple, scalar Option/Result) is a fixed
     // record of its shape's slots.
     if let Some(shape) = witchy_canonical_source::aggregates::scalar_aggregate_shape(source, records) {
-        if !matches!(StoragePlan::classify(source.unqualified(), records, |_| Some(0)),
+        if !matches!(storage,
             StoragePlan::Owned(witchy_canonical_source::carrier::CarrierElement::Tuple(_)
                 | witchy_canonical_source::carrier::CarrierElement::Dict(_, _)
                 | witchy_canonical_source::carrier::CarrierElement::Record { .. }
@@ -382,12 +383,16 @@ pub(super) fn enqueue_layout_children(
         }
         return enqueue_record_fields(layout, &shape.fields, shape.tagged, layouts, pending);
     }
-    match source.unqualified() {
-        witchy_syntax::ast::Type::Named(name, arguments) if matches!(name.as_str(), "String" | "Bytes") && arguments.is_empty() => {
+    match storage {
+        StoragePlan::Owned(witchy_canonical_source::carrier::CarrierElement::String
+            | witchy_canonical_source::carrier::CarrierElement::Bytes) => {
             let LayoutKind::RuntimeBuffer { element } = descriptor.kind() else { return false };
             layouts.get(*element).is_some_and(|element| matches!(element.kind(), LayoutKind::Scalar(ScalarKind::RawByte)))
         }
-        witchy_syntax::ast::Type::Named(name, arguments) if name == "List" && arguments.len() == 1 => {
+        StoragePlan::Owned(witchy_canonical_source::carrier::CarrierElement::List(_))
+            | StoragePlan::RetainedGraphList(_) | StoragePlan::RetainedCallableList(_) => {
+            let witchy_syntax::ast::Type::Named(_, arguments) = source.unqualified() else { return false };
+            let [source_element] = arguments.as_slice() else { return false };
             // Source List values are retained objects. An elided-header list
             // cannot satisfy their layout, including a DictRoot child list.
             let LayoutKind::PackedList { element, rc: RcHeader::Required } = descriptor.kind() else { return false };
@@ -397,10 +402,10 @@ pub(super) fn enqueue_layout_children(
             // List(&Int) uses its authenticated GC owner-list family; a plain
             // packed List(Int) layout cannot stand in for it. Preserve this
             // boundary for pointer elements such as String too.
-            if list_element_needs_owner_carrier(&arguments[0], records) {
+            if list_element_needs_owner_carrier(source_element, records) {
                 return false;
             }
-            match ListElementProjection::classify(&arguments[0], records) {
+            match ListElementProjection::classify(source_element, records) {
                 ListElementProjection::Owned(carrier) => {
                     // The same source plan used by layout projection supplies
                     // the recursive ownership proof. A physical mismatch
@@ -428,7 +433,7 @@ pub(super) fn enqueue_layout_children(
                 ListElementProjection::Refused => return false,
             }
         }
-        witchy_syntax::ast::Type::Fn(..) => {
+        StoragePlan::RetainedCallable(_) => {
             let LayoutKind::PackedRecord { fields } = descriptor.kind() else { return false };
             let Some(&id) = closure_layouts.get(&layout) else { return false };
             let Some(signature) = signatures.iter().find(|signature| signature.id == id) else { return false };

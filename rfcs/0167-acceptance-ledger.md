@@ -853,6 +853,17 @@ remain closed pending their separate authority contract. Focused compiler and
 existing view smokes plus an adversarial authority read passed; admitted-Wasm
 expected-result and zero-leak evidence remain outstanding, so no row closes.
 
+Row G layout correspondence classes (implemented but unverified,
+2026-09-25): SafeWIR's recursive layout walk now selects byte buffers,
+RC lists, and callable records from the same source storage classes used by
+lowering. It still validates the raw-byte element, required RC header,
+owner-carrier boundary, recursive list element layout, and exact closure
+signature and environment. Owner-carried and opaque aggregate lists remain
+on their separate authenticated GC path. A focused WIR check, two existing
+recursive-layout correspondence cases, and adversarial authority review
+passed. Independent admitted-Wasm results and zero-leak evidence are still
+needed before row G can close.
+
 At `adf1d01c7` (2026-09-18), the integrated core smoke was **42/42 passed**: rooted views (13), unique/write-back (12), normal/opt interoperation (2), resource composition (5), and optimization readiness (10). This is core canonical-route evidence only; it does not include the source interpreter, full, end-to-end, or examples suites.
 
 At `2f62f4038` (2026-09-19), the newly integrated concrete `Option(&Int)` evidence is **6/6 passed**: four lower carrier/tamper/`var` checks, one exact authority payload-state check, and one production-runtime three-leg fixture (`790`, zero leaks). The three generic rooted-slice fixtures are **1 passed / 2 failed**: region-root escape rejects as expected, while both positive forms stop at the explicit missing authenticated slice-element projection. This is a live failure checkpoint, not an acceptance closeout.
