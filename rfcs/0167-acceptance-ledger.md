@@ -55,6 +55,15 @@ is needed for soundness.
 
 ## Exact-tip evidence checkpoint
 
+Row M typed destructuring let (implemented but unverified, 2026-09-25):
+`meta.stmt_let_pattern` constructs `LetPattern` directly from sealed pattern
+and expression handles. The existing source checker retains responsibility for
+irrefutability and binding validation; unsupported or source-backed handles
+fail closed. A focused `witchy-interp` build with the test profile passed.
+A temporary generated tuple-destructuring program passed fresh CLI `check`
+and `run` printed the hand-computed 5. Admitted unoptimized Wasm and zero-leak
+evidence remain pending, so row M stays open.
+
 Row M typed loop control (implemented but unverified, 2026-09-25):
 `meta.stmt_break` and `meta.stmt_continue` use the existing sealed
 statement-leaf bridge with fixed compiler-owned variants. Other leaf names

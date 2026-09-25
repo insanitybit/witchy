@@ -109,6 +109,7 @@ pub enum IntrinsicId {
     MetaStmtExpr,
     MetaStmtReturn,
     MetaStmtLet,
+    MetaStmtLetPattern,
     MetaStmtAssign,
     MetaStmtYield,
     MetaParam,
@@ -686,6 +687,7 @@ pub(crate) const META_BLOCK_REGION: &str = "__meta_block_region";
 pub(crate) const META_STMT_EXPR: &str = "__meta_stmt_expr";
 pub(crate) const META_STMT_RETURN: &str = "__meta_stmt_return";
 pub(crate) const META_STMT_LET: &str = "__meta_stmt_let";
+pub(crate) const META_STMT_LET_PATTERN: &str = "__meta_stmt_let_pattern";
 pub(crate) const META_STMT_ASSIGN: &str = "__meta_stmt_assign";
 pub(crate) const META_STMT_YIELD: &str = "__meta_stmt_yield";
 pub(crate) const META_PARAM: &str = "__meta_param";
@@ -2302,6 +2304,21 @@ pub const ALL: &[IntrinsicSpec] = &[
         dynamic_wir_helpers: false,
         wir_host_call: None,
         diagnostic_name: "meta.stmt_let",
+        private_callers: META_BRIDGE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::MetaStmtLetPattern,
+        name: META_STMT_LET_PATTERN,
+        arity: 2,
+        signature: IntrinsicSignature::DeclaredInSource,
+        effect: IntrinsicEffect::Toolchain,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::FrontendGenerated,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: NO_HELPERS,
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: "meta.stmt_let_pattern",
         private_callers: META_BRIDGE_CALLERS,
     },
     IntrinsicSpec {
@@ -4162,6 +4179,10 @@ pub fn is_meta_stmt_yield(name: &str) -> bool {
 
 pub fn is_meta_stmt_let(name: &str) -> bool {
     lookup(name).is_some_and(|spec| spec.id == IntrinsicId::MetaStmtLet)
+}
+
+pub fn is_meta_stmt_let_pattern(name: &str) -> bool {
+    lookup(name).is_some_and(|spec| spec.id == IntrinsicId::MetaStmtLetPattern)
 }
 
 pub fn is_meta_stmt_assign(name: &str) -> bool {

@@ -1555,6 +1555,20 @@ impl Interpreter {
                     "meta.stmt_let expects Bool, Ident, Option(TypeSyntax), and ExprSyntax",
                 ),
             },
+            name if intrinsics::is_meta_stmt_let_pattern(name) => match args {
+                [pattern, value] => {
+                    if self.fresh_ident_scope.is_none() {
+                        return err("meta.stmt_let_pattern is available only during compile-time expansion");
+                    }
+                    let pattern = compiler_pattern_syntax_value(pattern, &self.compiler_pattern_syntax)?;
+                    let value = compiler_expr_syntax_value(value, &self.compiler_expr_syntax)?;
+                    Ok(Some(self.store_compiler_stmt_syntax(
+                        "let-pattern-statement",
+                        Stmt::LetPattern { pattern, value },
+                    )?))
+                }
+                _ => err("meta.stmt_let_pattern expects PatternSyntax and ExprSyntax"),
+            },
             name if intrinsics::is_meta_stmt_assign(name) => match args {
                 [binding, value] => {
                     if self.fresh_ident_scope.is_none() {

@@ -140,6 +140,8 @@ source-backed handles are refused.
 scrutinee, and body block; all three handles must be sealed.
 `meta.stmt_assign` assigns a compiler-owned expression to a compiler-owned
 local binding inside a generated block; it cannot forge a call-site binder.
+`meta.stmt_let_pattern` builds a destructuring `let` from sealed pattern and
+expression handles; ordinary checking requires an irrefutable pattern.
 `meta.stmt_break` and `meta.stmt_continue` build loop control statements;
 canonical lowering rejects either statement outside a loop.
 `meta.expr_index` builds a subscript from compiler-owned base and index

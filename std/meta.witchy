@@ -603,6 +603,14 @@ pub fn stmt_let(mutable: Bool, name: Ident, ty: Option(TypeSyntax), value: ExprS
 fn __meta_stmt_let(mutable: Bool, name: Ident, ty: Option(TypeSyntax), value: ExprSyntax) -> StmtSyntax:
     __meta_stmt_let(mutable, name, ty, value)
 
+// Construct a destructuring let statement from sealed pattern and expression
+// handles. The source checker requires the pattern to be irrefutable.
+pub fn stmt_let_pattern(pattern: PatternSyntax, value: ExprSyntax) -> StmtSyntax:
+    __meta_stmt_let_pattern(pattern, value)
+
+fn __meta_stmt_let_pattern(pattern: PatternSyntax, value: ExprSyntax) -> StmtSyntax:
+    __meta_stmt_let_pattern(pattern, value)
+
 // Construct an assignment to an existing mutable local from a sealed name
 // and expression. Field and index assignments are not supported.
 pub fn stmt_assign(name: Ident, value: ExprSyntax) -> StmtSyntax:

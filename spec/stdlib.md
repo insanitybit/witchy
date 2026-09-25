@@ -2978,6 +2978,10 @@ An or-pattern. Every alternative must bind the same names when type-checked.
 
 Compiler-owned statement and block syntax retain AST nodes through block-shaped generators.
 
+#### `fn stmt_let_pattern(pattern: PatternSyntax, value: ExprSyntax) -> StmtSyntax`
+
+Construct a destructuring let statement from sealed pattern and expression handles. The source checker requires the pattern to be irrefutable.
+
 #### `fn stmt_assign(name: Ident, value: ExprSyntax) -> StmtSyntax`
 
 Construct an assignment to an existing mutable local from a sealed name and expression. Field and index assignments are not supported.
