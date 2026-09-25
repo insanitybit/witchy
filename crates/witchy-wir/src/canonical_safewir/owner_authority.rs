@@ -24,6 +24,10 @@ pub(super) fn validate<S: ModuleStage>(
         }
     }
     for family in candidate.owner_families() {
+        if family.slice_carrier.is_some()
+            && !matches!(&family.source, OwnerFamilySource::SharedReference(_)) {
+            return Err(CandidateAbiBindingError::MissingCanonicalLayouts);
+        }
         match &family.source {
             OwnerFamilySource::Aggregate(source_type) => {
                 if !aggregate_types.insert(source_type.clone()) {
@@ -33,9 +37,9 @@ pub(super) fn validate<S: ModuleStage>(
                 continue;
             }
             OwnerFamilySource::SharedReference(source_type) => {
-                if let Some(element) = rooted_slice_carrier(source_type)
-                    && !source.admits_slice_carrier(&element)
-                {
+                let checked = rooted_slice_carrier(source_type);
+                if family.slice_carrier != checked
+                    || checked.as_ref().is_some_and(|element| !source.admits_slice_carrier(element)) {
                     return Err(CandidateAbiBindingError::MissingCanonicalLayouts);
                 }
                 validate_shared_reference_family(candidate.owner_families(), family, source_type, &layouts)?;

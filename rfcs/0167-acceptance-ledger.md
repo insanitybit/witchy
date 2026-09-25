@@ -144,6 +144,15 @@ slice and its `.owned()` materialization, and 16 for a dictionary with a
 nested List value copied through `.owned()`. No durable hand-computed Wasm
 witness or recorded zero-leak audit closes the row yet.
 
+Row G carrier proof transport (architecture implemented, 2026-09-25):
+each rooted-slice owner family now carries its recursive candidate element
+proof. The source-independent SafeWIR checker bounds that proof and matches
+its physical layout; the checked-source binding separately requires exact
+agreement with the parsed source type and membership in
+`CanonicalSourceView`. Raw candidates with an unsupported source type or an
+oversized proof fail closed. This adds no new admitted source form and closes
+no acceptance evidence gap by itself.
+
 Row G whole-root scalar-list expansion (implemented but unverified,
 2026-09-24): the compiler now recognizes exact `&List(List(S))` for
 `S = Float`, `Bool`, or `Duration` through the shared source predicate,

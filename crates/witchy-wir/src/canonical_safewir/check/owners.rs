@@ -22,6 +22,16 @@ impl<'a> Registry<'a> {
         let mut signatures = BTreeSet::new();
         let mut constructors = BTreeSet::new();
         for family in registry.families {
+            if family.slice_carrier.as_ref().is_some_and(|carrier| !carrier.within_resource_bounds()) {
+                return Err(InitialCheckError::UnsupportedMemorySignature { signature: family.signature });
+            }
+            if match &family.source {
+                OwnerFamilySource::SharedReference(source) =>
+                    family.slice_carrier != rooted_slice_carrier(source),
+                _ => family.slice_carrier.is_some(),
+            } {
+                return Err(InitialCheckError::UnsupportedMemorySignature { signature: family.signature });
+            }
             if !types.insert(family.owner_type)
                 || has_owner_list(family) && !types.insert(family.list_type)
                 || !signatures.insert(family.signature)
@@ -48,7 +58,7 @@ impl<'a> Registry<'a> {
                 return Err(InitialCheckError::CallableContractMismatch { signature: family.signature });
             }
             if let OwnerFamilySource::SharedReference(source_type) = &family.source {
-                if !shared_rooted_reference(source_type) {
+                if !shared_rooted_reference(family) {
                     return Err(InitialCheckError::UnsupportedMemorySignature { signature: family.signature });
                 }
                 let mut kinds = BTreeSet::new();
@@ -90,8 +100,8 @@ impl<'a> Registry<'a> {
                                 && slice.0 == 0 && index.0 == 1 && *field == 2 && kinds.insert(3_u8)
                                 && registry.families.iter().any(|candidate| {
                                     candidate.owner_type == *slice_type
-                                        && matches!(&candidate.source, OwnerFamilySource::SharedReference(source)
-                                            if rooted_int_slice_reference(source))
+                                        && matches!(&candidate.source, OwnerFamilySource::SharedReference(_))
+                                        && rooted_int_slice_reference(candidate)
                                 })
                         }
                         SharedReferenceConstructor::ListSlice { root, start, length } => {
@@ -103,7 +113,7 @@ impl<'a> Registry<'a> {
                             };
                             // The backing list's element representation must be
                             // exactly the family's checked `&[T]` element.
-                            rooted_slice_carrier(source_type).is_some_and(|carrier| {
+                            family.slice_carrier.as_ref().is_some_and(|carrier| {
                                 element.is_some_and(|element| carrier_element_layout_matches(&layouts, element, &carrier))
                             })
                                 && root.0 == 0 && start.0 == 1 && length.0 == 2 && kinds.insert(2_u8)
@@ -238,12 +248,12 @@ impl<'a> Registry<'a> {
             }
             O::ReadSharedSlice { destination, owner, family, field } => {
                 let family = self.family(*family)?;
-                let OwnerFamilySource::SharedReference(source) = &family.source else {
+                let OwnerFamilySource::SharedReference(_) = &family.source else {
                     return Err(InitialCheckError::UnsupportedMemoryOperation {
                         function: function.id, operation: "ReadSharedSlice non-slice family",
                     });
                 };
-                if rooted_slice_carrier(source).is_none()
+                if family.slice_carrier.is_none()
                     || !family.constructors.iter().all(|constructor| matches!(
                         constructor.shared_reference_constructor(),
                         Some(SharedReferenceConstructor::ListSlice { .. }),
@@ -562,8 +572,9 @@ pub(super) fn check(function: &Function, registry: &Registry<'_>) -> Result<(), 
     Ok(())
 }
 
-fn shared_rooted_reference(source_type: &witchy_syntax::ast::Type) -> bool {
-    shared_int_reference(source_type) || rooted_slice_carrier(source_type).is_some()
+fn shared_rooted_reference(family: &OwnerFamily) -> bool {
+    matches!(&family.source, OwnerFamilySource::SharedReference(source)
+        if shared_int_reference(source) || family.slice_carrier.is_some())
 }
 
 fn shared_int_reference(source_type: &witchy_syntax::ast::Type) -> bool {
@@ -574,8 +585,8 @@ fn shared_int_reference(source_type: &witchy_syntax::ast::Type) -> bool {
                 if name == "Int" && arguments.is_empty()))
 }
 
-fn rooted_int_slice_reference(source_type: &witchy_syntax::ast::Type) -> bool {
-    rooted_slice_carrier(source_type) == Some(witchy_canonical_source::carrier::CarrierElement::Scalar(
+fn rooted_int_slice_reference(family: &OwnerFamily) -> bool {
+    family.slice_carrier == Some(witchy_canonical_source::carrier::CarrierElement::Scalar(
         witchy_canonical_source::abi::CanonicalScalarKind::Int))
 }
 
@@ -589,6 +600,7 @@ pub mod self_checks {
         let owner_type = GcTypeId::new(0xc1000000);
         let family = OwnerFamily {
             source: OwnerFamilySource::Closure,
+            slice_carrier: None,
             owner_type, list_type: GcTypeId::new(0xc1000001),
             signature: FunctionSignatureId::new(0), declaration_signature: FunctionSignatureId::new(1),
             environment: crate::layout::LayoutId::from_bytes([0; 32]), constructors: vec![],

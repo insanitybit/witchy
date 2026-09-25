@@ -755,7 +755,7 @@ pub fn lower_typed_module(
                 witness: None, environment_tag: 0, captures: Vec::new() });
         }
         constructors.sort_by_key(|constructor| constructor.id.0);
-        closure_context.owners.push(OwnerFamily { source: OwnerFamilySource::Closure,
+        closure_context.owners.push(OwnerFamily { source: OwnerFamilySource::Closure, slice_carrier: None,
             owner_type, list_type: GcTypeId::new(owner_type.get() + 1),
             signature, declaration_signature, environment: family.environment, constructors });
     }
@@ -790,6 +790,7 @@ pub fn lower_typed_module(
         }
         closure_context.owners.push(OwnerFamily {
             source: OwnerFamilySource::Aggregate(family.source.clone()),
+            slice_carrier: None,
             owner_type: family.owner_type,
             list_type: family.list_type,
             signature: family_token,
@@ -862,6 +863,7 @@ pub fn lower_typed_module(
                 TypeQual::View,
                 Box::new(Type::Named("Int".into(), Vec::new())),
             )),
+            slice_carrier: None,
             owner_type: shared_reference_owner,
             list_type: GcTypeId::new(shared_reference_owner.get() + 1),
             signature: shared_reference_token,
@@ -881,6 +883,7 @@ pub fn lower_typed_module(
                 TypeQual::View,
                 Box::new(Type::Slice(Box::new(element_type))),
             )),
+            slice_carrier: Some(slice_layout.element.clone()),
             owner_type,
             list_type: GcTypeId::new(owner_type.get() + 1),
             signature,

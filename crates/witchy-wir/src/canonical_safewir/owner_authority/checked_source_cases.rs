@@ -38,6 +38,7 @@ fn aggregate_fixture(checker: &dyn SourceChecker) -> (
     let bundle = LayoutBundle::from_interner(&interner, [environment]).expect("layout bundle");
     let family = OwnerFamily {
         source: OwnerFamilySource::Aggregate(source_type),
+        slice_carrier: None,
         owner_type: GcTypeId::new(700),
         list_type: GcTypeId::new(701),
         signature: FunctionSignatureId::new(702),
@@ -115,6 +116,7 @@ pub fn exact_int_slice_record_field_rejects_erased_and_wrong_owner_carriers(chec
     let bundle = LayoutBundle::from_interner(&layouts, [environment]).expect("layout bundle");
     let family = OwnerFamily {
         source: OwnerFamilySource::Aggregate(packet.clone()),
+        slice_carrier: None,
         owner_type: GcTypeId::new(700),
         list_type: GcTypeId::new(701),
         signature: FunctionSignatureId::new(702),
@@ -134,6 +136,7 @@ pub fn exact_int_slice_record_field_rejects_erased_and_wrong_owner_carriers(chec
     };
     let slice_family = |element: &str, id| OwnerFamily {
         source: OwnerFamilySource::SharedReference(slice_view(element)),
+        slice_carrier: witchy_canonical_source::carrier::CarrierElement::from_view_type(&slice_view(element)),
         owner_type: GcTypeId::new(id),
         list_type: GcTypeId::new(id + 1),
         signature: FunctionSignatureId::new(id + 2),

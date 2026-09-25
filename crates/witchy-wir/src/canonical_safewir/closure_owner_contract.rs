@@ -266,6 +266,9 @@ pub(crate) fn carrier_element_layout_matches(
     layout: crate::layout::LayoutId,
     carrier: &witchy_canonical_source::carrier::CarrierElement,
 ) -> bool {
+    if !carrier.within_resource_bounds() {
+        return false;
+    }
     use crate::layout::{LayoutId, LayoutInterner, LayoutKind, PointerSlot, RcHeader, ScalarKind};
     use witchy_canonical_source::abi::CanonicalScalarKind;
     use witchy_canonical_source::carrier::CarrierLayoutQuery;
@@ -352,6 +355,10 @@ pub enum SharedReferenceConstructor {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OwnerFamily {
     pub source: OwnerFamilySource,
+    /// Candidate element proof for a rooted slice. The initial checker uses
+    /// its physical relation; checked-source binding authenticates it against
+    /// the exact checked view formation before admission.
+    pub slice_carrier: Option<witchy_canonical_source::carrier::CarrierElement>,
     pub owner_type: GcTypeId,
     pub list_type: GcTypeId,
     /// Body ABI: leading owner parameter followed by declaration parameters.

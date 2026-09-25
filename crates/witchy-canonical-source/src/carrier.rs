@@ -188,6 +188,36 @@ impl CarrierElement {
         }
     }
 
+    /// A raw candidate can carry a proof without passing through the checked
+    /// parser. Enforce the same finite proof domain before recursive physical
+    /// matching, using an iterative walk so hostile depth cannot overflow the
+    /// checker's own stack.
+    pub fn within_resource_bounds(&self) -> bool {
+        let mut pending = vec![(self, 0usize)];
+        let mut remaining = 4_096usize;
+        while let Some((element, depth)) = pending.pop() {
+            if depth > 128 || remaining == 0 {
+                return false;
+            }
+            remaining -= 1;
+            match element {
+                Self::Scalar(_) | Self::String => {}
+                Self::List(child) => pending.push((child, depth + 1)),
+                Self::Tuple(fields) => {
+                    if fields.is_empty() || fields.len() > 128 {
+                        return false;
+                    }
+                    pending.extend(fields.iter().map(|field| (field, depth + 1)));
+                }
+                Self::Dict(key, value) => {
+                    pending.push((key, depth + 1));
+                    pending.push((value, depth + 1));
+                }
+            }
+        }
+        true
+    }
+
     /// The single recursive relation between checked element, physical
     /// storage, and its copy or retain/clone/release operation. Every List
     /// edge is checked independently; any missing fact fails closed.
