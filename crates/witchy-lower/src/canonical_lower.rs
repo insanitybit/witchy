@@ -20101,8 +20101,8 @@ fn dictionary_layout(
         let LayoutKind::RuntimeDictionaryBody { key, value, .. } = descriptor.kind() else {
             continue;
         };
-        if dictionary_slot_matches(*key, key_type, layouts)
-            && dictionary_slot_matches(*value, value_type, layouts)
+        if dictionary_slot_matches(*key, key_type, &arguments[0], layouts)
+            && dictionary_slot_matches(*value, value_type, &arguments[1], layouts)
         {
             candidates.push(*root);
         }
@@ -20130,13 +20130,18 @@ fn dictionary_slot_type(
 fn dictionary_slot_matches(
     layout: witchy_wir::layout::LayoutId,
     value_type: ValueType,
+    source_type: &Type,
     layouts: &LayoutInterner,
 ) -> bool {
     let Some(descriptor) = physical_layout_descriptor(layouts, layout) else { return false };
+    // Duration and Int share a value lane, but their physical layouts and
+    // authenticated dictionary roots remain distinct.
+    let duration = matches!(source_type.unqualified(),
+        Type::Named(name, arguments) if name == "Duration" && arguments.is_empty());
     match (descriptor.kind(), value_type) {
-        (LayoutKind::Scalar(ScalarKind::Int), ValueType::Int)
-        | (LayoutKind::Scalar(ScalarKind::Float), ValueType::Float)
-        | (LayoutKind::Scalar(ScalarKind::Duration), ValueType::Int)
+        (LayoutKind::Scalar(ScalarKind::Int), ValueType::Int) if !duration => true,
+        (LayoutKind::Scalar(ScalarKind::Duration), ValueType::Int) if duration => true,
+        (LayoutKind::Scalar(ScalarKind::Float), ValueType::Float)
         | (LayoutKind::Scalar(ScalarKind::Unit), ValueType::Unit)
         | (LayoutKind::Scalar(ScalarKind::BoolValueSlot), ValueType::Bool) => true,
         (
