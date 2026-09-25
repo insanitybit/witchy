@@ -12,7 +12,9 @@
 // Whole `&Dict(String, Int)`, `&Dict(String, Bool)`, and
 // `&Dict(String, Float)` views have distinct admitted root identities: each
 // keeps its snapshot when the owner is updated. Other dictionary root-view
-// shapes still need carrier evidence.
+// shapes still need carrier evidence. The same exact scalar-root path is
+// implemented for `&Dict(String, Duration)` with a distinct identity, but
+// admitted Wasm snapshot and zero-leak evidence is pending for that form.
 
 // --- native primitives ---
 

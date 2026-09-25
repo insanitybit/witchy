@@ -121,35 +121,31 @@ pub fn dictionary_has_unadmitted_string_view_value(ty: &Type) -> bool {
                     if name == "String" && arguments.is_empty())))
 }
 
-/// The Int-valued dictionary shape whose whole immutable view can retain its
-/// existing reference-counted root token. Nested qualifiers and other key or
-/// value types need separate carrier evidence.
-pub fn is_dict_string_int_root_payload(ty: &Type) -> bool {
-    matches!(ty, Type::Named(name, arguments)
-        if name == "Dict" && matches!(arguments.as_slice(),
-            [Type::Named(key, key_args), Type::Named(value, value_args)]
-                if key == "String" && key_args.is_empty()
-                    && value == "Int" && value_args.is_empty()))
+/// The exact inline scalar carried by a retained `Dict(String, S)` root.
+/// Each kind has a distinct source ABI identity and physical value-list slot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DictRootScalar {
+    Int,
+    Bool,
+    Float,
+    Duration,
 }
 
-/// The Bool-valued dictionary root has the same retained-token shape as the
-/// Int-valued root, but keeps a distinct authenticated payload identity.
-pub fn is_dict_string_bool_root_payload(ty: &Type) -> bool {
-    matches!(ty, Type::Named(name, arguments)
-        if name == "Dict" && matches!(arguments.as_slice(),
-            [Type::Named(key, key_args), Type::Named(value, value_args)]
-                if key == "String" && key_args.is_empty()
-                    && value == "Bool" && value_args.is_empty()))
-}
-
-/// The Float-valued dictionary root keeps the same retained-token shape,
-/// with a payload identity distinct from the Int and Bool roots.
-pub fn is_dict_string_float_root_payload(ty: &Type) -> bool {
-    matches!(ty, Type::Named(name, arguments)
-        if name == "Dict" && matches!(arguments.as_slice(),
-            [Type::Named(key, key_args), Type::Named(value, value_args)]
-                if key == "String" && key_args.is_empty()
-                    && value == "Float" && value_args.is_empty()))
+/// A whole immutable dictionary view can retain its existing root only when
+/// the key is exactly String and the value is one unqualified inline scalar.
+/// Nested or qualified values must not inherit this owner family.
+pub fn dict_string_scalar_root_payload(ty: &Type) -> Option<DictRootScalar> {
+    let Type::Named(name, arguments) = ty else { return None };
+    if name != "Dict" { return None; }
+    let [Type::Named(key, key_args), Type::Named(value, value_args)] = arguments.as_slice() else { return None };
+    if key != "String" || !key_args.is_empty() || !value_args.is_empty() { return None; }
+    match value.as_str() {
+        "Int" => Some(DictRootScalar::Int),
+        "Bool" => Some(DictRootScalar::Bool),
+        "Float" => Some(DictRootScalar::Float),
+        "Duration" => Some(DictRootScalar::Duration),
+        _ => None,
+    }
 }
 
 /// The exact tuple root whose heap representation and child String token are

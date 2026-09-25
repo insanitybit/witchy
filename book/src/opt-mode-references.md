@@ -258,6 +258,10 @@ Whole `&Dict(String, Int)`, `&Dict(String, Bool)`, and
 Each retains its dictionary snapshot: inserting or replacing a value in the
 owner after the view forms does not change what the view reads. Closure capture
 of a dictionary view and views of other dictionary shapes remain unsupported.
+The compiler also has an exact `&Dict(String, Duration)` scalar-root path,
+but its admitted Wasm snapshot and leak evidence is pending. Treat that form
+as implemented but unverified; nested or qualified dictionary values do not
+inherit the scalar-root carrier.
 
 An exact whole `&(Int, String)` view keeps the old tuple after its owner is
 replaced, including the String field. This carrier covers direct calls and

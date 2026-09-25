@@ -64,12 +64,12 @@ fn main() -> Int:
 #[test]
 fn other_dictionary_view_payloads_stay_outside_the_exact_carrier() {
     let different_value = r#"
-fn count(v: &Dict(String, Duration)) -> Int:
+fn count(v: &Dict(String, String)) -> Int:
     (*v).length()
 
 fn main() -> Int:
-    var d: Dict(String, Duration) = dict.new()
-    let _ = d.insert("a", 1s)
+    var d: Dict(String, String) = dict.new()
+    let _ = d.insert("a", "value")
     count(&d)
 "#;
     let nested_view = r#"
