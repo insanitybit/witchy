@@ -2912,6 +2912,10 @@ Compiler-owned construction of an explicitly named record. The record head and l
 
 #### `fn expr_while(cond: ExprSyntax, body: BlockSyntax) -> ExprSyntax`
 
+#### `fn expr_while_let(pattern: PatternSyntax, scrutinee: ExprSyntax, body: BlockSyntax) -> ExprSyntax`
+
+Builds a loop that matches each scrutinee before executing its body. All three inputs must be compiler-owned syntax handles.
+
 #### `fn expr_await(value: ExprSyntax) -> ExprSyntax`
 
 The generated function is checked as async before this suspension is lowered.

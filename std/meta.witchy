@@ -464,6 +464,14 @@ pub fn expr_while(cond: ExprSyntax, body: BlockSyntax) -> ExprSyntax:
 fn __meta_expr_while(cond: ExprSyntax, body: BlockSyntax) -> ExprSyntax:
     __meta_expr_while(cond, body)
 
+// Builds a loop that matches each scrutinee before executing its body.
+// All three inputs must be compiler-owned syntax handles.
+pub fn expr_while_let(pattern: PatternSyntax, scrutinee: ExprSyntax, body: BlockSyntax) -> ExprSyntax:
+    __meta_expr_while_let(pattern, scrutinee, body)
+
+fn __meta_expr_while_let(pattern: PatternSyntax, scrutinee: ExprSyntax, body: BlockSyntax) -> ExprSyntax:
+    __meta_expr_while_let(pattern, scrutinee, body)
+
 // The generated function is checked as async before this suspension is lowered.
 pub fn expr_await(value: ExprSyntax) -> ExprSyntax:
     __meta_expr_await(value)

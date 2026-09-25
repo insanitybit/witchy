@@ -136,6 +136,8 @@ expression, and body block. Source-backed handles and call-site binders are
 refused.
 `meta.expr_while` builds a loop from compiler-owned condition and body handles;
 source-backed handles are refused.
+`meta.expr_while_let` builds a matching loop from a compiler-owned pattern,
+scrutinee, and body block; all three handles must be sealed.
 `meta.stmt_assign` assigns a compiler-owned expression to a compiler-owned
 local binding inside a generated block; it cannot forge a call-site binder.
 `meta.expr_index` builds a subscript from compiler-owned base and index

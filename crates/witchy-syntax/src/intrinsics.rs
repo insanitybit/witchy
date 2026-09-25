@@ -101,6 +101,7 @@ pub enum IntrinsicId {
     MetaExprIf,
     MetaExprFor,
     MetaExprWhile,
+    MetaExprWhileLet,
     MetaExprAwait,
     MetaMatchArm,
     MetaBlock,
@@ -677,6 +678,7 @@ pub(crate) const META_EXPR_BLOCK: &str = "__meta_expr_block";
 pub(crate) const META_EXPR_IF: &str = "__meta_expr_if";
 pub(crate) const META_EXPR_FOR: &str = "__meta_expr_for";
 pub(crate) const META_EXPR_WHILE: &str = "__meta_expr_while";
+pub(crate) const META_EXPR_WHILE_LET: &str = "__meta_expr_while_let";
 pub(crate) const META_EXPR_AWAIT: &str = "__meta_expr_await";
 pub(crate) const META_MATCH_ARM: &str = "__meta_match_arm";
 pub(crate) const META_BLOCK: &str = "__meta_block";
@@ -2195,6 +2197,21 @@ pub const ALL: &[IntrinsicSpec] = &[
         dynamic_wir_helpers: false,
         wir_host_call: None,
         diagnostic_name: "meta.expr_while",
+        private_callers: META_BRIDGE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::MetaExprWhileLet,
+        name: META_EXPR_WHILE_LET,
+        arity: 3,
+        signature: IntrinsicSignature::DeclaredInSource,
+        effect: IntrinsicEffect::Toolchain,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::FrontendGenerated,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: NO_HELPERS,
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: "meta.expr_while_let",
         private_callers: META_BRIDGE_CALLERS,
     },
     IntrinsicSpec {
@@ -4105,6 +4122,10 @@ pub fn is_meta_expr_for(name: &str) -> bool {
 
 pub fn is_meta_expr_while(name: &str) -> bool {
     lookup(name).is_some_and(|spec| spec.id == IntrinsicId::MetaExprWhile)
+}
+
+pub fn is_meta_expr_while_let(name: &str) -> bool {
+    lookup(name).is_some_and(|spec| spec.id == IntrinsicId::MetaExprWhileLet)
 }
 
 pub fn is_meta_expr_await(name: &str) -> bool {

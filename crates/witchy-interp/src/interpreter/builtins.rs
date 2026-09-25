@@ -1448,6 +1448,37 @@ impl Interpreter {
                 }
                 _ => err("meta.expr_while expects ExprSyntax and BlockSyntax"),
             },
+            name if intrinsics::is_meta_expr_while_let(name) => match args {
+                [pattern, scrutinee, body] => {
+                    if self.fresh_ident_scope.is_none() {
+                        return err("meta.expr_while_let is available only during compile-time expansion");
+                    }
+                    let mut hole_ancestry = compiler_direct_hole_origins(
+                        std::slice::from_ref(pattern),
+                        SyntaxCategory::Pattern,
+                        "CompilerPatternSyntax",
+                        &self.compiler_pattern_origins,
+                        self.cur_line,
+                    );
+                    hole_ancestry.extend(compiler_direct_hole_origins(
+                        std::slice::from_ref(scrutinee),
+                        SyntaxCategory::Expr,
+                        "CompilerExprSyntax",
+                        &self.compiler_expr_origins,
+                        self.cur_line,
+                    ));
+                    let pattern = compiler_pattern_syntax_value(pattern, &self.compiler_pattern_syntax)?;
+                    let scrutinee = compiler_expr_syntax_value(scrutinee, &self.compiler_expr_syntax)?;
+                    let body = compiler_block_syntax_value(body, &self.compiler_block_syntax)?;
+                    let expr = witchy_syntax::parser::desugar_while_let(pattern, scrutinee, body);
+                    Ok(Some(self.store_compiler_expr_syntax(
+                        "expression-while-let",
+                        expr,
+                        hole_ancestry,
+                    )?))
+                }
+                _ => err("meta.expr_while_let expects PatternSyntax, ExprSyntax, and BlockSyntax"),
+            },
             name if intrinsics::is_meta_expr_await(name) => match args {
                 [value] => {
                     if self.fresh_ident_scope.is_none() {
