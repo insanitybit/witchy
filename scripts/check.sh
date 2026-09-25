@@ -540,22 +540,6 @@ if cargo nextest --version >/dev/null 2>&1; then
                 nextest_extra_cmd+=(--features witchy-wir/native) ;;
         esac
     fi
-    # The slow-test ratchet confirms candidates with exactly this selection and
-    # feature set (minus --max-fail and -j), so its one confirmation run reuses
-    # the binaries this stage built instead of building a --workspace set.
-    ratchet_nextest_args=()
-    ratchet_skip_next=0
-    for ratchet_arg in "${nextest_cmd[@]:4}"; do
-        if [ "$ratchet_skip_next" -eq 1 ]; then ratchet_skip_next=0; continue; fi
-        if [ "$ratchet_arg" = "-j" ]; then ratchet_skip_next=1; continue; fi
-        ratchet_nextest_args+=("$ratchet_arg")
-    done
-    if [ "${#nextest_extra_sel[@]}" -gt 0 ]; then
-        # Confirmation is rare and runs only after a >5s observation. A
-        # workspace selector can replay candidates from either partition;
-        # neither partition's target flags alone can name both safely.
-        ratchet_nextest_args=(--workspace --features witchy-wir/native,witchy-lower/native-test-runtime)
-    fi
     # The workspace stage ALWAYS excludes `package(merge-queue-tests)` (see
     # $excl above) because those fixtures run in their own isolated shard. So
     # a diff whose entire selection belongs to that package leaves this stage
@@ -1291,19 +1275,12 @@ fi
 if [ "${#preflight_cmd[@]}" -gt 0 ]; then
     run_watched "preflight (tests that red the last attempt)" "${preflight_cmd[@]}"
 fi
-ratchet_since="$(date +%s)"
 run_watched "tests (workspace)"        run_product_tests
-# The 2-second-per-test target, enforced as a ratchet: a test over 5s in this
-# run that is not nightly-deferred or on scripts/slow-test-debt.txt is re-run
-# ALONE, and the gate fails only if it is still over 3s. See the script.
-if [ -n "${WITCHY_GATE_SCOPE+x}" ] && [ "$gate_scope" = "all" ] && [ "$full" -eq 0 ]; then
-    run_watched "slow-test ratchet" python3 scripts/slow-test-ratchet.py \
-        --since "$ratchet_since" \
-        --nextest-args "${ratchet_nextest_args[*]:-}" \
-        --junit "${CARGO_TARGET_DIR:-target}/nextest/default/junit.xml" \
-        --junit "${CARGO_TARGET_DIR:-target}/nextest/gate-partition/junit.xml" \
-        --junit target/nextest/default/junit.xml
-fi
+# Test execution is a few seconds; compiling its binaries is the expensive
+# part. Do not turn a loaded-host timing outlier into another Cargo invocation
+# here: mixed gate partitions made that confirmation rebuild the workspace for
+# up to five minutes. scripts/slow-test-ratchet.py remains available for
+# explicit performance investigations outside the serialized landing gate.
 if [ "$gate_skip_fmt" -eq 1 ]; then
     printf 'check.sh: skipping witchy fmt (WITCHY_GATE_SKIP_FMT=1; --full/CI still run it)\n'
 else

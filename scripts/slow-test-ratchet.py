@@ -1,11 +1,8 @@
 #!/usr/bin/env python3
-"""Stop NEW slow tests from landing. Target: no test over 2 seconds.
+"""Measure whether new tests exceed the 2-second target.
 
-The rule "no ordinary test exceeds 2s" was documented (check.sh's
-NIGHTLY-DEFERRED block, gate-test-cost.py --assert-budget) but enforced
-nowhere, and by 2026-09-21 245 tests had a median over 2s -- 58% of all
-test time. This is the enforcement, built so it cannot flake a serialized
-gate:
+By 2026-09-21, 245 tests had a median over 2s -- 58% of all test time. This
+diagnostic separates loaded-host outliers from tests that are slow alone:
 
   1. DETECT in the gate's own parallel run: any test over --detect seconds
      that is not exempt. Under ~8x parallel load and a sometimes-cold SafeWIR
@@ -27,10 +24,12 @@ Exempt: scripts/nightly-deferred-tests.txt (not in the default gate at all)
 and scripts/slow-test-debt.txt (today's offenders, which may only SHRINK --
 remove a line when you make that test fast; never add one).
 
-Usage (check.sh runs this after the workspace test stage in merge-gate mode):
+It is deliberately not part of the serialized merge gate: confirmation can
+compile a different feature graph and cost minutes while ordinary test
+execution takes seconds. Run it explicitly after a measured nextest campaign:
     scripts/slow-test-ratchet.py --junit target/nextest/default/junit.xml
 """
-import argparse, os, re, shlex, subprocess, sys, time
+import argparse, os, re, shlex, signal, subprocess, sys, time
 import xml.etree.ElementTree as ET
 
 def names(path):
@@ -52,12 +51,20 @@ def confirm_alone(candidates, nextest_args, budget):
     seconds = {}
     started = time.monotonic()
     process = subprocess.Popen(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                               text=True, bufsize=1)
+                               text=True, bufsize=1, start_new_session=True)
     # The deadline must hold even if one test runs silently past it.
     expired = []
     def stop():
-        expired.append(True)
-        process.kill()
+        if not expired:
+            expired.append(True)
+        try:
+            # `cargo` is the repository MBX shim. Killing only that wrapper
+            # orphaned cargo-nextest and rustc, so the nominal five-minute
+            # budget kept compiling indefinitely. The private session makes
+            # the whole diagnostic subtree one safe kill target.
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
     import threading
     timer = threading.Timer(budget, stop)
     timer.start()
@@ -70,7 +77,7 @@ def confirm_alone(candidates, nextest_args, budget):
             print(f"slow-test-ratchet:   {status} {float(secs):.1f}s alone {binary} {name}", flush=True)
         if time.monotonic() - started > budget:
             within = False
-            process.kill()
+            stop()
             break
     process.wait()
     timer.cancel()
