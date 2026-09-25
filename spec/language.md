@@ -1152,17 +1152,14 @@ carrier. Future optimization may elide provably redundant retains, copies, or
 carrier materialization, but it may not change snapshot behavior, bounds,
 write-back, or destruction order.
 
-The admitted whole-root `&List(List(Int))` carrier retains the outer list and
-its owned inner lists. A mutation to an inner element or a push to the outer
-`var` list leaves an earlier view's contents unchanged. The compiler also
-recognizes this exact whole-root shape for inner `Float`, `Bool`, `Duration`,
-and `String` lists; those additional cases await semantic and leak evidence.
-A qualified inner list such as `List(unique List(Int))` has no admitted
-whole-root view carrier and is refused during canonical admission. Region-born
-outer roots cannot escape through this view.
-For the inner `List(String)` case, the inner list owns each String child; both
-List layers require retained headers. An exact `&[List(String)]` slice uses a
-separate carrier, pending semantic and leak evidence.
+Whole-root `&List(T)` views use the same recursive element carrier as slice
+views. The carrier retains the outer list; each nested List needs an owned
+pointer slot, a retained header, and valid clone and release operations for its
+children. A mutation to an inner element or a push to the outer `var` list
+leaves an earlier view's contents unchanged. Qualifiers inside `T`, such as
+`List(unique List(Int))`, have no such carrier and fail closed. Region-born
+outer roots cannot escape through the view. Nested forms beyond the previously
+proven exact cases are implemented but await admitted Wasm and leak evidence.
 
 Slice carriers use one recursive checked-source relation for their element
 type, physical layout, and ownership operations. Each `List` layer requires a

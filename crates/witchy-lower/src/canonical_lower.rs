@@ -14353,10 +14353,10 @@ impl FunctionLowerer<'_> {
             }
             return Ok(value);
         }
-        let list_root = matches!(fact.payload(), Ty::List(element)
-            if matches!(element.as_ref(), Ty::Int | Ty::Float | Ty::Duration | Ty::Bool | Ty::String)
-                || matches!(element.as_ref(), Ty::List(inner)
-                    if matches!(inner.as_ref(), Ty::Int | Ty::Float | Ty::Bool | Ty::Duration | Ty::String)));
+        let list_root = witchy_types::typeck::ty_to_ast(fact.payload())
+            .as_ref()
+            .and_then(witchy_canonical_source::carrier::CarrierElement::from_list_root_payload_type)
+            .is_some();
         let record_root = record_root || list_root;
         if (matches!(fact.payload(), Ty::String) || record_root)
             && !fact.place().steps().is_empty()

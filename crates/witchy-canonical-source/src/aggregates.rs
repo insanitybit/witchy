@@ -821,25 +821,11 @@ pub fn is_scalar_value_view_payload(ty: &Type) -> bool {
         if arguments.is_empty() && matches!(name.as_str(), "Float" | "Bool" | "Duration"))
 }
 
-/// A whole `&List(T)` view (`ListRoot`): elements are one scalar kind, String,
-/// or exactly `List(S)` for an unqualified inline scalar or String `S`. The
-/// latter has an owned nested-list pointer layout; broader owner-bearing
-/// elements still require their own carrier judgment.
+/// A whole `&List(T)` view (`ListRoot`) uses the recursive checked carrier
+/// grammar. Physical ownership and layout still require independent SafeWIR
+/// validation; this source predicate alone grants no authority.
 pub fn is_list_root_payload(ty: &Type) -> bool {
-    let mut payload = ty;
-    while let Type::Qualified(witchy_syntax::ast::TypeQual::Frozen, inner) = payload {
-        payload = inner;
-    }
-    matches!(payload, Type::Named(name, arguments)
-        if name == "List" && matches!(arguments.as_slice(), [element]
-            if matches!(element, Type::Named(nested, nested_arguments)
-                if nested == "List" && matches!(nested_arguments.as_slice(), [inner]
-                    if matches!(inner, Type::Named(name, arguments)
-                        if matches!(name.as_str(), "Int" | "Float" | "Bool" | "Duration" | "String")
-                            && arguments.is_empty())))
-            || matches!(element, Type::Named(element, element_arguments)
-                if element_arguments.is_empty()
-                    && matches!(element.as_str(), "Int" | "Float" | "Duration" | "Bool" | "String"))))
+    crate::carrier::CarrierElement::from_list_root_payload_type(ty).is_some()
 }
 
 /// A whole view of this value is a `RecordRoot`: the retained aggregate

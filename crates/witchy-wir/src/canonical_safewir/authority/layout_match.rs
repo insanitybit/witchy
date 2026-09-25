@@ -12,6 +12,18 @@ pub(crate) fn value_type_matches_source(
     if is_unit_source_type(source) {
         return actual == super::super::ValueType::Unit;
     }
+    // A checked whole-list view carries the retained list object. Its
+    // element must satisfy the same recursive ownership relation as a rooted
+    // slice, including an owned pointer and RC list at every managed edge.
+    if let witchy_syntax::ast::Type::Qualified(witchy_syntax::ast::TypeQual::View, payload) = source
+        && let Some(carrier) = witchy_canonical_source::carrier::CarrierElement::from_list_root_payload_type(payload)
+    {
+        let super::super::ValueType::Ref(layout) = actual else { return false };
+        let Ok(physical) = layouts.resolve_nominal(layout) else { return false };
+        let Some(crate::layout::LayoutKind::PackedList { element, rc: crate::layout::RcHeader::Required }) =
+            layouts.get(physical).map(|descriptor| descriptor.kind()) else { return false };
+        return super::super::closure_owner_contract::carrier_element_layout_matches(layouts, *element, &carrier);
+    }
     // A rooted scalar or slice view aggregate is an opaque owner family, including when it
     // enters as a parameter. Its ordinary record fields may happen to look
     // like the erased referents, but that linear layout cannot authenticate

@@ -127,6 +127,22 @@ impl CarrierElement {
         Self::from_checked_type(element)
     }
 
+    /// Element of a whole rooted `&List(T)` view. Only an outer `frozen`
+    /// qualifier is representation-neutral; nested qualifiers need their own
+    /// ownership carrier and therefore fail this relation.
+    pub fn from_list_root_payload_type(mut payload: &Type) -> Option<Self> {
+        while let Type::Qualified(TypeQual::Frozen, inner) = payload {
+            payload = inner;
+        }
+        let Type::Named(name, arguments) = payload else {
+            return None;
+        };
+        let [element] = arguments.as_slice() else {
+            return None;
+        };
+        (name == "List").then(|| Self::from_checked_type(element)).flatten()
+    }
+
     pub fn source_type(&self) -> Type {
         match self {
             Self::Scalar(kind) => Type::Named(

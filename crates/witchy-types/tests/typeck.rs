@@ -277,15 +277,11 @@ mod tests {
     }
 
     #[test]
-    fn borrowed_nominal_cannot_escape_through_an_inferred_closure() {
-        let capture = check_str(
+    fn recursive_list_view_can_escape_through_an_inferred_closure() {
+        check_str(
             "mode opt\n\nfn escape(owner: List(List(List(Int)))) -> fn() -> &List(List(List(Int))):\n    let view = &owner\n    fn():\n        view\n",
         )
-        .expect_err("an inferred closure must not capture an unadmitted rooted view");
-        assert!(
-            capture.contains("closure") || capture.contains("view") || capture.contains("root"),
-            "{capture}"
-        );
+        .expect("the recursive carrier admits a depth-three rooted view capture");
 
         check_str("fn outer() -> Int:\n    let value = 7\n    let f = fn(): value\n    0\n")
             .expect("ordinary scalar closure captures remain valid");

@@ -12,18 +12,6 @@ fn checked(label: &str, source: &str) {
         .unwrap_or_else(|error| panic!("{label} must pass checked-source admission: {error}"));
 }
 
-fn canonical_refusal(label: &str, source: &str) {
-    let checked = witchy::resolve_std_only_checked(source)
-        .unwrap_or_else(|error| panic!("{label} must pass checked-source admission: {error}"));
-    let refusal = codegen::compile_checked_module_artifact(&checked).expect_unsupported(label);
-    assert!(
-        refusal.message.contains("unsupported")
-            || refusal.message.contains("canonical")
-            || refusal.message.contains("view"),
-        "{label} must fail closed at canonical lowering: {refusal}",
-    );
-}
-
 #[test]
 fn generic_immutable_views_keep_their_payload_type_and_projection() {
     checked(
@@ -80,28 +68,6 @@ fn main():
     let text = "view"
     let _ = view(&text)
     let _ = owned("owned")
-"#,
-    );
-}
-
-#[test]
-fn ambiguous_generic_view_projection_is_checked_but_not_lowered_by_erasure() {
-    canonical_refusal(
-        "generic shared relay with two possible roots",
-        r#"mode opt
-
-fn relay[a](left: &a, right: &a, choose_left: Bool) -> &a:
-    if choose_left:
-        left
-    else:
-        right
-
-fn main():
-    // A whole `&List(List(Int))` has an authenticated carrier. A third List
-    // shell does not, so choosing between two such roots must still refuse.
-    let left = [[[1]]]
-    let right = [[[2]]]
-    let _ = relay(&left, &right, true)
 "#,
     );
 }

@@ -102,6 +102,18 @@ whole-root child-ownership gap only; `&[List(Int)]`, other nested payloads,
 and broader row G carriers remain open. Exact-tip presubmit and queue gate
 are pending.
 
+Row G recursive whole-list root (implemented but unverified, 2026-09-25):
+the checker, canonical ABI identity, lowering, and SafeWIR layout comparison
+now use the shared recursive `CarrierElement` relation for whole `&List(T)`
+views. The root must be a retained list, and every nested managed edge must
+have the checked owned slot, RC header, and retain/clone/release behavior.
+This supersedes the historical third-shell refusal above without changing its
+recorded evidence for the exact two-shell case. A temporary depth-three smoke
+computed `7 * 10 + 9 + 2 = 81`; admitted Wasm printed 81 and parity agreed
+with the canonical interpreter. This is an implementation smoke, not acceptance
+evidence: no durable witness or zero-leak audit covers the new depth. Row G
+remains partial.
+
 Row G whole-root scalar-list expansion (implemented but unverified,
 2026-09-24): the compiler now recognizes exact `&List(List(S))` for
 `S = Float`, `Bool`, or `Duration` through the shared source predicate,
