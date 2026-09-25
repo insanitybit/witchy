@@ -167,7 +167,8 @@ fn gate_nextest_example_tests_only_is_not_workspace() {
 
 #[test]
 fn compiler_edit_loop_runs_one_example_slice_and_landing_runs_all() {
-    let sliced = selected(&["--edit-loop", "crates/witchy-types/src/typeck.rs"]);
+    let changed = "crates/witchy-lower/src/codegen/mod.rs";
+    let sliced = selected(&["--edit-loop", changed]);
     assert!(
         sliced.iter().any(|c| c.contains("--partition hash:1/8")
             && c.contains("test(/^example_tests::/)")),
@@ -175,7 +176,7 @@ fn compiler_edit_loop_runs_one_example_slice_and_landing_runs_all() {
     );
     let output = Command::new("bash")
         .arg(workspace_root().join("scripts/test-for-paths.sh"))
-        .args(["--edit-loop", "crates/witchy-types/src/typeck.rs"])
+        .args(["--edit-loop", changed])
         .env("WITCHY_EDIT_EXAMPLES", "full")
         .output()
         .expect("run test-for-paths.sh");
@@ -184,7 +185,7 @@ fn compiler_edit_loop_runs_one_example_slice_and_landing_runs_all() {
         full.contains("test(/^example_tests::/)") && !full.contains("--partition"),
         "WITCHY_EDIT_EXAMPLES=full did not restore the complete matrix: {full}",
     );
-    let landing = gate_nextest(&["crates/witchy-types/src/typeck.rs"]);
+    let landing = gate_nextest(&[changed]);
     assert!(!landing.contains("--partition"), "landing gate sliced the examples: {landing}");
 }
 
@@ -386,6 +387,12 @@ fn gate_nextest_types_only_is_not_unfiltered_workspace() {
         !output.contains("--workspace") && !output.contains("WORKSPACE"),
         "types-only gate mapping fell back to the full workspace: {output}",
     );
+    for heavy in ["-p witchy ", "witchy-wir", "witchy-lower"] {
+        assert!(
+            !output.contains(heavy),
+            "types-only gate crossed into native conformance via {heavy}: {output}",
+        );
+    }
 }
 
 #[test]
@@ -1702,27 +1709,20 @@ fn focused_mode_retains_crate_nextest_checks() {
     let commands = selected_focused(&["crates/witchy-syntax/src/parser.rs"]);
     assert_eq!(
         commands,
-        [
-            "cargo nextest run -p witchy-syntax",
-            "./scripts/nextest-admitted.sh witchy -- cargo nextest run -E 'test(/^example_tests::/)'",
-        ]
+        ["cargo nextest run -p witchy-syntax -p witchy-types"]
     );
 }
 
-/// Master broke on 2026-08-27 because an async-lowering change in
-/// `witchy-types` gated GREEN over 1,068 tests in 15.4s without ever running
-/// `rfc0130_generator`, whose owned-frame census the change invalidated. A
-/// single-crate selection cannot see a cross-pipeline conformance suite, so a
-/// compiler-stage change must always pull them in. They are cheap -- most
-/// average about a second.
+/// Stages that emit, admit, or execute Wasm keep native cross-pipeline
+/// conformance. Syntax/type edits stop at the checker boundary: selecting one
+/// of these root targets costs the Wasmtime/AWS-LC build before its cheap test
+/// body can run, while full CI still owns the complete conformance campaign.
 #[test]
 fn gate_nextest_compiler_stage_changes_select_rfc_conformance_binaries() {
     for path in [
-        "crates/witchy-types/src/typed_async_lowering.rs",
         "crates/witchy-lower/src/codegen/mod.rs",
         "crates/witchy-wir/src/lib.rs",
         "crates/witchy-runtime/src/runtime.rs",
-        "crates/witchy-syntax/src/linker.rs",
         "crates/witchy-interp/src/typed_async.rs",
     ] {
         let out = gate_nextest(&[path]);
@@ -1764,7 +1764,6 @@ fn a_deleted_integration_test_selects_the_budget_census_not_its_own_binary() {
 fn gate_nextest_compiler_stage_changes_select_semantic_conformance() {
     for path in [
         "crates/witchy-wir/src/canonical_safewir/check/memory.rs",
-        "crates/witchy-types/src/typeck.rs",
         "crates/witchy-lower/src/codegen/mod.rs",
     ] {
         let out = gate_nextest(&[path]);
@@ -1942,7 +1941,7 @@ fn gate_never_names_the_lib_of_a_crate_without_lib_tests() {
     // false` crate: one full compile of a 40-100k-line compiler crate each.
     // An all-disabled compiler selection names every integration test without
     // `--lib`, avoiding both empty lib copies and unrelated examples.
-    let compiler = gate_nextest(&["crates/witchy-types/src/typeck.rs"]);
+    let compiler = gate_nextest(&["crates/witchy-lower/src/codegen/mod.rs"]);
     let selection = compiler.lines().next().unwrap_or_default();
     assert!(!selection.contains("--lib"), "compiler selection names an empty lib: {compiler}");
     for target in ["typeck", "codegen", "safewir_checked_source"] {
@@ -2047,8 +2046,7 @@ fn a_compiler_crate_change_runs_its_downstream_compiler_crates_tests() {
     // green on witchy-wir's own tests alone, and left master red on
     // `canonical_pipeline::tests::mixed_var_list_write_back_origins_fail_closed`.
     for (changed, downstream) in [
-        ("crates/witchy-syntax/src/lib.rs", &["witchy-types", "witchy-wir", "witchy-lower"][..]),
-        ("crates/witchy-types/src/lib.rs", &["witchy-lower"][..]),
+        ("crates/witchy-syntax/src/lib.rs", &["witchy-types"][..]),
         ("crates/witchy-wir/src/canonical_safewir/check.rs", &["witchy-lower"][..]),
     ] {
         let output = gate_nextest(&[changed]);
@@ -2056,6 +2054,16 @@ fn a_compiler_crate_change_runs_its_downstream_compiler_crates_tests() {
             assert!(
                 output.contains(&format!("package({crate_name})")),
                 "{changed} does not run {crate_name}'s tests: {output}",
+            );
+        }
+    }
+
+    for changed in ["crates/witchy-syntax/src/lib.rs", "crates/witchy-types/src/lib.rs"] {
+        let output = gate_nextest(&[changed]);
+        for native in ["package(witchy-wir)", "package(witchy-lower)", "-p witchy "] {
+            assert!(
+                !output.contains(native),
+                "{changed} crossed the front-end gate boundary via {native}: {output}",
             );
         }
     }
@@ -2093,13 +2101,13 @@ fn wir_changes_compile_production_runtime_without_selecting_its_native_test_pack
 
 /// The RFC-pinned example modules (`example_tests::rfc0*`) are language
 /// contracts -- what an RFC admits and refuses -- living in the `witchy` bin.
-/// A compiler-stage change must run them at the gate and in the edit loop:
-/// two view-carrier changes gated green without them and left master red on
-/// two refusal pins (2026-09-22).
+/// Stages that emit or admit Wasm must run them at the gate and in the edit
+/// loop: two view-carrier changes gated green without them and left master red
+/// on two refusal pins (2026-09-22). Front-end-only edits stop at the checker
+/// to avoid compiling the native runtime graph.
 #[test]
 fn compiler_stage_changes_run_the_rfc_pinned_example_modules() {
     for changed in [
-        "crates/witchy-types/src/pipeline.rs",
         "crates/witchy-lower/src/canonical_lower.rs",
         "crates/witchy-wir/src/canonical_wasmir.rs",
     ] {

@@ -534,8 +534,8 @@ fn types_only_batch_classifies_a_focused_nextest_selection() {
         "types-only batch did not select the crate package: {env}",
     );
     assert!(
-        // The RFC-pinned modules (`example_tests::rfc0*`) run for every
-        // compiler-stage change; the whole matrix must not.
+        // Front-end edits stop at the checker boundary; the whole example
+        // matrix must not ride along and pull in native conformance.
         !env.contains("test(/^example_tests::/)"),
         "types-only batch still auto-attached the example_tests matrix: {env}",
     );

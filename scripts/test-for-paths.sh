@@ -77,9 +77,9 @@ add_early() { local c="$1"; local x; for x in ${early_cmds[0]+"${early_cmds[@]}"
 # `-p witchy` makes cargo BUILD all 24 of the package's test binaries, while
 # the expression then runs only the ~15 the diff selected. Timed back to back
 # after `touch src/lib.rs`: building all 24 takes 63s, building just the
-# rfc0* 15 takes 24s -- so a compiler-stage gate spends ~39s per attempt
+# rfc0* 15 takes 24s -- so a native conformance gate spends ~39s per attempt
 # compiling and linking binaries it will filter out at runtime, against a
-# ~166s median gate.
+# ~166s median gate. Front-end-only routes below now stop before this graph.
 #
 # The obvious fix (emit `--test rfc0NNN` instead of `-p witchy`) is WRONG for
 # the reason above, and the failure is silent: measured on the same tree,
@@ -181,12 +181,11 @@ emit_gate_nextest() {
             expr="${expr:+$expr or }test(/^example_tests::${m}::/)"
         done
     fi
-    # RFC conformance binaries adjudicate semantics ACROSS the pipeline, which
-    # is precisely what a single-crate selection cannot see. Master broke on
-    # 2026-08-27 because an async-lowering change in witchy-types gated green
-    # over 1,068 tests in 15.4s without ever running rfc0130_generator, whose
-    # owned-frame census the change invalidated. They are cheap -- most average
-    # about a second -- so a compiler-stage change always runs them.
+    # RFC conformance binaries adjudicate semantics ACROSS the native pipeline,
+    # which is precisely what a single-crate selection cannot see. Keep them on
+    # stages that emit, admit, or execute Wasm. Syntax/type routes deliberately
+    # stop at the checker: the test bodies are cheap, but linking their root
+    # targets pulls Wasmtime and AWS-LC. Full CI retains the complete campaign.
     if [ "$gate_need_conformance" -eq 1 ]; then
         need_witchy=1
         expr="${expr:+$expr or }binary_id(/^witchy::rfc0/)"
@@ -634,18 +633,14 @@ for p in "${paths[@]}"; do
             add "./scripts/nextest-admitted.sh witchy -- cargo nextest run -E 'test(/^example_tests::/)'" ;;
         crates/witchy-types/*)
             any_rust=1
-            gate_need_conformance=1
             add_pkg witchy-types
-            # RFC-0170 put the checked-source contract below both the checker
-            # and SafeWIR. WIR no longer consumes witchy-types, even in its test
-            # graph, so selecting its eleven integration binaries here defeats
-            # the dependency cut without observing the checker edit. The lower
-            # crate remains downstream of types and owns the moved real-source
-            # SafeWIR cases in safewir_checked_source.rs, as well as the
-            # canonical-pipeline admission regressions that caught bd239ce55.
-            add_pkg witchy-lower
+            # Keep ordinary checker edits on the target-neutral front end.
+            # Lower/root conformance pulls Wasmtime and AWS-LC before running
+            # a test; those cross-pipeline campaigns remain selected by lower,
+            # WIR, runtime, canonical-contract, and full-CI changes. The types
+            # integration binary carries the checker's executable judgments.
             add "cargo nextest run -p witchy-types"
-            add "./scripts/nextest-admitted.sh witchy -- cargo nextest run -E 'test(/^example_tests::/)'" ;;
+            ;;
         crates/witchy-lower/*)
             any_rust=1
             gate_need_conformance=1
@@ -687,18 +682,12 @@ for p in "${paths[@]}"; do
             ;;
         crates/witchy-syntax/*)
             any_rust=1
-            gate_need_conformance=1
             add_pkg witchy-syntax
-            # Downstream compiler crates consume this one, and their own tests
-            # (e.g. witchy-lower's canonical_pipeline admission tests) observe a
-            # change here that this crate's tests cannot. bd239ce55 changed the
-            # checker in witchy-wir, gated green without witchy-lower's tests,
-            # and left master red on one of them.
+            # Syntax changes are observed immediately by the checker, without
+            # crossing into lower/WIR/root's Wasmtime and AWS-LC graph.
             add_pkg witchy-types
-            add_pkg witchy-wir
-            add_pkg witchy-lower
-            add "cargo nextest run -p witchy-syntax"
-            add "./scripts/nextest-admitted.sh witchy -- cargo nextest run -E 'test(/^example_tests::/)'" ;;
+            add "cargo nextest run -p witchy-syntax -p witchy-types"
+            ;;
         crates/witchy-interp/* | crates/witchy-caps/*)
             any_rust=1
             gate_need_conformance=1
