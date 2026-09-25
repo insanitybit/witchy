@@ -1937,58 +1937,41 @@ fn script_rules_gate_on_the_binary_their_focused_check_names() {
 
 
 #[test]
-fn gate_names_every_target_of_every_selected_package() {
-    // `--test` is a GLOBAL target filter, so naming only the root binaries an
-    // expression needs silently drops each crate package's own tests (803 ->
-    // 160, reported green). Naming EVERY target of every selected package is
-    // sound because filters union. This pins the complete set for a typeck
-    // change against the filesystem, so a new integration test file cannot be
-    // left out of the gate by a stale list.
-    let output = gate_nextest(&["crates/witchy-types/src/typeck.rs"]);
-    let selection = output.lines().next().unwrap_or_default();
-    let words: Vec<&str> = selection.split_whitespace().collect();
-    let named = |target: &str| words.windows(2).any(|pair| pair == ["--test", target]);
-    assert!(words.contains(&"--lib"), "unit tests dropped: {output}");
-    let root = workspace_root();
-    for (dir, keep) in [("crates/witchy-types/tests", "" ), ("tests", "rfc0")] {
-        for entry in std::fs::read_dir(root.join(dir)).expect("list tests") {
-            let path = entry.expect("dir entry").path();
-            if path.extension().is_none_or(|extension| extension != "rs") { continue; }
-            let name = path.file_stem().unwrap().to_string_lossy().into_owned();
-            if !name.starts_with(keep) { continue; }
-            assert!(named(&name), "{dir}/{name}.rs is not built by the gate: {output}");
-        }
+fn gate_never_names_the_lib_of_a_crate_without_lib_tests() {
+    // An explicit `--lib` compiles the empty cfg(test) copy of a `[lib] test =
+    // false` crate: one full compile of a 40-100k-line compiler crate each.
+    // Such selections take the whole-package form, which honors `test = false`
+    // and still builds every integration test of every selected package.
+    for path in [
+        "crates/witchy-types/src/typeck.rs",
+        "crates/witchy-runtime/src/lib.rs",
+        "crates/witchy-canonical-source/src/lib.rs",
+    ] {
+        let output = gate_nextest(&[path]);
+        let selection = output.lines().next().unwrap_or_default();
+        let words: Vec<&str> = selection.split_whitespace().collect();
+        assert!(words.contains(&"witchy-types"), "{path} no longer selects witchy-types: {output}");
+        assert!(!words.contains(&"--lib"), "{path} compiles a test = false lib: {output}");
+        assert!(!words.contains(&"--test"), "{path} narrowed the target set: {output}");
     }
-    assert!(named("misc"), "semantic_conformance lives in misc: {output}");
-    assert!(!named("glamour") && !named("e2e"), "feature-gated targets named: {output}");
 }
 
 #[test]
-fn repository_contracts_do_not_disable_named_compiler_targets() {
-    // repo-tests lives under tools/, not crates/. Treating every workspace
-    // package as crates/<name> made this sound target-union optimization fail
-    // closed to whole packages. A compiler + std + contract batch then linked
-    // every root integration binary even though the expression ran a subset.
+fn repository_contracts_select_their_tool_package() {
+    // repo-tests lives under tools/, not crates/. The batch includes
+    // witchy-types (`[lib] test = false`), so it takes the whole-package form:
+    // naming `--lib` would compile the compiler crates' empty cfg(test) copies,
+    // which costs more than linking the few root binaries the named form skips.
     let output = gate_nextest(&[
         "crates/witchy-types/src/typeck.rs",
         "std/dict.witchy",
         "tools/repo-tests/tests/repo_hygiene/architecture.rs",
     ]);
     let selection = output.lines().next().unwrap_or_default();
-    for required in [
-        "--lib",
-        "--test typeck",
-        "--test repo_hygiene",
-        "--bin witchy",
-        "--test misc",
-    ] {
-        assert!(
-            selection.contains(required),
-            "named target union omitted {required}: {output}",
-        );
+    for required in ["-p witchy-types", "-p repo-tests", "-p witchy"] {
+        assert!(selection.contains(required), "batch omitted {required}: {output}");
     }
-    assert_eq!(selection.matches("--bin witchy").count(), 1, "{output}");
-    assert_eq!(selection.matches("--test misc").count(), 1, "{output}");
+    assert!(!selection.contains("--lib"), "batch compiles a test = false lib: {output}");
 }
 
 #[test]

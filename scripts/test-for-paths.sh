@@ -289,6 +289,10 @@ emit_gate_nextest() {
     #   - a crate has a bin or explicit [[test]]/[[bin]]/auto* targets, which
     #     `--lib` + `tests/*.rs` would silently miss
     #   - a package directory cannot be resolved
+    #   - a crate sets `[lib] test = false`: an explicit `--lib` still compiles
+    #     its (empty) cfg(test) copy, one full compile of a 40-100k-line
+    #     compiler crate per selected crate. The whole-package form skips it
+    #     and adds only the few root tests/*.rs binaries not named here.
     # The root bin is safe in the explicit target union: `--bin witchy` joins
     # every selected package's named lib/test targets instead of replacing
     # them. Free-form root test names still fail safe unless they are known
@@ -301,7 +305,8 @@ emit_gate_nextest() {
         for pkg in "${gate_pkgs[@]}"; do
             dir="$(gate_package_dir "$pkg")"
             if [ ! -f "$dir/Cargo.toml" ] || [ -e "$dir/src/main.rs" ] || [ -d "$dir/src/bin" ] \
-                || grep -qE '^\[\[(test|bin|bench|example)\]\]|^auto(tests|bins)' "$dir/Cargo.toml"; then
+                || grep -qE '^\[\[(test|bin|bench|example)\]\]|^auto(tests|bins)' "$dir/Cargo.toml" \
+                || sed -n '/^\[lib\]/,/^\[/p' "$dir/Cargo.toml" | grep -qE '^test *= *false'; then
                 name_targets=0
                 break
             fi
@@ -331,6 +336,10 @@ emit_gate_nextest() {
                 break
             fi
         done
+    fi
+    # The std-roots pin above adds `-p witchy-types` outside gate_pkgs.
+    if [ "$name_targets" -eq 1 ] && [[ " $args " == *" -p witchy-types "* ]]; then
+        name_targets=0
     fi
     if [ "$name_targets" -eq 1 ]; then
         if [ "$gate_need_examples" -eq 1 ] \
