@@ -1545,6 +1545,8 @@ runtime interpolation. Item-hole placement is structural. Directly supplied
 compiler-owned expression, type, and pattern values retain their AST. Every
 quote retains its enclosing template AST across hole substitution; typed
 builders retain their compiler-owned children as well.
+The structural `meta.expr_if`, `meta.expr_for`, and `meta.expr_while` builders
+retain sealed expression and block children; the loop binder is also sealed.
 `quote type:` covers named, generic, module-qualified, tuple, function,
 ownership-qualified, capability-right, anonymous structural, and reference
 types.

@@ -134,6 +134,8 @@ then/optional else blocks; source-backed syntax handles are refused.
 `meta.expr_for` builds a loop from a compiler-owned binding, iterator
 expression, and body block. Source-backed handles and call-site binders are
 refused.
+`meta.expr_while` builds a loop from compiler-owned condition and body handles;
+source-backed handles are refused.
 These compiler paths still await end-to-end runtime and leak evidence.
 
 Pattern templates follow the same rule. The compatibility-built `1` pattern is

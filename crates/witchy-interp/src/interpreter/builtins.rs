@@ -1363,6 +1363,18 @@ impl Interpreter {
                 }
                 _ => err("meta.expr_for expects Ident, ExprSyntax, and BlockSyntax"),
             },
+            name if intrinsics::is_meta_expr_while(name) => match args {
+                [cond, body] => {
+                    if self.fresh_ident_scope.is_none() {
+                        return err("meta.expr_while is available only during compile-time expansion");
+                    }
+                    let cond = compiler_expr_syntax_value(cond, &self.compiler_expr_syntax)?;
+                    let body = compiler_block_syntax_value(body, &self.compiler_block_syntax)?;
+                    let expr = Expr::While { cond: Box::new(cond), body };
+                    Ok(Some(self.store_compiler_expr_syntax("expression-while", expr, Vec::new())?))
+                }
+                _ => err("meta.expr_while expects ExprSyntax and BlockSyntax"),
+            },
             name if intrinsics::is_meta_expr_await(name) => match args {
                 [value] => {
                     if self.fresh_ident_scope.is_none() {

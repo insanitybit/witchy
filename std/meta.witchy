@@ -433,6 +433,12 @@ pub fn expr_for(binding: Ident, iter: ExprSyntax, body: BlockSyntax) -> ExprSynt
 fn __meta_expr_for(binding: Ident, iter: ExprSyntax, body: BlockSyntax) -> ExprSyntax:
     __meta_expr_for(binding, iter, body)
 
+pub fn expr_while(cond: ExprSyntax, body: BlockSyntax) -> ExprSyntax:
+    __meta_expr_while(cond, body)
+
+fn __meta_expr_while(cond: ExprSyntax, body: BlockSyntax) -> ExprSyntax:
+    __meta_expr_while(cond, body)
+
 // The generated function is checked as async before this suspension is lowered.
 pub fn expr_await(value: ExprSyntax) -> ExprSyntax:
     __meta_expr_await(value)
