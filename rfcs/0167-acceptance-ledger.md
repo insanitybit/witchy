@@ -68,6 +68,16 @@ found no authority widening. No new admitted Wasm, zero-leak evidence, or
 A–O closure is claimed. The five existing `List(&Int)` positive and negative
 smoke cases passed on this branch.
 
+Row K closure owner-family identity (architecture implemented, semantic
+evidence unchanged, 2026-09-25): opaque closure owner IDs now derive from a
+bounded typed encoding of the normalized callable signature, checked capture
+witness variants, and each capture's owner-storage class. The catalog refuses
+truncated-ID collisions before WIR construction. Closure and opaque aggregate
+environment ABI keys use their corresponding typed family digests instead of
+debug-formatted source types. This preserves the physical closure layout and
+its checked witness authority; admitted Wasm, zero-leak evidence, and A–O
+status remain unchanged.
+
 Row G aggregate owner-family identity (architecture implemented, semantic
 evidence unchanged, 2026-09-25): opaque aggregate owner IDs now derive from
 a bounded, versioned typed encoding of the normalized checked source type,

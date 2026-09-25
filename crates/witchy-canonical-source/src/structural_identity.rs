@@ -1,4 +1,4 @@
-//! Bounded, typed identities for checked aggregate owner families.
+//! Bounded, typed identities for checked owner families.
 //!
 //! The source name alone cannot identify an owner's storage: instantiated
 //! fields, constructor order, and qualifiers all participate in the key.
@@ -43,6 +43,45 @@ impl AggregateOwnerKey<'_> {
             encoder.text(&variant.name)?;
             encoder.count(variant.first_field)?;
             encoder.count(variant.arity)?;
+        }
+        if encoder.bytes.len() > 1_048_576 {
+            return None;
+        }
+        Some(*blake3::hash(&encoder.bytes).as_bytes())
+    }
+}
+
+/// One normalized callable family and its checked capture witness variants.
+/// The corresponding owner-field classes are chosen by the layout catalog
+/// from the same final opaque-family membership used for physical storage.
+pub struct ClosureOwnerKey<'a> {
+    pub signature: &'a Type,
+    pub variants: &'a [(u32, Vec<Type>)],
+    pub owner_fields: &'a [Vec<bool>],
+}
+
+impl ClosureOwnerKey<'_> {
+    pub fn digest(&self) -> Option<[u8; 32]> {
+        if self.variants.len() > 4_096 || self.owner_fields.len() != self.variants.len() {
+            return None;
+        }
+        let mut encoder = Encoder {
+            bytes: b"witchy/closure-owner-key/v1\0".to_vec(),
+            remaining: 4_096,
+        };
+        encoder.ty(self.signature, 0)?;
+        encoder.count(self.variants.len())?;
+        // The sequence fixes physical tag order. Global witness indices are
+        // checked elsewhere and do not change this family's storage shape.
+        for ((_, fields), owner_fields) in self.variants.iter().zip(self.owner_fields) {
+            if fields.len() > 4_096 || owner_fields.len() != fields.len() {
+                return None;
+            }
+            encoder.count(fields.len())?;
+            for (field, owner_field) in fields.iter().zip(owner_fields) {
+                encoder.ty(field, 0)?;
+                encoder.byte(u8::from(*owner_field));
+            }
         }
         if encoder.bytes.len() > 1_048_576 {
             return None;

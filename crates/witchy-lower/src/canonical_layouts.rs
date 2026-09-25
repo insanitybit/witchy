@@ -16,7 +16,7 @@ use witchy_canonical_source::aggregates::{
 use witchy_canonical_source::abi::CanonicalScalarKind;
 use witchy_canonical_source::carrier::CarrierElement;
 use witchy_canonical_source::storage::StoragePlan;
-use witchy_canonical_source::structural_identity::AggregateOwnerKey;
+use witchy_canonical_source::structural_identity::{AggregateOwnerKey, ClosureOwnerKey};
 use witchy_syntax::ast::{self, Item, Type, TypeDef};
 use witchy_types::pipeline::CanonicalCheckedSource;
 use witchy_types::typeck;
@@ -771,12 +771,28 @@ impl LayoutProjection {
             }
         }
         let mut owner_types = HashMap::new();
-        for (ordinal, (signature, _)) in closure_specs.iter().enumerate() {
+        let mut closure_family_keys = HashMap::new();
+        let mut allocated_closure_ids = HashSet::new();
+        for (signature, variants) in &closure_specs {
+            let owner_fields = variants.iter().map(|(_, fields)| {
+                fields.iter().map(|field| {
+                    witchy_canonical_source::capabilities::representation(field, &self.definitions).is_some()
+                        || type_has_opaque_owner_membership(
+                            field, &self.definitions,
+                            |key| opaque_signatures.contains(key),
+                            |key| opaque_aggregates.contains(key),
+                        )
+                }).collect::<Vec<_>>()
+            }).collect::<Vec<_>>();
+            let digest = ClosureOwnerKey { signature, variants, owner_fields: &owner_fields }.digest()
+                .ok_or_else(|| CanonicalLayoutError::InvalidLayout("closure identity exceeds bounds".into()))?;
+            closure_family_keys.insert(signature.clone(), digest);
             if opaque_signatures.contains(signature) {
-                let id = u32::try_from(ordinal).ok().and_then(|n| n.checked_mul(2))
-                    .and_then(|n| n.checked_add(0xc100_0000))
-                    .filter(|n| *n < 0xc200_0000)
-                    .ok_or_else(|| CanonicalLayoutError::InvalidLayout("opaque closure type overflow".into()))?;
+                let lower = u32::from_le_bytes([digest[0], digest[1], digest[2], digest[3]]);
+                let id = 0xc100_0000 | ((lower & 0x007f_ffff) << 1);
+                if !allocated_closure_ids.insert(id) {
+                    return Err(CanonicalLayoutError::InvalidLayout("opaque closure owner ID collision".into()));
+                }
                 owner_types.insert(signature.clone(), GcTypeId::new(id));
             }
         }
@@ -784,6 +800,7 @@ impl LayoutProjection {
             .filter(|(source, _)| opaque_aggregates.contains(source))
             .collect::<Vec<_>>();
         let mut aggregate_owner_types = HashMap::new();
+        let mut aggregate_family_keys = HashMap::new();
         let mut allocated_aggregate_ids = HashSet::new();
         for (source, shape) in &opaque_aggregate_specs {
             let owner_fields = shape.fields.iter().map(|field| {
@@ -796,6 +813,7 @@ impl LayoutProjection {
             }).collect::<Vec<_>>();
             let digest = AggregateOwnerKey { source, shape, owner_fields: &owner_fields }.digest()
                 .ok_or_else(|| CanonicalLayoutError::InvalidLayout("opaque aggregate identity exceeds bounds".into()))?;
+            aggregate_family_keys.insert(source.clone(), digest);
             let lower = u32::from_le_bytes([digest[0], digest[1], digest[2], digest[3]]);
             let id = 0xc200_0000 | ((lower & 0x007f_ffff) << 1);
             if !allocated_aggregate_ids.insert(id) {
@@ -805,11 +823,9 @@ impl LayoutProjection {
         }
         let mut closure_environments = HashMap::new();
         for (signature, _) in &closure_specs {
-            let key = format!("{:?}", canonical_closure_key(signature, &self.definitions));
             let mut digest = Sha256::new();
-            digest.update(b"witchy/canonical-layout/closure-environment-v1\0");
-            digest.update((key.len() as u64).to_le_bytes());
-            digest.update(key.as_bytes());
+            digest.update(b"witchy/canonical-layout/closure-environment-v2\0");
+            digest.update(closure_family_keys[signature]);
             let environment = interner.intern_opaque_nominal(digest.finalize().into())
                 .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?;
             closure_environments.insert(signature.clone(), environment);
@@ -822,11 +838,9 @@ impl LayoutProjection {
         }
         let mut aggregate_environments = HashMap::new();
         for (source, _) in &opaque_aggregate_specs {
-            let key = format!("{source:?}");
             let mut digest = Sha256::new();
-            digest.update(b"witchy/canonical-layout/opaque-aggregate-environment-v1\0");
-            digest.update((key.len() as u64).to_le_bytes());
-            digest.update(key.as_bytes());
+            digest.update(b"witchy/canonical-layout/opaque-aggregate-environment-v2\0");
+            digest.update(aggregate_family_keys[source]);
             let environment = interner.intern_opaque_nominal(digest.finalize().into())
                 .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?;
             aggregate_environments.insert(source.clone(), environment);
