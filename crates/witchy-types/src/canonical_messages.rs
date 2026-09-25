@@ -17,10 +17,14 @@ fn variant(index: usize) -> String { format!("{PAYLOAD}_{index}") }
 /// Only source-bearing checked linking calls this. All old expression facts
 /// are consumed before structural mutation; the caller derives final witnesses
 /// from the fallibly rechecked result, retaining source bytes and loader owners.
+///
+/// The flag reports whether any message site was rewritten. Without one the
+/// typed module is returned untouched: nothing was pruned or retained, so no
+/// post-message specialization can be pending.
 pub(crate) fn prepare(
     typed: TypedModule,
     catalog: Option<&RuntimeDeclarationCatalog>,
-) -> Result<TypedModule, String> {
+) -> Result<(TypedModule, bool), String> {
     let scope = witchy_canonical_source::scope::canonical_scope(typed.module());
     // Match the existing callable witness's runtime inventory exactly. Entry
     // libraries retain generic templates in canonical_scope, but templates
@@ -79,7 +83,7 @@ pub(crate) fn prepare(
             Ok(())
         })?;
     }
-    if sites.is_empty() { return Ok(typed); }
+    if sites.is_empty() { return Ok((typed, false)); }
     // Generated names are source-unspellable; also reject collisions in any
     // compiler input rather than treating a matching name as authority.
     for item in &typed.module().items {
@@ -156,7 +160,9 @@ pub(crate) fn prepare(
             _ => return Err("canonical messages require a monomorphized executable module".into()),
         }
     }
-    typeck::annotate_checked(module).map_err(|error| format!("canonical message recheck: {error}"))
+    typeck::annotate_checked(module)
+        .map(|typed| (typed, true))
+        .map_err(|error| format!("canonical message recheck: {error}"))
 }
 
 /// The fresh checker sees only the pruned module produced by message rewriting.

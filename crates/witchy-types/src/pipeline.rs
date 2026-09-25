@@ -1239,10 +1239,12 @@ fn finish_canonical_source(
     }).collect::<HashSet<_>>();
     // Ownership is taken only from this checked link, never from a catalog
     // supplied at the plan's use site or a cache keyed by source shape.
+    let messages_rewritten;
     let dynamic_runtime_plan = if checked.module_owners.is_some() {
         let runtime_catalog = checked.runtime_declaration_catalog()?;
-        typed_source = crate::canonical_messages::prepare(typed_source, Some(&runtime_catalog))
-            .map_err(|message| PipelineError::Type(TypeError { message }))?;
+        (typed_source, messages_rewritten) =
+            crate::canonical_messages::prepare(typed_source, Some(&runtime_catalog))
+                .map_err(|message| PipelineError::Type(TypeError { message }))?;
         let plan = crate::existential::build_dynamic_runtime_plan(
             &typed_source,
             &witness_catalog,
@@ -1256,7 +1258,7 @@ fn finish_canonical_source(
         ).map_err(|message| PipelineError::Type(TypeError { message }))?;
         Some(plan)
     } else {
-        typed_source = crate::canonical_messages::prepare(typed_source, None)
+        (typed_source, messages_rewritten) = crate::canonical_messages::prepare(typed_source, None)
             .map_err(|message| PipelineError::Type(TypeError { message }))?;
         crate::existential::build_dynamic_runtime_plan_inner(
             &typed_source,
@@ -1266,7 +1268,13 @@ fn finish_canonical_source(
         None
     };
 
-    typed_source = specialize_message_prepared_callables(typed_source, &mut preparation)?;
+    // Only a message rewrite can retain a callable that the specialization in
+    // `canonicalize_callable_instances` has not already reached. Without one,
+    // the rerun re-derives the module it is given (no new body, no new
+    // identity) at the cost of two whole-module typechecks.
+    if messages_rewritten {
+        typed_source = specialize_message_prepared_callables(typed_source, &mut preparation)?;
+    }
 
     let (prepared_traits, _) = crate::existential::prepare_closed_traits(
         typed_source, &witness_catalog,
