@@ -85,16 +85,16 @@ until it has a separate checked witness. No hand-computed result, admitted
 unoptimized Wasm run, or zero-leak audit has been recorded for the new
 scalar cases, so this expansion closes no additional acceptance gap yet.
 
-Row G Option/List RecordRoot expansion (implemented but unverified,
-2026-09-24): exact `&Option(List(S))` for direct unqualified
-`S = Int`, `Float`, `Bool`, `Duration`, or `String` now has one shared
-checked/source ABI identity for the retained outer Option and its owned List
-child. SafeWIR's Required-header List guard must land first: its layout walk
-reaches the owned child and otherwise could accept an elided header. Existing
-RecordRoot identity bytes are unchanged. Qualified, nested,
-and owner-bearing List elements remain outside the exact admission predicate.
-No hand-computed result, admitted unoptimized Wasm run, or zero-leak audit has
-been recorded for this new family; row G remains open.
+Row G direct List-child RecordRoot expansion (implemented but unverified,
+2026-09-24): eligible non-packed `Option`, `Result`, and declared user roots
+now share a checked/source ABI identity node for an exact direct `List(S)`
+child, with unqualified `S = Int`, `Float`, `Bool`, `Duration`, or `String`.
+`&Option(List(Int))` is one instance. SafeWIR's Required-header List guard
+must land first: its layout walk reaches the owned child and otherwise could
+accept an elided header. Existing RecordRoot identity bytes are unchanged.
+Qualified, nested, and owner-bearing List elements remain outside the exact
+admission predicate. No hand-computed result, admitted unoptimized Wasm run,
+or zero-leak audit has been recorded for this new family; row G remains open.
 
 At `adf1d01c7` (2026-09-18), the integrated core smoke was **42/42 passed**: rooted views (13), unique/write-back (12), normal/opt interoperation (2), resource composition (5), and optimization readiness (10). This is core canonical-route evidence only; it does not include the source interpreter, full, end-to-end, or examples suites.
 

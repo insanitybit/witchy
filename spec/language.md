@@ -1171,11 +1171,12 @@ its String child. The `Int` case has admitted Wasm and zero-leak evidence;
 the other scalar cases await that verification. Reordered or qualified fields
 and closure capture of these tuple views remain unsupported.
 
-An exact whole-root `&Option(List(S))` view is recognized for unqualified
-`S = Int`, `Float`, `Bool`, `Duration`, or `String`. The view retains the
-non-packed outer Option root, which owns its List child. Qualified, nested,
-or owner-bearing List elements have no admitted identity. These new cases
-await a hand-computed result, admitted Wasm execution, and a zero-leak audit.
+Eligible non-packed whole-root `Option`, `Result`, and declared user aggregate
+views can carry an exact direct `List(S)` child for unqualified `S = Int`,
+`Float`, `Bool`, `Duration`, or `String`. The retained outer root owns that
+List child. Qualified, nested, or owner-bearing List elements have no admitted
+identity. These new cases await hand-computed results, admitted Wasm execution,
+and zero-leak audits.
 
 ## 8. Generics and traits
 

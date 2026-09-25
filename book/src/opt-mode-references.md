@@ -174,10 +174,11 @@ child. The `Int` case has admitted Wasm and zero-leak evidence; the other
 scalar cases are implemented but await semantic and leak evidence. Reordered
 or qualified tuple fields and capturing such a view in a closure are refused.
 
-The compiler also recognizes exact `&Option(List(S))` for an unqualified
-`S = Int`, `Float`, `Bool`, `Duration`, or `String`. The outer Option keeps its
-owned List child alive. Qualified or nested List elements are refused; these
-new cases await admitted Wasm and leak evidence.
+Eligible non-packed `Option`, `Result`, and declared user aggregate roots can
+carry an exact direct `List(S)` child for unqualified `S = Int`, `Float`,
+`Bool`, `Duration`, or `String`; `&Option(List(Int))` is one example. The outer
+view retains its owned child. Qualified or nested List elements are refused;
+these new cases await admitted Wasm and leak evidence.
 
 The same rule applies to destructuring, field access, indexing, iteration,
 `Option`, `Result`, tuples, and supported nested aggregates: transport the
