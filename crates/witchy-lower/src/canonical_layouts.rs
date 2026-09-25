@@ -60,6 +60,9 @@ pub(crate) fn rooted_slice_owner_type(element: &str) -> Option<GcTypeId> {
         "Duration" => 0x8,
         "String" => 0xa,
         "List(Int)" => 0xc,
+        "List(Float)" => 0xe,
+        "List(Bool)" => 0x10,
+        "List(Duration)" => 0x12,
         _ => return None,
     };
     Some(GcTypeId::new(0xc300_0000 + offset))
@@ -71,11 +74,18 @@ pub(crate) fn rooted_int_slice_owner_type() -> GcTypeId {
 
 /// The admitted element name of a slice element type.
 pub(crate) fn rooted_slice_element_name(element: &Type) -> Option<&'static str> {
-    if matches!(element, Type::Named(name, arguments)
-        if name == "List" && matches!(arguments.as_slice(), [Type::Named(inner, inner_arguments)]
-            if inner == "Int" && inner_arguments.is_empty()))
+    if let Type::Named(name, arguments) = element
+        && name == "List"
+        && let [Type::Named(inner, inner_arguments)] = arguments.as_slice()
+        && inner_arguments.is_empty()
     {
-        return Some("List(Int)");
+        return match inner.as_str() {
+            "Int" => Some("List(Int)"),
+            "Float" => Some("List(Float)"),
+            "Bool" => Some("List(Bool)"),
+            "Duration" => Some("List(Duration)"),
+            _ => None,
+        };
     }
     let Type::Named(name, arguments) = element else { return None };
     if !arguments.is_empty() {
@@ -91,6 +101,9 @@ pub(crate) fn rooted_slice_element_type(element: &str) -> Option<Type> {
             Some(Type::Named(element.into(), Vec::new()))
         }
         "List(Int)" => Some(Type::Named("List".into(), vec![Type::Named("Int".into(), Vec::new())])),
+        "List(Float)" => Some(Type::Named("List".into(), vec![Type::Named("Float".into(), Vec::new())])),
+        "List(Bool)" => Some(Type::Named("List".into(), vec![Type::Named("Bool".into(), Vec::new())])),
+        "List(Duration)" => Some(Type::Named("List".into(), vec![Type::Named("Duration".into(), Vec::new())])),
         _ => None,
     }
 }

@@ -1074,7 +1074,8 @@ pub fn owner_carried_view_identity(ty: &Type) -> Option<Type> {
         }
         matches!(ty, Type::Named(name, arguments)
             if name == "List" && matches!(arguments.as_slice(), [Type::Named(inner, inner_arguments)]
-                if inner == "Int" && inner_arguments.is_empty()))
+                if inner_arguments.is_empty()
+                    && matches!(inner.as_str(), "Int" | "Float" | "Bool" | "Duration")))
             .then(|| ty.clone())
     };
     let payload = match &payload_of(inner) {

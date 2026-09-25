@@ -659,7 +659,7 @@ fn rooted_string_payload_key() -> CanonicalTypeKey {
 }
 
 /// The element of a `ListSliceRoot` carrier: one scalar kind carried inline,
-/// or an immutable String. An element that is itself an owner has none.
+/// immutable String, or an owned List of one exact inline scalar kind.
 fn slice_element_name_ty(element: &Ty) -> Option<&'static str> {
     match element {
         Ty::Int => Some("Int"),
@@ -668,16 +668,26 @@ fn slice_element_name_ty(element: &Ty) -> Option<&'static str> {
         Ty::Duration => Some("Duration"),
         Ty::String => Some("String"),
         Ty::List(inner) if matches!(inner.as_ref(), Ty::Int) => Some("List(Int)"),
+        Ty::List(inner) if matches!(inner.as_ref(), Ty::Float) => Some("List(Float)"),
+        Ty::List(inner) if matches!(inner.as_ref(), Ty::Bool) => Some("List(Bool)"),
+        Ty::List(inner) if matches!(inner.as_ref(), Ty::Duration) => Some("List(Duration)"),
         _ => None,
     }
 }
 
 fn slice_element_name_ast(element: &Type) -> Option<&'static str> {
-    if matches!(element, Type::Named(name, arguments)
-        if name == "List" && matches!(arguments.as_slice(), [Type::Named(inner, inner_arguments)]
-            if inner == "Int" && inner_arguments.is_empty()))
+    if let Type::Named(name, arguments) = element
+        && name == "List"
+        && let [Type::Named(inner, inner_arguments)] = arguments.as_slice()
+        && inner_arguments.is_empty()
     {
-        return Some("List(Int)");
+        return match inner.as_str() {
+            "Int" => Some("List(Int)"),
+            "Float" => Some("List(Float)"),
+            "Bool" => Some("List(Bool)"),
+            "Duration" => Some("List(Duration)"),
+            _ => None,
+        };
     }
     let Type::Named(name, arguments) = element else { return None };
     if !arguments.is_empty() {

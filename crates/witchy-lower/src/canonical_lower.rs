@@ -3290,7 +3290,8 @@ fn is_rooted_slice(ty: &Type) -> bool {
 }
 
 /// The admitted element of a `[T]` slice payload (`ListSliceRoot`): an exact
-/// scalar, String, or List(Int). Deeper and qualified owner elements refuse.
+/// scalar, String, or List of one exact inline scalar. Deeper and qualified
+/// owner elements refuse.
 fn rooted_slice_element(ty: &Type) -> Option<&'static str> {
     match ty.unqualified() {
         Type::Slice(element) => crate::canonical_layouts::rooted_slice_element_name(element),
@@ -3419,6 +3420,9 @@ fn checked_rooted_slice_element(ty: &Ty) -> Option<&'static str> {
         Ty::Duration => Some("Duration"),
         Ty::String => Some("String"),
         Ty::List(inner) if matches!(inner.as_ref(), Ty::Int) => Some("List(Int)"),
+        Ty::List(inner) if matches!(inner.as_ref(), Ty::Float) => Some("List(Float)"),
+        Ty::List(inner) if matches!(inner.as_ref(), Ty::Bool) => Some("List(Bool)"),
+        Ty::List(inner) if matches!(inner.as_ref(), Ty::Duration) => Some("List(Duration)"),
         _ => None,
     }
 }
@@ -4817,8 +4821,8 @@ impl<'a> FunctionLowerer<'a> {
     /// `xs[i]` on a `&[T]` view for a non-`Int` element: the index is checked
     /// against the slice's own length, offset by its checked start, and read
     /// from the retained backing root behind that root's own live bounds
-    /// check. A scalar element is the value; a String or List(Int) element is
-    /// a retained child reference.
+    /// check. A scalar element is the value; a String or admitted List(scalar)
+    /// element is a retained child reference.
     fn read_rooted_slice_element(
         &mut self,
         slice: ValueId,

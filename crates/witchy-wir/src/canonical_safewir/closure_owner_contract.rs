@@ -253,8 +253,11 @@ pub enum SharedSliceField {
 }
 
 /// The exact element names a rooted slice carrier admits: scalar kinds carried
-/// inline, or String and List(Int) behind owned pointer slots.
-pub const ROOTED_SLICE_ELEMENTS: [&str; 6] = ["Int", "Float", "Bool", "Duration", "String", "List(Int)"];
+/// inline, or String and exact List(scalar) children behind owned pointer slots.
+pub const ROOTED_SLICE_ELEMENTS: [&str; 9] = [
+    "Int", "Float", "Bool", "Duration", "String", "List(Int)",
+    "List(Float)", "List(Bool)", "List(Duration)",
+];
 
 /// The element name of an exact `&[T]` rooted slice source type, if `T` is an
 /// admitted slice element.
@@ -269,11 +272,18 @@ pub fn rooted_slice_element(source_type: &witchy_syntax::ast::Type) -> Option<&'
         witchy_syntax::ast::Type::Named(name, arguments) if name == "Slice" && arguments.len() == 1 => &arguments[0],
         _ => return None,
     };
-    if matches!(element, witchy_syntax::ast::Type::Named(name, arguments)
-        if name == "List" && matches!(arguments.as_slice(), [witchy_syntax::ast::Type::Named(inner, inner_arguments)]
-            if inner == "Int" && inner_arguments.is_empty()))
+    if let witchy_syntax::ast::Type::Named(name, arguments) = element
+        && name == "List"
+        && let [witchy_syntax::ast::Type::Named(inner, inner_arguments)] = arguments.as_slice()
+        && inner_arguments.is_empty()
     {
-        return Some("List(Int)");
+        return match inner.as_str() {
+            "Int" => Some("List(Int)"),
+            "Float" => Some("List(Float)"),
+            "Bool" => Some("List(Bool)"),
+            "Duration" => Some("List(Duration)"),
+            _ => None,
+        };
     }
     let witchy_syntax::ast::Type::Named(name, arguments) = element else { return None };
     if !arguments.is_empty() {
@@ -305,7 +315,14 @@ pub(crate) fn slice_element_layout_matches(
             };
             matches!(layouts.get(*byte).map(|descriptor| descriptor.kind()), Some(LayoutKind::Scalar(ScalarKind::RawByte)))
         }
-        "List(Int)" => {
+        "List(Int)" | "List(Float)" | "List(Bool)" | "List(Duration)" => {
+            let scalar = match name {
+                "List(Int)" => ScalarKind::Int,
+                "List(Float)" => ScalarKind::Float,
+                "List(Bool)" => ScalarKind::Bool,
+                "List(Duration)" => ScalarKind::Duration,
+                _ => unreachable!("matched exact nested scalar family"),
+            };
             let Some(LayoutKind::RuntimePointerValueSlot { pointee, semantics: PointerSlot::Owned }) = kind else {
                 return false;
             };
@@ -313,7 +330,8 @@ pub(crate) fn slice_element_layout_matches(
             let Some(LayoutKind::PackedList { element: inner, rc: RcHeader::Required }) = layouts.get(physical).map(|descriptor| descriptor.kind()) else {
                 return false;
             };
-            matches!(layouts.get(*inner).map(|descriptor| descriptor.kind()), Some(LayoutKind::Scalar(ScalarKind::Int)))
+            matches!(layouts.get(*inner).map(|descriptor| descriptor.kind()),
+                Some(LayoutKind::Scalar(actual)) if *actual == scalar)
         }
         _ => false,
     }
