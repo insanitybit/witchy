@@ -27,6 +27,7 @@ fn checked(source: &str) -> CheckedModule {
 /// Deliberately link only the exact canonical diagnostic ABIs. Unknown imports
 /// or mismatched signatures must still fail instantiation. These imports
 /// always terminate; a no-op host would conceal failed guards.
+#[cfg(feature = "native-test-runtime")]
 fn diagnostic_linker<T: 'static>(engine: &wasmtime::Engine) -> wasmtime::Linker<T> {
     let mut linker = wasmtime::Linker::new(engine);
     linker.func_wrap("witchy", "__witchy_abort_at",
@@ -47,6 +48,7 @@ fn diagnostic_linker<T: 'static>(engine: &wasmtime::Engine) -> wasmtime::Linker<
     linker
 }
 
+#[cfg(feature = "native-test-runtime")]
 fn diagnostic_text<T>(caller: &mut wasmtime::Caller<'_, T>, pointer: i32, length: i32) -> wasmtime::Result<String> {
     let memory = caller.get_export("memory").and_then(wasmtime::Extern::into_memory)
         .ok_or_else(|| wasmtime::Error::msg("diagnostic memory missing"))?;
@@ -71,6 +73,7 @@ fn import_names(wasm: &[u8]) -> Vec<String> {
     names
 }
 
+#[cfg(feature = "native-test-runtime")]
 fn run_oob(source: &str) -> String {
     let artifact = compile_checked_module_artifact(&checked(source))
         .expect_lowered("bounds checks permit safe canonical admission");
@@ -109,6 +112,7 @@ fn admitted_artifact_carries_checked_launch_contract_and_refuses_mutation() {
     assert!(artifact.verify_exact_bytes(&mutated).is_err(), "post-admission bytes must be refused");
 }
 
+#[cfg(feature = "native-test-runtime")]
 #[test]
 fn production_entry_emits_only_admitted_canonical_bytes() {
     let checked = checked("fn main() -> Int:\n    40 + 2\n");
@@ -131,20 +135,24 @@ fn production_entry_emits_only_admitted_canonical_bytes() {
     assert_eq!(main.call(&mut store, ()).expect("run production Wasm"), 42);
 }
 
+#[cfg(feature = "native-test-runtime")]
 #[test]
 fn list_int_out_of_bounds_source_admits_then_traps() {
     assert_eq!(run_oob("fn main() -> Int:\n    [10][1]\n"),
         "runtime error: `main`, line 2: list index 1 out of bounds (length 1)");
 }
 
+#[cfg(feature = "native-test-runtime")]
 #[test]
 fn list_push_keeps_length_bounds_check_for_out_of_bounds_index() {
     assert_eq!(run_oob("fn main() -> Int:\n    var xs = [1]\n    xs.push(2)\n    xs[2]\n"),
         "runtime error: `main`, line 4: list index 2 out of bounds (length 2)");
 }
 
+#[cfg(feature = "native-test-runtime")]
 struct FixtureConsole;
 
+#[cfg(feature = "native-test-runtime")]
 fn fixture_console_print(
     mut caller: wasmtime::Caller<'_, Vec<u8>>,
     token: Option<wasmtime::Rooted<wasmtime::ExternRef>>,
@@ -161,6 +169,7 @@ fn fixture_console_print(
     caller.data_mut().extend_from_slice(&bytes);
 }
 
+#[cfg(feature = "native-test-runtime")]
 #[test]
 fn list_string_push_moves_owned_elements_and_executes() {
     let source = "fn main(console: Console):\n    var xs = [\"first\"]\n    xs.push(\"second\")\n    console.print(xs[1])\n";

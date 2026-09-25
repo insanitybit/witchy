@@ -950,6 +950,52 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
     );
 
     fs::write(&cargo_args_file, "").expect("clear fake cargo arguments");
+    let lower_only = check_sh(&root, &[])
+        .env("PATH", &path)
+        .env("CARGO_TARGET_DIR", temp.path().join("target-lower-only"))
+        .env("WITCHY_GATE_SCOPE", "all")
+        .env(
+            "WITCHY_GATE_NEXTEST",
+            "-p witchy-lower --test codegen --test safewir_checked_source",
+        )
+        .env("WITCHY_GATE_NEXTEST_EXPR", "package(witchy-lower)")
+        .env("WITCHY_GATE_CHECK_PACKAGES", "-p witchy-lower")
+        .env("WITCHY_GATE_SKIP_RUST_CLASS", "1")
+        .env("WITCHY_GATE_SKIP_COMPILE", "0")
+        .env("WITCHY_GATE_SKIP_FMT", "1")
+        .env("FAKE_CARGO_ARGS_FILE", &cargo_args_file)
+        .env("WITCHY_FAILFAST_POLL", "0.05")
+        .env("WITCHY_STAGE_HEARTBEAT_INTERVAL", "0")
+        .output()
+        .expect("run serialized gate for a lower-only batch");
+    assert!(
+        lower_only.status.success(),
+        "lower-only fake gate failed: {}\n{}",
+        String::from_utf8_lossy(&lower_only.stderr),
+        String::from_utf8_lossy(&lower_only.stdout),
+    );
+    let lower_args =
+        fs::read_to_string(&cargo_args_file).expect("read lower-only cargo arguments");
+    for line in lower_args.lines().filter(|line| {
+        line.starts_with("nextest run") || line.starts_with("check ")
+    }) {
+        assert!(
+            !line.contains("witchy-wir/native")
+                && !line.contains("witchy-lower/native-test-runtime"),
+            "lower-only gate enabled the native runtime graph: {line}",
+        );
+    }
+    assert!(
+        lower_args.lines().any(|line| {
+            line.starts_with("nextest run")
+                && line.contains("-p witchy-lower")
+                && line.contains("--test codegen")
+                && line.contains("--test safewir_checked_source")
+        }),
+        "lower-only gate dropped its pure compiler tests: {lower_args}",
+    );
+
+    fs::write(&cargo_args_file, "").expect("clear fake cargo arguments");
     let interp_target = temp.path().join("target-interp-check");
     fs::create_dir_all(interp_target.join("debug")).expect("create interp fake target");
     fs::write(interp_target.join("debug/witchy"), "#!/bin/sh\nexit 0\n").expect("write interp witchy");

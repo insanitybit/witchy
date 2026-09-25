@@ -113,7 +113,36 @@ if [ -n "$cross_target" ] && command -v rustup >/dev/null 2>&1; then
     fi
 fi
 
-# One feature resolution for every selection (see the sourced file).
+# A lowerer-only selection must not inherit WIR's native oracle features from
+# unselected workspace packages. That inheritance pulls Wasmtime and AWS-LC
+# into syntax/type/lowering edit builds. Native/WIR/workspace selections keep
+# the single workspace feature graph; the pure lowerer graph is intentionally
+# a second, much smaller build identity.
+lower_selected=0
+native_owner_selected=0
+package_arg=0
+for arg in "$@"; do
+    if [ "$package_arg" -eq 1 ]; then
+        case "$arg" in
+            witchy-lower) lower_selected=1 ;;
+            witchy | witchy-wir) native_owner_selected=1 ;;
+        esac
+        package_arg=0
+        continue
+    fi
+    case "$arg" in
+        -p | --package) package_arg=1 ;;
+        --package=witchy-lower) lower_selected=1 ;;
+        --package=witchy | --package=witchy-wir | --workspace) native_owner_selected=1 ;;
+    esac
+done
+if [ -z "${WITCHY_FEATURE_UNIFICATION+x}" ] \
+    && [ "$lower_selected" -eq 1 ] && [ "$native_owner_selected" -eq 0 ]; then
+    export WITCHY_FEATURE_UNIFICATION=off
+    unset CARGO_UNSTABLE_FEATURE_UNIFICATION CARGO_RESOLVER_FEATURE_UNIFICATION
+fi
+
+# One feature resolution for every other selection (see the sourced file).
 # shellcheck source=../feature-unification.sh
 . "$self_dir/../feature-unification.sh"
 

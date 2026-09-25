@@ -338,14 +338,14 @@ fn secret_bytes(secret: &OracleSecretFixture, message: Option<&[u8]>) -> Result<
     Ok(bytes.iter().flat_map(|byte| [digits[(byte >> 4) as usize], digits[(byte & 15) as usize]]).collect())
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
 fn ed25519_bytes(seed: &[u8; 32], message: Option<&[u8]>) -> Result<Vec<u8>, InterpretError> {
     use aws_lc_rs::signature::{Ed25519KeyPair, KeyPair};
     let key = Ed25519KeyPair::from_seed_unchecked(seed).map_err(|_| refusal("Ed25519 seed refused"))?;
     Ok(match message { Some(message) => key.sign(message).as_ref().to_vec(), None => key.public_key().as_ref().to_vec() })
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(any(target_arch = "wasm32", not(feature = "native")))]
 fn ed25519_bytes(seed: &[u8; 32], message: Option<&[u8]>) -> Result<Vec<u8>, InterpretError> {
     use ed25519_dalek::{Signer, SigningKey};
     let key = SigningKey::from_bytes(seed);

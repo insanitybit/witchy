@@ -308,14 +308,12 @@ if [ -n "${WITCHY_GATE_SCOPE+x}" ] && [ "$full" -eq 0 ]; then
     esac
 fi
 
-# Keep every compiler leg that can select witchy-wir or witchy-lower on the
-# native feature as well. The foreground nextest command has its own feature
-# selection below; without this parallel check selection, a native
-# security test target can be absent from the compile leg while the test leg
-# still reports green.
+# Keep compile legs that explicitly select WIR on its native feature as well.
+# A lowerer-only compile is deliberately pure; the foreground workspace test
+# command below owns the explicit native lowerer campaign.
 native_feature_args=()
 case " ${compile_sel[*]} " in
-    *" --workspace "* | *" -p witchy-wir "* | *" -p witchy-lower "*)
+    *" --workspace "* | *" -p witchy-wir "*)
         native_feature_args=(--features witchy-wir/native)
         ;;
 esac
@@ -521,10 +519,14 @@ if cargo nextest --version >/dev/null 2>&1; then
     # because the root package's default feature enables it as a dependency;
     # without this explicit selector, #[cfg(feature = "native")] tests in the
     # witchy-wir test target disappear while nextest can still report green.
-    # Keep focused package selections valid: typeck-only batches do not select
-    # witchy-wir, while workspace, lowerer, and WIR batches do.
+    # Keep focused package selections valid: lowerer tests deliberately stay
+    # on their pure inspection path; workspace gates opt into the native
+    # lowerer campaign, while WIR-only batches still require WIR native tests.
     case " ${nextest_sel[*]} " in
-        *" --workspace "* | *" -p witchy-wir "* | *" -p witchy-lower "*)
+        *" --workspace "*)
+            nextest_cmd+=(--features witchy-wir/native,witchy-lower/native-test-runtime)
+            ;;
+        *" -p witchy-wir "*)
             nextest_cmd+=(--features witchy-wir/native)
             ;;
     esac
@@ -534,7 +536,7 @@ if cargo nextest --version >/dev/null 2>&1; then
         [ -z "$gate_test_jobs" ] || nextest_extra_cmd+=(-j "$gate_test_jobs")
         nextest_extra_cmd+=("${nextest_extra_sel[@]}" --profile gate-partition)
         case " ${nextest_extra_sel[*]} " in
-            *" -p witchy-wir "* | *" -p witchy-lower "*)
+            *" -p witchy-wir "*)
                 nextest_extra_cmd+=(--features witchy-wir/native) ;;
         esac
     fi
@@ -552,7 +554,7 @@ if cargo nextest --version >/dev/null 2>&1; then
         # Confirmation is rare and runs only after a >5s observation. A
         # workspace selector can replay candidates from either partition;
         # neither partition's target flags alone can name both safely.
-        ratchet_nextest_args=(--workspace --features witchy-wir/native)
+        ratchet_nextest_args=(--workspace --features witchy-wir/native,witchy-lower/native-test-runtime)
     fi
     # The workspace stage ALWAYS excludes `package(merge-queue-tests)` (see
     # $excl above) because those fixtures run in their own isolated shard. So
@@ -678,8 +680,14 @@ if cargo nextest --version >/dev/null 2>&1; then
                 [ -z "$gate_test_jobs" ] || preflight_base_cmd+=(-j "$gate_test_jobs")
                 preflight_base_cmd+=("${preflight_target[@]}")
                 case "$preflight_package" in
-                    witchy | witchy-lower | witchy-wir)
+                    witchy | witchy-wir)
                         preflight_base_cmd+=(--features witchy-wir/native) ;;
+                    witchy-lower)
+                        if [ "${#nextest_sel[@]}" -eq 1 ] \
+                            && [ "${nextest_sel[0]}" = "--workspace" ]; then
+                            preflight_base_cmd+=(--features witchy-wir/native,witchy-lower/native-test-runtime)
+                        fi
+                        ;;
                 esac
                 printf 'check.sh: failure preflight target: %s\n' \
                     "${WITCHY_GATE_PREFLIGHT_NEXTEST}"
@@ -751,7 +759,7 @@ else
     # `native` features are not inherited from the root package's defaults.
     # Without this explicit feature, witchy-wir's native security tests are
     # compiled out while cargo still reports a green workspace test run.
-    test_cmd=(cargo test --workspace --features witchy-wir/native)
+    test_cmd=(cargo test --workspace --features witchy-wir/native,witchy-lower/native-test-runtime)
     test_cmd_extra=()
     queue_infra_cmd=(cargo test -p merge-queue-tests --test merge_queue --test test_for_paths --test worktree -- --test-threads=1)
     repo_contracts_cmd=(cargo test -p repo-tests --test repo_hygiene)

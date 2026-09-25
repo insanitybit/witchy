@@ -69,12 +69,13 @@ git init -q
 git symbolic-ref HEAD refs/heads/master
 git config user.name "Canonical edit fixture"
 git config user.email test@example.invalid
-mkdir -p crates/witchy-lower/src
+mkdir -p crates/witchy-lower/src crates/witchy-wir/src
 printf '// base\n' > crates/witchy-lower/src/canonical_lower.rs
+printf '// base\n' > crates/witchy-wir/src/canonical_safewir.rs
 git add .
 git commit -qm base
 git switch -qc topic
-printf '// changed\n' >> crates/witchy-lower/src/canonical_lower.rs
+printf '// changed\n' >> crates/witchy-wir/src/canonical_safewir.rs
 git add .
 git commit -qm change
 export PATH="$tmp/bin:$PATH" MOCK_LOG="$tmp/cargo.jsonl" CARGO_TARGET_DIR="$tmp/target"
@@ -143,7 +144,7 @@ for command, row in zip(commands, rows[:3]):
 PY
 rm -f "$receipt"
 # An explicit partial selection cannot mint a whole-diff receipt.
-run_agent crates/witchy-wir/src/canonical_safewir.rs
+run_agent crates/witchy-wir/src/canonical_wasmir.rs
 [ ! -e "$receipt" ]
 # Dirty input never certifies the committed tip.
 printf '// dirty\n' >> crates/witchy-lower/src/canonical_lower.rs
@@ -164,7 +165,7 @@ done
 
 # Recipe additions remain selected; standalone runtime-native is NOT absorbed
 # into root's fixture-enabled union. Crypto retains the same rule.
-for path in crates/witchy-lower/src/canonical_build_read.rs crates/witchy-wir/src/canonical_interpreter/crypto_rsa_tests.rs; do
+for path in crates/witchy-wir/src/canonical_safewir/build_read.rs crates/witchy-wir/src/canonical_interpreter/crypto_rsa_tests.rs; do
     run_agent "$path"
     python3 - "$MOCK_LOG" <<'PY'
 import json, pathlib, sys
@@ -180,10 +181,10 @@ if "codegen" in rows[1]["args"]:
     assert "binary(=codegen)" in rows[3]["args"][rows[3]["args"].index("-E") + 1]
 PY
 done
-if MOCK_FAIL=missing-codegen run_agent crates/witchy-lower/src/canonical_build_read.rs; then
+if MOCK_FAIL=missing-codegen run_agent crates/witchy-wir/src/canonical_safewir/build_read.rs; then
     echo "missing recipe binary unexpectedly succeeded" >&2; exit 1
 fi
-if MOCK_FAIL=runtime run_agent crates/witchy-lower/src/canonical_build_read.rs; then
+if MOCK_FAIL=runtime run_agent crates/witchy-wir/src/canonical_safewir/build_read.rs; then
     echo "failed standalone runtime unexpectedly succeeded" >&2; exit 1
 fi
 printf 'canonical-native-edit: one union build, exact scopes/filters, separate runtime profiles, QoS, failures and receipts passed\n'

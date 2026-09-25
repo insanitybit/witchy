@@ -39,24 +39,24 @@ fn ecdsa_status(key: &str, message: &str, signature: &str, hex_message: bool) ->
     ecdsa_primitive(&key, &message, &signature).map(i64::from)
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
 fn ecdsa_primitive(key: &[u8], message: &[u8], signature: &[u8]) -> Result<bool, InterpretError> {
     use aws_lc_rs::signature::{UnparsedPublicKey, ECDSA_P256_SHA256_ASN1};
     Ok(UnparsedPublicKey::new(&ECDSA_P256_SHA256_ASN1, key).verify(message, signature).is_ok())
 }
-#[cfg(target_arch = "wasm32")]
+#[cfg(any(target_arch = "wasm32", not(feature = "native")))]
 fn ecdsa_primitive(_: &[u8], _: &[u8], _: &[u8]) -> Result<bool, InterpretError> {
-    Err(InterpretError::UnsupportedOperation("ECDSA P256 oracle primitive on wasm32"))
+    Err(InterpretError::UnsupportedOperation("ECDSA P256 oracle primitive without native crypto"))
 }
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
 fn hmac(key: &[u8], message: &[u8]) -> Result<Vec<u8>, InterpretError> {
     use aws_lc_rs::hmac;
     let key = hmac::Key::new(hmac::HMAC_SHA256, key);
     Ok(hex(hmac::sign(&key, message).as_ref()))
 }
-#[cfg(target_arch = "wasm32")]
+#[cfg(any(target_arch = "wasm32", not(feature = "native")))]
 fn hmac(_: &[u8], _: &[u8]) -> Result<Vec<u8>, InterpretError> {
-    Err(InterpretError::UnsupportedOperation("HMAC SHA256 oracle primitive on wasm32"))
+    Err(InterpretError::UnsupportedOperation("HMAC SHA256 oracle primitive without native crypto"))
 }
 
 impl Engine<'_> {
@@ -124,4 +124,3 @@ impl Engine<'_> {
         Ok(())
     }
 }
-

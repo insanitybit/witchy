@@ -43,7 +43,9 @@ mod tests {
         );
     }
     use witchy_syntax::parser::parse_module;
+    #[cfg(feature = "native-test-runtime")]
     use std::sync::{Arc, Mutex};
+    #[cfg(feature = "native-test-runtime")]
     use wasmtime::{Caller, Engine, Linker, Module as WtModule, Store};
 
     fn gc_wasm_features() -> wasmparser::WasmFeatures {
@@ -62,6 +64,7 @@ mod tests {
         wasmparser::Parser::new(0).parse_all(wasm)
     }
 
+    #[cfg(feature = "native-test-runtime")]
     fn gc_wasmtime_engine() -> Engine {
         let mut config = wasmtime::Config::new();
         config.wasm_reference_types(true);
@@ -110,6 +113,7 @@ mod tests {
     /// so a module that routes an abort through it (float ordering, list/bytes OOB,
     /// str_to_int, `fail`) instantiates in these minimal test linkers. The body
     /// traps, matching the real host's `bail!` contract (the call never returns).
+    #[cfg(feature = "native-test-runtime")]
     fn define_abort<T: 'static>(linker: &mut Linker<T>) {
         linker
             .func_wrap(
@@ -387,11 +391,13 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "native-test-runtime")]
     fn run_int(src: &str) -> i64 {
         let module = parse_module(src).expect("parse");
         run_int_module(&module)
     }
 
+    #[cfg(feature = "native-test-runtime")]
     fn run_int_with_opt(src: &str, opt: witchy_syntax::opt::OptSet) -> i64 {
         witchy_syntax::opt::set_for_tests(Some(opt));
         let result = run_int(src);
@@ -399,6 +405,7 @@ mod tests {
         result
     }
 
+    #[cfg(feature = "native-test-runtime")]
     fn run_int_module_with_opt(
         module: &witchy_syntax::ast::Module,
         opt: witchy_syntax::opt::OptSet,
@@ -409,6 +416,7 @@ mod tests {
         result
     }
 
+    #[cfg(feature = "native-test-runtime")]
     fn run_int_module(module: &witchy_syntax::ast::Module) -> i64 {
         let bytes = compile_module_binary(module)
             .expect_lowered("the binary path lowers this program");
@@ -433,6 +441,7 @@ mod tests {
         captured.lock().unwrap().take().expect("printed a value")
     }
 
+    #[cfg(feature = "native-test-runtime")]
     fn run_int_with_i64_globals(
         source: &str,
         names: &[&str],
@@ -441,6 +450,7 @@ mod tests {
         run_int_module_with_i64_globals(&module, names)
     }
 
+    #[cfg(feature = "native-test-runtime")]
     fn run_int_module_with_i64_globals(
         module: &witchy_syntax::ast::Module,
         names: &[&str],
@@ -480,6 +490,7 @@ mod tests {
         (printed, counters)
     }
 
+    #[cfg(feature = "native-test-runtime")]
     fn run_int_with_layout_metrics(
         source: &str,
     ) -> (i64, std::collections::BTreeMap<String, i64>, i32) {
@@ -617,6 +628,7 @@ fn main() -> Int:
         );
     }
 
+    #[cfg(feature = "native-test-runtime")]
     #[test]
     fn owned_consumer_result_cannot_alias_reused_destination_scratch() {
         let source = r#"
@@ -950,6 +962,7 @@ fn main() -> Int:
     }
 
     /// Build a wasmtime instance whose `print` captures strings from memory.
+    #[cfg(feature = "native-test-runtime")]
     fn instantiate_with_print(
         bytes: &[u8],
     ) -> (Store<()>, wasmtime::Instance, Arc<Mutex<Vec<String>>>) {
@@ -1174,6 +1187,7 @@ fn main(console: Console) -> Int:
         );
     }
 
+    #[cfg(feature = "native-test-runtime")]
     #[test]
     fn list_element_value_is_not_a_sequence_length_fact() {
         // An element value is arbitrary user data, not a proof that it is a
@@ -1199,6 +1213,7 @@ fn main() -> Int:
         assert!(deoptimized.contains("list_at"), "deoptimized path preserves bounds trap: {deoptimized}");
     }
 
+    #[cfg(feature = "native-test-runtime")]
     #[test]
     fn poisoned_loop_carried_range_value_retains_bounds_trap() {
         // The loop invariant is invalidated by the out-of-domain write before
@@ -1249,6 +1264,7 @@ fn main() -> Int:
         witchy_wir::wir::to_wat(&wir)
     }
 
+    #[cfg(feature = "native-test-runtime")]
     #[test]
     fn rfc0153_full_deoptimization_matrix_preserves_results_and_traps() {
         // Criterion 9 is intentionally a whole-pipeline check.  The family
@@ -1504,6 +1520,7 @@ fn main() -> Int:
         );
     }
 
+    #[cfg(feature = "native-test-runtime")]
     fn compiled_trap(source: &str, opt: witchy_syntax::opt::OptSet) -> String {
         witchy_syntax::opt::set_for_tests(Some(opt));
         let module = parse_module(source).expect("parse indexed trap fixture");
@@ -1512,6 +1529,7 @@ fn main() -> Int:
         result
     }
 
+    #[cfg(feature = "native-test-runtime")]
     fn compiled_module_trap(module: &witchy_syntax::ast::Module) -> String {
         let bytes = compile_module_binary(&module).expect_lowered("lower indexed trap fixture");
         let engine = gc_wasmtime_engine();
@@ -1529,6 +1547,7 @@ fn main() -> Int:
             .to_string()
     }
 
+    #[cfg(feature = "native-test-runtime")]
     fn compiled_module_trap_with_opt(
         module: &witchy_syntax::ast::Module,
         opt: witchy_syntax::opt::OptSet,
@@ -1663,6 +1682,7 @@ fn main() -> Int:
         assert!(!resized_wat.contains("__seq_base_"), "length mutation rejects the plan");
     }
 
+    #[cfg(feature = "native-test-runtime")]
     #[test]
     fn sequence_affine_offset_overflow_retains_checked_trap() {
         let source = r#"
@@ -1692,6 +1712,7 @@ fn main() -> Int:
 
     /// Run `src` on the COMPILED backend under a specific optimization set (for value-
     /// parity checks across the `closure-elide` lever).
+    #[cfg(feature = "native-test-runtime")]
     fn run_str_opt(src: &str, opt: witchy_syntax::opt::OptSet) -> Vec<String> {
         witchy_syntax::opt::set_for_tests(Some(opt));
         let module = parse_module(src).expect("parse");

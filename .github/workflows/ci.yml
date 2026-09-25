@@ -62,7 +62,7 @@ jobs:
         with:
           tool: nextest
       - name: Build
-        run: cargo build --workspace --all-targets --features witchy-wir/native
+        run: cargo build --workspace --all-targets --features witchy-wir/native,witchy-lower/native-test-runtime
       # RFC-0165 A1: package-local feature selection is intentional. The
       # workspace test below also enables native, but this direct invocation
       # prevents Cargo feature unification from silently compiling the WIR
@@ -79,7 +79,7 @@ jobs:
         # The RFC-0165 deferred-feature tests are excluded by the same script the
         # merge gate uses (scripts/rfc0165-deferred-filter.sh), never by an
         # expression written here; the native security suites stay mandatory.
-        run: cargo nextest run --workspace --features witchy-wir/native --profile ci --all-targets --partition "count:${SHARD}/4" -E "$(./scripts/rfc0165-deferred-filter.sh)"
+        run: cargo nextest run --workspace --features witchy-wir/native,witchy-lower/native-test-runtime --profile ci --all-targets --partition "count:${SHARD}/4" -E "$(./scripts/rfc0165-deferred-filter.sh)"
 
       # Workspace feature unification enables test fixtures. Exercise the
       # production-disabled boundary separately, and reject an empty selection

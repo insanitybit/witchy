@@ -136,7 +136,7 @@ pub(super) fn emit_final_release(
     emit_cleanup_worklist(body, local, function, layouts, payload_local, environment, index, binding)
 }
 
-#[cfg(feature = "raw-encoder-test-api")]
+#[cfg(all(feature = "raw-encoder-test-api", feature = "native"))]
 #[doc(hidden)]
 pub mod self_checks {
     use super::*;

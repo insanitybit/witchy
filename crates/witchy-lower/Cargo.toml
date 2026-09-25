@@ -15,10 +15,14 @@ doctest = false
 # Synthetic AST and lowerer tests intentionally exercise stages below the
 # checked pipeline. Production dependents receive only proof-carrying entries.
 raw-module-test-api = ["witchy-wir/legacy-encoder-bridge"]
+# Wasmtime execution is a separate, explicitly selected conformance layer.
+# Ordinary lowerer tests inspect the emitted WIR/Wasm and rejection contracts
+# without compiling the native runtime graph.
+native-test-runtime = ["dep:wasmtime", "witchy-wir/native"]
 
 # Non-test code is pure (it builds WIR via witchy-wir), so this crate is
-# wasm-clean. The tests run the emitted module under wasmtime — a dev-dependency,
-# so it never enters a non-test or wasm build.
+# wasm-clean. Only the explicit native-test-runtime campaign runs emitted
+# modules under Wasmtime.
 [dependencies]
 witchy-syntax = { path = "../witchy-syntax" }
 witchy-canonical-source = { path = "../witchy-canonical-source" }
@@ -29,9 +33,11 @@ foldhash = "0.2.0"
 sha2 = "0.11.0"
 # Validates the emitted module; pure Rust, so the lowering path stays wasm-clean.
 wasmparser = "0.251"
+# Test-only in practice, but optional normal dependencies are the only Cargo
+# dependencies that a package feature can enable for integration tests.
+wasmtime = { version = "45.0.0", optional = true, default-features = false, features = ["anyhow","backtrace","cache","gc","gc-drc","wat","profiling","parallel-compilation","cranelift","pooling-allocator","demangle","addr2line","coredump","debug-builtins","runtime","std"] }
 
 [dev-dependencies]
-wasmtime = { version = "45.0.0", default-features = false, features = ["anyhow","backtrace","cache","gc","gc-drc","wat","profiling","parallel-compilation","cranelift","pooling-allocator","demangle","addr2line","coredump","debug-builtins","runtime","std"] }
 # Integration tests (tests/) compile the lib WITHOUT cfg(test); enable the
 # raw-module test surface for them via a self-dependency.
 witchy-lower = { path = ".", features = ["raw-module-test-api"] }
@@ -41,4 +47,4 @@ witchy-lower = { path = ".", features = ["raw-module-test-api"] }
 # a separate opt-level-2 build of witchy-wir plus every dependent crate in the
 # same target dir. Dev-dependency features never reach `cargo build`, so the
 # production boundary around the raw encoder is unchanged.
-witchy-wir = { path = "../witchy-wir", features = ["native", "legacy-encoder-bridge", "raw-encoder-test-api", "checked-source-test-api"] }
+witchy-wir = { path = "../witchy-wir", features = ["legacy-encoder-bridge", "raw-encoder-test-api", "checked-source-test-api"] }

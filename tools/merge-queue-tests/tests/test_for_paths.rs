@@ -166,27 +166,31 @@ fn gate_nextest_example_tests_only_is_not_workspace() {
 }
 
 #[test]
-fn compiler_edit_loop_runs_one_example_slice_and_landing_runs_all() {
+fn lower_edit_loop_and_landing_stay_off_native_conformance() {
     let changed = "crates/witchy-lower/src/codegen/mod.rs";
-    let sliced = selected(&["--edit-loop", changed]);
+    let edit = selected(&["--edit-loop", changed]);
     assert!(
-        sliced.iter().any(|c| c.contains("--partition hash:1/8")
-            && c.contains("test(/^example_tests::/)")),
-        "compiler edit loop did not slice the example matrix: {sliced:?}",
+        edit.iter().any(|command| command.contains("-p witchy-lower")),
+        "lower edit loop dropped the lowerer tests: {edit:?}",
     );
-    let output = Command::new("bash")
-        .arg(workspace_root().join("scripts/test-for-paths.sh"))
-        .args(["--edit-loop", changed])
-        .env("WITCHY_EDIT_EXAMPLES", "full")
-        .output()
-        .expect("run test-for-paths.sh");
-    let full = String::from_utf8(output.stdout).expect("router output is UTF-8");
-    assert!(
-        full.contains("test(/^example_tests::/)") && !full.contains("--partition"),
-        "WITCHY_EDIT_EXAMPLES=full did not restore the complete matrix: {full}",
-    );
+    for command in &edit {
+        assert!(
+            !command.contains("witchy-wir/native")
+                && !command.contains("native-test-runtime")
+                && !command.contains("-p witchy ")
+                && !command.contains("example_tests"),
+            "lower edit loop crossed into the native graph: {edit:?}",
+        );
+    }
     let landing = gate_nextest(&[changed]);
-    assert!(!landing.contains("--partition"), "landing gate sliced the examples: {landing}");
+    assert!(landing.contains("-p witchy-lower"), "landing dropped lowerer tests: {landing}");
+    assert!(
+        !landing.contains("-p witchy ")
+            && !landing.contains("binary_id(/^witchy::rfc0/)")
+            && !landing.contains("test(/^semantic_conformance::/)")
+            && !landing.contains("example_tests"),
+        "lower landing crossed into native root conformance: {landing}",
+    );
 }
 
 #[test]
@@ -262,18 +266,16 @@ fn gate_nextest_docs_plus_integration_test_keeps_both_target_kinds() {
 /// modules, however, should never pay to build the other root test targets.
 #[test]
 fn gate_nextest_does_not_narrow_past_the_bin_target() {
-    // A crate package plus the rfc0* conformance binaries.
-    // It may name `--bin witchy` (for `example_tests::rfc0*`) only inside the
-    // explicit union of every test target. These compiler crates disable lib
-    // tests, so that union deliberately has no `--lib`.
+    // Lowering and the types census both have lib tests disabled. Their pure
+    // package gate deliberately has no root `--bin witchy` or empty `--lib`
+    // target; Cargo discovers only their integration targets.
     let compiler = gate_nextest(&["crates/witchy-lower/src/codegen/mod.rs"]);
     assert!(
         !compiler.contains("--bin witchy")
-            || (!compiler.contains(" --lib")
-                && compiler.contains("--test codegen")
-                && compiler.contains("--test typeck")
-                && compiler.contains("--test misc")),
-        "a compiler-stage change narrowed away its crate and conformance tests: {compiler}",
+            && !compiler.contains(" --lib")
+            && compiler.contains("-p witchy-lower")
+            && compiler.contains("-p witchy-types"),
+        "a lowerer change narrowed away its pure compiler tests: {compiler}",
     );
     for path in ["src/lsp.rs", "src/diagnostic_golden_tests.rs", "src/commands/test.rs"] {
         let output = gate_nextest(&[path]);
@@ -451,11 +453,16 @@ fn gate_nextest_lower_only_does_not_attach_wir_or_runtime() {
         "lower-only mapping dropped the crate: {output}",
     );
     assert!(
-        !output.contains("witchy-wir") && !output.contains("witchy-runtime"),
-        "lower-only mapping still attached wir/runtime: {output}",
+        !output.contains("witchy-wir")
+            && !output.contains("witchy-runtime")
+            && !output.contains("-p witchy "),
+        "lower-only mapping still attached wir/runtime/root: {output}",
     );
     assert!(
-        !output.contains("test(/^example_tests::/)") && !output.contains("WORKSPACE"),
+        !output.contains("test(/^example_tests::/)")
+            && !output.contains("binary_id(/^witchy::rfc0/)")
+            && !output.contains("test(/^semantic_conformance::/)")
+            && !output.contains("WORKSPACE"),
         "lower-only mapping was not crate-scoped: {output}",
     );
 }
@@ -1301,9 +1308,21 @@ fn build_env_host_edits_keep_authority_bounds_and_abi_probes() {
 
 #[test]
 fn canonical_build_recipe_edits_keep_cross_stage_contracts() {
+    for (path, package) in [
+        ("crates/witchy-lower/src/canonical_build_read.rs", "witchy-lower"),
+        ("crates/witchy-types/src/pipeline/build_recipe.rs", "witchy-types"),
+    ] {
+        let frontend = selected(&["--edit-loop", path]);
+        assert_eq!(frontend.len(), 1, "{path}: {frontend:?}");
+        assert!(
+            frontend[0].contains(&format!("-p {package}"))
+                && !frontend[0].contains("native")
+                && !frontend[0].contains("-p witchy "),
+            "front-end recipe edit crossed into native conformance: {path}: {frontend:?}",
+        );
+    }
+
     for path in [
-        "crates/witchy-lower/src/canonical_build_read.rs",
-        "crates/witchy-types/src/pipeline/build_recipe.rs",
         "crates/witchy-wir/src/canonical_interpreter/build_read.rs",
         "crates/witchy-wir/src/canonical_safewir/build_read.rs",
     ] {
@@ -1370,11 +1389,9 @@ fn canonical_type_edit_uses_the_bounded_semantic_sentinels() {
         "--edit-loop",
         "crates/witchy-types/src/canonical_aggregates.rs",
     ]);
-    assert_eq!(commands.len(), 3, "canonical type edit expanded past its sentinels: {commands:?}");
-    assert!(commands[0].contains("constant_prefix_publication_rejects_gaps_and_missing_children"), "{commands:?}");
-    assert!(commands[0].contains("scalar_move_range_is_bounds_checked_and_admitted"), "{commands:?}");
-    assert!(commands[1].contains("canonical_pipeline::list_"), "{commands:?}");
-    assert!(commands[2].contains("admitted_aggregates_render_structurally_as_the_interpreter_prints_them"), "{commands:?}");
+    assert_eq!(commands.len(), 1, "canonical type edit expanded past its package: {commands:?}");
+    assert!(commands[0].contains("-p witchy-types"), "{commands:?}");
+    assert!(!commands[0].contains("native") && !commands[0].contains("-p witchy "), "{commands:?}");
 }
 
 #[test]
@@ -1713,14 +1730,13 @@ fn focused_mode_retains_crate_nextest_checks() {
     );
 }
 
-/// Stages that emit, admit, or execute Wasm keep native cross-pipeline
-/// conformance. Syntax/type edits stop at the checker boundary: selecting one
+/// Stages that admit or execute Wasm keep native cross-pipeline conformance.
+/// Syntax/type/lowering edits stop before the native boundary: selecting one
 /// of these root targets costs the Wasmtime/AWS-LC build before its cheap test
-/// body can run, while full CI still owns the complete conformance campaign.
+/// body can run, while WIR/runtime edits and full CI own conformance.
 #[test]
 fn gate_nextest_compiler_stage_changes_select_rfc_conformance_binaries() {
     for path in [
-        "crates/witchy-lower/src/codegen/mod.rs",
         "crates/witchy-wir/src/lib.rs",
         "crates/witchy-runtime/src/runtime.rs",
         "crates/witchy-interp/src/typed_async.rs",
@@ -1762,10 +1778,7 @@ fn a_deleted_integration_test_selects_the_budget_census_not_its_own_binary() {
 /// says what the programs it admits should do.
 #[test]
 fn gate_nextest_compiler_stage_changes_select_semantic_conformance() {
-    for path in [
-        "crates/witchy-wir/src/canonical_safewir/check/memory.rs",
-        "crates/witchy-lower/src/codegen/mod.rs",
-    ] {
+    for path in ["crates/witchy-wir/src/canonical_safewir/check/memory.rs"] {
         let out = gate_nextest(&[path]);
         assert!(
             out.contains("test(/^semantic_conformance::/)"),
@@ -1944,12 +1957,8 @@ fn gate_never_names_the_lib_of_a_crate_without_lib_tests() {
     let compiler = gate_nextest(&["crates/witchy-lower/src/codegen/mod.rs"]);
     let selection = compiler.lines().next().unwrap_or_default();
     assert!(!selection.contains("--lib"), "compiler selection names an empty lib: {compiler}");
-    for target in ["typeck", "codegen", "safewir_checked_source"] {
-        assert!(
-            selection.contains(&format!("--test {target}")),
-            "compiler selection omitted integration test {target}: {compiler}",
-        );
-    }
+    assert!(selection.contains("-p witchy-lower"), "lower package was omitted: {compiler}");
+    assert!(selection.contains("-p witchy-types"), "std-roots census package was omitted: {compiler}");
     assert!(
         !selection.contains("--example abi_catalog"),
         "compiler selection retained a non-test WIR example: {compiler}",
@@ -2101,16 +2110,13 @@ fn wir_changes_compile_production_runtime_without_selecting_its_native_test_pack
 
 /// The RFC-pinned example modules (`example_tests::rfc0*`) are language
 /// contracts -- what an RFC admits and refuses -- living in the `witchy` bin.
-/// Stages that emit or admit Wasm must run them at the gate and in the edit
-/// loop: two view-carrier changes gated green without them and left master red
-/// on two refusal pins (2026-09-22). Front-end-only edits stop at the checker
-/// to avoid compiling the native runtime graph.
+/// Stages that admit Wasm must run them at the gate and in the edit loop: two
+/// view-carrier changes gated green without them and left master red on two
+/// refusal pins (2026-09-22). Lower-only edits use their structural/checked
+/// source suites so they do not compile the native runtime graph.
 #[test]
 fn compiler_stage_changes_run_the_rfc_pinned_example_modules() {
-    for changed in [
-        "crates/witchy-lower/src/canonical_lower.rs",
-        "crates/witchy-wir/src/canonical_wasmir.rs",
-    ] {
+    for changed in ["crates/witchy-wir/src/canonical_wasmir.rs"] {
         let output = gate_nextest(&[changed]);
         assert!(
             output.contains("test(/^example_tests::rfc0/)") || output.contains("test(/^example_tests::/)"),

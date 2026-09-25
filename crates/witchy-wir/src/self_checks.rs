@@ -18,6 +18,7 @@ pub use crate::canonical_safewir::check::host::self_checks as canonical_safewir_
 pub use crate::canonical_safewir::check::memory::self_checks as canonical_safewir_check_memory;
 pub use crate::canonical_safewir::check::owners::self_checks as canonical_safewir_check_owners;
 pub use crate::canonical_wasmir::self_checks as canonical_wasmir;
+#[cfg(feature = "native")]
 pub use crate::canonical_wasmir::closure_owner_kernel::self_checks as canonical_wasmir_closure_owner_kernel;
 #[cfg(feature = "native")]
 pub use crate::canonical_wasmir::drop_worklist::self_checks as canonical_wasmir_drop_worklist;

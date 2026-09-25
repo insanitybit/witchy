@@ -35,6 +35,7 @@ sha2 = "0.11.0"
 tiny-keccak = { version = "2.0.2", features = ["sha3", "shake"] }
 blake3 = "1.8.3"
 regex = "1.11"
+ed25519-dalek = "2.2.0"
 # The validation/test helpers that execute an emitted module under wasmtime
 # (native-only — off in the wasm build).
 wasmtime = { version = "45.0.0", optional = true, default-features = false, features = ["anyhow","backtrace","cache","gc","gc-drc","wat","profiling","parallel-compilation","cranelift","pooling-allocator","demangle","addr2line","coredump","debug-builtins","runtime","std"] }
@@ -42,13 +43,10 @@ wasmtime = { version = "45.0.0", optional = true, default-features = false, feat
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # Only the primitive is shared with the platform crypto provider. Canonical
 # oracle slice decoding and status semantics do not call the runtime registry.
-aws-lc-rs = "1"
-
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-ed25519-dalek = "2.2.0"
+aws-lc-rs = { version = "1", optional = true }
 
 [features]
-native = ["dep:wasmtime"]
+native = ["dep:wasmtime", "dep:aws-lc-rs"]
 # The lowerer is the one remaining production caller of the transitional
 # source-map bridge. Keep that authority separate from the raw test surface.
 legacy-encoder-bridge = []

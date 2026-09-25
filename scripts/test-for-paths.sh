@@ -428,8 +428,6 @@ for p in "${paths[@]}"; do
     path_has_early=0
     case "$p" in
         crates/witchy-canonical-source/src/* | \
-        crates/witchy-lower/src/canonical* | \
-        crates/witchy-types/src/canonical* | \
         crates/witchy-wir/src/canonical*)
             canonical_rewrite=1 ;;
         tests/misc/rfc0165_oracle.rs | \
@@ -443,15 +441,18 @@ for p in "${paths[@]}"; do
             canonical_wasmir_tail=1 ;;
     esac
     case "$p" in
-        crates/witchy-lower/src/canonical_build_read.rs | \
-        crates/witchy-types/src/pipeline/build_recipe.rs | \
+        crates/witchy-lower/src/canonical_build_read.rs)
+            canonical_build_recipe=1 ;;
+        crates/witchy-types/src/pipeline/build_recipe.rs)
+            canonical_build_recipe=1 ;;
         crates/witchy-wir/src/canonical_interpreter/build_read.rs | \
         crates/witchy-wir/src/canonical_safewir/build_read.rs)
             canonical_build_recipe=1
             canonical_rewrite=1 ;;
     esac
     case "$p" in
-        crates/witchy-lower/src/canonical_crypto.rs | \
+        crates/witchy-lower/src/canonical_crypto.rs)
+            canonical_crypto=1 ;;
         crates/witchy-runtime/src/runtime/host/crypto*.rs | \
         crates/witchy-wir/src/canonical_interpreter/crypto*.rs | \
         crates/witchy-wir/src/canonical_safewir/crypto.rs | \
@@ -609,8 +610,7 @@ for p in "${paths[@]}"; do
             path_has_early=1 ;;
         crates/witchy-lower/src/canonical_list_update.rs | \
         crates/witchy-lower/src/canonical_pipeline.rs)
-            add_early "cargo nextest run -p witchy-lower --features witchy-wir/native --test codegen -E 'test(canonical_pipeline::list_)'"
-            add_early "cargo nextest run -p witchy --features witchy-wir/native --test misc --ignore-default-filter -E 'test(rfc0165_admitted_launch::admitted_aggregates_render_structurally_as_the_interpreter_prints_them)'"
+            add_early "cargo nextest run -p witchy-lower --test codegen -E 'test(canonical_pipeline::list_)'"
             path_has_early=1 ;;
         crates/witchy-lower/tests/codegen.rs)
             add_early "cargo nextest run -p witchy-lower --test codegen -E 'test(=tests::grantful_build_primitives_compile_to_build_imports_only)'"
@@ -643,14 +643,12 @@ for p in "${paths[@]}"; do
             ;;
         crates/witchy-lower/*)
             any_rust=1
-            gate_need_conformance=1
             add_pkg witchy-lower
-            add "./scripts/nextest-admitted.sh witchy-lower -- cargo nextest run -p witchy-lower --features witchy-wir/native"
-            # The root package's test graph already enables witchy-wir/native
-            # through its dev-dependency. Spelling the feature here creates a
-            # distinct command for the same test binary, causing the 311-test
-            # example matrix to run twice for a combined compiler-manifest edit.
-            add "./scripts/nextest-admitted.sh witchy -- cargo nextest run -E 'test(/^example_tests::/)'"
+            # Lowering's structural and checked-source campaigns do not need a
+            # native engine. Root conformance is retained for WIR/runtime/root
+            # edits and full CI; attaching it here restores Wasmtime and AWS-LC
+            # before these fast tests can start.
+            add "./scripts/nextest-admitted.sh witchy-lower -- cargo nextest run -p witchy-lower"
             ;;
         crates/witchy-wir/*)
             any_rust=1

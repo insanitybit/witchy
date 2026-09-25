@@ -9377,6 +9377,7 @@ pub mod self_checks {
         checked_size_operation_with_input(operation, input, result, -1)
     }
 
+    #[cfg(feature = "native")]
     pub fn narrow_size_u32_overflow_traps_in_wasmtime() {
         let input = ValueId::new(1);
         let result = ValueId::new(2);
@@ -9395,6 +9396,7 @@ pub mod self_checks {
         assert!(result.is_err());
     }
 
+    #[cfg(feature = "native")]
     pub fn narrow_size_valid_value_executes() {
         let input = ValueId::new(1);
         let result = ValueId::new(2);

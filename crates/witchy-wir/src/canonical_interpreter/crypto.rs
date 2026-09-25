@@ -127,15 +127,15 @@ fn rsa_verify_status(key: &str, message: &str, signature: &str) -> Result<i64, I
     rsa_verify_primitive(&key, message.as_bytes(), &signature).map(i64::from)
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
 fn rsa_verify_primitive(key: &[u8], message: &[u8], signature: &[u8]) -> Result<bool, InterpretError> {
     use aws_lc_rs::signature::{UnparsedPublicKey, RSA_PKCS1_2048_8192_SHA256};
     Ok(UnparsedPublicKey::new(&RSA_PKCS1_2048_8192_SHA256, key).verify(message, signature).is_ok())
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(any(target_arch = "wasm32", not(feature = "native")))]
 fn rsa_verify_primitive(_key: &[u8], _message: &[u8], _signature: &[u8]) -> Result<bool, InterpretError> {
-    Err(InterpretError::UnsupportedOperation("RSA PKCS1 SHA256 oracle primitive on wasm32"))
+    Err(InterpretError::UnsupportedOperation("RSA PKCS1 SHA256 oracle primitive without native crypto"))
 }
 
 #[cfg(feature = "raw-encoder-test-api")]
@@ -143,13 +143,13 @@ fn rsa_verify_primitive(_key: &[u8], _message: &[u8], _signature: &[u8]) -> Resu
 #[path = "crypto_rsa_tests.rs"]
 pub mod rsa_self_checks;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
 fn verify_primitive(key: &[u8; 32], message: &[u8], signature: &[u8; 64]) -> bool {
     use aws_lc_rs::signature::{UnparsedPublicKey, ED25519};
     UnparsedPublicKey::new(&ED25519, key).verify(message, signature).is_ok()
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(any(target_arch = "wasm32", not(feature = "native")))]
 fn verify_primitive(key: &[u8; 32], message: &[u8], signature: &[u8; 64]) -> bool {
     use ed25519_dalek::{Signature, Verifier, VerifyingKey};
     VerifyingKey::from_bytes(key).is_ok_and(|key| key.verify(message, &Signature::from_bytes(signature)).is_ok())

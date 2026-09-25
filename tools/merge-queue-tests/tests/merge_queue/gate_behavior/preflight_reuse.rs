@@ -118,7 +118,10 @@ fn workspace_preflight_narrows_its_target_and_partitions_the_main_run() {
             "{args:?}"
         );
         assert_eq!(option_value(args, "-j"), "8");
-        assert_eq!(option_value(args, "--features"), "witchy-wir/native");
+        assert_eq!(
+            option_value(args, "--features"),
+            "witchy-wir/native,witchy-lower/native-test-runtime"
+        );
     }
     assert!(!runs[0].iter().any(|arg| arg == "--workspace"), "{:?}", runs[0]);
     assert_eq!(option_value(runs[0], "-p"), "witchy-lower");
@@ -239,7 +242,10 @@ fn scoped_preflight_keeps_the_complete_main_selection() {
         "scoped main must not subtract replay: {main}"
     );
     for args in &runs {
-        assert_eq!(option_value(args, "--features"), "witchy-wir/native");
+        assert!(
+            !args.iter().any(|arg| arg == "--features"),
+            "scoped lower/root selection redundantly enabled native features: {args:?}",
+        );
     }
     assert_eq!(runs[1].iter().filter(|arg| *arg == "-p").count(), 2);
 }
