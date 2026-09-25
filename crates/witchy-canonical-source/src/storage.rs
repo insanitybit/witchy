@@ -62,16 +62,14 @@ impl ListElementProjection {
         if matches!(ty.unqualified(), Type::Fn(..)) {
             return Self::LayoutOnly;
         }
-        if !is_v1_list_element_type(ty, definitions) {
-            return Self::Refused;
-        }
         match StoragePlan::classify(ty, definitions, |_| Some(0)) {
             StoragePlan::Owned(CarrierElement::Bytes) => {
                 Self::RetainedByteBuffer(RetainedByteBufferKind::Bytes)
             }
             plan => match plan.into_carrier_element() {
                 Some(plan) => Self::Owned(plan),
-                None => Self::LayoutOnly,
+                None if is_v1_list_element_type(ty, definitions) => Self::LayoutOnly,
+                None => Self::Refused,
             },
         }
     }

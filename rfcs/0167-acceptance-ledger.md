@@ -65,6 +65,18 @@ Direct whole-root `&Bytes` remains refused because its current byte-buffer
 view key would conflate the two source types. This widens the carrier grammar;
 admitted Wasm and zero-leak evidence are required before any A–O claim.
 
+Row G recursive list-element admission (implemented but unverified,
+2026-09-25): a complete shared `StoragePlan` carrier proof now admits a
+list element before the older field-shape predicate is consulted. The old
+predicate remains only for layout-only forms such as callable elements and
+cannot grant SafeWIR carrier authority. The structural carrier has explicit
+128-depth and 4,096-node limits, rejects qualified children, capabilities,
+must-consume aggregates, and nominal cycles, and still needs independent
+physical correspondence at admission. This can advance deeply nested
+structural elements beyond the old predicate's 64-depth limit; their positive
+compiler path and admitted Wasm semantics are not yet proven. No A–O row
+closes here.
+
 Row G retained byte-buffer layout class (architecture implemented, semantic
 evidence unchanged, 2026-09-25): the shared source-storage projection now
 classifies exact `Bytes` as a retained raw-byte buffer, and the list-element
