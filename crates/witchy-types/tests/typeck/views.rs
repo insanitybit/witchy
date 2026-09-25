@@ -1,4 +1,4 @@
-use crate::typeck::check;
+use witchy_types::typeck::check;
 
 #[test]
 fn view_qualifiers_and_unsupported_authority_carriers_reject() {

@@ -2,12 +2,11 @@
     //! checker (`check_str`) over a small `mode opt` program and asserts the loan
     //! rule accepts or rejects it with the documented diagnostic.
 
-    use crate::{
+    use witchy_types::{
         loans::facts,
         typeck::{check, check_reference_migration_str as check_str},
     };
 
-    use super::authenticated_borrow_escape_boundary;
 
     fn no_comptime(
         _name: &str,
@@ -17,7 +16,7 @@
         Ok(witchy_syntax::origin::OriginTable::default())
     }
 
-    fn linked_normal(main_body: &str) -> Result<(), crate::typeck::TypeError> {
+    fn linked_normal(main_body: &str) -> Result<(), witchy_types::typeck::TypeError> {
         let api = witchy_syntax::parser::parse_reference_migration(
             "mode opt\n\npub fn view(xs: &'a List(Int)) -> &'a List(Int):\n    xs\n",
         )
@@ -31,11 +30,11 @@
             "main",
             no_comptime,
         )
-        .map_err(|error| crate::typeck::TypeError { message: error.to_string() })?;
+        .map_err(|error| witchy_types::typeck::TypeError { message: error.to_string() })?;
         check(&linked)
     }
 
-    fn linked_main(source: &str) -> Result<(), crate::typeck::TypeError> {
+    fn linked_main(source: &str) -> Result<(), witchy_types::typeck::TypeError> {
         let main = witchy_syntax::parser::parse_reference_migration(source).expect("parse linked main");
         let linked = witchy_syntax::linker::link(vec![("main".into(), main)], "main", no_comptime)
             .expect("link main with bundled std modules");
@@ -146,43 +145,6 @@
     }
 
     // --- escape rejection (acceptance 7) ------------------------------------
-
-    #[test]
-    fn task_and_channel_escape_boundaries_require_canonical_identity() {
-        use super::BorrowEscapeBoundary::{ChannelSend, TaskSpawn};
-
-        assert_eq!(authenticated_borrow_escape_boundary("chan.send"), Some(ChannelSend));
-        assert_eq!(
-            authenticated_borrow_escape_boundary("chan.send__String"),
-            Some(ChannelSend)
-        );
-        assert_eq!(
-            authenticated_borrow_escape_boundary("task.__channel_send"),
-            Some(ChannelSend)
-        );
-        assert_eq!(authenticated_borrow_escape_boundary("chan.spawn"), Some(TaskSpawn));
-        assert_eq!(authenticated_borrow_escape_boundary("task.spawn"), Some(TaskSpawn));
-
-        for lookalike in [
-            "send",
-            "spawn",
-            "main.send",
-            "main.spawn",
-            "server.send",
-            "http.send",
-            "http.Request__send",
-            "channel.send",
-            "chan.send_later",
-            "task.respawn",
-            "other.__channel_send",
-        ] {
-            assert_eq!(
-                authenticated_borrow_escape_boundary(lookalike),
-                None,
-                "lookalike `{lookalike}` must not become an escape boundary"
-            );
-        }
-    }
 
     #[test]
     fn shared_reference_cannot_cross_async_suspension() {

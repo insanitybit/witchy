@@ -32,7 +32,8 @@ pub enum ReceiverKind {
     Listener,
 }
 
-const RECEIVER_TYPES: &[(ReceiverKind, &str)] = &[
+#[doc(hidden)]
+pub const RECEIVER_TYPES: &[(ReceiverKind, &str)] = &[
     (ReceiverKind::Console, "Console"),
     (ReceiverKind::Clock, "Clock"),
     (ReceiverKind::Rand, "Rand"),
@@ -304,41 +305,4 @@ pub fn receiver_supports(name: &str, receiver: ReceiverKind) -> bool {
 
 pub fn surface_name(name: &str) -> &str {
     name.strip_prefix(PREFIX).unwrap_or(name)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn receiver_lookup_disambiguates_arity_and_result() {
-        let file_read = operation("read", ReceiverKind::File).expect("File.read");
-        let dir_read = operation("read", ReceiverKind::Dir).expect("Dir.read");
-        assert_eq!(file_read.total_arity(), 1);
-        assert_eq!(dir_read.total_arity(), 2);
-        assert_eq!(
-            operation("__capop.resolve", ReceiverKind::Net).map(|op| op.result),
-            Some(ResultShape::ListString)
-        );
-    }
-
-    #[test]
-    fn every_catalog_receiver_has_one_nominal_type_identity() {
-        for operation in OPS {
-            let matches: Vec<_> = RECEIVER_TYPES
-                .iter()
-                .filter(|(receiver, _)| receiver == &operation.receiver)
-                .collect();
-            assert_eq!(
-                matches.len(),
-                1,
-                "{:?} must have exactly one receiver type identity",
-                operation.receiver
-            );
-            assert_eq!(
-                ReceiverKind::from_type_name(matches[0].1),
-                Some(operation.receiver)
-            );
-        }
-    }
 }

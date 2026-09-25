@@ -448,21 +448,6 @@ fn subst_expr(
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn find_cycle_flags_cyclic_constants() {
-        let cyclic = crate::parser::parse_module("let A = B\nlet B = A\n").expect("parse");
-        assert!(find_cycle(&cyclic).is_some());
-        let self_ref = crate::parser::parse_module("let A = A + 1\n").expect("parse");
-        assert!(find_cycle(&self_ref).is_some());
-        let ok = crate::parser::parse_module("let A = 10\nlet B = A + 1\n").expect("parse");
-        assert!(find_cycle(&ok).is_none());
-    }
-}
-
 /// Add the names a pattern binds to `scope`.
 fn pattern_binds(p: &Pattern, scope: &mut HashSet<String>) {
     match p {

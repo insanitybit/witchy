@@ -2131,3 +2131,23 @@ fn main() -> Int:
     }
 
 }
+
+// The crate's library target is `test = false`: every in-crate unit test that
+// survived the 2026-09-24 cut lives in these modules, compiled against the
+// ordinary (non-`cfg(test)`) library build.
+#[path = "typeck/access.rs"]
+mod access;
+#[path = "typeck/capabilities.rs"]
+mod capabilities;
+#[path = "typeck/checker.rs"]
+mod checker;
+#[path = "typeck/loans.rs"]
+mod loans;
+#[path = "typeck/own.rs"]
+mod own;
+#[path = "typeck/reference_erasure.rs"]
+mod reference_erasure;
+#[path = "typeck/std_pruning.rs"]
+mod std_pruning;
+#[path = "typeck/views.rs"]
+mod views;

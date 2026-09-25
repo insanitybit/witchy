@@ -4653,7 +4653,3 @@ fn lower_sugar_rooted_view_projection(e: &mut Expr, retain_subscripts: bool) {
         _ => lower_sugar_expr(e, retain_subscripts),
     }
 }
-
-#[cfg(test)]
-#[path = "parser_tests.rs"]
-mod tests;

@@ -13,7 +13,9 @@ use crate::typeck::{Ty, TypedModule};
 use witchy_canonical_source::abi::*;
 
 
-struct Context {
+/// Exposed for the ABI-security pins in `tests/typeck/capabilities.rs`.
+#[doc(hidden)]
+pub struct Context {
     nominal_ordinals: BTreeMap<String, u32>,
     type_declarations: std::collections::BTreeSet<String>,
     /// The module's type definitions, so a record-root view is admitted by the
@@ -22,7 +24,8 @@ struct Context {
 }
 
 impl Context {
-    fn from_module(module: &ast::Module) -> Self {
+    #[doc(hidden)]
+    pub fn from_module(module: &ast::Module) -> Self {
         let nominal_ordinals = module
             .items
             .iter()
@@ -83,7 +86,9 @@ pub(crate) fn canonical_ast_type_bytes(
 /// contribute open ABI entries, including nested function types.
 /// Preserve the checked declaration's resource qualifier, erased by HM value
 /// types. This never substitutes annotation payloads for checked closed types.
-pub(crate) fn checked_declaration_signature(typed: &TypedModule, name: &str) -> Result<Type, CanonicalAbiError> {
+/// Exposed for the ABI-security pins in `tests/typeck/capabilities.rs`.
+#[doc(hidden)]
+pub fn checked_declaration_signature(typed: &TypedModule, name: &str) -> Result<Type, CanonicalAbiError> {
     let mut signature = typed.table().function_type(name).ok_or_else(||
         CanonicalAbiError::InvalidCallable(format!("checked declaration `{name}` has no finalized signature")))?;
     let declaration = typed.module().items.iter().find_map(|item| match item {
@@ -314,7 +319,9 @@ fn value_from_ast(ty: &Type, context: &Context) -> Result<CanonicalValueKind, Ca
     })
 }
 
-fn rooted_view_from_ty(
+/// Exposed for the ABI-security pins in `tests/typeck/capabilities.rs`.
+#[doc(hidden)]
+pub fn rooted_view_from_ty(
     payload: &Ty,
     context: &Context,
 ) -> Result<CanonicalReferenceKind, CanonicalAbiError> {
@@ -395,7 +402,9 @@ fn rooted_view_from_ty(
     }
 }
 
-fn rooted_view_from_ast(
+/// Exposed for the ABI-security pins in `tests/typeck/capabilities.rs`.
+#[doc(hidden)]
+pub fn rooted_view_from_ast(
     payload: &Type,
     context: &Context,
 ) -> Result<CanonicalReferenceKind, CanonicalAbiError> {
@@ -880,67 +889,3 @@ fn builtin_nominal_tag(name: &str, arity: usize) -> Result<Option<u32>, Canonica
 
 fn is_capability_name(name: &str) -> bool { matches!(name, "Console" | "Clock" | "Rand" | "Env" | "Secret" | "SecretStore" | "Exec" | "Fetch" | "Dir" | "File" | "Net" | "Socket" | "Listener" | "BuildOut" | "BuildRead" | "BuildEnv" | "BuildNet" | "BuildExec") }
 fn capability_name(name: &str) -> CanonicalCapabilityKind { match name { "Console" => CanonicalCapabilityKind::Console, "Clock" => CanonicalCapabilityKind::Clock, "Rand" => CanonicalCapabilityKind::Rand, "Env" => CanonicalCapabilityKind::Env, "Secret" => CanonicalCapabilityKind::Secret, "SecretStore" => CanonicalCapabilityKind::SecretStore, "Exec" => CanonicalCapabilityKind::Exec, "Fetch" => CanonicalCapabilityKind::Fetch, "Dir" => CanonicalCapabilityKind::Dir, "File" => CanonicalCapabilityKind::File, "Net" => CanonicalCapabilityKind::Net, "Socket" => CanonicalCapabilityKind::Socket, "Listener" => CanonicalCapabilityKind::Listener, "BuildOut" => CanonicalCapabilityKind::BuildOut, "BuildRead" => CanonicalCapabilityKind::BuildRead, "BuildEnv" => CanonicalCapabilityKind::BuildEnv, "BuildNet" => CanonicalCapabilityKind::BuildNet, "BuildExec" => CanonicalCapabilityKind::BuildExec, _ => unreachable!("checked capability name") } }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::typeck;
-
-    fn typed(source: &str) -> TypedModule {
-        let module = witchy_syntax::parser::parse_module(source).expect("parse");
-        typeck::annotate_checked(module).expect("type check")
-    }
-
-    fn manifest(source: &str) -> CanonicalCallableAbiManifest {
-        let typed = typed(source);
-        let functions = typed
-            .module()
-            .items
-            .iter()
-            .filter_map(|item| match item {
-                Item::Function(function) => Some(function.name.clone()),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-        derive_manifest(&typed, &functions).expect("manifest")
-    }
-
-    #[test]
-    fn registry_secret_store_callable_abi_is_closed_and_kind_bound() {
-        let store = manifest("fn keep(store: SecretStore) -> SecretStore:\n    store\n");
-        let secret = manifest("fn keep(secret: Secret) -> Secret:\n    secret\n");
-        let clock = manifest("fn keep(clock: Clock) -> Clock:\n    clock\n");
-        assert_ne!(store.digest(), secret.digest());
-        assert_ne!(store.digest(), clock.digest());
-        assert_ne!(secret.digest(), clock.digest());
-    }
-
-    #[test]
-    fn nested_int_list_slice_has_exact_checked_and_declared_identity() {
-        let typed = typed("fn relay(view: &[List(Int)]) -> &[List(Int)]:\n    view\n");
-        let context = Context::from_module(typed.module());
-        let element = Ty::List(std::rc::Rc::new(Ty::Int));
-        let checked = rooted_view_from_ty(&Ty::Named("Slice".into(), vec![element].into()), &context)
-            .expect("exact nested-list slice has a checked carrier");
-        let signature = checked_declaration_signature(&typed, "relay")
-            .expect("checked declaration signature");
-        let Type::Fn(parameters, _, _, _) = signature else { panic!("callable signature") };
-        let Type::Qualified(ast::TypeQual::View, declared_payload) = &parameters[0] else {
-            panic!("rooted nested-list slice parameter")
-        };
-        let declared = rooted_view_from_ast(declared_payload, &context)
-            .expect("exact declared carrier");
-        assert_eq!(checked, declared);
-        let whole = rooted_view_from_ty(
-            &Ty::List(std::rc::Rc::new(Ty::List(std::rc::Rc::new(Ty::Int)))), &context,
-        ).expect("whole nested-list root");
-        assert_ne!(checked, whole, "slice projection and whole root cannot share an ABI key");
-
-        let raw = Type::Named("List".into(), vec![Type::Named("Int".into(), Vec::new())]);
-        for qualifier in [ast::TypeQual::Unique, ast::TypeQual::Frozen] {
-            let near_miss = Type::Slice(Box::new(Type::Qualified(qualifier, Box::new(raw.clone()))));
-            assert!(rooted_view_from_ast(&near_miss, &context).is_err(),
-                "qualified child cannot inherit the exact nested-list slice key");
-        }
-    }
-}

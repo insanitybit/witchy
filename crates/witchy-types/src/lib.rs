@@ -35,13 +35,12 @@ pub mod traits;
 pub mod typed_execution;
 pub mod typed_async_lowering;
 pub mod std_pruning;
-mod std_pruning_roots;
+/// Generated census of std names the compiler spells; public only so the
+/// integration test `std_pruning::tests::pruning_roots_cover_every_compiler_std_literal`
+/// can compare it against the sources.
+#[doc(hidden)]
+pub mod std_pruning_roots;
 pub mod typeck;
 pub mod try_context;
 pub mod witness;
 pub mod views;
-
-#[cfg(test)]
-mod access_tests;
-#[cfg(test)]
-mod views_tests;

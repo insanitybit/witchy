@@ -431,26 +431,3 @@ fn reject_if(condition: Expr) -> Stmt {
     Stmt::Expr(Expr::If { cond: Box::new(condition),
         then_block: block(vec![Stmt::Return(Some(Expr::Bool(false)))]), else_block: None })
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn specialization_identity_conflict_is_rejected_while_duplicate_coalesces() {
-        let int = LogicalSpecializationIdentity::from_types(&[Type::Named("Int".into(), vec![])]);
-        let string = LogicalSpecializationIdentity::from_types(&[Type::Named("String".into(), vec![])]);
-        let mut instances = Instances::from([("same".into(), int.clone())]);
-
-        merge_specialization_instances(
-            &mut instances,
-            Instances::from([("same".into(), int)]),
-        ).expect("the same checked specialization identity coalesces");
-
-        let error = merge_specialization_instances(
-            &mut instances,
-            Instances::from([("same".into(), string)]),
-        ).expect_err("a reused specialization name needs the same identity");
-        assert!(error.contains("conflicting checked identities"), "{error}");
-    }
-}

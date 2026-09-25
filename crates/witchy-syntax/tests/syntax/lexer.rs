@@ -1,4 +1,4 @@
-    use super::*;
+use witchy_syntax::parser::parse_module as tokenize;
 
     #[test]
     fn rejects_tab_in_leading_indentation() {

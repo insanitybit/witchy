@@ -1,6 +1,6 @@
 // These tests preserve historical ownership behavior for the migration-only
 // reference grammar; ordinary source continues to use `check_str`.
-use super::check_reference_migration_str as check_str;
+use witchy_types::typeck::check_reference_migration_str as check_str;
 
 #[test]
 fn own_cannot_transfer_the_same_binding_twice_in_one_call() {

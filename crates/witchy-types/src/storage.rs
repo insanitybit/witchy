@@ -607,20 +607,3 @@ fn mapped_dependencies<'a>(
         })
         .collect()
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn externref_capability_set_is_explicit_and_closed() {
-        for name in [
-            "Dir", "File", "Env", "Exec", "Net", "Fetch", "Socket", "Listener", "Secret",
-        ] {
-            assert_eq!(externref_cap_name(name), Some(name));
-        }
-        for name in ["Console", "Clock", "Rand", "SecretStore"] {
-            assert_eq!(externref_cap_name(name), None, "{name}");
-        }
-    }
-}

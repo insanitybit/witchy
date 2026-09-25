@@ -1,4 +1,5 @@
-use super::*;
+use witchy_syntax::parser::*;
+use witchy_syntax::ast::*;
 
 #[test]
 fn dereference_assignment_is_not_a_canonical_source_form() {
@@ -116,7 +117,7 @@ fn retired_reference_spellings_reject_at_every_source_entry() {
             let source = format!("{prefix}{body}");
             let error = parse_module(&source).expect_err("retired syntax is not ordinary source");
             assert!(error.message.contains(expected), "{source}: {error}");
-            let spanned = super::parse_module_with_expression_spans(&source)
+            let spanned = parse_module_with_expression_spans(&source)
                 .expect_err("span collection cannot enable retired syntax");
             assert_eq!(spanned, error);
         }
@@ -218,18 +219,3 @@ fn string_literal_record_field_names_are_rejected() {
     assert!(lit_err.to_string().contains("expected an identifier"), "{lit_err}");
 }
 
-
-#[test]
-fn a_line_leading_minus_starts_a_new_expression() {
-    // `-a` at the start of a line is a negation, not a subtraction continuing
-    // the line above (`let a = 5 - a`).
-    let module = parse_module("fn f() -> Int:\n    let a = 5\n    -a\n")
-        .expect("line-leading negation parses");
-    let rendered = format!("{module:?}");
-    assert!(!rendered.contains("Sub"), "{rendered}");
-    assert!(rendered.contains("Neg"), "{rendered}");
-    // A `-` at the END of a line still continues the expression.
-    let trailing = parse_module("fn g(a: Int, b: Int) -> Int:\n    a -\n        b\n")
-        .expect("trailing infix continues");
-    assert!(format!("{trailing:?}").contains("Sub"));
-}

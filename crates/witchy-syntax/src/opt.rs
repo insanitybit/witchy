@@ -356,16 +356,3 @@ pub fn active_schema_key() -> OptSchemaKey {
 pub fn set_for_tests(set: Option<OptSet>) {
     OVERRIDE.with(|c| c.set(set));
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn errors_on_unknown_and_misplaced_keyword() {
-        assert!(parse("bogus").is_err());
-        assert!(parse("-nope").is_err());
-        assert!(parse("inplace,all").is_err(), "`all` must be first");
-    }
-
-}

@@ -5135,7 +5135,3 @@ pub(crate) fn walk_block<'a>(b: &'a Block, f: &mut impl FnMut(&'a Expr)) {
         walk_stmt_exprs(s, f);
     }
 }
-
-#[cfg(test)]
-#[path = "loans_tests.rs"]
-mod tests;

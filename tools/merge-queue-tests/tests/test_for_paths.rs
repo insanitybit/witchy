@@ -393,6 +393,15 @@ fn gate_nextest_compiler_crate_edits_run_the_std_pruning_root_census() {
             output.contains("-p witchy-types") && output.contains(census),
             "{path} did not select the std-pruning root census: {output}",
         );
+        // witchy-types' lib target is `test = false`; the census lives in its
+        // `typeck` integration binary, which a narrowed `--lib` selection
+        // must name explicitly or the expression silently matches nothing.
+        let selection = output.lines().next().unwrap_or_default();
+        let words: Vec<&str> = selection.split_whitespace().collect();
+        assert!(
+            !words.contains(&"--lib") || words.windows(2).any(|pair| pair == ["--test", "typeck"]),
+            "{path} narrowed targets without the census binary: {output}",
+        );
     }
     let output = gate_nextest(&["std/meta.witchy"]);
     assert!(!output.contains(census), "a std-only edit selected the census: {output}");

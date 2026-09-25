@@ -1330,7 +1330,3 @@ pub(crate) fn apply_layout(tokens: Vec<Token>) -> Vec<Token> {
     }
     out
 }
-
-#[cfg(test)]
-#[path = "lexer_tests.rs"]
-mod tests;

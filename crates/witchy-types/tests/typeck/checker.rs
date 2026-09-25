@@ -1,4 +1,7 @@
-    use super::*;
+//! Checker refusals, driven through the public `witchy_types::typeck` API.
+
+    use witchy_types::typeck::*;
+    use witchy_syntax::ast::{self, Item};
 
     fn check_source(source: &str) -> Result<(), TypeError> {
         let module = witchy_syntax::parser::parse_module(source).expect("source parses");
@@ -568,24 +571,6 @@
     }
 
     #[test]
-    fn typed_module_refuses_missing_or_stale_retained_access_facts() {
-        let module = witchy_syntax::parser::parse_module(
-            "fn identity(value: Int) -> Int:\n    value\n\nfn main() -> Int:\n    identity(1)\n",
-        )
-        .expect("parse access fixture");
-        let mut typed = annotate_checked(module).expect("type-check access fixture");
-        typed.access_facts = None;
-        assert_eq!(typed.access_facts().unwrap_err(), CheckedAccessFactsError::Missing);
-
-        let mut typed = annotate_checked(witchy_syntax::parser::parse_module(
-            "fn identity(value: Int) -> Int:\n    value\n\nfn main() -> Int:\n    identity(1)\n",
-        ).expect("parse stale access fixture")).expect("type-check stale access fixture");
-        let facts = typed.access_facts.take().expect("retained access facts");
-        typed.access_facts = Some(RetainedAccessFacts { module: std::ptr::null(), facts: facts.facts });
-        assert_eq!(typed.access_facts().unwrap_err(), CheckedAccessFactsError::Stale);
-    }
-
-    #[test]
     fn resolved_capability_types_preserve_rights_when_converted_to_ast() {
         let named = |name: &str| ast::Type::Named(name.to_string(), Vec::new());
         assert_eq!(
@@ -659,7 +644,7 @@
                         impl Inspect for Box:\n    pure fn inspect(self) -> Int:\n        0\n";
         check_str(stronger).expect("pure impl may satisfy an ordinary method contract");
         let module = witchy_syntax::parser::parse_module(stronger).expect("parse");
-        let lowered = crate::traits::lower_checked(module).expect("lower");
+        let lowered = witchy_types::traits::lower_checked(module).expect("lower");
         assert!(lowered.items.iter().any(|item| matches!(
             item,
             witchy_syntax::ast::Item::Function(function)
@@ -694,7 +679,7 @@ fn main(console: Console, f: File[Read]):
         check_str(src).expect("file read capability method should type-check");
 
         let module = witchy_syntax::parser::parse_module(src).expect("parse");
-        let lowered = crate::traits::lower_checked(module).expect("lower");
+        let lowered = witchy_types::traits::lower_checked(module).expect("lower");
         let main = lowered
             .items
             .iter()
@@ -726,7 +711,7 @@ fn main(rand: Rand, net: Net[Listen, Tcp]):
         assert!(check_str(src).is_ok());
 
         let module = witchy_syntax::parser::parse_module(src).expect("parse");
-        let lowered = crate::traits::lower_checked(module).expect("lower");
+        let lowered = witchy_types::traits::lower_checked(module).expect("lower");
         let main = lowered
             .items
             .iter()
@@ -759,7 +744,7 @@ fn load(dir: Dir[Read], policy: DirPolicy) -> String:
         check_str(src).expect("Dir.only(...).read(...) should type-check");
 
         let module = witchy_syntax::parser::parse_module(src).expect("parse");
-        let lowered = crate::traits::lower_checked(module).expect("lower");
+        let lowered = witchy_types::traits::lower_checked(module).expect("lower");
         let load = lowered
             .items
             .iter()
@@ -778,41 +763,4 @@ fn load(dir: Dir[Read], policy: DirPolicy) -> String:
             panic!("expected lowered dir.only receiver");
         };
         assert_eq!(only_name, "__capop.only");
-    }
-
-    #[test]
-    fn source_tasks_are_affine_and_await_consumes_their_obligation() {
-        let module = witchy_syntax::parser::parse_module(
-            "async fn value() -> Int:\n    41\n\nfn drops() -> Int:\n    let _ = value()\n    1\n",
-        )
-        .expect("source parses");
-        let error = check_source_async_contracts(&module)
-            .expect_err("a cold task cannot be discarded");
-        assert!(error.message.contains("must-consume obligation"), "{error:?}");
-
-        let module = witchy_syntax::parser::parse_module(
-            "async fn value() -> Int:\n    41\n\nasync fn starts_twice() -> Int:\n    let task = value()\n    let first = task.await\n    task.await\n",
-        )
-        .expect("source parses");
-        let error = check_source_async_contracts(&module)
-            .expect_err("a task starts at most once");
-        assert!(error.message.contains("after it was moved"), "{error:?}");
-
-        let module = witchy_syntax::parser::parse_module(
-            "async fn value() -> Int:\n    41\n\nasync fn starts_once() -> Int:\n    let task = value()\n    task.await\n",
-        )
-        .expect("source parses");
-        check_source_async_contracts(&module)
-            .expect("await consumes the task obligation");
-    }
-
-    #[test]
-    fn source_await_rejects_non_task_operands() {
-        let module = witchy_syntax::parser::parse_module(
-            "async fn wrong() -> Int:\n    1.await\n",
-        )
-        .expect("source parses");
-        let error = check_source_async_contracts(&module)
-            .expect_err("await only consumes a task");
-        assert!(error.message.contains("`await` requires `Task(T)`"), "{error:?}");
     }

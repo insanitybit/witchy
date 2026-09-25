@@ -206,9 +206,11 @@ emit_gate_nextest() {
         need_witchy=1
         expr="${expr:+$expr or }test(stdlib_docs_are_current)"
     fi
-    # One 0.2s test. Its binary is witchy-types' lib test, which the gate's
-    # warm target already holds unless witchy-types itself changed, and then
-    # the crate is selected anyway.
+    # One 0.2s test. Its binary is witchy-types' `typeck` integration test
+    # (the crate's lib target is `test = false`), which the gate's warm target
+    # already holds unless witchy-types itself changed, and then the crate is
+    # selected anyway. The narrowed-target form below names `--test typeck`
+    # for it explicitly, since `--lib` no longer reaches it.
     if [ "$gate_need_std_roots" -eq 1 ]; then
         case " $args " in
             *" -p witchy-types "*) ;;
@@ -332,6 +334,9 @@ emit_gate_nextest() {
                 file="${file##*/}"
                 targets="$targets --test ${file%.rs}"
             done
+        fi
+        if [ "$gate_need_std_roots" -eq 1 ] && [[ " $targets " != *" --test typeck "* ]]; then
+            targets="$targets --test typeck"
         fi
         args="$args --lib$targets"
     fi

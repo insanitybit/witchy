@@ -8,6 +8,12 @@ description = "witchy compiler — type checking, trait resolution, and monomorp
 
 # Depends only on the front-end; the tests are plain #[cfg(test)] units (no
 # wasmtime), so this crate builds on every target including the wasm playground.
+# The library's own `cfg(test)` build is a second full compile of the crate;
+# its tests live in tests/ as one integration binary instead.
+[lib]
+test = false
+doctest = false
+
 [dependencies]
 witchy-canonical-source = { path = "../witchy-canonical-source" }
 witchy-cap-model = { path = "../witchy-cap-model" }

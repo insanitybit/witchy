@@ -323,7 +323,3 @@ fn fold_binary(op: BinOp, lhs: &Expr, rhs: &Expr) -> Option<Expr> {
         _ => return None,
     })
 }
-
-#[cfg(test)]
-#[path = "optimize_tests.rs"]
-mod tests;

@@ -3348,7 +3348,3 @@ fn string_lit(v: &str) -> String {
     s.push('"');
     s
 }
-
-#[cfg(test)]
-#[path = "format_tests.rs"]
-mod tests;

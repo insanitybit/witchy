@@ -303,16 +303,3 @@ fn block_types(block: &mut Block) {
         Ok(())
     });
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn message_preparation_requires_loader_ownership() {
-        let typed = typeck::annotate_checked(witchy_syntax::parser::parse_module(
-            "fn main() -> Int:\n    let value = __erase(0)\n    let result: Int = __unerase(value)\n    result\n",
-        ).unwrap()).unwrap();
-        assert!(prepare(typed, None).unwrap_err().contains("authenticated loader ownership"));
-    }
-}

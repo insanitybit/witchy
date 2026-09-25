@@ -10,6 +10,12 @@ description = "witchy compiler — the lexer, parser, and AST (source text → A
 # target-neutral; native cargo test executables additionally enable the
 # advisory cross-process std-expansion cache below. The wasm playground omits
 # that filesystem-only tier.
+# The library's own `cfg(test)` build is a second full compile of the crate;
+# its tests live in tests/ as one integration binary instead.
+[lib]
+test = false
+doctest = false
+
 [dependencies]
 witchy-cap-model = { path = "../witchy-cap-model" }
 # Fast non-DoS-resistant hasher for internal tables (see witchy-types).

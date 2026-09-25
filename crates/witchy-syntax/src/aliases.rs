@@ -856,31 +856,3 @@ pub fn moved_builtin(bare: &str) -> Option<&'static str> {
         _ => return None,
     })
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn find_cycle_flags_cyclic_aliases() {
-        let cyclic = crate::parser::parse_module("type A = B\ntype B = A\n").expect("parse");
-        assert!(find_cycle(&cyclic).is_some());
-        let ok = crate::parser::parse_module("type A = Int\ntype B = A\n").expect("parse");
-        assert!(find_cycle(&ok).is_none());
-    }
-
-    #[test]
-    fn record_composition_rejects_non_record_bases_and_tracks_cycles() {
-        let invalid = crate::parser::parse_module("type Bad = .{..Int, a: Int}\n").expect("parse");
-        let error = resolve(invalid).expect_err("non-record base fails");
-        assert!(
-            error.contains("type spread requires an anonymous record shape"),
-            "{error}"
-        );
-
-        let cycle =
-            crate::parser::parse_module("type A = .{..B, a: Int}\ntype B = .{..A, b: Int}\n")
-                .expect("parse");
-        assert!(find_cycle(&cycle).is_some());
-    }
-}

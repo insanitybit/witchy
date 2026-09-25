@@ -138,7 +138,7 @@ fn malformed_checked_contracts_fail_loudly() {
 
 #[test]
 fn generic_lambda_context_rejects_qualifier_and_convention_erasure() {
-    let qualifier = crate::typeck::check_reference_migration_str(
+    let qualifier = witchy_types::typeck::check_reference_migration_str(
         "fn accept(f: fn(unique List(Int)) -> Int) -> Int:\n    0\n\n\
          fn generic(x: a) -> Int:\n    accept(fn(xs: List(Int)): 0)\n\n\
          fn main() -> Int:\n    0\n",
@@ -150,7 +150,7 @@ fn generic_lambda_context_rejects_qualifier_and_convention_erasure() {
         "{qualifier}"
     );
 
-    let convention = crate::typeck::check_reference_migration_str(
+    let convention = witchy_types::typeck::check_reference_migration_str(
         "fn accept(f: fn(own List(Int)) -> Int) -> Int:\n    0\n\n\
          fn generic(x: a) -> Int:\n    accept(fn(xs: List(Int)): 0)\n\n\
          fn main() -> Int:\n    0\n",

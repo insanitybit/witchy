@@ -28,7 +28,7 @@ landing)
     run abi cargo test --test misc wasm_abi_catalog
     run lower cargo test -p witchy-lower --test codegen canonical
     run wir cargo test -p witchy-wir --lib --features native
-    run types cargo test -p witchy-types --lib
+    run types cargo test -p witchy-types --test typeck
     run runtime cargo test -p witchy-runtime --features native
     ;;
 esac

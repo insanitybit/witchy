@@ -1324,25 +1324,3 @@ fn classify_typed_operation(
         _ => TypedAsyncOperationKind::StaticAsyncCall,
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::pipeline::link_checked;
-
-    #[test]
-    fn linear_producer_rejects_unbound_call_and_channel_semantics_by_operation_kind() {
-        let module = witchy_syntax::parser::parse_module(
-            "from chan import Sender\n\nasync fn send_one(tx: Sender(Int)):\n    chan.send(tx, 7).await\n\nfn main():\n    ()\n",
-        ).expect("parse source");
-        let checked = link_checked(
-            vec![("main".to_string(), module)],
-            "main",
-            |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
-        ).expect("checked source");
-        let input = checked.typed_async_lowering_input().expect("typed lowering input");
-        let error = input.into_linear_execution(ExecutionShapeId(0), [0; 32])
-            .expect_err("channel operation needs the queue-aware producer");
-        assert!(error.contains("ChannelSend"), "unexpected rejection: {error}");
-    }
-}

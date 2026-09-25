@@ -18,6 +18,8 @@ fn workspace_root() -> PathBuf {
 mod architecture;
 #[path = "repo_hygiene/example_source_paths.rs"]
 mod example_source_paths;
+#[path = "repo_hygiene/lib_test_targets.rs"]
+mod lib_test_targets;
 #[path = "repo_hygiene/release_packaging.rs"]
 mod release_packaging;
 #[path = "repo_hygiene/rfc_status_hygiene.rs"]

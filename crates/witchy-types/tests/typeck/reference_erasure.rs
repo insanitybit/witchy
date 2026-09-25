@@ -1,5 +1,5 @@
 // These fixtures exercise the retired lifetime-bearing migration grammar.
-use super::check_reference_migration_str as check_str;
+use witchy_types::typeck::check_reference_migration_str as check_str;
 
 #[test]
 fn canonical_reference_nominal_cannot_erase_into_owned_existential() {
