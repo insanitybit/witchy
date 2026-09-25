@@ -13,6 +13,7 @@ use witchy_canonical_source::aggregates::{
     dictionary_has_unadmitted_string_view_value, is_scalar_type, is_v1_list_element_type,
     scalar_aggregate_shape, shape_from_definition,
 };
+use witchy_canonical_source::carrier::CarrierElement;
 use witchy_syntax::ast::{self, Item, Type, TypeDef};
 use witchy_types::pipeline::CanonicalCheckedSource;
 use witchy_types::typeck;
@@ -43,79 +44,18 @@ pub(crate) struct SharedIntReferenceLayout {
 /// backing list's layout.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RootedSliceLayout {
-    /// One of `closure_owner_contract::ROOTED_SLICE_ELEMENTS`.
-    pub element: &'static str,
+    pub element: CarrierElement,
+    pub owner_type: GcTypeId,
     pub environment: LayoutId,
     pub list_root: LayoutId,
 }
 
-/// The stable opaque identity of the `&[T]` family for an admitted element
-/// name; `&[Int]` keeps its original identity.  Each identity leaves its
-/// successor free, like every owner family's list type.
-pub(crate) fn rooted_slice_owner_type(element: &str) -> Option<GcTypeId> {
-    let offset = match element {
-        "Int" => 0x2,
-        "Float" => 0x4,
-        "Bool" => 0x6,
-        "Duration" => 0x8,
-        "String" => 0xa,
-        "List(Int)" => 0xc,
-        "List(Float)" => 0xe,
-        "List(Bool)" => 0x10,
-        "List(Duration)" => 0x12,
-        "List(String)" => 0x14,
-        _ => return None,
-    };
-    Some(GcTypeId::new(0xc300_0000 + offset))
+pub(crate) fn rooted_slice_element_name(element: &Type) -> Option<CarrierElement> {
+    CarrierElement::from_checked_type(element)
 }
 
-pub(crate) fn rooted_int_slice_owner_type() -> GcTypeId {
-    rooted_slice_owner_type("Int").expect("Int is an admitted slice element")
-}
-
-/// The admitted element name of a slice element type.
-pub(crate) fn rooted_slice_element_name(element: &Type) -> Option<&'static str> {
-    if let Type::Named(name, arguments) = element
-        && name == "List"
-        && let [Type::Named(inner, inner_arguments)] = arguments.as_slice()
-        && inner_arguments.is_empty()
-    {
-        return match inner.as_str() {
-            "Int" => Some("List(Int)"),
-            "Float" => Some("List(Float)"),
-            "Bool" => Some("List(Bool)"),
-            "Duration" => Some("List(Duration)"),
-            "String" => Some("List(String)"),
-            _ => None,
-        };
-    }
-    let Type::Named(name, arguments) = element else { return None };
-    if !arguments.is_empty() {
-        return None;
-    }
-    // Nested List names are admitted only through the structural branch above.
-    match name.as_str() {
-        "Int" => Some("Int"),
-        "Float" => Some("Float"),
-        "Bool" => Some("Bool"),
-        "Duration" => Some("Duration"),
-        "String" => Some("String"),
-        _ => None,
-    }
-}
-
-pub(crate) fn rooted_slice_element_type(element: &str) -> Option<Type> {
-    match element {
-        "Int" | "Float" | "Bool" | "Duration" | "String" => {
-            Some(Type::Named(element.into(), Vec::new()))
-        }
-        "List(Int)" => Some(Type::Named("List".into(), vec![Type::Named("Int".into(), Vec::new())])),
-        "List(Float)" => Some(Type::Named("List".into(), vec![Type::Named("Float".into(), Vec::new())])),
-        "List(Bool)" => Some(Type::Named("List".into(), vec![Type::Named("Bool".into(), Vec::new())])),
-        "List(Duration)" => Some(Type::Named("List".into(), vec![Type::Named("Duration".into(), Vec::new())])),
-        "List(String)" => Some(Type::Named("List".into(), vec![Type::Named("String".into(), Vec::new())])),
-        _ => None,
-    }
+pub(crate) fn rooted_slice_element_type(element: &CarrierElement) -> Type {
+    element.source_type()
 }
 
 /// The source-derived storage family for one `fn` signature.  The callable
@@ -499,7 +439,7 @@ struct LayoutProjection {
     /// `List(T)` layout. Only an explicit checked `&[T]` source type may
     /// request it, per admitted element; observing a list alone must never
     /// mint the owner family.
-    rooted_slices_requested: BTreeSet<&'static str>,
+    rooted_slices_requested: BTreeSet<CarrierElement>,
     // Shared so the walk can hold a shape-memo scope on the map while it
     // mutates the rest of the projection (see `with_shape_memo`).
     definitions: std::rc::Rc<BTreeMap<String, TypeDef>>,
@@ -873,9 +813,9 @@ impl LayoutProjection {
             let opaque_aggregate = aggregate_owner_types.contains_key(&identity);
             let opaque_list_element = match identity.unqualified() {
                 Type::Named(name, arguments) if name == "List" && arguments.len() == 1 => {
-                    opaque_owner_type_for(
+                    type_has_opaque_owner(
                         &arguments[0], &self.definitions, &owner_types, &aggregate_owner_types,
-                    ).is_some()
+                    )
                 }
                 _ => false,
             };
@@ -892,7 +832,7 @@ impl LayoutProjection {
         // A `&[Int]` carrier forms `&Int` element views (`&xs[i]`, and the
         // by-value read `xs[i]` through one), so it needs the shared Int
         // reference family even where no `&Int` is written.
-        let shared_int_reference = if self.rooted_slices_requested.contains("Int") || self.roots.iter().any(|ty| {
+        let shared_int_reference = if self.rooted_slices_requested.contains(&CarrierElement::Scalar(witchy_canonical_source::abi::CanonicalScalarKind::Int)) || self.roots.iter().any(|ty| {
             matches!(ty.unqualified(), Type::Named(name, arguments)
                 if name == "Int" && arguments.is_empty())
         }) {
@@ -927,9 +867,16 @@ impl LayoutProjection {
             None
         };
         let mut rooted_slices = Vec::new();
-        for element in &self.rooted_slices_requested {
-            let element_type = rooted_slice_element_type(element)
-                .ok_or(CanonicalLayoutError::InvalidLayout("unsupported rooted slice element".into()))?;
+        for (ordinal, element) in self.rooted_slices_requested.iter().enumerate() {
+            let element_type = rooted_slice_element_type(element);
+            // Structural ordering assigns collision-free IDs in the reserved
+            // slice namespace. Each family also reserves the odd successor
+            // for its catalog list type, even though slices do not expose it.
+            let id = u32::try_from(ordinal).ok().and_then(|n| n.checked_mul(2))
+                .and_then(|n| n.checked_add(0xc300_0002))
+                .filter(|n| *n < 0xc400_0000)
+                .ok_or_else(|| CanonicalLayoutError::InvalidLayout("rooted slice owner ID overflow".into()))?;
+            let owner_type = GcTypeId::new(id);
             let list_type = Type::Named("List".into(), vec![element_type]);
             if !self.roots.iter().any(|ty| canonical_layout_type(ty, &self.definitions) == list_type) {
                 continue;
@@ -948,7 +895,7 @@ impl LayoutProjection {
             let environment = interner.intern_packed_record(vec![tag, root, start, length])
                 .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?;
             roots.insert(environment);
-            rooted_slices.push(RootedSliceLayout { element, environment, list_root });
+            rooted_slices.push(RootedSliceLayout { element: element.clone(), owner_type, environment, list_root });
         }
         let mut families = HashMap::new();
         for (signature, variants) in closure_specs {
@@ -1025,7 +972,7 @@ fn type_requires_opaque_owner(
     if matches!(ty, Type::Qualified(ast::TypeQual::View, inner)
         if matches!(inner.unqualified(), Type::Named(name, arguments)
             if name == "Int" && arguments.is_empty()))
-        || witchy_wir::canonical_safewir::closure_owner_contract::rooted_slice_element(ty).is_some()
+        || witchy_wir::canonical_safewir::closure_owner_contract::rooted_slice_carrier(ty).is_some()
     {
         return true;
     }
@@ -1105,7 +1052,7 @@ fn intern_closure_environment(
                     CanonicalLayoutError::InvalidLayout("opaque capture field overflow".into()))?;
                 continue;
             }
-            if opaque_owner_type_for(field, definitions, owner_types, aggregate_owner_types).is_some() {
+            if type_has_opaque_owner(field, definitions, owner_types, aggregate_owner_types) {
                 storage.push(CaptureStorage::OwnerField(owner_field));
                 owner_field = owner_field.checked_add(1).ok_or_else(||
                     CanonicalLayoutError::InvalidLayout("opaque capture field overflow".into()))?;
@@ -1135,41 +1082,40 @@ fn intern_closure_environment(
     Ok((layout, variants))
 }
 
-fn opaque_owner_type_for(
+fn type_has_opaque_owner(
     ty: &Type,
     definitions: &BTreeMap<String, TypeDef>,
     closure_owner_types: &HashMap<Type, GcTypeId>,
     aggregate_owner_types: &HashMap<Type, GcTypeId>,
-) -> Option<GcTypeId> {
+) -> bool {
     if matches!(ty, Type::Qualified(ast::TypeQual::View, inner)
         if matches!(inner.unqualified(), Type::Named(name, arguments)
             if name == "Int" && arguments.is_empty()))
     {
-        return Some(shared_int_reference_owner_type());
+        return true;
     }
     // A captured `&[T]` retains its rooted-slice owner, one family per
     // admitted element; the carrier is never unpacked into its root.
-    if let Some(element) = witchy_wir::canonical_safewir::closure_owner_contract::rooted_slice_element(ty) {
-        return rooted_slice_owner_type(element);
+    if witchy_wir::canonical_safewir::closure_owner_contract::rooted_slice_carrier(ty).is_some() {
+        return true;
     }
     if matches!(ty.unqualified(), Type::Fn(..)) {
-        return closure_owner_types.get(&canonical_closure_key(ty, definitions)).copied();
+        return closure_owner_types.contains_key(&canonical_closure_key(ty, definitions));
     }
     let identity = canonical_layout_type(ty, definitions);
-    if let Some(owner) = aggregate_owner_types.get(&identity) {
-        return Some(*owner);
+    if aggregate_owner_types.contains_key(&identity) {
+        return true;
     }
-    let Type::Named(name, arguments) = identity.unqualified() else { return None };
+    let Type::Named(name, arguments) = identity.unqualified() else { return false };
     if name != "List" || arguments.len() != 1 {
-        return None;
+        return false;
     }
     let element = &arguments[0];
-    let owner = if matches!(element.unqualified(), Type::Fn(..)) {
-        closure_owner_types.get(&canonical_closure_key(element, definitions))
+    if matches!(element.unqualified(), Type::Fn(..)) {
+        closure_owner_types.contains_key(&canonical_closure_key(element, definitions))
     } else {
-        aggregate_owner_types.get(&canonical_layout_type(element, definitions))
-    }?;
-    owner.get().checked_add(1).map(GcTypeId::new)
+        aggregate_owner_types.contains_key(&canonical_layout_type(element, definitions))
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1193,9 +1139,9 @@ fn intern_opaque_aggregate_environment(
         let mut storage = Vec::with_capacity(fields.len());
         for field in &fields {
             if witchy_canonical_source::capabilities::representation(field, definitions).is_some()
-                || opaque_owner_type_for(
+                || type_has_opaque_owner(
                     field, definitions, closure_owner_types, aggregate_owner_types,
-                ).is_some()
+                )
             {
                 storage.push(CaptureStorage::OwnerField(owner_field));
                 owner_field = owner_field.checked_add(1).ok_or_else(|| {
@@ -1659,7 +1605,7 @@ pub(crate) fn is_v1_scalar_record(definition: &TypeDef) -> bool {
 /// `tests/codegen/canonical_layouts.rs`; each panics on a violated invariant.
 #[doc(hidden)]
 pub mod self_checks {
-    use super::{LayoutProjection, Type};
+    use super::{CarrierElement, LayoutProjection, Type};
 
     fn named(name: &str) -> Type {
         Type::Named(name.to_owned(), Vec::new())
@@ -1736,20 +1682,20 @@ pub mod self_checks {
             let (bundle, _, _, _, slices) = explicit.finish_with_families()
                 .expect("explicit &[T] catalog finishes");
             let [slice] = slices.as_slice() else { panic!("only explicit &[{element}] mints its rooted-slice layout") };
-            assert_eq!(slice.element, element);
+            assert_eq!(slice.element, CarrierElement::from_checked_type(&named(element)).expect("checked element"));
             assert!(bundle.roots().contains(&slice.environment));
             assert!(bundle.roots().contains(&slice.list_root));
         }
 
-        // A third List shell has no carrier and mints no family.
+        // Recursive list elements use the same source and ownership relation.
         let nested = Type::Qualified(
             witchy_syntax::ast::TypeQual::View,
             Box::new(Type::Slice(Box::new(Type::Named("List".into(), vec![Type::Named("List".into(), vec![named("Int")])])))),
         );
-        let mut refused = LayoutProjection::default();
-        refused.visit_type(&nested).expect("deeper list slice still projects its list layout");
-        let (_, _, _, _, slices) = refused.finish_with_families().expect("catalog finishes");
-        assert!(slices.is_empty(), "&[List(List(Int))] has no rooted-slice family");
+        let mut recursive = LayoutProjection::default();
+        recursive.visit_type(&nested).expect("recursive list slice projects its list layout");
+        let (_, _, _, _, slices) = recursive.finish_with_families().expect("catalog finishes");
+        assert_eq!(slices.len(), 1);
     }
 
     fn heap_definition(name: &str, fields: Vec<Type>) -> witchy_syntax::ast::TypeDef {

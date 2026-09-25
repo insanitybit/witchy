@@ -1369,7 +1369,7 @@ impl<'a> Engine<'a> {
             OwnerOperation::ReadSharedSlice { destination, owner, family, field } => {
                 let family_info = self.owner_family(*family)?;
                 if !matches!(&family_info.source, OwnerFamilySource::SharedReference(source)
-                    if crate::canonical_safewir::closure_owner_contract::rooted_slice_element(source).is_some())
+                    if crate::canonical_safewir::closure_owner_contract::rooted_slice_carrier(source).is_some())
                 {
                     return Err(InterpretError::UnsupportedOperation("non-slice shared-slice family"));
                 }

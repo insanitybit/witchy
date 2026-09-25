@@ -157,6 +157,29 @@ Qualified and deeper child lists, slice `.owned()` materialization, and
 closure capture remain refused. No hand-computed result, admitted unoptimized
 Wasm run, or zero-leak audit has been recorded; row G remains open.
 
+Row G recursive slice-carrier implementation (implemented but unverified,
+2026-09-25): the checker, callable ABI, layout projection, lowering and
+SafeWIR now share a source-authenticated recursive element contract through
+`CanonicalSourceView`. A checked formation or finalized closed callable
+signature supplies the exact structural element; SafeWIR requires its scalar
+or owned String layout, and for each List layer an owned pointer and retained
+List header. Carrier IDs are allocated without collisions from the sorted
+canonical elements and carry no source authority. `.owned()` returns a fresh
+`List(T)` through the authenticated projection. Unsupported qualifiers,
+nominal lookalikes and elements without retain, clone and release remain
+fail-closed. Earlier concrete results remain evidence only for their exact
+shapes; the newly generic depths are not marked proven until a hand-computed
+expected result, admitted unoptimized Wasm, and zero-leak audit pass. The
+queued concrete nested-Int branch went red on an obsolete depth refusal and
+did not land; this structural implementation supersedes it. Row G and the
+remaining A–O acceptance rows stay open where their evidence is incomplete.
+Earlier depth and `.owned()` refusals in this row describe historical
+checkpoints; they are superseded for recursively proven slice elements.
+A focused compiler smoke with `&[List(List(Int))].owned()` printed the
+hand-computed `102` on admitted Wasm, and parity compared that one output line
+with the canonical interpreter. No zero-leak audit is recorded for this new
+recursive depth, so this does not close an acceptance row.
+
 Row G String-valued dictionary expansion (implemented but unverified,
 2026-09-24): exact whole-root `&Dict(String, String)` now has a distinct
 checked/source DictRoot identity. The retained dictionary owns its String

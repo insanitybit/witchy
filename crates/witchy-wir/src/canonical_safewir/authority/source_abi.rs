@@ -387,7 +387,7 @@ pub(super) fn is_direct_rooted_view_string(source: &witchy_syntax::ast::Type) ->
 
 /// A direct `&[T]` rooted slice view of an admitted element (`ListSlice`).
 pub(super) fn is_direct_rooted_view_slice(source: &witchy_syntax::ast::Type) -> bool {
-    super::super::closure_owner_contract::rooted_slice_element(source).is_some()
+    super::super::closure_owner_contract::rooted_slice_carrier(source).is_some()
 }
 
 /// The only non-scalar reference carriers the current canonical ABI can move

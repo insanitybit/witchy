@@ -354,11 +354,11 @@ pub fn rooted_view_from_ty(
         Ty::Named(name, arguments)
             if name.as_ref() == "Slice"
                 && arguments.len() == 1
-                && arguments.first().and_then(slice_element_name_ty).is_some() =>
+                && arguments.first().and_then(slice_element_carrier_ty).is_some() =>
         {
-            let element = arguments.first().and_then(slice_element_name_ty).expect("matched above");
+            let element = arguments.first().and_then(slice_element_carrier_ty).expect("matched above");
             Ok(CanonicalReferenceKind::RootedView {
-                payload: rooted_slice_payload_key(element),
+                payload: rooted_slice_payload_key(&element),
                 carrier: CanonicalRootedViewCarrier::ListSliceRoot,
             })
         }
@@ -446,18 +446,18 @@ pub fn rooted_view_from_ast(
             payload: rooted_scalar_payload_key(CanonicalScalarKind::Int),
             carrier: CanonicalRootedViewCarrier::IntScalarRoot,
         }),
-        Type::Slice(element) if slice_element_name_ast(element).is_some() => {
+        Type::Slice(element) if slice_element_carrier_ast(element).is_some() => {
             Ok(CanonicalReferenceKind::RootedView {
-                payload: rooted_slice_payload_key(slice_element_name_ast(element).expect("matched above")),
+                payload: rooted_slice_payload_key(&slice_element_carrier_ast(element).expect("matched above")),
                 carrier: CanonicalRootedViewCarrier::ListSliceRoot,
             })
         }
         Type::Named(name, arguments)
             if name == "Slice"
-                && matches!(arguments.as_slice(), [element] if slice_element_name_ast(element).is_some()) =>
+                && matches!(arguments.as_slice(), [element] if slice_element_carrier_ast(element).is_some()) =>
         {
             Ok(CanonicalReferenceKind::RootedView {
-                payload: rooted_slice_payload_key(slice_element_name_ast(&arguments[0]).expect("matched above")),
+                payload: rooted_slice_payload_key(&slice_element_carrier_ast(&arguments[0]).expect("matched above")),
                 carrier: CanonicalRootedViewCarrier::ListSliceRoot,
             })
         }
@@ -742,51 +742,19 @@ fn rooted_string_payload_key() -> CanonicalTypeKey {
     CanonicalTypeKey::from_digest(*blake3::hash(b"witchy.canonical-rooted-view-payload.v1/string").as_bytes())
 }
 
-/// The element of a `ListSliceRoot` carrier: one scalar kind carried inline,
-/// immutable String, or an owned List of one exact scalar kind or String.
-fn slice_element_name_ty(element: &Ty) -> Option<&'static str> {
-    match element {
-        Ty::Int => Some("Int"),
-        Ty::Float => Some("Float"),
-        Ty::Bool => Some("Bool"),
-        Ty::Duration => Some("Duration"),
-        Ty::String => Some("String"),
-        Ty::List(inner) if matches!(inner.as_ref(), Ty::Int) => Some("List(Int)"),
-        Ty::List(inner) if matches!(inner.as_ref(), Ty::Float) => Some("List(Float)"),
-        Ty::List(inner) if matches!(inner.as_ref(), Ty::Bool) => Some("List(Bool)"),
-        Ty::List(inner) if matches!(inner.as_ref(), Ty::Duration) => Some("List(Duration)"),
-        Ty::List(inner) if matches!(inner.as_ref(), Ty::String) => Some("List(String)"),
-        _ => None,
-    }
+fn slice_element_carrier_ty(element: &Ty) -> Option<witchy_canonical_source::carrier::CarrierElement> {
+    crate::typeck::ty_to_ast(element).as_ref()
+        .and_then(witchy_canonical_source::carrier::CarrierElement::from_checked_type)
 }
 
-fn slice_element_name_ast(element: &Type) -> Option<&'static str> {
-    if let Type::Named(name, arguments) = element
-        && name == "List"
-        && let [Type::Named(inner, inner_arguments)] = arguments.as_slice()
-        && inner_arguments.is_empty()
-    {
-        return match inner.as_str() {
-            "Int" => Some("List(Int)"),
-            "Float" => Some("List(Float)"),
-            "Bool" => Some("List(Bool)"),
-            "Duration" => Some("List(Duration)"),
-            "String" => Some("List(String)"),
-            _ => None,
-        };
-    }
-    let Type::Named(name, arguments) = element else { return None };
-    if !arguments.is_empty() {
-        return None;
-    }
-    ["Int", "Float", "Bool", "Duration", "String"].into_iter().find(|admitted| admitted == name)
+fn slice_element_carrier_ast(element: &Type) -> Option<witchy_canonical_source::carrier::CarrierElement> {
+    witchy_canonical_source::carrier::CarrierElement::from_checked_type(element)
 }
 
-/// One payload identity per slice element. `Int` keeps its original key.
-fn rooted_slice_payload_key(element: &str) -> CanonicalTypeKey {
-    let mut bytes = b"witchy.canonical-rooted-view-payload.v1/slice-".to_vec();
-    bytes.extend(element.to_ascii_lowercase().bytes());
-    CanonicalTypeKey::from_digest(*blake3::hash(&bytes).as_bytes())
+/// The checked recursive element is the payload identity, independent of
+/// display spelling or a fixed catalog of concrete nested types.
+fn rooted_slice_payload_key(element: &witchy_canonical_source::carrier::CarrierElement) -> CanonicalTypeKey {
+    CanonicalTypeKey::from_digest(element.identity())
 }
 
 fn contains_rooted_view(ty: &Ty) -> bool {

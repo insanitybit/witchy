@@ -32,8 +32,8 @@ pub(crate) fn value_type_matches_source(
             return id == family.owner_type
                 && ((is_direct_rooted_view_int(expected) && is_direct_rooted_view_int(source))
                     || (is_direct_rooted_view_slice(expected)
-                        && super::super::closure_owner_contract::rooted_slice_element(expected)
-                            == super::super::closure_owner_contract::rooted_slice_element(source)));
+                        && super::super::closure_owner_contract::rooted_slice_carrier(expected)
+                            == super::super::closure_owner_contract::rooted_slice_carrier(source)));
         }
         if let super::super::closure_owner_contract::OwnerFamilySource::Aggregate(expected) = &family.source {
             let aggregate = if id == family.list_type {

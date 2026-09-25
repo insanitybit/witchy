@@ -114,7 +114,7 @@ fn bad() -> Option(&Int):
 }
 
 #[test]
-fn rooted_slice_rejects_deeper_list_element_at_canonical_boundary() {
+fn rooted_slice_accepts_recursive_owned_list_element() {
     let source = r#"
 fn relay(items: &[List(List(Int))]) -> &[List(List(Int))]:
     items
@@ -124,9 +124,5 @@ fn main() -> Int:
     let middle = relay(&values[0..1])
     middle.length()
 "#;
-    let checked = witchy::resolve_std_only_checked(source)
-        .expect("deeper slice payload still type-checks before canonical admission");
-    let refusal = codegen::compile_checked_module_artifact(&checked)
-        .expect_unsupported("a third List shell has no slice carrier");
-    assert!(refusal.to_string().contains("rooted view payload has no admitted authenticated carrier"));
+    assert_rooted_slice_length(source, 1);
 }

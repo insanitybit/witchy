@@ -16,6 +16,7 @@ pub mod abi;
 pub mod access;
 pub mod aggregates;
 pub mod capabilities;
+pub mod carrier;
 pub mod closure;
 pub mod proper_tail;
 pub mod scope;

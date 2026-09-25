@@ -111,9 +111,12 @@ fn is_admitted_view_carrier(payload: &Ty) -> bool {
 /// payload as the private `Slice(T)` nominal).  Its carrier is the
 /// rooted-slice owner family: an opaque owner retaining its backing list.
 fn is_admitted_slice_view(ty: &Ty) -> bool {
-    matches!(ty, Ty::Named(name, arguments)
-        if name.as_ref() == "Slice"
-            && matches!(&arguments[..], [Ty::Int | Ty::Float | Ty::Bool | Ty::Duration | Ty::String]))
+    let Ty::Named(name, arguments) = ty else { return false };
+    name.as_ref() == "Slice"
+        && matches!(&arguments[..], [element]
+            if ty_to_ast(element).as_ref()
+                .and_then(witchy_canonical_source::carrier::CarrierElement::from_checked_type)
+                .is_some())
 }
 
 fn type_is_explicit_reference(ty: &ast::Type) -> bool {
@@ -3549,18 +3552,17 @@ impl Checker {
             && arguments.len() == 1
         {
             let element = self.resolve(&arguments[0]);
-            if matches!(&element, Ty::Int | Ty::Float | Ty::Bool | Ty::Duration | Ty::String)
-                || matches!(&element, Ty::List(inner)
-                    if matches!(inner.as_ref(), Ty::Int | Ty::Float | Ty::Bool | Ty::Duration | Ty::String))
+            if ty_to_ast(&element).as_ref()
+                .and_then(witchy_canonical_source::carrier::CarrierElement::from_checked_type)
+                .is_some()
                 || matches!(&element, Ty::Var(variable)
                     if self.current_typarams.values().any(|typaram| typaram == variable))
             {
                 return Ok(Ty::List(Rc::new(element)));
             }
             return terr(format!(
-                "`.owned()` cannot materialize the slice view `{payload}`: only Int, Float, Bool, \
-                 Duration, String, and exact List(S) for S = Int, Float, Bool, Duration, or String \
-                 have an admitted checked copy into List(T)"
+                "`.owned()` cannot materialize the slice view `{payload}`: its element lacks \
+                 a recursive checked carrier with retain, clone, and release into List(T)"
             ));
         }
         if let Some(capability) = self.ty_authority_taint(&payload, &mut HashSet::new()) {

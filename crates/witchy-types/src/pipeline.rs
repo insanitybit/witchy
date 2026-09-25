@@ -138,6 +138,7 @@ pub struct CanonicalCheckedSource {
     // The precompiled environment as the Wasm imports it binds; derived once
     // from `precompiled_declarations`, which never changes after construction.
     precompiled_exports: Vec<PrecompiledExport>,
+    slice_carriers: Vec<witchy_canonical_source::carrier::CarrierElement>,
 }
 
 impl CanonicalCheckedSource {
@@ -159,6 +160,7 @@ impl CanonicalCheckedSource {
             access: self.typed.access_facts().ok().map(|facts| facts as &dyn CheckedAccessQuery),
             loans_checked: self.typed.loan_facts().is_ok(),
             precompiled_exports: &self.precompiled_exports,
+            slice_carriers: &self.slice_carriers,
         })
     }
 
@@ -816,6 +818,16 @@ fn attach_canonical_source(
             sidecar_sha256: library.sidecar_sha256(),
         })
     }).collect();
+    let mut slice_carriers = typed.view_facts().ok().into_iter()
+        .flat_map(|facts| facts.iter())
+        .filter_map(|fact| typeck::ty_to_ast(fact.payload()))
+        .filter_map(|payload| witchy_canonical_source::carrier::CarrierElement::from_slice_payload_type(&payload))
+        .collect::<Vec<_>>();
+    slice_carriers.extend(callable_witness.signatures.values().flat_map(
+        witchy_canonical_source::carrier::CarrierElement::in_checked_signature,
+    ));
+    slice_carriers.sort_by_key(|element| element.identity());
+    slice_carriers.dedup();
     checked.canonical_source = Some(CanonicalCheckedSource {
         console_fixture: false,
         build_entry: None,
@@ -839,6 +851,7 @@ fn attach_canonical_source(
         precompiled_declarations,
         type_definitions,
         precompiled_exports,
+        slice_carriers,
     });
     Ok(checked)
 }

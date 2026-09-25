@@ -191,20 +191,6 @@ fn main() -> Int:
     assert_eq!(vm.output(), vec!["3115".to_string()]);
     assert_eq!(vm.canonical_heap_leaks().expect("heap audit"), Some(0));
 
-    let other_list_source = r#"
-fn copy[a](xs: &[a]) -> List(a):
-    xs.owned()
-
-fn main() -> Int:
-    let nested = [[[1]], [[2]]]
-    let copied = copy(&nested[0..1])
-    copied.length()
-"#;
-    let error = witchy::resolve_std_only_checked(other_list_source)
-        .err().expect("deeper list elements remain outside the materialization boundary")
-        .to_string();
-    assert!(error.contains("List(List(Int))") && error.contains("exact List(S)"), "{error}");
-
     let must_source = r#"
 must type Ticket:
     Ticket(Int)
@@ -217,5 +203,5 @@ fn main() -> Int:
     let error = witchy::resolve_std_only_checked(must_source)
         .err().expect("must element cannot become a copyable slice")
         .to_string();
-    assert!(error.contains("Ticket") && error.contains("exact List(S)"), "{error}");
+    assert!(error.contains("Ticket") && error.contains("recursive checked carrier"), "{error}");
 }

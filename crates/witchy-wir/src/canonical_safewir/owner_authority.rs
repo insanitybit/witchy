@@ -1,7 +1,7 @@
 //! Independent checked-source binding for opaque closure constructors.
 //! Candidate IDs and field maps are claims, never capability authority.
 use super::authority::*;
-use super::closure_owner_contract::{CaptureStorage, CaptureTransfer, OwnerConstructor, OwnerFamily, OwnerFamilySource, OwnerOperation, SharedReferenceConstructor, SourceConstructor, rooted_slice_element, slice_element_layout_matches};
+use super::closure_owner_contract::{CaptureStorage, CaptureTransfer, OwnerConstructor, OwnerFamily, OwnerFamilySource, OwnerOperation, SharedReferenceConstructor, SourceConstructor, rooted_slice_carrier, carrier_element_layout_matches};
 use super::{CanonicalModule, ModuleStage, Operation, ValueId, ValueType};
 use std::collections::{BTreeMap, BTreeSet};
 use witchy_canonical_source::closure::ClosureBindingPathStep;
@@ -33,6 +33,11 @@ pub(super) fn validate<S: ModuleStage>(
                 continue;
             }
             OwnerFamilySource::SharedReference(source_type) => {
+                if let Some(element) = rooted_slice_carrier(source_type)
+                    && !source.admits_slice_carrier(&element)
+                {
+                    return Err(CandidateAbiBindingError::MissingCanonicalLayouts);
+                }
                 validate_shared_reference_family(candidate.owner_families(), family, source_type, &layouts)?;
                 continue;
             }
@@ -321,7 +326,7 @@ pub(super) fn validate<S: ModuleStage>(
                     Operation::ClosureOwner(OwnerOperation::ReadSharedSlice { family, .. }) => {
                         if candidate.owner_families().iter().find(|entry| entry.signature == *family)
                             .is_none_or(|entry| !matches!(&entry.source,
-                                OwnerFamilySource::SharedReference(source) if rooted_slice_element(source).is_some()))
+                                OwnerFamilySource::SharedReference(source) if rooted_slice_carrier(source).is_some()))
                         {
                             return Err(CandidateAbiBindingError::MissingCanonicalLayouts);
                         }
@@ -343,7 +348,8 @@ fn is_shared_int_reference(source_type: &witchy_syntax::ast::Type) -> bool {
 }
 
 fn is_rooted_int_slice_reference(source_type: &witchy_syntax::ast::Type) -> bool {
-    rooted_slice_element(source_type) == Some("Int")
+    rooted_slice_carrier(source_type) == Some(witchy_canonical_source::carrier::CarrierElement::Scalar(
+        witchy_canonical_source::abi::CanonicalScalarKind::Int))
 }
 
 fn insert_compatible_environment_field(
@@ -368,7 +374,7 @@ fn validate_shared_reference_family(
     layouts: &crate::layout::LayoutInterner,
 ) -> Result<(), CandidateAbiBindingError> {
     let refuse = || CandidateAbiBindingError::MissingCanonicalLayouts;
-    if !(is_shared_int_reference(source_type) || rooted_slice_element(source_type).is_some())
+    if !(is_shared_int_reference(source_type) || rooted_slice_carrier(source_type).is_some())
         || family.constructors.is_empty()
     {
         return Err(refuse());
@@ -448,8 +454,8 @@ fn validate_shared_reference_family(
                 else { return Err(refuse()) };
                 // The backing list's element representation must be exactly
                 // the family's checked `&[T]` element.
-                if !rooted_slice_element(source_type)
-                        .is_some_and(|name| slice_element_layout_matches(layouts, *element, name))
+                if !rooted_slice_carrier(source_type)
+                        .is_some_and(|carrier| carrier_element_layout_matches(layouts, *element, &carrier))
                     || root.0 != 0 || start.0 != 1 || length.0 != 2 || !kinds.insert(2_u8)
                 {
                     return Err(refuse());

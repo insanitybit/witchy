@@ -1,7 +1,7 @@
 //! Affine ownership of opaque GC values. These tokens have no linear-memory
 //! address, extent, allocation class, or pointer-slot authority.
 use super::*;
-use crate::canonical_safewir::closure_owner_contract::{CaptureStorage, CaptureTransfer, ConstructorId, OwnerCapture, OwnerFamily, OwnerFamilySource, OwnerOperation, SharedReferenceConstructor, SharedSliceField, rooted_slice_element, slice_element_layout_matches};
+use crate::canonical_safewir::closure_owner_contract::{CaptureStorage, CaptureTransfer, ConstructorId, OwnerCapture, OwnerFamily, OwnerFamilySource, OwnerOperation, SharedReferenceConstructor, SharedSliceField, rooted_slice_carrier, carrier_element_layout_matches};
 use crate::canonical_safewir::{GcTypeId, Ownership, ResultContract};
 
 type Live = BTreeSet<ValueId>;
@@ -103,8 +103,8 @@ impl<'a> Registry<'a> {
                             };
                             // The backing list's element representation must be
                             // exactly the family's checked `&[T]` element.
-                            rooted_slice_element(source_type).is_some_and(|name| {
-                                element.is_some_and(|element| slice_element_layout_matches(&layouts, element, name))
+                            rooted_slice_carrier(source_type).is_some_and(|carrier| {
+                                element.is_some_and(|element| carrier_element_layout_matches(&layouts, element, &carrier))
                             })
                                 && root.0 == 0 && start.0 == 1 && length.0 == 2 && kinds.insert(2_u8)
                         }
@@ -243,7 +243,7 @@ impl<'a> Registry<'a> {
                         function: function.id, operation: "ReadSharedSlice non-slice family",
                     });
                 };
-                if rooted_slice_element(source).is_none()
+                if rooted_slice_carrier(source).is_none()
                     || !family.constructors.iter().all(|constructor| matches!(
                         constructor.shared_reference_constructor(),
                         Some(SharedReferenceConstructor::ListSlice { .. }),
@@ -563,7 +563,7 @@ pub(super) fn check(function: &Function, registry: &Registry<'_>) -> Result<(), 
 }
 
 fn shared_rooted_reference(source_type: &witchy_syntax::ast::Type) -> bool {
-    shared_int_reference(source_type) || rooted_slice_element(source_type).is_some()
+    shared_int_reference(source_type) || rooted_slice_carrier(source_type).is_some()
 }
 
 fn shared_int_reference(source_type: &witchy_syntax::ast::Type) -> bool {
@@ -575,7 +575,8 @@ fn shared_int_reference(source_type: &witchy_syntax::ast::Type) -> bool {
 }
 
 fn rooted_int_slice_reference(source_type: &witchy_syntax::ast::Type) -> bool {
-    rooted_slice_element(source_type) == Some("Int")
+    rooted_slice_carrier(source_type) == Some(witchy_canonical_source::carrier::CarrierElement::Scalar(
+        witchy_canonical_source::abi::CanonicalScalarKind::Int))
 }
 
 #[cfg(feature = "raw-encoder-test-api")]

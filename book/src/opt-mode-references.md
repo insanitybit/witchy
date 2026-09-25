@@ -88,14 +88,14 @@ fn copy_for_storage(let view: &String) -> String:
     view.owned()
 ```
 
-For a slice view whose element is `Int`, `Float`, `Bool`, `Duration`, `String`,
-or exact `List(S)` for `S = Int`, `Float`, `Bool`, `Duration`, or `String`,
-`view.owned()` copies the viewed range into a fresh `List` of that element
-type. A generic `&[a]` can use this operation when specialization resolves
-`a` to one of those types. The method reads the retained snapshot, even
-if the original list was changed after the view formed. Other element types
-are rejected until their copy and layout contracts are implemented. A declared
-`owned` method takes precedence over this compiler-known operation.
+For a slice view, `view.owned()` copies the viewed range into a fresh
+`List(T)` when the checked element type has a proven recursive layout and
+retain, clone, and release behavior. This includes supported scalar and String
+elements and `List` elements at any supported depth. A generic `&[a]` can use
+this operation after specialization proves `a` has that carrier. The method
+reads the retained snapshot, even if the original list was changed after the
+view formed. Unsupported element types are rejected. A declared `owned`
+method takes precedence over this compiler-known operation.
 
 ## Ownership, `own`, `unique`, and `frozen`
 
@@ -164,13 +164,14 @@ list cannot escape by wrapping it in a view.
 The inner `List(String)` owns its String children; an exact slice of these
 inner lists also has a separate carrier, pending semantic and leak evidence.
 
-An exact slice of owned lists, `&[List(S)]`, has a carrier when `S` is `Int`,
-`Float`, `Bool`, `Duration`, or `String`. The outer list remains rooted, and an
-indexed inner list is retained as a child. The String case also retains each
-String child of that inner list. Qualified or deeper list elements are refused.
-The `Int` case is verified on admitted Wasm; the other cases are implemented
-but await semantic and leak evidence. These slices do not yet support
-`.owned()` materialization.
+Slices of owned lists use the same recursive carrier at every supported depth.
+The outer list remains rooted, and each managed child is retained through an
+owned pointer and a retained List header. A String leaf owns its byte buffer.
+Carrier proof is bounded at 128 nested `List` layers.
+Qualified children and elements without a complete ownership proof are
+refused. The exact previously evidenced cases remain recorded in the RFC-0167
+ledger; newly generic depths await semantic and leak evidence. `.owned()`
+materializes the checked range as a fresh `List(T)`.
 
 An exact whole-root tuple view `&(S, String)` is recognized for unqualified
 `S = Int`, `Float`, `Bool`, `Duration`, or `String`. The view retains the tuple

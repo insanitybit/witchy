@@ -14,6 +14,7 @@ use witchy_syntax::ast::{Expr, Function, Item, Module, Type, TypeDef};
 
 use crate::abi::{CanonicalCallableAbi, CanonicalCallableAbiManifest};
 use crate::access::AccessSignature;
+use crate::carrier::CarrierElement;
 use crate::closure::ClosureWitnessManifest;
 use crate::specialization::LogicalSpecializationIdentity;
 
@@ -159,6 +160,8 @@ pub struct CanonicalSourceParts<'s> {
     pub access: Option<&'s dyn CheckedAccessQuery>,
     pub loans_checked: bool,
     pub precompiled_exports: &'s [PrecompiledExport],
+    /// Recursive carriers derived from exact checked rooted-view formations.
+    pub slice_carriers: &'s [CarrierElement],
 }
 
 /// A borrowed, read-only view of one checked canonical source.
@@ -178,6 +181,7 @@ pub struct CanonicalSourceView<'s> {
     access: Option<&'s dyn CheckedAccessQuery>,
     loans_checked: bool,
     precompiled_exports: &'s [PrecompiledExport],
+    slice_carriers: &'s [CarrierElement],
 }
 
 impl<'s> CanonicalSourceView<'s> {
@@ -200,6 +204,7 @@ impl<'s> CanonicalSourceView<'s> {
             access,
             loans_checked,
             precompiled_exports,
+            slice_carriers,
         } = parts;
         Self {
             module,
@@ -216,6 +221,7 @@ impl<'s> CanonicalSourceView<'s> {
             access,
             loans_checked,
             precompiled_exports,
+            slice_carriers,
         }
     }
 
@@ -225,6 +231,14 @@ impl<'s> CanonicalSourceView<'s> {
     /// The declared types of the checked module, keyed by bare and
     /// entry-qualified name (see `aggregates::type_definitions`).
     pub fn type_definitions(&self) -> &'s BTreeMap<String, TypeDef> { self.type_definitions }
+
+    /// A candidate slice family must match one of these exact checked
+    /// formation payloads before its layout can be considered.
+    pub fn admits_slice_carrier(&self, element: &CarrierElement) -> bool {
+        self.slice_carriers.contains(element)
+    }
+
+    pub fn slice_carriers(&self) -> &'s [CarrierElement] { self.slice_carriers }
 
     pub fn source_witness(&self) -> &'s CheckedSourceWitness { self.source_witness }
 

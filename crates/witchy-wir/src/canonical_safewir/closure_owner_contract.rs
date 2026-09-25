@@ -252,115 +252,58 @@ pub enum SharedSliceField {
     Length,
 }
 
-/// The exact element names a rooted slice carrier admits: scalar kinds carried
-/// inline, or String and exact List(scalar or String) children behind owned pointer slots.
-pub const ROOTED_SLICE_ELEMENTS: [&str; 10] = [
-    "Int", "Float", "Bool", "Duration", "String", "List(Int)",
-    "List(Float)", "List(Bool)", "List(Duration)", "List(String)",
-];
-
-/// The element name of an exact `&[T]` rooted slice source type, if `T` is an
-/// admitted slice element.
-pub fn rooted_slice_element(source_type: &witchy_syntax::ast::Type) -> Option<&'static str> {
-    let witchy_syntax::ast::Type::Qualified(witchy_syntax::ast::TypeQual::View, inner) = source_type else {
-        return None;
-    };
-    // The checker spells a finalized slice payload as its private `Slice(T)`
-    // nominal; it is the same checked payload as the surface `[T]`.
-    let element = match inner.as_ref() {
-        witchy_syntax::ast::Type::Slice(element) => element.as_ref(),
-        witchy_syntax::ast::Type::Named(name, arguments) if name == "Slice" && arguments.len() == 1 => &arguments[0],
-        _ => return None,
-    };
-    if let witchy_syntax::ast::Type::Named(name, arguments) = element
-        && name == "List"
-        && let [witchy_syntax::ast::Type::Named(inner, inner_arguments)] = arguments.as_slice()
-        && inner_arguments.is_empty()
-    {
-        return match inner.as_str() {
-            "Int" => Some("List(Int)"),
-            "Float" => Some("List(Float)"),
-            "Bool" => Some("List(Bool)"),
-            "Duration" => Some("List(Duration)"),
-            "String" => Some("List(String)"),
-            _ => None,
-        };
-    }
-    let witchy_syntax::ast::Type::Named(name, arguments) = element else { return None };
-    if !arguments.is_empty() {
-        return None;
-    }
-    // A nominal called `List(Float)` is not the structural `List(Float)` type.
-    match name.as_str() {
-        "Int" => Some("Int"),
-        "Float" => Some("Float"),
-        "Bool" => Some("Bool"),
-        "Duration" => Some("Duration"),
-        "String" => Some("String"),
-        _ => None,
-    }
+/// Structural identity of a checked rooted slice. This is independent of a
+/// candidate's owner ID and of how a source type is printed.
+pub fn rooted_slice_carrier(source_type: &witchy_syntax::ast::Type) -> Option<witchy_canonical_source::carrier::CarrierElement> {
+    witchy_canonical_source::carrier::CarrierElement::from_view_type(source_type)
 }
 
-/// Whether `element` (the element layout of a slice's backing `PackedList`)
-/// is exactly the physical representation of the admitted source element.
-pub(crate) fn slice_element_layout_matches(
+/// Match every element's physical storage and ownership recursively. An owned
+/// pointer slot is required at each managed value edge; every List body must
+/// have an RC header. No nullable or borrowed slot can pass this relation.
+pub(crate) fn carrier_element_layout_matches(
     layouts: &crate::layout::LayoutInterner,
-    element: crate::layout::LayoutId,
-    name: &str,
+    layout: crate::layout::LayoutId,
+    carrier: &witchy_canonical_source::carrier::CarrierElement,
 ) -> bool {
-    use crate::layout::{LayoutKind, PointerSlot, RcHeader, ScalarKind};
-    let kind = layouts.get(element).map(|descriptor| descriptor.kind());
-    match name {
-        "Int" => matches!(kind, Some(LayoutKind::Scalar(ScalarKind::Int))),
-        "Float" => matches!(kind, Some(LayoutKind::Scalar(ScalarKind::Float))),
-        "Bool" => matches!(kind, Some(LayoutKind::Scalar(ScalarKind::Bool))),
-        "Duration" => matches!(kind, Some(LayoutKind::Scalar(ScalarKind::Duration))),
-        "String" => {
-            let Some(LayoutKind::RuntimePointerValueSlot { pointee, semantics: PointerSlot::Owned }) = kind else {
-                return false;
-            };
-            let Some(LayoutKind::RuntimeBuffer { element: byte }) = layouts.get(*pointee).map(|descriptor| descriptor.kind()) else {
-                return false;
-            };
-            matches!(layouts.get(*byte).map(|descriptor| descriptor.kind()), Some(LayoutKind::Scalar(ScalarKind::RawByte)))
+    use crate::layout::{LayoutId, LayoutInterner, LayoutKind, PointerSlot, RcHeader, ScalarKind};
+    use witchy_canonical_source::abi::CanonicalScalarKind;
+    use witchy_canonical_source::carrier::CarrierLayoutQuery;
+
+    struct Query<'a>(&'a LayoutInterner);
+    impl CarrierLayoutQuery for Query<'_> {
+        type Layout = LayoutId;
+
+        fn scalar(&self, layout: LayoutId) -> Option<CanonicalScalarKind> {
+            match self.0.get(layout)?.kind() {
+                LayoutKind::Scalar(ScalarKind::Int) => Some(CanonicalScalarKind::Int),
+                LayoutKind::Scalar(ScalarKind::Float) => Some(CanonicalScalarKind::Float),
+                LayoutKind::Scalar(ScalarKind::Bool) => Some(CanonicalScalarKind::Bool),
+                LayoutKind::Scalar(ScalarKind::Duration) => Some(CanonicalScalarKind::Duration),
+                _ => None,
+            }
         }
-        "List(Int)" | "List(Float)" | "List(Bool)" | "List(Duration)" => {
-            let scalar = match name {
-                "List(Int)" => ScalarKind::Int,
-                "List(Float)" => ScalarKind::Float,
-                "List(Bool)" => ScalarKind::Bool,
-                "List(Duration)" => ScalarKind::Duration,
-                _ => unreachable!("matched exact nested scalar family"),
-            };
-            let Some(LayoutKind::RuntimePointerValueSlot { pointee, semantics: PointerSlot::Owned }) = kind else {
-                return false;
-            };
-            let Ok(physical) = layouts.resolve_nominal(*pointee) else { return false };
-            let Some(LayoutKind::PackedList { element: inner, rc: RcHeader::Required }) = layouts.get(physical).map(|descriptor| descriptor.kind()) else {
-                return false;
-            };
-            matches!(layouts.get(*inner).map(|descriptor| descriptor.kind()),
-                Some(LayoutKind::Scalar(actual)) if *actual == scalar)
+
+        fn owned_string(&self, layout: LayoutId) -> bool {
+            let Some(LayoutKind::RuntimePointerValueSlot { pointee, semantics: PointerSlot::Owned }) =
+                self.0.get(layout).map(|descriptor| descriptor.kind()) else { return false };
+            let Ok(physical) = self.0.resolve_nominal(*pointee) else { return false };
+            let Some(LayoutKind::RuntimeBuffer { element: byte }) =
+                self.0.get(physical).map(|descriptor| descriptor.kind()) else { return false };
+            matches!(self.0.get(*byte).map(|descriptor| descriptor.kind()),
+                Some(LayoutKind::Scalar(ScalarKind::RawByte)))
         }
-        "List(String)" => {
-            let Some(LayoutKind::RuntimePointerValueSlot { pointee, semantics: PointerSlot::Owned }) = kind else {
-                return false;
-            };
-            let Ok(physical) = layouts.resolve_nominal(*pointee) else { return false };
-            let Some(LayoutKind::PackedList { element: inner, rc: RcHeader::Required }) = layouts.get(physical).map(|descriptor| descriptor.kind()) else {
-                return false;
-            };
-            let Some(LayoutKind::RuntimePointerValueSlot { pointee: string, semantics: PointerSlot::Owned }) = layouts.get(*inner).map(|descriptor| descriptor.kind()) else {
-                return false;
-            };
-            let Ok(physical_string) = layouts.resolve_nominal(*string) else { return false };
-            let Some(LayoutKind::RuntimeBuffer { element: byte }) = layouts.get(physical_string).map(|descriptor| descriptor.kind()) else {
-                return false;
-            };
-            matches!(layouts.get(*byte).map(|descriptor| descriptor.kind()), Some(LayoutKind::Scalar(ScalarKind::RawByte)))
+
+        fn owned_retained_list_element(&self, layout: LayoutId) -> Option<LayoutId> {
+            let LayoutKind::RuntimePointerValueSlot { pointee, semantics: PointerSlot::Owned } =
+                self.0.get(layout)?.kind() else { return None };
+            let physical = self.0.resolve_nominal(*pointee).ok()?;
+            let LayoutKind::PackedList { element, rc: RcHeader::Required } =
+                self.0.get(physical)?.kind() else { return None };
+            Some(*element)
         }
-        _ => false,
     }
+    carrier.matches_layout(&Query(layouts), layout)
 }
 
 /// Static interpretation of a shared-reference constructor. This is derived

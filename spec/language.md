@@ -1098,10 +1098,11 @@ current source; `check`, formatting, generated-source admission, and ordinary
 parsing reject them.
 
 The compiler-known `(&[T]).owned()` operation materializes the exact retained
-slice range as a fresh `List(T)` for `T = Int`, `Float`, `Bool`, `Duration`,
-`String`, or exact `List(S)` where `S` is `Int`, `Float`, `Bool`, `Duration`, or `String`.
-Generic uses are admitted after specialization to one of these types. Other
-element types fail closed. A declared `owned` method has ordinary method
+slice range as a fresh `List(T)` when the checked carrier proves T's recursive
+layout and copy, retain, and release operations. This includes supported
+scalar and String elements and `List` elements at any supported depth. Generic
+uses are admitted after specialization proves their concrete element type.
+Other elements fail closed. A declared `owned` method has ordinary method
 resolution precedence over this operation.
 
 #### Roots, projections, and snapshots
@@ -1163,15 +1164,17 @@ For the inner `List(String)` case, the inner list owns each String child; both
 List layers require retained headers. An exact `&[List(String)]` slice uses a
 separate carrier, pending semantic and leak evidence.
 
-The compiler also recognizes exact `&[List(S)]` slice carriers for `S = Int`,
-`Float`, `Bool`, `Duration`, or `String`. The slice retains its outer list root,
-and a read of an inner list retains that owned child through the checked
-projection. The String case also retains the inner list's String children.
-Nested or qualified child lists have no carrier and are refused. The `Int`
-case has admitted Wasm and zero-leak evidence; the other cases still await
-that verification. `.owned()` materializes exact `&[List(S)]` as a fresh
-`List(List(S))` for `S = Int`, `Float`, `Bool`, or `Duration`; other list element
-families remain unsupported.
+Slice carriers use one recursive checked-source relation for their element
+type, physical layout, and ownership operations. Each `List` layer requires a
+retained header and an owned child pointer; scalar leaves match their exact
+layout, and String leaves own a byte buffer. The slice retains its outer list
+root, and reads retain managed children through the checked projection.
+Carrier proof has a compiler resource limit of 128 nested `List` layers.
+Qualifiers, arbitrary nominal lookalikes, capabilities, and elements without
+a complete ownership proof are refused. `.owned()` copies the authenticated
+range into a fresh `List(T)` using that same relation. Generic recursive forms
+remain implemented but unverified until admitted unoptimized Wasm and zero-leak
+evidence is recorded for them in the acceptance ledger.
 
 The compiler recognizes exact whole-root `&(S, String)` tuple views for
 unqualified `S = Int`, `Float`, `Bool`, `Duration`, or `String`. The tuple root
