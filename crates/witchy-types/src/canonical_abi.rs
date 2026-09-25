@@ -376,15 +376,16 @@ pub fn rooted_view_from_ty(
         }),
         Ty::List(element) => {
             if let Ty::List(inner) = element.as_ref() {
-                let scalar = match inner.as_ref() {
-                    Ty::Int => Some(CanonicalScalarKind::Int),
-                    Ty::Float => Some(CanonicalScalarKind::Float),
-                    Ty::Bool => Some(CanonicalScalarKind::Bool),
-                    Ty::Duration => Some(CanonicalScalarKind::Duration),
+                let name = match inner.as_ref() {
+                    Ty::Int => Some("Int"),
+                    Ty::Float => Some("Float"),
+                    Ty::Bool => Some("Bool"),
+                    Ty::Duration => Some("Duration"),
+                    Ty::String => Some("String"),
                     _ => None,
                 };
-                if let Some(scalar) = scalar {
-                    return Ok(rooted_nested_scalar_list_view(scalar));
+                if let Some(name) = name {
+                    return Ok(rooted_nested_list_view(name));
                 }
             }
             let name = match element.as_ref() {
@@ -486,15 +487,8 @@ pub fn rooted_view_from_ast(
                 if nested == "List" {
                     if let [Type::Named(name, scalar_arguments)] = nested_arguments.as_slice() {
                         if scalar_arguments.is_empty() {
-                            let scalar = match name.as_str() {
-                                "Int" => Some(CanonicalScalarKind::Int),
-                                "Float" => Some(CanonicalScalarKind::Float),
-                                "Bool" => Some(CanonicalScalarKind::Bool),
-                                "Duration" => Some(CanonicalScalarKind::Duration),
-                                _ => None,
-                            };
-                            if let Some(scalar) = scalar {
-                                return Ok(rooted_nested_scalar_list_view(scalar));
+                            if matches!(name.as_str(), "Int" | "Float" | "Bool" | "Duration" | "String") {
+                                return Ok(rooted_nested_list_view(name));
                             }
                         }
                     }
@@ -718,16 +712,17 @@ fn rooted_list_view(element: &str) -> Result<CanonicalReferenceKind, CanonicalAb
     })
 }
 
-/// Distinct from scalar-element `ListRoot` keys and deeper lists. The Int
-/// identity retains its original bytes for ABI compatibility.
-/// Checked HM types and source annotations call this same constructor.
-fn rooted_nested_scalar_list_view(scalar: CanonicalScalarKind) -> CanonicalReferenceKind {
-    let bytes: &[u8] = match scalar {
-        CanonicalScalarKind::Int => b"witchy.canonical-rooted-view-payload.v2/list-of-list-int",
-        CanonicalScalarKind::Float => b"witchy.canonical-rooted-view-payload.v2/list-of-list-float",
-        CanonicalScalarKind::Bool => b"witchy.canonical-rooted-view-payload.v2/list-of-list-bool",
-        CanonicalScalarKind::Duration => b"witchy.canonical-rooted-view-payload.v2/list-of-list-duration",
-        _ => unreachable!("only exact nested scalar lists reach this constructor"),
+/// Distinct from direct-element `ListRoot` keys and deeper lists. Existing
+/// scalar identities retain their bytes; checked and source paths share this
+/// exact constructor for the newly admitted String child too.
+fn rooted_nested_list_view(element: &str) -> CanonicalReferenceKind {
+    let bytes: &[u8] = match element {
+        "Int" => b"witchy.canonical-rooted-view-payload.v2/list-of-list-int",
+        "Float" => b"witchy.canonical-rooted-view-payload.v2/list-of-list-float",
+        "Bool" => b"witchy.canonical-rooted-view-payload.v2/list-of-list-bool",
+        "Duration" => b"witchy.canonical-rooted-view-payload.v2/list-of-list-duration",
+        "String" => b"witchy.canonical-rooted-view-payload.v2/list-of-list-string",
+        _ => unreachable!("only exact nested List payloads reach this constructor"),
     };
     CanonicalReferenceKind::RootedView {
         payload: CanonicalTypeKey::from_digest(*blake3::hash(bytes).as_bytes()),
