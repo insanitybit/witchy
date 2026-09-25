@@ -129,6 +129,8 @@ typed region block, while `meta.function_async` and
 `meta.function_generator` wrap typed bodies in the corresponding function
 mode. The builders reject suspended `var` parameters, suspension in an
 ordinary nested lambda, and an await or yield outside its function mode.
+`meta.expr_if` builds a conditional from a compiler-owned condition and typed
+then/optional else blocks; source-backed syntax handles are refused.
 These compiler paths still await end-to-end runtime and leak evidence.
 
 Pattern templates follow the same rule. The compatibility-built `1` pattern is
