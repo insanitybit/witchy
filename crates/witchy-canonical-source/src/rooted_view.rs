@@ -120,58 +120,51 @@ impl RootedViewStorage {
         if matches!(bare, Type::Qualified(_, _)) {
             return None;
         }
-        if matches!(bare, Type::Tuple(_)) || matches!(bare, Type::Named(name, _) if name == "Dict")
-        {
-            return Some(Self::RetainedRoot(RetainedRootStorage::StructuralRecord(
-                CarrierElement::retained_structural_root(payload, definitions)?,
+        if let Type::Slice(element) = bare {
+            return Some(Self::RetainedProjection(
+                CarrierElement::from_checked_type_with_definitions(element, definitions)?,
+            ));
+        }
+        if let Type::Named(name, arguments) = bare {
+            if name == "Slice" {
+                let [element] = arguments.as_slice() else { return None };
+                return Some(Self::RetainedProjection(
+                    CarrierElement::from_checked_type_with_definitions(element, definitions)?,
+                ));
+            }
+        }
+        if crate::rooted_record::has_record_root_head(payload, definitions)? {
+            return Some(Self::RetainedRoot(RetainedRootStorage::CheckedAggregate(
+                RecordRootPlan::from_checked_type(payload, definitions, nominal)?,
             )));
         }
-        match bare {
-            Type::Named(name, args) if args.is_empty() && name == "Int" => {
-                Some(Self::ScalarCell(CanonicalScalarKind::Int))
-            }
-            Type::Named(name, args) if args.is_empty() && name == "String" => {
-                Some(Self::RetainedRoot(RetainedRootStorage::ByteBuffer))
-            }
-            Type::Named(name, args)
-                if args.is_empty() && matches!(name.as_str(), "Float" | "Bool" | "Duration") =>
-            {
-                let kind = match name.as_str() {
-                    "Float" => CanonicalScalarKind::Float,
-                    "Bool" => CanonicalScalarKind::Bool,
-                    _ => CanonicalScalarKind::Duration,
-                };
-                Some(Self::InlineScalar(kind))
-            }
-            Type::Slice(element) => Some(Self::RetainedProjection(
-                CarrierElement::from_checked_type_with_definitions(element, definitions)?,
-            )),
-            Type::Named(name, args) if name == "Slice" => {
-                let [element] = args.as_slice() else {
-                    return None;
-                };
-                Some(Self::RetainedProjection(
-                    CarrierElement::from_checked_type_with_definitions(element, definitions)?,
-                ))
-            }
-            Type::Named(name, _) if name == "List" => {
-                let element = CarrierElement::from_list_root_payload_type_with_definitions(
-                    payload,
-                    definitions,
-                )?;
-                Some(Self::RetainedRoot(RetainedRootStorage::Sequence(element)))
-            }
-            Type::Named(..)
-                if crate::rooted_record::has_record_root_head(payload, definitions)? =>
-            {
-                Some(Self::RetainedRoot(RetainedRootStorage::CheckedAggregate(RecordRootPlan::from_checked_type(
-                    payload,
-                    definitions,
-                    nominal,
-                )?)))
-            }
-            _ => None,
+        if let Some(element) = CarrierElement::from_list_root_payload_type_with_definitions(
+            payload, definitions,
+        ) {
+            return Some(Self::RetainedRoot(RetainedRootStorage::Sequence(element)));
         }
+        // The recursive checked carrier proof determines the storage class
+        // for ordinary values. The prior gates above keep their exact child
+        // depth budget and avoid reparsing a checked nominal's shape.
+        if let Some(plan) = CarrierElement::from_checked_type_with_definitions(bare, definitions) {
+            match plan {
+                CarrierElement::Scalar(CanonicalScalarKind::Int) => {
+                    return Some(Self::ScalarCell(CanonicalScalarKind::Int));
+                }
+                CarrierElement::Scalar(CanonicalScalarKind::Unit) => return None,
+                CarrierElement::Scalar(kind) => return Some(Self::InlineScalar(kind)),
+                CarrierElement::String => {
+                    return Some(Self::RetainedRoot(RetainedRootStorage::ByteBuffer));
+                }
+                CarrierElement::List(_) => return None,
+                plan @ (CarrierElement::Tuple(_) | CarrierElement::Dict(_, _)) => {
+                    if matches!(payload, Type::Qualified(_, _)) { return None; }
+                    return Some(Self::RetainedRoot(RetainedRootStorage::StructuralRecord(plan)));
+                }
+                CarrierElement::Record { .. } | CarrierElement::Sum { .. } => {}
+            }
+        }
+        None
     }
 
     /// One versioned structural encoding for every rooted-view source shape.
