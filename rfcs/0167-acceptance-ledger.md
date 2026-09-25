@@ -176,6 +176,15 @@ scalar or nested-list name list. A temporary `Point(Int, String)` program
 passed `witchy check` and exited admitted Wasm with the hand-computed value
 9. No durable zero-leak audit or A–O closure is claimed for this path.
 
+Row G direct record slice field (implemented but unverified, 2026-09-25):
+the aggregate owner predicate now accepts one direct `&[T]` field in a
+one-variant untagged record when the recursive checked carrier proves `T`.
+Nested or unproved slices and tagged wrappers still fail closed. Temporary
+record-field construction, parameter, direct return, and indirect return
+programs passed `witchy check`; the indirect `Point(Int, String)` program
+exited admitted Wasm with the hand-computed value 9. This has no durable
+zero-leak audit and closes no row G acceptance gap.
+
 Row G whole-root scalar-list expansion (implemented but unverified,
 2026-09-24): the compiler now recognizes exact `&List(List(S))` for
 `S = Float`, `Bool`, or `Duration` through the shared source predicate,

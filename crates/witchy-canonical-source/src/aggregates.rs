@@ -807,7 +807,7 @@ fn preserves_owner_view_identity(
     // A slice argument is part of this owner only when it is the actual
     // authenticated direct field, not merely an unused generic argument of
     // an aggregate that happens to carry some other view.
-    is_direct_rooted_int_slice_view(candidate)
+    is_direct_rooted_slice_view_syntax(candidate)
         && is_rooted_int_view_aggregate(aggregate, definitions)
         && scalar_aggregate_shape(aggregate, definitions).is_some_and(|shape| {
             shape.fields.iter().any(|field| field == candidate)
@@ -845,9 +845,9 @@ pub fn is_record_root_payload(ty: &Type, definitions: &BTreeMap<String, TypeDef>
 /// carrier judgment diverge; anything deeper simply is not a carrier.
 const MAX_VIEW_CARRIER_DEPTH: usize = 8;
 
-/// A direct authenticated `&Int` or exact `&[Int]` owner, or an admitted
+/// A direct authenticated `&Int` or proven `&[T]` owner, or an admitted
 /// non-packed aggregate of view owners. The existing `&Int` path covers tuple,
-/// record, sum, `Option`, and `Result` shells. An exact `&[Int]` extends only a
+/// record, sum, `Option`, and `Result` shells. A proven `&[T]` extends only a
 /// direct named record field; other slice-bearing shells remain unsupported.
 /// Every admitted shell is an opaque owner, so a view never enters linear memory.
 pub fn is_rooted_int_view_carrier(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> bool {
@@ -857,7 +857,7 @@ pub fn is_rooted_int_view_carrier(ty: &Type, definitions: &BTreeMap<String, Type
 /// An Option shell may reuse the established aggregate-view path, but a bare
 /// slice payload has no authenticated Option projection yet.
 pub fn is_rooted_int_option_payload_carrier(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> bool {
-    !is_direct_rooted_int_slice_view(ty) && is_rooted_int_view_carrier(ty, definitions)
+    !is_direct_rooted_slice_view_syntax(ty) && is_rooted_int_view_carrier(ty, definitions)
 }
 
 /// [`is_rooted_int_view_carrier`] minus the bare view: an aggregate owner.
@@ -866,7 +866,8 @@ pub fn is_rooted_int_view_aggregate(ty: &Type, definitions: &BTreeMap<String, Ty
 }
 
 fn view_carrier_at(ty: &Type, definitions: &BTreeMap<String, TypeDef>, depth: usize) -> bool {
-    is_direct_rooted_int_view(ty) || is_direct_rooted_int_slice_view(ty)
+    is_direct_rooted_int_view(ty)
+        || crate::carrier::CarrierElement::from_view_type_with_definitions(ty, definitions).is_some()
         || view_aggregate_at(ty, definitions, depth)
 }
 
@@ -887,11 +888,11 @@ fn view_aggregate_at(ty: &Type, definitions: &BTreeMap<String, TypeDef>, depth: 
     // The proven slice extension is an exact direct field of a declared
     // untagged record. A tuple, sum, builtin shell, or another record around
     // that field needs its own checked projection/owner witness. In
-    // particular, treating compiler-generated Option<&[Int]> async state as
+    // particular, treating compiler-generated Option<&[T]> async state as
     // an ordinary aggregate owner fails canonical ABI authentication.
-    let direct_slice_count = shape.fields.iter().filter(|field| is_direct_rooted_int_slice_view(field)).count();
+    let direct_slice_count = shape.fields.iter().filter(|field| is_direct_rooted_slice_view_syntax(field)).count();
     let nested_slice = shape.fields.iter().any(|field| {
-        !is_direct_rooted_int_slice_view(field)
+        !is_direct_rooted_slice_view_syntax(field)
             && contains_rooted_slice_view_at(field, definitions, depth + 1)
     });
     if (direct_slice_count != 0 || nested_slice)
@@ -924,7 +925,7 @@ fn contains_rooted_slice_view_at(
     definitions: &BTreeMap<String, TypeDef>,
     depth: usize,
 ) -> bool {
-    if is_direct_rooted_int_slice_view(ty) { return true; }
+    if is_direct_rooted_slice_view_syntax(ty) { return true; }
     // Unresolved depth is treated as a possible nested slice, so the narrow
     // record extension cannot authorize a recursive or over-deep carrier.
     if depth >= MAX_VIEW_CARRIER_DEPTH { return true; }
@@ -965,18 +966,15 @@ fn is_direct_rooted_int_view(ty: &Type) -> bool {
             if name == "Int" && arguments.is_empty()))
 }
 
-fn is_direct_rooted_int_slice_view(ty: &Type) -> bool {
+fn is_direct_rooted_slice_view_syntax(ty: &Type) -> bool {
     let Type::Qualified(witchy_syntax::ast::TypeQual::View, payload) = ty else {
         return false;
     };
-    let element = match payload.as_ref() {
-        Type::Slice(element) => element.as_ref(),
-        // Type checking normalizes surface `[Int]` to its private nominal.
-        Type::Named(name, arguments) if name == "Slice" && arguments.len() == 1 => &arguments[0],
-        _ => return false,
-    };
-    matches!(element, Type::Named(name, arguments)
-        if name == "Int" && arguments.is_empty())
+    match payload.as_ref() {
+        Type::Slice(_) => true,
+        Type::Named(name, arguments) => name == "Slice" && arguments.len() == 1,
+        _ => false,
+    }
 }
 
 fn aggregate_declaration<'a>(
@@ -1262,7 +1260,7 @@ mod recursive_shape_tests {
     }
 
     #[test]
-    fn record_slice_carrier_stays_exactly_int() {
+    fn record_slice_carrier_requires_proven_element() {
         let view_slice = |element| Type::Qualified(
             witchy_syntax::ast::TypeQual::View,
             Box::new(Type::Slice(Box::new(element))),
@@ -1324,9 +1322,15 @@ mod recursive_shape_tests {
         let positional_definitions = BTreeMap::from([("Positional".into(), positional)]);
         assert!(!is_rooted_int_view_aggregate(&named("Positional"), &positional_definitions));
 
+        for element in [named("Float"), Type::Named("List".into(), vec![named("Int")])] {
+            let admitted = view_slice(element);
+            let definitions = BTreeMap::from([(
+                "Packet".into(), definition("Packet", vec![admitted.clone()], false),
+            )]);
+            assert!(is_rooted_int_view_carrier(&admitted, &definitions));
+            assert!(is_rooted_int_view_aggregate(&packet, &definitions));
+        }
         for element in [
-            named("Float"),
-            Type::Named("List".into(), vec![named("Int")]),
             Type::Qualified(witchy_syntax::ast::TypeQual::View, Box::new(named("Int"))),
             Type::Qualified(witchy_syntax::ast::TypeQual::Unique, Box::new(named("Int"))),
         ] {

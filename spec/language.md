@@ -1172,6 +1172,9 @@ A declared one-variant heap record uses its checked instantiated fields in
 declaration order; every field needs that same recursive proof and an owned
 physical slot. Tagged, packed, must-consume, capability-bearing, and recursive
 records have no slice-element carrier yet.
+One direct `&[T]` field in a declared untagged record can carry the same
+proved slice owner through that record. Nested slice fields and tagged shells
+remain outside this aggregate-view carrier.
 The slice retains its outer list root, and reads retain managed children
 through the checked projection. Carrier proof has a compiler resource limit
 of 128 nested levels and 4,096 type nodes.
