@@ -172,10 +172,11 @@ but await semantic and leak evidence. These slices do not yet support
 `.owned()` materialization.
 
 An exact whole-root tuple view `&(S, String)` is recognized for unqualified
-`S = Int`, `Float`, `Bool`, or `Duration`. The view retains the tuple's String
-child. The `Int` case has admitted Wasm and zero-leak evidence; the other
-scalar cases are implemented but await semantic and leak evidence. Reordered
-or qualified tuple fields and capturing such a view in a closure are refused.
+`S = Int`, `Float`, `Bool`, `Duration`, or `String`. The view retains the tuple
+root and its owned String children. The `Int` case has admitted Wasm and
+zero-leak evidence; the other cases are implemented but await semantic and
+leak evidence. Reordered or qualified tuple fields and capturing such a view
+in a closure are refused.
 
 Eligible non-packed `Option`, `Result`, and declared user aggregate roots can
 carry an exact direct `List(S)` child for unqualified `S = Int`, `Float`,

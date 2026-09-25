@@ -1171,10 +1171,10 @@ case has admitted Wasm and zero-leak evidence; the other cases still await
 that verification. `.owned()` on a slice of lists remains unsupported.
 
 The compiler recognizes exact whole-root `&(S, String)` tuple views for
-unqualified `S = Int`, `Float`, `Bool`, or `Duration`. The tuple root retains
-its String child. The `Int` case has admitted Wasm and zero-leak evidence;
-the other scalar cases await that verification. Reordered or qualified fields
-and closure capture of these tuple views remain unsupported.
+unqualified `S = Int`, `Float`, `Bool`, `Duration`, or `String`. The tuple root
+retains its owned String children. The `Int` case has admitted Wasm and
+zero-leak evidence; the other cases await that verification. Reordered or
+qualified fields and closure capture of these tuple views remain unsupported.
 
 Eligible non-packed whole-root `Option`, `Result`, and declared user aggregate
 views can carry an exact direct `List(S)` child for unqualified `S = Int`,

@@ -1689,7 +1689,7 @@ fn erase_record_string_views(records: &ScalarRecordFields) -> ScalarRecordFields
 /// (`StringRoot`) or a view of a declared, non-packed, argument-less user
 /// record or sum (`RecordRoot`), exact `Dict(String, S)` with an admitted
 /// unqualified inline scalar or String `S` (`DictRoot`), or
-/// exact `(S, String)` for admitted inline scalar `S` (`TupleRoot`).
+/// exact `(S, String)` for admitted inline scalar or String `S` (`TupleRoot`).
 /// None has a projection.
 pub(super) fn is_direct_rooted_view_whole_root(source: &witchy_syntax::ast::Type, records: &ScalarRecordFields) -> bool {
     is_direct_rooted_view_string(source)

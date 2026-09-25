@@ -110,6 +110,13 @@ until it has a separate checked witness. No hand-computed result, admitted
 unoptimized Wasm run, or zero-leak audit has been recorded for the new
 scalar cases, so this expansion closes no additional acceptance gap yet.
 
+Row G two-String tuple expansion (implemented but unverified, 2026-09-24):
+exact whole-root `&(String, String)` now has a distinct checked/source
+TupleRoot identity. Both String fields remain owned children of the retained
+tuple. Qualified, nested, and view-bearing fields remain refused, as does
+closure capture. No hand-computed result, admitted unoptimized Wasm run, or
+zero-leak audit has been recorded for this new shape; row G remains open.
+
 Row G direct List-child RecordRoot expansion (implemented but unverified,
 2026-09-24): eligible non-packed `Option`, `Result`, and declared user roots
 now share a checked/source ABI identity node for an exact direct `List(S)`
