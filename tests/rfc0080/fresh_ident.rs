@@ -21,7 +21,7 @@ comptime:
     let value = meta.fresh("tmp")
     emit_item(meta.function(true, meta.ident("identity_fresh"), [meta.param(value, int)], Some(int), meta.expr_name(value)))
 
-comptime fn fresh_tag(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
+comptime fn fresh_tag(parts: List(String), holes: List(meta.TagHole)) -> meta.ExprSyntax:
     let _unused = meta.fresh("tag_local")
     quote expr:
         7

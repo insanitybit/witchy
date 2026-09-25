@@ -108,7 +108,7 @@ fn main(console: Console):
     /// matches a plain multiline string and both backends produce identical bytes.
     #[test]
     fn multiline_tag_literal_preserves_raw_newlines_on_both_backends() {
-        let src = "import meta\n\ncomptime fn raw(parts: List(String), holes: List(String)) -> meta.ExprSyntax:\n    meta.expr_string(parts.at(0))\n\nfn main(console: Console):\n    console.print(raw\"line1\\nline2\")\n    console.print(\"line1\\nline2\")\n";
+        let src = "import meta\n\ncomptime fn raw(parts: List(String), holes: List(meta.TagHole)) -> meta.ExprSyntax:\n    meta.expr_string(parts.at(0))\n\nfn main(console: Console):\n    console.print(raw\"line1\\nline2\")\n    console.print(\"line1\\nline2\")\n";
         // The plain multiline string (line 2 of output) is the oracle; the tagged
         // literal (line 1) must match it exactly on BOTH backends.
         let expected = vec!["line1\nline2".to_string(), "line1\nline2".to_string()];

@@ -1294,8 +1294,8 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
             dir.join("tags.witchy"),
-            "import meta\n\npub comptime fn bump(parts: List(String), holes: List(String)) -> meta.ExprSyntax:\n    \
-             meta.expr_binary(\"+\", meta.expr_tag_hole(holes.at(0)), meta.expr_int(1))\n",
+            "import meta\n\npub comptime fn bump(parts: List(String), holes: List(meta.TagHole)) -> meta.ExprSyntax:\n    \
+             meta.expr_binary(\"+\", meta.expr_tag_hole_typed(holes.at(0)), meta.expr_int(1))\n",
         )
         .unwrap();
         let file = dir.join("app.witchy");

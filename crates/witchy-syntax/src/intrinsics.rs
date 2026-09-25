@@ -1604,7 +1604,7 @@ pub const ALL: &[IntrinsicSpec] = &[
         wir_helpers: NO_HELPERS,
         dynamic_wir_helpers: false,
         wir_host_call: None,
-        diagnostic_name: "meta.expr_tag_hole",
+        diagnostic_name: "meta.expr_tag_hole_typed",
         private_callers: META_BRIDGE_CALLERS,
     },
     IntrinsicSpec {

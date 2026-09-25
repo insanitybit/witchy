@@ -1109,7 +1109,7 @@ pub enum Expr {
         body: Block,
     },
     /// `tag"a${x}b"` — a compile-time tagged literal (RFC-0006). `tag` is an
-    /// `comptime fn(parts: List(String), holes: List(String)) -> meta.ExprSyntax`.
+    /// `comptime fn(parts: List(String), holes: List(meta.TagHole)) -> meta.ExprSyntax`.
     /// `parts` are the static
     /// fragments (`["a", "b"]`); holes carry owned expression nodes parsed in
     /// their call-site context. `hole_spans` is each hole's `(line, col)` start position in the

@@ -300,7 +300,7 @@ impl Interpreter {
                         .is_some_and(|markers| markers.iter().any(|candidate| candidate.as_str() == marker.as_str()));
                     if !valid_shape || !active {
                         return err(
-                            "meta.expr_tag_hole expects a compiler-issued hole marker for the active tagged literal",
+                            "meta.expr_tag_hole_typed expects a compiler-issued hole marker for the active tagged literal",
                         );
                     }
                     Ok(Some(self.store_compiler_expr_syntax(
@@ -310,7 +310,7 @@ impl Interpreter {
                     )?))
                 }
                 other => err(format!(
-                    "meta.expr_tag_hole expects an opaque hole marker String, got `{other}`"
+                    "meta.expr_tag_hole_typed expects an opaque compiler-issued hole marker, got `{other}`"
                 )),
             },
             name if intrinsics::is_meta_expr_tagged(name) => match args {

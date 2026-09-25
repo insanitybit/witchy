@@ -225,8 +225,8 @@ String-returning tags are rejected. `parts` contains the static fragments;
 `holes` contains one sealed `meta.TagHole` per hole. The tag returns the typed
 expression that replaces the literal. Convert a hole with
 `meta.expr_tag_hole_typed`, or compose it through a structural quote or builder.
-Existing `List(String)` tags and `meta.expr_tag_hole` remain a temporary
-compatibility lane; other hole parameter types are rejected.
+Tags with `List(String)` holes and the former `meta.expr_tag_hole(String)`
+entry point are rejected; only compiler-issued typed holes are admitted.
 The compiler substitutes the real hole expression -
 resolved at the call site - and splices the result before type-checking.
 Reachable tag evaluator items don't invoke tagged literals in their bodies or
@@ -238,7 +238,7 @@ The evaluator retains the selected tag's module-qualified helper closure,
 including constants, constructors, custom traits, implementations, and imported
 comptime helpers. Duplicate tag names from direct imports are an error. Bundled
 standard-library modules aren't tag-entry namespaces; tags live in ordinary
-imported runes such as `glamour`.
+imported runes.
 
 `quote expr:` results, including structurally substituted expression templates,
 stay as compiler-owned AST through this boundary. Direct functions, types,
@@ -261,11 +261,11 @@ not collapse to an unlocated generated-source error.
 fn answer_value() -> Int:
     40
 
-comptime fn answer(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
+comptime fn answer(parts: List(String), holes: List(meta.TagHole)) -> meta.ExprSyntax:
     quote expr:
         answer_value() + 2
 
-comptime fn caller_answer(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
+comptime fn caller_answer(parts: List(String), holes: List(meta.TagHole)) -> meta.ExprSyntax:
     meta.expr_name(meta.call_site("answer_value"))
 
 fn main(console: Console):
@@ -302,10 +302,9 @@ Hello, witch!
 The tag runs **once, in the compiler**; both backends then compile the same AST.
 Holes are typed by position (the substituted expression is type-checked normally),
 so a type error points back *into the literal* at that `${…}`, and a marker may be
-placed zero, once, or many times. This preserves structural safety: the
-`glamour` rune's `html` tag turns a `${userInput}` in text position into a
-`text(…)` **node**, never markup - so interpolated input is **XSS-immune**, not
-escaped-after-the-fact.
+placed zero, once, or many times. This preserves structural safety: a typed
+HTML tag can turn a `${userInput}` in text position into a `text(…)` **node**
+instead of parsing it as markup.
 
 ## When to reach for it
 

@@ -9,7 +9,7 @@ fn tagged_literal_escaped_dollar_stays_literal_on_both_backends() {
     }
     let plain = r#"import meta
 
-comptime fn lit(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
+comptime fn lit(parts: List(String), holes: List(meta.TagHole)) -> meta.ExprSyntax:
     meta.expr_string(list.at(parts, 0))
 
 fn main(console: Console):

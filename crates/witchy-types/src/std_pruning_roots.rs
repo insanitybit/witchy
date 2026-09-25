@@ -293,7 +293,7 @@ pub const COMPILER_STD_NAMES: &[&str] = &[
     "meta.expr_qualified_call",
     "meta.expr_qualified_call_path",
     "meta.expr_record",
-    "meta.expr_tag_hole",
+    "meta.expr_tag_hole_typed",
     "meta.expr_tagged",
     "meta.expr_try",
     "meta.expr_tuple",

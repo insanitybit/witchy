@@ -19,7 +19,7 @@ const TAG_LIBRARY: &str = r#"
 import meta
 import definition_support
 
-pub comptime fn definition_qualified(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
+pub comptime fn definition_qualified(parts: List(String), holes: List(meta.TagHole)) -> meta.ExprSyntax:
     let argument = quote type:
         Int
     let ty = meta.type_qualified(meta.ident("definition_support"), meta.ident("Wrapped"), [argument])
@@ -32,7 +32,7 @@ pub comptime fn definition_qualified(parts: List(String), holes: List(String)) -
     quote expr:
         (fn(item: ${ty}) -> Int: ${matched})(definition_support.Wrapped(41))
 
-pub comptime fn callsite_qualified(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
+pub comptime fn callsite_qualified(parts: List(String), holes: List(meta.TagHole)) -> meta.ExprSyntax:
     let argument = quote type:
         Int
     let ty = meta.type_qualified(meta.call_site("consumer_support"), meta.ident("Wrapped"), [argument])
@@ -42,17 +42,17 @@ pub comptime fn callsite_qualified(parts: List(String), holes: List(String)) -> 
     let body = quote expr:
         value + 1
     let matched = meta.expr_match(item, [meta.match_arm(pattern, body)])
-    let supplied = meta.expr_tag_hole(holes.at(0))
+    let supplied = meta.expr_tag_hole_typed(holes.at(0))
     quote expr:
         (fn(item: ${ty}) -> Int: ${matched})(${supplied})
 
-pub comptime fn dynamic_qualified(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
+pub comptime fn dynamic_qualified(parts: List(String), holes: List(meta.TagHole)) -> meta.ExprSyntax:
     meta.expr_qualified_call(meta.ident("definition_support"), meta.ident("answer"), [])
 
-comptime fn literal_passthrough(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
-    meta.expr_tag_hole(holes.at(0))
+comptime fn literal_passthrough(parts: List(String), holes: List(meta.TagHole)) -> meta.ExprSyntax:
+    meta.expr_tag_hole_typed(holes.at(0))
 
-pub comptime fn dynamic_static_interpolation(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
+pub comptime fn dynamic_static_interpolation(parts: List(String), holes: List(meta.TagHole)) -> meta.ExprSyntax:
     let literal = meta.expr_string("\${not_in_scope}")
     meta.expr_tagged(meta.ident("literal_passthrough"), ["", ""], [literal])
 "#;

@@ -1549,8 +1549,8 @@ its normalized static parts and slot structure, keeping source location separate
 Here `parts` holds the static fragments and `holes` holds a sealed `meta.TagHole`
 per hole. `meta.expr_tag_hole_typed` converts one to expression syntax that the
 tag places where the hole's value belongs; the tag cannot read the hole's source.
-Existing `List(String)` tags and `meta.expr_tag_hole` remain a temporary
-compatibility lane; other hole parameter types are rejected. A tag returns
+Tags with `List(String)` holes and the former `meta.expr_tag_hole(String)`
+entry point are rejected. A tag returns
 `meta.ExprSyntax`; String-returning tags are
 rejected. A compiler-owned expression transfers its AST through the expansion
 event directly. A tag constructs generated expressions with a quote,
@@ -1586,8 +1586,8 @@ opt an expression, type, or constructor pattern back into invocation-site
 resolution by passing `meta.call_site("name")` to `meta.expr_name`,
 `meta.type_named`, or `meta.pattern_ctor`. A type error
 in a hole points back **into the literal** at that `${…}`, not at generated code.
-The `html` tag in the `glamour` rune uses this: a `${userInput}` in text position
-becomes a `text(…)` **node**, never markup, so it's XSS-immune by construction.
+A typed HTML tag can use this to turn a `${userInput}` in text position into a
+`text(…)` **node** rather than markup.
 
 ```witchy
 import meta

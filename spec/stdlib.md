@@ -2798,10 +2798,6 @@ A deterministic compiler-owned binding name. The returned identifier cannot coll
 
 Reify exactly one compiler-issued hole without parsing its source. The compiler substitutes its call-site expression after tag expansion.
 
-#### `fn expr_tag_hole(marker: String) -> ExprSyntax`
-
-Temporary compatibility lane for existing tags. Remove after all tag signatures use List(TagHole).
-
 #### `fn expr_tagged(tag: Ident, parts: List(String), holes: List(ExprSyntax)) -> ExprSyntax`
 
 Construct a nested tagged literal from validated tag identity, static parts, and compiler-owned expression handles. The bridge stores an owned AST; it never concatenates or reparses source. `parts` must have exactly one more member than `holes`.

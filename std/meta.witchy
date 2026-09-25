@@ -146,11 +146,6 @@ pub fn expr_tag_hole_typed(hole: TagHole) -> ExprSyntax:
     match hole:
         TagHole(marker) -> __meta_expr_tag_hole(marker)
 
-// Temporary compatibility lane for existing tags. Remove after all tag
-// signatures use List(TagHole).
-pub fn expr_tag_hole(marker: String) -> ExprSyntax:
-    __meta_expr_tag_hole(marker)
-
 fn __meta_expr_tag_hole(marker: String) -> ExprSyntax:
     __meta_expr_tag_hole(marker)
 
