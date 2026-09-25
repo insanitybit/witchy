@@ -174,6 +174,11 @@ child. The `Int` case has admitted Wasm and zero-leak evidence; the other
 scalar cases are implemented but await semantic and leak evidence. Reordered
 or qualified tuple fields and capturing such a view in a closure are refused.
 
+The compiler also recognizes exact `&Option(List(S))` for an unqualified
+`S = Int`, `Float`, `Bool`, `Duration`, or `String`. The outer Option keeps its
+owned List child alive. Qualified or nested List elements are refused; these
+new cases await admitted Wasm and leak evidence.
+
 The same rule applies to destructuring, field access, indexing, iteration,
 `Option`, `Result`, tuples, and supported nested aggregates: transport the
 carrier and its proof, or reject the operation. A displayed field name or
