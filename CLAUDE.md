@@ -197,7 +197,8 @@ are cached and shared across worktrees too; mbx learns which crate you are
 editing and compiles that one incrementally. A target seeded from the gate
 (every pool worktree: `.witchy-mbx-incremental-seed`) instead stays
 Cargo-incremental, and mbx bypasses its workspace crates, so the store never
-holds master's. Their shared source is the build seed: before each build the
+holds master's. Their shared source is the build seed: before each build in
+any incremental-mode target (seeded, or `agent-check`'s `target-codex`) the
 shim runs `scripts/build-seed.py refresh`, which swaps in the current seed's
 copy of every workspace unit whose sources and dependencies match it. After a
 rebase or a pool claim, only the crates your branch changed and their

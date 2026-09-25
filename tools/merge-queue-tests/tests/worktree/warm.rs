@@ -468,6 +468,70 @@ fn cargo_shim_preserves_incremental_mode_for_a_warm_seed_unless_overridden() {
     );
 }
 
+/// The shim refreshes every incremental-mode target from the build seed, not
+/// only one worktree-warm marked: agent-check forces incremental mode on an
+/// unmarked target-codex, where mbx bypasses workspace crates. A learned-mode
+/// target (mbx shares workspace crates itself) and an explicit --target-dir are
+/// left alone.
+#[test]
+fn cargo_shim_refreshes_incremental_targets_from_the_build_seed() {
+    let repo = temp_repo();
+    let root = repo.path();
+    write(root, "scripts/bin/cargo", include_str!("../../../../scripts/bin/cargo"));
+    write(
+        root,
+        "scripts/feature-unification.sh",
+        include_str!("../../../../scripts/feature-unification.sh"),
+    );
+    write(root, "scripts/build-seed.py", "import sys\nprint('refresh ' + sys.argv[4].rsplit('/', 1)[-1], file=sys.stderr)\n");
+    write(root, "fake-bin/cargo", "#!/bin/sh\nexit 0\n");
+    write(root, "state/mbx/bin/mbx", "#!/bin/sh\nexit 0\n");
+    write(root, "state/build-seed/current/manifest.json", "{}\n");
+    for executable in ["scripts/bin/cargo", "fake-bin/cargo", "state/mbx/bin/mbx"] {
+        let status = Command::new("chmod")
+            .args(["+x", executable])
+            .current_dir(root)
+            .status()
+            .expect("mark fixture executable");
+        assert!(status.success());
+    }
+    write(root, "seeded/.witchy-mbx-incremental-seed", "gate build seed\n");
+
+    let run = |target: &str, mode: Option<&str>, extra: &[&str]| {
+        let path = std::env::join_paths(
+            std::iter::once(root.join("fake-bin"))
+                .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())),
+        )
+        .expect("fixture PATH");
+        let mut command = Command::new(root.join("scripts/bin/cargo"));
+        command
+            .arg("build")
+            .args(extra)
+            .current_dir(root)
+            .env("PATH", path)
+            .env("CARGO_TARGET_DIR", target)
+            .env("MBX_STATS_REPORT", root.join("mbx-report.json"))
+            .env_remove("CARGO_BUILD_TARGET_DIR")
+            .env_remove("WITCHY_BUILD_CACHE")
+            .env_remove("WITCHY_CARGO_SHIM_ACTIVE")
+            .env_remove("WITCHY_GATE_SCOPE")
+            .env_remove("WITCHY_SEED_REFRESH");
+        if let Some(mode) = mode {
+            command.env("WITCHY_MBX_MODE", mode);
+        } else {
+            command.env_remove("WITCHY_MBX_MODE");
+        }
+        let output = command.output().expect("run cargo shim fixture");
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        String::from_utf8_lossy(&output.stderr).into_owned()
+    };
+
+    assert!(run("seeded", None, &[]).contains("refresh seeded"));
+    assert!(run("target-codex", Some("incremental"), &[]).contains("refresh target-codex"));
+    assert!(!run("cold", None, &[]).contains("refresh"));
+    assert!(!run("target-codex", Some("incremental"), &["--target-dir", "elsewhere"]).contains("refresh"));
+}
+
 #[test]
 fn cargo_shim_restores_gate_dependencies_without_joining_the_agent_pool() {
     let repo = temp_repo();

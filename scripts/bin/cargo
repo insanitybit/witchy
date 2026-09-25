@@ -256,12 +256,19 @@ fi
 # WITCHY_SEED_REFRESH=off disables it. It only touches that target's files,
 # never sources, so other target directories are unaffected; a build naming
 # its target some other way (--target-dir, CARGO_BUILD_TARGET_DIR) is skipped.
+# Any incremental-mode target qualifies, seeded or not: agent-check forces
+# incremental mode on the agent's own target-codex, which worktree-warm never
+# marked, and mbx bypasses workspace crates there, so without the refresh
+# every master landing recompiled them (2026-09-25: 1.14 compiler-min of
+# workspace crates per agent build after the seeded-only refresh landed).
+# A unit whose profile or features differ from the gate's has another
+# filename hash, never matches the seed, and is left alone.
 explicit_target=0
 [ -z "${CARGO_BUILD_TARGET_DIR:-}" ] || explicit_target=1
 for arg in "$@"; do
     case "$arg" in --target-dir | --target-dir=*) explicit_target=1 ;; esac
 done
-if [ "$seeded_target" = 1 ] && [ "$explicit_target" = 0 ] && [ -z "${WITCHY_GATE_SCOPE+x}" ] \
+if { [ "$seeded_target" = 1 ] || [ "$mbx_mode" = incremental ]; } && [ "$explicit_target" = 0 ] && [ -z "${WITCHY_GATE_SCOPE+x}" ] \
     && [ "${WITCHY_SEED_REFRESH:-on}" != "off" ] \
     && seed_dir="$(cd "$state_root/state/build-seed/current" 2>/dev/null && pwd -P)" \
     && [ -f "$seed_dir/manifest.json" ]; then
