@@ -409,6 +409,16 @@ its ordered field plans. Equal physical slots with different constructor tag
 meanings have distinct structural identities. This changes only newly added
 Sum keys; it adds no semantic evidence or A–O closure.
 
+Row G rooted representation classes (implemented but unverified,
+2026-09-25): checked rooted views now expose scalar place, inline scalar,
+retained projection, or retained whole root as the outer storage class.
+The whole-root plan carries byte-buffer, retained sequence, structural
+record, or checked aggregate facts. Lowering, source ABI admission, and
+SafeWIR's physical correspondence consume this same typed classification.
+The existing v4 structural ABI bytes, source admission, qualifier rules,
+and independent SafeWIR layout checks are preserved. This consolidation
+adds no new semantic evidence or A–O closure.
+
 At `adf1d01c7` (2026-09-18), the integrated core smoke was **42/42 passed**: rooted views (13), unique/write-back (12), normal/opt interoperation (2), resource composition (5), and optimization readiness (10). This is core canonical-route evidence only; it does not include the source interpreter, full, end-to-end, or examples suites.
 
 At `2f62f4038` (2026-09-19), the newly integrated concrete `Option(&Int)` evidence is **6/6 passed**: four lower carrier/tamper/`var` checks, one exact authority payload-state check, and one production-runtime three-leg fixture (`790`, zero leaks). The three generic rooted-slice fixtures are **1 passed / 2 failed**: region-root escape rejects as expected, while both positive forms stop at the explicit missing authenticated slice-element projection. This is a live failure checkpoint, not an acceptance closeout.
