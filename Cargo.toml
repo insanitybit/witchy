@@ -207,20 +207,38 @@ strip = "symbols"
 # 17s of tests. Level 1 preserves useful optimization without paying level-2
 # codegen for every compiler edit and test harness. The root crate and external
 # dependencies remain unoptimized for cheap cold builds.
+#
+# The workspace crates also drop line tables (`debug = 0`). With line tables,
+# inserting or deleting one line moves the line of every function below it,
+# and each codegen unit holding one is rebuilt: in witchy-wir one inserted
+# line in canonical_wasmir.rs rebuilt 129 CGUs for 86-94 CPU s, against 82
+# CGUs and 40-51 CPU s without (2026-09-25). `strip = "symbols"` already left
+# those tables unusable for backtraces; panic messages keep file:line, which
+# comes from compiled-in `Location` constants, not debug info. To step through
+# one of these crates in a debugger, remove its `debug = 0` locally.
 [profile.dev.package.witchy-interp]
 opt-level = 2
+debug = 0
 [profile.dev.package.witchy-runtime]
 opt-level = 2
+debug = 0
 [profile.dev.package.witchy-lower]
 opt-level = 1
+debug = 0
 [profile.dev.package.witchy-wir]
 opt-level = 1
+debug = 0
 [profile.dev.package.witchy-types]
 opt-level = 1
+debug = 0
 [profile.dev.package.witchy-canonical-source]
 opt-level = 1
+debug = 0
 [profile.dev.package.witchy-syntax]
 opt-level = 1
+debug = 0
+[profile.dev.package.witchy]
+debug = 0
 # foldhash backs the compiler crates' HashMaps; unoptimized it LOSES to std's
 # precompiled SipHash (~2% more instructions on a pm-front-end compile), with
 # this override it wins. Tiny crate — no build-time cost.

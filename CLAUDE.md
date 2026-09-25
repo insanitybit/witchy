@@ -60,6 +60,10 @@ repeat the rules; consult it when you're working inside one of these areas.
   (strip, opt-level, debug) forks a second full build of every crate AND
   dependency in the same target dir. For symbolized backtraces, knowingly pay
   for that second build with `CARGO_PROFILE_DEV_STRIP=none CARGO_PROFILE_TEST_STRIP=none`.
+  The workspace crates also build with `debug = 0`: line tables made a single
+  inserted line rebuild every codegen unit below it (about 2x the edit cost in
+  witchy-wir). Panic messages still carry file:line; for a debugger, remove
+  that crate's `debug = 0` locally.
   The same goes for features: `scripts/bin/cargo` resolves every `-p`
   selection with workspace feature unification, so `-p witchy-wir`,
   `-p witchy-lower` and `--workspace` share one witchy-wir build instead of
