@@ -346,6 +346,16 @@ pub fn rooted_view_from_ty(
             carrier: CanonicalRootedViewCarrier::DictRoot,
         });
     }
+    if let Some(element) = crate::typeck::ty_to_ast(payload).as_ref().and_then(|source| {
+        witchy_canonical_source::aggregates::is_record_root_payload(source, &context.definitions)
+            .then(|| witchy_canonical_source::aggregates::option_list_scalar_root_payload(source))
+            .flatten()
+    }) {
+        return Ok(CanonicalReferenceKind::RootedView {
+            payload: rooted_option_list_scalar_payload_key(element),
+            carrier: CanonicalRootedViewCarrier::RecordRoot,
+        });
+    }
     match payload {
         Ty::Int => Ok(CanonicalReferenceKind::RootedView {
             payload: rooted_scalar_payload_key(CanonicalScalarKind::Int),
@@ -427,6 +437,14 @@ pub fn rooted_view_from_ast(
         return Ok(CanonicalReferenceKind::RootedView {
             payload: rooted_tuple_scalar_string_payload_key(kind),
             carrier: CanonicalRootedViewCarrier::TupleRoot,
+        });
+    }
+    if witchy_canonical_source::aggregates::is_record_root_payload(payload, &context.definitions)
+        && let Some(element) = witchy_canonical_source::aggregates::option_list_scalar_root_payload(payload)
+    {
+        return Ok(CanonicalReferenceKind::RootedView {
+            payload: rooted_option_list_scalar_payload_key(element),
+            carrier: CanonicalRootedViewCarrier::RecordRoot,
         });
     }
     match payload.unqualified() {
@@ -594,6 +612,20 @@ const RECORD_IDENTITY_USER: u8 = 1;
 const RECORD_IDENTITY_OPTION: u8 = 2;
 const RECORD_IDENTITY_RESULT: u8 = 3;
 const RECORD_IDENTITY_LEAF: u8 = 4;
+const RECORD_IDENTITY_LIST: u8 = 5;
+
+/// A new record-root identity node for one exact owned List child. Existing
+/// record-root identity bytes stay unchanged; checked and source paths call
+/// this same encoder after the shared exact-shape judgment.
+fn rooted_option_list_scalar_payload_key(element: &str) -> CanonicalTypeKey {
+    let mut bytes = vec![RECORD_IDENTITY_OPTION];
+    bytes.extend_from_slice(&1u32.to_le_bytes());
+    bytes.push(RECORD_IDENTITY_LIST);
+    bytes.extend_from_slice(&1u32.to_le_bytes());
+    let encoded = record_leaf(element, &mut bytes);
+    debug_assert!(encoded, "the exact Option(List(S)) predicate admits only scalar or String S");
+    rooted_record_payload_key(&bytes)
+}
 
 fn record_head(name: &str, arity: usize, context: &Context, bytes: &mut Vec<u8>) -> Result<(), CanonicalAbiError> {
     match (name, arity) {
