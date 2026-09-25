@@ -1301,6 +1301,15 @@ mod recursive_shape_tests {
         assert_eq!(shape.fields, tree.variants[0].fields);
         assert!(is_v1_field_type(&Type::Named("Option".into(), vec![named("Tree")]), &definitions));
         assert!(is_v1_list_element_type(&named("Tree"), &definitions));
+
+        let self_slice = Type::Qualified(
+            witchy_syntax::ast::TypeQual::View,
+            Box::new(Type::Slice(Box::new(named("Tree")))),
+        );
+        let recursive = BTreeMap::from([(
+            "Tree".into(), definition("Tree", vec![self_slice.clone()], false),
+        )]);
+        assert!(owner_carried_view_identity(&self_slice, &recursive).is_none());
     }
 
     #[test]

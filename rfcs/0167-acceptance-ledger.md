@@ -446,9 +446,12 @@ from `RootedViewStorage`. Its authenticated scalar-place and retained
 projection cases retain their separate physical requirements. An outer
 `frozen` slice can still normalize for identity but cannot enter the
 aggregate-field admission path; extra nested qualifiers now refuse instead
-of passing the old scalar syntax shortcut. Existing canonical-source tests
-(19), a lowerer compile, and the slice-record smoke (2) passed; adversarial
-review found no new authority path. No new form or A–O evidence is claimed.
+of passing the old scalar syntax shortcut. A bounded nominal-graph preflight
+rejects recursive carrier elements before a carrier and aggregate shape query
+can restart each other's budget; an assertion in the existing recursive-shape
+test pins the self-slice case. Existing canonical-source tests (19), a lowerer
+compile, and the slice-record smoke (2) passed; adversarial review found no
+new authority path. No new form or A–O evidence is claimed.
 
 At `adf1d01c7` (2026-09-18), the integrated core smoke was **42/42 passed**: rooted views (13), unique/write-back (12), normal/opt interoperation (2), resource composition (5), and optimization readiness (10). This is core canonical-route evidence only; it does not include the source interpreter, full, end-to-end, or examples suites.
 

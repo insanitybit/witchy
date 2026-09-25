@@ -56,6 +56,16 @@ impl OwnerCarriedViewPlan {
             other => (other, false),
         };
         if matches!(payload, Type::Qualified(..)) { return None; }
+        // This is a leaf query from aggregate shape checking. Restrict it to
+        // the two owner-carried source heads before invoking the broader
+        // rooted-view classifier; a record-root query here could re-enter the
+        // same aggregate shape traversal through a recursive field.
+        match payload {
+            Type::Named(name, arguments) if name == "Int" && arguments.is_empty() => {}
+            Type::Slice(_) => {}
+            Type::Named(name, arguments) if name == "Slice" && arguments.len() == 1 => {}
+            _ => return None,
+        }
         let storage = match RootedViewStorage::classify(payload, definitions, |_| None)? {
             RootedViewStorage::ScalarCell(CanonicalScalarKind::Int) => {
                 OwnerCarriedViewStorage::AuthenticatedPlace(CanonicalScalarKind::Int)

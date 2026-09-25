@@ -4,7 +4,7 @@
 //! in `CanonicalSourceView` and SafeWIR independently matches the recursive
 //! physical layout. This description cannot grant authority on its own.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use witchy_syntax::ast::{Type, TypeDef, TypeQual};
 
 use crate::abi::CanonicalScalarKind;
@@ -143,6 +143,11 @@ impl CarrierElement {
         ty: &Type,
         definitions: &BTreeMap<String, TypeDef>,
     ) -> Option<Self> {
+        // Shape validation can ask for a slice element's carrier while it is
+        // still validating an enclosing nominal. Reject nominal cycles before
+        // entering that cross-module traversal: each shape query has its own
+        // budget, so a cycle across the two queries would otherwise reset it.
+        if !nominal_graph_acyclic(ty, definitions) { return None; }
         let mut budget = 4_096;
         Self::from_checked_type_with_definitions_at(ty, definitions, 0, &mut budget)
     }
@@ -566,4 +571,45 @@ impl CarrierElement {
         encode(self, &mut bytes);
         *blake3::hash(&bytes).as_bytes()
     }
+}
+
+fn nominal_graph_acyclic(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> bool {
+    fn visit(
+        ty: &Type,
+        definitions: &BTreeMap<String, TypeDef>,
+        active: &mut BTreeSet<String>,
+        budget: &mut usize,
+        depth: usize,
+    ) -> bool {
+        if depth > 128 || *budget == 0 { return false; }
+        *budget -= 1;
+        match ty {
+            Type::Named(name, arguments) => {
+                if arguments.iter().any(|argument| !visit(argument, definitions, active, budget, depth + 1)) {
+                    return false;
+                }
+                let Some(definition) = definitions.get(name) else { return true };
+                if definition.name.len() > 1_024 { return false; }
+                if active.contains(&definition.name) { return false; }
+                active.insert(definition.name.clone());
+                let valid = definition.variants.iter().all(|variant| {
+                    variant.fields.iter().all(|field| visit(field, definitions, active, budget, depth + 1))
+                });
+                active.remove(&definition.name);
+                valid
+            }
+            Type::Tuple(fields) | Type::Dyn(_, fields) => fields.iter()
+                .all(|field| visit(field, definitions, active, budget, depth + 1)),
+            Type::Slice(inner) | Type::Qualified(_, inner) => {
+                visit(inner, definitions, active, budget, depth + 1)
+            }
+            Type::Fn(parameters, result, _, _) => parameters.iter()
+                .all(|parameter| visit(parameter, definitions, active, budget, depth + 1))
+                && visit(result, definitions, active, budget, depth + 1),
+            Type::RecordCompose { base, fields } => visit(base, definitions, active, budget, depth + 1)
+                && fields.iter().all(|(_, field)| visit(field, definitions, active, budget, depth + 1)),
+        }
+    }
+
+    visit(ty, definitions, &mut BTreeSet::new(), &mut 4_096, 0)
 }
