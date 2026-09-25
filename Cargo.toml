@@ -203,6 +203,18 @@ lto = "off"
 [profile.test]
 strip = "symbols"
 
+# Host units (proc macros, build scripts) default to `debug = 0`, except that
+# Cargo drops the override for a crate the selection ALSO builds for the
+# target, so the two can be shared. witchy-wir's dev-dependency on `syn` does
+# exactly that to `proc-macro2`: a `-p witchy-wir` selection built it with
+# line tables, any other with none, and the different proc-macro2 hash changed
+# witchy-syntax, witchy-canonical-source and witchy-wir. The gate's two test
+# partitions rebuilt those three back to back (~40-100 s a gate, 2026-09-25).
+# Pinning host debuginfo to the profile's own setting makes every selection
+# build the same units.
+[profile.dev.build-override]
+debug = "line-tables-only"
+
 # Tests run the interpreter and Wasmtime host glue hard, so keep those two hot
 # execution crates at level 2. The compiler crates are dominated by codegen on
 # edit builds: on 2026-09-24 a warm-dependency lower probe spent 14m28s
