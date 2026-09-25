@@ -2757,7 +2757,15 @@ fn contains_deferred_v1_qualifier(ty: &Type) -> bool {
             _,
         ) => true,
         Type::Named(_, arguments) | Type::Tuple(arguments) | Type::Dyn(_, arguments) => {
-            arguments.iter().any(contains_deferred_v1_qualifier)
+            arguments.iter().any(|argument| {
+                // A direct dictionary view has a whole-root token. No
+                // aggregate projection (including Option's Some lane) has
+                // been authenticated for that token yet. Do not inherit the
+                // direct admission by recursively walking a wrapper.
+                matches!(argument, Type::Qualified(TypeQual::View, inner)
+                    if matches!(inner.unqualified(), Type::Named(name, _) if name == "Dict"))
+                    || contains_deferred_v1_qualifier(argument)
+            })
         }
         Type::Slice(inner) => contains_deferred_v1_qualifier(inner),
         Type::RecordCompose { base, fields } => {
