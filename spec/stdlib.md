@@ -2295,7 +2295,7 @@ Remove and return the final element. A uniquely owned non-empty list moves the l
 
 #### `fn slice(xs: List(a), start: Int, end: Int) -> List(a)`
 
-The elements in the half-open index range [start, end), clamped to bounds. `slice(xs, 1, 3)` of [a,b,c,d] is [b,c]. An immutable view `&xs[start..end]` retains a snapshot instead; its compiler-known `.owned()` copies that range to a fresh list for Int, Float, Bool, Duration, String, and exact List(S) elements for S = Int, Float, Bool, or Duration. Other element types currently fail closed.
+The elements in the half-open index range [start, end), clamped to bounds. `slice(xs, 1, 3)` of [a,b,c,d] is [b,c]. An immutable view `&xs[start..end]` retains a snapshot instead; its compiler-known `.owned()` copies that range to a fresh list for Int, Float, Bool, Duration, String, and exact List(S) elements for S = Int, Float, Bool, Duration, or String. Other element types currently fail closed.
 
 #### `fn range(n: Int) -> List(Int)`
 
@@ -2371,7 +2371,7 @@ The element at `index` (0-based). Out of bounds is a runtime error on every back
 
 #### `List.slice(start: Int, end: Int) -> List(a)`
 
-The elements in the half-open index range [start, end), clamped to bounds. `slice(xs, 1, 3)` of [a,b,c,d] is [b,c]. An immutable view `&xs[start..end]` retains a snapshot instead; its compiler-known `.owned()` copies that range to a fresh list for Int, Float, Bool, Duration, String, and exact List(S) elements for S = Int, Float, Bool, or Duration. Other element types currently fail closed.
+The elements in the half-open index range [start, end), clamped to bounds. `slice(xs, 1, 3)` of [a,b,c,d] is [b,c]. An immutable view `&xs[start..end]` retains a snapshot instead; its compiler-known `.owned()` copies that range to a fresh list for Int, Float, Bool, Duration, String, and exact List(S) elements for S = Int, Float, Bool, Duration, or String. Other element types currently fail closed.
 
 #### `List.get(index: Int) -> Option(a)`
 

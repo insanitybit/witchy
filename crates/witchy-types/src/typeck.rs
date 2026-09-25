@@ -3551,7 +3551,7 @@ impl Checker {
             let element = self.resolve(&arguments[0]);
             if matches!(&element, Ty::Int | Ty::Float | Ty::Bool | Ty::Duration | Ty::String)
                 || matches!(&element, Ty::List(inner)
-                    if matches!(inner.as_ref(), Ty::Int | Ty::Float | Ty::Bool | Ty::Duration))
+                    if matches!(inner.as_ref(), Ty::Int | Ty::Float | Ty::Bool | Ty::Duration | Ty::String))
                 || matches!(&element, Ty::Var(variable)
                     if self.current_typarams.values().any(|typaram| typaram == variable))
             {
@@ -3559,7 +3559,7 @@ impl Checker {
             }
             return terr(format!(
                 "`.owned()` cannot materialize the slice view `{payload}`: only Int, Float, Bool, \
-                 Duration, String, and exact List(S) for S = Int, Float, Bool, or Duration \
+                 Duration, String, and exact List(S) for S = Int, Float, Bool, Duration, or String \
                  have an admitted checked copy into List(T)"
             ));
         }

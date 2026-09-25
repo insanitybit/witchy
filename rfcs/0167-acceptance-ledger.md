@@ -118,9 +118,19 @@ and `&[List(Duration)]` using the same owned-pointer `CloneRange` path as the
 proven `List(Int)` case. The existing three-case
 `rfc0167_slice_owned_materialization` shard passes at this tip: the three
 copies contribute the hand-computed 1 + 10 + 100 = 111 in admitted unoptimized
-Wasm, with zero heap leaks. `List(String)` and must-consume `Ticket` elements
-refuse at source checking; deeper and qualified children remain outside the
-admitted boundary. Row G remains partial.
+Wasm, with zero heap leaks. At that checkpoint, `List(String)` and must-consume
+`Ticket` elements refused at source checking; deeper and qualified children
+remained outside the admitted boundary. Row G remains partial.
+
+Row G String-list slice materialization (proven for this exact shape,
+2026-09-25): exact `&[List(String)].owned()` uses the existing owned-pointer
+`CloneRange` path to produce `List(List(String))`. The checker and lowerer
+retain exact element-family gates. The existing three-case
+`rfc0167_slice_owned_materialization` shard passes at this tip: the retained
+view, copied list, and changed original contribute the hand-computed
+3000 + 100 + 10 + 5 = 3115 in admitted unoptimized Wasm with zero heap leaks.
+`List(List(Int))` and must-consume `Ticket` elements refuse at source checking;
+qualified children remain outside the admitted boundary. Row G remains partial.
 
 Row G String-child list slice expansion (implemented but unverified,
 2026-09-24): exact `&[List(String)]` has a distinct checked/source slice

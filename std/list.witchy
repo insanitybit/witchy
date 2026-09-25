@@ -94,7 +94,7 @@ pub fn pop(var xs: unique List(a)) -> Option(a):
 // An immutable view `&xs[start..end]` retains a snapshot instead; its
 // compiler-known `.owned()` copies that range to a fresh list for Int, Float,
 // Bool, Duration, String, and exact List(S) elements for S = Int, Float,
-// Bool, or Duration. Other element types currently fail closed.
+// Bool, Duration, or String. Other element types currently fail closed.
 pub fn slice(xs: List(a), start: Int, end: Int) -> List(a):
     var out = []
     var i = 0

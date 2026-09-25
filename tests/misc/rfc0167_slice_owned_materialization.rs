@@ -162,19 +162,48 @@ fn main() -> Int:
     assert_eq!(vm.output(), vec!["111".to_string()]);
     assert_eq!(vm.canonical_heap_leaks().expect("heap audit"), Some(0));
 
+    let string_lists = r#"
+fn copy[a](xs: &[a]) -> List(a):
+    xs.owned()
+
+fn main() -> Int:
+    var nested = [["aa"], ["bbb", "cccc"], ["ddddd"]]
+    let view = &nested[1..3]
+    var copied = copy(view)
+    nested[1][0] = "Z"
+    copied[0][1] = "Y"
+    view[0][0].length() * 1000 + copied[0][1].length() * 100 + nested[1][0].length() * 10 + copied[1][0].length()
+"#;
+    // The retained view reads "bbb" (3), copied reads "Y" (1) and
+    // "ddddd" (5), and the changed original reads "Z" (1): 3115.
+    let checked = witchy::resolve_std_only_checked(string_lists).expect("String-list slice materialization checks");
+    let (artifact, ()) = codegen::compile_checked_module_artifact_with_observer(&checked, |_, _| ())
+        .expect_lowered("canonical SafeWIR admits the exact String-list projection copy");
+    let mut runtime = Runtime::batch().expect("runtime");
+    let mut vm = runtime
+        .spawn_admitted(
+            &artifact,
+            Capabilities { print_int: true, quiet: true, ..Capabilities::none() },
+            128,
+        )
+        .expect("admitted Wasm instance");
+    vm.run().expect("admitted Wasm execution");
+    assert_eq!(vm.output(), vec!["3115".to_string()]);
+    assert_eq!(vm.canonical_heap_leaks().expect("heap audit"), Some(0));
+
     let other_list_source = r#"
 fn copy[a](xs: &[a]) -> List(a):
     xs.owned()
 
 fn main() -> Int:
-    let nested = [["a"], ["b"]]
+    let nested = [[[1]], [[2]]]
     let copied = copy(&nested[0..1])
     copied.length()
 "#;
     let error = witchy::resolve_std_only_checked(other_list_source)
-        .err().expect("List(String) elements remain outside the materialization boundary")
+        .err().expect("deeper list elements remain outside the materialization boundary")
         .to_string();
-    assert!(error.contains("List(String)") && error.contains("exact List(S)"), "{error}");
+    assert!(error.contains("List(List(Int))") && error.contains("exact List(S)"), "{error}");
 
     let must_source = r#"
 must type Ticket:

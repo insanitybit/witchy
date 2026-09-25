@@ -4872,7 +4872,7 @@ impl<'a> FunctionLowerer<'a> {
         };
         let element = rooted_slice_element(inner)
             .filter(|element| matches!(*element, "Int" | "Float" | "Bool" | "Duration" | "String"
-                | "List(Int)" | "List(Float)" | "List(Bool)" | "List(Duration)"))
+                | "List(Int)" | "List(Float)" | "List(Bool)" | "List(Duration)" | "List(String)"))
             .ok_or(CanonicalLoweringError::UnsupportedExpression(".owned() slice element"))?;
         let result_type = self.expression_type(expression)?;
         let element_source_type = crate::canonical_layouts::rooted_slice_element_type(element)
@@ -4886,7 +4886,7 @@ impl<'a> FunctionLowerer<'a> {
         )?;
         if matches!(element_type, ValueType::Gc(_))
             || (matches!(element_type, ValueType::Ref(_))
-                && !matches!(element, "String" | "List(Int)" | "List(Float)" | "List(Bool)" | "List(Duration)"))
+                && !matches!(element, "String" | "List(Int)" | "List(Float)" | "List(Bool)" | "List(Duration)" | "List(String)"))
         {
             return Err(CanonicalLoweringError::UnsupportedExpression(".owned() slice pointer element"));
         }

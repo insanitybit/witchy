@@ -89,7 +89,7 @@ fn copy_for_storage(let view: &String) -> String:
 ```
 
 For a slice view whose element is `Int`, `Float`, `Bool`, `Duration`, `String`,
-or exact `List(S)` for `S = Int`, `Float`, `Bool`, or `Duration`,
+or exact `List(S)` for `S = Int`, `Float`, `Bool`, `Duration`, or `String`,
 `view.owned()` copies the viewed range into a fresh `List` of that element
 type. A generic `&[a]` can use this operation when specialization resolves
 `a` to one of those types. The method reads the retained snapshot, even
