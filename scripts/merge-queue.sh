@@ -1410,6 +1410,30 @@ diff_snapshot_surface() {
         | grep -E '^(src/|std/|examples/|projects/|benchmarks/|rfcs/0087-migration-census\.tsv|spec/stdlib\.md|tests/misc(\.rs|/)|build\.rs|Cargo\.(toml|lock)|\.cargo/|rust-toolchain)' || true
 }
 
+# Cargo profiles change code generation cost, not compiler semantics or either
+# generated snapshot. Compare parsed manifests with their complete profile tree
+# removed so comments, whitespace, and nested package overrides are handled
+# without an error-prone diff-hunk heuristic.
+cargo_manifest_change_is_profile_only() { # cargo_manifest_change_is_profile_only <base-sha>
+    python3 - "$gate_wt" "$1" <<'PY'
+import subprocess
+import sys
+import tomllib
+
+worktree, base = sys.argv[1:]
+
+def manifest(revision: str) -> dict:
+    data = subprocess.check_output(
+        ["git", "-C", worktree, "show", f"{revision}:Cargo.toml"]
+    )
+    parsed = tomllib.loads(data.decode())
+    parsed.pop("profile", None)
+    return parsed
+
+raise SystemExit(manifest(base) != manifest("HEAD"))
+PY
+}
+
 # witchy fmt --check walks std/, examples/, and projects/. The formatter
 # itself is witchy_syntax::format, invoked from the CLI under src/.
 diff_fmt_surface() {
@@ -2330,8 +2354,15 @@ rebaseline_generated_snapshots() { # rebaseline_generated_snapshots <base> <bran
     # example_tests-only and crate-only compiler diffs cannot make this
     # gate observe census/stdlib drift (focused nextest). Skip the
     # generator cargo build; --full/CI still refresh and check.
-    if [ -z "$(diff_snapshot_surface "$pre_diff")" ]; then
+    local snapshot_surface
+    snapshot_surface="$(diff_snapshot_surface "$pre_diff")"
+    if [ -z "$snapshot_surface" ]; then
         note "rebaseline: skipped generator build (batch cannot stale census/stdlib snapshots)"
+        return 0
+    fi
+    if [ "$snapshot_surface" = "Cargo.toml" ] \
+        && cargo_manifest_change_is_profile_only "$rb_base"; then
+        note "rebaseline: skipped generator build (Cargo profile-only change cannot stale snapshots)"
         return 0
     fi
     # Never regenerate over TRACKED modifications (impossible after a clean

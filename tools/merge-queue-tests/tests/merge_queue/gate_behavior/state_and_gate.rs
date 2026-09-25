@@ -1520,6 +1520,78 @@ fn prepare_rebaselines_stale_generated_snapshots_onto_the_gated_sha() {
     );
 }
 
+#[test]
+fn profile_only_manifest_change_skips_snapshot_generator_build() {
+    let fixture = QueueFixture::stack(&[]);
+    let root = fixture.root.clone();
+    fs::write(
+        root.join("Cargo.toml"),
+        "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\n\n[profile.dev]\nopt-level = 1\n",
+    )
+    .expect("write base manifest");
+    run_git(&root, &["add", "Cargo.toml"]);
+    run_git(&root, &["commit", "-m", "add manifest"]);
+    run_git(&root, &["switch", "-c", "profile-only", "master"]);
+    fs::write(
+        root.join("Cargo.toml"),
+        "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\n\n[profile.dev]\nopt-level = 0\n",
+    )
+    .expect("change only the profile");
+    run_git(&root, &["add", "Cargo.toml"]);
+    run_git(&root, &["commit", "-m", "change profile"]);
+    run_git(&root, &["switch", "master"]);
+
+    let marker = fixture._temp.path().join("snapshot-build-ran");
+    let bin = fixture._temp.path().join("profile-only-bin");
+    fs::create_dir(&bin).expect("create fake cargo dir");
+    let cargo = bin.join("cargo");
+    fs::write(
+        &cargo,
+        format!("#!/bin/sh\ntouch '{}'\nexit 1\n", marker.display()),
+    )
+    .expect("write fake cargo");
+    fs::set_permissions(&cargo, fs::Permissions::from_mode(0o755)).expect("chmod fake cargo");
+    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default());
+
+    fixture.mq_ok(&["submit", "profile-only"], "true");
+    let output = fixture
+        .mq_command(&["run", "--once"], "true")
+        .env("PATH", &path)
+        .output()
+        .expect("run profile-only candidate");
+    assert!(
+        output.status.success(),
+        "profile-only gate failed: {}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert!(!marker.exists(), "profile-only change built the snapshot generator");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains(
+            "Cargo profile-only change cannot stale snapshots"
+        ),
+        "profile-only skip was not reported: {}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+
+    // A semantic manifest edit must retain the conservative generator path.
+    run_git(&root, &["switch", "-c", "manifest-semantic", "master"]);
+    fs::write(
+        root.join("Cargo.toml"),
+        "[package]\nname = \"fixture\"\nversion = \"0.2.0\"\n\n[profile.dev]\nopt-level = 0\n",
+    )
+    .expect("change package semantics");
+    run_git(&root, &["add", "Cargo.toml"]);
+    run_git(&root, &["commit", "-m", "change manifest semantics"]);
+    run_git(&root, &["switch", "master"]);
+    fixture.mq_ok(&["submit", "manifest-semantic"], "true");
+    fixture
+        .mq_command(&["run", "--once"], "true")
+        .env("PATH", &path)
+        .output()
+        .expect("run semantic manifest candidate");
+    assert!(marker.exists(), "semantic manifest change skipped the snapshot generator");
+}
+
 /// A gate starved by another cargo's package-cache lock produced a bare
 /// `timeout` and was re-diagnosed as a bad candidate: measured over 2,390
 /// gate logs, 93 runs show the signature and 49 of them were recorded
