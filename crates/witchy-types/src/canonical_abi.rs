@@ -12,6 +12,7 @@ use witchy_syntax::ast::{self, Convention, Item, Type};
 use crate::typeck::{Ty, TypedModule};
 use witchy_canonical_source::abi::*;
 use witchy_canonical_source::aggregates::DictRootScalar;
+use witchy_canonical_source::aggregates::TupleRootScalar;
 
 
 /// Exposed for the ABI-security pins in `tests/typeck/capabilities.rs`.
@@ -326,6 +327,16 @@ pub fn rooted_view_from_ty(
     payload: &Ty,
     context: &Context,
 ) -> Result<CanonicalReferenceKind, CanonicalAbiError> {
+    if matches!(payload, Ty::Tuple(_))
+        && let Some(kind) = crate::typeck::ty_to_ast(payload)
+            .as_ref()
+            .and_then(witchy_canonical_source::aggregates::tuple_scalar_string_root_payload)
+    {
+        return Ok(CanonicalReferenceKind::RootedView {
+            payload: rooted_tuple_scalar_string_payload_key(kind),
+            carrier: CanonicalRootedViewCarrier::TupleRoot,
+        });
+    }
     if let Some(kind) = crate::typeck::ty_to_ast(payload)
         .as_ref()
         .and_then(witchy_canonical_source::aggregates::dict_string_scalar_root_payload)
@@ -336,12 +347,6 @@ pub fn rooted_view_from_ty(
         });
     }
     match payload {
-        Ty::Tuple(items) if matches!(items.as_ref(), [Ty::Int, Ty::String]) => {
-            Ok(CanonicalReferenceKind::RootedView {
-                payload: rooted_tuple_int_string_payload_key(),
-                carrier: CanonicalRootedViewCarrier::TupleRoot,
-            })
-        }
         Ty::Int => Ok(CanonicalReferenceKind::RootedView {
             payload: rooted_scalar_payload_key(CanonicalScalarKind::Int),
             carrier: CanonicalRootedViewCarrier::IntScalarRoot,
@@ -418,15 +423,13 @@ pub fn rooted_view_from_ast(
     payload: &Type,
     context: &Context,
 ) -> Result<CanonicalReferenceKind, CanonicalAbiError> {
+    if let Some(kind) = witchy_canonical_source::aggregates::tuple_scalar_string_root_payload(payload) {
+        return Ok(CanonicalReferenceKind::RootedView {
+            payload: rooted_tuple_scalar_string_payload_key(kind),
+            carrier: CanonicalRootedViewCarrier::TupleRoot,
+        });
+    }
     match payload.unqualified() {
-        exact if witchy_canonical_source::aggregates::is_tuple_int_string_root_payload(exact)
-            && payload == exact =>
-        {
-            Ok(CanonicalReferenceKind::RootedView {
-                payload: rooted_tuple_int_string_payload_key(),
-                carrier: CanonicalRootedViewCarrier::TupleRoot,
-            })
-        }
         exact if payload == exact
             && witchy_canonical_source::aggregates::dict_string_scalar_root_payload(exact).is_some() =>
         {
@@ -571,10 +574,15 @@ fn rooted_dict_scalar_payload_key(kind: DictRootScalar) -> CanonicalTypeKey {
     CanonicalTypeKey::from_digest(*blake3::hash(source).as_bytes())
 }
 
-fn rooted_tuple_int_string_payload_key() -> CanonicalTypeKey {
-    CanonicalTypeKey::from_digest(
-        *blake3::hash(b"witchy.canonical-rooted-view-payload.v1/tuple-int-string").as_bytes(),
-    )
+fn rooted_tuple_scalar_string_payload_key(kind: TupleRootScalar) -> CanonicalTypeKey {
+    // The Int identity is an existing local ABI; keep its digest input exact.
+    let source: &[u8] = match kind {
+        TupleRootScalar::Int => b"witchy.canonical-rooted-view-payload.v1/tuple-int-string",
+        TupleRootScalar::Float => b"witchy.canonical-rooted-view-payload.v1/tuple-float-string",
+        TupleRootScalar::Bool => b"witchy.canonical-rooted-view-payload.v1/tuple-bool-string",
+        TupleRootScalar::Duration => b"witchy.canonical-rooted-view-payload.v1/tuple-duration-string",
+    };
+    CanonicalTypeKey::from_digest(*blake3::hash(source).as_bytes())
 }
 
 /// Record-root payload identity, written identically from a checked type and

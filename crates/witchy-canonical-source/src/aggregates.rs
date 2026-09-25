@@ -148,14 +148,29 @@ pub fn dict_string_scalar_root_payload(ty: &Type) -> Option<DictRootScalar> {
     }
 }
 
-/// The exact tuple root whose heap representation and child String token are
-/// authenticated by the canonical whole-root view carrier.
-pub fn is_tuple_int_string_root_payload(ty: &Type) -> bool {
-    matches!(ty, Type::Tuple(items)
-        if matches!(items.as_slice(),
-            [Type::Named(first, first_args), Type::Named(second, second_args)]
-                if first == "Int" && first_args.is_empty()
-                    && second == "String" && second_args.is_empty()))
+/// The exact inline scalar in a retained `(S, String)` tuple root.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TupleRootScalar {
+    Int,
+    Float,
+    Bool,
+    Duration,
+}
+
+/// The tuple root whose first slot is one unqualified inline scalar and
+/// whose second slot owns an exact String token. Other orders, qualifiers,
+/// and nested values have no TupleRoot authority.
+pub fn tuple_scalar_string_root_payload(ty: &Type) -> Option<TupleRootScalar> {
+    let Type::Tuple(items) = ty else { return None };
+    let [Type::Named(first, first_args), Type::Named(second, second_args)] = items.as_slice() else { return None };
+    if !first_args.is_empty() || second != "String" || !second_args.is_empty() { return None; }
+    match first.as_str() {
+        "Int" => Some(TupleRootScalar::Int),
+        "Float" => Some(TupleRootScalar::Float),
+        "Bool" => Some(TupleRootScalar::Bool),
+        "Duration" => Some(TupleRootScalar::Duration),
+        _ => None,
+    }
 }
 
 const MAX_AGGREGATE_SHAPE_EXPANSION: usize = 64;

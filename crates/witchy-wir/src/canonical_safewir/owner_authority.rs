@@ -106,7 +106,7 @@ pub(super) fn validate<S: ModuleStage>(
                     // a scalar List) is retained into a managed environment
                     // field. The token arm is bound to exactly those whole-root
                     // payloads, as the plain closure check binds it. The exact
-                    // tuple root has no admitted capture fact yet.
+                    // tuple-root family has no admitted capture fact yet.
                     // Legacy Borrow/BorrowMut types never reach this arm
                     // because the source witness is required to be View.
                     || rooted_view && !(matches!((capture.value_type, capture.storage, capture.transfer),
@@ -116,7 +116,7 @@ pub(super) fn validate<S: ModuleStage>(
                             && super::authority::is_direct_rooted_view_whole_root(original.checked_type(), &records)
                             && !matches!(original.checked_type(),
                                 witchy_syntax::ast::Type::Qualified(witchy_syntax::ast::TypeQual::View, inner)
-                                    if witchy_canonical_source::aggregates::is_tuple_int_string_root_payload(inner))
+                                    if witchy_canonical_source::aggregates::tuple_scalar_string_root_payload(inner).is_some())
                             && !matches!(original.checked_type(),
                                 witchy_syntax::ast::Type::Qualified(witchy_syntax::ast::TypeQual::View, inner)
                                     if witchy_canonical_source::aggregates::is_scalar_value_view_payload(inner))

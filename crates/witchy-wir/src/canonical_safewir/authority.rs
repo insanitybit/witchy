@@ -856,14 +856,14 @@ fn validate_candidate_abi_bindings<S: ModuleStage>(
                 ) || (
                     // A whole-root view (`&String`, a record or sum, a scalar
                     // List) is its retained object token, so its capture is a
-                    // managed reference slot. The exact tuple root has no
+                    // managed reference slot. The exact tuple-root family has no
                     // separately checked closure-capture witness yet.
                     matches!(actual, super::ValueType::Ref(_))
                         && matches!(capture.transfer(), witchy_canonical_source::closure::ClosureCaptureTransfer::RootedViewByValue)
                         && is_direct_rooted_view_whole_root(capture.checked_type(), &records)
                         && !matches!(capture.checked_type(),
                             witchy_syntax::ast::Type::Qualified(witchy_syntax::ast::TypeQual::View, inner)
-                                if witchy_canonical_source::aggregates::is_tuple_int_string_root_payload(inner))
+                                if witchy_canonical_source::aggregates::tuple_scalar_string_root_payload(inner).is_some())
                         && !matches!(capture.checked_type(),
                             witchy_syntax::ast::Type::Qualified(witchy_syntax::ast::TypeQual::View, inner)
                                 if witchy_canonical_source::aggregates::is_scalar_value_view_payload(inner))
@@ -1689,7 +1689,7 @@ fn erase_record_string_views(records: &ScalarRecordFields) -> ScalarRecordFields
 /// (`StringRoot`) or a view of a declared, non-packed, argument-less user
 /// record or sum (`RecordRoot`), exact `Dict(String, S)` with an admitted
 /// unqualified inline scalar `S` (`DictRoot`), or
-/// exact `(Int, String)` (`TupleRoot`).
+/// exact `(S, String)` for admitted inline scalar `S` (`TupleRoot`).
 /// None has a projection.
 pub(super) fn is_direct_rooted_view_whole_root(source: &witchy_syntax::ast::Type, records: &ScalarRecordFields) -> bool {
     is_direct_rooted_view_string(source)
@@ -1698,7 +1698,7 @@ pub(super) fn is_direct_rooted_view_whole_root(source: &witchy_syntax::ast::Type
                 if witchy_canonical_source::aggregates::is_record_root_payload(inner, records)
                     || witchy_canonical_source::aggregates::is_list_root_payload(inner)
                     || witchy_canonical_source::aggregates::dict_string_scalar_root_payload(inner).is_some()
-                    || witchy_canonical_source::aggregates::is_tuple_int_string_root_payload(inner)
+                    || witchy_canonical_source::aggregates::tuple_scalar_string_root_payload(inner).is_some()
                     || witchy_canonical_source::aggregates::is_scalar_value_view_payload(inner))
 }
 
