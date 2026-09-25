@@ -1196,6 +1196,9 @@ pass SafeWIR's owner-family and physical slot checks. Unproved fields refuse.
 The slice retains its outer list root, and reads retain managed children
 through the checked projection. Carrier proof has a compiler resource limit
 of 128 nested levels and 4,096 type nodes.
+Whole-root `&String` and `&Bytes` views retain the same physical byte-buffer
+layout but have distinct checked-source carrier identities. The compiler
+requires the exact source type and raw-byte buffer layout at admission.
 Qualifiers, nominal lookalikes without checked definitions, capabilities, and elements without
 a complete ownership proof are refused. `.owned()` copies the authenticated
 range into a fresh `List(T)` using that same relation. Generic recursive forms

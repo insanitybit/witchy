@@ -28,10 +28,17 @@ pub enum RootedViewStorage {
 /// checked source data; SafeWIR still verifies its independent layout walk.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RetainedRootStorage {
-    ByteBuffer,
+    ByteBuffer(ByteBufferKind),
     Sequence(CarrierElement),
     StructuralRecord(CarrierElement),
     CheckedAggregate(RecordRootPlan),
+}
+
+/// A shared physical byte buffer whose source identity remains distinct.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ByteBufferKind {
+    String,
+    Bytes,
 }
 
 /// The source-authenticated owner leaf carried by an aggregate field. The
@@ -174,11 +181,11 @@ impl RootedViewStorage {
                 CarrierElement::Scalar(CanonicalScalarKind::Unit) => return None,
                 CarrierElement::Scalar(kind) => return Some(Self::InlineScalar(kind)),
                 CarrierElement::String => {
-                    return Some(Self::RetainedRoot(RetainedRootStorage::ByteBuffer));
+                    return Some(Self::RetainedRoot(RetainedRootStorage::ByteBuffer(ByteBufferKind::String)));
                 }
-                // The current whole-root byte-buffer key does not carry the
-                // String/Bytes source distinction. Keep direct &Bytes closed.
-                CarrierElement::Bytes => return None,
+                CarrierElement::Bytes => {
+                    return Some(Self::RetainedRoot(RetainedRootStorage::ByteBuffer(ByteBufferKind::Bytes)));
+                }
                 CarrierElement::List(_) => return None,
                 plan @ (CarrierElement::Tuple(_) | CarrierElement::Dict(_, _)) => {
                     if matches!(payload, Type::Qualified(_, _)) { return None; }
@@ -227,7 +234,10 @@ impl RootedViewStorage {
             }
             Self::RetainedRoot(root) => {
                 match root {
-                    RetainedRootStorage::ByteBuffer => bytes.extend_from_slice(&[3, 0]),
+                    RetainedRootStorage::ByteBuffer(kind) => bytes.extend_from_slice(&[3, 0, match kind {
+                        ByteBufferKind::String => 0,
+                        ByteBufferKind::Bytes => 1,
+                    }]),
                     RetainedRootStorage::Sequence(element) => {
                         if !element.within_resource_bounds() { return None; }
                         bytes.extend_from_slice(&[3, 1]);
@@ -258,4 +268,23 @@ impl RootedViewStorage {
 
 fn digest(bytes: &[u8]) -> CanonicalTypeKey {
     CanonicalTypeKey::from_digest(*blake3::hash(bytes).as_bytes())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shared_byte_layout_keeps_distinct_view_keys() {
+        let definitions = BTreeMap::new();
+        let source = |name: &str| Type::Named(name.into(), Vec::new());
+        let string = RootedViewStorage::classify(&source("String"), &definitions, |_| None)
+            .expect("String has a retained root");
+        let bytes = RootedViewStorage::classify(&source("Bytes"), &definitions, |_| None)
+            .expect("Bytes has a retained root");
+        assert_eq!(string, RootedViewStorage::RetainedRoot(RetainedRootStorage::ByteBuffer(ByteBufferKind::String)));
+        assert_eq!(bytes, RootedViewStorage::RetainedRoot(RetainedRootStorage::ByteBuffer(ByteBufferKind::Bytes)));
+        assert_ne!(string.canonical_reference(), bytes.canonical_reference(),
+            "one physical buffer layout must not erase checked source identity");
+    }
 }

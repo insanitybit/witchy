@@ -139,9 +139,24 @@ evidence pending, 2026-09-25): the shared carrier proof now distinguishes
 raw-byte physical representation and owned-pointer clone/release rules.
 `List(Bytes)` and composites can use the recursive carrier relation only when
 the checked source inventory and SafeWIR's independent layout walk agree.
-Direct whole-root `&Bytes` remains refused because its current byte-buffer
-view key would conflate the two source types. This widens the carrier grammar;
+At this checkpoint, direct whole-root `&Bytes` remained refused because its
+byte-buffer view key would conflate the two source types. A later typed key
+addresses that gap. This widens the carrier grammar;
 admitted Wasm and zero-leak evidence are required before any A–O claim.
+
+Row G typed whole-root byte-buffer view (architecture implemented, semantic
+evidence pending, 2026-09-25): `RetainedRootStorage` now carries a typed
+String-or-Bytes discriminator into the canonical rooted-view key while both
+classes retain the raw-byte runtime layout. The lowerer selects the shared
+retained-buffer representation from the checked storage plan for whole roots,
+fields, and list elements instead of a `Ty::String` branch. SafeWIR still
+requires checked-source membership, the exact source ABI key, and independent
+raw-byte layout correspondence. A focused compile and production CLI smoke
+admitted `&Bytes` through a call and returned process status 42 for a
+hand-computed 298 (modulo 256); the distinct String/Bytes key assertion
+passed. Adversarial review found no concrete identity collision or authority
+bypass. Exact admitted-Wasm result and zero-leak audit remain pending, so row
+G and A–O remain open.
 
 Row G recursive list-element admission (implemented but unverified,
 2026-09-25): a complete shared `StoragePlan` carrier proof now admits a

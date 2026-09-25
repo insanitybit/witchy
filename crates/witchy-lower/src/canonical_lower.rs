@@ -14288,6 +14288,10 @@ impl FunctionLowerer<'_> {
                 witchy_canonical_source::aggregates::is_record_root_payload(&payload, self.definitions)
                     || CarrierElement::retained_structural_root(&payload, self.definitions).is_some()
             });
+        let byte_buffer_root = witchy_types::typeck::ty_to_ast(fact.payload()).is_some_and(|payload| {
+            matches!(RootedViewStorage::classify(&payload, self.definitions, |_| Some(0)),
+                Some(RootedViewStorage::RetainedRoot(RetainedRootStorage::ByteBuffer(_))))
+        });
         if matches!(fact.payload(), Ty::Float | Ty::Bool | Ty::Duration) {
             // A scalar-value view is the value read at formation: a whole
             // local, or a checked field chain from it, directly or through a
@@ -14307,17 +14311,17 @@ impl FunctionLowerer<'_> {
             }
             return self.lower_expr(operand);
         }
-        if matches!(fact.payload(), Ty::String) && is_field_chain_element(fact.place().steps()) {
-            // An element view of a String list or slice (`&xs[i]`,
+        if byte_buffer_root && is_field_chain_element(fact.place().steps()) {
+            // An element view of a byte-buffer list or slice (`&xs[i]`,
             // `&(*v)[i]`, `&r.names[i]`) is the element's retained token read
-            // at formation, bounds-checked like any index read: the String is
+            // at formation, bounds-checked like any index read: the buffer is
             // immutable, so the token is the snapshot, exactly as for a whole
             // `&String`.
             let _ = check_element_view_source(&fact, operand)?;
             let value = self.lower_expr(operand)?;
             if !matches!(self.values.get(&value), Some(ValueType::Ref(_))) {
                 return Err(CanonicalLoweringError::InvalidCheckedViewFacts(
-                    "immutable String element view does not read a heap value".to_string(),
+                    "immutable byte-buffer element view does not read a heap value".to_string(),
                 ));
             }
             return Ok(value);
@@ -14329,28 +14333,28 @@ impl FunctionLowerer<'_> {
             ))
             .is_some();
         let record_root = record_root || list_root;
-        if (matches!(fact.payload(), Ty::String) || record_root)
+        if (byte_buffer_root || record_root)
             && !fact.place().steps().is_empty()
         {
-            // A view of a String or record field (`&p.name`, `&o.inner`) is
+            // A view of a byte-buffer or record field (`&p.name`, `&o.inner`) is
             // that field's retained token: records are immutable values, so
             // the field read at formation is exactly what the view observes.
             let steps = fact.place().steps();
             if !steps.iter().all(|step| matches!(step, CheckedPlaceStep::Field(_))) {
                 return Err(CanonicalLoweringError::UnsupportedExpression(
-                    "rooted String or record view projection is outside the canonical carrier",
+                    "rooted byte-buffer or record view projection is outside the canonical carrier",
                 ));
             }
             check_field_view_source(&fact, steps, operand)?;
             let value = self.lower_expr(operand)?;
             if !matches!(self.values.get(&value), Some(ValueType::Ref(_))) {
                 return Err(CanonicalLoweringError::InvalidCheckedViewFacts(
-                    "immutable String or record field view does not read a heap value".to_string(),
+                    "immutable byte-buffer or record field view does not read a heap value".to_string(),
                 ));
             }
             return Ok(value);
         }
-        if (matches!(fact.payload(), Ty::String) || record_root) && fact.formed_through_view() {
+        if (byte_buffer_root || record_root) && fact.formed_through_view() {
             // `&*view` re-forms the whole view: the dereference reads the
             // view's retained root token, which is exactly its snapshot.
             check_field_view_source(&fact, &[], operand)?;
@@ -14362,8 +14366,8 @@ impl FunctionLowerer<'_> {
             }
             return Ok(value);
         }
-        if matches!(fact.payload(), Ty::String) || record_root {
-            // A whole-String view retains the immutable root object; it has
+        if byte_buffer_root || record_root {
+            // A whole byte-buffer view retains the immutable root object; it has
             // no projection and never exposes a place.
             let root = *self.bindings.get(fact.place().root()).ok_or_else(|| {
                 CanonicalLoweringError::InvalidCheckedViewFacts(format!(
@@ -14375,7 +14379,7 @@ impl FunctionLowerer<'_> {
                 || !matches!(self.values.get(&root), Some(ValueType::Ref(_)))
             {
                 return Err(CanonicalLoweringError::UnsupportedExpression(
-                    "rooted String or record view is only a whole-root carrier",
+                    "rooted byte-buffer or record view is only a whole-root carrier",
                 ));
             }
             return self.clone_reference_token(root);

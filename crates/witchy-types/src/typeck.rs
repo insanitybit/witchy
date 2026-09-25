@@ -441,7 +441,7 @@ impl Checker {
         match storage {
             RootedViewStorage::ScalarCell(_)
             | RootedViewStorage::InlineScalar(_)
-            | RootedViewStorage::RetainedRoot(RetainedRootStorage::ByteBuffer) => {
+            | RootedViewStorage::RetainedRoot(RetainedRootStorage::ByteBuffer(_)) => {
                 // The previous callable boundary admitted these direct
                 // values, but no qualified scalar or String payload.
                 !matches!(payload.as_ref(), ast::Type::Qualified(..))

@@ -104,7 +104,7 @@ fn graph_storage_operations(
         }
         Type::Qualified(TypeQual::View, payload) => match RootedViewStorage::classify(payload, definitions, |_| Some(0))? {
             RootedViewStorage::InlineScalar(_) => Some(true),
-            RootedViewStorage::RetainedRoot(RetainedRootStorage::ByteBuffer
+            RootedViewStorage::RetainedRoot(RetainedRootStorage::ByteBuffer(_)
                 | RetainedRootStorage::Sequence(_)
                 | RetainedRootStorage::StructuralRecord(_)
                 | RetainedRootStorage::CheckedAggregate(_)) => Some(true),

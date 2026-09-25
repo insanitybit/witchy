@@ -196,6 +196,10 @@ refused. The exact previously evidenced cases remain recorded in the RFC-0167
 ledger; newly generic depths await semantic and leak evidence. `.owned()`
 materializes the checked range as a fresh `List(T)`.
 
+Whole-root `&String` and `&Bytes` share a byte-buffer layout. Their carrier
+keys remain distinct, and SafeWIR checks the exact source type and physical
+raw-byte layout before admitting either view.
+
 Whole-root tuple views use a recursive checked ownership proof for every
 field. The view retains the tuple root and its managed children. The original
 `&(Int, String)` case has admitted Wasm and zero-leak evidence; newly generic

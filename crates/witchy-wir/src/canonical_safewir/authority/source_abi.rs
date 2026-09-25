@@ -452,7 +452,7 @@ pub(super) fn erase_byte_buffer_view(ty: &witchy_syntax::ast::Type) -> witchy_sy
                 ty, &BTreeMap::new(), |_| None,
             ), witchy_canonical_source::storage::StoragePlan::RootedView(
                 witchy_canonical_source::rooted_view::RootedViewStorage::RetainedRoot(
-                    witchy_canonical_source::rooted_view::RetainedRootStorage::ByteBuffer))) =>
+                    witchy_canonical_source::rooted_view::RetainedRootStorage::ByteBuffer(_)))) =>
         {
             inner.unqualified().clone()
         }
