@@ -3308,17 +3308,8 @@ fn is_direct_shared_int(ty: &Type) -> bool {
     )
 }
 
-fn is_rooted_int_slice(ty: &Type) -> bool {
-    rooted_slice_element(ty) == Some(CarrierElement::Scalar(CanonicalScalarKind::Int))
-}
-
-fn is_rooted_slice(ty: &Type) -> bool {
-    rooted_slice_element(ty).is_some()
-}
-
-/// The admitted element of a `[T]` slice payload (`ListSliceRoot`): an exact
-/// scalar, String, or List of one exact inline scalar. Deeper and qualified
-/// owner elements refuse.
+/// The definition-free portion of a `[T]` slice payload. Named record fields
+/// require the checked-definitions version below before admission.
 fn rooted_slice_element(ty: &Type) -> Option<CarrierElement> {
     match ty.unqualified() {
         Type::Slice(element) => crate::canonical_layouts::rooted_slice_element_name(element),
@@ -4843,11 +4834,10 @@ impl<'a> FunctionLowerer<'a> {
         Ok(destination)
     }
 
-    /// `xs[i]` on a `&[T]` view for a non-`Int` element: the index is checked
+    /// `xs[i]` on a `&[T]` view: the index is checked
     /// against the slice's own length, offset by its checked start, and read
     /// from the retained backing root behind that root's own live bounds
-    /// check. A scalar element is the value; a String or admitted List child
-    /// element is a retained child reference.
+    /// check. A scalar element is the value; a managed child is retained.
     fn read_rooted_slice_element(
         &mut self,
         slice: ValueId,
@@ -4961,16 +4951,7 @@ impl<'a> FunctionLowerer<'a> {
         slice: ValueId,
         index: ValueId,
     ) -> Result<ValueId, CanonicalLoweringError> {
-        if !self.is_rooted_int_slice_view(slice) {
-            return self.read_rooted_slice_element(slice, index);
-        }
-        let element = self.materialize_checked_list_int_view(slice, index)?;
-        let destination = self.fresh(ValueType::Int)?;
-        let family = self.shared_int_reference_family()?.signature;
-        self.push_operation(Operation::ClosureOwner(OwnerOperation::ReadSharedPlace {
-            destination, owner: element, family,
-        }));
-        Ok(destination)
+        self.read_rooted_slice_element(slice, index)
     }
 
     fn materialize_scalar_reference(&mut self, value: ValueId) -> Result<ValueId, CanonicalLoweringError> {
@@ -8898,7 +8879,7 @@ impl FunctionLowerer<'_> {
         // through the same checked projection as `xs[i]`. The carrier is
         // immutable, so it dominates the loop without becoming loop state.
         if rooted_view_inner(&logical_type).is_some_and(|inner| {
-            is_rooted_int_slice(inner) || rooted_slice_element_with_definitions(inner, self.definitions).is_some()
+            rooted_slice_element_with_definitions(inner, self.definitions).is_some()
         }) {
             use witchy_wir::canonical_safewir::closure_owner_contract::SharedSliceField;
             let slice = self.lower_expr(iterable)?;
@@ -14192,20 +14173,12 @@ impl FunctionLowerer<'_> {
     fn lower_index(&mut self, expression: &Expr, base: &Expr, index: &Expr) -> Result<ValueId, CanonicalLoweringError> {
         let site = self.diagnostic_site(expression)?;
         let logical_type = self.expression_type(base)?;
-        // Reading one element of a `&[Int]` view by value is the read through
-        // its checked element view: `xs[i]` is `*(&xs[i])`. The element view
-        // bounds-checks `i` against the slice's own length before the read.
-        if rooted_view_inner(&logical_type).is_some_and(is_rooted_int_slice)
-            && !matches!(index, Expr::Range { .. })
-        {
-            let slice = self.lower_expr(base)?;
-            if !self.is_rooted_int_slice_view(slice) {
-                return Err(CanonicalLoweringError::UnsupportedExpression("rooted slice index base"));
-            }
-            let index = self.lower_expr(index)?;
-            return self.read_slice_element_by_value(slice, index);
-        }
-        if rooted_view_inner(&logical_type).is_some_and(is_rooted_slice)
+        // Every proven slice carrier reads by value through the same bounds
+        // and backing-root layout checks. Taking `&slice[i]` still uses the
+        // separate checked place-view constructor where one is available.
+        if rooted_view_inner(&logical_type).is_some_and(|inner| {
+            rooted_slice_element_with_definitions(inner, self.definitions).is_some()
+        })
             && !matches!(index, Expr::Range { .. })
         {
             let slice = self.lower_expr(base)?;
