@@ -777,12 +777,13 @@ pub fn is_list_root_payload(ty: &Type) -> bool {
 /// builtin `Option`/`Result`, with a non-packed heap shape that holds no view
 /// (a view inside would need its own carrier).
 pub fn is_record_root_payload(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> bool {
-    let Type::Named(name, arguments) = ty.unqualified() else { return false };
-    let head = matches!((name.as_str(), arguments.len()), ("Option", 1) | ("Result", 2))
-        || definitions.contains_key(name);
-    head && crate::capabilities::representation(ty, definitions).is_none()
+    crate::rooted_record::has_record_root_head(ty, definitions) == Some(true)
+        && crate::capabilities::representation(ty, definitions).is_none()
         && scalar_aggregate_shape(ty, definitions).is_some_and(|shape| !shape.packed)
         && !contains_view(ty, definitions, &mut BTreeSet::new())
+        && crate::rooted_record::RecordRootIdentity::from_checked_type(
+            ty, definitions, |_| Some(0),
+        ).is_some()
 }
 
 /// Nesting bound for view carriers. A recursive nominal cannot make the

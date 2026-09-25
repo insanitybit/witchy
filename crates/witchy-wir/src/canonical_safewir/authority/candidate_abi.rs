@@ -90,6 +90,11 @@ pub(super) fn validate_candidate_abi_bindings<S: ModuleStage>(
         let Some(source_signature) = source.closed_callable_signature(binding.source_declaration_ordinal()) else {
             return Err(CandidateAbiBindingError::SourceAbiMismatch { source_declaration: binding.source_declaration_ordinal() });
         };
+        if !record_root_plans_in_signature(source, source_signature) {
+            return Err(CandidateAbiBindingError::SourceAbiMismatch {
+                source_declaration: binding.source_declaration_ordinal(),
+            });
+        }
         let source_declaration = source.closed_callable_declaration(binding.source_declaration_ordinal());
         if source_declaration.is_some_and(|declaration| {
             generic_shared_relay_template_candidate(source, &declaration.name)

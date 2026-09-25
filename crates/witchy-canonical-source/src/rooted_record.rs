@@ -10,6 +10,46 @@ use witchy_syntax::ast::{Type, TypeDef};
 use crate::abi::CanonicalScalarKind;
 use crate::carrier::CarrierElement;
 
+/// Identify the source heads that seek retained record-root storage. A bad
+/// arity still returns `Some(true)` so the full classifier can refuse it;
+/// an oversized qualifier chain returns `None` and must fail closed.
+pub fn has_record_root_head(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> Option<bool> {
+    let mut bare = ty;
+    let mut qualifiers = 0usize;
+    while let Type::Qualified(_, inner) = bare {
+        qualifiers += 1;
+        if qualifiers > 128 {
+            return None;
+        }
+        bare = inner;
+    }
+    Some(matches!(bare, Type::Named(name, _)
+        if matches!(name.as_str(), "Option" | "Result") || definitions.contains_key(name)))
+}
+
+/// One checked record-root classification: canonical ABI identity together
+/// with the exact source fields whose physical layout SafeWIR must match.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordRootPlan {
+    pub identity: RecordRootIdentity,
+    pub shape: crate::aggregates::ScalarAggregateShape,
+}
+
+impl RecordRootPlan {
+    pub fn from_checked_type(
+        ty: &Type,
+        definitions: &BTreeMap<String, TypeDef>,
+        nominal: impl Fn(&str) -> Option<u32>,
+    ) -> Option<Self> {
+        if !crate::aggregates::is_record_root_payload(ty, definitions) {
+            return None;
+        }
+        let identity = RecordRootIdentity::from_checked_type(ty, definitions, nominal)?;
+        let shape = crate::aggregates::scalar_aggregate_shape(ty, definitions)?;
+        Some(Self { identity, shape })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RecordRootIdentity {
     Scalar(CanonicalScalarKind),

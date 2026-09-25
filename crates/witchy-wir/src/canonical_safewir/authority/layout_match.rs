@@ -12,6 +12,23 @@ pub(crate) fn value_type_matches_source(
     if is_unit_source_type(source) {
         return actual == super::super::ValueType::Unit;
     }
+    // The source-independent layout walk consumes the same typed record-root
+    // classification as the checked ABI. Final binding also requires the
+    // nominally bound plan from CanonicalSourceView for this source signature.
+    if let witchy_syntax::ast::Type::Qualified(witchy_syntax::ast::TypeQual::View, payload) = source {
+        let record_head = witchy_canonical_source::rooted_record::has_record_root_head(payload, records);
+        if record_head.is_none() { return false; }
+        if record_head == Some(true) {
+            let Some(plan) = witchy_canonical_source::rooted_record::RecordRootPlan::from_checked_type(
+                payload, records, |_| Some(0),
+            ) else { return false };
+            let super::super::ValueType::Ref(layout) = actual else { return false };
+            return record_layout_matches_with_closures(
+                layout, &plan.shape.fields, plan.shape.tagged, layouts, records,
+                closure_layouts, signatures, context,
+            );
+        }
+    }
     if let witchy_syntax::ast::Type::Qualified(witchy_syntax::ast::TypeQual::View, payload) = source
         && let Some(plan) = witchy_canonical_source::carrier::CarrierElement::retained_structural_root(payload, records)
     {

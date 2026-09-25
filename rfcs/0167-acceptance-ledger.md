@@ -177,6 +177,18 @@ encoding preserves admitted v3 record-root keys and adds no source form.
 SafeWIR record layout and ownership checks remain separate consumers to
 consolidate, so this change closes no row G evidence gap.
 
+Row G record-root plan transport (architecture implemented, 2026-09-25):
+`CanonicalSourceView` now derives the nominally bound `RecordRootPlan` from
+the checked module. SafeWIR requires that plan for every record-root view in
+an authenticated callable signature, and its layout correspondence reads the
+same plan's field and tag shape before checking the physical record slots.
+The source-independent check has no nominal authority of its own; the checked
+view supplies it during binding. This tightens admission without adding a
+source form or closing any row G semantic evidence gap. Temporary admitted-Wasm
+smokes of `&Option(List(List(Int)))` and a declared record with the same List
+field each returned the hand-computed value 4; `&Option(List(&Int))` still
+refused. No durable zero-leak audit was added.
+
 Row G declared record slice elements (implemented but unverified,
 2026-09-25): the shared carrier contract now derives a one-variant heap
 record's identity and instantiated fields from checked type definitions.

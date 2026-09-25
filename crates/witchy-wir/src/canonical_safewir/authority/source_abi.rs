@@ -31,6 +31,47 @@ pub(crate) fn source_closure_family_key(
 
 pub(super) const MAX_SOURCE_CORRESPONDENCE_PAIRS: usize = 65_536;
 
+/// A source signature can grant a record-root ABI only when the checked view
+/// can derive its typed, nominally bound plan. This walk reads source facts;
+/// candidate syntax never supplies the plan or the nominal table.
+pub(super) fn record_root_plans_in_signature(
+    view: &witchy_canonical_source::source::CanonicalSourceView<'_>,
+    signature: &witchy_syntax::ast::Type,
+) -> bool {
+    use witchy_syntax::ast::{Type, TypeQual};
+    let mut pending = vec![signature];
+    let mut visited = 0usize;
+    while let Some(ty) = pending.pop() {
+        visited += 1;
+        if visited > 4_096 { return false; }
+        match ty {
+            Type::Qualified(TypeQual::View, payload) => {
+                match witchy_canonical_source::rooted_record::has_record_root_head(
+                    payload, view.type_definitions(),
+                ) {
+                    Some(true) if view.record_root_plan(payload).is_none() => return false,
+                    None => return false,
+                    _ => {}
+                }
+                pending.push(payload);
+            }
+            Type::Qualified(_, inner) | Type::Slice(inner) => pending.push(inner),
+            Type::Named(_, arguments) | Type::Dyn(_, arguments) | Type::Tuple(arguments) => {
+                pending.extend(arguments);
+            }
+            Type::Fn(parameters, result, _, _) => {
+                pending.extend(parameters);
+                pending.push(result);
+            }
+            Type::RecordCompose { base, fields } => {
+                pending.push(base);
+                pending.extend(fields.iter().map(|(_, field)| field));
+            }
+        }
+    }
+    true
+}
+
 #[derive(Default)]
 pub(crate) struct CorrespondenceContext {
     pub(super) owner_families: Vec<super::super::closure_owner_contract::OwnerFamily>,
