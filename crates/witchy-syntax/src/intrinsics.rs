@@ -2231,7 +2231,7 @@ pub const ALL: &[IntrinsicSpec] = &[
     IntrinsicSpec {
         id: IntrinsicId::MetaFunctionBlock,
         name: META_FUNCTION_BLOCK,
-        arity: 5,
+        arity: 7,
         signature: IntrinsicSignature::DeclaredInSource,
         effect: IntrinsicEffect::Toolchain,
         capability_effect: CapabilityEffect::None,

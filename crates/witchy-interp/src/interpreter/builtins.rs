@@ -1497,11 +1497,14 @@ impl Interpreter {
                 _ => err("meta.param expects Ident and TypeSyntax"),
             },
             name if intrinsics::is_meta_function_block(name) => match args {
-                [Value::Bool(public), name, params, ret, body] => {
+                [Value::Bool(public), Value::Bool(is_async), Value::Bool(is_gen), name, params, ret, body] => {
                     if self.fresh_ident_scope.is_none() {
                         return err(
                             "meta.function_block is available only during compile-time expansion",
                         );
+                    }
+                    if *is_async && *is_gen {
+                        return err("meta.function_block cannot be both async and generator");
                     }
                     let name = compiler_binding_ident_name(name, "meta.function_block")?;
                     let params = compiler_params(params, &self.compiler_param_syntax)?;
@@ -1523,8 +1526,8 @@ impl Interpreter {
                         ret,
                         body,
                         bounds: Vec::new(),
-                        is_gen: false,
-                        is_async: false,
+                        is_gen: *is_gen,
+                        is_async: *is_async,
                     });
                     let handle = self.next_compiler_syntax_handle("function-item")?;
                     self.compiler_item_syntax.insert(handle.clone(), item);
@@ -1537,7 +1540,7 @@ impl Interpreter {
                     }))
                 }
                 _ => err(
-                    "meta.function_block expects Bool, Ident, List(ParamSyntax), Option(TypeSyntax), and BlockSyntax",
+                    "meta.function_block expects Bool, Bool, Bool, Ident, List(ParamSyntax), Option(TypeSyntax), and BlockSyntax",
                 ),
             },
             name if intrinsics::is_meta_impl_block(name) => match args {

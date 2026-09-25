@@ -2894,6 +2894,10 @@ Compiler-owned construction of an explicitly named record. The record head and l
 
 #### `fn expr_block(body: BlockSyntax) -> ExprSyntax`
 
+#### `fn expr_await(value: ExprSyntax) -> ExprSyntax`
+
+The generated function is checked as async before this suspension is lowered.
+
 #### `fn pattern_var(name: Ident) -> PatternSyntax`
 
 Compiler-owned pattern syntax. Validated identifiers and structural pattern children retain their origin through generated matches.
@@ -2958,7 +2962,15 @@ Compiler-owned statement and block syntax retain AST nodes through block-shaped 
 
 #### `fn stmt_return_none() -> StmtSyntax`
 
+#### `fn stmt_yield(value: ExprSyntax) -> StmtSyntax`
+
+The generated function is checked as a generator before this yield is lowered.
+
 #### `fn block(stmts: List(StmtSyntax), tail: Option(ExprSyntax)) -> BlockSyntax`
+
+#### `fn block_region(body: BlockSyntax, result: Option(TypeSyntax)) -> BlockSyntax`
+
+Attach a typed copy-out annotation to an already compiler-owned block.
 
 #### `fn param(name: Ident, ty: TypeSyntax) -> ParamSyntax`
 
@@ -2967,6 +2979,10 @@ A function parameter and function item constructors. The single-expression form 
 #### `fn function(public: Bool, name: Ident, params: List(ParamSyntax), ret: Option(TypeSyntax), body: ExprSyntax) -> ItemSyntax`
 
 #### `fn function_block(public: Bool, name: Ident, params: List(ParamSyntax), ret: Option(TypeSyntax), body: BlockSyntax) -> ItemSyntax`
+
+#### `fn function_async(public: Bool, name: Ident, params: List(ParamSyntax), ret: Option(TypeSyntax), body: BlockSyntax) -> ItemSyntax`
+
+#### `fn function_generator(public: Bool, name: Ident, params: List(ParamSyntax), ret: Option(TypeSyntax), body: BlockSyntax) -> ItemSyntax`
 
 #### `fn impl_block(trait_ty: TypeSyntax, target_ty: TypeSyntax, items: List(ItemSyntax)) -> ItemSyntax`
 
