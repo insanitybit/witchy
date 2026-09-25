@@ -7,9 +7,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use witchy_syntax::ast::{Type, TypeDef, TypeQual};
 
 use crate::abi::CanonicalScalarKind;
-use crate::aggregates::{view_carrier_plan, ViewCarrierPlan};
+use crate::aggregates::{ViewCarrierPlan, view_carrier_plan};
 use crate::carrier::CarrierElement;
-use crate::rooted_view::RootedViewStorage;
+use crate::rooted_view::{OwnerCarriedViewPlan, OwnerCarriedViewStorage, RootedViewStorage};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StorageRefusal {
@@ -27,6 +27,9 @@ pub enum StorageRefusal {
 pub enum StoragePlan {
     InlineScalar(CanonicalScalarKind),
     Owned(CarrierElement),
+    /// A list of authenticated scalar-place owner tokens. Projected-view
+    /// lists need a different owner-family proof and remain refused.
+    RetainedOwnerList(OwnerCarriedViewPlan),
     RootedView(RootedViewStorage),
     AggregateView(ViewCarrierPlan),
     Refused(StorageRefusal),
@@ -55,6 +58,17 @@ impl StoragePlan {
         }
         if matches!(ty, Type::Tuple(fields) if fields.is_empty()) {
             return Self::InlineScalar(CanonicalScalarKind::Unit);
+        }
+        if let Type::Named(name, arguments) = ty
+            && name == "List"
+            && let [element] = arguments.as_slice()
+            && let Some(plan) = OwnerCarriedViewPlan::classify(element, definitions)
+            && matches!(
+                plan.admitted_storage(),
+                Some(OwnerCarriedViewStorage::AuthenticatedPlace(_))
+            )
+        {
+            return Self::RetainedOwnerList(plan);
         }
         if let Some(plan) = view_carrier_plan(ty, definitions) {
             return Self::AggregateView(plan);

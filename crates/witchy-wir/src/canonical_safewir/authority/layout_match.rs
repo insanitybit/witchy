@@ -64,8 +64,7 @@ pub(crate) fn value_type_matches_source(
             // `List(&Int)` is the `&Int` family's owner list.
             if id == family.list_type {
                 return is_direct_rooted_scalar_place(expected)
-                    && matches!(source.unqualified(), witchy_syntax::ast::Type::Named(name, arguments)
-                        if name == "List" && arguments.len() == 1 && is_direct_rooted_scalar_place(&arguments[0]));
+                    && is_list_of_rooted_scalar_places(source);
             }
             return id == family.owner_type
                 && ((is_direct_rooted_scalar_place(expected) && is_direct_rooted_scalar_place(source))

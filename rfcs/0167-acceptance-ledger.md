@@ -55,6 +55,19 @@ is needed for soundness.
 
 ## Exact-tip evidence checkpoint
 
+Row G list of authenticated scalar-place owners (architecture implemented,
+semantic evidence unchanged, 2026-09-25): `StoragePlan` now has a typed
+retained-owner-list class for `List(T)` whose element is an admitted
+authenticated scalar-place view. WIR's source ABI and owner-family layout
+checks consume that class instead of repeating the direct `List(&Int)` syntax
+predicate. The existing scalar family still proves only Int; frozen payloads
+retain their prior boundary, while unique payloads, projected-view lists,
+nested lists of views, and unsupported elements refuse. The checked-source
+witness and independent physical layout checks remain. Adversarial review
+found no authority widening. No new admitted Wasm, zero-leak evidence, or
+A–O closure is claimed. The five existing `List(&Int)` positive and negative
+smoke cases passed on this branch.
+
 Row G lowerer storage-plan consumption (architecture implemented, semantic
 evidence unchanged, 2026-09-25): the direct rooted-view gate and checked
 slice-element extraction now consume `StoragePlan` from canonical-source.

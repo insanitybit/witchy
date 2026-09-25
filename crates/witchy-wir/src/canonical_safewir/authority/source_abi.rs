@@ -191,8 +191,10 @@ pub(crate) fn candidate_signature_matches_source_with_layouts<S: ModuleStage>(
 
 /// An owner list whose elements are authenticated rooted scalar places.
 pub(super) fn is_list_of_rooted_scalar_places(ty: &witchy_syntax::ast::Type) -> bool {
-    matches!(ty.unqualified(), witchy_syntax::ast::Type::Named(name, arguments)
-        if name == "List" && arguments.len() == 1 && is_direct_rooted_scalar_place(&arguments[0]))
+    matches!(
+        witchy_canonical_source::storage::StoragePlan::classify(ty.unqualified(), &BTreeMap::new(), |_| None),
+        witchy_canonical_source::storage::StoragePlan::RetainedOwnerList(_)
+    )
 }
 
 /// Check the original source graph before any ABI comparison erases wrappers.
