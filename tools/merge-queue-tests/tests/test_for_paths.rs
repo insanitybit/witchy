@@ -2028,7 +2028,7 @@ fn a_compiler_crate_change_runs_its_downstream_compiler_crates_tests() {
     for (changed, downstream) in [
         ("crates/witchy-syntax/src/lib.rs", &["witchy-types", "witchy-wir", "witchy-lower"][..]),
         ("crates/witchy-types/src/lib.rs", &["witchy-wir", "witchy-lower"][..]),
-        ("crates/witchy-wir/src/canonical_safewir/check.rs", &["witchy-lower", "witchy-runtime"][..]),
+        ("crates/witchy-wir/src/canonical_safewir/check.rs", &["witchy-lower"][..]),
     ] {
         let output = gate_nextest(&[changed]);
         for crate_name in downstream {
@@ -2038,6 +2038,36 @@ fn a_compiler_crate_change_runs_its_downstream_compiler_crates_tests() {
             );
         }
     }
+}
+
+#[test]
+fn wir_changes_compile_production_runtime_without_selecting_its_native_test_package() {
+    let output = gate_nextest(&["crates/witchy-wir/src/canonical_safewir/check.rs"]);
+    let mut lines = output.lines();
+    let cargo_args = lines.next().unwrap_or_default();
+    let expression = lines.next().unwrap_or_default();
+    let compile_args = lines.next().unwrap_or_default();
+
+    assert!(cargo_args.contains("-p witchy"), "root conformance targets were dropped: {output}");
+    assert!(
+        expression.contains("binary_id(/^witchy::rfc0/)")
+            && expression.contains("test(/^semantic_conformance::/)"),
+        "WIR changes lost their independent root conformance evidence: {output}",
+    );
+    for selection in [cargo_args, expression, compile_args] {
+        assert!(
+            !selection.contains("witchy-runtime"),
+            "WIR-only edit still selects the native runtime test package: {output}",
+        );
+    }
+
+    // A runtime implementation edit still owns and runs the complete native
+    // runtime package. Only compiler-only WIR edits get the cheaper boundary.
+    let runtime_output = gate_nextest(&["crates/witchy-runtime/src/lib.rs"]);
+    assert!(
+        runtime_output.contains("package(witchy-runtime)"),
+        "runtime edits no longer select runtime package tests: {runtime_output}",
+    );
 }
 
 /// The RFC-pinned example modules (`example_tests::rfc0*`) are language

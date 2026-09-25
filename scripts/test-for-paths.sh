@@ -628,7 +628,14 @@ for p in "${paths[@]}"; do
             # checker in witchy-wir, gated green without witchy-lower's tests,
             # and left master red on one of them.
             add_pkg witchy-lower
-            add_pkg witchy-runtime
+            # Do not select witchy-runtime's package tests here. The root
+            # conformance targets below still compile the production runtime
+            # against the changed WIR, while `package(witchy-runtime)` also
+            # builds its 174-test cfg(test) copy. Runtime source edits select
+            # that package in their own route. Keeping the native host suite
+            # off a compiler-only edit is the boundary: WIR correctness is
+            # adjudicated by WIR/lower/root conformance, and runtime internals
+            # remain covered when they actually change.
             add "cargo nextest run -p witchy-wir --features witchy-wir/native"
             add "./scripts/nextest-admitted.sh witchy -- cargo nextest run -E 'test(/^example_tests::/)'"
             ;;
