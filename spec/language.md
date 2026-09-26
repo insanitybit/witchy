@@ -1154,7 +1154,9 @@ capabilities, must-consume values, once-callable values, and storage without a
 recursive copy proof. A nominal type argument that is absent from stored
 fields still contributes to the source and ABI identity, but it does not
 create a stored resource obligation. Generic view payloads are checked again
-at specialization with their concrete arguments.
+at specialization with their concrete arguments. Whole-root and aggregate
+view-carrier classification use those same stored fields; phantom arguments
+and callable signatures do not become embedded view owners.
 
 A non-packed declared record, sum, `Option`, or `Result` may hold a recursive
 `List(T)` child when the checked carrier proves every owned edge. Its rooted

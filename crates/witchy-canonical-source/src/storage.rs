@@ -66,7 +66,7 @@ pub enum StoredChildren {
 }
 
 impl StoredChildren {
-    fn into_types(self) -> Vec<Type> {
+    pub(crate) fn into_types(self) -> Vec<Type> {
         match self {
             Self::Sequence(element) => vec![element],
             Self::Mapping(key, value) => vec![key, value],

@@ -515,11 +515,10 @@ pub(super) fn is_direct_shared_reference(source: &witchy_syntax::ast::Type) -> b
     is_direct_shared_int(source) || is_direct_shared_owned_reference(source)
 }
 
-/// A non-packed aggregate of `&Int` views, or a named record with one direct
-/// exact `&[Int]` field (see `witchy_canonical_source::aggregates::is_rooted_int_view_aggregate`). The opaque
+/// A non-packed aggregate with a checked view-carrier field. The opaque
 /// aggregate family and constructor are revalidated independently; this
-/// predicate only prevents source correspondence from erasing the exact
-/// checked aggregate identity.
+/// predicate preserves the exact checked aggregate identity in source
+/// correspondence.
 pub(super) fn is_direct_rooted_view_aggregate_carrier(
     source: &witchy_syntax::ast::Type,
     records: &ScalarRecordFields,

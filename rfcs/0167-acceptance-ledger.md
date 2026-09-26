@@ -1178,6 +1178,17 @@ A focused compiler check and the existing phantom-versus-stored-resource case
 passed. Admitted unoptimized Wasm and zero-leak evidence remain open, so no
 additional A–O row closes.
 
+Row G stored-view containment (implemented but unverified, 2026-09-26):
+whole-record-root eligibility and aggregate view-field classification now
+traverse the shared checked stored-child relation. The separate syntax walker
+that treated phantom type arguments and callable signatures as stored views is
+removed. A record with a phantom view argument may use its ordinary retained
+root identity when its actual fields have the required recursive storage and
+layout proof; malformed child arity and bounded-recursion failures refuse.
+The focused structural case passes, and a direct `--debug` compiled smoke of
+`&Phantom(&[Int])` printed the hand-computed `7`. That smoke did not audit
+leaks or enter the A–O evidence matrix. No A–O row closes.
+
 Row G declaration-backed sum shapes (implemented but unverified,
 2026-09-26): the shared aggregate field guard, concrete identity, scalar
 shape builder, and owned-carrier entry now derive `Option` and `Result` arity,

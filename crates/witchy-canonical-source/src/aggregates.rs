@@ -14,7 +14,7 @@
 //! its slots, and the ABI authority binds a nominal source type to a
 //! candidate reference whose layout carries exactly these fields.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use witchy_syntax::ast::{effective_type_def_params, Item, Module, Type, TypeDef, Variant};
 
@@ -689,13 +689,14 @@ pub fn is_inline_scalar_view_payload(ty: &Type) -> bool {
 
 /// A whole view of this value is a `RecordRoot`: the retained aggregate
 /// object is the snapshot. Admitted for a declared record or sum, including
-/// standard sums, with a non-packed heap shape that holds no view
-/// (a view inside would need its own carrier).
+/// standard sums, with a non-packed heap shape that stores no view
+/// (a stored view would need its own carrier). Phantom type arguments and
+/// callable signatures bind identity without becoming stored fields.
 pub fn is_record_root_payload(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> bool {
     crate::rooted_record::has_record_root_head(ty, definitions) == Some(true)
         && crate::capabilities::representation(ty, definitions).is_none()
         && scalar_aggregate_shape(ty, definitions).is_some_and(|shape| !shape.packed)
-        && !contains_view(ty, definitions, &mut BTreeSet::new())
+        && matches!(contains_stored_view(ty, definitions), Some(false))
         && crate::rooted_record::RecordRootIdentity::from_checked_type(
             ty, definitions, |_| Some(0),
         ).is_some()
@@ -735,28 +736,12 @@ impl ViewCarrierPlan {
 
 }
 
-/// A direct authenticated `&Int` or proven `&[T]` owner, or an admitted
-/// non-packed aggregate of view owners. The existing `&Int` path covers tuple,
-/// record, sum, `Option`, and `Result` shells. A proven `&[T]` extends only a
-/// direct named record field; other slice-bearing shells remain unsupported.
-/// Every admitted shell is an opaque owner, so a view never enters linear memory.
-pub fn is_rooted_int_view_carrier(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> bool {
-    view_carrier_plan(ty, definitions).is_some()
-}
-
-/// An Option shell may reuse the established aggregate-view path, but a bare
-/// slice payload has no authenticated Option projection yet.
-pub fn is_rooted_int_option_payload_carrier(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> bool {
-    !is_direct_rooted_slice_view_syntax(ty) && is_rooted_int_view_carrier(ty, definitions)
-}
-
-/// [`is_rooted_int_view_carrier`] minus the bare view: an aggregate owner.
-pub fn is_rooted_int_view_aggregate(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> bool {
-    matches!(view_carrier_plan(ty, definitions), Some(ViewCarrierPlan::Aggregate { .. }))
-}
-
+/// The checked field relation for a direct rooted owner or an aggregate that
+/// retains view owners. Physical layout and ownership operations are checked
+/// separately before this plan can authorize a carrier.
 pub fn view_carrier_plan(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> Option<ViewCarrierPlan> {
-    may_carry_view(ty, definitions).then(|| view_carrier_plan_at(ty, definitions, 0)).flatten()
+    matches!(contains_stored_view(ty, definitions), Some(true))
+        .then(|| view_carrier_plan_at(ty, definitions, 0)).flatten()
 }
 
 fn view_carrier_plan_at(
@@ -777,12 +762,6 @@ fn view_carrier_plan_at(
     view_aggregate_plan_at(ty, definitions, depth)
 }
 
-/// Every layout identity asks this question, and almost no type holds a
-/// view. Answer those with one syntactic walk before expanding any shape.
-fn may_carry_view(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> bool {
-    contains_view(ty, definitions, &mut BTreeSet::new())
-}
-
 fn view_aggregate_plan_at(
     ty: &Type,
     definitions: &BTreeMap<String, TypeDef>,
@@ -798,51 +777,47 @@ fn view_aggregate_plan_at(
     let mut carriers = 0usize;
     let mut fields = Vec::with_capacity(shape.fields.len());
     for field in &shape.fields {
-        if !may_carry_view(field, definitions) {
-            fields.push(ViewCarrierFieldPlan::Plain);
-        } else {
-            let plan = view_carrier_plan_at(field, definitions, depth + 1)?;
-            fields.push(ViewCarrierFieldPlan::Carried(Box::new(plan)));
-            carriers += 1;
+        match contains_stored_view(field, definitions)? {
+            false => fields.push(ViewCarrierFieldPlan::Plain),
+            true => {
+                let plan = view_carrier_plan_at(field, definitions, depth + 1)?;
+                fields.push(ViewCarrierFieldPlan::Carried(Box::new(plan)));
+                carriers += 1;
+            }
         }
     }
     (carriers > 0).then_some(ViewCarrierPlan::Aggregate { shape, fields })
 }
 
-/// Whether any view hides in `ty`, through generic arguments, tuples, named
-/// declarations, and callable signatures.
-fn contains_view(ty: &Type, definitions: &BTreeMap<String, TypeDef>, active: &mut BTreeSet<String>) -> bool {
-    match ty {
-        Type::Qualified(witchy_syntax::ast::TypeQual::View, _) => true,
-        Type::Qualified(_, inner) | Type::Slice(inner) => contains_view(inner, definitions, active),
-        Type::Named(name, arguments) | Type::Dyn(name, arguments) => {
-            arguments.iter().any(|argument| contains_view(argument, definitions, active))
-                || definitions.get(name).is_some_and(|definition| {
-                    if !active.insert(name.clone()) { return false; }
-                    let found = definition.variants.iter().any(|variant| {
-                        variant.fields.iter().any(|field| contains_view(field, definitions, active))
-                    });
-                    active.remove(name);
-                    found
-                })
+/// Views retained by the value's checked storage, excluding phantom type
+/// arguments and callable signatures. Unknown storage refuses both a plain
+/// field and a whole-root identity; it cannot be treated as view-free.
+fn contains_stored_view(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> Option<bool> {
+    fn walk(
+        ty: &Type,
+        definitions: &BTreeMap<String, TypeDef>,
+        active: &mut HashSet<Type>,
+        depth: usize,
+        remaining: &mut usize,
+    ) -> Option<bool> {
+        if depth > 128 || *remaining == 0 { return None; }
+        *remaining -= 1;
+        match ty {
+            Type::Qualified(witchy_syntax::ast::TypeQual::View, _) => return Some(true),
+            Type::Qualified(_, inner) => return walk(inner, definitions, active, depth + 1, remaining),
+            _ => {}
         }
-        Type::Tuple(items) => items.iter().any(|item| contains_view(item, definitions, active)),
-        Type::RecordCompose { base, fields } => contains_view(base, definitions, active)
-            || fields.iter().any(|(_, field)| contains_view(field, definitions, active)),
-        Type::Fn(parameters, result, _, _) => parameters.iter().any(|parameter| contains_view(parameter, definitions, active))
-            || contains_view(result, definitions, active),
+        if !active.insert(ty.clone()) { return Some(false); }
+        let children = crate::storage::stored_children(ty, definitions).ok()?.map(|children| children.into_types())
+            .unwrap_or_default();
+        let mut found = false;
+        for child in &children {
+            found |= walk(child, definitions, active, depth + 1, remaining)?;
+        }
+        active.remove(ty);
+        Some(found)
     }
-}
-
-fn is_direct_rooted_slice_view_syntax(ty: &Type) -> bool {
-    let Type::Qualified(witchy_syntax::ast::TypeQual::View, payload) = ty else {
-        return false;
-    };
-    match payload.as_ref() {
-        Type::Slice(_) => true,
-        Type::Named(name, arguments) => name == "Slice" && arguments.len() == 1,
-        _ => false,
-    }
+    walk(ty, definitions, &mut HashSet::new(), 0, &mut 4_096)
 }
 
 fn aggregate_declaration<'a>(
@@ -1104,6 +1079,14 @@ mod shape_memo_tests {
 mod recursive_shape_tests {
     use super::*;
 
+    fn has_view_carrier(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> bool {
+        view_carrier_plan(ty, definitions).is_some()
+    }
+
+    fn has_aggregate_view_carrier(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> bool {
+        matches!(view_carrier_plan(ty, definitions), Some(ViewCarrierPlan::Aggregate { .. }))
+    }
+
     fn named(name: &str) -> Type {
         Type::Named(name.into(), Vec::new())
     }
@@ -1171,15 +1154,15 @@ mod recursive_shape_tests {
             ("Option".into(), option_definition()),
             ("Result".into(), result_definition()),
         ]);
-        assert!(is_rooted_int_view_carrier(&int_slice, &definitions));
-        assert!(is_rooted_int_view_aggregate(&packet, &definitions));
+        assert!(has_view_carrier(&int_slice, &definitions));
+        assert!(has_aggregate_view_carrier(&packet, &definitions));
         let normalized_int_slice = Type::Qualified(
             witchy_syntax::ast::TypeQual::View,
             Box::new(Type::Named("Slice".into(), vec![named("Int")])),
         );
-        assert!(is_rooted_int_view_carrier(&normalized_int_slice, &definitions));
+        assert!(has_view_carrier(&normalized_int_slice, &definitions));
         let option_slice = Type::Named("Option".into(), vec![int_slice.clone()]);
-        assert!(is_rooted_int_view_aggregate(&option_slice, &definitions));
+        assert!(has_aggregate_view_carrier(&option_slice, &definitions));
         assert_eq!(
             canonical_owner_aggregate_identity(&option_slice, &definitions),
             Some(option_slice.clone()),
@@ -1205,34 +1188,34 @@ mod recursive_shape_tests {
             "an unrelated fixed view field cannot authorize a slice generic argument",
         );
         let tuple = Type::Tuple(vec![int_slice.clone()]);
-        assert!(is_rooted_int_view_aggregate(&tuple, &definitions));
+        assert!(has_aggregate_view_carrier(&tuple, &definitions));
         for shell in [
             Type::Named("Option".into(), vec![tuple]),
             Type::Named("Result".into(), vec![int_slice.clone(), named("String")]),
         ] {
-            assert!(is_rooted_int_view_aggregate(&shell, &definitions));
+            assert!(has_aggregate_view_carrier(&shell, &definitions));
         }
         let mut nested = definitions.clone();
         nested.insert("Outer".into(), definition("Outer", vec![packet.clone()], false));
-        assert!(is_rooted_int_view_aggregate(&named("Outer"), &nested));
+        assert!(has_aggregate_view_carrier(&named("Outer"), &nested));
         let mut sum = definition("Choice", vec![int_slice.clone()], false);
         let mut other = sum.variants[0].clone();
         other.name = "Other".into();
         sum.variants.push(other);
         let sum_definitions = BTreeMap::from([("Choice".into(), sum)]);
-        assert!(is_rooted_int_view_aggregate(&named("Choice"), &sum_definitions));
+        assert!(has_aggregate_view_carrier(&named("Choice"), &sum_definitions));
         let mut positional = definition("Positional", vec![int_slice.clone()], false);
         positional.variants[0].field_names.clear();
         let positional_definitions = BTreeMap::from([("Positional".into(), positional)]);
-        assert!(is_rooted_int_view_aggregate(&named("Positional"), &positional_definitions));
+        assert!(has_aggregate_view_carrier(&named("Positional"), &positional_definitions));
 
         for element in [named("Float"), Type::Named("List".into(), vec![named("Int")])] {
             let admitted = view_slice(element);
             let definitions = BTreeMap::from([(
                 "Packet".into(), definition("Packet", vec![admitted.clone()], false),
             )]);
-            assert!(is_rooted_int_view_carrier(&admitted, &definitions));
-            assert!(is_rooted_int_view_aggregate(&packet, &definitions));
+            assert!(has_view_carrier(&admitted, &definitions));
+            assert!(has_aggregate_view_carrier(&packet, &definitions));
         }
         for element in [
             Type::Qualified(witchy_syntax::ast::TypeQual::View, Box::new(named("Int"))),
@@ -1242,8 +1225,8 @@ mod recursive_shape_tests {
             let definitions = BTreeMap::from([(
                 "Packet".into(), definition("Packet", vec![other.clone()], false),
             )]);
-            assert!(!is_rooted_int_view_carrier(&other, &definitions));
-            assert!(!is_rooted_int_view_aggregate(&packet, &definitions));
+            assert!(!has_view_carrier(&other, &definitions));
+            assert!(!has_aggregate_view_carrier(&packet, &definitions));
         }
         let qualified_payload = Type::Qualified(
             witchy_syntax::ast::TypeQual::View,
@@ -1252,7 +1235,17 @@ mod recursive_shape_tests {
                 Box::new(Type::Slice(Box::new(named("Int")))),
             )),
         );
-        assert!(!is_rooted_int_view_carrier(&qualified_payload, &BTreeMap::new()));
+        assert!(!has_view_carrier(&qualified_payload, &BTreeMap::new()));
+
+        let mut phantom_definitions = definitions.clone();
+        phantom_definitions.insert("Phantom".into(), generic_definition(
+            "Phantom", &["a"], vec![named("Int")], false,
+        ));
+        let phantom_view = Type::Named("Phantom".into(), vec![int_slice]);
+        assert_eq!(contains_stored_view(&phantom_view, &phantom_definitions), Some(false));
+        assert!(!has_aggregate_view_carrier(&phantom_view, &phantom_definitions));
+        assert!(is_record_root_payload(&phantom_view, &phantom_definitions));
+        assert_eq!(contains_stored_view(&Type::Named("List".into(), vec![]), &definitions), None);
     }
 
     #[test]
