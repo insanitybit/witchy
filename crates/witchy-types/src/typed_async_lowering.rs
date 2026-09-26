@@ -885,10 +885,18 @@ impl TypedAsyncLoweringInput {
     pub fn from_checked(checked: &CheckedModule) -> Result<Self, String> {
         let typed = typeck::annotate_checked_source(checked.module().clone())
             .map_err(|error| error.message)?;
-        let mut input = Self::from_typed(&typed, checked.source_async_control_flow())?;
+        let mut input = Self::from_typed(&typed, checked.source_async_control_flow()?)?;
         for operation in &mut input.operations {
             let Some(_) = operation.expression else { continue };
             let (expression, ty) = Self::typed_source_operation(checked, operation)?;
+            if operation.kind == SourceAsyncOperationKind::Await
+                && !matches!(expression, Expr::Unary { op: witchy_syntax::ast::UnOp::Await, .. })
+            {
+                return Err(format!(
+                    "source async {:?} operation {} lost its checked await identity",
+                    operation.callable, operation.source_operation,
+                ));
+            }
             operation.operand_type = Some(typeck::ty_to_ast(ty).ok_or_else(|| format!(
                 "source async {:?} operation {} has a non-concrete operand type `{ty}`",
                 operation.callable,
@@ -1182,35 +1190,6 @@ impl TypedAsyncLoweringInput {
             stored_obligations, type_definitions })
     }
 
-    /// Resolve one typed source-operation binding back to the exact retained
-    /// pre-CPS expression which supplies its operands. This is deliberately a
-    /// source/typed-lowering bridge only; callers still need to form typed
-    /// lanes, ownership actions, and executable state edges from checked data.
-    pub fn source_operation_expression<'a>(
-        checked: &'a CheckedModule,
-        operation: &TypedAsyncSourceOperationBinding,
-    ) -> Result<&'a Expr, String> {
-        let expression = operation.expression.ok_or_else(|| format!(
-            "source async {:?} operation {} has no expression operand",
-            operation.callable,
-            operation.source_operation,
-        ))?;
-        let function = checked
-            .async_surface()
-            .function(&operation.callable.module, &operation.callable.surface)
-            .ok_or_else(|| format!(
-                "source async operation {} has no retained callable {:?}",
-                operation.source_operation,
-                operation.callable,
-            ))?;
-        source_expression(function, expression).ok_or_else(|| format!(
-            "source async {:?} operation {} refers to absent source expression {:?}",
-            operation.callable,
-            operation.source_operation,
-            expression,
-        ))
-    }
-
     /// Resolve an operation through the fully linked typed-source projection.
     /// The returned expression and inferred type are guaranteed to share the
     /// same allocation, unlike the lossless syntax sidecar used for diagnostics.
@@ -1323,7 +1302,7 @@ fn is_nested_terminal_operand(source: &SourceAsyncControlFlow, operation: &Typed
             .is_some_and(|span| expression.0 > span.root.0 && expression.0 < span.end.0))
 }
 
-fn typed_source_function<'a>(
+pub(crate) fn typed_source_function<'a>(
     typed: &'a TypedModule,
     callable: &AsyncCallableId,
 ) -> Option<&'a Function> {

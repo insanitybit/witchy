@@ -430,10 +430,28 @@ impl CheckedModule {
     /// lowering. This remains non-executable until final typed frame and
     /// closure-layout binding are available.
     #[doc(hidden)]
-    pub fn source_async_control_flow(&self) -> crate::async_control_flow::SourceAsyncControlFlowInventory {
-        crate::async_control_flow::SourceAsyncControlFlowInventory::from_surface(
-            self.async_surface(),
-        )
+    pub fn source_async_control_flow(&self) -> Result<crate::async_control_flow::SourceAsyncControlFlowInventory, String> {
+        let Some(typed) = self.typed_async_source() else {
+            return if self.async_surface().modules.iter().all(|module| module.items.is_empty()) {
+                Ok(crate::async_control_flow::SourceAsyncControlFlowInventory::default())
+            } else {
+                Err("checked program has no typed pre-CPS async source projection".into())
+            };
+        };
+        let inventory = crate::async_control_flow::SourceAsyncControlFlowInventory::from_typed_projection(typed)?;
+        let expected = self.async_surface().modules.iter().flat_map(|module| {
+            module.items.iter().map(move |item| (
+                module.module.clone(), item.id.item, item.id.method,
+            ))
+        }).collect::<BTreeSet<_>>();
+        let actual = inventory.callables.iter().map(|flow| (
+            flow.callable.module.clone(), flow.callable.surface.item,
+            flow.callable.surface.method,
+        )).collect::<BTreeSet<_>>();
+        if actual != expected {
+            return Err("typed async source inventory differs from checked source surface".into());
+        }
+        Ok(inventory)
     }
 
     /// Borrow the fully linked, pre-CPS typed source projection for RFC-0161.

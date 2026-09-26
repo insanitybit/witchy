@@ -9,7 +9,10 @@
 use std::collections::HashMap;
 
 use witchy_syntax::ast::{Block, Expr, Function, Item, Stmt, pattern_binds};
-use witchy_syntax::async_surface::{AsyncSurfaceId, LinkedAsyncSurface};
+use witchy_syntax::async_surface::AsyncSurfaceId;
+use witchy_syntax::suspension::{async_surface, async_surface_module};
+
+use crate::typeck::TypedModule;
 
 /// Stable source identity of one async callable in a checked linked program.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -175,21 +178,29 @@ pub struct SourceAsyncControlFlowInventory {
 }
 
 impl SourceAsyncControlFlowInventory {
-    pub fn from_surface(surface: &LinkedAsyncSurface) -> Self {
+    /// Bind operation coordinates to the exact checked pre-CPS AST. The
+    /// lossless surface predates linker rewrites, which can insert expression
+    /// nodes and invalidate independently assigned preorder coordinates.
+    pub fn from_typed_projection(typed: &TypedModule) -> Result<Self, String> {
         let mut callables = Vec::new();
-        for module in &surface.modules {
-            for item in &module.items {
-                let function = match (&item.item, item.id.method) {
-                    (Item::Function(function), None) => Some(function),
-                    (Item::Impl(definition), Some(method)) => definition.methods.get(method as usize),
-                    _ => None,
-                };
-                let Some(function) = function else { continue };
+        let mut collect = |function: &Function| -> Result<(), String> {
+            if function.is_async {
+                let (item, method) = async_surface(function)
+                    .ok_or_else(|| format!("typed async callable `{}` has no source item identity", function.name))?;
+                let module = async_surface_module(function)
+                    .ok_or_else(|| format!("typed async callable `{}` has no source module identity", function.name))?;
                 let (controls, operations) = collect_function(function);
                 let (bindings, binding_uses, expression_spans) = collect_bindings(function);
                 callables.push(SourceAsyncControlFlow {
-                    callable: AsyncCallableId { module: module.module.clone(), surface: item.id.clone() },
-                    mode: witchy_canonical_source::source::source_execution_mode(function, &module.modes),
+                    callable: AsyncCallableId {
+                        module: module.to_string(),
+                        surface: AsyncSurfaceId {
+                            item: u32::try_from(item).map_err(|_| "async source item exceeds u32")?,
+                            method: method.map(|method| u32::try_from(method).map_err(|_| "async source method exceeds u32"))
+                                .transpose()?,
+                        },
+                    },
+                    mode: witchy_canonical_source::source::source_execution_mode(function, &typed.module().modes),
                     controls,
                     bindings,
                     binding_uses,
@@ -197,9 +208,24 @@ impl SourceAsyncControlFlowInventory {
                     operations,
                 });
             }
+            Ok(())
+        };
+        for item in &typed.module().items {
+            match item {
+                Item::Function(function) => collect(function)?,
+                Item::Impl(definition) => {
+                    for method in &definition.methods { collect(method)?; }
+                }
+                _ => {}
+            }
         }
         callables.sort_by(|left, right| left.callable.cmp(&right.callable));
-        Self { callables }
+        for pair in callables.windows(2) {
+            if pair[0].callable == pair[1].callable {
+                return Err(format!("duplicate typed async source identity {:?}", pair[0].callable));
+            }
+        }
+        Ok(Self { callables })
     }
 }
 
