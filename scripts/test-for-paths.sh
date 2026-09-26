@@ -117,6 +117,16 @@ for gate_queue_path in "${paths[@]}"; do
         *) gate_queue_expr=""; break ;;
     esac
 done
+gate_worktree_expr='test(/^warm::cargo_shim_/)'
+gate_cargo_shim_touched=0
+for gate_worktree_path in "${paths[@]}"; do
+    case "$gate_worktree_path" in
+        scripts/bin/cargo) gate_cargo_shim_touched=1 ;;
+        tools/merge-queue-tests/tests/worktree/warm.rs) ;;
+        *) gate_worktree_expr=""; break ;;
+    esac
+done
+[ "$gate_cargo_shim_touched" -eq 1 ] || gate_worktree_expr=""
 gate_lower_contracts_only=1
 for gate_lower_path in "${paths[@]}"; do
     case "$gate_lower_path" in
@@ -223,6 +233,7 @@ emit_gate_nextest() {
         done
         printf '%s\n' "$args"
         [ -z "$gate_queue_expr" ] || printf '%s\n' "$gate_queue_expr"
+        [ -z "$gate_worktree_expr" ] || printf '%s\n' "$gate_worktree_expr"
         return 0
     fi
     for p in ${gate_pkgs[0]+"${gate_pkgs[@]}"}; do
@@ -894,6 +905,13 @@ for p in "${paths[@]}"; do
         tools/merge-queue-tests/tests/test_for_paths.rs)
             add_gate_test test_for_paths
             add "./scripts/check.sh --queue-infra" ;;
+        tools/merge-queue-tests/tests/worktree/warm.rs)
+            add_gate_test worktree
+            if [ -n "$gate_worktree_expr" ]; then
+                add "cargo nextest run -p merge-queue-tests --test worktree -E '$gate_worktree_expr'"
+            else
+                add "cargo nextest run -p merge-queue-tests --test worktree"
+            fi ;;
         tools/merge-queue-tests/tests/worktree.rs | \
         tools/merge-queue-tests/tests/worktree/*.rs)
             add_gate_test worktree
@@ -1081,6 +1099,12 @@ for p in "${paths[@]}"; do
             add "./scripts/test-nextest-admitted.sh"
             add "cargo nextest run -p merge-queue-tests --test test_for_paths"
             add "./scripts/check.sh --queue-infra" ;;
+        scripts/bin/cargo)
+            add_gate_test worktree
+            # The shim's hermetic contracts live together in worktree/warm.rs.
+            # Keep a shim-only edit off unrelated pool creation/status fixtures.
+            add "for f in scripts/*.sh scripts/bin/*; do bash -n \"\$f\"; done"
+            add "cargo nextest run -p merge-queue-tests --test worktree -E 'test(/^warm::cargo_shim_/)'" ;;
         scripts/bin/*)
             # Extensionless shims (`cargo`, `witchy`). They have no suffix, so
             # the scripts/*.sh rule below never matched them and nothing

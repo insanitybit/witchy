@@ -213,6 +213,37 @@ fn lower_compiler_contract_edits_skip_the_monolithic_codegen_target() {
 }
 
 #[test]
+fn cargo_shim_edits_select_only_their_worktree_contracts() {
+    let shim = "scripts/bin/cargo";
+    let fixture = "tools/merge-queue-tests/tests/worktree/warm.rs";
+    let expression = "test(/^warm::cargo_shim_/)";
+
+    let focused = selected_focused(&[shim, fixture]);
+    assert!(
+        focused.iter().any(|command| command.contains(expression)),
+        "cargo shim edit lost its focused contracts: {focused:?}",
+    );
+    assert!(
+        focused.iter().all(|command| {
+            !command.contains("--test worktree") || command.contains(expression)
+        }),
+        "cargo shim edit retained the complete worktree suite: {focused:?}",
+    );
+
+    assert_eq!(
+        gate_nextest(&[shim, fixture]),
+        format!("--test worktree\n{expression}\n"),
+    );
+
+    let fixture_only = gate_nextest(&[fixture]);
+    assert_eq!(
+        fixture_only,
+        "--test worktree\n",
+        "a general warm fixture edit was narrowed to shim tests",
+    );
+}
+
+#[test]
 fn deleted_misc_module_fails_safe_to_the_complete_target() {
     assert_eq!(
         gate_nextest(&["tests/misc/deleted_module.rs"]),
