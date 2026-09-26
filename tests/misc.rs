@@ -143,3 +143,5 @@ mod rfc0167_slice_subscript_in_async;
 mod rfc0167_slice_list_int_root_view;
 #[path = "misc/rfc0167_resource_fallback.rs"]
 mod rfc0167_resource_fallback;
+#[path = "misc/rfc0167_consuming_coalesce.rs"]
+mod rfc0167_consuming_coalesce;

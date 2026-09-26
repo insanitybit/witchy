@@ -1667,15 +1667,36 @@ generic, nested, and empty nominal resources; phantom arguments and callable
 signatures alone are not stored resources. `typeck::resource_fallback` pins the
 independent refusal in normal and opt code, through a normal-to-opt call, and
 with a normal consumer of an opt-defined type. Concrete generic instantiation
-also rechecks the error obligation. Resource-bearing success values still pass
-source checking and retain their disposition obligation, but their canonical
-extraction currently refuses with `aggregate field read requires consuming
-affine extraction`; this is an open carrier gap, not executable evidence.
+also rechecks the error obligation. Resource-bearing success values retain their
+disposition obligation; the consuming-extraction evidence below supersedes the
+initial `aggregate field read requires consuming affine extraction` limitation
+only for the witnessed admitted layouts.
 `rfc0167_resource_fallback` exercises ordinary success values and phantom
 resource errors across the same mode/type boundaries: both success and fallback
 paths produce the hand-computed 797979 in admitted unoptimized Wasm with zero
-canonical heap leaks. Conditional RHS disposition and broader error/deferred
-resource transfers remain open. No A-O row closes from this repair.
+canonical heap leaks. Lazy-operand disposition has separate bounded evidence
+above; broader error/deferred resource transfers remain open. No A-O row closes
+from this repair.
+
+Consuming fallback extraction (bounded lowering repair, 2026-09-26): `??` uses
+the existing consuming-match operations for an affine success payload and
+retires the selected wrapper on both paths. `TakeNullableUnique` is no longer
+misclassified as a shared read; the checker still requires a sole unique parent
+and child, clears the source slot, and authenticates the recursive child plan.
+Later cloning still marks the value shared. No checker permission is widened.
+`rfc0167_consuming_coalesce` produces the hand-computed 79797979 in normal and
+opt roots, across normal-to-opt calls and normal use of opt-defined resources,
+including an owned Result parameter and nested Option(Box(resource)) payload.
+A separate conditional Option(once fn() -> Int) witness produces 7744 while
+disposing the untouched owner on the sibling path. Both run admitted
+unoptimized Wasm with zero canonical heap leaks. Borrowed extraction and double
+use refuse in both modes (currently source call-scoped access and lowering
+MissingToken respectively); earlier ownership-specific source refusal is also
+accepted by the regression. Existing consuming-match GC-result evidence stays
+green. Option/Result(unique List(Int)) conditional probes still fail with
+UnsupportedType before this cleanup path; those lawful carrier gaps are
+preserved outside the gate, not cemented as desired refusals. This is bounded
+evidence, not full aggregate coverage or an A-O row closure.
 
 ## Optimization-readiness carrier audit
 

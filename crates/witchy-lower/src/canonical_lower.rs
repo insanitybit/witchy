@@ -7025,23 +7025,7 @@ impl FunctionLowerer<'_> {
         }
         let scrutinee_value = self.lower_expr(scrutinee)?;
         if consuming_shape.is_some() {
-            // Each successful arm retires this owned shell after extracting
-            // its payload. The ordinary return path must not drop an entry
-            // parameter a second time after that explicit transfer.
-            let source_name = match scrutinee {
-                Expr::Var(name) => Some(name.as_str()),
-                Expr::Unary { op: UnOp::Move, expr } => match expr.as_ref() {
-                    Expr::Var(name) => Some(name.as_str()),
-                    _ => None,
-                },
-                _ => None,
-            };
-            self.owned_parameters.retain(|parameter| {
-                *parameter != scrutinee_value
-                    && self.parameter_names.get(parameter).is_none_or(|name| {
-                        Some(name.as_str()) != source_name
-                    })
-            });
+            self.retire_consumed_aggregate_parameter(scrutinee, scrutinee_value);
         }
         let scrutinee = scrutinee_value;
         let string_layout = self.string_layout_id().ok();
@@ -7475,6 +7459,25 @@ impl FunctionLowerer<'_> {
             self.lower_match_pattern(scrutinee, pattern, scrutinee_type)?
         };
         Ok((bindings, refutable))
+    }
+
+    /// Every selected arm retires this shell after extracting its payload.
+    /// Ordinary return cleanup must not drop an entry parameter a second time.
+    fn retire_consumed_aggregate_parameter(&mut self, source: &Expr, value: ValueId) {
+        let source_name = match source {
+            Expr::Var(name) => Some(name.as_str()),
+            Expr::Unary { op: UnOp::Move, expr } => match expr.as_ref() {
+                Expr::Var(name) => Some(name.as_str()),
+                _ => None,
+            },
+            _ => None,
+        };
+        self.owned_parameters.retain(|parameter| {
+            *parameter != value
+                && self.parameter_names.get(parameter).is_none_or(|name| {
+                    Some(name.as_str()) != source_name
+                })
+        });
     }
 
     /// The successful tag arm owns this shell. Move affine fields out of
@@ -10022,9 +10025,11 @@ impl FunctionLowerer<'_> {
                     }
                     Operation::Load {
                         destination,
-                        transfer: witchy_wir::canonical_safewir::LoadTransfer::CloneShared | witchy_wir::canonical_safewir::LoadTransfer::ClonePresent | witchy_wir::canonical_safewir::LoadTransfer::TakeLast | witchy_wir::canonical_safewir::LoadTransfer::TakeNullableUnique,
+                        transfer: witchy_wir::canonical_safewir::LoadTransfer::CloneShared | witchy_wir::canonical_safewir::LoadTransfer::ClonePresent | witchy_wir::canonical_safewir::LoadTransfer::TakeLast,
                         ..
                     } => { direct.insert(*destination); }
+                    // TakeNullableUnique transfers a proved sole child token,
+                    // not a shared read. A later CloneRef still demotes it.
                     // A call's reference result is a shared token (its result
                     // contract), never a unique one.
                     Operation::Call { destinations, callee, .. } => {
@@ -11918,13 +11923,42 @@ impl FunctionLowerer<'_> {
         // expressions instead of joining only the expression's result.
         let affine_result = StoragePlan::classify(&shape.fields[success_field], self.definitions, |_| Some(0))
             .requires_affine_owner_token();
+        let consuming_patterns = if affine_result {
+            let failure_name = if shape.name == "Option" { "None" } else { "Err" };
+            let (_, failure) = shape.variant(failure_name)
+                .ok_or(CanonicalLoweringError::UnsupportedExpression("coalesce failure variant"))?;
+            // These are the operator's two checked variant decisions, not a
+            // new representation rule. Reuse match's consuming slot operations
+            // and its refusal of discarded affine fields on the failure edge.
+            let success = Pattern::Ctor {
+                name: success_name.to_string(),
+                args: vec![Pattern::Var("__coalesce_payload".to_string())],
+            };
+            let failure = Pattern::Ctor {
+                name: failure_name.to_string(),
+                args: vec![Pattern::Wildcard; failure.arity],
+            };
+            self.retire_consumed_aggregate_parameter(left, object);
+            Some((success, failure))
+        } else { None };
         self.lower_conditional_branches(is_some, affine_result, |this| {
             // Never read the success payload on the None/Err edge.
-            let payload = this.load_source_aggregate_field(
-                object, &left_type, success_index, 0, success_field, payload_type,
-            )?;
+            let payload = if let Some((success, _)) = &consuming_patterns {
+                let mut fields = this.lower_consuming_aggregate_pattern(object, success, &left_type, &shape)?;
+                if fields.len() != 1 {
+                    return Err(CanonicalLoweringError::UnsupportedExpression("coalesce consuming payload"));
+                }
+                fields.pop().expect("one consuming payload").1
+            } else {
+                this.load_source_aggregate_field(
+                    object, &left_type, success_index, 0, success_field, payload_type,
+                )?
+            };
             Ok(Some(this.detach_bound_result(payload, affine_result)?))
         }, |this| {
+            if let Some((_, failure)) = &consuming_patterns {
+                this.lower_consuming_aggregate_pattern(object, failure, &left_type, &shape)?;
+            }
             let default = this.lower_expr(right)?;
             if this.values[&default] != payload_type {
                 return Err(CanonicalLoweringError::UnsupportedExpression("coalesce default type"));

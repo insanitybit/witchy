@@ -1883,9 +1883,10 @@ by `??`; use `?` to transfer it or `match` to consume it. This applies in both
 modes and across imports. A resource-bearing success may be transferred by
 fallback, but the resulting value still needs disposition. Phantom type
 arguments and callable signatures alone do not store an obligation.
-Resource-bearing success extraction currently passes source checking but
-remains unsupported in canonical lowering; source acceptance alone does not
-make that program executable.
+Canonical lowering transfers affine success payloads using the same consuming
+storage operations as `match`; both selected paths retire the wrapper. This
+supports resource payloads, including nested nominal payloads, in the admitted
+aggregate layouts. It does not make every qualified aggregate layout supported.
 It's `unwrap_or` with operator syntax - handy on the `Option`-returning
 lookups (`d.get(key)`, `list.head`, …).
 
