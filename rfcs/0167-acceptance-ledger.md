@@ -171,6 +171,17 @@ typed replay proof; task-value opt provenance through aggregates, generics,
 trait returns, and scheduler adapters, per-execution ownership preparation,
 and cancellation disposition remain open. No A–O row closes.
 
+Rows J/K task signature storage (implemented but unverified, 2026-09-26):
+the shared aggregate shape guard accepts the compiler-reserved erased message
+lane inside a declared scheduler signature. It still requires the independent
+recursive storage proof before copying a value: `Task(Int)` has a copyable
+closure field, while `Step(Int)` carrying an erased message has no replay
+snapshot proof. The opt checker accepts an owned `Task(Int)` parameter, and a
+cross-module unoptimized compiled run printed `7`. Task execution-mode
+provenance through stored values, per-execution ownership, cancellation
+disposition, and the required Wasm and zero-leak evidence remain open. No A–O
+row closes.
+
 Rows J/K replayable continuation boundary (implemented but unverified,
 2026-09-26): the checker now refuses a live must binding and a capture refined
 to must after body inference. The retired root suspension exception could move

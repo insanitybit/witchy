@@ -40,3 +40,10 @@ pub fn is_unit_type(ty: &Type) -> bool {
         _ => false,
     }
 }
+
+/// The reserved compiler message lane used by the cooperative scheduler.
+/// Recognizing its source spelling is not an ownership or layout proof.
+pub fn is_erased_message_type(ty: &Type) -> bool {
+    matches!(ty, Type::Named(name, arguments)
+        if name == "__Msg" && arguments.is_empty())
+}

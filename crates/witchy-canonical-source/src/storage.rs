@@ -1247,3 +1247,23 @@ fn within_source_bounds(
         }
     }
 }
+
+#[cfg(test)]
+#[test]
+fn erased_scheduler_lane_validates_task_signature_without_copy_authority() {
+    let source = witchy_syntax::linker::bundled_source("task").unwrap();
+    let module = witchy_syntax::parser::parse_module(source).unwrap();
+    let mut definitions = crate::aggregates::type_definitions(&module);
+    let option = witchy_syntax::parser::parse_module(witchy_syntax::linker::bundled_source("option").unwrap()).unwrap();
+    definitions.extend(crate::aggregates::type_definitions(&option));
+    let ty = Type::Named("Task".into(), vec![Type::Named("Int".into(), vec![])]);
+    assert!(replay_capture_eligibility(&ty, &definitions).is_ok());
+    let step = Type::Named("Step".into(), vec![Type::Named("Int".into(), vec![])]);
+    assert!(replay_capture_eligibility(&step, &definitions).is_err());
+    assert!(!crate::is_erased_message_type(&Type::Named("__Msg".into(), vec![
+        Type::Named("Int".into(), vec![]),
+    ])));
+    assert!(!crate::is_erased_message_type(&Type::Qualified(
+        TypeQual::View, Box::new(Type::Named("__Msg".into(), vec![])),
+    )));
+}

@@ -73,3 +73,25 @@ fn main(console: Console):
         .expect_err("a field type cannot authenticate its stored callback origin");
     assert!(error.contains("requires an opt-compatible callable"), "{error}");
 }
+
+#[test]
+fn opt_async_accepts_copyable_task_parameter() {
+    let worker = r#"mode opt
+
+import task
+
+pub async fn execute(own recipe: task.Task(Int)) -> Int:
+    recipe.await
+"#;
+    let main = r#"import worker
+
+async fn ordinary() -> Int:
+    7
+
+async fn main(console: Console):
+    let answer = worker.execute(ordinary()).await
+    console.print("${answer}")
+"#;
+    let result = super::source::checked_bundle(vec![("worker", worker), ("main", main)], "main");
+    assert!(result.is_ok(), "{result:?}");
+}

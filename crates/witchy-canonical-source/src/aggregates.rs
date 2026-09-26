@@ -186,6 +186,10 @@ fn field_type_ok_at_with_dependencies(
     }
     match ty.unqualified() {
         _ if is_scalar_type(ty) => true,
+        // The erased scheduler message is a compiler-owned ABI lane. Its
+        // syntax is valid inside Step's declared fields, while StoragePlan
+        // still requires an independent ownership proof before copying Step.
+        _ if crate::is_erased_message_type(ty) => true,
         Type::Named(name, arguments) if matches!(name.as_str(), "String" | "Bytes") && arguments.is_empty() => true,
         // An anonymous union carries its complete, checked constructor shape
         // in the synthetic head: the type arguments are the flattened
@@ -231,6 +235,7 @@ fn field_type_ok_at_with_dependencies(
 // linear-memory field representation. Unit also has its own scalar layout.
 fn is_callable_only_lane(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> bool {
     crate::is_unit_type(ty)
+        || crate::is_erased_message_type(ty)
         || crate::capabilities::representation(ty, definitions).is_some()
 }
 
