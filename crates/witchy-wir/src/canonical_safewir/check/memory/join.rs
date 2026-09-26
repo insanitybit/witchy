@@ -818,17 +818,17 @@ impl<'a> MemoryChecker<'a> {
         Ok(MemoryState {
             objects: objects.into(),
             shared_phi_origins: meet_shared_phi_origins(existing, incoming).into(),
-            bound_generations: bound_generations.into(),
+            bound_generations,
             guard_generations: meet_generation_facts(
                 &existing.guard_generations, &incoming.guard_generations,
-            ).into(),
+            ),
             // Only the fresh-header observations rebase into the joined epoch;
             // see `rebase_joined_generations` for why the derived proofs above
             // must keep their concrete epochs.
             fresh_header_lengths: meet_generation_facts(
                 &rebase_joined_generations(&existing.fresh_header_lengths, &joined_identities),
                 &rebase_joined_generations(&incoming.fresh_header_lengths, &joined_identities),
-            ).into(),
+            ),
             stored_objects: meet_map(&existing.stored_objects, &incoming.stored_objects),
             nullable_unique_slots: meet_set(&existing.nullable_unique_slots, &incoming.nullable_unique_slots),
             nullable_present_slots: meet_set(&existing.nullable_present_slots, &incoming.nullable_present_slots),

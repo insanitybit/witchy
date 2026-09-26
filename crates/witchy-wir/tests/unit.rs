@@ -59,6 +59,7 @@ mod canonical_safewir {
                 #[test] fn dynamic_pointer_move_range_transfers_initialized_ownership_once() { witchy_wir::self_checks::canonical_safewir_check_memory::dynamic_pointer_move_range_transfers_initialized_ownership_once() }
                 #[test] fn dynamic_pointer_prefix_cannot_hide_an_unaccounted_child_slot() { witchy_wir::self_checks::canonical_safewir_check_memory::dynamic_pointer_prefix_cannot_hide_an_unaccounted_child_slot() }
                 #[test] fn move_value_rejects_shared_source() { witchy_wir::self_checks::canonical_safewir_check_memory::move_value_rejects_shared_source() }
+                #[test] fn generation_meets_preserve_intersections_epochs_and_snapshot_isolation() { witchy_wir::self_checks::canonical_safewir_check_memory::generation_meets_preserve_intersections_epochs_and_snapshot_isolation() }
                 #[test] fn nullable_owned_checker_requires_initialization_and_checked_presence() { witchy_wir::self_checks::canonical_safewir_check_memory::nullable_owned_checker_requires_initialization_and_checked_presence() }
                 #[test] fn owned_prefix_summary_is_invalidated_by_move() { witchy_wir::self_checks::canonical_safewir_check_memory::owned_prefix_summary_is_invalidated_by_move() }
                 #[test] fn pointer_bearing_ranges_fail_closed_without_element_transfer_state() { witchy_wir::self_checks::canonical_safewir_check_memory::pointer_bearing_ranges_fail_closed_without_element_transfer_state() }

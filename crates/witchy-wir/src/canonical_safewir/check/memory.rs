@@ -729,9 +729,11 @@ fn exact_carried_counted_extent(left: &ObjectState, right: &ObjectState) -> Opti
 /// sound but discards the generation the predecessors agreed on whenever one
 /// of them happens to have proved another alongside it.
 fn meet_generation_facts<K: Ord + Copy>(
-    left: &SortedMap<K, SortedSet<OwnerGeneration>>,
-    right: &SortedMap<K, SortedSet<OwnerGeneration>>,
-) -> SortedMap<K, SortedSet<OwnerGeneration>> {
+    left: &CowFacts<SortedMap<K, SortedSet<OwnerGeneration>>>,
+    right: &CowFacts<SortedMap<K, SortedSet<OwnerGeneration>>>,
+) -> CowFacts<SortedMap<K, SortedSet<OwnerGeneration>>> {
+    // Preserve the exact predecessor container when no fact is removed, as
+    // ordinary map meets do. Re-authentication writes detach through CowFacts.
     if all_entries_survive(left, right) {
         return left.clone();
     }
@@ -769,36 +771,34 @@ fn meet_generation_facts<K: Ord + Copy>(
 /// the whole point, and rebasing both sides into the top would revive a guard
 /// the mutation retired; `bounds_guards_name_the_current_owner_generation`
 /// pins that refusal.
-fn rebase_joined_generations<'a, K: Ord + Copy>(
-    facts: &'a SortedMap<K, SortedSet<OwnerGeneration>>,
+fn rebase_joined_generations<K: Ord + Copy>(
+    facts: &CowFacts<SortedMap<K, SortedSet<OwnerGeneration>>>,
     joined: &SortedSet<ValueId>,
-) -> std::borrow::Cow<'a, SortedMap<K, SortedSet<OwnerGeneration>>> {
+) -> CowFacts<SortedMap<K, SortedSet<OwnerGeneration>>> {
     let affected = |set: &SortedSet<OwnerGeneration>| {
         set.iter().any(|fact| {
             fact.epoch != JOINED_OWNER_GENERATION && joined.contains(&fact.identity)
         })
     };
     if !facts.values().any(affected) {
-        return std::borrow::Cow::Borrowed(facts);
+        return facts.clone();
     }
-    std::borrow::Cow::Owned(
-        facts
-            .iter()
-            .map(|(key, set)| {
-                let rebased = set
-                    .iter()
-                    .map(|fact| {
-                        if joined.contains(&fact.identity) {
-                            OwnerGeneration { identity: fact.identity, epoch: JOINED_OWNER_GENERATION }
-                        } else {
-                            *fact
-                        }
-                    })
-                    .collect();
-                (*key, rebased)
-            })
-            .collect(),
-    )
+    facts
+        .iter()
+        .map(|(key, set)| {
+            let rebased = set
+                .iter()
+                .map(|fact| {
+                    if joined.contains(&fact.identity) {
+                        OwnerGeneration { identity: fact.identity, epoch: JOINED_OWNER_GENERATION }
+                    } else {
+                        *fact
+                    }
+                })
+                .collect();
+            (*key, rebased)
+        })
+        .collect()
 }
 
 fn all_entries_survive<K: Ord, V: PartialEq>(
@@ -1237,6 +1237,57 @@ pub mod self_checks {
             assert!(MemoryChecker::less_equal_in(facts, unknown, COUNT));
             assert!(!MemoryChecker::less_equal_in(facts, unrelated, CAPACITY));
         });
+    }
+
+    pub fn generation_meets_preserve_intersections_epochs_and_snapshot_isolation() {
+        type GenerationFacts = CowFacts<SortedMap<ValueId, SortedSet<OwnerGeneration>>>;
+        let first = OwnerGeneration { identity: SOURCE, epoch: 1 };
+        let later = OwnerGeneration { identity: SOURCE, epoch: 2 };
+        let other = OwnerGeneration { identity: DESTINATION, epoch: 1 };
+        let joined = OwnerGeneration { identity: SOURCE, epoch: JOINED_OWNER_GENERATION };
+        let left: GenerationFacts = SortedMap::from([
+            (COUNT, SortedSet::from([first, later])),
+            (CAPACITY, SortedSet::from([other])),
+            (ZERO, SortedSet::from([first])),
+        ]).into();
+        let frozen = (*left).clone();
+        let right: GenerationFacts = SortedMap::from([
+            (COUNT, SortedSet::from([later, other])),
+            (ZERO, SortedSet::from([first])),
+            (LENGTH, SortedSet::from([other])),
+        ]).into();
+        let met = meet_generation_facts(&left, &right);
+        assert_eq!(*met, SortedMap::from([
+            (COUNT, SortedSet::from([later])), (ZERO, SortedSet::from([first])),
+        ]));
+        // An unchanged intersection may share its storage, but later nested
+        // writes must not alter any predecessor snapshot.
+        let mut superset = left.clone();
+        superset.insert(LENGTH, SortedSet::from([other]));
+        let mut unchanged = meet_generation_facts(&left, &superset);
+        assert_eq!(*unchanged, frozen);
+        unchanged.entry(COUNT).or_default().insert(other);
+        assert_eq!(*left, frozen);
+        assert_eq!(superset.get(&COUNT), frozen.get(&COUNT));
+
+        let identities = SortedSet::from([SOURCE]);
+        let rebased = rebase_joined_generations(&left, &identities);
+        assert_eq!(*rebased, SortedMap::from([
+            (COUNT, SortedSet::from([joined])),
+            (CAPACITY, SortedSet::from([other])),
+            (ZERO, SortedSet::from([joined])),
+        ]));
+        assert_eq!(*left, frozen);
+        assert_eq!(*rebase_joined_generations(&left, &SortedSet::new()), frozen);
+        // Ordinary bounds/guards cannot combine a concrete epoch with top.
+        let stale = meet_generation_facts(&left, &rebased);
+        assert_eq!(*stale, SortedMap::from([(CAPACITY, SortedSet::from([other]))]));
+        // Only the existing fresh-header rule rebases BOTH predecessors.
+        let fresh = meet_generation_facts(&rebased,
+            &rebase_joined_generations(&right, &identities));
+        assert_eq!(*fresh, SortedMap::from([
+            (COUNT, SortedSet::from([joined])), (ZERO, SortedSet::from([joined])),
+        ]));
     }
 
     fn with_checker(
