@@ -11817,6 +11817,15 @@ pub(crate) enum CheckedAnnotation {
     BuildEntrypoint,
 }
 
+impl CheckedAnnotation {
+    fn annotate(self, module: Module) -> Result<TypedModule, TypeError> {
+        match self {
+            Self::Runtime => annotate_checked(module),
+            Self::BuildEntrypoint => annotate_checked_build(module),
+        }
+    }
+}
+
 #[derive(Debug)]
 struct RetainedLoanFacts {
     module: *const Module,
@@ -12012,27 +12021,69 @@ impl TypedModule {
         checked: CheckedAnnotation,
         rewrite: impl FnOnce(&TypeTable, &mut Module) -> Result<bool, E>,
     ) -> Result<Result<TypedModule, TypeError>, E> {
-        let reusable = self.checked_as == Some(checked)
-            && std::env::var_os("WITCHY_REANNOTATE_UNCHANGED").is_none();
+        let reusable = self.reusable_as(checked);
         let changed = rewrite(&self.table, &mut self.module)?;
         if reusable && !changed {
             return Ok(Ok(self));
         }
-        let module = *self.module;
-        Ok(match checked {
-            CheckedAnnotation::Runtime => annotate_checked(module),
-            CheckedAnnotation::BuildEntrypoint => annotate_checked_build(module),
-        })
+        Ok(checked.annotate(*self.module))
     }
 
-    /// Apply a potentially structural rewrite, then unconditionally rebuild
-    /// the address-keyed side table. The caller cannot assert that arbitrary
-    /// `&mut Module` access preserved node identity.
-    pub fn rewrite_and_reannotate(
+    /// The checked annotation of `candidate`, a module a pass rebuilt from a
+    /// copy of this one. When the rebuild reproduced this module exactly and
+    /// this wrapper is itself the `checked` annotation of it, that annotation
+    /// is the answer: the checker is a deterministic function of the module,
+    /// so a fresh run over an equal AST computes an equal table and equal
+    /// facts (keyed to `candidate`'s nodes instead of these). Equality is
+    /// structural AND debug-exact, because the hand-written `PartialEq` of
+    /// functions, arms and variants ignores the source lines diagnostics
+    /// report. Both walks are far cheaper than the whole-module check they
+    /// replace. `WITCHY_REANNOTATE_UNCHANGED=1` always re-annotates.
+    pub(crate) fn reannotate_unless_equal(
+        self,
+        checked: CheckedAnnotation,
+        candidate: Module,
+    ) -> Result<TypedModule, TypeError> {
+        if self.reusable_as(checked)
+            && *self.module == candidate
+            && format!("{:?}", self.module) == format!("{candidate:?}")
+        {
+            return Ok(self);
+        }
+        drop(self);
+        checked.annotate(candidate)
+    }
+
+    fn reusable_as(&self, checked: CheckedAnnotation) -> bool {
+        self.checked_as == Some(checked)
+            && std::env::var_os("WITCHY_REANNOTATE_UNCHANGED").is_none()
+    }
+
+    /// Apply a potentially structural rewrite that reports whether it changed
+    /// the AST (`true` whenever it mutated anything), then rebuild the
+    /// address-keyed side table best-effort.
+    ///
+    /// A no-op on a wrapper produced by [`annotate_checked`] for this
+    /// allocation keeps that wrapper, and its producer tag, whenever the
+    /// best-effort check succeeds. The two runs differ only in the
+    /// compiler-syntax rejection the best-effort one re-enables, which reads
+    /// no state and records nothing; once it passes, the checker computes the
+    /// identical table, and the retained facts are the ones the best-effort
+    /// wrapper would derive from it. The tag lets a later
+    /// `rewrite_reannotating_if_changed` skip its recheck of this same module.
+    /// A failing best-effort check keeps the empty-table route exactly.
+    /// `WITCHY_REANNOTATE_UNCHANGED=1` always re-annotates.
+    pub fn rewrite_and_reannotate_if_changed(
         mut self,
-        rewrite: impl FnOnce(&TypeTable, &mut Module),
+        rewrite: impl FnOnce(&TypeTable, &mut Module) -> bool,
     ) -> Self {
-        rewrite(&self.table, &mut self.module);
+        let reusable = self.reusable_as(CheckedAnnotation::Runtime);
+        if !rewrite(&self.table, &mut self.module)
+            && reusable
+            && run_check_selected(&self.module, true, None, None, None, None, false).is_ok()
+        {
+            return self;
+        }
         annotate(*self.module)
     }
 

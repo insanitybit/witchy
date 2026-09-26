@@ -3597,10 +3597,9 @@ fn assemble_wir_module_with_structs_mode(
     // annotation (so the operand's type is known) and before the string-`+` flip +
     // lowering (so the synthesized `map_err` lambda's `+` flips to `Concat` and its
     // nodes get typed). Re-annotate so the freshly minted calls/lambda are in the
-    // type table.
-    typed = typed.rewrite_and_reannotate(|table, module| {
-        rewrite_try_ctx_module(module, table);
-        
+    // type table; a program with no contextual try keeps its checked annotation.
+    typed = typed.rewrite_and_reannotate_if_changed(|table, module| {
+        rewrite_try_ctx_module(module, table)
     });
     let suspension_carrier =
         witchy_types::suspension_carrier::SuspensionCarrierCatalog::from_typed(&typed)

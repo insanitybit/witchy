@@ -934,8 +934,11 @@ fn specialize_message_prepared_callables<'catalog>(
         witchy_syntax::ast::Item::Function(function) => Some(function.name.clone()),
         _ => None,
     }).collect::<HashSet<_>>();
+    // Specialize a copy: the message rewrite usually retains no callable the
+    // earlier specialization missed, and then the rechecked module below is
+    // exactly `typed`'s own.
     let (mut module, instances) =
-        crate::traits::lower_for_wasm_with_specializations(typed.into_module()).into_parts();
+        crate::traits::lower_for_wasm_with_specializations(typed.module().clone()).into_parts();
     let mut last_function_item = HashMap::new();
     for (index, item) in module.items.iter().enumerate() {
         let witchy_syntax::ast::Item::Function(function) = item else { continue };
@@ -962,7 +965,7 @@ fn specialize_message_prepared_callables<'catalog>(
         witchy_syntax::ast::Item::Function(function) => last_function_item[&function.name] == *index,
         _ => true,
     }).map(|(_, item)| item).collect();
-    let typed = typeck::annotate_checked(module)?;
+    let typed = typed.reannotate_unless_equal(typeck::CheckedAnnotation::Runtime, module)?;
     preparation
         .merge_specialization_instances(instances)
         .map_err(|message| PipelineError::Type(TypeError { message }))?;

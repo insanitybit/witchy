@@ -82,18 +82,24 @@ pub(crate) fn prepare(
     // does not manufacture a closed payload universe.
     let consumed_runtime_type_handles = consumed_runtime_type_handles(typed.module(), &scope)?;
     let typed = crate::record_projection::lower_explicit_projections(typed)?;
-    let (module, _, result) = typed.rewrite_into_module(|table, module| {
-        rewrite_dynamic_module(module, table, Some(runtime_catalog), plan, Some(&scope))?;
-        // Keep only the exact compiler-owned requests that the reachable
-        // rewrite consumed. Linked sidecar records can outlive a pruned
-        // library body, but must never reappear as final-plan descriptors.
-        module.compiler_type_syntax.retain(|syntax| {
-            !syntax.runtime_identity || consumed_runtime_type_handles.contains(&syntax.handle)
-        });
-        Ok::<_, String>(())
-    });
-    result?;
-    let typed = crate::typeck::annotate_checked(module).map_err(|error| error.to_string())?;
+    // A program with no Dynamic operation and no stale runtime-type request
+    // leaves this module untouched; when its facts already came from the
+    // runtime checked annotation of this allocation, the recheck would only
+    // recompute them.
+    let typed = typed
+        .rewrite_reannotating_if_changed(crate::typeck::CheckedAnnotation::Runtime, |table, module| {
+            let rewritten =
+                rewrite_dynamic_module(module, table, Some(runtime_catalog), plan, Some(&scope))?;
+            // Keep only the exact compiler-owned requests that the reachable
+            // rewrite consumed. Linked sidecar records can outlive a pruned
+            // library body, but must never reappear as final-plan descriptors.
+            let requests = module.compiler_type_syntax.len();
+            module.compiler_type_syntax.retain(|syntax| {
+                !syntax.runtime_identity || consumed_runtime_type_handles.contains(&syntax.handle)
+            });
+            Ok::<_, String>(rewritten || module.compiler_type_syntax.len() != requests)
+        })?
+        .map_err(|error| error.to_string())?;
 
     // Forwarding an already existential payload (the library's `field`
     // helper) is not a concrete pack. Without a checked pack there is no
