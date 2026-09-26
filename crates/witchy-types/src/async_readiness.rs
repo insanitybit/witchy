@@ -14,7 +14,7 @@ use witchy_syntax::ast::{Module, Type};
 use crate::async_program::AsyncProgram;
 use crate::loans::LoanFactTelemetry;
 use crate::pipeline::CheckedModule;
-use crate::async_control_flow::AsyncSourceMode;
+use witchy_canonical_source::source::SourceExecutionMode;
 use crate::typeck::{CheckedViewFactsError, TypedModule};
 use crate::typed_async_lowering::{TypedAsyncLoweringInput, TypedAsyncOperationKind};
 use crate::typed_execution::LaneOwnership;
@@ -212,8 +212,8 @@ impl CheckedAsyncReadiness {
                 operation.runtime_kind,
                 TypedAsyncOperationKind::StaticAsyncCall | TypedAsyncOperationKind::DynamicAsyncCall,
             )).count(),
-            normal_callable_count: input.source.iter().filter(|source| source.mode == AsyncSourceMode::Normal).count(),
-            opt_callable_count: input.source.iter().filter(|source| source.mode == AsyncSourceMode::Opt).count(),
+            normal_callable_count: input.source.iter().filter(|source| source.mode == SourceExecutionMode::Normal).count(),
+            opt_callable_count: input.source.iter().filter(|source| source.mode == SourceExecutionMode::Opt).count(),
             loan_telemetry,
             access_contract_count,
             loan_owner_root_count,

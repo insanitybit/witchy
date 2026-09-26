@@ -199,7 +199,10 @@ normal-copy repair telemetry now consume one typed source-mode judgment in
 `witchy-canonical-source`. Canonical lowering reads that judgment through the
 checked `CanonicalSourceView` for named and generated lambda bodies; repair
 telemetry resolves nested lambda diagnostics to a checked enclosing function.
-The old syntax-level and name-prefix classifiers are removed. This
+The async source control-flow inventory and readiness product now consume that
+same judgment, including method declarations; their separate source-mode enum
+and module-text classifier are removed. The old syntax-level and name-prefix
+classifiers are removed. This
 preserves each callable body's declaration mode when async and method lowering
 change its name; it does not yet carry task execution provenance through task
 values, aggregates, generics, trait returns, or scheduler adapters. No A-O row
