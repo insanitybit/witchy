@@ -69,13 +69,13 @@ repeat the rules; consult it when you're working inside one of these areas.
   `-p witchy-lower` and `--workspace` share one witchy-wir build instead of
   compiling it once per selection. Plain `cargo -p ...` does not.
 - **`spec/stdlib.md` drift** is caught by the `stdlib_docs_are_current` test.
-- **No in-crate tests in `witchy-types`, `witchy-syntax`, `witchy-lower`, `witchy-interp`, `witchy-wir`.**
+- **No in-crate tests in `witchy-types`, `witchy-syntax`, `witchy-lower`, `witchy-interp`, `witchy-wir`, `witchy-runtime`.**
   Their Cargo.toml sets `[lib] test = false`: compiling a second `cfg(test)` copy
   of a 40-80k-line crate for a few unit tests cost far more than the tests
   (deleting 56% of all tests cut the test build only 14%). Put a test in the
   crate's integration binary (`crates/witchy-types/tests/typeck.rs`,
   `crates/witchy-syntax/tests/syntax.rs`, `crates/witchy-lower/tests/codegen.rs`,
-  `crates/witchy-wir/tests/unit.rs`),
+  `crates/witchy-wir/tests/unit.rs`, `crates/witchy-runtime/tests/runtime.rs`),
   exposing an internal as `#[doc(hidden)] pub` if it must. A check that needs
   deep private internals lives in the crate as a `#[doc(hidden)] pub mod
   self_checks` of panicking functions, driven by one-line integration tests (see
