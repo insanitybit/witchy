@@ -66,14 +66,40 @@ impl Verifier<'_> {
         }
     }
 
-    fn merge_existing(into: &mut Environment, branches: &[Environment]) {
+    fn merge_existing(into: &mut Environment, branches: &[Environment]) -> bool {
+        let mut changed = false;
         for (name, origins) in into.iter_mut() {
             for branch in branches {
                 if let Some(other) = branch.get(name) {
+                    let before = origins.len();
                     origins.extend(other.iter().cloned());
+                    changed |= origins.len() != before;
                 }
             }
         }
+        changed
+    }
+
+    // Loop-carried aliases can move an origin through several bindings before
+    // it reaches a return. Join until stable rather than inspecting one trip.
+    fn loop_fixed_point(
+        &self,
+        environment: &mut Environment,
+        mut transfer: impl FnMut(&mut Environment) -> Result<(), TypeError>,
+    ) -> Result<(), TypeError> {
+        for _ in 0..4096 {
+            let mut iteration = environment.clone();
+            transfer(&mut iteration)?;
+            if !Self::merge_existing(environment, &[iteration]) {
+                return Ok(());
+            }
+        }
+        Err(TypeError {
+            message: format!(
+                "in `{}`: call-scoped loop provenance did not converge",
+                self.function
+            ),
+        })
     }
 
     fn check_call(&self, expression: &Expr, arguments: &[Origins]) -> Result<(), TypeError> {
@@ -413,18 +439,20 @@ impl Verifier<'_> {
                 result
             }
             Expr::While { cond, body } => {
-                self.expr(cond, environment)?;
-                let mut branch = environment.clone();
-                self.block(body, &mut branch)?;
-                Self::merge_existing(environment, &[branch]);
+                self.loop_fixed_point(environment, |iteration| {
+                    self.expr(cond, iteration)?;
+                    self.block(body, iteration)?;
+                    Ok(())
+                })?;
                 Origins::new()
             }
             Expr::For { var, iter, body } => {
-                let source = self.expr(iter, environment)?;
-                let mut branch = environment.clone();
-                branch.insert(var.clone(), source);
-                self.block(body, &mut branch)?;
-                Self::merge_existing(environment, &[branch]);
+                self.loop_fixed_point(environment, |iteration| {
+                    let source = self.expr(iter, iteration)?;
+                    iteration.insert(var.clone(), source);
+                    self.block(body, iteration)?;
+                    Ok(())
+                })?;
                 Origins::new()
             }
             Expr::WhileLet {
@@ -432,11 +460,12 @@ impl Verifier<'_> {
                 scrutinee,
                 body,
             } => {
-                let source = self.expr(scrutinee, environment)?;
-                let mut branch = environment.clone();
-                Self::bind(pattern, &source, &mut branch);
-                self.block(body, &mut branch)?;
-                Self::merge_existing(environment, &[branch]);
+                self.loop_fixed_point(environment, |iteration| {
+                    let source = self.expr(scrutinee, iteration)?;
+                    Self::bind(pattern, &source, iteration);
+                    self.block(body, iteration)?;
+                    Ok(())
+                })?;
                 Origins::new()
             }
         };

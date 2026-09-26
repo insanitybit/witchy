@@ -98,6 +98,11 @@ and cancellation disposition remain open. No A–O row closes.
 Structural gaps under the 2026-09-25 composition clarification remain distinct.
 The checker now carries call-scoped origins through bindings, aggregate values,
 projections, branch joins, and closure captures, and rejects an escaping origin.
+Loop joins now iterate to a bounded fixed point, so an origin carried through
+several aliases on successive `while`, `for`, or `while let` iterations cannot
+disappear after a single transfer. The existing checker target passes with a
+two-iteration escape refusal. This is a source dataflow repair, not an A–O
+semantic proof.
 An inline scalar, an exact checked `.owned()` site, or an exact checked call
 contract for an independent owned result clears that origin. Calls and
 intrinsics without a result proof retain provenance or fail closed. Trait

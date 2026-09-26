@@ -18,6 +18,7 @@
             "fn callback_escape():\n    fn(let text: String): text\n",
             "fn callback_wrapper():\n    fn(let text: String): (text, 1)\n",
             "fn callback_view(let text: String, callback: fn(let String) -> &String) -> &String:\n    callback(text)\n",
+            "fn loop_escape(let text: String, n: Int) -> String:\n    var first = \"\"\n    var second = \"\"\n    var i = 0\n    while i < n:\n        second = first\n        first = text\n        i = i + 1\n    second\n",
         ] {
             let error = check_source(source).expect_err("call-scoped access cannot escape");
             assert!(error.message.contains("call-scoped `let` parameter access"), "{error:?}");
