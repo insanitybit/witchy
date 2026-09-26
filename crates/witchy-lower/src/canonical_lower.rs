@@ -3884,6 +3884,7 @@ fn lower_function(
         graph_version: 0,
         token_facts: std::cell::RefCell::new(None),
         shared_facts: std::cell::RefCell::new(None),
+        shared_operation_facts: std::cell::RefCell::new(SharedOperationFacts::default()),
         mutable_bindings: HashSet::new(),
         loop_contexts: Vec::new(),
         lambda_names,
@@ -4461,6 +4462,16 @@ struct SharedFacts {
     unspecified_incoming: BTreeMap<ValueId, std::rc::Rc<[ValueId]>>,
 }
 
+/// Operations only append through `push_operation`; their value types and
+/// callable/closure contracts never change during function lowering. Cache
+/// just that monotone part of the scan. Parameter ownership and incoming edges
+/// still use the ordinary graph-version invalidation and are rescanned in full.
+#[derive(Default)]
+struct SharedOperationFacts {
+    scanned: Vec<usize>,
+    direct: BTreeSet<ValueId>,
+}
+
 struct FunctionLowerer<'a> {
     function: String,
     function_id: FunctionId,
@@ -4502,6 +4513,7 @@ struct FunctionLowerer<'a> {
     graph_version: u64,
     token_facts: std::cell::RefCell<Option<TokenFacts>>,
     shared_facts: std::cell::RefCell<Option<SharedFacts>>,
+    shared_operation_facts: std::cell::RefCell<SharedOperationFacts>,
     /// Source name of each entry parameter, so an exit drop targets the
     /// token under its current binding (a loop threads parameters through
     /// block parameters) rather than the entry value.
@@ -9972,14 +9984,11 @@ impl FunctionLowerer<'_> {
     /// their definition, and each unspecified block parameter's incoming
     /// arguments in block order.
     fn scan_shared_facts(&self) -> SharedFacts {
-        let mut direct = BTreeSet::new();
-        for block in &self.blocks {
-            for parameter in &block.parameters {
-                if parameter.ownership == Some(Ownership::Shared) {
-                    direct.insert(parameter.value);
-                }
-            }
-            for operation in &block.operations {
+        let mut operation_facts = self.shared_operation_facts.borrow_mut();
+        operation_facts.scanned.resize(self.blocks.len(), 0);
+        let SharedOperationFacts { scanned, direct } = &mut *operation_facts;
+        for (block, scanned) in self.blocks.iter().zip(scanned) {
+            for operation in &block.operations[*scanned..] {
                 match operation {
                     Operation::StaticData { destination, .. } => { direct.insert(*destination); }
                     // Retaining a snapshot demotes both tokens. Preparation must
@@ -10032,6 +10041,16 @@ impl FunctionLowerer<'_> {
                         }
                     }
                     _ => {}
+                }
+            }
+            *scanned = block.operations.len();
+        }
+        let mut direct = direct.clone();
+        drop(operation_facts);
+        for block in &self.blocks {
+            for parameter in &block.parameters {
+                if parameter.ownership == Some(Ownership::Shared) {
+                    direct.insert(parameter.value);
                 }
             }
         }
