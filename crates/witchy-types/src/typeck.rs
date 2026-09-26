@@ -8528,13 +8528,18 @@ impl Checker {
                                     "cannot `await` while must-consume value `{name}` is live: cancellation at this suspension has no checked disposition path; consume or transfer it before awaiting"
                                 ));
                             }
-                            let replayable = ty_to_ast(&t).is_some_and(|source| {
+                            // `Ty` erases source `unique` qualifiers. Check the
+                            // operand place as well as its resolved storage:
+                            // a qualified root or projected field cannot be
+                            // replayed merely because Task(T) is copyable.
+                            let replayable = ty_to_ast(&self.resolve(&t)).is_some_and(|source| {
                                 witchy_canonical_source::storage::replay_capture_eligibility(
                                     &source, &self.canonical_definitions,
                                 ).is_ok()
                             }) && !self.ty_carries_unique_storage(&t)
                                 && !self.ty_carries_must_consume(&t)
-                                && !self.ty_carries_once_callable(&t);
+                                && !self.ty_carries_once_callable(&t)
+                                && !self.expression_carries_unique_storage(expr, &t);
                             if let Some((root, projected)) = self.affine_place(expr) {
                                 if projected && !replayable {
                                     return terr(format!(

@@ -426,6 +426,20 @@ hand-computed `1.2.3`. The generator
 iteration probe also passes this provenance boundary but reaches a separate
 SafeWIR closure-capture refusal for its owned iterator state. No A–O row closes.
 
+Inferred replayable task operands (implemented but unverified, 2026-09-26):
+source await ownership now asks the shared recursive replay judgment about the
+resolved checked task type. Previously an inferred `Task(Int)` still appeared
+as a type variable at this check, so the checker consumed its binding on the
+first await and falsely rejected replay. Temporary normal-mode CLI programs
+now pass admitted Wasm: a completed task awaited twice prints the hand-computed
+`1 1`, and a lazy recipe capturing `[1]` before its source binding is rebound
+to `[9]` also prints `1 1`. The existing must-capture and opt task-origin
+checker cases remain the focused negative boundaries. Full zero-leak evidence
+and per-execution disposition through scheduler adapters remain open. Replay
+eligibility also checks the existing unique-place judgment, because source
+`unique` qualifiers are erased from inferred `Ty`; declared unique roots and
+projected unique fields still require one-time transfer. No A–O row closes.
+
 Local callback task provenance (implemented but unverified, 2026-09-26):
 the shared value proof represents a checked callable with a lexical formal
 scope. The linked checker substitutes the exact checked argument proofs into
