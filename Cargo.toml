@@ -273,6 +273,15 @@ debug = 0
 # this override it wins. Tiny crate — no build-time cost.
 [profile.dev.package.foldhash]
 opt-level = 3
+# The native root binary's allocator runs on every compiler allocation. Dev 0
+# also compiles mimalloc's C implementation unoptimized via cc's OPT_LEVEL.
+# These stable external crates rebuild once, not on ordinary compiler edits.
+# On arm64, three paired dev-compiler runs used 32-40% less CPU across the
+# real/stdlib/corpus/async fixtures; warm async fell from 2.15 to 1.45 CPU s.
+[profile.dev.package.mimalloc]
+opt-level = 3
+[profile.dev.package.libmimalloc-sys]
+opt-level = 3
 # The canonical emitter validates every produced module with wasmparser and
 # decodes it again to match the plan mirror; unoptimized, those two passes
 # were 27% of a warm async compile in the test suite. Both crates are small,
