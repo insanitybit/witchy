@@ -42,10 +42,15 @@ pub enum TaskExecutionProof {
     Awaited(Box<Self>),
     /// Checked positional projection from a tuple or nominal aggregate.
     Slot(Box<Self>, usize),
+    /// Checked field of one exact sum variant. A different variant is absent,
+    /// never an interchangeable same-position payload.
+    VariantSlot(Box<Self>, usize, usize),
     /// Dynamic index into a checked homogeneous sequence.
     AnyElement(Box<Self>),
     Elements(Vec<Self>),
     Fields(BTreeMap<String, Self>),
+    Variant { ordinal: usize, fields: Vec<Self> },
+    Variants(BTreeMap<usize, Vec<Self>>),
 }
 
 impl TaskExecutionProof {
@@ -55,7 +60,7 @@ impl TaskExecutionProof {
     pub fn is_parameter_projection(&self) -> bool {
         match self {
             Self::Parameter(_) => true,
-            Self::Slot(base, _) | Self::AnyElement(base) | Self::Awaited(base) => base.is_parameter_projection(),
+            Self::Slot(base, _) | Self::VariantSlot(base, _, _) | Self::AnyElement(base) | Self::Awaited(base) => base.is_parameter_projection(),
             _ => false,
         }
     }
@@ -69,8 +74,11 @@ impl TaskExecutionProof {
             match proof {
                 TaskExecutionProof::Elements(elements) => elements.iter().all(|child| within(child, remaining, depth + 1)),
                 TaskExecutionProof::Fields(fields) => fields.values().all(|child| within(child, remaining, depth + 1)),
+                TaskExecutionProof::Variant { fields, .. } => fields.iter().all(|child| within(child, remaining, depth + 1)),
+                TaskExecutionProof::Variants(variants) => variants.values().flatten().all(|child| within(child, remaining, depth + 1)),
                 TaskExecutionProof::Task(_, result) | TaskExecutionProof::Awaited(result)
-                    | TaskExecutionProof::Slot(result, _) | TaskExecutionProof::AnyElement(result) => within(result, remaining, depth + 1),
+                    | TaskExecutionProof::Slot(result, _) | TaskExecutionProof::VariantSlot(result, _, _)
+                    | TaskExecutionProof::AnyElement(result) => within(result, remaining, depth + 1),
                 _ => true,
             }
         }
@@ -95,7 +103,38 @@ impl TaskExecutionProof {
                     (key, value.join(other))
                 }).collect())
             }
+            (Self::Variant { ordinal: a, fields: left }, Self::Variant { ordinal: b, fields: right }) => {
+                if a == b {
+                    if left.len() != right.len() { return Self::Unknown; }
+                    Self::Variant { ordinal: a, fields: left.into_iter().zip(right).map(|(a, b)| a.join(b)).collect() }
+                } else {
+                    Self::Variants(BTreeMap::from([(a, left), (b, right)]))
+                }
+            }
+            (Self::Variants(mut variants), Self::Variant { ordinal, fields })
+            | (Self::Variant { ordinal, fields }, Self::Variants(mut variants)) => {
+                if let Some(old) = variants.remove(&ordinal) {
+                    if old.len() != fields.len() { return Self::Unknown; }
+                    variants.insert(ordinal, old.into_iter().zip(fields).map(|(a, b)| a.join(b)).collect());
+                } else {
+                    variants.insert(ordinal, fields);
+                }
+                Self::Variants(variants)
+            }
+            (Self::Variants(mut left), Self::Variants(right)) => {
+                for (ordinal, fields) in right {
+                    if let Some(old) = left.remove(&ordinal) {
+                        if old.len() != fields.len() { return Self::Unknown; }
+                        left.insert(ordinal, old.into_iter().zip(fields).map(|(a, b)| a.join(b)).collect());
+                    } else {
+                        left.insert(ordinal, fields);
+                    }
+                }
+                Self::Variants(left)
+            }
             (Self::Slot(left, a), Self::Slot(right, b)) if a == b => Self::Slot(Box::new((*left).join(*right)), a),
+            (Self::VariantSlot(left, a, field_a), Self::VariantSlot(right, b, field_b))
+                if a == b && field_a == field_b => Self::VariantSlot(Box::new((*left).join(*right)), a, field_a),
             (Self::AnyElement(left), Self::AnyElement(right)) => Self::AnyElement(Box::new((*left).join(*right))),
             (left, right) if left == right => left,
             _ => Self::Unknown,
@@ -121,6 +160,15 @@ impl TaskExecutionProof {
                     TaskExecutionProof::Unknown => TaskExecutionProof::Unknown,
                     other => TaskExecutionProof::Slot(Box::new(other), *index),
                 },
+                TaskExecutionProof::VariantSlot(base, ordinal, index) => match go(base, arguments, depth + 1) {
+                    TaskExecutionProof::Variant { ordinal: actual, fields } if actual == *ordinal =>
+                        fields.get(*index).cloned().unwrap_or(TaskExecutionProof::Unknown),
+                    TaskExecutionProof::Variants(mut variants) => variants.remove(ordinal)
+                        .and_then(|fields| fields.get(*index).cloned()).unwrap_or(TaskExecutionProof::Unknown),
+                    TaskExecutionProof::Variant { .. } => TaskExecutionProof::Unknown,
+                    TaskExecutionProof::Unknown => TaskExecutionProof::Unknown,
+                    other => TaskExecutionProof::VariantSlot(Box::new(other), *ordinal, *index),
+                },
                 TaskExecutionProof::AnyElement(base) => match go(base, arguments, depth + 1) {
                     TaskExecutionProof::Elements(elements) => elements.into_iter().reduce(TaskExecutionProof::join).unwrap_or(TaskExecutionProof::Unknown),
                     TaskExecutionProof::Unknown => TaskExecutionProof::Unknown,
@@ -131,6 +179,14 @@ impl TaskExecutionProof {
                 ),
                 TaskExecutionProof::Fields(fields) => TaskExecutionProof::Fields(
                     fields.iter().map(|(name, child)| (name.clone(), go(child, arguments, depth + 1))).collect(),
+                ),
+                TaskExecutionProof::Variant { ordinal, fields } => TaskExecutionProof::Variant {
+                    ordinal: *ordinal,
+                    fields: fields.iter().map(|child| go(child, arguments, depth + 1)).collect(),
+                },
+                TaskExecutionProof::Variants(variants) => TaskExecutionProof::Variants(
+                    variants.iter().map(|(ordinal, fields)| (*ordinal,
+                        fields.iter().map(|child| go(child, arguments, depth + 1)).collect())).collect(),
                 ),
             }
         }

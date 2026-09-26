@@ -35,6 +35,39 @@ struct Analyzer<'a> {
 }
 
 impl Analyzer<'_> {
+    fn checked_variant_ordinal(&self, expression: &Expr, constructor: &str) -> Option<usize> {
+        let Ty::Named(owner, _) = self.table.type_of(expression)? else { return None };
+        let short = constructor.rsplit('.').next()?;
+        if let Some(definition) = self.definitions.get(owner.as_ref()) {
+            return definition.variants.iter().position(|variant| {
+                variant.name == constructor || variant.name.rsplit('.').next() == Some(short)
+            });
+        }
+        witchy_syntax::synthetic_names::anon_union_synthetic_variants(owner.as_ref())?
+            .iter().position(|(tag, _)| tag == short.trim_start_matches('.'))
+    }
+
+    fn checked_try_payload(&self, operand: &Expr, proof: Proof) -> Proof {
+        let Some(Ty::Named(owner, _)) = self.table.type_of(operand) else {
+            return Proof::Unknown;
+        };
+        let Some(definition) = self.definitions.get(owner.as_ref()) else {
+            return Proof::Unknown;
+        };
+        if definition.variants.len() != 2 || definition.variants[0].fields.len() != 1 {
+            return Proof::Unknown;
+        }
+        match proof {
+            Proof::Variant { ordinal: 0, fields } if fields.len() == 1 => fields.into_iter().next().unwrap(),
+            Proof::Variants(mut variants) => variants.remove(&0)
+                .and_then(|fields| (fields.len() == 1).then(|| fields.into_iter().next().unwrap()))
+                .unwrap_or(Proof::Unknown),
+            Proof::Parameter(_) | Proof::Slot(_, _) | Proof::VariantSlot(_, _, _)
+                | Proof::AnyElement(_) => Proof::VariantSlot(Box::new(proof), 0, 0),
+            _ => Proof::Unknown,
+        }
+    }
+
     fn place_root(expression: &Expr) -> Option<&str> {
         match expression {
             Expr::Var(name) => Some(name),
@@ -87,7 +120,7 @@ impl Analyzer<'_> {
             .unwrap_or(Proof::Unknown)
     }
 
-    fn bind(pattern: &Pattern, proof: Proof, environment: &mut Environment) {
+    fn bind(pattern: &Pattern, proof: Proof, ordinal: Option<usize>, environment: &mut Environment) {
         match (pattern, proof) {
             (Pattern::Var(name), proof) if name != "_" => {
                 environment.insert(name.clone(), proof);
@@ -96,7 +129,7 @@ impl Analyzer<'_> {
                 if patterns.len() == values.len() =>
             {
                 for (pattern, value) in patterns.iter().zip(values) {
-                    Self::bind(pattern, value, environment);
+                    Self::bind(pattern, value, None, environment);
                 }
             }
             (Pattern::Tuple(patterns), proof @ (Proof::Parameter(_) | Proof::Slot(_, _))) => {
@@ -104,28 +137,37 @@ impl Analyzer<'_> {
                     Self::bind(
                         pattern,
                         Proof::Slot(Box::new(proof.clone()), index),
+                        None,
                         environment,
                     );
                 }
             }
-            (
-                Pattern::Ctor { args, .. } | Pattern::AnonCtor { args, .. },
-                Proof::Elements(values),
-            ) if args.len() == values.len() => {
+            (Pattern::Ctor { args, .. } | Pattern::AnonCtor { args, .. },
+                Proof::Variant { ordinal: actual, fields: values })
+                if ordinal.is_none_or(|expected| expected == actual) && args.len() == values.len() => {
                 for (pattern, value) in args.iter().zip(values) {
-                    Self::bind(pattern, value, environment);
+                    Self::bind(pattern, value, None, environment);
                 }
             }
-            (
-                Pattern::Ctor { args, .. } | Pattern::AnonCtor { args, .. },
-                proof @ (Proof::Parameter(_) | Proof::Slot(_, _)),
-            ) => {
+            (Pattern::Ctor { args, .. } | Pattern::AnonCtor { args, .. }, Proof::Variants(mut variants)) => {
+                if let Some(values) = ordinal.and_then(|ordinal| variants.remove(&ordinal))
+                    && values.len() == args.len()
+                {
+                    for (pattern, value) in args.iter().zip(values) {
+                        Self::bind(pattern, value, None, environment);
+                    }
+                } else {
+                    let mut names = Vec::new();
+                    witchy_syntax::ast::pattern_binds(pattern, &mut names);
+                    for name in names { environment.insert(name, Proof::Unknown); }
+                }
+            }
+            (Pattern::Ctor { args, .. } | Pattern::AnonCtor { args, .. },
+                proof @ (Proof::Parameter(_) | Proof::Slot(_, _) | Proof::VariantSlot(_, _, _)))
+                if ordinal.is_some() => {
+                let ordinal = ordinal.expect("checked above");
                 for (index, pattern) in args.iter().enumerate() {
-                    Self::bind(
-                        pattern,
-                        Proof::Slot(Box::new(proof.clone()), index),
-                        environment,
-                    );
+                    Self::bind(pattern, Proof::VariantSlot(Box::new(proof.clone()), ordinal, index), None, environment);
                 }
             }
             (pattern, _) => {
@@ -149,7 +191,12 @@ impl Analyzer<'_> {
                 }
                 Stmt::LetPattern { pattern, value } => {
                     let proof = self.expr(value, environment)?;
-                    Self::bind(pattern, proof, environment);
+                    let ordinal = match pattern {
+                        Pattern::Ctor { name, .. } => self.checked_variant_ordinal(value, name),
+                        Pattern::AnonCtor { tag, .. } => self.checked_variant_ordinal(value, tag),
+                        _ => None,
+                    };
+                    Self::bind(pattern, proof, ordinal, environment);
                     Proof::Unknown
                 }
                 Stmt::Return(Some(value)) => {
@@ -268,10 +315,7 @@ impl Analyzer<'_> {
                 Self::invalidate_arguments(args.iter().map(|(_, value)| value), environment);
                 Proof::Unknown
             }
-            Expr::List(values)
-            | Expr::Tuple(values)
-            | Expr::Ctor { args: values, .. }
-            | Expr::AnonCtor { args: values, .. } => {
+            Expr::List(values) | Expr::Tuple(values) => {
                 let values = values
                     .iter()
                     .map(|value| self.expr(value, environment))
@@ -283,6 +327,17 @@ impl Analyzer<'_> {
                     Proof::Unknown
                 } else {
                     Proof::Elements(values)
+                }
+            }
+            Expr::Ctor { name, args } | Expr::AnonCtor { tag: name, args } => {
+                let values = args.iter().map(|value| self.expr(value, environment))
+                    .collect::<Result<Vec<_>, _>>()?;
+                if self.task_result(expression) {
+                    Proof::Unknown
+                } else {
+                    self.checked_variant_ordinal(expression, name)
+                        .map(|ordinal| Proof::Variant { ordinal, fields: values })
+                        .unwrap_or(Proof::Unknown)
                 }
             }
             Expr::Record { fields, spread, .. } => {
@@ -311,7 +366,7 @@ impl Analyzer<'_> {
             }
             Expr::Field { base, field } => match self.expr(base, environment)? {
                 Proof::Fields(mut fields) => fields.remove(field).unwrap_or(Proof::Unknown),
-                proof @ (Proof::Elements(_) | Proof::Parameter(_) | Proof::Slot(_, _)) => {
+                proof @ (Proof::Variant { .. } | Proof::Parameter(_) | Proof::Slot(_, _) | Proof::VariantSlot(_, _, _)) => {
                     let index = match self.table.type_of(base) {
                         Some(Ty::Named(name, _)) => self
                             .definitions
@@ -327,10 +382,10 @@ impl Analyzer<'_> {
                     };
                     index
                         .map(|index| match proof {
-                            Proof::Elements(elements) => {
-                                elements.get(index).cloned().unwrap_or(Proof::Unknown)
-                            }
-                            other => Proof::Slot(Box::new(other), index),
+                            Proof::Variant { ordinal: 0, fields } =>
+                                fields.get(index).cloned().unwrap_or(Proof::Unknown),
+                            Proof::Variant { .. } => Proof::Unknown,
+                            other => Proof::VariantSlot(Box::new(other), 0, index),
                         })
                         .unwrap_or(Proof::Unknown)
                 }
@@ -390,7 +445,12 @@ impl Analyzer<'_> {
                 let mut branches = Vec::new();
                 for arm in arms {
                     let mut branch = environment.clone();
-                    Self::bind(&arm.pattern, source.clone(), &mut branch);
+                    let ordinal = match &arm.pattern {
+                        Pattern::Ctor { name, .. } => self.checked_variant_ordinal(scrutinee, name),
+                        Pattern::AnonCtor { tag, .. } => self.checked_variant_ordinal(scrutinee, tag),
+                        _ => None,
+                    };
+                    Self::bind(&arm.pattern, source.clone(), ordinal, &mut branch);
                     if let Some(guard) = &arm.guard {
                         self.expr(guard, &mut branch)?;
                     }
@@ -478,8 +538,8 @@ impl Analyzer<'_> {
                 Proof::Unknown
             }
             Expr::Try(expr) => {
-                self.expr(expr, environment)?;
-                Proof::Unknown
+                let proof = self.expr(expr, environment)?;
+                self.checked_try_payload(expr, proof)
             }
             Expr::While { cond, body } => {
                 self.loop_body(environment, |this, environment| {
@@ -512,7 +572,12 @@ impl Analyzer<'_> {
             } => {
                 self.loop_body(environment, |this, environment| {
                     let source = this.expr(scrutinee, environment)?;
-                    Self::bind(pattern, source, environment);
+                    let ordinal = match pattern {
+                        Pattern::Ctor { name, .. } => this.checked_variant_ordinal(scrutinee, name),
+                        Pattern::AnonCtor { tag, .. } => this.checked_variant_ordinal(scrutinee, tag),
+                        _ => None,
+                    };
+                    Self::bind(pattern, source, ordinal, environment);
                     this.block(body, environment)?;
                     Ok(())
                 })?;

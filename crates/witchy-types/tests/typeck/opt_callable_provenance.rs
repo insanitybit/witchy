@@ -151,6 +151,21 @@ pub async fn nested() -> task.Task(Int):
 pub async fn execute_nested() -> Int:
     let inner = nested().await
     inner.await
+
+pub async fn execute_option(own recipe: Option(task.Task(Int))) -> Option(Int):
+    match recipe:
+        Some(recipe_value) -> Some(recipe_value.await)
+        None -> None
+
+pub async fn execute_try(own recipe: Option(task.Task(Int))) -> Option(Int):
+    let recipe_value = recipe?
+    Some(recipe_value.await)
+
+pub async fn execute_conditional(choose: Bool) -> Option(Int):
+    let wrapped = if choose: Some(compatible()) else: None
+    match wrapped:
+        Some(recipe_value) -> Some(recipe_value.await)
+        None -> None
 "#;
     let main = r#"import worker
 
@@ -165,6 +180,21 @@ async fn main(console: Console):
     let error = result.expect_err("a normal recipe cannot acquire opt execution provenance at the call site");
     assert!(error.contains("opt-compatible task value provenance"), "{error}");
 
+    let normal_option_main = r#"import worker
+
+async fn ordinary() -> Int:
+    7
+
+async fn main(console: Console):
+    let _ = worker.execute_try(Some(ordinary())).await
+    let _ = worker.execute_option(Some(ordinary())).await
+    console.print("done")
+"#;
+    let error = super::source::checked_bundle(
+        vec![("worker", worker), ("main", normal_option_main)], "main",
+    ).expect_err("a sum wrapper cannot erase normal task execution mode");
+    assert!(error.contains("opt-compatible task value provenance"), "{error}");
+
     let compatible_main = r#"import worker
 
 async fn main(console: Console):
@@ -173,10 +203,16 @@ async fn main(console: Console):
     let inner = worker.nested().await
     let nested_answer = inner.await
     let opt_nested_answer = worker.execute_nested().await
+    let opt_option_answer = worker.execute_option(Some(worker.compatible())).await
+    let opt_try_answer = worker.execute_try(Some(worker.compatible())).await
+    let opt_conditional_answer = worker.execute_conditional(true).await
     console.print("${answer}")
     console.print("${pair_answer}")
     console.print("${nested_answer}")
     console.print("${opt_nested_answer}")
+    console.print("${opt_option_answer}")
+    console.print("${opt_try_answer}")
+    console.print("${opt_conditional_answer}")
 "#;
     let result = super::source::checked_bundle(vec![("worker", worker), ("main", compatible_main)], "main");
     assert!(result.is_ok(), "{result:?}");

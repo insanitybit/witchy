@@ -228,14 +228,23 @@ pending; no A–O row closes.
 Task-value mode provenance (implemented but unverified, 2026-09-26): a
 post-typecheck value-flow judgment now follows a task body's authenticated
 source mode through direct async calls, aliases, aggregate construction and
-projection, and symbolic direct-call summaries. An opt await requires opt
+projection, and symbolic direct-call summaries. Named and anonymous sums now
+retain constructor ordinals and per-variant field proofs across joins;
+checked pattern and `?` projections select the payload without a type-name
+case table. A linked-source check accepts opt tasks through `Option` matching,
+conditional construction, and `?`, and refuses a normal task through the
+same opt entry. An opt await requires opt
 task provenance; an opt function that awaits an input task passes the proof
 requirement transitively to its direct callers. Generic local callables cannot
 borrow a same-spelled declaration's mode, and calls invalidate storage proofs
 they may mutate. Unknown indirect, trait, existential, and scheduler-adapter
 task results fail closed at opt await. Their checked transfer contracts,
 public task-parameter ABI metadata, and admitted-Wasm/zero-leak evidence are
-still open; no A–O row closes.
+still open; no A–O row closes. The single-module convenience checker still
+lacks a linked pre-CPS task type environment; a direct attempt to add the
+source proof there rejected valid async source. A local named `task` can also
+shadow the generated `task.and_then` module call during async lowering; that
+separate baseline name-resolution defect remains open.
 
 Rows J/K replayable continuation boundary (implemented but unverified,
 2026-09-26): the checker now refuses a live must binding and a capture refined
