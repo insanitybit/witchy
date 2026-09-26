@@ -531,7 +531,7 @@ pub fn with_shape_memo<R>(definitions: &BTreeMap<String, TypeDef>, body: impl Fn
     shape_memo::scoped(definitions, body)
 }
 
-mod shape_memo {
+pub(crate) mod shape_memo {
     use std::cell::RefCell;
     use std::collections::BTreeMap;
 
@@ -545,6 +545,7 @@ mod shape_memo {
         shapes: HashMap<Type, Option<ScalarAggregateShape>>,
         identities: HashMap<Type, Option<Type>>,
         derived: HashMap<&'static str, HashMap<Type, Type>>,
+        storage_plans: HashMap<Type, crate::storage::StoragePlan>,
     }
 
     thread_local! {
@@ -581,6 +582,7 @@ mod shape_memo {
                 shapes: HashMap::default(),
                 identities: HashMap::default(),
                 derived: HashMap::default(),
+                storage_plans: HashMap::default(),
             });
         });
         struct Pop;
@@ -626,6 +628,16 @@ mod shape_memo {
 
     pub(super) fn derived(definitions: &BTreeMap<String, TypeDef>, kind: &'static str, ty: &Type) -> Option<Type> {
         with_scope(definitions, |scope| scope.derived.get(kind).and_then(|by_type| by_type.get(ty)).cloned()).flatten()
+    }
+
+    pub(crate) fn storage_plan(definitions: &BTreeMap<String, TypeDef>, ty: &Type) -> Option<crate::storage::StoragePlan> {
+        with_scope(definitions, |scope| scope.storage_plans.get(ty).cloned()).flatten()
+    }
+
+    pub(crate) fn remember_storage_plan(definitions: &BTreeMap<String, TypeDef>, ty: &Type, plan: &crate::storage::StoragePlan) {
+        with_scope(definitions, |scope| {
+            scope.storage_plans.insert(ty.clone(), plan.clone());
+        });
     }
 
     pub(super) fn remember_derived(definitions: &BTreeMap<String, TypeDef>, kind: &'static str, ty: &Type, derived: &Type) {

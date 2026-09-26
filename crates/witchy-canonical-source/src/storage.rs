@@ -995,7 +995,32 @@ impl StoragePlan {
         definitions: &BTreeMap<String, TypeDef>,
         nominal: impl Fn(&str) -> Option<u32>,
     ) -> Self {
+        // `nominal` is consulted only for a view reached through the
+        // top-level `List(...)` element chain. Without one, the plan is a
+        // pure function of the type and the map, so the open shape-memo scope
+        // for that map may answer it.
+        if !Self::consults_nominal(ty) {
+            if let Some(plan) = crate::aggregates::shape_memo::storage_plan(definitions, ty) {
+                return plan;
+            }
+            let plan = Self::classify_inner(ty, definitions, &nominal);
+            crate::aggregates::shape_memo::remember_storage_plan(definitions, ty, &plan);
+            return plan;
+        }
         Self::classify_inner(ty, definitions, &nominal)
+    }
+
+    /// Whether `classify_inner` can reach `RootedViewStorage::classify`,
+    /// the only reader of `nominal`: a view here or down the `List` element
+    /// chain `classify_inner` recurses along.
+    fn consults_nominal(ty: &Type) -> bool {
+        match ty {
+            Type::Qualified(TypeQual::View, _) => true,
+            Type::Named(name, arguments) if name == "List" => {
+                matches!(arguments.as_slice(), [element] if Self::consults_nominal(element))
+            }
+            _ => false,
+        }
     }
 
     fn classify_inner(
