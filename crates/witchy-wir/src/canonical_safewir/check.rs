@@ -169,13 +169,28 @@ pub fn check_initial(
 /// each body and call edge still independently proves the live child tokens.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct AffineSignatureProof {
-    pub parameters: Vec<Vec<u32>>,
-    pub results: Vec<Vec<u32>>,
-    pub move_only_list_parameters: Vec<bool>,
-    pub move_only_list_results: Vec<bool>,
+    pub parameters: Vec<Option<AffinePhysicalPlan>>,
+    pub results: Vec<Option<AffinePhysicalPlan>>,
 }
 
-pub(super) type AffineAbiProofs = BTreeMap<FunctionSignatureId, AffineSignatureProof>;
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum AffinePhysicalPlan {
+    Leaf,
+    NullableFields(Vec<(u32, crate::layout::LayoutId, Box<AffinePhysicalPlan>)>),
+    Sequence { element: crate::layout::LayoutId, child: Box<AffinePhysicalPlan> },
+}
+
+#[derive(Debug, Clone, Default)]
+pub(super) struct AffineAbiProofs {
+    pub signatures: BTreeMap<FunctionSignatureId, AffineSignatureProof>,
+    pub layouts: BTreeMap<crate::layout::LayoutId, AffinePhysicalPlan>,
+}
+
+impl AffineAbiProofs {
+    pub fn new() -> Self { Self::default() }
+    pub fn get(&self, id: &FunctionSignatureId) -> Option<&AffineSignatureProof> { self.signatures.get(id) }
+    pub fn is_empty(&self) -> bool { self.signatures.is_empty() }
+}
 
 pub(super) fn check_initial_with_affine_abi(
     mut candidate: CanonicalModule<LoweredCandidate>,

@@ -524,6 +524,58 @@ impl<'a> MemoryChecker<'a> {
         Ok(true)
     }
 
+    pub(super) fn attach_affine_plan(&mut self, object: ValueId, layout: crate::layout::LayoutId) {
+        use crate::layout::{LayoutKind, PointerSlot, RcHeader};
+        let Some(proofs) = self.affine_abi else { return };
+        if let Some(plan) = proofs.layouts.get(&layout) {
+            self.state.affine_plans.insert(object, plan.clone());
+            return;
+        }
+        // A local list may have no source ABI lane of its own. Its child
+        // still has a source-bound plan, and an RC list with an owned pointer
+        // element composes that plan without granting any new leaf authority.
+        // The fresh list must subsequently establish exclusivity by checked
+        // MoveUnique stores before it can transfer an element or cross a call.
+        let Some(descriptor) = self.layouts.resolve_nominal(layout).ok()
+            .and_then(|physical| self.layouts.get(physical)) else { return };
+        let LayoutKind::PackedList { element, rc: RcHeader::Required } = descriptor.kind() else { return };
+        let Some(LayoutKind::RuntimePointerValueSlot { pointee, semantics: PointerSlot::Owned }) =
+            self.layouts.get(*element).map(|slot| slot.kind()) else { return };
+        if let Some(child) = proofs.layouts.get(pointee) {
+            self.state.affine_plans.insert(object, super::super::AffinePhysicalPlan::Sequence {
+                element: *pointee, child: Box::new(child.clone()),
+            });
+        }
+    }
+
+    pub(super) fn seed_affine_plan(&mut self, object: ValueId, plan: &super::super::AffinePhysicalPlan) {
+        self.state.affine_plans.insert(object, plan.clone());
+        match plan {
+            super::super::AffinePhysicalPlan::Leaf => {}
+            super::super::AffinePhysicalPlan::NullableFields(fields) => for (field, _, _) in fields {
+                self.state.nullable_unique_slots.insert((object, SlotIdentity::Constant(u64::from(*field))));
+            },
+            super::super::AffinePhysicalPlan::Sequence { .. } => {
+                self.state.affine_list_roots.insert(object);
+            }
+        }
+    }
+
+    pub(super) fn require_affine_plan(
+        &self, object: ValueId, plan: &super::super::AffinePhysicalPlan,
+    ) -> Result<bool, InitialCheckError> {
+        let root = self.live_object(object)?;
+        if root.ownership != Ownership::Unique || !self.is_sole_live_token(object, root.identity)
+            || self.state.affine_plans.get(&object) != Some(plan)
+        { return Ok(false); }
+        match plan {
+            super::super::AffinePhysicalPlan::Leaf => Ok(true),
+            super::super::AffinePhysicalPlan::NullableFields(fields) => Ok(fields.iter().all(|(field, _, _)|
+                self.nullable_unique_slot_by_identity(object, SlotIdentity::Constant(u64::from(*field))))),
+            super::super::AffinePhysicalPlan::Sequence { .. } => self.exclusive_list_elements(object),
+        }
+    }
+
     pub(super) fn invalidate_affine_list_root(&mut self, object: ValueId) {
         let aliases = self.state.affine_list_roots.iter().copied()
             .filter(|root| self.same_allocation(object, *root)).collect::<Vec<_>>();
@@ -564,6 +616,9 @@ impl<'a> MemoryChecker<'a> {
         }
         if self.state.affine_list_roots.remove(&source) {
             self.state.affine_list_roots.insert(destination);
+        }
+        if let Some(plan) = self.state.affine_plans.remove(&source) {
+            self.state.affine_plans.insert(destination, plan);
         }
         self.state.objects.insert(destination, state);
         self.state.objects

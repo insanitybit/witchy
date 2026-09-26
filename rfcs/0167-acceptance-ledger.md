@@ -923,6 +923,26 @@ handle; move-only list operations need a separate proof. These compile and
 smoke results are implementation checks, not hand-computed admitted-Wasm and
 zero-leak evidence. No A–O row closes from this checkpoint.
 
+Row G recursive affine list transport (implemented but unverified,
+2026-09-26): checked source now supplies one bounded recursive affine storage
+shape, and SafeWIR binds each leaf, nullable child, and list element to an
+owned physical layout. The same plan is used for ABI parameters, results,
+write-backs, local allocations, unique stores, and consuming loads. Local
+lists may compose a source-bound child plan through an RC owned-pointer
+element. Non-tagged aggregates with affine children refuse at source ABI
+binding until their consuming field transfer is implemented. Focused compiler
+checks and unoptimized command-line smokes for `List(Ticket)`, nested lists,
+and nested nullable tickets produced the expected values. Those smokes did
+not run the canonical zero-leak audit, so they do not close an A–O row.
+An existing channel-view test still refuses the live `task.Handle` captured
+across await; one-shot continuation and cancellation ownership remain a
+separate structural gap. Moving its join before the next suspension clears
+that refusal but exposes a second baseline lowering gap: the `Done` field of
+`task.Step(task.Handle)` lacks a consuming extraction. Its outer storage plan
+does not establish an affine move, while the field plan requires one. The moved
+fixture is a diagnostic probe, not row K evidence. Adversarial review found
+no authority bypass in the local list composition.
+
 Row G storage-proof consumers (implemented but unverified, 2026-09-25):
 the checker now requires the shared rooted-slice projection and bounded
 element proof for `&[T].owned()`, and a shared cloneable storage plan for

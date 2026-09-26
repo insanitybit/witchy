@@ -437,6 +437,7 @@ impl<'a> MemoryChecker<'a> {
                 initialized_owned_slots: initialized_empty_scalar_prefix,
             },
         );
+        self.attach_affine_plan(destination, layout);
         if fresh_owned_list {
             self.state.affine_list_roots.insert(destination);
         }
@@ -632,11 +633,17 @@ impl<'a> MemoryChecker<'a> {
         self.state.header_values.insert((object, HeaderField::Length), *index);
         if let ValueType::Ref(layout) = expected {
             let extent = self.parameter_extent(layout)?;
-            // Transfer one owned reference, never manufacture child exclusivity.
+            // Transfer one owned reference. Recursive child facts come only
+            // from the source-bound list plan and checked element stores.
             self.state.objects.insert(destination, ObjectState {
                 identity: destination, owner_generation: 0, layout, extent, ownership: Ownership::Unique,
                 allocation_class: Some(AllocationClass::ReferenceCounted), shared_immutable: false, initialized_owned_slots: true,
             });
+            let child_plan = self.state.affine_plans.get(&object).and_then(|plan| match plan {
+                super::super::AffinePhysicalPlan::Sequence { element, child } if *element == layout => Some(child.as_ref().clone()),
+                _ => None,
+            });
+            if let Some(child_plan) = &child_plan { self.seed_affine_plan(destination, child_plan); }
         }
         Ok(())
     }
@@ -744,6 +751,14 @@ impl<'a> MemoryChecker<'a> {
             self.clear_nullable_unique_slot_by_identity(key.0, key.1);
             self.state.nullable_absent_slots.insert(key);
             self.state.objects.insert(destination, child);
+            let child_plan = self.state.affine_plans.get(&place.object()).and_then(|plan| match plan {
+                super::super::AffinePhysicalPlan::NullableFields(fields) => fields.iter()
+                    .find(|(field, pointee, _)| matches!(key.1, SlotIdentity::Constant(slot) if slot == u64::from(*field))
+                        && *pointee == layout)
+                    .map(|(_, _, child)| child.as_ref().clone()),
+                _ => None,
+            });
+            if let Some(child_plan) = &child_plan { self.seed_affine_plan(destination, child_plan); }
             return Ok(());
         }
         if transfer == LoadTransfer::ClonePresent {
@@ -1021,6 +1036,19 @@ impl<'a> MemoryChecker<'a> {
         // A stored reference is complete: its own owned slots are initialized,
         // so a later load or drop of it needs no per-slot facts.
         self.require_complete_value_initialized(value, "Store(uninitialized owned slot)")?;
+        let affine_child = self.state.affine_plans.get(&place.object()).and_then(|plan| match (plan, place.projection()) {
+            (super::super::AffinePhysicalPlan::Sequence { element, child }, Projection::Element { .. })
+                if *element == layout => Some(child.as_ref().clone()),
+            (super::super::AffinePhysicalPlan::NullableFields(fields), Projection::Field { index }) =>
+                fields.iter().find(|(field, pointee, _)| *field == *index && *pointee == layout)
+                    .map(|(_, _, child)| child.as_ref().clone()),
+            _ => None,
+        });
+        if let Some(child) = &affine_child
+            && (transfer != StoreTransfer::MoveUnique || !self.require_affine_plan(value, child)?)
+        {
+            return self.unsupported("Store(affine child without recursive move proof)");
+        }
         let key = self.reference_slot(place)?;
         if self.stored_slot_by_identity(key.0, key.1).is_some()
             || (matches!(place.projection(), Projection::Field { .. })

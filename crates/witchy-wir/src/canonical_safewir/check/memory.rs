@@ -201,6 +201,9 @@ pub(super) struct MemoryState {
     /// Absence satisfies the property vacuously. Unlike an exact stored child
     /// identity, this proof survives joins of independently built variants.
     nullable_unique_slots: CowFacts<SortedSet<(ValueId, SlotIdentity)>>,
+    /// Source-bound recursive ownership shapes, indexed by the current SSA
+    /// root. Presence describes expected storage, never initializes a slot.
+    affine_plans: CowFacts<SortedMap<ValueId, super::AffinePhysicalPlan>>,
     /// Checked move-only list roots whose initialized prefix owns exclusive
     /// child tokens. A physical list shape alone never creates this fact.
     affine_list_roots: CowFacts<SortedSet<ValueId>>,
@@ -299,6 +302,7 @@ impl<'a> MemoryChecker<'a> {
                 shared_phi_origins: SortedMap::new().into(),
                 stored_objects: SortedMap::new().into(),
                 nullable_unique_slots: SortedSet::new().into(),
+                affine_plans: SortedMap::new().into(),
                 affine_list_roots: SortedSet::new().into(),
                 nullable_absent_slots: SortedSet::new().into(),
                 range_states: SortedMap::new().into(),

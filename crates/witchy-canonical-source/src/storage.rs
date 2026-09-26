@@ -833,20 +833,59 @@ pub fn consuming_aggregate_match_shape(
     Some(shape)
 }
 
-/// Nullable field ordinals whose checked source storage contains an affine owner.
-/// The physical ABI must independently prove an owned nullable pointer slot at each
-/// ordinal; this judgment alone never grants a SafeWIR child token.
-pub fn affine_nullable_fields(
+/// The finite ownership structure of a checked affine value. Each recursive
+/// edge must independently match its physical owned slot before SafeWIR may
+/// use it; this source judgment alone does not grant an owner token.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AffineStorageShape {
+    Leaf,
+    NullableFields(Vec<(u32, AffineStorageShape)>),
+    Sequence(Box<AffineStorageShape>),
+}
+
+pub fn affine_storage_shape(
     ty: &Type,
     definitions: &BTreeMap<String, TypeDef>,
-) -> Option<Vec<u32>> {
-    let shape = scalar_aggregate_shape(ty, definitions)?;
-    if shape.packed || !shape.tagged { return None; }
-    shape.fields.iter().enumerate().filter_map(|(index, field)| {
-        StoragePlan::classify(field, definitions, |_| Some(0))
-            .requires_affine_owner_token()
-            .then(|| u32::try_from(index).ok())
-    }).collect::<Option<Vec<_>>>()
+) -> Option<AffineStorageShape> {
+    fn walk(
+        plan: &StoragePlan, definitions: &BTreeMap<String, TypeDef>,
+        active: &mut HashSet<Type>, depth: usize, remaining: &mut usize,
+    ) -> Option<AffineStorageShape> {
+        if depth > 128 || *remaining == 0 || !plan.requires_affine_owner_token() { return None; }
+        *remaining -= 1;
+        let source = match plan {
+            StoragePlan::MoveOnlyList(sequence) => sequence.source(),
+            StoragePlan::AuthenticatedPlace(graph) => graph.source(),
+            _ => return None,
+        };
+        if !active.insert(source.clone()) { return None; }
+        let result = match plan {
+            StoragePlan::MoveOnlyList(sequence) => Some(AffineStorageShape::Sequence(Box::new(
+                walk(sequence.element(), definitions, active, depth + 1, remaining)?,
+            ))),
+            StoragePlan::AuthenticatedPlace(graph) if graph.movable() && !graph.cloneable() => {
+                let shape = graph.shape();
+                if shape.packed { return None; }
+                let mut children = Vec::new();
+                for (index, field) in shape.fields.iter().enumerate() {
+                    if *remaining == 0 { return None; }
+                    *remaining -= 1;
+                    let child = StoragePlan::classify(field, definitions, |_| Some(0));
+                    if child.requires_affine_owner_token() {
+                        if !shape.tagged { return None; }
+                        children.push((u32::try_from(index).ok()?, walk(&child, definitions, active, depth + 1, remaining)?));
+                    }
+                }
+                Some(if children.is_empty() { AffineStorageShape::Leaf }
+                    else { AffineStorageShape::NullableFields(children) })
+            }
+            _ => None,
+        };
+        active.remove(source);
+        result
+    }
+    let plan = StoragePlan::classify(ty.unqualified(), definitions, |_| Some(0));
+    walk(&plan, definitions, &mut HashSet::new(), 0, &mut 4_096)
 }
 
 impl StoragePlan {

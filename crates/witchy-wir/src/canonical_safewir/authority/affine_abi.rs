@@ -1,7 +1,6 @@
 use super::*;
-use crate::canonical_safewir::check::{AffineAbiProofs, AffineSignatureProof};
-use witchy_canonical_source::storage::affine_nullable_fields;
-use witchy_canonical_source::storage::StoragePlan;
+use crate::canonical_safewir::check::{AffineAbiProofs, AffinePhysicalPlan, AffineSignatureProof};
+use witchy_canonical_source::storage::{AffineStorageShape, affine_storage_shape};
 use witchy_syntax::ast::{Convention, Type};
 
 /// Bind the checked source's affine field judgment to the already validated
@@ -24,50 +23,30 @@ pub(super) fn affine_abi_proofs<S: ModuleStage>(
             return Err(CandidateAbiBindingError::SourceAbiMismatch { source_declaration: ordinal });
         };
         let mut proof = AffineSignatureProof {
-            parameters: vec![Vec::new(); signature.parameters.len()],
-            results: vec![Vec::new(); signature.results.len()],
-            move_only_list_parameters: vec![false; signature.parameters.len()],
-            move_only_list_results: vec![false; signature.results.len()],
+            parameters: vec![None; signature.parameters.len()],
+            results: vec![None; signature.results.len()],
         };
         for (index, ty) in parameters.iter().enumerate() {
-            if matches!(source.storage_plan(ty.unqualified()), StoragePlan::MoveOnlyList(_)) {
-                let Some(crate::canonical_safewir::ValueType::Ref(layout)) = signature.parameters.get(index) else {
-                    return Err(CandidateAbiBindingError::SourceAbiMismatch { source_declaration: ordinal });
-                };
-                if !move_only_list_layout(*layout, &layouts) {
+            let Some(shape) = affine_storage_shape(ty, source.type_definitions()) else {
+                if source.storage_plan(ty.unqualified()).requires_affine_owner_token() {
                     return Err(CandidateAbiBindingError::SourceAbiMismatch { source_declaration: ordinal });
                 }
-                proof.move_only_list_parameters[index] = true;
-            }
-            let Some(fields) = affine_nullable_fields(ty, source.type_definitions()) else { continue };
-            if fields.is_empty() { continue; }
+                continue;
+            };
             let Some(crate::canonical_safewir::ValueType::Ref(layout)) = signature.parameters.get(index) else {
                 return Err(CandidateAbiBindingError::SourceAbiMismatch { source_declaration: ordinal });
             };
-            if !fields_match_storage(*layout, ty, &fields, &layouts, source) {
-                return Err(CandidateAbiBindingError::SourceAbiMismatch { source_declaration: ordinal });
-            }
-            proof.parameters[index] = fields;
+            proof.parameters[index] = Some(bind_plan(ty, *layout, &shape, &layouts, source, &mut proofs.layouts)
+                .ok_or(CandidateAbiBindingError::SourceAbiMismatch { source_declaration: ordinal })?);
         }
-        if matches!(source.storage_plan(result.unqualified()), StoragePlan::MoveOnlyList(_)) {
+        if let Some(shape) = affine_storage_shape(result, source.type_definitions()) {
             let Some(crate::canonical_safewir::ValueType::Ref(layout)) = signature.results.first() else {
                 return Err(CandidateAbiBindingError::SourceAbiMismatch { source_declaration: ordinal });
             };
-            if !move_only_list_layout(*layout, &layouts) {
-                return Err(CandidateAbiBindingError::SourceAbiMismatch { source_declaration: ordinal });
-            }
-            proof.move_only_list_results[0] = true;
-        }
-        if let Some(fields) = affine_nullable_fields(result, source.type_definitions()) {
-            if !fields.is_empty() {
-                let Some(crate::canonical_safewir::ValueType::Ref(layout)) = signature.results.first() else {
-                    return Err(CandidateAbiBindingError::SourceAbiMismatch { source_declaration: ordinal });
-                };
-                if !fields_match_storage(*layout, result, &fields, &layouts, source) {
-                    return Err(CandidateAbiBindingError::SourceAbiMismatch { source_declaration: ordinal });
-                }
-                proof.results[0] = fields;
-            }
+            proof.results[0] = Some(bind_plan(result, *layout, &shape, &layouts, source, &mut proofs.layouts)
+                .ok_or(CandidateAbiBindingError::SourceAbiMismatch { source_declaration: ordinal })?);
+        } else if source.storage_plan(result.unqualified()).requires_affine_owner_token() {
+            return Err(CandidateAbiBindingError::SourceAbiMismatch { source_declaration: ordinal });
         }
         // A `var unique` parameter returns its replacement in an additional
         // ABI lane. Bind that lane by the source parameter's write-back
@@ -78,10 +57,8 @@ pub(super) fn affine_abi_proofs<S: ModuleStage>(
         let Some(hidden_start) = signature.results.len().checked_sub(writebacks.len()) else {
             return Err(CandidateAbiBindingError::SourceAbiMismatch { source_declaration: ordinal });
         };
-        for (parameter_index, parameter_type) in parameters.iter().enumerate() {
-            let list = proof.move_only_list_parameters.get(parameter_index) == Some(&true);
-            let fields = proof.parameters.get(parameter_index).cloned().unwrap_or_default();
-            if !list && fields.is_empty() { continue; }
+        for (parameter_index, parameter_proof) in proof.parameters.iter().enumerate() {
+            let Some(parameter_proof) = parameter_proof else { continue };
             let Some(crate::canonical_safewir::ParameterContract {
                 value_type: crate::canonical_safewir::ValueType::Ref(parameter_layout),
                 ownership: crate::canonical_safewir::ParameterOwnership::UniqueWriteBack,
@@ -95,15 +72,10 @@ pub(super) fn affine_abi_proofs<S: ModuleStage>(
             {
                 return Err(CandidateAbiBindingError::SourceAbiMismatch { source_declaration: ordinal });
             }
-            if !fields.is_empty() && !fields_match_storage(*parameter_layout, parameter_type, &fields, &layouts, source) {
-                return Err(CandidateAbiBindingError::SourceAbiMismatch { source_declaration: ordinal });
-            }
-            proof.results[result_index] = fields;
-            proof.move_only_list_results[result_index] = list;
+            proof.results[result_index] = Some(parameter_proof.clone());
         }
-        if proof.parameters.iter().chain(&proof.results).any(|fields| !fields.is_empty())
-            || proof.move_only_list_parameters.iter().chain(&proof.move_only_list_results).any(|marked| *marked) {
-            if proofs.insert(signature.id, proof.clone()).is_some_and(|prior| prior != proof) {
+        if proof.parameters.iter().chain(&proof.results).any(Option::is_some) {
+            if proofs.signatures.insert(signature.id, proof.clone()).is_some_and(|prior| prior != proof) {
                 return Err(CandidateAbiBindingError::SourceAbiMismatch { source_declaration: ordinal });
             }
         }
@@ -111,40 +83,56 @@ pub(super) fn affine_abi_proofs<S: ModuleStage>(
     Ok(proofs)
 }
 
-fn move_only_list_layout(layout: crate::layout::LayoutId, layouts: &crate::layout::LayoutInterner) -> bool {
-    use crate::layout::{LayoutKind, PointerSlot, RcHeader};
-    let Ok(physical) = layouts.resolve_nominal(layout) else { return false };
-    let Some(LayoutKind::PackedList { element, rc: RcHeader::Required }) = layouts.get(physical).map(|descriptor| descriptor.kind()) else {
-        return false;
-    };
-    matches!(layouts.get(*element).map(|descriptor| descriptor.kind()),
-        Some(LayoutKind::RuntimePointerValueSlot { semantics: PointerSlot::Owned, .. }))
-}
-
-fn fields_match_storage(
-    layout: crate::layout::LayoutId,
+fn bind_plan(
     source_type: &Type,
-    fields: &[u32],
+    layout: crate::layout::LayoutId,
+    shape: &AffineStorageShape,
     layouts: &crate::layout::LayoutInterner,
     source: &witchy_canonical_source::source::CanonicalSourceView<'_>,
-) -> bool {
-    use crate::layout::{FieldKind, LayoutKind, PointerSlot};
-    let Some(shape) = witchy_canonical_source::aggregates::scalar_aggregate_shape(source_type, source.type_definitions()) else {
-        return false;
-    };
-    let Ok(physical) = layouts.resolve_nominal(layout) else { return false };
-    let Some(descriptor) = layouts.get(physical) else { return false };
-    if !matches!(descriptor.kind(), LayoutKind::PackedRecord { .. }) || descriptor.fields().len() != shape.fields.len() {
-        return false;
-    }
-    let expected = if shape.tagged { PointerSlot::OwnedNullable } else { PointerSlot::Owned };
-    fields.iter().all(|index| {
-        let Some(field) = descriptor.fields().get(*index as usize) else { return false };
-        match field.kind() {
-            FieldKind::Pointer { slot, .. } => slot == expected,
-            FieldKind::Inline(layout) => matches!(layouts.get(layout).map(|descriptor| descriptor.kind()),
-                Some(LayoutKind::RuntimePointerValueSlot { semantics, .. }) if *semantics == expected),
-            _ => false,
+    catalog: &mut BTreeMap<crate::layout::LayoutId, AffinePhysicalPlan>,
+) -> Option<AffinePhysicalPlan> {
+    use crate::layout::{FieldKind, LayoutKind, PointerSlot, RcHeader};
+    let physical = layouts.resolve_nominal(layout).ok()?;
+    let descriptor = layouts.get(physical)?;
+    let plan = match shape {
+        AffineStorageShape::Leaf => {
+            let source_shape = witchy_canonical_source::aggregates::scalar_aggregate_shape(source_type, source.type_definitions())?;
+            if !matches!(descriptor.kind(), LayoutKind::PackedRecord { .. })
+                || descriptor.fields().len() != source_shape.fields.len() { return None; }
+            AffinePhysicalPlan::Leaf
         }
-    })
+        AffineStorageShape::NullableFields(children) => {
+            let source_shape = witchy_canonical_source::aggregates::scalar_aggregate_shape(source_type, source.type_definitions())?;
+            if !source_shape.tagged || !matches!(descriptor.kind(), LayoutKind::PackedRecord { .. })
+                || descriptor.fields().len() != source_shape.fields.len() { return None; }
+            let mut bound = Vec::with_capacity(children.len());
+            for (index, child) in children {
+                let field = descriptor.fields().get(*index as usize)?;
+                let pointee = match field.kind() {
+                    FieldKind::Pointer { pointee, slot: PointerSlot::OwnedNullable } => pointee,
+                    FieldKind::Inline(slot) => match layouts.get(slot)?.kind() {
+                        LayoutKind::RuntimePointerValueSlot { pointee, semantics: PointerSlot::OwnedNullable } => *pointee,
+                        _ => return None,
+                    },
+                    _ => return None,
+                };
+                let child_source = source_shape.fields.get(*index as usize)?;
+                bound.push((*index, pointee, Box::new(bind_plan(child_source, pointee, child, layouts, source, catalog)?)));
+            }
+            AffinePhysicalPlan::NullableFields(bound)
+        }
+        AffineStorageShape::Sequence(child) => {
+            let witchy_canonical_source::storage::StoragePlan::MoveOnlyList(sequence) = source.storage_plan(source_type.unqualified()) else { return None };
+            let Type::Named(_, arguments) = sequence.source() else { return None };
+            let [child_source] = arguments.as_slice() else { return None };
+            let LayoutKind::PackedList { element, rc: RcHeader::Required } = descriptor.kind() else { return None };
+            let LayoutKind::RuntimePointerValueSlot { pointee, semantics: PointerSlot::Owned } = layouts.get(*element)?.kind() else { return None };
+            AffinePhysicalPlan::Sequence {
+                element: *pointee,
+                child: Box::new(bind_plan(child_source, *pointee, child, layouts, source, catalog)?),
+            }
+        }
+    };
+    if catalog.insert(layout, plan.clone()).is_some_and(|prior| prior != plan) { return None; }
+    Some(plan)
 }

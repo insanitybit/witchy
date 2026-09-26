@@ -74,8 +74,9 @@ to_ms` finds `duration.to_milliseconds`.
 | `future` | `Future(a)` and the `await` surface |
 
 The canonical compiler currently refuses the `chan.par_map` and
-`chan.par_reduce` implementation because its scheduler constructs
-`List(task.Handle)` without a move-only list operation proof.
+`chan.par_reduce` implementation because its scheduler carries a live
+`task.Handle` through a task result without consuming aggregate extraction and
+cancellation disposition.
 
 `vm` runs capture-free work across isolated worker cores (`vm.par_map`); its
 `with_dir` / `serve` entry points thread a `Dir` / `Net` through to the workers.

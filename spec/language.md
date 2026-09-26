@@ -1076,10 +1076,14 @@ proof remain refused. Region-born roots cannot escape through these views;
 tuple-view closure capture remains unsupported.
 
 An owned `List(T)` requires an authenticated clone and release operation for
-`T`. `List(task.Handle)` is currently refused on the canonical route: list
-cloning can duplicate its must-consume handle, and no move-only list operation
-proof exists yet. This refusal also applies when a standard-library combinator
-constructs such a list internally.
+copyable `T`. Move-only `List(T)` values instead require a recursive checked
+storage and physical layout proof for unique element moves, calls, and returns.
+This admits nested lists and nullable aggregates of must-consume scalar
+records through the unoptimized canonical route. Non-tagged aggregates with
+move-only children still fail closed. Task scheduling with public
+`task.Handle` values remains incomplete: a live handle cannot cross a
+suspension without cancellation disposition, and `task.Step(task.Handle)`
+does not yet have a consuming aggregate field transfer.
 
 A persistent view requires a lawful snapshot of the storage it retains. The
 checked storage judgment walks instantiated stored fields and refuses

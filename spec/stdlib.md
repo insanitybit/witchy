@@ -382,7 +382,7 @@ STRUCTURED fan-out-and-collect: run every task in `jobs` concurrently and return
 
 #### `fn par_map(items: List(a), f: fn(a) -> Task(m)) -> Task(List(m))`
 
-STRUCTURED parallel map (the level-1 combinator): run `f` over every item of `items` concurrently and return the results in INPUT order. The tasks are never visible - spawn and join happen inside - so this cannot leak a handle, cannot deadlock on a forgotten join, and is the ergonomic default for data parallelism. Each item's result rides its own channel, so the returned order is the input order regardless of completion order. `f` is an ordinary callback and may exercise opaque delegated effects, so ordering alone is not a purity or determinism contract. A future parallel backend must require an explicit effect-free callable contract before assuming that reordering invocations is unobservable (see RFC-0032). Results are of the message type `m` (they ride channels), as with `gather`. The canonical compiler currently refuses this implementation when its scheduler constructs List(task.Handle); move-only list operations are needed.
+STRUCTURED parallel map (the level-1 combinator): run `f` over every item of `items` concurrently and return the results in INPUT order. The tasks are never visible - spawn and join happen inside - so this cannot leak a handle, cannot deadlock on a forgotten join, and is the ergonomic default for data parallelism. Each item's result rides its own channel, so the returned order is the input order regardless of completion order. `f` is an ordinary callback and may exercise opaque delegated effects, so ordering alone is not a purity or determinism contract. A future parallel backend must require an explicit effect-free callable contract before assuming that reordering invocations is unobservable (see RFC-0032). Results are of the message type `m` (they ride channels), as with `gather`. The canonical compiler currently refuses this implementation when its scheduler carries public task.Handle values through a task result; consuming aggregate extraction and cancellation disposition are still needed.
 
 #### `fn par_reduce(items: List(a), f: fn(a) -> Task(m), init: m, combine: fn(m, m) -> m) -> Task(m)`
 
@@ -2276,6 +2276,10 @@ The element at `index` (0-based). Out of bounds is a runtime error on every back
 #### `fn push(var xs: List(a), x: a)`
 
 Append `x` in place.
+
+#### `fn push_owned(var xs: List(a), own x: a)`
+
+Transfer an affine element into the list through the same checked append operation. Copyable callers can use `push` without moving their binding.
 
 #### `fn concat(xs: List(a), ys: List(a)) -> List(a)`
 
