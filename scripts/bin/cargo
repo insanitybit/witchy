@@ -230,6 +230,35 @@ if [ -z "${WITCHY_GATE_SCOPE+x}" ]; then
     esac
 fi
 
+# The native workspace and isolated compiler selections resolve incompatible
+# feature graphs for the same Witchy crates. Keeping both in one target makes
+# Cargo rebuild the compiler stack whenever an edit loop alternates between a
+# lower/WIR check and a native integration test. Give the isolated graph its
+# own persistent target. Do this before the build-cache fallback so disabling
+# mbx does not restore the feature-graph thrash.
+if [ -n "${CARGO_TARGET_DIR:-}" ]; then
+    case "$CARGO_TARGET_DIR" in
+        /*) effective_target="$CARGO_TARGET_DIR" ;;
+        *) effective_target="$PWD/$CARGO_TARGET_DIR" ;;
+    esac
+else
+    effective_target="$repo_root/target"
+fi
+explicit_target_arg=0
+for arg in "$@"; do
+    case "$arg" in --target-dir | --target-dir=*) explicit_target_arg=1 ;; esac
+done
+if [ "$isolated_graph_selected" -eq 1 ] && [ "$explicit_target_arg" -eq 0 ] \
+    && [ -z "${CARGO_BUILD_TARGET_DIR:-}" ]; then
+    case "$effective_target" in
+        *-pure) ;;
+        *)
+            effective_target="${effective_target}-pure"
+            export CARGO_TARGET_DIR="$effective_target"
+            ;;
+    esac
+fi
+
 [ "${WITCHY_BUILD_CACHE:-mbx}" != "off" ] || passthrough "$@"
 [ "${MBX_DISABLE:-0}" != "1" ] || passthrough "$@"
 
@@ -264,20 +293,11 @@ fi
 # Callers such as agent-check may explicitly promote themselves to normal.
 export MBX_SCHEDULER_PRIORITY="${MBX_SCHEDULER_PRIORITY:-low}"
 
-# worktree-warm clones the merge gate's Cargo-incremental target. Preserve that
-# exact profile unless the caller chose a mode explicitly; learned/shareable
-# mode intentionally uses a different profile and otherwise recompiles every
-# optimized workspace crate before it can cache them. CARGO_TARGET_DIR is
-# relative to the caller's current directory, while Cargo's default target is
-# rooted at the workspace.
-if [ -n "${CARGO_TARGET_DIR:-}" ]; then
-    case "$CARGO_TARGET_DIR" in
-        /*) effective_target="$CARGO_TARGET_DIR" ;;
-        *) effective_target="$PWD/$CARGO_TARGET_DIR" ;;
-    esac
-else
-    effective_target="$repo_root/target"
-fi
+# worktree-warm clones the merge gate's Cargo-incremental native target.
+# Preserve that exact profile unless the caller chose a mode explicitly.
+# The unseeded pure sidecar instead uses mbx's learned/shareable mode, so the
+# first worktree that builds a pure unit makes it reusable by every other
+# worktree; edited crates still become incremental after their first miss.
 seeded_target=0
 [ ! -f "$effective_target/.witchy-mbx-incremental-seed" ] || seeded_target=1
 mbx_mode="${WITCHY_MBX_MODE:-}"
