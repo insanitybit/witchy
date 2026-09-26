@@ -602,73 +602,45 @@ fn graph_storage_operations(
     }
 }
 
-fn contains_gc_view_owner(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> Option<bool> {
-    fn walk(
-        ty: &Type,
-        definitions: &BTreeMap<String, TypeDef>,
-        active: &mut HashSet<Type>,
-        depth: usize,
-        remaining: &mut usize,
-    ) -> Option<bool> {
-        if depth > 128 || *remaining == 0 { return None; }
-        *remaining -= 1;
-        if !active.insert(ty.clone()) { return Some(false); }
-        let result = if view_carrier_plan(ty, definitions).is_some_and(|plan| plan.requires_opaque_owner()) {
-            Some(true)
-        } else {
-            let fields = if let Some(children) = stored_children(ty, definitions).ok()? {
-                children.into_types()
-            } else {
-                match ty {
-                    Type::Qualified(_, inner) | Type::Slice(inner) => vec![*inner.clone()],
-                    _ => Vec::new(),
-                }
-            };
-            fields.iter().try_fold(false, |found, field| {
-                let child = walk(field, definitions, active, depth + 1, remaining)?;
-                Some(found || child)
-            })
-        };
-        active.remove(ty);
-        result
-    }
-    walk(ty, definitions, &mut HashSet::new(), 0, &mut 4_096)
+/// Facts about actual stored children of one source type. Phantom arguments and
+/// callable signatures do not occupy storage; an unknown nominal still needs
+/// its independent carrier proof before it can be admitted.
+#[derive(Clone, Copy, Default)]
+struct StoredContainment {
+    opaque_view_owner: bool,
+    capability_authority: bool,
 }
 
-/// A refusal caused by source capability authority must remain distinguishable
-/// from an ordinary missing ownership proof. Walk instantiated aggregate
-/// fields, rather than relying on a list of concrete container spellings.
-fn contains_capability_authority(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> Option<bool> {
+fn stored_containment(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> Option<StoredContainment> {
     fn walk(
         ty: &Type,
         definitions: &BTreeMap<String, TypeDef>,
         active: &mut HashSet<Type>,
         depth: usize,
         remaining: &mut usize,
-    ) -> Option<bool> {
+    ) -> Option<StoredContainment> {
         if depth > 128 || *remaining == 0 { return None; }
         *remaining -= 1;
-        if crate::capabilities::representation(ty, definitions).is_some() { return Some(true); }
-        if !active.insert(ty.clone()) { return Some(false); }
-        let children = if let Some(children) = stored_children(ty, definitions).ok().flatten() {
-            children.into_types()
-        } else {
-            match ty {
-                Type::Named(_, arguments) | Type::Dyn(_, arguments) | Type::Tuple(arguments) => arguments.clone(),
-                Type::Qualified(_, inner) | Type::Slice(inner) => vec![*inner.clone()],
-                Type::RecordCompose { base, fields } => {
-                    std::iter::once(base.as_ref().clone())
-                        .chain(fields.iter().map(|(_, field)| field.clone())).collect()
-                }
-                Type::Fn(parameters, result, _, _) => parameters.iter().cloned()
-                    .chain(std::iter::once(result.as_ref().clone())).collect(),
-            }
+        let mut facts = StoredContainment {
+            opaque_view_owner: view_carrier_plan(ty, definitions)
+                .is_some_and(|plan| plan.requires_opaque_owner()),
+            capability_authority: crate::capabilities::representation(ty, definitions).is_some(),
         };
-        let result = children.iter().try_fold(false, |found, child| {
-            Some(found || walk(child, definitions, active, depth + 1, remaining)?)
-        });
+        if !active.insert(ty.clone()) { return Some(facts); }
+        let children = match stored_children(ty, definitions).ok()? {
+            Some(children) => children.into_types(),
+            None => match ty {
+                Type::Qualified(_, inner) | Type::Slice(inner) => vec![*inner.clone()],
+                _ => Vec::new(),
+            },
+        };
+        for child in &children {
+            let nested = walk(child, definitions, active, depth + 1, remaining)?;
+            facts.opaque_view_owner |= nested.opaque_view_owner;
+            facts.capability_authority |= nested.capability_authority;
+        }
         active.remove(ty);
-        result
+        Some(facts)
     }
     walk(ty, definitions, &mut HashSet::new(), 0, &mut 4_096)
 }
@@ -1145,9 +1117,9 @@ impl StoragePlan {
             && let Some(plan) = AggregateGraphPlan::classify(element, definitions)
             && plan.cloneable()
         {
-            return match contains_gc_view_owner(element, definitions) {
-                Some(true) => Self::RetainedOpaqueAggregateList(plan),
-                Some(false) => Self::RetainedGraphList(plan),
+            return match stored_containment(element, definitions) {
+                Some(StoredContainment { opaque_view_owner: true, .. }) => Self::RetainedOpaqueAggregateList(plan),
+                Some(_) => Self::RetainedGraphList(plan),
                 None => Self::Refused(StorageRefusal::ResourceLimit),
             };
         }
@@ -1185,9 +1157,9 @@ impl StoragePlan {
             Some(plan) if plan.within_resource_bounds() => Self::Owned(plan),
             _ => AggregateGraphPlan::classify(ty, definitions)
                 .map(Self::AuthenticatedPlace)
-                .unwrap_or_else(|| match contains_capability_authority(ty, definitions) {
-                    Some(true) => Self::Refused(StorageRefusal::UnprovedAuthority),
-                    Some(false) => Self::Refused(StorageRefusal::UnprovedOwnership),
+                .unwrap_or_else(|| match stored_containment(ty, definitions) {
+                    Some(StoredContainment { capability_authority: true, .. }) => Self::Refused(StorageRefusal::UnprovedAuthority),
+                    Some(_) => Self::Refused(StorageRefusal::UnprovedOwnership),
                     None => Self::Refused(StorageRefusal::ResourceLimit),
                 }),
         }

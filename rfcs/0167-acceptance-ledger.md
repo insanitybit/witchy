@@ -62,6 +62,17 @@ is needed for soundness.
 
 ## Exact-tip evidence checkpoint
 
+Stored containment classification (implemented but unverified, 2026-09-26):
+the two production source-storage walks for opaque view owners and capability
+authority now use one finite traversal of instantiated stored children. This
+removes the fallback that inspected phantom type arguments and callable
+signatures as though they were stored fields. The list owner-family decision
+and the fail-closed capability refusal both consume the same judgment. Focused
+canonical-source and resource-composition checks pass. Admitted unoptimized
+Wasm, hand-computed results, and zero-leak evidence remain open; no A-O row
+closes from this structural replacement. Task execution-mode provenance is
+still a separate compiler gap.
+
 Opt callback aggregate origin (authority narrowed, 2026-09-26):
 the source checker no longer mints opt-compatible callback provenance from a
 record field's type, an existential result type, or a list loop element type.
