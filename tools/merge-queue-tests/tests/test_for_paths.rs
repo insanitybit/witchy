@@ -61,6 +61,31 @@ fn pure_compiler_edit_metadata_reuse_is_fail_closed() {
         String::from_utf8_lossy(&output.stderr));
 }
 
+#[test]
+fn mixed_compiler_edit_shares_native_build_without_repeating_pure_assertions() {
+    let paths = ["--edit-loop",
+        "crates/witchy-wir/src/canonical_safewir/check/memory/join.rs",
+        "crates/witchy-wir/tests/unit.rs"];
+    let commands = selected(&paths);
+    assert_eq!(commands, ["bash ./scripts/native-compiler-examples.sh hash:1/8 witchy-lower"],
+        "mixed route must retain both full compiler suites and example slice: {commands:?}");
+    // Pure-only and the fixed canonical sentinel route retain their contracts.
+    for paths in [vec!["--edit-loop", "crates/witchy-wir/src/canonical_safewir/check/memory.rs"],
+        vec!["--edit-loop", "crates/witchy-wir/src/canonical_wasmir.rs"],
+        vec!["--focused", "crates/witchy-wir/tests/unit.rs"]] {
+        assert!(!selected(&paths).iter().any(|c| c.contains("native-compiler-examples.sh")), "{paths:?}");
+    }
+}
+
+#[test]
+fn native_compiler_examples_metadata_reuse_is_fail_closed() {
+    let output = Command::new("bash")
+        .arg(workspace_root().join("scripts/test-native-compiler-examples.sh"))
+        .output().expect("run native compiler examples contracts");
+    assert!(output.status.success(), "{}\n{}", String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr));
+}
+
 fn workspace_root() -> PathBuf {
     let manifest_dir = PathBuf::from(
         std::env::var_os("CARGO_MANIFEST_DIR").expect("Cargo sets CARGO_MANIFEST_DIR for tests"),
@@ -1166,7 +1191,8 @@ fn compiler_feature_variants_share_one_example_matrix() {
     ]);
     let example_runs: Vec<_> = commands
         .iter()
-        .filter(|command| command.contains("test(/^example_tests::/)"))
+        .filter(|command| command.contains("test(/^example_tests::/)")
+            || command.starts_with("bash ./scripts/native-compiler-examples.sh "))
         .collect();
     assert_eq!(example_runs.len(), 1, "duplicate example matrices: {commands:?}");
     assert!(

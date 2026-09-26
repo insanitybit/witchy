@@ -1101,6 +1101,10 @@ for p in "${paths[@]}"; do
             add_gate_test test_for_paths
             add "bash -n scripts/pure-compiler-check.sh scripts/test-pure-compiler-check.sh"
             add "bash scripts/test-pure-compiler-check.sh" ;;
+        scripts/native-compiler-examples.sh | scripts/test-native-compiler-examples.sh)
+            add_gate_test test_for_paths
+            add "bash -n scripts/native-compiler-examples.sh scripts/test-native-compiler-examples.sh"
+            add "bash scripts/test-native-compiler-examples.sh" ;;
         scripts/test-for-paths.sh | scripts/test-path-receipts.sh | scripts/test-impact.py | \
         scripts/nextest-admitted.sh | scripts/test-nextest-admitted.sh)
             add_gate_test test_for_paths
@@ -1426,6 +1430,50 @@ for c in ${cmds[0]+"${cmds[@]}"}; do
     fi
 done
 cmds=(${coalesced_cmds[0]+"${coalesced_cmds[@]}"})
+
+# These two native scopes share the same feature graph. Reuse one freshly
+# built inventory, keeping the full WIR suite and only partitioning examples.
+# Match complete commands, never parse or absorb arbitrary shell policies.
+# If lower's complete suite is also selected, give it the same native graph
+# while retaining its admitted policy. The pure WIR suite is a semantic subset
+# of the native suite: native only adds execution helpers, never different
+# checker/admission logic. Pure-only routes retain their portability check;
+# a mixed edit does not rebuild that graph to repeat the same assertions.
+native_wir_command='cargo nextest run -p witchy-wir --features witchy-wir/native'
+pure_wir_command='cargo nextest run -p witchy-wir --test unit --test structural_contracts --test rfc0162_mutation_evidence --test rfc0165_route_gate --no-default-features'
+lower_command='./scripts/nextest-admitted.sh witchy-lower -- cargo nextest run -p witchy-lower'
+memory_probe="cargo nextest run -p witchy-wir --no-default-features --test unit -E 'test(constant_prefix_publication_rejects_gaps_and_missing_children)'"
+native_examples_command="./scripts/nextest-admitted.sh witchy -- cargo nextest run -E 'test(/^example_tests::/)'"
+native_examples_partition=full
+if [ "${WITCHY_EDIT_EXAMPLES:-slice}" != full ]; then
+    native_examples_partition="$edit_example_slice"
+    native_examples_command="./scripts/nextest-admitted.sh witchy -- cargo nextest run --partition $edit_example_slice -E 'test(/^example_tests::/)'"
+fi
+have_native_wir=0
+have_native_examples=0
+native_lower_package=""
+for c in ${cmds[0]+"${cmds[@]}"}; do
+    [ "$c" != "$native_wir_command" ] || have_native_wir=1
+    [ "$c" != "$native_examples_command" ] || have_native_examples=1
+    [ "$c" != "$lower_command" ] || native_lower_package=" witchy-lower"
+done
+if [ "$edit_loop" -eq 1 ] && [ "$have_native_wir" -eq 1 ] && [ "$have_native_examples" -eq 1 ]; then
+    native_cmds=()
+    native_inserted=0
+    for c in "${cmds[@]}"; do
+        if [ "$c" = "$native_wir_command" ] || [ "$c" = "$native_examples_command" ] \
+            || [ "$c" = "$pure_wir_command" ] || [ "$c" = "$memory_probe" ] \
+            || [ "$c" = "$lower_command" ]; then
+            if [ "$native_inserted" -eq 0 ]; then
+                native_cmds+=("bash ./scripts/native-compiler-examples.sh $native_examples_partition$native_lower_package")
+                native_inserted=1
+            fi
+        else
+            native_cmds+=("$c")
+        fi
+    done
+    cmds=("${native_cmds[@]}")
+fi
 
 if [ "${#cmds[@]}" -eq 0 ]; then
     echo "test-for-paths: prose-only change — no focused checks needed (still submit through the queue)"
