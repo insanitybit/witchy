@@ -48,7 +48,7 @@ interrupted apply leaves every source at its checkout time):
     build-seed.py restore-mtimes <checkout> <snapshot>
 """
 
-import fcntl, hashlib, json, os, re, shutil, struct, subprocess, sys, time
+import fcntl, filecmp, hashlib, json, os, re, shutil, struct, subprocess, sys, time
 
 MANIFEST = "manifest.json"
 # A worktree-warm clone (about a minute) may still be reading a seed after it
@@ -755,7 +755,9 @@ def refresh(seed, worktree, target_dir=None):
       * it was fresh against those sources in the gate (no named source is
         newer than its dep-info), so a stale leftover unit is never revived;
       * every workspace unit it depends on qualifies too, and every
-        third-party unit it depends on is present here with the same hash.
+        third-party unit it depends on is present here as the seed's own
+        artifact (byte-equal metadata, not merely the same fingerprint
+        hash), or is swapped in from the seed as well.
 
     Source mtimes are NEVER touched: other target directories of the same
     worktree judge freshness by them. Instead each copied unit (fingerprint
@@ -961,26 +963,78 @@ def refresh(seed, worktree, target_dir=None):
                 return False
         return True
 
-    good = {u for u, (reads, _) in candidates.items() if reads_match(reads)}
-
-    def dep_ready(h):
-        unit = by_hash.get(h)
-        if unit is None:
-            return False
-        if unit in good:
-            return True
-        mine = ours.get(unit)
-        return package_of(unit) is None and mine is not None and h in mine["hashes"]
-
-    changed = True
-    while changed:
-        changed = False
-        for unit in list(good):
-            if not all(dep_ready(h) for h in candidates[unit][1]):
-                good.discard(unit)
-                changed = True
-
+    matching = {u for u, (reads, _) in candidates.items() if reads_match(reads)}
     seed_index, our_index = index_deps(seed_debug), index_deps(debug)
+    artifact_memo = {}
+
+    def same_artifact(unit):
+        """This target's copy of a third-party unit is the very artifact the
+        seed's dependents were compiled against. The fingerprint hash is NOT
+        enough: it names the unit's inputs, not its bytes, and rustc embeds
+        each dependency's crate hash (SVH) in every dependent. The same
+        wasmtime unit held four different rmetas across agent targets on
+        2026-09-26 (mbx restores, rebuilds): a seed witchy-wir swapped in
+        beside another one failed with E0460/E0463 "can't find crate for
+        `witchy_wir`" in every dependent. The metadata carries the SVH, so
+        the .rmeta (else the .rlib or proc-macro library) must be byte-equal."""
+        if unit in artifact_memo:
+            return artifact_memo[unit]
+        mine = ours.get(unit)
+        same = mine is not None and mine["hashes"] == seed_units[unit]["hashes"]
+        if same:
+            seed_libs = sorted(r for r in unit_outputs(seed_debug, unit, seed_index)
+                               if r.endswith((".rmeta", ".rlib", ".dylib", ".so")))
+            our_libs = sorted(r for r in unit_outputs(debug, unit, our_index)
+                              if r.endswith((".rmeta", ".rlib", ".dylib", ".so")))
+            if seed_libs != our_libs:
+                same = False
+            else:
+                compared = [r for r in seed_libs if r.endswith(".rmeta")] or seed_libs
+                try:
+                    same = all(filecmp.cmp(os.path.join(seed_debug, r), os.path.join(debug, r),
+                                           shallow=False) for r in compared)
+                except OSError:
+                    same = False
+        artifact_memo[unit] = same
+        return same
+
+    # A third-party dependency this target holds as a different artifact is
+    # swapped for the seed's too (its dependents here then rebuild by mtime);
+    # failing that, every unit that needs it stays out of the refresh.
+    replaced = set()
+    while True:
+        good = matching | replaced
+        mismatched = set()
+
+        def dep_ready(h):
+            unit = by_hash.get(h)
+            if unit is None:
+                return False
+            if unit in good:
+                return True
+            mine = ours.get(unit)
+            if package_of(unit) is not None or mine is None or h not in mine["hashes"]:
+                return False
+            if same_artifact(unit):
+                return True
+            mismatched.add(unit)
+            return False
+
+        changed = True
+        while changed:
+            changed = False
+            for unit in list(good):
+                if not all(dep_ready(h) for h in candidates[unit][1]):
+                    good.discard(unit)
+                    changed = True
+        fresh = {u for u in mismatched - replaced
+                 if len(seed_units[u]["json"]) == 1 and isinstance(seed_units[u]["json"][0], dict)
+                 and len(seed_units[u]["hashes"]) == 1 and dep_hashes(seed_units[u]) is not None}
+        if not fresh:
+            break
+        for unit in fresh:
+            candidates[unit] = ((set(), set()), dep_hashes(seed_units[unit]))
+        replaced |= fresh
 
     def identical(unit):
         """This target already holds the seed's copy (same clone lineage)."""
@@ -1083,6 +1137,33 @@ def refresh(seed, worktree, target_dir=None):
                 os.utime(path, ns=(stamp_ns, stamp_ns))
             except FileNotFoundError:
                 pass
+    # Fail safe: every stamped unit must find each dependency here, under
+    # its hash and with its library outputs. One that does not loses its
+    # fingerprint, so Cargo rebuilds it (and, by mtime, its dependents)
+    # instead of handing rustc a dependency that is missing or another one.
+    now_units, now_index = fingerprint_units(debug), index_deps(debug)
+    held = {}
+    for unit, info in now_units.items():
+        for h in info["hashes"]:
+            held.setdefault(h, unit)
+
+    def resolves(h):
+        unit = held.get(h)
+        if unit is None:
+            return False
+        libs = [n for n in now_units[unit]["files"] if n.startswith("lib-") and not n.endswith(".json")]
+        outputs = unit_outputs(debug, unit, now_index)
+        return not libs or any(r.endswith((".rmeta", ".rlib", ".dylib", ".so")) for r in outputs)
+
+    unsafe = 0
+    for unit in stamp:
+        deps = dep_hashes(now_units[unit]) if unit in now_units else set()
+        if deps is None or not all(resolves(h) for h in deps):
+            shutil.rmtree(os.path.join(debug, ".fingerprint", unit), ignore_errors=True)
+            unsafe += 1
+    if unsafe:
+        print(f"build-seed: {unsafe} refreshed unit(s) had an unresolved dependency; "
+              "left for Cargo to rebuild", file=sys.stderr)
     write_stamp(stamp_path, key)
     print(f"build-seed: refreshed {copied} unit(s) from seed {manifest['head'][:9]} "
           f"({len(stamp) - len(copy)} restamped, {len(good - stamp)} already current) in "

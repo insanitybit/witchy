@@ -530,6 +530,10 @@ fn cargo_shim_refreshes_incremental_targets_from_the_build_seed() {
     assert!(run("target-codex", Some("incremental"), &[]).contains("refresh target-codex"));
     assert!(!run("cold", None, &[]).contains("refresh"));
     assert!(!run("target-codex", Some("incremental"), &["--target-dir", "elsewhere"]).contains("refresh"));
+    // The seed carries only the gate's native graph: an isolated selection's
+    // `-pure` sidecar is never refreshed from it.
+    let pure = run("target-codex", Some("incremental"), &["-p", "witchy-lower"]);
+    assert!(!pure.contains("refresh"), "{pure}");
 }
 
 #[test]
@@ -1512,4 +1516,89 @@ fn build_seed_refresh_leaves_an_uncommitted_edit_to_compile() {
     let built = seed_cargo(&wt, "target", &["build", "--offline", "-v"]);
     assert!(built.contains("Compiling dep"), "{built}");
     assert_eq!(run_bin(&wt, "target"), "7 topic\n");
+}
+
+/// Writes a path-dependency source with a fixed old mtime, so a Cargo target
+/// that compiled an EARLIER version of it still judges that unit fresh.
+fn write_aged(root: &Path, relative: &str, contents: &str) {
+    write(root, relative, contents);
+    let aged = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000_000);
+    std::fs::File::options()
+        .write(true)
+        .open(root.join(relative))
+        .and_then(|file| file.set_modified(aged))
+        .expect("age third-party source");
+}
+
+/// The same third-party unit (same fingerprint hash) can be a different
+/// artifact in the seed than in the agent's target: the hash names inputs,
+/// not bytes, and mbx restores or rebuilds diverge (the same wasmtime unit
+/// held four different rmetas across agent targets on 2026-09-26). Refresh
+/// once swapped in the seed's `witchy-wir`, compiled against the seed's
+/// wasmtime, beside the target's own wasmtime, and every dependent failed
+/// with E0460/E0463 "can't find crate for `witchy_wir`". Here `third` is
+/// such a dependency: the worktree's target compiled one version, the gate
+/// another, and Cargo finds the old one fresh. Refresh must swap in the
+/// seed's `third` with `dep` (or leave `dep` out), never `dep` alone.
+#[test]
+fn build_seed_refresh_swaps_a_divergent_third_party_dependency_with_its_dependent() {
+    let repo = TempRepo::new("seed-refresh-third-party", |_| {});
+    write_aged(repo.path(), "ext/third/src/lib.rs", "pub fn t() -> u32 { 10 }\n");
+    write(repo.path(), "ext/third/Cargo.toml", "[package]\nname = \"third\"\nversion = \"0.1.0\"\nedition = \"2021\"\n");
+    let gate = repo.path().join("gate");
+    std::fs::create_dir(&gate).expect("create gate checkout");
+    git(&gate, &["init", "--quiet"]);
+    git(&gate, &["config", "user.email", "worktree-test@witchy.invalid"]);
+    git(&gate, &["config", "user.name", "Witchy Worktree Test"]);
+    write(&gate, ".gitignore", "/target*\n/state\n/Cargo.lock\n");
+    write(&gate, "Cargo.toml", "[workspace]\nmembers = [\"dep\", \"bin\"]\nresolver = \"2\"\n");
+    write(
+        &gate,
+        "dep/Cargo.toml",
+        "[package]\nname = \"dep\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\nthird = { path = \"../../ext/third\" }\n",
+    );
+    write(&gate, "dep/src/lib.rs", "pub fn value() -> u32 { third::t() + 1 }\n");
+    write(
+        &gate,
+        "bin/Cargo.toml",
+        "[package]\nname = \"bin\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\ndep = { path = \"../dep\" }\n",
+    );
+    write(&gate, "bin/src/main.rs", "fn main() { println!(\"{} base\", dep::value()); }\n");
+    git(&gate, &["add", "."]);
+    git(&gate, &["commit", "--quiet", "-m", "base"]);
+    let base = git(&gate, &["rev-parse", "HEAD"]);
+
+    let wt = repo.path().join("wt");
+    git(&gate, &["worktree", "add", "--quiet", "-b", "topic", wt.to_str().expect("utf8"), &base]);
+    seed_cargo(&wt, "target", &["build", "--offline"]);
+    assert_eq!(run_bin(&wt, "target"), "11 base\n");
+    write(&wt, "bin/src/main.rs", "fn main() { println!(\"{} topic\", dep::value()); }\n");
+    git(&wt, &["commit", "--quiet", "-am", "topic edit"]);
+
+    // The gate compiles another `third` under the same unit hash.
+    write_aged(repo.path(), "ext/third/src/lib.rs", "pub fn t() -> u32 { 20 }\n");
+    write(&gate, "dep/src/lib.rs", "pub fn value() -> u32 { third::t() + 2 }\n");
+    git(&gate, &["commit", "--quiet", "-am", "master moves dep"]);
+    seed_cargo(&gate, "target", &["build", "--offline"]);
+    let scripts = workspace_root().join("scripts");
+    for args in [&["publish", ".", "target", "state/build-seed"][..], &["finish", "state/build-seed"]] {
+        let output = Command::new("python3")
+            .arg(scripts.join("build-seed.py"))
+            .args(args)
+            .current_dir(&gate)
+            .output()
+            .expect("run build-seed.py");
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    }
+    git(&wt, &["rebase", "--quiet", &git(&gate, &["rev-parse", "HEAD"])]);
+    let seed = std::fs::canonicalize(gate.join("state/build-seed/current")).expect("seed");
+
+    let refreshed = seed_refresh(&seed, &wt);
+    // Before the fix this build failed: E0460 "found possibly newer version
+    // of crate `third` which `dep` depends on".
+    let built = seed_cargo(&wt, "target", &["build", "--offline", "-v"]);
+    assert_eq!(run_bin(&wt, "target"), "22 topic\n");
+    assert!(refreshed.contains("refreshed 2 unit(s)"), "{refreshed}");
+    assert!(built.contains("Fresh dep"), "{built}");
+    assert!(built.contains("Compiling bin"), "{built}");
 }

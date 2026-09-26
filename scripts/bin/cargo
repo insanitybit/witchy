@@ -347,13 +347,17 @@ fi
 # every master landing recompiled them (2026-09-25: 1.14 compiler-min of
 # workspace crates per agent build after the seeded-only refresh landed).
 # A unit whose profile or features differ from the gate's has another
-# filename hash, never matches the seed, and is left alone.
+# filename hash, never matches the seed, and is left alone. The seed is the
+# gate's native target only, so a `-pure` sidecar is never refreshed: it
+# would gain ~1,200 unused native-graph units per seed (4.7 s on 2026-09-26)
+# and could swap shared third-party artifacts under its own pure crates.
 explicit_target=0
 [ -z "${CARGO_BUILD_TARGET_DIR:-}" ] || explicit_target=1
 for arg in "$@"; do
     case "$arg" in --target-dir | --target-dir=*) explicit_target=1 ;; esac
 done
-if { [ "$seeded_target" = 1 ] || [ "$mbx_mode" = incremental ]; } && [ "$explicit_target" = 0 ] && [ -z "${WITCHY_GATE_SCOPE+x}" ] \
+if { [ "$seeded_target" = 1 ] || [ "$mbx_mode" = incremental ]; } && [ "$explicit_target" = 0 ] \
+    && [ "$pure_graph_target" = 0 ] && [ -z "${WITCHY_GATE_SCOPE+x}" ] \
     && [ "${WITCHY_SEED_REFRESH:-on}" != "off" ] \
     && seed_dir="$(cd "$state_root/state/build-seed/current" 2>/dev/null && pwd -P)" \
     && [ -f "$seed_dir/manifest.json" ]; then
