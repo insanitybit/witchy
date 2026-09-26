@@ -15,7 +15,7 @@ use witchy_canonical_source::aggregates::{
 };
 use witchy_canonical_source::abi::CanonicalScalarKind;
 use witchy_canonical_source::carrier::CarrierElement;
-use witchy_canonical_source::storage::{OpaqueOwnerClass, OpaqueOwnerEvidence, StoragePlan, affine_storage_shape, aggregate_uses_nullable_owned_fields, is_inline_scalar_record};
+use witchy_canonical_source::storage::{OpaqueOwnerClass, OpaqueOwnerEvidence, StoragePlan, StorageRefusal, affine_storage_shape, aggregate_uses_nullable_owned_fields, is_inline_scalar_record};
 use witchy_canonical_source::rooted_view::RootedViewStorage;
 use witchy_canonical_source::structural_identity::{AggregateOwnerKey, ClosureOwnerKey, SourceTypeKey};
 use witchy_syntax::ast::{self, Item, Type, TypeDef};
@@ -605,7 +605,15 @@ impl LayoutProjection {
                 }
                 self.visit_type(&arguments[0])
             }
-            _ => Err(CanonicalLayoutError::UnsupportedType(format!("{ty:?}"))),
+            _ => {
+                let reason = match StoragePlan::classify(ty, &self.definitions, |_| Some(0)) {
+                    StoragePlan::Refused(StorageRefusal::UnprovedAuthority) => {
+                        format!("capability authority has no canonical linear layout: {ty:?}")
+                    }
+                    _ => format!("{ty:?}"),
+                };
+                Err(CanonicalLayoutError::UnsupportedType(reason))
+            }
         }
     }
 
