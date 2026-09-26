@@ -533,6 +533,61 @@ fn cargo_shim_refreshes_incremental_targets_from_the_build_seed() {
 }
 
 #[test]
+fn cargo_shim_niced_agent_builds_leave_the_gate_at_full_priority() {
+    let repo = temp_repo();
+    let root = repo.path();
+    write(root, "scripts/bin/cargo", include_str!("../../../../scripts/bin/cargo"));
+    write(
+        root,
+        "scripts/feature-unification.sh",
+        include_str!("../../../../scripts/feature-unification.sh"),
+    );
+    write(root, "fake-bin/cargo", "#!/bin/sh\necho \"nice=$(ps -o nice= -p $$ | tr -d ' ')\" >&2\n");
+    for executable in ["scripts/bin/cargo", "fake-bin/cargo"] {
+        let status = Command::new("chmod")
+            .args(["+x", executable])
+            .current_dir(root)
+            .status()
+            .expect("mark fixture executable");
+        assert!(status.success());
+    }
+    let run = |envs: &[(&str, &str)]| {
+        let path = std::env::join_paths(
+            std::iter::once(root.join("fake-bin"))
+                .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())),
+        )
+        .expect("fixture PATH");
+        let mut command = Command::new(root.join("scripts/bin/cargo"));
+        command
+            .arg("metadata")
+            .current_dir(root)
+            .env("PATH", path)
+            .env_remove("WITCHY_CARGO_SHIM_ACTIVE")
+            .env_remove("WITCHY_CARGO_NICED")
+            .env_remove("WITCHY_AGENT_NICE")
+            .env_remove("WITCHY_GATE_SCOPE");
+        for (key, value) in envs {
+            command.env(key, value);
+        }
+        let output = command.output().expect("run cargo shim fixture");
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        String::from_utf8_lossy(&output.stderr).into_owned()
+    };
+    let base: i32 = String::from_utf8_lossy(
+        &Command::new("sh").args(["-c", "ps -o nice= -p $$"]).output().expect("ps").stdout,
+    )
+    .trim()
+    .parse()
+    .expect("own nice");
+    let agent = run(&[]);
+    assert!(agent.contains(&format!("nice={}", (base + 10).min(20))), "{agent}");
+    let gate = run(&[("WITCHY_GATE_SCOPE", "all")]);
+    assert!(gate.contains(&format!("nice={base}")), "{gate}");
+    let opted_out = run(&[("WITCHY_AGENT_NICE", "off")]);
+    assert!(opted_out.contains(&format!("nice={base}")), "{opted_out}");
+}
+
+#[test]
 fn cargo_shim_restores_gate_dependencies_without_joining_the_agent_pool() {
     let repo = temp_repo();
     let root = repo.path();

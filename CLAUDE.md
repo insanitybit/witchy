@@ -192,6 +192,9 @@ scripts it drives already use the shim; for ad hoc commands put
 `scripts/bin` first on `PATH` or call `./scripts/bin/cargo build ...`.
 Plain system `cargo` bypasses both MBX artifact sharing and the global agent
 permit pool, so do not use it for repo builds.
+The shim also runs every non-gate cargo (and the tests it launches) at
+`nice 10`, so agent builds yield the CPU to the serialized merge gate under
+contention; `WITCHY_AGENT_NICE=off` opts out when timing a build.
 `WITCHY_BUILD_CACHE=off` is the kill switch. In a cold target, workspace crates
 are cached and shared across worktrees too; mbx learns which crate you are
 editing and compiles that one incrementally. A target seeded from the gate

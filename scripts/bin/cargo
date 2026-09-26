@@ -189,6 +189,18 @@ fi
 
 passthrough() { exec "$real_cargo" "$@"; }
 
+# Agent builds yield the CPU to the serialized merge gate. Every landing waits
+# on the gate's test build, which took 2m47s at load 12-20 against ~43s wall
+# alone (2026-09-25): the gate competed as an equal with every agent's rustc
+# and test processes. nice only matters under contention, so an idle machine
+# still gives agents every core. The gate (WITCHY_GATE_SCOPE) is not niced;
+# WITCHY_AGENT_NICE=off opts out, e.g. to time a build.
+if [ -z "${WITCHY_GATE_SCOPE+x}" ] && [ -z "${WITCHY_CARGO_NICED+x}" ] \
+    && [ "${WITCHY_AGENT_NICE:-10}" != "off" ] && command -v nice >/dev/null 2>&1; then
+    export WITCHY_CARGO_NICED=1
+    exec nice -n "${WITCHY_AGENT_NICE:-10}" "$self_dir/cargo" "$@"
+fi
+
 # Re-entry guard. mbx runs cargo itself; if that resolved back to this shim we
 # would exec mbx again forever (mise strips its dispatch dir for the same
 # reason). Two independent guards: a marker variable, and a PATH with this
