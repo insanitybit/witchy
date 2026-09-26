@@ -28,6 +28,23 @@ pub(super) fn validate_candidate_abi_bindings<S: ModuleStage>(
     candidate: &CanonicalModule<S>,
     source: &witchy_canonical_source::source::CanonicalSourceView<'_>,
 ) -> Result<(), CandidateAbiBindingError> {
+    // Signature correspondence reads a `&String` field as its String token.
+    // Every storage-plan and shape judgment below is made against this one
+    // derived map, which no enclosing shape-memo scope covers (the pipeline
+    // opens its scope for the checked definitions). Without its own scope
+    // each binding re-derived the same aggregate shapes from nothing: 22% of
+    // an async program's compile, measured 2026-09-26.
+    let byte_buffer_view_records = erase_record_byte_buffer_views(source.type_definitions());
+    witchy_canonical_source::aggregates::with_shape_memo(&byte_buffer_view_records, || {
+        validate_candidate_abi_bindings_with(candidate, source, &byte_buffer_view_records)
+    })
+}
+
+fn validate_candidate_abi_bindings_with<S: ModuleStage>(
+    candidate: &CanonicalModule<S>,
+    source: &witchy_canonical_source::source::CanonicalSourceView<'_>,
+    byte_buffer_view_records: &ScalarRecordFields,
+) -> Result<(), CandidateAbiBindingError> {
     use witchy_canonical_source::abi::CanonicalTargetPolicy;
     super::super::vm_service::validate(candidate, source).map_err(CandidateAbiBindingError::VmService)?;
     super::super::owner_authority::validate(candidate, source)?;
@@ -37,9 +54,6 @@ pub(super) fn validate_candidate_abi_bindings<S: ModuleStage>(
         Some((target.function_ordinal, entry.key.as_bytes()))
     }).collect::<BTreeMap<_, _>>();
     let records = source.type_definitions();
-    // Signature correspondence reads a `&String` field as its String token;
-    // computed once, used only by the two layout-correspondence matches.
-    let byte_buffer_view_records = erase_record_byte_buffer_views(&records);
     let access_facts = source.access_facts()
         .ok_or(CandidateAbiBindingError::MissingCanonicalLayouts)?;
     // A direct exclusive ABI has no syntax-only fallback: a stale or absent
@@ -153,7 +167,7 @@ pub(super) fn validate_candidate_abi_bindings<S: ModuleStage>(
             signature,
             &source_signature,
             candidate,
-            &byte_buffer_view_records,
+            byte_buffer_view_records,
             &layouts,
         );
         let fresh_list_push_matches = !source_matches
@@ -175,7 +189,7 @@ pub(super) fn validate_candidate_abi_bindings<S: ModuleStage>(
                     &source_shaped,
                     &source_signature,
                     candidate,
-                    &byte_buffer_view_records,
+                    byte_buffer_view_records,
                     &layouts,
                 )
             };
