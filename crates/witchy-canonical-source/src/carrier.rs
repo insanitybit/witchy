@@ -207,8 +207,7 @@ impl CarrierElement {
         }
         *budget -= 1;
         match ty {
-            Type::Named(name, arguments)
-                if definitions.contains_key(name) || matches!(name.as_str(), "Option" | "Result") => {
+            Type::Named(name, arguments) if definitions.contains_key(name) => {
                 if definitions.get(name).is_some_and(|definition| definition.must_consume || definition.is_capability)
                     || name.len() > 1_024 || arguments.len() > 128 {
                     None

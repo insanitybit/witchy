@@ -204,10 +204,6 @@ fn field_type_ok_at_with_dependencies(
         Type::Named(name, arguments) if name == "List" && arguments.len() == 1 => {
             field_type_ok_at_with_dependencies(&arguments[0], definitions, active, depth + 1, budget, completed, required, observed_depth)
         }
-        Type::Named(name, arguments) if matches!(name.as_str(), "Option" | "Result") => {
-            arguments.len() == if name == "Option" { 1 } else { 2 }
-                && arguments.iter().all(|argument| field_type_ok_at_with_dependencies(argument, definitions, active, depth + 1, budget, completed, required, observed_depth))
-        }
         Type::Tuple(items) => !items.is_empty() && items.iter().all(|item| field_type_ok_at_with_dependencies(item, definitions, active, depth + 1, budget, completed, required, observed_depth)),
         Type::Fn(parameters, result, conventions, _) => {
             // The closure occupies an owned pointer slot. Its signature still
@@ -908,8 +904,8 @@ fn concrete_identity_at(
         Type::Named(name, arguments) => {
             let (canonical_name, arity) = match name.as_str() {
                 "String" | "Bytes" => (name.as_str(), 0),
-                "List" | "Option" => (name.as_str(), 1),
-                "Result" | "Dict" => (name.as_str(), 2),
+                "List" => (name.as_str(), 1),
+                "Dict" => (name.as_str(), 2),
                 _ => {
                     let (key, definition) = aggregate_declaration(name, definitions)?;
                     if !is_aggregate_definition(definition) {
@@ -1121,6 +1117,26 @@ mod recursive_shape_tests {
         definition
     }
 
+    fn option_definition() -> TypeDef {
+        let mut definition = definition("Option", Vec::new(), false);
+        definition.params = vec!["a".into()];
+        definition.variants = vec![
+            witchy_syntax::ast::Variant { name: "Some".into(), line: 0, fields: vec![named("a")], field_names: Vec::new(), field_lines: Vec::new() },
+            witchy_syntax::ast::Variant { name: "None".into(), line: 0, fields: Vec::new(), field_names: Vec::new(), field_lines: Vec::new() },
+        ];
+        definition
+    }
+
+    fn result_definition() -> TypeDef {
+        let mut definition = definition("Result", Vec::new(), false);
+        definition.params = vec!["a".into(), "e".into()];
+        definition.variants = vec![
+            witchy_syntax::ast::Variant { name: "Ok".into(), line: 0, fields: vec![named("a")], field_names: Vec::new(), field_lines: Vec::new() },
+            witchy_syntax::ast::Variant { name: "Err".into(), line: 0, fields: vec![named("e")], field_names: Vec::new(), field_lines: Vec::new() },
+        ];
+        definition
+    }
+
     #[test]
     fn nested_int_list_slice_owner_identity_preserves_exact_child_qualifiers() {
         let child = Type::Named("List".into(), vec![named("Int")]);
@@ -1145,9 +1161,11 @@ mod recursive_shape_tests {
         );
         let int_slice = view_slice(named("Int"));
         let packet = named("Packet");
-        let definitions = BTreeMap::from([(
-            "Packet".into(), definition("Packet", vec![int_slice.clone()], false),
-        )]);
+        let definitions = BTreeMap::from([
+            ("Packet".into(), definition("Packet", vec![int_slice.clone()], false)),
+            ("Option".into(), option_definition()),
+            ("Result".into(), result_definition()),
+        ]);
         assert!(is_rooted_int_view_carrier(&int_slice, &definitions));
         assert!(is_rooted_int_view_aggregate(&packet, &definitions));
         let normalized_int_slice = Type::Qualified(
@@ -1235,7 +1253,10 @@ mod recursive_shape_tests {
     #[test]
     fn unit_payloads_preserve_generic_and_sum_shapes() {
         let payload = generic_definition("Payload", &["a"], vec![named("a"), named("Int")], false);
-        let definitions = BTreeMap::from([("Payload".into(), payload)]);
+        let definitions = BTreeMap::from([
+            ("Payload".into(), payload),
+            ("Option".into(), option_definition()),
+        ]);
         for unit in [named("Nil"), named("Unit"), Type::Tuple(Vec::new())] {
             let applied = Type::Named("Payload".into(), vec![unit.clone()]);
             assert_eq!(scalar_aggregate_shape(&applied, &definitions).unwrap().fields,
@@ -1252,7 +1273,10 @@ mod recursive_shape_tests {
     #[test]
     fn recursive_shapes_preserve_fields_without_expanding_cycles() {
         let tree = definition("Tree", vec![named("Int"), named("Tree")], false);
-        let definitions = BTreeMap::from([("Tree".into(), tree.clone())]);
+        let definitions = BTreeMap::from([
+            ("Tree".into(), tree.clone()),
+            ("Option".into(), option_definition()),
+        ]);
         let shape = scalar_aggregate_shape(&named("Tree"), &definitions).unwrap();
         assert_eq!(shape.fields, tree.variants[0].fields);
         assert!(aggregate_field_shape_well_formed(&Type::Named("Option".into(), vec![named("Tree")]), &definitions));
@@ -1352,6 +1376,8 @@ mod recursive_shape_tests {
         let definitions = BTreeMap::from([
             ("A".into(), definition("A", vec![named("B")], false)),
             ("B".into(), definition("B", vec![named("A"), named("String")], false)),
+            ("Option".into(), option_definition()),
+            ("Result".into(), result_definition()),
         ]);
         assert!(scalar_aggregate_shape(&named("A"), &definitions).is_some());
         assert!(scalar_aggregate_shape(&named("B"), &definitions).is_some());
@@ -1527,27 +1553,6 @@ fn scalar_aggregate_shape_uncached(
             packed: false,
         });
     }
-    match (name.as_str(), arguments.as_slice()) {
-        ("Option", [payload]) if aggregate_field_shape_well_formed(payload, definitions) => Some(ScalarAggregateShape {
-            name: "Option".into(),
-            fields: vec![int_type(), payload.clone()],
-            variants: vec![
-                ScalarVariant { name: "Some".into(), first_field: 1, arity: 1 },
-                ScalarVariant { name: "None".into(), first_field: 2, arity: 0 },
-            ],
-            tagged: true,
-            packed: false,
-        }),
-        ("Result", [value, error]) if aggregate_field_shape_well_formed(value, definitions) && aggregate_field_shape_well_formed(error, definitions) => Some(ScalarAggregateShape {
-            name: "Result".into(),
-            fields: vec![int_type(), value.clone(), error.clone()],
-            variants: vec![
-                ScalarVariant { name: "Ok".into(), first_field: 1, arity: 1 },
-                ScalarVariant { name: "Err".into(), first_field: 2, arity: 1 },
-            ],
-            tagged: true,
-            packed: false,
-        }),
-        _ => definitions.get(name).and_then(|definition| shape_from_instantiation(definition, arguments, definitions)),
-    }
+    definitions.get(name)
+        .and_then(|definition| shape_from_instantiation(definition, arguments, definitions))
 }

@@ -1143,6 +1143,18 @@ A focused compiler check and the existing phantom-versus-stored-resource case
 passed. Admitted unoptimized Wasm and zero-leak evidence remain open, so no
 additional A–O row closes.
 
+Row G declaration-backed sum shapes (implemented but unverified,
+2026-09-26): the shared aggregate field guard, concrete identity, scalar
+shape builder, and owned-carrier entry now derive `Option` and `Result` arity,
+payloads, variant names, and tag order from checked declarations. Their
+independent name-based grants are removed; a missing or malformed declaration
+fails closed. Existing source-shape contract cases pass with declarations
+supplied as their source fixtures; the standalone rooted-view ABI fixture also
+supplies the declaration it authenticates. The existing admitted-Wasm scalar-sum
+program still prints `12 9 0`, `7 9 5 -1`, `ok 3`, and `err 3`; its test does
+not audit leaks. This structural replacement does not close an A–O row
+without the required full independent evidence and zero-leak audit.
+
 Stored-child contract follow-up (implemented but unverified, 2026-09-25):
 replay eligibility, aggregate cloneability, GC view-owner detection,
 capability traversal, and opaque closure-owner evidence use one instantiated

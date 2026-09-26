@@ -66,16 +66,17 @@ mod canonical_abi {
 
     #[test]
     fn qualified_rooted_view_manifest_keeps_checked_source_storage() {
-        let ordinary = manifest("fn relay(view: &Option(String)) -> &Option(String):\n    view\n");
-        let frozen = manifest("fn relay(view: &Option(frozen String)) -> &Option(frozen String):\n    view\n");
+        let with_option = |source: &str| format!("type Option:\n    Some(a)\n    None\n\n{source}");
+        let ordinary = manifest(&with_option("fn relay(view: &Option(String)) -> &Option(String):\n    view\n"));
+        let frozen = manifest(&with_option("fn relay(view: &Option(frozen String)) -> &Option(frozen String):\n    view\n"));
         assert_ne!(ordinary.digest(), frozen.digest(),
             "a frozen child cannot inherit the ordinary record-root ABI key");
 
-        let qualified_list = typed("fn relay(view: &Option(frozen List(Int))) -> &Option(frozen List(Int)):\n    view\n");
+        let qualified_list = typed(&with_option("fn relay(view: &Option(frozen List(Int))) -> &Option(frozen List(Int)):\n    view\n"));
         assert!(derive_manifest(&qualified_list, &["relay".into()]).is_err(),
             "an erased qualified List child must remain outside the record-root ABI");
 
-        let nested = typed("fn accept(f: fn(&Option(frozen String)) -> Int) -> Int:\n    0\n");
+        let nested = typed(&with_option("fn accept(f: fn(&Option(frozen String)) -> Int) -> Int:\n    0\n"));
         assert!(derive_manifest(&nested, &["accept".into()]).is_err(),
             "a nested qualified rooted-view callable needs a structural ABI key");
 
