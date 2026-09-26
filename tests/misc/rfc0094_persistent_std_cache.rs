@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::Duration;
+use std::time::{Duration, UNIX_EPOCH};
 
 const CHILD_ENV: &str = "WITCHY_RFC0094_CACHE_CHILD";
 const CACHE_DIR_ENV: &str = "WITCHY_TEST_STDLIB_CACHE_DIR";
@@ -70,16 +70,16 @@ fn main(console: Console):
         Ok(version) -> console.print(semver.format(version))
         Err(_) -> console.print("error")
 "#;
+    // Linking reads or writes the persistent std expansion cache. The parent
+    // compares the linked AST byte for byte across cold, warm, and repaired
+    // runs, which pins the cached expansion more tightly than type-checking or
+    // running the program would.
     let parsed = witchy::parser::parse_module(source).expect("parse semver consumer");
     let linked = witchy::pipeline::link(vec![("main".into(), parsed)], "main")
         .expect("link semver consumer");
-    witchy::typeck::check(&linked).expect("typecheck semver consumer");
     let dump = std::env::var_os(DUMP_ENV).expect("child linked-AST dump path");
     std::fs::write(dump, format!("{linked:#?}"))
         .expect("write linked AST for parent comparison");
-    let output = witchy::interpreter::run_module(linked, ".", Vec::new())
-        .expect("run semver consumer");
-    assert_eq!(output, ["1.2.3"]);
 }
 
 #[test]
@@ -93,14 +93,16 @@ fn expanded_std_cache_hits_across_processes_and_repairs_corruption() {
     run_child(&root, &cold_dump);
     let entry = semver_entry(&root);
     let first = std::fs::read(&entry).expect("read populated cache entry");
-    let first_modified = std::fs::metadata(&entry)
-        .expect("cache metadata")
-        .modified()
-        .expect("cache modification time");
-
-    // Even filesystems with coarse timestamp granularity must distinguish a
-    // rewrite here. A true cross-process hit performs no write at all.
-    std::thread::sleep(Duration::from_millis(1100));
+    // Backdate the entry instead of sleeping past the filesystem's timestamp
+    // granularity: any rewrite now moves the mtime off this fixed past instant.
+    // A true cross-process hit performs no write at all.
+    let first_modified = UNIX_EPOCH + Duration::from_secs(1_000_000_000);
+    std::fs::File::options()
+        .write(true)
+        .open(&entry)
+        .expect("open cache entry")
+        .set_modified(first_modified)
+        .expect("backdate cache entry");
     run_child(&root, &warm_dump);
     let second_modified = std::fs::metadata(&entry)
         .expect("cache metadata after hit")

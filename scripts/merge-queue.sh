@@ -2408,6 +2408,16 @@ rebaseline_generated_snapshots() { # rebaseline_generated_snapshots <base> <bran
         note "rebaseline: generator build failed; skipping regen (the gate adjudicates)"
         return 0
     fi
+    # scripts/bin/cargo redirects an isolated `-p` graph like this one into
+    # `<target>-pure`, so `$rb_target/debug` can hold a STALE generator. On
+    # 2026-09-26 that stale binary silently reverted a landed census-input
+    # change. Run whichever copy the build just wrote.
+    local census_bin="./$rb_target/debug/rfc0087-census"
+    if [ -x "$gate_wt/$rb_target-pure/debug/rfc0087-census" ] \
+        && { [ ! -e "$gate_wt/$census_bin" ] \
+            || [ "$gate_wt/$rb_target-pure/debug/rfc0087-census" -nt "$gate_wt/$census_bin" ]; }; then
+        census_bin="./$rb_target-pure/debug/rfc0087-census"
+    fi
     tmp="$(mktemp "${TMPDIR:-/tmp}/witchy-rebaseline-XXXXXX")"
     census_tmp="$(mktemp "${TMPDIR:-/tmp}/witchy-census-proof-XXXXXX")"
     census_err="$(mktemp "${TMPDIR:-/tmp}/witchy-census-proof-error-XXXXXX")"
@@ -2415,7 +2425,7 @@ rebaseline_generated_snapshots() { # rebaseline_generated_snapshots <base> <bran
     # truncate the committed snapshot, and an identical output must not dirty
     # the tree.
     if [ -f "$gate_wt/rfcs/0087-migration-census.tsv" ] \
-        && ( cd "$gate_wt" && "./$rb_target/debug/rfc0087-census" . ) >"$census_tmp" 2>"$census_err"; then
+        && ( cd "$gate_wt" && "$census_bin" . ) >"$census_tmp" 2>"$census_err"; then
         census_run_ok=1
         [ ! -s "$census_err" ] && census_stderr_clean=1
         if ! cmp -s "$census_tmp" "$gate_wt/rfcs/0087-migration-census.tsv"; then
@@ -2424,7 +2434,7 @@ rebaseline_generated_snapshots() { # rebaseline_generated_snapshots <base> <bran
         fi
     fi
     if [ -f "$gate_wt/spec/stdlib.md" ] && ls "$gate_wt"/std/*.witchy >/dev/null 2>&1 \
-        && ( cd "$gate_wt" && "./$rb_target/debug/rfc0087-census" --stdlib-docs std/*.witchy ) >"$tmp" 2>/dev/null \
+        && ( cd "$gate_wt" && "$census_bin" --stdlib-docs std/*.witchy ) >"$tmp" 2>/dev/null \
         && ! cmp -s "$tmp" "$gate_wt/spec/stdlib.md"; then
         cat "$tmp" >"$gate_wt/spec/stdlib.md"
         files="${files:+$files }spec/stdlib.md"
