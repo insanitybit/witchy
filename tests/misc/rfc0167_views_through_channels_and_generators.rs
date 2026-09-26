@@ -163,7 +163,10 @@ fn channel_handle_refusal_and_owned_gc_result() {
         Err(error) => error,
         Ok(_) => panic!("live child handle must not enter a replayable continuation"),
     };
-    assert!(refusal.to_string().contains("closure") && refusal.to_string().contains("capture"),
+    // Source checking rejects the missing cancellation disposition before
+    // lowering can put the live child into a generated continuation capture.
+    assert!(refusal.to_string().contains("must-consume value `child`")
+        && refusal.to_string().contains("cancellation"),
         "unexpected refusal: {refusal}");
 
     // A copyable view child gets its own retained edge when the aggregate
