@@ -59,7 +59,7 @@ enum SnapshotUse { PersistentView, ReplayableTask }
 /// Instantiated stored children, with collection construction distinguished
 /// from declared aggregate fields. This describes source storage only; a
 /// caller still needs its layout and ownership-operation proof.
-enum StoredChildren {
+pub enum StoredChildren {
     Sequence(Type),
     Mapping(Type, Type),
     Aggregate(Vec<Type>),
@@ -256,7 +256,10 @@ fn carries_must(
     }, 0, &mut remaining)
 }
 
-fn stored_children(
+/// The exact children held in source storage for a checked type. An error
+/// means the constructor's arity or declared storage cannot be established.
+/// Consumers must not infer stored children from generic arguments on error.
+pub fn stored_children(
     ty: &Type,
     definitions: &BTreeMap<String, TypeDef>,
 ) -> Result<Option<StoredChildren>, ()> {
@@ -272,8 +275,15 @@ fn stored_children(
         }
         Type::Named(..) => match instantiated_declared_fields(ty, definitions) {
             Some(fields) => fields.map(|fields| Some(StoredChildren::Aggregate(fields))),
-            None => Ok(scalar_aggregate_shape(ty, definitions)
-                .map(|shape| StoredChildren::Aggregate(shape.fields))),
+            None => Ok(scalar_aggregate_shape(ty, definitions).map(|shape| {
+                // The shape's leading tag is physical metadata, not a source
+                // child. Traverse only payload slots named by variants.
+                let fields = shape.variants.iter().flat_map(|variant| {
+                    shape.fields[variant.first_field..variant.first_field + variant.arity]
+                        .iter().cloned()
+                }).collect();
+                StoredChildren::Aggregate(fields)
+            })),
         },
         _ => Ok(None),
     }

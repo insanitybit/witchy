@@ -163,6 +163,16 @@ the final closure witness; an unproved carrier remains refused at admission.
 Copyable recipe paths remain separate from the open per-execution ownership,
 mode-provenance, and cancellation work. No A–O row closes.
 
+Rows J/K direct frame storage walk (implemented but unverified, 2026-09-26):
+the lowerer's suspension frame planner now traverses the shared typed
+stored-child judgment for tuple, declared aggregate, and synthetic sum payloads.
+It no longer infers payloads from `Option` and `Result` names or from an
+unresolved constructor's generic arguments. Physical sum tags are excluded
+from source children, linked nominal aliases retain their checked declaration,
+and recursive expansion has a fixed bound. A focused compiler check passes;
+task ownership, execution-mode provenance, cancellation disposition, and the
+admitted-Wasm and zero-leak evidence remain open. No A–O row closes.
+
 Structural gaps under the 2026-09-25 composition clarification remain distinct.
 The checker now carries call-scoped origins through bindings, aggregate values,
 projections, branch joins, and closure captures, and rejects an escaping origin.

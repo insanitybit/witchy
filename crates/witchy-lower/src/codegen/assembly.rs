@@ -1297,50 +1297,45 @@ fn collect_gc_block_plans(
 fn collect_direct_suspension_type(
     cg: &Codegen<'_>,
     ty: &Type,
-    defs: &HashMap<String, &witchy_syntax::ast::TypeDef>,
+    definitions: &BTreeMap<String, witchy_syntax::ast::TypeDef>,
     seen: &mut HashSet<String>,
     types: &mut Vec<Type>,
-) {
+    remaining: &mut usize,
+) -> bool {
+    if *remaining == 0 {
+        return false;
+    }
+    *remaining -= 1;
+    // A recursive source declaration can revisit an identical instantiation.
+    // Stop there, including for open generic spellings that are not emitted.
+    let key = cg.gc_lookup_type_key(ty);
+    if !seen.insert(key) {
+        return true;
+    }
     if !type_has_var(ty) {
-        let key = cg.gc_lookup_type_key(ty);
-        if seen.insert(key) {
-            types.push(ty.clone());
-        }
+        types.push(ty.clone());
     }
     match ty.unqualified() {
-        Type::Tuple(items) => {
-            for item in items {
-                collect_direct_suspension_type(cg, item, defs, seen, types);
-            }
-        }
-        Type::Named(name, args) => {
-            let owner = cg.gc_nominal_names.get(name).unwrap_or(name);
-            if let Some(def) = defs.get(owner)
-                && witchy_syntax::ast::effective_nominal_type_def_params(def).len() == args.len()
+        Type::Tuple(_) | Type::Named(_, _) => {
+            // Only aggregate fields are reachable as frame-owned slots.
+            // Sequence and mapping elements live behind their own carriers;
+            // callable signatures and phantom parameters store nothing here.
+            if let Ok(Some(witchy_canonical_source::storage::StoredChildren::Aggregate(fields))) =
+                witchy_canonical_source::storage::stored_children(ty, definitions)
             {
-                for field in witchy_types::storage::instantiate_type_def_fields(def, args)
-                    .into_iter()
-                    .flatten()
-                {
-                    collect_direct_suspension_type(cg, &field, defs, seen, types);
-                }
-            } else if matches!(name.as_str(), "Option" | "Result") {
-                // These built-in sums store their type arguments as payloads.
-                // Other unresolved constructors may have phantom parameters
-                // (notably Sender(m)/Receiver(m)); do not infer storage from
-                // generic arguments when no declaration proves it.
-                for arg in args {
-                    collect_direct_suspension_type(cg, arg, defs, seen, types);
-                }
+                return fields.iter().all(|field| {
+                    collect_direct_suspension_type(cg, field, definitions, seen, types, remaining)
+                });
             }
         }
-        Type::Slice(inner) => collect_direct_suspension_type(cg, inner, defs, seen, types),
+        Type::Slice(inner) => return collect_direct_suspension_type(cg, inner, definitions, seen, types, remaining),
         Type::Fn(_, _, _, _) | Type::Dyn(_, _) => {}
         Type::RecordCompose { .. } => unreachable!(
             "compiler invariant violated: record composition must be normalized before Wasm suspension planning"
         ),
         Type::Qualified(_, _) => unreachable!("unqualified above"),
     }
+    true
 }
 
 /// Exact closed types stored in compiler-generated suspension frames. The
@@ -1355,19 +1350,20 @@ fn direct_suspension_types(
     if !carrier.is_wholly_direct() {
         return Vec::new();
     }
-    let defs: HashMap<String, &witchy_syntax::ast::TypeDef> = module
-        .items
-        .iter()
-        .filter_map(|item| match item {
-            Item::Type(def) => Some((def.name.clone(), def)),
-            _ => None,
-        })
-        .collect();
+    let mut definitions = witchy_canonical_source::aggregates::type_definitions(module);
+    for (alias, owner) in &cg.gc_nominal_names {
+        if let Some(definition) = definitions.get(owner).cloned() {
+            definitions.entry(alias.clone()).or_insert(definition);
+        }
+    }
     let mut seen = HashSet::new();
     let mut types = Vec::new();
+    let mut remaining = 4_096;
     for state in carrier.states() {
         for slot in &state.slots {
-            collect_direct_suspension_type(cg, &slot.ty, &defs, &mut seen, &mut types);
+            if !collect_direct_suspension_type(cg, &slot.ty, &definitions, &mut seen, &mut types, &mut remaining) {
+                return Vec::new();
+            }
         }
     }
     types
