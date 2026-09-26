@@ -272,7 +272,7 @@ found no remaining authority bypass in this change. No zero-leak audit or
 A–O closure is claimed; generic and indirect transport remains incomplete.
 
 Declared task-producing function values (implemented but unverified,
-2026-09-26): the checked task-provenance flow now binds an exact non-generic
+2026-09-26): the checked task-provenance flow now binds an exact checked
 declaration reference to its symbolic result, source execution mode, and
 parameter conventions. Local aliases and aggregate projections retain this
 proof; direct function-value and expression calls instantiate it with their
@@ -282,9 +282,17 @@ requirements, an unknown callable, and a same-named shadowing parameter remain
 unproved. A focused checker build and a local tuple-carried function-value
 program passed admitted Wasm execution with the independently expected `5`;
 opaque and shadowed factory parameters refused in opt mode. Adversarial review
-found no concrete authority widening. No zero-leak audit or A–O closure is
-claimed; generic function values and public higher-order task obligations
-remain open.
+found no concrete authority widening. The checker now authenticates the exact
+bare declaration expression in its type table, so generic function values
+with fully resolved use-site types can use the same provenance flow. Generic
+storage and trait obligations remain fail-closed for transported function
+values: indirect invocation cannot reproduce their direct-call proofs. A
+temporary opt CLI program carried a generic task-producing function through
+a tuple, invoked it with a `String`, and printed the independently expected
+`5` from admitted Wasm. Adversarial review found and prompted the trait-bound
+refusal, then found no further concrete origin or shadowing bypass. No
+zero-leak audit or A–O closure is claimed; public higher-order task
+obligations remain open.
 
 Source execution-mode ownership (implemented but unverified, 2026-09-26):
 the checker, loan analysis, call-scoped analysis, canonical lowerer, and legacy

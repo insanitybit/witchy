@@ -2201,12 +2201,14 @@ task values still require a whole-value, one-time start.
 An opt task origin survives a checked immutable call argument when its exact
 storage has a lawful replay copy. An `own` or `var` argument, an unknown call
 contract, or an exclusive reference cannot preserve that origin.
-A non-generic function value from an exact checked declaration can also carry
-its task execution origin through local aliases and aggregates. This requires
-that the declaration has no unrepresented opt task input obligation; an opaque
-or shadowing callable with the same function type does not acquire that origin.
-Generic and externally supplied function values still need an explicit checked
-contract before opt code can await a task they produce.
+A function value from an exact checked declaration can also carry its task
+execution origin through local aliases and aggregates, including a generic
+declaration whose use-site type is fully resolved. This requires that the
+declaration has no unrepresented storage or trait obligation and no
+unrepresented opt task input obligation; an opaque or shadowing callable with
+the same function type does not acquire that origin. Externally supplied
+function values still need an explicit checked contract before opt code can
+await a task they produce.
 
 The checker, loan analysis, and canonical lowering use the linked source
 callable's mode when deciding opt contracts, including after async segment and

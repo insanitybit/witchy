@@ -337,9 +337,7 @@ impl Analyzer<'_> {
             Expr::Var(name) => {
                 if let Some(local) = environment.get(name) {
                     local.clone()
-                } else if self.table.function_type(name).is_some_and(|declared| {
-                    self.table.type_of(expression).and_then(ty_to_ast).as_ref() == Some(&declared)
-                }) {
+                } else if self.table.declared_function_value(expression) == Some(name.as_str()) {
                     let declaration = self.module.items.iter().find_map(|item| match item {
                         Item::Function(function) if function.name == *name => Some(function),
                         _ => None,

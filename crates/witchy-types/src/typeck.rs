@@ -7978,6 +7978,11 @@ impl Checker {
                             "generic function `{name}` has storage obligations and cannot be transported as a function value; they require a direct checked call",
                         ));
                     }
+                    if self.fn_bounds.get(name).is_some_and(|bounds| !bounds.is_empty()) {
+                        return terr(format!(
+                            "generic function `{name}` has trait bounds and cannot be transported as a function value; they require a direct checked call",
+                        ));
+                    }
                     let typarams: HashSet<u32> = self
                         .fn_typarams
                         .get(name)
@@ -8013,6 +8018,10 @@ impl Checker {
                         &function_ty,
                         &format!("function value `{name}`"),
                     )?;
+                    if self.type_record.is_some() {
+                        self.declared_function_values
+                            .insert(expr as *const Expr as usize, name.clone());
+                    }
                     return Ok(function_ty);
                 }
                 if self.trait_method_names.contains(name) {
@@ -10874,6 +10883,9 @@ pub struct TypeTable {
     /// compiler-known `.owned()` operation. Structural rewrites must rebuild
     /// this table before any authority or tail-manifest consumer uses it.
     compiler_owned_materializations: HashSet<usize>,
+    /// Exact checker-authenticated source declaration behind a function-value
+    /// expression. This remains valid for a generic use-site instantiation.
+    declared_function_values: HashMap<usize, String>,
     /// Canonical view expressions retain their carrier type even while a
     /// generic payload variable remains unresolved. These are authenticated
     /// formation facts, not general permission for downstream consumers to
@@ -11578,6 +11590,13 @@ impl TypeTable {
 
     pub fn is_compiler_owned_materialization(&self, e: &Expr) -> bool {
         self.compiler_owned_materializations.contains(&(e as *const Expr as usize))
+    }
+
+    pub(crate) fn declared_function_value(&self, e: &Expr) -> Option<&str> {
+        matches!(self.type_of(e), Some(Ty::Fn(..)))
+            .then(|| self.declared_function_values.get(&(e as *const Expr as usize)))
+            .flatten()
+            .map(String::as_str)
     }
 
     pub(crate) fn view_type_of(&self, e: &Expr) -> Option<&Ty> {
@@ -12371,6 +12390,7 @@ fn run_check_selected(
         unique_storage_types: std::cell::RefCell::new(HashMap::new()),
         type_record: if record { Some(HashMap::new()) } else { None },
         compiler_owned_materializations: HashSet::new(),
+        declared_function_values: HashMap::new(),
         // Construction requests are also retained during ordinary checking so
         // capability payloads resolved only by the ending substitution are
         // rejected before annotation or lowering.
@@ -12990,6 +13010,7 @@ fn run_check_selected(
         return Ok(Some(TypeTable {
             types,
             compiler_owned_materializations: c.compiler_owned_materializations,
+            declared_function_values: c.declared_function_values,
             view_types,
             local_callees,
             non_completing,

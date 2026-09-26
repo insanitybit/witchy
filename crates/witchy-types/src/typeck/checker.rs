@@ -72,6 +72,9 @@ pub(super) struct Checker {
     /// operation. Method spelling and receiver shape alone cannot distinguish
     /// this operation from a user-declared method.
     pub(super) compiler_owned_materializations: HashSet<usize>,
+    /// A persistent bare declaration expression checked as a function value.
+    /// Local bindings and transient desugar nodes never mint this origin.
+    pub(super) declared_function_values: HashMap<usize, String>,
     /// Directed concrete-to-existential coercions discovered while checking.
     /// The types remain checker types until the ending substitution is known.
     /// [`TypeTable`] preserves unresolved requests so final existential
