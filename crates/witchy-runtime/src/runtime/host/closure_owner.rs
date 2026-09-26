@@ -671,11 +671,15 @@ impl Binding {
         let wasmtime::Val::I32(environment) = payload.field(&mut store, 0)? else {
             bail!("aggregate environment pointer is missing");
         };
-        let wasmtime::Val::I32(tag) = payload.field(&mut store, 1)? else {
-            bail!("aggregate constructor tag is missing");
+        // Aggregate variants live in the checked constructor identity and
+        // the guest environment's tag field. The second host payload lane is
+        // reserved for closure callable codes and is inert for aggregates.
+        // `access` above has already required this exact constructor token.
+        let wasmtime::Val::I32(callable_code) = payload.field(&mut store, 1)? else {
+            bail!("aggregate callable-code lane is missing");
         };
-        if tag != i32::try_from(self.environment_tag).map_err(|_| wasmtime::Error::msg("aggregate tag exceeds physical lane"))? {
-            bail!("aggregate constructor tag mismatch");
+        if callable_code != 0 {
+            bail!("aggregate callable-code lane must be inert");
         }
         for (field, child) in self.capture_fields.iter()
             .filter(|field| matches!(field.kind, CaptureFieldKind::Owner(_)))

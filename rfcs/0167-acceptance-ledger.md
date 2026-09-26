@@ -1359,6 +1359,21 @@ so no A–O row closes. The owned GC result ABI is now implemented separately;
 `task.Step(task.Handle)` still needs a lawful one-shot task capture and
 consuming aggregate extraction before it can be admitted end to end.
 
+Generated continuation affine ABI and scheduler handle transfer (implemented
+but not an A–O closure, 2026-09-26): the earlier `task.Step(task.Handle)`
+refusals above are superseded for a spawned child whose handle is promptly
+joined. SafeWIR now binds the same recursive affine source/physical plan to
+checked lambda parameters and results that it already bound to named
+functions; the exact closure witness and environment offset authenticate the
+extra lanes. Wasm lowering accepts writes through a moved unique indirect
+parameter under the SafeWIR effect contract. Opaque aggregate deconstruction
+checks the inert host callable-code lane as zero and uses the exact constructor
+token for variant identity. The existing slice/async program now includes a
+spawned child reading the captured slice and requires the independently
+computed `spawn 30` output on admitted unoptimized Wasm with zero canonical
+heap leaks. A live handle across an unrelated suspension, general one-shot
+capture, and cancellation disposition remain open; no additional row closes.
+
 Row G owned GC result contract (implemented but unverified, 2026-09-26):
 an affine or root-unique opaque GC source result now maps to a distinct
 `OwnedGc` contract. Source ABI correspondence checks its exact owner family;

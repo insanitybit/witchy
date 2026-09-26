@@ -4,10 +4,8 @@
 //! `own` parameters; consuming a scalar-value view is a plain copy of the value.
 //!
 //! Independent expectation, admitted unoptimized Wasm, zero-leak audit. One
-//! program, one async compile. A spawned task holding these views is not
-//! evidence here: `chan.spawn` yields a `task.Step(task.Handle)` whose `must`
-//! payload still lacks a consuming extraction from its opaque GC owner, so it
-//! fails closed (acceptance ledger, row K channel boundary).
+//! program, one async compile. Spawned scalar-value views are not exercised by
+//! this program; the slice-view spawn path has its own existing async program.
 
 use witchy::codegen;
 use witchy::opt::{self, OptSet};

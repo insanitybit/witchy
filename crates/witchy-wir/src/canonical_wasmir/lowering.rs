@@ -590,12 +590,18 @@ pub(super) fn is_indirect_parameter(signature: &FunctionSignature, index: usize,
         && signature.contract.parameters.get(index).is_some_and(|parameter| {
             let effects = signature.contract.parameter_effects.get(&(index as u32));
             match parameter.ownership {
-                ParameterOwnership::Shared
-                | ParameterOwnership::WriteBack
-                | ParameterOwnership::Unique => effects
+                ParameterOwnership::Shared | ParameterOwnership::WriteBack => effects
                     .is_none_or(|effects| effects.iter().all(|effect| matches!(
                         effect,
                         MemoryEffect::Read | MemoryEffect::Retain | MemoryEffect::Release,
+                    ))),
+                // A moved unique token can be written by its callee. The
+                // source-bound affine plan and final SafeWIR check establish
+                // the exact token transfer before this representation step.
+                ParameterOwnership::Unique => effects
+                    .is_none_or(|effects| effects.iter().all(|effect| matches!(
+                        effect,
+                        MemoryEffect::Read | MemoryEffect::Retain | MemoryEffect::Release | MemoryEffect::Write,
                     ))),
                 // A `var unique` function-value lane has a checked write-back
                 // contract.  Its caller still has to move the exact token and

@@ -88,6 +88,83 @@ pub(super) fn affine_abi_proofs<S: ModuleStage>(
             }
         }
     }
+    // Generated continuations are callable implementations too. Their first
+    // physical parameter is the closure environment; the remaining ABI is
+    // authenticated by the exact checked lambda witness in candidate_abi.
+    // Bind recursive affine plans to those lanes before the memory checker
+    // sees a must-bearing Step/aggregate crossing a continuation call.
+    for binding in candidate.closure_bindings().entries() {
+        let refuse = || CandidateAbiBindingError::ClosureSignatureMismatch { closure: binding.closure() };
+        let witness = source.closure_witness().entries().get(binding.closure() as usize)
+            .ok_or_else(refuse)?;
+        let function = candidate.functions().iter().find(|function| function.id == binding.function())
+            .ok_or(CandidateAbiBindingError::MissingCandidateFunction { function: binding.function() })?;
+        let signature = candidate.signatures().iter().find(|signature| signature.id == function.signature)
+            .ok_or(CandidateAbiBindingError::MissingCandidateSignature { function: binding.function() })?;
+        let Type::Fn(parameters, result, conventions, _) = witness.declared_signature() else {
+            return Err(refuse());
+        };
+        if signature.parameters.len() != parameters.len() + 1 {
+            return Err(refuse());
+        }
+        let mut proof = AffineSignatureProof {
+            parameters: vec![None; signature.parameters.len()],
+            results: vec![None; signature.results.len()],
+        };
+        for (source_index, ty) in parameters.iter().enumerate() {
+            let physical_index = source_index + 1;
+            let Some(shape) = affine_storage_shape(ty, source.type_definitions()) else {
+                if source.storage_plan(ty.unqualified()).requires_affine_owner_token() {
+                    return Err(refuse());
+                }
+                continue;
+            };
+            let Some(crate::canonical_safewir::ValueType::Ref(layout)) = signature.parameters.get(physical_index) else {
+                if matches!(signature.parameters.get(physical_index), Some(crate::canonical_safewir::ValueType::Gc(_))) {
+                    continue;
+                }
+                return Err(refuse());
+            };
+            proof.parameters[physical_index] = Some(bind_plan(ty, *layout, &shape, &layouts, source, &mut proofs.layouts)
+                .ok_or_else(refuse)?);
+        }
+        if let Some(shape) = affine_storage_shape(result, source.type_definitions()) {
+            match signature.results.first() {
+                Some(crate::canonical_safewir::ValueType::Ref(layout)) => {
+                    proof.results[0] = Some(bind_plan(result, *layout, &shape, &layouts, source, &mut proofs.layouts)
+                        .ok_or_else(refuse)?);
+                }
+                Some(crate::canonical_safewir::ValueType::Gc(_)) => {}
+                _ => return Err(refuse()),
+            }
+        } else if source.storage_plan(result.unqualified()).requires_affine_owner_token() {
+            return Err(refuse());
+        }
+        let writebacks = parameters.iter().enumerate().filter_map(|(index, _)|
+            (conventions.get(index).copied().unwrap_or(Convention::Let) == Convention::Var)
+                .then_some(index + 1)).collect::<Vec<_>>();
+        let hidden_start = signature.results.len().checked_sub(writebacks.len()).ok_or_else(refuse)?;
+        for (physical_index, parameter_proof) in proof.parameters.iter().enumerate() {
+            let Some(parameter_proof) = parameter_proof else { continue };
+            let Some(crate::canonical_safewir::ParameterContract {
+                value_type: crate::canonical_safewir::ValueType::Ref(parameter_layout),
+                ownership: crate::canonical_safewir::ParameterOwnership::UniqueWriteBack,
+            }) = signature.contract.parameters.get(physical_index) else { continue };
+            let offset = writebacks.iter().position(|index| *index == physical_index).ok_or_else(refuse)?;
+            let result_index = hidden_start + offset;
+            if !matches!(signature.contract.results.get(result_index),
+                Some(crate::canonical_safewir::ResultContract::Unique { layout }) if layout == parameter_layout)
+            {
+                return Err(refuse());
+            }
+            proof.results[result_index] = Some(parameter_proof.clone());
+        }
+        if proof.parameters.iter().chain(&proof.results).any(Option::is_some)
+            && proofs.signatures.insert(signature.id, proof.clone()).is_some_and(|prior| prior != proof)
+        {
+            return Err(refuse());
+        }
+    }
     bind_owner_environments(candidate, source, &layouts, &mut proofs)?;
     bind_local_allocations(candidate, source, &layouts, &mut proofs)?;
     Ok(proofs)
