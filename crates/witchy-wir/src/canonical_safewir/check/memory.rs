@@ -1783,6 +1783,17 @@ pub mod self_checks {
             checker.check(&Operation::Load { destination: ValueId::new(11), place: read.clone(), transfer: LoadTransfer::ClonePresent }).unwrap();
             assert!(checker.check(&Operation::Load { destination: LOADED, place: read, transfer: LoadTransfer::TakeNullableUnique }).is_err());
         });
+        with_nullable_checker(|checker, child| {
+            checker.check(&Operation::Store {
+                place: nullable_field(SOURCE, child, AccessMode::Write),
+                value: CHILD,
+                transfer: StoreTransfer::MoveUnique,
+            }).unwrap();
+            checker.check(&Operation::MoveValue { destination: DESTINATION, source: SOURCE }).unwrap();
+            let read = nullable_field(DESTINATION, child, AccessMode::Read);
+            checker.check(&Operation::Load { destination: LOADED, place: read.clone(), transfer: LoadTransfer::TakeNullableUnique }).unwrap();
+            assert!(checker.check(&Operation::Load { destination: ValueId::new(11), place: read, transfer: LoadTransfer::TakeNullableUnique }).is_err());
+        });
     }
 
     fn with_pointer_slot_checker(

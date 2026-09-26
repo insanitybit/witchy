@@ -699,6 +699,9 @@ impl<'a> MemoryChecker<'a> {
                     object: place.object(),
                 });
             }
+            if self.nullable_slot_absent(key.0, key.1) {
+                return self.unsupported("Load(take of absent nullable slot)");
+            }
             let stored = self.stored_slot_by_identity(key.0, key.1).cloned();
             if !root.initialized_owned_slots && stored.is_none()
                 && !self.nullable_slot_absent(key.0, key.1)
@@ -715,7 +718,12 @@ impl<'a> MemoryChecker<'a> {
             if !Self::is_managed_storage(&child) || child.ownership != Ownership::Unique {
                 return self.unsupported("Load(nullable take of non-unique child)");
             }
-            self.state.stored_objects.remove(&key);
+            let aliases = self.state.stored_objects.keys().copied().filter(|(container, slot)| {
+                *slot == key.1 && self.same_allocation(key.0, *container)
+            }).collect::<Vec<_>>();
+            for alias in aliases {
+                self.state.stored_objects.remove(&alias);
+            }
             self.state.nullable_absent_slots.insert(key);
             self.state.objects.insert(destination, child);
             return Ok(());
