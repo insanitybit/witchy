@@ -1373,6 +1373,19 @@ A focused compiler check and the existing phantom-versus-stored-resource case
 passed. Admitted unoptimized Wasm and zero-leak evidence remain open, so no
 additional A–O row closes.
 
+Closure runtime-template census (implemented but unverified, 2026-09-26):
+the witness walker and lowerer now use the same shared generic-template
+classifier. An entry-module template stays in the canonical item inventory
+but cannot mint a concrete closure witness; its checked specialized instance
+supplies that witness. A temporary opt CLI program with an `own` generic
+capture specialized to `Int` printed the independently expected `5` on
+admitted Wasm; the equivalent call-scoped `let` capture refused. Tuple-root
+view closure capture still fails closed at candidate ABI admission. The
+checker capture path still has a separate shape gate; migrating it to the
+shared replay judgment requires a post-specialization executable scope so
+unused standard-library helper bodies cannot reject unrelated programs.
+This smoke has no zero-leak audit, so no A–O row closes.
+
 Row G stored-view containment (implemented but unverified, 2026-09-26):
 whole-record-root eligibility and aggregate view-field classification now
 traverse the shared checked stored-child relation. The separate syntax walker

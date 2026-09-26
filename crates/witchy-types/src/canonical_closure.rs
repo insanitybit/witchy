@@ -695,11 +695,13 @@ fn walk_module(typed: &TypedModule) -> Result<Builder<'_>, ClosureWitnessError> 
         let item = u32::try_from(item_index).map_err(|_| ClosureWitnessError::PathOverflow)?;
         match item_def {
             Item::Function(function) => {
-                // Use the same runtime inventory as layouts, callable/tail
-                // witnesses, and lowering. Unused generic library templates
-                // need not have concrete lambda types. Keep original item
-                // indices so admitted callable identities do not shift.
-                if !scope.contains(&function.name) { continue; }
+                // Entry-module generic templates remain in canonical scope to
+                // preserve item ordinals, but have no executable lambda type.
+                // Witness only concrete runtime callables, as layouts and
+                // lowering do. Keep original item indices for identity.
+                if !scope.contains(&function.name)
+                    || witchy_canonical_source::scope::function_has_free_signature_variables(function)
+                { continue; }
                 let callable = ProperTailCallableId { item, method: None, lambda_path: Vec::new() };
                 let param_types = typed.table().function_type(&function.name).and_then(|ty| match ty { Type::Fn(inputs, _, _, _) => Some(inputs), _ => None }).unwrap_or_default();
                 builder.walk_callable(&function.body, callable, &function.params, &param_types)?;

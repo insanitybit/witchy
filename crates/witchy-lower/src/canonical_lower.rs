@@ -272,7 +272,7 @@ pub fn lower_typed_module(
         // witness into a skipped scan; only that exact free-variable template
         // shape remains compile-time input here.
         if source.callable_signature(&function.name).is_none() {
-            if generic_template_without_callable_witness(function) {
+            if witchy_canonical_source::scope::function_has_free_signature_variables(function) {
                 continue;
             }
             return Err(CanonicalLoweringError::MissingCheckedFunctionType(
@@ -388,7 +388,7 @@ pub fn lower_typed_module(
             continue;
         }
         let Some(function_type) = source.callable_signature(&function.name) else {
-            if generic_template_without_callable_witness(function) {
+            if witchy_canonical_source::scope::function_has_free_signature_variables(function) {
                 continue;
             }
             return Err(CanonicalLoweringError::MissingCheckedFunctionType(
@@ -556,7 +556,7 @@ pub fn lower_typed_module(
             continue;
         }
         let Some(function_type) = source.callable_signature(&function.name).cloned() else {
-            if generic_template_without_callable_witness(function) {
+            if witchy_canonical_source::scope::function_has_free_signature_variables(function) {
                 continue;
             }
             return Err(CanonicalLoweringError::MissingCheckedFunctionType(
@@ -1056,7 +1056,7 @@ pub fn lower_typed_module(
             continue;
         }
         if source.callable_signature(&function.name).is_none()
-            && generic_template_without_callable_witness(function)
+            && witchy_canonical_source::scope::function_has_free_signature_variables(function)
         {
             continue;
         }
@@ -2604,23 +2604,6 @@ fn generic_shared_relay_template_candidate(
         && matches!(result_inner.unqualified(), Type::Named(parameter, arguments)
             if parameter == type_parameter && arguments.is_empty())
         && is_direct_shared_owned_object(concrete)
-}
-
-/// Mirror the checked-source runtime inventory boundary: a declaration with
-/// free signature variables is a monomorphization template, never a callable
-/// witness. Keeping this local syntax check alongside a missing-witness error
-/// makes every other absent final declaration fail closed.
-fn generic_template_without_callable_witness(function: &witchy_syntax::ast::Function) -> bool {
-    let mut variables = Vec::new();
-    for parameter in &function.params {
-        if let Some(ty) = &parameter.ty {
-            witchy_syntax::ast::collect_type_vars(ty, &mut variables);
-        }
-    }
-    if let Some(result) = &function.ret {
-        witchy_syntax::ast::collect_type_vars(result, &mut variables);
-    }
-    !variables.is_empty()
 }
 
 fn signature_from_type(

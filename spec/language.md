@@ -1311,6 +1311,9 @@ view-producing expressions without a source proof refuse capture. Constructor
 patterns with qualified fields also refuse until construction carries a
 per-value qualifier proof. This
 structural path remains unverified for RFC-0167 acceptance evidence.
+The closure witness and SafeWIR verify the exact capture transfer. Generic
+source templates without executable signatures do not mint closure authority;
+their concrete checked instances supply the witness used by lowering.
 
 Non-packed whole-root `Option`, `Result`, and declared aggregate views derive
 their identity from recursively proved carrier leaves and their checked
