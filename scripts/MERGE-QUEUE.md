@@ -99,7 +99,9 @@ and handoff notes. It is observational, not a locking or file-ownership system.
   (strategy `prefix_split` / `culprit_evict` / `individual`), `evicted`
   (culprit member sent to a solo gate — see batch red below), `rebaselined`
   (prepare regenerated a stale generated snapshot onto the candidate),
-  `validated` (test-mode green, merge skipped), `swept`. `merged`/`red`/
+  `validated` (test-mode green, merge skipped), `swept`,
+  `master_canary_started` / `_green` / `_red` / `_timeout` / `_yielded`
+  (the idle master canary, step 8 below). `merged`/`red`/
   `timeout` carry the gate log path, elapsed seconds, and a stage-timing
   summary parsed from check.sh's `==> [N] stage (t+Ns)` markers.
   Every attempt-terminal event also carries a **contention covariate** written
@@ -209,6 +211,9 @@ merge-queue.sh status                            JSON: queue entries with change
                                                  in-flight gate (branch, stage,
                                                  elapsed, log age); blocked_on when
                                                  the main checkout cannot land;
+                                                 master_canary (last finished
+                                                 canary) and master_canary_red
+                                                 (report path while master is red);
                                                  recent journal
 merge-queue.sh doctor                            human health check: coordinator alive?
                                                  lock stale? which stage? log fresh?
@@ -253,7 +258,12 @@ candidate ends in `.md`),
 `MERGE_QUEUE_GATE_WT` (isolated state for TESTING the coordinator itself),
 `MERGE_QUEUE_TEST_ROOT` + `MERGE_QUEUE_ALLOW_TEST_ROOT=1` (explicitly gated
 throwaway repository root for migration fixtures),
-`MERGE_QUEUE_ALLOW_MERGE=1` (test mode still merges — see Testing below).
+`MERGE_QUEUE_ALLOW_MERGE=1` (test mode still merges — see Testing below),
+`MERGE_QUEUE_CANARY` (`1`/`0`; default on for the live queue, off when
+`MERGE_QUEUE_STATE_DIR` isolates test state) and
+`MERGE_QUEUE_CANARY_INTERVAL` (1800s between canary starts; `0` = every new
+tip), `MERGE_QUEUE_CANARY_REPORT` (red report path, default
+`state/agents/MASTER-CANARY-RED.md`).
 `check.sh` raises the bounded stage-heartbeat count from three to eight
 two-minute pulses whenever `WITCHY_GATE_SCOPE` is present, enough for measured
 bounded macOS discovery without making the watchdog unbounded.
@@ -514,6 +524,25 @@ instead of `--workspace --all-targets`. `--full` / CI still run everything.
    cleanup. The next attempt deletes and recreates a marked inactive
    generation inside that same cancellable group before trusting Cargo
    fingerprints again.
+
+8. **Idle master canary.** Path-scoped gates run a slice of the suite, so a
+   test broken on master used to stay broken until an unrelated Cargo change
+   happened to trigger a workspace gate (2026-09-25: 43 landings over ~3h).
+   After prewarm, while no queue entry is ready and `gate.lock` is free, the
+   coordinator runs `run_gate` on the exact master tip with the shape a
+   Cargo-metadata batch gets (scope `all`, empty `WITCHY_GATE_NEXTEST`, i.e.
+   unfiltered `--workspace` nextest) minus fmt/rust-class/compile legs, in the
+   gate worktree under `gate.lock`, logging to
+   `logs/<ts>-master-canary-<sha12>.log`. At most once per finished tip
+   (`canary.json`) and per `MERGE_QUEUE_CANARY_INTERVAL` (`canary-last-start`).
+   It **yields**: the monitor polls `queue_has_ready_change` and kills only the
+   canary's process group (`master_canary_yielded`; the tip is retried later).
+   Red journals `master_canary_red` (first failing line, log, `last_green`,
+   commit `range` since the last green canary) and writes
+   `state/agents/MASTER-CANARY-RED.md` for bisection; green journals
+   `master_canary_green`, records `canary-last-green`, and removes the report.
+   **Report only**: it never merges, never moves master, never blocks a
+   submission or gate, and does not bisect.
 
 ## Invariants (the load-bearing rules — do not break these when extending)
 

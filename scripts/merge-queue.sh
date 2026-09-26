@@ -159,6 +159,32 @@ deferred_sweep=0
 active_gate_pgid=""
 gate_preflight_expr=""
 gate_preflight_nextest=""
+# A function run_gate polls between monitor ticks; when it succeeds the gate
+# is killed and reports `yielded`. Only the idle master canary sets it.
+gate_yield_probe=""
+
+# Master canary: path-scoped gates never run most of the workspace suite, so a
+# test broken on master stays broken until some unrelated Cargo change happens
+# to trigger a workspace gate (2026-09-25: 43 landings over ~3h). While the
+# queue has no ready work, run the workspace test stage once per new master
+# tip, at most once per MERGE_QUEUE_CANARY_INTERVAL seconds. Report only: a red
+# canary never blocks a submission or a gate. On by default for the live
+# queue, off for isolated test state unless MERGE_QUEUE_CANARY=1.
+canary_enabled="${MERGE_QUEUE_CANARY:-}"
+if [ -z "$canary_enabled" ]; then
+    if [ -n "${MERGE_QUEUE_STATE_DIR:-}" ]; then canary_enabled=0; else canary_enabled=1; fi
+fi
+canary_interval="${MERGE_QUEUE_CANARY_INTERVAL:-1800}"
+canary_state="$qdir/canary.json"
+canary_last_green="$qdir/canary-last-green"
+canary_last_start="$qdir/canary-last-start"
+if [ -n "${MERGE_QUEUE_CANARY_REPORT:-}" ]; then
+    canary_report="$MERGE_QUEUE_CANARY_REPORT"
+elif [ -n "${MERGE_QUEUE_STATE_DIR:-}" ]; then
+    canary_report="$qdir/agents/MASTER-CANARY-RED.md"
+else
+    canary_report="$(witchy_agent_state_dir "$root")/MASTER-CANARY-RED.md"
+fi
 
 now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 note() { printf 'merge-queue: %s\n' "$*" >&2; }
@@ -296,6 +322,14 @@ case "$gate_timeout" in
         exit 2
         ;;
 esac
+case "$canary_enabled:$canary_interval" in
+    [01]:[0-9]*) case "$canary_interval" in *[!0-9]*) canary_enabled=bad ;; esac ;;
+    *) canary_enabled=bad ;;
+esac
+if [ "$canary_enabled" = bad ]; then
+    note "MERGE_QUEUE_CANARY must be 0 or 1 and MERGE_QUEUE_CANARY_INTERVAL a non-negative integer"
+    exit 2
+fi
 case "$workspace_test_budget" in
     '' | *[!0-9]*)
         note "MERGE_QUEUE_WORKSPACE_TEST_BUDGET must be a non-negative integer (0 disables it)"
@@ -1546,6 +1580,7 @@ run_gate() { # run_gate <log> [fuzz-mode] [gate-scope] [queue-infra] [queue-infr
     local test_stage_seen=0
     local test_execution_start=""
     local test_stage_done=0
+    local gate_yielded=0
     while :; do
         if ! pid_is_alive "$gpid"; then
             if wait "$gpid"; then gate_result="green"; else gate_result="red"; fi
@@ -1555,6 +1590,11 @@ run_gate() { # run_gate <log> [fuzz-mode] [gate-scope] [queue-infra] [queue-infr
             return 0
         fi
         sleep "$monitor_interval"
+        if [ -n "$gate_yield_probe" ] && "$gate_yield_probe"; then
+            why="yielding to ready queue work"
+            gate_yielded=1
+            break
+        fi
         local t; t="$(date +%s)"
         local elapsed=$((t - start))
         # Hard wall-clock on workspace TEST EXECUTION. Cargo compilation is
@@ -1670,7 +1710,11 @@ run_gate() { # run_gate <log> [fuzz-mode] [gate-scope] [queue-infra] [queue-infr
     else
         invalidate_workspace_fingerprints "$gate_wt/$cargo_target_dir"
     fi
-    gate_result="timeout: $why"
+    if [ "$gate_yielded" -eq 1 ]; then
+        gate_result="yielded"
+    else
+        gate_result="timeout: $why"
+    fi
     return 0
 }
 
@@ -2090,8 +2134,13 @@ cmd_status() {
         queue_json="$(queue_entries_with_status | jq -s .)"
     fi
     local blocked_on; blocked_on="$(main_worktree_block_reason)"
+    local canary_json; canary_json="$(jq -c . "$canary_state" 2>/dev/null || true)"
+    [ -n "$canary_json" ] || canary_json=null
+    local canary_red=""
+    [ ! -f "$canary_report" ] || canary_red="$canary_report"
     jq -n \
         --argjson q "$queue_json" \
+        --argjson canary "$canary_json" --arg canary_red "$canary_red" \
         --slurpfile j <(tail -20 "$journal" 2>/dev/null || true) \
         --arg pid "$lk_pid" --arg gate_pgid "$lk_gate_pgid" \
         --arg what "$lk_what" --arg branch "$lk_branch" \
@@ -2103,6 +2152,8 @@ cmd_status() {
             {pid: $pid, gate_pgid: $gate_pgid, what: $what, branch: $branch, log: $log,
              stage: $stage, elapsed_s: $elapsed, log_age_s: $log_age} end),
           blocked_on: (if $blocked_on == "" then null else $blocked_on end),
+          master_canary: $canary,
+          master_canary_red: (if $canary_red == "" then null else $canary_red end),
           recent: $j}'
 }
 
@@ -2215,6 +2266,10 @@ cmd_doctor() {
         fi
     fi
     echo "test budget : ${workspace_test_budget}s (MERGE_QUEUE_WORKSPACE_TEST_BUDGET; 0 disables)"
+    local canary_line
+    canary_line="$(jq -r '"\(.result) at \(.sha[0:9]) (\(.at))"' "$canary_state" 2>/dev/null || true)"
+    echo "canary      : ${canary_line:-none yet} (enabled=$canary_enabled, interval ${canary_interval}s)"
+    [ ! -f "$canary_report" ] || echo "  MASTER RED: $canary_report"
     echo "recent      :"
     if [ -f "$journal" ]; then
         tail -5 "$journal" | jq -r '"  \(.ts)  \(.event)\t\(.branch)\(if .reason then "  (" + .reason + ")" else "" end)"'
@@ -3586,6 +3641,127 @@ prewarm_gate() {
     release_lock
 }
 
+# Master canary (see canary_enabled above). Runs the serialized gate's own
+# workspace test shape -- the shape a Cargo.toml-only batch gets: scope `all`,
+# no WITCHY_GATE_NEXTEST selection -- on the exact master tip, in the gate
+# worktree, under gate.lock, with fmt/rust-class/compile legs skipped. It never
+# merges, never moves master, and yields: ready queue work arriving mid-run
+# kills only the canary's own process group. The canaried SHA is recorded only
+# for a finished run, so a yielded canary retries the same tip once the queue
+# is idle again and the interval has elapsed.
+master_canary() {
+    [ "$canary_enabled" = 1 ] || return 0
+    [ -d "$gate_wt" ] || return 0
+    # Never wait for the lock here: a waiting canary would block the loop and
+    # delay the next gate. Try again on a later idle pass.
+    [ ! -d "$lock" ] || return 0
+    queue_has_ready_change && return 0
+    local m; m="$(git -C "$root" rev-parse --verify --quiet master)" || return 0
+    [ "$(jq -r '.sha // empty' "$canary_state" 2>/dev/null || true)" != "$m" ] || return 0
+    local t last_start
+    t="$(date +%s)"
+    last_start="$(cat "$canary_last_start" 2>/dev/null || true)"
+    case "$last_start" in '' | *[!0-9]*) last_start=0 ;; esac
+    [ "$((t - last_start))" -ge "$canary_interval" ] || return 0
+
+    local log; log="$logs/$(date +%Y%m%d-%H%M%S)-master-canary-${m:0:12}.log"
+    acquire_lock "master canary: ${m:0:9}" "" "$log"
+    if queue_has_ready_change || [ "$(git -C "$root" rev-parse master)" != "$m" ]; then
+        release_lock
+        return 0
+    fi
+    printf '%s\n' "$t" >"$canary_last_start"
+    git -C "$gate_wt" rebase --abort >/dev/null 2>&1 || true
+    if ! git -C "$gate_wt" checkout --detach --quiet "$m" 2>/dev/null; then
+        note "idle: master canary could not check out ${m:0:9} in $gate_wt"
+        release_lock
+        return 0
+    fi
+    note "idle: master canary (workspace tests) at ${m:0:9}; log: $log"
+    record master_canary_started "" sha "$m" log "$log"
+    local cargo_target_dir; cargo_target_dir="$(gate_target_generation)"
+    gate_preflight_expr=""
+    gate_preflight_nextest=""
+    gate_yield_probe=queue_has_ready_change
+    # fuzz=none scope=all queue-infra=0/0 census-proof="" sweeps on, book
+    # skipped, workspace nextest (empty selection), skip rust-class/compile/
+    # wasm, no check packages, skip fmt.
+    run_gate "$log" none all 0 0 "$cargo_target_dir" "" "glamour grimoire" 0 1 \
+        "" "" 1 1 1 "" 1 ""
+    gate_yield_probe=""
+    local elapsed=$(($(date +%s) - t))
+    release_lock
+
+    local result
+    case "$gate_result" in
+        yielded)
+            note "idle: master canary at ${m:0:9} yielded to ready queue work"
+            record master_canary_yielded "" sha "$m" log "$log" elapsed_s "$elapsed"
+            return 0
+            ;;
+        green) result=green ;;
+        red) result=red ;;
+        *) result=timeout ;;
+    esac
+    local report_field=""
+    [ "$result" != red ] || report_field="$canary_report"
+    jq -n --arg sha "$m" --arg result "$result" --arg at "$(now)" --arg log "$log" \
+        --arg elapsed "$elapsed" --arg report "$report_field" \
+        '{sha: $sha, result: $result, at: $at, log: $log, elapsed_s: $elapsed}
+         + (if $report == "" then {} else {report: $report} end)' \
+        >"$canary_state.tmp" && mv "$canary_state.tmp" "$canary_state"
+
+    case "$result" in
+        green)
+            printf '%s\n' "$m" >"$canary_last_green"
+            rm -f "$canary_report"
+            note "idle: master canary GREEN at ${m:0:9}"
+            record master_canary_green "" sha "$m" log "$log" elapsed_s "$elapsed"
+            ;;
+        timeout)
+            note "idle: master canary at ${m:0:9} did not finish: ${gate_result#timeout: }"
+            record master_canary_timeout "" sha "$m" log "$log" elapsed_s "$elapsed" \
+                reason "${gate_result#timeout: }"
+            ;;
+        red)
+            local summary failing last_green range="" range_note
+            summary="$(failure_summary "$log")"
+            failing="$(strip_ansi <"$log" 2>/dev/null \
+                | grep -aE '^[[:space:]]*(TRY [0-9]+ )?(FAIL|TIMEOUT|TMT) \[' \
+                | sed 's/^[[:space:]]*//' | sort -u | sed -n '1,40p' || true)"
+            last_green="$(cat "$canary_last_green" 2>/dev/null || true)"
+            if [ -n "$last_green" ] \
+                && git -C "$root" merge-base --is-ancestor "$last_green" "$m" 2>/dev/null; then
+                range="$last_green..$m"
+                range_note="$(git -C "$root" log --oneline --no-decorate "$range" 2>/dev/null \
+                    | sed -n '1,200p')"
+            else
+                range_note="(no earlier green canary on this history; bisect from the last known-good master)"
+            fi
+            mkdir -p "$(dirname "$canary_report")"
+            {
+                printf '# Master canary RED\n\n'
+                printf 'Report only: this does not block submissions or gates.\n\n'
+                printf -- '- master: `%s`\n' "$m"
+                printf -- '- detected: %s\n' "$(now)"
+                printf -- '- log: `%s`\n' "$log"
+                printf -- '- first failure: %s\n' "$summary"
+                printf -- '- last green canary: `%s`\n\n' "${last_green:-none}"
+                printf '## Failing tests\n\n```\n%s\n```\n\n' \
+                    "${failing:-(no nextest FAIL line; see the log)}"
+                printf '## Commits since the last green canary%s\n\n' "${range:+ ($range)}"
+                printf '```\n%s\n```\n' "$range_note"
+            } >"$canary_report.tmp" && mv "$canary_report.tmp" "$canary_report"
+            note "idle: master canary RED at ${m:0:9}: $summary (report: $canary_report)"
+            record master_canary_red "" sha "$m" log "$log" elapsed_s "$elapsed" \
+                failing "$summary" \
+                failing_count "$(printf '%s' "$failing" | grep -c . || true)" \
+                last_green "$last_green" range "$range" report "$canary_report"
+            ;;
+    esac
+    return 0
+}
+
 next_ready_queue_file() {
     local qf readiness submitted_sha
     while IFS= read -r qf; do
@@ -3749,6 +3925,7 @@ cmd_run() {
             flush_deferred_sweep
             if [ "$once" -eq 1 ]; then note "queue drained"; break; fi
             prewarm_gate
+            master_canary || true
             sleep "$poll_interval"
             continue
         fi
@@ -3759,6 +3936,7 @@ cmd_run() {
                 note "queue has no ready changes (dependencies are waiting or blocked)"
                 break
             fi
+            master_canary || true
             sleep "$poll_interval"
             continue
         fi
