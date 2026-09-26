@@ -416,6 +416,9 @@ impl<'a> MemoryChecker<'a> {
             nullable_unique_slots: self.state.nullable_unique_slots.iter().map(|(container, slot)| {
                 (remap_value(&renames, *container), *slot)
             }).collect(),
+            nullable_present_slots: self.state.nullable_present_slots.iter().map(|(container, slot)| {
+                (remap_value(&renames, *container), *slot)
+            }).collect(),
             affine_plans: self.state.affine_plans.iter().map(|(root, plan)|
                 (remap_value(&renames, *root), plan.clone())).collect(),
             affine_list_roots: self.state.affine_list_roots.iter().map(|root| remap_value(&renames, *root)).collect(),
@@ -816,6 +819,7 @@ impl<'a> MemoryChecker<'a> {
             ).into(),
             stored_objects: meet_map(&existing.stored_objects, &incoming.stored_objects),
             nullable_unique_slots: meet_set(&existing.nullable_unique_slots, &incoming.nullable_unique_slots),
+            nullable_present_slots: meet_set(&existing.nullable_present_slots, &incoming.nullable_present_slots),
             affine_plans: meet_map(&existing.affine_plans, &incoming.affine_plans),
             affine_list_roots: meet_set(&existing.affine_list_roots, &incoming.affine_list_roots),
             nullable_absent_slots: meet_set(&existing.nullable_absent_slots, &incoming.nullable_absent_slots),

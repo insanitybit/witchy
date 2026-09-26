@@ -552,8 +552,10 @@ impl<'a> MemoryChecker<'a> {
         self.state.affine_plans.insert(object, plan.clone());
         match plan {
             super::super::AffinePhysicalPlan::Leaf => {}
-            super::super::AffinePhysicalPlan::NullableFields(fields) => for (field, _, _) in fields {
-                self.state.nullable_unique_slots.insert((object, SlotIdentity::Constant(u64::from(*field))));
+            super::super::AffinePhysicalPlan::NullableFields { fields, .. } => for (field, _, _) in fields {
+                let key = (object, SlotIdentity::Constant(u64::from(*field)));
+                self.state.nullable_unique_slots.insert(key);
+                self.state.nullable_present_slots.insert(key);
             },
             super::super::AffinePhysicalPlan::Sequence { .. } => {
                 self.state.affine_list_roots.insert(object);
@@ -570,8 +572,11 @@ impl<'a> MemoryChecker<'a> {
         { return Ok(false); }
         match plan {
             super::super::AffinePhysicalPlan::Leaf => Ok(true),
-            super::super::AffinePhysicalPlan::NullableFields(fields) => Ok(fields.iter().all(|(field, _, _)|
-                self.nullable_unique_slot_by_identity(object, SlotIdentity::Constant(u64::from(*field))))),
+            super::super::AffinePhysicalPlan::NullableFields { fields, allow_absent } => Ok(fields.iter().all(|(field, _, _)| {
+                let slot = SlotIdentity::Constant(u64::from(*field));
+                self.nullable_unique_slot_by_identity(object, slot)
+                    && (*allow_absent || self.nullable_present_slot_by_identity(object, slot))
+            })),
             super::super::AffinePhysicalPlan::Sequence { .. } => self.exclusive_list_elements(object),
         }
     }
@@ -613,6 +618,13 @@ impl<'a> MemoryChecker<'a> {
         for (container, slot) in nullable_slots {
             self.state.nullable_unique_slots.remove(&(container, slot));
             self.state.nullable_unique_slots.insert((destination, slot));
+        }
+        let present_slots = self.state.nullable_present_slots.iter().copied()
+            .filter(|(container, _)| self.same_allocation(source, *container))
+            .collect::<Vec<_>>();
+        for (container, slot) in present_slots {
+            self.state.nullable_present_slots.remove(&(container, slot));
+            self.state.nullable_present_slots.insert((destination, slot));
         }
         if self.state.affine_list_roots.remove(&source) {
             self.state.affine_list_roots.insert(destination);

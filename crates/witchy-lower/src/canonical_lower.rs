@@ -52,7 +52,7 @@ use witchy_syntax::ast::{BinOp, Convention, Expr, Item, Pattern, Stmt, Type, Typ
 use witchy_canonical_source::aggregates::{canonical_owner_aggregate_identity, concrete_aggregate_identity, scalar_aggregate_shape, ScalarAggregateShape, ScalarVariant};
 use witchy_canonical_source::carrier::CarrierElement;
 use witchy_canonical_source::rooted_view::{RetainedRootStorage, RootedViewStorage};
-use witchy_canonical_source::storage::{StoragePlan, is_inline_scalar_record};
+use witchy_canonical_source::storage::{StoragePlan, aggregate_uses_nullable_owned_fields, is_inline_scalar_record};
 use witchy_canonical_source::structural_identity::SourceTypeKey;
 use witchy_canonical_source::abi::CanonicalScalarKind;
 use witchy_canonical_source::access::{
@@ -7343,17 +7343,24 @@ impl FunctionLowerer<'_> {
         source: &Type,
         shape: &ScalarAggregateShape,
     ) -> Result<Vec<(String, ValueId)>, CanonicalLoweringError> {
-        let (Pattern::Ctor { name, args } | Pattern::AnonCtor { tag: name, args }) = pattern else {
-            return Err(CanonicalLoweringError::UnsupportedExpression("consuming aggregate pattern"));
+        let (args, variant_index, first_field, arity) = match pattern {
+            Pattern::Ctor { name, args } | Pattern::AnonCtor { tag: name, args } => {
+                let (index, variant) = shape.variant(name)
+                    .ok_or_else(|| CanonicalLoweringError::MissingBinding(name.clone()))?;
+                (args, index, variant.first_field, variant.arity)
+            }
+            Pattern::Tuple(args) if matches!(source.unqualified(), Type::Tuple(_))
+                && !shape.tagged && shape.variants.len() == 1
+                && shape.variants[0].name.is_empty() =>
+                (args, 0, 0, shape.fields.len()),
+            _ => return Err(CanonicalLoweringError::UnsupportedExpression("consuming aggregate pattern")),
         };
-        let (variant_index, variant) = shape.variant(name)
-            .ok_or_else(|| CanonicalLoweringError::MissingBinding(name.clone()))?;
-        if args.len() != variant.arity || !matches!(self.values[&scrutinee], ValueType::Ref(_)) {
+        if args.len() != arity || !matches!(self.values[&scrutinee], ValueType::Ref(_)) {
             return Err(CanonicalLoweringError::UnsupportedExpression("consuming aggregate payload"));
         }
         let mut bindings = Vec::new();
         for (offset, argument) in args.iter().enumerate() {
-            let slot = variant.first_field + offset;
+            let slot = first_field + offset;
             let field = &shape.fields[slot];
             let affine = StoragePlan::classify(field, self.definitions, |_| Some(0))
                 .requires_affine_owner_token();
@@ -11549,7 +11556,9 @@ impl FunctionLowerer<'_> {
             StoragePlan::classify(source.unqualified(), self.definitions, |_| Some(0))
                 .requires_affine_owner_token()
         });
-        self.lower_heap_record_with_slots(source_type, &shape.name, &shape.fields, values, move_only, shape.tagged)
+        let nullable_fields = source_type.is_some_and(|source|
+            aggregate_uses_nullable_owned_fields(source, self.definitions)) || shape.tagged;
+        self.lower_heap_record_with_slots(source_type, &shape.name, &shape.fields, values, move_only, nullable_fields)
     }
 
     /// `lower_aggregate` whose reference payloads are fresh owned tokens the
@@ -19545,7 +19554,7 @@ fn source_value_type(
         return aggregate_layout_for_source(
             source,
             &shape.fields,
-            shape.tagged,
+            aggregate_uses_nullable_owned_fields(source, definitions),
             layout_bundle,
             layouts,
             closure_layouts,
@@ -20177,7 +20186,7 @@ fn list_layout(
             return Err(CanonicalLoweringError::UnsupportedListElement(source.clone()));
         };
         Ok(ValueType::Ref(aggregate_layout_for_source(
-            &arguments[0], &shape.fields, shape.tagged, layout_bundle, layouts,
+            &arguments[0], &shape.fields, aggregate_uses_nullable_owned_fields(&arguments[0], definitions), layout_bundle, layouts,
             closure_layouts, definitions,
         )?))
     };

@@ -103,7 +103,7 @@ fn bind_plan(
         }
         AffineStorageShape::NullableFields(children) => {
             let source_shape = witchy_canonical_source::aggregates::scalar_aggregate_shape(source_type, source.type_definitions())?;
-            if !source_shape.tagged || !matches!(descriptor.kind(), LayoutKind::PackedRecord { .. })
+            if !matches!(descriptor.kind(), LayoutKind::PackedRecord { .. })
                 || descriptor.fields().len() != source_shape.fields.len() { return None; }
             let mut bound = Vec::with_capacity(children.len());
             for (index, child) in children {
@@ -119,7 +119,7 @@ fn bind_plan(
                 let child_source = source_shape.fields.get(*index as usize)?;
                 bound.push((*index, pointee, Box::new(bind_plan(child_source, pointee, child, layouts, source, catalog)?)));
             }
-            AffinePhysicalPlan::NullableFields(bound)
+            AffinePhysicalPlan::NullableFields { fields: bound, allow_absent: source_shape.tagged }
         }
         AffineStorageShape::Sequence(child) => {
             let witchy_canonical_source::storage::StoragePlan::MoveOnlyList(sequence) = source.storage_plan(source_type.unqualified()) else { return None };

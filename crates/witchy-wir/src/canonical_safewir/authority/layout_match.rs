@@ -1,6 +1,6 @@
 use super::*;
 use witchy_canonical_source::rooted_view::{OwnerCarriedViewPlan, OwnerCarriedViewStorage, RetainedRootStorage, RootedViewStorage};
-use witchy_canonical_source::storage::StoragePlan;
+use witchy_canonical_source::storage::{StoragePlan, aggregate_uses_nullable_owned_fields};
 
 pub(crate) fn value_type_matches_source(
     actual: super::super::ValueType,
@@ -29,7 +29,7 @@ pub(crate) fn value_type_matches_source(
             let super::super::ValueType::Ref(layout) = actual else { return false };
             if !nominal_layout_matches_source_identity(layout, payload, layouts, records) { return false; }
             return record_layout_matches_with_closures(
-                layout, &plan.shape.fields, plan.shape.tagged, layouts, records,
+                layout, &plan.shape.fields, aggregate_uses_nullable_owned_fields(payload, records), layouts, records,
                 closure_layouts, signatures, context,
             );
         }
@@ -163,7 +163,7 @@ pub(crate) fn value_type_matches_source(
             witchy_canonical_source::aggregates::scalar_aggregate_shape(source, records).is_some_and(|shape| {
                 matches!(actual, super::super::ValueType::Ref(layout)
                     if nominal_layout_matches_source_identity(layout, source, layouts, records)
-                        && record_layout_matches_with_closures(layout, &shape.fields, shape.tagged, layouts, records, closure_layouts, signatures, context))
+                        && record_layout_matches_with_closures(layout, &shape.fields, aggregate_uses_nullable_owned_fields(source, records), layouts, records, closure_layouts, signatures, context))
             })
         }
         StoragePlan::MoveOnlyList(_) | StoragePlan::RetainedGraphList(_) | StoragePlan::RetainedCallableList(_) | StoragePlan::Owned(
@@ -346,7 +346,7 @@ pub(super) fn enqueue_layout_children(
                 | StoragePlan::AggregateView(_) | StoragePlan::AuthenticatedPlace(_)) {
             return false;
         }
-        return enqueue_record_fields(layout, &shape.fields, shape.tagged, layouts, pending);
+        return enqueue_record_fields(layout, &shape.fields, aggregate_uses_nullable_owned_fields(source, records), layouts, pending);
     }
     let list_disposition = if matches!(storage, StoragePlan::MoveOnlyList(_)) {
         witchy_canonical_source::storage::ListElementDisposition::MoveOnly

@@ -15,7 +15,7 @@ use witchy_canonical_source::aggregates::{
 };
 use witchy_canonical_source::abi::CanonicalScalarKind;
 use witchy_canonical_source::carrier::CarrierElement;
-use witchy_canonical_source::storage::{OpaqueOwnerClass, OpaqueOwnerEvidence, StoragePlan, StorageRefusal, is_inline_scalar_record};
+use witchy_canonical_source::storage::{OpaqueOwnerClass, OpaqueOwnerEvidence, StoragePlan, StorageRefusal, affine_storage_shape, aggregate_uses_nullable_owned_fields, is_inline_scalar_record};
 use witchy_canonical_source::rooted_view::RootedViewStorage;
 use witchy_canonical_source::structural_identity::{AggregateOwnerKey, ClosureOwnerKey, SourceTypeKey};
 use witchy_syntax::ast::{self, Item, Type, TypeDef};
@@ -1097,6 +1097,26 @@ fn intern_v1_layout_checked(
         // reserved identity, regardless of whether its body is already bound.
         return intern_recursive_nominal(interner, &key);
     }
+    // An affine physical record may share its field layout with a tagged sum
+    // whose inactive fields may be absent. Keep the source identity on the
+    // layout so allocation and ABI binding select the same presence policy.
+    if scalar_aggregate_shape(&key, definitions).is_some_and(|shape| !shape.packed)
+        && affine_storage_shape(&key, definitions).is_some()
+    {
+        if !active.insert(key.clone()) {
+            return Err(CanonicalLayoutError::UnsupportedType(format!(
+                "cyclic affine layout {key:?}"
+            )));
+        }
+        let nominal = intern_recursive_nominal(interner, &key)?;
+        let body = intern_v1_layout_fields(
+            interner, &key, definitions, recursive_types, active, closure_layouts,
+        )?;
+        active.remove(&key);
+        interner.bind_nominal(nominal, body)
+            .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?;
+        return Ok(nominal);
+    }
     if !active.insert(key.clone()) {
         return Err(CanonicalLayoutError::UnsupportedType(format!(
             "recursive nominal layout {key:?} requires nullable owned-slot lowering"
@@ -1172,6 +1192,7 @@ fn intern_v1_layout_fields(
         // a string or list behind an owned pointer slot. Built directly: the
         // interner's type resolver cannot place a reference inside a record.
         let mut children = Vec::with_capacity(shape.fields.len());
+        let nullable_fields = aggregate_uses_nullable_owned_fields(ty, definitions);
         for field in &shape.fields {
             let child = if let Some(scalar) = scalar_kind_of(field) {
                 interner
@@ -1184,7 +1205,7 @@ fn intern_v1_layout_fields(
                 interner
                     .intern_runtime_pointer_value_slot(
                         pointee,
-                        if shape.tagged {
+                        if nullable_fields {
                             PointerSlot::OwnedNullable
                         } else {
                             PointerSlot::Owned

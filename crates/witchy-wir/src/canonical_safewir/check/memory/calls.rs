@@ -471,6 +471,9 @@ impl<'a> MemoryChecker<'a> {
                             .nullable_unique_slots
                             .retain(|(container, _)| !aliases.contains(container));
                         self.state
+                            .nullable_present_slots
+                            .retain(|(container, _)| !aliases.contains(container));
+                        self.state
                             .nullable_absent_slots
                             .retain(|(container, _)| !aliases.contains(container));
                         self.state

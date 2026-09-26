@@ -717,7 +717,11 @@ impl<'a> MemoryChecker<'a> {
                     object: place.object(),
                 });
             }
-            if self.nullable_slot_absent(key.0, key.1) {
+            let requires_present = matches!(self.state.affine_plans.get(&place.object()),
+                Some(super::super::AffinePhysicalPlan::NullableFields { allow_absent: false, .. }));
+            if (requires_present && !self.nullable_present_slot_by_identity(key.0, key.1))
+                || self.nullable_slot_absent(key.0, key.1)
+            {
                 return self.unsupported("Load(take of absent nullable slot)");
             }
             let stored = self.stored_slot_by_identity(key.0, key.1).cloned();
@@ -749,10 +753,11 @@ impl<'a> MemoryChecker<'a> {
                 self.state.stored_objects.remove(&alias);
             }
             self.clear_nullable_unique_slot_by_identity(key.0, key.1);
+            self.clear_nullable_present_slot_by_identity(key.0, key.1);
             self.state.nullable_absent_slots.insert(key);
             self.state.objects.insert(destination, child);
             let child_plan = self.state.affine_plans.get(&place.object()).and_then(|plan| match plan {
-                super::super::AffinePhysicalPlan::NullableFields(fields) => fields.iter()
+                super::super::AffinePhysicalPlan::NullableFields { fields, .. } => fields.iter()
                     .find(|(field, pointee, _)| matches!(key.1, SlotIdentity::Constant(slot) if slot == u64::from(*field))
                         && *pointee == layout)
                     .map(|(_, _, child)| child.as_ref().clone()),
@@ -1039,7 +1044,7 @@ impl<'a> MemoryChecker<'a> {
         let affine_child = self.state.affine_plans.get(&place.object()).and_then(|plan| match (plan, place.projection()) {
             (super::super::AffinePhysicalPlan::Sequence { element, child }, Projection::Element { .. })
                 if *element == layout => Some(child.as_ref().clone()),
-            (super::super::AffinePhysicalPlan::NullableFields(fields), Projection::Field { index }) =>
+            (super::super::AffinePhysicalPlan::NullableFields { fields, .. }, Projection::Field { index }) =>
                 fields.iter().find(|(field, pointee, _)| *field == *index && *pointee == layout)
                     .map(|(_, _, child)| child.as_ref().clone()),
             _ => None,
@@ -1137,9 +1142,11 @@ impl<'a> MemoryChecker<'a> {
         }
         if self.nullable_fixed_field(place)?.is_some() {
             self.clear_nullable_unique_slot_by_identity(key.0, key.1);
+            self.clear_nullable_present_slot_by_identity(key.0, key.1);
             if transfer == StoreTransfer::MoveUnique {
                 self.state.nullable_unique_slots.insert(key);
             }
+            self.state.nullable_present_slots.insert(key);
         }
         self.state.stored_objects.insert(key, stored);
         self.consolidate_fixed_fields(place.object())?;
@@ -1171,6 +1178,7 @@ impl<'a> MemoryChecker<'a> {
             return self.unsupported("InitNullableOwned(duplicate)");
         }
         self.state.nullable_absent_slots.insert(key);
+        self.clear_nullable_present_slot_by_identity(key.0, key.1);
         self.state.nullable_unique_slots.insert(key);
         self.consolidate_fixed_fields(place.object())?;
         Ok(())

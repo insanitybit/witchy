@@ -1078,9 +1078,12 @@ tuple-view closure capture remains unsupported.
 An owned `List(T)` requires an authenticated clone and release operation for
 copyable `T`. Move-only `List(T)` values instead require a recursive checked
 storage and physical layout proof for unique element moves, calls, and returns.
-This admits nested lists and nullable aggregates of must-consume scalar
-records through the unoptimized canonical route. Non-tagged aggregates with
-move-only children still fail closed. Task scheduling with public
+This admits nested lists, tagged sums, untagged records, and tuples with
+recursively proved move-only fields through the unoptimized canonical route.
+A consuming `match move` must bind each affine field exactly once. The physical
+owned-pointer slots are nullable to permit checked extraction, but an untagged
+aggregate cannot cross a call or return boundary with a required affine field
+absent. Unsupported field representations still fail closed. Task scheduling with public
 `task.Handle` values remains incomplete: a live handle cannot cross a
 suspension without cancellation disposition, and `task.Step(task.Handle)`
 does not yet have a consuming aggregate field transfer.

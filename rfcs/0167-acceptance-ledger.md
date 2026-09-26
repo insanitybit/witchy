@@ -62,6 +62,21 @@ is needed for soundness.
 
 ## Exact-tip evidence checkpoint
 
+Untagged affine aggregate storage (implemented but unverified, 2026-09-26):
+the shared recursive storage judgment now selects nullable owned fields for
+records and tuples with affine children. Checked consuming matches transfer
+each such child exactly once, and SafeWIR binds the source shape to the
+physical nullable slots. Its affine ABI plan requires every untagged field to
+be present at calls and returns; tagged sums retain lawful absent inactive
+slots. A positive presence fact meets across control-flow joins, and acyclic
+affine aggregate layouts carry a source-derived nominal identity so equal
+physical records cannot exchange tagged and untagged presence policy. Focused
+unoptimized CLI Wasm programs produced the independently computed outputs
+`7`, `9`, and `11` for a record, tuple, and nested record; a combined
+`Option(Ticket)` and `(Int, Ticket)` program produced `4` and `9`. Read-only
+adversarial review found no remaining authority widening in this delta.
+No zero-leak audit or complete A–O evidence was performed, so no row closes.
+
 Opt admission fallback (implemented but unverified, 2026-09-26): the
 canonical compiler now retains the checked unoptimized candidate when an
 optional opt pass runs. If that pass fails final SafeWIR validation or its

@@ -85,6 +85,12 @@ binding cannot be used until the returned value is assigned. If another live
 binding or reference could observe the old storage, the compiler must take a
 copy or reject the opt-mode program rather than reusing it.
 
+Move-only values can also live inside non-packed records and tuples when every
+field has a checked ownership and layout proof. `match move` transfers each
+affine field to one binding; a required field cannot be silently discarded.
+The unoptimized compiler checks that a record or tuple has all required fields
+before it crosses a call or return boundary.
+
 ## `var`: write-back without confusing the referent
 
 `var` is about the caller's slot, not about a hidden mutable reference:

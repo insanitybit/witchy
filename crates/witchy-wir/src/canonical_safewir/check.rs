@@ -176,7 +176,10 @@ pub(super) struct AffineSignatureProof {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum AffinePhysicalPlan {
     Leaf,
-    NullableFields(Vec<(u32, crate::layout::LayoutId, Box<AffinePhysicalPlan>)>),
+    NullableFields {
+        fields: Vec<(u32, crate::layout::LayoutId, Box<AffinePhysicalPlan>)>,
+        allow_absent: bool,
+    },
     Sequence { element: crate::layout::LayoutId, child: Box<AffinePhysicalPlan> },
 }
 

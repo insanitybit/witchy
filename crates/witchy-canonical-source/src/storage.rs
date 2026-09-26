@@ -809,16 +809,19 @@ pub fn consuming_aggregate_match_shape(
         if arm.guard.is_some() {
             return true;
         }
-        let (name, args) = match &arm.pattern {
-            Pattern::Ctor { name, args } => (name, args),
-            Pattern::AnonCtor { tag, args } => (tag, args),
+        let (args, first_field, arity) = match &arm.pattern {
+            Pattern::Ctor { name, args } | Pattern::AnonCtor { tag: name, args } => {
+                let Some((_, variant)) = shape.variant(name) else { return true };
+                (args, variant.first_field, variant.arity)
+            }
+            Pattern::Tuple(args) if matches!(ty.unqualified(), Type::Tuple(_))
+                && !shape.tagged && shape.variants.len() == 1
+                && shape.variants[0].name.is_empty() =>
+                (args, 0, shape.fields.len()),
             _ => return true,
         };
-        let Some((_, variant)) = shape.variant(name) else {
-            return true;
-        };
-        args.len() != variant.arity || args.iter().enumerate().any(|(offset, arg)| {
-            let field = &shape.fields[variant.first_field + offset];
+        args.len() != arity || args.iter().enumerate().any(|(offset, arg)| {
+            let field = &shape.fields[first_field + offset];
             match arg {
                 Pattern::Var(name) if name != "_" => false,
                 Pattern::Var(_) | Pattern::Wildcard => StoragePlan::classify(
@@ -841,6 +844,19 @@ pub enum AffineStorageShape {
     Leaf,
     NullableFields(Vec<(u32, AffineStorageShape)>),
     Sequence(Box<AffineStorageShape>),
+}
+
+/// A tagged sum has inactive slots; an affine record needs empty slots after
+/// consuming extraction. Both use the same nullable owned-pointer layout and
+/// the same checked take operation. This is a source storage judgment, not a
+/// property inferred from a candidate layout.
+pub fn aggregate_uses_nullable_owned_fields(
+    ty: &Type,
+    definitions: &BTreeMap<String, TypeDef>,
+) -> bool {
+    scalar_aggregate_shape(ty, definitions).is_some_and(|shape| {
+        shape.tagged || matches!(affine_storage_shape(ty, definitions), Some(AffineStorageShape::NullableFields(_)))
+    })
 }
 
 pub fn affine_storage_shape(
@@ -872,7 +888,6 @@ pub fn affine_storage_shape(
                     *remaining -= 1;
                     let child = StoragePlan::classify(field, definitions, |_| Some(0));
                     if child.requires_affine_owner_token() {
-                        if !shape.tagged { return None; }
                         children.push((u32::try_from(index).ok()?, walk(&child, definitions, active, depth + 1, remaining)?));
                     }
                 }
