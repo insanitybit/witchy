@@ -415,6 +415,10 @@ pub enum StoragePlan {
     RetainedCallableList(CallableStoragePlan),
     /// A typed GC list of cloneable opaque aggregate owners.
     RetainedOpaqueAggregateList(AggregateGraphPlan),
+    /// A packed sequence whose checked element graph can be transferred and
+    /// released, but cannot be cloned. Each initialized leaf carries its own
+    /// affine disposition; no ordinary list read may duplicate it.
+    MoveOnlyList(MoveOnlySequencePlan),
     RootedView(RootedViewStorage),
     AggregateView(ViewCarrierPlan),
     Refused(StorageRefusal),
@@ -429,6 +433,26 @@ pub struct AggregateGraphPlan {
     shape: ScalarAggregateShape,
     source_key: [u8; 32],
     cloneable: bool,
+    movable: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MoveOnlySequencePlan {
+    source: Type,
+    element: Box<StoragePlan>,
+    source_key: [u8; 32],
+}
+
+impl MoveOnlySequencePlan {
+    pub fn source(&self) -> &Type { &self.source }
+    pub fn element(&self) -> &StoragePlan { &self.element }
+    pub fn source_key(&self) -> [u8; 32] { self.source_key }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ListElementDisposition {
+    Cloneable,
+    MoveOnly,
 }
 
 impl AggregateGraphPlan {
@@ -436,6 +460,7 @@ impl AggregateGraphPlan {
     pub fn shape(&self) -> &ScalarAggregateShape { &self.shape }
     pub fn source_key(&self) -> [u8; 32] { self.source_key }
     pub fn cloneable(&self) -> bool { self.cloneable }
+    pub fn movable(&self) -> bool { self.movable }
 
     fn classify(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> Option<Self> {
         if crate::capabilities::representation(ty, definitions).is_some() { return None; }
@@ -443,8 +468,25 @@ impl AggregateGraphPlan {
         if shape.packed { return None; }
         let source_key = SourceTypeKey { source: ty }.digest()?;
         let mut remaining = 4_096;
-        let cloneable = graph_storage_operations(ty, definitions, &mut HashSet::new(), 0, &mut remaining)?;
-        Some(Self { source: ty.clone(), shape, source_key, cloneable })
+        let operations = graph_storage_operations(ty, definitions, &mut HashSet::new(), 0, &mut remaining)?;
+        Some(Self { source: ty.clone(), shape, source_key,
+            cloneable: operations.cloneable, movable: operations.movable })
+    }
+}
+
+#[derive(Clone, Copy)]
+struct GraphOperations {
+    cloneable: bool,
+    movable: bool,
+}
+
+impl GraphOperations {
+    const COPY: Self = Self { cloneable: true, movable: true };
+    const REFUSED: Self = Self { cloneable: false, movable: false };
+
+    fn with(self, child: Self) -> Self {
+        Self { cloneable: self.cloneable && child.cloneable,
+            movable: self.movable && child.movable }
     }
 }
 
@@ -457,7 +499,7 @@ fn graph_storage_operations(
     active: &mut HashSet<Type>,
     depth: usize,
     remaining: &mut usize,
-) -> Option<bool> {
+) -> Option<GraphOperations> {
     if depth > 128 || *remaining == 0 { return None; }
     *remaining -= 1;
     let child = |ty: &Type, active: &mut HashSet<Type>, remaining: &mut usize| {
@@ -466,56 +508,62 @@ fn graph_storage_operations(
     match ty {
         Type::Qualified(TypeQual::Frozen, inner) => child(inner, active, remaining),
         Type::Qualified(TypeQual::Unique, inner) => {
-            child(inner, active, remaining).map(|_| false)
+            child(inner, active, remaining).map(|_| GraphOperations::REFUSED)
         }
         Type::Qualified(TypeQual::View, _) => match StoragePlan::classify(ty, definitions, |_| Some(0)) {
             StoragePlan::RootedView(storage) => match storage {
-            RootedViewStorage::InlineScalar(_) => Some(true),
+            RootedViewStorage::InlineScalar(_) => Some(GraphOperations { cloneable: true, movable: false }),
             RootedViewStorage::RetainedRoot(RetainedRootStorage::ByteBuffer(_)
                 | RetainedRootStorage::Sequence(_)
                 | RetainedRootStorage::StructuralRecord(_)
-                | RetainedRootStorage::CheckedAggregate(_)) => Some(true),
+                | RetainedRootStorage::CheckedAggregate(_)) => Some(GraphOperations { cloneable: true, movable: false }),
             RootedViewStorage::ScalarCell(_) | RootedViewStorage::RetainedProjection(_) => None,
             },
             _ => None,
         },
         Type::Qualified(_, _) | Type::Slice(_) | Type::Dyn(_, _) | Type::RecordCompose { .. } => None,
         Type::Fn(_, _, _, qualifiers) => {
-            CallableStoragePlan::classify(ty, definitions).map(|_| !qualifiers.once)
+            CallableStoragePlan::classify(ty, definitions).map(|_| GraphOperations {
+                cloneable: !qualifiers.once, movable: false,
+            })
         }
         Type::Named(_, _) | Type::Tuple(_) => {
             if let Some(children @ (StoredChildren::Sequence(_) | StoredChildren::Mapping(_, _))) =
                 stored_children(ty, definitions).ok().flatten()
             {
-                return children.into_types().iter().try_fold(true, |all, field| {
-                    Some(all && child(field, active, remaining)?)
-                }).filter(|cloneable| *cloneable);
+                return children.into_types().iter().try_fold(GraphOperations::COPY, |all, field| {
+                    Some(all.with(child(field, active, remaining)?))
+                });
             }
             if view_carrier_plan(ty, definitions).is_some_and(|plan| plan.requires_opaque_owner()) {
-                return Some(opaque_aggregate_cloneable(ty, definitions));
+                return Some(GraphOperations { cloneable: opaque_aggregate_cloneable(ty, definitions), movable: false });
             }
             if let Some(element) = CarrierElement::from_checked_type(ty) {
-                return Some(matches!(element.ownership(), crate::carrier::CarrierOwnership::Copy
-                    | crate::carrier::CarrierOwnership::RetainCloneRelease));
+                return Some(if matches!(element.ownership(), crate::carrier::CarrierOwnership::Copy
+                    | crate::carrier::CarrierOwnership::RetainCloneRelease) {
+                    GraphOperations::COPY
+                } else { GraphOperations::REFUSED });
             }
             if crate::capabilities::representation(ty, definitions).is_some() {
-                return Some(false);
+                return Some(GraphOperations::REFUSED);
             }
             let shape = scalar_aggregate_shape(ty, definitions)?;
             if shape.packed { return None; }
-            if !active.insert(ty.clone()) { return Some(true); }
+            if !active.insert(ty.clone()) { return Some(GraphOperations::COPY); }
             // Instantiated fields, not phantom generic arguments, determine
             // storage operations. The source key still binds every argument.
-            let fields_cloneable = shape.fields.iter().try_fold(true, |all, field| {
-                    let proved = child(field, active, remaining)?;
-                    Some(all && proved)
+            let operations = shape.fields.iter().try_fold(GraphOperations::COPY, |all, field| {
+                    Some(all.with(child(field, active, remaining)?))
             });
             active.remove(ty);
             let must_consume = match ty {
                 Type::Named(name, _) => definitions.get(name).is_some_and(|definition| definition.must_consume),
                 _ => false,
             };
-            fields_cloneable.map(|cloneable| cloneable && !must_consume)
+            operations.map(|mut operations| {
+                operations.cloneable &= !must_consume;
+                operations
+            })
         }
     }
 }
@@ -753,7 +801,7 @@ impl StoragePlan {
             | Self::RetainedCallable(_) | Self::RetainedCallableList(_) => true,
             Self::AuthenticatedPlace(plan) | Self::RetainedGraphList(plan)
             | Self::RetainedOpaqueAggregateList(plan) => plan.cloneable(),
-            Self::RetainedOwnerList(_) | Self::RootedView(_) | Self::AggregateView(_)
+            Self::MoveOnlyList(_) | Self::RetainedOwnerList(_) | Self::RootedView(_) | Self::AggregateView(_)
             | Self::Refused(_) => false,
         }
     }
@@ -768,12 +816,15 @@ impl StoragePlan {
     /// carrier, a non-once callable, or a cloneable authenticated graph.
     /// Other storage plans retain their own representation but cannot become
     /// an ordinary packed-list element through a second shape table.
-    pub fn admits_list_element(&self, ty: &Type) -> bool {
+    pub fn list_element_disposition(&self, ty: &Type) -> Option<ListElementDisposition> {
         match self {
-            Self::InlineScalar(_) | Self::Owned(_) => true,
-            Self::RetainedCallable(_) => matches!(ty, Type::Fn(_, _, _, qualifiers) if !qualifiers.once),
-            Self::AuthenticatedPlace(plan) => plan.cloneable(),
-            _ => false,
+            Self::InlineScalar(_) | Self::Owned(_) => Some(ListElementDisposition::Cloneable),
+            Self::RetainedCallable(_) if matches!(ty, Type::Fn(_, _, _, qualifiers) if !qualifiers.once) =>
+                Some(ListElementDisposition::Cloneable),
+            Self::AuthenticatedPlace(plan) if plan.cloneable() => Some(ListElementDisposition::Cloneable),
+            Self::AuthenticatedPlace(plan) if plan.movable() => Some(ListElementDisposition::MoveOnly),
+            Self::MoveOnlyList(_) => Some(ListElementDisposition::MoveOnly),
+            _ => None,
         }
     }
 
@@ -855,6 +906,20 @@ impl StoragePlan {
                 Some(false) => Self::RetainedGraphList(plan),
                 None => Self::Refused(StorageRefusal::ResourceLimit),
             };
+        }
+        if let Type::Named(name, arguments) = ty
+            && name == "List"
+            && let [element] = arguments.as_slice()
+        {
+            let child = Self::classify(element, definitions, |_| Some(0));
+            if child.list_element_disposition(element) == Some(ListElementDisposition::MoveOnly) {
+                let Some(source_key) = (SourceTypeKey { source: ty }).digest() else {
+                    return Self::Refused(StorageRefusal::ResourceLimit);
+                };
+                return Self::MoveOnlyList(MoveOnlySequencePlan {
+                    source: ty.clone(), element: Box::new(child), source_key,
+                });
+            }
         }
         if let Type::Named(name, arguments) = ty
             && name == "List"

@@ -19939,7 +19939,7 @@ fn list_layout(
         return Err(CanonicalLoweringError::UnsupportedType(source.clone()));
     }
     let element_storage = StoragePlan::classify(&arguments[0], definitions, |_| Some(0));
-    if !element_storage.admits_list_element(&arguments[0]) {
+    if element_storage.list_element_disposition(&arguments[0]).is_none() {
         return Err(CanonicalLoweringError::UnsupportedListElement(source.clone()));
     }
     let duration_element = matches!(
@@ -19970,6 +19970,9 @@ fn list_layout(
         },
         StoragePlan::Owned(CarrierElement::String | CarrierElement::Bytes) => byte_buffer_element()?,
         StoragePlan::Owned(CarrierElement::List(_)) => {
+            ValueType::Ref(list_layout(&arguments[0], layout_bundle, layouts, closure_layouts, definitions)?.0)
+        }
+        StoragePlan::MoveOnlyList(_) => {
             ValueType::Ref(list_layout(&arguments[0], layout_bundle, layouts, closure_layouts, definitions)?.0)
         }
         StoragePlan::Owned(CarrierElement::Tuple(_)

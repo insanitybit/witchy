@@ -587,10 +587,11 @@ impl LayoutProjection {
                 let storage = StoragePlan::classify(ty, &self.definitions, |_| Some(0));
                 let admitted = matches!(
                     storage,
-                    StoragePlan::RetainedOwnerList(_) | StoragePlan::RetainedOpaqueAggregateList(_),
+                    StoragePlan::RetainedOwnerList(_) | StoragePlan::RetainedOpaqueAggregateList(_)
+                        | StoragePlan::MoveOnlyList(_),
                 ) || arguments.len() == 1 && StoragePlan::classify(
                     &arguments[0], &self.definitions, |_| Some(0),
-                ).admits_list_element(&arguments[0]);
+                ).list_element_disposition(&arguments[0]).is_some();
                 if !admitted {
                     if matches!(storage, StoragePlan::Refused(StorageRefusal::UnprovedAuthority)) {
                         return Err(CanonicalLayoutError::UnsupportedType(format!("capability-bearing {ty:?}")));
@@ -1131,7 +1132,7 @@ fn intern_v1_layout_fields(
         && arguments.len() == 1
     {
         let element_storage = StoragePlan::classify(&arguments[0], definitions, |_| Some(0));
-        if !element_storage.admits_list_element(&arguments[0]) {
+        if element_storage.list_element_disposition(&arguments[0]).is_none() {
             return Err(CanonicalLayoutError::UnsupportedType(format!("{ty:?}")));
         }
         let inline = matches!(element_storage,

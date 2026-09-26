@@ -69,6 +69,7 @@ impl ClosureCaptureTransfer {
             | StoragePlan::RetainedOpaqueAggregateList(_)
             | StoragePlan::AggregateView(_) => Some(Self::ManagedReferenceByValue),
             StoragePlan::AuthenticatedPlace(plan) if plan.cloneable() => Some(Self::ManagedReferenceByValue),
+            StoragePlan::MoveOnlyList(_) => None,
             _ => None,
         }
     }
