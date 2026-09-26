@@ -74,9 +74,12 @@ pub(super) fn candidate_signature_matches_source_inner(
                 super::super::ParameterOwnership::Value
             };
         }
-        if matches!(source, witchy_syntax::ast::Type::Qualified(
+        let affine_owner = witchy_canonical_source::storage::StoragePlan::classify(
+            source.unqualified(), records, |_| Some(0),
+        ).requires_affine_owner_token();
+        if (affine_owner || matches!(source, witchy_syntax::ast::Type::Qualified(
             witchy_syntax::ast::TypeQual::Unique, _
-        )) && convention == witchy_syntax::ast::Convention::Own {
+        ))) && convention == witchy_syntax::ast::Convention::Own {
             // Root `unique` is a source-level affine fact. Managed roots
             // carry it in SafeWIR's ownership token, while an inline scalar
             // has no addressable storage and therefore retains its ordinary
@@ -100,7 +103,7 @@ pub(super) fn candidate_signature_matches_source_inner(
             (super::super::ValueType::Gc(_), _) => false,
             (super::super::ValueType::Ref(_), witchy_syntax::ast::Convention::Own) => matches!(actual.ownership, super::super::ParameterOwnership::Shared),
             (super::super::ValueType::Ref(_), witchy_syntax::ast::Convention::Var)
-                if matches!(source, witchy_syntax::ast::Type::Qualified(witchy_syntax::ast::TypeQual::Unique, _)) =>
+                if affine_owner || matches!(source, witchy_syntax::ast::Type::Qualified(witchy_syntax::ast::TypeQual::Unique, _)) =>
                     actual.ownership == super::super::ParameterOwnership::UniqueWriteBack,
             (_, witchy_syntax::ast::Convention::Var) => actual.ownership == super::super::ParameterOwnership::WriteBack,
             (_, witchy_syntax::ast::Convention::Own) => matches!(actual.ownership, super::super::ParameterOwnership::Value),
@@ -138,7 +141,10 @@ pub(super) fn candidate_signature_matches_source_inner(
     let abi_ordinary_results = ordinary_results + disjunctive_selector_lanes;
     let source_unique_result = matches!(result,
         witchy_syntax::ast::Type::Qualified(witchy_syntax::ast::TypeQual::Unique, _))
-        || witchy_syntax::ast::is_direct_unique_result_ok_collection(result);
+        || witchy_syntax::ast::is_direct_unique_result_ok_collection(result)
+        || witchy_canonical_source::storage::StoragePlan::classify(
+            result.unqualified(), records, |_| Some(0),
+        ).requires_affine_owner_token();
     let unique_results_match = actual.contract.results.iter().enumerate().all(|(index, contract)| {
         let unique_parameter = index.checked_sub(abi_ordinary_results)
             .and_then(|offset| write_back_parameters.get(offset))
@@ -221,7 +227,7 @@ pub(super) fn candidate_signature_matches_source_inner(
             let gc_var = matches!(actual.parameters.get(*parameter as usize), Some(super::super::ValueType::Gc(_)))
                 && convention_at(*parameter as usize) == witchy_syntax::ast::Convention::Var;
             matches!(actual.parameters.get(*parameter as usize), Some(super::super::ValueType::Ref(_) | super::super::ValueType::Gc(_)))
-                && (!gc_var && matches!(actual.contract.parameters.get(*parameter as usize).map(|parameter| parameter.ownership), Some(super::super::ParameterOwnership::WriteBack | super::super::ParameterOwnership::UniqueWriteBack))
+                && (!gc_var && matches!(actual.contract.parameters.get(*parameter as usize).map(|parameter| parameter.ownership), Some(super::super::ParameterOwnership::WriteBack | super::super::ParameterOwnership::Unique | super::super::ParameterOwnership::UniqueWriteBack))
                     || read_only)
         });
     context.finish_callable(key, matched);

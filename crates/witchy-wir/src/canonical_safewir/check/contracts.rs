@@ -1324,11 +1324,14 @@ fn supported_indirect_reference_parameter(
         .parameter_effects
         .get(&(index as u32));
     match parameter.ownership {
-        ParameterOwnership::Shared | ParameterOwnership::WriteBack | ParameterOwnership::Unique => effects
+        ParameterOwnership::Shared | ParameterOwnership::WriteBack => effects
             .is_none_or(|effects| effects.iter().all(|effect| matches!(
                 effect,
                 MemoryEffect::Read | MemoryEffect::Retain | MemoryEffect::Release,
             ))),
+        ParameterOwnership::Unique => effects.is_none_or(|effects| effects.iter().all(|effect| matches!(
+            effect, MemoryEffect::Read | MemoryEffect::Retain | MemoryEffect::Release | MemoryEffect::Write,
+        ))),
         ParameterOwnership::UniqueWriteBack => effects.is_some_and(|effects| {
             effects.iter().any(|effect| *effect == MemoryEffect::Write)
                 && effects.iter().all(|effect| matches!(

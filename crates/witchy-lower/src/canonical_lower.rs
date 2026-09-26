@@ -2633,6 +2633,8 @@ fn signature_from_type(
         // An explicit `let` (`Convention::Borrow`) has the default convention's
         // observable semantics; its no-escape rule is the type checker's. Under
         // the v1 owned-reference ABI it is one owned token like `let`/`own`.
+        let affine_owner = StoragePlan::classify(parameter.unqualified(), definitions, |_| Some(0))
+            .requires_affine_owner_token();
         let ownership = match (value_type, convention) {
             (ValueType::Gc(_), Convention::Let | Convention::Borrow)
                 if rooted_gc_view_owner_type(parameter, closure_layouts, definitions).is_some() =>
@@ -2642,7 +2644,8 @@ fn signature_from_type(
             (ValueType::Ref(_), Convention::Let | Convention::Borrow)
                 if shared_reference_parts(parameter).is_some() => ParameterOwnership::Value,
             (ValueType::Ref(_) | ValueType::Gc(_), Convention::Own)
-                if is_root_unique(parameter) => ParameterOwnership::Unique,
+                if is_root_unique(parameter) || affine_owner => ParameterOwnership::Unique,
+            (ValueType::Ref(_), Convention::Var) if affine_owner => ParameterOwnership::UniqueWriteBack,
             (ValueType::Ref(_) | ValueType::Gc(_), Convention::Let | Convention::Borrow | Convention::Own) => {
                 ParameterOwnership::Shared
             }
@@ -2674,7 +2677,8 @@ fn signature_from_type(
                     MemoryEffect::Release,
                 ]
                 .into_iter()
-                .chain((ownership == ParameterOwnership::UniqueWriteBack).then_some(MemoryEffect::Write))
+                .chain(matches!(ownership, ParameterOwnership::Unique | ParameterOwnership::UniqueWriteBack)
+                    .then_some(MemoryEffect::Write))
                 .collect()
             };
             parameter_effects.insert(index as u32, effects);
@@ -2693,7 +2697,10 @@ fn signature_from_type(
             }],
             _ => return Err(CanonicalLoweringError::UnsupportedType(result.as_ref().clone())),
         }
-    } else if is_root_unique(result) {
+    } else if is_root_unique(result)
+        || StoragePlan::classify(result.unqualified(), definitions, |_| Some(0))
+            .requires_affine_owner_token()
+    {
         match result_type {
             // `unique` is a checked ownership fact. A managed value carries
             // that fact in SafeWIR's unique token; an inline scalar is
@@ -11389,7 +11396,11 @@ impl FunctionLowerer<'_> {
             };
             values.push(value);
         }
-        self.lower_heap_record_with_slots(source_type, &shape.name, &shape.fields, values, false, shape.tagged)
+        let move_only = source_type.is_some_and(|source| {
+            StoragePlan::classify(source.unqualified(), self.definitions, |_| Some(0))
+                .requires_affine_owner_token()
+        });
+        self.lower_heap_record_with_slots(source_type, &shape.name, &shape.fields, values, move_only, shape.tagged)
     }
 
     /// `lower_aggregate` whose reference payloads are fresh owned tokens the
@@ -13762,6 +13773,10 @@ impl FunctionLowerer<'_> {
         if layout != expected_layout {
             return Err(CanonicalLoweringError::UnsupportedExpression("list.push receiver layout"));
         }
+        let move_only = matches!(
+            StoragePlan::classify(list_type.unqualified(), self.definitions, |_| Some(0)),
+            StoragePlan::MoveOnlyList(_),
+        );
         let pointer_elements = matches!(element_type, ValueType::Ref(_));
         self.ensure_list_extent(old_object)?;
         let old_length = *self
@@ -13936,25 +13951,26 @@ impl FunctionLowerer<'_> {
         if pointer_elements {
             let zero = self.fresh(ValueType::Size)?;
             self.push_operation(Operation::ConstSize { destination: zero, value: 0 });
-            // The grown list clones the old prefix (retaining every element)
-            // rather than moving it out: the old list may be shared with a
-            // callee or a stored copy, and its own drop releases the elements.
-            let _ = element_type;
-            self.push_operation(Operation::CloneRange {
-                destination: witchy_wir::canonical_safewir::Place::projected(
+            // A move-only prefix transfers each initialized owner slot. A
+            // cloneable prefix retains its children and leaves the old list
+            // intact until its own drop.
+            let destination = witchy_wir::canonical_safewir::Place::projected(
                     new_object,
                     Projection::Slice { start: zero, length: old_length },
                     ValueType::Ref(layout),
                     AccessMode::Write,
-                ),
-                source: witchy_wir::canonical_safewir::Place::projected(
+                );
+            let source = witchy_wir::canonical_safewir::Place::projected(
                     old_object,
                     Projection::Slice { start: zero, length: old_length },
                     ValueType::Ref(layout),
                     AccessMode::Read,
-                ),
-                count: old_length,
-            });
+                );
+            if move_only {
+                self.push_operation(Operation::MoveRange { destination, source, count: old_length });
+            } else {
+                self.push_operation(Operation::CloneRange { destination, source, count: old_length });
+            }
         } else {
             let zero = self.fresh(ValueType::Size)?;
             self.push_operation(Operation::ConstSize { destination: zero, value: 0 });

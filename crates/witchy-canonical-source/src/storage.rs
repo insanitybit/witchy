@@ -812,6 +812,13 @@ impl StoragePlan {
         matches!(self, Self::InlineScalar(_) | Self::InlineAggregate(_) | Self::Owned(_))
     }
 
+    /// An affine aggregate has exactly one transferable owner token. The
+    /// source graph proves moves and recursive release but supplies no clone.
+    pub fn requires_affine_owner_token(&self) -> bool {
+        matches!(self, Self::MoveOnlyList(_))
+            || matches!(self, Self::AuthenticatedPlace(plan) if plan.movable() && !plan.cloneable())
+    }
+
     /// A list can duplicate initialized elements. Require a copyable owned
     /// carrier, a non-once callable, or a cloneable authenticated graph.
     /// Other storage plans retain their own representation but cannot become
