@@ -198,8 +198,12 @@ emit_gate_nextest() {
     # a second invocation because Cargo target filters are intersections.
     # Full CI retains the native execution campaign. Any mixed path that owns
     # native WIR evidence falls through to the ordinary fail-safe route.
+    # A mixed checked-source/root edit needs the root package's default native
+    # feature graph. Selecting the pure WIR partition for the whole union
+    # disables that graph and makes root tests fail to compile.
     if [ "$gate_pure_wir" -eq 1 ] && [ "$gate_native_wir" -eq 0 ] \
-        && [ "$gate_need_conformance" -eq 0 ]; then
+        && [ "$gate_need_conformance" -eq 0 ] \
+        && [[ " ${gate_pkgs[*]} " != *" witchy "* ]]; then
         local pure_expr="" pure_extra="" pure_checks="" pure_pkg
         for pure_pkg in "${gate_pkgs[@]}"; do
             pure_expr="${pure_expr:+$pure_expr or }package($pure_pkg)"
