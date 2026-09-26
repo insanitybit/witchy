@@ -66,10 +66,12 @@ worktree_pool_evict() {
 }
 
 # Claim a free slot and check it out on a new <branch> at <base>. Prints the
-# slot path on success. A slot that is stale (older than the max age), lost
-# its build cache, or is not a clean detached checkout is evicted instead.
+# slot path on success. Only a verified clean detached slot may be age-evicted.
+# Unexpected work invalidates the free marker, never the checkout. Cargo 1.100
+# + mbx creates managed targets lazily; an absent cache is not grounds to delete the slot's
+# ignored diagnostics or other retained state.
 worktree_pool_claim() {
-    local root="$1" branch="$2" base="$3" pool marker slot wt freed now max_age
+    local root="$1" branch="$2" base="$3" pool marker slot wt freed now max_age slot_head slot_status
     pool="$(worktree_pool_state_dir "$root")"
     [ -d "$pool/free" ] || return 1
     mkdir -p "$pool/claims" || return 1
@@ -82,11 +84,17 @@ worktree_pool_claim() {
         wt="$(worktree_pool_slot_path "$root" "$slot")"
         freed="$(cat "$marker" 2>/dev/null || echo 0)"
         case "$freed" in '' | *[!0-9]*) freed=0 ;; esac
-        if [ $((now - freed)) -gt "$max_age" ] \
-            || [ ! -d "$wt/target/debug" ] \
-            || [ "$(git -C "$wt" rev-parse --abbrev-ref HEAD 2>/dev/null)" != HEAD ] \
-            || [ -n "$(git -C "$wt" status --porcelain 2>/dev/null)" ]; then
-            echo "worktree-pool: evicting slot $slot (stale, cacheless or not clean)" >&2
+        if ! slot_head="$(git -C "$wt" rev-parse --abbrev-ref HEAD 2>/dev/null)" \
+            || [ "$slot_head" != HEAD ] \
+            || ! slot_status="$(git -C "$wt" status --porcelain 2>/dev/null)" \
+            || [ -n "$slot_status" ]; then
+            echo "worktree-pool: preserving slot $slot (not verified clean and detached); withdrawing free marker" >&2
+            rm -f "$marker"
+            rmdir "$pool/claims/$slot" 2>/dev/null || true
+            continue
+        fi
+        if [ $((now - freed)) -gt "$max_age" ]; then
+            echo "worktree-pool: evicting slot $slot (stale)" >&2
             worktree_pool_evict "$root" "$slot"
             rmdir "$pool/claims/$slot" 2>/dev/null || true
             continue
@@ -97,8 +105,7 @@ worktree_pool_claim() {
             printf '%s\n' "$wt"
             return 0
         fi
-        echo "worktree-pool: slot $slot refused the switch; evicting it" >&2
-        worktree_pool_evict "$root" "$slot"
+        echo "worktree-pool: slot $slot refused the switch; preserving it without a free marker" >&2
         rmdir "$pool/claims/$slot" 2>/dev/null || true
     done
     return 1

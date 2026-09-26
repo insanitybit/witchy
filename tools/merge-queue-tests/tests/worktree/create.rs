@@ -16,7 +16,7 @@ fn temp_repo() -> TempRepo {
         git(path, &["add", "README.md"]);
         git(path, &["commit", "--quiet", "-m", "fixture"]);
         // Build caches and queue state are ignored in the real checkout.
-        fs::write(path.join(".git/info/exclude"), "target/\nstate/\n.claude/\n")
+        fs::write(path.join(".git/info/exclude"), "target\nstate/\n.claude/\n")
             .expect("write fixture excludes");
     })
 }
@@ -244,6 +244,65 @@ fn worktree_create_recycles_a_released_pool_slot_with_its_build_state() {
     assert_eq!(third, pool_slot(root, "01"), "a claimed slot was handed out twice");
 }
 
+#[test]
+fn worktree_create_reuses_a_cacheless_free_slot_without_deleting_ignored_state() {
+    let repo = temp_repo();
+    let root = repo.path();
+    let first = created_path(&create(root, "first"));
+    assert!(!first.join("target").exists(), "the default target is created lazily");
+    let evidence = first.join("state/diagnostic.txt");
+    fs::create_dir_all(evidence.parent().expect("evidence parent")).expect("create state");
+    fs::write(&evidence, "retained evidence\n").expect("write ignored evidence");
+    release(root, &first);
+
+    let output = create(root, "second");
+    let second = created_path(&output);
+    assert_eq!(second, first, "a cacheless free slot was not reused");
+    // A delete-and-recreate at the same path is NOT recycling.
+    assert_eq!(fs::read_to_string(&evidence).expect("preserved evidence"), "retained evidence\n");
+    assert_eq!(git(&second, &["branch", "--show-current"]), "worktree-second");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("recycled pool worktree"));
+    assert!(!second.join("target").exists(), "claiming must not fabricate a build cache");
+}
+
+#[cfg(unix)]
+#[test]
+fn worktree_create_reuses_a_free_slot_with_a_dangling_managed_target() {
+    use std::os::unix::fs::symlink;
+
+    let repo = temp_repo();
+    let root = repo.path();
+    let first = created_path(&create(root, "first"));
+    let managed = root.join("state/mbx/targets/reclaimed");
+    symlink(&managed, first.join("target")).expect("dangling managed target");
+    let evidence = first.join("state/diagnostic.txt");
+    fs::create_dir_all(evidence.parent().expect("evidence parent")).expect("create state");
+    fs::write(&evidence, "retained evidence\n").expect("write ignored evidence");
+    release(root, &first);
+
+    let output = create(root, "second");
+    let second = created_path(&output);
+    assert_eq!(second, first, "a free slot with a reclaimed target was not reused");
+    assert_eq!(fs::read_to_string(&evidence).expect("preserved evidence"), "retained evidence\n");
+    assert_eq!(fs::read_link(second.join("target")).expect("preserved target link"), managed);
+    assert!(!managed.exists(), "claiming must leave managed-target creation to mbx");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("recycled pool worktree"));
+}
+
+#[test]
+fn worktree_create_does_not_claim_an_unmarked_detached_cacheless_slot() {
+    let repo = temp_repo();
+    let root = repo.path();
+    let first = created_path(&create(root, "first"));
+    git(&first, &["switch", "--quiet", "--detach", "master"]);
+    assert!(!root.join("state/worktree-pool/free/00").exists());
+
+    let second = created_path(&create(root, "second"));
+    assert_eq!(second, pool_slot(root, "01"), "detached HEAD does not prove a slot is free");
+    assert_eq!(git(&first, &["rev-parse", "--abbrev-ref", "HEAD"]), "HEAD");
+    assert!(first.is_dir(), "unmarked detached work must be left alone");
+}
+
 /// `--branch` gives agents that name their own branches (Codex tasks) a pool
 /// slot and its build state under exactly that branch, and refuses a name that
 /// is taken instead of renaming it.
@@ -299,20 +358,93 @@ fn worktree_create_past_the_pool_cap_makes_a_named_worktree() {
 }
 
 #[test]
-fn worktree_create_evicts_a_dirty_pool_slot_instead_of_handing_it_out() {
+fn worktree_create_preserves_unexpected_work_even_with_a_stale_free_marker() {
+    for condition in ["dirty", "stale-dirty", "attached"] {
+        let repo = temp_repo();
+        let root = repo.path();
+        let first = created_path(&create(root, "first"));
+        let state = plant_incremental_state(&first);
+        release(root, &first);
+        if condition == "attached" {
+            git(&first, &["switch", "--quiet", "worktree-first"]);
+        } else {
+            fs::write(first.join("stray.txt"), "new work\n").expect("untracked work");
+            fs::write(first.join("README.md"), "edited work\n").expect("tracked work");
+        }
+        let marker = root.join("state/worktree-pool/free/00");
+        if condition == "stale-dirty" {
+            fs::write(&marker, "0\n").expect("age the stale marker");
+        }
+
+        let output = create(root, "second");
+        let second = created_path(&output);
+        assert_eq!(second, pool_slot(root, "01"), "must not reuse {condition} slot");
+        assert!(String::from_utf8_lossy(&output.stderr).contains("preserving slot 00"));
+        assert!(!marker.exists(), "withdraw invalid free marker");
+        assert!(state.is_file(), "preserve retained state for {condition}");
+        if condition == "attached" {
+            assert_eq!(git(&first, &["branch", "--show-current"]), "worktree-first");
+        } else {
+            assert_eq!(fs::read_to_string(first.join("stray.txt")).unwrap(), "new work\n");
+            assert_eq!(fs::read_to_string(first.join("README.md")).unwrap(), "edited work\n");
+        }
+    }
+}
+
+#[test]
+fn worktree_create_evicts_only_verified_clean_stale_slots() {
     let repo = temp_repo();
     let root = repo.path();
     let first = created_path(&create(root, "first"));
     let state = plant_incremental_state(&first);
     release(root, &first);
-    fs::write(first.join("stray.txt"), "left behind\n").expect("dirty the free slot");
+    fs::write(root.join("state/worktree-pool/free/00"), "0\n").expect("age free slot");
 
     let output = create(root, "second");
     let second = created_path(&output);
     assert!(String::from_utf8_lossy(&output.stderr).contains("evicting slot 00"));
-    assert!(!second.join("stray.txt").exists(), "a dirty slot was handed out");
+    assert_eq!(second, first, "aged slot should be recreated at the same path");
     assert!(!state.exists(), "the evicted slot's cache survived");
     assert_eq!(git(&second, &["branch", "--show-current"]), "worktree-second");
+}
+
+#[test]
+fn worktree_pool_preserves_slots_when_git_status_or_switch_fails() {
+    for operation in ["status", "switch"] {
+        let repo = temp_repo();
+        let root = repo.path();
+        let first = created_path(&create(root, "first"));
+        let state = plant_incremental_state(&first);
+        release(root, &first);
+        let scripts = workspace_root().join("scripts");
+        let output = Command::new("bash")
+            .arg("-c")
+            .arg(r#"
+                . "$0/state-paths.sh" && . "$0/worktree-pool.sh" || exit 99
+                failed_worktree="$2"
+                failed_operation="$3"
+                git() {
+                    if [ "$1" = -C ] && [ "$2" = "$failed_worktree" ] && [ "$3" = "$failed_operation" ]; then
+                        return 1
+                    fi
+                    command git "$@"
+                }
+                worktree_pool_claim "$1" worktree-second master
+            "#)
+            .arg(scripts)
+            .arg(root)
+            .arg(&first)
+            .arg(operation)
+            .env_remove("WITCHY_STATE_DIR")
+            .output()
+            .expect("claim with failed git operation");
+        assert_eq!(output.status.code(), Some(1), "failed {operation} must refuse claim");
+        assert!(state.is_file(), "failed {operation} must preserve the checkout");
+        assert!(!root.join("state/worktree-pool/free/00").exists());
+        assert!(!root.join("state/worktree-pool/claims/00").exists());
+        let second = created_path(&create(root, "second"));
+        assert_eq!(second, pool_slot(root, "01"), "failed {operation} slot stays unclaimed");
+    }
 }
 
 #[test]
