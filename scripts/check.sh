@@ -636,17 +636,31 @@ if cargo nextest --version >/dev/null 2>&1; then
         fi
     fi
 
-    # Gate only: the pure SafeWIR route (--no-default-features) resolves a
-    # different feature graph for every compiler crate from cap-model up, so
-    # sharing one target with the native graph made consecutive gates rebuild
-    # the whole compiler stack each time the route flipped (8 of 18 gates on
-    # 2026-09-25 took the pure route). Each graph keeps its own warm target.
+    # Gate only: the pure SafeWIR and lowerer-only routes resolve a different
+    # feature graph for every compiler crate from cap-model up. The former says
+    # `--no-default-features` explicitly; the Cargo shim isolates the latter
+    # when witchy-lower is selected without a native owner. Sharing either one
+    # with the native graph made consecutive gates rebuild the whole compiler
+    # stack each time the route flipped. Each graph keeps its own warm target.
+    pure_gate_command() {
+        local command=" $* "
+        [[ "$command" == *" --no-default-features "* ]] && return 0
+        [[ "$command" == *" -p witchy-lower "* \
+            || "$command" == *" --package witchy-lower "* \
+            || "$command" == *" --package=witchy-lower "* ]] || return 1
+        [[ "$command" != *" --workspace "* \
+            && "$command" != *" -p witchy "* \
+            && "$command" != *" --package witchy "* \
+            && "$command" != *" --package=witchy "* \
+            && "$command" != *" witchy-wir/native"* \
+            && "$command" != *" witchy-lower/native-test-runtime"* ]]
+    }
     if [ -n "${WITCHY_GATE_SCOPE:-}" ]; then
-        if [[ " ${test_cmd[*]} " == *" --no-default-features "* ]]; then
+        if pure_gate_command "${test_cmd[@]}"; then
             test_cmd=(env "CARGO_TARGET_DIR=${target_dir}-pure" "${test_cmd[@]}")
         fi
         if [ "${#test_cmd_extra[@]}" -gt 0 ] \
-            && [[ " ${test_cmd_extra[*]} " == *" --no-default-features "* ]]; then
+            && pure_gate_command "${test_cmd_extra[@]}"; then
             test_cmd_extra=(env "CARGO_TARGET_DIR=${target_dir}-pure" "${test_cmd_extra[@]}")
         fi
     fi

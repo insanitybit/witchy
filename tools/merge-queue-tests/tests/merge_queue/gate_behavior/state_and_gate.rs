@@ -946,6 +946,18 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
         }),
         "lower-only gate dropped its pure compiler tests: {lower_args}",
     );
+    assert!(
+        lower_args
+            .lines()
+            .filter(|line| line.starts_with("nextest run"))
+            .all(|line| {
+                line.ends_with(&format!(
+                    "target={}-pure",
+                    temp.path().join("target-lower-only").display()
+                ))
+            }),
+        "lower-only gate shared the native graph's target: {lower_args}",
+    );
 
     fs::write(&cargo_args_file, "").expect("clear fake cargo arguments");
     let pure_wir = check_sh(&root, &[])
