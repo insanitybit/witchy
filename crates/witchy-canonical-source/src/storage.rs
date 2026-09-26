@@ -371,32 +371,17 @@ fn snapshot_eligibility_for(
                 if !active.insert(ty.clone()) {
                     return Err(SnapshotRefusal::UnprovedStorage);
                 }
-                // The aggregate layout judgment supplies instantiated stored
-                // fields. Phantom arguments bind identity but carry no value.
-                let fields = if use_kind == SnapshotUse::ReplayableTask
-                    && let Some(children) = stored_children(ty, definitions)
-                        .map_err(|_| SnapshotRefusal::UnprovedStorage)?
-                {
-                    if matches!(StoragePlan::classify(ty, definitions, |_| Some(0)),
-                        StoragePlan::Refused(_)) {
-                        return Err(SnapshotRefusal::UnprovedStorage);
-                    }
-                    children.into_types()
-                } else if let Some(shape) = scalar_aggregate_shape(ty, definitions) {
-                    shape.fields
-                } else {
-                    match StoragePlan::classify(ty, definitions, |_| Some(0)) {
-                        StoragePlan::Owned(CarrierElement::List(element)) => vec![element.source_type()],
-                        StoragePlan::Owned(CarrierElement::Scalar(_) | CarrierElement::String | CarrierElement::Bytes)
-                        | StoragePlan::InlineScalar(_) => Vec::new(),
-                        StoragePlan::AuthenticatedPlace(plan) if plan.cloneable() => Vec::new(),
-                        StoragePlan::RetainedGraphList(plan) | StoragePlan::RetainedOpaqueAggregateList(plan)
-                            if plan.cloneable() => vec![plan.source().clone()],
-                        StoragePlan::RetainedCallableList(plan) => vec![plan.exact_signature().clone()],
-                        StoragePlan::RetainedOwnerList(plan) => vec![plan.source_identity()],
-                        _ => return Err(SnapshotRefusal::UnprovedStorage),
-                    }
-                };
+                // Both persistent views and replayable recipes require an
+                // independent copy of the exact checked storage. The source
+                // child relation excludes phantom parameters and physical
+                // tags; the storage plan proves clone/release for its carrier.
+                if !StoragePlan::classify(ty, definitions, |_| Some(0)).admits_owned_copy() {
+                    return Err(SnapshotRefusal::UnprovedStorage);
+                }
+                let fields = stored_children(ty, definitions)
+                    .map_err(|_| SnapshotRefusal::UnprovedStorage)?
+                    .map(StoredChildren::into_types)
+                    .unwrap_or_default();
                 for field in &fields {
                     walk(field, definitions, use_kind, active, depth + 1, remaining)?;
                 }
@@ -1015,10 +1000,11 @@ impl StoragePlan {
     pub fn admits_owned_copy(&self) -> bool {
         match self {
             Self::InlineScalar(_) | Self::InlineAggregate(_) | Self::Owned(_)
-            | Self::RetainedCallable(_) | Self::RetainedCallableList(_) => true,
+            | Self::RetainedCallable(_) | Self::RetainedCallableList(_)
+            | Self::RetainedOwnerList(_) => true,
             Self::AuthenticatedPlace(plan) | Self::AggregateView(_, plan) | Self::RetainedGraphList(plan)
             | Self::RetainedOpaqueAggregateList(plan) => plan.cloneable(),
-            Self::MoveOnlyList(_) | Self::RetainedOwnerList(_) | Self::RootedView(_)
+            Self::MoveOnlyList(_) | Self::RootedView(_)
             | Self::Refused(_) => false,
         }
     }

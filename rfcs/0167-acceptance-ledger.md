@@ -1131,6 +1131,18 @@ phantom-versus-stored-resource contract case passed, and an adversarial
 authority read found no new widening. Full admitted-Wasm behavior and a
 zero-leak audit remain pending, so no A–O row closes.
 
+Row G snapshot consumer unification (implemented but unverified, 2026-09-26):
+persistent views and replayable task captures now traverse the same checked
+stored-child relation and require the carrier's independent owned-copy proof.
+The separate persistent-view scalar-aggregate, list, and retained-owner
+fallbacks are removed. Phantom parameters and physical sum tags are excluded;
+the already cloneable owner-token list carrier remains eligible through its
+shared owned-copy proof. Affine, must-consume, once-callable, and authority
+refusals remain explicit.
+A focused compiler check and the existing phantom-versus-stored-resource case
+passed. Admitted unoptimized Wasm and zero-leak evidence remain open, so no
+additional A–O row closes.
+
 Stored-child contract follow-up (implemented but unverified, 2026-09-25):
 replay eligibility, aggregate cloneability, GC view-owner detection,
 capability traversal, and opaque closure-owner evidence use one instantiated
