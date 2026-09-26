@@ -3730,20 +3730,8 @@ impl Checker {
         // the absence of the hazards above.
         if !self.has_only_declared_deferred_parameters(&payload)
             && !ty_to_ast(&payload).as_ref().is_some_and(|ty| {
-                match StoragePlan::classify(ty, &self.canonical_definitions, |_| Some(0)) {
-                    StoragePlan::InlineScalar(_)
-                    | StoragePlan::InlineAggregate(_)
-                    | StoragePlan::Owned(_)
-                    | StoragePlan::RetainedCallable(_)
-                    | StoragePlan::RetainedCallableList(_) => true,
-                    StoragePlan::AuthenticatedPlace(plan)
-                    | StoragePlan::RetainedGraphList(plan)
-                    | StoragePlan::RetainedOpaqueAggregateList(plan) => plan.cloneable(),
-                    StoragePlan::RetainedOwnerList(_)
-                    | StoragePlan::RootedView(_)
-                    | StoragePlan::AggregateView(_)
-                    | StoragePlan::Refused(_) => false,
-                }
+                StoragePlan::classify(ty, &self.canonical_definitions, |_| Some(0))
+                    .admits_owned_copy()
             })
         {
             return terr(format!(

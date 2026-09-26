@@ -745,6 +745,25 @@ impl<'a> OpaqueOwnerEvidence<'a> {
 }
 
 impl StoragePlan {
+    /// An independent owned copy can be made from this checked storage.
+    /// Borrowed and view-bearing plans never acquire this proof by omission.
+    pub fn admits_owned_copy(&self) -> bool {
+        match self {
+            Self::InlineScalar(_) | Self::InlineAggregate(_) | Self::Owned(_)
+            | Self::RetainedCallable(_) | Self::RetainedCallableList(_) => true,
+            Self::AuthenticatedPlace(plan) | Self::RetainedGraphList(plan)
+            | Self::RetainedOpaqueAggregateList(plan) => plan.cloneable(),
+            Self::RetainedOwnerList(_) | Self::RootedView(_) | Self::AggregateView(_)
+            | Self::Refused(_) => false,
+        }
+    }
+
+    /// A copy also severs a call-scoped origin only when no callable capture
+    /// or opaque aggregate field can hide another borrowed origin.
+    pub fn admits_call_scoped_copy(&self) -> bool {
+        matches!(self, Self::InlineScalar(_) | Self::InlineAggregate(_) | Self::Owned(_))
+    }
+
     /// A list can duplicate initialized elements. Require a copyable owned
     /// carrier, a non-once callable, or a cloneable authenticated graph.
     /// Other storage plans retain their own representation but cannot become

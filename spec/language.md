@@ -747,7 +747,7 @@ allocation-free RFC-0089 theorem.
 | Convention | Meaning |
 |---|---|
 | (default) | owned, observably immutable value - the callee may read but the caller sees no change |
-| `let` | call-scoped read access; its carrier, derived views, aliases, aggregates, and closure captures cannot escape the call. Computed scalars and explicitly checked `.owned()` copies are independent. |
+| `let` | call-scoped read access; its carrier, derived views, aliases, aggregates, and closure captures cannot escape the call. Computed scalars, freshly built owned values, and explicitly checked `.owned()` copies are independent. Normal mode repairs immutable owned calls and list iteration when the recursive storage proof establishes an independent copy; opt mode keeps its declared proof requirement. |
 | `var` | move-in/move-out write-back: requires a mutable caller place and commits the parameter's final value on every structured return, independently of parameter position or ordinary return type |
 | `own` | ownership transfer; the **callee** consumes the argument, so using the source afterwards is a check-time error |
 | `move e` | use-site ownership transfer; the **caller** consumes the source binding (see below), idiomatically paired with `own` |

@@ -1,20 +1,22 @@
 //! Call-scoped provenance for explicit `let` parameters (RFC-0167 §3).
 //!
 //! This runs on the retained, typed AST. An origin follows values through
-//! bindings, containers, projections, and captures. Only an inline scalar
-//! result or an exact checker-authenticated `.owned()` site removes it.
+//! bindings, containers, projections, and captures. Checked scalar results,
+//! lawful fresh results, and proven owned copies remove it.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use foldhash::{HashMap, HashMapExt as _};
 use witchy_canonical_source::access::{AccessKind, AccessQualifier};
+use witchy_canonical_source::aggregates::type_definitions;
+use witchy_canonical_source::storage::StoragePlan;
 use witchy_syntax::ast::{
-    BinOp, Block, Convention, Expr, Function, Item, Module, Pattern, Stmt, UnOp,
+    BinOp, Block, Convention, Expr, Function, Item, Module, Pattern, Stmt, TypeDef, UnOp,
 };
 use witchy_syntax::lambda_scan::scan_lambda;
 
 use crate::access::CheckedAccessFacts;
-use crate::typeck::{Ty, TypeError, TypeTable};
+use crate::typeck::{Ty, TypeError, TypeTable, ty_to_ast};
 
 type Origins = BTreeSet<String>;
 type Environment = HashMap<String, Origins>;
@@ -23,6 +25,8 @@ struct Verifier<'a> {
     module: &'a Module,
     table: &'a TypeTable,
     access: &'a CheckedAccessFacts,
+    definitions: &'a BTreeMap<String, TypeDef>,
+    opt_mode: bool,
     function: &'a str,
 }
 
@@ -102,7 +106,14 @@ impl Verifier<'_> {
         })
     }
 
-    fn check_call(&self, expression: &Expr, arguments: &[Origins]) -> Result<(), TypeError> {
+    fn normal_copy_repair(&self, expression: &Expr) -> bool {
+        !self.opt_mode
+            && self.table.type_of(expression).and_then(ty_to_ast).is_some_and(|ty| {
+                StoragePlan::classify(&ty, self.definitions, |_| Some(0)).admits_call_scoped_copy()
+            })
+    }
+
+    fn check_call(&self, expression: &Expr, values: &[&Expr], arguments: &[Origins]) -> Result<(), TypeError> {
         if arguments.iter().all(Origins::is_empty) {
             return Ok(());
         }
@@ -129,12 +140,15 @@ impl Verifier<'_> {
             let origins = arguments.iter().cloned().fold(Origins::new(), Self::union);
             return Err(self.error(&origins, "cross a call without a checked access contract"));
         };
-        if signature.params().len() != arguments.len() {
+        if signature.params().len() != arguments.len() || values.len() != arguments.len() {
             let origins = arguments.iter().cloned().fold(Origins::new(), Self::union);
             return Err(self.error(&origins, "cross a call with an incomplete access contract"));
         }
-        for (argument, parameter) in arguments.iter().zip(signature.params()) {
-            if !argument.is_empty() && parameter.kind() != AccessKind::SharedBorrow {
+        for ((value, argument), parameter) in values.iter().zip(arguments).zip(signature.params()) {
+            if !argument.is_empty()
+                && parameter.kind() != AccessKind::SharedBorrow
+                && !(parameter.kind() == AccessKind::OwnedImmutable && self.normal_copy_repair(value))
+            {
                 return Err(self.error(argument, "cross an owning or exclusive call parameter"));
             }
         }
@@ -241,11 +255,10 @@ impl Verifier<'_> {
                     Expr::LabeledCall { args, .. } => args.iter().map(|(_, value)| value).collect(),
                     _ => unreachable!(),
                 };
-                let arguments = values
-                    .into_iter()
+                let arguments = values.iter().copied()
                     .map(|value| self.expr(value, environment))
                     .collect::<Result<Vec<_>, _>>()?;
-                self.check_call(expression, &arguments)?;
+                self.check_call(expression, &values, &arguments)?;
                 if self.checked_call_result_is_independent(expression) {
                     Origins::new()
                 } else {
@@ -265,7 +278,7 @@ impl Verifier<'_> {
                 for arg in args {
                     arguments.push(self.expr(arg, environment)?);
                 }
-                self.check_call(expression, &arguments)?;
+                self.check_call(expression, &args.iter().collect::<Vec<_>>(), &arguments)?;
                 if self.checked_call_result_is_independent(expression) {
                     Origins::new()
                 } else {
@@ -280,7 +293,8 @@ impl Verifier<'_> {
                 for arg in args {
                     arguments.push(self.expr(arg, environment)?);
                 }
-                self.check_call(expression, &arguments)?;
+                let values = std::iter::once(receiver.as_ref()).chain(args.iter()).collect::<Vec<_>>();
+                self.check_call(expression, &values, &arguments)?;
                 if self.checked_call_result_is_independent(expression) {
                     Origins::new()
                 } else {
@@ -303,7 +317,8 @@ impl Verifier<'_> {
                 for arg in args {
                     arguments.push(self.expr(arg, environment)?);
                 }
-                self.check_call(expression, &arguments)?;
+                let values = std::iter::once(receiver.as_ref()).chain(args.iter()).collect::<Vec<_>>();
+                self.check_call(expression, &values, &arguments)?;
                 if self.checked_call_result_is_independent(expression) {
                     Origins::new()
                 } else {
@@ -315,7 +330,8 @@ impl Verifier<'_> {
                 for (_, arg) in args {
                     arguments.push(self.expr(arg, environment)?);
                 }
-                self.check_call(expression, &arguments)?;
+                let values = std::iter::once(receiver.as_ref()).chain(args.iter().map(|(_, arg)| arg)).collect::<Vec<_>>();
+                self.check_call(expression, &values, &arguments)?;
                 if self.checked_call_result_is_independent(expression) {
                     Origins::new()
                 } else {
@@ -397,7 +413,14 @@ impl Verifier<'_> {
             } => {
                 let mut origins = self.expr(lhs, environment)?;
                 origins.extend(self.expr(rhs, environment)?);
-                origins
+                if matches!(expression, Expr::Binary { op: BinOp::Add | BinOp::Concat, .. })
+                    && matches!(self.table.type_of(expression), Some(Ty::String))
+                {
+                    // String concatenation allocates a fresh owned result.
+                    Origins::new()
+                } else {
+                    origins
+                }
             }
             Expr::If {
                 cond,
@@ -448,7 +471,19 @@ impl Verifier<'_> {
             }
             Expr::For { var, iter, body } => {
                 self.loop_fixed_point(environment, |iteration| {
-                    let source = self.expr(iter, iteration)?;
+                    let mut source = self.expr(iter, iteration)?;
+                    if !source.is_empty()
+                        && !self.opt_mode
+                        && matches!(self.table.type_of(iter), Some(Ty::List(element))
+                            if ty_to_ast(element).is_some_and(|ty|
+                                StoragePlan::classify(&ty, self.definitions, |_| Some(0))
+                                    .admits_call_scoped_copy()))
+                    {
+                        // Normal list iteration clones an owned leaf into the
+                        // loop binding. Its new storage cannot retain the
+                        // list parameter's call-scoped access.
+                        source.clear();
+                    }
                     iteration.insert(var.clone(), source);
                     self.block(body, iteration)?;
                     Ok(())
@@ -478,11 +513,12 @@ pub(crate) fn verify(
     table: &TypeTable,
     access: &CheckedAccessFacts,
 ) -> Result<(), TypeError> {
+    let definitions = type_definitions(module);
     for item in &module.items {
         let Item::Function(function) = item else {
             continue;
         };
-        verify_function(module, table, access, function)?;
+        verify_function(module, table, access, &definitions, function)?;
     }
     Ok(())
 }
@@ -491,12 +527,15 @@ fn verify_function(
     module: &Module,
     table: &TypeTable,
     access: &CheckedAccessFacts,
+    definitions: &BTreeMap<String, TypeDef>,
     function: &Function,
 ) -> Result<(), TypeError> {
     let verifier = Verifier {
         module,
         table,
         access,
+        definitions,
+        opt_mode: module.modes.iter().any(|mode| mode == "opt"),
         function: &function.name,
     };
     let mut environment = Environment::new();

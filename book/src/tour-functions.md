@@ -347,6 +347,10 @@ the function reads it but the caller sees no change. Annotate it `let` to make i
 an explicit **borrow**: same read-only meaning, but the compiler guarantees it
 doesn't escape the call - returning a `let`-borrowed parameter is a type
 error - which is what lets backends share it without a defensive copy.
+Computed scalars and fresh owned results, such as a concatenated string, may
+escape. In normal mode an immutable owned call or list iteration can copy a
+borrowed input when its storage has a checked copy proof. Opt mode requires
+the declared ownership proof or an explicit lawful `.owned()` materialization.
 
 ```witchy
 fn sum(let xs: List(Int), i: Int) -> Int:

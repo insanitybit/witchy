@@ -109,6 +109,14 @@ intrinsics without a result proof retain provenance or fail closed. Trait
 lowering preserves the `.owned()` site for canonical lowering. Callback literal
 bodies now use the same origin dataflow for their own `let` inputs, including
 return and yield escapes, even when the enclosing function owns every input.
+In normal mode, the checker now permits a call-scoped input at an immutable
+owned call parameter only when the shared storage judgment proves an
+independent copy with no hidden callable capture. String concatenation and
+list iteration over similarly proved elements produce fresh values. Opt mode
+still requires its declared proof; direct returns, view-bearing storage, and
+unproved aggregate or callable copies retain their origin or fail closed.
+The existing precompiled `run-source` smoke passes after these repairs; this
+is a structural check, not A–O semantic evidence.
 Exact checked access signatures now distinguish independent owned results from
 view or borrow-related results across direct, function-value, method, and
 existential calls; unknown call contracts still retain origins. A focused
