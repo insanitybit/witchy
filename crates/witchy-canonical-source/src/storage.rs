@@ -852,6 +852,14 @@ impl StoragePlan {
         definitions: &BTreeMap<String, TypeDef>,
         nominal: impl Fn(&str) -> Option<u32>,
     ) -> Self {
+        Self::classify_inner(ty, definitions, &nominal)
+    }
+
+    fn classify_inner(
+        ty: &Type,
+        definitions: &BTreeMap<String, TypeDef>,
+        nominal: &dyn Fn(&str) -> Option<u32>,
+    ) -> Self {
         // `view_carrier_plan` traverses checked nominal definitions before the
         // owned-carrier parser applies its own limits. Bound that traversal as
         // well, including repeated visits through distinct source branches.
@@ -918,7 +926,7 @@ impl StoragePlan {
             && name == "List"
             && let [element] = arguments.as_slice()
         {
-            let child = Self::classify(element, definitions, |_| Some(0));
+            let child = Self::classify_inner(element, definitions, nominal);
             if child.list_element_disposition(element) == Some(ListElementDisposition::MoveOnly) {
                 let Some(source_key) = (SourceTypeKey { source: ty }).digest() else {
                     return Self::Refused(StorageRefusal::ResourceLimit);

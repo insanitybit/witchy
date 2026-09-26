@@ -19351,7 +19351,8 @@ fn source_value_type(
             .copied()
             .map(ValueType::Ref)
             .ok_or_else(|| CanonicalLoweringError::UnsupportedType(source.clone())),
-        StoragePlan::Owned(CarrierElement::List(_)) | StoragePlan::RetainedGraphList(_)
+        StoragePlan::Owned(CarrierElement::List(_)) | StoragePlan::MoveOnlyList(_)
+            | StoragePlan::RetainedGraphList(_)
             | StoragePlan::RetainedCallableList(_) => {
             list_layout(source, layout_bundle, layouts, closure_layouts, definitions).map(|(layout, _, _, _)| ValueType::Ref(layout))
         }
