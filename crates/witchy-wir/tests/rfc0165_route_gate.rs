@@ -127,6 +127,38 @@ fn rust_sources(root: &Path) -> Vec<(PathBuf, String)> {
     files
 }
 
+// These audits inspect named identifiers, not arbitrary Rust syntax. Avoid a
+// full AST for unrelated ASCII files. Raw identifiers retain their spelling
+// after `r#`; comments/string matches only cause harmless extra parsing. Let
+// syn handle non-ASCII or escape-bearing source without assumptions about
+// identifier normalization or future syntax. Compilation remains the syntax
+// check for files with none of the protected names.
+fn may_name_any(source: &str, names: &[&str]) -> bool {
+    !source.is_ascii() || source.contains('\\') || names.iter().any(|name| source.contains(name))
+}
+
+#[test]
+fn source_surface_prefilter_keeps_raw_unicode_and_escape_candidates() {
+    let names = ["WasmIr", "ValidatedSafeWir"];
+    for source in [
+        "struct WasmIr {}",
+        "struct r#ValidatedSafeWir {}",
+        "fn make() { let _ = crate::ValidatedSafeWir {}; }",
+        "// WasmIr in a comment is a conservative false positive\nfn unrelated() {}",
+        "const TEXT: &str = \"ValidatedSafeWir\";",
+        "struct Café {}",
+        "const TEXT: &str = \"\\u{57}asmIr\";",
+    ] {
+        syn::parse_file(source).expect("valid Rust fixture");
+        assert!(may_name_any(source, &names), "candidate must reach syn: {source}");
+    }
+    let escaped_identifier = r"struct \u{57}asmIr {}";
+    assert!(may_name_any(escaped_identifier, &names));
+    assert!(syn::parse_file(escaped_identifier).is_err(),
+        "identifier escapes must reach the parser, not disappear in the prefilter");
+    assert!(!may_name_any("struct Unrelated { field: u32 }", &names));
+}
+
 fn path_ends_in(path: &SynPath, name: &str) -> bool {
     path.segments.last().is_some_and(|segment| segment.ident == name)
 }
@@ -223,6 +255,9 @@ fn canonical_wasmir_has_one_private_validated_construction_surface() {
     let mut canonical_surface = WasmIrSurface::default();
 
     for (path, source) in rust_sources(&source_root) {
+        if !may_name_any(&source, &["WasmIr"]) {
+            continue;
+        }
         let file = syn::parse_file(&source)
             .unwrap_or_else(|error| panic!("{} parses: {error}", path.display()));
         let mut surface = WasmIrSurface::default();
@@ -269,6 +304,9 @@ fn validated_safewir_has_one_checker_owned_construction_surface() {
     let mut constructions = Vec::new();
 
     for (path, source) in rust_sources(&source_root) {
+        if !may_name_any(&source, &["ValidatedSafeWir"]) {
+            continue;
+        }
         let file = syn::parse_file(&source)
             .unwrap_or_else(|error| panic!("{} parses: {error}", path.display()));
         let mut surface = ValidatedSafeWirSurface::default();
@@ -321,6 +359,11 @@ fn a3_witness_and_digest_types_have_no_public_minting_surface() {
     ];
 
     for (path, source) in rust_sources(&source_root) {
+        if !may_name_any(&source, &protected_public_types)
+            && !may_name_any(&source, &protected_private_types)
+        {
+            continue;
+        }
         let file = syn::parse_file(&source)
             .unwrap_or_else(|error| panic!("{} parses: {error}", path.display()));
         for item in &file.items {
