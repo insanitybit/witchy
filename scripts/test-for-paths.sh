@@ -99,6 +99,7 @@ gate_workspace=0
 corpus_impact=0
 gate_example_mods=()
 gate_witchy_tests=()
+gate_misc_modules=()
 gate_need_conformance=0
 gate_need_std_roots=0
 gate_pure_wir=0
@@ -138,6 +139,11 @@ add_witchy_test() {
     for x in ${gate_witchy_tests[0]+"${gate_witchy_tests[@]}"}; do [ "$x" = "$m" ] && return; done
     gate_witchy_tests+=("$m")
 }
+add_misc_module() {
+    local m="$1" x
+    for x in ${gate_misc_modules[0]+"${gate_misc_modules[@]}"}; do [ "$x" = "$m" ] && return; done
+    gate_misc_modules+=("$m")
+}
 emit_gate_nextest() {
     local p t args="" expr="" m need_witchy=0
     if [ "$gate_workspace" -eq 1 ]; then
@@ -170,7 +176,8 @@ emit_gate_nextest() {
     if [ "${#gate_pkgs[@]}" -eq 0 ] && [ "${#gate_tests[@]}" -eq 0 ] \
         && [ "$gate_need_examples" -eq 0 ] && [ "$gate_need_stdlib_docs" -eq 0 ] \
         && [ "${#gate_example_mods[@]}" -eq 0 ] \
-        && [ "${#gate_witchy_tests[@]}" -eq 0 ]; then
+        && [ "${#gate_witchy_tests[@]}" -eq 0 ] \
+        && [ "${#gate_misc_modules[@]}" -eq 0 ]; then
         printf 'WORKSPACE\n'
         return 0
     fi
@@ -179,7 +186,8 @@ emit_gate_nextest() {
     if [ "${#gate_tests[@]}" -gt 0 ] && [ "${#gate_pkgs[@]}" -eq 0 ] \
         && [ "$gate_need_examples" -eq 0 ] && [ "$gate_need_stdlib_docs" -eq 0 ] \
         && [ "${#gate_example_mods[@]}" -eq 0 ] \
-        && [ "${#gate_witchy_tests[@]}" -eq 0 ]; then
+        && [ "${#gate_witchy_tests[@]}" -eq 0 ] \
+        && [ "${#gate_misc_modules[@]}" -eq 0 ]; then
         for t in "${gate_tests[@]}"; do
             args="${args:+$args }--test $t"
         done
@@ -251,6 +259,10 @@ emit_gate_nextest() {
         need_witchy=1
         expr="${expr:+$expr or }test(/^${m}/)"
     done
+    for m in ${gate_misc_modules[0]+"${gate_misc_modules[@]}"}; do
+        need_witchy=1
+        expr="${expr:+$expr or }test(/^${m}::/)"
+    done
     if [ "$need_witchy" -eq 1 ]; then
         case " $args " in
             *" -p witchy "*) ;;
@@ -294,6 +306,15 @@ emit_gate_nextest() {
              || [ "$gate_need_stdlib_docs" -eq 1 ] \
              || [ "${#gate_witchy_tests[@]}" -gt 0 ]; }; then
         args="$args --bin witchy"
+    fi
+    # A touched `tests/misc/<module>.rs` needs the misc integration binary, but
+    # not every test within it. Keep the target explicit while the expression
+    # above selects only the changed modules. This composes with `--bin witchy`
+    # when one diff touches both root target families.
+    if [ "${#gate_misc_modules[@]}" -gt 0 ] \
+        && [ "${#gate_pkgs[@]}" -eq 0 ] \
+        && [ "$gate_need_conformance" -eq 0 ]; then
+        args="$args --test misc"
     fi
     # NAME EVERY TARGET instead of building whole packages.
     #
@@ -390,6 +411,9 @@ emit_gate_nextest() {
             || [ "$gate_need_stdlib_docs" -eq 1 ] \
             || [ "${#gate_witchy_tests[@]}" -gt 0 ]; then
             root_targets="$root_targets --bin witchy"
+        fi
+        if [ "${#gate_misc_modules[@]}" -gt 0 ]; then
+            root_targets="$root_targets --test misc"
         fi
         if [ "$gate_need_conformance" -eq 1 ]; then
             # `--bin witchy` carries `example_tests::rfc0*` (see above).
@@ -879,10 +903,23 @@ for p in "${paths[@]}"; do
             any_rust=1
             add_early "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test misc -E 'test(/^rfc0152_semantic_matrix::/)'"
             path_has_early=1 ;;
-        tests/misc.rs | tests/misc/*)
+        tests/misc.rs)
             any_rust=1
             add_gate_test misc
             add "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test misc" ;;
+        tests/misc/*)
+            any_rust=1
+            if [ ! -f "$p" ]; then
+                # The module no longer exists, so a name filter would select
+                # nothing. Run the complete surviving integration target.
+                add_gate_test misc
+                add "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test misc"
+            else
+                _misc="${p##*/}"
+                _misc="${_misc%.rs}"
+                add_misc_module "$_misc"
+                add "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test misc -E 'test(/^${_misc}::/)'"
+            fi ;;
         tests/*.rs)
             any_rust=1
             test_name="${p#tests/}"

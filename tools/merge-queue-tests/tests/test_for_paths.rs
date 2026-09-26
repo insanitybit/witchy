@@ -166,6 +166,35 @@ fn gate_nextest_example_tests_only_is_not_workspace() {
 }
 
 #[test]
+fn gate_nextest_misc_module_runs_only_that_module() {
+    let module = "rfc0167_resource_composition";
+    let output = gate_nextest(&[
+        "crates/witchy-types/src/typeck.rs",
+        "tests/misc/rfc0167_resource_composition.rs",
+    ]);
+    assert!(
+        output.contains("-p witchy --test typeck --test misc"),
+        "mixed compiler and misc-module edit lost its exact targets: {output}",
+    );
+    assert!(
+        output.contains(&format!("test(/^{}::/)", module)),
+        "misc-module edit lost its module filter: {output}",
+    );
+    assert!(
+        !output.contains("binary(misc)") && !output.contains("WORKSPACE"),
+        "misc-module edit expanded to the complete integration target: {output}",
+    );
+}
+
+#[test]
+fn deleted_misc_module_fails_safe_to_the_complete_target() {
+    assert_eq!(
+        gate_nextest(&["tests/misc/deleted_module.rs"]),
+        "--test misc\n",
+    );
+}
+
+#[test]
 fn lower_edit_loop_and_landing_stay_off_native_conformance() {
     let changed = "crates/witchy-lower/src/codegen/mod.rs";
     let edit = selected(&["--edit-loop", changed]);
