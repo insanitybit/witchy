@@ -1218,8 +1218,15 @@ const PERSISTENT_STD_CACHE_MAGIC: &[u8] = b"witchy-std-expansion-cache\x04";
 const PERSISTENT_STD_CACHE_MAX_BYTES: usize = 8 * 1024 * 1024;
 
 #[cfg(not(target_arch = "wasm32"))]
+const PERSISTENT_STD_CACHE_MAX_GENERATIONS: usize = 64;
+
+#[cfg(not(target_arch = "wasm32"))]
 static PERSISTENT_STD_CACHE_WRITE_ID: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
+
+#[cfg(not(target_arch = "wasm32"))]
+static PRUNED_PERSISTENT_STD_CACHE_ROOTS: OnceLock<Mutex<HashSet<std::path::PathBuf>>> =
+    OnceLock::new();
 
 /// A stable address inside the current executable. Subtracting it from the
 /// expander address cancels ASLR while keeping alternate test expanders in
@@ -1239,9 +1246,9 @@ fn persistent_std_cache_path(expand: ComptimeExpander, name: &str) -> Option<std
     // (parent dir `deps`) share a cache under the target dir. Every other binary
     // — the installed CLI — shares a cache under the user cache dir, beside the
     // runtime's other witchy caches (`witchy/wasm`, `witchy/optimized-wasm`,
-    // ...), where `witchy cache gc` (RFC-0096) will prune it. The executable-
-    // identity key below invalidates either on a new binary, so enabling the CLI
-    // home can never serve a stale prelude.
+    // ...). The executable-identity key below invalidates either on a new
+    // binary, so enabling the CLI home can never serve a stale prelude. Each
+    // process also prunes old executable identities once per cache root.
     let executable = std::env::current_exe().ok()?;
     let parent = executable.parent()?;
     // Cargo 1.100's per-unit target layout no longer guarantees that a test
@@ -1282,8 +1289,54 @@ fn persistent_std_cache_path(expand: ComptimeExpander, name: &str) -> Option<std
     #[cfg(debug_assertions)]
     identity.update(bundled_sources_on_disk::digest());
     let identity = identity.finalize().to_hex();
+    let version_root = root.join("v1");
+    persistent_std_cache_prune_once(&version_root, identity.as_str());
 
-    Some(root.join("v1").join(identity.as_str()).join(format!("{name}.wstd")))
+    Some(version_root.join(identity.as_str()).join(format!("{name}.wstd")))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn persistent_std_cache_prune_once(version_root: &std::path::Path, active_generation: &str) {
+    let roots = PRUNED_PERSISTENT_STD_CACHE_ROOTS.get_or_init(|| Mutex::new(HashSet::new()));
+    let should_prune = roots.lock().is_ok_and(|mut roots| roots.insert(version_root.to_path_buf()));
+    if should_prune {
+        persistent_std_cache_prune(version_root, active_generation);
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn persistent_std_cache_prune(version_root: &std::path::Path, active_generation: &str) {
+    let Ok(entries) = std::fs::read_dir(version_root) else {
+        return;
+    };
+    let mut generations = entries
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+        .filter_map(|entry| {
+            let name = entry.file_name();
+            let name = name.to_str()?;
+            let is_identity = name.len() == 64
+                && name.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte));
+            (is_identity && name != active_generation).then(|| {
+                let modified = entry
+                    .metadata()
+                    .and_then(|metadata| metadata.modified())
+                    .unwrap_or(std::time::UNIX_EPOCH);
+                (modified, entry.path())
+            })
+        })
+        .collect::<Vec<_>>();
+    generations.sort_unstable_by(|left, right| right.cmp(left));
+
+    // Reserve one slot for the current executable even if its cache directory
+    // has not been created yet. Cache deletion is best-effort and never affects
+    // compiler correctness.
+    for (_, path) in generations
+        .into_iter()
+        .skip(PERSISTENT_STD_CACHE_MAX_GENERATIONS.saturating_sub(1))
+    {
+        let _ = std::fs::remove_dir_all(path);
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]

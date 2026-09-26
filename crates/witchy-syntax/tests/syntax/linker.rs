@@ -27,6 +27,61 @@
         }
     }
 
+    #[test]
+    fn persistent_std_cache_prunes_old_generations() {
+        const GENERATIONS: usize = 70;
+        const MAX_GENERATIONS: usize = 64;
+
+        if let Some(root) = std::env::var_os("WITCHY_STDLIB_CACHE_PRUNE_PROBE") {
+            let version_root = std::path::PathBuf::from(root).join("v1");
+            std::fs::create_dir_all(&version_root).unwrap();
+            for generation in 0..GENERATIONS {
+                std::fs::create_dir(version_root.join(format!("{generation:064x}"))).unwrap();
+            }
+            std::fs::create_dir(version_root.join("not-a-cache-generation")).unwrap();
+
+            link_main("import option\n\nfn main():\n    ()\n").unwrap();
+
+            let entries = std::fs::read_dir(&version_root)
+                .unwrap()
+                .filter_map(Result::ok)
+                .map(|entry| entry.file_name())
+                .collect::<Vec<_>>();
+            let generations = entries
+                .iter()
+                .filter_map(|name| name.to_str())
+                .filter(|name| {
+                    name.len() == 64
+                        && name
+                            .bytes()
+                            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+                })
+                .count();
+            assert!(generations <= MAX_GENERATIONS, "found {generations} cache generations");
+            assert!(entries.iter().any(|name| name == "not-a-cache-generation"));
+            return;
+        }
+
+        let root = std::env::temp_dir().join(format!(
+            "witchy-stdlib-cache-prune-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "linker::persistent_std_cache_prunes_old_generations"])
+            .env("WITCHY_TEST_STDLIB_CACHE_DIR", &root)
+            .env("WITCHY_STDLIB_CACHE_PRUNE_PROBE", &root)
+            .output()
+            .unwrap();
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(
+            output.status.success(),
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
     fn noop_expand(
         _: &str,
         _: &mut Module,
