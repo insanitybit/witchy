@@ -39,7 +39,7 @@ fn repository_census_matches_the_checked_in_type_resolved_snapshot() {
                 "representative census produced unexpected or altered finding: {line}"
             );
         }
-        for prefix in ["benchmarks/", "examples/", "projects/", "std/"] {
+        for prefix in ["benchmarks/", "book/", "examples/", "std/"] {
             assert!(
                 findings.iter().any(|line| line.starts_with(prefix)),
                 "representative census must retain a finding from {prefix}"

@@ -137,6 +137,26 @@ fn run(args: &[&str]) -> std::process::Output {
     Command::new(BIN).args(args).output().expect("spawn witchy")
 }
 
+/// Run independent invocations at once: a test that probes several CLI paths
+/// waits for the slowest one instead of their sum.
+fn run_concurrently(invocations: &[&[&str]]) -> Vec<std::process::Output> {
+    let children: Vec<_> = invocations
+        .iter()
+        .map(|args| {
+            Command::new(BIN)
+                .args(*args)
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .expect("spawn witchy")
+        })
+        .collect();
+    children
+        .into_iter()
+        .map(|child| child.wait_with_output().expect("wait for witchy"))
+        .collect()
+}
+
 #[test]
 fn cli_help_version_and_bare_invocation_are_stable() {
     let expected_help = include_str!("fixtures/cli-help.txt");
@@ -370,26 +390,38 @@ fn fetch_root_requires_an_explicit_valid_origin_and_admitted_artifact() {
         "fn main(console: Console, fetch: Fetch):\n    console.print(\"fetch-ready\")\n",
     );
 
-    for args in [
-        vec![src.as_str()],
-        vec!["sandbox", src.as_str()],
-    ] {
-        let denied = run(&args);
-        assert!(!denied.status.success(), "{args:?} must not mint ambient Fetch");
+    let wasm = dir.join("fetch.wasm");
+    let grants = write(
+        &dir,
+        "fetch.grants.toml",
+        "[fetch]\nfetch = [\"http://127.0.0.1:1\"]\n",
+    );
+    let outputs = run_concurrently(&[
+        &[src.as_str()],
+        &["sandbox", src.as_str()],
+        &["--fetch", "not-an-origin", &src],
+        &["--fetch", "http://127.0.0.1:1", &src],
+        &["emit-wasm", &src, "-o", wasm.to_str().unwrap()],
+        &["sandbox", "--grants", &grants, "--accept-grants", &src],
+    ]);
+    let [plain, sandboxed, malformed, granted, emitted, documented] = &outputs[..] else {
+        unreachable!()
+    };
+
+    for (label, denied) in [("run", plain), ("sandbox", sandboxed)] {
+        assert!(!denied.status.success(), "{label} must not mint ambient Fetch");
         assert!(
             String::from_utf8_lossy(&denied.stderr).contains("--fetch"),
-            "{args:?}: {}",
+            "{label}: {}",
             String::from_utf8_lossy(&denied.stderr),
         );
     }
 
-    let malformed = run(&["--fetch", "not-an-origin", &src]);
     assert!(!malformed.status.success());
     assert!(
         String::from_utf8_lossy(&malformed.stderr).contains("invalid `--fetch` grant")
     );
 
-    let granted = run(&["--fetch", "http://127.0.0.1:1", &src]);
     assert!(
         granted.status.success(),
         "valid Fetch origin must launch: {}",
@@ -397,44 +429,6 @@ fn fetch_root_requires_an_explicit_valid_origin_and_admitted_artifact() {
     );
     assert_eq!(String::from_utf8_lossy(&granted.stdout), "fetch-ready\n");
 
-    let wasm = dir.join("fetch.wasm");
-    assert!(
-        run(&["emit-wasm", &src, "-o", wasm.to_str().unwrap()])
-            .status
-            .success()
-    );
-    let denied_wasm = run(&["sandbox", wasm.to_str().unwrap()]);
-    assert!(!denied_wasm.status.success());
-    assert!(String::from_utf8_lossy(&denied_wasm.stderr).contains("--fetch"));
-    let granted_wasm = run(&[
-        "sandbox",
-        "--fetch",
-        "http://127.0.0.1:1",
-        wasm.to_str().unwrap(),
-    ]);
-    assert!(
-        !granted_wasm.status.success(),
-        "a valid Fetch origin must not authenticate detached raw Wasm",
-    );
-    assert!(
-        String::from_utf8_lossy(&granted_wasm.stderr)
-            .contains("raw Wasm cannot claim canonical admission"),
-        "{}",
-        String::from_utf8_lossy(&granted_wasm.stderr),
-    );
-
-    let grants = write(
-        &dir,
-        "fetch.grants.toml",
-        "[fetch]\nfetch = [\"http://127.0.0.1:1\"]\n",
-    );
-    let documented = run(&[
-        "sandbox",
-        "--grants",
-        &grants,
-        "--accept-grants",
-        &src,
-    ]);
     assert!(
         documented.status.success(),
         "named Fetch grant must bind through the document: {}",
@@ -444,6 +438,14 @@ fn fetch_root_requires_an_explicit_valid_origin_and_admitted_artifact() {
         String::from_utf8_lossy(&documented.stdout),
         "fetch-ready\n"
     );
+
+    // The artifact's launch metadata keeps the Fetch requirement. (That a
+    // grant never authenticates detached raw Wasm is pinned once, by
+    // `sandbox_wasm_requires_explicit_dir_grant`.)
+    assert!(emitted.status.success());
+    let denied_wasm = run(&["sandbox", wasm.to_str().unwrap()]);
+    assert!(!denied_wasm.status.success());
+    assert!(String::from_utf8_lossy(&denied_wasm.stderr).contains("--fetch"));
 }
 
 // ---- BUG-112: SecretStore is mintable empty ----
@@ -610,21 +612,27 @@ fn mode_opt_enforced_across_subcommands() {
     let bad = write(&dir, "bad.witchy", BAD_OPT);
     let compiled = dir.join("bad.wasm");
     let grants = write(&dir, "empty.grants.toml", "");
-    // `check` is the reference: it rejects.
-    assert!(!run(&["check", &bad]).status.success(), "check must reject the mode-opt violation");
-    // BUG-163 artifact paths and BUG-177 stats + test must all reject too.
-    assert!(
-        !run(&["compile", &bad, "--out", compiled.to_str().unwrap()]).status.success(),
+    let outputs = run_concurrently(&[
+        &["check", &bad],
+        &["compile", &bad, "--out", compiled.to_str().unwrap()],
+        &["emit-wat", &bad],
+        &["sandbox", "--grants", &grants, "--accept-grants", &bad],
+        &["stats", &bad],
+        &["test", &bad],
+    ]);
+    // `check` is the reference: it rejects. BUG-163 artifact paths and
+    // BUG-177 stats + test must all reject too.
+    for (out, why) in outputs.iter().zip([
+        "check must reject the mode-opt violation",
         "BUG-163: compile must enforce mode opt",
-    );
-    assert!(!compiled.exists(), "BUG-163: a rejected compile must not write an artifact");
-    assert!(!run(&["emit-wat", &bad]).status.success(), "BUG-163: emit-wat must enforce mode opt");
-    assert!(
-        !run(&["sandbox", "--grants", &grants, "--accept-grants", &bad]).status.success(),
+        "BUG-163: emit-wat must enforce mode opt",
         "BUG-163: grant-document sandbox must enforce mode opt",
-    );
-    assert!(!run(&["stats", &bad]).status.success(), "BUG-177: stats must enforce mode opt");
-    assert!(!run(&["test", &bad]).status.success(), "BUG-177: test must enforce mode opt");
+        "BUG-177: stats must enforce mode opt",
+        "BUG-177: test must enforce mode opt",
+    ]) {
+        assert!(!out.status.success(), "{why}");
+    }
+    assert!(!compiled.exists(), "BUG-163: a rejected compile must not write an artifact");
 }
 
 #[test]
@@ -775,32 +783,28 @@ fn caps_diff_grantable_widening_message_matches_exit_code() {
 // ---- BUG-146: grant-document sealed ----
 
 #[test]
-fn grant_document_sealed_blocks_reveal() {
-    // BUG-146: a `[secrets]` entry declared `sealed = true` is unrevealable.
+fn grant_document_rejects_a_misspelled_secret_modifier() {
+    // BUG-146: `sealed = true` is the per-secret reveal guard, so a misspelled
+    // modifier must be a loud parse error (deny_unknown_fields), never a silently
+    // revealable secret. The sealed row itself is pinned by
+    // `grant_approval_row_marks_the_reveal_policy`; runtime refusal of a sealed
+    // reveal lives with the crypto host.
     let dir = workdir("grant-sealed");
     let prog = write(
         &dir,
         "r.witchy",
         "import secretstore\nimport crypto\n\nfn main(console: Console, store: SecretStore):\n    let s = secretstore.require(store, \"token\")\n    console.print(crypto.reveal(s))\n",
     );
-    let sealed = write(&dir, "sealed.toml", "[secrets]\ntoken = { from = \"env:MY_TOKEN\", sealed = true }\n");
-    let out = Command::new(BIN)
-        .args(["sandbox", "--grants", &sealed, "--accept-grants", &prog])
-        .env("MY_TOKEN", "hunter2")
-        .output()
-        .expect("spawn");
-    let combined = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
-    assert!(combined.contains("sealed") || combined.contains("cannot be revealed"), "reveal must be refused: {combined}");
-    assert!(!combined.contains("hunter2"), "the secret must never be revealed: {combined}");
-
-    // A misspelled modifier is a loud parse error (deny_unknown_fields).
-    let bad = write(&dir, "bad.toml", "[secrets]\ntoken = { from = \"env:MY_TOKEN\", sealed = true }\n");
+    let bad = write(&dir, "bad.toml", "[secrets]\ntoken = { from = \"env:MY_TOKEN\", seald = true }\n");
     let out = Command::new(BIN)
         .args(["sandbox", "--grants", &bad, "--accept-grants", &prog])
         .env("MY_TOKEN", "hunter2")
         .output()
         .expect("spawn");
+    let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(!out.status.success(), "a misspelled grant key must be rejected");
+    assert!(stderr.contains("unknown field `seald`"), "{stderr}");
+    assert!(!stderr.contains("hunter2"), "{stderr}");
 }
 
 // ---- an env-injected secret must not remain readable as an env variable ----
@@ -878,12 +882,17 @@ fn grant_approval_row_marks_the_reveal_policy() {
         "g.toml",
         "[secrets]\napikey = { from = \"env:MY_API_KEY\" }\ntlskey = { from = \"env:MY_TLS_KEY\", sealed = true }\n",
     );
-    let out = Command::new(BIN)
+    let launch = Command::new(BIN)
         .args(["sandbox", "--grants", &doc, "--accept-grants", &prog])
         .env("MY_API_KEY", "aaa")
         .env("MY_TLS_KEY", "bbb")
-        .output()
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
         .expect("spawn");
+    // The same policy must show up in the cross-check a reviewer/CI runs.
+    let check = run(&["grants-check", &prog, &doc]);
+    let out = launch.wait_with_output().expect("wait for witchy");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         stderr.contains("secret apikey: env:MY_API_KEY (revealable)"),
@@ -894,8 +903,6 @@ fn grant_approval_row_marks_the_reveal_policy() {
         "a sealed secret must say so: {stderr}"
     );
 
-    // The same policy must show up in the cross-check a reviewer/CI runs.
-    let check = run(&["grants-check", &prog, &doc]);
     let stdout = String::from_utf8_lossy(&check.stdout);
     assert!(stdout.contains("apikey: env:MY_API_KEY (revealable)"), "grants-check must show the policy: {stdout}");
     assert!(stdout.contains("tlskey: env:MY_TLS_KEY (sealed)"), "grants-check must show the policy: {stdout}");

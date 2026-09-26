@@ -61,11 +61,13 @@ fn run() -> Result<(), String> {
             collect_witchy_files(&root.join(directory), &mut files)?;
         }
     } else {
-        // Representative set of files covering all migration categories across std, examples, projects, and benchmarks.
+        // Representative set covering every active migration category across
+        // std, examples, and benchmarks. It is sized to keep the blocking
+        // census test under two seconds: glamour (2.5s alone) and
+        // spec/language.md (44 blocks, 2.9s alone) stay in the `--full` scan.
         let representative = [
             "benchmarks/dict_count.witchy",
             "examples/dice/src/dice.witchy",
-            "projects/glamour/src/glamour.witchy",
             "std/dict.witchy",
         ];
         for rel in representative {
@@ -88,7 +90,7 @@ fn run() -> Result<(), String> {
     // Each file's and each markdown block's census (link + typecheck +
     // trait-lowering) is fully independent -- no shared mutable state beyond
     // the (thread-safe) parse cache. One bounded pool of workers takes files
-    // first (the largest, glamour, dominates) and then the markdown blocks, so
+    // first (the largest dominates) and then the markdown blocks, so
     // the blocks fill in behind it. Keep the pool small rather than spawning
     // one typechecker per job: each typecheck retains a substantial module
     // graph, and an unbounded wave can exhaust memory before the gate starts.
@@ -277,7 +279,6 @@ fn markdown_files(root: &Path, full_scan: bool) -> Result<Vec<PathBuf>, String> 
         let representative = [
             "book/src/cookbook-collections.md",
             "book/src/mutating-methods.md",
-            "spec/language.md",
         ];
         let mut files = Vec::new();
         for rel in representative {

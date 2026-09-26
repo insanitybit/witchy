@@ -33,10 +33,11 @@ trusted_application_executables::dependency_footprint_does_not_widen_the_trusted
 # compiler subprocess over source. The 2026-09-25 generic-carrier gate spent
 # 286.5s on the passing-body case after every other selected test had finished;
 # the paired abort case uses the same whole-compiler path and the nextest group
-# intentionally serializes them. Their focused edit route and full/CI campaign
-# retain both semantic assertions without charging routine landing gates.
-rfc0077_integration_grants::source_integration_async_recipe_drives_body_instead_of_only_making_a_task
-rfc0077_integration_grants::source_integration_async_recipe_preserves_abort_from_body
+# intentionally serializes them. Since 2026-09-26 one unfiltered invocation
+# carries both cases, so the executor compiles once instead of twice. The
+# focused edit route and full/CI campaign retain both semantic assertions
+# without charging routine landing gates.
+rfc0077_integration_grants::source_integration_async_recipe_drives_body_and_preserves_its_abort
 
 # RFC-0080 AST Expansion & Tagged Literal Matrix (>2s multi-pass dual-backend checks)
 fresh_ident::fresh_identifiers_are_deterministic_distinct_and_backend_neutral

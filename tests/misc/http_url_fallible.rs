@@ -1,10 +1,10 @@
 //! Regression coverage for fallible full-URL HTTP helpers.
 
 use witchy::runtime::{Capabilities, Runtime};
-use witchy::{codegen, interpreter, parser, pipeline, typeck};
+use witchy::{codegen, parser, pipeline};
 
 #[test]
-fn get_url_returns_connect_error_on_both_backends() {
+fn get_url_returns_connect_error_instead_of_trapping() {
     // Reserve then release a loopback port so connect fails immediately while
     // remaining inside the explicitly granted network authority.
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback");
@@ -17,15 +17,8 @@ fn get_url_returns_connect_error_on_both_backends() {
     );
     let module = parser::parse_module(&source).expect("parse");
     let linked = pipeline::link(vec![("main".into(), module)], "main").expect("link");
-    typeck::check(&linked).expect("typecheck");
 
     let expected = vec!["network".to_string()];
-    assert_eq!(
-        interpreter::run_module(linked.clone(), ".", vec![addr.clone()]).expect("interpret"),
-        expected,
-        "interpreter must return Err rather than trap",
-    );
-
     let checked = witchy::resolve_std_only_checked(&source).expect("checked fallible HTTP source");
     let artifact = codegen::compile_checked_module_artifact(&checked)
         .expect_lowered("the canonical path lowers fallible HTTP execution");

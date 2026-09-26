@@ -179,7 +179,9 @@ fn test_abort(console: Console):
 }
 
 #[test]
-fn source_integration_async_recipe_drives_body_instead_of_only_making_a_task() {
+fn source_integration_async_recipe_drives_body_and_preserves_its_abort() {
+    // One invocation selects both async tests: compiling the async executor
+    // dominates, so a second filtered invocation would pay it again.
     let temp = TempDir::new("integration-recipe-async");
     let suite = temp.write("suite.witchy", r#"import testing
 async fn test_pass():
@@ -187,28 +189,11 @@ async fn test_pass():
 async fn test_abort():
     testing.fail_with("async integration body ran")
 "#);
-    let success = run([
-        "test".into(), "--integration".into(), "--filter".into(), "test_pass".into(),
-        suite.clone().into_os_string(),
-    ]);
-    assert!(success.status.success(), "{}", text(&success));
-}
-
-#[test]
-fn source_integration_async_recipe_preserves_abort_from_body() {
-    // This is an independent whole-compiler invocation, not state shared with
-    // the passing case. Keep both source declarations and the selected filter.
-    let temp = TempDir::new("integration-recipe-async-abort");
-    let suite = temp.write("suite.witchy", r#"import testing
-async fn test_pass():
-    testing.assert_int_eq(2 + 2, 4)
-async fn test_abort():
-    testing.fail_with("async integration body ran")
-"#);
-    let failure = run([
-        "test".into(), "--integration".into(), "--filter".into(), "test_abort".into(),
-        suite.into_os_string(),
-    ]);
-    assert!(!failure.status.success(), "{}", text(&failure));
-    assert!(text(&failure).contains("async integration body ran"), "{}", text(&failure));
+    let output = run(["test".into(), "--integration".into(), suite.into_os_string()]);
+    let text = text(&output);
+    assert!(!output.status.success(), "{text}");
+    assert!(text.contains("test suite.test_pass ... ok"), "{text}");
+    assert!(text.contains("test suite.test_abort ... FAILED"), "{text}");
+    assert!(text.contains("async integration body ran"), "{text}");
+    assert!(text.contains("1 passed; 1 failed"), "{text}");
 }
