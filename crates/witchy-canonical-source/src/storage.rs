@@ -679,6 +679,15 @@ pub struct OpaqueOwnerEvidence<'a> {
     opaque_callable_families: HashSet<Type>,
 }
 
+/// [`OpaqueOwnerEvidence`] without its definitions borrow. Only
+/// `OpaqueOwnerEvidence::detach` makes one, and `reattach` accepts it only
+/// for the same definitions map, so it cannot carry a judgment across maps.
+#[derive(Debug, Clone)]
+pub struct DetachedOpaqueOwnerEvidence {
+    definitions: usize,
+    opaque_callable_families: std::sync::Arc<HashSet<Type>>,
+}
+
 /// Physical owner-bearing lane selected from checked storage, not from a
 /// candidate GC type ID. A collection carries its own owner only when its
 /// recursively classified element has a matching retained owner operation.
@@ -714,6 +723,29 @@ impl<'a> OpaqueOwnerEvidence<'a> {
             if !changed { break; }
         }
         Some(evidence)
+    }
+
+    /// Keep this evidence past the borrow of its definitions, e.g. in a
+    /// lowering context that asks `owner_class` for many types. Rebuilding it
+    /// per question re-ran the whole closure-family fixpoint each time.
+    pub fn detach(&self) -> DetachedOpaqueOwnerEvidence {
+        DetachedOpaqueOwnerEvidence {
+            definitions: std::ptr::from_ref(self.definitions) as usize,
+            opaque_callable_families: std::sync::Arc::new(self.opaque_callable_families.clone()),
+        }
+    }
+
+    /// Rebind detached evidence to the definitions it was derived from.
+    /// `None` for any other map: the evidence is a judgment over one map and
+    /// must be rebuilt for another.
+    pub fn reattach(
+        definitions: &'a BTreeMap<String, TypeDef>,
+        detached: &DetachedOpaqueOwnerEvidence,
+    ) -> Option<Self> {
+        (detached.definitions == std::ptr::from_ref(definitions) as usize).then(|| Self {
+            definitions,
+            opaque_callable_families: (*detached.opaque_callable_families).clone(),
+        })
     }
 
     pub fn requires_owner(&self, ty: &Type) -> bool {

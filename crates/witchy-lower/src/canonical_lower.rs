@@ -97,6 +97,9 @@ struct ClosureValueLayouts {
     slice_owners: HashMap<CarrierElement, GcTypeId>,
     shared_int_reference: Option<GcTypeId>,
     closure_witnesses: witchy_canonical_source::closure::ClosureWitnessManifest,
+    /// `OpaqueOwnerEvidence` over `closure_witnesses` and the module's
+    /// definitions, built once; `opaque_type` rebuilds it only for another map.
+    opaque_evidence: Option<witchy_canonical_source::storage::DetachedOpaqueOwnerEvidence>,
 }
 
 impl std::ops::Deref for ClosureValueLayouts {
@@ -107,7 +110,9 @@ impl std::ops::Deref for ClosureValueLayouts {
 impl ClosureValueLayouts {
     fn opaque_type(&self, source: &Type, definitions: &BTreeMap<String, TypeDef>) -> Option<GcTypeId> {
         use witchy_canonical_source::storage::{OpaqueOwnerClass, OpaqueOwnerEvidence};
-        let evidence = OpaqueOwnerEvidence::from_checked_source(definitions, &self.closure_witnesses)?;
+        let evidence = self.opaque_evidence.as_ref()
+            .and_then(|detached| OpaqueOwnerEvidence::reattach(definitions, detached))
+            .or_else(|| OpaqueOwnerEvidence::from_checked_source(definitions, &self.closure_witnesses))?;
         match evidence.owner_class(source)? {
             OpaqueOwnerClass::Capability => None,
             OpaqueOwnerClass::RootedView => {
@@ -340,6 +345,9 @@ pub fn lower_typed_module(
             (layout.element.clone(), layout.owner_type)).collect(),
         shared_int_reference: shared_reference_layout.as_ref().map(|layout| layout.owner_type),
         closure_witnesses: source.closure_witness().clone(),
+        opaque_evidence: witchy_canonical_source::storage::OpaqueOwnerEvidence::from_checked_source(
+            &definitions, source.closure_witness(),
+        ).map(|evidence| evidence.detach()),
     };
     let abort_sites = abort::sites(typed.module(), source.is_console_fixture())?;
     let (registry_imports, requires_secret) = registry_hosts::collect_imports(typed.module());

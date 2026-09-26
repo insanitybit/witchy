@@ -15,6 +15,12 @@ pub(super) struct Checker {
     /// mutations. `RefCell` because `resolve` takes `&self` -- most of its
     /// callers hold other borrows of `self` alongside it.
     pub(super) resolve_cache: std::cell::RefCell<HashMap<u32, Ty>>,
+    /// Memoizes `StoragePlan::classify` over `canonical_definitions`, which
+    /// never changes after construction. The plan is a pure function of the
+    /// source type and that map; recomputing it re-walked every reachable
+    /// definition (capability-authority and view searches) for each probed
+    /// binding, ~a third of an async compile.
+    pub(super) storage_plans: std::cell::RefCell<HashMap<ast::Type, witchy_canonical_source::storage::StoragePlan>>,
     /// When annotating (see `annotate`): expression identity -> inferred type,
     /// finalized against the ending substitution. Key = `&Expr as *const _`.
     // The boolean is checked non-completion, recorded in the same session so

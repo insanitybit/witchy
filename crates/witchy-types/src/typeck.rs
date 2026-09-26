@@ -443,6 +443,19 @@ fn bare_cap_op_error(name: &str, arity: usize) -> Option<String> {
 }
 
 impl Checker {
+    /// The canonical storage plan of `ty` over this module's definitions,
+    /// memoized: the plan depends only on the type and the (fixed) map.
+    fn storage_plan(&self, ty: &ast::Type) -> witchy_canonical_source::storage::StoragePlan {
+        if let Some(plan) = self.storage_plans.borrow().get(ty) {
+            return plan.clone();
+        }
+        let plan = witchy_canonical_source::storage::StoragePlan::classify(
+            ty, &self.canonical_definitions, |_| Some(0),
+        );
+        self.storage_plans.borrow_mut().insert(ty.clone(), plan.clone());
+        plan
+    }
+
     /// A view payload with a carrier that crosses a callable boundary: the
     /// scalar and `&String` carriers, or a record/sum/`Option`/`Result` or
     /// scalar List accepted by the canonical carrier rules.
@@ -451,9 +464,7 @@ impl Checker {
         use witchy_canonical_source::storage::StoragePlan;
         let Some(payload) = ty_to_ast(payload) else { return false };
         let view = ast::Type::Qualified(ast::TypeQual::View, Box::new(payload));
-        let StoragePlan::RootedView(storage) = StoragePlan::classify(
-            &view, &self.canonical_definitions, |_| Some(0),
-        ) else { return false };
+        let StoragePlan::RootedView(storage) = self.storage_plan(&view) else { return false };
         let ast::Type::Qualified(_, payload) = &view else { unreachable!() };
         match storage {
             RootedViewStorage::ScalarCell(_)
@@ -2309,9 +2320,7 @@ impl Checker {
                     || self.ty_carries_unique_storage(ty)
                     || (!self.is_consumed_binding(name)
                         && ty_to_ast(&self.resolve(ty)).is_some_and(|source| {
-                            witchy_canonical_source::storage::StoragePlan::classify(
-                                &source, &self.canonical_definitions, |_| Some(0),
-                            ).requires_affine_owner_token()
+                            self.storage_plan(&source).requires_affine_owner_token()
                         }))
             }
             Expr::As { expr, .. } | Expr::Unary { op: UnOp::Move, expr } => {
@@ -3542,7 +3551,7 @@ impl Checker {
             return terr(format!("{context} cannot form an immutable view of `{resolved}`: {explanation}"));
         }
         let view = ast::Type::Qualified(ast::TypeQual::View, Box::new(source));
-        if !matches!(StoragePlan::classify(&view, &self.canonical_definitions, |_| Some(0)),
+        if !matches!(self.storage_plan(&view),
             StoragePlan::RootedView(_))
         {
             return terr(format!("{context} cannot form an immutable view without an authenticated storage carrier"));
@@ -3694,7 +3703,7 @@ impl Checker {
             if ty_to_ast(&payload).is_some_and(|ty| {
                 let view = ast::Type::Qualified(ast::TypeQual::View, Box::new(ty));
                 matches!(
-                    StoragePlan::classify(&view, &self.canonical_definitions, |_| Some(0)),
+                    self.storage_plan(&view),
                     StoragePlan::RootedView(RootedViewStorage::RetainedProjection(element))
                         if element.within_resource_bounds()
                 )
@@ -3736,7 +3745,7 @@ impl Checker {
         // the absence of the hazards above.
         if !self.has_only_declared_deferred_parameters(&payload)
             && !ty_to_ast(&payload).as_ref().is_some_and(|ty| {
-                StoragePlan::classify(ty, &self.canonical_definitions, |_| Some(0))
+                self.storage_plan(ty)
                     .admits_owned_copy()
             })
         {
@@ -7186,9 +7195,7 @@ impl Checker {
         if witchy_syntax::intrinsics::canonical_operation_name(&call_name)
             == witchy_syntax::intrinsics::LIST_AT
             && ty_to_ast(&self.resolve(&ret)).is_some_and(|source| {
-                witchy_canonical_source::storage::StoragePlan::classify(
-                    &source, &self.canonical_definitions, |_| Some(0),
-                ).requires_affine_owner_token()
+                self.storage_plan(&source).requires_affine_owner_token()
             })
         {
             return terr("list.at reads by copy; use a consuming extraction for move-only elements");
@@ -7868,9 +7875,7 @@ impl Checker {
             let index_ty = self.infer(index)?;
             self.unify(&index_ty, &Ty::Int)?;
             if ty_to_ast(&self.resolve(&element)).is_some_and(|source| {
-                witchy_canonical_source::storage::StoragePlan::classify(
-                    &source, &self.canonical_definitions, |_| Some(0),
-                ).requires_affine_owner_token()
+                self.storage_plan(&source).requires_affine_owner_token()
             }) {
                 return terr("list indexing reads by copy; use a consuming extraction for move-only elements");
             }
@@ -12546,6 +12551,7 @@ fn run_check_selected(
     let mut c = Checker {
         canonical_definitions: witchy_canonical_source::aggregates::type_definitions(module),
         resolve_cache: std::cell::RefCell::new(HashMap::new()),
+        storage_plans: std::cell::RefCell::new(HashMap::new()),
         type_record: if record { Some(HashMap::new()) } else { None },
         compiler_owned_materializations: HashSet::new(),
         // Construction requests are also retained during ordinary checking so
