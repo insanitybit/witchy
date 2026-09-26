@@ -1120,6 +1120,10 @@ each continuing arm transfers one owned token into a unique result lane.
 SafeWIR verifies every incoming owned origin and consumes the joined token
 exactly once. A branch result that would duplicate a bound affine owner is
 refused.
+A mutable binding of an affine GC owner can cross a conditional or loop join
+when each completing edge transfers one owned replacement after consuming its
+previous owner. The join's source family and recursive storage proof require
+a unique GC lane; an alias or borrowed token cannot supply that lane.
 View-bearing aggregate owners use the same recursive clone and move judgment
 as other aggregates. A `must` opaque shell can be consumed even when its
 children are copyable; a shell with an affine child transfers that child

@@ -1051,6 +1051,18 @@ The earlier branch-gap statement above is superseded. This is structural
 admission only: no hand-computed Wasm result or zero-leak audit is claimed,
 and no A–O row closes.
 
+Row G affine GC binding joins (implemented but unverified, 2026-09-26):
+the common binding-lane planner now derives unique GC ownership from the
+registered family's recursive checked source type. Its `if`, `match`, and
+or-pattern consumers transport that lane without a clone. All four loop
+builders carry the same ownership through header, body, and exit parameters;
+the `while let` scrutinee has its own checked source-type proof. The existing
+compiler smoke admits consume-and-replace of `must BoxView(&Int)` through
+conditional, match, counted-for, and while joins, then constructs unoptimized
+Wasm. A binding join that would duplicate one affine GC token refuses. This
+is structural admission only; no hand-computed Wasm result or zero-leak audit
+is claimed, and no A–O row closes.
+
 Row G view-bearing affine aggregate composition (implemented but unverified,
 2026-09-26): the checked `AggregateView` plan now carries the recursive
 storage graph's clone and move judgment. A `must` opaque shell with copyable

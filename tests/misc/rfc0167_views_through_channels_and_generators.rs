@@ -115,6 +115,48 @@ fn main() -> Int:
     consume(box) + consume(matched) + consume(choose(false))
 "#;
 
+const OWNED_GC_BINDING_JOIN: &str = r#"
+must type BoxView:
+    BoxView(&Int)
+
+fn make(n: Int) -> BoxView:
+    let value = n
+    BoxView(&value)
+
+fn consume(own box: BoxView) -> Int:
+    match box:
+        BoxView(view) -> *view
+
+fn main() -> Int:
+    var box = make(1)
+    if true:
+        let previous = consume(move box)
+        box = make(previous + 2)
+    else:
+        let previous = consume(move box)
+        box = make(previous + 3)
+    let after_if = consume(move box)
+    box = make(after_if)
+    match false:
+        false ->
+            let previous = consume(move box)
+            box = make(previous + 4)
+        _ ->
+            let previous = consume(move box)
+            box = make(previous + 5)
+    let after_match = consume(move box)
+    box = make(after_match)
+    for i in 0..2:
+        let previous = consume(move box)
+        box = make(previous + i)
+    var step = 0
+    while step < 2:
+        let previous = consume(move box)
+        box = make(previous + step)
+        step = step + 1
+    consume(move box)
+"#;
+
 #[test]
 fn channel_handle_refusal_and_owned_gc_result() {
     let refusal = match witchy::resolve_std_only_checked(CHANNELS) {
@@ -145,4 +187,9 @@ fn channel_handle_refusal_and_owned_gc_result() {
         .expect("owned GC result joins are checked by source type");
     let _ = witchy::codegen::compile_checked_module_artifact(&checked)
         .expect_lowered("owned GC branch join preserves its unique owner");
+
+    let checked = witchy::resolve_std_only_checked(OWNED_GC_BINDING_JOIN)
+        .expect("affine rebinding consumes each old owner");
+    let _ = witchy::codegen::compile_checked_module_artifact(&checked)
+        .expect_lowered("affine GC bindings cross conditional and loop joins");
 }

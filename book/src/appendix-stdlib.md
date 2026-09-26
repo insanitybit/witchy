@@ -81,6 +81,8 @@ owner transfers; it does not make a replayable task capture of a handle lawful.
 An affine GC owner can also cross a checked `if` or `match` result join when
 each continuing branch supplies its own owned token. This does not grant a
 clone of a `must` owner.
+A mutable binding of such an owner may be replaced in a branch or loop after
+the previous value is consumed; each path must supply one owned replacement.
 
 `vm` runs capture-free work across isolated worker cores (`vm.par_map`); its
 `with_dir` / `serve` entry points thread a `Dir` / `Net` through to the workers.

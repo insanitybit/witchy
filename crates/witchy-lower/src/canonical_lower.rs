@@ -6272,6 +6272,21 @@ impl FunctionLowerer<'_> {
         let mut plans = Vec::with_capacity(changed_names.len());
         for name in changed_names {
             let mut values = arms.iter().map(|(_, bindings)| bindings[name]).collect::<Vec<_>>();
+            if let ValueType::Gc(family) = self.values[&values[0]] {
+                let affine = self.affine_gc_family(family);
+                if affine && arms.iter().enumerate().any(|(index, (_, bindings))| {
+                    bindings.iter().any(|(other, value)| other != name && *value == values[index])
+                }) {
+                    return Err(CanonicalLoweringError::UnsupportedExpression(
+                        "affine GC binding join cannot duplicate an owner lane",
+                    ));
+                }
+                plans.push(BindingLanePlan {
+                    name: name.clone(), values, extents: affine.then_some(Vec::new()), family: None,
+                    phi: affine.then_some(Ownership::Unique), all_tokens: false,
+                });
+                continue;
+            }
             if !matches!(self.values[&values[0]], ValueType::Ref(_)) {
                 plans.push(BindingLanePlan { name: name.clone(), values, extents: None, family: None, phi: None, all_tokens: false });
                 continue;
@@ -6374,6 +6389,39 @@ impl FunctionLowerer<'_> {
             self.absorb_facts(facts);
         }
         Ok(plans)
+    }
+
+    /// Derive the GC lane's affine judgment from the registered structural
+    /// source family. Final admission binds this family back to checked source;
+    /// a closure or unproved family never acquires unique join authority.
+    fn affine_gc_family(&self, id: GcTypeId) -> bool {
+        self.closures.owners.iter().any(|family| {
+            let OwnerFamilySource::Aggregate(source) = &family.source else { return false };
+            let ty = if family.owner_type == id {
+                source.clone()
+            } else if family.list_type == id {
+                Type::Named("List".into(), vec![source.clone()])
+            } else {
+                return false;
+            };
+            StoragePlan::classify(&ty, self.definitions, |_| Some(0))
+                .requires_affine_owner_token()
+        })
+    }
+
+    fn mark_affine_gc_loop_lanes(
+        &mut self,
+        block: BlockId,
+        names: &[String],
+        outer: &HashMap<String, ValueId>,
+    ) {
+        for (index, name) in names.iter().enumerate() {
+            if let ValueType::Gc(family) = self.values[&outer[name]]
+                && self.affine_gc_family(family)
+            {
+                self.blocks[block.get() as usize].parameters[index].ownership = Some(Ownership::Unique);
+            }
+        }
     }
 
     fn drop_bindings_except(&mut self, names: &[String]) {
@@ -8530,6 +8578,8 @@ impl FunctionLowerer<'_> {
         let header = self.new_block(&state_types)?;
         let exit = self.new_block(&state_types)?;
         self.mark_tracked_phi_parameters(header, &names, &list_names, &outer, false, &rebound);
+        self.mark_affine_gc_loop_lanes(header, &names, &outer);
+        self.mark_affine_gc_loop_lanes(exit, &names, &outer);
         if block_breaks_loop(body) {
             self.give_exit_header_ownership(header, exit);
         }
@@ -8567,6 +8617,15 @@ impl FunctionLowerer<'_> {
             body_types.push(self.values[&value]);
         }
         let body_id = self.new_block(&body_types)?;
+        self.mark_affine_gc_loop_lanes(body_id, &names, &outer);
+        if lane_position.is_none()
+            && StoragePlan::classify(&scrutinee_type, self.definitions, |_| Some(0))
+                .requires_affine_owner_token()
+            && matches!(self.values[&value], ValueType::Gc(_))
+        {
+            self.blocks[body_id.get() as usize].parameters[body_types.len() - 1].ownership =
+                Some(Ownership::Unique);
+        }
         let mut body_arguments = header_state.clone();
         if lane_position.is_none() {
             body_arguments.push(value);
@@ -8755,6 +8814,9 @@ impl FunctionLowerer<'_> {
         let body_id = self.new_block(&state_types)?;
         let exit = self.new_block(&state_types)?;
         self.mark_tracked_phi_parameters(header, &names, &list_names, &outer, false, &rebound);
+        for block in [header, body_id, exit] {
+            self.mark_affine_gc_loop_lanes(block, &names, &outer);
+        }
         if block_breaks_loop(body) {
             self.give_exit_header_ownership(header, exit);
         }
@@ -8995,6 +9057,9 @@ impl FunctionLowerer<'_> {
         let body_id = self.new_block(&state_types)?;
         let exit = self.new_block(&state_types)?;
         self.mark_tracked_phi_parameters(header, &names, &list_names, &outer, false, &rebound);
+        for block in [header, body_id, exit] {
+            self.mark_affine_gc_loop_lanes(block, &names, &outer);
+        }
         if block_breaks_loop(body) {
             self.give_exit_header_ownership(header, exit);
         }
@@ -9258,6 +9323,9 @@ impl FunctionLowerer<'_> {
         // allocated by a prior iteration.  Untracked/Shared references stay
         // unspecified and therefore cannot acquire phi authority.
         self.mark_tracked_phi_parameters(header, &names, &list_names, &outer, true, &rebound);
+        for block in [header, body_id, exit] {
+            self.mark_affine_gc_loop_lanes(block, &names, &outer);
+        }
         if block_breaks_loop(body) {
             self.give_exit_header_ownership(header, exit);
         }
