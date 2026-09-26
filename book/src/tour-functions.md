@@ -418,6 +418,10 @@ views use authenticated retained-root carriers or a proven equivalent value
 representation; a slice carrier also preserves its checked projection. These
 contracts preserve the program's answer while letting `mode opt` turn a missed
 ownership proof into a compile error instead of taking a copy-correct fallback.
+The same source-origin rule applies to callbacks passed into an opt callable:
+an ordinary function type inside a record, existential, or list does not prove
+that the stored callback is opt-compatible. Pass a callback through a checked
+opt interface; an unproved aggregate route is refused.
 Rooted views, the `own unique` recursive-kernel contract, and the operations
 that use `unique` are covered in [Appendix: Performance](appendix-performance.md).
 

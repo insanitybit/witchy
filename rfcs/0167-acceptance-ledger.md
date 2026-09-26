@@ -62,6 +62,16 @@ is needed for soundness.
 
 ## Exact-tip evidence checkpoint
 
+Opt callback aggregate origin (authority narrowed, 2026-09-26):
+the source checker no longer mints opt-compatible callback provenance from a
+record field's type, an existential result type, or a list loop element type.
+Those types prove ABI shape, not the origin of the stored callable. An
+adversarial linked-source record fixture now refuses a normal callback at the
+opt higher-order call boundary. Direct and authenticated alias provenance
+remain available. Structural opt callback transport through aggregate values
+and existential dispatch still needs a checked value-level contract; admitted
+Wasm and zero-leak evidence is pending, so no A-O row closes here.
+
 Task cancellation source boundary (implemented but unverified, 2026-09-26):
 the linked checker now type-checks and retains the same pre-CPS async source
 projection before checking its executable runtime projection. The old async

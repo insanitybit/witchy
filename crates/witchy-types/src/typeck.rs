@@ -2043,23 +2043,10 @@ impl Checker {
                     _ => None,
                 }
             }
-            Expr::Field { base, field } => {
-                // A record field's type is independently checked at its
-                // declaration.  It is a carrier only while checking an opt
-                // declaration; normal modules never acquire this fact.
-                self.current_opt_callable.then(|| {
-                    let base_ty = self.lookup(match base.as_ref() { Expr::Var(name) => name, _ => return None })?;
-                    let Ty::Named(record, arguments) = self.resolve(&base_ty) else { return None };
-                    let (params, fields) = self.record_fields.get(record.as_ref())?.clone();
-                    let (_, field_ty) = fields.iter().find(|(name, _)| name == field)?;
-                    let substitutions: HashMap<u32, Ty> = params.into_iter().zip(arguments.iter().cloned()).collect();
-                    self.opt_callable_contract_from_ty(&self.subst_vars(field_ty, &substitutions))
-                }).flatten()
-            }
-            Expr::ExistentialCall { result, .. } => self
-                .current_opt_callable
-                .then(|| OptCallableContract::from_function_type(result))
-                .flatten(),
+            // A field or existential result's type describes its ABI, not the
+            // origin of the value stored there. Neither operation can mint an
+            // opt callable contract from the current body's source mode.
+            Expr::Field { .. } | Expr::ExistentialCall { .. } => None,
             Expr::If { then_block, else_block: Some(else_block), .. } => {
                 let then_contract = self.block_opt_callable_contract(then_block)?;
                 let else_contract = self.block_opt_callable_contract(else_block)?;
@@ -9131,13 +9118,7 @@ impl Checker {
                 self.push();
                 let borrowed_element = self.is_direct_borrowed_nominal(&elem);
                 self.define(var.clone(), elem.clone(), false);
-                if let Some(contract) = self.container_opt_contract_for_expr(iter).flatten().or_else(|| {
-                    // Empty literals acquire their element type only after a
-                    // later generic call.  That call is checked before this
-                    // projection; recover its now-finalized callable shape
-                    // without treating an unknown container as a source.
-                    self.current_opt_callable.then(|| self.opt_callable_contract_from_ty(&elem)).flatten()
-                }) {
+                if let Some(contract) = self.container_opt_contract_for_expr(iter).flatten() {
                     self.remember_opt_callable_provenance(var.clone(), contract);
                 }
                 // A borrowed-list loop binder is a read-only borrowed shell.

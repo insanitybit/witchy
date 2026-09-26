@@ -864,6 +864,10 @@ Aliases, generics, trait signatures, reflection, and runtime type descriptors
 preserve that identity. Captured capability names are not part of the public
 function type: an ordinary callback is opaque delegated behavior, and its caller
 chooses the environment it supplies.
+For an opt higher-order call, the callback value must also carry checked opt
+origin. A record field type, existential result type, or iterated element type
+does not establish that origin by itself; unproved transport through those
+values is refused at the opt call boundary.
 
 There is one directed compatibility exception to exact identity: purity may be
 widened away without changing invocation cardinality.
