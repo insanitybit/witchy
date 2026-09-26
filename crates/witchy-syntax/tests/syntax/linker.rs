@@ -117,6 +117,37 @@
     }
 
     #[test]
+    fn async_generated_calls_keep_their_module_when_a_local_shadows_it() {
+        let source = "async fn value() -> Int:\n    7\n\nasync fn main(console: Console):\n    let task = 1\n    let result = value().await\n    console.print(\"${result + task}\")\n";
+        let parsed = witchy_syntax::parser::parse_module(source).expect("async source parses");
+        let linked = link(vec![("main".to_string(), parsed)], "main", noop_expand)
+            .expect("generated task calls link despite the local binding");
+        let mut generated_task_calls = 0;
+        for item in &linked.items {
+            if let Item::Function(function) = item {
+                let _: Result<(), ()> = witchy_syntax::ast::visit::visit_block(
+                    &function.body,
+                    &mut |expression| {
+                        if let Expr::Call { name, .. } = expression
+                            && name == "task.and_then"
+                        {
+                            generated_task_calls += 1;
+                        }
+                        if let Expr::MethodCall { receiver, method, .. } = expression
+                            && method == "and_then"
+                            && matches!(receiver.as_ref(), Expr::Var(name) if name == "task")
+                        {
+                            panic!("generated task.and_then became a call on the local task");
+                        }
+                        Ok(())
+                    },
+                );
+            }
+        }
+        assert!(generated_task_calls > 0, "await must produce a task.and_then call");
+    }
+
+    #[test]
     fn user_module_cannot_shadow_bundled_std_module() {
         let bytes = witchy_syntax::parser::parse_module("pub fn unrelated() -> Int:\n    1\n")
             .expect("local bytes parses");

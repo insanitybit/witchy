@@ -215,6 +215,30 @@ pub fn lower(checked: GeneratorsLoweredModule) -> Result<AsyncLoweredModule, Str
 pub(crate) fn lower_with_item_mapping(
     checked: GeneratorsLoweredModule,
 ) -> Result<(AsyncLoweredModule, Vec<Vec<usize>>), String> {
+    lower_with_item_mapping_for(checked, GeneratedCallDestination::Direct)
+}
+
+/// Linked lowering authenticates compiler-generated qualified calls before
+/// lexical rewriting can mistake a module name for a local receiver.
+pub(crate) fn lower_for_linker(
+    checked: GeneratorsLoweredModule,
+) -> Result<AsyncLoweredModule, String> {
+    lower_with_item_mapping_for(checked, GeneratedCallDestination::Linker)
+        .map(|(module, _)| module)
+}
+
+#[derive(Clone, Copy)]
+enum GeneratedCallDestination {
+    Direct,
+    Linker,
+}
+
+const GENERATED_CALL_PREFIX: &str = "@async_generated:";
+
+fn lower_with_item_mapping_for(
+    checked: GeneratorsLoweredModule,
+    destination: GeneratedCallDestination,
+) -> Result<(AsyncLoweredModule, Vec<Vec<usize>>), String> {
     let borrowed_shells = BorrowedShellCatalog::from_module(checked.module());
     // Callables whose call result is a borrowed view. An `async fn` is never
     // one: calling it produces its `Task`, and the task carries a direct view
@@ -269,12 +293,20 @@ pub(crate) fn lower_with_item_mapping(
             _ => Vec::new(),
         })
         .collect();
-    lower_with_view_fns_and_item_mapping(checked, &view_fns)
+    lower_with_view_fns_and_item_mapping_for(checked, &view_fns, destination)
 }
 
 pub(crate) fn lower_with_view_fns_and_item_mapping(
+    checked: GeneratorsLoweredModule,
+    view_fns: &HashSet<String>,
+) -> Result<(AsyncLoweredModule, Vec<Vec<usize>>), String> {
+    lower_with_view_fns_and_item_mapping_for(checked, view_fns, GeneratedCallDestination::Linker)
+}
+
+fn lower_with_view_fns_and_item_mapping_for(
     mut checked: GeneratorsLoweredModule,
     view_fns: &HashSet<String>,
+    destination: GeneratedCallDestination,
 ) -> Result<(AsyncLoweredModule, Vec<Vec<usize>>), String> {
     if !has_async(checked.module()) {
         let item_count = checked.module().items.len();
@@ -399,6 +431,7 @@ pub(crate) fn lower_with_view_fns_and_item_mapping(
         items.push(Item::Function(seg));
     }
     module.items = items;
+    finish_generated_calls(module, destination);
     // The lowering uses the `task` substrate always, and `chan` for receive loops
     // (`for await`); the user's body may use either, so make both available.
     for needed in ["task", "chan"] {
@@ -3167,8 +3200,46 @@ fn prefix_stmt_at(head: Stmt, k: Expr, head_line: u32, tail_line: u32) -> Expr {
 
 fn call(name: &str, args: Vec<Expr>) -> Expr {
     Expr::Call {
-        name: name.to_string(),
+        name: if name.contains('.') && !name.starts_with('@') {
+            format!("{GENERATED_CALL_PREFIX}{name}")
+        } else {
+            name.to_string()
+        },
         args,
+    }
+}
+
+fn finish_generated_calls(module: &mut Module, destination: GeneratedCallDestination) {
+    let mut visit = |expression: &mut Expr| -> Result<(), ()> {
+        if let Expr::Call { name, .. } = expression
+            && let Some(target) = name.strip_prefix(GENERATED_CALL_PREFIX)
+        {
+            *name = match destination {
+                GeneratedCallDestination::Direct => target.to_string(),
+                GeneratedCallDestination::Linker => {
+                    let (module, function) = target
+                        .split_once('.')
+                        .expect("generated qualified call has a module");
+                    crate::linker::definition_site_name(module, function)
+                }
+            };
+        }
+        Ok(())
+    };
+    for item in &mut module.items {
+        match item {
+            Item::Function(function) => {
+                crate::ast::visit::visit_block_mut(&mut function.body, &mut visit)
+                    .expect("generated-call visitor is infallible");
+            }
+            Item::Impl(definition) => {
+                for method in &mut definition.methods {
+                    crate::ast::visit::visit_block_mut(&mut method.body, &mut visit)
+                        .expect("generated-call visitor is infallible");
+                }
+            }
+            _ => {}
+        }
     }
 }
 

@@ -1583,7 +1583,7 @@ fn prepare_source_for_expansion(
     })?;
     let checked = crate::generators::lower(checked)
         .map_err(|message| LinkError { message, location: None })?;
-    let checked = crate::async_lower::lower(checked)
+    let checked = crate::async_lower::lower_for_linker(checked)
         .map_err(|message| LinkError { message, location: None })?;
     let projected = crate::records::lower_lenient(checked)
         .map_err(|message| LinkError { message, location: None })?
@@ -3061,7 +3061,7 @@ where
         .map_err(|message| LinkError { message, location: None })?;
     let module = match async_stage {
         AsyncLoweringStage::Runtime => {
-            let checked = crate::async_lower::lower(checked)
+            let checked = crate::async_lower::lower_for_linker(checked)
                 .map_err(|message| LinkError { message, location: None })?;
             crate::records::lower(checked)
                 .map_err(|message| LinkError { message, location: None })?

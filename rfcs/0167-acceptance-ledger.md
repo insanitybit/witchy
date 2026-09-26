@@ -246,6 +246,15 @@ source proof there rejected valid async source. A local named `task` can also
 shadow the generated `task.and_then` module call during async lowering; that
 separate baseline name-resolution defect remains open.
 
+Async generated-call hygiene (implemented but unverified, 2026-09-26): linked
+async lowering now gives compiler-emitted qualified calls definition-site
+identity before the linker applies local shadowing. A local named `task` can
+therefore cross an await without changing the generated `task.and_then` call
+into a method call on that local. Direct, unlinked lowering retains ordinary
+qualified names; source-written calls retain lexical shadowing. A focused
+linker regression passes. This repairs a baseline lowering path but supplies
+no admitted-Wasm or zero-leak evidence and closes no A–O row.
+
 Rows J/K replayable continuation boundary (implemented but unverified,
 2026-09-26): the checker now refuses a live must binding and a capture refined
 to must after body inference. The retired root suspension exception could move
