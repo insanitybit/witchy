@@ -2219,6 +2219,15 @@ when its argument is a symbolic task parameter. An opaque or shadowing callable
 with the same function type does not acquire that origin. Externally supplied
 function values still need an explicit checked contract before opt code can
 await a task they produce.
+An exact local lambda may forward an opt task input through its own checked
+formal, including through a nested local lambda. The requirement is checked
+against the actual task when that lambda is invoked. If a control-flow join
+or callback call loses its exact scope or declaration origin, the callable
+remains unproved through projections and cannot be invoked or exported. A
+lambda with an unresolved opt task input
+requirement cannot enter aggregate storage, another closure capture, a cast,
+an opaque call, or a return; public callable types do not yet carry this
+requirement.
 
 The checker, loan analysis, and canonical lowering use the linked source
 callable's mode when deciding opt contracts, including after async segment and

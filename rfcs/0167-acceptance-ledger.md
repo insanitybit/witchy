@@ -298,8 +298,28 @@ declaration value invoked with an opt task through an `own` parameter and
 rejects the same public entry with a normal task. A temporary admitted
 unoptimized Wasm program for that path printed the hand-computed `7`.
 Adversarial review found no mode upgrade through the new requirement transfer.
-No zero-leak audit or A–O closure is claimed. Lambda-formal forwarding and
-externally supplied higher-order task obligations remain fail-closed gaps.
+No zero-leak audit or A–O closure is claimed. Externally supplied higher-order
+task obligations remain a fail-closed gap.
+
+Local lambda task-input contracts (implemented but unverified, 2026-09-26):
+the shared task-value proof now attaches deferred opt requirements to the
+exact lexical lambda formal scope. Known local `Call` and `Apply` instantiate
+those requirements with actual task arguments; nested lambda requirements
+rooted in an outer formal propagate to that outer scope. The source verifier
+rejects obligation-bearing lambdas at returns, yields, aggregates, captures,
+casts, opaque calls, parameter write-backs, and projected assignments. A
+branch join or callback invalidation that loses exact scope or declaration
+origin preserves an unproved callable marker through fields, indexes, loop
+elements, and pattern bindings, which refuses later invocation or escape. The
+existing linked checker case admits local and nested forwarding of opt tasks
+and refuses normal tasks, public lambda return, mismatched branch scopes, and
+an invalidated tuple of exact declared callbacks.
+Adversarial review found and prompted the write-back and join fixes, then
+found no further concrete authority widening. A temporary admitted
+unoptimized Wasm program printed the hand-computed `7 7` through direct and
+nested local forwarding. A zero-leak audit remains pending; no A–O row closes.
+Public and externally
+supplied callback contracts still lack a task-input mode field.
 
 Source execution-mode ownership (implemented but unverified, 2026-09-26):
 the checker, loan analysis, call-scoped analysis, canonical lowerer, and legacy

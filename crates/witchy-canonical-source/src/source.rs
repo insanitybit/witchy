@@ -46,9 +46,18 @@ impl TaskCallableScope {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TaskExecutionProof {
     Unknown,
+    /// A control-flow join or invalidation lost the exact callable, but
+    /// it may still carry an opt task-input obligation. It cannot escape or
+    /// be invoked through an unproved function value.
+    UnprovedCallableObligation,
     Task(SourceExecutionMode, Box<Self>),
     /// A checked local callable with a distinct lexical formal scope.
-    Callable { scope: TaskCallableScope, parameters: usize, result: Box<Self> },
+    Callable {
+        scope: TaskCallableScope,
+        parameters: usize,
+        required_opt_inputs: Vec<Self>,
+        result: Box<Self>,
+    },
     /// An exact checked declaration reference. Its result and opt task-input
     /// obligations use the declaration's own symbolic parameters until this
     /// value is invoked with checked arguments.
@@ -126,6 +135,64 @@ impl TaskExecutionProof {
         }
     }
 
+    /// A lambda-local obligation may be deferred only to that exact lexical
+    /// formal scope. An enclosing function's parameter is a separate proof.
+    pub fn is_callable_parameter_projection(&self, scope: &TaskCallableScope) -> bool {
+        let mut current = self;
+        for _ in 0..=128 {
+            match current {
+                Self::CallableParameter(actual, _) => return actual == scope,
+                Self::Slot(base, _) | Self::VariantSlot(base, _, _)
+                | Self::AnyElement(base) | Self::Awaited(base) => current = base,
+                _ => return false,
+            }
+        }
+        false
+    }
+
+    /// A callable obligation cannot cross an opaque function-value ABI.
+    /// Only a known local invocation can discharge it against actual inputs.
+    fn has_callable_input_obligation(&self, only_local: bool) -> bool {
+        fn contains(proof: &TaskExecutionProof, only_local: bool, depth: usize, remaining: &mut usize) -> bool {
+            if depth > 128 || *remaining == 0 { return true; }
+            *remaining -= 1;
+            match proof {
+                TaskExecutionProof::Callable { required_opt_inputs, result, .. } =>
+                    !required_opt_inputs.is_empty() || contains(result, only_local, depth + 1, remaining),
+                TaskExecutionProof::UnprovedCallableObligation => true,
+                TaskExecutionProof::Task(_, result) | TaskExecutionProof::Awaited(result)
+                | TaskExecutionProof::Slot(result, _)
+                | TaskExecutionProof::VariantSlot(result, _, _)
+                | TaskExecutionProof::AnyElement(result) => contains(result, only_local, depth + 1, remaining),
+                TaskExecutionProof::DeclaredCallable { required_opt_inputs, result, .. } =>
+                    (!only_local && !required_opt_inputs.is_empty())
+                        || required_opt_inputs.iter().any(|input| contains(input, only_local, depth + 1, remaining))
+                        || contains(result, only_local, depth + 1, remaining),
+                TaskExecutionProof::Elements(values) | TaskExecutionProof::Variant { fields: values, .. } =>
+                    values.iter().any(|value| contains(value, only_local, depth + 1, remaining)),
+                TaskExecutionProof::Fields(fields) =>
+                    fields.values().any(|value| contains(value, only_local, depth + 1, remaining)),
+                TaskExecutionProof::Variants(variants) =>
+                    variants.values().flatten().any(|value| contains(value, only_local, depth + 1, remaining)),
+                _ => false,
+            }
+        }
+        contains(self, only_local, 0, &mut 4096)
+    }
+
+    pub fn has_local_callable_obligation(&self) -> bool {
+        self.has_callable_input_obligation(true)
+    }
+
+    pub fn has_any_callable_input_obligation(&self) -> bool {
+        self.has_callable_input_obligation(false)
+    }
+
+    pub fn invalidated(&self) -> Self {
+        if self.has_callable_input_obligation(false) { Self::UnprovedCallableObligation }
+        else { Self::Unknown }
+    }
+
     /// Keep recursively composed summaries finite even for recursive source
     /// functions that repeatedly wrap their own result.
     pub fn bounded(self, max_nodes: usize) -> Self {
@@ -138,9 +205,11 @@ impl TaskExecutionProof {
                 TaskExecutionProof::Variant { fields, .. } => fields.iter().all(|child| within(child, remaining, depth + 1)),
                 TaskExecutionProof::Variants(variants) => variants.values().flatten().all(|child| within(child, remaining, depth + 1)),
                 TaskExecutionProof::Task(_, result) | TaskExecutionProof::Awaited(result)
-                    | TaskExecutionProof::Callable { result, .. }
                     | TaskExecutionProof::Slot(result, _) | TaskExecutionProof::VariantSlot(result, _, _)
                     | TaskExecutionProof::AnyElement(result) => within(result, remaining, depth + 1),
+                TaskExecutionProof::Callable { required_opt_inputs, result, .. } =>
+                    required_opt_inputs.iter().all(|child| within(child, remaining, depth + 1))
+                        && within(result, remaining, depth + 1),
                 TaskExecutionProof::DeclaredCallable { required_opt_inputs, result, .. } =>
                     required_opt_inputs.iter().all(|child| within(child, remaining, depth + 1))
                         && within(result, remaining, depth + 1),
@@ -148,7 +217,9 @@ impl TaskExecutionProof {
             }
         }
         let mut remaining = max_nodes;
-        if within(&self, &mut remaining, 0) { self } else { Self::Unknown }
+        if within(&self, &mut remaining, 0) { self }
+        else if self.has_callable_input_obligation(false) { Self::UnprovedCallableObligation }
+        else { Self::Unknown }
     }
 
     /// Join alternative control-flow paths. A mixed or missing proof is
@@ -158,10 +229,16 @@ impl TaskExecutionProof {
             (Self::Task(left_mode, left_result), Self::Task(right_mode, right_result)) if left_mode == right_mode => {
                 Self::Task(left_mode, Box::new((*left_result).join(*right_result)))
             }
-            (Self::Callable { scope: left_scope, parameters: left_arity, result: left },
-                Self::Callable { scope: right_scope, parameters: right_arity, result: right })
-                if left_scope == right_scope && left_arity == right_arity => {
-                Self::Callable { scope: left_scope, parameters: left_arity, result: Box::new((*left).join(*right)) }
+            (Self::Callable { scope: left_scope, parameters: left_arity, required_opt_inputs: left_requirements, result: left },
+                Self::Callable { scope: right_scope, parameters: right_arity, required_opt_inputs: right_requirements, result: right })
+                if left_scope == right_scope && left_arity == right_arity
+                    && left_requirements == right_requirements => {
+                Self::Callable {
+                    scope: left_scope,
+                    parameters: left_arity,
+                    required_opt_inputs: left_requirements,
+                    result: Box::new((*left).join(*right)),
+                }
             }
             (Self::DeclaredCallable { conventions: left_conventions, required_opt_inputs: left_requirements, result: left },
                 Self::DeclaredCallable { conventions: right_conventions, required_opt_inputs: right_requirements, result: right })
@@ -216,6 +293,8 @@ impl TaskExecutionProof {
                 if a == b && field_a == field_b => Self::VariantSlot(Box::new((*left).join(*right)), a, field_a),
             (Self::AnyElement(left), Self::AnyElement(right)) => Self::AnyElement(Box::new((*left).join(*right))),
             (left, right) if left == right => left,
+            (left, right) if left.has_callable_input_obligation(false)
+                || right.has_callable_input_obligation(false) => Self::UnprovedCallableObligation,
             _ => Self::Unknown,
         }
     }
@@ -224,12 +303,19 @@ impl TaskExecutionProof {
     /// argument proofs. Bounded recursion keeps malformed summaries closed.
     fn substitute(&self, arguments: &[Self], formal_scope: Option<&TaskCallableScope>) -> Self {
         fn go(proof: &TaskExecutionProof, arguments: &[TaskExecutionProof], formal_scope: Option<&TaskCallableScope>, depth: usize) -> TaskExecutionProof {
-            if depth > 128 { return TaskExecutionProof::Unknown; }
+            if depth > 128 {
+                return if proof.has_callable_input_obligation(false) {
+                    TaskExecutionProof::UnprovedCallableObligation
+                } else { TaskExecutionProof::Unknown };
+            }
             match proof {
                 TaskExecutionProof::Unknown => TaskExecutionProof::Unknown,
+                TaskExecutionProof::UnprovedCallableObligation => TaskExecutionProof::UnprovedCallableObligation,
                 TaskExecutionProof::Task(mode, result) => TaskExecutionProof::Task(*mode, Box::new(go(result, arguments, formal_scope, depth + 1))),
-                TaskExecutionProof::Callable { scope, parameters, result } => TaskExecutionProof::Callable {
+                TaskExecutionProof::Callable { scope, parameters, required_opt_inputs, result } => TaskExecutionProof::Callable {
                     scope: scope.clone(), parameters: *parameters,
+                    required_opt_inputs: required_opt_inputs.iter()
+                        .map(|input| go(input, arguments, formal_scope, depth + 1)).collect(),
                     result: Box::new(go(result, arguments, formal_scope, depth + 1)),
                 },
                 // A declared callable has no lexical captures. Substituting

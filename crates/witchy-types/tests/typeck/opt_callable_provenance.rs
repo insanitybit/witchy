@@ -142,6 +142,16 @@ pub async fn execute_indirect(own recipe: task.Task(Int)) -> Int:
     let relay = execute
     relay(recipe).await
 
+pub async fn execute_local_lambda(own recipe: task.Task(Int)) -> Int:
+    let relay = fn(own input: task.Task(Int)): execute(input)
+    relay(recipe).await
+
+pub async fn execute_nested_local_lambda(own recipe: task.Task(Int)) -> Int:
+    let relay = fn(own input: task.Task(Int)):
+        let nested = fn(): execute(input)
+        nested()
+    relay(recipe).await
+
 pub async fn compatible() -> Int:
     7
 
@@ -194,6 +204,8 @@ async fn ordinary() -> Int:
 async fn main(console: Console):
     let answer = worker.execute(ordinary()).await
     let _ = worker.execute_indirect(ordinary()).await
+    let _ = worker.execute_local_lambda(ordinary()).await
+    let _ = worker.execute_nested_local_lambda(ordinary()).await
     console.print("${answer}")
 "#;
     let result = super::source::checked_bundle(vec![("worker", worker), ("main", main)], "main");
@@ -220,6 +232,8 @@ async fn main(console: Console):
 async fn main(console: Console):
     let answer = worker.execute(worker.compatible()).await
     let indirect_answer = worker.execute_indirect(worker.compatible()).await
+    let local_lambda_answer = worker.execute_local_lambda(worker.compatible()).await
+    let nested_local_lambda_answer = worker.execute_nested_local_lambda(worker.compatible()).await
     let pair_answer = worker.execute_pair((worker.compatible(), 1)).await
     let inner = worker.nested().await
     let nested_answer = inner.await
@@ -231,6 +245,8 @@ async fn main(console: Console):
     let opt_parameter_callback_answer = worker.execute_parameter_callback().await
     console.print("${answer}")
     console.print("${indirect_answer}")
+    console.print("${local_lambda_answer}")
+    console.print("${nested_local_lambda_answer}")
     console.print("${pair_answer}")
     console.print("${nested_answer}")
     console.print("${opt_nested_answer}")
@@ -260,4 +276,33 @@ async fn main(console: Console):
         vec![("worker", &normal_argument_worker), ("main", compatible_main)], "main",
     ).expect_err("a callback formal cannot upgrade a normal task argument");
     assert!(error.contains("opt-compatible task value provenance"), "{error}");
+
+    let escaped_lambda_worker = format!("{worker}\n\npub fn escape_lambda() -> fn(own task.Task(Int)) -> task.Task(Int):\n    let relay = fn(own input: task.Task(Int)): execute(input)\n    relay\n");
+    let error = super::source::checked_bundle(
+        vec![("worker", &escaped_lambda_worker), ("main", compatible_main)], "main",
+    ).expect_err("a lambda input obligation cannot escape through an unchecked function type");
+    assert!(error.contains("local callback with an opt task input obligation"), "{error}");
+
+    let joined_lambda_worker = format!("{worker}\n\npub async fn join_lambda(flag: Bool) -> Int:\n    let relay = if flag: fn(own input: task.Task(Int)): execute(input) else: fn(own input: task.Task(Int)): execute(input)\n    relay(compatible()).await\n");
+    let error = super::source::checked_bundle(
+        vec![("worker", &joined_lambda_worker), ("main", compatible_main)], "main",
+    ).expect_err("joining different local lambda scopes cannot erase their opt input obligation");
+    assert!(error.contains("local callback with an opt task input obligation"), "{error}");
+
+    let aggregate_worker = format!("{worker}\n\npub fn factory() -> (fn(own task.Task(Int)) -> task.Task(Int), Int):\n    (execute, 0)\n");
+    let aggregate_main = r#"import task
+import worker
+
+async fn main(console: Console):
+    let pair = worker.factory()
+    let noop = fn(): 0
+    let _ = noop()
+    let (relay, _) = pair
+    let _ = relay(task.done(7)).await
+    console.print("unreachable")
+"#;
+    let error = super::source::checked_bundle(
+        vec![("worker", &aggregate_worker), ("main", aggregate_main)], "main",
+    ).expect_err("invalidation cannot erase an opt task input obligation inside a tuple");
+    assert!(error.contains("local callback with an opt task input obligation"), "{error}");
 }
