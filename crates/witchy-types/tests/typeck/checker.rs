@@ -9,6 +9,42 @@
     }
 
     #[test]
+    fn checked_comptime_source_retains_exact_pre_trait_normalization() {
+        let source = "type Boxed:\n    value: Int\n\n\
+                      trait Inspect:\n    fn inspect(self) -> Int\n\n\
+                      impl Inspect for Boxed:\n    fn inspect(self) -> Int:\n        self.value\n\n\
+                      fn identity(value: a) -> a:\n    value\n\n\
+                      fn main() -> Int:\n    identity(Boxed(value: 7)).inspect()\n";
+        let module = witchy_syntax::parser::parse_module(source).expect("source parses");
+        let checked = witchy_syntax::source_check::check(module.clone()).unwrap();
+        let generators = witchy_syntax::generators::lower(checked).unwrap();
+        let asynchronous = witchy_syntax::async_lower::lower(generators).unwrap();
+        let expected = witchy_syntax::records::lower(asynchronous).unwrap().into_module();
+        let retained = check_comptime_source(&module).unwrap().into_module();
+        assert_eq!(retained, expected);
+        assert!(retained.items.iter().any(|item| matches!(item, Item::Trait(_))));
+        assert!(retained.items.iter().any(|item| matches!(item, Item::Impl(_))));
+        assert!(retained.items.iter().any(|item| matches!(item, Item::Function(f) if f.name == "identity")));
+    }
+
+    #[test]
+    fn checked_comptime_source_preserves_check_failures() {
+        for source in [
+            "fn duplicate() -> Int:\n    1\n\nfn duplicate() -> Int:\n    missing()\n",
+            "fn wrong() -> Int:\n    \"not an integer\"\n",
+            "fn unknown(value: Missing) -> Int:\n    1\n",
+        ] {
+            let module = witchy_syntax::parser::parse_module(source).expect("source parses");
+            let expected = check_comptime(&module).expect_err("original check rejects source");
+            let actual = match check_comptime_source(&module) {
+                Ok(_) => panic!("source handoff must not bypass a failing check"),
+                Err(error) => error,
+            };
+            assert_eq!(actual.message, expected.message);
+        }
+    }
+
+    #[test]
     fn call_scoped_access_follows_aliases_aggregates_and_captures() {
         for source in [
             "fn escape(let text: String) -> String:\n    let alias = text\n    alias\n",

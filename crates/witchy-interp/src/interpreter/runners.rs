@@ -597,21 +597,22 @@ pub(crate) fn run_comptime_module_outputs_budgeted_in_scope_with_qualifiers(
     })
 }
 
-/// Prepare `module` once and run each named zero-argument entry in its own
-/// fresh interpreter, exactly as [`run_comptime_module_budgeted_in_scope`]
+/// Prepare checked, source-normalized comptime input once and run each named
+/// zero-argument entry in its own fresh interpreter, exactly as
+/// [`run_comptime_module_budgeted_in_scope`]
 /// runs `main` (same root, budget, seed, and per-entry identifier scope). One
 /// deep-stack thread serves the whole batch. The outer `Err` is a preparation
 /// failure; each entry carries its own run result, and entries after the first
 /// failed one are not run.
 pub(crate) fn run_comptime_entries_budgeted(
-    module: Module,
+    source: witchy_types::typeck::CheckedComptimeSource,
     root: impl AsRef<Path>,
     step_limit: u64,
     entries: Vec<(String, Option<String>)>,
 ) -> Result<Vec<Result<(Vec<String>, Vec<PositionedComptimeItem>), RuntimeError>>, RuntimeError> {
     let root = root.as_ref().to_path_buf();
     run_on_deep_stack(move || {
-        let (module, witnesses) = prepare_runtime_module(module, None)?;
+        let (module, witnesses) = prepare_source_normalized_runtime_module(source.into_module(), None)?;
         let mut runs = Vec::with_capacity(entries.len());
         for (entry, fresh_ident_scope) in entries {
             let run = run_prepared_entry_limited(module.clone(), witnesses.clone(), &entry,
@@ -880,6 +881,16 @@ fn prepare_runtime_module(
     let module = witchy_syntax::records::lower(checked)
         .map_err(|message| RuntimeError { message })?
         .into_module();
+    prepare_source_normalized_runtime_module(module, runtime_catalog)
+}
+
+/// Both callers have completed the identical source/generator/async/record
+/// pipeline. Only that work is shared: runtime specialization, annotation,
+/// and existential witnesses must still be produced from this exact AST.
+fn prepare_source_normalized_runtime_module(
+    module: Module,
+    runtime_catalog: Option<&RuntimeDeclarationCatalog>,
+) -> Result<(Module, WitnessPlan), RuntimeError> {
     let catalog = witchy_types::witness::WitnessCatalog::from_module(&module);
     // Keep this ordering aligned with the compiled backend: trait lowering
     // resolves dynamic method slots before the type table records the concrete

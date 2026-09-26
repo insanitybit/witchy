@@ -10583,10 +10583,40 @@ pub fn check_comptime(module: &Module) -> Result<(), TypeError> {
     check_with_compiler_syntax(module, true).map(|_| ())
 }
 
+/// Successfully checked comptime source after generator, async, and record
+/// normalization, but before trait erasure or runtime specialization.
+///
+/// This owns no type table and is not executable or an admission proof. The
+/// interpreter must still perform its unbounded specialization and checked
+/// runtime preparation. Keeping this source avoids normalizing the identical
+/// input again after the successful check.
+pub struct CheckedComptimeSource {
+    module: Module,
+}
+
+impl CheckedComptimeSource {
+    pub fn into_module(self) -> Module { self.module }
+}
+
+/// Run the complete comptime check and retain its normalized source for the
+/// interpreter. Errors and their ordering are identical to [`check_comptime`].
+pub fn check_comptime_source(module: &Module) -> Result<CheckedComptimeSource, TypeError> {
+    check_with_compiler_syntax_and_source(module, true)
+        .map(|(_, module)| CheckedComptimeSource { module })
+}
+
 fn check_with_compiler_syntax(
     module: &Module,
     compiler_syntax_allowed: bool,
 ) -> Result<TypedModule, TypeError> {
+    check_with_compiler_syntax_and_source(module, compiler_syntax_allowed)
+        .map(|(typed, _)| typed)
+}
+
+fn check_with_compiler_syntax_and_source(
+    module: &Module,
+    compiler_syntax_allowed: bool,
+) -> Result<(TypedModule, Module), TypeError> {
     crate::views::reject_const_view_formation(module)?;
     // Catch duplicate top-level functions before lowering, while `impl` methods
     // are still distinct from free functions (so overloaded methods aren't
@@ -10660,7 +10690,9 @@ fn check_with_compiler_syntax(
             // type checking (so a genuine type error is reported first) on the
             // lowered module (method calls are plain `Call`s and the borrow
             // signatures survive lowering as `Qualified(Borrow, _)`).
-            typed_module_checked(lowered, type_table)
+            // `recs` already stays alive while the checker lowers its clone;
+            // retaining it does not clone either AST or address-keyed tables.
+            typed_module_checked(lowered, type_table).map(|typed| (typed, recs))
         }
         Err(message) => {
             // (BUG-307) Mono's "cannot infer the result type" fallback fires when

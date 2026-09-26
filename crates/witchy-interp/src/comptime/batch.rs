@@ -138,15 +138,16 @@ impl ComptimeBatch {
         else {
             return BatchStart::Failed;
         };
-        if witchy_types::typeck::check_comptime(&linked).is_err() {
+        let Ok(checked) = witchy_types::typeck::check_comptime_source(&linked) else {
             return BatchStart::Failed;
-        }
+        };
+        drop(linked);
         let scope = |k: usize| Some(format!("comptime:{}:{name}:{}", name.len(), expanded + k));
         let entries = std::iter::once(("main".to_string(), scope(0)))
             .chain((1..=speculated.len()).map(|k| (format!("comptime.{}", entry_name(k)), scope(k))))
             .collect();
         let Ok(runs) = crate::interpreter::run_comptime_entries_budgeted(
-            linked,
+            checked,
             ".",
             crate::interpreter::COMPTIME_STEP_LIMIT,
             entries,
