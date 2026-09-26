@@ -4,6 +4,15 @@ use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[test]
+fn compiler_benchmark_preserves_source_and_rejects_invalid_comparisons() {
+    let output = Command::new("bash")
+        .arg(workspace_root().join("scripts/test-compile-bench.sh"))
+        .output().expect("run compiler benchmark contracts");
+    assert!(output.status.success(), "{}\n{}", String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr));
+}
+
+#[test]
 fn documentation_edits_do_not_run_the_deferred_source_interpreter_sweep() {
     for path in ["README.md", "spec/language.md"] {
         let commands = selected(&[path]);

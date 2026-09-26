@@ -1,131 +1,115 @@
 #!/usr/bin/env bash
-# Controlled COMPILER benchmark — the one way to measure "how long does the
-# compiler take on a program" so successive perf rounds compare like against
-# like. `gate-bench.sh` is its sibling for gate wall time; this one measures
-# `witchy` itself.
-#
-# WHY THIS EXISTS. On 2026-09-20/21 a perf session tuned exclusively against
-# the async boundary test (an 11k-block generated executor). Six changes were
-# measured there. Then one profile of a REAL program showed a completely
-# different machine:
-#
-#     workload                     typeck   allocator
-#     async executor (11k blocks)  10-15%     ~18%
-#     gm_core.witchy (1,824 lines)    85%     ~70%
-#
-# The very next change, found only because a real program was profiled, was
-# worth 17% -- larger than everything the async benchmark had produced. ONE
-# BENCHMARK IS NOT A WORKLOAD. This script runs a spread on purpose.
-#
-# Every trap below was hit in practice during that session:
-#   * COMMIT FIRST. The A/B swaps files with `git checkout <ref> -- <path>`
-#     and restores with `git checkout HEAD -- <path>`; an uncommitted change
-#     is silently destroyed and you measure a ref against itself.
-#   * ALTERNATE IN ONE WINDOW and take the MIN. This box's load swings 10x
-#     within seconds. A branch reading of 2.70s was briefly called a 30%
-#     regression against a 2.05s master reading taken hours earlier; measured
-#     back to back the same minute, they were 2.70 vs 2.73 -- neutral.
-#   * NEVER touch the tree while a presubmit runs; it voids the receipt.
-#   * A profile SHARE is not a lever. Ten ideas chosen from flame-profile
-#     percentages measured as nothing; the wins came from counting one
-#     specific quantity. Use this to confirm, not to hunt.
+# Compare explicitly built compiler binaries; never swap source or rebuild.
+# Both executables read the SAME workload sources and WITCHY_STD_DIR. This is
+# a compiler implementation comparison, not a comparison of std revisions.
 #
 # Usage:
-#   ./scripts/compile-bench.sh                     # time current build, all workloads
-#   ./scripts/compile-bench.sh --against master    # alternating A/B vs a ref
-#   ./scripts/compile-bench.sh --rounds 5 --only real
+#   ./scripts/compile-bench.sh --binary /path/to/candidate
+#   ./scripts/compile-bench.sh --binary /path/to/candidate --against-binary /path/to/baseline
+#   ./scripts/compile-bench.sh --rounds 5 --only async --output-dir state/compile-samples
+#
+# real/stdlib measure frontend checking; corpus/async measure full emit-wat.
+# Cold verification is the default. For warm-cache runs, explicitly set
+# WITCHY_SAFEWIR_CHECK_CACHE=on and WITCHY_SAFEWIR_CHECK_CACHE_DIR.
+# One priming pair precedes alternating measured pairs. Raw samples are kept;
+# medians do not eliminate host contention. Failed runs are never results.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-
 rounds=3
+binary="target/debug/witchy"
 against=""
 only=""
+output=""
 while [ $# -gt 0 ]; do
     case "$1" in
-        --against) against="${2:?--against needs a git ref}"; shift 2 ;;
-        --rounds)  rounds="${2:?--rounds needs a count}"; shift 2 ;;
-        --only)    only="${2:?--only needs a workload name}"; shift 2 ;;
+        --binary) binary="${2:?--binary needs a path}"; shift 2 ;;
+        --against-binary) against="${2:?--against-binary needs a path}"; shift 2 ;;
+        --against) echo 'compile-bench: source-swapping --against was removed; build the ref in isolation and use --against-binary PATH' >&2; exit 2 ;;
+        --rounds) rounds="${2:?--rounds needs a count}"; shift 2 ;;
+        --only) only="${2:?--only needs a workload name}"; shift 2 ;;
+        --output-dir) output="${2:?--output-dir needs a path}"; shift 2 ;;
         --help|-h) sed -n '2,/^set -euo pipefail$/{/^set -euo pipefail$/d; s/^# \{0,1\}//; p; }' "$0"; exit 0 ;;
         *) echo "compile-bench: unknown argument '$1'" >&2; exit 2 ;;
     esac
 done
-
-# name:path:description. Deliberately a SPREAD: a large real library, a
-# mid-size stdlib module, a small corpus program, and the async executor the
-# 2026-09 session over-fitted to. Add to this list rather than replacing it.
-workloads=(
-    "real:projects/grimoire/src/gm_core.witchy:1.8k-line real library (typeck-dominated)"
-    "stdlib:std/json.witchy:mid-size stdlib module"
-    "corpus:tests/rfc0165/corpus/025-aggregates_with_string_payloads_construct_match_and_propagate.witchy:small canonical corpus program"
-    "async:examples/channels/src/channels.witchy:23-line async program (std executor dominates)"
-)
-
-binary="target/debug/witchy"
-[ -x "$binary" ] || { echo "compile-bench: no $binary — run: ./scripts/bin/cargo build -p witchy" >&2; exit 1; }
-
-cores="$(sysctl -n hw.ncpu 2>/dev/null || echo 0)"
-load1() { sysctl -n vm.loadavg 2>/dev/null | awk '{print $2}' || uptime | sed 's/.*averages*: //' | cut -d' ' -f1; }
-warn_load() {
-    local l; l="$(load1)"
-    # `set -e` plus a `&&` chain whose test legitimately fails would abort the
-    # whole script the moment the box is QUIET, which is the one case that
-    # matters. Keep the result out of the function's exit status.
-    if awk -v l="$l" -v c="$cores" 'BEGIN { exit !(c > 0 && l+0 > c*1.5) }'; then
-        printf '\033[1;33mcompile-bench: load %s on %s cores — contention will dominate; treat results as indicative only\033[0m\n' "$l" "$cores"
-    fi
-    return 0
-}
-
-# One timed run: CPU seconds, which is far more robust to a loaded box than
-# wall. The verdict store is disabled so the checker is actually exercised
-# rather than replayed.
-timed() { # timed <path>
-    WITCHY_SAFEWIR_CHECK_CACHE=off RUST_MIN_STACK=16777216 \
-        /usr/bin/time -p "$binary" check "$1" 2>&1 >/dev/null |
-        awk '/^user/{u=$2} /^sys/{s=$2} END{printf "%.2f", u+s}'
-}
-
-best_of() { # best_of <path> <rounds>
-    local best="" t i=0
-    while [ "$i" -lt "$2" ]; do
-        t="$(timed "$1")"
-        if [ -z "$best" ] || awk -v a="$t" -v b="$best" 'BEGIN{exit !(a+0 < b+0)}'; then best="$t"; fi
-        i=$((i + 1))
-    done
-    printf '%s' "$best"
-}
-
-warn_load
-if [ -n "$against" ]; then
-    [ -z "$(git status --porcelain)" ] || {
-        echo "compile-bench: commit first — the A/B swap would destroy uncommitted work (see header)" >&2
-        exit 2
+case "$rounds" in ''|*[!0-9]*) echo 'compile-bench: rounds must be a positive integer' >&2; exit 2 ;; esac
+[ "$rounds" -gt 0 ] 2>/dev/null || { echo 'compile-bench: rounds must be a positive integer' >&2; exit 2; }
+case "$only" in ''|real|stdlib|corpus|async) ;; *) echo "compile-bench: unknown workload '$only'" >&2; exit 2 ;; esac
+executables=("$binary")
+[ -z "$against" ] || executables+=("$against")
+for executable in "${executables[@]}"; do
+    [ -x "$executable" ] && [ ! -d "$executable" ] || {
+        echo "compile-bench: missing executable $executable; build it explicitly first" >&2; exit 2;
     }
-    git rev-parse --verify --quiet "$against" >/dev/null || { echo "compile-bench: no such ref '$against'" >&2; exit 2; }
-fi
-
-printf '%-8s %-46s %10s' "workload" "description" "cpu_s"
-[ -n "$against" ] && printf ' %10s %8s' "$against" "delta"
-printf '\n'
-
-for entry in "${workloads[@]}"; do
-    name="${entry%%:*}"; rest="${entry#*:}"; path="${rest%%:*}"; desc="${rest#*:}"
-    [ -n "$only" ] && [ "$only" != "$name" ] && continue
-    [ -f "$path" ] || { printf '%-8s %-46s %10s\n' "$name" "$desc" "MISSING"; continue; }
-    here="$(best_of "$path" "$rounds")"
-    if [ -z "$against" ]; then
-        printf '%-8s %-46s %10s\n' "$name" "$desc" "$here"
-        continue
-    fi
-    # Alternating A/B in one window: rebuild the ref, measure, restore, measure.
-    git stash list >/dev/null
-    git checkout -q "$against" -- crates src 2>/dev/null || true
-    ./scripts/bin/cargo build -q -p witchy 2>/dev/null || true
-    there="$(best_of "$path" "$rounds")"
-    git checkout -q HEAD -- crates src
-    ./scripts/bin/cargo build -q -p witchy 2>/dev/null || true
-    delta="$(awk -v a="$here" -v b="$there" 'BEGIN{ if (b+0 == 0) print "n/a"; else printf "%+.1f%%", 100*(a-b)/b }')"
-    printf '%-8s %-46s %10s %10s %8s\n' "$name" "$desc" "$here" "$there" "$delta"
 done
-
-printf '\nload now %s on %s cores. CPU seconds, best of %s.\n' "$(load1)" "$cores" "$rounds"
+if [ -z "$output" ]; then
+    mkdir -p state
+    output="$(mktemp -d "$PWD/state/compile-bench.XXXXXX")"
+else
+    # Never mix old successful samples with a new failed run.
+    mkdir "$output" || { echo 'compile-bench: output directory must be new' >&2; exit 2; }
+fi
+export WITCHY_STD_DIR="${WITCHY_STD_DIR:-$PWD/std}"
+export WITCHY_SAFEWIR_CHECK_CACHE="${WITCHY_SAFEWIR_CHECK_CACHE:-off}"
+export RUST_MIN_STACK=16777216
+export LC_ALL=C
+{
+    printf 'source_tip=%s\nbinary=%s\nagainst=%s\nstd=%s\nverdict_cache=%s\n' \
+        "$(git rev-parse HEAD)" "$binary" "$against" "$WITCHY_STD_DIR" "$WITCHY_SAFEWIR_CHECK_CACHE"
+    git status --short
+    uptime
+    for executable in "${executables[@]}"; do openssl dgst -sha256 "$executable"; done
+} > "$output/metadata.txt"
+printf 'round\tvariant\tcpu_s\twall_s\n' > "$output/samples.tsv"
+workloads=(
+    'real:check:projects/grimoire/src/gm_core.witchy'
+    'stdlib:check:std/json.witchy'
+    'corpus:emit-wat:tests/rfc0165/corpus/025-aggregates_with_string_payloads_construct_match_and_propagate.witchy'
+    'async:emit-wat:benchmarks/compile_async.witchy'
+)
+timed() {
+    local variant="$1" round="$2" command="$3" source="$4" executable="$binary" status
+    [ "$variant" != baseline ] || executable="$against"
+    if /usr/bin/time -p "$executable" "$command" "$source" \
+        > "$output/$name-$variant-$round.stdout" 2> "$output/$name-$variant-$round.stderr"; then
+        :
+    else
+        status=$?
+        echo "compile-bench: $name $variant failed (exit $status); raw evidence: $output" >&2
+        cat "$output/$name-$variant-$round.stderr" >&2
+        return "$status"
+    fi
+    if [ "$round" -gt 0 ]; then
+        awk -v r="$round" -v v="$name/$variant" \
+            '/^real [0-9]/{w=$2} /^user [0-9]/{u=$2} /^sys [0-9]/{s=$2; found=1}
+             END{if (!found) exit 1; printf "%s\t%s\t%.2f\t%s\n",r,v,u+s,w}' \
+            "$output/$name-$variant-$round.stderr" >> "$output/samples.tsv"
+    fi
+}
+median() {
+    awk -v v="$1" '$2==v {print $3}' "$output/samples.tsv" | sort -n |
+        awk '{a[NR]=$1} END{if (NR%2) print a[(NR+1)/2]; else printf "%.3f",(a[NR/2]+a[NR/2+1])/2}'
+}
+printf 'Raw evidence: %s\n' "$output"
+printf '%-8s %-10s %12s %12s\n' workload command candidate_cpu baseline_cpu
+for entry in "${workloads[@]}"; do
+    name="${entry%%:*}"; rest="${entry#*:}"; command="${rest%%:*}"; source="${rest#*:}"
+    [ -z "$only" ] || [ "$only" = "$name" ] || continue
+    [ -f "$source" ] || { echo "compile-bench: missing workload $source" >&2; exit 2; }
+    round=0
+    while [ "$round" -le "$rounds" ]; do
+        variants=(candidate)
+        if [ -n "$against" ]; then
+            if (( round % 2 )); then variants=(baseline candidate); else variants=(candidate baseline); fi
+        fi
+        for variant in "${variants[@]}"; do timed "$variant" "$round" "$command" "$source"; done
+        if [ -n "$against" ] && ! cmp -s "$output/$name-candidate-$round.stdout" "$output/$name-baseline-$round.stdout"; then
+            echo "compile-bench: $name output mismatch; raw evidence: $output" >&2; exit 1
+        fi
+        round=$((round + 1))
+    done
+    baseline_cpu='-'
+    [ -z "$against" ] || baseline_cpu="$(median "$name/baseline")"
+    printf '%-8s %-10s %12s %12s\n' "$name" "$command" "$(median "$name/candidate")" "$baseline_cpu"
+done
+printf 'CPU seconds, median of %s; inspect raw spread and host load before attributing changes.\n' "$rounds"

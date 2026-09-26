@@ -246,14 +246,16 @@ executor, 10-15% typeck) before one profile of a real 1.8k-line program showed
 85% typeck and ~70% allocator traffic. The next change, found only there, was
 worth 17% -- more than everything the async benchmark had produced.
 
-    ./scripts/compile-bench.sh                  # baseline, all workloads
-    ./scripts/compile-bench.sh --against master # alternating A/B vs a ref
+    ./scripts/compile-bench.sh --binary /path/to/candidate
+    ./scripts/compile-bench.sh --binary /path/to/candidate --against-binary /path/to/baseline
 
-It reports CPU seconds (robust to this box's 10x load swings), takes the best
-of N, alternates against the ref IN ONE WINDOW, prints the load with the
-result, and REFUSES an A/B on a dirty tree -- the swap would silently destroy
-the uncommitted change and measure a ref against itself. Read its header
-before hand-rolling a measurement; every trap in it was hit in practice.
+Build and save each executable in isolation first. The benchmark never swaps
+source or rebuilds a revision. Both binaries read the same workload sources and
+standard library; real/stdlib time frontend checking, corpus/async time full
+compilation. It alternates pairs, requires successful matching output, retains
+raw samples and reports median CPU seconds. CPU still varies with host load and
+frequency: inspect the spread. Cold verification is the default; warm-cache runs
+must be labeled separately. Read its header before measuring.
 
 ## Merge queue: operational specifics
 

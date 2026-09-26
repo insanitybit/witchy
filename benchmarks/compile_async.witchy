@@ -1,0 +1,11 @@
+// Compilation benchmark: supported suspension, no spawn/Handle extraction.
+// Executing the admitted program prints 42.
+import chan
+
+async fn answer() -> Int:
+    chan.yield_now().await
+    42
+
+async fn main(console: Console):
+    let n = answer().await
+    console.print("${n}")
