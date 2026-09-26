@@ -153,7 +153,7 @@ fn main() -> Int:
 
 #[test]
 fn a_qualified_inner_list_has_no_authenticated_whole_root_carrier() {
-    let checked = witchy::resolve_std_only_checked(
+    let error = witchy::resolve_std_only_checked(
         r#"
 fn relay(view: &List(unique List(Int))) -> &List(unique List(Int)):
     view
@@ -164,7 +164,6 @@ fn main() -> Int:
     (*old).length()
 "#,
     )
-    .expect("near-miss source type-checks before canonical admission");
-    codegen::compile_checked_module_artifact(&checked)
-        .expect_unsupported("qualified inner list has no admitted root carrier");
+    .expect_err("qualified inner list has no admitted root carrier");
+    assert!(error.to_string().contains("rooted view payload has no admitted authenticated carrier"), "{error}");
 }
