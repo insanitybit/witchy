@@ -625,6 +625,34 @@ fn cargo_shim_keeps_isolated_and_native_artifacts_in_separate_targets() {
         String::from_utf8_lossy(&explicit.stdout),
         "shared-target learned=1\n"
     );
+
+    // Any explicit feature set may change the dependency graph; do not keep
+    // a feature-name allowlist in the shim or silently reuse the pure target.
+    for features in [
+        vec!["--features", "native-test-runtime"],
+        vec!["--features=native-test-runtime"],
+        vec!["-F", "native-test-runtime"],
+        vec!["-Fnative-test-runtime"],
+        vec!["--all-features"],
+        vec!["--features", "raw-module-test-api"],
+        vec!["--features=native-test-runtime", "--target-dir=chosen"],
+    ] {
+        let mut args = vec!["test", "-p", "witchy-lower"];
+        args.extend(features);
+        let selected = run(&args);
+        assert!(selected.status.success(), "{}", String::from_utf8_lossy(&selected.stderr));
+        assert_eq!(String::from_utf8_lossy(&selected.stdout), "shared-target learned=1\n",
+            "explicit features unexpectedly selected the pure sidecar: {args:?}");
+    }
+    let wir_native = run(&["test", "-p", "witchy-wir", "--no-default-features",
+        "--features", "native"]);
+    assert!(wir_native.status.success(), "{}", String::from_utf8_lossy(&wir_native.stderr));
+    assert_eq!(String::from_utf8_lossy(&wir_native.stdout), "shared-target learned=1\n");
+
+    let test_args = run(&["test", "-p", "witchy-lower", "--", "--features=not-a-cargo-flag"]);
+    assert!(test_args.status.success(), "{}", String::from_utf8_lossy(&test_args.stderr));
+    assert_eq!(String::from_utf8_lossy(&test_args.stdout), String::from_utf8_lossy(&warm_lower.stdout),
+        "test-program arguments changed Cargo target routing");
 }
 
 #[test]
