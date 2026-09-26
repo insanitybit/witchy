@@ -137,3 +137,5 @@ mod rfc0167_slice_owned_materialization;
 mod rfc0167_slice_subscript_in_async;
 #[path = "misc/rfc0167_slice_list_int_root_view.rs"]
 mod rfc0167_slice_list_int_root_view;
+#[path = "misc/rfc0167_resource_fallback.rs"]
+mod rfc0167_resource_fallback;

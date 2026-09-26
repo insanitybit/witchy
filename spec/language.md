@@ -1872,7 +1872,15 @@ their ordinary ownership cleanup.
 **Unwrapping with `??`.** For a quick value-or-default, `Option(T) ?? T` unwraps
 to a bare `T` (§4): `Some(x) ?? d` is `x`, `None ?? d` is `d` (with `d` evaluated
 only when absent). `Result(T, e) ?? T` unwraps `Ok` likewise, discarding the
-error. It's `unwrap_or` with operator syntax - handy on the `Option`-returning
+error. An error that recursively stores a `must` obligation cannot be discarded
+by `??`; use `?` to transfer it or `match` to consume it. This applies in both
+modes and across imports. A resource-bearing success may be transferred by
+fallback, but the resulting value still needs disposition. Phantom type
+arguments and callable signatures alone do not store an obligation.
+Resource-bearing success extraction currently passes source checking but
+remains unsupported in canonical lowering; source acceptance alone does not
+make that program executable.
+It's `unwrap_or` with operator syntax - handy on the `Option`-returning
 lookups (`d.get(key)`, `list.head`, …).
 
 ```witchy

@@ -1598,6 +1598,23 @@ tuple root cannot escape, and closure capture of this tuple view remains
 refused. Broader tuple roots and tuple-view captures still need separate
 carrier evidence.
 
+Resource fallback disposition (bounded source repair, 2026-09-26): `??` now
+rejects a `Result` error whose instantiated stored payload recursively carries
+a `must` obligation. The existing stored-obligation judgment handles nominal,
+generic, nested, and empty nominal resources; phantom arguments and callable
+signatures alone are not stored resources. `typeck::resource_fallback` pins the
+independent refusal in normal and opt code, through a normal-to-opt call, and
+with a normal consumer of an opt-defined type. Concrete generic instantiation
+also rechecks the error obligation. Resource-bearing success values still pass
+source checking and retain their disposition obligation, but their canonical
+extraction currently refuses with `aggregate field read requires consuming
+affine extraction`; this is an open carrier gap, not executable evidence.
+`rfc0167_resource_fallback` exercises ordinary success values and phantom
+resource errors across the same mode/type boundaries: both success and fallback
+paths produce the hand-computed 797979 in admitted unoptimized Wasm with zero
+canonical heap leaks. Conditional RHS disposition and broader error/deferred
+resource transfers remain open. No A-O row closes from this repair.
+
 ## Optimization-readiness carrier audit
 
 This inventory identifies production carriers already capable of preserving the

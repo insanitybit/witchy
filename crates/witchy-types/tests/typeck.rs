@@ -2171,6 +2171,8 @@ mod reference_contract_matrix;
 mod region_parent_view_results;
 #[path = "typeck/resource_composition.rs"]
 mod resource_composition;
+#[path = "typeck/resource_fallback.rs"]
+mod resource_fallback;
 #[path = "typeck/source.rs"]
 mod source;
 #[path = "typeck/std_pruning.rs"]

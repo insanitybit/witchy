@@ -9168,6 +9168,16 @@ impl Checker {
                         Ok(t)
                     }
                     Ty::Named(ref n, ref args) if **n == *"Result" && args.len() == 2 => {
+                        // Fallback drops the Err payload, unlike `?` or an
+                        // explicit match that can transfer its obligation.
+                        // Classify stored children, not the success payload or
+                        // phantom/callable-signature type arguments.
+                        if self.ty_carries_must_consume(&args[1]) {
+                            return terr(format!(
+                                "`??` cannot discard must-consume error `{}`; use `?` to transfer it or `match` to consume it",
+                                args[1],
+                            ));
+                        }
                         let t = args[0].clone();
                         self.unify(&t, &rt).map_err(|e| TypeError {
                             message: format!(
