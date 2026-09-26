@@ -525,6 +525,17 @@ impl<'a> MemoryChecker<'a> {
                 object: source,
             });
         }
+        // The physical nullable-slot proof belongs to the sole moving
+        // owner. Re-key it before a later unique phi rebases that owner's
+        // allocation identity; leaving it on the consumed SSA name would
+        // make an otherwise valid consuming take lose its proof.
+        let nullable_slots = self.state.nullable_unique_slots.iter().copied()
+            .filter(|(container, _)| self.same_allocation(source, *container))
+            .collect::<Vec<_>>();
+        for (container, slot) in nullable_slots {
+            self.state.nullable_unique_slots.remove(&(container, slot));
+            self.state.nullable_unique_slots.insert((destination, slot));
+        }
         self.state.objects.insert(destination, state);
         self.state.objects
             .get_mut(&source)

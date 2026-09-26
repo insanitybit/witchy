@@ -197,6 +197,10 @@ pub(super) struct MemoryState {
     /// became one allocation merely because control flow joined.
     shared_phi_origins: CowFacts<SortedMap<ValueId, SortedSet<ValueId>>>,
     stored_objects: CowFacts<SortedMap<(ValueId, SlotIdentity), ObjectState>>,
+    /// Every present child of this nullable slot has an exclusive token.
+    /// Absence satisfies the property vacuously. Unlike an exact stored child
+    /// identity, this proof survives joins of independently built variants.
+    nullable_unique_slots: CowFacts<SortedSet<(ValueId, SlotIdentity)>>,
     /// Explicitly initialized nullable fixed slots that contain absence. This
     /// is distinct from an uninitialized slot and from a live stored edge.
     nullable_absent_slots: CowFacts<SortedSet<(ValueId, SlotIdentity)>>,
@@ -279,6 +283,7 @@ impl<'a> MemoryChecker<'a> {
                 objects: SortedMap::new().into(),
                 shared_phi_origins: SortedMap::new().into(),
                 stored_objects: SortedMap::new().into(),
+                nullable_unique_slots: SortedSet::new().into(),
                 nullable_absent_slots: SortedSet::new().into(),
                 range_states: SortedMap::new().into(),
                 bound_generations: SortedMap::new().into(),

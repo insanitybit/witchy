@@ -166,7 +166,7 @@ pub(crate) fn value_type_matches_source(
                         && record_layout_matches_with_closures(layout, &shape.fields, shape.tagged, layouts, records, closure_layouts, signatures, context))
             })
         }
-        StoragePlan::RetainedGraphList(_) | StoragePlan::RetainedCallableList(_) | StoragePlan::Owned(
+        StoragePlan::MoveOnlyList(_) | StoragePlan::RetainedGraphList(_) | StoragePlan::RetainedCallableList(_) | StoragePlan::Owned(
             witchy_canonical_source::carrier::CarrierElement::String
             | witchy_canonical_source::carrier::CarrierElement::Bytes
             | witchy_canonical_source::carrier::CarrierElement::List(_)
@@ -188,7 +188,7 @@ pub(crate) fn value_type_matches_source(
         },
         StoragePlan::InlineAggregate(_) | StoragePlan::RootedView(_)
             | StoragePlan::RetainedOwnerList(_) | StoragePlan::RetainedOpaqueAggregateList(_)
-            | StoragePlan::MoveOnlyList(_) | StoragePlan::Refused(_) => false,
+            | StoragePlan::Refused(_) => false,
     }
 }
 
@@ -321,49 +321,6 @@ pub(super) fn match_layout_graph(
     true
 }
 
-/// A plain packed List layout has no authority to erase a nested view or
-/// unique contract, including one hidden in a tuple or nominal field.
-/// Frozen is representation-neutral and remains allowed by the source ABI.
-/// Authenticated owner-list families are checked before this layout path.
-pub(super) fn list_element_needs_owner_carrier(
-    source: &witchy_syntax::ast::Type,
-    records: &ScalarRecordFields,
-) -> bool {
-    use witchy_syntax::ast::{Type, TypeQual};
-    // Keep this judgment iterative and bounded: candidate source and nominal
-    // definitions are untrusted inputs to the SafeWIR authority checker.
-    const MAX_LIST_ELEMENT_SCAN_NODES: usize = 1_024;
-    let mut pending = vec![source];
-    let mut visited_definitions = BTreeSet::new();
-    let mut visited_nodes = 0;
-    while let Some(node) = pending.pop() {
-        visited_nodes += 1;
-        if visited_nodes > MAX_LIST_ELEMENT_SCAN_NODES { return true; }
-        match node {
-            Type::Qualified(TypeQual::Frozen, inner) | Type::Slice(inner) => pending.push(inner),
-            Type::Qualified(..) => return true,
-            Type::Tuple(items) => pending.extend(items),
-            Type::RecordCompose { base, fields } => {
-                pending.push(base);
-                pending.extend(fields.iter().map(|(_, field)| field));
-            }
-            Type::Fn(parameters, result, _, _) => {
-                pending.extend(parameters);
-                pending.push(result);
-            }
-            Type::Named(name, arguments) | Type::Dyn(name, arguments) => {
-                pending.extend(arguments);
-                if visited_definitions.insert(name) {
-                    if let Some(definition) = records.get(name) {
-                        pending.extend(definition.variants.iter().flat_map(|variant| &variant.fields));
-                    }
-                }
-            }
-        }
-    }
-    false
-}
-
 pub(super) fn enqueue_layout_children(
     layout: crate::layout::LayoutId,
     source: &witchy_syntax::ast::Type,
@@ -391,6 +348,11 @@ pub(super) fn enqueue_layout_children(
         }
         return enqueue_record_fields(layout, &shape.fields, shape.tagged, layouts, pending);
     }
+    let list_disposition = if matches!(storage, StoragePlan::MoveOnlyList(_)) {
+        witchy_canonical_source::storage::ListElementDisposition::MoveOnly
+    } else {
+        witchy_canonical_source::storage::ListElementDisposition::Cloneable
+    };
     match storage {
         StoragePlan::Owned(witchy_canonical_source::carrier::CarrierElement::String
             | witchy_canonical_source::carrier::CarrierElement::Bytes) => {
@@ -398,7 +360,8 @@ pub(super) fn enqueue_layout_children(
             layouts.get(*element).is_some_and(|element| matches!(element.kind(), LayoutKind::Scalar(ScalarKind::RawByte)))
         }
         StoragePlan::Owned(witchy_canonical_source::carrier::CarrierElement::List(_))
-            | StoragePlan::RetainedGraphList(_) | StoragePlan::RetainedCallableList(_) => {
+            | StoragePlan::RetainedGraphList(_) | StoragePlan::RetainedCallableList(_)
+            | StoragePlan::MoveOnlyList(_) => {
             let witchy_syntax::ast::Type::Named(_, arguments) = source.unqualified() else { return false };
             let [source_element] = arguments.as_slice() else { return false };
             // Source List values are retained objects. An elided-header list
@@ -406,16 +369,11 @@ pub(super) fn enqueue_layout_children(
             let LayoutKind::PackedList { element, rc: RcHeader::Required } = descriptor.kind() else { return false };
             let element_layout = *element;
             let Some(element) = layouts.get(element_layout) else { return false };
-            // A nested qualifier changes the source carrier. In particular,
-            // List(&Int) uses its authenticated GC owner-list family; a plain
-            // packed List(Int) layout cannot stand in for it. Preserve this
-            // boundary for pointer elements such as String too.
-            if list_element_needs_owner_carrier(source_element, records) {
-                return false;
-            }
+            // The source plan owns the recursive carrier judgment, including
+            // nested views and qualifiers. No parallel syntax scan can grant
+            // a plain packed-list representation here.
             let element_storage = StoragePlan::classify(source_element, records, |_| Some(0));
-            if element_storage.list_element_disposition(source_element)
-                != Some(witchy_canonical_source::storage::ListElementDisposition::Cloneable)
+            if element_storage.list_element_disposition(source_element) != Some(list_disposition)
             { return false; }
             match element_storage {
                 StoragePlan::InlineScalar(kind) => {
@@ -441,6 +399,11 @@ pub(super) fn enqueue_layout_children(
                     return matches!(element.kind(), LayoutKind::RuntimePointerValueSlot {
                         pointee, semantics: PointerSlot::Owned,
                     } if { pending.push((*pointee, plan.source().clone())); true });
+                }
+                StoragePlan::MoveOnlyList(_) => {
+                    return matches!(element.kind(), LayoutKind::RuntimePointerValueSlot {
+                        pointee, semantics: PointerSlot::Owned,
+                    } if { pending.push((*pointee, source_element.clone())); true });
                 }
                 _ => return false,
             }

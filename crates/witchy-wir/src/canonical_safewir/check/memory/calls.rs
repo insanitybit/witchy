@@ -443,6 +443,9 @@ impl<'a> MemoryChecker<'a> {
                             .stored_objects
                             .retain(|(container, _), _| !aliases.contains(container));
                         self.state
+                            .nullable_unique_slots
+                            .retain(|(container, _)| !aliases.contains(container));
+                        self.state
                             .nullable_absent_slots
                             .retain(|(container, _)| !aliases.contains(container));
                         self.state

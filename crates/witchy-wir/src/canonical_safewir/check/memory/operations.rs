@@ -703,17 +703,23 @@ impl<'a> MemoryChecker<'a> {
                 return self.unsupported("Load(take of absent nullable slot)");
             }
             let stored = self.stored_slot_by_identity(key.0, key.1).cloned();
-            if !root.initialized_owned_slots && stored.is_none()
-                && !self.nullable_slot_absent(key.0, key.1)
-            {
-                return self.unsupported("Load(uninitialized nullable take)");
-            }
-            // A complete aggregate proves that the slot was initialized, but
-            // does not prove that its child is still unique. A prior retain or
-            // a control-flow join can erase that proof. Moving the child out
-            // requires the precise recorded ownership fact.
-            let Some(child) = stored else {
+            if !self.nullable_unique_slot_by_identity(key.0, key.1) {
                 return self.unsupported("Load(nullable take without unique child proof)");
+            }
+            let child = if let Some(child) = stored { child } else {
+                // Exact child identities are discarded when a complete
+                // aggregate crosses a join. Every incoming edge still proves
+                // that a present child owns one exclusive RC token.
+                let extent = match self.descriptor(layout)?.size() {
+                    LayoutSize::Fixed(bytes) => Extent::FixedBytes(u64::from(bytes)),
+                    LayoutSize::Dynamic { base, .. } => Extent::HeaderPrefix { minimum_bytes: base },
+                };
+                ObjectState {
+                    identity: destination, owner_generation: 0, layout, extent,
+                    ownership: Ownership::Unique,
+                    allocation_class: Some(AllocationClass::ReferenceCounted),
+                    shared_immutable: false, initialized_owned_slots: true,
+                }
             };
             if !Self::is_managed_storage(&child) || child.ownership != Ownership::Unique {
                 return self.unsupported("Load(nullable take of non-unique child)");
@@ -724,6 +730,7 @@ impl<'a> MemoryChecker<'a> {
             for alias in aliases {
                 self.state.stored_objects.remove(&alias);
             }
+            self.clear_nullable_unique_slot_by_identity(key.0, key.1);
             self.state.nullable_absent_slots.insert(key);
             self.state.objects.insert(destination, child);
             return Ok(());
@@ -769,6 +776,7 @@ impl<'a> MemoryChecker<'a> {
             for alias in aliases {
                 self.state.stored_objects.get_mut(&alias).expect("recorded slot").ownership = Ownership::Shared;
             }
+            self.clear_nullable_unique_slot_by_identity(key.0, key.1);
             self.state.objects.insert(destination, result);
             return Ok(());
         }
@@ -1082,6 +1090,12 @@ impl<'a> MemoryChecker<'a> {
         for absent in absent_aliases {
             self.state.nullable_absent_slots.remove(&absent);
         }
+        if self.nullable_fixed_field(place)?.is_some() {
+            self.clear_nullable_unique_slot_by_identity(key.0, key.1);
+            if transfer == StoreTransfer::MoveUnique {
+                self.state.nullable_unique_slots.insert(key);
+            }
+        }
         self.state.stored_objects.insert(key, stored);
         self.consolidate_fixed_fields(place.object())?;
         Ok(())
@@ -1112,6 +1126,7 @@ impl<'a> MemoryChecker<'a> {
             return self.unsupported("InitNullableOwned(duplicate)");
         }
         self.state.nullable_absent_slots.insert(key);
+        self.state.nullable_unique_slots.insert(key);
         self.consolidate_fixed_fields(place.object())?;
         Ok(())
     }
@@ -1236,10 +1251,7 @@ impl<'a> MemoryChecker<'a> {
         Ok(true)
     }
 
-    /// Once every value-bearing field of a fixed-layout object is initialized,
-    /// the object is complete. Keep precise nullable child facts so a later
-    /// consuming take can prove uniqueness; the summary flag still permits
-    /// ordinary loads and drops after joins erase those precise facts.
+    /// Unit fields have no stored bytes but still require an explicit store.
     pub(super) fn unit_fields_initialized(&self, object: ValueId, layout: crate::layout::LayoutId) -> Result<bool, InitialCheckError> {
         Ok(self.descriptor(layout)?.fields().iter().enumerate().all(|(index, field)| {
             field.kind() != FieldKind::Scalar(ScalarKind::Unit)
@@ -1247,6 +1259,9 @@ impl<'a> MemoryChecker<'a> {
         }))
     }
 
+    /// Summarize a complete fixed aggregate so independently constructed
+    /// children can join. Nullable child uniqueness has its own conditional
+    /// fact and never depends on retaining an exact child identity here.
     pub(super) fn consolidate_fixed_fields(&mut self, object: ValueId) -> Result<(), InitialCheckError> {
         let layout = self.live_object(object)?.layout;
         let pointer_fields = self.fixed_pointer_fields(layout)?;
@@ -1256,21 +1271,8 @@ impl<'a> MemoryChecker<'a> {
         if !self.fixed_value_fields_initialized(object, layout)? {
             return Ok(());
         }
-        let descriptor = self.descriptor(layout)?;
-        let nonnullable_fields = pointer_fields.iter().filter_map(|(index, _)| {
-            let field = descriptor.fields().get(*index as usize)?;
-            let nullable = match field.kind() {
-                FieldKind::Pointer { slot: PointerSlot::OwnedNullable, .. } => true,
-                FieldKind::Inline(slot) => matches!(
-                    self.layouts.get(slot).map(|slot| slot.kind()),
-                    Some(LayoutKind::RuntimePointerValueSlot { semantics: PointerSlot::OwnedNullable, .. })
-                ),
-                _ => false,
-            };
-            (!nullable).then_some(*index)
-        }).collect::<Vec<_>>();
-        for index in nonnullable_fields {
-            self.state.stored_objects.remove(&(object, SlotIdentity::Constant(index)));
+        for (index, _) in pointer_fields.iter() {
+            self.state.stored_objects.remove(&(object, SlotIdentity::Constant(*index)));
         }
         self.state.objects.get_mut(&object).expect("live object exists").initialized_owned_slots = true;
         Ok(())

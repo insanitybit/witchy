@@ -298,6 +298,21 @@ impl<'a> MemoryChecker<'a> {
         })
     }
 
+    pub(super) fn nullable_unique_slot_by_identity(&self, object: ValueId, slot: SlotIdentity) -> bool {
+        self.state.nullable_unique_slots.iter().any(|(container, candidate)| {
+            *candidate == slot && self.same_allocation(object, *container)
+        })
+    }
+
+    pub(super) fn clear_nullable_unique_slot_by_identity(&mut self, object: ValueId, slot: SlotIdentity) {
+        let aliases = self.state.nullable_unique_slots.iter().copied().filter(|(container, candidate)| {
+            *candidate == slot && self.same_allocation(object, *container)
+        }).collect::<Vec<_>>();
+        for alias in aliases {
+            self.state.nullable_unique_slots.remove(&alias);
+        }
+    }
+
     /// Scalar-prefix initialization is dataflow evidence, never implied by a
     /// physical allocation or by the scalar's width.
     pub(super) fn scalar_prefix_initialized(
