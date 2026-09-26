@@ -6871,11 +6871,17 @@ impl FunctionLowerer<'_> {
             return Err(CanonicalLoweringError::UnsupportedExpression("empty match"));
         }
         let scrutinee_type = self.expression_type(scrutinee)?;
-        if StoragePlan::classify(&scrutinee_type, self.definitions, |_| Some(0))
-            .requires_affine_owner_token()
-        {
+        let consuming = StoragePlan::classify(&scrutinee_type, self.definitions, |_| Some(0))
+            .requires_affine_owner_token();
+        if consuming && (!scalar_aggregate_shape(&scrutinee_type, self.definitions)
+            .is_some_and(|shape| shape.tagged)
+            || arms.iter().any(|arm| arm.guard.is_some() || !matches!(
+                &arm.pattern,
+                Pattern::Ctor { args, .. } | Pattern::AnonCtor { args, .. }
+                    if args.iter().all(|argument| matches!(argument, Pattern::Var(_) | Pattern::Wildcard))
+            ))) {
             return Err(CanonicalLoweringError::UnsupportedExpression(
-                "affine aggregate matching requires consuming payload extraction",
+                "affine aggregate match lacks a consuming tagged-pattern proof",
             ));
         }
         let scrutinee = self.lower_expr(scrutinee)?;
@@ -6934,7 +6940,7 @@ impl FunctionLowerer<'_> {
             // another alternative, and a tail body retains one source witness.
             let mut next_block = None;
             let (pattern_bindings, _) = self.lower_pattern_decision(
-                scrutinee, &arm.pattern, &scrutinee_type, &mut next_block,
+                scrutinee, &arm.pattern, &scrutinee_type, &mut next_block, consuming,
             )?;
             let mut retry_blocks = next_block.into_iter().collect::<Vec<_>>();
             let shadowed_outer = pattern_bindings.iter()
@@ -7297,10 +7303,86 @@ impl FunctionLowerer<'_> {
         pattern: &Pattern,
         scrutinee_type: &Type,
         failure: &mut Option<BlockId>,
+        consuming: bool,
     ) -> Result<(Vec<(String, ValueId)>, bool), CanonicalLoweringError> {
         let condition = self.match_pattern_condition(scrutinee, pattern, scrutinee_type)?;
         let refutable = self.branch_pattern_condition(condition, failure)?;
-        Ok((self.lower_match_pattern(scrutinee, pattern, scrutinee_type)?, refutable))
+        let bindings = if consuming {
+            self.lower_consuming_tagged_pattern(scrutinee, pattern, scrutinee_type)?
+        } else {
+            self.lower_match_pattern(scrutinee, pattern, scrutinee_type)?
+        };
+        Ok((bindings, refutable))
+    }
+
+    /// The successful tag arm owns this shell. Move affine fields out of
+    /// nullable slots, clear those slots, then retire the empty shell before
+    /// the arm body can consume its bindings. Other fields remain ordinary
+    /// value reads and are released with the shell.
+    fn lower_consuming_tagged_pattern(
+        &mut self,
+        scrutinee: ValueId,
+        pattern: &Pattern,
+        source: &Type,
+    ) -> Result<Vec<(String, ValueId)>, CanonicalLoweringError> {
+        let shape = scalar_aggregate_shape(source, self.definitions)
+            .filter(|shape| shape.tagged)
+            .ok_or(CanonicalLoweringError::UnsupportedExpression("consuming tagged shape"))?;
+        let (Pattern::Ctor { name, args } | Pattern::AnonCtor { tag: name, args }) = pattern else {
+            return Err(CanonicalLoweringError::UnsupportedExpression("consuming tagged pattern"));
+        };
+        let (variant_index, variant) = shape.variant(name)
+            .ok_or_else(|| CanonicalLoweringError::MissingBinding(name.clone()))?;
+        if args.len() != variant.arity || !matches!(self.values[&scrutinee], ValueType::Ref(_)) {
+            return Err(CanonicalLoweringError::UnsupportedExpression("consuming tagged payload"));
+        }
+        let mut bindings = Vec::new();
+        for (offset, argument) in args.iter().enumerate() {
+            let slot = variant.first_field + offset;
+            let field = &shape.fields[slot];
+            let affine = StoragePlan::classify(field, self.definitions, |_| Some(0))
+                .requires_affine_owner_token();
+            let Pattern::Var(name) = argument else {
+                if affine || !matches!(argument, Pattern::Wildcard) {
+                    return Err(CanonicalLoweringError::UnsupportedExpression("unbound affine payload"));
+                }
+                continue;
+            };
+            if name == "_" {
+                if affine {
+                    return Err(CanonicalLoweringError::UnsupportedExpression("discarded affine payload"));
+                }
+                continue;
+            }
+            let value_type = self.field_value_type(field)?;
+            let value = if affine {
+                let slot = u32::try_from(slot).map_err(|_| CanonicalLoweringError::IdOverflow)?;
+                if !matches!(value_type, ValueType::Ref(_))
+                    || !self.is_nullable_record_field(scrutinee, slot)
+                {
+                    return Err(CanonicalLoweringError::UnsupportedExpression("affine payload lacks nullable owned slot"));
+                }
+                let value = self.fresh(value_type)?;
+                self.push_operation(Operation::Load {
+                    destination: value,
+                    place: witchy_wir::canonical_safewir::Place::projected(
+                        scrutinee, Projection::Field { index: slot }, value_type, AccessMode::Read,
+                    ),
+                    transfer: witchy_wir::canonical_safewir::LoadTransfer::MoveUnique,
+                });
+                self.push_operation(Operation::InitNullableOwned {
+                    place: witchy_wir::canonical_safewir::Place::projected(
+                        scrutinee, Projection::Field { index: slot }, value_type, AccessMode::Write,
+                    ),
+                });
+                value
+            } else {
+                self.load_source_aggregate_field(scrutinee, source, variant_index, offset, slot, value_type)?
+            };
+            bindings.push((name.clone(), value));
+        }
+        self.push_operation(Operation::DropRef { object: scrutinee });
+        Ok(bindings)
     }
 
     fn lower_or_pattern_decision(
@@ -13355,7 +13437,10 @@ impl FunctionLowerer<'_> {
         if self.values[&value] != element_type {
             return Err(CanonicalLoweringError::UnsupportedListElement(list_type.clone()));
         }
-        if move_only && !matches!(value_expression, Expr::Unary { op: UnOp::Move, .. }) {
+        if move_only
+            && !matches!(value_expression, Expr::Unary { op: UnOp::Move, .. })
+            && !self.owned_parameters.contains(&value)
+        {
             return Err(CanonicalLoweringError::UnsupportedExpression(
                 "move-only list append requires an explicit element transfer",
             ));

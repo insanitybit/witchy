@@ -9449,9 +9449,26 @@ impl Checker {
         if self.ty_carries_must_consume(&st) {
             self.reject_implicit_must_copy(scrutinee, "match scrutinee")?;
             if self.expression_introduces_must_obligation(scrutinee, &st) {
-                return terr(
-                    "matching would erase a must-consume obligation; transfer the value to an `own` operation before inspecting it",
-                );
+                let consuming_tagged_match = ty_to_ast(&self.resolve(&st)).is_some_and(|source| {
+                    witchy_canonical_source::storage::StoragePlan::classify(
+                        &source, &self.canonical_definitions, |_| Some(0),
+                    ).requires_affine_owner_token()
+                        && witchy_canonical_source::aggregates::scalar_aggregate_shape(
+                            &source, &self.canonical_definitions,
+                        ).is_some_and(|shape| shape.tagged)
+                }) && matches!(scrutinee,
+                    Expr::Call { .. } | Expr::Ctor { .. } | Expr::AnonCtor { .. }
+                        | Expr::Unary { op: UnOp::Move, .. })
+                    && arms.iter().all(|arm| arm.guard.is_none() && matches!(
+                        &arm.pattern,
+                        Pattern::Ctor { args, .. } | Pattern::AnonCtor { args, .. }
+                            if args.iter().all(|argument| matches!(argument, Pattern::Var(_) | Pattern::Wildcard))
+                    ));
+                if !consuming_tagged_match {
+                    return terr(
+                        "matching would erase a must-consume obligation; transfer the value to an `own` operation before inspecting it",
+                    );
+                }
             }
         }
         let mut result = expected.cloned();

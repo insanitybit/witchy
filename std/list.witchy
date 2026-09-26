@@ -49,6 +49,12 @@ pub fn push(var xs: List(a), x: a):
     xs = list.__push(xs, x)
     return
 
+// Transfer an affine element into the list through the same checked append
+// operation. Copyable callers can use `push` without moving their binding.
+pub fn push_owned(var xs: List(a), own x: a):
+    list.push(xs, x)
+    return
+
 // A new list that is `xs` followed by `ys`.
 pub fn concat(xs: List(a), ys: List(a)) -> List(a):
     list.concat(xs, ys)
