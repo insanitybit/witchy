@@ -62,6 +62,32 @@ is needed for soundness.
 
 ## Exact-tip evidence checkpoint
 
+Lazy-operand disposition (bounded repair, 2026-09-26): `&&`, `||`, and `??`
+now join the skipped edge with the completing RHS edge using the same ownership
+dataflow as conditional expressions. A conditional transfer cannot discharge a
+resource on the skipped edge; a possible transfer or once invocation cannot be
+repeated afterward. Returning RHS paths do not consume the surviving skipped
+continuation's owner. `lazy_operand_ownership` checks these refusals and positive
+controls in normal/opt source and across opt module boundaries. The analysis
+remains conservative about constant left operands, not a full reachability proof.
+The separate `rfc0167_lazy_operand_ownership` witness independently expects the
+ordered effects `7`, `8`, `9`, then result `24`: unselected RHS constructions
+and effects must not run, while LHS disposition always runs. Source acceptance,
+admitted unoptimized execution, and zero canonical heap leaks are checked
+separately; this bounded witness closes no broad acceptance row.
+
+Stored callable invocation (bounded repair, 2026-09-26): local-name and expression
+invocation in opt bodies now require actual checked callable provenance, including
+after extraction from opt-defined records. Normal construction cannot authenticate
+its stored callback by nominal type identity. The existing typed stored-proof
+walk projects tuple fields recursively, preserving unknown leaves rather than
+inventing provenance. `opt_stored_callback_invocation` checks unknown alias/direct
+refusals and authenticated tuple/branch/returned controls. The native companion
+`rfc0167_stored_callback_invocation` produces the independent result `168` on
+admitted unoptimized Wasm with zero canonical heap leaks. This does not establish
+arbitrary callback-holder formal transport, task producer correspondence, or a
+complete row I/J/K contract.
+
 Rows E/H/I/P nested child preparation (representative evidence, 2026-09-26):
 `rfc0167_nested_mode_preparation` places one ordinary List child into two
 outer slots, retains the old outer snapshot, and mutates only the first child.

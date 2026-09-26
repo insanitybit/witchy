@@ -436,6 +436,12 @@ evaluates its condition before the selected branch, and `match`/`if let` evaluat
 their scrutinee before selection. Assignment captures destination coordinates,
 then evaluates the right-hand side, then stores.
 
+Ownership follows the same conditional evaluation: a resource consumed only in
+the right operand of `&&`, `||`, or `??` remains owed on the skipped path. A
+possible transfer or once-callable invocation cannot be repeated after the
+expression. The checker currently joins both paths conservatively, even for a
+constant left operand; move unconditional disposition outside the lazy operand.
+
 A `var` argument captures and reads its place at its argument position. Its
 write-back commits after the callee returns and before the call yields its ordinary
 result. Earlier `var` arguments remain reserved until that commit: later arguments

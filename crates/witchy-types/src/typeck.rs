@@ -9023,7 +9023,23 @@ impl Checker {
     fn infer_binary(&mut self, op: ast::BinOp, lhs: &Expr, rhs: &Expr) -> Result<Ty, TypeError> {
         use ast::BinOp::*;
         let lt = self.infer(lhs)?;
+        // The left operand always runs. A lazy right operand has an additional
+        // skipped edge: consuming a resource there cannot discharge the owner
+        // on that edge. Reuse the ordinary conditional ownership join.
+        let lazy_entry = matches!(op, And | Or | Coalesce).then(|| (
+            self.consumed.clone(), self.must_live.clone(), self.once_invoked.clone(),
+        ));
         let rt = self.infer(rhs)?;
+        if let Some((consumed, must_live, once_invoked)) = lazy_entry {
+            let branches = [
+                (true, consumed, must_live, once_invoked),
+                (expr_can_complete(rhs), std::mem::take(&mut self.consumed),
+                    std::mem::take(&mut self.must_live), std::mem::take(&mut self.once_invoked)),
+            ];
+            (self.consumed, self.must_live, self.once_invoked) = join_reachable_binding_facts(
+                &branches[0].1, &branches[0].2, &branches[0].3, &branches,
+            );
+        }
         match op {
             Add | Sub | Mul | Div => {
                 let lr = self.resolve(&lt);

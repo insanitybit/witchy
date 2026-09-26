@@ -37,6 +37,8 @@ mod rfc0165_build_env_project;
 
 #[path = "misc/examples_index.rs"]
 mod examples_index;
+#[path = "misc/rfc0167_lazy_operand_ownership.rs"]
+mod rfc0167_lazy_operand_ownership;
 #[path = "misc/fmt_cli.rs"]
 mod fmt_cli;
 #[path = "misc/http_url_fallible.rs"]

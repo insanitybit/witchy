@@ -2191,3 +2191,5 @@ mod view_witnesses;
 mod vm_service;
 #[path = "typeck/vm_worker_isolation.rs"]
 mod vm_worker_isolation;
+#[path = "typeck/lazy_operand_ownership.rs"]
+mod lazy_operand_ownership;
