@@ -85,6 +85,100 @@ pub struct StoredObligationCatalog {
     pub must_types: BTreeSet<String>,
 }
 
+/// This spelling cannot occur in source (the lexer reserves `@`). The checker
+/// uses it only while asking whether an unresolved generic could make a pure
+/// closure capture unsafe; it is a refusal, never an authority grant.
+pub const PURE_CAPTURE_UNKNOWN: &str = "@unresolved-pure-capture";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PureCaptureHazard {
+    Capability(crate::capabilities::CapabilityKind),
+    DeclaredCapability,
+    OrdinaryCallable,
+    Existential,
+    UnresolvedGeneric,
+    UnprovedStorage,
+}
+
+/// Classify a pure closure's actual stored capture through the same checked
+/// child relation used for ownership. Callable signatures and phantom type
+/// arguments cannot grant or revoke the captured value's effect contract.
+pub fn pure_capture_hazard(
+    ty: &Type,
+    definitions: &BTreeMap<String, TypeDef>,
+    catalog: &StoredObligationCatalog,
+) -> Option<PureCaptureHazard> {
+    fn walk(
+        ty: &Type,
+        definitions: &BTreeMap<String, TypeDef>,
+        catalog: &StoredObligationCatalog,
+        active: &mut BTreeSet<String>,
+        remaining: &mut usize,
+    ) -> Option<PureCaptureHazard> {
+        if *remaining == 0 { return Some(PureCaptureHazard::UnprovedStorage); }
+        *remaining -= 1;
+        match ty {
+            Type::Qualified(_, inner) | Type::Slice(inner) =>
+                walk(inner, definitions, catalog, active, remaining),
+            Type::Fn(_, _, _, qualifiers) => (!qualifiers.pure)
+                .then_some(PureCaptureHazard::OrdinaryCallable),
+            Type::Dyn(..) => Some(PureCaptureHazard::Existential),
+            Type::Tuple(fields) => fields.iter().find_map(|field|
+                walk(field, definitions, catalog, active, remaining)),
+            Type::RecordCompose { .. } => Some(PureCaptureHazard::UnprovedStorage),
+            Type::Named(name, arguments) => {
+                if name == PURE_CAPTURE_UNKNOWN {
+                    return Some(PureCaptureHazard::UnresolvedGeneric);
+                }
+                if definitions.get(name).is_some_and(|definition| definition.is_capability) {
+                    return Some(PureCaptureHazard::DeclaredCapability);
+                }
+                if let Some(representation) = crate::capabilities::representation(ty, definitions) {
+                    let kind = match representation {
+                        crate::capabilities::CapabilityRepresentation::Direct(kind)
+                        | crate::capabilities::CapabilityRepresentation::Nullable(kind) => kind,
+                    };
+                    return Some(PureCaptureHazard::Capability(kind));
+                }
+                if let Some(mask) = catalog_mask(name, &catalog.stored_parameters, definitions) {
+                    if mask.len() != arguments.len() {
+                        return Some(PureCaptureHazard::UnprovedStorage);
+                    }
+                } else if definitions.contains_key(name) {
+                    return Some(PureCaptureHazard::UnprovedStorage);
+                }
+                let stored_shape = match stored_children(ty, definitions) {
+                    Ok(shape) => shape,
+                    Err(()) => return Some(PureCaptureHazard::UnprovedStorage),
+                };
+                for child in stored_arguments_for_catalog(ty, &catalog.stored_parameters, definitions) {
+                    if let Some(hazard) = walk(&child, definitions, catalog, active, remaining) {
+                        return Some(hazard);
+                    }
+                }
+                // Recursive generic heads may transform their argument on
+                // every trip. Inspect stored argument positions first, then
+                // stop revisiting the declaration's field graph by name.
+                if !active.insert(name.clone()) { return None; }
+                let children = match stored_shape {
+                    Some(children) => children.into_types(),
+                    None if definitions.contains_key(name) => Vec::new(),
+                    None if !matches!(StoragePlan::classify(ty, definitions, |_| Some(0)), StoragePlan::Refused(_)) => Vec::new(),
+                    _ => return Some(PureCaptureHazard::UnprovedStorage),
+                };
+                for child in children {
+                    if let Some(hazard) = walk(&child, definitions, catalog, active, remaining) {
+                        return Some(hazard);
+                    }
+                }
+                active.remove(name);
+                None
+            }
+        }
+    }
+    walk(ty, definitions, catalog, &mut BTreeSet::new(), &mut 4_096)
+}
+
 impl StoredObligationCatalog {
     /// Whether this concrete checked type carries a must-consume value in
     /// stored fields. Callable signatures and phantom arguments are excluded

@@ -124,15 +124,6 @@ enum Uncomparable {
     Existential,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum PureCaptureHazard {
-    Capability(&'static str),
-    DeclaredCapability,
-    OrdinaryCallable,
-    Existential,
-    UnresolvedGeneric,
-}
-
 // `uncomparable_kind` is a `Checker` method (it must consult the record/enum type
 // tables to reach fn/capability FIELDS, not just generic arguments — BUG-302).
 
@@ -1091,153 +1082,29 @@ impl Checker {
         go(self, t, &mut HashSet::new())
     }
 
-    /// Classify values captured into a closure whose construction or invocation
-    /// must preserve a `pure` promise. Unlike the general capability firewall,
-    /// callable signatures are opaque here: a function value does not own its
-    /// parameter or result types. Its own qualifier is the complete contract.
-    fn pure_capture_hazard(&self, ty: &Ty) -> Option<PureCaptureHazard> {
-        fn direct_capability(ty: &Ty) -> Option<&'static str> {
-            Some(match ty {
-                Ty::Console(_) => "Console",
-                Ty::Clock => "Clock",
-                Ty::Rand => "Rand",
-                Ty::Env => "Env",
-                Ty::Secret(_) => "Secret",
-                Ty::Exec => "Exec",
-                Ty::Fetch => "Fetch",
-                Ty::Dir(_) => "Dir",
-                Ty::File(_) => "File",
-                Ty::Net(_) => "Net",
-                Ty::Socket => "Socket",
-                Ty::Listener => "Listener",
-                Ty::BuildOut => "BuildOut",
-                Ty::BuildRead => "BuildRead",
-                Ty::BuildEnv => "BuildEnv",
-                Ty::BuildNet => "BuildNet",
-                Ty::BuildExec => "BuildExec",
-                Ty::Named(name, _) if **name == *"SecretStore" => "SecretStore",
-                _ => return None,
-            })
-        }
-
-        fn go(
-            checker: &Checker,
-            ty: &Ty,
-            visiting: &mut HashSet<String>,
-        ) -> Option<PureCaptureHazard> {
-            let resolved = checker.resolve(ty);
-            if let Some(capability) = direct_capability(&resolved) {
-                return Some(PureCaptureHazard::Capability(capability));
-            }
-            match resolved {
-                Ty::Fn(_, _, _, _, qualifiers) => (!qualifiers.pure)
-                    .then_some(PureCaptureHazard::OrdinaryCallable),
-                Ty::Dyn(_, _) => Some(PureCaptureHazard::Existential),
-                Ty::Var(_) => Some(PureCaptureHazard::UnresolvedGeneric),
-                Ty::List(item) => go(checker, &item, visiting),
-                Ty::View(payload) => go(checker, &payload, visiting),
-                Ty::Tuple(items) => items.iter().find_map(|item| go(checker, item, visiting)),
-                Ty::Named(name, arguments) => {
-                    if checker.capability_types.contains(name.as_ref()) {
-                        return Some(PureCaptureHazard::DeclaredCapability);
-                    }
-                    if let Some(capability) = checker.transparent_externref_brands.get(name.as_ref()) {
-                        return externref_cap_name(capability)
-                            .map(PureCaptureHazard::Capability);
-                    }
-
-                    // Check arguments known to occupy owning storage before
-                    // the recursion guard. A recursive generic may transform
-                    // its argument (`Grow(a)` -> `Grow(List(a))`), so guarding
-                    // on exact instantiations would never converge. The owning
-                    // position fixpoint tells us which arguments can actually
-                    // enter the value; callable-only positions stay opaque.
-                    let argument_hazard = match checker.stored_obligations.stored_parameters.get(name.as_ref()) {
-                        Some(stored) => stored
-                            .iter()
-                            .zip(arguments.iter())
-                            .find_map(|(stored, argument)| {
-                                if *stored {
-                                    go(checker, argument, visiting)
-                                } else {
-                                    None
-                                }
-                            }),
-                        None => arguments
-                            .iter()
-                            .find_map(|argument| go(checker, argument, visiting)),
-                    };
-                    if argument_hazard.is_some() {
-                        return argument_hazard;
-                    }
-                    if !visiting.insert(name.to_string()) {
-                        return None;
-                    }
-
-                    if let Some((parameters, fields)) = checker.record_fields.get(name.as_ref()) {
-                        let substitution = parameters
-                            .iter()
-                            .copied()
-                            .zip(arguments.iter().cloned())
-                            .collect::<HashMap<_, _>>();
-                        for (_, field) in fields {
-                            let field = checker.subst_vars(field, &substitution);
-                            if let Some(hazard) = go(checker, &field, visiting) {
-                                visiting.remove(name.as_ref());
-                                return Some(hazard);
-                            }
-                        }
-                    }
-                    if let Some(variants) = checker.adt_variants.get(name.as_ref()) {
-                        for variant in variants {
-                            let Some((payloads, result)) = checker.ctor_sigs.get(variant) else {
-                                continue;
-                            };
-                            let result_arguments = match checker.resolve(result) {
-                                Ty::Named(_, result_arguments) => result_arguments,
-                                _ => Vec::new().into(),
-                            };
-                            let substitution = result_arguments
-                                .iter()
-                                .zip(arguments.iter())
-                                .filter_map(|(parameter, argument)| match parameter {
-                                    Ty::Var(id) => Some((*id, argument.clone())),
-                                    _ => None,
-                                })
-                                .collect::<HashMap<_, _>>();
-                            for payload in payloads {
-                                let payload = checker.subst_vars(payload, &substitution);
-                                if let Some(hazard) = go(checker, &payload, visiting) {
-                                    visiting.remove(name.as_ref());
-                                    return Some(hazard);
-                                }
-                            }
-                        }
-                    }
-
-                    visiting.remove(name.as_ref());
-                    None
-                }
-                Ty::Int | Ty::Float | Ty::Duration | Ty::String | Ty::Bytes | Ty::Msg
-                | Ty::Bool | Ty::Unit => None,
-                // Direct capabilities were handled above.
-                Ty::Console(_) | Ty::Clock | Ty::Rand | Ty::Env | Ty::Secret(_)
-                | Ty::Exec | Ty::Fetch | Ty::Dir(_) | Ty::File(_) | Ty::Net(_)
-                | Ty::Socket | Ty::Listener | Ty::BuildOut | Ty::BuildRead
-                | Ty::BuildEnv | Ty::BuildNet | Ty::BuildExec => None,
-            }
-        }
-
-        go(self, ty, &mut HashSet::new())
+    /// Ask the shared checked-storage judgment about the actual captured
+    /// value. A free inference variable becomes an explicit refusal marker;
+    /// callable signatures and phantom arguments remain outside storage.
+    fn pure_capture_hazard(
+        &self, ty: &Ty,
+    ) -> Option<witchy_canonical_source::storage::PureCaptureHazard> {
+        use witchy_canonical_source::storage::{PureCaptureHazard, pure_capture_hazard};
+        let source = ty_to_ast_with_unresolved(
+            &self.resolve(ty), UnresolvedAst::UnknownPureCapture,
+        );
+        source.map_or(Some(PureCaptureHazard::UnprovedStorage), |source| {
+            pure_capture_hazard(&source, &self.canonical_definitions, &self.stored_obligations)
+        })
     }
 
     fn reject_pure_capture(&self, capture: &str, ty: &Ty) -> Result<(), TypeError> {
+        use witchy_canonical_source::storage::PureCaptureHazard;
         let Some(hazard) = self.pure_capture_hazard(ty) else {
             return Ok(());
         };
         let reason = match hazard {
             PureCaptureHazard::Capability(capability) => {
-                format!("it carries capability `{capability}`")
+                format!("it carries capability `{capability:?}`")
             }
             PureCaptureHazard::DeclaredCapability => {
                 "its nominal type is declared as a capability".to_string()
@@ -1251,6 +1118,9 @@ impl Checker {
             }
             PureCaptureHazard::UnresolvedGeneric => {
                 "its generic type may store authority or an ordinary callable".to_string()
+            }
+            PureCaptureHazard::UnprovedStorage => {
+                "its stored fields have no complete pure-capture proof".to_string()
             }
         };
         terr(format!(
@@ -2202,7 +2072,7 @@ impl Checker {
         // nominal are still inspected by the shared stored-child judgment.
         // The memo is keyed by the resolved type and is invalidated as
         // inference binds variables. Failed stored-child proofs remain affine.
-        let answer = ty_to_ast_with_unresolved(&resolved, true).map_or(true, |source| {
+        let answer = ty_to_ast_with_unresolved(&resolved, UnresolvedAst::NeutralStorage).map_or(true, |source| {
             witchy_canonical_source::storage::contains_unique_storage(
                 &source, &self.canonical_definitions,
             ).unwrap_or(true)
@@ -11913,10 +11783,13 @@ impl TypedModule {
 /// backends' type-directed machinery (eq/to_string shapes, valtypes)
 /// consumes. None where no surface form exists (free variables).
 pub fn ty_to_ast(t: &Ty) -> Option<witchy_syntax::ast::Type> {
-    ty_to_ast_with_unresolved(t, false)
+    ty_to_ast_with_unresolved(t, UnresolvedAst::Absent)
 }
 
-fn ty_to_ast_with_unresolved(t: &Ty, unresolved_as_unit: bool) -> Option<witchy_syntax::ast::Type> {
+#[derive(Clone, Copy)]
+enum UnresolvedAst { Absent, NeutralStorage, UnknownPureCapture }
+
+fn ty_to_ast_with_unresolved(t: &Ty, unresolved: UnresolvedAst) -> Option<witchy_syntax::ast::Type> {
     use witchy_syntax::ast::Type as T;
     let marker = |name: &str| T::Named(name.to_string(), Vec::new());
     Some(match t {
@@ -12032,31 +11905,36 @@ fn ty_to_ast_with_unresolved(t: &Ty, unresolved_as_unit: bool) -> Option<witchy_
         Ty::BuildEnv => T::Named("BuildEnv".into(), Vec::new()),
         Ty::BuildNet => T::Named("BuildNet".into(), Vec::new()),
         Ty::BuildExec => T::Named("BuildExec".into(), Vec::new()),
-        Ty::List(e) => T::Named("List".into(), vec![ty_to_ast_with_unresolved(e, unresolved_as_unit)?]),
+        Ty::List(e) => T::Named("List".into(), vec![ty_to_ast_with_unresolved(e, unresolved)?]),
         Ty::View(payload) => T::Qualified(
             witchy_syntax::ast::TypeQual::View,
-            Box::new(ty_to_ast_with_unresolved(payload, unresolved_as_unit)?),
+            Box::new(ty_to_ast_with_unresolved(payload, unresolved)?),
         ),
         Ty::Tuple(ts) => {
-            T::Tuple(ts.iter().map(|ty| ty_to_ast_with_unresolved(ty, unresolved_as_unit)).collect::<Option<Vec<_>>>()?)
+            T::Tuple(ts.iter().map(|ty| ty_to_ast_with_unresolved(ty, unresolved)).collect::<Option<Vec<_>>>()?)
         }
         Ty::Named(n, args) => T::Named(
             n.to_string(),
-            args.iter().map(|ty| ty_to_ast_with_unresolved(ty, unresolved_as_unit)).collect::<Option<Vec<_>>>()?,
+            args.iter().map(|ty| ty_to_ast_with_unresolved(ty, unresolved)).collect::<Option<Vec<_>>>()?,
         ),
         // (RFC-0081) The existential surface form: `dyn Render(args…)`.
         Ty::Dyn(n, args) => T::Dyn(
             n.to_string(),
-            args.iter().map(|ty| ty_to_ast_with_unresolved(ty, unresolved_as_unit)).collect::<Option<Vec<_>>>()?,
+            args.iter().map(|ty| ty_to_ast_with_unresolved(ty, unresolved)).collect::<Option<Vec<_>>>()?,
         ),
         Ty::Fn(params, ret, conventions, _, qualifiers) => T::Fn(
-            params.iter().map(|ty| ty_to_ast_with_unresolved(ty, unresolved_as_unit)).collect::<Option<Vec<_>>>()?,
-            Box::new(ty_to_ast_with_unresolved(ret, unresolved_as_unit)?),
+            params.iter().map(|ty| ty_to_ast_with_unresolved(ty, unresolved)).collect::<Option<Vec<_>>>()?,
+            Box::new(ty_to_ast_with_unresolved(ret, unresolved)?),
             conventions.to_vec(),
             *qualifiers,
         ),
-        Ty::Var(_) if unresolved_as_unit => T::Tuple(Vec::new()),
-        Ty::Var(_) => return None,
+        Ty::Var(_) => match unresolved {
+            UnresolvedAst::Absent => return None,
+            UnresolvedAst::NeutralStorage => T::Tuple(Vec::new()),
+            UnresolvedAst::UnknownPureCapture => T::Named(
+                witchy_canonical_source::storage::PURE_CAPTURE_UNKNOWN.into(), Vec::new(),
+            ),
+        },
     })
 }
 
@@ -12419,16 +12297,6 @@ fn run_check_selected(
         callable_opt_provenance: vec![HashMap::new()],
         container_opt_provenance: vec![HashMap::new()],
         sealed_types: HashSet::new(),
-        capability_types: module
-            .items
-            .iter()
-            .filter_map(|item| {
-                let Item::Type(definition) = item else {
-                    return None;
-                };
-                definition.is_capability.then(|| definition.name.clone())
-            })
-            .collect(),
         construction_sealed_types: HashSet::new(),
         transparent_externref_brands: HashMap::new(),
         gc_cap_aggregates: HashSet::new(),

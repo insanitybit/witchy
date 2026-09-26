@@ -1227,6 +1227,17 @@ storage and resource-composition cases pass; an adversarial review checked the
 authority boundary. Admitted unoptimized Wasm and zero-leak evidence remain
 pending; no A–O row closes.
 
+Pure closure capture storage (implemented but unverified, 2026-09-26):
+the checker now asks one canonical-source stored-child judgment whether a
+captured value carries capability authority, an ordinary callable, existential
+behavior, or an unresolved stored generic. The separate checker recursion over
+record fields, sum constructors, and type arguments, together with its local
+capability-name table, is removed. The shared catalog excludes phantom type
+arguments and callable signatures, validates arity before recursive cycle
+handling, and refuses malformed or bounded proofs. Existing pure-capture cases
+pass and the authority change received adversarial review. Admitted Wasm and
+zero-leak evidence remain pending; no A–O row closes.
+
 Row G declaration-backed sum shapes (implemented but unverified,
 2026-09-26): the shared aggregate field guard, concrete identity, scalar
 shape builder, and owned-carrier entry now derive `Option` and `Result` arity,

@@ -174,10 +174,6 @@ pub(super) struct Checker {
     /// carried capability is `match`, which the linker confines to the home
     /// module — otherwise an alias would leak the underlying authority.
     pub(super) sealed_types: HashSet<String>,
-    /// Every source nominal declared with `capability`, including bare,
-    /// positional, and unsealed forms whose payload fields alone do not reveal
-    /// that the nominal value is authority-bearing.
-    pub(super) capability_types: HashSet<String>,
     /// Every `sealed type` and `capability` record. Rebuilding one through a
     /// record update is construction, so it is legal only while checking a
     /// function in the type's defining module.
