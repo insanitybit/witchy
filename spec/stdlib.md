@@ -2691,21 +2691,21 @@ Source spans are compiler-owned metadata. The constructor is sealed so user code
 
 #### `sealed type TypeSyntax`
 
-Hole-free `quote type:` values retain a compiler-owned type AST. The internal constructor carries an opaque handle and display source. Builders resolve the handle to its checked type AST.
+Hole-free `quote type:` values retain a compiler-owned type AST. The internal constructor carries an opaque handle. Builders resolve the handle to its checked type AST.
 
-- `CompilerTypeSyntax(String, String)`
+- `CompilerTypeSyntax(String)`
 
 #### `sealed type ExprSyntax`
 
 Hole-free `quote expr:` values retain a compiler-owned expression AST.
 
-- `CompilerExprSyntax(String, String)`
+- `CompilerExprSyntax(String)`
 
 #### `sealed type PatternSyntax`
 
 Hole-free `quote pattern:` values retain compiler-owned pattern AST. Existing builders compose the checked pattern AST through its opaque handle.
 
-- `CompilerPatternSyntax(String, String)`
+- `CompilerPatternSyntax(String)`
 
 #### `sealed type SyntaxHole`
 
@@ -2717,21 +2717,21 @@ Hole-free `quote pattern:` values retain compiler-owned pattern AST. Existing bu
 
 Hole-free `quote stmt:` values retain compiler-owned statement AST.
 
-- `CompilerStmtSyntax(String, String)`
+- `CompilerStmtSyntax(String)`
 
 #### `sealed type BlockSyntax`
 
 Hole-free `quote block:` values retain compiler-owned block AST.
 
-- `CompilerBlockSyntax(String, String)`
+- `CompilerBlockSyntax(String)`
 
 #### `sealed type MatchArmSyntax`
 
-- `CompilerMatchArmSyntax(String, String)`
+- `CompilerMatchArmSyntax(String)`
 
 #### `sealed type ParamSyntax`
 
-- `CompilerParamSyntax(String, String)`
+- `CompilerParamSyntax(String)`
 
 #### `sealed type Ident`
 

@@ -99,7 +99,7 @@ pub(super) fn compiler_expr_syntax_value(
         return err("meta.expr_call expected ExprSyntax values");
     };
     match (tail(name), fields.as_slice()) {
-        ("CompilerExprSyntax", [Value::Str(handle), Value::Str(_source)]) => compiler_expr_syntax
+        ("CompilerExprSyntax", [Value::Str(handle)]) => compiler_expr_syntax
             .get(handle.as_str())
             .cloned()
             .ok_or_else(|| RuntimeError {
@@ -129,7 +129,7 @@ pub(super) fn compiler_owned_expr_syntax_value(
         return err(format!("{operation} expects compiler-owned ExprSyntax holes"));
     };
     match (tail(name), fields.as_slice()) {
-        ("CompilerExprSyntax", [Value::Str(handle), Value::Str(_source)]) => compiler_expr_syntax
+        ("CompilerExprSyntax", [Value::Str(handle)]) => compiler_expr_syntax
             .get(handle.as_str())
             .cloned()
             .ok_or_else(|| RuntimeError {
@@ -152,7 +152,7 @@ pub(super) fn compiler_type_syntax_value(
         return err("meta.stmt_let expected TypeSyntax");
     };
     match (tail(name), fields.as_slice()) {
-        ("CompilerTypeSyntax", [Value::Str(handle), Value::Str(_source)]) => {
+        ("CompilerTypeSyntax", [Value::Str(handle)]) => {
             compiler_type_syntax.get(handle.as_str()).cloned().ok_or_else(|| RuntimeError {
                 message: "CompilerTypeSyntax carried an invalid syntax handle".into(),
             })
@@ -228,7 +228,7 @@ pub(super) fn compiler_stmt_syntax_value(
         return err("meta.block expected StmtSyntax values");
     };
     match (tail(name), fields.as_slice()) {
-        ("CompilerStmtSyntax", [Value::Str(handle), Value::Str(_source)]) => {
+        ("CompilerStmtSyntax", [Value::Str(handle)]) => {
             compiler_stmt_syntax.get(handle.as_str()).cloned().ok_or_else(|| RuntimeError {
                 message: "CompilerStmtSyntax carried an invalid syntax handle".into(),
             })
@@ -327,7 +327,7 @@ pub(super) fn compiler_pattern_syntax_value(
         return err("meta.match_arm expected PatternSyntax");
     };
     match (tail(name), fields.as_slice()) {
-        ("CompilerPatternSyntax", [Value::Str(handle), Value::Str(_source)]) => {
+        ("CompilerPatternSyntax", [Value::Str(handle)]) => {
             compiler_pattern_syntax.get(handle.as_str()).cloned().ok_or_else(|| RuntimeError {
                 message: "CompilerPatternSyntax carried an invalid syntax handle".into(),
             })
@@ -352,7 +352,7 @@ pub(super) fn compiler_match_arms(
         .map(|arm| match arm {
             Value::Ctor { name, fields }
                 if tail(name) == "CompilerMatchArmSyntax"
-                    && matches!(fields.as_slice(), [Value::Str(_), Value::Str(_)]) =>
+                    && matches!(fields.as_slice(), [Value::Str(_)]) =>
             {
                 let Value::Str(handle) = &fields[0] else { unreachable!() };
                 compiler_match_arm_syntax.get(handle.as_str()).cloned().ok_or_else(|| {
@@ -382,7 +382,7 @@ pub(super) fn compiler_params(
         .map(|param| match param {
             Value::Ctor { name, fields }
                 if tail(name) == "CompilerParamSyntax"
-                    && matches!(fields.as_slice(), [Value::Str(_), Value::Str(_)]) =>
+                    && matches!(fields.as_slice(), [Value::Str(_)]) =>
             {
                 let Value::Str(handle) = &fields[0] else { unreachable!() };
                 compiler_param_syntax.get(handle.as_str()).cloned().ok_or_else(|| {
@@ -408,7 +408,7 @@ pub(super) fn compiler_block_syntax_value(
         return err("meta.function_block expected a BlockSyntax body");
     };
     match (tail(name), fields.as_slice()) {
-        ("CompilerBlockSyntax", [Value::Str(handle), Value::Str(_source)]) => {
+        ("CompilerBlockSyntax", [Value::Str(handle)]) => {
             compiler_block_syntax.get(handle.as_str()).cloned().ok_or_else(|| RuntimeError {
                 message: "CompilerBlockSyntax carried an invalid syntax handle".into(),
             })
@@ -460,7 +460,7 @@ pub(super) fn compiler_item_holes(
                 }
                 "TypeHole" => match syntax {
                     Value::Ctor { name, fields } if tail(name) == "CompilerTypeSyntax" => {
-                        let [Value::Str(handle), Value::Str(_source)] = fields.as_slice() else {
+                        let [Value::Str(handle)] = fields.as_slice() else {
                             return err("CompilerTypeSyntax carried an invalid payload");
                         };
                         compiler_type_syntax
@@ -476,7 +476,7 @@ pub(super) fn compiler_item_holes(
                 },
                 "PatternHole" => match syntax {
                     Value::Ctor { name, fields } if tail(name) == "CompilerPatternSyntax" => {
-                        let [Value::Str(handle), Value::Str(_source)] = fields.as_slice() else {
+                        let [Value::Str(handle)] = fields.as_slice() else {
                             return err("CompilerPatternSyntax carried an invalid payload");
                         };
                         compiler_pattern_syntax
@@ -559,7 +559,7 @@ fn syntax_hole_origin(
 
     let syntax_origin = match syntax {
         Value::Ctor { name, fields } if tail(name) == compiler_ctor => {
-            let [Value::Str(handle), ..] = fields.as_slice() else {
+            let [Value::Str(handle)] = fields.as_slice() else {
                 return Vec::new();
             };
             origins.get(handle.as_str())
@@ -593,7 +593,7 @@ pub(super) fn compiler_type_holes(
             };
             match tail(name) {
                 "CompilerTypeSyntax" => {
-                    let [Value::Str(handle), Value::Str(_source)] = fields.as_slice() else {
+                    let [Value::Str(handle)] = fields.as_slice() else {
                         return err("CompilerTypeSyntax carried an invalid payload");
                     };
                     compiler_type_syntax
@@ -710,7 +710,7 @@ pub(super) fn compiler_pattern_holes(
             };
             match tail(name) {
                 "CompilerPatternSyntax" => {
-                    let [Value::Str(handle), Value::Str(_source)] = fields.as_slice() else {
+                    let [Value::Str(handle)] = fields.as_slice() else {
                         return err("CompilerPatternSyntax carried an invalid payload");
                     };
                     compiler_pattern_syntax

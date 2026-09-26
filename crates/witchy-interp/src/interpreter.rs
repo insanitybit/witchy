@@ -1389,12 +1389,11 @@ impl Interpreter {
         category: &str,
         stmt: Stmt,
     ) -> Result<Value, RuntimeError> {
-        let source = witchy_syntax::format::stmt_str(&stmt);
         let handle = self.next_compiler_syntax_handle(category)?;
         self.compiler_stmt_syntax.insert(handle.clone(), stmt);
         Ok(Value::Ctor {
             name: "meta.CompilerStmtSyntax".into(),
-            fields: Rc::new(vec![Value::str(handle), Value::str(source)]),
+            fields: Rc::new(vec![Value::str(handle)]),
         })
     }
 
@@ -1404,7 +1403,6 @@ impl Interpreter {
         expr: Expr,
         hole_ancestry: Vec<ComptimeHoleOrigin>,
     ) -> Result<Value, RuntimeError> {
-        let source = witchy_syntax::format::expr_str(&expr);
         let handle = self.next_compiler_syntax_handle(category)?;
         self.compiler_expr_syntax.insert(handle.clone(), expr);
         self.compiler_expr_origins.insert(
@@ -1416,7 +1414,7 @@ impl Interpreter {
         );
         Ok(Value::Ctor {
             name: "meta.CompilerExprSyntax".into(),
-            fields: Rc::new(vec![Value::str(handle), Value::str(source)]),
+            fields: Rc::new(vec![Value::str(handle)]),
         })
     }
 
@@ -1426,7 +1424,6 @@ impl Interpreter {
         ty: Type,
         hole_ancestry: Vec<ComptimeHoleOrigin>,
     ) -> Result<Value, RuntimeError> {
-        let source = witchy_syntax::format::type_str(&ty);
         let handle = self.next_compiler_syntax_handle(category)?;
         self.compiler_type_syntax.insert(handle.clone(), ty);
         self.compiler_type_origins.insert(
@@ -1438,7 +1435,7 @@ impl Interpreter {
         );
         Ok(Value::Ctor {
             name: "meta.CompilerTypeSyntax".into(),
-            fields: Rc::new(vec![Value::str(handle), Value::str(source)]),
+            fields: Rc::new(vec![Value::str(handle)]),
         })
     }
 
@@ -1448,7 +1445,6 @@ impl Interpreter {
         pattern: Pattern,
         hole_ancestry: Vec<ComptimeHoleOrigin>,
     ) -> Result<Value, RuntimeError> {
-        let source = witchy_syntax::format::pattern_str(&pattern);
         let handle = self.next_compiler_syntax_handle(category)?;
         self.compiler_pattern_syntax.insert(handle.clone(), pattern);
         self.compiler_pattern_origins.insert(
@@ -1460,7 +1456,7 @@ impl Interpreter {
         );
         Ok(Value::Ctor {
             name: "meta.CompilerPatternSyntax".into(),
-            fields: Rc::new(vec![Value::str(handle), Value::str(source)]),
+            fields: Rc::new(vec![Value::str(handle)]),
         })
     }
 
@@ -2495,4 +2491,3 @@ impl Interpreter {
         }
     }
 }
-

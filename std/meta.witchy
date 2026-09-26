@@ -27,19 +27,19 @@ sealed type Span:
     Span(String, Int, Int)
 
 // Hole-free `quote type:` values retain a compiler-owned type AST. The
-// internal constructor carries an opaque handle and display source. Builders
-// resolve the handle to its checked type AST.
+// internal constructor carries an opaque handle. Builders resolve the handle
+// to its checked type AST.
 sealed type TypeSyntax:
-    CompilerTypeSyntax(String, String)
+    CompilerTypeSyntax(String)
 
 // Hole-free `quote expr:` values retain a compiler-owned expression AST.
 sealed type ExprSyntax:
-    CompilerExprSyntax(String, String)
+    CompilerExprSyntax(String)
 
 // Hole-free `quote pattern:` values retain compiler-owned pattern AST. Existing
 // builders compose the checked pattern AST through its opaque handle.
 sealed type PatternSyntax:
-    CompilerPatternSyntax(String, String)
+    CompilerPatternSyntax(String)
 
 sealed type SyntaxHole:
     ExprHole(ExprSyntax)
@@ -48,17 +48,17 @@ sealed type SyntaxHole:
 
 // Hole-free `quote stmt:` values retain compiler-owned statement AST.
 sealed type StmtSyntax:
-    CompilerStmtSyntax(String, String)
+    CompilerStmtSyntax(String)
 
 // Hole-free `quote block:` values retain compiler-owned block AST.
 sealed type BlockSyntax:
-    CompilerBlockSyntax(String, String)
+    CompilerBlockSyntax(String)
 
 sealed type MatchArmSyntax:
-    CompilerMatchArmSyntax(String, String)
+    CompilerMatchArmSyntax(String)
 
 sealed type ParamSyntax:
-    CompilerParamSyntax(String, String)
+    CompilerParamSyntax(String)
 
 sealed type Ident:
     Ident(String)

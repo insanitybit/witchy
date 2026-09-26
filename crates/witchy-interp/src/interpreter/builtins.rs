@@ -432,7 +432,6 @@ impl Interpreter {
                     );
                     let args = compiler_type_holes(args, &self.compiler_type_syntax)?;
                     validate_compiler_named_type(name, &args)?;
-                    let source = witchy_syntax::linker::call_site_type_source(name, &args);
                     let ty = witchy_syntax::linker::call_site_type(name, args);
                     let handle = self.next_compiler_syntax_handle("call-site-type")?;
                     self.compiler_type_syntax.insert(handle.clone(), ty);
@@ -445,10 +444,7 @@ impl Interpreter {
                     );
                     Ok(Some(Value::Ctor {
                         name: "meta.CompilerTypeSyntax".into(),
-                        fields: Rc::new(vec![
-                            Value::str(handle),
-                            Value::str(source),
-                        ]),
+                        fields: Rc::new(vec![Value::str(handle)]),
                     }))
                 }
                 _ => err("meta.call_site type construction expects a name and type arguments"),
@@ -630,15 +626,13 @@ impl Interpreter {
                     );
                     let args =
                         compiler_pattern_holes(args, &self.compiler_pattern_syntax)?;
-                    let (source, pattern) = if let Some(tag) = name.strip_prefix('.') {
+                    let pattern = if let Some(tag) = name.strip_prefix('.') {
                         if tag.is_empty() || tag.contains('.') {
                             return err("meta.pattern_anon_ctor expected one anonymous tag");
                         }
-                        let pattern = Pattern::AnonCtor { tag: tag.into(), args };
-                        (witchy_syntax::format::pattern_str(&pattern), pattern)
+                        Pattern::AnonCtor { tag: tag.into(), args }
                     } else {
-                        let source = witchy_syntax::linker::call_site_pattern_source(name, &args);
-                        (source, witchy_syntax::linker::call_site_pattern(name, args))
+                        witchy_syntax::linker::call_site_pattern(name, args)
                     };
                     let handle = self.next_compiler_syntax_handle("call-site-pattern")?;
                     self.compiler_pattern_syntax.insert(handle.clone(), pattern);
@@ -651,10 +645,7 @@ impl Interpreter {
                     );
                     Ok(Some(Value::Ctor {
                         name: "meta.CompilerPatternSyntax".into(),
-                        fields: Rc::new(vec![
-                            Value::str(handle),
-                            Value::str(source),
-                        ]),
+                        fields: Rc::new(vec![Value::str(handle)]),
                     }))
                 }
                 _ => {
@@ -836,7 +827,6 @@ impl Interpreter {
                         }
                         callee => Expr::Apply { func: Box::new(callee), args },
                     };
-                    let source = witchy_syntax::format::expr_str(&expr);
                     let handle = self.next_compiler_syntax_handle("expression-call")?;
                     self.compiler_expr_syntax.insert(handle.clone(), expr);
                     self.compiler_expr_origins.insert(
@@ -845,7 +835,7 @@ impl Interpreter {
                     );
                     Ok(Some(Value::Ctor {
                         name: "meta.CompilerExprSyntax".into(),
-                        fields: Rc::new(vec![Value::str(handle), Value::str(source)]),
+                        fields: Rc::new(vec![Value::str(handle)]),
                     }))
                 }
                 _ => err("meta.expr_call expects an ExprSyntax callee and List(ExprSyntax) arguments"),
@@ -891,7 +881,6 @@ impl Interpreter {
                     );
                     let value = compiler_expr_syntax_value(value, &self.compiler_expr_syntax)?;
                     let expr = Expr::Try(Box::new(value));
-                    let source = witchy_syntax::format::expr_str(&expr);
                     let handle = self.next_compiler_syntax_handle("expression-try")?;
                     self.compiler_expr_syntax.insert(handle.clone(), expr);
                     self.compiler_expr_origins.insert(
@@ -900,7 +889,7 @@ impl Interpreter {
                     );
                     Ok(Some(Value::Ctor {
                         name: "meta.CompilerExprSyntax".into(),
-                        fields: Rc::new(vec![Value::str(handle), Value::str(source)]),
+                        fields: Rc::new(vec![Value::str(handle)]),
                     }))
                 }
                 _ => err("meta.expr_try expects an ExprSyntax"),
@@ -926,7 +915,6 @@ impl Interpreter {
                         ret,
                         qualifiers: CallableQualifiers::ORDINARY,
                     };
-                    let source = witchy_syntax::format::expr_str(&expr);
                     let handle = self.next_compiler_syntax_handle("expression-lambda")?;
                     self.compiler_expr_syntax.insert(handle.clone(), expr);
                     self.compiler_expr_origins.insert(
@@ -935,7 +923,7 @@ impl Interpreter {
                     );
                     Ok(Some(Value::Ctor {
                         name: "meta.CompilerExprSyntax".into(),
-                        fields: Rc::new(vec![Value::str(handle), Value::str(source)]),
+                        fields: Rc::new(vec![Value::str(handle)]),
                     }))
                 }
                 _ => err("meta.expr_lambda expects List(ParamSyntax), Option(TypeSyntax), and ExprSyntax"),
@@ -962,7 +950,6 @@ impl Interpreter {
                         .map(|arg| compiler_expr_syntax_value(arg, &self.compiler_expr_syntax))
                         .collect::<Result<Vec<_>, _>>()?;
                     let expr = Expr::MethodCall { receiver: Box::new(receiver), method, args };
-                    let source = witchy_syntax::format::expr_str(&expr);
                     let handle = self.next_compiler_syntax_handle("expression-method")?;
                     self.compiler_expr_syntax.insert(handle.clone(), expr);
                     self.compiler_expr_origins.insert(
@@ -971,7 +958,7 @@ impl Interpreter {
                     );
                     Ok(Some(Value::Ctor {
                         name: "meta.CompilerExprSyntax".into(),
-                        fields: Rc::new(vec![Value::str(handle), Value::str(source)]),
+                        fields: Rc::new(vec![Value::str(handle)]),
                     }))
                 }
                 _ => err("meta.expr_method_call expects ExprSyntax, Ident, and List(ExprSyntax)"),
@@ -983,10 +970,9 @@ impl Interpreter {
                     let member = compiler_ident_name(member, "meta.expr_qualified_call")?;
                     let args = args.iter().map(|arg| compiler_expr_syntax_value(arg, &self.compiler_expr_syntax)).collect::<Result<Vec<_>, _>>()?;
                     let expr = Expr::Call { name: format!("{module}.{member}"), args };
-                    let source = witchy_syntax::format::expr_str(&expr);
                     let handle = self.next_compiler_syntax_handle("expression-qualified-call")?;
                     self.compiler_expr_syntax.insert(handle.clone(), expr);
-                    Ok(Some(Value::Ctor { name: "meta.CompilerExprSyntax".into(), fields: Rc::new(vec![Value::str(handle), Value::str(source)]) }))
+                    Ok(Some(Value::Ctor { name: "meta.CompilerExprSyntax".into(), fields: Rc::new(vec![Value::str(handle)]) }))
                 }
                 _ => err("meta.expr_qualified_call expects Ident, Ident, and List(ExprSyntax)"),
             },
@@ -1030,12 +1016,11 @@ impl Interpreter {
                         method: member,
                         args,
                     };
-                    let source = witchy_syntax::format::expr_str(&expr);
                     let handle = self.next_compiler_syntax_handle("expression-qualified-call-path")?;
                     self.compiler_expr_syntax.insert(handle.clone(), expr);
                     Ok(Some(Value::Ctor {
                         name: "meta.CompilerExprSyntax".into(),
-                        fields: Rc::new(vec![Value::str(handle), Value::str(source)]),
+                        fields: Rc::new(vec![Value::str(handle)]),
                     }))
                 }
                 _ => err(
@@ -1047,10 +1032,9 @@ impl Interpreter {
                     if self.fresh_ident_scope.is_none() { return err("meta.expr_dynamic_descriptor is available only during compile-time expansion"); }
                     let value = compiler_expr_syntax_value(value, &self.compiler_expr_syntax)?;
                     let expr = Expr::Call { name: witchy_syntax::intrinsics::DYNAMIC_DESCRIPTOR_ID.into(), args: vec![value] };
-                    let source = witchy_syntax::format::expr_str(&expr);
                     let handle = self.next_compiler_syntax_handle("expression-dynamic-descriptor")?;
                     self.compiler_expr_syntax.insert(handle.clone(), expr);
-                    Ok(Some(Value::Ctor { name: "meta.CompilerExprSyntax".into(), fields: Rc::new(vec![Value::str(handle), Value::str(source)]) }))
+                    Ok(Some(Value::Ctor { name: "meta.CompilerExprSyntax".into(), fields: Rc::new(vec![Value::str(handle)]) }))
                 }
                 _ => err("meta.expr_dynamic_descriptor expects ExprSyntax"),
             },
@@ -1071,7 +1055,6 @@ impl Interpreter {
                     let base = compiler_expr_syntax_value(base, &self.compiler_expr_syntax)?;
                     let field = compiler_ident_name(field, "meta.expr_field")?;
                     let expr = Expr::Field { base: Box::new(base), field };
-                    let source = witchy_syntax::format::expr_str(&expr);
                     let handle = self.next_compiler_syntax_handle("expression-field")?;
                     self.compiler_expr_syntax.insert(handle.clone(), expr);
                     self.compiler_expr_origins.insert(
@@ -1080,7 +1063,7 @@ impl Interpreter {
                     );
                     Ok(Some(Value::Ctor {
                         name: "meta.CompilerExprSyntax".into(),
-                        fields: Rc::new(vec![Value::str(handle), Value::str(source)]),
+                        fields: Rc::new(vec![Value::str(handle)]),
                     }))
                 }
                 _ => err("meta.expr_field expects an ExprSyntax base and Ident field"),
@@ -1348,11 +1331,6 @@ impl Interpreter {
                         &self.compiler_pattern_syntax,
                     )?;
                     let body = compiler_expr_syntax_value(body, &self.compiler_expr_syntax)?;
-                    let source = format!(
-                        "{} -> {}",
-                        witchy_syntax::format::pattern_str(&pattern),
-                        witchy_syntax::format::expr_str(&body),
-                    );
                     let arm = MatchArm {
                         line: self.cur_line,
                         pattern,
@@ -1363,7 +1341,7 @@ impl Interpreter {
                     self.compiler_match_arm_syntax.insert(handle.clone(), arm);
                     Ok(Some(Value::Ctor {
                         name: "meta.CompilerMatchArmSyntax".into(),
-                        fields: Rc::new(vec![Value::str(handle), Value::str(source)]),
+                        fields: Rc::new(vec![Value::str(handle)]),
                     }))
                 }
                 _ => err("meta.match_arm expects PatternSyntax and ExprSyntax"),
@@ -1386,7 +1364,6 @@ impl Interpreter {
                         compiler_expr_syntax_value(scrutinee, &self.compiler_expr_syntax)?;
                     let arms = compiler_match_arms(arms, &self.compiler_match_arm_syntax)?;
                     let expr = Expr::Match { scrutinee: Box::new(scrutinee), arms };
-                    let canonical_source = witchy_syntax::format::expr_str(&expr);
                     let handle = self.next_compiler_syntax_handle("expression-match")?;
                     self.compiler_expr_syntax.insert(handle.clone(), expr);
                     self.compiler_expr_origins.insert(
@@ -1395,7 +1372,7 @@ impl Interpreter {
                     );
                     Ok(Some(Value::Ctor {
                         name: "meta.CompilerExprSyntax".into(),
-                        fields: Rc::new(vec![Value::str(handle), Value::str(canonical_source)]),
+                        fields: Rc::new(vec![Value::str(handle)]),
                     }))
                 }
                 _ => err("meta.expr_match expects an ExprSyntax scrutinee and List(MatchArmSyntax) arms"),
@@ -1405,10 +1382,9 @@ impl Interpreter {
                     if self.fresh_ident_scope.is_none() { return err("meta.expr_block is available only during compile-time expansion"); }
                     let body = compiler_block_syntax_value(body, &self.compiler_block_syntax)?;
                     let expr = Expr::Block(body);
-                    let source = witchy_syntax::format::expr_str(&expr);
                     let handle = self.next_compiler_syntax_handle("expression-block")?;
                     self.compiler_expr_syntax.insert(handle.clone(), expr);
-                    Ok(Some(Value::Ctor { name: "meta.CompilerExprSyntax".into(), fields: Rc::new(vec![Value::str(handle), Value::str(source)]) }))
+                    Ok(Some(Value::Ctor { name: "meta.CompilerExprSyntax".into(), fields: Rc::new(vec![Value::str(handle)]) }))
                 }
                 _ => err("meta.expr_block expects BlockSyntax"),
             },
@@ -1611,12 +1587,11 @@ impl Interpreter {
                         stmts,
                         region: None,
                     };
-                    let source = witchy_syntax::format::block_str(&block);
                     let handle = self.next_compiler_syntax_handle("block-builder")?;
                     self.compiler_block_syntax.insert(handle.clone(), block);
                     Ok(Some(Value::Ctor {
                         name: "meta.CompilerBlockSyntax".into(),
-                        fields: Rc::new(vec![Value::str(handle), Value::str(source)]),
+                        fields: Rc::new(vec![Value::str(handle)]),
                     }))
                 }
                 _ => err("meta.block expects List(StmtSyntax) and Option(ExprSyntax)"),
@@ -1632,12 +1607,11 @@ impl Interpreter {
                     }
                     let ty = compiler_optional_type_syntax_value(result, &self.compiler_type_syntax)?;
                     body.region = Some(RegionAnn { ty });
-                    let source = witchy_syntax::format::block_str(&body);
                     let handle = self.next_compiler_syntax_handle("region-block")?;
                     self.compiler_block_syntax.insert(handle.clone(), body);
                     Ok(Some(Value::Ctor {
                         name: "meta.CompilerBlockSyntax".into(),
-                        fields: Rc::new(vec![Value::str(handle), Value::str(source)]),
+                        fields: Rc::new(vec![Value::str(handle)]),
                     }))
                 }
                 _ => err("meta.block_region expects BlockSyntax and Option(TypeSyntax)"),
@@ -1647,19 +1621,15 @@ impl Interpreter {
                     if self.fresh_ident_scope.is_none() {
                         return err("meta.param is available only during compile-time expansion");
                     }
-                    let (convention, prefix) = match convention.as_str() {
-                        "default" => (Convention::Let, ""),
-                        "let" => (Convention::Borrow, "let "),
-                        "var" => (Convention::Var, "var "),
-                        "own" => (Convention::Own, "own "),
+                    let convention = match convention.as_str() {
+                        "default" => Convention::Let,
+                        "let" => Convention::Borrow,
+                        "var" => Convention::Var,
+                        "own" => Convention::Own,
                         _ => return err("meta.param: unsupported parameter convention"),
                     };
                     let name = compiler_binding_ident_name(binding, "meta.param")?;
                     let ty = compiler_type_syntax_value(ty, &self.compiler_type_syntax)?;
-                    let source = format!(
-                        "{prefix}{name}: {}",
-                        witchy_syntax::format::type_str(&ty),
-                    );
                     let param = Param {
                         name,
                         ty: Some(ty),
@@ -1670,7 +1640,7 @@ impl Interpreter {
                     self.compiler_param_syntax.insert(handle.clone(), param);
                     Ok(Some(Value::Ctor {
                         name: "meta.CompilerParamSyntax".into(),
-                        fields: Rc::new(vec![Value::str(handle), Value::str(source)]),
+                        fields: Rc::new(vec![Value::str(handle)]),
                     }))
                 }
                 _ => err("meta.param expects a supported convention, Ident, and TypeSyntax"),
@@ -1881,7 +1851,7 @@ impl Interpreter {
                     );
                 }
                 match args {
-                    [Value::Str(handle), Value::Str(source)]
+                    [Value::Str(handle), Value::Str(_source)]
                         if self.compiler_expr_syntax.contains_key(handle.as_str()) =>
                     {
                         let expr = self.compiler_expr_syntax[handle.as_str()].clone();
@@ -1896,10 +1866,7 @@ impl Interpreter {
                         );
                         Ok(Some(Value::Ctor {
                             name: "meta.CompilerExprSyntax".into(),
-                            fields: Rc::new(vec![
-                                Value::str(instance_handle),
-                                Value::Str(source.clone()),
-                            ]),
+                            fields: Rc::new(vec![Value::str(instance_handle)]),
                         }))
                     }
                     [Value::Str(_), Value::Str(_)] => {
@@ -1944,7 +1911,6 @@ impl Interpreter {
                         let expr =
                             witchy_syntax::syntax_holes::instantiate_expr_mixed(&template, holes)
                                 .map_err(|message| RuntimeError { message })?;
-                        let source = witchy_syntax::format::expr_str(&expr);
                         let instance_handle = self.next_compiler_syntax_handle("expression")?;
                         if let Some(existing) = self.compiler_expr_syntax.get(&instance_handle) {
                             if existing != &expr {
@@ -1961,7 +1927,7 @@ impl Interpreter {
                         );
                         Ok(Some(Value::Ctor {
                             name: "meta.CompilerExprSyntax".into(),
-                            fields: Rc::new(vec![Value::str(instance_handle), Value::str(source)]),
+                            fields: Rc::new(vec![Value::str(instance_handle)]),
                         }))
                     }
                     [Value::Str(_), Value::List(_), Value::List(_)] => err(
@@ -1979,7 +1945,7 @@ impl Interpreter {
                     );
                 }
                 match args {
-                    [Value::Str(handle), Value::Str(source)]
+                    [Value::Str(handle), Value::Str(_source)]
                         if self.compiler_type_syntax.contains_key(handle.as_str()) =>
                     {
                         let ty = self.compiler_type_syntax[handle.as_str()].clone();
@@ -1994,10 +1960,7 @@ impl Interpreter {
                         );
                         Ok(Some(Value::Ctor {
                             name: "meta.CompilerTypeSyntax".into(),
-                            fields: Rc::new(vec![
-                                Value::str(instance_handle),
-                                Value::Str(source.clone()),
-                            ]),
+                            fields: Rc::new(vec![Value::str(instance_handle)]),
                         }))
                     }
                     [Value::Str(_), Value::Str(_)] => {
@@ -2036,7 +1999,6 @@ impl Interpreter {
                         let holes = compiler_type_holes(holes, &self.compiler_type_syntax)?;
                         let ty = witchy_syntax::syntax_holes::instantiate_type(&template, holes)
                             .map_err(|message| RuntimeError { message })?;
-                        let source = witchy_syntax::format::type_str(&ty);
                         let instance_handle = self.next_compiler_syntax_handle("type")?;
                         if let Some(existing) = self.compiler_type_syntax.get(&instance_handle) {
                             if existing != &ty {
@@ -2053,7 +2015,7 @@ impl Interpreter {
                         );
                         Ok(Some(Value::Ctor {
                             name: "meta.CompilerTypeSyntax".into(),
-                            fields: Rc::new(vec![Value::str(instance_handle), Value::str(source)]),
+                            fields: Rc::new(vec![Value::str(instance_handle)]),
                         }))
                     }
                     [Value::Str(_), Value::List(_), Value::List(_)] => err(
@@ -2071,7 +2033,7 @@ impl Interpreter {
                     );
                 }
                 match args {
-                    [Value::Str(handle), Value::Str(source)]
+                    [Value::Str(handle), Value::Str(_source)]
                         if self.compiler_pattern_syntax.contains_key(handle.as_str()) =>
                     {
                         let pattern = self.compiler_pattern_syntax[handle.as_str()].clone();
@@ -2086,10 +2048,7 @@ impl Interpreter {
                         );
                         Ok(Some(Value::Ctor {
                             name: "meta.CompilerPatternSyntax".into(),
-                            fields: Rc::new(vec![
-                                Value::str(instance_handle),
-                                Value::Str(source.clone()),
-                            ]),
+                            fields: Rc::new(vec![Value::str(instance_handle)]),
                         }))
                     }
                     [Value::Str(_), Value::Str(_)] => {
@@ -2130,7 +2089,6 @@ impl Interpreter {
                         let pattern =
                             witchy_syntax::syntax_holes::instantiate_pattern(&template, holes)
                                 .map_err(|message| RuntimeError { message })?;
-                        let source = witchy_syntax::format::pattern_str(&pattern);
                         let instance_handle = self.next_compiler_syntax_handle("pattern")?;
                         if let Some(existing) = self.compiler_pattern_syntax.get(&instance_handle) {
                             if existing != &pattern {
@@ -2148,7 +2106,7 @@ impl Interpreter {
                         );
                         Ok(Some(Value::Ctor {
                             name: "meta.CompilerPatternSyntax".into(),
-                            fields: Rc::new(vec![Value::str(instance_handle), Value::str(source)]),
+                            fields: Rc::new(vec![Value::str(instance_handle)]),
                         }))
                     }
                     [Value::Str(_), Value::List(_), Value::List(_)] => err(
@@ -2166,12 +2124,12 @@ impl Interpreter {
                     );
                 }
                 match args {
-                    [Value::Str(handle), Value::Str(source)]
+                    [Value::Str(handle), Value::Str(_source)]
                         if self.compiler_stmt_syntax.contains_key(handle.as_str()) =>
                     {
                         Ok(Some(Value::Ctor {
                             name: "meta.CompilerStmtSyntax".into(),
-                            fields: Rc::new(vec![Value::Str(handle.clone()), Value::Str(source.clone())]),
+                            fields: Rc::new(vec![Value::Str(handle.clone())]),
                         }))
                     }
                     [Value::Str(_), Value::Str(_)] => {
@@ -2221,10 +2179,7 @@ impl Interpreter {
                         }
                         Ok(Some(Value::Ctor {
                             name: "meta.CompilerStmtSyntax".into(),
-                            fields: Rc::new(vec![
-                                Value::str(instance_handle),
-                                Value::str(source),
-                            ]),
+                            fields: Rc::new(vec![Value::str(instance_handle)]),
                         }))
                     }
                     [Value::Str(_), Value::List(_), Value::List(_)] => err(
@@ -2242,12 +2197,12 @@ impl Interpreter {
                     );
                 }
                 match args {
-                    [Value::Str(handle), Value::Str(source)]
+                    [Value::Str(handle), Value::Str(_source)]
                         if self.compiler_block_syntax.contains_key(handle.as_str()) =>
                     {
                         Ok(Some(Value::Ctor {
                             name: "meta.CompilerBlockSyntax".into(),
-                            fields: Rc::new(vec![Value::Str(handle.clone()), Value::Str(source.clone())]),
+                            fields: Rc::new(vec![Value::Str(handle.clone())]),
                         }))
                     }
                     [Value::Str(_), Value::Str(_)] => {
@@ -2298,10 +2253,7 @@ impl Interpreter {
                         }
                         Ok(Some(Value::Ctor {
                             name: "meta.CompilerBlockSyntax".into(),
-                            fields: Rc::new(vec![
-                                Value::str(instance_handle),
-                                Value::str(source),
-                            ]),
+                            fields: Rc::new(vec![Value::str(instance_handle)]),
                         }))
                     }
                     [Value::Str(_), Value::List(_), Value::List(_)] => err(
@@ -2456,7 +2408,7 @@ impl Interpreter {
                         if name.rsplit_once('.').map_or(&*name, |(_, tail)| tail)
                             == "CompilerExprSyntax" =>
                     {
-                        let [Value::Str(handle), Value::Str(_source)] = fields.as_slice() else {
+                        let [Value::Str(handle)] = fields.as_slice() else {
                             return err("CompilerExprSyntax carried an invalid payload");
                         };
                         let expr = self
