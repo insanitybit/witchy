@@ -53,6 +53,45 @@ pub enum TaskExecutionProof {
     Variants(BTreeMap<usize, Vec<Self>>),
 }
 
+/// One checked pre-CPS await and the exact value-flow proof for its operand.
+/// The source coordinate is stable across final function renaming; an optional
+/// final item binding is established only after CPS and specialization.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskAwaitProof {
+    source_module: String,
+    source_item: u32,
+    source_method: Option<u32>,
+    suspension: u32,
+    source_mode: SourceExecutionMode,
+    origin: TaskExecutionProof,
+}
+
+impl TaskAwaitProof {
+    #[doc(hidden)]
+    pub fn from_checked_frontend(
+        source_module: String,
+        source_item: u32,
+        source_method: Option<u32>,
+        suspension: u32,
+        source_mode: SourceExecutionMode,
+        origin: TaskExecutionProof,
+    ) -> Self {
+        Self { source_module, source_item, source_method, suspension, source_mode, origin }
+    }
+
+    pub fn source_identity(&self) -> (&str, u32, Option<u32>, u32) {
+        (&self.source_module, self.source_item, self.source_method, self.suspension)
+    }
+
+    pub fn source_mode(&self) -> SourceExecutionMode { self.source_mode }
+    pub fn origin(&self) -> &TaskExecutionProof { &self.origin }
+
+    pub fn opt_compatible(&self) -> bool {
+        matches!(self.origin, TaskExecutionProof::Task(SourceExecutionMode::Opt, _))
+            || self.origin.is_parameter_projection()
+    }
+}
+
 impl TaskExecutionProof {
     /// A checked source summary may defer an opt requirement only when it is rooted
     /// in one of that callable's checked parameters. Unknown storage cannot
@@ -384,6 +423,9 @@ pub struct CanonicalSourceParts<'s> {
     pub slice_carriers: &'s [CarrierElement],
     /// Concrete expression types retained from this exact checked module.
     pub concrete_types: &'s [Type],
+    pub task_awaits: &'s [TaskAwaitProof],
+    pub task_await_items: &'s BTreeMap<u32, usize>,
+    pub task_operand_items: &'s BTreeMap<u32, Vec<usize>>,
 }
 
 /// A borrowed, read-only view of one checked canonical source.
@@ -405,6 +447,9 @@ pub struct CanonicalSourceView<'s> {
     precompiled_exports: &'s [PrecompiledExport],
     slice_carriers: &'s [CarrierElement],
     concrete_types: &'s [Type],
+    task_awaits: &'s [TaskAwaitProof],
+    task_await_items: &'s BTreeMap<u32, usize>,
+    task_operand_items: &'s BTreeMap<u32, Vec<usize>>,
 }
 
 impl<'s> CanonicalSourceView<'s> {
@@ -429,6 +474,9 @@ impl<'s> CanonicalSourceView<'s> {
             precompiled_exports,
             slice_carriers,
             concrete_types,
+            task_awaits,
+            task_await_items,
+            task_operand_items,
         } = parts;
         Self {
             module,
@@ -447,11 +495,27 @@ impl<'s> CanonicalSourceView<'s> {
             precompiled_exports,
             slice_carriers,
             concrete_types,
+            task_awaits,
+            task_await_items,
+            task_operand_items,
         }
     }
 
     /// The exact checked AST every other fact in this view is keyed on.
     pub fn module(&self) -> &'s Module { self.module }
+
+    pub fn task_await_proofs(&self) -> &'s [TaskAwaitProof] { self.task_awaits }
+
+    pub fn task_await_proof_at(&self, item: u32) -> Option<&'s TaskAwaitProof> {
+        self.task_awaits.get(*self.task_await_items.get(&item)?)
+    }
+
+    /// Source-authenticated proofs for the executable task operands in this
+    /// checked final function, including direct-return awaits.
+    pub fn task_operand_proofs_at(&self, item: u32) -> impl Iterator<Item = &'s TaskAwaitProof> + '_ {
+        self.task_operand_items.get(&item).into_iter().flatten()
+            .filter_map(|proof| self.task_awaits.get(*proof))
+    }
 
     /// Only a function occupying this ordinal in the checked module can
     /// authorize a body mode. Generated lambdas use their checked enclosing

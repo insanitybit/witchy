@@ -95,6 +95,28 @@ fn validate_candidate_abi_bindings_with<S: ModuleStage>(
         }
     }
     for binding in candidate.source_abi_bindings().entries() {
+        let ordinal = binding.source_declaration_ordinal();
+        for proof in source.task_operand_proofs_at(ordinal) {
+            if source.source_execution_mode_at(ordinal) != Some(proof.source_mode())
+                || (proof.source_mode().is_opt() && !proof.opt_compatible())
+            {
+                return Err(CandidateAbiBindingError::SourceAbiMismatch { source_declaration: ordinal });
+            }
+        }
+        if let Some(witchy_syntax::ast::Item::Function(source_function)) =
+            source.module().items.get(binding.source_declaration_ordinal() as usize)
+            && witchy_syntax::suspension::source_suspension(source_function).is_some()
+        {
+            let ordinal = binding.source_declaration_ordinal();
+            let Some(proof) = source.task_await_proof_at(ordinal) else {
+                return Err(CandidateAbiBindingError::SourceAbiMismatch { source_declaration: ordinal });
+            };
+            if source.source_execution_mode_at(ordinal) != Some(proof.source_mode())
+                || (proof.source_mode().is_opt() && !proof.opt_compatible())
+            {
+                return Err(CandidateAbiBindingError::SourceAbiMismatch { source_declaration: ordinal });
+            }
+        }
         let Some(function) = functions.get(&binding.function()) else {
             return Err(CandidateAbiBindingError::MissingCandidateFunction { function: binding.function() });
         };

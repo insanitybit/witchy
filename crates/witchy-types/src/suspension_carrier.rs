@@ -2309,7 +2309,7 @@ fn select_payload_lane_types(first: Option<&Ty>, second: Option<&Ty>) -> Option<
     }
 }
 
-fn call_family(name: &str, family: &str) -> bool {
+pub(crate) fn call_family(name: &str, family: &str) -> bool {
     name == family
         || name
             .strip_prefix(family)

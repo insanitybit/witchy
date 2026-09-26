@@ -1493,6 +1493,29 @@ if capability_imports.contains("build_out_write_at") {
         let item_ordinal = u32::try_from(item_index).map_err(|_| CanonicalLoweringError::IdOverflow)?;
         let execution_mode = source.view().source_execution_mode_at(item_ordinal)
             .ok_or_else(|| CanonicalLoweringError::InvalidCheckedFunctionType(function.name.clone()))?;
+        for proof in source.view().task_operand_proofs_at(item_ordinal) {
+            if proof.source_mode() != execution_mode
+                || (execution_mode.is_opt() && !proof.opt_compatible())
+            {
+                return Err(CanonicalLoweringError::InvalidCheckedFunctionType(
+                    format!("{}: executable task operand mode mismatch", function.name),
+                ));
+            }
+        }
+        if witchy_syntax::suspension::source_suspension(function).is_some() {
+            let view = source.view();
+            let proof = view.task_await_proof_at(item_ordinal)
+                .ok_or_else(|| CanonicalLoweringError::InvalidCheckedFunctionType(
+                    format!("{}: missing source task-await proof", function.name),
+                ))?;
+            if proof.source_mode() != execution_mode
+                || (execution_mode.is_opt() && !proof.opt_compatible())
+            {
+                return Err(CanonicalLoweringError::InvalidCheckedFunctionType(
+                    format!("{}: source task-await mode mismatch", function.name),
+                ));
+            }
+        }
         let lowered = lower_function(
             function,
             &function.body,

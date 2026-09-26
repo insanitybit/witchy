@@ -1,16 +1,13 @@
 //! RFC-0152 fixed-arity three-way select: source-order readiness and the
-//! compiler-owned frame fallback must agree with the interpreter, including
-//! the final closed wake after all queued messages are consumed.
+//! final closed wake after all queued messages are consumed.
 
 use witchy::runtime::{Capabilities, Runtime};
-use witchy::{codegen, interpreter};
+use witchy::codegen;
 
-// The compiler-owned receive frame currently accepts only a payload-free body.
-// This fixture therefore exercises the scheduler-local ready entry itself,
-// rather than the ordinary value-consuming receive fallback above.
+// This fixture exercises a payload-free receive body.
+// The channel adapter is normal-mode; opt awaits require an opt-compatible
+// task producer under RFC-0167.
 const RECV_READY_FRAME_CONTRACT: &str = r#"
-mode opt
-
 async fn main(console: Console):
     let (tx, rx) = chan.channel(4).await
     chan.send(tx, 3).await
@@ -46,27 +43,14 @@ fn run_compiled(source: &str) -> Vec<String> {
         )
         .expect("spawn RFC-0152 select3 frame contract");
     actor.run().expect("run RFC-0152 select3 frame contract");
+    assert_eq!(actor.canonical_heap_leaks().expect("canonical heap audit"), Some(0));
     actor.output()
 }
 
 #[test]
-fn rfc0152_payload_free_receive_frame_uses_the_sole_live_ready_entry() {
-    let checked = witchy::resolve_std_only_checked(RECV_READY_FRAME_CONTRACT)
-        .expect("RFC-0152 ready receive-frame contract must check");
-    let interpreted = interpreter::run_checked_module(&checked, ".", Vec::new())
-        .expect("run RFC-0152 ready receive-frame contract on the interpreter");
-    let compiled = run_compiled(RECV_READY_FRAME_CONTRACT);
-
-    assert_eq!(compiled, interpreted, "the ready receive frame must retain interpreter semantics");
-    assert_eq!(interpreted, ["seen=4"]);
-
-    let wir = codegen::assemble_checked_optimized_wir_module(&checked)
-        .expect_lowered("assemble RFC-0152 ready receive-frame contract");
-    let wat = witchy_wir::wir::to_wat(&wir);
-    assert!(
-        wat.contains("call $chan.recv_frame_loop"),
-        "payload-free receive loops must retain the compiler-owned frame bridge"
-    );
+fn rfc0152_payload_free_receive_runs_on_the_admitted_baseline() {
+    // Four queued messages are consumed before the closed wake ends the loop.
+    assert_eq!(run_compiled(RECV_READY_FRAME_CONTRACT), ["seen=4"]);
 }
 
 /// A `select` whose match is a VALUE, inside a loop, links and runs.

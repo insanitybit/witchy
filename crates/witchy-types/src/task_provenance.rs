@@ -32,6 +32,7 @@ struct Analyzer<'a> {
     check_await: bool,
     returns: Vec<Proof>,
     required_opt_inputs: Vec<Proof>,
+    await_origins: BTreeMap<usize, Proof>,
 }
 
 impl Analyzer<'_> {
@@ -407,6 +408,13 @@ impl Analyzer<'_> {
                 expr,
             } => {
                 let origin = self.expr(expr, environment)?;
+                if self.check_await {
+                    let address = expression as *const Expr as usize;
+                    self.await_origins
+                        .entry(address)
+                        .and_modify(|previous| *previous = previous.clone().join(origin.clone()))
+                        .or_insert_with(|| origin.clone());
+                }
                 if source_execution_mode(self.function, &self.module.modes)
                     == SourceExecutionMode::Opt
                 {
@@ -621,7 +629,7 @@ fn analyze_function(
     summaries: &BTreeMap<String, Summary>,
     function: &Function,
     check_await: bool,
-) -> Result<Summary, TypeError> {
+) -> Result<(Summary, BTreeMap<usize, Proof>), TypeError> {
     let mut analyzer = Analyzer {
         module,
         table,
@@ -631,6 +639,7 @@ fn analyze_function(
         check_await,
         returns: Vec::new(),
         required_opt_inputs: Vec::new(),
+        await_origins: BTreeMap::new(),
     };
     let mut environment = function
         .params
@@ -642,13 +651,19 @@ fn analyze_function(
     if !matches!(function.body.stmts.last(), Some(Stmt::Return(_))) {
         analyzer.returns.push(tail);
     }
-    Ok(Summary {
+    Ok((Summary {
         result: Analyzer::join_values(analyzer.returns).bounded(4096),
         required_opt_inputs: analyzer.required_opt_inputs,
-    })
+    }, analyzer.await_origins))
 }
 
-pub(crate) fn verify(module: &Module, table: &TypeTable) -> Result<(), TypeError> {
+/// Each key is an await expression in the exact checked AST allocation. The
+/// address is transient: callers bind it to a source coordinate before the
+/// typed module is moved into the canonical source product.
+pub(crate) fn checked_await_origins(
+    module: &Module,
+    table: &TypeTable,
+) -> Result<BTreeMap<usize, Proof>, TypeError> {
     let definitions = type_definitions(module);
     let functions: Vec<_> = module
         .items
@@ -665,7 +680,7 @@ pub(crate) fn verify(module: &Module, table: &TypeTable) -> Result<(), TypeError
         for function in &functions {
             next.insert(
                 function.name.clone(),
-                analyze_function(module, table, &definitions, &summaries, function, false)?,
+                analyze_function(module, table, &definitions, &summaries, function, false)?.0,
             );
         }
         if next == summaries {
@@ -679,8 +694,22 @@ pub(crate) fn verify(module: &Module, table: &TypeTable) -> Result<(), TypeError
             message: "task execution provenance summaries did not converge".into(),
         });
     }
+    let mut awaits = BTreeMap::new();
     for function in functions {
-        analyze_function(module, table, &definitions, &summaries, function, true)?;
+        awaits.extend(analyze_function(module, table, &definitions, &summaries, function, true)?.1);
     }
-    Ok(())
+    for item in &module.items {
+        if let Item::Impl(definition) = item {
+            for method in &definition.methods {
+                if method.is_async {
+                    awaits.extend(analyze_function(module, table, &definitions, &summaries, method, true)?.1);
+                }
+            }
+        }
+    }
+    Ok(awaits)
+}
+
+pub(crate) fn verify(module: &Module, table: &TypeTable) -> Result<(), TypeError> {
+    checked_await_origins(module, table).map(|_| ())
 }

@@ -46,9 +46,14 @@ pub const ASYNC_REGION_ATTRIBUTE_PREFIX: &str = "__compiler_async_region=";
 
 /// Identity of the source suspension whose successful completion enters a
 /// generated continuation state. It is per source callable and assigned in
-/// lexical order before continuation lowering recurses, so it remains stable
-/// even when the CPS transform emits later continuations first.
+/// source AST preorder before continuation lowering recurses, so it remains
+/// stable even when the CPS transform emits later continuations first.
 pub const SOURCE_SUSPENSION_ATTRIBUTE_PREFIX: &str = "__compiler_source_suspension=";
+
+/// Unspellable local in the checked task expression that binds a source await
+/// to the scheduler call or direct-return task that actually executes it.
+pub const SOURCE_TASK_OPERAND_PREFIX: &str = "@async.await.operand:";
+
 
 /// Maps one physical parameter of a compiler-generated async frame to the
 /// lexical source binding that supplied it.  Both numbers are local to the

@@ -432,6 +432,13 @@ fn lower_with_view_fns_and_item_mapping_for(
     }
     module.items = items;
     finish_generated_calls(module, destination);
+    crate::ast::visit::visit_module_exprs(module, &mut |expression| {
+        if matches!(expression, Expr::Call { name, .. } if name == SOURCE_AWAIT_MARKER) {
+            Err("compiler source-await identity escaped async lowering".to_string())
+        } else {
+            Ok(())
+        }
+    })?;
     // The lowering uses the `task` substrate always, and `chan` for receive loops
     // (`for await`); the user's body may use either, so make both available.
     for needed in ["task", "chan"] {
@@ -734,7 +741,6 @@ struct Ctx<'a> {
     fname: String,
     counter: &'a mut usize,
     state_counter: &'a mut usize,
-    source_suspension_counter: u32,
     segments: Vec<Function>,
     view_fns: &'a HashSet<String>,
     borrowed_shells: &'a BorrowedShellCatalog,
@@ -768,18 +774,6 @@ impl<'a> Ctx<'a> {
         let n = *self.counter;
         *self.counter += 1;
         format!("__await{n}")
-    }
-
-    /// Reserve this identity before lowering the continuation. `go` recursively
-    /// forms later segments first, so assigning it in `lift_suspend` would make
-    /// final-state metadata run in reverse source order.
-    fn fresh_source_suspension(&mut self) -> Result<u32, String> {
-        let suspension = self.source_suspension_counter;
-        self.source_suspension_counter = self
-            .source_suspension_counter
-            .checked_add(1)
-            .ok_or_else(|| self.err("source suspension count exceeds u32"))?;
-        Ok(suspension)
     }
 
     fn frame_attributes(&mut self) -> Vec<String> {
@@ -870,7 +864,9 @@ impl<'a> Ctx<'a> {
                             .as_ref()
                             .is_some_and(|ty| type_is_view_callable(ty, self.borrowed_shells)),
                     };
-                    self.suspend(inner.clone(), Some(bind), cont)
+                    let identity = source_await_id(value)
+                        .ok_or_else(|| self.err("source await lost its checked identity"))?;
+                    self.suspend(inner.clone(), Some(bind), cont, Some(identity))
                 } else {
                     reject_await(value, &self.fname)?;
                     let mut scope2 = scope.to_vec();
@@ -922,10 +918,7 @@ impl<'a> Ctx<'a> {
                     name: tmp.clone(),
                     ty: None,
                     mutable: false,
-                    value: Expr::Unary {
-                        op: UnOp::Await,
-                        expr: Box::new(inner),
-                    },
+                    value: value.clone(),
                 });
                 new_stmts.push(Stmt::LetPattern {
                     pattern: pattern.clone(),
@@ -1047,7 +1040,9 @@ impl<'a> Ctx<'a> {
         } else if let Some(inner) = as_await(e) {
             // A non-last `await E` runs E for effect and continues.
             reject_await(inner, &self.fname)?;
-            self.suspend(inner.clone(), None, cont)
+            let identity = source_await_id(e)
+                .ok_or_else(|| self.err("source await lost its checked identity"))?;
+            self.suspend(inner.clone(), None, cont, Some(identity))
         } else {
             reject_await(e, &self.fname)?;
             Ok(prefix_stmt_at(
@@ -1073,7 +1068,7 @@ impl<'a> Ctx<'a> {
             if cont.rest.is_empty() && matches!(cont.tail, Tail::Return) {
                 return Ok(loop_future);
             }
-            return self.suspend(RawTask(loop_future), None, cont);
+            return self.suspend(RawTask(loop_future), None, cont, None);
         }
         // The loop yields its accumulators; rebind them, then continue.
         let acc_bind = self.fresh_tmp();
@@ -1134,8 +1129,25 @@ impl<'a> Ctx<'a> {
         if let Some(inner) = as_await(e) {
             reject_await(inner, &self.fname)?;
             return match tail {
-                Tail::Return => Ok(inner.clone()),
-                Tail::Loop { .. } => Ok(and_then(inner.clone(), self.fresh_tmp(), self.end(tail))),
+                Tail::Return => {
+                    let identity = source_await_id(e)
+                        .ok_or_else(|| self.err("terminal source await lost its checked identity"))?;
+                    Ok(mark_source_task_operand(identity, inner.clone()))
+                }
+                Tail::Loop { .. } => {
+                    let suspension = source_await_id(e)
+                        .ok_or_else(|| self.err("source await lost its checked identity"))?;
+                    let bind = Local {
+                        name: self.fresh_tmp(),
+                        source_binding: None,
+                        ty: None,
+                        mutable: false,
+                        borrowed_view: false,
+                        returns_view: false,
+                    };
+                    let continuation = self.end(tail);
+                    self.lift_suspend(inner.clone(), Some(bind), continuation, scope, 0, Some(suspension))
+                }
             };
         }
         // A tail value (a match arm body, an `if` condition) with a nested
@@ -1253,8 +1265,8 @@ impl<'a> Ctx<'a> {
         inner: impl IntoTask,
         bind: Option<Local>,
         cont: Continuation<'_>,
+        source_suspension: Option<u32>,
     ) -> Result<Expr, String> {
-        let source_suspension = self.fresh_source_suspension()?;
         // Even a source-level discarded await needs a frame input. If its
         // produced type is must-consume, the generated segment's affine slot
         // must reject dropping it instead of losing the obligation in the
@@ -1284,7 +1296,7 @@ impl<'a> Ctx<'a> {
             cont_expr,
             cont.scope,
             next_line(cont.rest_lines, cont.line),
-            Some(source_suspension),
+            source_suspension,
         )
     }
 
@@ -1375,13 +1387,20 @@ impl<'a> Ctx<'a> {
             qualifiers: CallableQualifiers::ORDINARY,
         };
         let inner = inner.into_task();
-        match inner {
-            Expr::Call { name, mut args } if name == "chan.select" && args.len() == 2 => {
+        let scheduled = match (inner, source_suspension) {
+            (Expr::Call { name, mut args }, None) if name == "chan.select" && args.len() == 2 => {
                 args.push(cont_lambda);
-                Ok(call("chan.__select2_map", args))
+                call("chan.__select2_map", args)
             }
-            other => Ok(call("task.and_then", vec![other, cont_lambda])),
-        }
+            (other, source_suspension) => {
+                let task = match source_suspension {
+                    Some(identity) => mark_source_task_operand(identity, other),
+                    None => other,
+                };
+                call("task.and_then", vec![task, cont_lambda])
+            }
+        };
+        Ok(scheduled)
     }
 
     /// `for x in xs:` whose body awaits — lowered to `task.for_each(xs', fn(x):
@@ -1575,9 +1594,9 @@ impl<'a> Ctx<'a> {
         body: &Block,
         cont: Continuation<'_>,
     ) -> Result<Expr, String> {
-        if let Some(frame_loop) = self.try_lower_select_frame_loop(cond, body, cont)? {
-            return Ok(frame_loop);
-        }
+        // The select-frame rewrite has no checked source-task operand binding.
+        // Keep this loop on named segments until that optional path can carry
+        // the same proof as ordinary awaits.
         if block_contains_return(body) {
             // See `lower_for_await`: normal exit and early return must share the
             // enclosing async function's result type.
@@ -1600,251 +1619,6 @@ impl<'a> Ctx<'a> {
             None,
         )?;
         self.sequence_loop(entry, accs, cont)
-    }
-
-    /// Lower the narrow, compiler-owned select loop ABI.  This is deliberately
-    /// proof-gated: only a fixed-arity `chan.select(...).await` in the first body
-    /// statement, with scalar mutable lanes and no other suspension/control
-    /// escape, is eligible.  Everything else keeps the ordinary named-segment
-    /// lowering.
-    fn try_lower_select_frame_loop(
-        &mut self,
-        cond: &Expr,
-        body: &Block,
-        cont: Continuation<'_>,
-    ) -> Result<Option<Expr>, String> {
-        let Some(Stmt::Let { name: selected, value, .. }) = body.stmts.first() else {
-            return Ok(None);
-        };
-        let Some(selected_call) = as_await(value) else {
-            return Ok(None);
-        };
-        let Expr::Call { name, args } = selected_call else {
-            return Ok(None);
-        };
-        let arity = match name.as_str() {
-            "chan.select" => 2,
-            "chan.select3" => 3,
-            "chan.select4" => 4,
-            _ => return Ok(None),
-        };
-        if args.len() != arity || body.stmts.len() < 2 {
-            return Ok(None);
-        }
-        let tail_body = &body.stmts[1..];
-        let tail_lines = body.lines.get(1..).unwrap_or(&[]);
-        if tail_body.iter().any(stmt_contains_await)
-            || block_contains_return(&Block {
-                stmts: tail_body.to_vec(),
-                lines: tail_lines.to_vec(),
-                region: None,
-            })
-            || tail_body
-                .iter()
-                .any(|stmt| matches!(stmt, Stmt::Break | Stmt::Continue))
-        {
-            return Ok(None);
-        }
-
-        let mut used = crate::suspension::free_bindings(cond);
-        let mut selected_bound = HashSet::default();
-        selected_bound.insert(selected.clone());
-        used.extend(crate::suspension::free_bindings_in_block(
-            &Block {
-                stmts: tail_body.to_vec(),
-                lines: tail_lines.to_vec(),
-                region: None,
-            },
-            &selected_bound,
-        ));
-        for stmt in cont.rest {
-            match stmt {
-                Stmt::Let { value, .. }
-                | Stmt::Assign { value, .. }
-                | Stmt::Expr(value)
-                | Stmt::Yield(value) => used.extend(crate::suspension::free_bindings(value)),
-                Stmt::Return(Some(value)) => used.extend(crate::suspension::free_bindings(value)),
-                _ => {}
-            }
-        }
-        let used: HashSet<String> = used.into_iter().collect();
-        let lanes: Vec<Local> = cont
-            .scope
-            .iter()
-            .filter(|local| local.mutable && used.contains(&local.name))
-            .filter(|local| {
-                matches!(
-                    local.ty.as_ref().map(Type::unqualified),
-                    Some(Type::Named(name, args))
-                        if args.is_empty() && (name == "Int" || name == "Bool")
-                )
-            })
-            .cloned()
-            .collect();
-        // The compiler-owned select frame is the whole mutable carry set.
-        // A buffer root (for example a String accumulated by an arm) cannot
-        // be reconstructed from the Int frame after a ready drain or the
-        // final close wake.  Keep those loops on the ordinary segment path
-        // until the frame ABI has an exact root lane, rather than silently
-        // retaining a stale outer binding.
-        if cont.scope.iter().any(|local| {
-            local.mutable
-                && used.contains(&local.name)
-                && !lanes.iter().any(|lane| lane.name == local.name)
-        }) {
-            return Ok(None);
-        }
-
-        let frame = self.fresh_tmp();
-        let tag = self.fresh_tmp();
-        let option = self.fresh_tmp();
-        let payload = self.fresh_tmp();
-        let closed = self.fresh_tmp();
-        let frame_ty = Type::Named(
-            "List".to_string(),
-            vec![Type::Named("Int".to_string(), vec![])],
-        );
-        let frame_val = if lanes.is_empty() {
-            call("list.repeat", vec![Expr::Int(0), Expr::Int(0)])
-        } else {
-            Expr::List(
-                lanes
-                    .iter()
-                    .map(|lane| encode_lane(Expr::Var(lane.name.clone()), lane))
-                    .collect(),
-            )
-        };
-        let mut setup = vec![Stmt::Let {
-            name: frame.clone(),
-            ty: Some(frame_ty),
-            mutable: false,
-            value: frame_val,
-        }];
-
-        let mut step_stmts = Vec::new();
-        for (index, lane) in lanes.iter().enumerate() {
-            step_stmts.push(Stmt::Let {
-                name: lane.name.clone(),
-                ty: lane.ty.clone(),
-                mutable: true,
-                value: decode_lane(call("list.at", vec![Expr::Var(frame.clone()), Expr::Int(index as i64)]), lane),
-            });
-        }
-        let direct_result_arms = match arity {
-            2 => rewrite_local_select_matches(tail_body, &selected, &tag, &option, &payload),
-            3 => rewrite_local_select3_matches(tail_body, &selected, &tag, &option, &payload),
-            4 => rewrite_local_select4_matches(tail_body, &selected, &tag, &option, &payload),
-            _ => unreachable!("fixed arity was validated above"),
-        };
-        let direct_result_used = direct_result_arms.is_some();
-        if let Some(rewritten) = direct_result_arms {
-            step_stmts.extend(rewritten);
-        } else {
-            let selected_expr = call(
-                &crate::linker::definition_site_name("chan", match arity {
-                    2 => "select2_frame_decode",
-                    3 => "select3_frame_decode",
-                    4 => "select4_frame_decode",
-                    _ => unreachable!("fixed arity was validated above"),
-                }),
-                vec![Expr::Var(tag.clone()), Expr::Var(option.clone())],
-            );
-            step_stmts.push(Stmt::Let { name: selected.clone(), ty: None, mutable: false, value: selected_expr });
-            step_stmts.extend(tail_body.iter().cloned());
-        }
-        for (index, lane) in lanes.iter().enumerate() {
-            step_stmts.push(Stmt::Expr(call("list.set_at", vec![Expr::Var(frame.clone()), Expr::Int(index as i64), encode_lane(Expr::Var(lane.name.clone()), lane)])));
-        }
-        let closed_expr = if direct_result_used {
-            Expr::Match {
-                scrutinee: Box::new(Expr::Var(option.clone())),
-                arms: vec![
-                    MatchArm { line: 0, pattern: Pattern::Ctor { name: "None".into(), args: vec![] }, guard: None, body: Expr::Bool(true) },
-                    MatchArm { line: 0, pattern: Pattern::Ctor { name: "Some".into(), args: vec![Pattern::Wildcard] }, guard: None, body: Expr::Bool(false) },
-                ],
-            }
-        } else {
-            let (closed_ctor, ready_ctors): (&str, Vec<&str>) = match arity {
-                2 => ("Closed", vec!["First", "Second"]),
-                3 => ("Closed3", vec!["First3", "Second3", "Third3"]),
-                4 => ("Closed4", vec!["First4", "Second4", "Third4", "Fourth4"]),
-                _ => unreachable!("fixed arity was validated above"),
-            };
-            let mut arms = vec![MatchArm {
-                line: 0,
-                pattern: Pattern::Ctor { name: closed_ctor.into(), args: vec![] },
-                guard: None,
-                body: Expr::Bool(true),
-            }];
-            for ctor in ready_ctors {
-                arms.push(MatchArm {
-                    line: 0,
-                    pattern: Pattern::Ctor { name: ctor.into(), args: vec![Pattern::Wildcard] },
-                    guard: None,
-                    body: Expr::Bool(false),
-                });
-            }
-            Expr::Match {
-                scrutinee: Box::new(Expr::Var(selected.clone())),
-                arms,
-            }
-        };
-        step_stmts.push(Stmt::Let { name: closed.clone(), ty: Some(Type::Named("Bool".into(), vec![])), mutable: false, value: closed_expr });
-        step_stmts.push(Stmt::Expr(Expr::If {
-            cond: Box::new(Expr::Var(closed.clone())),
-            then_block: tail_block(Expr::Bool(true)),
-            else_block: Some(tail_block(Expr::Unary { op: UnOp::Not, expr: Box::new(cond.clone()) })),
-        }));
-        let step = self.fresh_tmp();
-        setup.push(Stmt::Let {
-            name: step.clone(),
-            ty: None,
-            mutable: false,
-            value: Expr::Lambda {
-                params: vec![
-                    Param { name: tag.clone(), ty: Some(Type::Named("Int".into(), vec![])), convention: Convention::Let, default: None },
-                    Param { name: option.clone(), ty: None, convention: Convention::Let, default: None },
-                    Param { name: frame.clone(), ty: Some(Type::Named("List".into(), vec![Type::Named("Int".into(), vec![])])), convention: Convention::Var, default: None },
-                ],
-                body: Block { stmts: step_stmts, lines: vec![first_line(&body.lines); 1 + lanes.len() * 2 + tail_body.len() + 2], region: None },
-                ret: Some(Type::Named("Bool".into(), vec![])),
-                qualifiers: CallableQualifiers::ORDINARY,
-            },
-        });
-
-        let mut done_stmts = Vec::new();
-        let done_frame = self.fresh_tmp();
-        for (index, lane) in lanes.iter().enumerate() {
-            done_stmts.push(Stmt::Let {
-                name: lane.name.clone(), ty: lane.ty.clone(), mutable: true,
-                value: decode_lane(call("list.at", vec![Expr::Var(done_frame.clone()), Expr::Int(index as i64)]), lane),
-            });
-        }
-        done_stmts.extend(cont.rest.iter().cloned());
-        let done_scope = cont.scope.to_vec();
-        let done_expr = self.go(&done_stmts, &vec![cont.line; done_stmts.len()], &done_scope, cont.tail)?;
-        setup.push(Stmt::Let {
-            name: self.fresh_tmp(), ty: None, mutable: false,
-            value: Expr::Lambda {
-                params: vec![Param { name: done_frame, ty: Some(Type::Named("List".into(), vec![Type::Named("Int".into(), vec![])])), convention: Convention::Let, default: None }],
-                body: tail_block_at(done_expr, cont.line),
-                ret: None,
-                qualifiers: CallableQualifiers::ORDINARY,
-            },
-        });
-        let done_name = match setup.last() { Some(Stmt::Let { name, .. }) => name.clone(), _ => unreachable!() };
-        let mut frame_args = args.clone();
-        frame_args.extend([Expr::Var(frame), Expr::Var(step), Expr::Var(done_name)]);
-        setup.push(Stmt::Expr(call(
-            match arity {
-                2 => "chan.select2_frame_loop",
-                3 => "chan.select3_frame_loop",
-                4 => "chan.select4_frame_loop",
-                _ => unreachable!("fixed arity was validated above"),
-            },
-            frame_args,
-        )));
-        Ok(Some(Expr::Block(Block { lines: vec![cont.line; setup.len()], stmts: setup, region: None })))
     }
 
     /// Lower a receive-until-closed loop onto the reusable one-way frame ABI.
@@ -2205,7 +1979,7 @@ fn resolved_async_parameter_type<'a>(
 /// As [`lower_async_fn`], with an optional receiver type for a method's `self`
 /// (so a carried `self` keeps its type when it becomes a segment parameter).
 fn lower_async_fn_with(
-    f: Function,
+    mut f: Function,
     is_entry: bool,
     counter: &mut usize,
     state_counter: &mut usize,
@@ -2213,6 +1987,7 @@ fn lower_async_fn_with(
     view_fns: &HashSet<String>,
     borrowed_shells: &BorrowedShellCatalog,
 ) -> Result<(Function, Vec<Function>), String> {
+    tag_source_awaits(&mut f.body)?;
     let declared_ret = f.ret.clone();
     if f.params
         .iter()
@@ -2257,7 +2032,6 @@ fn lower_async_fn_with(
         fname: f.name.clone(),
         counter,
         state_counter,
-        source_suspension_counter: 0,
         segments: Vec::new(),
         view_fns,
         borrowed_shells,
@@ -2549,13 +2323,65 @@ fn as_recv_stream(e: &Expr) -> Option<&Expr> {
     }
 }
 
-/// `await E` -> `Some(&E)`, else None.
+/// Private source identity travels with the awaited operand through hoisting
+/// and loop restructuring. The marker is removed before any generated body is
+/// type checked, so it cannot become a user callable or an ABI fallback.
+const SOURCE_AWAIT_MARKER: &str = "@async.await.source";
+
+fn mark_source_task_operand(identity: u32, task: Expr) -> Expr {
+    Expr::Block(Block {
+        stmts: vec![
+            Stmt::Let {
+                name: format!("{}{identity}", crate::suspension::SOURCE_TASK_OPERAND_PREFIX),
+                ty: None,
+                mutable: false,
+                value: Expr::Int(i64::from(identity)),
+            },
+            Stmt::Expr(task),
+        ],
+        lines: vec![0, 0],
+        region: None,
+    })
+}
+
+fn tag_source_awaits(body: &mut Block) -> Result<(), String> {
+    let mut next = 0_u32;
+    crate::ast::visit::visit_block_mut(body, &mut |expression| {
+        if let Expr::Unary { op: UnOp::Await, expr } = expression {
+            let identity = next;
+            next = next.checked_add(1).ok_or("source await count exceeds u32")?;
+            let operand = std::mem::replace(&mut **expr, Expr::Int(0));
+            **expr = Expr::Call {
+                name: SOURCE_AWAIT_MARKER.into(),
+                args: vec![Expr::Int(i64::from(identity)), operand],
+            };
+        }
+        Ok(())
+    })
+}
+
+fn source_await_id(expression: &Expr) -> Option<u32> {
+    let Expr::Unary { op: UnOp::Await, expr } = expression else { return None };
+    let Expr::Call { name, args } = expr.as_ref() else { return None };
+    if name != SOURCE_AWAIT_MARKER || args.len() != 2 { return None; }
+    let Expr::Int(identity) = args[0] else { return None };
+    u32::try_from(identity).ok()
+}
+
+fn source_await_operand(operand: &Expr) -> &Expr {
+    match operand {
+        Expr::Call { name, args } if name == SOURCE_AWAIT_MARKER && args.len() == 2 => &args[1],
+        other => other,
+    }
+}
+
+/// `await E` -> `Some(&E)`, else None. Strip the compiler-private identity.
 fn as_await(e: &Expr) -> Option<&Expr> {
     match e {
         Expr::Unary {
             op: UnOp::Await,
             expr,
-        } => Some(expr),
+        } => Some(source_await_operand(expr)),
         _ => None,
     }
 }
@@ -2714,461 +2540,6 @@ fn expr_contains_return(expression: &Expr) -> bool {
         // function whose loop is being lowered.
         Expr::Lambda { .. } => false,
         _ => false,
-    }
-}
-
-/// Rewrite a local, exhaustive `match selected` into a tag-plus-payload match.
-/// This deliberately accepts only immediate `First`/`Second`/`Closed` arms.
-/// Any escape, guard, nested use, or structural payload pattern retains the
-/// ordinary nominal `Selected` result.
-fn rewrite_local_select_matches(
-    tail: &[Stmt],
-    selected: &str,
-    tag: &str,
-    option: &str,
-    payload: &str,
-) -> Option<Vec<Stmt>> {
-    let mut rewritten_any = false;
-    let rewritten = tail
-        .iter()
-        .map(|stmt| rewrite_local_select_match_stmt(
-            stmt,
-            selected,
-            tag,
-            option,
-            payload,
-            &mut rewritten_any,
-        ))
-        .collect::<Vec<_>>();
-    if !rewritten_any {
-        return None;
-    }
-    let free = crate::suspension::free_bindings_in_block(
-        &Block {
-            stmts: rewritten.clone(),
-            lines: vec![0; rewritten.len()],
-            region: None,
-        },
-        &HashSet::default(),
-    );
-    (!free.iter().any(|name| name == selected)).then_some(rewritten)
-}
-
-fn rewrite_local_select_match_stmt(
-    stmt: &Stmt,
-    selected: &str,
-    tag: &str,
-    option: &str,
-    payload: &str,
-    rewritten_any: &mut bool,
-) -> Stmt {
-    let rewrite = |value: &Expr, rewritten_any: &mut bool| {
-        let Some(rewritten) = rewrite_local_select_match(value, selected, tag, option, payload) else {
-            return value.clone();
-        };
-        *rewritten_any = true;
-        rewritten
-    };
-    match stmt {
-        Stmt::Let { name, ty, mutable, value } => Stmt::Let {
-            name: name.clone(), ty: ty.clone(), mutable: *mutable,
-            value: rewrite(value, rewritten_any),
-        },
-        Stmt::Assign { name, value, place_depth } => Stmt::Assign {
-            place_depth: *place_depth,
-            name: name.clone(), value: rewrite(value, rewritten_any),
-        },
-        Stmt::LetPattern { pattern, value } => Stmt::LetPattern {
-            pattern: pattern.clone(), value: rewrite(value, rewritten_any),
-        },
-        Stmt::Return(Some(value)) => Stmt::Return(Some(rewrite(value, rewritten_any))),
-        Stmt::Yield(value) => Stmt::Yield(rewrite(value, rewritten_any)),
-        Stmt::Expr(value) => Stmt::Expr(rewrite(value, rewritten_any)),
-        _ => stmt.clone(),
-    }
-}
-
-fn rewrite_local_select_match(
-    expression: &Expr,
-    selected: &str,
-    tag: &str,
-    option: &str,
-    payload: &str,
-) -> Option<Expr> {
-    let Expr::Match { scrutinee, arms } = expression else { return None };
-    if !matches!(scrutinee.as_ref(), Expr::Var(name) if name == selected) || arms.len() != 3 {
-        return None;
-    }
-    let first = arms.iter().find(|arm| matches!(&arm.pattern,
-        Pattern::Ctor { name, args } if name == "First" && args.len() == 1
-    ))?;
-    let second = arms.iter().find(|arm| matches!(&arm.pattern,
-        Pattern::Ctor { name, args } if name == "Second" && args.len() == 1
-    ))?;
-    let closed = arms.iter().find(|arm| matches!(&arm.pattern,
-        Pattern::Ctor { name, args } if name == "Closed" && args.is_empty()
-    ))?;
-    if arms.iter().any(|arm| arm.guard.is_some()) {
-        return None;
-    }
-    let uses_payload = !matches!(&first.pattern, Pattern::Ctor { args, .. } if matches!(args.as_slice(), [Pattern::Wildcard]))
-        || !matches!(&second.pattern, Pattern::Ctor { args, .. } if matches!(args.as_slice(), [Pattern::Wildcard]));
-    let first_body = if uses_payload {
-        bind_select_payload(&first.pattern, payload, first.body.clone(), first.line)?
-    } else {
-        first.body.clone()
-    };
-    let second_body = if uses_payload {
-        bind_select_payload(&second.pattern, payload, second.body.clone(), second.line)?
-    } else {
-        second.body.clone()
-    };
-    Some(Expr::Match {
-        scrutinee: Box::new(if uses_payload {
-            call(&crate::linker::definition_site_name("chan", "select2_frame_payload"),
-                vec![Expr::Var(option.into())])
-        } else {
-            Expr::Var(option.into())
-        }),
-        arms: vec![
-            MatchArm {
-                line: first.line,
-                pattern: Pattern::Ctor {
-                    name: "Some".into(),
-                    args: vec![if uses_payload { Pattern::Var(payload.into()) } else { Pattern::Wildcard }],
-                },
-                guard: None,
-                body: Expr::If {
-                    cond: Box::new(Expr::Binary {
-                        op: BinOp::Eq,
-                        lhs: Box::new(Expr::Var(tag.into())),
-                        rhs: Box::new(Expr::Int(0)),
-                    }),
-                    then_block: tail_block_at(first_body, first.line),
-                    else_block: Some(tail_block_at(second_body, second.line)),
-                },
-            },
-            MatchArm {
-                line: closed.line,
-                pattern: Pattern::Ctor { name: "None".into(), args: vec![] },
-                guard: None,
-                body: closed.body.clone(),
-            },
-        ],
-    })
-}
-
-/// Three-way counterpart of `rewrite_local_select_matches`.  Keep this
-/// deliberately separate from arbitrary-select lowering: the compiler-owned
-/// frame ABI is fixed arity and all three payload constructors must be present.
-fn rewrite_local_select3_matches(
-    tail: &[Stmt],
-    selected: &str,
-    tag: &str,
-    option: &str,
-    payload: &str,
-) -> Option<Vec<Stmt>> {
-    let mut rewritten_any = false;
-    let rewritten = tail
-        .iter()
-        .map(|stmt| rewrite_local_select3_match_stmt(
-            stmt,
-            selected,
-            tag,
-            option,
-            payload,
-            &mut rewritten_any,
-        ))
-        .collect::<Vec<_>>();
-    if !rewritten_any {
-        return None;
-    }
-    let free = crate::suspension::free_bindings_in_block(
-        &Block {
-            stmts: rewritten.clone(),
-            lines: vec![0; rewritten.len()],
-            region: None,
-        },
-        &HashSet::default(),
-    );
-    (!free.iter().any(|name| name == selected)).then_some(rewritten)
-}
-
-fn rewrite_local_select3_match_stmt(
-    stmt: &Stmt,
-    selected: &str,
-    tag: &str,
-    option: &str,
-    payload: &str,
-    rewritten_any: &mut bool,
-) -> Stmt {
-    let rewrite = |value: &Expr, rewritten_any: &mut bool| {
-        let Some(rewritten) = rewrite_local_select3_match(value, selected, tag, option, payload) else {
-            return value.clone();
-        };
-        *rewritten_any = true;
-        rewritten
-    };
-    match stmt {
-        Stmt::Let { name, ty, mutable, value } => Stmt::Let {
-            name: name.clone(), ty: ty.clone(), mutable: *mutable,
-            value: rewrite(value, rewritten_any),
-        },
-        Stmt::Assign { name, value, place_depth } => Stmt::Assign {
-            place_depth: *place_depth,
-            name: name.clone(), value: rewrite(value, rewritten_any),
-        },
-        Stmt::LetPattern { pattern, value } => Stmt::LetPattern {
-            pattern: pattern.clone(), value: rewrite(value, rewritten_any),
-        },
-        Stmt::Return(Some(value)) => Stmt::Return(Some(rewrite(value, rewritten_any))),
-        Stmt::Yield(value) => Stmt::Yield(rewrite(value, rewritten_any)),
-        Stmt::Expr(value) => Stmt::Expr(rewrite(value, rewritten_any)),
-        _ => stmt.clone(),
-    }
-}
-
-fn rewrite_local_select3_match(
-    expression: &Expr,
-    selected: &str,
-    tag: &str,
-    option: &str,
-    payload: &str,
-) -> Option<Expr> {
-    let Expr::Match { scrutinee, arms } = expression else { return None };
-    if !matches!(scrutinee.as_ref(), Expr::Var(name) if name == selected) || arms.len() != 4 {
-        return None;
-    }
-    let first = arms.iter().find(|arm| matches!(&arm.pattern,
-        Pattern::Ctor { name, args } if name == "First3" && args.len() == 1
-    ))?;
-    let second = arms.iter().find(|arm| matches!(&arm.pattern,
-        Pattern::Ctor { name, args } if name == "Second3" && args.len() == 1
-    ))?;
-    let third = arms.iter().find(|arm| matches!(&arm.pattern,
-        Pattern::Ctor { name, args } if name == "Third3" && args.len() == 1
-    ))?;
-    let closed = arms.iter().find(|arm| matches!(&arm.pattern,
-        Pattern::Ctor { name, args } if name == "Closed3" && args.is_empty()
-    ))?;
-    if arms.iter().any(|arm| arm.guard.is_some()) {
-        return None;
-    }
-    let uses_payload = !matches!(&first.pattern, Pattern::Ctor { args, .. } if matches!(args.as_slice(), [Pattern::Wildcard]))
-        || !matches!(&second.pattern, Pattern::Ctor { args, .. } if matches!(args.as_slice(), [Pattern::Wildcard]))
-        || !matches!(&third.pattern, Pattern::Ctor { args, .. } if matches!(args.as_slice(), [Pattern::Wildcard]));
-    let first_body = if uses_payload {
-        bind_select_payload(&first.pattern, payload, first.body.clone(), first.line)?
-    } else {
-        first.body.clone()
-    };
-    let second_body = if uses_payload {
-        bind_select_payload(&second.pattern, payload, second.body.clone(), second.line)?
-    } else {
-        second.body.clone()
-    };
-    let third_body = if uses_payload {
-        bind_select_payload(&third.pattern, payload, third.body.clone(), third.line)?
-    } else {
-        third.body.clone()
-    };
-    Some(Expr::Match {
-        scrutinee: Box::new(if uses_payload {
-            call(&crate::linker::definition_site_name("chan", "select3_frame_payload"),
-                vec![Expr::Var(option.into())])
-        } else {
-            Expr::Var(option.into())
-        }),
-        arms: vec![
-            MatchArm {
-                line: first.line,
-                pattern: Pattern::Ctor {
-                    name: "Some".into(),
-                    args: vec![if uses_payload { Pattern::Var(payload.into()) } else { Pattern::Wildcard }],
-                },
-                guard: None,
-                body: Expr::If {
-                    cond: Box::new(Expr::Binary {
-                        op: BinOp::Eq,
-                        lhs: Box::new(Expr::Var(tag.into())),
-                        rhs: Box::new(Expr::Int(0)),
-                    }),
-                    then_block: tail_block_at(first_body, first.line),
-                    else_block: Some(tail_block(Expr::If {
-                        cond: Box::new(Expr::Binary {
-                            op: BinOp::Eq,
-                            lhs: Box::new(Expr::Var(tag.into())),
-                            rhs: Box::new(Expr::Int(1)),
-                        }),
-                        then_block: tail_block_at(second_body, second.line),
-                        else_block: Some(tail_block_at(third_body, third.line)),
-                    })),
-                },
-            },
-            MatchArm {
-                line: closed.line,
-                pattern: Pattern::Ctor { name: "None".into(), args: vec![] },
-                guard: None,
-                body: closed.body.clone(),
-            },
-        ],
-    })
-}
-
-/// Four-way counterpart of `rewrite_local_select3_matches`. The source-order
-/// tag is retained in the compiler-owned step callback; the typed payload is
-/// materialized only as an `Option(m)`, never as a nominal `Selected4(m)`.
-fn rewrite_local_select4_matches(
-    tail: &[Stmt],
-    selected: &str,
-    tag: &str,
-    option: &str,
-    payload: &str,
-) -> Option<Vec<Stmt>> {
-    let mut rewritten_any = false;
-    let rewritten = tail
-        .iter()
-        .map(|stmt| rewrite_local_select4_match_stmt(
-            stmt, selected, tag, option, payload, &mut rewritten_any,
-        ))
-        .collect::<Vec<_>>();
-    if !rewritten_any {
-        return None;
-    }
-    let free = crate::suspension::free_bindings_in_block(
-        &Block { stmts: rewritten.clone(), lines: vec![0; rewritten.len()], region: None },
-        &HashSet::default(),
-    );
-    (!free.iter().any(|name| name == selected)).then_some(rewritten)
-}
-
-fn rewrite_local_select4_match_stmt(
-    stmt: &Stmt,
-    selected: &str,
-    tag: &str,
-    option: &str,
-    payload: &str,
-    rewritten_any: &mut bool,
-) -> Stmt {
-    let rewrite = |value: &Expr, rewritten_any: &mut bool| {
-        let Some(rewritten) = rewrite_local_select4_match(value, selected, tag, option, payload) else {
-            return value.clone();
-        };
-        *rewritten_any = true;
-        rewritten
-    };
-    match stmt {
-        Stmt::Let { name, ty, mutable, value } => Stmt::Let {
-            name: name.clone(), ty: ty.clone(), mutable: *mutable,
-            value: rewrite(value, rewritten_any),
-        },
-        Stmt::Assign { name, value, place_depth } => Stmt::Assign {
-            place_depth: *place_depth,
-            name: name.clone(), value: rewrite(value, rewritten_any),
-        },
-        Stmt::LetPattern { pattern, value } => Stmt::LetPattern {
-            pattern: pattern.clone(), value: rewrite(value, rewritten_any),
-        },
-        Stmt::Return(Some(value)) => Stmt::Return(Some(rewrite(value, rewritten_any))),
-        Stmt::Yield(value) => Stmt::Yield(rewrite(value, rewritten_any)),
-        Stmt::Expr(value) => Stmt::Expr(rewrite(value, rewritten_any)),
-        _ => stmt.clone(),
-    }
-}
-
-fn rewrite_local_select4_match(
-    expression: &Expr,
-    selected: &str,
-    tag: &str,
-    option: &str,
-    payload: &str,
-) -> Option<Expr> {
-    let Expr::Match { scrutinee, arms } = expression else { return None };
-    if !matches!(scrutinee.as_ref(), Expr::Var(name) if name == selected) || arms.len() != 5 {
-        return None;
-    }
-    let arm = |name: &str| arms.iter().find(|arm| matches!(&arm.pattern,
-        Pattern::Ctor { name: found, args } if found.as_str() == name && args.len() == 1
-    ));
-    let first = arm("First4")?;
-    let second = arm("Second4")?;
-    let third = arm("Third4")?;
-    let fourth = arm("Fourth4")?;
-    let closed = arms.iter().find(|arm| matches!(&arm.pattern,
-        Pattern::Ctor { name, args } if name == "Closed4" && args.is_empty()
-    ))?;
-    if arms.iter().any(|arm| arm.guard.is_some()) {
-        return None;
-    }
-    let uses_payload = [first, second, third, fourth].iter().any(|arm| {
-        !matches!(&arm.pattern, Pattern::Ctor { args, .. } if matches!(args.as_slice(), [Pattern::Wildcard]))
-    });
-    let body = |arm: &MatchArm| {
-        if uses_payload {
-            bind_select_payload(&arm.pattern, payload, arm.body.clone(), arm.line)
-        } else {
-            Some(arm.body.clone())
-        }
-    };
-    let first_body = body(first)?;
-    let second_body = body(second)?;
-    let third_body = body(third)?;
-    let fourth_body = body(fourth)?;
-    let branch = |index, then_body, else_body, line| Expr::If {
-        cond: Box::new(Expr::Binary {
-            op: BinOp::Eq,
-            lhs: Box::new(Expr::Var(tag.into())),
-            rhs: Box::new(Expr::Int(index)),
-        }),
-        then_block: tail_block_at(then_body, line),
-        else_block: Some(tail_block(else_body)),
-    };
-    let dispatched = branch(
-        0,
-        first_body,
-        branch(1, second_body, branch(2, third_body, fourth_body, third.line), second.line),
-        first.line,
-    );
-    Some(Expr::Match {
-        scrutinee: Box::new(if uses_payload {
-            call(&crate::linker::definition_site_name("chan", "select4_frame_payload"),
-                vec![Expr::Var(option.into())])
-        } else {
-            Expr::Var(option.into())
-        }),
-        arms: vec![
-            MatchArm {
-                line: first.line,
-                pattern: Pattern::Ctor {
-                    name: "Some".into(),
-                    args: vec![if uses_payload { Pattern::Var(payload.into()) } else { Pattern::Wildcard }],
-                },
-                guard: None,
-                body: dispatched,
-            },
-            MatchArm {
-                line: closed.line,
-                pattern: Pattern::Ctor { name: "None".into(), args: vec![] },
-                guard: None,
-                body: closed.body.clone(),
-            },
-        ],
-    })
-}
-
-fn bind_select_payload(pattern: &Pattern, payload: &str, body: Expr, line: u32) -> Option<Expr> {
-    let Pattern::Ctor { args, .. } = pattern else { return None };
-    match args.as_slice() {
-        [Pattern::Var(name)] => Some(Expr::Block(Block {
-            stmts: vec![
-                Stmt::Let { name: name.clone(), ty: None, mutable: false, value: Expr::Var(payload.into()) },
-                Stmt::Expr(body),
-            ],
-            lines: vec![line, line],
-            region: None,
-        })),
-        [Pattern::Wildcard] => Some(body),
-        _ => None,
     }
 }
 

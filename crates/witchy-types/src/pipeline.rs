@@ -39,7 +39,7 @@ use witchy_canonical_source::rooted_view::RootedViewStorage;
 use witchy_canonical_source::storage::StoragePlan;
 use witchy_canonical_source::source::{
     CanonicalSourceParts, CanonicalSourceView, CheckedAccessQuery, CheckedSourceDigests,
-    CheckedSourceWitness, PrecompiledExport,
+    CheckedSourceWitness, PrecompiledExport, TaskAwaitProof,
 };
 use crate::precompiled_declarations::PrecompiledDeclarationEnvironment;
 use crate::optimization_readiness::OptimizationReadiness;
@@ -142,6 +142,9 @@ pub struct CanonicalCheckedSource {
     precompiled_exports: Vec<PrecompiledExport>,
     slice_carriers: Vec<witchy_canonical_source::carrier::CarrierElement>,
     concrete_types: Vec<Type>,
+    task_awaits: Vec<TaskAwaitProof>,
+    task_await_items: BTreeMap<u32, usize>,
+    task_operand_items: BTreeMap<u32, Vec<usize>>,
 }
 
 impl CanonicalCheckedSource {
@@ -165,6 +168,9 @@ impl CanonicalCheckedSource {
             precompiled_exports: &self.precompiled_exports,
             slice_carriers: &self.slice_carriers,
             concrete_types: &self.concrete_types,
+            task_awaits: &self.task_awaits,
+            task_await_items: &self.task_await_items,
+            task_operand_items: &self.task_operand_items,
         })
     }
 
@@ -803,6 +809,180 @@ fn obligations_digest(obligations: &BTreeSet<CanonicalObligation>) -> [u8; 32] {
     *hasher.finalize().as_bytes()
 }
 
+fn bind_task_await_proofs(
+    checked: &CheckedModule,
+    final_module: &Module,
+) -> Result<(Vec<TaskAwaitProof>, BTreeMap<u32, usize>, BTreeMap<u32, Vec<usize>>), PipelineError> {
+    let Some(source) = checked.typed_async_source() else {
+        return Ok((Vec::new(), BTreeMap::new(), BTreeMap::new()));
+    };
+    let refuse = |message: String| PipelineError::Type(TypeError { message });
+    let inventory = checked.source_async_control_flow().map_err(refuse)?;
+    let expected = checked.async_surface().modules.iter().flat_map(|module| {
+        module.items.iter().map(move |item| (
+            module.module.clone(), item.id.item, item.id.method,
+        ))
+    }).collect::<BTreeSet<_>>();
+    let actual = inventory.callables.iter().map(|flow| (
+        flow.callable.module.clone(), flow.callable.surface.item,
+        flow.callable.surface.method,
+    )).collect::<BTreeSet<_>>();
+    if actual != expected {
+        return Err(refuse("typed async source inventory differs from checked source surface".into()));
+    }
+    let mut origins = crate::task_provenance::checked_await_origins(source.module(), source.table())
+        .map_err(PipelineError::Type)?;
+    let mut awaits = Vec::new();
+    let mut by_source = BTreeMap::new();
+    for flow in &inventory.callables {
+        let function = crate::typed_async_lowering::typed_source_function(source, &flow.callable)
+            .ok_or_else(|| refuse(format!("checked async source lacks callable {:?}", flow.callable)))?;
+        // Syntax lowering tags await nodes in AST preorder before CPS can
+        // construct later loop continuations ahead of earlier source bodies.
+        let mut await_operations = flow.operations.iter()
+            .filter(|operation| operation.kind == crate::async_control_flow::SourceAsyncOperationKind::Await)
+            .collect::<Vec<_>>();
+        await_operations.sort_by_key(|operation| operation.expression);
+        for (suspension, operation) in await_operations.into_iter().enumerate() {
+            let suspension = u32::try_from(suspension)
+                .map_err(|_| refuse("checked async suspension count exceeds u32".into()))?;
+            let expression_id = operation.expression.ok_or_else(|| refuse(format!(
+                "checked async await {} has no expression identity", operation.ordinal,
+            )))?;
+            let expression = crate::async_control_flow::source_expression(function, expression_id)
+                .ok_or_else(|| refuse(format!("checked async await {} lost its typed expression", operation.ordinal)))?;
+            if !matches!(expression, witchy_syntax::ast::Expr::Unary {
+                op: witchy_syntax::ast::UnOp::Await, ..
+            }) {
+                return Err(refuse(format!("checked async operation {} is not an await", operation.ordinal)));
+            }
+            let origin = origins.remove(&(expression as *const _ as usize))
+                .ok_or_else(|| refuse(format!("checked async await {} lacks task value provenance", operation.ordinal)))?;
+            let proof = TaskAwaitProof::from_checked_frontend(
+                flow.callable.module.clone(), flow.callable.surface.item,
+                flow.callable.surface.method, suspension, flow.mode, origin,
+            );
+            if flow.mode.is_opt() && !proof.opt_compatible() {
+                return Err(refuse(format!("checked opt await {} lacks opt task provenance", operation.ordinal)));
+            }
+            let key = (flow.callable.module.clone(), flow.callable.surface.item,
+                flow.callable.surface.method, suspension);
+            if by_source.insert(key, awaits.len()).is_some() {
+                return Err(refuse("duplicate checked async await identity".into()));
+            }
+            awaits.push(proof);
+        }
+    }
+    if !origins.is_empty() {
+        return Err(refuse("typed await provenance has no checked source operation".into()));
+    }
+    let mut final_items = BTreeMap::new();
+    let mut continuation_names = BTreeMap::new();
+    for (ordinal, item) in final_module.items.iter().enumerate() {
+        let witchy_syntax::ast::Item::Function(function) = item else { continue };
+        let Some(suspension) = witchy_syntax::suspension::source_suspension(function) else { continue };
+        let (source_item, source_method) = witchy_syntax::suspension::async_surface(function)
+            .ok_or_else(|| refuse(format!("final async function `{}` lost its source item", function.name)))?;
+        let module = witchy_syntax::suspension::async_surface_module(function)
+            .ok_or_else(|| refuse(format!("final async function `{}` lost its source module", function.name)))?;
+        let source_item = u32::try_from(source_item)
+            .map_err(|_| refuse("final async source item exceeds u32".into()))?;
+        let source_method = source_method.map(|method| u32::try_from(method)
+            .map_err(|_| refuse("final async source method exceeds u32".into()))).transpose()?;
+        let proof = by_source.get(&(module.to_string(), source_item, source_method, suspension))
+            .copied().ok_or_else(|| refuse(format!(
+                "final async continuation `{}` lacks checked task provenance", function.name,
+            )))?;
+        if continuation_names.insert(function.name.clone(), proof).is_some() {
+            return Err(refuse("duplicate final async continuation name".into()));
+        }
+        final_items.insert(u32::try_from(ordinal).map_err(|_| refuse("final item exceeds u32".into()))?, proof);
+    }
+    let mut accounted = BTreeSet::new();
+    let mut task_operand_items = BTreeMap::<u32, Vec<usize>>::new();
+    let mut marked_scheduler_edges = BTreeSet::new();
+    let mut scheduler_edges = BTreeMap::<usize, u32>::new();
+    let mut marked_operands = BTreeMap::<usize, usize>::new();
+    let mut scheduler_operands = Vec::<(usize, usize)>::new();
+    let mut inspect = |item: u32, function: &witchy_syntax::ast::Function| -> Result<(), PipelineError> {
+        witchy_syntax::ast::visit::visit_block(&function.body, &mut |expression| {
+            if let witchy_syntax::ast::Expr::Block(block) = expression
+                && let Some(witchy_syntax::ast::Stmt::Let { name, .. }) = block.stmts.first()
+                && let Some(identity) = name.strip_prefix(witchy_syntax::suspension::SOURCE_TASK_OPERAND_PREFIX)
+            {
+                let [witchy_syntax::ast::Stmt::Let { value: witchy_syntax::ast::Expr::Int(encoded), .. },
+                    witchy_syntax::ast::Stmt::Expr(_task)] = block.stmts.as_slice() else {
+                    return Err(refuse("malformed compiler source-task operand marker".into()));
+                };
+                let identity = identity.parse::<u32>()
+                    .map_err(|_| refuse("invalid compiler source-task operand identity".into()))?;
+                if *encoded != i64::from(identity) {
+                    return Err(refuse("compiler source-task operand identity mismatch".into()));
+                }
+                let (source_item, source_method) = witchy_syntax::suspension::async_surface(function)
+                    .ok_or_else(|| refuse("marked task operand has no source callable".into()))?;
+                let module = witchy_syntax::suspension::async_surface_module(function)
+                    .ok_or_else(|| refuse("marked task operand has no source module".into()))?;
+                let source_item = u32::try_from(source_item)
+                    .map_err(|_| refuse("marked task source item exceeds u32".into()))?;
+                let source_method = source_method.map(|method| u32::try_from(method)
+                    .map_err(|_| refuse("marked task source method exceeds u32".into()))).transpose()?;
+                let proof = by_source.get(&(module.to_string(), source_item, source_method, identity))
+                    .copied().ok_or_else(|| refuse("marked task operand lacks checked await proof".into()))?;
+                let mode = witchy_canonical_source::source::source_execution_mode(function, &final_module.modes);
+                if mode != awaits[proof].source_mode() || (mode.is_opt() && !awaits[proof].opt_compatible()) {
+                    return Err(refuse("marked task operand has incompatible execution mode".into()));
+                }
+                if !accounted.insert(proof) {
+                    return Err(refuse("checked await has duplicate executable task operands".into()));
+                }
+                task_operand_items.entry(item).or_default().push(proof);
+                marked_operands.insert(expression as *const _ as usize, proof);
+            }
+            let witchy_syntax::ast::Expr::Call { name, args } = expression else { return Ok(()) };
+            if !crate::suspension_carrier::call_family(name, "task.and_then")
+                && !crate::suspension_carrier::call_family(name, "chan.__select2_map")
+            { return Ok(()); }
+            let Some(witchy_syntax::ast::Expr::Lambda { body, .. }) = args.last() else { return Ok(()) };
+            let [witchy_syntax::ast::Stmt::Expr(witchy_syntax::ast::Expr::Call { name: target, .. })]
+                = body.stmts.as_slice() else { return Ok(()) };
+            let Some(proof) = continuation_names.get(target).copied() else { return Ok(()) };
+            let task = args.first()
+                .ok_or_else(|| refuse("source await scheduler has no task operand".into()))?;
+            scheduler_operands.push((task as *const _ as usize, proof));
+            let count = scheduler_edges.entry(proof).or_default();
+            *count = count.checked_add(1)
+                .ok_or_else(|| refuse("async scheduler edge count exceeds u32".into()))?;
+            Ok(())
+        })
+    };
+    for (ordinal, item) in final_module.items.iter().enumerate() {
+        let ordinal = u32::try_from(ordinal).map_err(|_| refuse("final item exceeds u32".into()))?;
+        match item {
+            witchy_syntax::ast::Item::Function(function) => inspect(ordinal, function)?,
+            witchy_syntax::ast::Item::Impl(definition) => {
+                for method in &definition.methods { inspect(ordinal, method)?; }
+            }
+            _ => {}
+        }
+    }
+    if continuation_names.values().any(|proof| scheduler_edges.get(proof) != Some(&1)) {
+        return Err(refuse("checked async continuation lacks one unique scheduler edge".into()));
+    }
+    for (task, proof) in scheduler_operands {
+        if marked_operands.get(&task) != Some(&proof) {
+            return Err(refuse("scheduler task operand does not match checked source await".into()));
+        }
+        marked_scheduler_edges.insert(proof);
+    }
+    if accounted.len() != awaits.len()
+        || continuation_names.values().any(|proof| !marked_scheduler_edges.contains(proof))
+    {
+        return Err(refuse("checked async await lacks one marked executable task operand".into()));
+    }
+    Ok((awaits, final_items, task_operand_items))
+}
+
 fn attach_canonical_source(
     mut checked: CheckedModule,
     typed: typeck::TypedModule,
@@ -814,6 +994,7 @@ fn attach_canonical_source(
     dynamic_runtime_plan: Option<RuntimeTypePlan>,
     precompiled_declarations: PrecompiledDeclarationEnvironment,
 ) -> Result<CheckedModule, PipelineError> {
+    let (task_awaits, task_await_items, task_operand_items) = bind_task_await_proofs(&checked, typed.module())?;
     let launch_contract_payload = capabilities::launch_contract_payload(checked.module());
     let launch_contract_digest = launch_contract_digest(&launch_contract_payload);
     let optimization_readiness = OptimizationReadiness::from_typed(&typed, source_bundle_digest)
@@ -883,6 +1064,9 @@ fn attach_canonical_source(
         precompiled_exports,
         slice_carriers,
         concrete_types,
+        task_awaits,
+        task_await_items,
+        task_operand_items,
     });
     Ok(checked)
 }

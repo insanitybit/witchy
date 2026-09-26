@@ -94,7 +94,7 @@ impl<'a> Ctx<'a> {
             Expr::Unary { op: UnOp::Await, expr } => {
                 self.hoist_in_place(expr, scope, pending)?;
                 let name = self.fresh_tmp();
-                if let Some(ty) = self.awaited_value_type(&**expr, scope) {
+                if let Some(ty) = self.awaited_value_type(source_await_operand(expr), scope) {
                     pending.types.insert(name.clone(), ty);
                 }
                 let value = std::mem::replace(e, Expr::Var(name.clone()));

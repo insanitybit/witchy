@@ -62,6 +62,21 @@ is needed for soundness.
 
 ## Exact-tip evidence checkpoint
 
+Executable task-operand identity (implemented but unverified, 2026-09-26):
+the linked checker binds each source `await` to its exact typed pre-CPS
+operand and mode proof. Async lowering carries that identity through hoisting
+and loop restructuring into the final executable task operand; the checked
+pipeline verifies its placement at the scheduler call or direct return before
+minting the canonical source view. Canonical lowering and candidate ABI
+validation consume the source-authenticated mode fact. The optional select
+frame rewrite, which lost the operand identity, was removed; named segments
+retain an admitted unoptimized path. Existing nested-await, select-loop, and
+receive-loop programs run on admitted Wasm; the receive fixture now checks its
+hand-computed result and zero canonical heap leaks. SafeWIR does not yet prove
+value-level correspondence between a candidate WIR task producer and this
+source operand; an optimizer can still substitute a different same-ABI task.
+Task replay, cancellation disposition, and the full A-O evidence remain open.
+
 Stored containment classification (implemented but unverified, 2026-09-26):
 the two production source-storage walks for opaque view owners and capability
 authority now use one finite traversal of instantiated stored children. This
