@@ -198,11 +198,10 @@ pub(super) struct Checker {
     /// Per-function type parameters (name, var id), from lowercase type names in
     /// signatures. Generalized: instantiated fresh at each call site.
     pub(super) fn_typarams: HashMap<String, Vec<(String, u32)>>,
-    /// Full generic payload shapes formed into rooted views. Their stored
-    /// fields are checked after call-site instantiation; a phantom type
-    /// argument is bound to identity without acquiring a stored obligation.
-    pub(super) fn_view_payload_constraints: HashMap<String, Vec<Ty>>,
-    pub(super) current_view_payload_constraints: Vec<Ty>,
+    /// Generic view and replay-capture storage judgments rechecked after
+    /// direct-call instantiation. Function-value transport remains refused.
+    pub(super) fn_storage_obligations: HashMap<String, Vec<StorageObligation>>,
+    pub(super) current_storage_obligations: Vec<StorageObligation>,
     /// Per-function call obligations from `where` clauses, keyed to the same
     /// signature type-parameter var ids as `fn_typarams`. These are checked at a
     /// generic call site so wrapper functions cannot erase a callee's public

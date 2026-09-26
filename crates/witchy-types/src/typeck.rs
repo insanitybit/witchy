@@ -148,8 +148,24 @@ enum FloatKeyKind {
 /// the value's actual type arguments on access.
 type RecordInfo = (Vec<u32>, Vec<(String, Ty)>);
 type CallObligations = Vec<(Ty, String)>;
-type ViewPayloadConstraints = Vec<Ty>;
-type UserCallSig = (Vec<Ty>, Ty, CallObligations, ViewPayloadConstraints);
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum StorageObligation {
+    RootedView(Ty),
+    ReplayCapture(Ty),
+}
+type StorageObligations = Vec<StorageObligation>;
+type UserCallSig = (Vec<Ty>, Ty, CallObligations, StorageObligations);
+fn replay_snapshot_reason(reason: witchy_canonical_source::storage::SnapshotRefusal) -> &'static str {
+    use witchy_canonical_source::storage::SnapshotRefusal;
+    match reason {
+        SnapshotRefusal::UniqueOwner => "affine unique storage",
+        SnapshotRefusal::MustConsume => "must-consume storage",
+        SnapshotRefusal::OnceCallable => "affine once-callable storage",
+        SnapshotRefusal::Authority => "unproved capability storage",
+        SnapshotRefusal::ResourceLimit => "storage beyond the recursive proof limit",
+        SnapshotRefusal::UnprovedStorage => "storage without a checked replay snapshot proof",
+    }
+}
 type AnonUnionVariants = Vec<(String, Vec<Ty>)>;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -659,7 +675,7 @@ impl Checker {
         ret: &Ty,
         typarams: &HashSet<u32>,
         bounds: &[(u32, String)],
-        view_payload_constraints: &[Ty],
+        storage_obligations: &[StorageObligation],
     ) -> UserCallSig {
         let fresh_map = self.fresh_typeparam_map(typarams);
         let p = params.iter().map(|t| self.subst_vars(t, &fresh_map)).collect();
@@ -668,11 +684,14 @@ impl Checker {
             .iter()
             .map(|(var, tr)| (self.subst_vars(&Ty::Var(*var), &fresh_map), tr.clone()))
             .collect();
-        let views = view_payload_constraints
+        let storage = storage_obligations
             .iter()
-            .map(|payload| self.subst_vars(payload, &fresh_map))
+            .map(|obligation| match obligation {
+                StorageObligation::RootedView(payload) => StorageObligation::RootedView(self.subst_vars(payload, &fresh_map)),
+                StorageObligation::ReplayCapture(capture) => StorageObligation::ReplayCapture(self.subst_vars(capture, &fresh_map)),
+            })
             .collect();
-        (p, r, bs, views)
+        (p, r, bs, storage)
     }
 
     fn fresh_typeparam_map(&mut self, typarams: &HashSet<u32>) -> HashMap<u32, Ty> {
@@ -1757,6 +1776,7 @@ impl Checker {
             .rev()
             .find_map(|types| types.get(name).cloned())
     }
+
 
     fn remember_callable_unique_contract(&mut self, name: String, contract: UniqueCallableContract) {
         self.callable_unique_contracts
@@ -3455,6 +3475,21 @@ impl Checker {
         }
     }
 
+    fn collect_storage_variables(&self, ty: &Ty, variables: &mut HashSet<u32>) {
+        match self.resolve(ty) {
+            Ty::Var(variable) => { variables.insert(variable); }
+            Ty::View(payload) | Ty::List(payload) => self.collect_storage_variables(&payload, variables),
+            Ty::Tuple(items) | Ty::Named(_, items) | Ty::Dyn(_, items) => {
+                for item in items.iter() { self.collect_storage_variables(item, variables); }
+            }
+            Ty::Fn(params, result, _, _, _) => {
+                for parameter in params.iter() { self.collect_storage_variables(parameter, variables); }
+                self.collect_storage_variables(&result, variables);
+            }
+            _ => {}
+        }
+    }
+
     /// Admit a payload for a copyable rooted-view carrier. Generic variables
     /// belonging to the current declaration become retained call-site
     /// obligations; every other unresolved variable is rejected now. This
@@ -3462,30 +3497,9 @@ impl Checker {
     /// `a` to authority, must-consume, or affine storage.
     fn admit_view_payload(&mut self, ty: &Ty, context: &str) -> Result<(), TypeError> {
         use witchy_canonical_source::storage::{SnapshotRefusal, StoragePlan, snapshot_eligibility};
-        fn collect(checker: &Checker, ty: &Ty, variables: &mut HashSet<u32>) {
-            match checker.resolve(ty) {
-                Ty::Var(variable) => {
-                    variables.insert(variable);
-                }
-                Ty::View(payload) | Ty::List(payload) => collect(checker, &payload, variables),
-                Ty::Tuple(items) | Ty::Named(_, items) | Ty::Dyn(_, items) => {
-                    for item in items.iter() {
-                        collect(checker, item, variables);
-                    }
-                }
-                Ty::Fn(params, result, _, _, _) => {
-                    for parameter in params.iter() {
-                        collect(checker, parameter, variables);
-                    }
-                    collect(checker, &result, variables);
-                }
-                _ => {}
-            }
-        }
-
         let resolved = self.resolve(ty);
         let mut variables = HashSet::new();
-        collect(self, &resolved, &mut variables);
+        self.collect_storage_variables(&resolved, &mut variables);
         let current: HashSet<u32> = self.current_typarams.values().copied().collect();
         let mut deferred = HashMap::new();
         for variable in variables {
@@ -3497,8 +3511,10 @@ impl Checker {
                 ));
             }
         }
-        if !deferred.is_empty() && !self.current_view_payload_constraints.contains(&resolved) {
-            self.current_view_payload_constraints.push(resolved.clone());
+        if !deferred.is_empty()
+            && !self.current_storage_obligations.contains(&StorageObligation::RootedView(resolved.clone()))
+        {
+            self.current_storage_obligations.push(StorageObligation::RootedView(resolved.clone()));
         }
         // A declared generic variable is proved again at specialization. Use
         // an inline scalar representative now so all other instantiated
@@ -3510,6 +3526,7 @@ impl Checker {
         if let Err(reason) = snapshot_eligibility(&source, &self.canonical_definitions) {
             let explanation = match reason {
                 SnapshotRefusal::Authority => "authority storage has no lawful retained snapshot",
+                SnapshotRefusal::UniqueOwner => "affine unique storage has no lawful retained snapshot",
                 SnapshotRefusal::MustConsume => "must-consume storage cannot be copied into a persistent view",
                 SnapshotRefusal::OnceCallable => "affine once-callable storage cannot be copied into a persistent view",
                 SnapshotRefusal::ResourceLimit => "view storage exceeds the recursive proof limit",
@@ -3522,6 +3539,71 @@ impl Checker {
             StoragePlan::RootedView(_))
         {
             return terr(format!("{context} cannot form an immutable view without an authenticated storage carrier"));
+        }
+        Ok(())
+    }
+
+    fn admit_replay_capture_source(
+        &mut self,
+        source: &ast::Type,
+        inferred: &Ty,
+        context: &str,
+    ) -> Result<(), TypeError> {
+        use witchy_canonical_source::storage::{SnapshotRefusal, replay_capture_eligibility};
+        let initial = replay_capture_eligibility(source, &self.canonical_definitions);
+        if initial.is_ok() { return Ok(()); }
+        let resolved = self.resolve(inferred);
+        let mut variables = HashSet::new();
+        self.collect_storage_variables(&resolved, &mut variables);
+        let current: HashSet<u32> = self.current_typarams.values().filter_map(|variable| {
+            match self.resolve(&Ty::Var(*variable)) { Ty::Var(representative) => Some(representative), _ => None }
+        }).collect();
+        if matches!(initial, Err(SnapshotRefusal::UnprovedStorage))
+            && !variables.is_empty()
+            && variables.iter().all(|variable| current.contains(variable))
+        {
+            let substitutions = self.current_typarams.keys()
+                .map(|name| (name.clone(), ast::Type::Named("Int".into(), Vec::new())))
+                .collect();
+            let representative = Self::substitute_unique_source_type(source, &substitutions);
+            if replay_capture_eligibility(&representative, &self.canonical_definitions).is_ok() {
+                let obligation = StorageObligation::ReplayCapture(resolved);
+                if !self.current_storage_obligations.contains(&obligation) {
+                    self.current_storage_obligations.push(obligation);
+                }
+                return Ok(());
+            }
+        }
+        terr(format!("{context} has no copyable snapshot: {}", replay_snapshot_reason(initial.err().unwrap())))
+    }
+
+    fn admit_replay_capture_ty(&mut self, ty: &Ty, context: &str) -> Result<(), TypeError> {
+        use witchy_canonical_source::storage::replay_capture_eligibility;
+        let resolved = self.resolve(ty);
+        let mut variables = HashSet::new();
+        self.collect_storage_variables(&resolved, &mut variables);
+        let current: HashSet<u32> = self.current_typarams.values().filter_map(|variable| {
+            match self.resolve(&Ty::Var(*variable)) { Ty::Var(representative) => Some(representative), _ => None }
+        }).collect();
+        let mut representatives = HashMap::new();
+        for variable in variables {
+            if !current.contains(&variable) {
+                return terr(format!("{context} has an unresolved replay capture type"));
+            }
+            representatives.insert(variable, Ty::Int);
+        }
+        let representative = self.subst_vars(&resolved, &representatives);
+        let source = ty_to_ast(&representative).ok_or_else(|| TypeError {
+            message: format!("{context} has no checked replay capture type"),
+        })?;
+        replay_capture_eligibility(&source, &self.canonical_definitions).map_err(|reason| TypeError {
+            message: format!("{context} has no copyable snapshot: {}", replay_snapshot_reason(reason)),
+        })?;
+        if !representatives.is_empty() {
+            let obligation = StorageObligation::ReplayCapture(resolved);
+            if !self.current_storage_obligations.contains(&obligation) {
+                self.current_storage_obligations.push(obligation);
+            }
         }
         Ok(())
     }
@@ -4246,8 +4328,8 @@ impl Checker {
             .map(|(_, id)| *id)
             .collect();
         let bounds = self.fn_bounds.get(name).cloned().unwrap_or_default();
-        let view_payload_constraints = self
-            .fn_view_payload_constraints
+        let storage_obligations = self
+            .fn_storage_obligations
             .get(name)
             .cloned()
             .unwrap_or_default();
@@ -4256,7 +4338,7 @@ impl Checker {
             &ret,
             &typarams,
             &bounds,
-            &view_payload_constraints,
+            &storage_obligations,
         ))
     }
 
@@ -6675,7 +6757,7 @@ impl Checker {
         if let Some(t) = self.check_try_ctx(call_name, args)? {
             return Ok(t);
         }
-        let (params, ret, call_bounds, view_payload_constraints) = match catalog_contract {
+        let (params, ret, call_bounds, storage_obligations) = match catalog_contract {
             Some((params, ret, bounds)) => (params, ret, bounds, Vec::new()),
             None => match user_sig {
                 Some(sig) => sig,
@@ -6889,11 +6971,15 @@ impl Checker {
         for (bound_ty, trait_name) in &call_bounds {
             self.require_call_bound(call_name, bound_ty, trait_name)?;
         }
-        for payload in &view_payload_constraints {
-            self.admit_view_payload(
-                payload,
-                &format!("generic call to `{display}`"),
-            )?;
+        for obligation in &storage_obligations {
+            match obligation {
+                StorageObligation::RootedView(payload) => {
+                    self.admit_view_payload(payload, &format!("generic call to `{display}`"))?;
+                }
+                StorageObligation::ReplayCapture(capture) => {
+                    self.admit_replay_capture_ty(capture, &format!("generic call to `{display}`"))?;
+                }
+            }
         }
         if !bind_expected_before_args && let Some(expected) = expected {
             self.coerce_arg(expected, &ret).map_err(|e| TypeError {
@@ -8063,12 +8149,12 @@ impl Checker {
                 // parameter conventions in the function type.
                 if let Some((params, ret)) = self.fn_sigs.get(name).cloned() {
                     if self
-                        .fn_view_payload_constraints
+                        .fn_storage_obligations
                         .get(name)
                         .is_some_and(|constraints| !constraints.is_empty())
                     {
                         return terr(format!(
-                            "generic function `{name}` forms rooted views from its type parameters and cannot be transported as a function value; its view-admissibility constraints require a direct checked call",
+                            "generic function `{name}` has storage obligations and cannot be transported as a function value; they require a direct checked call",
                         ));
                     }
                     let typarams: HashSet<u32> = self
@@ -8669,10 +8755,17 @@ impl Checker {
                         Ty::Named(name, arguments)
                             if (name == "Task".into() || name == "task.Task".into()) && arguments.len() == 1 =>
                         {
+                            let replayable = ty_to_ast(&t).is_some_and(|source| {
+                                witchy_canonical_source::storage::replay_capture_eligibility(
+                                    &source, &self.canonical_definitions,
+                                ).is_ok()
+                            }) && !self.ty_carries_unique_storage(&t)
+                                && !self.ty_carries_must_consume(&t)
+                                && !self.ty_carries_once_callable(&t);
                             if let Some((root, projected)) = self.affine_place(expr) {
-                                if projected {
+                                if projected && !replayable {
                                     return terr(format!(
-                                        "cannot await a projected task from `{root}`; transfer the whole Task value before starting it"
+                                        "cannot await a projected affine task from `{root}`; transfer the whole Task value before starting it"
                                     ));
                                 }
                                 self.reject_own_of_borrowed_must(&root, "`await`")?;
@@ -8681,8 +8774,10 @@ impl Checker {
                                         "cannot await task `{root}` after it was already started or transferred"
                                     ));
                                 }
-                                self.mark_consumed_binding(&root);
-                                self.consume_must_binding(&root);
+                                if !replayable {
+                                    self.mark_consumed_binding(&root);
+                                    self.consume_must_binding(&root);
+                                }
                             }
                             Ok(arguments[0].clone())
                         }
@@ -10220,7 +10315,7 @@ impl Checker {
         self.must_live.clear();
         self.must_borrowed.clear();
         self.once_borrowed.clear();
-        self.current_view_payload_constraints.clear();
+        self.current_storage_obligations.clear();
         let body_ret =
             self.async_body_returns
                 .get(&func.name)
@@ -10275,27 +10370,36 @@ impl Checker {
             attribute == witchy_syntax::suspension::FRAME_FUNCTION_ATTRIBUTE
         });
         for (param, ty) in func.params.iter().zip(&params) {
-            if func.is_async && param.convention == Convention::Borrow {
+            let lazy_recipe = func.is_async && func.name != "main";
+            if lazy_recipe && param.convention == Convention::Borrow {
                 return terr(format!(
                     "async function `{}` cannot capture call-scoped `let` parameter `{}` in a lazy Task recipe; pass an ordinary owned value or materialize one explicitly",
                     diagnostic_callable_name(&source_callable),
                     param.name,
                 ));
             }
-            // A source async call constructs a reusable recipe before the body
-            // runs. Its capture must be reproducible for every execution,
-            // including unique storage nested in an instantiated aggregate.
-            // The checked qualifier/field judgment sees both source qualifiers
-            // and fields whose qualifiers were erased from `Ty`.
-            if func.is_async
-                && (param.ty.as_ref().is_some_and(|declared| self.declared_type_carries_unique_storage(declared))
-                    || self.ty_carries_unique_storage(ty))
-            {
-                return terr(format!(
-                    "async function `{}` cannot capture affine unique storage in parameter `{}` into its replayable Task recipe; materialize copyable data before constructing the task",
-                    diagnostic_callable_name(&source_callable),
-                    param.name,
-                ));
+            // The source async entry captures this value once in `task.lazy`;
+            // each execution clones its invocation state from that snapshot.
+            // Check instantiated stored fields, not a second name-based list
+            // of unique/must/once shapes. `main` runs directly, with no recipe.
+            if lazy_recipe {
+                if param.convention == Convention::Var {
+                    return terr(format!(
+                        "async function `{}` cannot defer `var` write-back for parameter `{}` in a lazy Task recipe",
+                        diagnostic_callable_name(&source_callable), param.name,
+                    ));
+                }
+                let source_ty = param.ty.clone().or_else(|| ty_to_ast(ty)).ok_or_else(|| TypeError {
+                    message: format!("async parameter `{}` has no checked replay capture type", param.name),
+                })?;
+                self.admit_replay_capture_source(
+                    &source_ty,
+                    ty,
+                    &format!(
+                        "async function `{}` cannot capture parameter `{}` into its replayable Task recipe",
+                        diagnostic_callable_name(&source_callable), param.name,
+                    ),
+                )?;
             }
             // `var` replaces the parameter handle and `own` transfers it; neither
             // is a field/deep mutation of a frozen payload.
@@ -10325,13 +10429,6 @@ impl Checker {
                 // obligation before the first suspension.  Compiler-generated
                 // frame functions are checked separately below and retain the
                 // one exact non-cancellable root-transfer exception.
-                if func.is_async && param.convention == Convention::Own {
-                    return terr(format!(
-                        "async function `{}` cannot capture must-consume parameter `{}` into its lazy Task recipe; consume it before constructing the task or use an obligation-visible non-replayable operation",
-                        diagnostic_callable_name(&source_callable),
-                        param.name,
-                    ));
-                }
                 match param.convention {
                     // An `own` parameter is the declaration of a consuming
                     // operation. The caller's obligation is discharged at the
@@ -10354,13 +10451,6 @@ impl Checker {
                 }
             }
             if self.ty_carries_once_callable(ty) {
-                if func.is_async && param.convention == Convention::Own {
-                    return terr(format!(
-                        "async function `{}` cannot capture affine once-callable parameter `{}` into its replayable Task recipe; invoke it before constructing the task or pass copyable data",
-                        diagnostic_callable_name(&source_callable),
-                        param.name,
-                    ));
-                }
                 match param.convention {
                     Convention::Var => {
                         return terr(format!(
@@ -10484,8 +10574,8 @@ impl Checker {
                 }
             }
         }
-        self.fn_view_payload_constraints
-            .insert(func.name.clone(), self.current_view_payload_constraints.clone());
+        self.fn_storage_obligations
+            .insert(func.name.clone(), self.current_storage_obligations.clone());
         self.compiler_syntax_allowed = prev_compiler_syntax_allowed;
         self.current_opt_callable = saved_opt_callable;
         Ok(())
@@ -12595,8 +12685,8 @@ fn run_check_selected(
         gc_cap_aggregates: HashSet::new(),
         adt_variants: HashMap::new(),
         fn_typarams: HashMap::new(),
-        fn_view_payload_constraints: HashMap::new(),
-        current_view_payload_constraints: Vec::new(),
+        fn_storage_obligations: HashMap::new(),
+        current_storage_obligations: Vec::new(),
         fn_bounds: HashMap::new(),
         trait_method_names: trait_method_names.cloned().unwrap_or_else(|| collect_trait_method_names(module)),
         trait_supertraits: trait_supertraits.cloned().unwrap_or_else(|| {
@@ -12784,7 +12874,7 @@ fn run_check_selected(
                         frozen_result: f.ret.as_ref().is_some_and(is_frozen_value_type),
                     },
                 );
-                if source_callable_is_opt(&module.modes, f) {
+                if witchy_syntax::linker::source_callable_is_opt(f, &module.modes) {
                     c.fn_opt_provenance
                         .insert(f.name.clone(), OptCallableContract::from_function(f));
                 }

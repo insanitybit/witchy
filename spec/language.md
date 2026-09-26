@@ -2088,6 +2088,15 @@ constructing the task. The checked capture rule also refuses `unique` storage
 inside an instantiated aggregate: one affine owner cannot supply repeated
 recipe executions. Ordinary copyable data and eligible immutable view
 snapshots remain available as task inputs.
+For a generic async function, the capture proof is retained as a direct-call
+obligation and checked again for the instantiated stored type. Awaiting a
+copyable recipe may run it again from the original capture snapshot; affine
+task values still require a whole-value, one-time start.
+
+The checker, loan analysis, and canonical lowering use the linked source
+callable's mode when deciding opt contracts, including after async segment and
+closure lowering changes its implementation name. Task-value provenance through
+generic and indirect transport remains a compiler gap.
 
 ```witchy
 from chan import Sender

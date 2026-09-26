@@ -21,8 +21,12 @@ the executor - it's driven to completion automatically.
 The call creates a reusable task recipe. An explicit `let` parameter only
 grants access for the call, so an `async fn` cannot capture it in that recipe.
 Pass an ordinary owned value, or explicitly materialize an independent value
-before the call. An async recipe also cannot capture `unique` storage, even
-when it is nested inside an aggregate.
+before the call. The compiler checks the stored fields of every captured type:
+an async recipe cannot capture `unique` storage, a `must` obligation, or a
+`once` callable, even when one is nested inside an aggregate. Calling an async
+function captures its inputs once; running the recipe later uses that snapshot
+and does not read the caller's bindings again. `async main` runs directly and
+does not create a recipe.
 
 ```witchy
 async fn double(n: Int) -> Int:

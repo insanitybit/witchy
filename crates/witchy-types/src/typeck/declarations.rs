@@ -32,30 +32,6 @@ pub(super) fn is_builtin_type_name(name: &str) -> bool {
     BUILTIN_TYPE_NAMES.contains(&name) || CapabilityKind::from_name(name).is_some()
 }
 
-/// Linker mode markers identify the source module that owns a callable.  They
-/// are retained metadata (`@opt:module`), not user spellings, so a normal entry
-/// can call an imported opt export without becoming opt itself.  In particular,
-/// an inherent method may lower to an unqualified `List__map`; its linker-stamped
-/// source owner, rather than that mangled implementation spelling, decides the
-/// contract.
-pub(super) fn source_callable_is_opt(modes: &[String], function: &Function) -> bool {
-    if let Some(owner) = witchy_syntax::linker::linked_source_module(function) {
-        return modes.iter().any(|mode| mode == &format!("@opt:{owner}"));
-    }
-
-    // Standalone type-checking has no linked source owner. Preserve its
-    // source-level `mode opt` behavior; linked modules always carry the marker
-    // above, so an unqualified lowered std method cannot inherit entry mode.
-    if !function.name.contains('.') {
-        return modes.iter().any(|mode| mode == "opt");
-    }
-    modes.iter().any(|mode| {
-        mode.strip_prefix("@opt:")
-            .and_then(|owner| function.name.strip_prefix(owner))
-            .is_some_and(|suffix| suffix.starts_with('.'))
-    })
-}
-
 /// Linked async signatures may retain the module-qualified spelling for the
 /// compiler-provided Task type while source calls use its bare builtin name.
 pub(super) fn same_builtin_nominal_head(left: &str, right: &str) -> bool {

@@ -30,6 +30,7 @@ pub enum StorageRefusal {
 pub enum SnapshotRefusal {
     ResourceLimit,
     Authority,
+    UniqueOwner,
     MustConsume,
     OnceCallable,
     UnprovedStorage,
@@ -39,9 +40,31 @@ pub fn snapshot_eligibility(
     ty: &Type,
     definitions: &BTreeMap<String, TypeDef>,
 ) -> Result<(), SnapshotRefusal> {
+    snapshot_eligibility_for(ty, definitions, SnapshotUse::PersistentView)
+}
+
+/// A lazy recipe retains one copyable snapshot and clones invocation state on
+/// every execution. Unlike a persistent view, its declared capability token
+/// may be copied as delegated authority; affine storage still cannot replay.
+pub fn replay_capture_eligibility(
+    ty: &Type,
+    definitions: &BTreeMap<String, TypeDef>,
+) -> Result<(), SnapshotRefusal> {
+    snapshot_eligibility_for(ty, definitions, SnapshotUse::ReplayableTask)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SnapshotUse { PersistentView, ReplayableTask }
+
+fn snapshot_eligibility_for(
+    ty: &Type,
+    definitions: &BTreeMap<String, TypeDef>,
+    use_kind: SnapshotUse,
+) -> Result<(), SnapshotRefusal> {
     fn walk(
         ty: &Type,
         definitions: &BTreeMap<String, TypeDef>,
+        use_kind: SnapshotUse,
         active: &mut HashSet<Type>,
         depth: usize,
         remaining: &mut usize,
@@ -51,11 +74,31 @@ pub fn snapshot_eligibility(
         }
         *remaining -= 1;
         match ty {
-            Type::Qualified(TypeQual::Frozen | TypeQual::Unique | TypeQual::View, inner)
-            | Type::Slice(inner) => walk(inner, definitions, active, depth + 1, remaining),
+            Type::Qualified(TypeQual::Frozen, inner) => {
+                walk(inner, definitions, use_kind, active, depth + 1, remaining)
+            }
+            Type::Qualified(TypeQual::Unique, inner) => {
+                if use_kind == SnapshotUse::ReplayableTask {
+                    Err(SnapshotRefusal::UniqueOwner)
+                } else {
+                    walk(inner, definitions, use_kind, active, depth + 1, remaining)
+                }
+            }
+            Type::Qualified(TypeQual::View, inner) => {
+                if use_kind == SnapshotUse::ReplayableTask
+                    && RootedViewStorage::classify(inner, definitions, |_| Some(0)).is_none()
+                {
+                    return Err(SnapshotRefusal::UnprovedStorage);
+                }
+                walk(inner, definitions, SnapshotUse::PersistentView, active, depth + 1, remaining)
+            }
+            Type::Slice(inner) if use_kind == SnapshotUse::PersistentView => {
+                walk(inner, definitions, use_kind, active, depth + 1, remaining)
+            }
             Type::Qualified(_, _) | Type::Dyn(_, _) | Type::RecordCompose { .. } => {
                 Err(SnapshotRefusal::UnprovedStorage)
             }
+            Type::Slice(_) => Err(SnapshotRefusal::UnprovedStorage),
             Type::Fn(_, _, _, qualifiers) => {
                 if qualifiers.once {
                     Err(SnapshotRefusal::OnceCallable)
@@ -67,43 +110,63 @@ pub fn snapshot_eligibility(
             }
             Type::Tuple(fields) => {
                 for field in fields {
-                    walk(field, definitions, active, depth + 1, remaining)?;
+                    walk(field, definitions, use_kind, active, depth + 1, remaining)?;
                 }
                 Ok(())
             }
             Type::Named(name, _) => {
+                if let Some(definition) = definitions.get(name) {
+                    if definition.must_consume {
+                        return Err(SnapshotRefusal::MustConsume);
+                    }
+                }
                 if crate::capabilities::representation(ty, definitions).is_some() {
+                    return if use_kind == SnapshotUse::ReplayableTask {
+                        Ok(())
+                    } else {
+                        Err(SnapshotRefusal::Authority)
+                    };
+                }
+                if definitions.get(name).is_some_and(|definition| definition.is_capability) {
                     return Err(SnapshotRefusal::Authority);
                 }
                 if let Some(RootedViewStorage::RetainedProjection(element)) =
                     RootedViewStorage::classify(ty, definitions, |_| Some(0))
                 {
-                    return walk(&element.source_type(), definitions, active, depth + 1, remaining);
-                }
-                if let Some(definition) = definitions.get(name) {
-                    if definition.is_capability {
-                        return Err(SnapshotRefusal::Authority);
-                    }
-                    if definition.must_consume {
-                        return Err(SnapshotRefusal::MustConsume);
-                    }
+                    return walk(&element.source_type(), definitions, use_kind, active, depth + 1, remaining);
                 }
                 if !active.insert(ty.clone()) {
                     return Err(SnapshotRefusal::UnprovedStorage);
                 }
                 // The aggregate layout judgment supplies instantiated stored
                 // fields. Phantom arguments bind identity but carry no value.
-                let fields = if let Some(shape) = scalar_aggregate_shape(ty, definitions) {
+                let fields = if use_kind == SnapshotUse::ReplayableTask
+                    && name == "List"
+                    && let Type::Named(_, arguments) = ty
+                    && let [element] = arguments.as_slice()
+                {
+                    vec![element.clone()]
+                } else if use_kind == SnapshotUse::ReplayableTask
+                    && let Some(fields) = instantiated_declared_fields(ty, definitions)
+                {
+                    fields.map_err(|_| SnapshotRefusal::UnprovedStorage)?
+                } else if let Some(shape) = scalar_aggregate_shape(ty, definitions) {
                     shape.fields
                 } else {
-                    match CarrierElement::from_checked_type_with_definitions(ty, definitions) {
-                        Some(CarrierElement::List(element)) => vec![element.source_type()],
-                        Some(CarrierElement::Scalar(_) | CarrierElement::String | CarrierElement::Bytes) => Vec::new(),
+                    match StoragePlan::classify(ty, definitions, |_| Some(0)) {
+                        StoragePlan::Owned(CarrierElement::List(element)) => vec![element.source_type()],
+                        StoragePlan::Owned(CarrierElement::Scalar(_) | CarrierElement::String | CarrierElement::Bytes)
+                        | StoragePlan::InlineScalar(_) => Vec::new(),
+                        StoragePlan::AuthenticatedPlace(plan) if plan.cloneable() => Vec::new(),
+                        StoragePlan::RetainedGraphList(plan) | StoragePlan::RetainedOpaqueAggregateList(plan)
+                            if plan.cloneable() => vec![plan.source().clone()],
+                        StoragePlan::RetainedCallableList(plan) => vec![plan.exact_signature().clone()],
+                        StoragePlan::RetainedOwnerList(plan) => vec![plan.source_identity()],
                         _ => return Err(SnapshotRefusal::UnprovedStorage),
                     }
                 };
                 for field in &fields {
-                    walk(field, definitions, active, depth + 1, remaining)?;
+                    walk(field, definitions, use_kind, active, depth + 1, remaining)?;
                 }
                 active.remove(ty);
                 Ok(())
@@ -111,7 +174,7 @@ pub fn snapshot_eligibility(
         }
     }
     SourceTypeKey { source: ty }.digest().ok_or(SnapshotRefusal::ResourceLimit)?;
-    walk(ty, definitions, &mut HashSet::new(), 0, &mut 4_096)
+    walk(ty, definitions, use_kind, &mut HashSet::new(), 0, &mut 4_096)
 }
 
 /// A finite source-derived proof for the storage classes the canonical route
@@ -472,7 +535,7 @@ impl StoragePlan {
                 return Self::Refused(match reason {
                     SnapshotRefusal::ResourceLimit => StorageRefusal::ResourceLimit,
                     SnapshotRefusal::Authority => StorageRefusal::UnprovedAuthority,
-                    SnapshotRefusal::MustConsume | SnapshotRefusal::OnceCallable
+                    SnapshotRefusal::UniqueOwner | SnapshotRefusal::MustConsume | SnapshotRefusal::OnceCallable
                     | SnapshotRefusal::UnprovedStorage => StorageRefusal::UnprovedOwnership,
                 });
             }

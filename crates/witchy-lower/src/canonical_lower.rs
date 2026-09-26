@@ -680,7 +680,10 @@ pub fn lower_typed_module(
                 public: false,
                 pure: qualifiers.pure,
                 comptime_only: false,
-                attributes: Vec::new(),
+                attributes: witchy_syntax::linker::linked_source_module(function)
+                    .map(witchy_syntax::linker::linked_source_module_attribute)
+                    .into_iter()
+                    .collect(),
                 name: name.clone(),
                 type_params: Vec::new(),
                 params,
@@ -1466,7 +1469,7 @@ if capability_imports.contains("build_out_write_at") {
             &function.body,
             function_id,
             u32::try_from(item_index).map_err(|_| CanonicalLoweringError::IdOverflow)?,
-            is_opt_function(&function.name, &typed.module().modes),
+            witchy_syntax::linker::source_callable_is_opt(function, &typed.module().modes),
             Vec::new(),
             &lambda_names,
             signature,
@@ -1524,7 +1527,7 @@ if capability_imports.contains("build_out_write_at") {
             lambda.body,
             lambda.function_id,
             lambda.item_index,
-            is_opt_function(&lambda.synthesized.name, &typed.module().modes),
+            witchy_syntax::linker::source_callable_is_opt(&lambda.synthesized, &typed.module().modes),
             lambda.lambda_path.clone(),
             &lambda_names,
             signature,
@@ -3574,17 +3577,6 @@ fn write_back_count(signature: &FunctionSignature) -> usize {
     signature.contract.parameters.iter()
         .filter(|parameter| matches!(parameter.ownership, ParameterOwnership::WriteBack | ParameterOwnership::UniqueWriteBack))
         .count()
-}
-
-fn is_opt_function(name: &str, modes: &[String]) -> bool {
-    if !name.contains('.') {
-        return modes.iter().any(|mode| mode == "opt");
-    }
-    modes.iter().any(|mode| {
-        mode.strip_prefix("@opt:")
-            .and_then(|owner| name.strip_prefix(owner))
-            .is_some_and(|suffix| suffix.starts_with('.'))
-    })
 }
 
 fn collect_callable_types(ty: &Type, out: &mut Vec<Type>) {

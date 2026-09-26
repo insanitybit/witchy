@@ -177,17 +177,6 @@ fn source_is_direct_reference(source: &BorrowSource) -> bool {
         || source.root_type.as_ref().and_then(direct_reference_kind).is_some()
 }
 
-fn is_opt_function(name: &str, modes: &[String]) -> bool {
-    if !name.contains('.') {
-        return modes.iter().any(|mode| mode == "opt");
-    }
-    modes.iter().any(|mode| {
-        mode.strip_prefix("@opt:")
-            .and_then(|owner| name.strip_prefix(owner))
-            .is_some_and(|suffix| suffix.starts_with('.'))
-    })
-}
-
 /// A short callable name for diagnostics: the last `.`-segment of the canonical
 /// `module.fn` name.
 fn short_name(name: &str) -> &str {
@@ -1070,7 +1059,7 @@ fn facts_impl(
     // Pass 1: validate signatures and record each function's borrow relation.
     for item in &module.items {
         let Item::Function(f) = item else { continue };
-        let sig = validate_signature(f, is_opt_function(&f.name, &module.modes), &catalog)?;
+        let sig = validate_signature(f, witchy_syntax::linker::source_callable_is_opt(f, &module.modes), &catalog)?;
         sigs.insert(f.name.clone(), sig);
     }
 
@@ -1147,7 +1136,7 @@ fn facts_impl(
                 body,
                 ret,
                 &format!("lambda {} in {}", index + 1, short_name(&f.name)),
-                is_opt_function(&f.name, &module.modes),
+                witchy_syntax::linker::source_callable_is_opt(f, &module.modes),
                 LoanEnvironment { sigs: &sigs, catalog: &catalog, type_table },
                 target_facts,
             )?;

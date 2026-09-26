@@ -71,6 +71,22 @@ composition refusal test passes in normal and opt modes for borrowed and
 nested-unique captures, alongside its must/once checks. This is a focused
 checker result, not hand-computed admitted-Wasm or zero-leak evidence.
 
+Rows J/K source async replay and mode (implemented but unverified,
+2026-09-25): source async parameters use the shared stored-field snapshot
+judgment for lazy recipe captures. Generic stored capture obligations are
+rechecked at direct calls and remain closed to function-value transport.
+Await now retains a replayable Task binding for another execution while
+affine/obligation-bearing tasks remain one-time. Checker, loan analysis, and
+canonical lowering use one linker-owned source-mode decision. The focused
+view-across-await smoke passes; a separate compiled smoke printed `22` after
+two awaits of a recipe captured before its original list grew, and a generic
+unique-field instantiation was refused. These are structural checks, not the
+hand-computed admitted-Wasm and zero-leak evidence required to close rows.
+Ordinary closure captures of compiler-erased channel messages still need a
+typed replay proof; task-value opt provenance through aggregates, generics,
+trait returns, and scheduler adapters, per-execution ownership preparation,
+and cancellation disposition remain open. No A–O row closes.
+
 Structural gaps under the 2026-09-25 composition clarification remain distinct.
 The checker now carries call-scoped origins through bindings, aggregate values,
 projections, branch joins, and closure captures, and rejects an escaping origin.
