@@ -74,6 +74,16 @@ consume this exact witness; no new A–O row
 closes until hand-computed admitted unoptimized Wasm and zero-leak evidence
 passes. Focused compile/admission checks cover the direct and tuple paths.
 
+Row K recursive closure source proof (representative evidence, 2026-09-26):
+the closure witness's nominal-field qualifier walk now terminates on a
+repeated exact source type, while checking all sibling fields and retaining
+depth/node refusal for expanding instantiations. This restores scheduler
+continuation captures through the recursive `Task`/`Step` declarations. The
+existing nested-await program passes its hand-computed output trace on admitted
+unoptimized Wasm and audits zero canonical heap leaks. The review found no
+qualifier-authority widening. Other task provenance and cancellation gaps
+remain open, so row K is not closed.
+
 Untagged affine aggregate storage (implemented but unverified, 2026-09-26):
 the shared recursive storage judgment now selects nullable owned fields for
 records and tuples with affine children. Checked consuming matches transfer

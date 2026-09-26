@@ -6,7 +6,7 @@
 //! the type table supplies checked expression types, and lexical declaration
 //! paths supply stable binding identities.
 
-use std::{collections::BTreeMap, fmt};
+use std::{collections::{BTreeMap, HashSet}, fmt};
 
 use witchy_syntax::ast::{self, Block, Expr, Item, Pattern, Stmt, Type};
 
@@ -324,24 +324,41 @@ impl<'a> Builder<'a> {
     /// without a proved projection keep their bindings unproved instead of
     /// minting an unqualified closure capture.
     fn source_may_contain_qualifier(&self, ty: &Type, depth: usize, remaining: &mut usize) -> bool {
-        if *remaining == 0 || depth >= 128 { return true; }
-        *remaining -= 1;
-        let mut child = |ty: &Type| self.source_may_contain_qualifier(ty, depth + 1, remaining);
-        match ty {
-            Type::Qualified(ast::TypeQual::Frozen | ast::TypeQual::Unique, _) => true,
-            Type::Qualified(_, inner) | Type::Slice(inner) => child(inner),
-            Type::Tuple(items) | Type::Dyn(_, items) => items.iter().any(&mut child),
-            Type::Named(_, arguments) => {
-                if arguments.iter().any(&mut child) { return true; }
-                match witchy_canonical_source::aggregates::instantiated_declared_fields(ty, &self.definitions) {
-                    Some(Ok(fields)) => fields.iter().any(child),
-                    Some(Err(())) => true,
-                    None => false,
+        fn walk(
+            ty: &Type,
+            definitions: &BTreeMap<String, ast::TypeDef>,
+            depth: usize,
+            remaining: &mut usize,
+            active: &mut HashSet<Type>,
+        ) -> bool {
+            if *remaining == 0 || depth >= 128 { return true; }
+            *remaining -= 1;
+            // A repeated exact instantiation contributes no new fields. The
+            // first visit still inspects every sibling, including qualifiers;
+            // expanding generic instantiations retain the resource limits.
+            if !active.insert(ty.clone()) { return false; }
+            let mut child = |ty: &Type| walk(ty, definitions, depth + 1, remaining, active);
+            let contains = match ty {
+                Type::Qualified(ast::TypeQual::Frozen | ast::TypeQual::Unique, _) => true,
+                Type::Qualified(_, inner) | Type::Slice(inner) => child(inner),
+                Type::Tuple(items) | Type::Dyn(_, items) => items.iter().any(&mut child),
+                Type::Named(_, arguments) => {
+                    if arguments.iter().any(&mut child) { true }
+                    else {
+                        match witchy_canonical_source::aggregates::instantiated_declared_fields(ty, definitions) {
+                            Some(Ok(fields)) => fields.iter().any(child),
+                            Some(Err(())) => true,
+                            None => false,
+                        }
+                    }
                 }
-            }
-            Type::Fn(parameters, result, _, _) => parameters.iter().any(&mut child) || child(result),
-            Type::RecordCompose { base, fields } => child(base) || fields.iter().any(|(_, field)| child(field)),
+                Type::Fn(parameters, result, _, _) => parameters.iter().any(&mut child) || child(result),
+                Type::RecordCompose { base, fields } => child(base) || fields.iter().any(|(_, field)| child(field)),
+            };
+            active.remove(ty);
+            contains
         }
+        walk(ty, &self.definitions, depth, remaining, &mut HashSet::new())
     }
 
     fn pattern_binding_types(&self, pattern: &Pattern, source: Option<&Type>, unproved: bool) -> Vec<(String, Option<Type>, bool)> {
