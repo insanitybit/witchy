@@ -17,6 +17,7 @@
             "fn escape(let xs: List(Int)) -> &Int:\n    &xs[0]\n",
             "fn callback_escape():\n    fn(let text: String): text\n",
             "fn callback_wrapper():\n    fn(let text: String): (text, 1)\n",
+            "fn callback_view(let text: String, callback: fn(let String) -> &String) -> &String:\n    callback(text)\n",
         ] {
             let error = check_source(source).expect_err("call-scoped access cannot escape");
             assert!(error.message.contains("call-scoped `let` parameter access"), "{error:?}");
@@ -32,6 +33,8 @@
             .expect("an owned input can retain a view of its snapshot");
         check_source("fn callback_size():\n    fn(let text: String): text.length()\n")
             .expect("a callback may compute a scalar from call-scoped access");
+        check_source("fn copy_through_callback(let text: String) -> String:\n    let callback = fn(let value: String) -> String:\n        value.owned()\n    callback(text)\n")
+            .expect("a checked callback result with its own token is independent of a borrowed argument");
     }
 
     #[test]

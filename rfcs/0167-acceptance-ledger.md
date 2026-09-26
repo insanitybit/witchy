@@ -90,16 +90,20 @@ and cancellation disposition remain open. No A–O row closes.
 Structural gaps under the 2026-09-25 composition clarification remain distinct.
 The checker now carries call-scoped origins through bindings, aggregate values,
 projections, branch joins, and closure captures, and rejects an escaping origin.
-Only an inline scalar or an exact checked `.owned()` site clears that origin.
-Direct checked callee bodies establish independent results; indirect calls and
+An inline scalar, an exact checked `.owned()` site, or an exact checked call
+contract for an independent owned result clears that origin. Calls and
 intrinsics without a result proof retain provenance or fail closed. Trait
 lowering preserves the `.owned()` site for canonical lowering. Callback literal
 bodies now use the same origin dataflow for their own `let` inputs, including
 return and yield escapes, even when the enclosing function owns every input.
-Focused checker and existing owned/slice materialization smoke cases pass, but
-indirect callback result flow, source async/generator rewrites, and independent
-admitted-Wasm plus zero-leak evidence remain open. This is implemented but
-unverified for rows G/J/P. Checker view formation, canonical ABI identity,
+Exact checked access signatures now distinguish independent owned results from
+view or borrow-related results across direct, function-value, method, and
+existential calls; unknown call contracts still retain origins. A focused
+checker case accepts an owned callback result and rejects an indirect view
+result. Source async/generator rewrites, generic and cross-module callback
+composition, and independent admitted-Wasm plus zero-leak evidence remain open.
+This is implemented but unverified for rows G/J/P. Checker view formation,
+canonical ABI identity,
 lowerer view/root selection, layout selection, and SafeWIR owner-family
 correspondence now consume the same typed storage plan. The shared stored-field
 snapshot proof rejects retained resource obligations; lawful closure-capture

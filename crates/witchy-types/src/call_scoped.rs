@@ -115,21 +115,11 @@ impl Verifier<'_> {
         Ok(())
     }
 
-    fn independently_checked_call_result(
-        &self,
-        expression: &Expr,
-        environment: &Environment,
-    ) -> bool {
-        let (Expr::Call { name, .. } | Expr::LabeledCall { name, .. }) = expression else {
-            return false;
-        };
-        // Direct declarations in this exact checked module undergo this same
-        // body proof. Indirect callbacks have no such source body here.
-        if environment.contains_key(name)
-            || (!crate::typeck::intrinsic(name) && self.access.declaration(name).is_none())
-        {
-            return false;
-        }
+    fn checked_call_result_is_independent(&self, expression: &Expr) -> bool {
+        // The exact checked call signature is the public access contract for
+        // direct and indirect calls alike. An owned result with no declared
+        // borrow relation has its own ownership token; a view or dependent
+        // result keeps every input origin below.
         let Some(signature) = self.access.call_at(self.module, expression) else {
             return false;
         };
@@ -230,10 +220,17 @@ impl Verifier<'_> {
                     .map(|value| self.expr(value, environment))
                     .collect::<Result<Vec<_>, _>>()?;
                 self.check_call(expression, &arguments)?;
-                if self.independently_checked_call_result(expression, environment) {
+                if self.checked_call_result_is_independent(expression) {
                     Origins::new()
                 } else {
-                    arguments.into_iter().fold(Origins::new(), Self::union)
+                    let name = match expression {
+                        Expr::Call { name, .. } | Expr::LabeledCall { name, .. } => name,
+                        _ => unreachable!(),
+                    };
+                    arguments.into_iter().fold(
+                        environment.get(name).cloned().unwrap_or_default(),
+                        Self::union,
+                    )
                 }
             }
             Expr::Apply { func, args } => {
@@ -243,10 +240,14 @@ impl Verifier<'_> {
                     arguments.push(self.expr(arg, environment)?);
                 }
                 self.check_call(expression, &arguments)?;
-                for argument in arguments {
-                    origins.extend(argument);
+                if self.checked_call_result_is_independent(expression) {
+                    Origins::new()
+                } else {
+                    for argument in arguments {
+                        origins.extend(argument);
+                    }
+                    origins
                 }
-                origins
             }
             Expr::ExistentialCall { receiver, args, .. } => {
                 let mut arguments = vec![self.expr(receiver, environment)?];
@@ -254,7 +255,11 @@ impl Verifier<'_> {
                     arguments.push(self.expr(arg, environment)?);
                 }
                 self.check_call(expression, &arguments)?;
-                arguments.into_iter().fold(Origins::new(), Self::union)
+                if self.checked_call_result_is_independent(expression) {
+                    Origins::new()
+                } else {
+                    arguments.into_iter().fold(Origins::new(), Self::union)
+                }
             }
             Expr::MethodCall {
                 receiver,
@@ -273,7 +278,11 @@ impl Verifier<'_> {
                     arguments.push(self.expr(arg, environment)?);
                 }
                 self.check_call(expression, &arguments)?;
-                arguments.into_iter().fold(Origins::new(), Self::union)
+                if self.checked_call_result_is_independent(expression) {
+                    Origins::new()
+                } else {
+                    arguments.into_iter().fold(Origins::new(), Self::union)
+                }
             }
             Expr::LabeledMethodCall { receiver, args, .. } => {
                 let mut arguments = vec![self.expr(receiver, environment)?];
@@ -281,7 +290,11 @@ impl Verifier<'_> {
                     arguments.push(self.expr(arg, environment)?);
                 }
                 self.check_call(expression, &arguments)?;
-                arguments.into_iter().fold(Origins::new(), Self::union)
+                if self.checked_call_result_is_independent(expression) {
+                    Origins::new()
+                } else {
+                    arguments.into_iter().fold(Origins::new(), Self::union)
+                }
             }
             Expr::Unary {
                 op: UnOp::Borrow,
