@@ -332,7 +332,7 @@ fn is_storage_backed_direct_view_carrier(
     is_storage_backed_rooted_view(source, records)
         || matches!(StoragePlan::classify(source.unqualified(), records, |_| Some(0)),
             StoragePlan::RetainedOwnerList(_)
-                | StoragePlan::AggregateView(witchy_canonical_source::aggregates::ViewCarrierPlan::Aggregate { .. }))
+                | StoragePlan::AggregateView(witchy_canonical_source::aggregates::ViewCarrierPlan::Aggregate { .. }, _))
 }
 
 fn is_storage_backed_rooted_view(
@@ -396,7 +396,7 @@ pub(super) fn erase_nested_byte_buffer_views(signature: &witchy_syntax::ast::Typ
     use witchy_syntax::ast::Type;
     let lane = |ty: &Type| -> Type {
         if matches!(witchy_canonical_source::storage::StoragePlan::classify(ty, records, |_| Some(0)),
-            witchy_canonical_source::storage::StoragePlan::AggregateView(_)) {
+            witchy_canonical_source::storage::StoragePlan::AggregateView(_, _)) {
             return ty.clone();
         }
         match ty {
@@ -529,7 +529,7 @@ pub(super) fn is_direct_rooted_view_aggregate_carrier(
             source.unqualified(), records, |_| Some(0),
         ),
         witchy_canonical_source::storage::StoragePlan::AggregateView(
-            witchy_canonical_source::aggregates::ViewCarrierPlan::Aggregate { .. }
+            witchy_canonical_source::aggregates::ViewCarrierPlan::Aggregate { .. }, _
         )
     )
 }

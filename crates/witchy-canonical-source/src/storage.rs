@@ -430,7 +430,7 @@ pub enum StoragePlan {
     /// affine disposition; no ordinary list read may duplicate it.
     MoveOnlyList(MoveOnlySequencePlan),
     RootedView(RootedViewStorage),
-    AggregateView(ViewCarrierPlan),
+    AggregateView(ViewCarrierPlan, AggregateGraphPlan),
     Refused(StorageRefusal),
 }
 
@@ -577,9 +577,6 @@ fn graph_storage_operations(
                     Some(all.with(child(field, active, remaining)?))
                 });
             }
-            if view_carrier_plan(ty, definitions).is_some_and(|plan| plan.requires_opaque_owner()) {
-                return Some(GraphOperations { cloneable: opaque_aggregate_cloneable(ty, definitions), movable: false });
-            }
             if let Some(element) = CarrierElement::from_checked_type(ty) {
                 return Some(if matches!(element.ownership(), crate::carrier::CarrierOwnership::Copy
                     | crate::carrier::CarrierOwnership::RetainCloneRelease) {
@@ -608,26 +605,6 @@ fn graph_storage_operations(
             })
         }
     }
-}
-
-fn opaque_aggregate_cloneable(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> bool {
-    let Some(shape) = scalar_aggregate_shape(ty, definitions) else { return false };
-    if shape.packed || matches!(ty, Type::Named(name, _) if definitions.get(name).is_some_and(|definition| definition.must_consume)) {
-        return false;
-    }
-    shape.fields.iter().all(|field| {
-        if let Type::Qualified(TypeQual::View, payload) = field {
-            let view = Type::Qualified(TypeQual::View, payload.clone());
-            return matches!(StoragePlan::classify(&view, definitions, |_| Some(0)), StoragePlan::RootedView(_));
-        }
-        crate::is_unit_type(field)
-            || CarrierElement::from_checked_type_with_definitions(field, definitions)
-                .is_some_and(|element| matches!(element.ownership(),
-                    crate::carrier::CarrierOwnership::Copy
-                        | crate::carrier::CarrierOwnership::RetainCloneRelease))
-            || matches!(field, Type::Fn(_, _, _, qualifiers) if !qualifiers.once)
-                && CallableStoragePlan::classify(field, definitions).is_some()
-    })
 }
 
 fn contains_gc_view_owner(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> Option<bool> {
@@ -974,7 +951,7 @@ pub fn affine_storage_shape(
         *remaining -= 1;
         let source = match plan {
             StoragePlan::MoveOnlyList(sequence) => sequence.source(),
-            StoragePlan::AuthenticatedPlace(graph) => graph.source(),
+            StoragePlan::AuthenticatedPlace(graph) | StoragePlan::AggregateView(_, graph) => graph.source(),
             _ => return None,
         };
         if !active.insert(source.clone()) { return None; }
@@ -982,7 +959,8 @@ pub fn affine_storage_shape(
             StoragePlan::MoveOnlyList(sequence) => Some(AffineStorageShape::Sequence(Box::new(
                 walk(sequence.element(), definitions, active, depth + 1, remaining)?,
             ))),
-            StoragePlan::AuthenticatedPlace(graph) if graph.movable() && !graph.cloneable() => {
+            StoragePlan::AuthenticatedPlace(graph) | StoragePlan::AggregateView(_, graph)
+                if graph.movable() && !graph.cloneable() => {
                 let shape = graph.shape();
                 if shape.packed { return None; }
                 let mut children = Vec::new();
@@ -1008,14 +986,15 @@ pub fn affine_storage_shape(
 
 impl StoragePlan {
     /// An independent owned copy can be made from this checked storage.
-    /// Borrowed and view-bearing plans never acquire this proof by omission.
+    /// A view-bearing aggregate requires its recursive graph clone proof;
+    /// a bare view has no generic owned-copy permission.
     pub fn admits_owned_copy(&self) -> bool {
         match self {
             Self::InlineScalar(_) | Self::InlineAggregate(_) | Self::Owned(_)
             | Self::RetainedCallable(_) | Self::RetainedCallableList(_) => true,
-            Self::AuthenticatedPlace(plan) | Self::RetainedGraphList(plan)
+            Self::AuthenticatedPlace(plan) | Self::AggregateView(_, plan) | Self::RetainedGraphList(plan)
             | Self::RetainedOpaqueAggregateList(plan) => plan.cloneable(),
-            Self::MoveOnlyList(_) | Self::RetainedOwnerList(_) | Self::RootedView(_) | Self::AggregateView(_)
+            Self::MoveOnlyList(_) | Self::RetainedOwnerList(_) | Self::RootedView(_)
             | Self::Refused(_) => false,
         }
     }
@@ -1030,7 +1009,8 @@ impl StoragePlan {
     /// source graph proves moves and recursive release but supplies no clone.
     pub fn requires_affine_owner_token(&self) -> bool {
         matches!(self, Self::MoveOnlyList(_))
-            || matches!(self, Self::AuthenticatedPlace(plan) if plan.movable() && !plan.cloneable())
+            || matches!(self, Self::AuthenticatedPlace(plan) | Self::AggregateView(_, plan)
+                if plan.movable() && !plan.cloneable())
     }
 
     /// A list can duplicate initialized elements. Require a copyable owned
@@ -1184,7 +1164,9 @@ impl StoragePlan {
             return Self::RetainedCallableList(plan);
         }
         if let Some(plan) = view_carrier_plan(ty, definitions).filter(ViewCarrierPlan::requires_opaque_owner) {
-            return Self::AggregateView(plan);
+            return AggregateGraphPlan::classify(ty, definitions)
+                .map(|graph| Self::AggregateView(plan, graph))
+                .unwrap_or(Self::Refused(StorageRefusal::UnprovedOwnership));
         }
         match CarrierElement::from_checked_type_with_definitions(ty, definitions) {
             Some(CarrierElement::Scalar(kind)) if kind != CanonicalScalarKind::Unit => {

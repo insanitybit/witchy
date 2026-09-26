@@ -266,10 +266,17 @@ pub(super) fn aggregate_reference_result_contract_matches(
     if !is_direct_rooted_view_aggregate_carrier(result, records) {
         return true;
     }
+    let affine = witchy_canonical_source::storage::StoragePlan::classify(
+        result.unqualified(), records, |_| Some(0),
+    ).requires_affine_owner_token();
     matches!(
         (actual.results.first(), actual.contract.results.first()),
         (Some(super::super::ValueType::Gc(owner)), Some(super::super::ResultContract::Value(super::super::ValueType::Gc(contract_owner))))
-            if owner == contract_owner
+            if owner == contract_owner && !affine
+    ) || matches!(
+        (actual.results.first(), actual.contract.results.first()),
+        (Some(super::super::ValueType::Gc(owner)), Some(super::super::ResultContract::OwnedGc { family }))
+            if owner == family && affine
     )
 }
 

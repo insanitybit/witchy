@@ -8,12 +8,13 @@ type Live = BTreeSet<ValueId>;
 
 pub(super) struct Registry<'a> {
     families: &'a [OwnerFamily],
+    affine_abi: Option<&'a super::AffineAbiProofs>,
 }
 
 impl<'a> Registry<'a> {
     pub(super) fn require_affine_proofs(&self, proofs: Option<&super::AffineAbiProofs>) -> Result<(), InitialCheckError> {
         for family in self.families {
-            if !Self::move_bearing(family) { continue; }
+            if !self.affine_bearing(family) { continue; }
             let Some(proofs) = proofs else {
                 return Err(InitialCheckError::UnsupportedMemorySignature { signature: family.signature });
             };
@@ -25,8 +26,8 @@ impl<'a> Registry<'a> {
         }
         Ok(())
     }
-    pub(super) fn new<S: ModuleStage>(module: &'a CanonicalModule<S>) -> Result<Self, InitialCheckError> {
-        let registry = Self { families: module.owner_families() };
+    pub(super) fn new<S: ModuleStage>(module: &'a CanonicalModule<S>, affine_abi: Option<&'a super::AffineAbiProofs>) -> Result<Self, InitialCheckError> {
+        let registry = Self { families: module.owner_families(), affine_abi };
         let (_, layouts) = crate::layout::LayoutBundle::decode_canonical(&module.layouts().canonical_bytes())
             .map_err(|_| InitialCheckError::UnsupportedMemoryOperation {
                 function: FunctionId::new(u32::MAX),
@@ -206,11 +207,17 @@ impl<'a> Registry<'a> {
             .any(|capture| capture.transfer == CaptureTransfer::MoveManaged)
     }
 
+    fn affine_bearing(&self, family: &OwnerFamily) -> bool {
+        Self::move_bearing(family) || self.affine_abi.is_some_and(|proofs|
+            family.constructors.iter().any(|constructor|
+                proofs.owner_environments.contains_key(&constructor.id)))
+    }
+
     /// The family of an owner-list operation. Only a family with an owner list
     /// (see `has_owner_list`) admits one.
     fn list_family(&self, function: &Function, id: FunctionSignatureId, operation: &'static str) -> Result<&OwnerFamily, InitialCheckError> {
         let family = self.family(id)?;
-        if !has_owner_list(family) || Self::move_bearing(family) {
+        if !has_owner_list(family) || self.affine_bearing(family) {
             return Err(InitialCheckError::UnsupportedMemoryOperation { function: function.id, operation });
         }
         Ok(family)
@@ -239,7 +246,7 @@ impl<'a> Registry<'a> {
             O::Deconstruct { owner, constructor, environment, captures } => {
                 let (family, constructor) = self.constructor(function, *constructor)?;
                 if !matches!(family.source, OwnerFamilySource::Aggregate(_))
-                    || !Self::move_bearing(family)
+                    || !self.affine_bearing(family)
                     || constructor.captures.iter().any(|capture| matches!(capture.storage,
                         CaptureStorage::OwnerField(_)) && !matches!(capture.value_type, ValueType::Gc(_)))
                 {
@@ -270,7 +277,7 @@ impl<'a> Registry<'a> {
             }
             O::ReadOwner { destination, owner, constructor, capture } => {
                 let (family, constructor) = self.constructor(function, *constructor)?;
-                if matches!(family.source, OwnerFamilySource::SharedReference(_)) || Self::move_bearing(family) {
+                if matches!(family.source, OwnerFamilySource::SharedReference(_)) || self.affine_bearing(family) {
                     return Err(InitialCheckError::UnsupportedMemoryOperation { function: function.id, operation: "ReadOwner shared-reference family" });
                 }
                 require_type(function, *owner, ValueType::Gc(family.owner_type))?;
@@ -346,7 +353,7 @@ impl<'a> Registry<'a> {
             }
             O::CloneEnvironment { destination, owner, constructor } => {
                 let (family, _) = self.constructor(function, *constructor)?;
-                if matches!(family.source, OwnerFamilySource::SharedReference(_)) || Self::move_bearing(family) {
+                if matches!(family.source, OwnerFamilySource::SharedReference(_)) || self.affine_bearing(family) {
                     return Err(InitialCheckError::UnsupportedMemoryOperation { function: function.id, operation: "CloneEnvironment shared-reference family" });
                 }
                 require_type(function, *owner, ValueType::Gc(family.owner_type))?;
@@ -362,8 +369,8 @@ impl<'a> Registry<'a> {
             }
             O::Clone { destination, owner, family } => {
                 let family = self.family(*family)?;
-                if Self::move_bearing(family) { return Err(InitialCheckError::UnsupportedMemoryOperation {
-                    function: function.id, operation: "Clone move-bearing owner",
+                if self.affine_bearing(family) { return Err(InitialCheckError::UnsupportedMemoryOperation {
+                    function: function.id, operation: "Clone affine owner",
                 }); }
                 let ty = ValueType::Gc(family.owner_type);
                 require_type(function, *owner, ty)?;
@@ -372,17 +379,11 @@ impl<'a> Registry<'a> {
             O::Drop { owner, family } => require_type(function, *owner, ValueType::Gc(self.family(*family)?.owner_type))?,
             O::NewList { destination, family, elements } => {
                 let family = self.list_family(function, *family, "NewList shared-reference family")?;
-                if Self::move_bearing(family) { return Err(InitialCheckError::UnsupportedMemoryOperation {
-                    function: function.id, operation: "move-bearing owner list",
-                }); }
                 require_type(function, *destination, ValueType::Gc(family.list_type))?;
                 for element in elements { require_type(function, *element, ValueType::Gc(family.owner_type))?; }
             }
             O::ListGet { destination, list, index, family } => {
                 let family = self.list_family(function, *family, "ListGet shared-reference family")?;
-                if Self::move_bearing(family) { return Err(InitialCheckError::UnsupportedMemoryOperation {
-                    function: function.id, operation: "move-bearing owner list",
-                }); }
                 require_type(function, *list, ValueType::Gc(family.list_type))?;
                 require_type(function, *index, ValueType::Size)?;
                 require_type(function, *destination, ValueType::Gc(family.owner_type))?;
@@ -913,21 +914,21 @@ pub mod self_checks {
             OwnerOperation::DropList { list, family: signature },
             OwnerOperation::ListLength { destination: ValueId::new(2), list, family: signature },
         ], vec![]);
-        assert!(matches!(check(&function, &Registry { families: &[family.clone()] }), Err(InitialCheckError::UseAfterConsume { .. })));
+        assert!(matches!(check(&function, &Registry { families: &[family.clone()], affine_abi: None }), Err(InitialCheckError::UseAfterConsume { .. })));
         let mut wrong = function;
         wrong.blocks[0].operations[0] = Operation::ClosureOwner(OwnerOperation::NewList { destination: list, family: FunctionSignatureId::new(9), elements: vec![source] });
-        assert!(matches!(check(&wrong, &Registry { families: &[family] }), Err(InitialCheckError::MissingSignature(_))));
+        assert!(matches!(check(&wrong, &Registry { families: &[family], affine_abi: None }), Err(InitialCheckError::MissingSignature(_))));
     }
 
     pub fn opaque_owner_affine_call_requires_move_and_no_leak() {
         let (mut function, family) = fixture(vec![], vec![]);
         let source = ValueId::new(0);
         function.blocks[0].operations.push(Operation::Call { destinations: vec![], callee: FunctionId::new(1), arguments: vec![CallArgument::Value(source)] });
-        assert!(matches!(check(&function, &Registry { families: &[family.clone()] }), Err(InitialCheckError::InvalidOwnership { .. })));
+        assert!(matches!(check(&function, &Registry { families: &[family.clone()], affine_abi: None }), Err(InitialCheckError::InvalidOwnership { .. })));
         function.blocks[0].operations[0] = Operation::Call { destinations: vec![], callee: FunctionId::new(1), arguments: vec![CallArgument::Move(source)] };
-        check(&function, &Registry { families: &[family.clone()] }).unwrap();
+        check(&function, &Registry { families: &[family.clone()], affine_abi: None }).unwrap();
         function.blocks[0].operations.clear();
-        assert!(matches!(check(&function, &Registry { families: &[family] }), Err(InitialCheckError::UnconsumedReference { .. })));
+        assert!(matches!(check(&function, &Registry { families: &[family], affine_abi: None }), Err(InitialCheckError::UnconsumedReference { .. })));
     }
 
 

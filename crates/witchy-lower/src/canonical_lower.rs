@@ -2151,7 +2151,12 @@ fn checked_signature(
             return Err(CanonicalLoweringError::UnsupportedType(result.clone()));
         };
         results = vec![value_type];
-        result_contracts = vec![ResultContract::Value(value_type)];
+        let affine = StoragePlan::classify(result.unqualified(), definitions, |_| Some(0))
+            .requires_affine_owner_token();
+        result_contracts = vec![match (value_type, affine) {
+            (ValueType::Gc(family), true) => ResultContract::OwnedGc { family },
+            _ => ResultContract::Value(value_type),
+        }];
     }
     // Unlike the direct one-owner alias ABI, an aggregate return has its own
     // RC shell and explicitly clones each source reference into a field.  Its
@@ -2185,6 +2190,11 @@ fn checked_signature(
                 value_type,
                 ownership: if *convention == Convention::Var {
                     ParameterOwnership::WriteBack
+                } else if *convention == Convention::Own
+                    && StoragePlan::classify(source_type.unqualified(), definitions, |_| Some(0))
+                        .requires_affine_owner_token()
+                {
+                    ParameterOwnership::Unique
                 } else {
                     ParameterOwnership::Shared
                 },
@@ -2902,7 +2912,7 @@ fn is_direct_rooted_view_aggregate_carrier(
     definitions: &BTreeMap<String, TypeDef>,
 ) -> bool {
     matches!(StoragePlan::classify(ty.unqualified(), definitions, |_| Some(0)),
-        StoragePlan::AggregateView(witchy_canonical_source::aggregates::ViewCarrierPlan::Aggregate { .. }))
+        StoragePlan::AggregateView(witchy_canonical_source::aggregates::ViewCarrierPlan::Aggregate { .. }, _))
 }
 
 fn shared_reference_parts(ty: &Type) -> Option<(&str, &Type)> {
@@ -19690,7 +19700,7 @@ fn source_value_type(
         && matches!(storage,
             StoragePlan::Owned(CarrierElement::Tuple(_) | CarrierElement::Dict(_, _)
                 | CarrierElement::Record { .. } | CarrierElement::Sum { .. })
-            | StoragePlan::AggregateView(_) | StoragePlan::AuthenticatedPlace(_))
+            | StoragePlan::AggregateView(_, _) | StoragePlan::AuthenticatedPlace(_))
     {
         // A scalar aggregate (record, sum, scalar `Option`/`Result`) is one
         // owned reference; a packed record stays an inline aggregate, which

@@ -55,6 +55,34 @@ fn main() -> Int:
     consume(make())
 "#;
 
+const OWNED_GC_AFFINE_FIELD: &str = r#"
+must type Token:
+    Token(Int)
+
+must type Cell:
+    Cell(&Int, Token)
+
+fn make() -> Cell:
+    let n = 3
+    Cell(&n, Token(7))
+
+fn consume(own cell: Cell) -> Int:
+    match cell:
+        Cell(view, token) ->
+            match move token:
+                Token(n) -> n + *view
+
+fn consume_local() -> Int:
+    let cell = make()
+    match move cell:
+        Cell(view, token) ->
+            match move token:
+                Token(n) -> n + *view
+
+fn main() -> Int:
+    consume(make()) + consume_local()
+"#;
+
 #[test]
 fn channel_handle_refusal_and_owned_gc_result() {
     let refusal = match witchy::resolve_std_only_checked(CHANNELS) {
@@ -75,4 +103,9 @@ fn channel_handle_refusal_and_owned_gc_result() {
         .expect("must GC aggregate has a checked owned result");
     let _ = witchy::codegen::compile_checked_module_artifact(&checked)
         .expect_lowered("owned GC result transfers a constructed owner");
+
+    let checked = witchy::resolve_std_only_checked(OWNED_GC_AFFINE_FIELD)
+        .expect("owned GC shell may transfer a nested affine field");
+    let _ = witchy::codegen::compile_checked_module_artifact(&checked)
+        .expect_lowered("consuming GC match extracts the affine field");
 }

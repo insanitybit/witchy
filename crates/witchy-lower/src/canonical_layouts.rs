@@ -528,7 +528,7 @@ impl LayoutProjection {
             // are roots of their own.
             Type::Tuple(fields) if scalar_aggregate_shape(ty, &self.definitions).is_some()
                 && matches!(StoragePlan::classify(ty, &self.definitions, |_| Some(0)),
-                    StoragePlan::Owned(CarrierElement::Tuple(_)) | StoragePlan::AggregateView(_)
+                    StoragePlan::Owned(CarrierElement::Tuple(_)) | StoragePlan::AggregateView(_, _)
                         | StoragePlan::AuthenticatedPlace(_)) => {
                 for field in fields {
                     if !layout_field_is_inline(field, &self.definitions) {
@@ -556,7 +556,7 @@ impl LayoutProjection {
                 if scalar_aggregate_shape(ty, &self.definitions).is_some_and(|shape| !shape.packed)
                     && matches!(StoragePlan::classify(ty, &self.definitions, |_| Some(0)),
                         StoragePlan::Owned(CarrierElement::Record { .. } | CarrierElement::Sum { .. })
-                            | StoragePlan::AggregateView(_) | StoragePlan::AuthenticatedPlace(_)) =>
+                            | StoragePlan::AggregateView(_, _) | StoragePlan::AuthenticatedPlace(_)) =>
             {
                 let shape = scalar_aggregate_shape(ty, &self.definitions).expect("checked above");
                 for field in &shape.fields {

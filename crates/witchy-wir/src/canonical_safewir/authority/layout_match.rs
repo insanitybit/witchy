@@ -159,7 +159,7 @@ pub(crate) fn value_type_matches_source(
             | witchy_canonical_source::carrier::CarrierElement::Dict(_, _)
             | witchy_canonical_source::carrier::CarrierElement::Record { .. }
             | witchy_canonical_source::carrier::CarrierElement::Sum { .. }
-        ) | StoragePlan::AggregateView(_) | StoragePlan::AuthenticatedPlace(_) => {
+        ) | StoragePlan::AggregateView(_, _) | StoragePlan::AuthenticatedPlace(_) => {
             witchy_canonical_source::aggregates::scalar_aggregate_shape(source, records).is_some_and(|shape| {
                 matches!(actual, super::super::ValueType::Ref(layout)
                     if nominal_layout_matches_source_identity(layout, source, layouts, records)
@@ -343,7 +343,7 @@ pub(super) fn enqueue_layout_children(
                 | witchy_canonical_source::carrier::CarrierElement::Dict(_, _)
                 | witchy_canonical_source::carrier::CarrierElement::Record { .. }
                 | witchy_canonical_source::carrier::CarrierElement::Sum { .. })
-                | StoragePlan::AggregateView(_) | StoragePlan::AuthenticatedPlace(_)) {
+                | StoragePlan::AggregateView(_, _) | StoragePlan::AuthenticatedPlace(_)) {
             return false;
         }
         return enqueue_record_fields(layout, &shape.fields, aggregate_uses_nullable_owned_fields(source, records), layouts, pending);

@@ -275,6 +275,12 @@ fn install_body_derived_result_contracts(
                             signature: signature.id,
                         });
                     }
+                    // The body-summary lattice records the physical GC lane
+                    // as Value. It cannot grant an owned origin. Keep the
+                    // explicit source-derived contract here; the separate
+                    // owned-GC origin pass below proves every return path.
+                    super::ResultContract::OwnedGc { family }
+                        if *derived == super::ResultContract::Value(ValueType::Gc(*family)) => {}
                     explicit if explicit != derived => {
                         if std::env::var_os("WITCHY_CANONICAL_PLAN_DEBUG").is_some() {
                             eprintln!(
@@ -335,7 +341,7 @@ fn check_candidate<S: ModuleStage>(
     let imports = index_imports(candidate.imports())?;
     let functions = index_functions(candidate.functions())?;
     contracts::check_all(&functions, &signatures, derived)?;
-    let owners = owners::Registry::new(candidate)?;
+    let owners = owners::Registry::new(candidate, affine_abi)?;
     owners.require_affine_proofs(affine_abi)?;
     for function in candidate.functions() {
         owners::check(function, &owners)?;

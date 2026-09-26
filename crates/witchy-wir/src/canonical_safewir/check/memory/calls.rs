@@ -272,7 +272,7 @@ impl<'a> MemoryChecker<'a> {
                 // The separate opaque-token CFG judgment consumes this lane.
                 // It has no linear address, extent, or allocation class.
                 if !matches!(argument, CallArgument::Move(_))
-                    || !matches!(parameter.ownership, ParameterOwnership::Shared | ParameterOwnership::WriteBack)
+                    || !matches!(parameter.ownership, ParameterOwnership::Shared | ParameterOwnership::WriteBack | ParameterOwnership::Unique)
                 {
                     return self.unsupported("Call(opaque ownership)");
                 }

@@ -181,8 +181,6 @@ pub(super) fn build<S: crate::canonical_safewir::ModuleStage>(source: &Canonical
                 let declared = family.constructors.iter().find(|candidate| candidate.id == *constructor)
                     .ok_or_else(|| error("deconstruct constructor"))?;
                 if !matches!(family.source, OwnerFamilySource::Aggregate(_))
-                    || !family.constructors.iter().flat_map(|candidate| &candidate.captures)
-                        .any(|capture| capture.transfer == crate::canonical_safewir::closure_owner_contract::CaptureTransfer::MoveManaged)
                     || declared.captures.iter().any(|capture| matches!(capture.storage,
                         crate::canonical_safewir::closure_owner_contract::CaptureStorage::OwnerField(_))
                         && !matches!(capture.value_type, ValueType::Gc(_)))

@@ -149,8 +149,11 @@ fn bind_owner_environments<S: ModuleStage>(
         let OwnerFamilySource::Aggregate(source_type) = &family.source else { continue };
         let move_bearing = family.constructors.iter().flat_map(|constructor| &constructor.captures)
             .any(|capture| capture.transfer == CaptureTransfer::MoveManaged);
-        if !move_bearing { continue; }
-        if !source.storage_plan(source_type).requires_affine_owner_token() { return Err(refuse()); }
+        let affine = source.storage_plan(source_type).requires_affine_owner_token();
+        if !affine {
+            if move_bearing { return Err(refuse()); }
+            continue;
+        }
         let shape = witchy_canonical_source::aggregates::scalar_aggregate_shape(source_type, source.type_definitions())
             .filter(|shape| !shape.packed).ok_or_else(refuse)?;
         let physical = layouts.resolve_nominal(family.environment).map_err(|_| refuse())?;

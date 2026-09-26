@@ -1032,10 +1032,23 @@ that `BoxView` is `Gc`, so this path exercises `OwnedGc`. The earlier `Chain`
 smoke used a `Ref` layout and was incorrectly labeled as GC; this corrects
 that checkpoint. This is compiler admission only; no hand-computed Wasm
 result or zero-leak audit is claimed, and no A–O row closes. The channel
-handle path remains blocked by replayable must capture; a separate opaque GC
-aggregate with a must field lacks consuming field extraction. A conditional
+handle path remains blocked by replayable must capture. A conditional
 `unique Chain` relay currently reaches SafeWIR but fails callable-contract
 validation; owned GC branch result lowering remains a structural gap.
+
+Row G view-bearing affine aggregate composition (implemented but unverified,
+2026-09-26): the checked `AggregateView` plan now carries the recursive
+storage graph's clone and move judgment. A `must` opaque shell with copyable
+fields remains affine even without a `MoveManaged` child; an opaque shell with
+an affine child uses the same consuming match and owner-family proof. Source
+ABI, layout, lowering, SafeWIR admission, and the Wasm owner bridge consume
+that judgment, replacing the old view-specific cloneability list and the
+physical `MoveManaged` discriminator for deconstruction. The existing compiler
+smoke admits `Cell(&Int, Token)` through an owned result, `own` call, local
+move, nested affine extraction, and unoptimized Wasm construction. Adversarial
+review found no further concrete authority widening. This is structural
+admission only: no hand-computed Wasm result or zero-leak audit is claimed,
+and no A–O row closes.
 
 Row G local affine allocation binding (implemented but unverified,
 2026-09-26): the checked-source view now carries concrete expression types
