@@ -59,6 +59,10 @@ pub(super) struct Checker {
     /// which are filled before any body is checked; re-walking every nominal
     /// payload with fresh substitutions per probe was ~7% of an async compile.
     pub(super) once_callable_types: std::cell::RefCell<HashMap<Ty, bool>>,
+    /// Root unique-storage queries, evaluated with an empty recursion guard.
+    /// Declaration tables are fixed before body checking; both substitution
+    /// mutations clear this memo because the judgment resolves their fields.
+    pub(super) unique_storage_types: std::cell::RefCell<HashMap<Ty, bool>>,
     /// When annotating (see `annotate`): expression identity -> inferred type,
     /// finalized against the ending substitution. Key = `&Expr as *const _`.
     // The boolean is checked non-completion, recorded in the same session so

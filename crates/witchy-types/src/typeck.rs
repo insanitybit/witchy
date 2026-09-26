@@ -827,18 +827,20 @@ impl Checker {
 
     /// The only two ways `self.subst` may change: bind one more variable, or
     /// roll back to an earlier snapshot (speculative unification's undo).
-    /// Both invalidate `resolve_cache` -- a stale entry would answer with a
-    /// type variable's PREVIOUS binding. Route every mutation through these
+    /// Both invalidate substitution-dependent query caches -- a stale entry
+    /// would answer with a type variable's PREVIOUS binding. Route mutations through these
     /// rather than `self.subst.insert`/`self.subst = ...` directly, so a
     /// future write can't forget to invalidate.
     fn bind_subst_var(&mut self, v: u32, ty: Ty) {
         self.subst.insert(v, ty);
         self.resolve_cache.borrow_mut().clear();
+        self.unique_storage_types.borrow_mut().clear();
     }
 
     fn restore_subst(&mut self, saved: HashMap<u32, Ty>) {
         self.subst = saved;
         self.resolve_cache.borrow_mut().clear();
+        self.unique_storage_types.borrow_mut().clear();
     }
 
     fn same_resolved_type(&self, a: &Ty, b: &Ty) -> bool {
@@ -2292,7 +2294,13 @@ impl Checker {
                 _ => false,
             }
         }
-        go(self, ty, &mut HashSet::new())
+        let resolved = self.resolve(ty);
+        if let Some(answer) = self.unique_storage_types.borrow().get(&resolved) {
+            return *answer;
+        }
+        let answer = go(self, &resolved, &mut HashSet::new());
+        self.unique_storage_types.borrow_mut().insert(resolved, answer);
+        answer
     }
 
     /// Whether evaluating `expression` yields storage that must follow affine
@@ -12425,6 +12433,7 @@ fn run_check_selected(
         resolve_cache: std::cell::RefCell::new(HashMap::new()),
         storage_plans,
         once_callable_types: std::cell::RefCell::new(HashMap::new()),
+        unique_storage_types: std::cell::RefCell::new(HashMap::new()),
         type_record: if record { Some(HashMap::new()) } else { None },
         compiler_owned_materializations: HashSet::new(),
         // Construction requests are also retained during ordinary checking so

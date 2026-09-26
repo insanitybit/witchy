@@ -338,6 +338,34 @@
     }
 
     #[test]
+    fn unique_storage_queries_follow_inference_and_recursive_generic_payloads() {
+        check_source(
+            "type Chain(a):\n    End\n    More(a, List(Chain(a)))\n\nfn copies(value: Chain(Int)) -> (Chain(Int), Chain(Int)):\n    (value, value)\n",
+        )
+        .expect("recursive ordinary payloads remain copyable");
+
+        let recursive = check_source(
+            "type Owner:\n    value: unique String\n\ntype Chain(a):\n    End\n    More(a, List(Chain(a)))\n\nfn copies(own value: Chain(Owner)):\n    let first = value\n    value\n",
+        )
+        .expect_err("recursive generic payloads retain their unique-storage obligation");
+        assert!(recursive.message.contains("after it was transferred")
+            || recursive.message.contains("after it was moved"), "{recursive:?}");
+
+        let inferred = check_source(
+            "type Owner:\n    value: unique String\n\nfn copies():\n    var values = []\n    values = [Owner(\"one\")]\n    let first = values\n    values\n",
+        )
+        .expect_err("an initially unresolved collection acquires its element's affinity");
+        assert!(inferred.message.contains("after it was transferred")
+            || inferred.message.contains("after it was moved"), "{inferred:?}");
+
+        let rollback = check_source(
+            "fn rejected() -> List(Int):\n    let value: .{items: List(Int), needed: Int} = .{items: [], extra: 2}\n    value.items\n",
+        )
+        .expect_err("partially inferred structural conformance must still reject a missing field");
+        assert!(rollback.message.contains("missing required field `needed`"), "{rollback:?}");
+    }
+
+    #[test]
     fn unique_storage_is_affine_through_values_aggregates_and_calls() {
         let reused_root = check_source(
             "fn duplicate(value: unique String):\n    let moved = value\n    let copied = value\n",
