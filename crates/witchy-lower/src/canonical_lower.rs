@@ -5866,14 +5866,29 @@ impl FunctionLowerer<'_> {
         Ok(())
     }
 
-    fn lower_let_value(&mut self, mutable: bool, value: &Expr) -> Result<ValueId, CanonicalLoweringError> {
-        let value = self.lower_expr(value)?;
+    fn lower_let_value(&mut self, mutable: bool, expression: &Expr) -> Result<ValueId, CanonicalLoweringError> {
+        let value = self.lower_expr(expression)?;
         if matches!(self.values[&value], ValueType::Gc(_)) {
             return if self.bindings.values().any(|bound| *bound == value) {
                 self.clone_reference_token(value)
             } else { Ok(value) };
         }
         if !matches!(self.values[&value], ValueType::Ref(_)) {
+            return Ok(value);
+        }
+        if StoragePlan::classify(&self.expression_type(expression)?, self.definitions, |_| Some(0))
+            .requires_affine_owner_token()
+        {
+            if self.bindings.values().any(|bound| *bound == value)
+                && !matches!(expression, Expr::Unary { op: UnOp::Move, .. })
+            {
+                return Err(CanonicalLoweringError::UnsupportedExpression(
+                    "affine local binding requires an explicit ownership transfer",
+                ));
+            }
+            return Ok(value);
+        }
+        if matches!(expression, Expr::Unary { op: UnOp::Move, .. }) {
             return Ok(value);
         }
         // A `var` initialised from a static string (`var out = ""`) owns a
@@ -6856,6 +6871,13 @@ impl FunctionLowerer<'_> {
             return Err(CanonicalLoweringError::UnsupportedExpression("empty match"));
         }
         let scrutinee_type = self.expression_type(scrutinee)?;
+        if StoragePlan::classify(&scrutinee_type, self.definitions, |_| Some(0))
+            .requires_affine_owner_token()
+        {
+            return Err(CanonicalLoweringError::UnsupportedExpression(
+                "affine aggregate matching requires consuming payload extraction",
+            ));
+        }
         let scrutinee = self.lower_expr(scrutinee)?;
         let string_layout = self.string_layout_id().ok();
         let facts = self.snapshot_facts();
@@ -7539,6 +7561,12 @@ impl FunctionLowerer<'_> {
         elems: &[Pattern],
         rest: Option<&Option<String>>,
     ) -> Result<Vec<(String, ValueId)>, CanonicalLoweringError> {
+        if matches!(StoragePlan::classify(scrutinee_type, self.definitions, |_| Some(0)),
+            StoragePlan::MoveOnlyList(_)) {
+            return Err(CanonicalLoweringError::UnsupportedExpression(
+                "list pattern cannot copy move-only elements",
+            ));
+        }
         let (layout, element_type, header_bytes, stride_bytes) = list_layout(
             scrutinee_type, self.layout_bundle, self.layouts, &self.closures.layouts, self.definitions,
         )?;
@@ -8826,6 +8854,18 @@ impl FunctionLowerer<'_> {
             return self.lower_range_for(variable, lo, hi, *inclusive, body);
         }
         let logical_type = self.expression_type(iterable)?;
+        // Iteration reads each element while preserving the list. An affine
+        // element can only leave through a consuming operation such as pop.
+        if matches!(
+            witchy_canonical_source::storage::StoragePlan::classify(
+                &logical_type, self.definitions, |_| Some(0),
+            ),
+            witchy_canonical_source::storage::StoragePlan::MoveOnlyList(_)
+        ) {
+            return Err(CanonicalLoweringError::UnsupportedExpression(
+                "for iteration of a move-only list requires consuming extraction",
+            ));
+        }
         // A `&[T]` view iterates `0..length`, reading each element by value
         // through the same checked projection as `xs[i]`. The carrier is
         // immutable, so it dominates the loop without becoming loop state.
@@ -10190,6 +10230,15 @@ impl FunctionLowerer<'_> {
         linear_index: usize,
         value_type: ValueType,
     ) -> Result<ValueId, CanonicalLoweringError> {
+        if scalar_aggregate_shape(source, self.definitions)
+            .and_then(|shape| shape.fields.get(linear_index).cloned())
+            .is_some_and(|field| StoragePlan::classify(&field, self.definitions, |_| Some(0))
+                .requires_affine_owner_token())
+        {
+            return Err(CanonicalLoweringError::UnsupportedExpression(
+                "aggregate field read requires consuming affine extraction",
+            ));
+        }
         if !matches!(self.values[&object], ValueType::Gc(_)) {
             return self.load_record_field(
                 object,
@@ -11488,6 +11537,13 @@ impl FunctionLowerer<'_> {
     /// same error) from a terminal block.
     fn lower_try(&mut self, inner: &Expr) -> Result<ValueId, CanonicalLoweringError> {
         let inner_type = self.expression_type(inner)?;
+        if StoragePlan::classify(&inner_type, self.definitions, |_| Some(0))
+            .requires_affine_owner_token()
+        {
+            return Err(CanonicalLoweringError::UnsupportedExpression(
+                "try on affine storage requires consuming payload extraction",
+            ));
+        }
         let shape = scalar_aggregate_shape(&inner_type, self.definitions)
             .filter(|shape| matches!(shape.name.as_str(), "Option" | "Result"))
             .ok_or(CanonicalLoweringError::UnsupportedExpression("try operand"))?;
@@ -11791,6 +11847,13 @@ impl FunctionLowerer<'_> {
     /// Inactive tagged payloads are never loaded; their nullable slots are
     /// initialized by the ordinary constructor path.
     fn clone_aggregate_for_storage(&mut self, value: ValueId, ty: &Type) -> Result<ValueId, CanonicalLoweringError> {
+        if StoragePlan::classify(ty, self.definitions, |_| Some(0))
+            .requires_affine_owner_token()
+        {
+            return Err(CanonicalLoweringError::UnsupportedExpression(
+                "affine aggregate has no clone operation",
+            ));
+        }
         let shape = scalar_aggregate_shape(ty, self.definitions)
             .ok_or_else(|| CanonicalLoweringError::UnsupportedType(ty.clone()))?;
         if shape.tagged {
@@ -12950,7 +13013,11 @@ impl FunctionLowerer<'_> {
             if self.values[&value] != element_type {
                 return Err(CanonicalLoweringError::UnsupportedListElement(logical_type.clone()));
             }
-            if matches!(element_type, ValueType::Ref(_)) {
+            let move_only = matches!(
+                StoragePlan::classify(&logical_type, self.definitions, |_| Some(0)),
+                StoragePlan::MoveOnlyList(_),
+            );
+            if matches!(element_type, ValueType::Ref(_)) && !move_only {
                 if self.string_lengths.contains_key(&value) {
                     value = self.clone_string_for_storage(value)?;
                 } else if matches!(item, Expr::Lambda { .. }) && matches!(element_type, ValueType::Ref(_)) {
@@ -13182,6 +13249,12 @@ impl FunctionLowerer<'_> {
         source: ValueId,
         source_type: &Type,
     ) -> Result<ValueId, CanonicalLoweringError> {
+        if matches!(StoragePlan::classify(source_type, self.definitions, |_| Some(0)),
+            StoragePlan::MoveOnlyList(_)) {
+            return Err(CanonicalLoweringError::UnsupportedExpression(
+                "move-only list has no clone operation",
+            ));
+        }
         let (layout, element_type, header_bytes, stride_bytes) =
             list_layout(source_type, self.layout_bundle, self.layouts, &self.closures.layouts, self.definitions)?;
         if self.values.get(&source).copied() != Some(ValueType::Ref(layout)) {
@@ -13270,6 +13343,10 @@ impl FunctionLowerer<'_> {
             return Ok(());
         }
         let list_type = self.expression_type(&arguments[0])?;
+        let move_only = matches!(
+            StoragePlan::classify(&list_type, self.definitions, |_| Some(0)),
+            StoragePlan::MoveOnlyList(_),
+        );
         let (_, element_type, _, _) =
             list_layout(&list_type, self.layout_bundle, self.layouts, &self.closures.layouts, self.definitions)?;
         let pointer_elements = matches!(element_type, ValueType::Ref(_));
@@ -13278,9 +13355,14 @@ impl FunctionLowerer<'_> {
         if self.values[&value] != element_type {
             return Err(CanonicalLoweringError::UnsupportedListElement(list_type.clone()));
         }
-        if pointer_elements && self.string_lengths.contains_key(&value) {
+        if move_only && !matches!(value_expression, Expr::Unary { op: UnOp::Move, .. }) {
+            return Err(CanonicalLoweringError::UnsupportedExpression(
+                "move-only list append requires an explicit element transfer",
+            ));
+        }
+        if pointer_elements && !move_only && self.string_lengths.contains_key(&value) {
             value = self.clone_string_for_storage(value)?;
-        } else if pointer_elements && !matches!(value_expression, Expr::List(_)) {
+        } else if pointer_elements && !move_only && !matches!(value_expression, Expr::List(_)) {
             let Type::Named(_, arguments) = list_type.unqualified() else {
                 return Err(CanonicalLoweringError::UnsupportedListElement(list_type.clone()));
             };
@@ -13304,6 +13386,12 @@ impl FunctionLowerer<'_> {
         };
         let old_object = self.lower_expr(receiver)?;
         let list_type = self.expression_type(receiver)?;
+        if matches!(StoragePlan::classify(&list_type, self.definitions, |_| Some(0)),
+            StoragePlan::MoveOnlyList(_)) {
+            return Err(CanonicalLoweringError::UnsupportedExpression(
+                "value-producing push cannot copy a move-only list",
+            ));
+        }
         let mut value = self.lower_expr(element)?;
         if let Some(family) = self.owner_list_family(old_object).cloned() {
             if self.values[&value] != ValueType::Gc(family.owner_type) {
@@ -13345,6 +13433,14 @@ impl FunctionLowerer<'_> {
         };
         let left_type = self.expression_type(left_expression)?;
         let right_type = self.expression_type(right_expression)?;
+        if [(&left_type), (&right_type)].into_iter().any(|ty| matches!(
+            StoragePlan::classify(ty, self.definitions, |_| Some(0)),
+            StoragePlan::MoveOnlyList(_)
+        )) {
+            return Err(CanonicalLoweringError::UnsupportedExpression(
+                "concat cannot copy a move-only list",
+            ));
+        }
         let (layout, element_type, header_bytes, stride_bytes) =
             list_layout(&left_type, self.layout_bundle, self.layouts, &self.closures.layouts, self.definitions)?;
         let (right_layout, right_element_type, right_header_bytes, right_stride_bytes) =
@@ -14160,6 +14256,12 @@ impl FunctionLowerer<'_> {
     fn lower_index(&mut self, expression: &Expr, base: &Expr, index: &Expr) -> Result<ValueId, CanonicalLoweringError> {
         let site = self.diagnostic_site(expression)?;
         let logical_type = self.expression_type(base)?;
+        if matches!(StoragePlan::classify(&logical_type, self.definitions, |_| Some(0)),
+            StoragePlan::MoveOnlyList(_)) {
+            return Err(CanonicalLoweringError::UnsupportedExpression(
+                "index cannot copy a move-only list element",
+            ));
+        }
         // Every proven slice carrier reads by value through the same bounds
         // and backing-root layout checks. Taking `&slice[i]` still uses the
         // separate checked place-view constructor where one is available.

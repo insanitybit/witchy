@@ -7177,6 +7177,16 @@ impl Checker {
             witchy_syntax::intrinsics::canonical_operation_name(&call_name),
             witchy_syntax::intrinsics::LIST_AT
         ) && self.is_nested_borrowed_nominal_list(&ret);
+        if witchy_syntax::intrinsics::canonical_operation_name(&call_name)
+            == witchy_syntax::intrinsics::LIST_AT
+            && ty_to_ast(&self.resolve(&ret)).is_some_and(|source| {
+                witchy_canonical_source::storage::StoragePlan::classify(
+                    &source, &self.canonical_definitions, |_| Some(0),
+                ).requires_affine_owner_token()
+            })
+        {
+            return terr("list.at reads by copy; use a consuming extraction for move-only elements");
+        }
         if !self.is_direct_borrowed_nominal(&ret) && !operation_is_nested_list_projection {
             self.reject_borrowed_nominal_runtime_ty(
                 &ret,
@@ -7851,6 +7861,13 @@ impl Checker {
         if let Ty::List(element) = self.resolve(&payload) {
             let index_ty = self.infer(index)?;
             self.unify(&index_ty, &Ty::Int)?;
+            if ty_to_ast(&self.resolve(&element)).is_some_and(|source| {
+                witchy_canonical_source::storage::StoragePlan::classify(
+                    &source, &self.canonical_definitions, |_| Some(0),
+                ).requires_affine_owner_token()
+            }) {
+                return terr("list indexing reads by copy; use a consuming extraction for move-only elements");
+            }
             return Ok((base_ty, element.as_ref().clone()));
         }
         // The transient below types clones; infer the source index directly so

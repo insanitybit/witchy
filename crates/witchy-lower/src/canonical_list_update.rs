@@ -40,6 +40,12 @@ impl FunctionLowerer<'_> {
         replacement: ValueId,
         list_type: Type,
     ) -> Result<ValueId, CanonicalLoweringError> {
+        if matches!(StoragePlan::classify(&list_type, self.definitions, |_| Some(0)),
+            StoragePlan::MoveOnlyList(_)) {
+            return Err(CanonicalLoweringError::UnsupportedExpression(
+                "indexed replacement cannot copy move-only list elements",
+            ));
+        }
         if let Some(family) = self.owner_list_family(source).cloned() {
             if self.values[&index] != ValueType::Int
                 || self.values[&replacement] != ValueType::Gc(family.owner_type)

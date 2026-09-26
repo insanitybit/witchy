@@ -38,7 +38,7 @@ from task import Task, Handle, ChannelId
 
 fn appended(own xs: List(a), own x: a) -> List(a):
     var out = move xs
-    list.push(out, x)
+    list.push(out, move x)
     out
 
 // (RFC-0042) `Task` and `Handle` are owned by std/task. The raw scheduler
