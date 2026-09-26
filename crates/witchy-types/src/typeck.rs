@@ -169,16 +169,6 @@ fn replay_snapshot_reason(reason: witchy_canonical_source::storage::SnapshotRefu
 }
 type AnonUnionVariants = Vec<(String, Vec<Ty>)>;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum SuspensionTransferKind {
-    /// The executor's root task cannot be addressed by a `Handle`, so its owned
-    /// frame is driven to completion unless the whole program aborts.
-    Root,
-    /// A spawned task can be shallow-cancelled while suspended. With no drop
-    /// glue, abandoning this frame would also abandon any live must obligation.
-    Cancellable(String),
-}
-
 /// Qualifier-bearing callable facts that are intentionally absent from [`Ty`]'s
 /// runtime function identity. Result guarantees require every source path;
 /// parameter demands are retained if any source path needs them.
@@ -3897,66 +3887,6 @@ impl Checker {
             ));
         }
         Ok(())
-    }
-
-    /// Recognize the exact shallow continuation emitted by async lowering:
-    /// `fn(own resume): frame(carried..., resume)`. Every captured binding must
-    /// be forwarded exactly once, as a bare argument, to the identically named
-    /// `own` slot of a compiler-marked frame function. This is deliberately a
-    /// provenance check, not a general rule for closures passed to `own`.
-    fn suspension_transfer_kind(
-        &self,
-        params: &[ast::Param],
-        body: &Block,
-        captures: &[String],
-    ) -> Option<SuspensionTransferKind> {
-        if body.region.is_some() || body.stmts.len() != 1 {
-            return None;
-        }
-        let Stmt::Expr(Expr::Call { name, args }) = &body.stmts[0] else {
-            return None;
-        };
-        let kind = self.suspension_frames.get(name)?.clone();
-        let conventions = self.fn_conventions.get(name)?;
-        let target_names = self.fn_param_names.get(name)?;
-        if args.len() != conventions.len() || args.len() != target_names.len() {
-            return None;
-        }
-
-        let captures = captures
-            .iter()
-            .filter(|capture| self.lookup(capture).is_some())
-            .map(String::as_str)
-            .collect::<Vec<_>>();
-        let lambda_params = params
-            .iter()
-            .map(|parameter| parameter.name.as_str())
-            .collect::<HashSet<_>>();
-        for ((argument, convention), target_name) in
-            args.iter().zip(conventions).zip(target_names)
-        {
-            let Expr::Var(argument_name) = argument else {
-                return None;
-            };
-            if convention != &Convention::Own
-                || argument_name != target_name
-                || (!captures.contains(&argument_name.as_str())
-                    && !lambda_params.contains(argument_name.as_str()))
-            {
-                return None;
-            }
-        }
-        if captures.iter().any(|capture| {
-            args.iter()
-                .filter(|argument| {
-                    matches!(argument, Expr::Var(name) if name.as_str() == *capture)
-                })
-                .count()
-                != 1
-        }) {
-            return None;
-        }
-        Some(kind)
     }
 
     fn affine_place(&self, expression: &Expr) -> Option<(String, bool)> {
@@ -8251,8 +8181,6 @@ impl Checker {
                     ));
                 }
                 let captures = scan.captures();
-                let suspension_transfer =
-                    self.suspension_transfer_kind(params, body, &captures);
                 let mut copied_captures = Vec::new();
                 for capture in captures {
                     let Some(captured_ty) = self.lookup(&capture) else { continue };
@@ -8267,28 +8195,9 @@ impl Checker {
                         ));
                     }
                     if self.is_must_binding(&capture) {
-                        match &suspension_transfer {
-                            Some(SuspensionTransferKind::Root)
-                                if self.is_live_must_binding(&capture) =>
-                            {
-                                return terr(format!(
-                                    "must-consume `{capture}` remains live across `await` in the root async fn; suspended frames have no drop cleanup, so consume or return it before the suspension"
-                                ));
-                            }
-                            Some(SuspensionTransferKind::Cancellable(source))
-                                if self.is_live_must_binding(&capture) =>
-                            {
-                                return terr(format!(
-                                    "must-consume `{capture}` remains live across `await` in async fn `{}`; spawned tasks are shallow-cancellable and suspended frames have no drop cleanup, so consume or return it before the suspension",
-                                    diagnostic_callable_name(source),
-                                ));
-                            }
-                            _ => {
-                                return terr(format!(
-                                    "closure environment carries must-consume `{capture}`; this callable type would erase that obligation"
-                                ));
-                            }
-                        }
+                        return terr(format!(
+                            "closure capture `{capture}` carries a must-consume obligation; an ordinary callable cannot hide it or enter a replayable task"
+                        ));
                     }
                     // RFC-0167 §views: "a view is a value-semantic snapshot handle,
                     // not a lexical loan ... may be returned, stored in an aggregate,
@@ -8326,9 +8235,7 @@ impl Checker {
                     if pure_capture_boundary {
                         self.reject_pure_capture(&capture, &captured_ty)?;
                     }
-                    if !self.is_must_binding(&capture)
-                        && !self.ty_carries_must_consume(&captured_ty)
-                    {
+                    if !self.ty_carries_must_consume(&captured_ty) {
                         let mutable = self.is_mutable(&capture).unwrap_or(false);
                         let frozen = self.is_frozen_binding(&capture);
                         copied_captures.push((capture, captured_ty, mutable, frozen));
@@ -8338,10 +8245,11 @@ impl Checker {
                 let saved_pure_var_parameters =
                     std::mem::take(&mut self.pure_var_parameters);
                 self.push();
-                // Ordinary value captures are snapshots, not the enclosing
-                // bindings. An `own` call in the body consumes that invocation's
-                // private binding. Approved must-consume suspension captures
-                // deliberately keep the existing transfer identity instead.
+                // Value captures are snapshots, not the enclosing bindings.
+                // An `own` call in the body consumes that invocation's
+                // private binding. Known obligation-bearing capture types
+                // are left to the final checked closure witness; unresolved
+                // captures are rechecked below after body inference.
                 for (capture, ty, mutable, frozen) in &copied_captures {
                     // These analysis-only bindings do not allocate storage in
                     // the enclosing lexical region, unlike a source `let`.
@@ -8453,33 +8361,14 @@ impl Checker {
                 self.unify(&lambda_ret, &body_ty).map_err(|e| TypeError {
                     message: format!("closure body type does not match its declared return type: {}", e.message),
                 })?;
-                // Body inference can refine a generic capture. It must not
-                // retroactively turn an admitted snapshot into an affine,
-                // must-consume, or reference-bearing environment. The one
-                // exception is the exact compiler-generated root suspension
-                // transfer: it is not cancellable, and
-                // `suspension_transfer_kind` has structurally proved this
-                // one-expression continuation forwards every capture exactly
-                // once to the matching `own` frame slot.
-                let mut late_root_must_transfers = Vec::new();
+                // Body inference can refine a generic capture. Recheck the
+                // resolved storage before granting a reusable callable: even
+                // a root continuation is wrapped in a replayable Task recipe.
                 for (capture, captured_ty, _, _) in &copied_captures {
                     if self.ty_carries_must_consume(captured_ty) {
-                        match &suspension_transfer {
-                            Some(SuspensionTransferKind::Root) => {
-                                late_root_must_transfers.push(capture.clone());
-                            }
-                            Some(SuspensionTransferKind::Cancellable(source)) => {
-                                return terr(format!(
-                                    "must-consume `{capture}` remains live across `await` in async fn `{}`; spawned tasks are shallow-cancellable and suspended frames have no drop cleanup, so consume or return it before the suspension",
-                                    diagnostic_callable_name(source),
-                                ));
-                            }
-                            None => {
-                                return terr(format!(
-                                    "closure environment carries must-consume `{capture}`; this callable type would erase that obligation"
-                                ));
-                            }
-                        }
+                        return terr(format!(
+                            "closure capture `{capture}` carries a must-consume obligation; an ordinary callable cannot hide it or enter a replayable task"
+                        ));
                     }
                     if self.ty_carries_once_callable(captured_ty) {
                         return terr(format!(
@@ -8494,9 +8383,6 @@ impl Checker {
                 self.current_ret = saved_ret;
                 self.reject_live_must_in_current_scope()?;
                 self.pop();
-                for capture in late_root_must_transfers {
-                    self.transfer_owned_argument_binding(&capture);
-                }
                 self.current_pure = saved_pure;
                 self.pure_var_parameters = saved_pure_var_parameters;
                 let conventions = params.iter().map(|p| p.convention).collect();
@@ -12523,31 +12409,6 @@ fn run_check_selected(
         .ok_or_else(|| TypeError {
             message: "checked Task declaration has inconsistent execution-obligation arity".into(),
         })?;
-    let root_source = module
-        .linked_entry
-        .as_ref()
-        .map_or_else(|| "main".to_string(), |entry| format!("{entry}.main"));
-    let suspension_frames = module
-        .items
-        .iter()
-        .filter_map(|item| {
-            let Item::Function(function) = item else {
-                return None;
-            };
-            if !function.attributes.iter().any(|attribute| {
-                attribute == witchy_syntax::suspension::FRAME_FUNCTION_ATTRIBUTE
-            }) {
-                return None;
-            }
-            let source = witchy_syntax::suspension::source_callable_name(function);
-            let kind = if source == root_source {
-                SuspensionTransferKind::Root
-            } else {
-                SuspensionTransferKind::Cancellable(source)
-            };
-            Some((function.name.clone(), kind))
-        })
-        .collect();
     let mut c = Checker {
         canonical_definitions: witchy_canonical_source::aggregates::type_definitions(module),
         resolve_cache: std::cell::RefCell::new(HashMap::new()),
@@ -12563,7 +12424,6 @@ fn run_check_selected(
         fn_sigs: HashMap::new(),
         async_body_returns: HashMap::new(),
         fn_qualifiers: HashMap::new(),
-        suspension_frames,
         from_conversion_fns: from_conversion_fns.cloned().unwrap_or_default(),
         fn_conventions: HashMap::new(),
         fn_exclusive_reference_params: HashMap::new(),

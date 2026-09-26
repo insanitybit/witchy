@@ -29,7 +29,6 @@ pub enum ClosureCaptureTransfer {
     /// may retain the carrier, but must never recover a root or projection
     /// from its physical layout and synthesize a new view.
     RootedViewByValue,
-    ExplicitOwnedMove,
 }
 
 impl ClosureCaptureTransfer {

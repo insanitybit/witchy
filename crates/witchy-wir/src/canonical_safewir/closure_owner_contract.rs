@@ -85,7 +85,6 @@ impl<'a> SourceConstructor<'a> {
                 Ok(CaptureTransfer::CopyScalar)
             }
             ClosureCaptureTransfer::RootedViewByValue => Ok(CaptureTransfer::CloneManaged),
-            ClosureCaptureTransfer::ExplicitOwnedMove => Err(ContractError::UnsupportedCapture),
             ClosureCaptureTransfer::CopyCapability => {
                 let Some(CapabilityRepresentation::Direct(kind)) =
                     witchy_canonical_source::capabilities::representation(capture.checked_type(), &definitions)

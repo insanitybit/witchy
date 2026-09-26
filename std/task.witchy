@@ -140,7 +140,8 @@ pub fn yield_now() -> Task(()):
     Task(fn(): Yield(Task(fn(): Done(unit()))))
 
 // Sequence: run `t`, then continue with `k` applied to its result. This is what
-// `await` lowers to - the continuation `k` is the rest of the body.
+// `await` lowers to - the continuation `k` is the rest of the body. The lazy
+// Task stores `k` for possible replay, so it cannot hide a must obligation.
 pub fn and_then(t: Task(a), own k: fn(own a) -> Task(b)) -> Task(b):
     Task(fn(): and_then_step(poll(t), k))
 

@@ -127,6 +127,18 @@ typed replay proof; task-value opt provenance through aggregates, generics,
 trait returns, and scheduler adapters, per-execution ownership preparation,
 and cancellation disposition remain open. No A–O row closes.
 
+Rows J/K replayable continuation boundary (implemented but unverified,
+2026-09-26): the checker now refuses a live must binding and a capture refined
+to must after body inference. The retired root suspension exception could move
+a must value into an ordinary callable, but `task.and_then` stores that
+callable in a replayable Task recipe. The closure witness and SafeWIR already
+require a copyable capture, and the unused owned-move capture vocabulary is
+removed. The existing live-child channel case now expects a checked-source
+refusal. A generic or nested Task capture still needs a typed replay proof at
+the final closure witness; an unproved carrier remains refused at admission.
+Copyable recipe paths remain separate from the open per-execution ownership,
+mode-provenance, and cancellation work. No A–O row closes.
+
 Structural gaps under the 2026-09-25 composition clarification remain distinct.
 The checker now carries call-scoped origins through bindings, aggregate values,
 projections, branch joins, and closure captures, and rejects an escaping origin.

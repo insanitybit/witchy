@@ -26,7 +26,9 @@ an async recipe cannot capture `unique` storage, a `must` obligation, or a
 `once` callable, even when one is nested inside an aggregate. Calling an async
 function captures its inputs once; running the recipe later uses that snapshot
 and does not read the caller's bindings again. `async main` runs directly and
-does not create a recipe.
+does not create a recipe. Its `await` continuations still pass through
+replayable task recipes, so a live `must` value cannot cross an `await` in
+that continuation.
 
 ```witchy
 async fn double(n: Int) -> Int:

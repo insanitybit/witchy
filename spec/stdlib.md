@@ -4512,7 +4512,7 @@ Hand control back to the executor once, then continue.
 
 #### `fn and_then(t: Task(a), own k: fn(own a) -> Task(b)) -> Task(b)`
 
-Sequence: run `t`, then continue with `k` applied to its result. This is what `await` lowers to - the continuation `k` is the rest of the body.
+Sequence: run `t`, then continue with `k` applied to its result. This is what `await` lowers to - the continuation `k` is the rest of the body. The lazy Task stores `k` for possible replay, so it cannot hide a must obligation.
 
 #### `fn map(t: Task(a), f: fn(own a) -> b) -> Task(b)`
 

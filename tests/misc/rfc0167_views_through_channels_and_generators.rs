@@ -1,9 +1,5 @@
-//! RFC-0167 row K channel boundary, still awaiting a consuming GC task frame.
-//! A live `must` child handle cannot be captured across the receive await:
-//! cancellation would otherwise abandon its join obligation. This program
-//! stays fail-closed until one-shot capture and cancellation are implemented.
-
-use witchy::codegen;
+//! RFC-0167 row K channel boundary. A live `must` child handle cannot enter
+//! the replayable Task continuation installed by `await`.
 
 const CHANNELS: &str = r#"
 from chan import Sender
@@ -25,9 +21,10 @@ async fn main(console: Console):
 
 #[test]
 fn channels_with_live_child_handle_fail_closed() {
-    let checked = witchy::resolve_std_only_checked(CHANNELS).expect("channel source checks");
-    let refusal = codegen::compile_checked_module_artifact_with_observer(&checked, |_, _| ())
-        .expect_unsupported("live child handle must not cross a cancellable receive");
-    assert!(refusal.to_string().contains("closure") || refusal.to_string().contains("capture"),
+    let refusal = match witchy::resolve_std_only_checked(CHANNELS) {
+        Err(error) => error,
+        Ok(_) => panic!("live child handle must not enter a replayable continuation"),
+    };
+    assert!(refusal.to_string().contains("closure") && refusal.to_string().contains("capture"),
         "unexpected refusal: {refusal}");
 }

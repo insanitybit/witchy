@@ -851,6 +851,9 @@ aliases, aggregates, generic instantiations, branches, patterns, and returns.
 A closure environment remains opaque at a function-value boundary. A closure
 therefore cannot capture a live affine or must-consume value:
 doing so would erase the captured obligation if the callable were dropped.
+This also applies to compiler-formed async continuations: the current
+`task.and_then` path stores the continuation in a replayable `Task` recipe,
+including when the executor is running the root `async main`.
 Writing `own callback: fn(...)` or `own callback: once fn(...)` does not make
 such a hidden capture safe; `own` transfers the callable value, not a promise to
 invoke or dispose of an obligation hidden inside it.
@@ -2128,9 +2131,14 @@ async fn producer(tx: Sender(Int)):
 async fn main(console: Console):
     let (tx, rx) = chan.channel(4).await
     let producer_handle = chan.spawn(producer(tx)).await
-    chan.consume(rx, fn(n): chan.done(console.print("got ${n}"))).await
     chan.join(producer_handle).await
+    chan.consume(rx, fn(n): chan.done(console.print("got ${n}"))).await
 ```
+
+The capacity holds all three sends, so the producer can finish before the
+consumer starts. Joining it first discharges the child handle before the
+consumer's suspensions; a replayable receive continuation cannot capture a
+live must-consume handle.
 
 `chan.channel(cap)` is a bounded channel - the sender blocks when it's full
 while the executor can make progress; pass `0`, or use `chan.unbounded()`, for no

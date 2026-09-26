@@ -51,11 +51,6 @@ pub(super) struct Checker {
     pub(super) async_body_returns: HashMap<String, Ty>,
     /// Callable contract promised by each named reusable function.
     pub(super) fn_qualifiers: HashMap<String, CallableQualifiers>,
-    /// Compiler-marked async segment functions, including whether their source
-    /// callable is the executor root. This authenticates the one internal
-    /// closure shape that transfers owned frame columns across `await`; source
-    /// closures never receive this privilege.
-    pub(super) suspension_frames: HashMap<String, SuspensionTransferKind>,
     /// Functions selected by trait lowering as actual `From.from` impls.
     /// Generated function names are an ABI detail, not semantic evidence.
     pub(super) from_conversion_fns: HashSet<String>,

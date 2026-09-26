@@ -591,11 +591,11 @@
         let linked = witchy_syntax::linker::link(vec![("main".into(), main)], "main", no_comptime)
             .expect("root-suspension fixture links with std task");
         let error = annotate_checked_source(linked)
-            .expect_err("the root task can still be terminated without frame drop cleanup");
+            .expect_err("a root continuation cannot hide a must obligation in a replayable Task");
         assert!(
             error
                 .message
-                .contains("must-consume `ticket` remains live across `await` in the root async fn"),
+                .contains("closure capture `ticket` carries a must-consume obligation"),
             "{error:?}"
         );
     }
