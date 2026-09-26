@@ -106,7 +106,7 @@ use crate::{codegen, interpreter, parser, typeck};
     }
 
     /// End-to-end `std/jwt`: a REAL aws-lc-signed compact RS256 JWT, embedded as a
-    /// witchy string literal, verifies identically on both backends — `Ok` yields the
+    /// runtime argument, verifies identically on both backends — `Ok` yields the
     /// claims (we read `sub`); a tampered signature, an expired token, and a wrong
     /// audience each reject with the module's reason. Proves `jwt.verify_rs256`
     /// composes RS256 + base64url + json end to end, with no host capability.
@@ -131,12 +131,12 @@ use crate::{codegen, interpreter, parser, typeck};
             chars.into_iter().collect::<String>()
         };
         // `now` = 1000, audience "coven". Print `sub` on success, else the error.
+        // Compile one program; each case still runs in a fresh interpreter/VM.
+        let src = "import jwt\nimport json\nimport list\nfn main(console: Console, argv: List(String)):\n    let token = list.at(argv, 0)\n    let key = list.at(argv, 1)\n    match jwt.verify_rs256(token, key, \"coven\", 1000):\n        Ok(claims) -> console.print(json.get_string(claims, \"sub\").unwrap_or(\"?\"))\n        Err(e) -> console.print(jwt.jwt_error_message(e))\n";
         let run = |token: &str| -> Vec<String> {
-            let src = format!(
-                "import jwt\nimport json\nfn main(console: Console):\n    match jwt.verify_rs256(\"{token}\", \"{pk_hex}\", \"coven\", 1000):\n        Ok(claims) -> console.print(json.get_string(claims, \"sub\").unwrap_or(\"?\"))\n        Err(e) -> console.print(jwt.jwt_error_message(e))\n"
-            );
-            let interp = link_run(&src);
-            let wasm = run_linked_on_wasm(&[("main", src.as_str())], "main");
+            let args = vec![token.to_owned(), pk_hex.clone()];
+            let interp = link_run_args(src, args.clone());
+            let wasm = run_on_wasm_args(src, args);
             assert_eq!(interp, wasm, "interp vs wasm must agree");
             interp
         };
@@ -192,12 +192,11 @@ use crate::{codegen, interpreter, parser, typeck};
             r#"{"iss":"https://token.actions.githubusercontent.com","aud":"coven","repository":"octo/witchy","iat":1060,"exp":1200}"#,
         );
         // (token, issuer-to-trust) -> printed line. now = 1000, audience "coven".
+        let src = "import jwt\nimport json\nimport list\nfn main(console: Console, argv: List(String)):\n    let token = list.at(argv, 0)\n    let key = list.at(argv, 1)\n    let issuer = list.at(argv, 2)\n    match jwt.verify_oidc(token, key, issuer, \"coven\", 1000):\n        Ok(claims) -> console.print(json.get_string(claims, \"repository\").unwrap_or(\"?\"))\n        Err(e) -> console.print(jwt.jwt_error_message(e))\n";
         let run = |tok: &str, issuer: &str| -> Vec<String> {
-            let src = format!(
-                "import jwt\nimport json\nfn main(console: Console):\n    match jwt.verify_oidc(\"{tok}\", \"{pk_hex}\", \"{issuer}\", \"coven\", 1000):\n        Ok(claims) -> console.print(json.get_string(claims, \"repository\").unwrap_or(\"?\"))\n        Err(e) -> console.print(jwt.jwt_error_message(e))\n"
-            );
-            let interp = link_run(&src);
-            assert_eq!(interp, run_linked_on_wasm(&[("main", src.as_str())], "main"), "backends agree");
+            let args = vec![tok.to_owned(), pk_hex.clone(), issuer.to_owned()];
+            let interp = link_run_args(src, args.clone());
+            assert_eq!(interp, run_on_wasm_args(src, args), "backends agree");
             interp
         };
         assert_eq!(run(&token, gh), vec!["octo/witchy".to_string()], "trusted issuer admits, claims readable");
@@ -215,23 +214,26 @@ use crate::{codegen, interpreter, parser, typeck};
         // lifetime and future-iat skew. This is application policy, not a silent
         // change to generic OIDC verification. Typed errors expose the rejected
         // claim relationship without requiring callers to parse display text.
-        let run_fresh = |tok: &str| -> Vec<String> {
-            let src = format!(
-                r#"import jwt
+        let fresh_src = r#"import jwt
 import json
-fn main(console: Console):
-    match jwt.verify_oidc_fresh("{tok}", "{pk_hex}", "{gh}", "coven", 1000, 600, 60):
+import list
+fn main(console: Console, argv: List(String)):
+    let token = list.at(argv, 0)
+    let key = list.at(argv, 1)
+    let issuer = list.at(argv, 2)
+    match jwt.verify_oidc_fresh(token, key, issuer, "coven", 1000, 600, 60):
         Ok(claims) -> console.print("ok:" + json.get_string(claims, "repository").unwrap_or("?"))
         Err(e) ->
             match e:
-                jwt.TokenLifetimeTooLong(actual, maximum) -> console.print("ttl:${{actual}}:${{maximum}}")
-                jwt.IssuedAtInFuture(iat, skew) -> console.print("future:${{iat}}:${{skew}}")
+                jwt.TokenLifetimeTooLong(actual, maximum) -> console.print("ttl:${actual}:${maximum}")
+                jwt.IssuedAtInFuture(iat, skew) -> console.print("future:${iat}:${skew}")
                 jwt.MissingClaim(name) -> console.print("missing:" + name)
                 _ -> console.print(jwt.jwt_error_message(e))
-"#
-            );
-            let interp = link_run(&src);
-            assert_eq!(interp, run_linked_on_wasm(&[("main", src.as_str())], "main"), "freshness policy backends agree");
+"#;
+        let run_fresh = |tok: &str| -> Vec<String> {
+            let args = vec![tok.to_owned(), pk_hex.clone(), gh.to_owned()];
+            let interp = link_run_args(fresh_src, args.clone());
+            assert_eq!(interp, run_on_wasm_args(fresh_src, args), "freshness policy backends agree");
             interp
         };
         assert_eq!(run_fresh(&token), vec!["ok:octo/witchy".to_string()]);
@@ -264,12 +266,11 @@ fn main(console: Console):
         // Multi-audience including us, azp ABSENT: rejected.
         let multi_missing = sign_rs256(&kp, r#"{"iss":"https://accounts.google.com","aud":["myclient","other"],"sub":"u4","nbf":0,"exp":9999}"#);
         // audience = "myclient", now = 1000.
+        let src = "import jwt\nimport json\nimport list\nfn main(console: Console, argv: List(String)):\n    let token = list.at(argv, 0)\n    let key = list.at(argv, 1)\n    let issuer = list.at(argv, 2)\n    match jwt.verify_oidc(token, key, issuer, \"myclient\", 1000):\n        Ok(claims) -> console.print(json.get_string(claims, \"sub\").unwrap_or(\"?\"))\n        Err(e) -> console.print(jwt.jwt_error_message(e))\n";
         let run = |tok: &str| -> Vec<String> {
-            let src = format!(
-                "import jwt\nimport json\nfn main(console: Console):\n    match jwt.verify_oidc(\"{tok}\", \"{pk_hex}\", \"{iss}\", \"myclient\", 1000):\n        Ok(claims) -> console.print(json.get_string(claims, \"sub\").unwrap_or(\"?\"))\n        Err(e) -> console.print(jwt.jwt_error_message(e))\n"
-            );
-            let interp = link_run(&src);
-            assert_eq!(interp, run_linked_on_wasm(&[("main", src.as_str())], "main"), "backends agree");
+            let args = vec![tok.to_owned(), pk_hex.clone(), iss.to_owned()];
+            let interp = link_run_args(src, args.clone());
+            assert_eq!(interp, run_on_wasm_args(src, args), "backends agree");
             interp
         };
         assert_eq!(run(&single), vec!["u1".to_string()], "single-audience token needs no azp");
@@ -463,4 +464,3 @@ fn main(console: Console):
         actor.run().expect("compiled OAuth execution");
         actor.output().to_vec()
     }
-
