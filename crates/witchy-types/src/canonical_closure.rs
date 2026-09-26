@@ -6,7 +6,7 @@
 //! the type table supplies checked expression types, and lexical declaration
 //! paths supply stable binding identities.
 
-use std::fmt;
+use std::{collections::BTreeMap, fmt};
 
 use witchy_syntax::ast::{self, Block, Expr, Item, Pattern, Stmt, Type};
 
@@ -117,31 +117,6 @@ fn explicit_borrow(ty: &Type) -> bool {
     }
 }
 
-fn is_capability(ty: &Type, module: &ast::Module) -> bool {
-    let Type::Named(name, _) = ty.unqualified() else { return false; };
-    module.items.iter().any(|item| {
-        matches!(item, Item::Type(def) if def.name == *name && def.is_capability)
-    }) || witchy_cap_model::CapabilityKind::from_name(name).is_some()
-}
-
-fn capture_transfer(ty: &Type, module: &ast::Module) -> ClosureCaptureTransfer {
-    // Ordinary closures capture by value, including values received by own.
-    // Parameter transfer conventions do not describe closure construction.
-    // A rooted view is a retained root-plus-projection carrier.  Give it a
-    // distinct manifest transfer before asking whether the payload happens to
-    // have an ordinary managed representation: later lowering must carry this
-    // exact authenticated carrier, not reconstruct its projection.
-    if matches!(ty, Type::Qualified(ast::TypeQual::View, _)) {
-        return ClosureCaptureTransfer::RootedViewByValue;
-    }
-    if is_capability(ty, module) { return ClosureCaptureTransfer::CopyCapability; }
-    if witchy_canonical_source::aggregates::is_scalar_type(ty) {
-        ClosureCaptureTransfer::CopyScalar
-    } else {
-        ClosureCaptureTransfer::ManagedReferenceByValue
-    }
-}
-
 fn type_from_expr(typed: &TypedModule, expr: &Expr) -> Option<Type> {
     typed.table().type_of(expr).and_then(typeck::ty_to_ast)
 }
@@ -199,6 +174,7 @@ pub struct LambdaSite {
 struct Builder<'a> {
     typed: &'a TypedModule,
     module: &'a ast::Module,
+    definitions: BTreeMap<String, ast::TypeDef>,
     entries: Vec<ClosureWitness>,
     scopes: Vec<Vec<Binding>>,
     sites: Vec<LambdaSite>,
@@ -355,7 +331,10 @@ impl<'a> Builder<'a> {
                     if binding.borrowed || explicit_borrow(&checked_type) { return Err(ClosureWitnessError::BorrowedCapture { name }); }
                     let checked_type_encoding = canonical_abi::canonical_ast_type_bytes(self.typed, &checked_type)
                         .map_err(|error| ClosureWitnessError::UnsupportedType { context: error.to_string() })?;
-                    let transfer = capture_transfer(&checked_type, self.module);
+                    let transfer = ClosureCaptureTransfer::classify(&checked_type, &self.definitions)
+                        .ok_or_else(|| ClosureWitnessError::UnsupportedType {
+                            context: format!("closure capture `{name}` of type {checked_type:?} has no checked copy and release plan"),
+                        })?;
                     capture_witnesses.push(ClosureCaptureWitness::new(binding.id, checked_type, checked_type_encoding, transfer));
                 }
                 self.entries.push(ClosureWitness::new(
@@ -451,7 +430,11 @@ pub fn lambda_sites(typed: &TypedModule) -> Result<Vec<LambdaSite>, ClosureWitne
 }
 
 fn walk_module(typed: &TypedModule) -> Result<Builder<'_>, ClosureWitnessError> {
-    let mut builder = Builder { typed, module: typed.module(), entries: Vec::new(), scopes: Vec::new(), sites: Vec::new() };
+    let mut builder = Builder {
+        typed, module: typed.module(),
+        definitions: witchy_canonical_source::aggregates::type_definitions(typed.module()),
+        entries: Vec::new(), scopes: Vec::new(), sites: Vec::new(),
+    };
     let scope = witchy_canonical_source::scope::canonical_scope(typed.module());
     for (item_index, item_def) in typed.module().items.iter().enumerate() {
         let item = u32::try_from(item_index).map_err(|_| ClosureWitnessError::PathOverflow)?;

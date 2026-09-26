@@ -3,9 +3,12 @@
 //! witnesses whose digest binds them into the checked-source witness. The
 //! checker derives the witnesses (`witchy_types::canonical_closure`).
 
-use witchy_syntax::ast::Type;
+use std::collections::BTreeMap;
+
+use witchy_syntax::ast::{Type, TypeDef, TypeQual};
 
 use crate::proper_tail::{ProperTailCallableId, ProperTailPathStep};
+use crate::storage::StoragePlan;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ClosureBindingPathStep {
@@ -27,6 +30,48 @@ pub enum ClosureCaptureTransfer {
     /// from its physical layout and synthesize a new view.
     RootedViewByValue,
     ExplicitOwnedMove,
+}
+
+impl ClosureCaptureTransfer {
+    /// The source-authenticated capture lane. The checker mints this in the
+    /// closure witness; the SafeWIR owner path derives it again before mapping
+    /// it to a physical transfer. Unproved and must-consume storage has no
+    /// copy fallback.
+    pub fn classify(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> Option<Self> {
+        use crate::capabilities::CapabilityRepresentation;
+        // Frozen changes the source contract, not its physical storage. Keep
+        // the original qualified type for the recursive ownership check.
+        let storage_type = match ty {
+            Type::Qualified(TypeQual::Frozen, inner) => inner.as_ref(),
+            _ => ty,
+        };
+        crate::storage::replay_capture_eligibility(ty, definitions).ok()?;
+        if let Some(representation) = crate::capabilities::representation(ty, definitions) {
+            return matches!(representation, CapabilityRepresentation::Direct(_))
+                .then_some(Self::CopyCapability);
+        }
+        let plan = StoragePlan::classify(storage_type, definitions, |_| Some(0));
+        match plan {
+            StoragePlan::RootedView(_) if matches!(ty, Type::Qualified(TypeQual::View, _)) => {
+                Some(Self::RootedViewByValue)
+            }
+            // An outer frozen qualifier keeps the view's physical managed
+            // representation, but does not satisfy the direct-view authority
+            // checks for the distinct rooted-view transfer tag.
+            StoragePlan::RootedView(_) => Some(Self::ManagedReferenceByValue),
+            StoragePlan::InlineScalar(_) => Some(Self::CopyScalar),
+            StoragePlan::InlineAggregate(_) => Some(Self::ManagedReferenceByValue),
+            StoragePlan::Owned(_)
+            | StoragePlan::RetainedCallable(_)
+            | StoragePlan::RetainedOwnerList(_)
+            | StoragePlan::RetainedGraphList(_)
+            | StoragePlan::RetainedCallableList(_)
+            | StoragePlan::RetainedOpaqueAggregateList(_)
+            | StoragePlan::AggregateView(_) => Some(Self::ManagedReferenceByValue),
+            StoragePlan::AuthenticatedPlace(plan) if plan.cloneable() => Some(Self::ManagedReferenceByValue),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]

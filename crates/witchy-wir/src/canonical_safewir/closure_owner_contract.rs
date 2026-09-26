@@ -63,7 +63,13 @@ impl<'a> SourceConstructor<'a> {
         let witness = source.closure_witness().entries().get(ordinal.0 as usize)
             .ok_or(ContractError::MissingWitness)?;
         let definitions = source.type_definitions();
-        let transfers = witness.captures().iter().map(|capture| match capture.transfer() {
+        let transfers = witness.captures().iter().map(|capture| {
+            if ClosureCaptureTransfer::classify(capture.checked_type(), &definitions)
+                != Some(capture.transfer())
+            {
+                return Err(ContractError::UnsupportedCapture);
+            }
+            match capture.transfer() {
             ClosureCaptureTransfer::CopyScalar => Ok(CaptureTransfer::CopyScalar),
             ClosureCaptureTransfer::ManagedReferenceByValue => Ok(CaptureTransfer::CloneManaged),
             // The view witness is distinct source authority, while the only
@@ -101,6 +107,7 @@ impl<'a> SourceConstructor<'a> {
                     CapabilityKind::BuildExec => super::BUILD_EXEC_CAPABILITY_KIND,
                     CapabilityKind::BuildNet => super::BUILD_NET_CAPABILITY_KIND,
                 }))
+            }
             }
         }).collect::<Result<Vec<_>, _>>()?;
         if transfers.iter().any(|transfer| matches!(transfer, CaptureTransfer::CopyCapability(_)))
