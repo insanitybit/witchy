@@ -3531,9 +3531,9 @@ impl Checker {
                 SnapshotRefusal::MustConsume => "must-consume storage cannot be copied into a persistent view",
                 SnapshotRefusal::OnceCallable => "affine once-callable storage cannot be copied into a persistent view",
                 SnapshotRefusal::ResourceLimit => "view storage exceeds the recursive proof limit",
-                SnapshotRefusal::UnprovedStorage => "view storage has no recursive checked snapshot proof",
+                SnapshotRefusal::UnprovedStorage => "view storage has no recursive checked carrier with a lawful snapshot proof",
             };
-            return terr(format!("{context} cannot form an immutable view: {explanation}"));
+            return terr(format!("{context} cannot form an immutable view of `{resolved}`: {explanation}"));
         }
         let view = ast::Type::Qualified(ast::TypeQual::View, Box::new(source));
         if !matches!(StoragePlan::classify(&view, &self.canonical_definitions, |_| Some(0)),
