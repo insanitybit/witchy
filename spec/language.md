@@ -1314,6 +1314,11 @@ structural path remains unverified for RFC-0167 acceptance evidence.
 The closure witness and SafeWIR verify the exact capture transfer. Generic
 source templates without executable signatures do not mint closure authority;
 their concrete checked instances supply the witness used by lowering.
+For concrete executable functions, capture checking uses the same recursive
+replay snapshot judgment after body inference. An unresolved local type must
+resolve by the end of whole-module inference. Unused linked helpers are
+checked when a concrete instance becomes executable; an unprepared scheduler
+message never acquires capture authority from its erased source type.
 
 Non-packed whole-root `Option`, `Result`, and declared aggregate views derive
 their identity from recursively proved carrier leaves and their checked

@@ -238,6 +238,12 @@ pub(super) struct Checker {
     /// direct-call instantiation. Function-value transport remains refused.
     pub(super) fn_storage_obligations: HashMap<String, Vec<StorageObligation>>,
     pub(super) current_storage_obligations: Vec<StorageObligation>,
+    /// Concrete executable functions on this checked source. Templates and
+    /// unused linked helpers receive their capture proof after specialization.
+    pub(super) replay_capture_scope: std::sync::Arc<std::collections::BTreeSet<String>>,
+    pub(super) check_replay_captures: bool,
+    /// Local inference variables can resolve in later declarations.
+    pub(super) pending_replay_captures: Vec<(Ty, String)>,
     /// Per-function call obligations from `where` clauses, keyed to the same
     /// signature type-parameter var ids as `fn_typarams`. These are checked at a
     /// generic call site so wrapper functions cannot erase a callee's public

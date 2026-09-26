@@ -203,10 +203,11 @@
             .expect_err("positional/unsealed capability identity must not depend on its fields");
         assert!(capability.message.contains("nominal type is declared as a capability"), "{capability:?}");
 
-        check_source(
+        let recursive = check_source(
             "type Grow(a):\n    Value(a)\n    More(Grow(List(a)))\n\npure fn inspect(value: Grow(Int)) -> Int:\n    let deferred = pure fn():\n        let ignored = value\n        1\n    0\n",
         )
-        .expect("argument-transforming recursive storage must terminate when it carries only data");
+        .expect_err("argument-transforming recursive capture needs a finite snapshot proof");
+        assert!(recursive.message.contains("recursive proof limit"), "{recursive:?}");
 
         let transformed = check_source(
             "type Grow(a):\n    Value(a)\n    More(Grow((a, fn() -> Int)))\n\npure fn defer(value: Grow(Int)) -> pure fn() -> Int:\n    pure fn():\n        let ignored = value\n        1\n",

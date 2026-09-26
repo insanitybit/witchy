@@ -440,33 +440,6 @@ impl Checker {
         plan
     }
 
-    /// A view payload with a carrier that crosses a callable boundary: the
-    /// scalar and `&String` carriers, or a record/sum/`Option`/`Result` or
-    /// scalar List accepted by the canonical carrier rules.
-    fn admitted_view_capture(&self, payload: &Ty) -> bool {
-        use witchy_canonical_source::rooted_view::{RetainedRootStorage, RootedViewStorage};
-        use witchy_canonical_source::storage::StoragePlan;
-        let Some(payload) = ty_to_ast(payload) else { return false };
-        let view = ast::Type::Qualified(ast::TypeQual::View, Box::new(payload));
-        let StoragePlan::RootedView(storage) = self.storage_plan(&view) else { return false };
-        let ast::Type::Qualified(_, payload) = &view else { unreachable!() };
-        match storage {
-            RootedViewStorage::ScalarCell(_) => true,
-            RootedViewStorage::InlineScalar(_)
-            | RootedViewStorage::RetainedRoot(RetainedRootStorage::ByteBuffer(_)) => {
-                !matches!(payload.as_ref(), ast::Type::Qualified(..))
-            }
-            RootedViewStorage::RetainedProjection(_) => {
-                // `Slice(T)` is the checker's private retained-view payload.
-                matches!(payload.as_ref(), ast::Type::Named(name, arguments)
-                    if name == "Slice" && arguments.len() == 1)
-            }
-            RootedViewStorage::RetainedRoot(RetainedRootStorage::Sequence(_)
-                | RetainedRootStorage::CheckedAggregate(_)) => true,
-            RootedViewStorage::RetainedRoot(RetainedRootStorage::StructuralRecord(_)) => false,
-        }
-    }
-
     fn fresh(&mut self) -> Ty {
         let v = self.next_var;
         self.next_var += 1;
@@ -3459,6 +3432,16 @@ impl Checker {
             }
         }
         Ok(())
+    }
+
+    fn check_or_defer_replay_capture(&mut self, ty: &Ty, context: &str) -> Result<(), TypeError> {
+        let mut variables = HashSet::new();
+        self.collect_storage_variables(ty, &mut variables);
+        if variables.iter().any(|variable| !self.is_declared_type_parameter_representative(*variable)) {
+            self.pending_replay_captures.push((ty.clone(), context.to_string()));
+            return Ok(());
+        }
+        self.admit_replay_capture_ty(ty, context)
     }
 
     fn is_declared_type_parameter_representative(&self, variable: u32) -> bool {
@@ -8085,30 +8068,9 @@ impl Checker {
                             "closure capture `{capture}` carries a must-consume obligation; an ordinary callable cannot hide it or enter a replayable task"
                         ));
                     }
-                    // RFC-0167 §views: "a view is a value-semantic snapshot handle,
-                    // not a lexical loan ... may be returned, stored in an aggregate,
-                    // transported through a generic, and captured by a callable
-                    // without naming a lifetime", because the carrier retains the
-                    // root while any copy of the view is live. So capture is not a
-                    // loan escape, and the blanket refusal that stood here reasoned
-                    // in the model that section retires.
-                    //
-                    // What a capture still must not do is carry a payload the ABI has
-                    // no carrier for past the boundary that would refuse it, so the
-                    // refusal is kept for exactly that. Row G of the acceptance ledger
-                    // records the admitted carrier and the matching `&Float` refusal.
-                    if self
-                        .explicit_reference_bindings
-                        .iter()
-                        .rev()
-                        .any(|bindings| bindings.contains(&capture))
-                        && !matches!(
-                            self.resolve(&captured_ty),
-                            Ty::View(ref payload) if self.admitted_view_capture(payload)
-                        )
-                    {
+                    if self.check_replay_captures && self.is_unique_value_binding(&capture) {
                         return terr(format!(
-                            "closure capture `{capture}` carries a view whose payload has no admitted carrier; callable capture requires a checked scalar, String, List, aggregate, or recursive slice carrier"
+                            "closure capture `{capture}` carries unique storage; a replayable callable requires an independent snapshot"
                         ));
                     }
                     if let Some(borrowed) = self.borrowed_nominal_name(&captured_ty) {
@@ -8265,6 +8227,14 @@ impl Checker {
                         captured_ty,
                         &format!("closure capture `{capture}`"),
                     )?;
+                    if self.check_replay_captures
+                        && !matches!(self.resolve(captured_ty), Ty::Msg)
+                    {
+                        self.check_or_defer_replay_capture(
+                            captured_ty,
+                            &format!("closure capture `{capture}`"),
+                        )?;
+                    }
                 }
                 self.current_ret = saved_ret;
                 self.reject_live_must_in_current_scope()?;
@@ -10172,6 +10142,8 @@ impl Checker {
         self.must_borrowed.clear();
         self.once_borrowed.clear();
         self.current_storage_obligations.clear();
+        self.check_replay_captures = self.replay_capture_scope.contains(&func.name)
+            && !witchy_canonical_source::scope::function_has_free_signature_variables(func);
         let body_ret =
             self.async_body_returns
                 .get(&func.name)
@@ -12384,6 +12356,9 @@ fn run_check_selected(
     let storage_plans = checker::shared_storage_plans(&canonical_definitions);
     let mut c = Checker {
         canonical_definitions,
+        replay_capture_scope: witchy_canonical_source::scope::canonical_scope(module),
+        check_replay_captures: false,
+        pending_replay_captures: Vec::new(),
         resolve_cache: std::cell::RefCell::new(HashMap::new()),
         storage_plans,
         once_callable_types: std::cell::RefCell::new(HashMap::new()),
@@ -12908,6 +12883,24 @@ fn run_check_selected(
     }
     if enforce_public_return_annotations {
         c.check_public_return_annotations(module)?;
+    }
+    // A nested lambda or generic call may leave a local inference variable
+    // pending until a later declaration fixes its type. No such variable can
+    // authorize an executable capture: replay requires the final concrete
+    // source type, with no generic-formal fallback at this phase.
+    for (capture, context) in std::mem::take(&mut c.pending_replay_captures) {
+        let resolved = c.resolve(&capture);
+        if ty_has_var(&resolved) {
+            return terr(format!("{context} has an unresolved replay capture type"));
+        }
+        let source = ty_to_ast(&resolved).ok_or_else(|| TypeError {
+            message: format!("{context} has no checked replay capture type"),
+        })?;
+        witchy_canonical_source::storage::replay_capture_eligibility(
+            &source, &c.canonical_definitions,
+        ).map_err(|reason| TypeError {
+            message: format!("{context} has no copyable snapshot: {}", replay_snapshot_reason(reason)),
+        })?;
     }
     let mut existential_packs = HashMap::new();
     if let Some(records) = c.existential_pack_record.take() {

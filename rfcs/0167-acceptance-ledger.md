@@ -1381,10 +1381,21 @@ supplies that witness. A temporary opt CLI program with an `own` generic
 capture specialized to `Int` printed the independently expected `5` on
 admitted Wasm; the equivalent call-scoped `let` capture refused. Tuple-root
 view closure capture still fails closed at candidate ABI admission. The
-checker capture path still has a separate shape gate; migrating it to the
-shared replay judgment requires a post-specialization executable scope so
-unused standard-library helper bodies cannot reject unrelated programs.
-This smoke has no zero-leak audit, so no A–O row closes.
+checker capture path now uses the shared recursive replay judgment for
+concrete functions in the canonical executable scope. The previous explicit
+view-capture shape whitelist is removed. Capture checks with inference
+variables run after whole-module inference; unused linked helpers and generic
+templates are checked again
+when their concrete specialized instances enter executable scope. Bare
+compiler-private erased messages remain deferred until closed message
+preparation; final closure witnesses and SafeWIR still refuse an unprepared
+message. A temporary generic async replay program checks, an owned unique
+capture refuses at source, and an inline scalar view capture prints the
+independently expected `1.5` on admitted Wasm. Adversarial review found no
+reachable authority bypass. An argument-transforming recursive capture now
+fails at the finite snapshot-proof limit instead of silently acquiring a
+copyable closure. These smokes have no zero-leak audit, so no A–O
+row closes.
 
 Row G stored-view containment (implemented but unverified, 2026-09-26):
 whole-record-root eligibility and aggregate view-field classification now

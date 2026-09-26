@@ -170,12 +170,10 @@
             "mode opt\n\nfn bad(input: &'a String) -> fn() -> String:\n    fn():\n        *input\n\nfn main(console: Console):\n    let text = \"value\"\n    let action = bad(&text)\n    console.print(action())\n",
         )
         .expect_err("an escaping closure cannot retain a shared reference");
-        // The refusal reason changed with RFC-0167: capture is no longer a loan
-        // escape (a view retains its root), so what is refused here is the
-        // payload having no admitted carrier.
+        // This retired explicit lifetime never constructs a rooted view. The
+        // read fails before a closure-capture storage proof is relevant.
         assert!(
-            err.message.contains("closure capture")
-                && err.message.contains("no admitted carrier"),
+            err.message.contains("immutable read dereference requires a rooted view"),
             "{err}"
         );
 
@@ -183,12 +181,10 @@
             "mode opt\n\nfn main(console: Console):\n    let make = fn(input: &'a String) -> fn() -> String:\n        fn():\n            *input\n    let text = \"value\"\n    let action = make(&text)\n    console.print(action())\n",
         )
         .expect_err("an escaping nested closure cannot retain a shared reference parameter");
-        // The refusal reason changed with RFC-0167: capture is no longer a loan
-        // escape (a view retains its root), so what is refused here is the
-        // payload having no admitted carrier.
+        // The nested retired reference also fails at the immutable read,
+        // before a closure-capture storage proof is relevant.
         assert!(
-            err.message.contains("closure capture")
-                && err.message.contains("no admitted carrier"),
+            err.message.contains("immutable read dereference requires a rooted view"),
             "{err}"
         );
     }
@@ -237,4 +233,3 @@
             "{error}"
         );
     }
-
