@@ -19,6 +19,26 @@ async fn main(console: Console):
     chan.join(child).await
 "#;
 
+const COPYABLE_FIELD_IN_AFFINE_SHELL: &str = r#"
+must type Ticket:
+    Ticket(Int)
+
+must type Packet:
+    Packet(&String, Ticket)
+
+fn consume(own packet: Packet) -> Int:
+    match packet:
+        Packet(view, ticket) ->
+            match move ticket:
+                Ticket(n) -> n + (*view).length()
+
+fn main() -> Int:
+    let text = "abc"
+    let view = &text
+    let packet = Packet(view, Ticket(7))
+    consume(packet)
+"#;
+
 #[test]
 fn channels_with_live_child_handle_fail_closed() {
     let refusal = match witchy::resolve_std_only_checked(CHANNELS) {
@@ -27,4 +47,11 @@ fn channels_with_live_child_handle_fail_closed() {
     };
     assert!(refusal.to_string().contains("closure") && refusal.to_string().contains("capture"),
         "unexpected refusal: {refusal}");
+
+    // A copyable view child gets its own retained edge when the aggregate
+    // shell moves; the affine child still transfers its unique token.
+    let checked = witchy::resolve_std_only_checked(COPYABLE_FIELD_IN_AFFINE_SHELL)
+        .expect("copyable and affine fields share one checked aggregate move plan");
+    let _ = witchy::codegen::compile_checked_module_artifact(&checked)
+        .expect_lowered("copyable view and affine field have distinct storage transfers");
 }

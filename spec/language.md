@@ -1101,6 +1101,10 @@ absent. An opaque GC aggregate uses the same recursive checked field judgment
 for clone or move at construction. A consuming match requires its exact sole
 owner, transfers nested owner tokens and affine nullable fields, then retires
 the shell. A field with neither a lawful clone nor a proved move is refused.
+An owned shell may therefore combine copyable and affine fields: construction
+retains the copyable field's edge and transfers the affine field's unique
+edge. The recursive storage judgment supplies both operations, and the
+unoptimized lowerer uses the matching operation for each managed field.
 Unsupported field representations still fail closed. Task scheduling with public
 `task.Handle` values remains incomplete: a live handle cannot cross a
 suspension without cancellation disposition, and `task.Step(task.Handle)`

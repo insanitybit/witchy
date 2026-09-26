@@ -496,14 +496,16 @@ impl GraphOperations {
 
     fn with(self, child: Self) -> Self {
         Self { cloneable: self.cloneable && child.cloneable,
-            movable: self.movable && child.movable }
+            // A copyable field can be retained when transferring the owned
+            // aggregate shell; it need not expose a unique move operation.
+            movable: self.movable && (child.movable || child.cloneable) }
     }
 }
 
 /// How a managed field crosses an aggregate-owner constructor. This is the
 /// same recursive ownership judgment used by authenticated aggregate storage:
-/// a noncopyable field moves only when every child has a lawful move, while a
-/// field with neither operation cannot enter the owner at all.
+/// a noncopyable field moves when every child can move or be lawfully cloned,
+/// while a field with neither operation cannot enter the owner at all.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ManagedAggregateFieldTransfer { Clone, Move }
 

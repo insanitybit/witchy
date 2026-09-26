@@ -1000,12 +1000,23 @@ An existing channel-view test still refuses the live `task.Handle` captured
 across await; one-shot continuation and cancellation ownership remain a
 separate structural gap. Moving its join before the next suspension clears
 that refusal but exposes a second baseline lowering gap: the `Done` field of
-`task.Step(task.Handle)` lacks a consuming extraction. Its outer storage plan
-does not establish an affine move, while the field plan requires one. The
+`task.Step(task.Handle)` lacks an owned GC result ABI even though its outer
+storage plan now establishes the recursive affine move. The
 existing channel test now pins the fail-closed refusal rather than claiming
 admitted-Wasm row K evidence. The moved fixture is a diagnostic probe, not row
 K evidence. Adversarial review found no authority bypass in the local list
 composition. Opaque GC consuming field transfer is tracked above.
+
+Row G mixed aggregate transfer (implemented but unverified, 2026-09-26):
+the recursive checked storage judgment now permits an owned aggregate shell
+when every child can either move uniquely or be lawfully cloned. The lowerer
+uses that same child judgment to retain copyable managed fields and transfer
+affine managed fields when building the shell. An existing compiler smoke
+admits a `Packet(&String, Ticket)` through checked source and unoptimized
+SafeWIR lowering; the live-handle channel refusal remains fail closed. This
+does not establish hand-computed admitted-Wasm behavior or a zero-leak audit,
+so no A–O row closes. The owned GC result ABI for `task.Step(task.Handle)`
+remains a separate structural blocker.
 
 Row G local affine allocation binding (implemented but unverified,
 2026-09-26): the checked-source view now carries concrete expression types

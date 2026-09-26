@@ -52,7 +52,7 @@ use witchy_syntax::ast::{BinOp, Convention, Expr, Item, Pattern, Stmt, Type, Typ
 use witchy_canonical_source::aggregates::{canonical_owner_aggregate_identity, concrete_aggregate_identity, scalar_aggregate_shape, ScalarAggregateShape, ScalarVariant};
 use witchy_canonical_source::carrier::CarrierElement;
 use witchy_canonical_source::rooted_view::{RetainedRootStorage, RootedViewStorage};
-use witchy_canonical_source::storage::{StoragePlan, aggregate_uses_nullable_owned_fields, is_inline_scalar_record};
+use witchy_canonical_source::storage::{StoragePlan, ManagedAggregateFieldTransfer, aggregate_managed_field_transfer, aggregate_uses_nullable_owned_fields, is_inline_scalar_record};
 use witchy_canonical_source::structural_identity::SourceTypeKey;
 use witchy_canonical_source::abi::CanonicalScalarKind;
 use witchy_canonical_source::access::{
@@ -12347,7 +12347,15 @@ impl FunctionLowerer<'_> {
                         });
                     }
                     let reference = matches!(expected, ValueType::Ref(_));
-                    let (value, transfer) = if reference && !move_references {
+                    let clone_reference = if reference && move_references && source_type.is_some() {
+                        match aggregate_managed_field_transfer(field_type, self.definitions) {
+                            Some(ManagedAggregateFieldTransfer::Clone) => true,
+                            Some(ManagedAggregateFieldTransfer::Move) => false,
+                            None => return Err(CanonicalLoweringError::UnsupportedExpression(
+                                "aggregate field lacks checked clone or move operation")),
+                        }
+                    } else { !move_references };
+                    let (value, transfer) = if reference && clone_reference {
                         // A field owns one reference, not a deep copy of every
                         // possible variant payload. Cloning the token makes its
                         // shared state explicit; Store retains the field's edge
