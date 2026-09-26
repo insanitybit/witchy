@@ -9,6 +9,13 @@ impl<'a> MemoryChecker<'a> {
         target: &BasicBlock,
         arguments: &[ValueId],
     ) -> Result<MemoryState, InitialCheckError> {
+        // The caller has checked the terminator's arity and value types. With
+        // no parameters there is no SSA or owner-identity rebase, promotion,
+        // or phi evidence to discard: transfer is exactly the current state.
+        // Preserve its copy-on-write collections instead of rebuilding them.
+        if target.parameters.is_empty() && arguments.is_empty() {
+            return Ok(self.state.clone());
+        }
         // A managed phi needs the argument's counted extent, which promotion
         // derives lazily from the header loads already in this state. Derive
         // it now from the same facts; a promotion the facts do not justify is

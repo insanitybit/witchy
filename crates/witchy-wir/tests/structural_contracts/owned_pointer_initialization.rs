@@ -188,6 +188,73 @@ fn uninitialized(escape: Escape, operation: &'static str) {
     );
 }
 
+fn split_memory_operations(function: &mut Function) {
+    let entry = function.blocks.pop().expect("one fixture block");
+    assert!(function.blocks.is_empty());
+    let count = entry.operations.len();
+    for (index, operation) in entry.operations.into_iter().enumerate() {
+        function.blocks.push(BasicBlock {
+            id: BlockId::new(index as u32), parameters: Vec::new(), operations: vec![operation],
+            terminator: Terminator::Branch { target: BlockId::new(index as u32 + 1), arguments: Vec::new() },
+        });
+    }
+    function.blocks.push(BasicBlock {
+        id: BlockId::new(count as u32), parameters: Vec::new(), operations: Vec::new(),
+        terminator: entry.terminator,
+    });
+}
+
+#[test]
+fn parameterless_edges_preserve_memory_admission_and_refusal() {
+    // Every operation boundary transports the same facts without an SSA
+    // rename. Include live/cloned/consumed tokens, initialized owned slots,
+    // bounds guards, and each escape boundary, including exact refusals.
+    for count in [0, 1] {
+        for initialized in [false, true] {
+            for escape in [Escape::Drop, Escape::Release, Escape::Reclaim, Escape::Call, Escape::Return] {
+                let straight = check_initial(candidate(count, initialized, escape)).map(|_| ());
+                let split = candidate(count, initialized, escape).transform_functions(|functions| {
+                    split_memory_operations(&mut functions[0]);
+                });
+                assert_eq!(check_initial(split).map(|_| ()), straight);
+            }
+        }
+    }
+    let twice_released = || candidate(0, false, Escape::Release).transform_functions(|functions| {
+        functions[0].blocks[0].operations.insert(5, Operation::Release { object: ValueId::new(6) });
+    });
+    let refused = check_initial(twice_released()).expect_err("consumed clone is not a live token");
+    assert_eq!(check_initial(twice_released().transform_functions(|functions| {
+        split_memory_operations(&mut functions[0]);
+    })).expect_err("edge cannot revive a consumed clone"), refused);
+}
+
+#[test]
+fn parameterless_edges_still_reject_extra_arguments_on_both_branch_kinds() {
+    for conditional in [false, true] {
+        let malformed = candidate(0, false, Escape::Drop).transform_functions(|functions| {
+            let function = &mut functions[0];
+            split_memory_operations(function);
+            let extra = ValueId::new(2); // The count defined in the first block.
+            function.blocks[0].terminator = if conditional {
+                let condition = ValueId::new(100);
+                function.value_types.insert(condition, ValueType::Bool);
+                function.blocks[0].operations.push(Operation::ConstBool { destination: condition, value: true });
+                // Even the statically unselected edge must retain its arity check.
+                Terminator::BranchIf {
+                    condition, then_target: BlockId::new(1), then_arguments: Vec::new(),
+                    else_target: BlockId::new(1), else_arguments: vec![extra],
+                }
+            } else {
+                Terminator::Branch { target: BlockId::new(1), arguments: vec![extra] }
+            };
+        });
+        assert_eq!(check_initial(malformed).expect_err("extra edge argument"), InitialCheckError::ArityMismatch {
+            context: "derived branch arguments", expected: 0, actual: 1,
+        });
+    }
+}
+
 #[test]
 fn owned_pointer_escape_requires_complete_initialization() {
     check_initial(candidate(0, false, Escape::Drop)).expect("empty owned container");
