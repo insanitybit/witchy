@@ -78,6 +78,23 @@ pub fn expand(
     module: &mut Module,
     siblings: &[(String, Module)],
 ) -> Result<OriginTable, String> {
+    // Most modules contain no tags. In that case the traversal changes nothing,
+    // so do not snapshot this module and every sibling just to drop them again.
+    // The shared visitor covers the expansion walk's expression positions.
+    // Keep the ordinary path for synthetic hole-origin wrappers too: the walk
+    // removes those even when their payload contains no further tagged literal.
+    let needs_walk = witchy_syntax::ast::visit::visit_module_exprs(module, &mut |expr| {
+        if matches!(expr, Expr::TaggedLit { .. })
+            || matches!(expr, Expr::Call { name, .. } if name == HOLE_ORIGIN_MARKER)
+        {
+            Err(())
+        } else {
+            Ok(())
+        }
+    }).is_err();
+    if !needs_walk {
+        return Ok(OriginTable::default());
+    }
     // Snapshot the module's own items + std imports once: every tag expansion in
     // this module runs in a comptime program carrying this context, so a tag
     // defined locally (or in std) is callable. Cloning per-module (not per-hole)

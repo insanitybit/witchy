@@ -6,6 +6,54 @@ use std::collections::HashSet;
 
 use witchy::{comptime, format, parser, pipeline, typeck};
 
+#[test]
+fn tag_free_expansion_preserves_ast_but_still_removes_hole_origin_wrappers() {
+    use witchy::ast::{Block, Expr, Item, Stmt};
+
+    let mut ordinary = parser::parse_module("fn answer() -> Int:\n    42\n")
+        .expect("tag-free fixture parses");
+    let before = ordinary.clone();
+    let origins = comptime::expand_compile_time("comptime", &mut ordinary, &[])
+        .expect("tag-free expansion succeeds");
+    assert_eq!(ordinary, before);
+    assert!(origins.nodes().is_empty() && origins.tagged_literals().is_empty());
+
+    let mut wrapped = ordinary.clone();
+    let Item::Function(function) = &mut wrapped.items[0] else { unreachable!() };
+    function.body.stmts[0] = Stmt::Expr(Expr::Block(Block {
+        stmts: vec![
+            Stmt::Expr(Expr::Call {
+                name: "@hole_origin".to_string(),
+                args: vec![Expr::Int(0), Expr::Int(2), Expr::Int(5)],
+            }),
+            Stmt::Expr(Expr::Int(42)),
+        ],
+        lines: vec![2, 2],
+        region: None,
+    }));
+    let origins = comptime::expand_compile_time("comptime", &mut wrapped, &[])
+        .expect("compiler-owned hole wrapper is removed even without a tag");
+    assert_eq!(wrapped, before);
+    assert!(origins.nodes().is_empty() && origins.tagged_literals().is_empty());
+}
+
+#[test]
+fn tag_presence_guard_keeps_all_expansion_positions_on_the_checked_path() {
+    for source in [
+        "let answer = missing\"value\"\n",
+        "fn answer() -> Int:\n    missing\"value\"\n",
+        "fn answer():\n    let nested = fn(): missing\"value\"\n",
+        "trait Answer:\n    fn answer(self) -> Int:\n        missing\"value\"\n",
+        "type Value:\n    Value\n\nimpl Value:\n    fn answer(self) -> Int:\n        missing\"value\"\n",
+    ] {
+        let mut module = parser::parse_module(source).expect("tag position fixture parses");
+        let error = comptime::expand_compile_time("comptime", &mut module, &[])
+            .expect_err("the guard must not skip a tag in any expansion position");
+        assert!(error.contains("tagged literal `missing`"), "{source}: {error}");
+        assert!(error.contains("is not defined"), "{source}: {error}");
+    }
+}
+
 fn link(modules: Vec<(&str, &str)>) -> Result<(), String> {
     let user_modules = modules.iter().map(|(name, _)| (*name).to_string()).collect::<HashSet<_>>();
     let parsed = modules
