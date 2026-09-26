@@ -706,6 +706,42 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
         }),
         "worktree-only selection ran unrelated queue binaries: {worktree_only_args}",
     );
+    // Helper-only diffs can map to queue tests without the coordinator's
+    // path census setting QUEUE_INFRA. Exercise the real mapper and gate,
+    // not merely the mapper's advertised selection or a presubmit receipt.
+    let mapped = Command::new("bash")
+        .arg(root.join("scripts/test-for-paths.sh"))
+        .args(["--gate-nextest", "scripts/test-native-compiler-examples.sh"])
+        .output().expect("map helper-only landing");
+    assert!(mapped.status.success());
+    let mapped = String::from_utf8(mapped.stdout).expect("mapped selection is utf8");
+    assert_eq!(mapped.trim(), "--test test_for_paths");
+    for fail in [false, true] {
+        fs::write(&cargo_args_file, "").expect("clear helper cargo arguments");
+        let helper = check_sh(&root, &[])
+            .env("PATH", &path)
+            .env("CARGO_TARGET_DIR", temp.path().join("target-mapped-helper"))
+            .env("WITCHY_GATE_SCOPE", "all")
+            .env("WITCHY_GATE_QUEUE_INFRA", "0")
+            .env("WITCHY_GATE_SKIP_FMT", "1")
+            .env("WITCHY_GATE_SKIP_RUST_CLASS", "1")
+            .env_remove("WITCHY_QUEUE_INFRA_JOBS")
+            .env("WITCHY_GATE_NEXTEST", mapped.trim())
+            .env("FAKE_CARGO_ARGS_FILE", &cargo_args_file)
+            .env("FAKE_CARGO_FAIL_NEXTEST", if fail { "1" } else { "0" })
+            .env("WITCHY_FAILFAST_POLL", "0.05")
+            .env("WITCHY_STAGE_HEARTBEAT_INTERVAL", "0")
+            .output().expect("execute mapped helper-only gate");
+        assert_eq!(helper.status.success(), !fail,
+            "mapped helper failure propagation: {}", String::from_utf8_lossy(&helper.stderr));
+        let args = fs::read_to_string(&cargo_args_file).expect("read mapped helper execution");
+        let runs: Vec<_> = args.lines().filter(|line| line.starts_with("nextest run ")).collect();
+        assert_eq!(runs.len(), 1, "helper gate must execute exactly its queue shard: {args}");
+        assert!(runs[0].starts_with("nextest run -p merge-queue-tests --test test_for_paths -j 6 "),
+            "mapped helper ran a wrong or broadened selection: {args}");
+        assert!(!runs[0].contains("--test merge_queue") && !runs[0].contains("--test worktree"),
+            "helper gate broadened to unrelated queue fixtures: {args}");
+    }
     fs::write(&cargo_args_file, "").expect("clear fake cargo arguments");
     // A diff touching the queue scripts AND a root integration test maps the
     // queue binary in the expression, not the product Cargo arguments. Recover
@@ -750,6 +786,28 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
         mixed_args.lines().any(|line| line.starts_with(mixed_queue_prefix)),
         "the selected queue binary did not run alone in the isolated shard: {mixed_args}",
     );
+    // Invalid mapper syntax must retain the workspace fallback; an unknown
+    // test name remains a product target for Cargo to adjudicate, never an
+    // excuse to suppress the product run as queue-only.
+    for (selection, expected) in [("unusable-selection", "--workspace"),
+                                  ("--test unknown_contract", "--test unknown_contract")] {
+        fs::write(&cargo_args_file, "").expect("clear fallback cargo arguments");
+        let fallback = check_sh(&root, &["--fast"])
+            .env("PATH", &path)
+            .env("CARGO_TARGET_DIR", temp.path().join("target-unknown-selection"))
+            .env("WITCHY_GATE_SCOPE", "all")
+            .env("WITCHY_GATE_QUEUE_INFRA", "0")
+            .env("WITCHY_GATE_NEXTEST", selection)
+            .env("FAKE_CARGO_ARGS_FILE", &cargo_args_file)
+            .env("WITCHY_FAILFAST_POLL", "0.05")
+            .env("WITCHY_STAGE_HEARTBEAT_INTERVAL", "0")
+            .output().expect("execute non-queue selection fallback");
+        assert!(fallback.status.success(), "{}", String::from_utf8_lossy(&fallback.stderr));
+        let args = fs::read_to_string(&cargo_args_file).expect("read fallback execution");
+        assert!(args.lines().any(|line| line.starts_with("nextest run ") && line.contains(expected)),
+            "non-queue selection suppressed the product run: {selection}: {args}");
+        assert!(!args.contains("-p merge-queue-tests"), "unknown selection acquired queue identity: {args}");
+    }
     let invalid_width = check_sh(&root, &["--queue-infra"])
         .env("PATH", &path)
         .env("WITCHY_QUEUE_INFRA_JOBS", "0")
