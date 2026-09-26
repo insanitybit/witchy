@@ -706,6 +706,17 @@ struct StoredContainment {
     unique_storage: bool,
 }
 
+#[derive(Clone, Copy)]
+struct ContainmentDemand {
+    opaque_view_owner: bool,
+    capability_authority: bool,
+}
+
+impl ContainmentDemand {
+    const ALL: Self = Self { opaque_view_owner: true, capability_authority: true };
+    const UNIQUE: Self = Self { opaque_view_owner: false, capability_authority: false };
+}
+
 /// Whether a source type owns unique storage in an instantiated stored child.
 /// Views, slices, and borrowed handles do not own their referents. `None`
 /// means the finite stored-child proof was unavailable and must not authorize
@@ -714,13 +725,18 @@ pub fn contains_unique_storage(
     ty: &Type,
     definitions: &BTreeMap<String, TypeDef>,
 ) -> Option<bool> {
-    stored_containment(ty, definitions).map(|facts| facts.unique_storage)
+    stored_containment(ty, definitions, ContainmentDemand::UNIQUE).map(|facts| facts.unique_storage)
 }
 
-fn stored_containment(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> Option<StoredContainment> {
+fn stored_containment(
+    ty: &Type,
+    definitions: &BTreeMap<String, TypeDef>,
+    demand: ContainmentDemand,
+) -> Option<StoredContainment> {
     fn walk(
         ty: &Type,
         definitions: &BTreeMap<String, TypeDef>,
+        demand: ContainmentDemand,
         active: &mut HashSet<Type>,
         depth: usize,
         remaining: &mut usize,
@@ -728,9 +744,13 @@ fn stored_containment(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> Opt
         if depth > 128 || *remaining == 0 { return None; }
         *remaining -= 1;
         let mut facts = StoredContainment {
-            opaque_view_owner: view_carrier_plan(ty, definitions)
+            // Computing a view plan recursively inspects the stored graph.
+            // Skip unused projections, not children: the outer walk must keep
+            // its exact cycle, resource-limit, and malformed-storage refusals.
+            opaque_view_owner: demand.opaque_view_owner && view_carrier_plan(ty, definitions)
                 .is_some_and(|plan| plan.requires_opaque_owner()),
-            capability_authority: crate::capabilities::representation(ty, definitions).is_some(),
+            capability_authority: demand.capability_authority
+                && crate::capabilities::representation(ty, definitions).is_some(),
             unique_storage: matches!(ty, Type::Qualified(TypeQual::Unique, _)),
         };
         let owns_referent = !matches!(ty,
@@ -746,7 +766,7 @@ fn stored_containment(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> Opt
                 .map(StoredChildren::into_types).unwrap_or_default(),
         };
         for child in &children {
-            let nested = walk(child, definitions, active, depth + 1, remaining)?;
+            let nested = walk(child, definitions, demand, active, depth + 1, remaining)?;
             facts.opaque_view_owner |= nested.opaque_view_owner;
             facts.capability_authority |= nested.capability_authority;
             facts.unique_storage |= owns_referent && nested.unique_storage;
@@ -754,7 +774,7 @@ fn stored_containment(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> Opt
         active.remove(ty);
         Some(facts)
     }
-    walk(ty, definitions, &mut HashSet::new(), 0, &mut 4_096)
+    walk(ty, definitions, demand, &mut HashSet::new(), 0, &mut 4_096)
 }
 
 /// The packed one-variant record layout class is selected from field storage,
@@ -1229,7 +1249,7 @@ impl StoragePlan {
             && let Some(plan) = AggregateGraphPlan::classify(element, definitions)
             && plan.cloneable()
         {
-            return match stored_containment(element, definitions) {
+            return match stored_containment(element, definitions, ContainmentDemand::ALL) {
                 Some(StoredContainment { opaque_view_owner: true, .. }) => Self::RetainedOpaqueAggregateList(plan),
                 Some(_) => Self::RetainedGraphList(plan),
                 None => Self::Refused(StorageRefusal::ResourceLimit),
@@ -1269,7 +1289,7 @@ impl StoragePlan {
             Some(plan) if plan.within_resource_bounds() => Self::Owned(plan),
             _ => AggregateGraphPlan::classify(ty, definitions)
                 .map(Self::AuthenticatedPlace)
-                .unwrap_or_else(|| match stored_containment(ty, definitions) {
+                .unwrap_or_else(|| match stored_containment(ty, definitions, ContainmentDemand::ALL) {
                     Some(StoredContainment { capability_authority: true, .. }) => Self::Refused(StorageRefusal::UnprovedAuthority),
                     Some(_) => Self::Refused(StorageRefusal::UnprovedOwnership),
                     None => Self::Refused(StorageRefusal::ResourceLimit),
@@ -1331,6 +1351,9 @@ fn within_source_bounds(
         }
     }
 }
+
+#[cfg(test)]
+mod query_tests;
 
 #[cfg(test)]
 #[test]
