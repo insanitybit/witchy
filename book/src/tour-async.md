@@ -29,6 +29,9 @@ and does not read the caller's bindings again. `async main` runs directly and
 does not create a recipe. Its `await` continuations still pass through
 replayable task recipes, so a live `must` value cannot cross an `await` in
 that continuation.
+For a generic async function, each direct call checks the instantiated capture
+type. A generic function with an unresolved capture obligation cannot be
+passed as a function value.
 
 ```witchy
 async fn double(n: Int) -> Int:

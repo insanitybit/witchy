@@ -1350,6 +1350,19 @@ otherwise gain an authenticated-place plan. This is a structural migration;
 it closes no A–O evidence row. Generic replay through indirect callables,
 per-execution preparation, and cancellation disposition remain open.
 
+Generic replay capture judgment (implemented but unverified, 2026-09-26):
+the shared snapshot classifier now carries unresolved checked type formals as
+conditional obligations through stored children. Both the async declaration
+check and each direct generic call consume this judgment; neither substitutes
+`Int` as a stand-in. A call must recheck the exact instantiated type, while a
+generic function with an outstanding storage obligation cannot be transported
+as an unchecked function value. The existing resource-composition checker case
+accepts an `Int` capture and a `List(Int)` capture through generic async
+parameters and refuses an affine once-callable instantiation in both modes.
+A temporary admitted unoptimized CLI run of those copyable calls printed the
+hand-computed `7 2`. This smoke has no durable Wasm witness or zero-leak audit;
+no A–O row closes.
+
 Stored-obligation catalog replacement (implemented but unverified,
 2026-09-26): canonical source now derives generic stored-parameter masks and
 transitive must-containment from its instantiated stored-child relation. The

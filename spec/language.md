@@ -2168,7 +2168,11 @@ inside an instantiated aggregate: one affine owner cannot supply repeated
 recipe executions. Ordinary copyable data and eligible immutable view
 snapshots remain available as task inputs.
 For a generic async function, the capture proof is retained as a direct-call
-obligation and checked again for the instantiated stored type. Awaiting a
+obligation and checked again for the exact instantiated stored type. The
+declaration checks its known constructors and stored fields with symbolic type
+formals; it does not assume a concrete substitute for an unknown type. A
+generic function with an outstanding storage obligation cannot be passed as
+an unchecked function value. Awaiting a
 copyable recipe may run it again from the original capture snapshot; affine
 task values still require a whole-value, one-time start.
 

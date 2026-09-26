@@ -40,7 +40,7 @@ pub fn snapshot_eligibility(
     ty: &Type,
     definitions: &BTreeMap<String, TypeDef>,
 ) -> Result<(), SnapshotRefusal> {
-    snapshot_eligibility_for(ty, definitions, SnapshotUse::PersistentView)
+    snapshot_eligibility_for(ty, definitions, SnapshotUse::PersistentView, &BTreeSet::new()).map(|_| ())
 }
 
 /// A lazy recipe retains one copyable snapshot and clones invocation state on
@@ -50,7 +50,20 @@ pub fn replay_capture_eligibility(
     ty: &Type,
     definitions: &BTreeMap<String, TypeDef>,
 ) -> Result<(), SnapshotRefusal> {
-    snapshot_eligibility_for(ty, definitions, SnapshotUse::ReplayableTask)
+    snapshot_eligibility_for(ty, definitions, SnapshotUse::ReplayableTask, &BTreeSet::new()).map(|_| ())
+}
+
+/// A generic recipe capture is conditional on each checked instantiation.
+/// The returned flag records whether an unresolved formal was encountered;
+/// callers must carry a replay obligation to every concrete call when true.
+/// Known constructors, qualifiers, stored children, and resource limits are
+/// still checked here, while exact clone/release admission occurs at the call.
+pub fn replay_capture_template_eligibility(
+    ty: &Type,
+    definitions: &BTreeMap<String, TypeDef>,
+    formals: &BTreeSet<String>,
+) -> Result<bool, SnapshotRefusal> {
+    snapshot_eligibility_for(ty, definitions, SnapshotUse::ReplayableTask, formals)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -387,40 +400,56 @@ fn snapshot_eligibility_for(
     ty: &Type,
     definitions: &BTreeMap<String, TypeDef>,
     use_kind: SnapshotUse,
-) -> Result<(), SnapshotRefusal> {
+    formals: &BTreeSet<String>,
+) -> Result<bool, SnapshotRefusal> {
+    fn contains_formal(ty: &Type, formals: &BTreeSet<String>) -> bool {
+        match ty {
+            Type::Named(name, arguments) => (arguments.is_empty() && formals.contains(name))
+                || arguments.iter().any(|argument| contains_formal(argument, formals)),
+            Type::Tuple(fields) | Type::Dyn(_, fields) =>
+                fields.iter().any(|field| contains_formal(field, formals)),
+            Type::Fn(parameters, result, _, _) => parameters.iter().any(|parameter| contains_formal(parameter, formals))
+                || contains_formal(result, formals),
+            Type::Slice(inner) | Type::Qualified(_, inner) => contains_formal(inner, formals),
+            Type::RecordCompose { base, fields } => contains_formal(base, formals)
+                || fields.iter().any(|(_, field)| contains_formal(field, formals)),
+        }
+    }
     fn walk(
         ty: &Type,
         definitions: &BTreeMap<String, TypeDef>,
         use_kind: SnapshotUse,
+        formals: &BTreeSet<String>,
         active: &mut HashSet<Type>,
         depth: usize,
         remaining: &mut usize,
-    ) -> Result<(), SnapshotRefusal> {
+    ) -> Result<bool, SnapshotRefusal> {
         if depth > 128 || *remaining == 0 {
             return Err(SnapshotRefusal::ResourceLimit);
         }
         *remaining -= 1;
         match ty {
             Type::Qualified(TypeQual::Frozen, inner) => {
-                walk(inner, definitions, use_kind, active, depth + 1, remaining)
+                walk(inner, definitions, use_kind, formals, active, depth + 1, remaining)
             }
             Type::Qualified(TypeQual::Unique, inner) => {
                 if use_kind == SnapshotUse::ReplayableTask {
                     Err(SnapshotRefusal::UniqueOwner)
                 } else {
-                    walk(inner, definitions, use_kind, active, depth + 1, remaining)
+                    walk(inner, definitions, use_kind, formals, active, depth + 1, remaining)
                 }
             }
             Type::Qualified(TypeQual::View, inner) => {
                 if use_kind == SnapshotUse::ReplayableTask
                     && RootedViewStorage::classify(inner, definitions, |_| Some(0)).is_none()
+                    && !contains_formal(inner, formals)
                 {
                     return Err(SnapshotRefusal::UnprovedStorage);
                 }
-                walk(inner, definitions, SnapshotUse::PersistentView, active, depth + 1, remaining)
+                walk(inner, definitions, SnapshotUse::PersistentView, formals, active, depth + 1, remaining)
             }
             Type::Slice(inner) if use_kind == SnapshotUse::PersistentView => {
-                walk(inner, definitions, use_kind, active, depth + 1, remaining)
+                walk(inner, definitions, use_kind, formals, active, depth + 1, remaining)
             }
             Type::Qualified(_, _) | Type::Dyn(_, _) | Type::RecordCompose { .. } => {
                 Err(SnapshotRefusal::UnprovedStorage)
@@ -430,18 +459,24 @@ fn snapshot_eligibility_for(
                 if qualifiers.once {
                     Err(SnapshotRefusal::OnceCallable)
                 } else if CallableStoragePlan::classify(ty, definitions).is_some() {
-                    Ok(())
+                    Ok(false)
+                } else if contains_formal(ty, formals) {
+                    Ok(true)
                 } else {
                     Err(SnapshotRefusal::UnprovedStorage)
                 }
             }
             Type::Tuple(fields) => {
+                let mut deferred = false;
                 for field in fields {
-                    walk(field, definitions, use_kind, active, depth + 1, remaining)?;
+                    deferred |= walk(field, definitions, use_kind, formals, active, depth + 1, remaining)?;
                 }
-                Ok(())
+                Ok(deferred)
             }
-            Type::Named(name, _) => {
+            Type::Named(name, arguments) => {
+                if arguments.is_empty() && formals.contains(name) {
+                    return Ok(true);
+                }
                 if let Some(definition) = definitions.get(name) {
                     if definition.must_consume {
                         return Err(SnapshotRefusal::MustConsume);
@@ -449,7 +484,7 @@ fn snapshot_eligibility_for(
                 }
                 if crate::capabilities::representation(ty, definitions).is_some() {
                     return if use_kind == SnapshotUse::ReplayableTask {
-                        Ok(())
+                        Ok(false)
                     } else {
                         Err(SnapshotRefusal::Authority)
                     };
@@ -460,7 +495,7 @@ fn snapshot_eligibility_for(
                 if let Some(RootedViewStorage::RetainedProjection(element)) =
                     RootedViewStorage::classify(ty, definitions, |_| Some(0))
                 {
-                    return walk(&element.source_type(), definitions, use_kind, active, depth + 1, remaining);
+                    return walk(&element.source_type(), definitions, use_kind, formals, active, depth + 1, remaining);
                 }
                 if !active.insert(ty.clone()) {
                     return Err(SnapshotRefusal::UnprovedStorage);
@@ -469,23 +504,26 @@ fn snapshot_eligibility_for(
                 // independent copy of the exact checked storage. The source
                 // child relation excludes phantom parameters and physical
                 // tags; the storage plan proves clone/release for its carrier.
-                if !StoragePlan::classify(ty, definitions, |_| Some(0)).admits_owned_copy() {
+                let children = stored_children(ty, definitions)
+                    .map_err(|_| SnapshotRefusal::UnprovedStorage)?;
+                let known_constructor = children.is_some() || definitions.contains_key(name);
+                let fields = children.map(StoredChildren::into_types).unwrap_or_default();
+                let mut deferred = contains_formal(ty, formals);
+                for field in &fields {
+                    deferred |= walk(field, definitions, use_kind, formals, active, depth + 1, remaining)?;
+                }
+                if (!deferred || !known_constructor)
+                    && !StoragePlan::classify(ty, definitions, |_| Some(0)).admits_owned_copy()
+                {
                     return Err(SnapshotRefusal::UnprovedStorage);
                 }
-                let fields = stored_children(ty, definitions)
-                    .map_err(|_| SnapshotRefusal::UnprovedStorage)?
-                    .map(StoredChildren::into_types)
-                    .unwrap_or_default();
-                for field in &fields {
-                    walk(field, definitions, use_kind, active, depth + 1, remaining)?;
-                }
                 active.remove(ty);
-                Ok(())
+                Ok(deferred)
             }
         }
     }
     SourceTypeKey { source: ty }.digest().ok_or(SnapshotRefusal::ResourceLimit)?;
-    walk(ty, definitions, use_kind, &mut HashSet::new(), 0, &mut 4_096)
+    walk(ty, definitions, use_kind, formals, &mut HashSet::new(), 0, &mut 4_096)
 }
 
 /// A finite source-derived proof for the storage classes the canonical route

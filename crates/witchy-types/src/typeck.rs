@@ -3374,7 +3374,7 @@ impl Checker {
         inferred: &Ty,
         context: &str,
     ) -> Result<(), TypeError> {
-        use witchy_canonical_source::storage::{SnapshotRefusal, replay_capture_eligibility};
+        use witchy_canonical_source::storage::{SnapshotRefusal, replay_capture_eligibility, replay_capture_template_eligibility};
         let initial = replay_capture_eligibility(source, &self.canonical_definitions);
         if initial.is_ok() { return Ok(()); }
         let resolved = self.resolve(inferred);
@@ -3387,11 +3387,11 @@ impl Checker {
             && !variables.is_empty()
             && variables.iter().all(|variable| current.contains(variable))
         {
-            let substitutions = self.current_typarams.keys()
-                .map(|name| (name.clone(), ast::Type::Named("Int".into(), Vec::new())))
-                .collect();
-            let representative = Self::substitute_unique_source_type(source, &substitutions);
-            if replay_capture_eligibility(&representative, &self.canonical_definitions).is_ok() {
+            let formals = self.current_typarams.iter().filter_map(|(name, variable)| {
+                matches!(self.resolve(&Ty::Var(*variable)), Ty::Var(id) if variables.contains(&id))
+                    .then_some(name.clone())
+            }).collect();
+            if replay_capture_template_eligibility(source, &self.canonical_definitions, &formals).is_ok() {
                 let obligation = StorageObligation::ReplayCapture(resolved);
                 if !self.current_storage_obligations.contains(&obligation) {
                     self.current_storage_obligations.push(obligation);
@@ -3403,28 +3403,40 @@ impl Checker {
     }
 
     fn admit_replay_capture_ty(&mut self, ty: &Ty, context: &str) -> Result<(), TypeError> {
-        use witchy_canonical_source::storage::replay_capture_eligibility;
+        use witchy_canonical_source::storage::{replay_capture_eligibility, replay_capture_template_eligibility};
         let resolved = self.resolve(ty);
         let mut variables = HashSet::new();
         self.collect_storage_variables(&resolved, &mut variables);
         let current: HashSet<u32> = self.current_typarams.values().filter_map(|variable| {
             match self.resolve(&Ty::Var(*variable)) { Ty::Var(representative) => Some(representative), _ => None }
         }).collect();
-        let mut representatives = HashMap::new();
+        let mut symbolic = HashMap::new();
+        let mut formals = std::collections::BTreeSet::new();
         for variable in variables {
             if !current.contains(&variable) {
                 return terr(format!("{context} has an unresolved replay capture type"));
             }
-            representatives.insert(variable, Ty::Int);
+            let name = self.current_typarams.iter().find_map(|(name, candidate)| {
+                (self.resolve(&Ty::Var(*candidate)) == Ty::Var(variable)).then_some(name.clone())
+            }).ok_or_else(|| TypeError {
+                message: format!("{context} has no checked generic replay capture parameter"),
+            })?;
+            symbolic.insert(variable, Ty::Named(name.clone().into(), Vec::new().into()));
+            formals.insert(name);
         }
-        let representative = self.subst_vars(&resolved, &representatives);
-        let source = ty_to_ast(&representative).ok_or_else(|| TypeError {
+        let template = self.subst_vars(&resolved, &symbolic);
+        let source = ty_to_ast(&template).ok_or_else(|| TypeError {
             message: format!("{context} has no checked replay capture type"),
         })?;
-        replay_capture_eligibility(&source, &self.canonical_definitions).map_err(|reason| TypeError {
+        let proof = if formals.is_empty() {
+            replay_capture_eligibility(&source, &self.canonical_definitions).map(|_| false)
+        } else {
+            replay_capture_template_eligibility(&source, &self.canonical_definitions, &formals)
+        };
+        proof.map_err(|reason| TypeError {
             message: format!("{context} has no copyable snapshot: {}", replay_snapshot_reason(reason)),
         })?;
-        if !representatives.is_empty() {
+        if !formals.is_empty() {
             let obligation = StorageObligation::ReplayCapture(resolved);
             if !self.current_storage_obligations.contains(&obligation) {
                 self.current_storage_obligations.push(obligation);

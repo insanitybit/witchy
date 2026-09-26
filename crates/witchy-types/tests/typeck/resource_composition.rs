@@ -51,6 +51,15 @@ fn qualifier_erasure_cannot_hide_must_once_or_capability_contracts() {
 #[test]
 fn cancellation_cannot_drop_live_must_or_once_task_captures() {
     for mode in ["", "mode opt\n\n"] {
+        let copyable = format!("{mode}async fn replay(own value: a) -> a:\n    value\n\nasync fn main(console: Console):\n    let answer = replay(7).await\n    console.print(\"${{answer}}\")\n");
+        assert!(checked(&copyable).is_ok(), "a checked concrete replay capture must instantiate: {copyable}");
+        let nested = format!("{mode}async fn replay(own values: List(a)) -> Int:\n    values.length()\n\nasync fn main(console: Console):\n    let answer = replay([1, 2]).await\n    console.print(\"${{answer}}\")\n");
+        assert!(checked(&nested).is_ok(), "a recursively stored generic capture must instantiate: {nested}");
+        assert_rejected(
+            "a generic replay capture cannot instantiate with an affine callable",
+            &format!("{mode}async fn replay(own value: a) -> a:\n    value\n\nasync fn main():\n    let callback: once fn() -> Int = once fn(): 7\n    let value = replay(callback).await\n    value()\n"),
+            &["once-callable", "replayable Task recipe", "copyable snapshot"],
+        );
         assert_rejected(
             "cancellation cannot abandon a live must capture",
             &format!("{mode}import chan\n\nasync fn leaf():\n    chan.yield_now().await\n\nasync fn supervisor():\n    let nested = chan.spawn(leaf()).await\n    chan.yield_now().await\n    chan.join(nested).await\n\nasync fn main():\n    let parent = chan.spawn(supervisor()).await\n    chan.cancel(parent).await\n"),
