@@ -3814,7 +3814,18 @@ impl Checker {
                 _ => false,
             }
         }
-        go(self, ty, &mut HashSet::new())
+        // A variable-free type is a fixed input: its answer cannot change as
+        // the substitution grows, so it is computed once per checker.
+        let resolved = self.resolve(ty);
+        if ty_has_var(&resolved) {
+            return go(self, &resolved, &mut HashSet::new());
+        }
+        if let Some(answer) = self.once_callable_types.borrow().get(&resolved) {
+            return *answer;
+        }
+        let answer = go(self, &resolved, &mut HashSet::new());
+        self.once_callable_types.borrow_mut().insert(resolved, answer);
+        answer
     }
 
     fn mark_borrowed_once_binding(&mut self, name: &str) {
@@ -12407,10 +12418,13 @@ fn run_check_selected(
         .ok_or_else(|| TypeError {
             message: "checked Task declaration has inconsistent execution-obligation arity".into(),
         })?;
+    let canonical_definitions = witchy_canonical_source::aggregates::type_definitions(module);
+    let storage_plans = checker::shared_storage_plans(&canonical_definitions);
     let mut c = Checker {
-        canonical_definitions: witchy_canonical_source::aggregates::type_definitions(module),
+        canonical_definitions,
         resolve_cache: std::cell::RefCell::new(HashMap::new()),
-        storage_plans: std::cell::RefCell::new(HashMap::new()),
+        storage_plans,
+        once_callable_types: std::cell::RefCell::new(HashMap::new()),
         type_record: if record { Some(HashMap::new()) } else { None },
         compiler_owned_materializations: HashSet::new(),
         // Construction requests are also retained during ordinary checking so

@@ -4,6 +4,37 @@
 
 use super::*;
 
+/// `StoragePlan::classify` answers over one exact set of type definitions.
+pub(super) type StoragePlanMemo =
+    std::rc::Rc<std::cell::RefCell<HashMap<ast::Type, witchy_canonical_source::storage::StoragePlan>>>;
+
+thread_local! {
+    static SHARED_STORAGE_PLANS: std::cell::RefCell<Option<(std::collections::BTreeMap<String, ast::TypeDef>, StoragePlanMemo)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// The storage-plan memo for checkers over `definitions`.
+///
+/// One compile builds a checker per pass (link check, each monomorphization
+/// round, each re-annotation: eleven for a small async program), and each
+/// used to classify the same types over the same definitions from scratch
+/// (6% of the compile). A plan is a pure function of the type and the
+/// definitions map, so a memo is reused exactly when the new checker's map
+/// is equal to the one it was filled over (`TypeDef` equality is structural
+/// over every field). Any other map replaces it.
+pub(super) fn shared_storage_plans(definitions: &std::collections::BTreeMap<String, ast::TypeDef>) -> StoragePlanMemo {
+    SHARED_STORAGE_PLANS.with_borrow_mut(|shared| {
+        if let Some((filled_over, memo)) = shared.as_ref()
+            && filled_over == definitions
+        {
+            return std::rc::Rc::clone(memo);
+        }
+        let memo = StoragePlanMemo::default();
+        *shared = Some((definitions.clone(), std::rc::Rc::clone(&memo)));
+        memo
+    })
+}
+
 pub(super) struct Checker {
     /// The module's type definitions in the canonical form, so a view capture
     /// is admitted by exactly the record-root and list-root carrier rules that
@@ -19,8 +50,15 @@ pub(super) struct Checker {
     /// never changes after construction. The plan is a pure function of the
     /// source type and that map; recomputing it re-walked every reachable
     /// definition (capability-authority and view searches) for each probed
-    /// binding, ~a third of an async compile.
-    pub(super) storage_plans: std::cell::RefCell<HashMap<ast::Type, witchy_canonical_source::storage::StoragePlan>>,
+    /// binding, ~a third of an async compile. Shared by every checker on
+    /// this thread built over equal definitions ([`shared_storage_plans`]).
+    pub(super) storage_plans: StoragePlanMemo,
+    /// Memoizes `ty_carries_once_callable` for variable-free types. The
+    /// answer then reads only the type and the declaration tables
+    /// (`record_fields`, `adt_variants`, `ctor_sigs`, `stored_obligations`),
+    /// which are filled before any body is checked; re-walking every nominal
+    /// payload with fresh substitutions per probe was ~7% of an async compile.
+    pub(super) once_callable_types: std::cell::RefCell<HashMap<Ty, bool>>,
     /// When annotating (see `annotate`): expression identity -> inferred type,
     /// finalized against the ending substitution. Key = `&Expr as *const _`.
     // The boolean is checked non-completion, recorded in the same session so
