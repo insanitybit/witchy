@@ -1850,13 +1850,16 @@ fn a_bounded_edit_loop_names_the_binary_it_did_not_run() {
 
     let fired = |plan: &str, changed: &str| -> bool {
         let script = format!(
-            "set -u\n{function}\n./scripts/test-for-paths.sh() {{ printf '%s' \"{plan}\"; }}\n             git() {{ printf '%s' \"{changed}\"; }}\nreport_bounded_edit_gap\n"
+            "set -u\n{function}\n./scripts/test-for-paths.sh() {{ exit 93; }}\n             git() {{ printf '%s' \"$TEST_CHANGED\"; }}\nreport_bounded_edit_gap \"$TEST_PLAN\"\n"
         );
         let output = Command::new("bash")
             .current_dir(workspace_root())
+            .env("TEST_PLAN", plan)
+            .env("TEST_CHANGED", changed)
             .args(["-c", &script])
             .output()
             .expect("run the gap probe");
+        assert!(output.status.success(), "advisory unexpectedly rerouted: {output:?}");
         String::from_utf8_lossy(&output.stdout).contains("bounded edit loop")
     };
 

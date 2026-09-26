@@ -19,18 +19,21 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+# QoS and target selection need the same repository identity. Enumerate linked
+# worktrees once, retaining the existing non-Git fixture fallback.
+agent_main_worktree="$(git worktree list --porcelain 2>/dev/null | sed -n '1s/^worktree //p' || true)"
+
 usage() {
     sed -n '2,/^set -euo pipefail$/p' "$0" | sed '$d; s/^# \{0,1\}//'
     exit "${1:-0}"
 }
 
 gate_is_live() {
-    local main_worktree queue_state
-    main_worktree="$(git worktree list --porcelain 2>/dev/null | sed -n '1s/^worktree //p')"
-    [ -n "$main_worktree" ] || return 1
+    local queue_state
+    [ -n "$agent_main_worktree" ] || return 1
     # shellcheck source=state-paths.sh
     . ./scripts/state-paths.sh
-    queue_state="$(witchy_merge_queue_state_dir "$main_worktree")" || return 1
+    queue_state="$(witchy_merge_queue_state_dir "$agent_main_worktree")" || return 1
     [ -d "$queue_state/gate.lock" ]
 }
 
@@ -106,7 +109,7 @@ run_edit_checks() {
         ./scripts/record-shard-receipt.sh edit "$((SECONDS - started_at))" || true
     fi
     # Advisory only: never let the notice change this command's outcome.
-    report_bounded_edit_gap "$@" || true
+    report_bounded_edit_gap "$edit_plan" || true
 }
 
 # The edit loop is deliberately bounded so iteration stays fast (see the
@@ -118,8 +121,9 @@ run_edit_checks() {
 # bounded plan does not run in full. Say so once, here, where the agent is
 # looking, rather than letting a green edit loop read as gate-ready.
 report_bounded_edit_gap() {
-    local plan
-    plan="$(./scripts/test-for-paths.sh --edit-loop "$@" 2>/dev/null)" || return 0
+    # This is an advisory about the selected plan, not another validation run.
+    # Actual execution still asks the router to select its checks afresh.
+    local plan="$1"
     case "$plan" in
         *"check.sh --fast"*) return 0 ;;
     esac
@@ -163,13 +167,12 @@ ensure_agent_target() {
 }
 
 default_agent_target() {
-    local repo_root main_worktree
+    local repo_root
     repo_root="$(git rev-parse --show-toplevel 2>/dev/null)" || {
         printf 'target-codex\n'
         return
     }
-    main_worktree="$(git worktree list --porcelain 2>/dev/null | sed -n '1s/^worktree //p')"
-    if [ -n "$main_worktree" ] && [ "$repo_root" != "$main_worktree" ]; then
+    if [ -n "$agent_main_worktree" ] && [ "$repo_root" != "$agent_main_worktree" ]; then
         # Always use the checkout-local mbx-managed target. A caller that
         # deliberately needs another directory can still set CARGO_TARGET_DIR.
         printf 'target\n'

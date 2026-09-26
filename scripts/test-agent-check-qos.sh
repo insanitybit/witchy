@@ -50,6 +50,9 @@ EOF
 cat >"$fixture/scripts/test-for-paths.sh" <<'EOF'
 #!/bin/sh
 set -eu
+if [ -n "${AGENT_CHECK_ROUTE_LOG:-}" ]; then
+    printf '%s\n' "$*" >> "$AGENT_CHECK_ROUTE_LOG"
+fi
 case " $* " in
     *' --run '*) ;;
     *)
@@ -120,15 +123,39 @@ git -C "$main_fixture" config user.name Test
 git -C "$main_fixture" add scripts
 git -C "$main_fixture" commit -qm initial
 git -C "$main_fixture" worktree add -qb linked "$linked_fixture"
-env -u CARGO_TARGET_DIR AGENT_CHECK_ENV_LOG="$tmp/linked-env.log" FAKE_AGENT_PLAN=shell \
+actual_git="$(command -v git)"
+cat > "$tmp/bin/git" <<'EOF'
+#!/bin/sh
+set -eu
+if [ "$*" = 'worktree list --porcelain' ]; then
+    printf 'worktrees\n' >> "$AGENT_CHECK_DISCOVERY_LOG"
+fi
+exec "$AGENT_CHECK_TEST_REAL_GIT" "$@"
+EOF
+chmod +x "$tmp/bin/git"
+env -u CARGO_TARGET_DIR PATH="$tmp/bin:$PATH" \
+    AGENT_CHECK_TEST_REAL_GIT="$actual_git" AGENT_CHECK_DISCOVERY_LOG="$tmp/linked-git.log" \
+    AGENT_CHECK_ROUTE_LOG="$tmp/linked-route.log" \
+    AGENT_CHECK_ENV_LOG="$tmp/linked-env.log" FAKE_AGENT_PLAN=shell \
     "$linked_fixture/scripts/agent-check.sh" edit docs/probe.md >/dev/null
 grep -F 'strip=unset priority=normal nextest=2 target=unset args=--edit-loop --run docs/probe.md' \
     "$tmp/linked-env.log" >/dev/null
 mkdir -p "$linked_fixture/target-codex"
-env -u CARGO_TARGET_DIR AGENT_CHECK_ENV_LOG="$tmp/linked-codex-env.log" \
+env -u CARGO_TARGET_DIR PATH="$tmp/bin:$PATH" \
+    AGENT_CHECK_TEST_REAL_GIT="$actual_git" AGENT_CHECK_DISCOVERY_LOG="$tmp/linked-codex-git.log" \
+    AGENT_CHECK_ROUTE_LOG="$tmp/linked-codex-route.log" AGENT_CHECK_ENV_LOG="$tmp/linked-codex-env.log" \
     "$linked_fixture/scripts/agent-check.sh" edit docs/probe.md >/dev/null
 grep -F 'strip=unset priority=normal nextest=2 target=unset args=--edit-loop --run docs/probe.md' \
     "$tmp/linked-codex-env.log" >/dev/null
+for variant in linked linked-codex; do
+    discovery_count="$(wc -l < "$tmp/$variant-git.log" | tr -d ' ')"
+    route_count="$(wc -l < "$tmp/$variant-route.log" | tr -d ' ')"
+    printf '%s: worktree enumerations=%s router calls=%s\n' "$variant" "$discovery_count" "$route_count"
+    [ "$discovery_count" = 1 ]
+    [ "$route_count" = 2 ]
+    grep -Fx -- '--edit-loop docs/probe.md' "$tmp/$variant-route.log" >/dev/null
+    grep -Fx -- '--edit-loop --run docs/probe.md' "$tmp/$variant-route.log" >/dev/null
+done
 
 echo "agent-check focused commands use utility QoS only while the gate is live"
 echo "agent-check focused commands use normal MBX priority and preserve overrides"
@@ -136,3 +163,4 @@ echo "agent-check focused nextest uses bounded concurrency and preserves overrid
 echo "agent-check uses the default test profile and preserves explicit symbols"
 echo "agent-check skips target seeding for shell-only edit plans"
 echo "agent-check uses the managed default target of a linked worktree"
+echo "agent-check discovers worktrees once and reuses its advisory plan"
