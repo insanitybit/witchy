@@ -636,6 +636,21 @@ if cargo nextest --version >/dev/null 2>&1; then
         fi
     fi
 
+    # Gate only: the pure SafeWIR route (--no-default-features) resolves a
+    # different feature graph for every compiler crate from cap-model up, so
+    # sharing one target with the native graph made consecutive gates rebuild
+    # the whole compiler stack each time the route flipped (8 of 18 gates on
+    # 2026-09-25 took the pure route). Each graph keeps its own warm target.
+    if [ -n "${WITCHY_GATE_SCOPE:-}" ]; then
+        if [[ " ${test_cmd[*]} " == *" --no-default-features "* ]]; then
+            test_cmd=(env "CARGO_TARGET_DIR=${target_dir}-pure" "${test_cmd[@]}")
+        fi
+        if [ "${#test_cmd_extra[@]}" -gt 0 ] \
+            && [[ " ${test_cmd_extra[*]} " == *" --no-default-features "* ]]; then
+            test_cmd_extra=(env "CARGO_TARGET_DIR=${target_dir}-pure" "${test_cmd_extra[@]}")
+        fi
+    fi
+
     # Every queue fixture owns a distinct temporary repository, state root, and
     # process group. Bounded width removes the serialized fixture floor while
     # retaining an operator override for repeated reliability measurements.

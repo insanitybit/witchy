@@ -405,7 +405,7 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
     fs::write(
         &tool,
         "#!/bin/sh\n\
-         if [ -n \"${FAKE_CARGO_ARGS_FILE:-}\" ]; then printf '%s\\n' \"$*\" >>\"$FAKE_CARGO_ARGS_FILE\"; fi\n\
+         if [ -n \"${FAKE_CARGO_ARGS_FILE:-}\" ]; then printf '%s target=%s\\n' \"$*\" \"${CARGO_TARGET_DIR:-}\" >>\"$FAKE_CARGO_ARGS_FILE\"; fi\n\
          if [ -n \"${FAKE_CARGO_ENV_FILE:-}\" ]; then printf '%s\\n' \"${CARGO_PROFILE_TEST_STRIP-unset}\" >>\"$FAKE_CARGO_ENV_FILE\"; fi\n\
          if [ -n \"${FAKE_CARGO_JOBS_FILE:-}\" ]; then printf '%s\\n' \"${CARGO_BUILD_JOBS-unset}\" >>\"$FAKE_CARGO_JOBS_FILE\"; fi\n\
          if [ -n \"${FAKE_FUZZ_ENV_FILE:-}\" ]; then printf '%s\\n' \"${WITCHY_FUZZ_PROGRAMS-unset}\" >>\"$FAKE_FUZZ_ENV_FILE\"; fi\n\
@@ -982,6 +982,12 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
                 && !line.contains("--features witchy-wir/native")
         }),
         "pure WIR gate re-enabled the native graph: {pure_wir_args}",
+    );
+    assert!(
+        pure_wir_args.lines().filter(|line| line.starts_with("nextest run")).all(|line| {
+            line.ends_with(&format!("target={}-pure", temp.path().join("target-pure-wir").display()))
+        }),
+        "pure WIR gate shared the native graph's target: {pure_wir_args}",
     );
 
     fs::write(&cargo_args_file, "").expect("clear fake cargo arguments");
