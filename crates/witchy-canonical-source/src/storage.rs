@@ -712,7 +712,17 @@ pub fn is_inline_scalar_record(definition: &TypeDef) -> bool {
 pub struct OpaqueOwnerEvidence<'a> {
     definitions: &'a BTreeMap<String, TypeDef>,
     opaque_callable_families: std::sync::Arc<HashSet<Type>>,
+    owner_classes: OwnerClassMemo,
 }
+
+/// `owner_class` answers, shared by every attachment of one evidence. The
+/// judgment is a pure function of the type, the definitions map and the
+/// callable families, and all three are fixed once the evidence is built:
+/// the map by the address binding, the families because the fixpoint in
+/// `from_checked_source` (which asks only `requires_owner`) has finished.
+/// Lowering asks it for the same few aggregate types on every constructor;
+/// unmemoized it was 7% of an async program's compile (2026-09-26).
+type OwnerClassMemo = std::sync::Arc<std::sync::Mutex<std::collections::HashMap<Type, Option<OpaqueOwnerClass>>>>;
 
 /// [`OpaqueOwnerEvidence`] without its definitions borrow. Only
 /// `OpaqueOwnerEvidence::detach` makes one, and `reattach` accepts it only
@@ -724,6 +734,7 @@ pub struct OpaqueOwnerEvidence<'a> {
 pub struct DetachedOpaqueOwnerEvidence {
     definitions: usize,
     opaque_callable_families: std::sync::Arc<HashSet<Type>>,
+    owner_classes: OwnerClassMemo,
 }
 
 /// Physical owner-bearing lane selected from checked storage, not from a
@@ -750,7 +761,11 @@ impl<'a> OpaqueOwnerEvidence<'a> {
             })
         }).collect::<Option<Vec<_>>>()?;
         if families.len() > 4_096 { return None; }
-        let mut evidence = Self { definitions, opaque_callable_families: Default::default() };
+        let mut evidence = Self {
+            definitions,
+            opaque_callable_families: Default::default(),
+            owner_classes: Default::default(),
+        };
         loop {
             let mut changed = false;
             for (family, captures) in &families {
@@ -770,6 +785,7 @@ impl<'a> OpaqueOwnerEvidence<'a> {
         DetachedOpaqueOwnerEvidence {
             definitions: std::ptr::from_ref(self.definitions) as usize,
             opaque_callable_families: std::sync::Arc::clone(&self.opaque_callable_families),
+            owner_classes: std::sync::Arc::clone(&self.owner_classes),
         }
     }
 
@@ -783,6 +799,7 @@ impl<'a> OpaqueOwnerEvidence<'a> {
         (detached.definitions == std::ptr::from_ref(definitions) as usize).then(|| Self {
             definitions,
             opaque_callable_families: std::sync::Arc::clone(&detached.opaque_callable_families),
+            owner_classes: std::sync::Arc::clone(&detached.owner_classes),
         })
     }
 
@@ -795,6 +812,15 @@ impl<'a> OpaqueOwnerEvidence<'a> {
     /// itself occupies an opaque owner lane. Keeping the two judgments apart
     /// prevents a linear outer collection from inheriting a child's GC ABI.
     pub fn owner_class(&self, ty: &Type) -> Option<OpaqueOwnerClass> {
+        if let Some(known) = self.owner_classes.lock().expect("owner-class memo").get(ty) {
+            return *known;
+        }
+        let class = self.owner_class_uncached(ty);
+        self.owner_classes.lock().expect("owner-class memo").insert(ty.clone(), class);
+        class
+    }
+
+    fn owner_class_uncached(&self, ty: &Type) -> Option<OpaqueOwnerClass> {
         if crate::capabilities::representation(ty, self.definitions).is_some() {
             return Some(OpaqueOwnerClass::Capability);
         }
