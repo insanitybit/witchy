@@ -525,26 +525,9 @@ impl<'a> MemoryChecker<'a> {
     }
 
     pub(super) fn attach_affine_plan(&mut self, object: ValueId, layout: crate::layout::LayoutId) {
-        use crate::layout::{LayoutKind, PointerSlot, RcHeader};
         let Some(proofs) = self.affine_abi else { return };
         if let Some(plan) = proofs.layouts.get(&layout) {
             self.state.affine_plans.insert(object, plan.clone());
-            return;
-        }
-        // A local list may have no source ABI lane of its own. Its child
-        // still has a source-bound plan, and an RC list with an owned pointer
-        // element composes that plan without granting any new leaf authority.
-        // The fresh list must subsequently establish exclusivity by checked
-        // MoveUnique stores before it can transfer an element or cross a call.
-        let Some(descriptor) = self.layouts.resolve_nominal(layout).ok()
-            .and_then(|physical| self.layouts.get(physical)) else { return };
-        let LayoutKind::PackedList { element, rc: RcHeader::Required } = descriptor.kind() else { return };
-        let Some(LayoutKind::RuntimePointerValueSlot { pointee, semantics: PointerSlot::Owned }) =
-            self.layouts.get(*element).map(|slot| slot.kind()) else { return };
-        if let Some(child) = proofs.layouts.get(pointee) {
-            self.state.affine_plans.insert(object, super::super::AffinePhysicalPlan::Sequence {
-                element: *pointee, child: Box::new(child.clone()),
-            });
         }
     }
 

@@ -1078,6 +1078,10 @@ tuple-view closure capture remains unsupported.
 An owned `List(T)` requires an authenticated clone and release operation for
 copyable `T`. Move-only `List(T)` values instead require a recursive checked
 storage and physical layout proof for unique element moves, calls, and returns.
+For a locally allocated move-only aggregate or list, SafeWIR derives that
+proof from a concrete checked expression type and exact correspondence with
+the allocated physical layout. A candidate layout by itself grants no move
+authority.
 This admits nested lists, tagged sums, untagged records, and tuples with
 recursively proved move-only fields through the unoptimized canonical route.
 A consuming `match move` must bind each affine field exactly once. The physical

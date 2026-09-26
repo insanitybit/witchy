@@ -195,7 +195,9 @@ pub(super) struct AffineAbiProofs {
 impl AffineAbiProofs {
     pub fn new() -> Self { Self::default() }
     pub fn get(&self, id: &FunctionSignatureId) -> Option<&AffineSignatureProof> { self.signatures.get(id) }
-    pub fn is_empty(&self) -> bool { self.signatures.is_empty() && self.owner_environments.is_empty() }
+    pub fn is_empty(&self) -> bool {
+        self.signatures.is_empty() && self.layouts.is_empty() && self.owner_environments.is_empty()
+    }
 }
 
 pub(super) fn check_initial_with_affine_abi(

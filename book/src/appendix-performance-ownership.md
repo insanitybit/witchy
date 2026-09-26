@@ -88,6 +88,9 @@ copy or reject the opt-mode program rather than reusing it.
 Move-only values can also live inside non-packed records and tuples when every
 field has a checked ownership and layout proof. `match move` transfers each
 affine field to one binding; a required field cannot be silently discarded.
+Locally allocated values receive that proof only when their layout matches a
+concrete type retained by the checker; a matching pointer shape alone is not
+enough.
 The unoptimized compiler checks that a record or tuple has all required fields
 before it crosses a call or return boundary.
 

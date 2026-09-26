@@ -141,6 +141,7 @@ pub struct CanonicalCheckedSource {
     // from `precompiled_declarations`, which never changes after construction.
     precompiled_exports: Vec<PrecompiledExport>,
     slice_carriers: Vec<witchy_canonical_source::carrier::CarrierElement>,
+    concrete_types: Vec<Type>,
 }
 
 impl CanonicalCheckedSource {
@@ -163,6 +164,7 @@ impl CanonicalCheckedSource {
             loans_checked: self.typed.loan_facts().is_ok(),
             precompiled_exports: &self.precompiled_exports,
             slice_carriers: &self.slice_carriers,
+            concrete_types: &self.concrete_types,
         })
     }
 
@@ -846,6 +848,10 @@ fn attach_canonical_source(
     }));
     slice_carriers.sort_by_key(|element| element.identity());
     slice_carriers.dedup();
+    let concrete_types = typed.table().concrete_types()
+        .filter_map(typeck::ty_to_ast)
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter().collect::<Vec<_>>();
     checked.canonical_source = Some(CanonicalCheckedSource {
         console_fixture: false,
         build_entry: None,
@@ -870,6 +876,7 @@ fn attach_canonical_source(
         type_definitions,
         precompiled_exports,
         slice_carriers,
+        concrete_types,
     });
     Ok(checked)
 }

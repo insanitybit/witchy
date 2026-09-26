@@ -89,7 +89,52 @@ pub(super) fn affine_abi_proofs<S: ModuleStage>(
         }
     }
     bind_owner_environments(candidate, source, &layouts, &mut proofs)?;
+    bind_local_allocations(candidate, source, &layouts, &mut proofs)?;
     Ok(proofs)
+}
+
+/// A local allocation has no ABI lane. Bind its recursive move plan only
+/// from a concrete checked expression type and exact physical correspondence.
+/// The memory checker carries that plan through extraction, calls, returns,
+/// and control-flow joins; a candidate layout alone never grants it.
+fn bind_local_allocations<S: ModuleStage>(
+    candidate: &CanonicalModule<S>,
+    source: &witchy_canonical_source::source::CanonicalSourceView<'_>,
+    layouts: &crate::layout::LayoutInterner,
+    proofs: &mut AffineAbiProofs,
+) -> Result<(), CandidateAbiBindingError> {
+    const MAX_LOCAL_PLAN_PAIRS: usize = 65_536;
+    let records = source.type_definitions();
+    let allocated_layouts = candidate.functions().iter()
+        .flat_map(|function| &function.blocks)
+        .flat_map(|block| &block.operations)
+        .filter_map(|operation| match operation {
+            crate::canonical_safewir::Operation::Alloc { layout, .. } => Some(*layout),
+            _ => None,
+        }).collect::<BTreeSet<_>>();
+    let affine_types = source.concrete_types().iter().filter_map(|ty|
+        affine_storage_shape(ty, records).map(|shape| (ty, shape))).collect::<Vec<_>>();
+    let Some(pairs) = affine_types.len().checked_mul(allocated_layouts.len()) else {
+        return Err(CandidateAbiBindingError::MissingCanonicalLayouts);
+    };
+    if pairs > MAX_LOCAL_PLAN_PAIRS {
+        return Err(CandidateAbiBindingError::MissingCanonicalLayouts);
+    }
+    for (source_type, shape) in affine_types {
+        for layout in allocated_layouts.iter().copied() {
+            if !layout_matches_source_with_closures(
+                layout, source_type, layouts, records, candidate.closure_layouts(),
+                candidate.signatures(), &mut CorrespondenceContext::with_owners(candidate),
+            ) { continue; }
+            // A failed recursive bind must not leave partial child authority.
+            let mut catalog = proofs.layouts.clone();
+            if bind_plan(source_type, layout, &shape, layouts, source, &mut catalog).is_none() {
+                return Err(CandidateAbiBindingError::MissingCanonicalLayouts);
+            }
+            proofs.layouts = catalog;
+        }
+    }
+    Ok(())
 }
 
 fn bind_owner_environments<S: ModuleStage>(

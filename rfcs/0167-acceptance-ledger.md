@@ -960,9 +960,10 @@ Row G recursive affine list transport (implemented but unverified,
 shape, and SafeWIR binds each leaf, nullable child, and list element to an
 owned physical layout. The same plan is used for ABI parameters, results,
 write-backs, local allocations, unique stores, and consuming loads. Local
-lists may compose a source-bound child plan through an RC owned-pointer
-element. Non-tagged aggregates with affine children refuse at source ABI
-binding until their consuming field transfer is implemented. Focused compiler
+allocations now require a concrete checked expression type and complete
+source-to-layout correspondence; the layout-only local-list child fallback
+was removed. Non-tagged aggregates with affine children require every
+mandatory owned slot present at a call boundary. Focused compiler
 checks and unoptimized command-line smokes for `List(Ticket)`, nested lists,
 and nested nullable tickets produced the expected values. Those smokes did
 not run the canonical zero-leak audit, so they do not close an A–O row.
@@ -975,8 +976,19 @@ does not establish an affine move, while the field plan requires one. The
 existing channel test now pins the fail-closed refusal rather than claiming
 admitted-Wasm row K evidence. The moved fixture is a diagnostic probe, not row
 K evidence. Adversarial review found no authority bypass in the local list
-composition. Opaque GC owners still need a consuming, source-bound field take
-before the shared graph move judgment can admit this combination.
+composition. Opaque GC consuming field transfer is tracked above.
+
+Row G local affine allocation binding (implemented but unverified,
+2026-09-26): the checked-source view now carries concrete expression types
+from the type table. SafeWIR binds a local recursive affine plan only for a
+layout actually allocated by the candidate and fully corresponding to one
+of those checked types. The existing memory dataflow carries that plan from
+allocation through consuming field extraction, calls, returns, and joins.
+The earlier `Envelope(Ticket, fn() -> Int)` Ref path now checks and runs
+through an `own Ticket` call, printing the hand-computed `9` in admitted
+Wasm. The bounded pair search fails closed, and an independent authority
+review found no concrete widening after restricting it to allocated layouts.
+This smoke lacks a zero-leak audit and does not close an A–O row.
 
 Row G storage-proof consumers (implemented but unverified, 2026-09-25):
 the checker now requires the shared rooted-slice projection and bounded

@@ -163,6 +163,8 @@ pub struct CanonicalSourceParts<'s> {
     pub precompiled_exports: &'s [PrecompiledExport],
     /// Recursive carriers derived from exact checked rooted-view formations.
     pub slice_carriers: &'s [CarrierElement],
+    /// Concrete expression types retained from this exact checked module.
+    pub concrete_types: &'s [Type],
 }
 
 /// A borrowed, read-only view of one checked canonical source.
@@ -183,6 +185,7 @@ pub struct CanonicalSourceView<'s> {
     loans_checked: bool,
     precompiled_exports: &'s [PrecompiledExport],
     slice_carriers: &'s [CarrierElement],
+    concrete_types: &'s [Type],
 }
 
 impl<'s> CanonicalSourceView<'s> {
@@ -206,6 +209,7 @@ impl<'s> CanonicalSourceView<'s> {
             loans_checked,
             precompiled_exports,
             slice_carriers,
+            concrete_types,
         } = parts;
         Self {
             module,
@@ -223,6 +227,7 @@ impl<'s> CanonicalSourceView<'s> {
             loans_checked,
             precompiled_exports,
             slice_carriers,
+            concrete_types,
         }
     }
 
@@ -240,6 +245,10 @@ impl<'s> CanonicalSourceView<'s> {
     }
 
     pub fn slice_carriers(&self) -> &'s [CarrierElement] { self.slice_carriers }
+
+    /// Checked source types that can authorize a local physical ownership
+    /// plan only after complete layout correspondence succeeds.
+    pub fn concrete_types(&self) -> &'s [Type] { self.concrete_types }
 
     /// Classify one type using this exact checked module's definitions and
     /// nominal ordinals. The caller must still establish that the type comes
