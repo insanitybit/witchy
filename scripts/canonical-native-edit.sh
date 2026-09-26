@@ -43,28 +43,29 @@ env -u WITCHY_ORACLE_EXAMPLE cargo nextest list \
 # A missing target must not become a partial green run. Nextest subsequently
 # parses both complete documents and validates the reused binary paths itself.
 [ -s "$cargo_metadata" ] && [ -s "$binaries_metadata" ]
-jq -e '.packages | type == "array" and length > 0' "$cargo_metadata" >/dev/null
-jq -e '."rust-binaries" | type == "object" and length > 0' "$binaries_metadata" >/dev/null
-require_binary() {
-    local package="$1" kind="$2" name="$3"
-    jq -e --slurpfile cargo "$cargo_metadata" --arg package "$package" \
-        --arg kind "$kind" --arg name "$name" '
-        [$cargo[0].packages[] | select(.name == $package) | .id] as $ids |
-        any(."rust-binaries"[];
+# Parse the two documents once, not once per required target. Keep package
+# identity, target kind/name and nonempty binary paths in the same judgment.
+jq -e --slurpfile cargo "$cargo_metadata" '
+    . as $inventory | $cargo[0] as $metadata |
+    ($metadata.packages | type == "array" and length > 0) and
+    ($inventory."rust-binaries" | type == "object" and length > 0) and
+    all([
+        ["witchy-wir", "test", "unit"],
+        ["witchy-wir", "test", "rfc0165_route_gate"],
+        ["witchy", "bin", "witchy"],
+        ["witchy", "test", "misc"],
+        ["witchy", "test", "cli_subcommands"],
+        ["witchy-lower", "test", "codegen"]
+    ][]; . as $target |
+        [$metadata.packages[] | select(.name == $target[0]) | .id] as $ids |
+        any($inventory."rust-binaries"[];
             . as $binary | ($ids | index($binary."package-id")) != null
-            and .kind == $kind and ($name == "" or ."binary-name" == $name)
-            and (."binary-path" | type == "string" and length > 0))
-    ' "$binaries_metadata" >/dev/null || {
-        echo "canonical native: missing binary $package/$kind/$name" >&2
-        exit 1
-    }
+            and .kind == $target[1] and ."binary-name" == $target[2]
+            and (."binary-path" | type == "string" and length > 0)))
+' "$binaries_metadata" >/dev/null || {
+    echo 'canonical native: invalid metadata or missing required binary' >&2
+    exit 1
 }
-require_binary witchy-wir test unit
-require_binary witchy-wir test rfc0165_route_gate
-require_binary witchy bin witchy
-require_binary witchy test misc
-require_binary witchy test cli_subcommands
-require_binary witchy-lower test codegen
 
 reuse=(--cargo-metadata "$cargo_metadata" --binaries-metadata "$binaries_metadata")
 # Keep the two default-filter intersections, and root's explicit override.

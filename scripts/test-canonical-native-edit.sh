@@ -45,6 +45,11 @@ elif a[:2] == ["nextest", "list"]:
         key = package + "::" + kind + "::" + name
         binaries[key] = {"binary-id": key, "binary-name": name, "kind": kind,
                          "package-id": package + "@1", "binary-path": str(root / "mock-binary")}
+        if name == "unit":
+            for failure, field, value in [("wrong-package", "package-id", "other@1"),
+                                           ("wrong-kind", "kind", "bin"),
+                                           ("empty-path", "binary-path", "")]:
+                if mode == failure: binaries[key][field] = value
     print(json.dumps({"rust-binaries": binaries}))
 elif a[:2] == ["nextest", "run"]:
     expr = a[a.index("-E") + 1]
@@ -160,7 +165,7 @@ git add .
 git commit -qm dirty-fixture-change
 sha="$(git rev-parse HEAD)"
 receipt="$tmp/state/receipts/$sha.json"
-for failure in metadata build empty malformed missing-unit missing-rfc0165_route_gate missing-codegen missing-witchy missing-misc missing-cli_subcommands wir lower root head-change; do
+for failure in metadata build empty malformed missing-unit missing-rfc0165_route_gate missing-codegen missing-witchy missing-misc missing-cli_subcommands wrong-package wrong-kind empty-path wir lower root head-change; do
     if MOCK_FAIL="$failure" run_agent; then
         echo "unexpected success for $failure" >&2
         exit 1
