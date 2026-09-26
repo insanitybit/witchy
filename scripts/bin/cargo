@@ -248,8 +248,10 @@ explicit_target_arg=0
 for arg in "$@"; do
     case "$arg" in --target-dir | --target-dir=*) explicit_target_arg=1 ;; esac
 done
+pure_graph_target=0
 if [ "$isolated_graph_selected" -eq 1 ] && [ "$explicit_target_arg" -eq 0 ] \
     && [ -z "${CARGO_BUILD_TARGET_DIR:-}" ]; then
+    pure_graph_target=1
     case "$effective_target" in
         *-pure) ;;
         *)
@@ -295,14 +297,21 @@ export MBX_SCHEDULER_PRIORITY="${MBX_SCHEDULER_PRIORITY:-low}"
 
 # worktree-warm clones the merge gate's Cargo-incremental native target.
 # Preserve that exact profile unless the caller chose a mode explicitly.
-# The unseeded pure sidecar instead uses mbx's learned/shareable mode, so the
-# first worktree that builds a pure unit makes it reusable by every other
-# worktree; edited crates still become incremental after their first miss.
+# The pure sidecar restores every crate into an empty target once, then uses
+# mbx's learned/shareable mode; edited crates become incremental after a miss.
 seeded_target=0
 [ ! -f "$effective_target/.witchy-mbx-incremental-seed" ] || seeded_target=1
 mbx_mode="${WITCHY_MBX_MODE:-}"
 if [ -z "$mbx_mode" ]; then
-    if [ "$seeded_target" = 1 ]; then
+    if [ "$pure_graph_target" = 1 ] \
+        && [ ! -d "$effective_target/debug/.fingerprint" ]; then
+        # Learned mode deliberately bypasses crates that agents edit often.
+        # On a brand-new pure target that means every Witchy compiler crate,
+        # even when an identical artifact is already shareable in MBX. Seed
+        # the sidecar in restore mode once; later invocations see the target
+        # and return to learned mode so active edits become incremental.
+        mbx_mode="restore"
+    elif [ "$seeded_target" = 1 ]; then
         mbx_mode="incremental"
     else
         mbx_mode="learned"

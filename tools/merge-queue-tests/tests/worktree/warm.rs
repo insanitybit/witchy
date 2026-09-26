@@ -671,6 +671,9 @@ fn cargo_shim_keeps_isolated_targets_off_the_workspace_native_feature_graph() {
             .env("PATH", &path)
             .env("WITCHY_GATE_SCOPE", "all")
             .env("MBX_STATS_REPORT", root.join("mbx-report.json"))
+            .env_remove("MBX_INCREMENTAL")
+            .env_remove("MBX_LEARNED_INCREMENTAL")
+            .env_remove("WITCHY_MBX_MODE")
             .env_remove("WITCHY_BUILD_CACHE")
             .env_remove("WITCHY_CARGO_SHIM_ACTIVE")
             .env_remove("WITCHY_FEATURE_UNIFICATION")
@@ -742,7 +745,7 @@ fn cargo_shim_keeps_isolated_and_native_artifacts_in_separate_targets() {
         "scripts/feature-unification.sh",
         include_str!("../../../../scripts/feature-unification.sh"),
     );
-    let print_target = "#!/bin/sh\nprintf '%s\n' \"${CARGO_TARGET_DIR-unset}\"\n";
+    let print_target = "#!/bin/sh\nprintf '%s learned=%s\n' \"${CARGO_TARGET_DIR-unset}\" \"${MBX_LEARNED_INCREMENTAL-unset}\"\n";
     write(root, "fake-bin/cargo", print_target);
     write(root, "state/mbx/bin/mbx", print_target);
     for executable in ["scripts/bin/cargo", "fake-bin/cargo", "state/mbx/bin/mbx"] {
@@ -765,7 +768,11 @@ fn cargo_shim_keeps_isolated_and_native_artifacts_in_separate_targets() {
             .env("PATH", &path)
             .env("CARGO_TARGET_DIR", "shared-target")
             .env("MBX_STATS_REPORT", root.join("mbx-report.json"))
+            .env_remove("MBX_INCREMENTAL")
+            .env_remove("MBX_LEARNED_INCREMENTAL")
+            .env_remove("WITCHY_MBX_MODE")
             .env_remove("WITCHY_BUILD_CACHE")
+            .env_remove("WITCHY_GATE_SCOPE")
             .env_remove("WITCHY_CARGO_SHIM_ACTIVE")
             .output()
             .expect("run cargo shim target fixture")
@@ -776,17 +783,38 @@ fn cargo_shim_keeps_isolated_and_native_artifacts_in_separate_targets() {
     let lower_target = String::from_utf8_lossy(&lower.stdout);
     assert!(
         Path::new(lower_target.trim()).is_absolute()
-            && lower_target.ends_with("/shared-target-pure\n"),
+            && lower_target.ends_with("/shared-target-pure learned=unset\n"),
         "isolated graph did not use the pure sidecar: {lower_target}"
+    );
+    std::fs::create_dir_all(root.join("shared-target-pure/debug/.fingerprint"))
+        .expect("mark pure target populated");
+    let warm_lower = run(&["build", "-p", "witchy-lower"]);
+    assert!(
+        warm_lower.status.success(),
+        "{}",
+        String::from_utf8_lossy(&warm_lower.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&warm_lower.stdout).ends_with(
+            "/shared-target-pure learned=1\n"
+        ),
+        "populated pure target did not return to learned mode: {}",
+        String::from_utf8_lossy(&warm_lower.stdout),
     );
 
     let native = run(&["build", "-p", "witchy"]);
     assert!(native.status.success(), "{}", String::from_utf8_lossy(&native.stderr));
-    assert_eq!(String::from_utf8_lossy(&native.stdout), "shared-target\n");
+    assert_eq!(
+        String::from_utf8_lossy(&native.stdout),
+        "shared-target learned=1\n"
+    );
 
     let explicit = run(&["build", "-p", "witchy-lower", "--target-dir", "chosen"]);
     assert!(explicit.status.success(), "{}", String::from_utf8_lossy(&explicit.stderr));
-    assert_eq!(String::from_utf8_lossy(&explicit.stdout), "shared-target\n");
+    assert_eq!(
+        String::from_utf8_lossy(&explicit.stdout),
+        "shared-target learned=1\n"
+    );
 }
 
 #[test]
