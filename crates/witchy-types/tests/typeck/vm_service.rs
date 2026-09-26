@@ -15,7 +15,6 @@ fn vm_service_local_callback_and_captures_are_source_errors() {
     for callback in ["fn(state, request): state.concat(request)", "local"] {
         let source = SOURCE.replace("    let states", "    let local = accumulate\n    let states")
             .replace(", accumulate)", &format!(", {callback})"));
-        assert!(witchy::resolve_std_only_checked(&source).is_err(), "{callback}");
+        assert!(super::source::checked(&source).is_err(), "{callback}");
     }
 }
-

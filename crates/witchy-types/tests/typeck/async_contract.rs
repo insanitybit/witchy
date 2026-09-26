@@ -1,7 +1,5 @@
 fn check(src: &str) -> Result<(), String> {
-    witchy::resolve_std_only_checked(src)
-        .map(|_| ())
-        .map_err(|error| error.to_string())
+    super::source::checked(src)
 }
 
 #[test]

@@ -2137,22 +2137,32 @@ mod access;
 mod async_view;
 #[path = "typeck/async_view_results.rs"]
 mod async_view_results;
+#[path = "typeck/async_contract.rs"]
+mod async_contract;
 #[path = "typeck/capabilities.rs"]
 mod capabilities;
 #[path = "typeck/checker.rs"]
 mod checker;
 #[path = "typeck/dict_view_diagnostic.rs"]
 mod dict_view_diagnostic;
+#[path = "typeck/dir_metadata.rs"]
+mod dir_metadata;
 #[path = "typeck/frozen_view_matrix.rs"]
 mod frozen_view_matrix;
 #[path = "typeck/loans.rs"]
 mod loans;
+#[path = "typeck/list_push_value.rs"]
+mod list_push_value;
+#[path = "typeck/nullable_capabilities.rs"]
+mod nullable_capabilities;
 #[path = "typeck/own.rs"]
 mod own;
 #[path = "typeck/own_view_consumption.rs"]
 mod own_view_consumption;
 #[path = "typeck/optimization_readiness.rs"]
 mod optimization_readiness;
+#[path = "typeck/opt_callable_provenance.rs"]
+mod opt_callable_provenance;
 #[path = "typeck/reference_erasure.rs"]
 mod reference_erasure;
 #[path = "typeck/reference_contract_matrix.rs"]
@@ -2171,3 +2181,9 @@ mod unit_results;
 mod unique_writeback_matrix;
 #[path = "typeck/views.rs"]
 mod views;
+#[path = "typeck/view_witnesses.rs"]
+mod view_witnesses;
+#[path = "typeck/vm_service.rs"]
+mod vm_service;
+#[path = "typeck/vm_worker_isolation.rs"]
+mod vm_worker_isolation;

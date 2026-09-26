@@ -1,8 +1,4 @@
-//! Focused RFC-0167 rooted-view witnesses at the canonical execution boundary.
-//!
-//! These fixtures use an independent scalar expectation, the canonical SafeWIR
-//! interpreter, and admitted unoptimized Wasm. They deliberately do not invoke
-//! the source interpreter or optional optimizers.
+//! Focused RFC-0167 rooted-view rejection at the checked-source boundary.
 
 #[test]
 fn opt_import_of_arbitrary_normal_module_rejects_at_transitive_mode_boundary() {
@@ -21,13 +17,9 @@ fn main() -> Int:
     value = 9
     (*observed) * 10 + value
 "#;
-    let error = witchy_types::pipeline::link_checked_from_source_bundle(
-        vec![
-            ("normal".to_owned(), normal.as_bytes().to_vec()),
-            ("app".to_owned(), opt_entry.as_bytes().to_vec()),
-        ],
+    let error = super::source::checked_bundle(
+        vec![("normal", normal), ("app", opt_entry)],
         "app",
-        witchy_interp::comptime::expand_compile_time,
     )
     .expect_err("opt caller must reject an arbitrary normal dependency");
     let message = error.to_string();

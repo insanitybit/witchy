@@ -16,12 +16,15 @@ fn main(console: Console):
     console.print(b.items.join("|"))
 "#;
     for source in [source.to_owned(), format!("mode opt\n{source}")] {
-        let error = witchy::resolve_std_only_checked(&source)
-            .err()
-            .expect("later argument must not replace the reserved receiver root");
-        let message = error.to_string();
-        assert!(message.contains("reserves `var` place rooted in `b`"), "{message}");
-        assert!(message.contains("later argument 2 writes back to an overlapping place"), "{message}");
+        let message = super::source::checked(&source)
+            .expect_err("later argument must not replace the reserved receiver root");
+        assert!(
+            message.contains("reserves `var` place rooted in `b`"),
+            "{message}"
+        );
+        assert!(
+            message.contains("later argument 2 writes back to an overlapping place"),
+            "{message}"
+        );
     }
 }
-

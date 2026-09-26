@@ -20,6 +20,3 @@ fn main(net: Net):
     };
     assert!(format!("{error:#}").contains("raw Wasm cannot claim canonical admission"));
 }
-
-#[path = "rfc0165_vm_service.rs"]
-mod vm_service;

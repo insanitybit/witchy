@@ -53,8 +53,6 @@ mod semantic_conformance;
 mod sealed_task_handles;
 #[path = "misc/url_components.rs"]
 mod url_components;
-#[path = "misc/async_contract.rs"]
-mod async_contract;
 #[path = "misc/rfc0129_async_lowering.rs"]
 mod rfc0129_async_lowering;
 #[path = "misc/rfc0130_surface.rs"]
@@ -85,8 +83,6 @@ mod rfc0152_semantic_matrix;
 mod rfc0152_async_region_formation;
 #[path = "misc/typed_errors.rs"]
 mod typed_errors;
-#[path = "misc/vm_worker_isolation.rs"]
-mod vm_worker_isolation;
 #[path = "misc/wasm_abi_catalog.rs"]
 mod wasm_abi_catalog;
 #[path = "misc/rfc0102_console.rs"]
@@ -95,12 +91,8 @@ mod rfc0102_console;
 mod rfc0103_build_step_confinement;
 #[path = "misc/rfc0165_admitted_launch.rs"]
 mod rfc0165_admitted_launch;
-#[path = "misc/rfc0165_list_push_value.rs"]
-mod rfc0165_list_push_value;
 #[path = "misc/rfc0167_try_context_and_leading_minus.rs"]
 mod rfc0167_try_context_and_leading_minus;
-#[path = "misc/rfc0167_opt_callable_provenance.rs"]
-mod rfc0167_opt_callable_provenance;
 #[path = "misc/rfc0167_precompiled_run_source.rs"]
 mod rfc0167_precompiled_run_source;
 #[path = "misc/rfc0167_views_through_views.rs"]
@@ -125,8 +117,6 @@ mod rfc0167_var_view_parameters;
 mod rfc0167_view_locals_across_await;
 #[path = "misc/rfc0167_await_in_nested_expressions.rs"]
 mod rfc0167_await_in_nested_expressions;
-#[path = "misc/rfc0167_view_witnesses.rs"]
-mod rfc0167_view_witnesses;
 #[path = "misc/rfc0167_owned_materialization.rs"]
 mod rfc0167_owned_materialization;
 #[path = "misc/rfc0167_tuple_root_view.rs"]

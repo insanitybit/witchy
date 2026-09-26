@@ -1,9 +1,7 @@
 //! Worker callback isolation and explicit sequential-fallback proofs.
 
 fn check(source: &str) -> Result<(), String> {
-    witchy::resolve_std_only_checked(source)
-        .map(|_| ())
-        .map_err(|error| error.to_string())
+    super::source::checked(source)
 }
 
 #[test]
@@ -82,4 +80,3 @@ fn main(console: Console):
         );
     }
 }
-
