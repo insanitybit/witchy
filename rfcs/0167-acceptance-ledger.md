@@ -62,6 +62,18 @@ is needed for soundness.
 
 ## Exact-tip evidence checkpoint
 
+Inferred qualified closure captures (implemented but unverified, 2026-09-26):
+the closure witness now carries a source-authenticated qualified view from a
+checked direct immutable root through immutable aliases and proved tuple
+pattern projections. Capture typing compares the exact source
+type with the checker-erased type before canonical ABI encoding. Mutable
+aliases, unproved casts, explicit view annotations without matching initializer
+proof, constructor patterns with qualified fields, and other view-producing
+expressions without source proof refuse capture. The lowerer and SafeWIR
+consume this exact witness; no new A–O row
+closes until hand-computed admitted unoptimized Wasm and zero-leak evidence
+passes. Focused compile/admission checks cover the direct and tuple paths.
+
 Untagged affine aggregate storage (implemented but unverified, 2026-09-26):
 the shared recursive storage judgment now selects nullable owned fields for
 records and tuples with affine children. Checked consuming matches transfer

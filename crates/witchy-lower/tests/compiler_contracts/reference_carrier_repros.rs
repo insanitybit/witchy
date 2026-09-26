@@ -127,4 +127,84 @@ fn main() -> Int:
     let _ = compile_checked_module_artifact(&qualified)
         .expect_lowered("qualified scalar-place callable");
 
+    let captured = try_checked(
+        r#"mode opt
+
+fn main() -> Int:
+    let n: frozen Int = 11
+    let view = &n
+    let alias = view
+    let read = fn() -> Int: *alias
+    read()
+"#,
+    )
+    .expect("inferred immutable capture retains its checked qualified view type");
+    let _ = compile_checked_module_artifact(&captured)
+        .expect_lowered("inferred qualified scalar-place capture");
+
+    let patterned = try_checked(
+        r#"mode opt
+
+fn main() -> Int:
+    let n: frozen Int = 11
+    let view = &n
+    let (alias,) = (view,)
+    let read = fn() -> Int: *alias
+    read()
+"#,
+    )
+    .expect("tuple pattern preserves the inferred qualified view source");
+    let _ = compile_checked_module_artifact(&patterned)
+        .expect_lowered("tuple-pattern qualified scalar-place capture");
+
+    let ordinary_call = try_checked(
+        r#"mode opt
+
+fn make(own value: Int) -> &Int:
+    &value
+
+fn main() -> Int:
+    let view = make(11)
+    let read = fn() -> Int: *view
+    read()
+"#,
+    )
+    .expect("ordinary call result view passes source checking");
+    let _ = compile_checked_module_artifact(&ordinary_call)
+        .expect_lowered("ordinary call result view capture");
+
+    let unproved_field = try_checked(
+        r#"mode opt
+
+type Box:
+    Box(&frozen Int)
+
+fn main() -> Int:
+    var n = 11
+    let box = Box(&n)
+    let Box(alias) = box
+    let read = fn() -> Int: *alias
+    read()
+"#,
+    )
+    .expect("constructor field qualifier is erased by source checking");
+    let unproved_field = compile_checked_module_artifact(&unproved_field)
+        .expect_unsupported("constructor pattern cannot mint a qualified capture");
+    assert!(unproved_field.to_string().contains("stable checked storage qualifier"), "{unproved_field}");
+
+    let unstable = try_checked(
+        r#"mode opt
+
+fn main() -> Int:
+    let n: frozen Int = 11
+    var view = &n
+    let read = fn() -> Int: *view
+    read()
+"#,
+    )
+    .expect("mutable view declaration passes the source checker");
+    let unstable = compile_checked_module_artifact(&unstable)
+        .expect_unsupported("mutable inferred view qualifier has no stable capture proof");
+    assert!(unstable.to_string().contains("stable checked storage qualifier"), "{unstable}");
+
 }

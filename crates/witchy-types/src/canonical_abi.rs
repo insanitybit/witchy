@@ -213,20 +213,26 @@ fn qualified_rooted_view(ty: &Type) -> bool {
     visit(ty, false)
 }
 
-fn has_storage_qualifier(ty: &Type) -> bool {
-    match ty {
-        Type::Qualified(ast::TypeQual::Frozen | ast::TypeQual::Unique, _) => true,
-        Type::Qualified(_, inner) | Type::Slice(inner) => has_storage_qualifier(inner),
-        Type::Named(_, arguments) | Type::Tuple(arguments) | Type::Dyn(_, arguments) =>
-            arguments.iter().any(has_storage_qualifier),
-        Type::Fn(parameters, result, _, _) =>
-            parameters.iter().any(has_storage_qualifier) || has_storage_qualifier(result),
-        Type::RecordCompose { base, fields } =>
-            has_storage_qualifier(base) || fields.iter().any(|(_, field)| has_storage_qualifier(field)),
+pub(crate) fn has_storage_qualifier(ty: &Type) -> bool {
+    fn walk(ty: &Type, depth: usize, remaining: &mut usize) -> bool {
+        if depth >= 128 || *remaining == 0 { return true; }
+        *remaining -= 1;
+        let child = |ty: &Type, remaining: &mut usize| walk(ty, depth + 1, remaining);
+        match ty {
+            Type::Qualified(ast::TypeQual::Frozen | ast::TypeQual::Unique, _) => true,
+            Type::Qualified(_, inner) | Type::Slice(inner) => child(inner, remaining),
+            Type::Named(_, arguments) | Type::Tuple(arguments) | Type::Dyn(_, arguments) =>
+                arguments.iter().any(|argument| child(argument, remaining)),
+            Type::Fn(parameters, result, _, _) =>
+                parameters.iter().any(|parameter| child(parameter, remaining)) || child(result, remaining),
+            Type::RecordCompose { base, fields } =>
+                child(base, remaining) || fields.iter().any(|(_, field)| child(field, remaining)),
+        }
     }
+    walk(ty, 0, &mut 4_096)
 }
 
-fn erase_storage_qualifiers(ty: &Type, depth: usize, budget: &mut usize) -> Option<Type> {
+pub(crate) fn erase_storage_qualifiers(ty: &Type, depth: usize, budget: &mut usize) -> Option<Type> {
     if depth > 128 || *budget == 0 { return None; }
     *budget -= 1;
     let child = |inner: &Type, budget: &mut usize| erase_storage_qualifiers(inner, depth + 1, budget);

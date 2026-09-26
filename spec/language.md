@@ -1249,6 +1249,16 @@ The retained tuple root owns its managed children. The original
 field combinations remain implemented but unverified. Qualifiers inside a
 field and closure capture of tuple views remain unsupported.
 
+Closure witnesses preserve a qualified scalar-place view captured from a
+checked direct immutable root, through immutable aliases and proved tuple
+pattern projections. The source qualifier and erased checked type
+must agree. Mutable aliases, explicit view annotations without a matching
+initializer proof, casts without qualifier-preservation evidence, and
+view-producing expressions without a source proof refuse capture. Constructor
+patterns with qualified fields also refuse until construction carries a
+per-value qualifier proof. This
+structural path remains unverified for RFC-0167 acceptance evidence.
+
 Non-packed whole-root `Option`, `Result`, and declared aggregate views derive
 their identity from recursively proved carrier leaves and their checked
 declaration shape. A leaf may use scalar, byte-buffer, list, tuple, or

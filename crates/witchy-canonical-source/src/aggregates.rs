@@ -998,7 +998,7 @@ pub fn shape_from_definition(definition: &TypeDef, definitions: &BTreeMap<String
 /// Instantiate declared fields even when their storage shape is refused.
 /// Refusal diagnostics need to find authority in a rejected field without
 /// treating the rejected declaration as a valid aggregate layout.
-pub(crate) fn instantiated_declared_fields(
+pub fn instantiated_declared_fields(
     ty: &Type,
     definitions: &BTreeMap<String, TypeDef>,
 ) -> Option<Result<Vec<Type>, ()>> {

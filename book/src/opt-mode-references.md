@@ -169,10 +169,13 @@ these inner lists use the same recursive carrier.
 
 For a callable whose signature explicitly names a qualified scalar-place
 view, the compiler keeps the qualifier in its checked callable identity and
-transports the authenticated view token through an indirect call. The checker
-does not yet retain payload qualifiers for inferred closure captures, so this
-transport uses explicit source annotations. Qualifiers around an aggregate
-containing a view remain outside this callable carrier.
+transports the authenticated view token through an indirect call. An inferred
+closure capture also keeps the qualifier when it comes from a checked direct
+view of an immutable qualified root, an immutable alias, or a proved tuple
+pattern projection. Mutable aliases, constructor patterns with qualified
+fields, unproved casts, and other view-producing expressions without a source
+proof refuse capture. Qualifiers around an
+aggregate containing a view remain outside this callable carrier.
 
 An eligible non-packed record, sum, `Option`, or `Result` may contain a
 recursive `List(T)` child when its checked carrier proves every owned edge.
