@@ -985,6 +985,20 @@ pub fn affine_storage_shape(
 }
 
 impl StoragePlan {
+    /// A checked sequence whose physical representation is a packed list.
+    /// The element's retain, clone, move, and release judgment is already
+    /// encoded by the selected plan; layout consumers must still validate the
+    /// actual element slot and reference-counted header.
+    pub fn has_packed_sequence_layout(&self) -> bool {
+        matches!(self,
+            Self::Owned(CarrierElement::List(_))
+                | Self::RetainedOwnerList(_)
+                | Self::RetainedGraphList(_)
+                | Self::RetainedCallableList(_)
+                | Self::RetainedOpaqueAggregateList(_)
+                | Self::MoveOnlyList(_))
+    }
+
     /// An independent owned copy can be made from this checked storage.
     /// A view-bearing aggregate requires its recursive graph clone proof;
     /// a bare view has no generic owned-copy permission.

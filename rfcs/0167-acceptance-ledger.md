@@ -1191,6 +1191,17 @@ recursive-layout correspondence cases, and adversarial authority review
 passed. Independent admitted-Wasm results and zero-leak evidence are still
 needed before row G can close.
 
+Row G closed layout resolver (implemented but unverified, 2026-09-26):
+the lowerer's closed type resolver now obtains inline scalar and packed
+sequence representation from `StoragePlan`, and uses the same bounded aggregate
+shape and storage proof to collect nominal instantiations. Bare declarations,
+generic record/sum instantiations, and nested type arguments use one collection
+path; the prior `Option`/`Result` collector and name-based `List` layout grant
+are removed. Physical layouts remain validated by the interner and SafeWIR.
+An existing admitted-Wasm scalar-sum smoke passed, and a direct generic
+`Box(Int)`/`Choice(Int)` program printed the hand-computed `12`. That direct
+smoke did not audit leaks; no additional A–O row closes.
+
 Row G rooted-owner structural family check (implemented but unverified,
 2026-09-25): the scalar-place and retained-slice owner IDs derive from the
 shared bounded rooted-view storage plan. SafeWIR recomputes the ID from the

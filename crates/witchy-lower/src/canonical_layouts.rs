@@ -11,11 +11,11 @@ use sha2::{Digest, Sha256};
 use witchy_canonical_source::aggregates::{
     aggregate_key, canonical_owner_aggregate_identity, concrete_aggregate_identity,
     is_scalar_type,
-    scalar_aggregate_shape, shape_from_definition,
+    scalar_aggregate_shape,
 };
 use witchy_canonical_source::abi::CanonicalScalarKind;
 use witchy_canonical_source::carrier::CarrierElement;
-use witchy_canonical_source::storage::{OpaqueOwnerClass, OpaqueOwnerEvidence, StoragePlan, StorageRefusal, affine_storage_shape, aggregate_uses_nullable_owned_fields, is_inline_scalar_record};
+use witchy_canonical_source::storage::{OpaqueOwnerClass, OpaqueOwnerEvidence, StoragePlan, affine_storage_shape, aggregate_uses_nullable_owned_fields, is_inline_scalar_record};
 use witchy_canonical_source::rooted_view::RootedViewStorage;
 use witchy_canonical_source::structural_identity::{AggregateOwnerKey, ClosureOwnerKey, SourceTypeKey};
 use witchy_syntax::ast::{self, Item, Type, TypeDef};
@@ -583,22 +583,12 @@ impl LayoutProjection {
                 }
                 _ => Err(CanonicalLayoutError::UnsupportedType(name.clone())),
             },
-            Type::Named(name, arguments) if name == "List" => {
-                let storage = StoragePlan::classify(ty, &self.definitions, |_| Some(0));
-                let admitted = matches!(
-                    storage,
-                    StoragePlan::RetainedOwnerList(_) | StoragePlan::RetainedOpaqueAggregateList(_)
-                        | StoragePlan::MoveOnlyList(_),
-                ) || arguments.len() == 1 && StoragePlan::classify(
-                    &arguments[0], &self.definitions, |_| Some(0),
-                ).list_element_disposition(&arguments[0]).is_some();
-                if !admitted {
-                    if matches!(storage, StoragePlan::Refused(StorageRefusal::UnprovedAuthority)) {
-                        return Err(CanonicalLayoutError::UnsupportedType(format!("capability-bearing {ty:?}")));
-                    }
+            Type::Named(_, arguments) if StoragePlan::classify(ty, &self.definitions, |_| Some(0))
+                .has_packed_sequence_layout() => {
+                let [element] = arguments.as_slice() else {
                     return Err(CanonicalLayoutError::UnsupportedType(format!("{ty:?}")));
-                }
-                self.visit_type(&arguments[0])?;
+                };
+                self.visit_type(element)?;
                 self.roots.push(ty.clone());
                 Ok(())
             }
@@ -1416,33 +1406,31 @@ struct V1Resolver<'a> {
 impl<'a> V1Resolver<'a> {
     fn new(definitions: &'a BTreeMap<String, TypeDef>, ty: &Type) -> Self {
         let mut packed_views = BTreeMap::new();
-        for (name, definition) in definitions {
-            if definition.packed {
-                continue;
-            }
-            if let Some(shape) = shape_from_definition(definition, definitions) {
-                let mut view = shape.packed_view();
-                view.name = name.clone();
-                packed_views.insert(name.clone(), view);
-            }
+        for name in definitions.keys() {
+            collect_instantiated_aggregate_views(
+                &Type::Named(name.clone(), Vec::new()), definitions, &mut packed_views,
+            );
         }
-        collect_builtin_views(ty, definitions, &mut packed_views);
+        collect_instantiated_aggregate_views(ty, definitions, &mut packed_views);
         Self { definitions, packed_views }
     }
 }
 
-/// Views for every scalar `Option`/`Result` instantiation inside `ty`.
-fn collect_builtin_views(ty: &Type, definitions: &BTreeMap<String, TypeDef>, views: &mut BTreeMap<String, TypeDef>) {
+/// Views for every source-proven aggregate instantiation inside `ty`.
+fn collect_instantiated_aggregate_views(ty: &Type, definitions: &BTreeMap<String, TypeDef>, views: &mut BTreeMap<String, TypeDef>) {
     match ty {
-        Type::Qualified(_, inner) => collect_builtin_views(inner, definitions, views),
-        Type::Named(name, arguments) => {
-            if matches!(name.as_str(), "Option" | "Result")
-                && let Some(key) = aggregate_key(ty)
+        Type::Qualified(_, inner) => collect_instantiated_aggregate_views(inner, definitions, views),
+        Type::Named(_, arguments) => {
+            if let Some(key) = aggregate_key(ty)
                 && let Some(shape) = scalar_aggregate_shape(ty, definitions)
+                && !shape.packed
+                && matches!(StoragePlan::classify(ty, definitions, |_| Some(0)),
+                    StoragePlan::Owned(CarrierElement::Record { .. } | CarrierElement::Sum { .. })
+                        | StoragePlan::AuthenticatedPlace(_)
+                        | StoragePlan::AggregateView(_, _))
             {
-                // The interner resolves the instantiation by its key as a
-                // nominal without arguments (`Option(Int)`), so the view
-                // carries that name.
+                // The interner resolves an instantiation by its structural
+                // aggregate key, so the view carries that exact identity.
                 views.entry(key.clone()).or_insert_with(|| {
                     let mut view = shape.packed_view();
                     view.name = key;
@@ -1450,12 +1438,30 @@ fn collect_builtin_views(ty: &Type, definitions: &BTreeMap<String, TypeDef>, vie
                 });
             }
             for argument in arguments {
-                collect_builtin_views(argument, definitions, views);
+                collect_instantiated_aggregate_views(argument, definitions, views);
             }
         }
         Type::Tuple(fields) => {
             for field in fields {
-                collect_builtin_views(field, definitions, views);
+                collect_instantiated_aggregate_views(field, definitions, views);
+            }
+        }
+        Type::Slice(inner) => collect_instantiated_aggregate_views(inner, definitions, views),
+        Type::Fn(parameters, result, _, _) => {
+            for parameter in parameters {
+                collect_instantiated_aggregate_views(parameter, definitions, views);
+            }
+            collect_instantiated_aggregate_views(result, definitions, views);
+        }
+        Type::Dyn(_, arguments) => {
+            for argument in arguments {
+                collect_instantiated_aggregate_views(argument, definitions, views);
+            }
+        }
+        Type::RecordCompose { base, fields } => {
+            collect_instantiated_aggregate_views(base, definitions, views);
+            for (_, field) in fields {
+                collect_instantiated_aggregate_views(field, definitions, views);
             }
         }
         _ => {}
@@ -1468,24 +1474,19 @@ impl ClosedTypeResolver for V1Resolver<'_> {
         name: &str,
         _arguments: &[Type],
     ) -> Option<ResolvedNamed<'a>> {
-        match name {
-            "Int" => Some(ResolvedNamed::Scalar(ScalarKind::Int)),
-            "Float" => Some(ResolvedNamed::Scalar(ScalarKind::Float)),
-            "Duration" => Some(ResolvedNamed::Scalar(ScalarKind::Duration)),
-            "Bool" => Some(ResolvedNamed::Scalar(ScalarKind::Bool)),
-            "Nil" | "Unit" => Some(ResolvedNamed::Scalar(ScalarKind::Unit)),
-            "List" => Some(ResolvedNamed::PackedList { rc: RcHeader::Required }),
-            name => {
-                // A keyed instantiation (`Option(Int)`) arrives as its own
-                // name; a user type arrives bare.
-                let key = aggregate_key(&Type::Named(name.to_owned(), _arguments.to_vec()));
-                self.packed_views
-                    .get(name)
-                    .or_else(|| key.as_deref().and_then(|key| self.packed_views.get(key)))
-                    .or_else(|| self.definitions.get(name).filter(|definition| is_inline_scalar_record(definition)))
-                    .map(ResolvedNamed::PackedRecord)
-            }
+        let source = Type::Named(name.to_owned(), _arguments.to_vec());
+        if let Some(kind) = scalar_kind_of(&source) {
+            return Some(ResolvedNamed::Scalar(kind));
         }
+        if StoragePlan::classify(&source, self.definitions, |_| Some(0)).has_packed_sequence_layout() {
+            return Some(ResolvedNamed::PackedList { rc: RcHeader::Required });
+        }
+        let key = aggregate_key(&source);
+        self.packed_views
+            .get(name)
+            .or_else(|| key.as_deref().and_then(|key| self.packed_views.get(key)))
+            .or_else(|| self.definitions.get(name).filter(|definition| is_inline_scalar_record(definition)))
+            .map(ResolvedNamed::PackedRecord)
     }
 }
 
