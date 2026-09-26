@@ -15,7 +15,7 @@ use witchy_canonical_source::aggregates::{
 };
 use witchy_canonical_source::abi::CanonicalScalarKind;
 use witchy_canonical_source::carrier::CarrierElement;
-use witchy_canonical_source::storage::{StoragePlan, StorageRefusal, is_inline_scalar_record};
+use witchy_canonical_source::storage::{OpaqueOwnerClass, OpaqueOwnerEvidence, StoragePlan, StorageRefusal, is_inline_scalar_record};
 use witchy_canonical_source::rooted_view::RootedViewStorage;
 use witchy_canonical_source::structural_identity::{AggregateOwnerKey, ClosureOwnerKey, SourceTypeKey};
 use witchy_syntax::ast::{self, Item, Type, TypeDef};
@@ -317,19 +317,7 @@ fn project_layouts(
 ) -> Result<LayoutProjection, CanonicalLayoutError> {
     let typed = source.typed_module();
     let scope = witchy_canonical_source::scope::canonical_scope(typed.module());
-    // The checker spells an entry-module type as `entry.Name` while the
-    // definition keeps its bare source name; key both spellings.
-    let entry_module = typed.module().linked_entry.as_deref();
-    let definitions = typed.module().items.iter().filter_map(|item| match item {
-        Item::Type(definition) => Some(definition),
-        _ => None,
-    }).flat_map(|definition| {
-        let qualified = entry_module
-            .filter(|_| !definition.name.contains('.'))
-            .map(|entry| (format!("{entry}.{}", definition.name), definition.clone()));
-        std::iter::once((definition.name.clone(), definition.clone())).chain(qualified)
-    }).collect::<BTreeMap<_, _>>();
-    let definitions = std::rc::Rc::new(definitions);
+    let definitions = std::rc::Rc::new(source.type_definitions().clone());
     let capture_variants = closure_capture_variants(source, &definitions)?;
     let mut projection = LayoutProjection {
         roots: Vec::new(),
@@ -337,6 +325,7 @@ fn project_layouts(
         definitions,
         closures: HashMap::new(),
         capture_variants,
+        closure_witnesses: source.closure_witness().clone(),
         visiting: HashSet::new(),
         visited: HashSet::new(),
     };
@@ -413,6 +402,7 @@ struct LayoutProjection {
     /// its exact source-witness environment variants.
     closures: HashMap<Type, Vec<(u32, Vec<Type>)>>,
     capture_variants: HashMap<Type, Vec<(u32, Vec<Type>)>>,
+    closure_witnesses: witchy_canonical_source::closure::ClosureWitnessManifest,
     visiting: HashSet<Type>,
     visited: HashSet<Type>,
 }
@@ -675,7 +665,11 @@ impl LayoutProjection {
         // families whose checked captures require opaque storage change ABI.
         // These ids identify candidate types; the independent checker binds
         // the complete family schema back to checked source before admission.
-        let mut opaque_signatures = HashSet::new();
+        let opaque_evidence = OpaqueOwnerEvidence::from_checked_source(
+            &self.definitions, &self.closure_witnesses,
+        ).ok_or_else(|| CanonicalLayoutError::InvalidLayout(
+            "checked closure owner evidence exceeds bounds".into(),
+        ))?;
         let aggregate_specs = self.visited.iter().filter_map(|ty| {
             let source = canonical_layout_type(ty, &self.definitions);
             // Direct and optional host tokens already have a checked externref
@@ -703,54 +697,19 @@ impl LayoutProjection {
         let aggregate_specs = keyed_aggregate_specs.into_iter().map(|(_, source, shape)| {
             (source, shape)
         }).collect::<Vec<_>>();
-        let mut opaque_aggregates = HashSet::new();
-        loop {
-            let mut changed = false;
-            for (signature, variants) in &closure_specs {
-                let requires_owner = variants.iter().flat_map(|(_, fields)| fields).any(|field| {
-                    type_requires_opaque_owner(
-                        field,
-                        &self.definitions,
-                        &opaque_signatures,
-                        &opaque_aggregates,
-                        &mut HashSet::new(),
-                    )
-                });
-                if requires_owner && opaque_signatures.insert(signature.clone()) {
-                    changed = true;
-                }
-            }
-            for (source, shape) in &aggregate_specs {
-                let requires_owner = shape.fields.iter().skip(usize::from(shape.tagged)).any(|field| {
-                    type_requires_opaque_owner(
-                        field,
-                        &self.definitions,
-                        &opaque_signatures,
-                        &opaque_aggregates,
-                        &mut HashSet::new(),
-                    )
-                });
-                if requires_owner && opaque_aggregates.insert(source.clone()) {
-                    changed = true;
-                }
-            }
-            if !changed {
-                break;
-            }
-        }
+        let opaque_signatures = closure_specs.iter()
+            .filter(|(signature, _)| opaque_evidence.owner_class(signature) == Some(OpaqueOwnerClass::Callable))
+            .map(|(signature, _)| signature.clone()).collect::<HashSet<_>>();
+        let opaque_aggregates = aggregate_specs.iter()
+            .filter(|(source, _)| opaque_evidence.owner_class(source) == Some(OpaqueOwnerClass::Aggregate))
+            .map(|(source, _)| source.clone()).collect::<HashSet<_>>();
         let mut owner_types = HashMap::new();
         let mut closure_family_keys = HashMap::new();
         let mut allocated_closure_ids = HashSet::new();
         for (signature, variants) in &closure_specs {
             let owner_fields = variants.iter().map(|(_, fields)| {
-                fields.iter().map(|field| {
-                    witchy_canonical_source::capabilities::representation(field, &self.definitions).is_some()
-                        || type_has_opaque_owner_membership(
-                            field, &self.definitions,
-                            |key| opaque_signatures.contains(key),
-                            |key| opaque_aggregates.contains(key),
-                        )
-                }).collect::<Vec<_>>()
+                fields.iter().map(|field| opaque_evidence.owner_class(field).is_some())
+                    .collect::<Vec<_>>()
             }).collect::<Vec<_>>();
             let digest = ClosureOwnerKey { signature, variants, owner_fields: &owner_fields }.digest()
                 .ok_or_else(|| CanonicalLayoutError::InvalidLayout("closure identity exceeds bounds".into()))?;
@@ -771,14 +730,8 @@ impl LayoutProjection {
         let mut aggregate_family_keys = HashMap::new();
         let mut allocated_aggregate_ids = HashSet::new();
         for (source, shape) in &opaque_aggregate_specs {
-            let owner_fields = shape.fields.iter().map(|field| {
-                witchy_canonical_source::capabilities::representation(field, &self.definitions).is_some()
-                    || type_has_opaque_owner_membership(
-                        field, &self.definitions,
-                        |signature| opaque_signatures.contains(signature),
-                        |aggregate| opaque_aggregates.contains(aggregate),
-                    )
-            }).collect::<Vec<_>>();
+            let owner_fields = shape.fields.iter().map(|field| opaque_evidence.owner_class(field).is_some())
+                .collect::<Vec<_>>();
             let digest = AggregateOwnerKey { source, shape, owner_fields: &owner_fields }.digest()
                 .ok_or_else(|| CanonicalLayoutError::InvalidLayout("opaque aggregate identity exceeds bounds".into()))?;
             aggregate_family_keys.insert(source.clone(), digest);
@@ -843,16 +796,8 @@ impl LayoutProjection {
         }
         for ty in &self.roots {
             let identity = canonical_layout_type(ty, &self.definitions);
-            let opaque_aggregate = aggregate_owner_types.contains_key(&identity);
-            let opaque_list_element = match identity.unqualified() {
-                Type::Named(name, arguments) if name == "List" && arguments.len() == 1 => {
-                    type_has_opaque_owner(
-                        &arguments[0], &self.definitions, &owner_types, &aggregate_owner_types,
-                    )
-                }
-                _ => false,
-            };
-            if opaque_aggregate || opaque_list_element {
+            if matches!(opaque_evidence.owner_class(&identity),
+                Some(OpaqueOwnerClass::Aggregate | OpaqueOwnerClass::Collection)) {
                 // Opaque owner lists have typed reference storage, not a
                 // linear-memory layout with address-sized element slots.
                 continue;
@@ -942,8 +887,7 @@ impl LayoutProjection {
                 &self.definitions,
                 &recursive_types,
                 &closure_layouts,
-                &owner_types,
-                &aggregate_owner_types,
+                &opaque_evidence,
             )?;
             interner.bind_nominal(environment, environment_body)
                 .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?;
@@ -962,8 +906,7 @@ impl LayoutProjection {
                 &self.definitions,
                 &recursive_types,
                 &closure_layouts,
-                &owner_types,
-                &aggregate_owner_types,
+                &opaque_evidence,
             )?;
             interner.bind_nominal(environment, environment_body)
                 .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?;
@@ -992,76 +935,13 @@ fn rooted_slice_element(ty: &Type) -> Option<&Type> {
     }
 }
 
-fn type_requires_opaque_owner(
-    ty: &Type,
-    definitions: &BTreeMap<String, TypeDef>,
-    opaque_signatures: &HashSet<Type>,
-    opaque_aggregates: &HashSet<Type>,
-    visiting: &mut HashSet<Type>,
-) -> bool {
-    // A canonical rooted view is an authenticated GC owner for its backing
-    // root plus projection.  It cannot occupy an ordinary aggregate's linear
-    // field: doing so would erase the retained-root contract.  Keep this
-    // deliberately to the installed opaque carriers, the direct `&Int` place
-    // owner and the `&[T]` rooted-slice owners; token-carried whole-root
-    // views occupy an ordinary managed field.
-    if matches!(StoragePlan::classify(ty, definitions, |_| Some(0)),
-        StoragePlan::RootedView(RootedViewStorage::ScalarCell(_)
-            | RootedViewStorage::RetainedProjection(_))) {
-        return true;
-    }
-    if witchy_canonical_source::capabilities::representation(ty, definitions).is_some() {
-        return true;
-    }
-    if matches!(ty.unqualified(), Type::Fn(..)) {
-        return opaque_signatures.contains(&canonical_closure_key(ty, definitions));
-    }
-    let identity = canonical_layout_type(ty, definitions);
-    if opaque_aggregates.contains(&identity) {
-        return true;
-    }
-    if !visiting.insert(identity.clone()) {
-        return false;
-    }
-    let requires_owner = if let Some(tuple) =
-        witchy_canonical_source::aggregates::dictionary_as_tuple(identity.unqualified())
-    {
-        type_requires_opaque_owner(
-            &tuple, definitions, opaque_signatures, opaque_aggregates, visiting,
-        )
-    } else if let Some(shape) = scalar_aggregate_shape(&identity, definitions) {
-        shape.fields.iter().any(|field| {
-            type_requires_opaque_owner(
-                field, definitions, opaque_signatures, opaque_aggregates, visiting,
-            )
-        })
-    } else {
-        match identity.unqualified() {
-            Type::Named(name, arguments) if name == "List" && arguments.len() == 1 => {
-                type_requires_opaque_owner(
-                    &arguments[0], definitions, opaque_signatures, opaque_aggregates, visiting,
-                )
-            }
-            Type::Tuple(fields) => fields.iter().any(|field| {
-                type_requires_opaque_owner(
-                    field, definitions, opaque_signatures, opaque_aggregates, visiting,
-                )
-            }),
-            _ => false,
-        }
-    };
-    visiting.remove(&identity);
-    requires_owner
-}
-
 fn intern_closure_environment(
     interner: &mut LayoutInterner,
     witnesses: Vec<(u32, Vec<Type>)>,
     definitions: &BTreeMap<String, TypeDef>,
     recursive_types: &HashSet<Type>,
     closure_layouts: &HashMap<Type, LayoutId>,
-    owner_types: &HashMap<Type, GcTypeId>,
-    aggregate_owner_types: &HashMap<Type, GcTypeId>,
+    opaque_evidence: &OpaqueOwnerEvidence<'_>,
 ) -> Result<(LayoutId, Vec<ClosureEnvironmentVariant>), CanonicalLayoutError> {
     let tag = interner
         .intern_scalar(ScalarKind::Int)
@@ -1080,13 +960,7 @@ fn intern_closure_environment(
         let mut storage = Vec::with_capacity(fields.len());
         let mut owner_field = 2u32;
         for field in &fields {
-            if witchy_canonical_source::capabilities::representation(field, definitions).is_some() {
-                storage.push(CaptureStorage::OwnerField(owner_field));
-                owner_field = owner_field.checked_add(1).ok_or_else(||
-                    CanonicalLayoutError::InvalidLayout("opaque capture field overflow".into()))?;
-                continue;
-            }
-            if type_has_opaque_owner(field, definitions, owner_types, aggregate_owner_types) {
+            if opaque_evidence.owner_class(field).is_some() {
                 storage.push(CaptureStorage::OwnerField(owner_field));
                 owner_field = owner_field.checked_add(1).ok_or_else(||
                     CanonicalLayoutError::InvalidLayout("opaque capture field overflow".into()))?;
@@ -1116,50 +990,6 @@ fn intern_closure_environment(
     Ok((layout, variants))
 }
 
-fn type_has_opaque_owner(
-    ty: &Type,
-    definitions: &BTreeMap<String, TypeDef>,
-    closure_owner_types: &HashMap<Type, GcTypeId>,
-    aggregate_owner_types: &HashMap<Type, GcTypeId>,
-) -> bool {
-    type_has_opaque_owner_membership(
-        ty, definitions,
-        |signature| closure_owner_types.contains_key(signature),
-        |aggregate| aggregate_owner_types.contains_key(aggregate),
-    )
-}
-
-fn type_has_opaque_owner_membership(
-    ty: &Type,
-    definitions: &BTreeMap<String, TypeDef>,
-    closure_has: impl Fn(&Type) -> bool,
-    aggregate_has: impl Fn(&Type) -> bool,
-) -> bool {
-    // Scalar cells and projected slices carry authenticated opaque owners.
-    if matches!(StoragePlan::classify(ty, definitions, |_| Some(0)),
-        StoragePlan::RootedView(RootedViewStorage::ScalarCell(_)
-            | RootedViewStorage::RetainedProjection(_))) {
-        return true;
-    }
-    if matches!(ty.unqualified(), Type::Fn(..)) {
-        return closure_has(&canonical_closure_key(ty, definitions));
-    }
-    let identity = canonical_layout_type(ty, definitions);
-    if aggregate_has(&identity) {
-        return true;
-    }
-    let Type::Named(name, arguments) = identity.unqualified() else { return false };
-    if name != "List" || arguments.len() != 1 {
-        return false;
-    }
-    let element = &arguments[0];
-    if matches!(element.unqualified(), Type::Fn(..)) {
-        closure_has(&canonical_closure_key(element, definitions))
-    } else {
-        aggregate_has(&canonical_layout_type(element, definitions))
-    }
-}
-
 #[allow(clippy::too_many_arguments)]
 fn intern_opaque_aggregate_environment(
     interner: &mut LayoutInterner,
@@ -1167,8 +997,7 @@ fn intern_opaque_aggregate_environment(
     definitions: &BTreeMap<String, TypeDef>,
     recursive_types: &HashSet<Type>,
     closure_layouts: &HashMap<Type, LayoutId>,
-    closure_owner_types: &HashMap<Type, GcTypeId>,
-    aggregate_owner_types: &HashMap<Type, GcTypeId>,
+    opaque_evidence: &OpaqueOwnerEvidence<'_>,
 ) -> Result<(LayoutId, Vec<OpaqueAggregateVariant>), CanonicalLayoutError> {
     let tag = interner.intern_scalar(ScalarKind::Int)
         .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?;
@@ -1180,11 +1009,7 @@ fn intern_opaque_aggregate_environment(
         let first_field = children.len();
         let mut storage = Vec::with_capacity(fields.len());
         for field in &fields {
-            if witchy_canonical_source::capabilities::representation(field, definitions).is_some()
-                || type_has_opaque_owner(
-                    field, definitions, closure_owner_types, aggregate_owner_types,
-                )
-            {
+            if opaque_evidence.owner_class(field).is_some() {
                 storage.push(CaptureStorage::OwnerField(owner_field));
                 owner_field = owner_field.checked_add(1).ok_or_else(|| {
                     CanonicalLayoutError::InvalidLayout("opaque aggregate owner field overflow".into())

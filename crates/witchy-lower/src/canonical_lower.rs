@@ -96,6 +96,7 @@ struct ClosureValueLayouts {
     aggregate_owners: HashMap<Type, (GcTypeId, GcTypeId)>,
     slice_owners: HashMap<CarrierElement, GcTypeId>,
     shared_int_reference: Option<GcTypeId>,
+    closure_witnesses: witchy_canonical_source::closure::ClosureWitnessManifest,
 }
 
 impl std::ops::Deref for ClosureValueLayouts {
@@ -105,34 +106,42 @@ impl std::ops::Deref for ClosureValueLayouts {
 
 impl ClosureValueLayouts {
     fn opaque_type(&self, source: &Type, definitions: &BTreeMap<String, TypeDef>) -> Option<GcTypeId> {
-        if rooted_view_inner(source).is_some_and(is_scalar_cell_view_payload) {
-            return self.shared_int_reference;
-        }
-        if let Some(element) = rooted_view_inner(source)
-            .and_then(|inner| rooted_slice_element_with_definitions(inner, definitions)) {
-            return self.slice_owners.get(&element).copied();
-        }
-        match source.unqualified() {
-            Type::Fn(..) => self.owners
+        use witchy_canonical_source::storage::{OpaqueOwnerClass, OpaqueOwnerEvidence};
+        let evidence = OpaqueOwnerEvidence::from_checked_source(definitions, &self.closure_witnesses)?;
+        match evidence.owner_class(source)? {
+            OpaqueOwnerClass::Capability => None,
+            OpaqueOwnerClass::RootedView => {
+                if rooted_view_inner(source).is_some_and(is_scalar_cell_view_payload) {
+                    self.shared_int_reference
+                } else {
+                    let element = rooted_view_inner(source)
+                        .and_then(|inner| rooted_slice_element_with_definitions(inner, definitions))?;
+                    self.slice_owners.get(&element).copied()
+                }
+            }
+            OpaqueOwnerClass::Callable => self.owners
                 .get(&crate::canonical_layouts::canonical_closure_key(source, definitions))
                 .copied(),
-            Type::Named(name, args) if name == "List" && args.len() == 1 => {
-                // A list of `&Int` views is an owner list of the shared place
-                // family: each element is one retained, authenticated carrier.
-                if rooted_view_inner(&args[0]).is_some_and(is_scalar_cell_view_payload) {
-                    return self.shared_int_reference.map(|owner| GcTypeId::new(owner.get() + 1));
-                }
-                if matches!(args[0].unqualified(), Type::Fn(..)) {
-                    return self.owners
-                        .get(&crate::canonical_layouts::canonical_closure_key(&args[0], definitions))
-                        .map(|owner| GcTypeId::new(owner.get() + 1));
-                }
-                let key = concrete_aggregate_identity(&args[0], definitions)?;
-                self.aggregate_owners.get(&key).map(|(_, list)| *list)
-            }
-            _ => {
+            OpaqueOwnerClass::Aggregate => {
                 let key = canonical_owner_aggregate_identity(source, definitions)?;
                 self.aggregate_owners.get(&key).map(|(owner, _)| *owner)
+            }
+            OpaqueOwnerClass::Collection => {
+                let Type::Named(name, arguments) = source.unqualified() else { return None };
+                let [element] = arguments.as_slice() else { return None };
+                if name != "List" { return None; }
+                match evidence.owner_class(element)? {
+                    OpaqueOwnerClass::RootedView => self.shared_int_reference
+                        .map(|owner| GcTypeId::new(owner.get() + 1)),
+                    OpaqueOwnerClass::Callable => self.owners
+                        .get(&crate::canonical_layouts::canonical_closure_key(&element, definitions))
+                        .map(|owner| GcTypeId::new(owner.get() + 1)),
+                    OpaqueOwnerClass::Aggregate => {
+                        let key = concrete_aggregate_identity(&element, definitions)?;
+                        self.aggregate_owners.get(&key).map(|(_, list)| *list)
+                    }
+                    OpaqueOwnerClass::Capability | OpaqueOwnerClass::Collection => None,
+                }
             }
         }
     }
@@ -330,6 +339,7 @@ pub fn lower_typed_module(
         slice_owners: rooted_slice_layouts.iter().map(|layout|
             (layout.element.clone(), layout.owner_type)).collect(),
         shared_int_reference: shared_reference_layout.as_ref().map(|layout| layout.owner_type),
+        closure_witnesses: source.closure_witness().clone(),
     };
     let abort_sites = abort::sites(typed.module(), source.is_console_fixture())?;
     let (registry_imports, requires_secret) = registry_hosts::collect_imports(typed.module());

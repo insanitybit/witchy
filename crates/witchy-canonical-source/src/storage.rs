@@ -460,6 +460,18 @@ pub struct OpaqueOwnerEvidence<'a> {
     opaque_callable_families: HashSet<Type>,
 }
 
+/// Physical owner-bearing lane selected from checked storage, not from a
+/// candidate GC type ID. A collection carries its own owner only when its
+/// recursively classified element has a matching retained owner operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OpaqueOwnerClass {
+    Capability,
+    RootedView,
+    Callable,
+    Aggregate,
+    Collection,
+}
+
 impl<'a> OpaqueOwnerEvidence<'a> {
     pub fn from_checked_source(
         definitions: &'a BTreeMap<String, TypeDef>,
@@ -487,6 +499,45 @@ impl<'a> OpaqueOwnerEvidence<'a> {
 
     pub fn requires_owner(&self, ty: &Type) -> bool {
         self.requires_owner_at(ty, &mut HashSet::new(), 0, &mut 16_384) == Some(true)
+    }
+
+    /// The actual carrier at this edge. `requires_owner` answers whether a
+    /// stored descendant needs an owner; this query answers whether the value
+    /// itself occupies an opaque owner lane. Keeping the two judgments apart
+    /// prevents a linear outer collection from inheriting a child's GC ABI.
+    pub fn owner_class(&self, ty: &Type) -> Option<OpaqueOwnerClass> {
+        if crate::capabilities::representation(ty, self.definitions).is_some() {
+            return Some(OpaqueOwnerClass::Capability);
+        }
+        match StoragePlan::classify(ty, self.definitions, |_| Some(0)) {
+            StoragePlan::RootedView(RootedViewStorage::ScalarCell(_)
+                | RootedViewStorage::RetainedProjection(_)) => return Some(OpaqueOwnerClass::RootedView),
+            StoragePlan::RetainedOwnerList(_) => {
+                let Some(StoredChildren::Sequence(element)) = stored_children(ty, self.definitions).ok().flatten() else { return None };
+                return (self.owner_class(&element) == Some(OpaqueOwnerClass::RootedView))
+                    .then_some(OpaqueOwnerClass::Collection);
+            }
+            StoragePlan::RetainedCallableList(_) => {
+                let Some(StoredChildren::Sequence(element)) = stored_children(ty, self.definitions).ok().flatten() else { return None };
+                return (self.owner_class(&element) == Some(OpaqueOwnerClass::Callable))
+                    .then_some(OpaqueOwnerClass::Collection);
+            }
+            StoragePlan::RetainedOpaqueAggregateList(_) | StoragePlan::RetainedGraphList(_) => {
+                let Some(StoredChildren::Sequence(element)) = stored_children(ty, self.definitions).ok().flatten() else { return None };
+                return (self.owner_class(&element) == Some(OpaqueOwnerClass::Aggregate))
+                    .then_some(OpaqueOwnerClass::Collection);
+            }
+            StoragePlan::Refused(_) => return None,
+            _ => {}
+        }
+        if matches!(ty.unqualified(), Type::Fn(..)) {
+            let family = crate::callable_storage::bounded_closure_family_type(ty, self.definitions)?;
+            return self.opaque_callable_families.contains(&family)
+                .then_some(OpaqueOwnerClass::Callable);
+        }
+        let shape = scalar_aggregate_shape(ty, self.definitions)?;
+        (!shape.packed && self.requires_owner(ty))
+            .then_some(OpaqueOwnerClass::Aggregate)
     }
 
     fn requires_owner_at(

@@ -5,6 +5,7 @@ use super::closure_owner_contract::{CaptureStorage, CaptureTransfer, OwnerConstr
 use super::{CanonicalModule, ModuleStage, Operation, ValueId, ValueType};
 use std::collections::{BTreeMap, BTreeSet};
 use witchy_canonical_source::closure::ClosureBindingPathStep;
+use witchy_canonical_source::storage::OpaqueOwnerClass;
 
 pub(super) fn validate<S: ModuleStage>(
     candidate: &CanonicalModule<S>,
@@ -40,7 +41,7 @@ pub(super) fn validate<S: ModuleStage>(
         }
         match &family.source {
             OwnerFamilySource::Aggregate(source_type) => {
-                if !opaque_evidence.requires_owner(source_type) {
+                if opaque_evidence.owner_class(source_type) != Some(OpaqueOwnerClass::Aggregate) {
                     return Err(CandidateAbiBindingError::MissingCanonicalLayouts);
                 }
                 if !aggregate_types.insert(source_type.clone()) {

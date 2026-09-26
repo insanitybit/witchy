@@ -935,6 +935,21 @@ otherwise gain an authenticated-place plan. This is a structural migration;
 it closes no A–O evidence row. Generic replay through indirect callables,
 per-execution preparation, and cancellation disposition remain open.
 
+Opaque owner-family replacement (implemented but unverified, 2026-09-25):
+checked `OpaqueOwnerEvidence` now classifies the owner-bearing lane of a
+source value separately from recursive owner containment. Layout family
+selection, closure and aggregate owner-field placement, lowering's GC-family
+lookup, and SafeWIR's aggregate owner-source check consume that one
+representation judgment. The layout-local owner fixed point and membership
+walkers were removed; layout projection uses the checked source's type
+definitions directly. A focused three-crate compile and three existing
+admitted-Wasm owner/view smokes passed. Adversarial review found a list of
+opaque-callback aggregates whose graph-list storage needed collection owner
+classification; that class is included. This does not establish the full
+hand-computed Wasm and zero-leak evidence for any A–O row. Call-scoped
+provenance through generated continuations and lawful task cancellation
+disposition remain structural gaps.
+
 Row G ABI representation consumers (implemented but unverified, 2026-09-25):
 direct rooted-view, owner-list, and view-bearing aggregate qualifier checks
 now use the shared storage plan and owner-carried representation class. Legacy
