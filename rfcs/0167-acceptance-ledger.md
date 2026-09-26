@@ -1391,10 +1391,19 @@ capability-bearing tuple both refuse. Adversarial review identified a mixed
 direct-capability/affine shell whose consuming deconstruction cannot transfer
 the capability output; the shared operation judgment now refuses that shell
 before lowering. A nullable capability child also remains
-refused for lack of an aggregate capture layout. The generated iterator-frame probe now
-passes the closure-capture boundary but fails at a separate missing diagnostic
-source location in canonical lowering. No zero-leak audit or A–O closure is
-claimed.
+refused for lack of an aggregate capture layout. No zero-leak audit or A–O
+closure is claimed.
+
+Generated iterator diagnostic origins (implemented but unverified,
+2026-09-26): generator lowering now completes the parallel statement-location
+vectors for helper and wrapper functions from their real source declaration,
+preserving existing nonzero statement locations. Canonical lowering can thus
+bind diagnostics in synthetic frame blocks without an unknown-line fallback.
+The temporary admitted unoptimized iterator probe prints the hand-computed
+`made`, `source`, `effect 1`, `effect 2`, `effect 3`, `[10, 20, 30]` in order;
+the unused lazy iterator produces no effects. This reaches one generator path
+end to end, but has no durable Wasm witness or zero-leak audit and closes no
+A–O row.
 
 Stored-obligation catalog replacement (implemented but unverified,
 2026-09-26): canonical source now derives generic stored-parameter masks and

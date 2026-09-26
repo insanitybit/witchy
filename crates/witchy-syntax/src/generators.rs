@@ -434,7 +434,7 @@ fn lower_gen(
     };
     let names = GeneratorNames::new(&f, entry_state);
     let normalized = normalize_owned_generator(&f, &names, function_returns);
-    if let Some(lowered) = lower_owned_loop_frame(
+    if let Some((mut helper, mut wrapper)) = lower_owned_loop_frame(
         &normalized,
         method,
         &helper_name,
@@ -443,13 +443,45 @@ fn lower_gen(
         &names,
         function_returns,
     )? {
-        return Ok(lowered);
+        // Both generated functions inherit this real source declaration.
+        // Complete their synthetic statement locations before the diagnostic
+        // catalog pairs every access with a statement line.
+        complete_generated_locations(&mut helper, f.line);
+        complete_generated_locations(&mut wrapper, f.line);
+        return Ok((helper, wrapper));
     }
 
     Err(format!(
         "gen fn `{}` at line {} has a suspension control-flow shape that cannot yet be represented by Witchy's owned resumable frame; use finite direct/conditional/match yields or one terminal `while`, `while let`, or list `for` loop, and keep nested yielding loops in separate generators",
         f.name, f.line,
     ))
+}
+
+fn complete_generated_locations(function: &mut Function, source_line: u32) {
+    fn complete(block: &mut Block, source_line: u32) {
+        block.lines.resize(block.stmts.len(), source_line);
+        for line in &mut block.lines {
+            if *line == 0 { *line = source_line; }
+        }
+    }
+
+    complete(&mut function.body, source_line);
+    // The visitor descends after each callback, so every generated nested
+    // block is completed before it is visited. Existing nonzero source lines
+    // remain attached to the source statements they came from.
+    crate::ast::visit::visit_block_mut(&mut function.body, &mut |expression| {
+        match expression {
+            Expr::Block(body) | Expr::Lambda { body, .. }
+            | Expr::While { body, .. } | Expr::WhileLet { body, .. }
+            | Expr::For { body, .. } => complete(body, source_line),
+            Expr::If { then_block, else_block, .. } => {
+                complete(then_block, source_line);
+                if let Some(body) = else_block { complete(body, source_line); }
+            }
+            _ => {}
+        }
+        Ok::<_, ()>(())
+    }).expect("generated location completion is infallible");
 }
 
 /// Normalize accepted finite forms and the flagship seed-yield loop into the
