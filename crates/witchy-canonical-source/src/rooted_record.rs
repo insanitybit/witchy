@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 use witchy_syntax::ast::{Type, TypeDef, TypeQual};
 
 use crate::carrier::CarrierElement;
+use crate::structural_identity::SourceTypeKey;
 
 /// Identify the source heads that seek retained record-root storage. A bad
 /// arity still returns `Some(true)` so the full classifier can refuse it;
@@ -22,8 +23,7 @@ pub fn has_record_root_head(ty: &Type, definitions: &BTreeMap<String, TypeDef>) 
         }
         bare = inner;
     }
-    Some(matches!(bare, Type::Named(name, _)
-        if matches!(name.as_str(), "Option" | "Result") || definitions.contains_key(name)))
+    Some(matches!(bare, Type::Named(name, _) if definitions.contains_key(name)))
 }
 
 /// One checked record-root classification: canonical ABI identity together
@@ -55,9 +55,7 @@ pub enum RecordRootIdentity {
     /// scalar, byte-buffer, list, tuple, and dictionary payloads.
     Leaf(CarrierElement),
     Qualified { qualifier: RecordRootQualifier, inner: Box<Self> },
-    Option(Box<Self>),
-    Result(Box<Self>, Box<Self>),
-    Nominal { ordinal: u32, storage: Box<CarrierElement> },
+    Nominal { ordinal: u32, storage: Box<CarrierElement>, field_types: Vec<[u8; 32]> },
 }
 
 /// Only storage qualifiers accepted by the checked record-root grammar.
@@ -103,38 +101,26 @@ impl RecordRootIdentity {
             unqualified = inner;
         }
         let (identity, contains_list) = match unqualified {
-            Type::Named(name, arguments) if name == "Option" && arguments.len() == 1 => {
-                let child = &arguments[0];
-                let (child, contains_list) =
-                    Self::parse(child, definitions, nominal, depth + 1, budget)?;
-                (Self::Option(Box::new(child)), contains_list)
-            }
-            Type::Named(name, arguments) if name == "Result" && arguments.len() == 2 => {
-                let (ok, error) = (&arguments[0], &arguments[1]);
-                let (ok, ok_list) = Self::parse(ok, definitions, nominal, depth + 1, budget)?;
-                let (error, error_list) =
-                    Self::parse(error, definitions, nominal, depth + 1, budget)?;
-                (
-                    Self::Result(Box::new(ok), Box::new(error)),
-                    ok_list || error_list,
-                )
-            }
             Type::Named(name, arguments) if definitions.contains_key(name) && arguments.len() <= 128 => {
                 let ordinal = nominal(name)?;
                 let storage = CarrierElement::from_checked_type_with_definitions(unqualified, definitions)?;
                 if !matches!(storage, CarrierElement::Record { .. } | CarrierElement::Sum { .. }) {
                     return None;
                 }
+                let shape = crate::aggregates::scalar_aggregate_shape(unqualified, definitions)?;
+                let field_types = shape.fields.iter().map(|field| SourceTypeKey { source: field }.digest())
+                    .collect::<Option<Vec<_>>>()?;
                 let (nodes, relative_depth) = storage.bounded_resource_shape()?;
                 if depth.checked_add(relative_depth)? > 128 {
                     return None;
                 }
                 *budget = (*budget).checked_sub(nodes.saturating_sub(1))?;
-                let contains_list = carrier_contains_list(&storage);
+                let contains_list = storage.contains_retained_sequence();
                 (
                     Self::Nominal {
                         ordinal,
                         storage: Box::new(storage),
+                        field_types,
                     },
                     contains_list,
                 )
@@ -149,7 +135,7 @@ impl RecordRootIdentity {
                     return None;
                 }
                 *budget = (*budget).checked_sub(nodes.saturating_sub(1))?;
-                let contains_list = carrier_contains_list(&plan);
+                let contains_list = plan.contains_retained_sequence();
                 (Self::Leaf(plan), contains_list)
             }
         };
@@ -164,8 +150,6 @@ impl RecordRootIdentity {
     /// instantiated fields and constructor names as well as their ordinal.
     pub fn append_identity_bytes(&self, bytes: &mut Vec<u8>) -> bool {
         const USER_SHAPE: u8 = 8;
-        const OPTION: u8 = 2;
-        const RESULT: u8 = 3;
         const LEAF: u8 = 4;
         const QUALIFIED: u8 = 6;
         const QUALIFIED_END: u8 = 7;
@@ -182,42 +166,17 @@ impl RecordRootIdentity {
                 if !inner.append_identity_bytes(bytes) { return false; }
                 bytes.push(QUALIFIED_END);
             }
-            Self::Option(child) => {
-                bytes.push(OPTION);
-                bytes.extend_from_slice(&1u32.to_le_bytes());
-                if !child.append_identity_bytes(bytes) {
-                    return false;
-                }
-            }
-            Self::Result(ok, error) => {
-                bytes.push(RESULT);
-                bytes.extend_from_slice(&2u32.to_le_bytes());
-                if !ok.append_identity_bytes(bytes) || !error.append_identity_bytes(bytes) {
-                    return false;
-                }
-            }
-            Self::Nominal { ordinal, storage } => {
+            Self::Nominal { ordinal, storage, field_types } => {
                 bytes.push(USER_SHAPE);
                 bytes.extend_from_slice(&ordinal.to_le_bytes());
                 if !storage.within_resource_bounds() { return false; }
                 bytes.extend_from_slice(&storage.identity());
+                let Ok(count) = u32::try_from(field_types.len()) else { return false; };
+                bytes.extend_from_slice(&count.to_le_bytes());
+                for field in field_types { bytes.extend_from_slice(field); }
             }
         }
         true
-    }
-}
-
-fn carrier_contains_list(plan: &CarrierElement) -> bool {
-    match plan {
-        CarrierElement::List(_) => true,
-        CarrierElement::Tuple(fields) => fields.iter().any(carrier_contains_list),
-        // A dictionary is physically a pair of retained key/value Lists.
-        CarrierElement::Dict(_, _) => true,
-        CarrierElement::Record { fields, .. } => fields.iter().any(carrier_contains_list),
-        CarrierElement::Sum { variants, .. } => {
-            variants.iter().any(|variant| variant.fields.iter().any(carrier_contains_list))
-        }
-        CarrierElement::Scalar(_) | CarrierElement::String | CarrierElement::Bytes => false,
     }
 }
 

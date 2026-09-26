@@ -309,5 +309,13 @@ mod tests {
         assert_eq!(bytes, RootedViewStorage::RetainedRoot(RetainedRootStorage::ByteBuffer(ByteBufferKind::Bytes)));
         assert_ne!(string.canonical_reference(&source("String")), bytes.canonical_reference(&source("Bytes")),
             "one physical buffer layout must not erase checked source identity");
+
+        let plain_slice = Type::Slice(Box::new(source("String")));
+        let frozen_slice = Type::Slice(Box::new(Type::Qualified(
+            TypeQual::Frozen, Box::new(source("String")),
+        )));
+        assert!(RootedViewStorage::classify(&plain_slice, &definitions, |_| None).is_some());
+        assert!(RootedViewStorage::classify(&frozen_slice, &definitions, |_| None).is_none(),
+            "a qualified slice child cannot inherit the unqualified projection key");
     }
 }

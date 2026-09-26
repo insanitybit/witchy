@@ -683,8 +683,8 @@ pub fn is_inline_scalar_view_payload(ty: &Type) -> bool {
 }
 
 /// A whole view of this value is a `RecordRoot`: the retained aggregate
-/// object is the snapshot.  Admitted for a declared user record or sum, or
-/// builtin `Option`/`Result`, with a non-packed heap shape that holds no view
+/// object is the snapshot. Admitted for a declared record or sum, including
+/// standard sums, with a non-packed heap shape that holds no view
 /// (a view inside would need its own carrier).
 pub fn is_record_root_payload(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> bool {
     crate::rooted_record::has_record_root_head(ty, definitions) == Some(true)

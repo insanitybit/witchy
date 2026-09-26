@@ -193,7 +193,7 @@ impl CarrierElement {
         // budget, so a cycle across the two queries would otherwise reset it.
         if !nominal_graph_acyclic(ty, definitions) { return None; }
         let mut budget = 4_096;
-        Self::from_checked_type_with_definitions_at(ty, definitions, 0, &mut budget)
+        Self::from_checked_type_with_definitions_at(ty, definitions, 0, &mut budget, false)
     }
 
     fn from_checked_type_with_definitions_at(
@@ -201,12 +201,23 @@ impl CarrierElement {
         definitions: &BTreeMap<String, TypeDef>,
         depth: usize,
         budget: &mut usize,
+        in_nominal_storage: bool,
     ) -> Option<Self> {
         if depth > 128 || *budget == 0 {
             return None;
         }
         *budget -= 1;
         match ty {
+            // `frozen` changes write permission, not the child's physical
+            // retain/clone/release operations. A retained sequence below it
+            // still needs a qualifier-preserving owner relation, so refuse
+            // that representation until it has one.
+            Type::Qualified(TypeQual::Frozen, inner) if in_nominal_storage => {
+                let child = Self::from_checked_type_with_definitions_at(
+                    inner, definitions, depth + 1, budget, in_nominal_storage,
+                )?;
+                (!child.contains_retained_sequence()).then_some(child)
+            }
             Type::Named(name, arguments) if definitions.contains_key(name) => {
                 if definitions.get(name).is_some_and(|definition| definition.must_consume || definition.is_capability)
                     || name.len() > 1_024 || arguments.len() > 128 {
@@ -225,7 +236,7 @@ impl CarrierElement {
                             let variants = shape.variants.iter().enumerate().map(|(index, variant)| {
                                 let end = variant.first_field.checked_add(variant.arity)?;
                                 let fields = shape.fields.get(variant.first_field..end)?.iter().map(|field| {
-                                    Self::from_checked_type_with_definitions_at(field, definitions, depth + 1, budget)
+                                    Self::from_checked_type_with_definitions_at(field, definitions, depth + 1, budget, true)
                                 }).collect::<Option<Vec<_>>>()?;
                                 let field_names = checked_variant_field_names(name, index, variant, definitions)?;
                                 Some(CarrierVariant { name: variant.name.clone(), field_names, fields })
@@ -236,7 +247,7 @@ impl CarrierElement {
                             let [variant] = shape.variants.as_slice() else { return None };
                             let field_names = checked_variant_field_names(name, 0, variant, definitions)?;
                             let fields = shape.fields.iter().map(|field| {
-                                Self::from_checked_type_with_definitions_at(field, definitions, depth + 1, budget)
+                                Self::from_checked_type_with_definitions_at(field, definitions, depth + 1, budget, true)
                             }).collect::<Option<Vec<_>>>()?;
                             Some(Self::Record { name: name.clone(), constructor: variant.name.clone(), field_names, arguments, fields })
                         }
@@ -246,22 +257,35 @@ impl CarrierElement {
             Type::Named(name, arguments) if name == "List" => {
                 let [child] = arguments.as_slice() else { return None };
                 Some(Self::List(Box::new(Self::from_checked_type_with_definitions_at(
-                    child, definitions, depth + 1, budget,
+                    child, definitions, depth + 1, budget, in_nominal_storage,
                 )?)))
             }
             Type::Named(name, arguments) if name == "Dict" => {
                 let [key, value] = arguments.as_slice() else { return None };
                 Some(Self::Dict(
-                    Box::new(Self::from_checked_type_with_definitions_at(key, definitions, depth + 1, budget)?),
-                    Box::new(Self::from_checked_type_with_definitions_at(value, definitions, depth + 1, budget)?),
+                    Box::new(Self::from_checked_type_with_definitions_at(key, definitions, depth + 1, budget, in_nominal_storage)?),
+                    Box::new(Self::from_checked_type_with_definitions_at(value, definitions, depth + 1, budget, in_nominal_storage)?),
                 ))
             }
             Type::Tuple(fields) if !fields.is_empty() && fields.len() <= 128 => {
                 Some(Self::Tuple(fields.iter().map(|field| {
-                    Self::from_checked_type_with_definitions_at(field, definitions, depth + 1, budget)
+                    Self::from_checked_type_with_definitions_at(field, definitions, depth + 1, budget, in_nominal_storage)
                 }).collect::<Option<Vec<_>>>()?))
             }
             _ => Self::from_checked_type_bounded(ty, depth, budget),
+        }
+    }
+
+    /// Whether a qualifier would cross an independently retained sequence
+    /// owner in this recursively proved storage representation.
+    pub fn contains_retained_sequence(&self) -> bool {
+        match self {
+            Self::List(_) | Self::Dict(_, _) => true,
+            Self::Tuple(fields) | Self::Record { fields, .. } =>
+                fields.iter().any(Self::contains_retained_sequence),
+            Self::Sum { variants, .. } => variants.iter().any(|variant|
+                variant.fields.iter().any(Self::contains_retained_sequence)),
+            Self::Scalar(_) | Self::String | Self::Bytes => false,
         }
     }
 
