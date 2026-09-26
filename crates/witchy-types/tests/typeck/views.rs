@@ -28,5 +28,8 @@ fn views_cannot_launder_must_or_once_payload_obligations() {
         let module = witchy_syntax::parser::parse_module(source).expect("source parses");
         assert!(check(&module).is_err(), "copyable views preserve payload obligations: {source}");
     }
-}
 
+    let phantom = "type Phantom(a):\n    Phantom(Int)\n\nfn inspect[a](own value: Phantom(a)) -> Int:\n    let view = &value\n    1\n\nfn main() -> Int:\n    let value: Phantom(Clock) = Phantom(1)\n    inspect(value)\n";
+    let module = witchy_syntax::parser::parse_module(phantom).expect("phantom source parses");
+    check(&module).expect("a phantom resource argument does not enter retained storage");
+}

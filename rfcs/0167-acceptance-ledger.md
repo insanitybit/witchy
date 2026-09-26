@@ -888,6 +888,17 @@ copy proof. Focused compiler checks and existing `.owned()` and scalar-view
 smokes passed. This does not supply hand-computed admitted-Wasm or zero-leak
 evidence, so no acceptance row closes.
 
+Row G persistent-view snapshot judgment (implemented but unverified,
+2026-09-25): view formation in the checker and `StoragePlan` now consume the
+same recursive stored-field snapshot eligibility relation. It refuses
+capability, must-consume, once-callable, and unproved storage; declared
+generic variables remain specialization obligations. Nominal phantom type
+arguments bind structural carrier identity but do not enter ownership or
+record-root traversal. The existing typechecker suite and a focused
+phantom-versus-stored-resource contract case passed, and an adversarial
+authority read found no new widening. Full admitted-Wasm behavior and a
+zero-leak audit remain pending, so no A–O row closes.
+
 Row G ABI representation consumers (implemented but unverified, 2026-09-25):
 direct rooted-view, owner-list, and view-bearing aggregate qualifier checks
 now use the shared storage plan and owner-carried representation class. Legacy

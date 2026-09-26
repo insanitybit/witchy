@@ -659,7 +659,7 @@ impl Checker {
         ret: &Ty,
         typarams: &HashSet<u32>,
         bounds: &[(u32, String)],
-        view_payload_vars: &[u32],
+        view_payload_constraints: &[Ty],
     ) -> UserCallSig {
         let fresh_map = self.fresh_typeparam_map(typarams);
         let p = params.iter().map(|t| self.subst_vars(t, &fresh_map)).collect();
@@ -668,9 +668,9 @@ impl Checker {
             .iter()
             .map(|(var, tr)| (self.subst_vars(&Ty::Var(*var), &fresh_map), tr.clone()))
             .collect();
-        let views = view_payload_vars
+        let views = view_payload_constraints
             .iter()
-            .map(|var| self.subst_vars(&Ty::Var(*var), &fresh_map))
+            .map(|payload| self.subst_vars(payload, &fresh_map))
             .collect();
         (p, r, bs, views)
     }
@@ -3461,6 +3461,7 @@ impl Checker {
     /// prevents a generic body from manufacturing `&a` and later specializing
     /// `a` to authority, must-consume, or affine storage.
     fn admit_view_payload(&mut self, ty: &Ty, context: &str) -> Result<(), TypeError> {
+        use witchy_canonical_source::storage::{SnapshotRefusal, snapshot_eligibility};
         fn collect(checker: &Checker, ty: &Ty, variables: &mut HashSet<u32>) {
             match checker.resolve(ty) {
                 Ty::Var(variable) => {
@@ -3486,29 +3487,35 @@ impl Checker {
         let mut variables = HashSet::new();
         collect(self, &resolved, &mut variables);
         let current: HashSet<u32> = self.current_typarams.values().copied().collect();
+        let mut deferred = HashMap::new();
         for variable in variables {
             if current.contains(&variable) {
-                self.current_view_payload_vars.insert(variable);
+                deferred.insert(variable, Ty::Int);
             } else {
                 return terr(format!(
                     "{context} forms an immutable view with unresolved payload type; authenticate a concrete payload or declare it as a function type parameter",
                 ));
             }
         }
-        if let Some(capability) = self.ty_authority_taint(&resolved, &mut HashSet::new()) {
-            return terr(format!(
-                "{context} cannot form an immutable view of authority `{capability}`; no retained-authority carrier is admitted",
-            ));
+        if !deferred.is_empty() && !self.current_view_payload_constraints.contains(&resolved) {
+            self.current_view_payload_constraints.push(resolved.clone());
         }
-        if self.ty_carries_must_consume(&resolved) {
-            return terr(format!(
-                "{context} cannot form an immutable view of must-consume storage; the copyable carrier would erase the payload obligation",
-            ));
-        }
-        if self.ty_carries_once_callable(&resolved) {
-            return terr(format!(
-                "{context} cannot form an immutable view of affine once-callable storage; the copyable carrier cannot consume its referent",
-            ));
+        // A declared generic variable is proved again at specialization. Use
+        // an inline scalar representative now so all other instantiated
+        // fields are checked by the same source-storage judgment as SafeWIR.
+        let representative = self.subst_vars(&resolved, &deferred);
+        let source = ty_to_ast(&representative).ok_or_else(|| TypeError {
+            message: format!("{context} cannot authenticate its immutable view payload"),
+        })?;
+        if let Err(reason) = snapshot_eligibility(&source, &self.canonical_definitions) {
+            let explanation = match reason {
+                SnapshotRefusal::Authority => "authority storage has no lawful retained snapshot",
+                SnapshotRefusal::MustConsume => "must-consume storage cannot be copied into a persistent view",
+                SnapshotRefusal::OnceCallable => "affine once-callable storage cannot be copied into a persistent view",
+                SnapshotRefusal::ResourceLimit => "view storage exceeds the recursive proof limit",
+                SnapshotRefusal::UnprovedStorage => "view storage has no recursive checked snapshot proof",
+            };
+            return terr(format!("{context} cannot form an immutable view: {explanation}"));
         }
         Ok(())
     }
@@ -4233,7 +4240,7 @@ impl Checker {
             .map(|(_, id)| *id)
             .collect();
         let bounds = self.fn_bounds.get(name).cloned().unwrap_or_default();
-        let view_payload_vars = self
+        let view_payload_constraints = self
             .fn_view_payload_constraints
             .get(name)
             .cloned()
@@ -4243,7 +4250,7 @@ impl Checker {
             &ret,
             &typarams,
             &bounds,
-            &view_payload_vars,
+            &view_payload_constraints,
         ))
     }
 
@@ -10207,7 +10214,7 @@ impl Checker {
         self.must_live.clear();
         self.must_borrowed.clear();
         self.once_borrowed.clear();
-        self.current_view_payload_vars.clear();
+        self.current_view_payload_constraints.clear();
         let body_ret =
             self.async_body_returns
                 .get(&func.name)
@@ -10471,10 +10478,8 @@ impl Checker {
                 }
             }
         }
-        let mut view_payload_vars: Vec<u32> = self.current_view_payload_vars.iter().copied().collect();
-        view_payload_vars.sort_unstable();
         self.fn_view_payload_constraints
-            .insert(func.name.clone(), view_payload_vars);
+            .insert(func.name.clone(), self.current_view_payload_constraints.clone());
         self.compiler_syntax_allowed = prev_compiler_syntax_allowed;
         self.current_opt_callable = saved_opt_callable;
         Ok(())
@@ -12585,7 +12590,7 @@ fn run_check_selected(
         adt_variants: HashMap::new(),
         fn_typarams: HashMap::new(),
         fn_view_payload_constraints: HashMap::new(),
-        current_view_payload_vars: HashSet::new(),
+        current_view_payload_constraints: Vec::new(),
         fn_bounds: HashMap::new(),
         trait_method_names: trait_method_names.cloned().unwrap_or_else(|| collect_trait_method_names(module)),
         trait_supertraits: trait_supertraits.cloned().unwrap_or_else(|| {

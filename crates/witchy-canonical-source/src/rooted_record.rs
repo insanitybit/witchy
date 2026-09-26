@@ -57,7 +57,7 @@ pub enum RecordRootIdentity {
     Qualified { qualifier: RecordRootQualifier, inner: Box<Self> },
     Option(Box<Self>),
     Result(Box<Self>, Box<Self>),
-    Nominal { ordinal: u32, arguments: Vec<Self>, storage: Box<CarrierElement> },
+    Nominal { ordinal: u32, storage: Box<CarrierElement> },
 }
 
 /// Only storage qualifiers accepted by the checked record-root grammar.
@@ -121,14 +121,6 @@ impl RecordRootIdentity {
             }
             Type::Named(name, arguments) if definitions.contains_key(name) && arguments.len() <= 128 => {
                 let ordinal = nominal(name)?;
-                let mut children = Vec::with_capacity(arguments.len());
-                let mut contains_list = false;
-                for argument in arguments {
-                    let (child, child_list) =
-                        Self::parse(argument, definitions, nominal, depth + 1, budget)?;
-                    children.push(child);
-                    contains_list |= child_list;
-                }
                 let storage = CarrierElement::from_checked_type_with_definitions(unqualified, definitions)?;
                 if !matches!(storage, CarrierElement::Record { .. } | CarrierElement::Sum { .. }) {
                     return None;
@@ -138,11 +130,10 @@ impl RecordRootIdentity {
                     return None;
                 }
                 *budget = (*budget).checked_sub(nodes.saturating_sub(1))?;
-                contains_list |= carrier_contains_list(&storage);
+                let contains_list = carrier_contains_list(&storage);
                 (
                     Self::Nominal {
                         ordinal,
-                        arguments: children,
                         storage: Box::new(storage),
                     },
                     contains_list,
@@ -205,15 +196,9 @@ impl RecordRootIdentity {
                     return false;
                 }
             }
-            Self::Nominal { ordinal, arguments, storage } => {
+            Self::Nominal { ordinal, storage } => {
                 bytes.push(USER_SHAPE);
                 bytes.extend_from_slice(&ordinal.to_le_bytes());
-                bytes.extend_from_slice(&(arguments.len() as u32).to_le_bytes());
-                for argument in arguments {
-                    if !argument.append_identity_bytes(bytes) {
-                        return false;
-                    }
-                }
                 if !storage.within_resource_bounds() { return false; }
                 bytes.extend_from_slice(&storage.identity());
             }
@@ -228,10 +213,9 @@ fn carrier_contains_list(plan: &CarrierElement) -> bool {
         CarrierElement::Tuple(fields) => fields.iter().any(carrier_contains_list),
         // A dictionary is physically a pair of retained key/value Lists.
         CarrierElement::Dict(_, _) => true,
-        CarrierElement::Record { arguments, fields, .. } => arguments.iter().chain(fields).any(carrier_contains_list),
-        CarrierElement::Sum { arguments, variants, .. } => {
-            arguments.iter().any(carrier_contains_list)
-                || variants.iter().any(|variant| variant.fields.iter().any(carrier_contains_list))
+        CarrierElement::Record { fields, .. } => fields.iter().any(carrier_contains_list),
+        CarrierElement::Sum { variants, .. } => {
+            variants.iter().any(|variant| variant.fields.iter().any(carrier_contains_list))
         }
         CarrierElement::Scalar(_) | CarrierElement::String | CarrierElement::Bytes => false,
     }
@@ -260,5 +244,26 @@ mod tests {
         assert!(RecordRootIdentity::from_checked_type(&dict, &definitions, |_| Some(0)).is_some());
         let frozen_dict = Type::Qualified(TypeQual::Frozen, Box::new(dict));
         assert!(RecordRootIdentity::from_checked_type(&frozen_dict, &definitions, |_| Some(0)).is_none());
+
+        // A nominal argument binds source identity, but an unused argument
+        // does not place its resource in the record's retained storage.
+        let mut phantom = ScalarAggregateShape {
+            name: "Phantom".into(), fields: vec![named("Int")], variants: Vec::new(), tagged: false, packed: false,
+        }.packed_view();
+        phantom.packed = false;
+        phantom.params = vec!["a".into()];
+        let mut held = phantom.clone();
+        held.name = "Held".into();
+        held.variants[0].name = "Held".into();
+        held.variants[0].fields = vec![named("a")];
+        let definitions = BTreeMap::from([("Phantom".into(), phantom), ("Held".into(), held)]);
+        let phantom_clock = Type::Named("Phantom".into(), vec![named("Clock")]);
+        let phantom_int = Type::Named("Phantom".into(), vec![named("Int")]);
+        let clock_root = RecordRootIdentity::from_checked_type(&phantom_clock, &definitions, |_| Some(0)).expect("phantom argument does not require a carrier");
+        let int_root = RecordRootIdentity::from_checked_type(&phantom_int, &definitions, |_| Some(0)).expect("ordinary argument remains admitted");
+        assert_ne!(clock_root, int_root);
+        assert_eq!(crate::storage::snapshot_eligibility(&phantom_clock, &definitions), Ok(()));
+        let held_clock = Type::Named("Held".into(), vec![named("Clock")]);
+        assert_ne!(crate::storage::snapshot_eligibility(&held_clock, &definitions), Ok(()));
     }
 }

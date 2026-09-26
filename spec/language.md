@@ -1081,6 +1081,14 @@ cloning can duplicate its must-consume handle, and no move-only list operation
 proof exists yet. This refusal also applies when a standard-library combinator
 constructs such a list internally.
 
+A persistent view requires a lawful snapshot of the storage it retains. The
+checked storage judgment walks instantiated stored fields and refuses
+capabilities, must-consume values, once-callable values, and storage without a
+recursive copy proof. A nominal type argument that is absent from stored
+fields still contributes to the source and ABI identity, but it does not
+create a stored resource obligation. Generic view payloads are checked again
+at specialization with their concrete arguments.
+
 A non-packed declared record, sum, `Option`, or `Result` may hold a recursive
 `List(T)` child when the checked carrier proves every owned edge. Its rooted
 view keeps the aggregate snapshot, and SafeWIR checks the List headers and

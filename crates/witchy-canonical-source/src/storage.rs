@@ -23,6 +23,97 @@ pub enum StorageRefusal {
     UnprovedOwnership,
 }
 
+/// Why a retained snapshot of instantiated storage cannot be proven. Type
+/// arguments participate in identity, but only stored fields participate in
+/// this ownership judgment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SnapshotRefusal {
+    ResourceLimit,
+    Authority,
+    MustConsume,
+    OnceCallable,
+    UnprovedStorage,
+}
+
+pub fn snapshot_eligibility(
+    ty: &Type,
+    definitions: &BTreeMap<String, TypeDef>,
+) -> Result<(), SnapshotRefusal> {
+    fn walk(
+        ty: &Type,
+        definitions: &BTreeMap<String, TypeDef>,
+        active: &mut HashSet<Type>,
+        depth: usize,
+        remaining: &mut usize,
+    ) -> Result<(), SnapshotRefusal> {
+        if depth > 128 || *remaining == 0 {
+            return Err(SnapshotRefusal::ResourceLimit);
+        }
+        *remaining -= 1;
+        match ty {
+            Type::Qualified(TypeQual::Frozen | TypeQual::Unique | TypeQual::View, inner)
+            | Type::Slice(inner) => walk(inner, definitions, active, depth + 1, remaining),
+            Type::Qualified(_, _) | Type::Dyn(_, _) | Type::RecordCompose { .. } => {
+                Err(SnapshotRefusal::UnprovedStorage)
+            }
+            Type::Fn(_, _, _, qualifiers) => {
+                if qualifiers.once {
+                    Err(SnapshotRefusal::OnceCallable)
+                } else if CallableStoragePlan::classify(ty, definitions).is_some() {
+                    Ok(())
+                } else {
+                    Err(SnapshotRefusal::UnprovedStorage)
+                }
+            }
+            Type::Tuple(fields) => {
+                for field in fields {
+                    walk(field, definitions, active, depth + 1, remaining)?;
+                }
+                Ok(())
+            }
+            Type::Named(name, _) => {
+                if crate::capabilities::representation(ty, definitions).is_some() {
+                    return Err(SnapshotRefusal::Authority);
+                }
+                if let Some(RootedViewStorage::RetainedProjection(element)) =
+                    RootedViewStorage::classify(ty, definitions, |_| Some(0))
+                {
+                    return walk(&element.source_type(), definitions, active, depth + 1, remaining);
+                }
+                if let Some(definition) = definitions.get(name) {
+                    if definition.is_capability {
+                        return Err(SnapshotRefusal::Authority);
+                    }
+                    if definition.must_consume {
+                        return Err(SnapshotRefusal::MustConsume);
+                    }
+                }
+                if !active.insert(ty.clone()) {
+                    return Err(SnapshotRefusal::UnprovedStorage);
+                }
+                // The aggregate layout judgment supplies instantiated stored
+                // fields. Phantom arguments bind identity but carry no value.
+                let fields = if let Some(shape) = scalar_aggregate_shape(ty, definitions) {
+                    shape.fields
+                } else {
+                    match CarrierElement::from_checked_type_with_definitions(ty, definitions) {
+                        Some(CarrierElement::List(element)) => vec![element.source_type()],
+                        Some(CarrierElement::Scalar(_) | CarrierElement::String | CarrierElement::Bytes) => Vec::new(),
+                        _ => return Err(SnapshotRefusal::UnprovedStorage),
+                    }
+                };
+                for field in &fields {
+                    walk(field, definitions, active, depth + 1, remaining)?;
+                }
+                active.remove(ty);
+                Ok(())
+            }
+        }
+    }
+    SourceTypeKey { source: ty }.digest().ok_or(SnapshotRefusal::ResourceLimit)?;
+    walk(ty, definitions, &mut HashSet::new(), 0, &mut 4_096)
+}
+
 /// A finite source-derived proof for the storage classes the canonical route
 /// currently understands. An owned value retains, clones, and releases its
 /// recursive `CarrierElement`; a view or view-bearing aggregate has its own
@@ -102,13 +193,16 @@ fn graph_storage_operations(
         Type::Qualified(TypeQual::Unique, inner) => {
             child(inner, active, remaining).map(|_| false)
         }
-        Type::Qualified(TypeQual::View, payload) => match RootedViewStorage::classify(payload, definitions, |_| Some(0))? {
+        Type::Qualified(TypeQual::View, _) => match StoragePlan::classify(ty, definitions, |_| Some(0)) {
+            StoragePlan::RootedView(storage) => match storage {
             RootedViewStorage::InlineScalar(_) => Some(true),
             RootedViewStorage::RetainedRoot(RetainedRootStorage::ByteBuffer(_)
                 | RetainedRootStorage::Sequence(_)
                 | RetainedRootStorage::StructuralRecord(_)
                 | RetainedRootStorage::CheckedAggregate(_)) => Some(true),
             RootedViewStorage::ScalarCell(_) | RootedViewStorage::RetainedProjection(_) => None,
+            },
+            _ => None,
         },
         Type::Qualified(_, _) | Type::Slice(_) | Type::Dyn(_, _) | Type::RecordCompose { .. } => None,
         Type::Fn(_, _, _, qualifiers) => {
@@ -160,7 +254,8 @@ fn opaque_aggregate_cloneable(ty: &Type, definitions: &BTreeMap<String, TypeDef>
     }
     shape.fields.iter().all(|field| {
         if let Type::Qualified(TypeQual::View, payload) = field {
-            return RootedViewStorage::classify(payload, definitions, |_| Some(0)).is_some();
+            let view = Type::Qualified(TypeQual::View, payload.clone());
+            return matches!(StoragePlan::classify(&view, definitions, |_| Some(0)), StoragePlan::RootedView(_));
         }
         crate::is_unit_type(field)
             || CarrierElement::from_checked_type_with_definitions(field, definitions)
@@ -373,6 +468,14 @@ impl StoragePlan {
             return Self::Refused(StorageRefusal::ResourceLimit);
         }
         if let Type::Qualified(TypeQual::View, payload) = ty {
+            if let Err(reason) = snapshot_eligibility(payload, definitions) {
+                return Self::Refused(match reason {
+                    SnapshotRefusal::ResourceLimit => StorageRefusal::ResourceLimit,
+                    SnapshotRefusal::Authority => StorageRefusal::UnprovedAuthority,
+                    SnapshotRefusal::MustConsume | SnapshotRefusal::OnceCallable
+                    | SnapshotRefusal::UnprovedStorage => StorageRefusal::UnprovedOwnership,
+                });
+            }
             return RootedViewStorage::classify(payload, definitions, nominal)
                 .map(Self::RootedView)
                 .unwrap_or(Self::Refused(StorageRefusal::UnprovedView));

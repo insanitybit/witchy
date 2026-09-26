@@ -8,6 +8,47 @@ use std::collections::{BTreeMap, BTreeSet};
 use witchy_syntax::ast::{Type, TypeDef, TypeQual};
 
 use crate::abi::CanonicalScalarKind;
+use crate::structural_identity::SourceTypeKey;
+
+/// A nominal argument binds source identity, but contributes ownership only
+/// through the instantiated fields that actually store it. A phantom resource
+/// type therefore cannot fabricate a carrier and does not need one.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct CarrierTypeArgument {
+    source: Type,
+    identity: [u8; 32],
+}
+
+impl PartialOrd for CarrierTypeArgument {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for CarrierTypeArgument {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.identity.cmp(&other.identity).then_with(|| {
+            if self.source == other.source {
+                std::cmp::Ordering::Equal
+            } else {
+                SourceTypeKey { source: &self.source }.encoding()
+                    .cmp(&SourceTypeKey { source: &other.source }.encoding())
+            }
+        })
+    }
+}
+
+impl CarrierTypeArgument {
+    fn from_checked_type(source: &Type) -> Option<Self> {
+        Some(Self { source: source.clone(), identity: SourceTypeKey { source }.digest()? })
+    }
+
+    fn valid(&self) -> bool {
+        SourceTypeKey { source: &self.source }.digest() == Some(self.identity)
+    }
+
+    fn source_type(&self) -> Type { self.source.clone() }
+}
 
 /// The value and ownership shape of one slice element. A scalar is copied;
 /// managed values and nonempty tuples use owned storage and require retain,
@@ -21,11 +62,12 @@ pub enum CarrierElement {
     Tuple(Vec<Self>),
     Dict(Box<Self>, Box<Self>),
     /// A checked, one-variant heap record. The declared identity and every
-    /// instantiated field are part of the proof, including unused parameters.
-    Record { name: String, constructor: String, field_names: Vec<String>, arguments: Vec<Self>, fields: Vec<Self> },
+    /// instantiated stored field is part of the ownership proof. Arguments
+    /// without stored fields still bind source identity.
+    Record { name: String, constructor: String, field_names: Vec<String>, arguments: Vec<CarrierTypeArgument>, fields: Vec<Self> },
     /// A checked tagged heap aggregate. Variant payloads occupy flattened
     /// nullable slots; only the active variant's slots are populated.
-    Sum { name: String, arguments: Vec<Self>, variants: Vec<CarrierVariant> },
+    Sum { name: String, arguments: Vec<CarrierTypeArgument>, variants: Vec<CarrierVariant> },
 }
 
 /// A checked constructor's name and fields are both part of the carrier's
@@ -175,9 +217,10 @@ impl CarrierElement {
                     if shape.packed || shape.fields.len() > 128 || shape.variants.len() > 128 {
                         None
                     } else {
-                        let arguments = arguments.iter().map(|argument| {
-                            Self::from_checked_type_with_definitions_at(argument, definitions, depth + 1, budget)
-                        }).collect::<Option<Vec<_>>>()?;
+                        SourceTypeKey { source: ty }.digest()?;
+                        let arguments = arguments.iter()
+                            .map(CarrierTypeArgument::from_checked_type)
+                            .collect::<Option<Vec<_>>>()?;
                         if shape.tagged {
                             if shape.variants.len() < 2 { return None; }
                             let variants = shape.variants.iter().enumerate().map(|(index, variant)| {
@@ -380,10 +423,10 @@ impl CarrierElement {
                 "Dict".into(), vec![key.source_type(), value.source_type()],
             ),
             Self::Record { name, arguments, .. } => Type::Named(
-                name.clone(), arguments.iter().map(Self::source_type).collect(),
+                name.clone(), arguments.iter().map(CarrierTypeArgument::source_type).collect(),
             ),
             Self::Sum { name, arguments, .. } => Type::Named(
-                name.clone(), arguments.iter().map(Self::source_type).collect(),
+                name.clone(), arguments.iter().map(CarrierTypeArgument::source_type).collect(),
             ),
         }
     }
@@ -435,7 +478,8 @@ impl CarrierElement {
                         || field_names.iter().any(|field| field.len() > 1_024) {
                         return None;
                     }
-                    pending.extend(arguments.iter().chain(fields).map(|field| (field, depth + 1)));
+                    if !arguments.iter().all(CarrierTypeArgument::valid) { return None; }
+                    pending.extend(fields.iter().map(|field| (field, depth + 1)));
                 }
                 Self::Sum { name, arguments, variants } => {
                     if name.len() > 1_024 || arguments.len() > 128 || variants.len() < 2 || variants.len() > 128
@@ -445,10 +489,12 @@ impl CarrierElement {
                         || !variants.iter().try_fold(0usize, |count, variant| count.checked_add(variant.fields.len())).is_some_and(|count| count <= 127) {
                         return None;
                     }
-                    pending.extend(arguments.iter().chain(variants.iter().flat_map(|variant| &variant.fields)).map(|field| (field, depth + 1)));
+                    if !arguments.iter().all(CarrierTypeArgument::valid) { return None; }
+                    pending.extend(variants.iter().flat_map(|variant| &variant.fields).map(|field| (field, depth + 1)));
                 }
             }
         }
+        SourceTypeKey { source: &self.source_type() }.digest()?;
         Some((4_096 - remaining, maximum_depth))
     }
 
@@ -568,7 +614,7 @@ impl CarrierElement {
                     bytes.extend_from_slice(&(constructor.len() as u32).to_le_bytes());
                     bytes.extend_from_slice(constructor.as_bytes());
                     bytes.extend_from_slice(&(arguments.len() as u32).to_le_bytes());
-                    for argument in arguments { encode(argument, bytes); }
+                    for argument in arguments { bytes.extend_from_slice(&argument.identity); }
                     encode_field_names(field_names, bytes);
                     bytes.extend_from_slice(&(fields.len() as u32).to_le_bytes());
                     for field in fields { encode(field, bytes); }
@@ -579,7 +625,7 @@ impl CarrierElement {
                     bytes.extend_from_slice(&(name.len() as u32).to_le_bytes());
                     bytes.extend_from_slice(name.as_bytes());
                     bytes.extend_from_slice(&(arguments.len() as u32).to_le_bytes());
-                    for argument in arguments { encode(argument, bytes); }
+                    for argument in arguments { bytes.extend_from_slice(&argument.identity); }
                     bytes.extend_from_slice(&(variants.len() as u32).to_le_bytes());
                     for variant in variants {
                         bytes.extend_from_slice(&(variant.name.len() as u32).to_le_bytes());
@@ -592,7 +638,7 @@ impl CarrierElement {
                 }
             }
         }
-        let mut bytes = b"witchy.rooted-slice-carrier.v1\0".to_vec();
+        let mut bytes = b"witchy.rooted-slice-carrier.v2\0".to_vec();
         encode(self, &mut bytes);
         *blake3::hash(&bytes).as_bytes()
     }

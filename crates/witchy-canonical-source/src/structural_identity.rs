@@ -17,13 +17,17 @@ pub struct SourceTypeKey<'a> {
 }
 
 impl SourceTypeKey<'_> {
-    pub fn digest(&self) -> Option<[u8; 32]> {
+    pub fn encoding(&self) -> Option<Vec<u8>> {
         let mut encoder = Encoder {
             bytes: b"witchy/source-type-key/v1\0".to_vec(),
             remaining: 4_096,
         };
         encoder.ty(self.source, 0)?;
-        (encoder.bytes.len() <= 1_048_576).then(|| *blake3::hash(&encoder.bytes).as_bytes())
+        (encoder.bytes.len() <= 1_048_576).then_some(encoder.bytes)
+    }
+
+    pub fn digest(&self) -> Option<[u8; 32]> {
+        Some(*blake3::hash(&self.encoding()?).as_bytes())
     }
 }
 
