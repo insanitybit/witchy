@@ -99,8 +99,6 @@ mod rfc0167_precompiled_run_source;
 mod rfc0167_views_through_views;
 #[path = "misc/rfc0165_owner_adapters.rs"]
 mod rfc0165_owner_adapters;
-#[path = "misc/rfc0167_reference_carrier_repros.rs"]
-mod rfc0167_reference_carrier_repros;
 #[path = "misc/rfc0167_views_through_channels_and_generators.rs"]
 mod rfc0167_views_through_channels_and_generators;
 #[path = "misc/rfc0167_installed_workflow.rs"]
