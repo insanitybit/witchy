@@ -633,15 +633,21 @@ fn gate_nextest_crate_plus_integration_test_unions_without_workspace() {
 
 #[test]
 fn gate_nextest_nested_integration_modules_use_root_targets() {
-    let output = gate_nextest(&[
-        "crates/witchy-types/src/typeck.rs",
+    for path in [
+        "tests/rfc0080/expansion_diagnostics.rs",
         "tests/rfc0082/dynamic_methods.rs",
-    ]);
-    assert!(
-        output.contains("binary(rfc0080_0130_conformance)"),
-        "missing consolidated RFC root target: {output}",
-    );
-    assert!(!output.contains("rfc0082/dynamic_methods"), "nested path became a binary selector: {output}");
+        "tests/rfc0130_generator/liveness.rs",
+    ] {
+        let output = gate_nextest(&["crates/witchy-types/src/typeck.rs", path]);
+        assert!(
+            output.contains("binary(rfc0080_0130_conformance)"),
+            "missing consolidated RFC root target for {path}: {output}",
+        );
+        assert!(!output.contains("WORKSPACE"), "nested path selected the workspace: {output}");
+        let commands = selected(&["--edit-loop", "crates/witchy-interp/src/tagged.rs", path]);
+        assert!(commands.iter().any(|c| c.contains("--test rfc0080_0130_conformance")), "{commands:?}");
+        assert!(!commands.iter().any(|c| c.contains("check.sh --fast")), "{commands:?}");
+    }
 }
 
 #[test]

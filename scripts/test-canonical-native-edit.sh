@@ -36,9 +36,8 @@ elif a[:2] == ["nextest", "list"]:
         print("not-json")
         sys.exit(0)
     rows = [("witchy-wir", "test", "unit"), ("witchy-wir", "test", "rfc0165_route_gate"),
-            ("witchy-lower", "lib", "witchy_lower"), ("witchy", "bin", "witchy"),
-            ("witchy", "test", "misc"), ("witchy", "test", "cli_subcommands"),
-            ("witchy", "lib", "witchy")]
+            ("witchy", "bin", "witchy"),
+            ("witchy", "test", "misc"), ("witchy", "test", "cli_subcommands")]
     if "codegen" in a: rows.append(("witchy-lower", "test", "codegen"))
     binaries = {}
     for package, kind, name in rows:
@@ -100,6 +99,11 @@ assert len(rows) == 6, rows
 assert rows[0]["args"][0] == "metadata"
 assert rows[1]["args"][:2] == ["nextest", "list"]
 assert rows[1]["args"].count("-p") == 3
+assert "--lib" not in rows[1]["args"], "must not force unused cfg(test) library copies"
+for row in rows[:2]:
+    features = row["args"][row["args"].index("--features") + 1].split(",")
+    assert "witchy-wir/native" in features
+    assert "witchy-lower/native-test-runtime" in features, "lower execution probe is feature gated"
 assert all(p in rows[1]["args"] for p in ["witchy-wir", "witchy-lower", "witchy", "misc", "cli_subcommands", "rfc0165_route_gate", "codegen"])
 for row in rows:
     # This fixture has no live gate lock, so the focused compiler workflow is
@@ -118,7 +122,7 @@ assert "--ignore-default-filter" not in rows[3]["args"]
 assert "--ignore-default-filter" in rows[4]["args"]
 expected_scopes = [
     "package(=witchy-wir) and kind(test) and (binary(=unit) or binary(=rfc0165_route_gate))",
-    "package(=witchy-lower) and (kind(lib) or (kind(test) and binary(=codegen)))",
+    "package(=witchy-lower) and kind(test) and binary(=codegen)",
     "package(=witchy) and ((kind(bin) and binary(=witchy)) or (kind(test) and binary(=misc)))",
 ]
 for row, scope in zip(rows[2:5], expected_scopes):
@@ -156,7 +160,7 @@ git add .
 git commit -qm dirty-fixture-change
 sha="$(git rev-parse HEAD)"
 receipt="$tmp/state/receipts/$sha.json"
-for failure in metadata build empty malformed missing-unit missing-rfc0165_route_gate missing-witchy_lower missing-witchy missing-misc wir lower root head-change; do
+for failure in metadata build empty malformed missing-unit missing-rfc0165_route_gate missing-codegen missing-witchy missing-misc missing-cli_subcommands wir lower root head-change; do
     if MOCK_FAIL="$failure" run_agent; then
         echo "unexpected success for $failure" >&2
         exit 1

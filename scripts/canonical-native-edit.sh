@@ -5,9 +5,10 @@
 # Feature audit: the selected WIR predicates inspect canonical checker/graph/
 # catalog state or parse source for authority pins. Raw encoder features only
 # expose separate test APIs; these predicates do not branch on their absence.
-# Lower's list_string tests retain checked-source admission and fixed Console
-# fixtures. The optional codegen test already enables raw-module-test-api and
-# asserts that the raw build route refuses. Root tests already use this native
+# Lower's list_string test uses checked-source admission and a fixed Console
+# fixture, with native-test-runtime explicitly enabled below. The recipe's
+# codegen test also enables raw-module-test-api and asserts that the raw build
+# route refuses. Root tests already use this native
 # dev-feature union. No disabled-profile assertion is converted to an enabled
 # one: optional runtime-native runs and every noncanonical route stay separate.
 set -euo pipefail
@@ -24,16 +25,19 @@ temporary="$(mktemp -d "${TMPDIR:-/tmp}/witchy-canonical-edit.XXXXXX")"
 trap 'rm -rf "$temporary"' EXIT
 cargo_metadata="$temporary/cargo.json"
 binaries_metadata="$temporary/binaries.json"
-targets=(--lib --bin witchy --test unit --test rfc0165_route_gate --test misc --test cli_subcommands --test codegen)
-lower_scope='package(=witchy-lower) and (kind(lib) or (kind(test) and binary(=codegen)))'
+targets=(--bin witchy --test unit --test rfc0165_route_gate --test misc --test cli_subcommands --test codegen)
+lower_scope='package(=witchy-lower) and kind(test) and binary(=codegen)'
+features='witchy-wir/native,witchy-lower/native-test-runtime'
 
-# One Cargo test build, with the union of the three existing feature sets.
-# --lib also builds root's lib test target; execution below explicitly excludes
-# it. Cargo target flags cannot express a per-package target union.
+# One Cargo test build, with the feature union needed by the three scopes.
+# These assertions live in integration targets, not cfg(test) library copies.
+# --lib overrides lib.test=false and would rebuild three otherwise unused
+# libraries. The lower execution probe requires its own runtime feature;
+# enabling only WIR's native feature leaves that probe absent from inventory.
 env -u WITCHY_ORACLE_EXAMPLE cargo metadata --locked --format-version 1 \
-    --features witchy-wir/native > "$cargo_metadata"
+    --features "$features" > "$cargo_metadata"
 env -u WITCHY_ORACLE_EXAMPLE cargo nextest list \
-    -p witchy-wir -p witchy-lower -p witchy --features witchy-wir/native \
+    -p witchy-wir -p witchy-lower -p witchy --features "$features" \
     "${targets[@]}" --list-type binaries-only --message-format json > "$binaries_metadata"
 
 # A missing target must not become a partial green run. Nextest subsequently
@@ -57,7 +61,6 @@ require_binary() {
 }
 require_binary witchy-wir test unit
 require_binary witchy-wir test rfc0165_route_gate
-require_binary witchy-lower lib ''
 require_binary witchy bin witchy
 require_binary witchy test misc
 require_binary witchy test cli_subcommands

@@ -995,7 +995,7 @@ for p in "${paths[@]}"; do
             # modules only when their sibling root integration target exists;
             # otherwise retain the fail-safe broad selection below.
             case "$test_name" in
-                rfc0082/* | rfc0130_generator/*)
+                rfc0080/* | rfc0082/* | rfc0130_generator/*)
                     test_name="rfc0080_0130_conformance"
                     ;;
                 */*)
@@ -1311,7 +1311,7 @@ elif [ "$edit_loop" -eq 1 ] && [ "$canonical_rewrite" -eq 1 ] \
     canonical_native_batch=("$canonical_native_wir_expr" "$canonical_native_lower_expr" "$canonical_native_app_expr" "$canonical_build_recipe")
     cmds=(
         "cargo nextest run -p witchy-wir --features native --test unit --test rfc0165_route_gate -E '${canonical_native_wir_expr}'"
-        "cargo nextest run -p witchy-lower --features witchy-wir/native --test codegen -E '${canonical_native_lower_expr}'"
+        "cargo nextest run -p witchy-lower --features witchy-wir/native,witchy-lower/native-test-runtime --test codegen -E '${canonical_native_lower_expr}'"
         "WITCHY_ORACLE_EXAMPLE=calc cargo nextest run -p witchy --features witchy-wir/native --bin witchy --test misc --ignore-default-filter -E '${canonical_native_app_expr}' && ./scripts/nextest-admitted.sh witchy -- cargo nextest run --test cli_subcommands -E 'test(=fetch_root_requires_an_explicit_valid_origin_and_admitted_artifact)'"
     )
     if [ "$canonical_build_recipe" -eq 1 ]; then
