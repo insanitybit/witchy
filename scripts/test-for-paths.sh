@@ -929,14 +929,6 @@ for p in "${paths[@]}"; do
         tests/worktree.rs | tests/worktree/*.rs)
             add_gate_test worktree
             add "cargo nextest run -p merge-queue-tests --test worktree" ;;
-        tests/misc/url_components.rs)
-            any_rust=1
-            add_early "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test misc -E 'test(/^url_components::/)'"
-            path_has_early=1 ;;
-        tests/misc/http_url_fallible.rs)
-            any_rust=1
-            add_early "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test misc -E 'test(/^http_url_fallible::/)'"
-            path_has_early=1 ;;
         tests/misc/rfc0087_migration_census.rs)
             any_rust=1
             add_early "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test misc -E 'test(/^rfc0087_migration_census::/)'"
@@ -950,14 +942,6 @@ for p in "${paths[@]}"; do
             # the compiler-independent repository-contract package.
             add_pkg repo-tests
             add "cargo nextest run -p repo-tests --test repo_hygiene" ;;
-        tests/misc/rfc0152_async_region_formation.rs)
-            any_rust=1
-            add_early "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test misc -E 'test(/^rfc0152_async_region_formation::/)'"
-            path_has_early=1 ;;
-        tests/misc/rfc0152_semantic_matrix.rs)
-            any_rust=1
-            add_early "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test misc -E 'test(/^rfc0152_semantic_matrix::/)'"
-            path_has_early=1 ;;
         tests/misc.rs)
             any_rust=1
             add_gate_test misc

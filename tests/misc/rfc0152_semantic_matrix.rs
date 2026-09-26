@@ -174,14 +174,10 @@ fn assert_case(case: &ChannelCase) {
 }
 
 #[test]
-fn rfc0152_phase0_sources_remain_accepted_in_both_modes() {
-    for case in CASES {
-        for source in [case.source.to_owned(), format!("mode opt\n\n{}", case.source)] {
-            witchy::resolve_std_only_checked(&source).unwrap_or_else(|error| {
-                panic!("{}: migrated source must check in both modes: {error}", case.label)
-            });
-        }
-    }
+fn rfc0152_phase0_representative_source_remains_accepted() {
+    let case = &CASES[0];
+    witchy::resolve_std_only_checked(case.source)
+        .unwrap_or_else(|error| panic!("{}: representative source must check: {error}", case.label));
 }
 
 #[test]

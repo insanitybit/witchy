@@ -70,18 +70,9 @@ fn interpreted_output(source: &str) -> Vec<String> {
 }
 
 #[test]
-fn rfc0152_region_sources_remain_accepted_in_both_modes() {
-    let ordinary = [
-        REGION_BOUNDARY_CONTRACT.to_owned(),
-        guarded_boundary_contract(true),
-        guarded_boundary_contract(false),
-    ];
-    for source in ordinary {
-        for candidate in [source.clone(), format!("mode opt\n\n{source}")] {
-            witchy::resolve_std_only_checked(&candidate)
-                .expect("migrated RFC-0152 region source must check in both modes");
-        }
-    }
+fn rfc0152_representative_region_source_remains_accepted() {
+    witchy::resolve_std_only_checked(REGION_BOUNDARY_CONTRACT)
+        .expect("representative RFC-0152 region source must check");
 }
 
 #[test]

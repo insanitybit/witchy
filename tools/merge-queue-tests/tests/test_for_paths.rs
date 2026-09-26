@@ -1026,7 +1026,10 @@ fn dispatch_edits_probe_fetch_origin_admission_before_commands_module() {
 
 #[test]
 fn network_misc_edits_run_only_their_modules() {
-    for (path, module) in [("tests/misc/http_url_fallible.rs", "http_url_fallible")] {
+    for (path, module) in [
+        ("tests/misc/http_url_fallible.rs", "http_url_fallible"),
+        ("tests/misc/url_components.rs", "url_components"),
+    ] {
         let commands = selected(&["--edit-loop", path]);
         assert_eq!(commands.len(), 1, "{path}: {commands:?}");
         assert!(
@@ -1037,6 +1040,14 @@ fn network_misc_edits_run_only_their_modules() {
             commands[0],
             "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test misc",
             "{path} expanded to every misc test: {commands:?}"
+        );
+
+        let gate = gate_nextest(&[path]);
+        assert!(
+            gate.lines().next().is_some_and(|line| line.contains("--test misc"))
+                && gate.contains(&format!("test(/^{}::/)", module))
+                && !gate.contains("WORKSPACE"),
+            "{path} expanded its landing gate beyond the touched module: {gate}",
         );
     }
 }
@@ -1134,6 +1145,14 @@ fn async_region_edits_run_complete_rfc0152_modules() {
             commands[0],
             "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test misc",
             "{path} expanded to every misc test: {commands:?}"
+        );
+
+        let gate = gate_nextest(&[path]);
+        assert!(
+            gate.lines().next().is_some_and(|line| line.contains("--test misc"))
+                && gate.contains(&format!("test(/^{}::/)", module))
+                && !gate.contains("WORKSPACE"),
+            "{path} expanded its landing gate beyond the touched module: {gate}",
         );
     }
 }
