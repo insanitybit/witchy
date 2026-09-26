@@ -10,7 +10,7 @@
 
 use std::collections::BTreeMap;
 
-use witchy_syntax::ast::{Expr, Function, Item, Module, Type, TypeDef};
+use witchy_syntax::ast::{Convention, Expr, Function, Item, Module, Type, TypeDef};
 
 use crate::abi::{CanonicalCallableAbi, CanonicalCallableAbiManifest};
 use crate::access::AccessSignature;
@@ -49,6 +49,9 @@ pub enum TaskExecutionProof {
     Task(SourceExecutionMode, Box<Self>),
     /// A checked local callable with a distinct lexical formal scope.
     Callable { scope: TaskCallableScope, parameters: usize, result: Box<Self> },
+    /// An exact checked declaration reference. Its result uses the declared
+    /// function's own symbolic parameters until this value is invoked.
+    DeclaredCallable { conventions: Vec<Convention>, result: Box<Self> },
     Parameter(usize),
     /// A lambda formal cannot borrow its enclosing function's parameter proof.
     CallableParameter(TaskCallableScope, usize),
@@ -131,6 +134,7 @@ impl TaskExecutionProof {
                 TaskExecutionProof::Variants(variants) => variants.values().flatten().all(|child| within(child, remaining, depth + 1)),
                 TaskExecutionProof::Task(_, result) | TaskExecutionProof::Awaited(result)
                     | TaskExecutionProof::Callable { result, .. }
+                    | TaskExecutionProof::DeclaredCallable { result, .. }
                     | TaskExecutionProof::Slot(result, _) | TaskExecutionProof::VariantSlot(result, _, _)
                     | TaskExecutionProof::AnyElement(result) => within(result, remaining, depth + 1),
                 _ => true,
@@ -151,6 +155,11 @@ impl TaskExecutionProof {
                 Self::Callable { scope: right_scope, parameters: right_arity, result: right })
                 if left_scope == right_scope && left_arity == right_arity => {
                 Self::Callable { scope: left_scope, parameters: left_arity, result: Box::new((*left).join(*right)) }
+            }
+            (Self::DeclaredCallable { conventions: left_conventions, result: left },
+                Self::DeclaredCallable { conventions: right_conventions, result: right })
+                if left_conventions == right_conventions => {
+                Self::DeclaredCallable { conventions: left_conventions, result: Box::new((*left).join(*right)) }
             }
             (Self::Awaited(left), Self::Awaited(right)) => Self::Awaited(Box::new((*left).join(*right))),
             (Self::Elements(left), Self::Elements(right)) if left.len() == right.len() => {
@@ -212,6 +221,9 @@ impl TaskExecutionProof {
                     scope: scope.clone(), parameters: *parameters,
                     result: Box::new(go(result, arguments, formal_scope, depth + 1)),
                 },
+                // A declared callable has no lexical captures. Substituting
+                // the enclosing function must not bind its own formals.
+                TaskExecutionProof::DeclaredCallable { .. } => proof.clone(),
                 TaskExecutionProof::Parameter(index) if formal_scope.is_none() =>
                     arguments.get(*index).cloned().unwrap_or(TaskExecutionProof::Unknown),
                 TaskExecutionProof::Parameter(index) => TaskExecutionProof::Parameter(*index),

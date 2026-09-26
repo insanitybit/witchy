@@ -256,17 +256,21 @@ impl Analyzer<'_> {
         // expression. A shadowing value cannot borrow same-spelled declaration
         // authority, even if its signature happens to match.
         if environment.contains_key(name) || self.table.local_callee_type(expression).is_some() {
-            let callable = environment.get(name).and_then(|proof| match proof {
-                Proof::Callable { scope, parameters, result } if *parameters == proofs.len() =>
-                    Some(result.instantiate_callback(scope, &proofs).bounded(4096)),
-                _ => None,
-            });
-            if let Some(result) = callable {
-                // A closure may change its captures when called. Its current
-                // result was checked above, but no prior local proof survives
-                // to a later execution without a fresh dataflow judgment.
-                environment.values_mut().for_each(|proof| *proof = Proof::Unknown);
-                return Ok(result);
+            match environment.get(name).cloned() {
+                Some(Proof::Callable { scope, parameters, result }) if parameters == proofs.len() => {
+                    let result = result.instantiate_callback(&scope, &proofs).bounded(4096);
+                    // A closure may change its captures when called. Its
+                    // current result was checked above, but prior captured
+                    // proofs need a fresh dataflow judgment after invocation.
+                    environment.values_mut().for_each(|proof| *proof = Proof::Unknown);
+                    return Ok(result);
+                }
+                Some(Proof::DeclaredCallable { conventions, result }) if conventions.len() == proofs.len() => {
+                    let result = result.instantiate(&proofs).bounded(4096);
+                    self.invalidate_arguments(args, Some(&conventions), environment);
+                    return Ok(result);
+                }
+                _ => {}
             }
             self.invalidate_arguments(args, None, environment);
             return Ok(Proof::Unknown);
@@ -331,20 +335,37 @@ impl Analyzer<'_> {
     ) -> Result<Proof, TypeError> {
         let proof = match expression {
             Expr::Var(name) => {
-                if self.check_await
-                    && self
-                        .summaries
-                        .get(name)
-                        .is_some_and(|summary| !summary.required_opt_inputs.is_empty())
-                {
-                    return Err(TypeError {
-                        message: format!(
-                            "in `{}`: callable `{name}` requires opt task input provenance and cannot be erased into an unchecked function value",
-                            self.function.name,
-                        ),
+                if let Some(local) = environment.get(name) {
+                    local.clone()
+                } else if self.table.function_type(name).is_some_and(|declared| {
+                    self.table.type_of(expression).and_then(ty_to_ast).as_ref() == Some(&declared)
+                }) {
+                    let declaration = self.module.items.iter().find_map(|item| match item {
+                        Item::Function(function) if function.name == *name => Some(function),
+                        _ => None,
                     });
+                    match (declaration, self.summaries.get(name)) {
+                        (Some(function), Some(summary)) if summary.required_opt_inputs.is_empty() => {
+                            let result = summary.result.clone();
+                            let result = if function.is_async {
+                                Proof::Task(source_execution_mode(function, &self.module.modes), Box::new(result))
+                            } else { result };
+                            Proof::DeclaredCallable {
+                                conventions: function.params.iter().map(|parameter| parameter.convention).collect(),
+                                result: Box::new(result.bounded(4096)),
+                            }
+                        }
+                        (Some(_), Some(_)) if self.check_await => {
+                            return Err(TypeError { message: format!(
+                                "in `{}`: callable `{name}` requires opt task input provenance and cannot be erased into an unchecked function value",
+                                self.function.name,
+                            ) });
+                        }
+                        _ => Proof::Unknown,
+                    }
+                } else {
+                    Proof::Unknown
                 }
-                environment.get(name).cloned().unwrap_or(Proof::Unknown)
             }
             Expr::Call { name, args } => self.direct_call(expression, name, args, environment)?,
             Expr::LabeledCall { args, .. } => {
@@ -567,6 +588,10 @@ impl Analyzer<'_> {
                     Proof::Callable { scope, parameters, result } if parameters == args.len() => {
                         environment.values_mut().for_each(|proof| *proof = Proof::Unknown);
                         result.instantiate_callback(&scope, &proofs).bounded(4096)
+                    }
+                    Proof::DeclaredCallable { conventions, result } if conventions.len() == args.len() => {
+                        self.invalidate_arguments(args, Some(&conventions), environment);
+                        result.instantiate(&proofs).bounded(4096)
                     }
                     _ => {
                         environment.values_mut().for_each(|proof| *proof = Proof::Unknown);

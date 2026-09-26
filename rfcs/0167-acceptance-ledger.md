@@ -271,6 +271,21 @@ await. Adversarial review found and prompted the exclusive-reference fix and
 found no remaining authority bypass in this change. No zero-leak audit or
 A–O closure is claimed; generic and indirect transport remains incomplete.
 
+Declared task-producing function values (implemented but unverified,
+2026-09-26): the checked task-provenance flow now binds an exact non-generic
+declaration reference to its symbolic result, source execution mode, and
+parameter conventions. Local aliases and aggregate projections retain this
+proof; direct function-value and expression calls instantiate it with their
+checked arguments. Outer function summary substitution cannot bind the
+declaration's own formals. A declaration with unrepresented opt task input
+requirements, an unknown callable, and a same-named shadowing parameter remain
+unproved. A focused checker build and a local tuple-carried function-value
+program passed admitted Wasm execution with the independently expected `5`;
+opaque and shadowed factory parameters refused in opt mode. Adversarial review
+found no concrete authority widening. No zero-leak audit or A–O closure is
+claimed; generic function values and public higher-order task obligations
+remain open.
+
 Source execution-mode ownership (implemented but unverified, 2026-09-26):
 the checker, loan analysis, call-scoped analysis, canonical lowerer, and legacy
 normal-copy repair telemetry now consume one typed source-mode judgment in
