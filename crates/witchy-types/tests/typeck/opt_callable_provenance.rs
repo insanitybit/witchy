@@ -26,3 +26,23 @@ fn main(console: Console):
         "{error}"
     );
 }
+
+#[test]
+fn imported_opt_body_keeps_call_scoped_copy_rule() {
+    let worker = r#"mode opt
+
+fn consume(value: String) -> Int:
+    value.length()
+
+pub fn inspect(let value: String) -> Int:
+    consume(value)
+"#;
+    let main = "import worker\n\nfn main(console: Console):\n    let _ = worker.inspect(\"hello\")\n    console.print(\"done\")\n";
+    let error = super::source::checked_bundle(vec![("worker", worker), ("main", main)], "main")
+        .expect_err("an imported opt body cannot copy-repair call-scoped access");
+    assert!(error.contains("call-scoped `let` parameter"), "{error}");
+
+    let normal_worker = worker.replacen("mode opt\n\n", "", 1);
+    super::source::checked_bundle(vec![("worker", &normal_worker), ("main", main)], "main")
+        .expect("normal source may make the checked independent copy");
+}

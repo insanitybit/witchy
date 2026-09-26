@@ -193,6 +193,10 @@ independent copy with no hidden callable capture. String concatenation and
 list iteration over similarly proved elements produce fresh values. Opt mode
 still requires its declared proof; direct returns, view-bearing storage, and
 unproved aggregate or callable copies retain their origin or fail closed.
+The linked verifier now selects normal or opt copy repair from each callable's
+authenticated source module, so a normal entry importing an opt body cannot
+grant that body normal-mode repair. This closes the cross-module mode-selection
+gap; admitted-Wasm and zero-leak evidence remain deferred.
 The existing precompiled `run-source` smoke passes after these repairs; this
 is a structural check, not A–O semantic evidence.
 Exact checked access signatures now distinguish independent owned results from
