@@ -1,76 +1,59 @@
 use super::*;
 use crate::{codegen, interpreter};
 
-    /// (RFC-0045) The message parity property: when the interpreter aborts, the
-    /// compiled backend must abort with the SAME message CORE — not merely "both
-    /// error". Covers each routed abort class: `fail(msg)` (dynamic), list-index
-    /// OOB and `string.to_int` junk (static + dynamic data), and NaN ordering
-    /// (static). This is the differential gate's semantics made a unit test: a
-    /// compiled trap at the wrong site or for the wrong reason would diverge here.
+    /// (RFC-0045) The message property: the compiled backend aborts with the
+    /// exact expected message, not merely "an error". Covers each routed abort
+    /// class: `fail(msg)` (dynamic), list-index OOB and `string.to_int` junk
+    /// (static + dynamic data), and NaN ordering (static). A compiled trap at the
+    /// wrong site or for the wrong reason would diverge here. The expected
+    /// messages are independent literals (the source walker is not RFC-0167
+    /// evidence), and the programs compile in parallel.
     #[test]
     fn abort_messages_match_across_backends() {
-        // Each case: (program, expected message core the interpreter produces).
+        // Each case: (program, the exact abort message, with its source site).
         let cases: &[(&str, &str)] = &[
             (
                 "fn main(console: Console):\n    fail(\"the reason\")\n",
-                "the reason",
+                "`main`, line 2: the reason",
             ),
             (
                 "import list\nfn main(console: Console):\n    let xs = [1, 2]\n    console.print(\"${list.at(xs, 5)}\")\n",
-                "list index 5 out of bounds (length 2)",
+                "`main`, line 4: list index 5 out of bounds (length 2)",
             ),
             (
                 "fn main(console: Console):\n    console.print(\"${\"junk\".to_int()}\")\n",
-                "cannot parse `junk` as an Int",
+                "`main`, line 2: cannot parse `junk` as an Int",
             ),
             (
                 "fn main(console: Console):\n    let nan = 0.0 / 0.0\n    console.print(\"${nan < 1.0}\")\n",
-                "cannot compare NaN",
+                "`main`, line 3: cannot compare NaN",
+            ),
+            // (RFC-0045 / latent i32-wrap hole) A list index beyond i32 range
+            // must abort with its TRUE value — `$list_at` checks in i64, so a
+            // huge index can't wrap to an in-range i32 and read a bogus slot.
+            // `4294967297` = 2^32 + 1 (wraps to 1 as i32) is the regression seed.
+            (
+                "import list\nfn main(console: Console):\n    let xs = [10, 20]\n    console.print(\"${list.at(xs, 4294967297)}\")\n",
+                "`main`, line 4: list index 4294967297 out of bounds (length 2)",
             ),
         ];
-        // (RFC-0045 / latent i32-wrap hole) A list index beyond i32 range must
-        // still abort with its TRUE value on both backends — `$list_at` now checks
-        // in i64, so a huge index can't wrap to an in-range i32 and read a bogus
-        // slot. `4294967297` = 2^32 + 1 (wraps to 1 as i32) is the regression seed.
-        let wrap_src = "import list\nfn main(console: Console):\n    let xs = [10, 20]\n    console.print(\"${list.at(xs, 4294967297)}\")\n";
-        {
-            let ierr = interpreter::run(wrap_src).expect_err("interpreter must abort on the huge index");
-            assert!(
-                ierr.message.ends_with("list index 4294967297 out of bounds (length 2)"),
-                "interpreter: {}",
-                ierr.message
-            );
-            let linked = prepared_module(wrap_src);
-            let bytes = codegen::compile_module_binary(&linked)
-                .expect_lowered("binary");
-            let cerr = crate::run_wasm_bytes(&bytes).expect_err("WASM must abort on the huge index");
-            assert_eq!(
-                cerr,
-                format!("runtime error: {}", ierr.message),
-                "compiled must report the TRUE index, not a wrapped one"
-            );
-        }
-
-        for (src, want_core) in cases {
-            // Interpreter (the oracle): its full message ends with the core.
-            let ierr = interpreter::run(src).expect_err("interpreter must abort");
-            assert!(
-                ierr.message.ends_with(want_core),
-                "interpreter core mismatch: got `{}`, want suffix `{want_core}`",
-                ierr.message
-            );
-            // Compiled: the routed abort surfaces `runtime error: <core>` via the
-            // host `bail!` (root cause). It must equal the interpreter's core.
-            let linked = prepared_module(src);
-            let bytes = codegen::compile_module_binary(&linked)
-                .expect_lowered("the binary path lowers this program");
-            let cerr = crate::run_wasm_bytes(&bytes).expect_err("WASM must abort");
-            assert_eq!(
-                cerr,
-                format!("runtime error: {}", ierr.message),
-                "compiled abort mismatch for src:\n{src}"
-            );
-        }
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = cases
+                .iter()
+                .map(|(src, want)| {
+                    scope.spawn(move || {
+                        let linked = prepared_module(src);
+                        let bytes = codegen::compile_module_binary(&linked)
+                            .expect_lowered("the binary path lowers this program");
+                        let cerr = crate::run_wasm_bytes(&bytes).expect_err("WASM must abort");
+                        assert_eq!(cerr, format!("runtime error: {want}"), "compiled abort mismatch for src:\n{src}");
+                    })
+                })
+                .collect();
+            for handle in handles {
+                handle.join().expect("abort case");
+            }
+        });
     }
 
     /// (RFC-0044 rule 3) The Witchy std contract-violation path aborts: a bad

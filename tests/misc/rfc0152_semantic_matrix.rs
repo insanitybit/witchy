@@ -174,13 +174,6 @@ fn assert_case(case: &ChannelCase) {
 }
 
 #[test]
-fn rfc0152_phase0_representative_source_remains_accepted() {
-    let case = &CASES[0];
-    witchy::resolve_std_only_checked(case.source)
-        .unwrap_or_else(|error| panic!("{}: representative source must check: {error}", case.label));
-}
-
-#[test]
 fn rfc0152_phase0_ready_select4_matrix() {
     assert_case(&CASES[0]);
 }

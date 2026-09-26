@@ -53,7 +53,12 @@ use crate::{ast, codegen, interpreter, parser, typeck};
             "import dict\n\ntype Key:\n    Key(Int)\n\nfn main(console: Console):\n    let d: Dict(Key, Int) = dict.new()\n    let _x = d.merge(d)\n    console.print(\"bad\")\n",
             "import dict\n\ntype Value:\n    Value(Int)\n\nfn main(console: Console):\n    let d: Dict(String, Value) = dict.new()\n    let _x = d.invert()\n    console.print(\"bad\")\n",
         ];
+        // The nine sources are independent checks; run them in parallel.
+        let resolve_fs_std = &resolve_fs_std;
+        std::thread::scope(|scope| {
+        let mut handles = Vec::new();
         for src in rejected {
+            handles.push(scope.spawn(move || {
             let linked = resolve_fs_std(src);
             match typeck::check(&linked) {
                 Err(err) => assert!(
@@ -69,22 +74,33 @@ use crate::{ast, codegen, interpreter, parser, typeck};
                     );
                 }
             }
+            }));
         }
 
+        handles.push(scope.spawn(move || {
         let erased_wrapper = "import dict\n\npub fn wrapped(d: Dict(k, v), key: k) -> Option(v):\n    d.get(key)\n";
         let linked = resolve_fs_std(erased_wrapper);
         let err = typeck::check(&linked).expect_err("generic wrapper must forward dict.get's Eq bound");
         assert!(err.message.contains("requires `k: Eq`"), "expected forwarded Eq-bound error, got: {}", err.message);
+        }));
 
+        handles.push(scope.spawn(move || {
         let bounded_wrapper = "import dict\n\npub fn wrapped(d: Dict(k, v), key: k) -> Option(v) where k: Eq:\n    d.get(key)\n";
         let linked = resolve_fs_std(bounded_wrapper);
         typeck::check(&linked).expect("generic wrapper can forward dict.get's Eq bound");
+        }));
 
+        handles.push(scope.spawn(move || {
         let accepted = "import dict\n\nfn id(x: Int) -> Int:\n    x\n\nfn keep(_k: String, _v: Int) -> Bool:\n    true\n\nfn main(console: Console):\n    let d: Dict(String, Int) = dict.new()\n    let values: Dict(String, Int) = dict.new()\n    let _a = d.get(\"one\")\n    let _b = dict.from_pairs([(\"one\", 1)])\n    let _c = d.map_values(id)\n    let _d = d.filter(keep)\n    let _e = d.merge(d)\n    let _f = values.invert()\n    console.print(\"ok\")\n";
         let linked = resolve_fs_std(accepted);
         typeck::check(&linked).expect("bounded dict wrappers type-check");
         codegen::compile_module_binary(&linked)
             .expect_lowered("bounded dict wrappers lower");
+        }));
+        for handle in handles {
+            handle.join().expect("dict wrapper case");
+        }
+        });
     }
 
     /// VALUE EQUALITY, ALWAYS (the learning log's F15): dict lookups with

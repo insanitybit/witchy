@@ -517,13 +517,23 @@ fn admitted_bytes_out_of_range_index_value_and_count_trap() {
         "import bytes\n\nfn main(console: Console):\n    let b = bytes.with_capacity(0 - 1)\n    console.print(\"${b.length()}\")\n",
         "import bytes\n\nfn main(console: Console):\n    var b = bytes.repeat(1, 3)\n    b.set_at(0 - 1, 7)\n    console.print(\"${b.length()}\")\n",
     ];
-    for fixture in fixtures {
-        assert!(run_admitted_result(fixture).is_err(), "{fixture}");
-    }
-    // A capacity hint is unobservable: a huge one is clamped, not an abort
-    // (the interpreter clamps its own hint).
-    let output = run_admitted("import bytes\n\nfn main(console: Console):\n    let b = bytes.repeat(1, 3)\n    var c = bytes.with_capacity(9223372036854775807)\n    c.reserve(9223372036854775807)\n    console.print(\"${b.at(2)} ${b.slice(1, 3).length()} ${c.length()}\")\n");
-    assert_eq!(output, vec!["1 2 0".to_string()]);
+    // Five independent compiles: run them in parallel.
+    std::thread::scope(|scope| {
+        let traps: Vec<_> = fixtures
+            .into_iter()
+            .map(|fixture| scope.spawn(move || assert!(run_admitted_result(fixture).is_err(), "{fixture}")))
+            .collect();
+        // A capacity hint is unobservable: a huge one is clamped, not an abort
+        // (the interpreter clamps its own hint).
+        let clamp = scope.spawn(|| {
+            let output = run_admitted("import bytes\n\nfn main(console: Console):\n    let b = bytes.repeat(1, 3)\n    var c = bytes.with_capacity(9223372036854775807)\n    c.reserve(9223372036854775807)\n    console.print(\"${b.at(2)} ${b.slice(1, 3).length()} ${c.length()}\")\n");
+            assert_eq!(output, vec!["1 2 0".to_string()]);
+        });
+        for trap in traps {
+            trap.join().expect("trap fixture");
+        }
+        clamp.join().expect("clamp fixture");
+    });
 }
 
 /// Run an admitted program with `Dir` and `Env` grants beside the console.

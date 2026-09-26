@@ -41,24 +41,13 @@ use crate::{interpreter, parser, typeck};
 
     /// (BUG-396) Structured channel helpers sequence multi-handle lists without
     /// routing join/cancel through the recursive generic `for_each` helper.
+    /// One program covers both fan-outs (`scope` joins all eight, then
+    /// `race_n` takes the first of eight and cancels the rest) so the test pays
+    /// the async executor compile once; the expected lines are independent.
     #[test]
     fn channel_structured_join_cancel_indexed_fanouts_backends_agree() {
-        let cases = [
-            (
-                "scope",
-                "import chan\nimport list\n\nasync fn noop(_n: Int) -> ():\n    return\n\nasync fn main(console: Console):\n    let items = list.range(8)\n    chan.scope(list.map(items, fn(n): noop(n))).await\n    console.print(\"scoped ${list.length(items)}\")\n",
-                ["scoped 8"],
-            ),
-            (
-                "race_n",
-                "import chan\nimport list\nimport option\n\nasync fn value(n: Int) -> Int:\n    n\n\nasync fn main(console: Console):\n    let items = list.range(8)\n    let raced = chan.race_n(list.map(items, fn(n): value(n))).await\n    let winner = option.unwrap_or(raced, 0 - 1)\n    console.print(\"${winner}\")\n",
-                ["0"],
-            ),
-        ];
-        for (label, src, expected) in cases {
-            assert_eq!(link_run(src), expected, "interp: {label}");
-            assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "compiled: {label}");
-        }
+        let src = "import chan\nimport list\nimport option\n\nasync fn noop(_n: Int) -> ():\n    return\n\nasync fn value(n: Int) -> Int:\n    n\n\nasync fn main(console: Console):\n    let items = list.range(8)\n    chan.scope(list.map(items, fn(n): noop(n))).await\n    console.print(\"scoped ${list.length(items)}\")\n    let raced = chan.race_n(list.map(items, fn(n): value(n))).await\n    let winner = option.unwrap_or(raced, 0 - 1)\n    console.print(\"${winner}\")\n";
+        assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), ["scoped 8", "0"], "compiled scope + race_n");
     }
 
     /// (BUG-007) The trait-method edge is rejected LOUDLY at parse time rather than

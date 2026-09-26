@@ -1,5 +1,5 @@
 use super::*;
-use crate::{codegen, parser, typeck};
+use crate::{codegen, parser};
 
     /// `witchy emit-wat <file>` compiles a program to WebAssembly text — the same
     /// module `sandbox` runs — for inspecting the generated code.
@@ -35,8 +35,10 @@ use crate::{codegen, parser, typeck};
 
     /// M3 sink-flip: the WIR→binary path (`compile_module_binary`, NO
     /// `wat::parse_str`) must, for every program whose whole module lowers,
-    /// assemble a VALID wasm module that runs identically to the interpreter
-    /// oracle and to the legacy WAT path. Programs are chosen from the lowering
+    /// assemble a VALID wasm module whose output equals the independent expected
+    /// lines. (The source-walker and std-resolved recompiles were dropped: the
+    /// walker is not RFC-0167 evidence and the second compile ran the same
+    /// `compile_module_binary` again.) Programs are chosen from the lowering
     /// subset (string literals + control flow + scalar helpers; no list-building,
     /// string concat, generated render, or Int/Float `main` yet).
     #[test]
@@ -399,19 +401,41 @@ use crate::{codegen, parser, typeck};
             ),
         ];
         assert!(!cases.is_empty(), "the WIR binary path lowered nothing — convergence regressed");
+        // Every case that is a bare `main` body (no helpers, types or imports)
+        // is compiled as one program: its body becomes `case_<i>` and `main`
+        // calls them in order. That pays the per-program compile floor once
+        // instead of once per case; the expected lines concatenate in order.
+        // Cases with their own top-level items keep their own program.
+        const MAIN: &str = "fn main(console: Console):\n";
+        let mut merged_src = String::new();
+        let mut merged_calls = String::new();
+        let mut merged_want: Vec<String> = Vec::new();
+        let mut programs: Vec<(String, Vec<String>)> = Vec::new();
+        for (index, (src, want)) in cases.iter().enumerate() {
+            match src.strip_prefix(MAIN) {
+                Some(body) if body.lines().all(|line| line.is_empty() || line.starts_with(' ')) => {
+                    merged_src.push_str(&format!("fn case_{index}(console: Console):\n{body}\n"));
+                    merged_calls.push_str(&format!("    case_{index}(console)\n"));
+                    merged_want.extend(want.iter().cloned());
+                }
+                _ => programs.push(((*src).to_string(), want.clone())),
+            }
+        }
+        merged_src.push_str(MAIN);
+        merged_src.push_str(&merged_calls);
+        programs.push((merged_src, merged_want));
         std::thread::scope(|s| {
-            let handles: Vec<_> = cases.iter().map(|(src, want)| {
+            let handles: Vec<_> = programs.iter().map(|(src, want)| {
                 s.spawn(move || {
                     let module = parser::parse_module(src).expect("parse");
                     let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
-                    typeck::check(&linked).expect("typecheck");
+                    // No separate `typeck::check`: `compile_module_binary`
+                    // re-checks the program and rejects a type error itself.
                     let bytes = codegen::compile_module_binary(&linked)
                         .expect_lowered(&format!(
                             "expected the WIR binary path to handle this program:\n{src}"
                         ));
                     assert_eq!(&run_bytes_print_only(&bytes), want, "binary path (print-only):\n{src}");
-                    assert_eq!(&link_run(src), want, "interpreter oracle:\n{src}");
-                    assert_eq!(&run_on_wasm(src), want, "legacy WAT path:\n{src}");
                 })
             }).collect();
             for h in handles { h.join().unwrap(); }

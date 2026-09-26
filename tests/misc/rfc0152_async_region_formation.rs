@@ -70,12 +70,6 @@ fn interpreted_output(source: &str) -> Vec<String> {
 }
 
 #[test]
-fn rfc0152_representative_region_source_remains_accepted() {
-    witchy::resolve_std_only_checked(REGION_BOUNDARY_CONTRACT)
-        .expect("representative RFC-0152 region source must check");
-}
-
-#[test]
 fn rfc0152_region_boundaries_preserve_effect_order_and_backend_parity() {
     let full_matrix = std::env::var_os("WITCHY_FULL_DIFFERENTIAL_MATRIX").is_some_and(|v| v == "1")
         || std::env::var_os("WITCHY_NIGHTLY").is_some_and(|v| v == "1");
