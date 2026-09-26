@@ -37,6 +37,9 @@ impl SourceExecutionMode {
 pub enum TaskExecutionProof {
     Unknown,
     Task(SourceExecutionMode, Box<Self>),
+    /// A checked local callable whose result depends only on its captured
+    /// snapshot and known calls. Parameter-dependent results remain Unknown.
+    Callable { parameters: usize, result: Box<Self> },
     Parameter(usize),
     /// Result of executing a symbolic task parameter or projection.
     Awaited(Box<Self>),
@@ -116,6 +119,7 @@ impl TaskExecutionProof {
                 TaskExecutionProof::Variant { fields, .. } => fields.iter().all(|child| within(child, remaining, depth + 1)),
                 TaskExecutionProof::Variants(variants) => variants.values().flatten().all(|child| within(child, remaining, depth + 1)),
                 TaskExecutionProof::Task(_, result) | TaskExecutionProof::Awaited(result)
+                    | TaskExecutionProof::Callable { result, .. }
                     | TaskExecutionProof::Slot(result, _) | TaskExecutionProof::VariantSlot(result, _, _)
                     | TaskExecutionProof::AnyElement(result) => within(result, remaining, depth + 1),
                 _ => true,
@@ -131,6 +135,10 @@ impl TaskExecutionProof {
         match (self, other) {
             (Self::Task(left_mode, left_result), Self::Task(right_mode, right_result)) if left_mode == right_mode => {
                 Self::Task(left_mode, Box::new((*left_result).join(*right_result)))
+            }
+            (Self::Callable { parameters: left_arity, result: left },
+                Self::Callable { parameters: right_arity, result: right }) if left_arity == right_arity => {
+                Self::Callable { parameters: left_arity, result: Box::new((*left).join(*right)) }
             }
             (Self::Awaited(left), Self::Awaited(right)) => Self::Awaited(Box::new((*left).join(*right))),
             (Self::Elements(left), Self::Elements(right)) if left.len() == right.len() => {
@@ -188,6 +196,10 @@ impl TaskExecutionProof {
             match proof {
                 TaskExecutionProof::Unknown => TaskExecutionProof::Unknown,
                 TaskExecutionProof::Task(mode, result) => TaskExecutionProof::Task(*mode, Box::new(go(result, arguments, depth + 1))),
+                TaskExecutionProof::Callable { parameters, result } => TaskExecutionProof::Callable {
+                    parameters: *parameters,
+                    result: Box::new(go(result, arguments, depth + 1)),
+                },
                 TaskExecutionProof::Parameter(index) => arguments.get(*index).cloned().unwrap_or(TaskExecutionProof::Unknown),
                 TaskExecutionProof::Awaited(base) => match go(base, arguments, depth + 1) {
                     TaskExecutionProof::Task(_, result) => *result,

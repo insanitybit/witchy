@@ -231,6 +231,18 @@ impl Analyzer<'_> {
         // expression. A shadowing value cannot borrow same-spelled declaration
         // authority, even if its signature happens to match.
         if environment.contains_key(name) || self.table.local_callee_type(expression).is_some() {
+            let callable = environment.get(name).and_then(|proof| match proof {
+                Proof::Callable { parameters, result } if *parameters == proofs.len() =>
+                    Some(result.as_ref().clone().bounded(4096)),
+                _ => None,
+            });
+            if let Some(result) = callable {
+                // A closure may change its captures when called. Its current
+                // result was checked above, but no prior local proof survives
+                // to a later execution without a fresh dataflow judgment.
+                environment.values_mut().for_each(|proof| *proof = Proof::Unknown);
+                return Ok(result);
+            }
             Self::invalidate_arguments(args, environment);
             return Ok(Proof::Unknown);
         }
@@ -367,6 +379,10 @@ impl Analyzer<'_> {
             }
             Expr::Field { base, field } => match self.expr(base, environment)? {
                 Proof::Fields(mut fields) => fields.remove(field).unwrap_or(Proof::Unknown),
+                Proof::Elements(elements) if matches!(self.table.type_of(base), Some(Ty::Tuple(_))) =>
+                    field.parse::<usize>().ok()
+                        .and_then(|index| elements.get(index).cloned())
+                        .unwrap_or(Proof::Unknown),
                 proof @ (Proof::Variant { .. } | Proof::Parameter(_) | Proof::Slot(_, _) | Proof::VariantSlot(_, _, _)) => {
                     let index = match self.table.type_of(base) {
                         Some(Ty::Named(name, _)) => self
@@ -477,32 +493,45 @@ impl Analyzer<'_> {
             Expr::Lambda { params, body, .. } => {
                 let mut nested = environment.clone();
                 for parameter in params {
+                    // A lambda parameter cannot borrow an enclosing
+                    // function's symbolic parameter identity. Results that
+                    // depend on the invocation argument stay fail closed.
                     nested.insert(parameter.name.clone(), Proof::Unknown);
                 }
                 // Audit deferred bodies even when the closure itself is only
                 // stored. Their effects run under this source declaration.
                 let old_returns = std::mem::take(&mut self.returns);
                 let old_requirements = std::mem::take(&mut self.required_opt_inputs);
-                self.block(body, &mut nested)?;
+                let tail = self.block(body, &mut nested)?;
+                let mut nested_returns = std::mem::replace(&mut self.returns, old_returns);
+                if !matches!(body.stmts.last(), Some(Stmt::Return(_))) {
+                    nested_returns.push(tail);
+                }
                 let nested_requirements =
                     std::mem::replace(&mut self.required_opt_inputs, old_requirements);
-                self.returns = old_returns;
                 for requirement in nested_requirements {
                     if !self.required_opt_inputs.contains(&requirement) {
                         self.required_opt_inputs.push(requirement);
                     }
                 }
-                Proof::Unknown
+                Proof::Callable {
+                    parameters: params.len(),
+                    result: Box::new(Self::join_values(nested_returns).bounded(4096)),
+                }
             }
             Expr::Apply { func, args } => {
-                self.expr(func, environment)?;
-                for arg in args {
-                    self.expr(arg, environment)?;
+                let callable = self.expr(func, environment)?;
+                for arg in args { self.expr(arg, environment)?; }
+                match callable {
+                    Proof::Callable { parameters, result } if parameters == args.len() => {
+                        environment.values_mut().for_each(|proof| *proof = Proof::Unknown);
+                        (*result).bounded(4096)
+                    }
+                    _ => {
+                        environment.values_mut().for_each(|proof| *proof = Proof::Unknown);
+                        Proof::Unknown
+                    }
                 }
-                environment
-                    .values_mut()
-                    .for_each(|proof| *proof = Proof::Unknown);
-                Proof::Unknown
             }
             Expr::MethodCall { receiver, args, .. } => {
                 self.expr(receiver, environment)?;
