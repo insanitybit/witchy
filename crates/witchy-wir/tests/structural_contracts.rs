@@ -16,3 +16,5 @@ mod owned_slot_child_storage;
 mod recursive_layout_transport;
 #[path = "structural_contracts/safewir_structure.rs"]
 mod safewir_structure;
+#[path = "structural_contracts/same_target_branch.rs"]
+mod same_target_branch;

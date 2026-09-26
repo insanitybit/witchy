@@ -1099,11 +1099,17 @@ fn check_block_flow(
         blocks,
         memory,
     )?;
-    let mut updates = Vec::new();
+    let mut updates: Vec<(BlockId, memory::MemoryState)> = Vec::new();
     for (target, arguments) in memory_successor_edges(&block.terminator, memory) {
         let target_block = blocks[&target];
         let transferred = memory.transfer_edge(target_block, arguments)?;
-        let next = match incoming.get(&target) {
+        // Both conditional arms may reach the same block with different
+        // arguments. Include the earlier arm before publishing either update;
+        // otherwise the later arm overwrites its facts without a join.
+        let current = updates.iter().rev()
+            .find_map(|(previous_target, state)| (*previous_target == target).then_some(state))
+            .or_else(|| incoming.get(&target));
+        let next = match current {
             Some(current) => memory.meet(target_block, current, &transferred)?,
             None => transferred,
         };
