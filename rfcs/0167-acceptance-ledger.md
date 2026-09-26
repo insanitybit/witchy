@@ -62,6 +62,23 @@ is needed for soundness.
 
 ## Exact-tip evidence checkpoint
 
+Rows E/H/I/P nested child preparation (representative evidence, 2026-09-26):
+`rfc0167_nested_mode_preparation` places one ordinary List child into two
+outer slots, retains the old outer snapshot, and mutates only the first child.
+Normal-to-normal calls, normal-to-opt `var unique` calls, and normal mutation
+of an opt-defined plain record each produce the independently derived score
+`1*1000 + 1*100 + 9*10 + 1 = 1191`. Their combined result `119111911191`
+executes on admitted unoptimized Wasm with zero canonical heap leaks. The
+corresponding opt call refuses a shared child, despite the fresh outer shell.
+An opt caller explicitly constructing an independent unique child from scalar
+reads produces `119`, also with zero leaks. These are exact representative
+paths, not completion of the broader rows or an allocation-performance claim.
+Ordinary `rows[0].owned()` currently fails to establish the unique proof for
+that opt call. Its non-view lowering shares the handle, so granting source
+uniqueness alone would be unsound; checked materialization and matching storage
+operations remain an implementation gap. Imported behavior provenance and
+resource disposition are separate obligations, not established by this test.
+
 Executable task-operand identity (implemented but unverified, 2026-09-26):
 the linked checker binds each source `await` to its exact typed pre-CPS
 operand and mode proof. Async lowering carries that identity through hoisting

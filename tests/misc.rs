@@ -105,6 +105,8 @@ mod rfc0167_views_through_channels_and_generators;
 mod rfc0167_installed_workflow;
 #[path = "misc/rfc0167_normal_view_bearing_types.rs"]
 mod rfc0167_normal_view_bearing_types;
+#[path = "misc/rfc0167_nested_mode_preparation.rs"]
+mod rfc0167_nested_mode_preparation;
 #[path = "misc/rfc0167_slice_record_field.rs"]
 mod rfc0167_slice_record_field;
 #[path = "misc/rfc0167_try_int_view_payload.rs"]
