@@ -14064,6 +14064,9 @@ impl FunctionLowerer<'_> {
                 );
             if move_only {
                 self.push_operation(Operation::MoveRange { destination, source, count: old_length });
+                // The source's owned slots are now empty. Publish an empty
+                // logical prefix before DropRef inspects that old owner.
+                self.push_operation(Operation::UpdateCount { object: old_object, count: zero });
             } else {
                 self.push_operation(Operation::CloneRange { destination, source, count: old_length });
             }
