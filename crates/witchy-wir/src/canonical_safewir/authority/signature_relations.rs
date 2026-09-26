@@ -149,10 +149,21 @@ pub(super) fn candidate_signature_matches_source_inner(
         let unique_parameter = index.checked_sub(abi_ordinary_results)
             .and_then(|offset| write_back_parameters.get(offset))
             .is_some_and(|(parameter, _)| actual.contract.parameters[*parameter].ownership == super::super::ParameterOwnership::UniqueWriteBack);
+        if index == 0 && !result_is_unit && source_unique_result {
+            if let Some(super::super::ValueType::Gc(family)) = actual.results.get(index) {
+                // GC values have no linear-memory layout to name in Unique.
+                // The source owner-family and GC owned-origin dataflow bind
+                // this distinct result authority separately.
+                return matches!(contract, super::super::ResultContract::OwnedGc {
+                    family: actual_family,
+                } if actual_family == family);
+            }
+        }
         let expected_unique = (index == 0 && !result_is_unit && source_unique_result
             && actual.results.get(index).is_some_and(root_unique_result_requires_token))
             || unique_parameter;
-        expected_unique == matches!(contract, super::super::ResultContract::Unique { .. })
+        !matches!(contract, super::super::ResultContract::OwnedGc { .. })
+            && expected_unique == matches!(contract, super::super::ResultContract::Unique { .. })
     });
     let direct_alias_matches = direct_shared_alias_result_matches(
         actual,

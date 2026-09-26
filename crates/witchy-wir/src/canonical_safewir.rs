@@ -367,6 +367,9 @@ pub enum ResultContract {
     Shared { layout: LayoutId },
     /// A complete exclusive RC token, not a claim of fresh allocation.
     Unique { layout: LayoutId },
+    /// One source-authenticated opaque GC owner token. The GC ownership
+    /// dataflow must prove an owned origin; no linear-memory layout is implied.
+    OwnedGc { family: GcTypeId },
     AliasesParameter { parameter: u32, layout: LayoutId },
     /// A checked exclusive result carrier. Unlike `AliasesParameter`, this
     /// requires a declaration-derived `WriteBack` input and retains its

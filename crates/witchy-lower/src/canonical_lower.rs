@@ -2722,6 +2722,10 @@ fn signature_from_type(
             // that fact in SafeWIR's unique token; an inline scalar is
             // already non-aliasable and keeps its ordinary physical lane.
             ValueType::Ref(layout) => vec![ResultContract::Unique { layout }],
+            // Opaque GC owners have no linear-memory layout. Their owned
+            // result contract requires a registered family and an owned
+            // origin in the GC ownership dataflow.
+            ValueType::Gc(family) => vec![ResultContract::OwnedGc { family }],
             value_type if is_inline_scalar(value_type) => {
                 (!is_unit(value_type)).then_some(ResultContract::Value(value_type)).into_iter().collect()
             }

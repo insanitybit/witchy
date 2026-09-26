@@ -76,7 +76,8 @@ to_ms` finds `duration.to_milliseconds`.
 The canonical compiler currently refuses the `chan.par_map` and
 `chan.par_reduce` implementation because its scheduler carries a live
 `task.Handle` through a task result without consuming aggregate extraction and
-cancellation disposition.
+cancellation disposition. The owned GC result ABI exists for direct unique
+owner transfers; it does not make a replayable task capture of a handle lawful.
 
 `vm` runs capture-free work across isolated worker cores (`vm.par_map`); its
 `with_dir` / `serve` entry points thread a `Dir` / `Net` through to the workers.

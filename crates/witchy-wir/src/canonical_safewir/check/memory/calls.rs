@@ -339,6 +339,7 @@ impl<'a> MemoryChecker<'a> {
             }
             match result {
                 ResultContract::Value(value_type) if !value_type.is_linear_memory_ref() => {}
+                ResultContract::OwnedGc { .. } => {}
                 ResultContract::CheckedValue { layout } => {
                     self.require_ref_type(*destination, *layout)?;
                     let extent = self.parameter_extent(*layout)?;
@@ -737,6 +738,7 @@ impl<'a> MemoryChecker<'a> {
             }
             match result {
                 ResultContract::Value(value_type) if !value_type.is_linear_memory_ref() => {}
+                ResultContract::OwnedGc { .. } => {}
                 ResultContract::DisjunctiveWriteBackSelector {
                     carrier_result,
                     parameters: candidates,

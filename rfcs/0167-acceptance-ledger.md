@@ -1000,8 +1000,8 @@ An existing channel-view test still refuses the live `task.Handle` captured
 across await; one-shot continuation and cancellation ownership remain a
 separate structural gap. Moving its join before the next suspension clears
 that refusal but exposes a second baseline lowering gap: the `Done` field of
-`task.Step(task.Handle)` lacks an owned GC result ABI even though its outer
-storage plan now establishes the recursive affine move. The
+`task.Step(task.Handle)` originally lacked an owned GC result ABI even though
+its outer storage plan established the recursive affine move. The
 existing channel test now pins the fail-closed refusal rather than claiming
 admitted-Wasm row K evidence. The moved fixture is a diagnostic probe, not row
 K evidence. Adversarial review found no authority bypass in the local list
@@ -1015,8 +1015,24 @@ affine managed fields when building the shell. An existing compiler smoke
 admits a `Packet(&String, Ticket)` through checked source and unoptimized
 SafeWIR lowering; the live-handle channel refusal remains fail closed. This
 does not establish hand-computed admitted-Wasm behavior or a zero-leak audit,
-so no A–O row closes. The owned GC result ABI for `task.Step(task.Handle)`
-remains a separate structural blocker.
+so no A–O row closes. The owned GC result ABI is now implemented separately;
+`task.Step(task.Handle)` still needs a lawful one-shot task capture and
+consuming aggregate extraction before it can be admitted end to end.
+
+Row G owned GC result contract (implemented but unverified, 2026-09-26):
+an affine or root-unique opaque GC source result now maps to a distinct
+`OwnedGc` contract. Source ABI correspondence checks its exact owner family;
+SafeWIR tracks owned origins through parameters, owner construction and
+extraction, direct and indirect calls, branches, and tail calls. Retaining
+operations demote the source token's owned proof, while a borrowed or cloned
+token cannot satisfy `OwnedGc`. A focused checked-source and unoptimized
+SafeWIR smoke admits construction, an `own unique` relay, and consuming match
+for recursive `Chain`. This is compiler admission only; no hand-computed Wasm
+result or zero-leak audit is claimed, and no A–O row closes. The channel
+handle path remains blocked by replayable must capture; a separate opaque GC
+aggregate with a must field lacks consuming field extraction. A conditional
+`unique Chain` relay currently reaches SafeWIR but fails callable-contract
+validation; owned GC branch result lowering remains a structural gap.
 
 Row G local affine allocation binding (implemented but unverified,
 2026-09-26): the checked-source view now carries concrete expression types

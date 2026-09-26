@@ -1105,6 +1105,15 @@ An owned shell may therefore combine copyable and affine fields: construction
 retains the copyable field's edge and transfers the affine field's unique
 edge. The recursive storage judgment supplies both operations, and the
 unoptimized lowerer uses the matching operation for each managed field.
+An opaque GC owner result with a checked affine or root-unique source type
+uses an owned GC result contract. SafeWIR binds its owner family to checked
+source and tracks whether each GC token came from an owned parameter, a fresh
+owner construction, or a retaining clone. Borrowed and cloned tokens cannot
+satisfy an owned GC result; direct and indirect calls and tail calls preserve
+that distinction. A recursive `unique` GC aggregate can cross an `own`
+parameter and result boundary by transferring its owner token.
+Conditional owned-GC result relays still fail callable-contract validation,
+so the admitted path currently requires a direct owner transfer.
 Unsupported field representations still fail closed. Task scheduling with public
 `task.Handle` values remains incomplete: a live handle cannot cross a
 suspension without cancellation disposition, and `task.Step(task.Handle)`

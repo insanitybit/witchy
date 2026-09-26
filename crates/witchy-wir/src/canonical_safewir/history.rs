@@ -436,6 +436,7 @@ impl CanonicalWriter {
     fn result_contract(&mut self, result: &ResultContract) {
         match result {
             ResultContract::Unique { layout } => { self.u8(8); self.layout_id(*layout); }
+            ResultContract::OwnedGc { family } => { self.u8(15); self.u32(family.get()); }
             ResultContract::BodyDerived(value_type) => {
                 self.u8(6);
                 self.value_type(*value_type);

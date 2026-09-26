@@ -339,6 +339,7 @@ fn check_candidate<S: ModuleStage>(
     owners.require_affine_proofs(affine_abi)?;
     for function in candidate.functions() {
         owners::check(function, &owners)?;
+        owners::check_owned_gc_origins(function, candidate, &owners)?;
     }
     host::check_imports(&imports, &signatures, catalog)?;
     let tail_obligations = index_tail_obligations(
@@ -1889,6 +1890,7 @@ fn check_call(
         let contract_type = match contract {
             super::ResultContract::BodyDerived(value_type) => *value_type,
             super::ResultContract::Value(value_type) => *value_type,
+            super::ResultContract::OwnedGc { family } => super::ValueType::Gc(*family),
             super::ResultContract::DisjunctiveWriteBackSelector { .. } => super::ValueType::Bool,
             super::ResultContract::CheckedValue { layout }
             | super::ResultContract::Fresh { layout, .. }

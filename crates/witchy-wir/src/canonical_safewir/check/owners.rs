@@ -176,7 +176,7 @@ impl<'a> Registry<'a> {
                     // through a source `var` lane (`WriteBack`); both move one
                     // affine token in and the CFG judgment below tracks it.
                     if !registry.registered(id)
-                        || !matches!(parameter.ownership, ParameterOwnership::Shared | ParameterOwnership::WriteBack)
+                        || !matches!(parameter.ownership, ParameterOwnership::Shared | ParameterOwnership::WriteBack | ParameterOwnership::Unique)
                     {
                         return Err(InitialCheckError::UnsupportedMemorySignature { signature: signature.id });
                     }
@@ -184,7 +184,10 @@ impl<'a> Registry<'a> {
             }
             for (ty, result) in signature.results.iter().zip(&signature.contract.results) {
                 if let ValueType::Gc(id) = ty {
-                    if !registry.registered(*id) || result != &ResultContract::Value(*ty) {
+                    if !registry.registered(*id)
+                        || result != &ResultContract::Value(*ty)
+                            && result != &(ResultContract::OwnedGc { family: *id })
+                    {
                         return Err(InitialCheckError::UnsupportedMemorySignature { signature: signature.id });
                     }
                 }
@@ -501,7 +504,9 @@ pub(super) fn check(function: &Function, registry: &Registry<'_>) -> Result<(), 
     let mut initial = Live::new();
     for parameter in &entry.parameters {
         if is_gc(function, parameter.value) {
-            if parameter.ownership != Some(Ownership::Shared) { return Err(InitialCheckError::InvalidOwnership { function: function.id, object: parameter.value }); }
+            if !matches!(parameter.ownership, Some(Ownership::Shared | Ownership::Unique)) {
+                return Err(InitialCheckError::InvalidOwnership { function: function.id, object: parameter.value });
+            }
             initial.insert(parameter.value);
         }
     }
@@ -613,7 +618,9 @@ pub(super) fn check(function: &Function, registry: &Registry<'_>) -> Result<(), 
             for (argument, parameter) in arguments.iter().zip(&destination.parameters) {
                 if is_gc(function, *argument) {
                     require_type(function, *argument, parameter.value_type)?;
-                    if parameter.ownership != Some(Ownership::Shared) { return Err(InitialCheckError::InvalidOwnership { function: function.id, object: parameter.value }); }
+                    if !matches!(parameter.ownership, Some(Ownership::Shared | Ownership::Unique)) {
+                        return Err(InitialCheckError::InvalidOwnership { function: function.id, object: parameter.value });
+                    }
                     consume(function, &mut next, *argument)?;
                     renamed.push(parameter.value);
                 }
@@ -630,6 +637,214 @@ pub(super) fn check(function: &Function, registry: &Registry<'_>) -> Result<(), 
                 incoming.insert(target, next);
                 pending.push_back(target);
             }
+        }
+    }
+    Ok(())
+}
+
+/// Prove the stronger owned GC result lane from token origins. The liveness
+/// pass above enforces one use of every GC token; this pass also prevents a
+/// borrowed or cloned token from satisfying an affine source result.
+pub(super) fn check_owned_gc_origins<S: ModuleStage>(
+    function: &Function,
+    module: &CanonicalModule<S>,
+    registry: &Registry<'_>,
+) -> Result<(), InitialCheckError> {
+    let signature = module.signatures().iter().find(|entry| entry.id == function.signature)
+        .ok_or(InitialCheckError::MissingSignature(function.signature))?;
+    let blocks = index_blocks(function)?;
+    let entry = blocks.get(&function.entry)
+        .ok_or(InitialCheckError::MissingBlock { function: function.id, block: function.entry })?;
+    let mut initial = BTreeSet::new();
+    for (parameter, contract) in entry.parameters.iter().zip(&signature.contract.parameters) {
+        if is_gc(function, parameter.value) && contract.ownership == ParameterOwnership::Unique {
+            initial.insert(parameter.value);
+        }
+    }
+    let mut incoming = BTreeMap::from([(function.entry, initial)]);
+    let mut pending = VecDeque::from([function.entry]);
+    let mut visits = 0usize;
+    while let Some(id) = pending.pop_front() {
+        visits += 1;
+        if visits > 65_536 {
+            return Err(InitialCheckError::UnsupportedMemorySignature { signature: function.signature });
+        }
+        let block = blocks[&id];
+        let mut owned = incoming[&id].clone();
+        for operation in &block.operations {
+            let mut granted = BTreeSet::new();
+            match operation {
+                Operation::ClosureOwner(OwnerOperation::Construct { destination, constructor, captures }) => {
+                    let (_, declared) = registry.constructor(function, *constructor)?;
+                    let all_moved_gc_owned = captures.iter().zip(&declared.captures).all(|(value, capture)|
+                        capture.transfer != CaptureTransfer::MoveManaged
+                            || !is_gc(function, *value) || owned.contains(value));
+                    if all_moved_gc_owned { granted.insert(*destination); }
+                    for (value, capture) in captures.iter().zip(&declared.captures) {
+                        if is_gc(function, *value) && capture.transfer == CaptureTransfer::CloneManaged {
+                            owned.remove(value);
+                        }
+                    }
+                }
+                Operation::ClosureOwner(OwnerOperation::Deconstruct { owner, constructor, captures, .. }) => {
+                    let (_, declared) = registry.constructor(function, *constructor)?;
+                    if owned.contains(owner) {
+                        for (destination, capture) in captures.iter().zip(declared.captures.iter()
+                            .filter(|capture| matches!(capture.storage, CaptureStorage::OwnerField(_)))) {
+                            if is_gc(function, *destination)
+                                && capture.transfer == CaptureTransfer::MoveManaged {
+                                granted.insert(*destination);
+                            }
+                        }
+                    }
+                }
+                Operation::ClosureOwner(OwnerOperation::NewList { destination, elements, .. }) => {
+                    // NewList clones each checked copyable element into a
+                    // fresh owner-list token; the list itself has one owner.
+                    granted.insert(*destination);
+                    for element in elements { owned.remove(element); }
+                }
+                Operation::ClosureOwner(OwnerOperation::Clone { owner, .. }
+                    | OwnerOperation::ReadOwner { owner, .. }) => {
+                    owned.remove(owner);
+                }
+                Operation::ClosureOwner(OwnerOperation::CloneList { list, .. }
+                    | OwnerOperation::ListGet { list, .. }) => {
+                    owned.remove(list);
+                }
+                Operation::ClosureOwner(OwnerOperation::ListPush { destination, list, value, .. }
+                    | OwnerOperation::ListSet { destination, list, value, .. }) => {
+                    if owned.contains(list) && owned.contains(value) { granted.insert(*destination); }
+                }
+                Operation::Call { destinations, callee, arguments } => {
+                    let callee = module.functions().iter().find(|entry| entry.id == *callee)
+                        .ok_or(InitialCheckError::MissingFunction(*callee))?;
+                    let contract = module.signatures().iter().find(|entry| entry.id == callee.signature)
+                        .ok_or(InitialCheckError::MissingSignature(callee.signature))?;
+                    check_owned_gc_arguments(function, arguments, contract, &owned)?;
+                    grant_owned_gc_results(destinations, contract, &mut granted)?;
+                }
+                Operation::VarCall { destinations, signature, arguments, .. } => {
+                    let contract = module.signatures().iter().find(|entry| entry.id == *signature)
+                        .ok_or(InitialCheckError::MissingSignature(*signature))?;
+                    check_owned_gc_arguments(function, arguments, contract, &owned)?;
+                    grant_owned_gc_results(destinations, contract, &mut granted)?;
+                }
+                _ => {}
+            }
+            for destination in operation_destinations(operation).into_iter().filter(|value| is_gc(function, *value)) {
+                if granted.contains(&destination) { owned.insert(destination); }
+                else { owned.remove(&destination); }
+            }
+        }
+        let edges = match &block.terminator {
+            Terminator::Return { values } => {
+                for (value, contract) in values.iter().zip(&signature.contract.results) {
+                    if matches!(contract, ResultContract::OwnedGc { .. }) && !owned.contains(value) {
+                        return Err(InitialCheckError::InvalidOwnership { function: function.id, object: *value });
+                    }
+                }
+                Vec::new()
+            }
+            Terminator::TailCall { callee, arguments, .. } => {
+                let callee = module.functions().iter().find(|entry| entry.id == *callee)
+                    .ok_or(InitialCheckError::MissingFunction(*callee))?;
+                let contract = module.signatures().iter().find(|entry| entry.id == callee.signature)
+                    .ok_or(InitialCheckError::MissingSignature(callee.signature))?;
+                check_owned_gc_arguments(function, arguments, contract, &owned)?;
+                check_owned_gc_tail_results(function, signature, contract)?;
+                Vec::new()
+            }
+            Terminator::VarTailCall { signature: callee_signature, arguments, .. } => {
+                let contract = module.signatures().iter().find(|entry| entry.id == *callee_signature)
+                    .ok_or(InitialCheckError::MissingSignature(*callee_signature))?;
+                check_owned_gc_arguments(function, arguments, contract, &owned)?;
+                check_owned_gc_tail_results(function, signature, contract)?;
+                Vec::new()
+            }
+            Terminator::Branch { target, arguments } => vec![(*target, arguments)],
+            Terminator::BranchIf { then_target, then_arguments, else_target, else_arguments, .. } =>
+                vec![(*then_target, then_arguments), (*else_target, else_arguments)],
+            Terminator::Trap | Terminator::Unreachable => Vec::new(),
+        };
+        for (target, arguments) in edges {
+            let destination = blocks.get(&target)
+                .ok_or(InitialCheckError::MissingBlock { function: function.id, block: target })?;
+            let mut next = owned.clone();
+            for (value, parameter) in arguments.iter().zip(&destination.parameters) {
+                if !is_gc(function, *value) { continue; }
+                if parameter.ownership == Some(Ownership::Unique) {
+                    if !owned.contains(value) {
+                        return Err(InitialCheckError::InvalidOwnership { function: function.id, object: *value });
+                    }
+                    next.insert(parameter.value);
+                } else {
+                    next.remove(&parameter.value);
+                }
+            }
+            if let Some(previous) = incoming.get_mut(&target) {
+                let intersection = previous.intersection(&next).copied().collect::<BTreeSet<_>>();
+                if *previous != intersection {
+                    *previous = intersection;
+                    pending.push_back(target);
+                }
+            } else {
+                incoming.insert(target, next);
+                pending.push_back(target);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn check_owned_gc_arguments(
+    function: &Function,
+    arguments: &[CallArgument],
+    signature: &crate::canonical_safewir::FunctionSignature,
+    owned: &BTreeSet<ValueId>,
+) -> Result<(), InitialCheckError> {
+    if arguments.len() != signature.contract.parameters.len() {
+        return Err(InitialCheckError::UnsupportedMemorySignature { signature: signature.id });
+    }
+    for (argument, parameter) in arguments.iter().zip(&signature.contract.parameters) {
+        if matches!(parameter.value_type, ValueType::Gc(_))
+            && parameter.ownership == ParameterOwnership::Unique
+        {
+            let CallArgument::Move(value) = argument else {
+                return Err(InitialCheckError::UnsupportedMemorySignature { signature: signature.id });
+            };
+            if !owned.contains(value) {
+                return Err(InitialCheckError::InvalidOwnership { function: function.id, object: *value });
+            }
+        }
+    }
+    Ok(())
+}
+
+fn grant_owned_gc_results(
+    destinations: &[ValueId],
+    signature: &crate::canonical_safewir::FunctionSignature,
+    granted: &mut BTreeSet<ValueId>,
+) -> Result<(), InitialCheckError> {
+    if destinations.len() != signature.contract.results.len() {
+        return Err(InitialCheckError::UnsupportedMemorySignature { signature: signature.id });
+    }
+    for (destination, result) in destinations.iter().zip(&signature.contract.results) {
+        if matches!(result, ResultContract::OwnedGc { .. }) { granted.insert(*destination); }
+    }
+    Ok(())
+}
+
+fn check_owned_gc_tail_results(
+    function: &Function,
+    declared: &crate::canonical_safewir::FunctionSignature,
+    callee: &crate::canonical_safewir::FunctionSignature,
+) -> Result<(), InitialCheckError> {
+    for (index, result) in declared.contract.results.iter().enumerate() {
+        if let ResultContract::OwnedGc { family } = result
+            && callee.contract.results.get(index) != Some(&ResultContract::OwnedGc { family: *family })
+        {
+            return Err(InitialCheckError::UnsupportedMemorySignature { signature: function.signature });
         }
     }
     Ok(())

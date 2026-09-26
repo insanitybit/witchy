@@ -273,7 +273,7 @@ fn call_flow(
             continue;
         }
         match contract {
-            ResultContract::Value(ValueType::Gc(_)) => { owned.insert(*destination); }
+            ResultContract::Value(ValueType::Gc(_)) | ResultContract::OwnedGc { .. } => { owned.insert(*destination); }
             ResultContract::Shared { .. } | ResultContract::Unique { .. }
             | ResultContract::AliasesWriteBackParameter { .. }
             | ResultContract::AliasesOneOfWriteBackParameters { .. }

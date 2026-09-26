@@ -1423,6 +1423,9 @@ fn declared_shared_summary(signature: &FunctionSignature) -> Option<BodySummary>
             ResultContract::Value(actual) if actual == value_type && !matches!(actual, ValueType::Ref(_)) => {
                 Some(DerivedResult::Value(*actual))
             }
+            ResultContract::OwnedGc { family } if *value_type == ValueType::Gc(*family) => {
+                Some(DerivedResult::Value(*value_type))
+            }
             ResultContract::Shared { layout } if *value_type == ValueType::Ref(*layout) => {
                 Some(DerivedResult::Shared(*layout))
             }
@@ -1949,6 +1952,7 @@ fn ownership_supports(parameter: &ParameterContract, needs: EffectSet) -> bool {
 fn result_matches(declared: &ResultContract, derived: &DerivedResult) -> bool {
     match (declared, derived) {
         (ResultContract::Unique { layout: expected }, DerivedResult::Unique(actual)) => expected == actual,
+        (ResultContract::OwnedGc { family }, DerivedResult::Value(ValueType::Gc(actual))) => family == actual,
         (ResultContract::Value(expected), DerivedResult::Value(actual)) => expected == actual,
         (ResultContract::CheckedValue { layout: expected }, DerivedResult::Fresh { layout: actual, .. })
         | (ResultContract::CheckedValue { layout: expected }, DerivedResult::StaticData(actual))

@@ -192,7 +192,9 @@ never visible and the join is guaranteed. Prefer these over a raw `spawn`:
 The canonical compiler currently refuses `chan.par_map` and `chan.par_reduce`
 when their scheduler carries public `task.Handle` values through a task result.
 The compiler does not yet prove consuming aggregate extraction and cancellation
-disposition for that path.
+disposition for that path. A direct unique GC owner can cross an `own` call and
+result boundary, but a replayable task continuation cannot capture a live
+must-consume handle.
 The compiler tracks `must` obligations through owning async frame fields and
 checks blocked-operation cancellation paths. It refuses a `must` value carried
 through a receive or released from a frame until the operation proves how
