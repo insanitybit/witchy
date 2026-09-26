@@ -453,7 +453,11 @@ fn raw_wir_byte_entrypoints_are_sealed_or_are_the_documented_bridge() {
 
 // The synthetic feature is an explicit opt-in, never an edge from a normal
 // dependency/default feature. Fail closed on unrecognized activation sites.
-fn production_test_feature_violations(source: &str, lowerer: bool) -> Vec<usize> {
+// Two test-only features may forward to it: the lowerer's
+// `raw-module-test-api`, and the runtime's `self-checks`, which only the root
+// package's dev-dependency enables. `self-checks` is itself pinned, so no
+// production edge can reach it.
+fn production_test_feature_violations(source: &str, owner: &str) -> Vec<usize> {
     let mut section = "";
     let mut violations = Vec::new();
     for (index, line) in source.lines().enumerate() {
@@ -465,14 +469,19 @@ fn production_test_feature_violations(source: &str, lowerer: bool) -> Vec<usize>
         let features = line.split(['"', '\'']).skip(1).step_by(2)
             .filter(|value| matches!(value.rsplit('/').next(),
                 Some("raw-encoder-test-api" | "raw-module-test-api" | "legacy-encoder-bridge"
-                    | "checked-source-test-api")))
+                    | "checked-source-test-api" | "self-checks")))
             .collect::<Vec<_>>();
         if features.is_empty() || section.contains("dev-dependencies") {
             continue;
         }
-        let test_forward = lowerer && section == "[features]"
-            && line.split_once('=').is_some_and(|(key, _)| key.trim() == "raw-module-test-api")
-            && features == ["witchy-wir/legacy-encoder-bridge"];
+        let key = line.split_once('=').map(|(key, _)| key.trim());
+        let test_forward = section == "[features]" && match (owner, key) {
+            ("witchy-lower", Some("raw-module-test-api")) =>
+                features == ["witchy-wir/legacy-encoder-bridge"],
+            ("witchy-runtime", Some("self-checks")) =>
+                features.iter().all(|feature| feature.starts_with("witchy-wir/")),
+            _ => false,
+        };
         if !test_forward {
             violations.push(index + 1);
         }
@@ -482,12 +491,12 @@ fn production_test_feature_violations(source: &str, lowerer: bool) -> Vec<usize>
 
 #[test]
 fn production_features_do_not_activate_legacy_encoding() {
-    let lowerer = manifest_dir().join("../witchy-lower/Cargo.toml").canonicalize().unwrap();
     for manifest in workspace_manifests() {
         let source = fs::read_to_string(&manifest).expect("read manifest");
-        let violations = production_test_feature_violations(
-            &source, manifest.canonicalize().unwrap() == lowerer,
-        );
+        let manifest = manifest.canonicalize().unwrap();
+        let owner = manifest.parent().and_then(|dir| dir.file_name())
+            .and_then(|name| name.to_str()).unwrap_or_default();
+        let violations = production_test_feature_violations(&source, owner);
         assert!(violations.is_empty(),
             "production test/bridge feature activation in {} at {violations:?}", manifest.display());
     }
@@ -502,16 +511,25 @@ fn production_feature_pin_rejects_dependency_and_default_activation() {
         "[features]\nnative = [\"witchy-wir/legacy-encoder-bridge\"]\n",
         "[features]\ndefault = [\"alias\"]\nalias = [\"witchy-lower/raw-module-test-api\"]\n",
         "[dependencies]\nwitchy-wir = { features = [\"checked-source-test-api\"] }\n",
+        "[dependencies]\nwitchy-runtime = { features = [\"self-checks\"] }\n",
+        "[features]\nnative = [\"witchy-runtime/self-checks\"]\n",
     ] {
-        assert!(!production_test_feature_violations(source, true).is_empty(), "{source}");
+        assert!(!production_test_feature_violations(source, "witchy-lower").is_empty(), "{source}");
     }
-    assert!(production_test_feature_violations(
-        "[features]\nraw-module-test-api = [\"witchy-wir/legacy-encoder-bridge\"]\n",
-        true,
+    assert!(!production_test_feature_violations(
+        "[features]\nself-checks = [\"witchy-wir/raw-encoder-test-api\"]\n", "witchy-caps",
     ).is_empty());
     assert!(production_test_feature_violations(
-        "[dev-dependencies]\nwitchy-wir = { features = [\"legacy-encoder-bridge\"] }\n",
-        false,
+        "[features]\nraw-module-test-api = [\"witchy-wir/legacy-encoder-bridge\"]\n",
+        "witchy-lower",
+    ).is_empty());
+    assert!(production_test_feature_violations(
+        "[features]\nself-checks = [\"native\", \"witchy-wir/raw-encoder-test-api\"]\n",
+        "witchy-runtime",
+    ).is_empty());
+    assert!(production_test_feature_violations(
+        "[dev-dependencies]\nwitchy-runtime = { features = [\"self-checks\"] }\n",
+        "witchy",
     ).is_empty());
 }
 
