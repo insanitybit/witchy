@@ -2321,6 +2321,49 @@ impl ValueType {
 pub mod self_checks {
     use std::collections::BTreeMap;
 
+    pub fn sorted_map_collect_keeps_order_and_last_pair() {
+        use super::sorted::SortedMap;
+        // All short sequences include empty, ordered, descending, and
+        // interleaved duplicate runs; values identify arrival order.
+        for len in 0..=7_u32 {
+            for mut sequence in 0..3_u32.pow(len) {
+                let entries: Vec<_> = (0..len).map(|arrival| {
+                    let key = sequence % 3;
+                    sequence /= 3;
+                    (key, arrival)
+                }).collect();
+                let expected: BTreeMap<_, _> = entries.iter().copied().collect();
+                let actual: SortedMap<_, _> = entries.into_iter().collect();
+                assert_eq!(actual.into_iter().collect::<Vec<_>>(), expected.into_iter().collect::<Vec<_>>());
+            }
+        }
+        // Equal keys can have distinct payloads. Preserve the previous
+        // constructor's LAST complete key/value pair, not just its value.
+        #[derive(Debug)]
+        struct Key(u8, &'static str);
+        impl PartialEq for Key {
+            fn eq(&self, other: &Self) -> bool { self.0 == other.0 }
+        }
+        impl Eq for Key {}
+        impl PartialOrd for Key {
+            fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> { Some(self.cmp(other)) }
+        }
+        impl Ord for Key {
+            fn cmp(&self, other: &Self) -> std::cmp::Ordering { self.0.cmp(&other.0) }
+        }
+        let actual: SortedMap<_, _> = [
+            (Key(2, "old"), String::from("old")),
+            (Key(1, "first"), String::from("first")),
+            (Key(2, "middle"), String::from("middle")),
+            (Key(1, "last-one"), String::from("one")),
+            (Key(2, "last-two"), String::from("two")),
+        ].into_iter().collect();
+        assert_eq!(actual.into_iter().map(|(k, v)| (k.0, k.1, v)).collect::<Vec<_>>(), [
+            (1, "last-one", String::from("one")),
+            (2, "last-two", String::from("two")),
+        ]);
+    }
+
     use super::super::{
         AccessMode, AllocationClass, ArithmeticOperator, BasicBlock, BlockId, BlockParameter, CallableContract,
         CanonicalAbiCatalog, CanonicalModule,

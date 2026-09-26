@@ -173,12 +173,19 @@ impl<'a, K: Ord, V> Entry<'a, K, V> {
 impl<K: Ord, V> FromIterator<(K, V)> for SortedMap<K, V> {
     fn from_iter<I: IntoIterator<Item = (K, V)>>(items: I) -> Self {
         let mut entries: Vec<(K, V)> = items.into_iter().collect();
-        // Later duplicates win, matching `BTreeMap`'s `collect`. A stable sort
-        // keeps them in arrival order so `dedup_by` can drop the earlier ones.
+        // Later duplicates win. Stable sorting preserves their arrival order;
+        // dedup_by passes the later entry first and removes it on true, so swap
+        // just duplicates to retain the complete last pair. Unique runs need
+        // no movement, unlike reversing the whole run before and after dedup.
         entries.sort_by(|(left, _), (right, _)| left.cmp(right));
-        entries.reverse();
-        entries.dedup_by(|(left, _), (right, _)| left == right);
-        entries.reverse();
+        entries.dedup_by(|later, retained| {
+            if later.0 == retained.0 {
+                std::mem::swap(later, retained);
+                true
+            } else {
+                false
+            }
+        });
         Self { entries }
     }
 }

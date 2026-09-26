@@ -26,6 +26,9 @@ mod canonical_safewir {
         #[test] fn compiler_imports_are_authenticated_internal_buffer_services() { witchy_wir::self_checks::canonical_safewir_catalog::compiler_imports_are_authenticated_internal_buffer_services() }
     }
     mod check {
+        mod sorted {
+            #[test] fn collect_keeps_order_and_last_pair() { witchy_wir::self_checks::canonical_safewir_check::sorted_map_collect_keeps_order_and_last_pair() }
+        }
         mod cache {
             mod store {
                 mod tests {
