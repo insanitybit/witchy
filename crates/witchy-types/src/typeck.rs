@@ -34,6 +34,7 @@ use witchy_cap_model::{CapabilityClass, CapabilityKind};
 
 use crate::storage::{ReferenceLeaf, ReferenceStorageClassifier};
 use witchy_canonical_source::capabilities::externref_cap_name;
+use witchy_canonical_source::storage::StoredObligationCatalog;
 
 mod coverage;
 use coverage::{
@@ -1150,7 +1151,7 @@ impl Checker {
                     // on exact instantiations would never converge. The owning
                     // position fixpoint tells us which arguments can actually
                     // enter the value; callable-only positions stay opaque.
-                    let argument_hazard = match checker.must_consume_parameters.get(name.as_ref()) {
+                    let argument_hazard = match checker.stored_obligations.stored_parameters.get(name.as_ref()) {
                         Some(stored) => stored
                             .iter()
                             .zip(arguments.iter())
@@ -3457,9 +3458,9 @@ impl Checker {
             Ty::List(element) => self.ty_carries_must_consume(&element),
             Ty::Tuple(items) => items.iter().any(|item| self.ty_carries_must_consume(item)),
             Ty::Named(name, arguments) | Ty::Dyn(name, arguments) => {
-                self.must_consume_types.contains(name.as_ref())
+                self.stored_obligations.must_types.contains(name.as_ref())
                     || self
-                        .must_consume_parameters
+                        .stored_obligations.stored_parameters
                         .get(name.as_ref())
                         .is_some_and(|positions| {
                             positions.iter().zip(arguments.iter()).any(|(stored, argument)| {
@@ -3764,21 +3765,18 @@ impl Checker {
                 // checked at the packing boundary instead.
                 Ty::Dyn(..) => false,
                 Ty::Named(name, arguments) => {
-                    let builtin_hit = matches!(
-                        name.rsplit('.').next().unwrap_or(&name),
-                        "Option" | "Result" | "Dict" | "Set" | "Task" | "Iter"
-                    ) && arguments.iter().any(|argument| go(checker, argument, seen));
-                    if builtin_hit {
-                        return true;
-                    }
                     let parameter_hit = checker
-                        .must_consume_parameters
+                        .stored_obligations.stored_parameters
                         .get(name.as_ref())
-                        .is_some_and(|positions| {
+                        .map(|positions| {
                             positions.iter().zip(arguments.iter()).any(|(stored, argument)| {
                                 *stored && go(checker, argument, seen)
                             })
-                        });
+                        })
+                        // An unavailable declaration cannot prove a phantom
+                        // position. Treat every argument as stored until the
+                        // source contract is present.
+                        .unwrap_or_else(|| arguments.iter().any(|argument| go(checker, argument, seen)));
                     if parameter_hit {
                         return true;
                     }
@@ -3861,7 +3859,7 @@ impl Checker {
                     contains(checker, inner)
                 }
                 ast::Type::Named(name, arguments) => {
-                    let positions = checker.must_consume_parameters.get(name).cloned();
+                    let positions = checker.stored_obligations.stored_parameters.get(name).cloned();
                     match positions {
                         Some(positions) => positions
                             .iter()
@@ -5642,7 +5640,7 @@ impl Checker {
                 Ty::Dyn(_, arguments) => arguments.iter().any(|argument| go(checker, argument, seen)),
                 Ty::Named(name, arguments) => {
                     let argument_hit = checker
-                        .must_consume_parameters
+                        .stored_obligations.stored_parameters
                         .get(name.as_ref())
                         .map(|stored| stored.iter().zip(arguments.iter()).any(|(stored, argument)| {
                             *stored && go(checker, argument, seen)
@@ -12479,153 +12477,6 @@ fn run_check_with_trait_methods(
     )
 }
 
-struct MustConsumeCatalog {
-    types: HashSet<String>,
-    parameters: HashMap<String, Vec<bool>>,
-}
-
-fn must_consume_catalog(module: &Module) -> MustConsumeCatalog {
-    fn stores_parameter(
-        ty: &ast::Type,
-        parameter: &str,
-        positions: &HashMap<String, Vec<bool>>,
-    ) -> bool {
-        match ty {
-            ast::Type::Qualified(_, inner) => stores_parameter(inner, parameter, positions),
-            ast::Type::Slice(elem) => stores_parameter(elem, parameter, positions),
-            ast::Type::Named(name, arguments) => {
-                if name == parameter && arguments.is_empty() {
-                    return true;
-                }
-                match positions.get(name) {
-                    Some(stored) => stored.iter().zip(arguments).any(|(stored, argument)| {
-                        *stored && stores_parameter(argument, parameter, positions)
-                    }),
-                    // Unknown/builtin nominal storage stays conservative. Known
-                    // wrappers such as Task and Iter acquire an exact mask from
-                    // their declarations in the linked module.
-                    None => arguments
-                        .iter()
-                        .any(|argument| stores_parameter(argument, parameter, positions)),
-                }
-            }
-            ast::Type::Dyn(_, _) | ast::Type::Fn(..) => false,
-            ast::Type::Tuple(items) => items
-                .iter()
-                .any(|item| stores_parameter(item, parameter, positions)),
-            ast::Type::RecordCompose { base, fields } => {
-                stores_parameter(base, parameter, positions)
-                    || fields
-                        .iter()
-                        .any(|(_, field)| stores_parameter(field, parameter, positions))
-            }
-        }
-    }
-
-    fn carries(
-        ty: &ast::Type,
-        names: &HashSet<String>,
-        positions: &HashMap<String, Vec<bool>>,
-        local_parameters: &HashSet<String>,
-    ) -> bool {
-        match ty {
-            ast::Type::Qualified(_, inner) => {
-                carries(inner, names, positions, local_parameters)
-            }
-            ast::Type::Slice(elem) => {
-                carries(elem, names, positions, local_parameters)
-            }
-            ast::Type::Named(name, arguments) => {
-                if local_parameters.contains(name) && arguments.is_empty() {
-                    return false;
-                }
-                names.contains(name)
-                    || match positions.get(name) {
-                        Some(stored) => stored.iter().zip(arguments).any(|(stored, argument)| {
-                            *stored && carries(argument, names, positions, local_parameters)
-                        }),
-                        None => arguments
-                            .iter()
-                            .any(|argument| carries(argument, names, positions, local_parameters)),
-                    }
-            }
-            ast::Type::Dyn(_, _) | ast::Type::Fn(..) => false,
-            ast::Type::Tuple(items) => items
-                .iter()
-                .any(|item| carries(item, names, positions, local_parameters)),
-            ast::Type::RecordCompose { base, fields } => {
-                carries(base, names, positions, local_parameters)
-                    || fields
-                        .iter()
-                        .any(|(_, field)| carries(field, names, positions, local_parameters))
-            }
-        }
-    }
-
-    let definitions = module
-        .items
-        .iter()
-        .filter_map(|item| match item {
-            Item::Type(definition) => Some(definition),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-    let mut positions = definitions
-        .iter()
-        .map(|definition| {
-            (
-                definition.name.clone(),
-                vec![false; ast::effective_type_def_params(definition).len()],
-            )
-        })
-        .collect::<HashMap<_, _>>();
-    positions.entry("Task".to_string()).or_insert_with(|| vec![false]);
-    loop {
-        let before = positions.clone();
-        for definition in &definitions {
-            let parameters = ast::effective_type_def_params(definition);
-            let stored = positions
-                .get_mut(&definition.name)
-                .expect("every definition has a parameter mask");
-            for (index, parameter) in parameters.iter().enumerate() {
-                stored[index] |= definition
-                    .variants
-                    .iter()
-                    .flat_map(|variant| &variant.fields)
-                    .any(|field| stores_parameter(field, parameter, &before));
-            }
-        }
-        if positions == before {
-            break;
-        }
-    }
-    let mut names = definitions
-        .iter()
-        .filter(|definition| definition.must_consume)
-        .map(|definition| definition.name.clone())
-        .collect::<HashSet<_>>();
-    names.insert("Task".to_string());
-    loop {
-        let before = names.len();
-        for definition in &definitions {
-            let local_parameters = ast::effective_type_def_params(definition)
-                .into_iter()
-                .collect::<HashSet<_>>();
-            if definition
-                .variants
-                .iter()
-                .flat_map(|variant| &variant.fields)
-                .any(|field| carries(field, &names, &positions, &local_parameters))
-            {
-                names.insert(definition.name.clone());
-            }
-        }
-        if names.len() == before {
-            return MustConsumeCatalog { types: names, parameters: positions };
-        }
-    }
-}
-
 fn run_check_selected(
     module: &Module,
     record: bool,
@@ -12640,7 +12491,13 @@ fn run_check_selected(
     // re-annotation and trait-lowering probes do not, and must not reapply a
     // source-only exported-signature rule to their generated functions.
     let enforce_public_return_annotations = trait_method_names.is_some();
-    let must_consume = must_consume_catalog(module);
+    // Task itself requires disposition, while its future result is not a
+    // stored recipe field. Every generic storage mask comes from the shared
+    // source judgment, including collection and declared aggregate children.
+    let stored_obligations = StoredObligationCatalog::from_module(module, &[("Task", 1)])
+        .ok_or_else(|| TypeError {
+            message: "checked Task declaration has inconsistent execution-obligation arity".into(),
+        })?;
     let root_source = module
         .linked_entry
         .as_ref()
@@ -12805,8 +12662,7 @@ fn run_check_selected(
         scopes: vec![HashMap::new()],
         consumed: HashSet::new(),
         once_invoked: HashSet::new(),
-        must_consume_types: must_consume.types,
-        must_consume_parameters: must_consume.parameters,
+        stored_obligations,
         must_live: HashSet::new(),
         must_borrowed: HashSet::new(),
         once_borrowed: HashSet::new(),

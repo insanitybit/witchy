@@ -948,6 +948,17 @@ otherwise gain an authenticated-place plan. This is a structural migration;
 it closes no A–O evidence row. Generic replay through indirect callables,
 per-execution preparation, and cancellation disposition remain open.
 
+Stored-obligation catalog replacement (implemented but unverified,
+2026-09-26): canonical source now derives generic stored-parameter masks and
+transitive must-containment from its instantiated stored-child relation. The
+checker consumes that one catalog for must, once-callable, rooted-view, and
+pure-capture containment; its separate parameter-mask and must-name fixed
+points are removed. Linked entry-qualified names share the declaration's
+mask and must judgment. The type-checker target passed 139/139 and the
+existing admitted-Wasm channel/view task smoke passed. This replaces a
+source storage classifier; it does not provide A–O expected-result and
+zero-leak evidence or the missing one-shot task frame.
+
 Opaque owner-family replacement (implemented but unverified, 2026-09-25):
 checked `OpaqueOwnerEvidence` now classifies the owner-bearing lane of a
 source value separately from recursive owner containment. Layout family

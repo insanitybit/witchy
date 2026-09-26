@@ -4,7 +4,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
-use witchy_syntax::ast::{Type, TypeDef, TypeQual};
+use witchy_syntax::ast::{Item, Module, Type, TypeDef, TypeQual};
 
 use crate::abi::CanonicalScalarKind;
 use crate::aggregates::{ScalarAggregateShape, ViewCarrierPlan, instantiated_declared_fields, scalar_aggregate_shape, view_carrier_plan};
@@ -73,6 +73,177 @@ impl StoredChildren {
             Self::Aggregate(fields) => fields,
         }
     }
+}
+
+/// Which generic arguments occupy source storage, and which nominal values
+/// transitively carry a must-consume obligation. The checker uses this same
+/// stored-child relation for must, once-callable, and rooted-view containment;
+/// callable signatures and phantom arguments are never treated as fields.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredObligationCatalog {
+    pub stored_parameters: BTreeMap<String, Vec<bool>>,
+    pub must_types: BTreeSet<String>,
+}
+
+impl StoredObligationCatalog {
+    /// `execution_obligations` names semantic values, such as lazy tasks, that
+    /// require explicit disposition even when their declaration stores no
+    /// resource-bearing type argument. Their arity is checked against any
+    /// declaration before the catalogue is used by the frontend.
+    pub fn from_module(module: &Module, execution_obligations: &[(&str, usize)]) -> Option<Self> {
+        let definitions = module.items.iter().filter_map(|item| match item {
+            Item::Type(definition) => Some(definition),
+            _ => None,
+        }).collect::<Vec<_>>();
+        let source_definitions = crate::aggregates::type_definitions(module);
+        let mut stored_parameters = definitions.iter().map(|definition| (
+            definition.name.clone(),
+            vec![false; witchy_syntax::ast::effective_type_def_params(definition).len()],
+        )).collect::<BTreeMap<_, _>>();
+        for &(name, arity) in execution_obligations {
+            match stored_parameters.get(name) {
+                Some(mask) if mask.len() != arity => return None,
+                Some(_) => {},
+                None => { stored_parameters.insert(name.to_owned(), vec![false; arity]); },
+            }
+        }
+        loop {
+            let before = stored_parameters.clone();
+            for definition in &definitions {
+                let parameters = witchy_syntax::ast::effective_type_def_params(definition);
+                let mask = stored_parameters.get_mut(&definition.name)?;
+                for (index, parameter) in parameters.iter().enumerate() {
+                    mask[index] |= definition.variants.iter().flat_map(|variant| &variant.fields)
+                        .any(|field| stores_parameter(field, parameter, &before, &source_definitions));
+                }
+            }
+            if stored_parameters == before { break; }
+        }
+        let mut must_types = definitions.iter().filter(|definition| definition.must_consume)
+            .map(|definition| definition.name.clone()).collect::<BTreeSet<_>>();
+        must_types.extend(execution_obligations.iter().map(|(name, _)| (*name).to_owned()));
+        loop {
+            let before = must_types.len();
+            for definition in &definitions {
+                let local_parameters = witchy_syntax::ast::effective_type_def_params(definition)
+                    .into_iter().collect::<BTreeSet<_>>();
+                if definition.variants.iter().flat_map(|variant| &variant.fields).any(|field| {
+                    carries_must(field, &must_types, &stored_parameters, &local_parameters, &source_definitions)
+                }) {
+                    must_types.insert(definition.name.clone());
+                }
+            }
+            if must_types.len() == before { break; }
+        }
+        // The linker may expose the same declaration under an entry-qualified
+        // name. Publish both spellings so checker consumers never fall back to
+        // treating its type arguments as unknown storage.
+        for (alias, definition) in &source_definitions {
+            if let Some(mask) = stored_parameters.get(&definition.name).cloned() {
+                stored_parameters.insert(alias.clone(), mask);
+            }
+            if must_types.contains(&definition.name) {
+                must_types.insert(alias.clone());
+            }
+        }
+        Some(Self { stored_parameters, must_types })
+    }
+}
+
+fn catalog_mask<'a>(
+    name: &str,
+    positions: &'a BTreeMap<String, Vec<bool>>,
+    definitions: &BTreeMap<String, TypeDef>,
+) -> Option<&'a Vec<bool>> {
+    positions.get(name).or_else(|| definitions.get(name)
+        .and_then(|definition| positions.get(&definition.name)))
+}
+
+fn stored_arguments_for_catalog(
+    ty: &Type,
+    positions: &BTreeMap<String, Vec<bool>>,
+    definitions: &BTreeMap<String, TypeDef>,
+) -> Vec<Type> {
+    match ty {
+        Type::Qualified(_, inner) | Type::Slice(inner) => vec![inner.as_ref().clone()],
+        Type::Named(name, arguments) => {
+            if let Some(mask) = catalog_mask(name, positions, definitions) {
+                return mask.iter().zip(arguments).filter_map(|(stored, argument)|
+                    stored.then_some(argument.clone())).collect();
+            }
+            // Built-in sequences and mappings take their stored positions from
+            // the same relation used by snapshot and layout classification.
+            stored_children(ty, definitions).ok().flatten().map(StoredChildren::into_types)
+                .unwrap_or_else(|| arguments.clone())
+        }
+        Type::Tuple(fields) => fields.clone(),
+        Type::RecordCompose { base, fields } => std::iter::once(base.as_ref().clone())
+            .chain(fields.iter().map(|(_, field)| field.clone())).collect(),
+        Type::Dyn(..) | Type::Fn(..) => Vec::new(),
+    }
+}
+
+enum StoredTypeStep { Found, Stop, Continue }
+
+fn any_stored_type(
+    ty: &Type,
+    positions: &BTreeMap<String, Vec<bool>>,
+    definitions: &BTreeMap<String, TypeDef>,
+    test: &impl Fn(&Type) -> StoredTypeStep,
+    depth: usize,
+    remaining: &mut usize,
+) -> bool {
+    // The catalog grants copy/escape permission when it says an obligation is
+    // absent. Exhausting its proof budget must therefore answer conservatively.
+    if depth > 128 || *remaining == 0 { return true; }
+    *remaining -= 1;
+    match test(ty) {
+        StoredTypeStep::Found => return true,
+        StoredTypeStep::Stop => return false,
+        StoredTypeStep::Continue => {},
+    }
+    if matches!(ty, Type::Named(name, _) if definitions.contains_key(name)
+        && catalog_mask(name, positions, definitions).is_none()) {
+        return true;
+    }
+    stored_arguments_for_catalog(ty, positions, definitions).iter().any(|child|
+        any_stored_type(child, positions, definitions, test, depth + 1, remaining))
+}
+
+fn stores_parameter(
+    ty: &Type,
+    parameter: &str,
+    positions: &BTreeMap<String, Vec<bool>>,
+    definitions: &BTreeMap<String, TypeDef>,
+) -> bool {
+    let mut remaining = 16_384;
+    any_stored_type(ty, positions, definitions, &|candidate| {
+        if matches!(candidate, Type::Named(name, arguments) if name == parameter && arguments.is_empty()) {
+            StoredTypeStep::Found
+        } else {
+            StoredTypeStep::Continue
+        }
+    }, 0, &mut remaining)
+}
+
+fn carries_must(
+    ty: &Type,
+    must_types: &BTreeSet<String>,
+    positions: &BTreeMap<String, Vec<bool>>,
+    local_parameters: &BTreeSet<String>,
+    definitions: &BTreeMap<String, TypeDef>,
+) -> bool {
+    let mut remaining = 16_384;
+    any_stored_type(ty, positions, definitions, &|candidate| {
+        if let Type::Named(name, arguments) = candidate {
+            if arguments.is_empty() && local_parameters.contains(name) { return StoredTypeStep::Stop; }
+            if must_types.contains(name) || definitions.get(name)
+                .is_some_and(|definition| must_types.contains(&definition.name)) {
+                return StoredTypeStep::Found;
+            }
+        }
+        StoredTypeStep::Continue
+    }, 0, &mut remaining)
 }
 
 fn stored_children(

@@ -235,14 +235,9 @@ pub(super) struct Checker {
     /// retained separately so diagnostics and CFG joins do not misreport an
     /// affine call as an `own` move.
     pub(super) once_invoked: HashSet<(usize, String)>,
-    /// Nominal declarations whose values carry a must-consume obligation,
-    /// including aggregates that transitively contain one of those values.
-    pub(super) must_consume_types: HashSet<String>,
-    /// For each nominal generic, whether each type parameter is stored in an
-    /// owning field position. Function parameter/result positions are not
-    /// storage: `Task(Ticket)` does not own a Ticket before the task produces
-    /// one, while `Box(Ticket)` and `List(Ticket)` do.
-    pub(super) must_consume_parameters: HashMap<String, Vec<bool>>,
+    /// Checked stored-parameter and transitive must-containment judgment.
+    /// All source storage consumers read one canonical-source product.
+    pub(super) stored_obligations: StoredObligationCatalog,
     /// Owned must-consume bindings that still require disposition on at least
     /// one control-flow path. Branch joins use union: a value is discharged
     /// only when every path consumes or returns it.
