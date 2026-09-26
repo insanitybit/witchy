@@ -378,8 +378,11 @@ export MBX_TARGET_MAX_SIZE="${MBX_TARGET_MAX_SIZE:-none}"
 # 60 GiB target by default) and reclaims idle caches. Without a coordinator,
 # standalone builds must monitor disk space or set an explicit total cap.
 # Abandoned-checkout cleanup and age-based collection still apply.
+# Keep 16 GiB of learned/generated state so more pooled edit graphs coexist.
+# A size sweep may evict recent compiler-idle slots, not just old checkouts.
+# The action cap and coordinator's physical free-space guard stay unchanged.
 export MBX_GC_MAX_SIZE="${MBX_GC_MAX_SIZE:-8GiB}"
-export MBX_GC_INCREMENTAL_MAX_SIZE="${MBX_GC_INCREMENTAL_MAX_SIZE:-8GiB}"
+export MBX_GC_INCREMENTAL_MAX_SIZE="${MBX_GC_INCREMENTAL_MAX_SIZE:-16GiB}"
 export MBX_GC_MAX_TOTAL_SIZE="${MBX_GC_MAX_TOTAL_SIZE:-none}"
 
 # Never run mbx's garbage collector inside a build. mbx's automatic sweep
