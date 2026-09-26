@@ -149,6 +149,13 @@ pub async fn execute_local_callback() -> Int:
     let second = pair.0().await
     first * 10 + second
 
+pub async fn execute_parameter_callback() -> Int:
+    let relay = fn(own recipe: task.Task(Int)): recipe
+    let first = relay(compatible()).await
+    let pair = (fn(own recipe: task.Task(Int)): recipe, 0)
+    let second = pair.0(compatible()).await
+    first * 10 + second
+
 pub async fn execute_pair(own pair: (task.Task(Int), Int)) -> Int:
     let (recipe, _) = pair
     recipe.await
@@ -215,6 +222,7 @@ async fn main(console: Console):
     let opt_try_answer = worker.execute_try(Some(worker.compatible())).await
     let opt_conditional_answer = worker.execute_conditional(true).await
     let opt_local_callback_answer = worker.execute_local_callback().await
+    let opt_parameter_callback_answer = worker.execute_parameter_callback().await
     console.print("${answer}")
     console.print("${pair_answer}")
     console.print("${nested_answer}")
@@ -223,6 +231,7 @@ async fn main(console: Console):
     console.print("${opt_try_answer}")
     console.print("${opt_conditional_answer}")
     console.print("${opt_local_callback_answer}")
+    console.print("${opt_parameter_callback_answer}")
 "#;
     let result = super::source::checked_bundle(vec![("worker", worker), ("main", compatible_main)], "main");
     assert!(result.is_ok(), "{result:?}");
@@ -234,5 +243,14 @@ async fn main(console: Console):
     let error = super::source::checked_bundle(
         vec![("worker", &normal_callback_worker), ("main", compatible_main)], "main",
     ).expect_err("a local callback cannot upgrade a normal task producer");
+    assert!(error.contains("opt-compatible task value provenance"), "{error}");
+
+    let normal_argument_worker = worker.replace(
+        "relay(compatible()).await",
+        "relay(task.done(7)).await",
+    );
+    let error = super::source::checked_bundle(
+        vec![("worker", &normal_argument_worker), ("main", compatible_main)], "main",
+    ).expect_err("a callback formal cannot upgrade a normal task argument");
     assert!(error.contains("opt-compatible task value provenance"), "{error}");
 }

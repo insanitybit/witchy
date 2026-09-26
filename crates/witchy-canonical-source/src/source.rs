@@ -34,13 +34,24 @@ impl SourceExecutionMode {
 /// Parameter references are symbolic until a checked direct call supplies its
 /// exact argument proofs; unknown producers never acquire opt authority.
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskCallableScope {
+    owner: String,
+    ordinal: u32,
+}
+
+impl TaskCallableScope {
+    pub fn new(owner: String, ordinal: u32) -> Self { Self { owner, ordinal } }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TaskExecutionProof {
     Unknown,
     Task(SourceExecutionMode, Box<Self>),
-    /// A checked local callable whose result depends only on its captured
-    /// snapshot and known calls. Parameter-dependent results remain Unknown.
-    Callable { parameters: usize, result: Box<Self> },
+    /// A checked local callable with a distinct lexical formal scope.
+    Callable { scope: TaskCallableScope, parameters: usize, result: Box<Self> },
     Parameter(usize),
+    /// A lambda formal cannot borrow its enclosing function's parameter proof.
+    CallableParameter(TaskCallableScope, usize),
     /// Result of executing a symbolic task parameter or projection.
     Awaited(Box<Self>),
     /// Checked positional projection from a tuple or nominal aggregate.
@@ -136,9 +147,10 @@ impl TaskExecutionProof {
             (Self::Task(left_mode, left_result), Self::Task(right_mode, right_result)) if left_mode == right_mode => {
                 Self::Task(left_mode, Box::new((*left_result).join(*right_result)))
             }
-            (Self::Callable { parameters: left_arity, result: left },
-                Self::Callable { parameters: right_arity, result: right }) if left_arity == right_arity => {
-                Self::Callable { parameters: left_arity, result: Box::new((*left).join(*right)) }
+            (Self::Callable { scope: left_scope, parameters: left_arity, result: left },
+                Self::Callable { scope: right_scope, parameters: right_arity, result: right })
+                if left_scope == right_scope && left_arity == right_arity => {
+                Self::Callable { scope: left_scope, parameters: left_arity, result: Box::new((*left).join(*right)) }
             }
             (Self::Awaited(left), Self::Awaited(right)) => Self::Awaited(Box::new((*left).join(*right))),
             (Self::Elements(left), Self::Elements(right)) if left.len() == right.len() => {
@@ -190,28 +202,34 @@ impl TaskExecutionProof {
 
     /// Instantiate an interprocedural summary with the exact checked call's
     /// argument proofs. Bounded recursion keeps malformed summaries closed.
-    pub fn instantiate(&self, arguments: &[Self]) -> Self {
-        fn go(proof: &TaskExecutionProof, arguments: &[TaskExecutionProof], depth: usize) -> TaskExecutionProof {
+    fn substitute(&self, arguments: &[Self], formal_scope: Option<&TaskCallableScope>) -> Self {
+        fn go(proof: &TaskExecutionProof, arguments: &[TaskExecutionProof], formal_scope: Option<&TaskCallableScope>, depth: usize) -> TaskExecutionProof {
             if depth > 128 { return TaskExecutionProof::Unknown; }
             match proof {
                 TaskExecutionProof::Unknown => TaskExecutionProof::Unknown,
-                TaskExecutionProof::Task(mode, result) => TaskExecutionProof::Task(*mode, Box::new(go(result, arguments, depth + 1))),
-                TaskExecutionProof::Callable { parameters, result } => TaskExecutionProof::Callable {
-                    parameters: *parameters,
-                    result: Box::new(go(result, arguments, depth + 1)),
+                TaskExecutionProof::Task(mode, result) => TaskExecutionProof::Task(*mode, Box::new(go(result, arguments, formal_scope, depth + 1))),
+                TaskExecutionProof::Callable { scope, parameters, result } => TaskExecutionProof::Callable {
+                    scope: scope.clone(), parameters: *parameters,
+                    result: Box::new(go(result, arguments, formal_scope, depth + 1)),
                 },
-                TaskExecutionProof::Parameter(index) => arguments.get(*index).cloned().unwrap_or(TaskExecutionProof::Unknown),
-                TaskExecutionProof::Awaited(base) => match go(base, arguments, depth + 1) {
+                TaskExecutionProof::Parameter(index) if formal_scope.is_none() =>
+                    arguments.get(*index).cloned().unwrap_or(TaskExecutionProof::Unknown),
+                TaskExecutionProof::Parameter(index) => TaskExecutionProof::Parameter(*index),
+                TaskExecutionProof::CallableParameter(scope, index) if formal_scope == Some(scope) =>
+                    arguments.get(*index).cloned().unwrap_or(TaskExecutionProof::Unknown),
+                TaskExecutionProof::CallableParameter(scope, index) =>
+                    TaskExecutionProof::CallableParameter(scope.clone(), *index),
+                TaskExecutionProof::Awaited(base) => match go(base, arguments, formal_scope, depth + 1) {
                     TaskExecutionProof::Task(_, result) => *result,
                     TaskExecutionProof::Unknown => TaskExecutionProof::Unknown,
                     other => TaskExecutionProof::Awaited(Box::new(other)),
                 },
-                TaskExecutionProof::Slot(base, index) => match go(base, arguments, depth + 1) {
+                TaskExecutionProof::Slot(base, index) => match go(base, arguments, formal_scope, depth + 1) {
                     TaskExecutionProof::Elements(elements) => elements.get(*index).cloned().unwrap_or(TaskExecutionProof::Unknown),
                     TaskExecutionProof::Unknown => TaskExecutionProof::Unknown,
                     other => TaskExecutionProof::Slot(Box::new(other), *index),
                 },
-                TaskExecutionProof::VariantSlot(base, ordinal, index) => match go(base, arguments, depth + 1) {
+                TaskExecutionProof::VariantSlot(base, ordinal, index) => match go(base, arguments, formal_scope, depth + 1) {
                     TaskExecutionProof::Variant { ordinal: actual, fields } if actual == *ordinal =>
                         fields.get(*index).cloned().unwrap_or(TaskExecutionProof::Unknown),
                     TaskExecutionProof::Variants(mut variants) => variants.remove(ordinal)
@@ -220,28 +238,36 @@ impl TaskExecutionProof {
                     TaskExecutionProof::Unknown => TaskExecutionProof::Unknown,
                     other => TaskExecutionProof::VariantSlot(Box::new(other), *ordinal, *index),
                 },
-                TaskExecutionProof::AnyElement(base) => match go(base, arguments, depth + 1) {
+                TaskExecutionProof::AnyElement(base) => match go(base, arguments, formal_scope, depth + 1) {
                     TaskExecutionProof::Elements(elements) => elements.into_iter().reduce(TaskExecutionProof::join).unwrap_or(TaskExecutionProof::Unknown),
                     TaskExecutionProof::Unknown => TaskExecutionProof::Unknown,
                     other => TaskExecutionProof::AnyElement(Box::new(other)),
                 },
                 TaskExecutionProof::Elements(elements) => TaskExecutionProof::Elements(
-                    elements.iter().map(|child| go(child, arguments, depth + 1)).collect(),
+                    elements.iter().map(|child| go(child, arguments, formal_scope, depth + 1)).collect(),
                 ),
                 TaskExecutionProof::Fields(fields) => TaskExecutionProof::Fields(
-                    fields.iter().map(|(name, child)| (name.clone(), go(child, arguments, depth + 1))).collect(),
+                    fields.iter().map(|(name, child)| (name.clone(), go(child, arguments, formal_scope, depth + 1))).collect(),
                 ),
                 TaskExecutionProof::Variant { ordinal, fields } => TaskExecutionProof::Variant {
                     ordinal: *ordinal,
-                    fields: fields.iter().map(|child| go(child, arguments, depth + 1)).collect(),
+                    fields: fields.iter().map(|child| go(child, arguments, formal_scope, depth + 1)).collect(),
                 },
                 TaskExecutionProof::Variants(variants) => TaskExecutionProof::Variants(
                     variants.iter().map(|(ordinal, fields)| (*ordinal,
-                        fields.iter().map(|child| go(child, arguments, depth + 1)).collect())).collect(),
+                        fields.iter().map(|child| go(child, arguments, formal_scope, depth + 1)).collect())).collect(),
                 ),
             }
         }
-        go(self, arguments, 0)
+        go(self, arguments, formal_scope, 0)
+    }
+
+    pub fn instantiate(&self, arguments: &[Self]) -> Self {
+        self.substitute(arguments, None)
+    }
+
+    pub fn instantiate_callback(&self, scope: &TaskCallableScope, arguments: &[Self]) -> Self {
+        self.substitute(arguments, Some(scope))
     }
 }
 

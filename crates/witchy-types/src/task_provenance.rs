@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 
 use witchy_canonical_source::aggregates::type_definitions;
 use witchy_canonical_source::source::{
-    SourceExecutionMode, TaskExecutionProof as Proof, source_execution_mode,
+    SourceExecutionMode, TaskCallableScope, TaskExecutionProof as Proof, source_execution_mode,
 };
 use witchy_syntax::ast::{Block, Expr, Function, Item, Module, Pattern, Stmt, TypeDef, UnOp};
 
@@ -33,6 +33,7 @@ struct Analyzer<'a> {
     returns: Vec<Proof>,
     required_opt_inputs: Vec<Proof>,
     await_origins: BTreeMap<usize, Proof>,
+    lambda_scopes: BTreeMap<usize, TaskCallableScope>,
 }
 
 impl Analyzer<'_> {
@@ -232,8 +233,8 @@ impl Analyzer<'_> {
         // authority, even if its signature happens to match.
         if environment.contains_key(name) || self.table.local_callee_type(expression).is_some() {
             let callable = environment.get(name).and_then(|proof| match proof {
-                Proof::Callable { parameters, result } if *parameters == proofs.len() =>
-                    Some(result.as_ref().clone().bounded(4096)),
+                Proof::Callable { scope, parameters, result } if *parameters == proofs.len() =>
+                    Some(result.instantiate_callback(scope, &proofs).bounded(4096)),
                 _ => None,
             });
             if let Some(result) = callable {
@@ -491,12 +492,13 @@ impl Analyzer<'_> {
                 value
             }
             Expr::Lambda { params, body, .. } => {
+                let scope = self.lambda_scopes.get(&(expression as *const Expr as usize))
+                    .cloned().ok_or_else(|| TypeError {
+                        message: format!("in `{}`: checked lambda lacks a stable callable scope", self.function.name),
+                    })?;
                 let mut nested = environment.clone();
-                for parameter in params {
-                    // A lambda parameter cannot borrow an enclosing
-                    // function's symbolic parameter identity. Results that
-                    // depend on the invocation argument stay fail closed.
-                    nested.insert(parameter.name.clone(), Proof::Unknown);
+                for (index, parameter) in params.iter().enumerate() {
+                    nested.insert(parameter.name.clone(), Proof::CallableParameter(scope.clone(), index));
                 }
                 // Audit deferred bodies even when the closure itself is only
                 // stored. Their effects run under this source declaration.
@@ -515,17 +517,19 @@ impl Analyzer<'_> {
                     }
                 }
                 Proof::Callable {
+                    scope,
                     parameters: params.len(),
                     result: Box::new(Self::join_values(nested_returns).bounded(4096)),
                 }
             }
             Expr::Apply { func, args } => {
                 let callable = self.expr(func, environment)?;
-                for arg in args { self.expr(arg, environment)?; }
+                let proofs = args.iter().map(|arg| self.expr(arg, environment))
+                    .collect::<Result<Vec<_>, _>>()?;
                 match callable {
-                    Proof::Callable { parameters, result } if parameters == args.len() => {
+                    Proof::Callable { scope, parameters, result } if parameters == args.len() => {
                         environment.values_mut().for_each(|proof| *proof = Proof::Unknown);
-                        (*result).bounded(4096)
+                        result.instantiate_callback(&scope, &proofs).bounded(4096)
                     }
                     _ => {
                         environment.values_mut().for_each(|proof| *proof = Proof::Unknown);
@@ -659,6 +663,22 @@ fn analyze_function(
     function: &Function,
     check_await: bool,
 ) -> Result<(Summary, BTreeMap<usize, Proof>), TypeError> {
+    // AST preorder is stable across summary iterations. A lexical scope key
+    // keeps lambda formals distinct from enclosing function parameters and
+    // from formals captured by a nested lambda.
+    let mut lambda_scopes = BTreeMap::new();
+    let mut next_lambda = 0_u32;
+    witchy_syntax::ast::visit::visit_block(&function.body, &mut |expression| {
+        if matches!(expression, Expr::Lambda { .. }) {
+            let ordinal = next_lambda;
+            next_lambda = next_lambda.checked_add(1).ok_or_else(|| TypeError {
+                message: format!("in `{}`: checked lambda count exceeds u32", function.name),
+            })?;
+            lambda_scopes.insert(expression as *const Expr as usize,
+                TaskCallableScope::new(function.name.clone(), ordinal));
+        }
+        Ok::<(), TypeError>(())
+    })?;
     let mut analyzer = Analyzer {
         module,
         table,
@@ -669,6 +689,7 @@ fn analyze_function(
         returns: Vec::new(),
         required_opt_inputs: Vec::new(),
         await_origins: BTreeMap::new(),
+        lambda_scopes,
     };
     let mut environment = function
         .params

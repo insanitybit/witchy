@@ -262,17 +262,19 @@ shadow the generated `task.and_then` module call during async lowering; that
 separate baseline name-resolution defect remains open.
 
 Local callback task provenance (implemented but unverified, 2026-09-26):
-the shared value proof now represents a checked callable whose task result is
-independent of its invocation arguments. The linked checker carries that proof
-through aliases and aggregates and consumes it for both named local calls and
-indirect application. It audits the callback body at construction and clears
-local provenance after invocation, since a callback may mutate captures.
-Parameter-dependent callback results, unknown function values, trait dispatch,
-and scheduler adapters remain fail closed. The existing linked opt-task checker
-case accepts a local callback returning an opt task and rejects a callback
-returning a normal task. A temporary admitted CLI program combines a named
-callback alias with a checked tuple-field callback and prints the hand-computed
-`77`. A durable admitted-Wasm witness and zero-leak audit remain pending; no
+the shared value proof represents a checked callable with a lexical formal
+scope. The linked checker substitutes the exact checked argument proofs into
+that scope at a known local call, including named aliases and callbacks
+projected from aggregates. It audits the callback body at construction and
+clears local provenance after invocation, since a callback may mutate captures.
+Unknown function values, trait dispatch, and scheduler adapters remain fail
+closed. The existing linked opt-task checker case accepts parameter-dependent
+local callbacks passed opt tasks and refuses a normal task passed to the same
+callback. A temporary admitted CLI program for the captured-result callback
+previously printed the hand-computed `77`. A temporary admitted unoptimized CLI
+program now passes two opt tasks through parameter-dependent callbacks, one
+named and one projected from a tuple, and also prints the hand-computed `77`.
+These temporary smokes lack a durable Wasm witness and zero-leak audit. No
 A–O row closes.
 
 Async generated-call hygiene (implemented but unverified, 2026-09-26): linked
