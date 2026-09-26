@@ -2143,6 +2143,8 @@ mod loans;
 mod own;
 #[path = "typeck/reference_erasure.rs"]
 mod reference_erasure;
+#[path = "typeck/resource_composition.rs"]
+mod resource_composition;
 #[path = "typeck/std_pruning.rs"]
 mod std_pruning;
 #[path = "typeck/views.rs"]

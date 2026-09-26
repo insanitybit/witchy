@@ -1,15 +1,37 @@
-//! RFC-0167 row K: resources, callable effects, erased payloads, and
-//! suspension retain one composition contract in normal and opt source.
-//!
-//! The executable evidence is the RFC-0167 triad: an independent expected
-//! result, admitted unoptimized Wasm, and focused structural contracts.
-//! The source tree-walker interpreter is deliberately not an acceptance oracle.
+//! RFC-0167 row K: checker-only resource, callable-effect, erased-payload,
+//! and suspension composition contracts.
+
+use std::collections::{HashSet, VecDeque};
+
+fn checked(source: &str) -> Result<(), String> {
+    let entry = witchy_syntax::parser::parse_module(source).map_err(|error| error.to_string())?;
+    let mut sources = vec![("main".to_string(), source.as_bytes().to_vec())];
+    let mut loaded = HashSet::from(["main".to_string()]);
+    let mut queue = VecDeque::from([entry]);
+    while let Some(module) = queue.pop_front() {
+        for name in module.imports {
+            if !loaded.insert(name.clone()) {
+                continue;
+            }
+            let bundled = witchy_syntax::linker::bundled_source(&name)
+                .ok_or_else(|| format!("unknown bundled module `{name}`"))?;
+            let parsed = witchy_syntax::parser::parse_module(bundled)
+                .map_err(|error| error.to_string())?;
+            queue.push_back(parsed);
+            sources.push((name, bundled.as_bytes().to_vec()));
+        }
+    }
+    witchy_types::pipeline::link_checked_from_source_bundle(
+        sources,
+        "main",
+        |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
+    )
+    .map(|_| ())
+    .map_err(|error| error.to_string())
+}
 
 fn assert_rejected(label: &str, source: &str, needles: &[&str]) {
-    let error = witchy::resolve_std_only_checked(source)
-        .expect_err(label)
-        .to_string()
-        .to_lowercase();
+    let error = checked(source).expect_err(label).to_lowercase();
     assert!(
         needles.iter().any(|needle| error.contains(&needle.to_lowercase())),
         "{label} must fail at its composed contract boundary with one of {needles:?}: {error}",
@@ -55,12 +77,6 @@ fn qualifier_erasure_cannot_hide_must_once_or_capability_contracts() {
 
 #[test]
 fn cancellation_cannot_drop_live_must_or_once_task_captures() {
-    // A spawned task has a cancellation handle, unlike the compiler-generated
-    // root task. These sources deliberately construct that handle and cancel
-    // it, so the refusal is tied to the cancellable frame rather than merely
-    // to an isolated async declaration. The ordinary composition witness above
-    // remains the executable interpreter/admitted-Wasm control: neither
-    // cancellation nor this rejection adds a backend-specific cleanup path.
     for mode in ["", "mode opt\n\n"] {
         assert_rejected(
             "cancellation cannot abandon a live must capture",
