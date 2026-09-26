@@ -1484,7 +1484,28 @@ fn agent_check_changes_verify_utility_qos_without_a_rust_build() {
             ],
             "{path}"
         );
+        let gate = gate_nextest(&[path]);
+        assert!(gate.contains("--test test_for_paths"), "missing real agent-check contracts: {gate}");
+        assert!(!gate.contains("--test merge_queue") && !gate.contains("--test worktree"),
+            "agent-check selected unrelated coordinator/worktree fixtures: {gate}");
     }
+    for queue_path in ["scripts/merge-queue.sh", "tools/merge-queue-tests/tests/merge_queue/coordinator.rs"] {
+        let gate = gate_nextest(&["scripts/agent-check.sh", queue_path]);
+        assert!(gate.contains("--test test_for_paths") && gate.contains("--test merge_queue"),
+            "mixed edit lost a required binary: {queue_path}: {gate}");
+    }
+    let compiler_gate = gate_nextest(&["scripts/agent-check.sh", "crates/witchy-types/src/typeck.rs"]);
+    assert!(compiler_gate.contains("binary(test_for_paths)") && compiler_gate.contains("package(witchy-types)"),
+        "mixed product edit lost its agent-check or compiler contracts: {compiler_gate}");
+}
+
+#[test]
+fn agent_check_preserves_qos_and_target_selection() {
+    let output = Command::new("bash")
+        .arg(workspace_root().join("scripts/test-agent-check-qos.sh"))
+        .output().expect("run real agent-check QoS contracts");
+    assert!(output.status.success(), "{}\n{}", String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr));
 }
 
 #[test]
@@ -1931,15 +1952,16 @@ fn script_rules_gate_on_the_binary_their_focused_check_names() {
     //
     // The covering binary is a checkable fact, not a guess:
     // tools/merge-queue-tests/tests/worktree/{status,warm,create,rfc_status}.rs reference the four
-    // worktree scripts, and tools/merge-queue-tests/tests/merge_queue/
-    // coordinator.rs references agent-check.sh and submit-with-presubmit.sh.
+    // worktree scripts. This binary executes the real agent-check workflow,
+    // receipt and QoS harnesses; coordinator.rs substitutes agent-check but
+    // covers the submission-wrapper/coordinator contracts.
     for (path, binary) in [
         ("scripts/worktree-status.sh", "worktree"),
         ("scripts/worktree-warm.sh", "worktree"),
         ("scripts/worktree-create.sh", "worktree"),
         ("scripts/rfc-status.sh", "worktree"),
-        ("scripts/agent-check.sh", "merge_queue"),
-        ("scripts/test-agent-check-qos.sh", "merge_queue"),
+        ("scripts/agent-check.sh", "test_for_paths"),
+        ("scripts/test-agent-check-qos.sh", "test_for_paths"),
         ("scripts/submit-with-presubmit.sh", "merge_queue"),
         ("scripts/test-submit-with-presubmit.sh", "merge_queue"),
     ] {
@@ -2076,7 +2098,7 @@ fn compiler_change_mixed_with_queue_scripts_names_no_foreign_target() {
     // The queue binaries live in merge-queue-tests, which the workspace stage
     // never selects. Naming them next to `-p witchy-types -p witchy` makes
     // cargo reject the whole run before building anything.
-    for queue_path in ["scripts/merge-queue.sh", "scripts/test-for-paths.sh", "tools/merge-queue-tests/tests/test_for_paths.rs"] {
+    for queue_path in ["scripts/merge-queue.sh", "scripts/agent-check.sh", "scripts/test-for-paths.sh", "tools/merge-queue-tests/tests/test_for_paths.rs"] {
         let output = gate_nextest(&["crates/witchy-types/src/typeck.rs", queue_path]);
         let selection = output.lines().next().unwrap_or_default();
         let words: Vec<&str> = selection.split_whitespace().collect();

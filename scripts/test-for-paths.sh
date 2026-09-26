@@ -1086,7 +1086,9 @@ for p in "${paths[@]}"; do
             add_early "cargo nextest run -p repo-tests --test repo_hygiene -E 'test(architecture::stage_crates_follow_the_declared_dependency_dag)'"
             path_has_early=1 ;;
         scripts/agent-check.sh | scripts/test-agent-check-qos.sh)
-            add_gate_test merge_queue
+            # This binary executes the real edit/receipt workflow and QoS harness;
+            # coordinator fixtures substitute agent-check rather than exercise it.
+            add_gate_test test_for_paths
             add "for f in scripts/*.sh scripts/bin/*; do bash -n \"\$f\"; done"
             add "./scripts/test-agent-check-qos.sh" ;;
         scripts/submit-with-presubmit.sh | scripts/test-submit-with-presubmit.sh)
