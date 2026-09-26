@@ -32,6 +32,9 @@ that continuation.
 For a generic async function, each direct call checks the instantiated capture
 type. A generic function with an unresolved capture obligation cannot be
 passed as a function value.
+Passing a copyable task recipe to a checked immutable parameter leaves the
+caller free to await its original recipe later. A `var` or `own` call may
+replace or consume it, so the compiler no longer trusts the old task origin.
 
 ```witchy
 async fn double(n: Int) -> Int:

@@ -2197,11 +2197,14 @@ generic function with an outstanding storage obligation cannot be passed as
 an unchecked function value. Awaiting a
 copyable recipe may run it again from the original capture snapshot; affine
 task values still require a whole-value, one-time start.
+An opt task origin survives a checked immutable call argument when its exact
+storage has a lawful replay copy. An `own` or `var` argument, an unknown call
+contract, or an exclusive reference cannot preserve that origin.
 
 The checker, loan analysis, and canonical lowering use the linked source
 callable's mode when deciding opt contracts, including after async segment and
 closure lowering changes its implementation name. Task-value provenance through
-generic and indirect transport remains a compiler gap.
+unproved generic and indirect transport remains a compiler gap.
 
 ```witchy
 from chan import Sender

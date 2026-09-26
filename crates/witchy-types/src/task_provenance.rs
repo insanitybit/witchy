@@ -11,9 +11,9 @@ use witchy_canonical_source::aggregates::type_definitions;
 use witchy_canonical_source::source::{
     SourceExecutionMode, TaskCallableScope, TaskExecutionProof as Proof, source_execution_mode,
 };
-use witchy_syntax::ast::{Block, Expr, Function, Item, Module, Pattern, Stmt, TypeDef, UnOp};
+use witchy_syntax::ast::{Block, Convention, Expr, Function, Item, Module, Pattern, Stmt, TypeDef, UnOp};
 
-use crate::typeck::{Ty, TypeError, TypeTable};
+use crate::typeck::{Ty, TypeError, TypeTable, ty_to_ast};
 
 type Environment = BTreeMap<String, Proof>;
 
@@ -83,13 +83,37 @@ impl Analyzer<'_> {
         }
     }
 
+    fn callable_conventions(&self, callable: Option<&Ty>, arity: usize) -> Option<Vec<Convention>> {
+        let Ty::Fn(parameters, _, conventions, _, _) = callable? else { return None };
+        if parameters.len() != arity { return None; }
+        if conventions.is_empty() { Some(vec![Convention::Let; arity]) }
+        else { (conventions.len() == arity).then(|| conventions.to_vec()) }
+    }
+
     fn invalidate_arguments<'b>(
+        &self,
         arguments: impl IntoIterator<Item = &'b Expr>,
+        conventions: Option<&[Convention]>,
         environment: &mut Environment,
     ) {
-        for argument in arguments {
+        let arguments = arguments.into_iter().collect::<Vec<_>>();
+        let conventions = conventions.filter(|items| items.len() == arguments.len());
+        for (index, argument) in arguments.into_iter().enumerate() {
             if let Some(root) = Self::place_root(argument) {
                 if environment.contains_key(root) {
+                    // A checked immutable formal receives an independent
+                    // replayable copy; it cannot consume or replace the
+                    // caller's executable recipe. Unknown, var, and own
+                    // contracts still revoke its provenance.
+                    if conventions.is_some_and(|items| matches!(items[index], Convention::Let | Convention::Borrow))
+                        && self.table.type_of(argument).and_then(ty_to_ast).is_some_and(|source| {
+                            witchy_canonical_source::storage::replay_capture_eligibility(
+                                &source, self.definitions,
+                            ).is_ok()
+                        })
+                    {
+                        continue;
+                    }
                     environment.insert(root.to_owned(), Proof::Unknown);
                 }
             }
@@ -244,18 +268,18 @@ impl Analyzer<'_> {
                 environment.values_mut().for_each(|proof| *proof = Proof::Unknown);
                 return Ok(result);
             }
-            Self::invalidate_arguments(args, environment);
+            self.invalidate_arguments(args, None, environment);
             return Ok(Proof::Unknown);
         }
         let Some(function) = self.module.items.iter().find_map(|item| match item {
             Item::Function(function) if function.name == name => Some(function),
             _ => None,
         }) else {
-            Self::invalidate_arguments(args, environment);
+            self.invalidate_arguments(args, None, environment);
             return Ok(Proof::Unknown);
         };
         if proofs.len() != function.params.len() {
-            Self::invalidate_arguments(args, environment);
+            self.invalidate_arguments(args, None, environment);
             return Ok(Proof::Unknown);
         }
         if let Some(summary) = self.summaries.get(name) {
@@ -276,7 +300,8 @@ impl Analyzer<'_> {
                 summary.result.instantiate(&proofs).bounded(4096)
             })
         };
-        Self::invalidate_arguments(args, environment);
+        let conventions = function.params.iter().map(|parameter| parameter.convention).collect::<Vec<_>>();
+        self.invalidate_arguments(args, Some(&conventions), environment);
         Ok(result)
     }
 
@@ -326,7 +351,8 @@ impl Analyzer<'_> {
                 for (_, value) in args {
                     self.expr(value, environment)?;
                 }
-                Self::invalidate_arguments(args.iter().map(|(_, value)| value), environment);
+                let conventions = self.callable_conventions(self.table.local_callee_type(expression), args.len());
+                self.invalidate_arguments(args.iter().map(|(_, value)| value), conventions.as_deref(), environment);
                 Proof::Unknown
             }
             Expr::List(values) | Expr::Tuple(values) => {
@@ -443,6 +469,17 @@ impl Analyzer<'_> {
                     }
                 }
             }
+            Expr::Unary { op: UnOp::BorrowMut, expr } => {
+                self.expr(expr, environment)?;
+                // The checker represents an explicit exclusive reference by
+                // its referent type. Its apparent replayable Task type cannot
+                // prove that the original binding survives writes through
+                // this handle, even when a callee's formal says `let`.
+                if let Some(root) = Self::place_root(expr) {
+                    environment.insert(root.to_owned(), Proof::Unknown);
+                }
+                Proof::Unknown
+            }
             Expr::Unary { expr, .. }
             | Expr::As { expr, .. }
             | Expr::ExistentialPack { expr, .. }
@@ -542,8 +579,10 @@ impl Analyzer<'_> {
                 for arg in args {
                     self.expr(arg, environment)?;
                 }
-                Self::invalidate_arguments(
+                let conventions = self.callable_conventions(self.table.local_callee_type(expression), args.len() + 1);
+                self.invalidate_arguments(
                     std::iter::once(receiver.as_ref()).chain(args.iter()),
+                    conventions.as_deref(),
                     environment,
                 );
                 Proof::Unknown
@@ -553,8 +592,10 @@ impl Analyzer<'_> {
                 for (_, arg) in args {
                     self.expr(arg, environment)?;
                 }
-                Self::invalidate_arguments(
+                let conventions = self.callable_conventions(self.table.local_callee_type(expression), args.len() + 1);
+                self.invalidate_arguments(
                     std::iter::once(receiver.as_ref()).chain(args.iter().map(|(_, value)| value)),
+                    conventions.as_deref(),
                     environment,
                 );
                 Proof::Unknown
@@ -564,8 +605,10 @@ impl Analyzer<'_> {
                 for arg in args {
                     self.expr(arg, environment)?;
                 }
-                Self::invalidate_arguments(
+                let conventions = self.callable_conventions(self.table.local_callee_type(expression), args.len() + 1);
+                self.invalidate_arguments(
                     std::iter::once(receiver.as_ref()).chain(args.iter()),
+                    conventions.as_deref(),
                     environment,
                 );
                 Proof::Unknown

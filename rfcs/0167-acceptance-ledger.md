@@ -257,6 +257,20 @@ inputs now require opt-compatible source provenance at each checked direct
 call. Per-execution ownership, cancellation disposition, and the required
 Wasm and zero-leak evidence remain open. No A–O row closes.
 
+Task proof across immutable calls (implemented but unverified, 2026-09-26):
+the checked task-provenance dataflow now consults the exact call convention
+and shared replay storage judgment before revoking an argument's origin.
+A replayable task passed to a known `let` or immutable borrowed formal retains
+its opt execution proof; `own`, `var`, unknown signatures, and exclusive
+reference formation revoke that proof. All direct, labeled, method, and
+existential argument invalidations use this judgment, with unresolved forms
+remaining conservative. A fresh master compiler refused the temporary opt
+probe after an immutable call; this branch's admitted unoptimized Wasm prints
+the hand-computed `1:5`. A `var` write-back near miss still refuses at the opt
+await. Adversarial review found and prompted the exclusive-reference fix and
+found no remaining authority bypass in this change. No zero-leak audit or
+A–O closure is claimed; generic and indirect transport remains incomplete.
+
 Source execution-mode ownership (implemented but unverified, 2026-09-26):
 the checker, loan analysis, call-scoped analysis, canonical lowerer, and legacy
 normal-copy repair telemetry now consume one typed source-mode judgment in
