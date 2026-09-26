@@ -932,6 +932,14 @@ generic or bounded function value; specialization follows those references to a
 fixpoint. Unannotated parameters that don't carry a type variable don't block
 specialization. Scalar-only parameters and results retain the universal scalar
 ABI, but the function value itself always uses the uniform GC closure wrapper.
+An owned, copyable aggregate captured by a closure may contain a checked direct
+capability token. Copying that field delegates the existing
+host-minted token; source type and physical capability kind must still match.
+An affine child has no copy capture. A capability-bearing shell with an affine
+child also cannot be transferred by consuming deconstruction. A persistent view
+of capability-bearing storage has no lawful retained snapshot. Nullable
+capability fields in closure aggregates remain refused until their physical
+capture layout is proved.
 
 An explicitly annotated callable signature may carry a qualified scalar-place
 view such as `&frozen Int` or `&unique Int`. Its checked storage plan selects

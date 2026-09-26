@@ -1380,6 +1380,22 @@ A temporary admitted unoptimized CLI run of those copyable calls printed the
 hand-computed `7 2`. This smoke has no durable Wasm witness or zero-leak audit;
 no A–O row closes.
 
+Copyable capability fields in closure aggregates (implemented but unverified,
+2026-09-26): the shared recursive aggregate ownership judgment now treats a
+source-authenticated direct capability as a copyable token field.
+Closure capture, aggregate layout, and SafeWIR reclassification consume that
+same judgment and still check physical capability kind. A temporary admitted
+unoptimized CLI program captures `(Console, List(Int))` and prints the
+hand-computed `2`. A `unique List(Int)` child and a persistent view of the
+capability-bearing tuple both refuse. Adversarial review identified a mixed
+direct-capability/affine shell whose consuming deconstruction cannot transfer
+the capability output; the shared operation judgment now refuses that shell
+before lowering. A nullable capability child also remains
+refused for lack of an aggregate capture layout. The generated iterator-frame probe now
+passes the closure-capture boundary but fails at a separate missing diagnostic
+source location in canonical lowering. No zero-leak audit or A–O closure is
+claimed.
+
 Stored-obligation catalog replacement (implemented but unverified,
 2026-09-26): canonical source now derives generic stored-parameter masks and
 transitive must-containment from its instantiated stored-child relation. The

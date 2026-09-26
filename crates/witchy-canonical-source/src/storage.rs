@@ -605,7 +605,7 @@ impl AggregateGraphPlan {
         if shape.packed { return None; }
         let source_key = SourceTypeKey { source: ty }.digest()?;
         let mut remaining = 4_096;
-        let operations = graph_storage_operations(ty, definitions, &mut HashSet::new(), 0, &mut remaining)?;
+        let operations = graph_storage_operations(ty, definitions, &mut HashSet::new(), 0, &mut remaining)?.finish();
         Some(Self { source: ty.clone(), shape, source_key,
             cloneable: operations.cloneable, movable: operations.movable })
     }
@@ -615,17 +615,27 @@ impl AggregateGraphPlan {
 struct GraphOperations {
     cloneable: bool,
     movable: bool,
+    direct_capability_field: bool,
 }
 
 impl GraphOperations {
-    const COPY: Self = Self { cloneable: true, movable: true };
-    const REFUSED: Self = Self { cloneable: false, movable: false };
+    const COPY: Self = Self { cloneable: true, movable: true, direct_capability_field: false };
+    const REFUSED: Self = Self { cloneable: false, movable: false, direct_capability_field: false };
+
+    fn finish(mut self) -> Self {
+        // Consuming deconstruction cannot transfer a capability OwnerField as
+        // an output. A copyable shell can use its clone route; a shell with an
+        // affine child has no such route and must refuse before lowering.
+        if self.direct_capability_field && !self.cloneable { self.movable = false; }
+        self
+    }
 
     fn with(self, child: Self) -> Self {
         Self { cloneable: self.cloneable && child.cloneable,
             // A copyable field can be retained when transferring the owned
             // aggregate shell; it need not expose a unique move operation.
-            movable: self.movable && (child.movable || child.cloneable) }
+            movable: self.movable && (child.movable || child.cloneable),
+            direct_capability_field: self.direct_capability_field || child.direct_capability_field }
     }
 }
 
@@ -642,7 +652,7 @@ pub fn aggregate_managed_field_transfer(
 ) -> Option<ManagedAggregateFieldTransfer> {
     let operations = graph_storage_operations(
         ty, definitions, &mut HashSet::new(), 0, &mut 4_096,
-    )?;
+    )?.finish();
     if operations.cloneable {
         Some(ManagedAggregateFieldTransfer::Clone)
     } else if operations.movable {
@@ -674,18 +684,18 @@ fn graph_storage_operations(
         }
         Type::Qualified(TypeQual::View, _) => match StoragePlan::classify(ty, definitions, |_| Some(0)) {
             StoragePlan::RootedView(storage) => match storage {
-            RootedViewStorage::InlineScalar(_) => Some(GraphOperations { cloneable: true, movable: false }),
+            RootedViewStorage::InlineScalar(_) => Some(GraphOperations { cloneable: true, movable: false, direct_capability_field: false }),
             RootedViewStorage::RetainedRoot(RetainedRootStorage::ByteBuffer(_)
                 | RetainedRootStorage::Sequence(_)
                 | RetainedRootStorage::StructuralRecord(_)
-                | RetainedRootStorage::CheckedAggregate(_)) => Some(GraphOperations { cloneable: true, movable: false }),
+                | RetainedRootStorage::CheckedAggregate(_)) => Some(GraphOperations { cloneable: true, movable: false, direct_capability_field: false }),
             RootedViewStorage::RetainedProjection(element) if element.within_resource_bounds() =>
-                Some(GraphOperations { cloneable: true, movable: false }),
+                Some(GraphOperations { cloneable: true, movable: false, direct_capability_field: false }),
             // A scalar-cell view carries a shared GC owner. Crossing an
             // aggregate-owner edge retains that owner; it does not move the
             // underlying scalar place.
             RootedViewStorage::ScalarCell(_) =>
-                Some(GraphOperations { cloneable: true, movable: false }),
+                Some(GraphOperations { cloneable: true, movable: false, direct_capability_field: false }),
             RootedViewStorage::RetainedProjection(_) => None,
             },
             _ => None,
@@ -694,6 +704,7 @@ fn graph_storage_operations(
         Type::Fn(_, _, _, qualifiers) => {
             CallableStoragePlan::classify(ty, definitions).map(|_| GraphOperations {
                 cloneable: !qualifiers.once, movable: !qualifiers.once,
+                direct_capability_field: false,
             })
         }
         Type::Named(_, _) | Type::Tuple(_) => {
@@ -710,8 +721,18 @@ fn graph_storage_operations(
                     GraphOperations::COPY
                 } else { GraphOperations::REFUSED });
             }
-            if crate::capabilities::representation(ty, definitions).is_some() {
-                return Some(GraphOperations::REFUSED);
+            if let Some(representation) = crate::capabilities::representation(ty, definitions) {
+                // A checked direct capability is an immutable host-minted
+                // token. Copying it inside an owned aggregate delegates the
+                // same authority; it does not mint a new capability. A mixed
+                // affine owner shell cannot consume/deconstruct the token.
+                // Nullable capability fields lack an aggregate capture layout.
+                return Some(match representation {
+                    crate::capabilities::CapabilityRepresentation::Direct(_) => GraphOperations {
+                        cloneable: true, movable: false, direct_capability_field: true,
+                    },
+                    crate::capabilities::CapabilityRepresentation::Nullable(_) => GraphOperations::REFUSED,
+                });
             }
             let shape = scalar_aggregate_shape(ty, definitions)?;
             if shape.packed { return None; }

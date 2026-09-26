@@ -313,6 +313,11 @@ fn main(console: Console):
 enclosing scope - that's a compile error, not a silent surprise. If you need to
 produce a changed value, return it; if you need to mutate a caller's variable,
 the next section's `var` is the tool.
+An owned tuple captured by a closure can hold a capability such as `Console`:
+the closure keeps a copy of the same granted token. Capturing `unique` storage
+through that tuple still fails, as does consuming a tuple with both a
+capability and an affine field or taking a persistent view of the
+capability-bearing tuple.
 
 ## Mutating a caller's variable: `var`
 
