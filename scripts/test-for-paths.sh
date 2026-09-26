@@ -142,7 +142,7 @@ add_pkg() {
 }
 gate_package_dir() { # gate_package_dir <workspace package>
     case "$1" in
-        merge-queue-tests | repo-tests) printf 'tools/%s\n' "$1" ;;
+        merge-queue-tests | repo-tests | witchy-snapshot-tools) printf 'tools/%s\n' "$1" ;;
         witchy) printf '.\n' ;;
         *) printf 'crates/%s\n' "$1" ;;
     esac
@@ -1108,6 +1108,12 @@ for p in "${paths[@]}"; do
             echo "WARNING: spec/stdlib.md is GENERATED — edit std/*.witchy doc-comments instead" >&2
             gate_need_stdlib_docs=1
             add "./scripts/nextest-admitted.sh witchy -- cargo nextest run --bin witchy -E 'test(stdlib_docs_are_current)'" ;;
+        spec/language.md)
+            # The representative census type-checks every Witchy block in
+            # this file. The broader interpreter documentation sweep is
+            # explicitly deferred, so selecting it yields zero gate tests.
+            add_pkg witchy-snapshot-tools
+            add "cargo nextest run -p witchy-snapshot-tools --test rfc0087_migration_census" ;;
         spec/* | CONTRIBUTING.md)
             # documentation_examples_are_valid walks README, CONTRIBUTING,
             # spec/, and book/src. A spec-only edit cannot change crate

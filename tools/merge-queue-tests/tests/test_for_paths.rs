@@ -603,8 +603,9 @@ fn gate_nextest_nested_integration_modules_use_root_targets() {
 fn gate_nextest_spec_language_is_not_workspace() {
     let output = gate_nextest(&["spec/language.md"]);
     assert!(
-        output.contains("documentation_examples_are_valid"),
-        "spec/language.md mapping did not select the documentation sweep: {output}",
+        output.contains("package(witchy-snapshot-tools)")
+            && !output.contains("documentation_examples_are_valid"),
+        "spec/language.md mapping did not select the active compiler census: {output}",
     );
     assert!(
         !output.contains("WORKSPACE") && !output.contains("--workspace"),

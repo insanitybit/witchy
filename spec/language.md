@@ -1370,7 +1370,7 @@ Heterogeneous values dispatch through their own witnesses:
 
 ```witchy
 trait Render:
-    fn render(let self) -> String
+    fn render(own self) -> String
 
 type Number:
     Number(Int)
@@ -1379,12 +1379,12 @@ type Label:
     Label(String)
 
 impl Render for Number:
-    fn render(let self) -> String:
+    fn render(own self) -> String:
         match self:
             Number(value) -> "number=${value}"
 
 impl Render for Label:
-    fn render(let self) -> String:
+    fn render(own self) -> String:
         match self:
             Label(value) -> "label=${value}"
 
