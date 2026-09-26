@@ -207,19 +207,21 @@ fn lower_explicit_packs_inner(
     }
     let typed = crate::record_projection::lower_explicit_projections(typed)?;
     let runtime_types = build_dynamic_runtime_plan_inner(&typed, catalog, runtime_catalog)?;
-    let (module, _, dynamic_result) = typed.rewrite_into_module(|table, module| {
-        rewrite_dynamic_module(module, table, runtime_catalog, &runtime_types, None)
-    });
-    dynamic_result?;
     // Dynamic expansion introduces typed calls and payload decodes. Rebuild
     // their address-keyed facts with the checked path so a malformed generated
     // node is reported here instead of degrading the executable to an empty
-    // table and erasing exact call identity.
-    let typed = match reannotation {
-        ReannotationPolicy::Runtime => crate::typeck::annotate_checked(module),
-        ReannotationPolicy::BuildEntrypoint => crate::typeck::annotate_checked_build(module),
-    }
-    .map_err(|error| error.to_string())?;
+    // table and erasing exact call identity. A program with no Dynamic
+    // operation is left untouched; when the incoming facts came from that same
+    // checked annotation, rechecking would only recompute them.
+    let checked = match reannotation {
+        ReannotationPolicy::Runtime => crate::typeck::CheckedAnnotation::Runtime,
+        ReannotationPolicy::BuildEntrypoint => crate::typeck::CheckedAnnotation::BuildEntrypoint,
+    };
+    let typed = typed
+        .rewrite_reannotating_if_changed(checked, |table, module| {
+            rewrite_dynamic_module(module, table, runtime_catalog, &runtime_types, None)
+        })?
+        .map_err(|error| error.to_string())?;
     let (requests, upcasts) = collect_requests(typed.module(), typed.table())?;
     let witnesses = witness::build_from_catalog_with_upcasts(catalog, requests, upcasts)?;
     let (module, table, result) =

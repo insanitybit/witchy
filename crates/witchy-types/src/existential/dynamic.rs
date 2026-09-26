@@ -633,7 +633,7 @@ pub(super) fn rewrite_dynamic_module(
     runtime_catalog: Option<&RuntimeDeclarationCatalog>,
     runtime_types: &RuntimeTypePlan,
     executable_scope: Option<&BTreeSet<String>>,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let dynamic_context = module.clone();
     for item in &mut module.items {
         match item {
@@ -716,7 +716,11 @@ pub(super) fn rewrite_dynamic_module(
             Item::Type(_) | Item::TypeAlias { .. } => {}
         }
     }
-    Ok(())
+    // Whether any rewrite fired. Every rewrite site in `rewrite_dynamic_expr`
+    // replaces a Dynamic intrinsic call with a different expression (or renames
+    // it and appends an argument), and the traversal otherwise only borrows, so
+    // an equal module is one whose nodes were not touched at all.
+    Ok(*module != dynamic_context)
 }
 
 fn rewrite_dynamic_block(

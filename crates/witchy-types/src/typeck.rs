@@ -11803,6 +11803,18 @@ pub struct TypedModule {
     loan_facts: Option<RetainedLoanFacts>,
     access_facts: Option<RetainedAccessFacts>,
     view_facts: Option<RetainedViewFacts>,
+    /// Which checked annotation produced exactly this table and these facts
+    /// for exactly this AST, if any. Cleared by every in-place rewrite, so it
+    /// is never a claim about a module the checker did not see.
+    checked_as: Option<CheckedAnnotation>,
+}
+
+/// The checked annotation entry point that produced a [`TypedModule`]:
+/// [`annotate_checked`] or [`annotate_checked_build`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CheckedAnnotation {
+    Runtime,
+    BuildEntrypoint,
 }
 
 #[derive(Debug)]
@@ -11907,6 +11919,7 @@ fn typed_module_checked(module: Module, table: TypeTable) -> Result<TypedModule,
         view_facts: view_facts.map(|facts| RetainedViewFacts { module: std::ptr::from_ref(module.as_ref()), facts }),
         module,
         table,
+        checked_as: None,
     })
 }
 
@@ -11926,7 +11939,7 @@ fn typed_module_best_effort(module: Module, table: TypeTable) -> TypedModule {
     let view_facts = (has_views && !mixed_view_and_loan).then(|| crate::views::checked_facts(&module, &table))
         .and_then(Result::ok)
         .map(|facts| RetainedViewFacts { module: std::ptr::from_ref(module.as_ref()), facts });
-    TypedModule { module, table, loan_facts, access_facts, view_facts }
+    TypedModule { module, table, loan_facts, access_facts, view_facts, checked_as: None }
 }
 
 impl TypedModule {
@@ -11981,7 +11994,35 @@ impl TypedModule {
         &mut self,
         rewrite: impl FnOnce(&TypeTable, &mut Module) -> R,
     ) -> R {
+        self.checked_as = None;
         rewrite(&self.table, &mut self.module)
+    }
+
+    /// Apply a rewrite that reports whether it changed the AST, and rebuild the
+    /// address-keyed facts only when it did (or when this wrapper was not
+    /// produced by the `checked` annotation the caller requires).
+    ///
+    /// `rewrite` must return `false` only when it mutated nothing: then every
+    /// node allocation and value is exactly what `checked` already annotated,
+    /// so re-running it would recompute this same table and these same facts
+    /// for the same addresses. `WITCHY_REANNOTATE_UNCHANGED=1` re-annotates
+    /// regardless (a kill switch for comparing the two routes).
+    pub(crate) fn rewrite_reannotating_if_changed<E>(
+        mut self,
+        checked: CheckedAnnotation,
+        rewrite: impl FnOnce(&TypeTable, &mut Module) -> Result<bool, E>,
+    ) -> Result<Result<TypedModule, TypeError>, E> {
+        let reusable = self.checked_as == Some(checked)
+            && std::env::var_os("WITCHY_REANNOTATE_UNCHANGED").is_none();
+        let changed = rewrite(&self.table, &mut self.module)?;
+        if reusable && !changed {
+            return Ok(Ok(self));
+        }
+        let module = *self.module;
+        Ok(match checked {
+            CheckedAnnotation::Runtime => annotate_checked(module),
+            CheckedAnnotation::BuildEntrypoint => annotate_checked_build(module),
+        })
     }
 
     /// Apply a potentially structural rewrite, then unconditionally rebuild
@@ -12198,7 +12239,9 @@ pub fn annotate_checked(module: Module) -> Result<TypedModule, TypeError> {
         true,
     )?
         .unwrap_or_default();
-    typed_module_checked(module, table)
+    let mut typed = typed_module_checked(module, table)?;
+    typed.checked_as = Some(CheckedAnnotation::Runtime);
+    Ok(typed)
 }
 
 /// Lower an already checked linked source module to the ordinary typed runtime
@@ -12268,7 +12311,9 @@ pub fn annotate_checked_build(mut module: Module) -> Result<TypedModule, TypeErr
             table.functions.insert("main".to_string(), signature);
         }
     }
-    typed_module_checked(module, table)
+    let mut typed = typed_module_checked(module, table)?;
+    typed.checked_as = Some(CheckedAnnotation::BuildEntrypoint);
+    Ok(typed)
 }
 
 fn annotate_with_conversion_fns(
@@ -12322,6 +12367,7 @@ pub(crate) fn annotate_types_with_from_conversions(
         loan_facts: None,
         access_facts: None,
         view_facts: None,
+        checked_as: None,
     }
 }
 
