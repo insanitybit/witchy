@@ -23,7 +23,7 @@ fn checked(source: &str) -> witchy_types::pipeline::CheckedModule {
 }
 
 #[test]
-fn async_program_binds_cancellation_and_one_time_edges_into_its_fingerprint() {
+fn async_readiness_binds_capture_cancellation_and_one_time_identity() {
     let checked = checked(
         r#"
 from chan import Receiver
@@ -40,6 +40,20 @@ fn main():
     let mut input = checked
         .typed_async_lowering_input()
         .expect("checked source retains typed async lowering input");
+
+    // Exercise stale capture identity against the same pristine checked
+    // fixture before adding scheduler bindings or tampering with its program.
+    let mut stale = input.clone();
+    let state = stale.states.iter_mut().find(|state| !state.frame.is_empty())
+        .expect("receive continuation has an owned capture destination");
+    state.frame[0].source_binding = None;
+    let rejection = checked.checked_async_readiness(
+        &stale,
+        &AsyncProgram::new(Vec::new()).expect("empty program for mismatch probe"),
+    ).unwrap_err();
+    assert_eq!(rejection, AsyncReadinessError::TypedInputMismatch,
+        "missing source capture identity must not be repaired from a generated frame name");
+
     let receive = input
         .operations
         .iter()
@@ -114,33 +128,7 @@ fn main():
 }
 
 #[test]
-fn async_readiness_refuses_stale_capture_identity_and_replayable_once_recipe() {
-    let checked = checked(
-        r#"
-from chan import Receiver
-
-async fn receive_one(rx: Receiver(Int)) -> Option(Int):
-    chan.recv(rx).await
-
-fn main():
-    let root = 1
-    let view = &root
-    ()
-"#,
-    );
-    let input = checked.typed_async_lowering_input().expect("typed async input");
-    let mut stale = input.clone();
-    let state = stale.states.iter_mut().find(|state| !state.frame.is_empty())
-        .expect("receive continuation has an owned capture destination");
-    state.frame[0].source_binding = None;
-
-    let rejection = checked.checked_async_readiness(
-        &stale,
-        &AsyncProgram::new(Vec::new()).expect("empty program for mismatch probe"),
-    ).unwrap_err();
-    assert_eq!(rejection, AsyncReadinessError::TypedInputMismatch,
-        "missing source capture identity must not be repaired from a generated frame name");
-
+fn async_readiness_refuses_replayable_once_recipe() {
     let replay = checked_module(
         r#"
 async fn worker(own callback: once fn() -> Int) -> Int:
