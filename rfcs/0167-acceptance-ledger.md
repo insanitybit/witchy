@@ -261,6 +261,17 @@ source proof there rejected valid async source. A local named `task` can also
 shadow the generated `task.and_then` module call during async lowering; that
 separate baseline name-resolution defect remains open.
 
+Recursive task-proof summaries (implemented but unverified, 2026-09-26):
+recursive ordinary value producers such as `iter.unfold` can grow a symbolic
+result without bound even though no task authority is established. The checked
+summary fixed point now widens only unstable result proofs to `Unknown` and
+reruns their consumers; nonconvergent opt-input requirements still refuse.
+The formerly failing semver standard-library link now succeeds; a temporary
+admitted unoptimized CLI program parses and formats `1.2.3` and prints the
+hand-computed `1.2.3`. The generator
+iteration probe also passes this provenance boundary but reaches a separate
+SafeWIR closure-capture refusal for its owned iterator state. No A–O row closes.
+
 Local callback task provenance (implemented but unverified, 2026-09-26):
 the shared value proof represents a checked callable with a lexical formal
 scope. The linked checker substitutes the exact checked argument proofs into

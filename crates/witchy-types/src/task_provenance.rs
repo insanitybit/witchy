@@ -5,7 +5,7 @@
 //! Unknown callbacks, dynamic dispatch, or projections fail closed at an opt
 //! await; a result type alone cannot authorize opt execution.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use witchy_canonical_source::aggregates::type_definitions;
 use witchy_canonical_source::source::{
@@ -724,25 +724,46 @@ pub(crate) fn checked_await_origins(
         })
         .collect();
     let mut summaries = BTreeMap::new();
+    // A recursive value producer can construct an unbounded symbolic result
+    // (for example, an iterator whose step contains the next iterator). Its
+    // finite summary must lose result precision, never opt requirements. Mark
+    // only the still-growing results Unknown and rerun their consumers. An
+    // unstable requirement itself has no lawful widening and stays refused.
+    let mut widened = BTreeSet::new();
     let mut converged = false;
-    for _ in 0..128 {
-        let mut next = summaries.clone();
+    for _round in 0..=functions.len() {
+        for _ in 0..128 {
+            let mut next = summaries.clone();
+            for function in &functions {
+                let mut summary = analyze_function(module, table, &definitions, &summaries, function, false)?.0;
+                if widened.contains(&function.name) { summary.result = Proof::Unknown; }
+                next.insert(function.name.clone(), summary);
+            }
+            if next == summaries {
+                converged = true;
+                break;
+            }
+            summaries = next;
+        }
+        if converged { break; }
+        let mut growing = BTreeSet::new();
         for function in &functions {
-            next.insert(
-                function.name.clone(),
-                analyze_function(module, table, &definitions, &summaries, function, false)?.0,
-            );
+            let next = analyze_function(module, table, &definitions, &summaries, function, false)?.0;
+            let prior = summaries.get(&function.name);
+            if prior.is_some_and(|prior| prior.required_opt_inputs != next.required_opt_inputs) {
+                return Err(TypeError {
+                    message: format!("task execution provenance requirements did not converge in `{}`", function.name),
+                });
+            }
+            if prior.is_none_or(|prior| prior.result != next.result) && !widened.contains(&function.name) {
+                growing.insert(function.name.clone());
+            }
         }
-        if next == summaries {
-            converged = true;
-            break;
-        }
-        summaries = next;
+        if growing.is_empty() { break; }
+        widened.extend(growing);
     }
     if !converged {
-        return Err(TypeError {
-            message: "task execution provenance summaries did not converge".into(),
-        });
+        return Err(TypeError { message: "task execution provenance summaries did not converge after bounded result widening".into() });
     }
     let mut awaits = BTreeMap::new();
     for function in functions {
