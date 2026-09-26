@@ -552,7 +552,12 @@ fn graph_storage_operations(
                 | RetainedRootStorage::CheckedAggregate(_)) => Some(GraphOperations { cloneable: true, movable: false }),
             RootedViewStorage::RetainedProjection(element) if element.within_resource_bounds() =>
                 Some(GraphOperations { cloneable: true, movable: false }),
-            RootedViewStorage::ScalarCell(_) | RootedViewStorage::RetainedProjection(_) => None,
+            // A scalar-cell view carries a shared GC owner. Crossing an
+            // aggregate-owner edge retains that owner; it does not move the
+            // underlying scalar place.
+            RootedViewStorage::ScalarCell(_) =>
+                Some(GraphOperations { cloneable: true, movable: false }),
+            RootedViewStorage::RetainedProjection(_) => None,
             },
             _ => None,
         },
