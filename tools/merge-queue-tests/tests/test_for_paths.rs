@@ -16,6 +16,42 @@ fn documentation_edits_do_not_run_the_deferred_source_interpreter_sweep() {
     }
 }
 
+#[test]
+fn pure_compiler_edit_batches_consumers_without_documentation_campaigns() {
+    // A representative cross-stage RFC-0167 change. Prose alongside it must
+    // not introduce a native feature graph or a migration-corpus build.
+    for document in ["book/src/ownership.md", "spec/language.md", "rfcs/0167-acceptance-ledger.md"] {
+        let commands = selected(&[
+            "--edit-loop", "crates/witchy-canonical-source/src/storage.rs",
+            "crates/witchy-lower/src/canonical_lower.rs",
+            "crates/witchy-wir/src/canonical_safewir/check/memory.rs", document,
+        ]);
+        assert!(commands[0].starts_with("bash ./scripts/pure-compiler-check.sh"), "{commands:?}");
+        for package in ["witchy-canonical-source", "witchy-types", "witchy-wir", "witchy-lower"] {
+            assert!(commands[0].contains(package), "missing consumer {package}: {commands:?}");
+        }
+        assert!(commands.len() <= 2, "{commands:?}");
+        for command in &commands {
+            assert!(!command.contains("--features native") && !command.contains("example_tests")
+                && !command.contains("rfc0087_migration_census"), "{commands:?}");
+        }
+    }
+    for path in ["book/src/ownership.md", "spec/language.md"] {
+        assert!(selected(&["--edit-loop", path]).is_empty(), "{path}");
+    }
+    // Deferring the corpus in the edit loop does not remove landing evidence.
+    assert!(gate_nextest(&["spec/language.md"]).contains("witchy-snapshot-tools"));
+}
+
+#[test]
+fn pure_compiler_edit_metadata_reuse_is_fail_closed() {
+    let output = Command::new("bash")
+        .arg(workspace_root().join("scripts/test-pure-compiler-check.sh"))
+        .output().expect("run pure compiler edit contracts");
+    assert!(output.status.success(), "{}\n{}", String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr));
+}
+
 fn workspace_root() -> PathBuf {
     let manifest_dir = PathBuf::from(
         std::env::var_os("CARGO_MANIFEST_DIR").expect("Cargo sets CARGO_MANIFEST_DIR for tests"),

@@ -515,8 +515,17 @@ canonical_build_recipe=0
 canonical_crypto=0
 canonical_fixture_rewrite=0
 canonical_fixture_rewrite_paths_only=1
+pure_compiler_edit_paths_only=1
 for p in "${paths[@]}"; do
     path_has_early=0
+    case "$p" in
+        crates/witchy-canonical-source/src/* | crates/witchy-canonical-source/tests/* | \
+        crates/witchy-types/src/* | crates/witchy-types/tests/* | \
+        crates/witchy-lower/src/* | crates/witchy-lower/tests/* | \
+        crates/witchy-wir/src/* | crates/witchy-wir/tests/* | \
+        rfcs/* | book/* | spec/language.md | docs/*) ;;
+        *) pure_compiler_edit_paths_only=0 ;;
+    esac
     case "$p" in
         crates/witchy-canonical-source/src/* | \
         crates/witchy-wir/src/canonical*)
@@ -680,7 +689,7 @@ for p in "${paths[@]}"; do
     case "$p" in
         crates/witchy-wir/src/canonical_safewir/check/memory.rs | \
         crates/witchy-wir/src/canonical_safewir/check/memory/*.rs)
-            add_early "cargo nextest run -p witchy-wir --features native --test unit -E 'test(constant_prefix_publication_rejects_gaps_and_missing_children)'"
+            add_early "cargo nextest run -p witchy-wir --no-default-features --test unit -E 'test(constant_prefix_publication_rejects_gaps_and_missing_children)'"
             path_has_early=1 ;;
         crates/witchy-lower/src/canonical_list_update.rs | \
         crates/witchy-lower/src/canonical_pipeline.rs)
@@ -888,7 +897,16 @@ for p in "${paths[@]}"; do
             # interpreter and is deferred until the playground/docs runner uses
             # admitted Wasm. Keep the gate impact without selecting it here.
             ;;
-        examples/* | book/*)
+        book/*)
+            # Book validation is deferred while the compiler is being rebuilt.
+            # In particular, prose accompanying a compiler change must not
+            # introduce a second, native build into its pure edit loop.
+            if [ "$edit_loop" -eq 0 ]; then
+                corpus_impact=1
+                add "./scripts/nextest-admitted.sh witchy -- cargo nextest run -E 'test(/^example_tests::/)'"
+            fi
+            ;;
+        examples/*)
             corpus_impact=1
             add "./scripts/nextest-admitted.sh witchy -- cargo nextest run -E 'test(/^example_tests::/)'"
             ;;
@@ -1075,6 +1093,10 @@ for p in "${paths[@]}"; do
             add_gate_test test_for_paths
             add "bash -n scripts/canonical-native-edit.sh scripts/test-canonical-native-edit.sh"
             add "./scripts/test-canonical-native-edit.sh" ;;
+        scripts/pure-compiler-check.sh | scripts/test-pure-compiler-check.sh)
+            add_gate_test test_for_paths
+            add "bash -n scripts/pure-compiler-check.sh scripts/test-pure-compiler-check.sh"
+            add "bash scripts/test-pure-compiler-check.sh" ;;
         scripts/test-for-paths.sh | scripts/test-path-receipts.sh | scripts/test-impact.py | \
         scripts/nextest-admitted.sh | scripts/test-nextest-admitted.sh)
             add_gate_test test_for_paths
@@ -1113,7 +1135,12 @@ for p in "${paths[@]}"; do
             # this file. The broader interpreter documentation sweep is
             # explicitly deferred, so selecting it yields zero gate tests.
             add_pkg witchy-snapshot-tools
-            add "cargo nextest run -p witchy-snapshot-tools --test rfc0087_migration_census" ;;
+            # The migration corpus remains in the landing selection; it is
+            # not a prerequisite to iterating on a compiler/spec change.
+            if [ "$edit_loop" -eq 0 ]; then
+                add "cargo nextest run -p witchy-snapshot-tools --test rfc0087_migration_census"
+            fi
+            ;;
         spec/* | CONTRIBUTING.md)
             # documentation_examples_are_valid walks README, CONTRIBUTING,
             # spec/, and book/src. A spec-only edit cannot change crate
@@ -1215,6 +1242,26 @@ if [ "$edit_loop" -eq 1 ] && [ "${#cmds[@]}" -gt 0 ] \
     && { [ "${paths[0]}" = "tests/misc/rfc0165_project_run.rs" ] \
         || [ "${paths[0]}" = "tests/misc/rfc0165_owner_adapters.rs" ]; }; then
     : # Keep the exact direct-file module route selected above.
+elif [ "$edit_loop" -eq 1 ] && [ "$pure_compiler_edit_paths_only" -eq 1 ] \
+    && [ "$gate_pure_wir" -eq 1 ] && [ "$gate_native_wir" -eq 0 ] \
+    && [ "$gate_need_conformance" -eq 0 ] && [ "$gate_workspace" -eq 0 ]; then
+    # Build the union of target-neutral compiler tests once. Separate crate
+    # commands resolve different feature sets and serialize upstream builds
+    # before downstream crates can start. The helper preserves the original
+    # direct/admitted execution policies against fresh nextest metadata.
+    pure_packages=""
+    for pure_package in "${gate_pkgs[@]}"; do
+        case "$pure_package" in
+            witchy-canonical-source | witchy-types | witchy-wir | witchy-lower)
+                pure_packages="$pure_packages $pure_package" ;;
+        esac
+    done
+    cmds=("bash ./scripts/pure-compiler-check.sh$pure_packages")
+    for pure_package in "${gate_pkgs[@]}"; do
+        if [ "$pure_package" = repo-tests ]; then
+            cmds+=("cargo nextest run -p repo-tests --test repo_hygiene -E 'test(rfc_status_hygiene::)'")
+        fi
+    done
 elif [ "$edit_loop" -eq 1 ] && [ "$canonical_fixture_rewrite" -eq 1 ] \
     && [ "$canonical_fixture_rewrite_paths_only" -eq 1 ]; then
     # Console-fixture plumbing spans the checked driver, interpreter, host, and
