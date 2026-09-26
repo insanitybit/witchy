@@ -624,6 +624,17 @@ instead of `--workspace --all-targets`. `--full` / CI still run everything.
   reclaimed there without relying on an arbitrary whole-suite duration.
   Raising `STALL_TIMEOUT` would only move the cliff; the compile is genuinely
   long, so liveness is the right signal.
+- **A step that outlives its nextest summary is mbx, not nextest
+  (2026-09-26).** mbx's automatic GC sweep ran in the foreground after Cargo
+  exited, and a build that found collection due also waited on another
+  process's sweep. Gate test steps stayed open 15-31 minutes after the
+  `Summary` line, on red and green gates alike. The 1800s workspace-test budget
+  then ended them. Fail-fast SIGKILLs only happened to appear in the same
+  logs. `scripts/bin/cargo` now exports `MBX_GC_AUTO=false` and runs
+  `mbx gc` detached at most hourly. To diagnose one, compare
+  `session_duration_ns` in `state/mbx/reports/*-merge-gate.json` with the
+  report's mtime. Evidence:
+  `state/agents/NOTE-2026-09-26-mbx-failfast-hang.md`.
 - **Tracked edits on checked-out main `master` defer before a gate.** The queue
   keeps the submission queued and retries once the checkout is clean, avoiding
   a full gate that cannot safely fast-forward. A later `blocked` event usually

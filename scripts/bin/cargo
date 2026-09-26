@@ -402,6 +402,44 @@ export MBX_CC="${MBX_CC:-off}"
 # unused units in live targets) never visits them either.
 export MBX_TARGET_VIEWS=0
 
+# Never run mbx's garbage collector inside a build. mbx's automatic sweep
+# ("gc.auto": sweep after a build when collection is due) runs in the
+# FOREGROUND after Cargo has exited, and a build that finds collection due
+# also waits on another process's sweep. On this shared store that turned
+# the end of a build into a 15-31 minute wait: on 2026-09-26 every merge-gate
+# workspace nextest from 04:46Z on (green and red alike), and pool-05's
+# `cargo check`, stayed alive 135-1900s after Cargo exited
+# (state/mbx/reports: session_duration 30-170s, report written 900-1900s
+# later). Two unrelated sessions finished at the same second, one printing
+# `mbx[gc]`, and the last lag ended at gc/v1/last-sweep. The gate's step
+# then hit MERGE_QUEUE_WORKSPACE_TEST_BUDGET (1800s) after 36s of tests.
+# Evidence: state/agents/NOTE-2026-09-26-mbx-failfast-hang.md.
+#
+# Collection still happens, just never on a build's critical path: at most
+# once per WITCHY_MBX_GC_INTERVAL seconds (default 3600) the shim starts
+# `mbx gc` detached, in its own session, with stdio on /dev/null so it
+# cannot hold a gate log or a caller's pipe open. mbx itself refuses a
+# second concurrent collector. WITCHY_MBX_GC=off skips the background sweep
+# too; MBX_GC_AUTO set by the caller still wins.
+export MBX_GC_AUTO="${MBX_GC_AUTO:-false}"
+if [ "${WITCHY_MBX_GC:-on}" != "off" ] && [ "$MBX_GC_AUTO" = "false" ]; then
+    gc_stamp="$MBX_CACHE_DIR/.witchy-gc-launched"
+    gc_interval="${WITCHY_MBX_GC_INTERVAL:-3600}"
+    case "$gc_interval" in '' | *[!0-9]*) gc_interval=3600 ;; esac
+    gc_now="$(date +%s)"
+    gc_last="$(stat -f %m "$gc_stamp" 2>/dev/null || stat -c %Y "$gc_stamp" 2>/dev/null || echo 0)"
+    if [ $((gc_now - gc_last)) -ge "$gc_interval" ] && mkdir -p "$MBX_CACHE_DIR" 2>/dev/null \
+        && touch "$gc_stamp" 2>/dev/null; then
+        if command -v setsid >/dev/null 2>&1; then
+            nohup setsid nice -n 19 "$mbx" gc </dev/null >/dev/null 2>&1 &
+        else
+            nohup perl -MPOSIX -e 'POSIX::setsid(); exec @ARGV or exit 127' \
+                nice -n 19 "$mbx" gc </dev/null >/dev/null 2>&1 &
+        fi
+        disown 2>/dev/null || true
+    fi
+fi
+
 # Keep mbx's interactive display out of agent logs; plain cargo output.
 export CARGO_TERM_PROGRESS_WHEN="${CARGO_TERM_PROGRESS_WHEN:-never}"
 export MBX_SAVINGS="${MBX_SAVINGS:-off}"

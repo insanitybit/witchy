@@ -1035,6 +1035,112 @@ fn cargo_shim_runs_the_pinned_mbx_with_target_views_off() {
     assert_eq!(String::from_utf8_lossy(&output.stdout), "link views=0 store=store-bin\n");
 }
 
+/// mbx's automatic GC sweep runs in the foreground after Cargo exits, and on
+/// 2026-09-26 it held merge-gate test steps open for 15-31 minutes after
+/// nextest's summary. The shim turns it off for every build and instead
+/// launches `mbx gc` detached, at most once per interval, with its stdio
+/// away from the caller's (a gate log or pipe must never wait on it).
+#[test]
+fn cargo_shim_keeps_mbx_gc_off_the_build_critical_path() {
+    let repo = temp_repo();
+    let root = repo.path();
+    write(root, "scripts/bin/cargo", include_str!("../../../../scripts/bin/cargo"));
+    write(
+        root,
+        "scripts/feature-unification.sh",
+        include_str!("../../../../scripts/feature-unification.sh"),
+    );
+    write(root, "scripts/mbx-install.sh", "#!/bin/sh\nMBX_VERSION=\"9.9.9\"\n");
+    write(root, "fake-bin/cargo", "#!/bin/sh\nexit 0\n");
+    // `mbx gc` sleeps before recording itself: a shim that waited on it, or
+    // shared its stdout, would print "swept" or finish late.
+    write(
+        root,
+        "state/mbx/9.9.9/mbx",
+        "#!/bin/sh\nif [ \"$1\" = gc ]; then sleep 2; echo swept; \
+         echo \"$$ views=${MBX_TARGET_VIEWS-unset}\" >>\"$MBX_CACHE_DIR/../gc-runs\"; exit 0; fi\n\
+         printf 'build gc_auto=%s\\n' \"${MBX_GC_AUTO-unset}\"\n",
+    );
+    for executable in ["scripts/bin/cargo", "fake-bin/cargo", "state/mbx/9.9.9/mbx"] {
+        let status = Command::new("chmod")
+            .args(["+x", executable])
+            .current_dir(root)
+            .status()
+            .expect("mark fixture executable");
+        assert!(status.success());
+    }
+    let path = std::env::join_paths(
+        std::iter::once(root.join("fake-bin"))
+            .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())),
+    )
+    .expect("fixture PATH");
+    let run = |gate: bool, gc_auto: Option<&str>| {
+        let mut command = Command::new(root.join("scripts/bin/cargo"));
+        command
+            .args(["nextest", "run", "--workspace"])
+            .current_dir(root)
+            .env("PATH", &path)
+            .env("MBX_STATS_REPORT", root.join("mbx-report.json"))
+            .env("WITCHY_AGENT_NICE", "off")
+            .env_remove("MBX_CACHE_DIR")
+            .env_remove("MBX_GC_AUTO")
+            .env_remove("WITCHY_MBX_GC")
+            .env_remove("WITCHY_MBX_GC_INTERVAL")
+            .env_remove("WITCHY_BUILD_CACHE")
+            .env_remove("WITCHY_CARGO_SHIM_ACTIVE")
+            .env_remove("WITCHY_GATE_SCOPE");
+        if gate {
+            command.env("WITCHY_GATE_SCOPE", "all");
+        }
+        if let Some(value) = gc_auto {
+            command.env("MBX_GC_AUTO", value);
+        }
+        let started = std::time::Instant::now();
+        let output = command.output().expect("run cargo shim fixture");
+        (output, started.elapsed())
+    };
+    let runs = root.join("state/mbx/gc-runs");
+    let wait_for_runs = |count: usize| {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        loop {
+            let seen = std::fs::read_to_string(&runs).map(|s| s.lines().count()).unwrap_or(0);
+            if seen >= count || std::time::Instant::now() > deadline {
+                return seen;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+    };
+
+    let (output, elapsed) = run(true, None);
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "build gc_auto=false\n");
+    assert!(
+        elapsed < std::time::Duration::from_millis(1800),
+        "the build waited on the background sweep: {elapsed:?}",
+    );
+    assert_eq!(wait_for_runs(1), 1, "the due sweep never ran");
+    assert_eq!(
+        std::fs::read_to_string(&runs).expect("gc record").split_whitespace().nth(1),
+        Some("views=0"),
+        "the background sweep must see the shim's target-views guard",
+    );
+
+    // Within the interval a second build neither sweeps nor turns gc on.
+    let (output, _) = run(false, None);
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "build gc_auto=false\n");
+    std::thread::sleep(std::time::Duration::from_millis(2500));
+    assert_eq!(wait_for_runs(1), 1, "the sweep ignored its interval");
+
+    // A caller that asks for mbx's own automatic sweep keeps it, and the
+    // shim does not add a second collector.
+    std::fs::remove_file(root.join("state/mbx/store-9.9.9/.witchy-gc-launched"))
+        .expect("reset gc stamp");
+    let (output, _) = run(false, Some("true"));
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "build gc_auto=true\n");
+    std::thread::sleep(std::time::Duration::from_millis(2500));
+    assert_eq!(wait_for_runs(1), 1, "an explicit MBX_GC_AUTO still launched a sweep");
+}
+
 #[test]
 fn cargo_shim_bounds_direct_agent_test_fanout_but_not_the_serialized_gate() {
     let repo = temp_repo();
