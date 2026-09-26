@@ -2163,6 +2163,8 @@ mod own_view_consumption;
 mod optimization_readiness;
 #[path = "typeck/opt_callable_provenance.rs"]
 mod opt_callable_provenance;
+#[path = "typeck/opt_stored_callback_invocation.rs"]
+mod opt_stored_callback_invocation;
 #[path = "typeck/reference_erasure.rs"]
 mod reference_erasure;
 #[path = "typeck/reference_contract_matrix.rs"]

@@ -1838,6 +1838,8 @@ impl Checker {
             Expr::Field { base, field } => {
                 let proof = self.expression_opt_value_proof(base);
                 let index = match self.place_ty(base) {
+                    Some(Ty::Tuple(elements)) => field.parse::<usize>().ok()
+                        .filter(|index| *index < elements.len()),
                     Some(Ty::Named(owner, _)) => self.record_fields.get(owner.as_ref())
                         .and_then(|(_, fields)| fields.iter().position(|(name, _)| name == field)),
                     _ => None,
@@ -1976,6 +1978,15 @@ impl Checker {
 
     fn block_opt_callable_contract(&self, block: &Block) -> Option<OptCallableContract> {
         self.recorded_opt_expression_proof_for_block(block).callable()
+    }
+
+    /// Invocation needs the callee's actual checked origin, even when none of
+    /// its arguments is itself callable. A nominal field type is not proof.
+    fn require_opt_invocation_provenance(&self, authenticated: bool) -> Result<(), TypeError> {
+        if self.current_opt_callable && !authenticated {
+            return terr("invocation in opt code requires an opt-compatible callable; the callee value has no authenticated opt provenance");
+        }
+        Ok(())
     }
 
     fn require_opt_callable_provenance(
@@ -2843,7 +2854,12 @@ impl Checker {
         match expr {
             Expr::Var(name) => self.lookup(name).map(|ty| self.resolve(&ty)),
             Expr::Field { base, field } => {
-                let Ty::Named(name, args) = self.place_ty(base)? else {
+                let base_ty = self.place_ty(base)?;
+                if let Ty::Tuple(elements) = &base_ty {
+                    return elements.get(field.parse::<usize>().ok()?)
+                        .map(|element| self.resolve(element));
+                }
+                let Ty::Named(name, args) = base_ty else {
                     return None;
                 };
                 let (parameters, fields) = self.record_fields.get(name.as_ref())?;
@@ -6316,6 +6332,8 @@ impl Checker {
                 self.consume_once_callee(&callee, &vty)?;
                 self.infer(&callee)?;
             }
+            let opt_callable = self.callable_opt_contract(name).is_some();
+            self.require_opt_invocation_provenance(opt_callable)?;
             match self.resolve(&vty) {
                 Ty::Fn(param_tys, ret, conventions, reference_params, qualifiers) => {
                     if self.current_pure && !qualifiers.pure {
@@ -6340,7 +6358,6 @@ impl Checker {
                     }
                     let display = diagnostic_callable_name(name);
                     let unique_contract = self.callable_unique_contract(name);
-                    let opt_callable = self.callable_opt_contract(name).is_some();
                     if let Some(expected) = expected {
                         self.coerce_arg(expected, ret.as_ref()).map_err(|e| TypeError {
                             message: format!("in call to `{display}`: {}", e.message),
@@ -8269,8 +8286,11 @@ impl Checker {
                 // The callee is an arbitrary expression of function type; unify
                 // it with `fn(argtys) -> r` and yield `r`.
                 let unique_contract = self.callable_unique_contract_for_expr(func);
-                let opt_callable = self.expression_opt_callable_contract(func).is_some();
                 let fty = self.infer(func)?;
+                // Branch/block proofs are recorded during inference; inspect
+                // them only after the callee expression has been checked.
+                let opt_callable = self.expression_opt_callable_contract(func).is_some();
+                self.require_opt_invocation_provenance(opt_callable)?;
                 if let Ty::Fn(param_tys, ret, conventions, reference_params, qualifiers) =
                     self.resolve(&fty)
                 {

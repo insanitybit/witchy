@@ -85,6 +85,8 @@ mod rfc0152_async_region_formation;
 mod typed_errors;
 #[path = "misc/wasm_abi_catalog.rs"]
 mod wasm_abi_catalog;
+#[path = "misc/rfc0167_stored_callback_invocation.rs"]
+mod rfc0167_stored_callback_invocation;
 #[path = "misc/rfc0102_console.rs"]
 mod rfc0102_console;
 #[path = "misc/rfc0103_build_step_confinement.rs"]
