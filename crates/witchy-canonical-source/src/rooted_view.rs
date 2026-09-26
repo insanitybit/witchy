@@ -200,7 +200,7 @@ impl RootedViewStorage {
     /// One versioned structural encoding for every rooted-view source shape.
     /// The representation class selects the physical lanes; the key binds the
     /// checked recursive payload within that class.
-    pub fn canonical_reference(&self) -> Option<CanonicalReferenceKind> {
+    pub fn canonical_reference(&self, source_payload: &Type) -> Option<CanonicalReferenceKind> {
         let mut bytes = b"witchy.canonical-rooted-view-payload.v4\0".to_vec();
         let carrier = match self {
             Self::ScalarCell(kind) => {
@@ -259,6 +259,29 @@ impl RootedViewStorage {
                 CanonicalRootedViewCarrier::RetainedRoot
             }
         };
+        // The storage class selects the physical lanes, while the checked
+        // source qualifier chain remains part of the ABI identity. The
+        // classifier may erase these shells to find storage; doing so here
+        // would let `&T` and `&unique T` share an authority key.
+        let mut qualifiers = Vec::new();
+        let mut bare = source_payload;
+        for _ in 0..128 {
+            match bare {
+                Type::Qualified(TypeQual::Frozen, inner) => {
+                    qualifiers.push(0_u8);
+                    bare = inner;
+                }
+                Type::Qualified(TypeQual::Unique, inner) => {
+                    qualifiers.push(1_u8);
+                    bare = inner;
+                }
+                Type::Qualified(..) => return None,
+                _ => break,
+            }
+        }
+        if matches!(bare, Type::Qualified(..)) { return None; }
+        bytes.push(qualifiers.len() as u8);
+        bytes.extend_from_slice(&qualifiers);
         Some(CanonicalReferenceKind::RootedView {
             payload: digest(&bytes),
             carrier,
@@ -284,7 +307,7 @@ mod tests {
             .expect("Bytes has a retained root");
         assert_eq!(string, RootedViewStorage::RetainedRoot(RetainedRootStorage::ByteBuffer(ByteBufferKind::String)));
         assert_eq!(bytes, RootedViewStorage::RetainedRoot(RetainedRootStorage::ByteBuffer(ByteBufferKind::Bytes)));
-        assert_ne!(string.canonical_reference(), bytes.canonical_reference(),
+        assert_ne!(string.canonical_reference(&source("String")), bytes.canonical_reference(&source("Bytes")),
             "one physical buffer layout must not erase checked source identity");
     }
 }

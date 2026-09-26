@@ -79,6 +79,11 @@ mod canonical_abi {
         assert!(derive_manifest(&nested, &["accept".into()]).is_err(),
             "a nested qualified rooted-view callable needs a structural ABI key");
 
+        let scalar = manifest("fn accept(f: fn(&Int) -> Int) -> Int:\n    0\n");
+        let qualified_scalar = manifest("fn accept(f: fn(&frozen Int) -> Int) -> Int:\n    0\n");
+        assert_ne!(scalar.digest(), qualified_scalar.digest(),
+            "a nested scalar-place view retains its checked payload qualifier");
+
         let original_sum = manifest("type Shade:\n    Bright(Int)\n    Dark(String)\nfn relay(view: &Shade) -> &Shade:\n    view\n");
         let renamed_tag = manifest("type Shade:\n    Light(Int)\n    Dark(String)\nfn relay(view: &Shade) -> &Shade:\n    view\n");
         let changed_field = manifest("type Shade:\n    Bright(Duration)\n    Dark(String)\nfn relay(view: &Shade) -> &Shade:\n    view\n");

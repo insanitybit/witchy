@@ -1725,7 +1725,7 @@ enum CallableReferenceCarrier {
     /// An immutable root-plus-projection token, not a legacy loan alias.  The
     /// key covers its exact `&Int -> &Int` source contract, including the
     /// rooted-view qualifier and payload identity retained by type checking.
-    RootedIntView(AccessIdentityKey),
+    RootedScalarPlace(AccessIdentityKey),
 }
 
 impl CallableReferenceCarrier {
@@ -1733,7 +1733,7 @@ impl CallableReferenceCarrier {
         match self {
             Self::ExclusiveWriteBack(identity)
             | Self::SharedAlias(identity)
-            | Self::RootedIntView(identity) => identity,
+            | Self::RootedScalarPlace(identity) => identity,
         }
     }
 }
@@ -2948,9 +2948,12 @@ fn exclusive_reference_parts(ty: &Type) -> Option<(&str, &Type)> {
 /// carrier: the `&Int` place owner, a rooted slice owner, the retained String
 /// token, a record or scalar-List root token, or a scalar value view.
 fn is_direct_view_payload(inner: &Type, definitions: &BTreeMap<String, TypeDef>) -> bool {
-    // `&frozen T` is the same immutable payload; any other qualifier nested
-    // under the view (`&(&mut T)`, `&unique T`) is not a direct view.
-    if matches!(inner, Type::Qualified(qualifier, _) if *qualifier != TypeQual::Frozen) {
+    // The shared checked storage plan decides which qualifier shells can be
+    // snapshotted. Physical projection transport still requires the direct
+    // slice representation below.
+    if matches!(inner, Type::Qualified(qualifier, _)
+        if *qualifier != TypeQual::Frozen
+            && !matches!(classified_view_storage(inner, definitions), Some(RootedViewStorage::ScalarCell(_)))) {
         return false;
     }
     match classified_view_storage(inner, definitions) {
@@ -3302,7 +3305,7 @@ fn exact_callable_shared_alias_contract(signature: &AccessSignature) -> bool {
 /// out, with no lexical loan relation.  Its root/projection representation is
 /// authenticated by the type-level view facts and its exact callable identity
 /// is checked at closure construction and indirect invocation.
-fn exact_callable_rooted_int_view_contract(signature: &AccessSignature) -> bool {
+fn exact_callable_rooted_scalar_place_contract(signature: &AccessSignature) -> bool {
     matches!(signature.params(), [parameter]
         if parameter.kind() == AccessKind::OwnedImmutable
             && rooted_view_inner(parameter.ty()).is_some_and(is_scalar_cell_view_payload))
@@ -3316,8 +3319,8 @@ fn callable_reference_carrier(signature: &AccessSignature) -> Option<CallableRef
         Some(CallableReferenceCarrier::ExclusiveWriteBack(identity))
     } else if exact_callable_shared_alias_contract(signature) {
         Some(CallableReferenceCarrier::SharedAlias(identity))
-    } else if exact_callable_rooted_int_view_contract(signature) {
-        Some(CallableReferenceCarrier::RootedIntView(identity))
+    } else if exact_callable_rooted_scalar_place_contract(signature) {
+        Some(CallableReferenceCarrier::RootedScalarPlace(identity))
     } else {
         None
     }

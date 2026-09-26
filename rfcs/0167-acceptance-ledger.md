@@ -875,10 +875,15 @@ Row G qualified record-root identity (implemented but unverified,
 `frozen` and `unique` children rather than erasing their source contracts.
 Closed callable manifests restore direct annotated rooted-view spelling only
 after a bounded match to the finalized erased type. Qualified children
-without an admitted carrier still fail closed, and nested or outer-wrapped
-qualified rooted views remain refused because their callable encoder cannot
-yet represent those qualifiers. One focused ABI authority pin covers direct
-key separation and both refusals. This closes no semantic acceptance row.
+without an admitted carrier still fail closed. A later scalar-place transport
+change binds `frozen` and `unique` view-payload qualifiers into the shared
+rooted-view structural key and restores them inside explicitly annotated
+callable signatures after the checked storage proof. Qualifiers wrapping an
+aggregate containing a view remain refused because the outer qualifier has
+no distinct key or physical carrier. Inferred closure captures still erase
+the payload qualifier before witness construction and need a source-bound
+provenance path. Focused ABI and lowering checks are structural only; this
+closes no semantic acceptance row.
 
 Row G structural rooted aggregate result relation (architecture implemented,
 semantic evidence unchanged, 2026-09-25): SafeWIR now checks an admitted

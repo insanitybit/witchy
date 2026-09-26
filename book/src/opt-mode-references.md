@@ -167,6 +167,13 @@ broader family awaits semantic and leak evidence. A qualified child such as
 wrapping it in a view. A List of String owns its String children; slices of
 these inner lists use the same recursive carrier.
 
+For a callable whose signature explicitly names a qualified scalar-place
+view, the compiler keeps the qualifier in its checked callable identity and
+transports the authenticated view token through an indirect call. The checker
+does not yet retain payload qualifiers for inferred closure captures, so this
+transport uses explicit source annotations. Qualifiers around an aggregate
+containing a view remain outside this callable carrier.
+
 An eligible non-packed record, sum, `Option`, or `Result` may contain a
 recursive `List(T)` child when its checked carrier proves every owned edge.
 The record view retains the whole root and SafeWIR checks each physical child

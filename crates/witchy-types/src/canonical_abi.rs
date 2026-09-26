@@ -95,6 +95,7 @@ pub(crate) fn canonical_ast_type_bytes(
 /// Exposed for the ABI-security pins in `tests/typeck/capabilities.rs`.
 #[doc(hidden)]
 pub fn checked_declaration_signature(typed: &TypedModule, name: &str) -> Result<Type, CanonicalAbiError> {
+    let context = Context::from_module(typed.module());
     let mut signature = typed.table().function_type(name).ok_or_else(||
         CanonicalAbiError::InvalidCallable(format!("checked declaration `{name}` has no finalized signature")))?;
     let declaration = typed.module().items.iter().find_map(|item| match item {
@@ -111,7 +112,7 @@ pub fn checked_declaration_signature(typed: &TypedModule, name: &str) -> Result<
         if let Some(source) = declared.ty.as_ref()
             && qualified_rooted_view(source)
         {
-            restore_qualified_rooted_view(parameter, source)?;
+            restore_qualified_rooted_view(parameter, source, &context)?;
         }
         if declared.convention == Convention::Var
             && matches!(&declared.ty, Some(Type::Qualified(ast::TypeQual::Unique, _)))
@@ -134,21 +135,16 @@ pub fn checked_declaration_signature(typed: &TypedModule, name: &str) -> Result<
     if let Some(source) = declaration.ret.as_ref()
         && qualified_rooted_view(source)
     {
-        restore_qualified_rooted_view(result, source)?;
+        restore_qualified_rooted_view(result, source, &context)?;
     }
     Ok(signature)
 }
 
-/// A finalized HM type erases nested storage qualifiers. Restore a direct
-/// rooted view's exact source spelling after proving the same erased physical
-/// type. The source classifier then admits it or refuses it without an erased
-/// qualifier silently granting a different carrier.
-fn restore_qualified_rooted_view(finalized: &mut Type, source: &Type) -> Result<(), CanonicalAbiError> {
-    if !matches!(source, Type::Qualified(ast::TypeQual::View, _)) {
-        return Err(CanonicalAbiError::InvalidCallable(
-            "nested qualified rooted-view ABI has no structural key".into(),
-        ));
-    }
+/// A finalized HM type erases storage qualifiers. Restore the checked source
+/// spelling only after proving the same erased type and a storage plan for
+/// every rooted view it contains. This also covers views nested in a callable
+/// signature without granting an erased qualifier its own carrier.
+fn restore_qualified_rooted_view(finalized: &mut Type, source: &Type, context: &Context) -> Result<(), CanonicalAbiError> {
     if !within_canonical_abi_ast_budget(source)
         || erase_storage_qualifiers(source, 0, &mut 4_096).as_ref() != Some(finalized)
     {
@@ -156,8 +152,45 @@ fn restore_qualified_rooted_view(finalized: &mut Type, source: &Type) -> Result<
             "qualified rooted view differs from finalized checked type".into(),
         ));
     }
+    if !matches!(source, Type::Qualified(ast::TypeQual::View, _))
+        && !nested_qualified_views_have_carriers(source, context)
+    {
+        return Err(CanonicalAbiError::InvalidCallable(
+            "nested qualified rooted view has no installed callable carrier".into(),
+        ));
+    }
+    // `encode_ast` validates each rooted view against the same recursive
+    // checked storage judgment used to make its structural ABI key.
+    encode_ast(source, context, &mut Vec::new())?;
     *finalized = source.clone();
     Ok(())
+}
+
+fn nested_qualified_views_have_carriers(ty: &Type, context: &Context) -> bool {
+    match ty {
+        Type::Qualified(ast::TypeQual::View, payload) => {
+            if has_storage_qualifier(payload) {
+                let view = Type::Qualified(ast::TypeQual::View, payload.clone());
+                return matches!(witchy_canonical_source::storage::StoragePlan::classify(
+                    &view, &context.definitions, |name| context.nominal(name).ok(),
+                ), witchy_canonical_source::storage::StoragePlan::RootedView(
+                    witchy_canonical_source::rooted_view::RootedViewStorage::ScalarCell(_)));
+            }
+            true
+        }
+        // A qualifier outside the view would be erased by the present
+        // aggregate/callable encoder. It has no distinct installed carrier.
+        Type::Qualified(_, _) => false,
+        Type::Slice(inner) => nested_qualified_views_have_carriers(inner, context),
+        Type::Named(_, children) | Type::Tuple(children) | Type::Dyn(_, children) =>
+            children.iter().all(|child| nested_qualified_views_have_carriers(child, context)),
+        Type::Fn(parameters, result, _, _) =>
+            parameters.iter().all(|parameter| nested_qualified_views_have_carriers(parameter, context))
+                && nested_qualified_views_have_carriers(result, context),
+        Type::RecordCompose { base, fields } =>
+            nested_qualified_views_have_carriers(base, context)
+                && fields.iter().all(|(_, field)| nested_qualified_views_have_carriers(field, context)),
+    }
 }
 
 fn qualified_rooted_view(ty: &Type) -> bool {
@@ -493,7 +526,7 @@ pub fn rooted_view_from_ast(
         &context.definitions,
         |name| context.declares_type(name).then(|| context.nominal(name).ok()).flatten(),
     ) {
-        witchy_canonical_source::storage::StoragePlan::RootedView(plan) => plan.canonical_reference(),
+        witchy_canonical_source::storage::StoragePlan::RootedView(plan) => plan.canonical_reference(payload),
         _ => None,
     }
     .ok_or_else(|| CanonicalAbiError::Unsupported(
@@ -588,7 +621,11 @@ fn encode_anonymous_union_ty(
 fn encode_ast(ty: &Type, context: &Context, bytes: &mut Vec<u8>) -> Result<(), CanonicalAbiError> {
     if let Type::Qualified(ast::TypeQual::View, payload) = ty {
         bytes.push(6);
-        encode_ast(payload, context, bytes)?;
+        let CanonicalReferenceKind::RootedView { payload, carrier } = rooted_view_from_ast(payload, context)? else {
+            return Err(CanonicalAbiError::Unsupported("rooted view has no structural carrier".into()));
+        };
+        bytes.extend_from_slice(&payload.as_bytes());
+        bytes.push(carrier as u8);
         return Ok(());
     }
     match ty.unqualified() {

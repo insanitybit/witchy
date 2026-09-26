@@ -457,11 +457,9 @@ impl Checker {
         let StoragePlan::RootedView(storage) = self.storage_plan(&view) else { return false };
         let ast::Type::Qualified(_, payload) = &view else { unreachable!() };
         match storage {
-            RootedViewStorage::ScalarCell(_)
-            | RootedViewStorage::InlineScalar(_)
+            RootedViewStorage::ScalarCell(_) => true,
+            RootedViewStorage::InlineScalar(_)
             | RootedViewStorage::RetainedRoot(RetainedRootStorage::ByteBuffer(_)) => {
-                // The previous callable boundary admitted these direct
-                // values, but no qualified scalar or String payload.
                 !matches!(payload.as_ref(), ast::Type::Qualified(..))
             }
             RootedViewStorage::RetainedProjection(_) => {

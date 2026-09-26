@@ -928,6 +928,13 @@ generic or bounded function value; specialization follows those references to a
 fixpoint. Unannotated parameters that don't carry a type variable don't block
 specialization. Scalar-only parameters and results retain the universal scalar
 ABI, but the function value itself always uses the uniform GC closure wrapper.
+
+An explicitly annotated callable signature may carry a qualified scalar-place
+view such as `&frozen Int` or `&unique Int`. Its checked storage plan selects
+the authenticated root-plus-place representation, while the payload qualifier
+remains in the source-bound callable ABI key. A qualifier wrapping an
+aggregate that contains a view has no installed callable carrier and is
+refused.
 A boxed lambda's captures live in a per-lambda typed GC struct, so direct
 capabilities, other closures, and fixed-layout GC aggregates remain references
 throughout creation, aliasing, and indirect invocation.

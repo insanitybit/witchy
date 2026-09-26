@@ -1,6 +1,6 @@
 //! RFC-0167 row G: dictionary values need an admitted collection carrier.
 //! `Dict(String, &String)` must fail during canonical ABI checking with a named
-//! reason until dictionary operations authenticate retained String view roots.
+//! reason until dictionary operations carry an installed retained-view owner.
 
 use super::source::checked;
 
@@ -14,9 +14,9 @@ fn main() -> Int:
     d.length()
 "#;
     let refusal = checked(source)
-        .expect_err("a dictionary of String views has no canonical ABI key");
+        .expect_err("a dictionary of String views has no installed callable carrier");
     assert_eq!(
         refusal.to_string(),
-        "type error: canonical callable ABI is invalid: nested qualified rooted-view ABI has no structural key"
+        "type error: canonical callable ABI is invalid: nested qualified rooted view has no installed callable carrier"
     );
 }

@@ -112,7 +112,7 @@ impl<'a> Registry<'a> {
                                 storage: CaptureStorage::EnvironmentField(_),
                                 transfer: CaptureTransfer::CopyScalar,
                             }) = constructor.captures.get(index.0 as usize) else { return Err(InitialCheckError::CallableContractMismatch { signature: family.signature }) };
-                            shared_int_reference(source_type)
+                            shared_scalar_cell_reference(source_type)
                                 && slice.0 == 0 && index.0 == 1 && *field == 2 && kinds.insert(3_u8)
                                 && registry.families.iter().any(|candidate| {
                                     candidate.owner_type == *slice_type
@@ -637,15 +637,14 @@ pub(super) fn check(function: &Function, registry: &Registry<'_>) -> Result<(), 
 
 fn shared_rooted_reference(family: &OwnerFamily) -> bool {
     matches!(&family.source, OwnerFamilySource::SharedReference(source)
-        if shared_int_reference(source) || family.slice_carrier.is_some())
+        if shared_scalar_cell_reference(source) || family.slice_carrier.is_some())
 }
 
-fn shared_int_reference(source_type: &witchy_syntax::ast::Type) -> bool {
-    matches!(source_type,
-        witchy_syntax::ast::Type::Qualified(
-            witchy_syntax::ast::TypeQual::View, inner,
-        ) if matches!(inner.as_ref(), witchy_syntax::ast::Type::Named(name, arguments)
-                if name == "Int" && arguments.is_empty()))
+fn shared_scalar_cell_reference(source_type: &witchy_syntax::ast::Type) -> bool {
+    matches!(witchy_canonical_source::storage::StoragePlan::classify(
+        source_type, &std::collections::BTreeMap::new(), |_| None,
+    ), witchy_canonical_source::storage::StoragePlan::RootedView(
+        witchy_canonical_source::rooted_view::RootedViewStorage::ScalarCell(_)))
 }
 
 fn rooted_int_slice_reference(family: &OwnerFamily) -> bool {
@@ -725,7 +724,7 @@ pub mod self_checks {
 /// its retained place carriers. Slice families have none.
 fn has_owner_list(family: &OwnerFamily) -> bool {
     match &family.source {
-        OwnerFamilySource::SharedReference(source) => shared_int_reference(source),
+        OwnerFamilySource::SharedReference(source) => shared_scalar_cell_reference(source),
         _ => true,
     }
 }

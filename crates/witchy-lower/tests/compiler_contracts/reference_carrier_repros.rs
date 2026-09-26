@@ -108,4 +108,23 @@ fn main():
     let _ = compile_checked_module_artifact(&admitted)
         .expect_lowered("callable immutable view carrier");
 
+    let qualified = try_checked(
+        r#"mode opt
+
+fn apply(action: fn(own &frozen Int) -> &frozen Int, own value: &frozen Int) -> Int:
+    let result = action(value)
+    *result
+
+fn relay(own value: &frozen Int) -> &frozen Int:
+    value
+
+fn main() -> Int:
+    let n: frozen Int = 11
+    apply(relay, &n)
+"#,
+    )
+    .expect("qualified scalar-place callable passes checked-source admission");
+    let _ = compile_checked_module_artifact(&qualified)
+        .expect_lowered("qualified scalar-place callable");
+
 }
