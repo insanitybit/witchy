@@ -49,9 +49,14 @@ pub enum TaskExecutionProof {
     Task(SourceExecutionMode, Box<Self>),
     /// A checked local callable with a distinct lexical formal scope.
     Callable { scope: TaskCallableScope, parameters: usize, result: Box<Self> },
-    /// An exact checked declaration reference. Its result uses the declared
-    /// function's own symbolic parameters until this value is invoked.
-    DeclaredCallable { conventions: Vec<Convention>, result: Box<Self> },
+    /// An exact checked declaration reference. Its result and opt task-input
+    /// obligations use the declaration's own symbolic parameters until this
+    /// value is invoked with checked arguments.
+    DeclaredCallable {
+        conventions: Vec<Convention>,
+        required_opt_inputs: Vec<Self>,
+        result: Box<Self>,
+    },
     Parameter(usize),
     /// A lambda formal cannot borrow its enclosing function's parameter proof.
     CallableParameter(TaskCallableScope, usize),
@@ -134,9 +139,11 @@ impl TaskExecutionProof {
                 TaskExecutionProof::Variants(variants) => variants.values().flatten().all(|child| within(child, remaining, depth + 1)),
                 TaskExecutionProof::Task(_, result) | TaskExecutionProof::Awaited(result)
                     | TaskExecutionProof::Callable { result, .. }
-                    | TaskExecutionProof::DeclaredCallable { result, .. }
                     | TaskExecutionProof::Slot(result, _) | TaskExecutionProof::VariantSlot(result, _, _)
                     | TaskExecutionProof::AnyElement(result) => within(result, remaining, depth + 1),
+                TaskExecutionProof::DeclaredCallable { required_opt_inputs, result, .. } =>
+                    required_opt_inputs.iter().all(|child| within(child, remaining, depth + 1))
+                        && within(result, remaining, depth + 1),
                 _ => true,
             }
         }
@@ -156,10 +163,14 @@ impl TaskExecutionProof {
                 if left_scope == right_scope && left_arity == right_arity => {
                 Self::Callable { scope: left_scope, parameters: left_arity, result: Box::new((*left).join(*right)) }
             }
-            (Self::DeclaredCallable { conventions: left_conventions, result: left },
-                Self::DeclaredCallable { conventions: right_conventions, result: right })
-                if left_conventions == right_conventions => {
-                Self::DeclaredCallable { conventions: left_conventions, result: Box::new((*left).join(*right)) }
+            (Self::DeclaredCallable { conventions: left_conventions, required_opt_inputs: left_requirements, result: left },
+                Self::DeclaredCallable { conventions: right_conventions, required_opt_inputs: right_requirements, result: right })
+                if left_conventions == right_conventions && left_requirements == right_requirements => {
+                Self::DeclaredCallable {
+                    conventions: left_conventions,
+                    required_opt_inputs: left_requirements,
+                    result: Box::new((*left).join(*right)),
+                }
             }
             (Self::Awaited(left), Self::Awaited(right)) => Self::Awaited(Box::new((*left).join(*right))),
             (Self::Elements(left), Self::Elements(right)) if left.len() == right.len() => {

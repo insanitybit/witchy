@@ -265,7 +265,10 @@ impl Analyzer<'_> {
                     environment.values_mut().for_each(|proof| *proof = Proof::Unknown);
                     return Ok(result);
                 }
-                Some(Proof::DeclaredCallable { conventions, result }) if conventions.len() == proofs.len() => {
+                Some(Proof::DeclaredCallable { conventions, required_opt_inputs, result }) if conventions.len() == proofs.len() => {
+                    for requirement in required_opt_inputs {
+                        self.require_opt_task(requirement.instantiate(&proofs))?;
+                    }
                     let result = result.instantiate(&proofs).bounded(4096);
                     self.invalidate_arguments(args, Some(&conventions), environment);
                     return Ok(result);
@@ -343,21 +346,16 @@ impl Analyzer<'_> {
                         _ => None,
                     });
                     match (declaration, self.summaries.get(name)) {
-                        (Some(function), Some(summary)) if summary.required_opt_inputs.is_empty() => {
+                        (Some(function), Some(summary)) => {
                             let result = summary.result.clone();
                             let result = if function.is_async {
                                 Proof::Task(source_execution_mode(function, &self.module.modes), Box::new(result))
                             } else { result };
                             Proof::DeclaredCallable {
                                 conventions: function.params.iter().map(|parameter| parameter.convention).collect(),
+                                required_opt_inputs: summary.required_opt_inputs.clone(),
                                 result: Box::new(result.bounded(4096)),
                             }
-                        }
-                        (Some(_), Some(_)) if self.check_await => {
-                            return Err(TypeError { message: format!(
-                                "in `{}`: callable `{name}` requires opt task input provenance and cannot be erased into an unchecked function value",
-                                self.function.name,
-                            ) });
                         }
                         _ => Proof::Unknown,
                     }
@@ -587,7 +585,10 @@ impl Analyzer<'_> {
                         environment.values_mut().for_each(|proof| *proof = Proof::Unknown);
                         result.instantiate_callback(&scope, &proofs).bounded(4096)
                     }
-                    Proof::DeclaredCallable { conventions, result } if conventions.len() == args.len() => {
+                    Proof::DeclaredCallable { conventions, required_opt_inputs, result } if conventions.len() == args.len() => {
+                        for requirement in required_opt_inputs {
+                            self.require_opt_task(requirement.instantiate(&proofs))?;
+                        }
                         self.invalidate_arguments(args, Some(&conventions), environment);
                         result.instantiate(&proofs).bounded(4096)
                     }

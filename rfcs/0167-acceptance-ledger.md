@@ -277,9 +277,11 @@ declaration reference to its symbolic result, source execution mode, and
 parameter conventions. Local aliases and aggregate projections retain this
 proof; direct function-value and expression calls instantiate it with their
 checked arguments. Outer function summary substitution cannot bind the
-declaration's own formals. A declaration with unrepresented opt task input
-requirements, an unknown callable, and a same-named shadowing parameter remain
-unproved. A focused checker build and a local tuple-carried function-value
+declaration's own formals. Its symbolic opt task input requirements now travel
+with the exact declaration value and are rechecked at an indirect call; a
+symbolic caller parameter passes that requirement to its direct caller. An
+unknown callable and a same-named shadowing parameter remain unproved. A
+focused checker build and a local tuple-carried function-value
 program passed admitted Wasm execution with the independently expected `5`;
 opaque and shadowed factory parameters refused in opt mode. Adversarial review
 found no concrete authority widening. The checker now authenticates the exact
@@ -290,9 +292,14 @@ values: indirect invocation cannot reproduce their direct-call proofs. A
 temporary opt CLI program carried a generic task-producing function through
 a tuple, invoked it with a `String`, and printed the independently expected
 `5` from admitted Wasm. Adversarial review found and prompted the trait-bound
-refusal, then found no further concrete origin or shadowing bypass. No
-zero-leak audit or A–O closure is claimed; public higher-order task
-obligations remain open.
+refusal, then found no further concrete origin or shadowing bypass. The
+existing linked opt-provenance case now accepts a
+declaration value invoked with an opt task through an `own` parameter and
+rejects the same public entry with a normal task. A temporary admitted
+unoptimized Wasm program for that path printed the hand-computed `7`.
+Adversarial review found no mode upgrade through the new requirement transfer.
+No zero-leak audit or A–O closure is claimed. Lambda-formal forwarding and
+externally supplied higher-order task obligations remain fail-closed gaps.
 
 Source execution-mode ownership (implemented but unverified, 2026-09-26):
 the checker, loan analysis, call-scoped analysis, canonical lowerer, and legacy

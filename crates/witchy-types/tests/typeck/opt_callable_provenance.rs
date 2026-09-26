@@ -138,6 +138,10 @@ import task
 pub async fn execute(own recipe: task.Task(Int)) -> Int:
     recipe.await
 
+pub async fn execute_indirect(own recipe: task.Task(Int)) -> Int:
+    let relay = execute
+    relay(recipe).await
+
 pub async fn compatible() -> Int:
     7
 
@@ -189,6 +193,7 @@ async fn ordinary() -> Int:
 
 async fn main(console: Console):
     let answer = worker.execute(ordinary()).await
+    let _ = worker.execute_indirect(ordinary()).await
     console.print("${answer}")
 "#;
     let result = super::source::checked_bundle(vec![("worker", worker), ("main", main)], "main");
@@ -214,6 +219,7 @@ async fn main(console: Console):
 
 async fn main(console: Console):
     let answer = worker.execute(worker.compatible()).await
+    let indirect_answer = worker.execute_indirect(worker.compatible()).await
     let pair_answer = worker.execute_pair((worker.compatible(), 1)).await
     let inner = worker.nested().await
     let nested_answer = inner.await
@@ -224,6 +230,7 @@ async fn main(console: Console):
     let opt_local_callback_answer = worker.execute_local_callback().await
     let opt_parameter_callback_answer = worker.execute_parameter_callback().await
     console.print("${answer}")
+    console.print("${indirect_answer}")
     console.print("${pair_answer}")
     console.print("${nested_answer}")
     console.print("${opt_nested_answer}")
