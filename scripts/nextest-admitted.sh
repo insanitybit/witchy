@@ -5,8 +5,15 @@ set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$root"
 
+# A caller batching packages can compose this same policy with unfiltered
+# security suites, without duplicating the exclusion lists or starting Cargo.
+print_filter=0
+if [ "$#" -eq 2 ] && [ "$2" = --filter ]; then
+    print_filter=1
+    set -- "$1" -- cargo nextest run
+fi
 if [ "$#" -lt 4 ] || [ "$2" != -- ] || [ "$3" != cargo ] || [ "$4" != nextest ]; then
-    echo "usage: $0 <package> -- cargo nextest run [args...]" >&2
+    echo "usage: $0 <package> {--filter | -- cargo nextest run [args...]}" >&2
     exit 2
 fi
 
@@ -93,6 +100,10 @@ fi
 
 if [ -n "$selection" ]; then
     policy="($selection) and ($policy)"
+fi
+if [ "$print_filter" -eq 1 ]; then
+    printf '%s\n' "$policy"
+    exit 0
 fi
 # Enter through the repository's cargo shim even when the caller has not
 # prepended scripts/bin to PATH. The shim owns the MBX policy and still finds

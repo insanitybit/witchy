@@ -69,15 +69,14 @@ for package in "${packages[@]}"; do
     ' "$binaries" >/dev/null || { echo "pure compiler edit: missing $package target" >&2; exit 1; }
 done
 reuse=(--cargo-metadata "$metadata" --binaries-metadata "$binaries")
-# These calls do not invoke rustc. Keep MBX's test scheduling, but do not
+# This call does not invoke rustc. Keep MBX's test scheduling, but do not
 # refresh a native build seed merely to execute this pure binary inventory.
-if [ -n "$direct" ]; then
-    WITCHY_SEED_REFRESH=off cargo nextest run "${reuse[@]}" -E "$direct"
-fi
+selection="$direct"
 if [ "$lower" -eq 1 ]; then
-    WITCHY_SEED_REFRESH=off ./scripts/nextest-admitted.sh witchy-lower -- cargo nextest run "${reuse[@]}" \
-        -E 'package(=witchy-lower)'
+    policy="$(./scripts/nextest-admitted.sh witchy-lower --filter)"
+    selection="${selection:+($selection) or }(package(=witchy-lower) and ($policy))"
 fi
+WITCHY_SEED_REFRESH=off cargo nextest run "${reuse[@]}" -E "$selection"
 [ "$(git rev-parse HEAD)" = "$start_sha" ] || {
     echo 'pure compiler edit: HEAD changed during checks' >&2; exit 1;
 }

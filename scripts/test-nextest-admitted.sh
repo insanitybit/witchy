@@ -82,6 +82,10 @@ lower_policy="$(./scripts/rfc0165-deferred-filter.sh scripts/rfc0165-deferred-te
 lower_policy="($lower_policy) and not (test(/${nightly_names}/))"
 [ "$(tail -2 "$NEXTEST_ADMITTED_LOG" | head -1)" = -E ] || fail 'unselected policy flag missing'
 [ "$(tail -1 "$NEXTEST_ADMITTED_LOG")" = "$lower_policy" ] || fail 'package policy changed'
+before="$(cat "$NEXTEST_ADMITTED_LOG")"
+[ "$(PATH="$tmp/bin:$PATH" ./scripts/nextest-admitted.sh witchy-lower --filter)" = "$lower_policy" ] \
+    || fail 'query policy differs from execution policy'
+[ "$(cat "$NEXTEST_ADMITTED_LOG")" = "$before" ] || fail 'policy query invoked cargo'
 # A nightly-deferred name must be excluded by the composed policy: a focused
 # run that fails on a test the gate never runs teaches agents to ignore red.
 sample="$(grep -vE '^\s*(#|$)' scripts/nightly-deferred-tests.txt | head -1)"

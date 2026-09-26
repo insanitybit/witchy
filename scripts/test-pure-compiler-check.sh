@@ -57,7 +57,8 @@ grep -F -- 'nextest run -p witchy-canonical-source --lib --no-default-features' 
 test "$(grep -c -- '--lib' "$PURE_TEST_LOG")" = 1
 if grep -E -- '--features|rfc0165_native_gate' "$PURE_TEST_LOG"; then exit 1; fi
 grep -F -- 'package(=witchy-canonical-source) or package(=witchy-types) or package(=witchy-wir)' "$PURE_TEST_LOG" >/dev/null
-grep -F -- '(package(=witchy-lower)) and (' "$PURE_TEST_LOG" >/dev/null
+grep -F -- '(package(=witchy-lower) and (' "$PURE_TEST_LOG" >/dev/null
+test "$(grep -c -- '--binaries-metadata' "$PURE_TEST_LOG")" = 1
 for failure in missing build; do
     : > "$PURE_TEST_LOG"
     if [ "$failure" = missing ]; then
