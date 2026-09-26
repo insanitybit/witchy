@@ -261,7 +261,11 @@ impl TaskExecutionProof {
             }
             (Self::Variant { ordinal: a, fields: left }, Self::Variant { ordinal: b, fields: right }) => {
                 if a == b {
-                    if left.len() != right.len() { return Self::Unknown; }
+                    if left.len() != right.len() {
+                        return if left.iter().chain(&right).any(Self::has_any_callable_input_obligation) {
+                            Self::UnprovedCallableObligation
+                        } else { Self::Unknown };
+                    }
                     Self::Variant { ordinal: a, fields: left.into_iter().zip(right).map(|(a, b)| a.join(b)).collect() }
                 } else {
                     Self::Variants(BTreeMap::from([(a, left), (b, right)]))
@@ -270,7 +274,11 @@ impl TaskExecutionProof {
             (Self::Variants(mut variants), Self::Variant { ordinal, fields })
             | (Self::Variant { ordinal, fields }, Self::Variants(mut variants)) => {
                 if let Some(old) = variants.remove(&ordinal) {
-                    if old.len() != fields.len() { return Self::Unknown; }
+                    if old.len() != fields.len() {
+                        return if old.iter().chain(&fields).any(Self::has_any_callable_input_obligation) {
+                            Self::UnprovedCallableObligation
+                        } else { Self::Unknown };
+                    }
                     variants.insert(ordinal, old.into_iter().zip(fields).map(|(a, b)| a.join(b)).collect());
                 } else {
                     variants.insert(ordinal, fields);
@@ -280,7 +288,11 @@ impl TaskExecutionProof {
             (Self::Variants(mut left), Self::Variants(right)) => {
                 for (ordinal, fields) in right {
                     if let Some(old) = left.remove(&ordinal) {
-                        if old.len() != fields.len() { return Self::Unknown; }
+                        if old.len() != fields.len() {
+                            return if old.iter().chain(&fields).any(Self::has_any_callable_input_obligation) {
+                                Self::UnprovedCallableObligation
+                            } else { Self::Unknown };
+                        }
                         left.insert(ordinal, old.into_iter().zip(fields).map(|(a, b)| a.join(b)).collect());
                     } else {
                         left.insert(ordinal, fields);

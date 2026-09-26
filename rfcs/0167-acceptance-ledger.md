@@ -321,6 +321,25 @@ nested local forwarding. A zero-leak audit remains pending; no A–O row closes.
 Public and externally
 supplied callback contracts still lack a task-input mode field.
 
+Opaque callback task-input boundary (implemented but unverified, 2026-09-26):
+the shared recursive task-value proof now refuses any unresolved opt task-input
+obligation at opaque direct, applied, labeled, method, existential, closure,
+task-recipe, cast, yield, and write-back boundaries. Exact declaration values
+can still travel through source-linked results and aggregates while their
+proof is intact. Unknown constructor and result paths retain an unproved
+marker instead of silently clearing a nested obligation. A `?` cannot carry
+such an obligation because its propagated failure is absent from the ordinary
+result summary. An opaque Task result that may yield such a callback retains
+the marker through a normal-mode `await`, without traversing the Task runtime
+representation. The existing linked checker case includes a normal relay that
+tries to pass an opt callback through an ordinary function type after tuple
+projection, and an error variant that tries to propagate it; both refuse.
+An ordinary join of callbacks with no opt task-input obligation remains
+accepted, so type shape alone does not taint a local control-flow result.
+Public callback types still cannot express the required task-input contract,
+so the intended higher-order call remains a fail-closed structural gap. No
+admitted-Wasm or zero-leak evidence is claimed and no A–O row closes.
+
 Source execution-mode ownership (implemented but unverified, 2026-09-26):
 the checker, loan analysis, call-scoped analysis, canonical lowerer, and legacy
 normal-copy repair telemetry now consume one typed source-mode judgment in

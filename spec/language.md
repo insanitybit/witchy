@@ -2228,6 +2228,15 @@ lambda with an unresolved opt task input
 requirement cannot enter aggregate storage, another closure capture, a cast,
 an opaque call, or a return; public callable types do not yet carry this
 requirement.
+An exact declaration value may retain its task-input requirement through a
+source-linked return or checked aggregate projection. Passing that value into
+an opaque function parameter, method, existential call, task recipe, or closure
+capture is rejected because the ordinary callable ABI cannot carry the
+requirement. A later exact invocation still checks its actual task input.
+An opaque producer whose checked result may contain a callable accepting Task
+storage yields an unproved callback value until an explicit contract is
+available. Propagation with `?` refuses a stored task-input obligation because
+the failure result would otherwise bypass the ordinary result summary.
 
 The checker, loan analysis, and canonical lowering use the linked source
 callable's mode when deciding opt contracts, including after async segment and

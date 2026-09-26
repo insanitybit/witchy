@@ -305,4 +305,42 @@ async fn main(console: Console):
         vec![("worker", &aggregate_worker), ("main", aggregate_main)], "main",
     ).expect_err("invalidation cannot erase an opt task input obligation inside a tuple");
     assert!(error.contains("local callback with an opt task input obligation"), "{error}");
+
+    let opaque_callback_main = r#"import task
+import worker
+
+fn relay(callback: fn(own task.Task(Int)) -> task.Task(Int), own recipe: task.Task(Int)) -> task.Task(Int):
+    callback(recipe)
+
+async fn main(console: Console):
+    let pair = (worker.execute, 0)
+    let _ = relay(pair.0, task.done(7)).await
+    console.print("unreachable")
+"#;
+    let error = super::source::checked_bundle(
+        vec![("worker", worker), ("main", opaque_callback_main)], "main",
+    ).expect_err("an ordinary function-value ABI cannot erase an opt task-input requirement");
+    assert!(error.contains("callback with an opt task input obligation"), "{error}");
+
+    let propagated_callback_worker = format!("{worker}\n\npub fn choose(flag: Bool) -> Result(Int, fn(own task.Task(Int)) -> task.Task(Int)):\n    if flag: Ok(1) else: Err(execute)\n\npub fn propagate(flag: Bool) -> Result(Int, fn(own task.Task(Int)) -> task.Task(Int)):\n    let value = choose(flag)?\n    Ok(value)\n");
+    let error = super::source::checked_bundle(
+        vec![("worker", &propagated_callback_worker), ("main", compatible_main)], "main",
+    ).expect_err("early error propagation cannot hide a callback task-input obligation");
+    assert!(error.contains("propagate through `?`"), "{error}");
+
+    let ordinary_callback_join = r#"import task
+
+fn identity(own recipe: task.Task(Int)) -> task.Task(Int):
+    recipe
+
+fn choose(flag: Bool, left: fn(own task.Task(Int)) -> task.Task(Int), right: fn(own task.Task(Int)) -> task.Task(Int)) -> fn(own task.Task(Int)) -> task.Task(Int):
+    if flag: left else: right
+
+async fn main(console: Console):
+    let relay = choose(true, identity, identity)
+    let answer = relay(task.done(7)).await
+    console.print("${answer}")
+"#;
+    super::source::checked_bundle(vec![("main", ordinary_callback_join)], "main")
+        .expect("a normal callback join without an opt obligation remains usable");
 }

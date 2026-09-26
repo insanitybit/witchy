@@ -8,10 +8,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use witchy_canonical_source::aggregates::type_definitions;
+use witchy_canonical_source::storage::stored_children;
 use witchy_canonical_source::source::{
     SourceExecutionMode, TaskCallableScope, TaskExecutionProof as Proof, source_execution_mode,
 };
-use witchy_syntax::ast::{Block, Convention, Expr, Function, Item, Module, Pattern, Stmt, TypeDef, UnOp};
+use witchy_syntax::ast::{Block, Convention, Expr, Function, Item, Module, Pattern, Stmt, Type, TypeDef, UnOp};
 use witchy_syntax::lambda_scan::scan_lambda;
 
 use crate::typeck::{Ty, TypeError, TypeTable, ty_to_ast};
@@ -40,6 +41,48 @@ struct Analyzer<'a> {
 }
 
 impl Analyzer<'_> {
+    fn opaque_result_may_hide_task_input(&self, expression: &Expr) -> bool {
+        fn walk(ty: &Type, definitions: &BTreeMap<String, TypeDef>, parameter: bool,
+            depth: usize, remaining: &mut usize) -> bool {
+            if depth > 128 || *remaining == 0 { return true; }
+            *remaining -= 1;
+            match ty.unqualified() {
+                Type::Named(name, arguments)
+                    if (name == "Task" || name == "task.Task") && arguments.len() == 1 =>
+                    parameter || walk(&arguments[0], definitions, false, depth + 1, remaining),
+                Type::Fn(inputs, result, _, _) => inputs.iter().any(|input|
+                    walk(input, definitions, true, depth + 1, remaining))
+                    || walk(result, definitions, false, depth + 1, remaining),
+                Type::Slice(inner) => walk(inner, definitions, parameter, depth + 1, remaining),
+                source => match stored_children(source, definitions) {
+                    Ok(Some(children)) => children.into_types().iter().any(|child|
+                        walk(child, definitions, parameter, depth + 1, remaining)),
+                    Ok(None) => false,
+                    Err(()) => true,
+                },
+            }
+        }
+        let Some(ty) = self.table.type_of(expression) else { return false };
+        let Some(source) = ty_to_ast(ty) else { return matches!(ty, Ty::Fn(..)) };
+        walk(&source, self.definitions, false, 0, &mut 4_096)
+    }
+
+    fn unknown_opaque_result(&self, expression: &Expr) -> Proof {
+        if self.check_await && self.opaque_result_may_hide_task_input(expression) {
+            Proof::UnprovedCallableObligation
+        } else { Proof::Unknown }
+    }
+
+    fn reject_opaque_callable_transfer(&self, proof: &Proof, boundary: &str) -> Result<(), TypeError> {
+        if proof.has_any_callable_input_obligation() {
+            return Err(TypeError { message: format!(
+                "in `{}`: callback with an opt task input obligation cannot {boundary} without a checked callable contract",
+                self.function.name,
+            ) });
+        }
+        Ok(())
+    }
+
     fn reject_local_callable_transfer(&self, proof: &Proof, boundary: &str) -> Result<(), TypeError> {
         if proof.has_local_callable_obligation() {
             return Err(TypeError { message: format!(
@@ -64,22 +107,29 @@ impl Analyzer<'_> {
 
     fn checked_try_payload(&self, operand: &Expr, proof: Proof) -> Proof {
         let Some(Ty::Named(owner, _)) = self.table.type_of(operand) else {
-            return Proof::Unknown;
+            return proof.invalidated();
         };
         let Some(definition) = self.definitions.get(owner.as_ref()) else {
-            return Proof::Unknown;
+            return proof.invalidated();
         };
         if definition.variants.len() != 2 || definition.variants[0].fields.len() != 1 {
-            return Proof::Unknown;
+            return proof.invalidated();
         }
         match proof {
             Proof::Variant { ordinal: 0, fields } if fields.len() == 1 => fields.into_iter().next().unwrap(),
-            Proof::Variants(mut variants) => variants.remove(&0)
+            Proof::Variant { fields, .. } => if fields.iter().any(Proof::has_any_callable_input_obligation) {
+                Proof::UnprovedCallableObligation
+            } else { Proof::Unknown },
+            Proof::Variants(mut variants) => {
+                let tainted = variants.values().flatten().any(Proof::has_any_callable_input_obligation);
+                variants.remove(&0)
                 .and_then(|fields| (fields.len() == 1).then(|| fields.into_iter().next().unwrap()))
-                .unwrap_or(Proof::Unknown),
+                .unwrap_or(if tainted { Proof::UnprovedCallableObligation } else { Proof::Unknown })
+            }
+            Proof::UnprovedCallableObligation => Proof::UnprovedCallableObligation,
             Proof::Parameter(_) | Proof::Slot(_, _) | Proof::VariantSlot(_, _, _)
                 | Proof::AnyElement(_) => Proof::VariantSlot(Box::new(proof), 0, 0),
-            _ => Proof::Unknown,
+            other => other.invalidated(),
         }
     }
 
@@ -189,6 +239,7 @@ impl Analyzer<'_> {
                 }
             }
             (Pattern::Ctor { args, .. } | Pattern::AnonCtor { args, .. }, Proof::Variants(mut variants)) => {
+                let tainted = variants.values().flatten().any(Proof::has_any_callable_input_obligation);
                 if let Some(values) = ordinal.and_then(|ordinal| variants.remove(&ordinal))
                     && values.len() == args.len()
                 {
@@ -198,7 +249,10 @@ impl Analyzer<'_> {
                 } else {
                     let mut names = Vec::new();
                     witchy_syntax::ast::pattern_binds(pattern, &mut names);
-                    for name in names { environment.insert(name, Proof::Unknown); }
+                    let fallback = if tainted {
+                        Proof::UnprovedCallableObligation
+                    } else { Proof::Unknown };
+                    for name in names { environment.insert(name, fallback.clone()); }
                 }
             }
             (Pattern::Ctor { args, .. } | Pattern::AnonCtor { args, .. },
@@ -233,13 +287,13 @@ impl Analyzer<'_> {
                 }
                 Stmt::Assign { name, value, place_depth } => {
                     let proof = self.expr(value, environment)?;
-                    if proof.has_local_callable_obligation()
+                    if proof.has_any_callable_input_obligation()
                         && (*place_depth != 0
                             || self.function.params.iter().any(|parameter| parameter.name == *name)
                             || self.lambda_parameter_scopes.iter().any(|scope| scope.contains(name))
                             || !environment.contains_key(name))
                     {
-                        self.reject_local_callable_transfer(&proof, "cross a write-back or projected assignment")?;
+                        self.reject_opaque_callable_transfer(&proof, "cross a write-back or projected assignment")?;
                     }
                     environment.insert(name.clone(), proof);
                     Proof::Unknown
@@ -262,7 +316,7 @@ impl Analyzer<'_> {
                 }
                 Stmt::Yield(value) => {
                     let proof = self.expr(value, environment)?;
-                    self.reject_local_callable_transfer(&proof, "escape through a yield")?;
+                    self.reject_opaque_callable_transfer(&proof, "escape through a yield")?;
                     Proof::Unknown
                 }
                 Stmt::Expr(value) => self.expr(value, environment)?,
@@ -284,7 +338,7 @@ impl Analyzer<'_> {
             .map(|arg| self.expr(arg, environment))
             .collect::<Result<Vec<_>, _>>()?;
         for proof in &proofs {
-            self.reject_local_callable_transfer(proof, "cross a call argument")?;
+            self.reject_opaque_callable_transfer(proof, "cross a call argument")?;
         }
         // The checker records local callable resolution at the exact call
         // expression. A shadowing value cannot borrow same-spelled declaration
@@ -323,7 +377,7 @@ impl Analyzer<'_> {
             _ => None,
         }) else {
             self.invalidate_arguments(args, None, environment);
-            return Ok(Proof::Unknown);
+            return Ok(self.unknown_opaque_result(expression));
         };
         if proofs.len() != function.params.len() {
             self.invalidate_arguments(args, None, environment);
@@ -409,11 +463,11 @@ impl Analyzer<'_> {
             Expr::LabeledCall { args, .. } => {
                 for (_, value) in args {
                     let proof = self.expr(value, environment)?;
-                    self.reject_local_callable_transfer(&proof, "cross a labeled call argument")?;
+                    self.reject_opaque_callable_transfer(&proof, "cross a labeled call argument")?;
                 }
                 let conventions = self.callable_conventions(self.table.local_callee_type(expression), args.len());
                 self.invalidate_arguments(args.iter().map(|(_, value)| value), conventions.as_deref(), environment);
-                Proof::Unknown
+                self.unknown_opaque_result(expression)
             }
             Expr::List(values) | Expr::Tuple(values) => {
                 let values = values
@@ -427,6 +481,9 @@ impl Analyzer<'_> {
                 // mode needs a separate callable proof; the constructor's
                 // source spelling cannot mint one.
                 if self.task_result(expression) {
+                    for value in &values {
+                        self.reject_opaque_callable_transfer(value, "enter a task recipe without a callable contract")?;
+                    }
                     Proof::Unknown
                 } else {
                     Proof::Elements(values)
@@ -439,11 +496,15 @@ impl Analyzer<'_> {
                     self.reject_local_callable_transfer(value, "enter aggregate storage")?;
                 }
                 if self.task_result(expression) {
+                    for value in &values {
+                        self.reject_opaque_callable_transfer(value, "enter a task recipe without a callable contract")?;
+                    }
                     Proof::Unknown
                 } else {
+                    let tainted = values.iter().any(Proof::has_any_callable_input_obligation);
                     self.checked_variant_ordinal(expression, name)
                         .map(|ordinal| Proof::Variant { ordinal, fields: values })
-                        .unwrap_or(Proof::Unknown)
+                        .unwrap_or(if tainted { Proof::UnprovedCallableObligation } else { Proof::Unknown })
                 }
             }
             Expr::Record { fields, spread, .. } => {
@@ -541,13 +602,14 @@ impl Analyzer<'_> {
                 } else {
                     match origin {
                         Proof::Task(_, result) => *result,
+                        Proof::UnprovedCallableObligation => Proof::UnprovedCallableObligation,
                         _ => Proof::Unknown,
                     }
                 }
             }
             Expr::Unary { op: UnOp::BorrowMut, expr } => {
                 let proof = self.expr(expr, environment)?;
-                self.reject_local_callable_transfer(&proof, "enter an exclusive reference")?;
+                self.reject_opaque_callable_transfer(&proof, "enter an exclusive reference")?;
                 // The checker represents an explicit exclusive reference by
                 // its referent type. Its apparent replayable Task type cannot
                 // prove that the original binding survives writes through
@@ -557,16 +619,20 @@ impl Analyzer<'_> {
                 }
                 Proof::Unknown
             }
-            Expr::Unary { expr, .. } => {
+            Expr::Unary { op, expr } => {
                 let proof = self.expr(expr, environment)?;
-                self.reject_local_callable_transfer(&proof, "cross a unary value conversion")?;
+                if matches!(op, UnOp::Borrow | UnOp::Deref) {
+                    self.reject_opaque_callable_transfer(&proof, "cross a reference conversion")?;
+                } else {
+                    self.reject_local_callable_transfer(&proof, "cross a unary value conversion")?;
+                }
                 proof
             }
             Expr::As { expr, .. }
             | Expr::ExistentialPack { expr, .. }
             | Expr::ExistentialUpcast { expr, .. } => {
                 let proof = self.expr(expr, environment)?;
-                self.reject_local_callable_transfer(&proof, "cross a cast or erased value")?;
+                self.reject_opaque_callable_transfer(&proof, "cross a cast or erased value")?;
                 proof
             }
             Expr::If {
@@ -620,7 +686,7 @@ impl Analyzer<'_> {
                     })?;
                 for capture in scan_lambda(params, body).captures() {
                     if let Some(proof) = environment.get(&capture) {
-                        self.reject_local_callable_transfer(proof, "enter another closure capture")?;
+                        self.reject_opaque_callable_transfer(proof, "enter another closure capture")?;
                     }
                 }
                 let mut nested = environment.clone();
@@ -675,7 +741,7 @@ impl Analyzer<'_> {
                 let proofs = args.iter().map(|arg| self.expr(arg, environment))
                     .collect::<Result<Vec<_>, _>>()?;
                 for proof in &proofs {
-                    self.reject_local_callable_transfer(proof, "cross a callback argument")?;
+                    self.reject_opaque_callable_transfer(proof, "cross a callback argument")?;
                 }
                 match callable {
                     Proof::Callable { scope, parameters, required_opt_inputs, result } if parameters == args.len() => {
@@ -701,10 +767,10 @@ impl Analyzer<'_> {
             }
             Expr::MethodCall { receiver, args, .. } => {
                 let proof = self.expr(receiver, environment)?;
-                self.reject_local_callable_transfer(&proof, "cross a method receiver")?;
+                self.reject_opaque_callable_transfer(&proof, "cross a method receiver")?;
                 for arg in args {
                     let proof = self.expr(arg, environment)?;
-                    self.reject_local_callable_transfer(&proof, "cross a method argument")?;
+                    self.reject_opaque_callable_transfer(&proof, "cross a method argument")?;
                 }
                 let conventions = self.callable_conventions(self.table.local_callee_type(expression), args.len() + 1);
                 self.invalidate_arguments(
@@ -712,14 +778,14 @@ impl Analyzer<'_> {
                     conventions.as_deref(),
                     environment,
                 );
-                Proof::Unknown
+                self.unknown_opaque_result(expression)
             }
             Expr::LabeledMethodCall { receiver, args, .. } => {
                 let proof = self.expr(receiver, environment)?;
-                self.reject_local_callable_transfer(&proof, "cross a method receiver")?;
+                self.reject_opaque_callable_transfer(&proof, "cross a method receiver")?;
                 for (_, arg) in args {
                     let proof = self.expr(arg, environment)?;
-                    self.reject_local_callable_transfer(&proof, "cross a method argument")?;
+                    self.reject_opaque_callable_transfer(&proof, "cross a method argument")?;
                 }
                 let conventions = self.callable_conventions(self.table.local_callee_type(expression), args.len() + 1);
                 self.invalidate_arguments(
@@ -727,14 +793,14 @@ impl Analyzer<'_> {
                     conventions.as_deref(),
                     environment,
                 );
-                Proof::Unknown
+                self.unknown_opaque_result(expression)
             }
             Expr::ExistentialCall { receiver, args, .. } => {
                 let proof = self.expr(receiver, environment)?;
-                self.reject_local_callable_transfer(&proof, "cross existential dispatch")?;
+                self.reject_opaque_callable_transfer(&proof, "cross existential dispatch")?;
                 for arg in args {
                     let proof = self.expr(arg, environment)?;
-                    self.reject_local_callable_transfer(&proof, "cross existential dispatch")?;
+                    self.reject_opaque_callable_transfer(&proof, "cross existential dispatch")?;
                 }
                 let conventions = self.callable_conventions(self.table.local_callee_type(expression), args.len() + 1);
                 self.invalidate_arguments(
@@ -742,7 +808,7 @@ impl Analyzer<'_> {
                     conventions.as_deref(),
                     environment,
                 );
-                Proof::Unknown
+                self.unknown_opaque_result(expression)
             }
             Expr::Binary { lhs, rhs, .. }
             | Expr::Range {
@@ -754,7 +820,9 @@ impl Analyzer<'_> {
             }
             Expr::Try(expr) => {
                 let proof = self.expr(expr, environment)?;
-                self.reject_local_callable_transfer(&proof, "cross propagation")?;
+                // The propagated failure is absent from the ordinary result
+                // summary, so an obligation on either variant cannot escape.
+                self.reject_opaque_callable_transfer(&proof, "propagate through `?` without a checked error contract")?;
                 self.checked_try_payload(expr, proof)
             }
             Expr::While { cond, body } => {
@@ -915,7 +983,7 @@ pub(crate) fn checked_await_origins(
             let mut next = summaries.clone();
             for function in &functions {
                 let mut summary = analyze_function(module, table, &definitions, &summaries, function, false)?.0;
-                if widened.contains(&function.name) { summary.result = Proof::Unknown; }
+                if widened.contains(&function.name) { summary.result = summary.result.invalidated(); }
                 next.insert(function.name.clone(), summary);
             }
             if next == summaries {
