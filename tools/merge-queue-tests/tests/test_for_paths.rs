@@ -187,6 +187,32 @@ fn gate_nextest_misc_module_runs_only_that_module() {
 }
 
 #[test]
+fn lower_compiler_contract_edits_skip_the_monolithic_codegen_target() {
+    let path = "crates/witchy-lower/tests/compiler_contracts/reference_carrier_repros.rs";
+    assert_eq!(
+        selected_focused(&[path]),
+        ["cargo nextest run -p witchy-lower --test compiler_contracts"],
+    );
+    let gate = gate_nextest(&[path]);
+    assert_eq!(
+        gate.lines().collect::<Vec<_>>(),
+        [
+            "-p witchy-lower --test compiler_contracts",
+            "package(witchy-lower)",
+            "-p witchy-lower",
+        ],
+        "lower contract edit rebuilt unrelated test binaries: {gate}",
+    );
+
+    let mixed = gate_nextest(&[path, "crates/witchy-lower/src/lib.rs"]);
+    assert_ne!(
+        mixed.lines().next(),
+        Some("-p witchy-lower --test compiler_contracts"),
+        "a lower source edit was unsafely narrowed to one test binary: {mixed}",
+    );
+}
+
+#[test]
 fn deleted_misc_module_fails_safe_to_the_complete_target() {
     assert_eq!(
         gate_nextest(&["tests/misc/deleted_module.rs"]),

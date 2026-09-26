@@ -117,6 +117,14 @@ for gate_queue_path in "${paths[@]}"; do
         *) gate_queue_expr=""; break ;;
     esac
 done
+gate_lower_contracts_only=1
+for gate_lower_path in "${paths[@]}"; do
+    case "$gate_lower_path" in
+        crates/witchy-lower/tests/compiler_contracts.rs | \
+        crates/witchy-lower/tests/compiler_contracts/*) ;;
+        *) gate_lower_contracts_only=0; break ;;
+    esac
+done
 add_pkg() {
     local p="$1" x
     for x in ${gate_pkgs[0]+"${gate_pkgs[@]}"}; do [ "$x" = "$p" ] && return; done
@@ -161,6 +169,15 @@ emit_gate_nextest() {
     local p t args="" expr="" m need_witchy=0
     if [ "$gate_workspace" -eq 1 ]; then
         printf 'WORKSPACE\n'
+        return 0
+    fi
+    # These tests live in a deliberately small integration binary so a
+    # structural lowering proof never links the monolithic codegen harness.
+    # Mixed diffs fall through to the ordinary package-safe union below.
+    if [ "$gate_lower_contracts_only" -eq 1 ]; then
+        printf '%s\n' '-p witchy-lower --test compiler_contracts'
+        printf '%s\n' 'package(witchy-lower)'
+        printf '%s\n' '-p witchy-lower'
         return 0
     fi
     # SafeWIR and the checker/WIR contract are target-neutral compiler
@@ -697,6 +714,12 @@ for p in "${paths[@]}"; do
             # WIR, runtime, canonical-contract, and full-CI changes. The types
             # integration binary carries the checker's executable judgments.
             add "cargo nextest run -p witchy-types"
+            ;;
+        crates/witchy-lower/tests/compiler_contracts.rs | \
+        crates/witchy-lower/tests/compiler_contracts/*)
+            any_rust=1
+            add_pkg witchy-lower
+            add "cargo nextest run -p witchy-lower --test compiler_contracts"
             ;;
         crates/witchy-lower/*)
             any_rust=1
