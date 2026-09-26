@@ -924,6 +924,17 @@ phantom-versus-stored-resource contract case passed, and an adversarial
 authority read found no new widening. Full admitted-Wasm behavior and a
 zero-leak audit remain pending, so no A–O row closes.
 
+Stored-child contract follow-up (implemented but unverified, 2026-09-25):
+replay eligibility, aggregate cloneability, GC view-owner detection,
+capability traversal, and opaque closure-owner evidence use one instantiated
+child relation for sequences, mappings, tuples, declared aggregates, and
+checked built-in sum shapes. The ownership and physical-layout judgments still
+gate admission. An adversarial review found and prompted a fix for omitted
+`Option`/`Result` payloads and for a noncloneable dictionary graph that would
+otherwise gain an authenticated-place plan. This is a structural migration;
+it closes no A–O evidence row. Generic replay through indirect callables,
+per-execution preparation, and cancellation disposition remain open.
+
 Row G ABI representation consumers (implemented but unverified, 2026-09-25):
 direct rooted-view, owner-list, and view-bearing aggregate qualifier checks
 now use the shared storage plan and owner-carried representation class. Legacy

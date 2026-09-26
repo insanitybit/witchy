@@ -56,6 +56,48 @@ pub fn replay_capture_eligibility(
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SnapshotUse { PersistentView, ReplayableTask }
 
+/// Instantiated stored children, with collection construction distinguished
+/// from declared aggregate fields. This describes source storage only; a
+/// caller still needs its layout and ownership-operation proof.
+enum StoredChildren {
+    Sequence(Type),
+    Mapping(Type, Type),
+    Aggregate(Vec<Type>),
+}
+
+impl StoredChildren {
+    fn into_types(self) -> Vec<Type> {
+        match self {
+            Self::Sequence(element) => vec![element],
+            Self::Mapping(key, value) => vec![key, value],
+            Self::Aggregate(fields) => fields,
+        }
+    }
+}
+
+fn stored_children(
+    ty: &Type,
+    definitions: &BTreeMap<String, TypeDef>,
+) -> Result<Option<StoredChildren>, ()> {
+    match ty.unqualified() {
+        Type::Tuple(fields) => Ok(Some(StoredChildren::Aggregate(fields.clone()))),
+        Type::Named(name, arguments) if name == "List" => {
+            let [element] = arguments.as_slice() else { return Err(()) };
+            Ok(Some(StoredChildren::Sequence(element.clone())))
+        }
+        Type::Named(name, arguments) if name == "Dict" => {
+            let [key, value] = arguments.as_slice() else { return Err(()) };
+            Ok(Some(StoredChildren::Mapping(key.clone(), value.clone())))
+        }
+        Type::Named(..) => match instantiated_declared_fields(ty, definitions) {
+            Some(fields) => fields.map(|fields| Some(StoredChildren::Aggregate(fields))),
+            None => Ok(scalar_aggregate_shape(ty, definitions)
+                .map(|shape| StoredChildren::Aggregate(shape.fields))),
+        },
+        _ => Ok(None),
+    }
+}
+
 fn snapshot_eligibility_for(
     ty: &Type,
     definitions: &BTreeMap<String, TypeDef>,
@@ -141,15 +183,14 @@ fn snapshot_eligibility_for(
                 // The aggregate layout judgment supplies instantiated stored
                 // fields. Phantom arguments bind identity but carry no value.
                 let fields = if use_kind == SnapshotUse::ReplayableTask
-                    && name == "List"
-                    && let Type::Named(_, arguments) = ty
-                    && let [element] = arguments.as_slice()
+                    && let Some(children) = stored_children(ty, definitions)
+                        .map_err(|_| SnapshotRefusal::UnprovedStorage)?
                 {
-                    vec![element.clone()]
-                } else if use_kind == SnapshotUse::ReplayableTask
-                    && let Some(fields) = instantiated_declared_fields(ty, definitions)
-                {
-                    fields.map_err(|_| SnapshotRefusal::UnprovedStorage)?
+                    if matches!(StoragePlan::classify(ty, definitions, |_| Some(0)),
+                        StoragePlan::Refused(_)) {
+                        return Err(SnapshotRefusal::UnprovedStorage);
+                    }
+                    children.into_types()
                 } else if let Some(shape) = scalar_aggregate_shape(ty, definitions) {
                     shape.fields
                 } else {
@@ -271,16 +312,14 @@ fn graph_storage_operations(
         Type::Fn(_, _, _, qualifiers) => {
             CallableStoragePlan::classify(ty, definitions).map(|_| !qualifiers.once)
         }
-        Type::Named(name, arguments) if name == "List" => {
-            let [element] = arguments.as_slice() else { return None };
-            child(element, active, remaining).filter(|cloneable| *cloneable)
-        }
-        Type::Named(name, arguments) if name == "Dict" => {
-            let [key, value] = arguments.as_slice() else { return None };
-            (child(key, active, remaining)? && child(value, active, remaining)?)
-                .then_some(true)
-        }
         Type::Named(_, _) | Type::Tuple(_) => {
+            if let Some(children @ (StoredChildren::Sequence(_) | StoredChildren::Mapping(_, _))) =
+                stored_children(ty, definitions).ok().flatten()
+            {
+                return children.into_types().iter().try_fold(true, |all, field| {
+                    Some(all && child(field, active, remaining)?)
+                }).filter(|cloneable| *cloneable);
+            }
             if view_carrier_plan(ty, definitions).is_some_and(|plan| plan.requires_opaque_owner()) {
                 return Some(opaque_aggregate_cloneable(ty, definitions));
             }
@@ -344,11 +383,10 @@ fn contains_gc_view_owner(ty: &Type, definitions: &BTreeMap<String, TypeDef>) ->
         let result = if view_carrier_plan(ty, definitions).is_some_and(|plan| plan.requires_opaque_owner()) {
             Some(true)
         } else {
-            let fields = if let Some(shape) = scalar_aggregate_shape(ty, definitions) {
-                shape.fields
+            let fields = if let Some(children) = stored_children(ty, definitions).ok()? {
+                children.into_types()
             } else {
                 match ty {
-                    Type::Named(_, arguments) | Type::Tuple(arguments) => arguments.clone(),
                     Type::Qualified(_, inner) | Type::Slice(inner) => vec![*inner.clone()],
                     _ => Vec::new(),
                 }
@@ -379,10 +417,8 @@ fn contains_capability_authority(ty: &Type, definitions: &BTreeMap<String, TypeD
         *remaining -= 1;
         if crate::capabilities::representation(ty, definitions).is_some() { return Some(true); }
         if !active.insert(ty.clone()) { return Some(false); }
-        let children = if let Some(shape) = scalar_aggregate_shape(ty, definitions) {
-            shape.fields
-        } else if let Some(fields) = instantiated_declared_fields(ty, definitions) {
-            fields.ok()?
+        let children = if let Some(children) = stored_children(ty, definitions).ok().flatten() {
+            children.into_types()
         } else {
             match ty {
                 Type::Named(_, arguments) | Type::Dyn(_, arguments) | Type::Tuple(arguments) => arguments.clone(),
@@ -472,15 +508,9 @@ impl<'a> OpaqueOwnerEvidence<'a> {
             let family = crate::callable_storage::bounded_closure_family_type(ty, self.definitions)?;
             Some(self.opaque_callable_families.contains(&family))
         } else {
-            let children = if let Some(shape) = scalar_aggregate_shape(ty, self.definitions) {
-                shape.fields
-            } else {
-                match ty.unqualified() {
-                    Type::Named(name, arguments) if name == "List" && arguments.len() == 1 => arguments.clone(),
-                    Type::Named(name, arguments) if name == "Dict" && arguments.len() == 2 => arguments.clone(),
-                    Type::Tuple(items) => items.clone(),
-                    _ => Vec::new(),
-                }
+            let children = match stored_children(ty, self.definitions) {
+                Ok(children) => children.map(StoredChildren::into_types).unwrap_or_default(),
+                Err(()) => return Some(true),
             };
             children.iter().try_fold(false, |found, child| {
                 let required = self.requires_owner_at(child, active, depth + 1, remaining)?;
