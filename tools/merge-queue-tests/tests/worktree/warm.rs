@@ -871,19 +871,34 @@ fn cargo_shim_keeps_mbx_gc_off_the_build_critical_path() {
         "the background sweep must see the shim's managed-target policy",
     );
 
+    // Launching a collector touches this stamp synchronously, before detaching
+    // it. Give the stamp a distinct but still recent mtime so an unwanted touch
+    // cannot hide within the clock resolution. This checks the launch decision
+    // without waiting for a possibly delayed child to append its record.
+    let stamp = root.join("state/mbx/store-9.9.9/.witchy-gc-launched");
+    let recent = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+    std::fs::OpenOptions::new().write(true).open(&stamp).expect("open gc stamp")
+        .set_times(std::fs::FileTimes::new().set_modified(recent))
+        .expect("set recent gc stamp mtime");
+    let stamp_mtime = std::fs::metadata(&stamp).expect("gc stamp metadata")
+        .modified().expect("gc stamp mtime");
+
     // Within the interval a second build neither sweeps nor turns gc on.
     let (output, _) = run(false, None);
     assert_eq!(String::from_utf8_lossy(&output.stdout), "build gc_auto=false\n");
-    std::thread::sleep(std::time::Duration::from_millis(2500));
+    assert_eq!(
+        std::fs::metadata(&stamp).expect("preserved gc stamp").modified().expect("gc stamp mtime"),
+        stamp_mtime,
+        "the sweep ignored its interval and touched the launch stamp",
+    );
     assert_eq!(wait_for_runs(1), 1, "the sweep ignored its interval");
 
     // A caller that asks for mbx's own automatic sweep keeps it, and the
     // shim does not add a second collector.
-    std::fs::remove_file(root.join("state/mbx/store-9.9.9/.witchy-gc-launched"))
-        .expect("reset gc stamp");
+    std::fs::remove_file(&stamp).expect("reset gc stamp");
     let (output, _) = run(false, Some("true"));
     assert_eq!(String::from_utf8_lossy(&output.stdout), "build gc_auto=true\n");
-    std::thread::sleep(std::time::Duration::from_millis(2500));
+    assert!(!stamp.exists(), "an explicit MBX_GC_AUTO still scheduled a sweep");
     assert_eq!(wait_for_runs(1), 1, "an explicit MBX_GC_AUTO still launched a sweep");
 }
 
