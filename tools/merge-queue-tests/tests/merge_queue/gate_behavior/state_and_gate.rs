@@ -707,17 +707,21 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
         "worktree-only selection ran unrelated queue binaries: {worktree_only_args}",
     );
     fs::write(&cargo_args_file, "").expect("clear fake cargo arguments");
-    // A diff touching the queue scripts AND a root integration test maps to a
-    // mixed selector. Root Cargo cannot resolve the standalone queue binary,
-    // so it must go to the isolated shard (turned on even without the
-    // coordinator's flag) while the product target stays in the main run.
+    // A diff touching the queue scripts AND a root integration test maps the
+    // queue binary in the expression, not the product Cargo arguments. Recover
+    // it into the isolated shard while the product target stays in the main
+    // run, even without the coordinator's queue-infrastructure flag.
     let mixed = check_sh(&root, &["--fast"])
         .env("PATH", &path)
         .env("CARGO_TARGET_DIR", temp.path().join("target-mixed"))
         .env("WITCHY_GATE_SCOPE", "all")
         .env_remove("WITCHY_GATE_QUEUE_INFRA")
         .env_remove("WITCHY_QUEUE_INFRA_JOBS")
-        .env("WITCHY_GATE_NEXTEST", "--test merge_queue --test rfc0092")
+        .env("WITCHY_GATE_NEXTEST", "--test rfc0092")
+        .env(
+            "WITCHY_GATE_NEXTEST_EXPR",
+            "binary(merge_queue) or binary(rfc0092)",
+        )
         .env("FAKE_CARGO_ARGS_FILE", &cargo_args_file)
         .env("WITCHY_FAILFAST_POLL", "0.05")
         .env("WITCHY_STAGE_HEARTBEAT_INTERVAL", "0")

@@ -415,6 +415,19 @@ if cargo nextest --version >/dev/null 2>&1; then
             gate_nextest="${product_sel[*]}"
             queue_infra=1
         fi
+        # Mixed product/queue mappings cannot put a standalone queue target in
+        # the product Cargo arguments, so test-for-paths records it only in the
+        # expression (`binary(test_for_paths)`, etc.). Recover those identities
+        # here and keep the isolated shard on the named binaries. Without this,
+        # changing one router fixture beside a product test ran all 242 queue
+        # tests even though the mapper had selected one queue binary.
+        for queue_target in merge_queue test_for_paths worktree; do
+            if [[ "$gate_nextest_expr" == *"binary($queue_target)"* ]] \
+                && [[ " $queue_nextest_args " != *" --test $queue_target "* ]]; then
+                queue_nextest_args="${queue_nextest_args:+$queue_nextest_args }--test $queue_target"
+                queue_infra=1
+            fi
+        done
         if [ -n "$gate_nextest_expr" ]; then
             excl="($gate_nextest_expr)${excl:+ and ($excl)}"
         fi
