@@ -11,8 +11,12 @@ use crate::{codegen, parser};
             .expect_err("unannotated List param must be rejected in a mode file");
         assert!(err.contains("ownership convention"), "{err}");
 
-        // The same code with `let` is accepted.
-        let annotated = unannotated.replace("fn tag(xs:", "fn tag(let xs:");
+        // The same code with `let` is accepted. `list.length` declares an
+        // owned parameter, so an opt caller holding only call-scoped access
+        // supplies the copy explicitly (RFC-0167 section 3 call protocol).
+        let annotated = unannotated
+            .replace("fn tag(xs:", "fn tag(let xs:")
+            .replace("list.length(xs)", "list.length(xs.owned())");
         crate::enforce_performance_modes(&link_mode(&annotated), "t").expect("annotated param passes");
 
         // A scalar param needs no annotation even in a mode file.
