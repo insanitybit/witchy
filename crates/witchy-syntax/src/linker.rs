@@ -1234,22 +1234,28 @@ fn persistent_std_cache_path(expand: ComptimeExpander, name: &str) -> Option<std
         return None;
     }
 
-    // Two on-disk homes, chosen by how the running binary was laid out. Cargo /
-    // nextest test executables (parent dir `deps`) share a cache under the target
-    // dir. Every other binary — the installed CLI — shares a cache under the user
-    // cache dir, beside the runtime's other witchy caches (`witchy/wasm`,
-    // `witchy/optimized-wasm`, ...), where `witchy cache gc` (RFC-0096) will prune
-    // it. The executable-identity key below invalidates either on a new binary, so
-    // enabling the CLI home can never serve a stale prelude.
+    // Two on-disk homes, chosen by an explicit test override first and the
+    // running binary's layout second. Older Cargo/nextest test executables
+    // (parent dir `deps`) share a cache under the target dir. Every other binary
+    // — the installed CLI — shares a cache under the user cache dir, beside the
+    // runtime's other witchy caches (`witchy/wasm`, `witchy/optimized-wasm`,
+    // ...), where `witchy cache gc` (RFC-0096) will prune it. The executable-
+    // identity key below invalidates either on a new binary, so enabling the CLI
+    // home can never serve a stale prelude.
     let executable = std::env::current_exe().ok()?;
     let parent = executable.parent()?;
-    let root = if parent.file_name()?.to_str()? == "deps" {
+    // Cargo 1.100's per-unit target layout no longer guarantees that a test
+    // executable lives directly under a directory named `deps`. An explicit
+    // test-cache root is authoritative regardless of Cargo's output layout.
+    let explicit_test_root = std::env::var_os("WITCHY_TEST_STDLIB_CACHE_DIR")
+        .filter(|path| !path.is_empty())
+        .map(std::path::PathBuf::from);
+    let root = if let Some(root) = explicit_test_root {
+        root
+    } else if parent.file_name()?.to_str()? == "deps" {
         let profile = parent.parent()?;
         let target = profile.parent()?;
-        std::env::var_os("WITCHY_TEST_STDLIB_CACHE_DIR")
-            .filter(|path| !path.is_empty())
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|| target.join("witchy-testcache"))
+        target.join("witchy-testcache")
     } else {
         let base = std::env::var_os("XDG_CACHE_HOME")
             .map(std::path::PathBuf::from)
