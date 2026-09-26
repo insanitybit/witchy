@@ -277,21 +277,22 @@ impl TypedExecutionShape {
         Ok(())
     }
 
-    /// Conservatively propagate the initialized subset of only `must` lanes.
-    /// A union at a join means an obligation may still be live on at least one
-    /// incoming path, so a later terminal edge must transfer or discharge it.
-    /// This is monotone and bounded by the number of states times frame lanes;
-    /// it does not enumerate execution paths.
+    /// Propagate both possible empty and live states of each `must` lane.
+    /// Joins retain either possibility: a later transfer must prove the lane
+    /// live on every incoming path, and a terminal edge must prove it empty on
+    /// every incoming path. The finite two-bit state reaches a fixed point.
     fn validate_must_lane_paths(&self) -> Result<(), String> {
+        const EMPTY: u8 = 1;
+        const LIVE: u8 = 2;
         let must_lanes = self.frame.iter().map(|lane| {
             lane.ownership == LaneOwnership::MustConsume
         }).collect::<Vec<_>>();
         if !must_lanes.iter().any(|must| *must) {
             return Ok(());
         }
-        let mut states = vec![None::<Vec<bool>>; self.states.len()];
+        let mut states = vec![None::<Vec<u8>>; self.states.len()];
         let mut entry = self.frame.iter().zip(&must_lanes).map(|(lane, must)| {
-            *must && lane.initially_initialized
+            if !*must { 0 } else if lane.initially_initialized { LIVE } else { EMPTY }
         }).collect::<Vec<_>>();
         states[self.entry.0 as usize] = Some(std::mem::take(&mut entry));
         let mut pending = VecDeque::from([self.entry.0 as usize]);
@@ -309,14 +310,14 @@ impl TypedExecutionShape {
                             Some(existing) => {
                                 let mut changed = false;
                                 for (existing, incoming) in existing.iter_mut().zip(&next) {
-                                    let joined = *existing || *incoming;
+                                    let joined = *existing | *incoming;
                                     changed |= joined != *existing;
                                     *existing = joined;
                                 }
                                 changed
                             }
                             None => {
-                                states[target] = Some(next);
+                                states[target] = Some(next.clone());
                                 true
                             }
                         };
@@ -324,17 +325,40 @@ impl TypedExecutionShape {
                     }
                     ExecutionOutcome::Complete => {
                         for (lane, live) in next.iter().enumerate() {
-                            if *live && !self.result_lanes.iter().any(|result| result.0 as usize == lane) {
+                            let result = self.result_lanes.iter().any(|result| result.0 as usize == lane);
+                            if *live & LIVE != 0 && (!result || self.cancellation.is_some_and(|cancel| cancel.state.0 as usize == state_index)) {
                                 return Err("execution completion leaves a must-consume frame lane undisposed".to_string());
+                            }
+                            if result && state_index != self.cancellation.map_or(usize::MAX, |cancel| cancel.state.0 as usize)
+                                && must_lanes[lane] && *live != LIVE {
+                                return Err("execution completion lacks a produced must-consume result".to_string());
                             }
                         }
                     }
                     ExecutionOutcome::PropagateError => {
-                        if next.iter().any(|live| *live) {
+                        if next.iter().any(|live| *live & LIVE != 0) {
                             return Err("execution error propagation leaves a must-consume frame lane undisposed".to_string());
                         }
                     }
                     ExecutionOutcome::Trap => {}
+                }
+                if matches!(transition.outcome, ExecutionOutcome::Blocked { .. }) {
+                    if let Some(cancel) = self.cancellation {
+                        let target = cancel.state.0 as usize;
+                        let changed = match &mut states[target] {
+                            Some(existing) => {
+                                let mut changed = false;
+                                for (current, incoming) in existing.iter_mut().zip(&next) {
+                                    let joined = *current | *incoming;
+                                    changed |= joined != *current;
+                                    *current = joined;
+                                }
+                                changed
+                            }
+                            None => { states[target] = Some(next); true }
+                        };
+                        if changed { pending.push_back(target); }
+                    }
                 }
             }
         }
@@ -343,10 +367,12 @@ impl TypedExecutionShape {
 
     fn apply_must_actions(
         &self,
-        mut initialized: Vec<bool>,
+        mut initialized: Vec<u8>,
         must_lanes: &[bool],
         actions: &[LaneAction],
-    ) -> Result<Vec<bool>, String> {
+    ) -> Result<Vec<u8>, String> {
+        const EMPTY: u8 = 1;
+        const LIVE: u8 = 2;
         for action in actions {
             match *action {
                 LaneAction::Copy { from, to } => {
@@ -358,20 +384,32 @@ impl TypedExecutionShape {
                     }
                 }
                 LaneAction::Move { from, to } => {
-                    if must_lanes[from.0 as usize] && !initialized[from.0 as usize] {
-                        return Err("execution transition moves an uninitialized must-consume frame lane".to_string());
+                    if must_lanes[from.0 as usize] && initialized[from.0 as usize] != LIVE {
+                        return Err("execution transition moves a must-consume frame lane not live on every path".to_string());
                     }
                     if must_lanes[from.0 as usize] != must_lanes[to.0 as usize] {
                         return Err("execution transition changes must-consume lane ownership".to_string());
                     }
                     if must_lanes[from.0 as usize] {
-                        initialized[from.0 as usize] = false;
-                        initialized[to.0 as usize] = true;
+                        if from != to && initialized[to.0 as usize] & LIVE != 0 {
+                            return Err("execution transition overwrites a live must-consume frame lane".to_string());
+                        }
+                        initialized[from.0 as usize] = EMPTY;
+                        initialized[to.0 as usize] = LIVE;
                     }
                 }
-                LaneAction::Write { to } if must_lanes[to.0 as usize] => initialized[to.0 as usize] = true,
-                LaneAction::Clear { lane } | LaneAction::Discharge { lane }
-                    if must_lanes[lane.0 as usize] => initialized[lane.0 as usize] = false,
+                LaneAction::Write { to } if must_lanes[to.0 as usize] => {
+                    if initialized[to.0 as usize] & LIVE != 0 {
+                        return Err("execution transition overwrites a live must-consume frame lane".to_string());
+                    }
+                    initialized[to.0 as usize] = LIVE;
+                }
+                LaneAction::Clear { lane } if must_lanes[lane.0 as usize] => {
+                    return Err("execution transition clears a must-consume frame lane without disposition".to_string());
+                }
+                LaneAction::Discharge { lane } if must_lanes[lane.0 as usize] => {
+                    return Err("execution transition has no checked runtime disposition proof for a must-consume frame lane".to_string());
+                }
                 LaneAction::Write { .. } | LaneAction::Clear { .. } | LaneAction::Discharge { .. } => {}
             }
         }

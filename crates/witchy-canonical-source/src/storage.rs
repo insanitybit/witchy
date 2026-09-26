@@ -86,11 +86,21 @@ pub struct StoredObligationCatalog {
 }
 
 impl StoredObligationCatalog {
-    /// `execution_obligations` names semantic values, such as lazy tasks, that
-    /// require explicit disposition even when their declaration stores no
-    /// resource-bearing type argument. Their arity is checked against any
-    /// declaration before the catalogue is used by the frontend.
-    pub fn from_module(module: &Module, execution_obligations: &[(&str, usize)]) -> Option<Self> {
+    /// Whether this concrete checked type carries a must-consume value in
+    /// stored fields. Callable signatures and phantom arguments are excluded
+    /// by the same recursive relation used to build this catalog.
+    pub fn carries_must_source(
+        &self, ty: &Type, definitions: &BTreeMap<String, TypeDef>,
+    ) -> bool {
+        carries_must(ty, &self.must_types, &self.stored_parameters,
+            &BTreeSet::new(), definitions)
+    }
+
+    /// The checked language's lazy task token has an execution obligation
+    /// even when its result parameter is absent from stored fields. Both the
+    /// source checker and final async frame consume this same catalog.
+    pub fn from_module(module: &Module) -> Option<Self> {
+        let execution_obligations = &[("Task", 1)];
         let definitions = module.items.iter().filter_map(|item| match item {
             Item::Type(definition) => Some(definition),
             _ => None,

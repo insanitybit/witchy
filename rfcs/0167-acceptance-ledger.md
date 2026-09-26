@@ -1049,6 +1049,17 @@ hand-computed Wasm and zero-leak evidence for any A–O row. Call-scoped
 provenance through generated continuations and lawful task cancellation
 disposition remain structural gaps.
 
+Typed async frame obligations (implemented but unverified, 2026-09-26):
+the final checked frame now carries the shared recursive stored must-consume
+judgment through source-bound lane ownership. Async readiness compares that
+judgment against the checked input and, for must-bearing operations, requires
+the exact program produced by checked typed lowering. Path validation joins
+live and empty possibilities, visits cancellation cleanup from blocked edges,
+and refuses invented must-lane discharge or unproduced must results. A focused
+compiler check and the existing async readiness case passed. Runtime-bound
+must transfer, receive-result production, and cancellation disposition remain
+open; this is not A–O admitted-Wasm or zero-leak evidence.
+
 Row G ABI representation consumers (implemented but unverified, 2026-09-25):
 direct rooted-view, owner-list, and view-bearing aggregate qualifier checks
 now use the shared storage plan and owner-carried representation class. Legacy

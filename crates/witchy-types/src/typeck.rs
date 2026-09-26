@@ -12519,7 +12519,7 @@ fn run_check_selected(
     // Task itself requires disposition, while its future result is not a
     // stored recipe field. Every generic storage mask comes from the shared
     // source judgment, including collection and declared aggregate children.
-    let stored_obligations = StoredObligationCatalog::from_module(module, &[("Task", 1)])
+    let stored_obligations = StoredObligationCatalog::from_module(module)
         .ok_or_else(|| TypeError {
             message: "checked Task declaration has inconsistent execution-obligation arity".into(),
         })?;

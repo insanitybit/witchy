@@ -25,6 +25,7 @@ use crate::async_program::{AsyncProgram, FinalTypedAsyncExecution, FinalTypedAsy
 use crate::typed_execution::{CancellationTransition, ExecutionEdgeCondition, ExecutionOperation, ExecutionOutcome,
     ExecutionShapeId, ExecutionState, ExecutionStateId, ExecutionTransition, FrameLane,
     FrameLaneId, LaneOwnership, OperationArm, OperationSite, OperationSiteId, QueueShape, TypedExecutionShape};
+use witchy_canonical_source::storage::StoredObligationCatalog;
 
 /// A final callable-table position. This is an internal backend binding input;
 /// it is intentionally not a generated function name.
@@ -76,6 +77,8 @@ pub struct TypedAsyncFrameInput {
     pub source_binding: Option<SourceBindingId>,
     pub ty: Type,
     pub convention: Convention,
+    /// Checked stored-field obligation, before executable lane assignment.
+    pub ownership: LaneOwnership,
 }
 
 /// A source-addressable final typed async state.
@@ -170,9 +173,49 @@ pub struct TypedAsyncLoweringInput {
     pub controls: Vec<TypedAsyncSourceControlBinding>,
     pub operations: Vec<TypedAsyncSourceOperationBinding>,
     pub queue_bindings: Vec<TypedAsyncQueueBinding>,
+    stored_obligations: StoredObligationCatalog,
+    type_definitions: BTreeMap<String, witchy_syntax::ast::TypeDef>,
+}
+
+fn checked_frame_ownership(
+    convention: Convention,
+    ty: &Type,
+    obligations: &StoredObligationCatalog,
+    definitions: &BTreeMap<String, witchy_syntax::ast::TypeDef>,
+) -> Result<LaneOwnership, String> {
+    if obligations.carries_must_source(ty, definitions) {
+        return if matches!(convention, Convention::Own | Convention::Var) {
+            Ok(LaneOwnership::MustConsume)
+        } else {
+            Err(format!("async frame cannot retain must-consume `{ty:?}` without an owning capture"))
+        };
+    }
+    Ok(match convention {
+        Convention::Own | Convention::Var => LaneOwnership::Move,
+        Convention::Let | Convention::Borrow => LaneOwnership::Copy,
+    })
 }
 
 impl TypedAsyncLoweringInput {
+    pub(crate) fn requires_must_execution_proof(&self) -> bool {
+        let carries = |ty: &Type| self.stored_obligations.carries_must_source(ty, &self.type_definitions);
+        self.states.iter().flat_map(|state| &state.frame).any(|field| carries(&field.ty))
+            || self.operations.iter().any(|operation| {
+                operation.operand_type.as_ref().is_some_and(&carries)
+                    || operation.operand_types.iter().any(&carries)
+            })
+    }
+    pub(crate) fn ownership_contract_matches(&self, other: &Self) -> bool {
+        self.stored_obligations == other.stored_obligations
+            && self.type_definitions == other.type_definitions
+    }
+    fn owned_result_ownership(&self, ty: &Type) -> LaneOwnership {
+        if self.stored_obligations.carries_must_source(ty, &self.type_definitions) {
+            LaneOwnership::MustConsume
+        } else {
+            LaneOwnership::Move
+        }
+    }
     /// Produce one canonical program for all source callables that are within
     /// the conservative linear boundary. Shape IDs are assigned in the same
     /// lexical callable order retained by `from_typed`; each callable's final
@@ -193,6 +236,8 @@ impl TypedAsyncLoweringInput {
                 controls: self.controls.iter().filter(|control| control.callable == source.callable).cloned().collect(),
                 operations: self.operations.iter().filter(|operation| operation.callable == source.callable).cloned().collect(),
                 queue_bindings: self.queue_bindings.clone(),
+                stored_obligations: self.stored_obligations.clone(),
+                type_definitions: self.type_definitions.clone(),
             };
             let shape = ExecutionShapeId(u32::try_from(index).map_err(|_| "RFC-0161 linear program shape count exceeds u32")?);
             executions.push(input.into_linear_execution(shape, *fingerprint)?);
@@ -389,10 +434,7 @@ impl TypedAsyncLoweringInput {
         let frame: Vec<FrameLane> = entry.map(|state| state.frame.iter().map(|input| FrameLane {
             id: FrameLaneId(input.parameter),
             ty: input.ty.clone(),
-            ownership: match input.convention {
-                Convention::Own | Convention::Var => LaneOwnership::Move,
-                Convention::Let | Convention::Borrow => LaneOwnership::Copy,
-            },
+            ownership: input.ownership,
             initially_initialized: true,
         }).collect()).unwrap_or_default();
         if frame.iter().enumerate().any(|(index, lane)| lane.id.0 != index as u32) {
@@ -465,7 +507,7 @@ impl TypedAsyncLoweringInput {
         let frame = entry.frame.iter().map(|input| FrameLane {
             id: FrameLaneId(input.parameter),
             ty: input.ty.clone(),
-            ownership: match input.convention { Convention::Own | Convention::Var => LaneOwnership::Move, Convention::Let | Convention::Borrow => LaneOwnership::Copy },
+            ownership: input.ownership,
             initially_initialized: true,
         }).collect::<Vec<_>>();
         let endpoint = entry.frame.iter().find_map(|input| {
@@ -473,10 +515,12 @@ impl TypedAsyncLoweringInput {
         }).ok_or_else(|| "RFC-0161 terminal receive endpoint is absent from the entry frame".to_string())?;
         let result = FrameLaneId(u32::try_from(frame.len()).map_err(|_| "RFC-0161 terminal receive result lane exceeds u32")?);
         let mut frame = frame;
+        let result_type = operation.operand_type.clone()
+            .ok_or_else(|| "RFC-0161 terminal receive has no result type".to_string())?;
         frame.push(FrameLane {
             id: result,
-            ty: operation.operand_type.clone().ok_or_else(|| "RFC-0161 terminal receive has no result type".to_string())?,
-            ownership: LaneOwnership::Move,
+            ownership: self.owned_result_ownership(&result_type),
+            ty: result_type,
             initially_initialized: false,
         });
         let execution = TypedExecutionShape {
@@ -550,12 +594,12 @@ impl TypedAsyncLoweringInput {
         if continuation.frame.len() != 1 { return Err("RFC-0161 continuation receive requires one result capture".into()); }
         let mut frame = entry.frame.iter().map(|input| FrameLane {
             id: FrameLaneId(input.parameter), ty: input.ty.clone(),
-            ownership: match input.convention { Convention::Own | Convention::Var => LaneOwnership::Move, Convention::Let | Convention::Borrow => LaneOwnership::Copy }, initially_initialized: true,
+            ownership: input.ownership, initially_initialized: true,
         }).collect::<Vec<_>>();
         let endpoint = entry.frame.iter().find_map(|input| (input.source_binding == Some(operation.operand_bindings[0])).then_some(FrameLaneId(input.parameter)))
             .ok_or_else(|| "RFC-0161 continuation receive endpoint is absent from the entry frame".to_string())?;
         let result = FrameLaneId(u32::try_from(frame.len()).map_err(|_| "RFC-0161 continuation receive result lane exceeds u32")?);
-        frame.push(FrameLane { id: result, ty: continuation.frame[0].ty.clone(), ownership: LaneOwnership::Move, initially_initialized: false });
+        frame.push(FrameLane { id: result, ty: continuation.frame[0].ty.clone(), ownership: continuation.frame[0].ownership, initially_initialized: false });
         let execution = TypedExecutionShape {
             id: shape, entry: ExecutionStateId(0), frame, result_lanes: vec![result],
             states: vec![
@@ -595,7 +639,7 @@ impl TypedAsyncLoweringInput {
             .ok_or_else(|| "RFC-0161 terminal send has no final entry state".to_string())?;
         let mut frame = entry.frame.iter().map(|input| FrameLane {
             id: FrameLaneId(input.parameter), ty: input.ty.clone(),
-            ownership: match input.convention { Convention::Own | Convention::Var => LaneOwnership::Move, Convention::Let | Convention::Borrow => LaneOwnership::Copy },
+            ownership: input.ownership,
             initially_initialized: true,
         }).collect::<Vec<_>>();
         let endpoint = entry.frame.iter().find_map(|input| (input.source_binding == Some(operation.operand_bindings[0])).then_some(FrameLaneId(input.parameter)))
@@ -642,7 +686,7 @@ impl TypedAsyncLoweringInput {
         if continuation.frame.len() > 1 { return Err("RFC-0161 continuation ChannelSend requires at most one completion capture".into()); }
         let mut frame = entry.frame.iter().map(|input| FrameLane {
             id: FrameLaneId(input.parameter), ty: input.ty.clone(),
-            ownership: match input.convention { Convention::Own | Convention::Var => LaneOwnership::Move, Convention::Let | Convention::Borrow => LaneOwnership::Copy }, initially_initialized: true,
+            ownership: input.ownership, initially_initialized: true,
         }).collect::<Vec<_>>();
         let endpoint = entry.frame.iter().find_map(|input| (input.source_binding == Some(operation.operand_bindings[0])).then_some(FrameLaneId(input.parameter)))
             .ok_or_else(|| "RFC-0161 continuation ChannelSend endpoint is absent from the entry frame".to_string())?;
@@ -650,7 +694,7 @@ impl TypedAsyncLoweringInput {
             .ok_or_else(|| "RFC-0161 continuation ChannelSend payload must be an entry-frame binding".to_string())?;
         let completion = if let Some(capture) = continuation.frame.first() {
             let lane = FrameLaneId(u32::try_from(frame.len()).map_err(|_| "RFC-0161 continuation ChannelSend completion lane exceeds u32")?);
-            frame.push(FrameLane { id: lane, ty: capture.ty.clone(), ownership: LaneOwnership::Move, initially_initialized: false });
+            frame.push(FrameLane { id: lane, ty: capture.ty.clone(), ownership: capture.ownership, initially_initialized: false });
             Some(lane)
         } else { None };
         let execution = TypedExecutionShape {
@@ -689,10 +733,11 @@ impl TypedAsyncLoweringInput {
             .ok_or_else(|| "RFC-0161 ChannelSelect has no final entry state".to_string())?;
         let mut frame = entry.frame.iter().map(|input| FrameLane {
             id: FrameLaneId(input.parameter), ty: input.ty.clone(),
-            ownership: match input.convention { Convention::Own | Convention::Var => LaneOwnership::Move, Convention::Let | Convention::Borrow => LaneOwnership::Copy }, initially_initialized: true,
+            ownership: input.ownership, initially_initialized: true,
         }).collect::<Vec<_>>();
         let result = FrameLaneId(u32::try_from(frame.len()).map_err(|_| "RFC-0161 ChannelSelect result lane exceeds u32")?);
-        frame.push(FrameLane { id: result, ty: operation.operand_type.clone().ok_or_else(|| "RFC-0161 ChannelSelect has no result type".to_string())?, ownership: LaneOwnership::Move, initially_initialized: false });
+        let result_type = operation.operand_type.clone().ok_or_else(|| "RFC-0161 ChannelSelect has no result type".to_string())?;
+        frame.push(FrameLane { id: result, ownership: self.owned_result_ownership(&result_type), ty: result_type, initially_initialized: false });
         let (queues, queue_by_endpoint) = select_queue_layout(&operation.operand_bindings, queue_bindings, "ChannelSelect")?;
         let mut arms = Vec::with_capacity(operation.operand_bindings.len());
         for (ordinal, endpoint_binding) in operation.operand_bindings.iter().enumerate() {
@@ -749,11 +794,11 @@ impl TypedAsyncLoweringInput {
         }
         let mut frame = entry.frame.iter().map(|input| FrameLane {
             id: FrameLaneId(input.parameter), ty: input.ty.clone(),
-            ownership: match input.convention { Convention::Own | Convention::Var => LaneOwnership::Move, Convention::Let | Convention::Borrow => LaneOwnership::Copy },
+            ownership: input.ownership,
             initially_initialized: true,
         }).collect::<Vec<_>>();
         let result = FrameLaneId(u32::try_from(frame.len()).map_err(|_| "RFC-0161 continuation ChannelSelect result lane exceeds u32")?);
-        frame.push(FrameLane { id: result, ty: continuation.frame[0].ty.clone(), ownership: LaneOwnership::Move, initially_initialized: false });
+        frame.push(FrameLane { id: result, ty: continuation.frame[0].ty.clone(), ownership: continuation.frame[0].ownership, initially_initialized: false });
         let (queues, queue_by_endpoint) = select_queue_layout(&operation.operand_bindings, queue_bindings, "continuation ChannelSelect")?;
         let mut arms = Vec::with_capacity(operation.operand_bindings.len());
         for (ordinal, endpoint_binding) in operation.operand_bindings.iter().enumerate() {
@@ -811,7 +856,7 @@ impl TypedAsyncLoweringInput {
         let execution = TypedExecutionShape {
             id: shape,
             entry: ExecutionStateId(0),
-            frame: vec![FrameLane { id: crate::typed_execution::FrameLaneId(0), ty: entry.frame[0].ty.clone(), ownership: LaneOwnership::Copy, initially_initialized: true }],
+            frame: vec![FrameLane { id: crate::typed_execution::FrameLaneId(0), ty: entry.frame[0].ty.clone(), ownership: entry.frame[0].ownership, initially_initialized: true }],
             result_lanes: Vec::new(),
             states: vec![ExecutionState {
                 id: ExecutionStateId(0),
@@ -867,6 +912,9 @@ impl TypedAsyncLoweringInput {
         typed: &TypedModule,
         source_inventory: SourceAsyncControlFlowInventory,
     ) -> Result<Self, String> {
+        let stored_obligations = StoredObligationCatalog::from_module(typed.module())
+            .ok_or_else(|| "typed async frame has no stored-obligation catalog".to_string())?;
+        let type_definitions = witchy_canonical_source::aggregates::type_definitions(typed.module());
         let mut source = source_inventory.callables;
         source.sort_by(|left, right| left.callable.cmp(&right.callable));
         let source_ids = source.iter().map(|flow| flow.callable.clone()).collect::<std::collections::BTreeSet<_>>();
@@ -944,11 +992,15 @@ impl TypedAsyncLoweringInput {
                 }
             }
             let frame = function.params.iter().enumerate().map(|(parameter, parameter_info)| {
+                let ty = inferred.get(parameter).cloned().or_else(|| parameter_info.ty.clone())
+                    .ok_or_else(|| format!("async state at final callable index {function_index} has untyped parameter `{}`", parameter_info.name))?;
                 Ok(TypedAsyncFrameInput {
                     parameter: u32::try_from(parameter).map_err(|_| "async parameter count exceeds u32")?,
                     name: parameter_info.name.clone(),
                     source_binding: declared_bindings.get(&parameter).copied(),
-                    ty: inferred.get(parameter).cloned().or_else(|| parameter_info.ty.clone()).ok_or_else(|| format!("async state at final callable index {function_index} has untyped parameter `{}`", parameter_info.name))?,
+                    ownership: checked_frame_ownership(parameter_info.convention, &ty,
+                        &stored_obligations, &type_definitions)?,
+                    ty,
                     convention: parameter_info.convention,
                 })
             }).collect::<Result<Vec<_>, String>>()?;
@@ -1126,7 +1178,8 @@ impl TypedAsyncLoweringInput {
                 return Err(format!("source async control {} has multiple typed bindings", pair[0].control));
             }
         }
-        Ok(Self { source, states, suspensions, controls, operations, queue_bindings: Vec::new() })
+        Ok(Self { source, states, suspensions, controls, operations, queue_bindings: Vec::new(),
+            stored_obligations, type_definitions })
     }
 
     /// Resolve one typed source-operation binding back to the exact retained

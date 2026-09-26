@@ -1095,6 +1095,11 @@ Unsupported field representations still fail closed. Task scheduling with public
 `task.Handle` values remains incomplete: a live handle cannot cross a
 suspension without cancellation disposition, and `task.Step(task.Handle)`
 remains unadmitted end to end.
+The typed async frame records a recursive must-consume obligation for owning
+`own` and `var` fields. Its execution check follows both live and empty states
+through joins and checks cancellation cleanup from each blocked operation.
+It refuses a must-consume receive result or frame disposition until the
+operation and runtime action have a checked ownership binding.
 
 A persistent view requires a lawful snapshot of the storage it retains. The
 checked storage judgment walks instantiated stored fields and refuses

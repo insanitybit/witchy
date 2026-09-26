@@ -13,7 +13,7 @@ use witchy_types::async_program::AsyncProgram;
 use witchy_types::async_readiness::AsyncReadinessError;
 use witchy_types::typed_async_lowering::{TypedAsyncOperationKind, TypedAsyncQueueBinding};
 use witchy_types::typed_execution::{
-    ExecutionShapeId, PayloadOwnership, QueueCapacity, QueueShape, QueueShapeId,
+    ExecutionShapeId, LaneAction, LaneOwnership, PayloadOwnership, QueueCapacity, QueueShape, QueueShapeId,
 };
 use super::source::checked_module;
 
@@ -57,6 +57,21 @@ fn main():
     let execution = input
         .into_linear_execution(ExecutionShapeId(0), [0x16; 32])
         .expect("typed queue operation lowers without replaying source syntax");
+    let mut unproduced = execution.execution.clone();
+    let result = unproduced.result_lanes[0];
+    unproduced.frame[result.0 as usize].ownership = LaneOwnership::MustConsume;
+    let unproduced_error = unproduced.validate().unwrap_err();
+    assert!(unproduced_error.contains("produced must-consume result"), "{unproduced_error}");
+
+    let mut undisposed_on_cancel = execution.execution.clone();
+    undisposed_on_cancel.frame[0].ownership = LaneOwnership::MustConsume;
+    undisposed_on_cancel.frame[result.0 as usize].ownership = LaneOwnership::MustConsume;
+    undisposed_on_cancel.states[1].transitions[0].actions.push(LaneAction::Move {
+        from: undisposed_on_cancel.frame[0].id,
+        to: result,
+    });
+    let cancellation_error = undisposed_on_cancel.validate().unwrap_err();
+    assert!(cancellation_error.contains("undisposed"), "{cancellation_error}");
     let mut program = AsyncProgram::from_final_typed_executions(vec![execution])
         .expect("typed execution forms a canonical async program");
     let readiness = checked

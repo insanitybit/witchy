@@ -9,7 +9,7 @@
 
 use std::fmt;
 
-use witchy_syntax::ast::{Convention, Module, Type};
+use witchy_syntax::ast::{Module, Type};
 
 use crate::async_program::AsyncProgram;
 use crate::loans::LoanFactTelemetry;
@@ -282,6 +282,16 @@ fn validate_program_binding(
     program: &AsyncProgram,
 ) -> Result<(), AsyncReadinessError> {
     program.validate().map_err(AsyncReadinessError::InvalidAsyncProgram)?;
+    if input.requires_must_execution_proof() {
+        let fingerprints = input.source.iter().zip(&program.execution_shapes)
+            .map(|(source, shape)| (source.callable.clone(), shape.closure_layout_fingerprint))
+            .collect();
+        let expected = input.into_linear_program(&fingerprints)
+            .map_err(AsyncReadinessError::InvalidAsyncProgram)?;
+        if expected != *program {
+            return Err(AsyncReadinessError::ProgramIdentityMismatch);
+        }
+    }
     if input.source.len() != program.execution_shapes.len() {
         return Err(AsyncReadinessError::StateDestinationMismatch);
     }
@@ -300,7 +310,7 @@ fn validate_program_binding(
                     && binding.capture_to_lane.len() == state.frame.len()
                     && state.frame.iter().zip(&binding.capture_to_lane).all(|(field, lane)| {
                         shape.frame.get(*lane as usize).is_some_and(|lane| {
-                            lane.ty == field.ty && lane.ownership == field_lane_ownership(field.convention)
+                            lane.ty == field.ty && lane.ownership == field.ownership
                         })
                     })
             })
@@ -318,7 +328,7 @@ fn validate_program_binding(
                     && binding.capture_to_lane.len() == entry.frame.len()
                     && entry.frame.iter().zip(&binding.capture_to_lane).all(|(field, lane)| {
                         shape.frame.get(*lane as usize).is_some_and(|lane| {
-                            lane.ty == field.ty && lane.ownership == field_lane_ownership(field.convention)
+                            lane.ty == field.ty && lane.ownership == field.ownership
                         })
                     })
             })
@@ -369,6 +379,7 @@ fn checked_input_matches(
         && expected.suspensions == supplied.suspensions
         && expected.controls == supplied.controls
         && expected.operations == supplied.operations
+        && expected.ownership_contract_matches(supplied)
         && queue_bindings_are_structural(supplied).is_ok()
 }
 
@@ -404,13 +415,6 @@ fn queue_bindings_are_structural(
         }
     }
     Ok(())
-}
-
-fn field_lane_ownership(convention: Convention) -> LaneOwnership {
-    match convention {
-        Convention::Own | Convention::Var => LaneOwnership::Move,
-        Convention::Let | Convention::Borrow => LaneOwnership::Copy,
-    }
 }
 
 fn type_carries_once(ty: &Type) -> bool {
