@@ -684,7 +684,7 @@ for p in "${paths[@]}"; do
             path_has_early=1 ;;
         crates/witchy-lower/src/canonical_list_update.rs | \
         crates/witchy-lower/src/canonical_pipeline.rs)
-            add_early "cargo nextest run -p witchy-lower --test codegen -E 'test(canonical_pipeline::list_)'"
+            add_early "cargo nextest run -p witchy-lower --features native-test-runtime --test codegen -E 'test(canonical_pipeline::list_)'"
             path_has_early=1 ;;
         crates/witchy-lower/tests/codegen.rs)
             add_early "cargo nextest run -p witchy-lower --test codegen -E 'test(=tests::grantful_build_primitives_compile_to_build_imports_only)'"

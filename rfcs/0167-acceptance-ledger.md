@@ -62,6 +62,14 @@ is needed for soundness.
 
 ## Exact-tip evidence checkpoint
 
+Opt admission fallback (implemented but unverified, 2026-09-26): the
+canonical compiler now retains the checked unoptimized candidate when an
+optional opt pass runs. If that pass fails final SafeWIR validation or its
+Wasm output fails admission, the compiler retries from the checked baseline
+through the same validation and admission gates. Baseline lowering or
+admission failure remains a failure. This is a structural safety boundary,
+not an optimizer-correctness claim or new A–O evidence.
+
 Rows J/K lazy task capture clarification (implemented but unverified,
 2026-09-25): the checker now rejects an explicit call-scoped `let` parameter
 of a source `async fn`, since calling it creates a persistent recipe. It also
