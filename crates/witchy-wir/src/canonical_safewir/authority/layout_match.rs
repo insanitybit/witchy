@@ -166,7 +166,7 @@ pub(crate) fn value_type_matches_source(
                         && record_layout_matches_with_closures(layout, &shape.fields, shape.tagged, layouts, records, closure_layouts, signatures, context))
             })
         }
-        StoragePlan::MoveOnlyList(_) | StoragePlan::RetainedGraphList(_) | StoragePlan::RetainedCallableList(_) | StoragePlan::Owned(
+        StoragePlan::RetainedGraphList(_) | StoragePlan::RetainedCallableList(_) | StoragePlan::Owned(
             witchy_canonical_source::carrier::CarrierElement::String
             | witchy_canonical_source::carrier::CarrierElement::Bytes
             | witchy_canonical_source::carrier::CarrierElement::List(_)
@@ -188,7 +188,7 @@ pub(crate) fn value_type_matches_source(
         },
         StoragePlan::InlineAggregate(_) | StoragePlan::RootedView(_)
             | StoragePlan::RetainedOwnerList(_) | StoragePlan::RetainedOpaqueAggregateList(_)
-            | StoragePlan::Refused(_) => false,
+            | StoragePlan::MoveOnlyList(_) | StoragePlan::Refused(_) => false,
     }
 }
 
@@ -398,8 +398,7 @@ pub(super) fn enqueue_layout_children(
             layouts.get(*element).is_some_and(|element| matches!(element.kind(), LayoutKind::Scalar(ScalarKind::RawByte)))
         }
         StoragePlan::Owned(witchy_canonical_source::carrier::CarrierElement::List(_))
-            | StoragePlan::RetainedGraphList(_) | StoragePlan::RetainedCallableList(_)
-            | StoragePlan::MoveOnlyList(_) => {
+            | StoragePlan::RetainedGraphList(_) | StoragePlan::RetainedCallableList(_) => {
             let witchy_syntax::ast::Type::Named(_, arguments) = source.unqualified() else { return false };
             let [source_element] = arguments.as_slice() else { return false };
             // Source List values are retained objects. An elided-header list
@@ -415,7 +414,9 @@ pub(super) fn enqueue_layout_children(
                 return false;
             }
             let element_storage = StoragePlan::classify(source_element, records, |_| Some(0));
-            if element_storage.list_element_disposition(source_element).is_none() { return false; }
+            if element_storage.list_element_disposition(source_element)
+                != Some(witchy_canonical_source::storage::ListElementDisposition::Cloneable)
+            { return false; }
             match element_storage {
                 StoragePlan::InlineScalar(kind) => {
                     return super::super::closure_owner_contract::carrier_element_layout_matches(
@@ -437,11 +438,6 @@ pub(super) fn enqueue_layout_children(
                     } if { pending.push((*pointee, plan.exact_signature().clone())); true });
                 }
                 StoragePlan::AuthenticatedPlace(plan) => {
-                    return matches!(element.kind(), LayoutKind::RuntimePointerValueSlot {
-                        pointee, semantics: PointerSlot::Owned,
-                    } if { pending.push((*pointee, plan.source().clone())); true });
-                }
-                StoragePlan::MoveOnlyList(plan) => {
                     return matches!(element.kind(), LayoutKind::RuntimePointerValueSlot {
                         pointee, semantics: PointerSlot::Owned,
                     } if { pending.push((*pointee, plan.source().clone())); true });
