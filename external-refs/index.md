@@ -3,6 +3,14 @@
 One entry per external source. Newest-relevant first. The `witchy-wiki` skill
 keeps this current as refs are added.
 
+## Local compiler services (informs RFC-0172)
+
+- **sccache, systemd service ownership, and Wasmtime precompilation/safety** —
+  [primary-source notes](compiler-service-2026/notes.md) distinguish persistent
+  coordination, protected cache ownership, and trusted native artifact loading.
+  Informed [RFC-0172](../rfcs/0172-protected-compiler-service.md); no Witchy
+  performance result is implied.
+
 ## Knowledge-system design (informed RFC-0001 + the wiki/ design)
 
 - **Karpathy, "LLM Wiki"** — gist `442a6bf555914893e9891c11519de94f`.

@@ -18,6 +18,9 @@ and evidence work. Optimization expansion is deferred.
 
 For security detail, begin with [capabilities/effects](0126-capability-effects-contract.md).
 For production compiler admission, begin with [canonical SafeWIR](0165-safewir-canonical-ir.md).
+[RFC-0172](0172-protected-compiler-service.md) proposes a protected local compiler
+service with warm in-memory state and shared compilation work. It is not yet an
+adopted cache policy or an implemented compiler path.
 [Stable semantics converge before support](0135-stable-semantics-converge.md)
 continues to govern parity. Their security checks and evidence obligations
 are not weakened by the source-language consolidation.
