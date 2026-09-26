@@ -2,9 +2,12 @@
 //! The typed async projection keeps a subscript as a subscript, so it is the
 //! checked element read it is in ordinary code, not a call to the user-facing
 //! `list.at` (which stays closed to slices). Reads work before and after a
-//! suspension, in an awaited task, in a spawned task, and in an ordinary
-//! function of the same program, and every slice keeps its snapshot while its
-//! `var` root is mutated.
+//! suspension, in an awaited task, and in an ordinary function of the same
+//! program, and every slice keeps its snapshot while its `var` root is mutated.
+//! A spawned task holding a slice is not evidence here: `chan.spawn` yields a
+//! `task.Step(task.Handle)` whose `must` payload still lacks a consuming
+//! extraction from its opaque GC owner, so it fails closed (acceptance ledger,
+//! row K channel boundary).
 //!
 //! Independent expectation, admitted unoptimized Wasm, zero-leak audit. One
 //! program, one async compile.
@@ -50,8 +53,6 @@ fn assert_async_output(label: &str, source: &str, expected: &[&str]) {
 /// 3, and the task created before the mutation reads `s[2]` = 40; the
 /// ordinary `first(s)` = 20. `w = &["ab", "cd", "ef"][1..3]` keeps "cd" + "ef"
 /// although index 1 became "zz"; an awaited task reads `w[1]` + "!" = "ef!".
-/// A spawned task holds `&[1.5, 2.5, 3.5][1..3]` and prints 2.5 + 3.5 = 6.0
-/// after the root's index 1 became 100.0.
 #[test]
 fn slice_subscripts_read_elements_inside_async_functions() {
     assert_async_output(
@@ -71,16 +72,11 @@ async fn word(ws: &[String], i: Int) -> String:
     chan.yield_now().await
     ws[i] + "!"
 
-async fn worker(console: Console, fs: &[Float]):
-    chan.yield_now().await
-    console.print("${fs[0] + fs[1]}")
-
 async fn main(console: Console):
     var ns = [10, 20, 30, 40]
     let s = &ns[1..4]
     var ws = ["ab", "cd", "ef"]
     let w = &ws[1..3]
-    var fs = [1.5, 2.5, 3.5]
     let pending = pick(s, 2)
     chan.yield_now().await
     ns[3] = 7
@@ -93,11 +89,7 @@ async fn main(console: Console):
     console.print(w[0] + w[1])
     let x = word(w, 1).await
     console.print(x)
-    let h = chan.spawn(worker(console, &fs[1..3])).await
-    fs[1] = 100.0
-    console.print("spawned ${fs[1]}")
-    chan.join(h).await
 "#,
-        &["20 40 3 7 5", "40 20", "cdef", "ef!", "spawned 100.0", "6.0"],
+        &["20 40 3 7 5", "40 20", "cdef", "ef!"],
     );
 }

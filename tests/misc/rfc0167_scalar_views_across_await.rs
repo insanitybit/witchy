@@ -4,7 +4,10 @@
 //! `own` parameters; consuming a scalar-value view is a plain copy of the value.
 //!
 //! Independent expectation, admitted unoptimized Wasm, zero-leak audit. One
-//! program, one async compile.
+//! program, one async compile. A spawned task holding these views is not
+//! evidence here: `chan.spawn` yields a `task.Step(task.Handle)` whose `must`
+//! payload still lacks a consuming extraction from its opaque GC owner, so it
+//! fails closed (acceptance ledger, row K channel boundary).
 
 use witchy::codegen;
 use witchy::opt::{self, OptSet};
@@ -47,7 +50,7 @@ fn scalar_value_views_cross_await() {
     // Views taken at f = 2.5, b = true, d = 30s keep those snapshots while the
     // `var` roots become 9.0, false, 1s between suspensions. Async functions
     // that yield before reading: 2.5 / 2 = 1.25, !true = false, 30s + 30s =
-    // 60s. The spawned task prints after main's "spawned".
+    // 60s.
     assert_async_output("scalar views across await", r#"
 import chan
 
@@ -62,10 +65,6 @@ async fn flip(v: &Bool) -> Bool:
 async fn twice(v: &Duration) -> Duration:
     chan.yield_now().await
     (*v) + (*v)
-
-async fn worker(console: Console, v: &Float, w: &Bool):
-    chan.yield_now().await
-    console.print("task ${*v} ${*w}")
 
 async fn main(console: Console):
     var f = 2.5
@@ -88,8 +87,5 @@ async fn main(console: Console):
     console.print("${fb}")
     let dd = twice(dv).await
     console.print("${dd == 60s}")
-    let h = chan.spawn(worker(console, fv, bv)).await
-    console.print("spawned")
-    chan.join(h).await
-"#, &["2.5 9.0", "true false", "true true", "1.25", "false", "true", "spawned", "task 2.5 true"]);
+"#, &["2.5 9.0", "true false", "true true", "1.25", "false", "true"]);
 }
