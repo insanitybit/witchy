@@ -1693,7 +1693,7 @@ impl FunctionLowerer<'_> {
             ));
         }
         let alias = reference_alias.map(str::to_owned);
-        self.lower_conditional_branches(roots.selector, |this| {
+        self.lower_conditional_branches(roots.selector, false, |this| {
             let place = PreparedWriteBack {
                 root: roots.first.clone(),
                 projections: Vec::new(),

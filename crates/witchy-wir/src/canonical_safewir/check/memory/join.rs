@@ -46,7 +46,12 @@ impl<'a> MemoryChecker<'a> {
         let mut unique_phi_rebases = SortedMap::new();
         let mut shared_phi_rebases = SortedMap::new();
         for (argument, parameter) in arguments.iter().zip(&target.parameters) {
-            if parameter.ownership == Some(Ownership::Unique) {
+            // GC owner lanes are proved by the linear GC checker and its
+            // owned-origin flow. This rebase is only for linear-memory Ref
+            // allocations, which have an authenticated physical identity.
+            if parameter.ownership == Some(Ownership::Unique)
+                && !matches!(parameter.value_type, ValueType::Gc(_))
+            {
                 if !matches!(parameter.value_type, ValueType::Ref(_)) {
                     return Err(InitialCheckError::InvalidOwnership {
                         function: self.function.id,

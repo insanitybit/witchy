@@ -1115,13 +1115,18 @@ boundary only when its source and owner-family proofs exist. A
 `must BoxView(&Int)` follows the admitted direct path: its fresh GC
 owner returns from a helper, crosses an `own` parameter, and is consumed by
 a match.
+When a checked affine GC result flows through a non-tail `if` or `match`,
+each continuing arm transfers one owned token into a unique result lane.
+SafeWIR verifies every incoming owned origin and consumes the joined token
+exactly once. A branch result that would duplicate a bound affine owner is
+refused.
 View-bearing aggregate owners use the same recursive clone and move judgment
 as other aggregates. A `must` opaque shell can be consumed even when its
 children are copyable; a shell with an affine child transfers that child
 through a consuming match. SafeWIR requires the source-bound affine family
 proof before deconstruction and rejects cloning that family.
-Conditional owned-GC result relays still fail callable-contract validation,
-so the admitted path currently requires a direct owner transfer.
+Conditional owned-GC result relays are admitted when each continuing branch
+supplies an independently owned token of the checked result family.
 Unsupported field representations still fail closed. Task scheduling with public
 `task.Handle` values remains incomplete: a live handle cannot cross a
 suspension without cancellation disposition, and `task.Step(task.Handle)`

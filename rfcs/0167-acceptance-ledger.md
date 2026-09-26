@@ -1036,7 +1036,20 @@ that checkpoint. This is compiler admission only; no hand-computed Wasm
 result or zero-leak audit is claimed, and no A–O row closes. The channel
 handle path remains blocked by replayable must capture. A conditional
 `unique Chain` relay currently reaches SafeWIR but fails callable-contract
-validation; owned GC branch result lowering remains a structural gap.
+validation. The owned GC branch result gap is addressed below.
+
+Row G owned GC branch-result joins (implemented but unverified, 2026-09-26):
+the non-tail `if` and `match` result builders now request a unique GC lane
+only when the checked recursive storage plan classifies the result as affine.
+The linear GC checker transfers each edge once, and the owned-origin flow
+requires an owned token on every incoming edge. The linear-memory checker
+keeps its Ref identity rebase confined to Ref lanes. The existing compiler
+smoke admits fresh `BoxView(&Int)` results through both joins, a local binding,
+and `own` calls into a consuming match; it constructs unoptimized Wasm.
+Bound affine results that would require duplicating their owner still refuse.
+The earlier branch-gap statement above is superseded. This is structural
+admission only: no hand-computed Wasm result or zero-leak audit is claimed,
+and no A–O row closes.
 
 Row G view-bearing affine aggregate composition (implemented but unverified,
 2026-09-26): the checked `AggregateView` plan now carries the recursive

@@ -86,6 +86,35 @@ fn main() -> Int:
     consume(make()) + consume_local()
 "#;
 
+const OWNED_GC_BRANCH_JOIN: &str = r#"
+must type BoxView:
+    BoxView(&Int)
+
+fn make(n: Int) -> BoxView:
+    let value = n
+    BoxView(&value)
+
+fn choose(flag: Bool) -> BoxView:
+    if flag:
+        make(3)
+    else:
+        make(4)
+
+fn consume(own box: BoxView) -> Int:
+    match box:
+        BoxView(view) -> *view
+
+fn main() -> Int:
+    let box = if true:
+        make(3)
+    else:
+        make(4)
+    let matched = match false:
+        false -> make(5)
+        _ -> make(6)
+    consume(box) + consume(matched) + consume(choose(false))
+"#;
+
 #[test]
 fn channel_handle_refusal_and_owned_gc_result() {
     let refusal = match witchy::resolve_std_only_checked(CHANNELS) {
@@ -111,4 +140,9 @@ fn channel_handle_refusal_and_owned_gc_result() {
         .expect("owned GC shell may transfer a nested affine field");
     let _ = witchy::codegen::compile_checked_module_artifact(&checked)
         .expect_lowered("consuming GC match extracts the affine field");
+
+    let checked = witchy::resolve_std_only_checked(OWNED_GC_BRANCH_JOIN)
+        .expect("owned GC result joins are checked by source type");
+    let _ = witchy::codegen::compile_checked_module_artifact(&checked)
+        .expect_lowered("owned GC branch join preserves its unique owner");
 }

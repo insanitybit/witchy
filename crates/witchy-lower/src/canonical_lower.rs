@@ -5500,17 +5500,17 @@ impl FunctionLowerer<'_> {
                 cond,
                 then_block,
                 else_block: Some(else_block),
-            } => self.lower_if(cond, then_block, else_block, false).map(|_| ()),
+            } => self.lower_if(cond, then_block, else_block, false, false).map(|_| ()),
             Expr::If { cond, then_block, else_block: None } => {
                 let empty = witchy_syntax::ast::Block {
                     stmts: Vec::new(),
                     lines: Vec::new(),
                     region: None,
                 };
-                self.lower_if(cond, then_block, &empty, false).map(|_| ())
+                self.lower_if(cond, then_block, &empty, false, false).map(|_| ())
             }
             Expr::Match { scrutinee, arms } => {
-                self.lower_match(scrutinee, arms, false, None).map(|_| ())
+                self.lower_match(scrutinee, arms, false, None, false).map(|_| ())
             }
             _ => {
                 self.lower_expr(expression)?;
@@ -5721,8 +5721,8 @@ impl FunctionLowerer<'_> {
                 cond,
                 then_block,
                 else_block: Some(else_block),
-            } => self.lower_if(cond, then_block, else_block, true),
-            Expr::Match { scrutinee, arms } => self.lower_match(scrutinee, arms, true, None),
+            } => self.lower_if(cond, then_block, else_block, true, self.affine_expression_result(expression)?),
+            Expr::Match { scrutinee, arms } => self.lower_match(scrutinee, arms, true, None, self.affine_expression_result(expression)?),
             Expr::Block(block) => self.lower_block_flow_value(block),
             _ => self.lower_expr(expression).map(Some),
         }
@@ -5902,6 +5902,16 @@ impl FunctionLowerer<'_> {
     fn lower_let_value(&mut self, mutable: bool, expression: &Expr) -> Result<ValueId, CanonicalLoweringError> {
         let value = self.lower_expr(expression)?;
         if matches!(self.values[&value], ValueType::Gc(_)) {
+            if self.affine_expression_result(expression)? {
+                if self.bindings.values().any(|bound| *bound == value)
+                    && !matches!(expression, Expr::Unary { op: UnOp::Move, .. })
+                {
+                    return Err(CanonicalLoweringError::UnsupportedExpression(
+                        "affine local binding requires an explicit ownership transfer",
+                    ));
+                }
+                return Ok(value);
+            }
             return if self.bindings.values().any(|bound| *bound == value) {
                 self.clone_reference_token(value)
             } else { Ok(value) };
@@ -5978,11 +5988,16 @@ impl FunctionLowerer<'_> {
     /// reach the join twice when that name is rebound in another arm, once as
     /// the result lane and once as the binding lane; a token cannot feed two
     /// lanes, so the result lane gets its own.
-    fn detach_bound_result(&mut self, value: ValueId) -> Result<ValueId, CanonicalLoweringError> {
+    fn detach_bound_result(&mut self, value: ValueId, affine: bool) -> Result<ValueId, CanonicalLoweringError> {
         if !matches!(self.values[&value], ValueType::Ref(_) | ValueType::Gc(_))
             || !self.bindings.values().any(|bound| *bound == value)
         {
             return Ok(value);
+        }
+        if affine {
+            return Err(CanonicalLoweringError::UnsupportedExpression(
+                "affine branch result cannot duplicate a bound owner",
+            ));
         }
         self.clone_reference_token(value)
     }
@@ -6103,7 +6118,7 @@ impl FunctionLowerer<'_> {
             Expr::Match { scrutinee, arms } => {
                 let mut match_path = path;
                 match_path.push(ProperTailPathStep::Node(ProperTailExprKind::Match));
-                self.lower_match(scrutinee, arms, !results.is_empty(), Some(match_path)).map(|_| ())
+                self.lower_match(scrutinee, arms, !results.is_empty(), Some(match_path), false).map(|_| ())
             }
             Expr::Block(block) => {
                 let mut block_path = path;
@@ -6371,12 +6386,13 @@ impl FunctionLowerer<'_> {
         then_block: &witchy_syntax::ast::Block,
         else_block: &witchy_syntax::ast::Block,
         with_value: bool,
+        affine_result: bool,
     ) -> Result<Option<ValueId>, CanonicalLoweringError> {
         let condition = self.lower_expr(condition)?;
-        self.lower_conditional_branches(condition, |this| {
+        self.lower_conditional_branches(condition, affine_result, |this| {
             if with_value {
                 match this.lower_block_flow_value(then_block)? {
-                    Some(value) => Ok(Some(this.detach_bound_result(value)?)),
+                    Some(value) => Ok(Some(this.detach_bound_result(value, affine_result)?)),
                     None => Ok(None),
                 }
             } else {
@@ -6386,7 +6402,7 @@ impl FunctionLowerer<'_> {
         }, |this| {
             if with_value {
                 match this.lower_block_flow_value(else_block)? {
-                    Some(value) => Ok(Some(this.detach_bound_result(value)?)),
+                    Some(value) => Ok(Some(this.detach_bound_result(value, affine_result)?)),
                     None => Ok(None),
                 }
             } else {
@@ -6403,6 +6419,7 @@ impl FunctionLowerer<'_> {
     fn lower_conditional_branches(
         &mut self,
         condition: ValueId,
+        affine_result: bool,
         lower_then: impl FnOnce(&mut Self) -> Result<Option<ValueId>, CanonicalLoweringError>,
         lower_else: impl FnOnce(&mut Self) -> Result<Option<ValueId>, CanonicalLoweringError>,
     ) -> Result<Option<ValueId>, CanonicalLoweringError> {
@@ -6540,6 +6557,9 @@ impl FunctionLowerer<'_> {
         // without count/capacity lanes: unique when both arms hold their own
         // fresh token, shared otherwise.
         let fixed_result_phi = result_type.and_then(|(then_value, else_value, result_type)| {
+            if matches!(result_type, ValueType::Gc(_)) {
+                return affine_result.then_some(Ownership::Unique);
+            }
             let ValueType::Ref(layout) = result_type else { return None };
             let fixed = matches!(self.physical_descriptor(layout).map(|descriptor| descriptor.size()), Some(LayoutSize::Fixed(_)));
             (fixed && self.shared_phi_eligible(then_value) && self.shared_phi_eligible(else_value)).then(|| {
@@ -6899,6 +6919,7 @@ impl FunctionLowerer<'_> {
         arms: &[witchy_syntax::ast::MatchArm],
         with_value: bool,
         tail: Option<Vec<ProperTailPathStep>>,
+        affine_result: bool,
     ) -> Result<Option<ValueId>, CanonicalLoweringError> {
         if arms.is_empty() {
             return Err(CanonicalLoweringError::UnsupportedExpression("empty match"));
@@ -7056,7 +7077,7 @@ impl FunctionLowerer<'_> {
                     Expr::Block(block) => self.lower_block_flow_value(block)?,
                     _ => Some(self.lower_expr(&arm.body)?),
                 };
-                value.map(|value| self.detach_bound_result(value)).transpose()?
+                value.map(|value| self.detach_bound_result(value, affine_result)).transpose()?
             } else {
                 self.lower_effect_expr(&arm.body)?;
                 None
@@ -7210,6 +7231,9 @@ impl FunctionLowerer<'_> {
             parameter_types.extend([ValueType::Size, ValueType::Size]);
         }
         let fixed_result_phi = result_type.and_then(|result_type| {
+            if matches!(result_type, ValueType::Gc(_)) {
+                return affine_result.then_some(Ownership::Unique);
+            }
             let ValueType::Ref(layout) = result_type else { return None };
             let fixed = matches!(self.physical_descriptor(layout).map(|descriptor| descriptor.size()), Some(LayoutSize::Fixed(_)));
             (fixed && !result_values.is_empty() && result_values.iter().all(|value| self.shared_phi_eligible(*value))).then(|| {
@@ -11538,11 +11562,11 @@ impl FunctionLowerer<'_> {
                 then_block,
                 else_block: Some(else_block),
             } => self
-                .lower_if(cond, then_block, else_block, true)?
+                .lower_if(cond, then_block, else_block, true, self.affine_expression_result(expression)?)?
                 .ok_or(CanonicalLoweringError::UnsupportedExpression("if value")),
             Expr::If { .. } => Err(CanonicalLoweringError::UnsupportedExpression("if without else")),
             Expr::Match { scrutinee, arms } => self
-                .lower_match(scrutinee, arms, true, None)?
+                .lower_match(scrutinee, arms, true, None, self.affine_expression_result(expression)?)?
                 .ok_or(CanonicalLoweringError::UnsupportedExpression("match value")),
             Expr::Block(block) => self.lower_block_value(block),
             Expr::While { .. } => Err(CanonicalLoweringError::UnsupportedExpression("while value")),
@@ -11561,6 +11585,11 @@ impl FunctionLowerer<'_> {
             .type_of(expression)
             .and_then(witchy_types::typeck::ty_to_ast)
             .ok_or_else(|| CanonicalLoweringError::MissingCheckedExpressionType(format!("{expression:?}")))
+    }
+
+    fn affine_expression_result(&self, expression: &Expr) -> Result<bool, CanonicalLoweringError> {
+        Ok(StoragePlan::classify(&self.expression_type(expression)?, self.definitions, |_| Some(0))
+            .requires_affine_owner_token())
     }
 
     fn lower_record_constructor(
@@ -11772,18 +11801,20 @@ impl FunctionLowerer<'_> {
         // The lazy default may write back any ordinary var argument. Use the
         // same per-edge binding, ownership, and extent join as if/short-circuit
         // expressions instead of joining only the expression's result.
-        self.lower_conditional_branches(is_some, |this| {
+        let affine_result = StoragePlan::classify(&shape.fields[success_field], self.definitions, |_| Some(0))
+            .requires_affine_owner_token();
+        self.lower_conditional_branches(is_some, affine_result, |this| {
             // Never read the success payload on the None/Err edge.
             let payload = this.load_source_aggregate_field(
                 object, &left_type, success_index, 0, success_field, payload_type,
             )?;
-            Ok(Some(this.detach_bound_result(payload)?))
+            Ok(Some(this.detach_bound_result(payload, affine_result)?))
         }, |this| {
             let default = this.lower_expr(right)?;
             if this.values[&default] != payload_type {
                 return Err(CanonicalLoweringError::UnsupportedExpression("coalesce default type"));
             }
-            Ok(Some(this.detach_bound_result(default)?))
+            Ok(Some(this.detach_bound_result(default, affine_result)?))
         })?.ok_or(CanonicalLoweringError::UnsupportedExpression("divergent coalesce expression"))
     }
 
@@ -15126,7 +15157,7 @@ impl FunctionLowerer<'_> {
             }
             Ok(Some(value))
         };
-        self.lower_conditional_branches(left,
+        self.lower_conditional_branches(left, false,
             |this| lower_arm(this, evaluate_on_true),
             |this| lower_arm(this, !evaluate_on_true),
         )?.ok_or(CanonicalLoweringError::UnsupportedExpression("divergent short-circuit expression"))

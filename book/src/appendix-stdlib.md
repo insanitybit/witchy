@@ -78,6 +78,9 @@ The canonical compiler currently refuses the `chan.par_map` and
 `task.Handle` through a task result without consuming aggregate extraction and
 cancellation disposition. The owned GC result ABI exists for direct checked
 owner transfers; it does not make a replayable task capture of a handle lawful.
+An affine GC owner can also cross a checked `if` or `match` result join when
+each continuing branch supplies its own owned token. This does not grant a
+clone of a `must` owner.
 
 `vm` runs capture-free work across isolated worker cores (`vm.par_map`); its
 `with_dir` / `serve` entry points thread a `Dir` / `Net` through to the workers.
