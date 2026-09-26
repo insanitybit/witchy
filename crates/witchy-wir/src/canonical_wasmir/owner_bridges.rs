@@ -6,6 +6,7 @@ use crate::canonical_safewir::closure_owner_contract::{CaptureOrdinal, Construct
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OwnerBridgeRecipe {
     Construct(ConstructorId),
+    Deconstruct(ConstructorId),
     ReadCapability(ConstructorId, CaptureOrdinal),
     ReadOwner(ConstructorId, CaptureOrdinal),
     ReadTag(crate::canonical_safewir::FunctionSignatureId),
@@ -27,6 +28,7 @@ impl OwnerBridgeRecipe {
         use OwnerOperation as O;
         match operation {
             O::Construct { constructor, .. } => Self::Construct(*constructor),
+            O::Deconstruct { constructor, .. } => Self::Deconstruct(*constructor),
             O::ReadCapability { constructor, capture, .. } => Self::ReadCapability(*constructor, *capture),
             O::ReadOwner { constructor, capture, .. } => Self::ReadOwner(*constructor, *capture),
             // The operation is implemented from this family-authenticated tag
@@ -51,6 +53,7 @@ impl OwnerBridgeRecipe {
     pub(super) fn id(&self) -> ImportId {
         let (tag, first, second) = match self {
             Self::Construct(c) => (0, c.0, 0),
+            Self::Deconstruct(c) => (19, c.0, 0),
             Self::ReadCapability(c, capture) => (1, c.0, capture.0),
             Self::ReadOwner(c, capture) => (12, c.0, capture.0),
             Self::ReadTag(f) => (13, f.get(), 0),
@@ -137,7 +140,8 @@ pub(super) fn build<S: crate::canonical_safewir::ModuleStage>(source: &Canonical
             let error = |operation| LoweringError::UnsupportedOperation { function: function.id, operation };
             let recipe = OwnerBridgeRecipe::of(operation);
             let family = match &recipe {
-                OwnerBridgeRecipe::Construct(id) | OwnerBridgeRecipe::ReadCapability(id, _)
+                OwnerBridgeRecipe::Construct(id) | OwnerBridgeRecipe::Deconstruct(id)
+                | OwnerBridgeRecipe::ReadCapability(id, _)
                 | OwnerBridgeRecipe::ReadOwner(id, _) | OwnerBridgeRecipe::CloneEnvironment(id) =>
                     family_by_constructor.get(&id.0).copied(),
                 OwnerBridgeRecipe::ReadTag(id) | OwnerBridgeRecipe::ReadCallable(id) | OwnerBridgeRecipe::Clone(id) | OwnerBridgeRecipe::Drop(id)
@@ -171,6 +175,26 @@ pub(super) fn build<S: crate::canonical_safewir::ModuleStage>(source: &Canonical
                     .map(|capture| capture.value_type);
                 if !matches!(captured_type, Some(ValueType::Gc(_))) || results.as_slice() != captured_type.as_slice() {
                     return Err(error("typed nested owner result"));
+                }
+            }
+            if let OwnerBridgeRecipe::Deconstruct(constructor) = &recipe {
+                let declared = family.constructors.iter().find(|candidate| candidate.id == *constructor)
+                    .ok_or_else(|| error("deconstruct constructor"))?;
+                if !matches!(family.source, OwnerFamilySource::Aggregate(_))
+                    || !family.constructors.iter().flat_map(|candidate| &candidate.captures)
+                        .any(|capture| capture.transfer == crate::canonical_safewir::closure_owner_contract::CaptureTransfer::MoveManaged)
+                    || declared.captures.iter().any(|capture| matches!(capture.storage,
+                        crate::canonical_safewir::closure_owner_contract::CaptureStorage::OwnerField(_))
+                        && !matches!(capture.value_type, ValueType::Gc(_)))
+                {
+                    return Err(error("deconstruct owner family"));
+                }
+                let expected = std::iter::once(ValueType::Ref(family.environment)).chain(
+                    declared.captures.iter().filter(|capture| matches!(capture.storage,
+                        crate::canonical_safewir::closure_owner_contract::CaptureStorage::OwnerField(_)))
+                        .map(|capture| capture.value_type)).collect::<Vec<_>>();
+                if parameters != [ValueType::Gc(family.owner_type)] || results != expected {
+                    return Err(error("deconstruct bridge lanes"));
                 }
             }
             let payload_result = matches!(recipe, OwnerBridgeRecipe::Drop(_) | OwnerBridgeRecipe::CloneEnvironment(_) | OwnerBridgeRecipe::DropList(_));

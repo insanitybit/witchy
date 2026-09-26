@@ -10,25 +10,14 @@ use crate::canonical_safewir::checked_source_test_api::SourceChecker;
 use crate::layout::{LayoutBundle, LayoutInterner, ScalarKind};
 use witchy_syntax::ast::Type;
 
-/// The type definitions the checker retains for `source` (module `main`).
-fn checked_records(checker: &dyn SourceChecker, source: &[u8]) -> BTreeMap<String, witchy_syntax::ast::TypeDef> {
-    let mut records = None;
-    checker.with_checked("main", source, &mut |checked| {
-        records = Some(witchy_canonical_source::aggregates::type_definitions(checked.typed_module));
-    });
-    records.expect("checked source")
-}
+const ENVELOPE_SOURCE: &[u8] = b"type Envelope:\n    Value(Int)\n    Empty\n\nfn main():\n    let n = 0\n";
 
-fn aggregate_fixture(checker: &dyn SourceChecker) -> (
+fn aggregate_fixture(records: BTreeMap<String, witchy_syntax::ast::TypeDef>) -> (
     CanonicalModule<super::super::LoweredCandidate>,
     OwnerFamily,
     BTreeMap<String, witchy_syntax::ast::TypeDef>,
     crate::layout::LayoutInterner,
 ) {
-    let records = checked_records(
-        checker,
-        b"type Envelope:\n    Value(Int)\n    Empty\n\nfn main():\n    let n = 0\n",
-    );
     let source_type = witchy_canonical_source::aggregates::concrete_aggregate_identity(
         &Type::Named("Envelope".into(), Vec::new()), &records,
     ).expect("normalized concrete aggregate");
@@ -78,31 +67,35 @@ fn aggregate_fixture(checker: &dyn SourceChecker) -> (
 }
 
 pub fn aggregate_owner_source_schema_rejects_type_and_storage_forgery(checker: &dyn SourceChecker) {
-    let (candidate, family, records, layouts) = aggregate_fixture(checker);
+    checker.with_checked("main", ENVELOPE_SOURCE, &mut |checked| {
+    let (candidate, family, records, layouts) = aggregate_fixture(
+        witchy_canonical_source::aggregates::type_definitions(checked.typed_module));
     let OwnerFamilySource::Aggregate(source_type) = &family.source else { unreachable!() };
-    validate_aggregate_family(&candidate, &family, source_type, &records, &layouts)
+    validate_aggregate_family(&candidate, &family, source_type, &checked.view, &records, &layouts)
         .expect("exact checked aggregate schema");
 
     let mut forged_type = family.clone();
     forged_type.source = OwnerFamilySource::Aggregate(Type::Named("main.Forged".into(), Vec::new()));
     let OwnerFamilySource::Aggregate(source_type) = &forged_type.source else { unreachable!() };
-    assert!(validate_aggregate_family(&candidate, &forged_type, source_type, &records, &layouts).is_err());
+    assert!(validate_aggregate_family(&candidate, &forged_type, source_type, &checked.view, &records, &layouts).is_err());
 
     let mut wrong_storage = family.clone();
     wrong_storage.constructors[0].captures[0].storage = CaptureStorage::OwnerField(2);
     assert!(validate_aggregate_family(&candidate, &wrong_storage,
         match &wrong_storage.source { OwnerFamilySource::Aggregate(ty) => ty, _ => unreachable!() },
-        &records, &layouts).is_err());
+        &checked.view, &records, &layouts).is_err());
 
     let mut wrong_type = family;
     wrong_type.constructors[0].captures[0].value_type = ValueType::Bool;
     assert!(validate_aggregate_family(&candidate, &wrong_type,
         match &wrong_type.source { OwnerFamilySource::Aggregate(ty) => ty, _ => unreachable!() },
-        &records, &layouts).is_err());
+        &checked.view, &records, &layouts).is_err());
+    });
 }
 
 pub fn exact_int_slice_record_field_rejects_erased_and_wrong_owner_carriers(checker: &dyn SourceChecker) {
-    let records = checked_records(checker, b"type Packet:\n    data: &[Int]\n\nfn main():\n    ()\n");
+    checker.with_checked("main", b"type Packet:\n    data: &[Int]\n\nfn main():\n    ()\n", &mut |checked| {
+    let records = witchy_canonical_source::aggregates::type_definitions(checked.typed_module);
     let packet = witchy_canonical_source::aggregates::canonical_owner_aggregate_identity(
         &Type::Named("Packet".into(), Vec::new()), &records,
     ).expect("exact aggregate identity");
@@ -165,44 +158,52 @@ pub fn exact_int_slice_record_field_rejects_erased_and_wrong_owner_carriers(chec
         proper_tail_sites: Vec::new(),
     }).with_owner_families(vec![family.clone(), slice_family("Int"), slice_family("Float")]);
 
-    validate_aggregate_family(&candidate, &family, &packet, &records, &layouts)
+    validate_aggregate_family(&candidate, &family, &packet, &checked.view, &records, &layouts)
         .expect("exact rooted Int slice occupies an owner field");
 
     let mut erased = family.clone();
     erased.constructors[0].captures[0].value_type = ValueType::Ref(environment);
-    assert!(matches!(validate_aggregate_family(&candidate, &erased, &packet, &records, &layouts),
+    assert!(matches!(validate_aggregate_family(&candidate, &erased, &packet, &checked.view, &records, &layouts),
         Err(CandidateAbiBindingError::MissingCanonicalLayouts)),
         "an erased linear reference cannot claim the slice field");
 
     let mut wrong_storage = family.clone();
     wrong_storage.constructors[0].captures[0].storage = CaptureStorage::EnvironmentField(1);
-    assert!(matches!(validate_aggregate_family(&candidate, &wrong_storage, &packet, &records, &layouts),
+    assert!(matches!(validate_aggregate_family(&candidate, &wrong_storage, &packet, &checked.view, &records, &layouts),
         Err(CandidateAbiBindingError::MissingCanonicalLayouts)),
         "a slice owner must remain in the authenticated owner field");
 
     let mut wrong_family = family;
     wrong_family.constructors[0].captures[0].value_type = ValueType::Gc(GcTypeId::new(float_slice_id));
-    assert!(matches!(validate_aggregate_family(&candidate, &wrong_family, &packet, &records, &layouts),
+    assert!(matches!(validate_aggregate_family(&candidate, &wrong_family, &packet, &checked.view, &records, &layouts),
         Err(CandidateAbiBindingError::MissingCanonicalLayouts)),
         "the Float slice owner cannot claim an Int slice field");
+    });
 }
 
 pub fn aggregate_tuple_owner_binds_exact_fields_and_storage(checker: &dyn SourceChecker) {
-    let (candidate, mut family, records, layouts) = aggregate_fixture(checker);
+    checker.with_checked("main", ENVELOPE_SOURCE, &mut |checked| {
+    let (candidate, mut family, records, layouts) = aggregate_fixture(
+        witchy_canonical_source::aggregates::type_definitions(checked.typed_module));
     let tuple = Type::Tuple(vec![Type::Named("Int".into(), Vec::new())]);
     family.source = OwnerFamilySource::Aggregate(tuple.clone());
     family.constructors.truncate(1);
-    validate_aggregate_family(&candidate, &family, &tuple, &records, &layouts)
+    validate_aggregate_family(&candidate, &family, &tuple, &checked.view, &records, &layouts)
         .expect("structural tuple fields authorize the exact constructor");
     family.constructors[0].captures[0].storage = CaptureStorage::OwnerField(2);
-    assert!(validate_aggregate_family(&candidate, &family, &tuple, &records, &layouts).is_err());
+    assert!(validate_aggregate_family(&candidate, &family, &tuple, &checked.view, &records, &layouts).is_err());
     family.constructors[0].captures[0].storage = CaptureStorage::EnvironmentField(1);
     let wrong = Type::Tuple(vec![Type::Named("Bool".into(), Vec::new())]);
-    assert!(validate_aggregate_family(&candidate, &family, &wrong, &records, &layouts).is_err());
+    assert!(validate_aggregate_family(&candidate, &family, &wrong, &checked.view, &records, &layouts).is_err());
+    });
 }
 
 pub fn aggregate_gc_correspondence_requires_exact_normalized_source_type(checker: &dyn SourceChecker) {
-    let (candidate, family, records, layouts) = aggregate_fixture(checker);
+    let mut records = None;
+    checker.with_checked("main", ENVELOPE_SOURCE, &mut |checked| {
+        records = Some(witchy_canonical_source::aggregates::type_definitions(checked.typed_module));
+    });
+    let (candidate, family, records, layouts) = aggregate_fixture(records.expect("checked source"));
     let expected = match &family.source { OwnerFamilySource::Aggregate(ty) => ty.clone(), _ => unreachable!() };
     let mut context = CorrespondenceContext::with_owners(&candidate);
     assert!(value_type_matches_source(ValueType::Gc(family.owner_type), &expected, &layouts,

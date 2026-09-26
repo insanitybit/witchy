@@ -853,7 +853,7 @@ fn propagate_operation_origins(
                         Some(ValueType::Ref(layout)) => Origin::Shared(*layout),
                         _ => return Err(InitialCheckError::UnsupportedMemoryOperation { function: function.id, operation: "ReadSharedSlice root contract" }),
                     },
-                    O::Construct { .. }
+                    O::Construct { .. } | O::Deconstruct { .. }
                     | O::ReadCapability { .. }
                     | O::ReadOwner { .. }
                     | O::ReadSharedPlace { .. }
@@ -1171,7 +1171,7 @@ fn derive_operation(
             use crate::canonical_safewir::closure_owner_contract::OwnerOperation as O;
             for value in owner.operands() {
                 let effect = match owner {
-                    O::Drop { .. } | O::DropList { .. } => MemoryEffect::Release,
+                    O::Drop { .. } | O::DropList { .. } | O::Deconstruct { .. } => MemoryEffect::Release,
                     O::Clone { .. } | O::CloneList { .. } | O::Construct { .. } | O::NewList { .. } => MemoryEffect::Retain,
                     O::ReadCapability { .. }
                     | O::ReadOwner { .. }
@@ -1201,6 +1201,7 @@ fn derive_operation(
                     | O::ListLength { .. }
                     | O::CloneList { .. }
                     | O::DropList { .. } => false,
+                    O::Deconstruct { .. } => false,
                 };
                 if escapes {
                     mark_escape(summary, origin_of(origins, value));
@@ -1218,7 +1219,7 @@ fn derive_operation(
                         Some(ValueType::Ref(layout)) => Origin::Shared(*layout),
                         _ => return Err(InitialCheckError::UnsupportedMemoryOperation { function: function.id, operation: "ReadSharedSlice root contract" }),
                     },
-                    O::Construct { .. }
+                    O::Construct { .. } | O::Deconstruct { .. }
                     | O::ReadCapability { .. }
                     | O::ReadOwner { .. }
                     | O::ReadSharedPlace { .. }

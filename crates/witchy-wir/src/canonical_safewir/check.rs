@@ -187,12 +187,15 @@ pub(super) enum AffinePhysicalPlan {
 pub(super) struct AffineAbiProofs {
     pub signatures: BTreeMap<FunctionSignatureId, AffineSignatureProof>,
     pub layouts: BTreeMap<crate::layout::LayoutId, AffinePhysicalPlan>,
+    pub owner_environments: BTreeMap<super::closure_owner_contract::ConstructorId, AffinePhysicalPlan>,
+    pub owner_captures: BTreeMap<super::closure_owner_contract::ConstructorId,
+        Vec<(super::closure_owner_contract::CaptureTransfer, ValueType)>>,
 }
 
 impl AffineAbiProofs {
     pub fn new() -> Self { Self::default() }
     pub fn get(&self, id: &FunctionSignatureId) -> Option<&AffineSignatureProof> { self.signatures.get(id) }
-    pub fn is_empty(&self) -> bool { self.signatures.is_empty() }
+    pub fn is_empty(&self) -> bool { self.signatures.is_empty() && self.owner_environments.is_empty() }
 }
 
 pub(super) fn check_initial_with_affine_abi(
@@ -331,6 +334,7 @@ fn check_candidate<S: ModuleStage>(
     let functions = index_functions(candidate.functions())?;
     contracts::check_all(&functions, &signatures, derived)?;
     let owners = owners::Registry::new(candidate)?;
+    owners.require_affine_proofs(affine_abi)?;
     for function in candidate.functions() {
         owners::check(function, &owners)?;
     }

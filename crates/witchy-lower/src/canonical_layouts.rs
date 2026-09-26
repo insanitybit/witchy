@@ -903,6 +903,7 @@ impl LayoutProjection {
             let environment = aggregate_environments[&source];
             let (environment_body, variants) = intern_opaque_aggregate_environment(
                 &mut interner,
+                &source,
                 &shape,
                 &self.definitions,
                 &recursive_types,
@@ -994,12 +995,16 @@ fn intern_closure_environment(
 #[allow(clippy::too_many_arguments)]
 fn intern_opaque_aggregate_environment(
     interner: &mut LayoutInterner,
+    source: &Type,
     shape: &witchy_canonical_source::aggregates::ScalarAggregateShape,
     definitions: &BTreeMap<String, TypeDef>,
     recursive_types: &HashSet<Type>,
     closure_layouts: &HashMap<Type, LayoutId>,
     opaque_evidence: &OpaqueOwnerEvidence<'_>,
 ) -> Result<(LayoutId, Vec<OpaqueAggregateVariant>), CanonicalLayoutError> {
+    let nullable_references = witchy_canonical_source::storage::aggregate_uses_nullable_owned_fields(
+        source, definitions,
+    );
     let tag = interner.intern_scalar(ScalarKind::Int)
         .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?;
     let mut children = vec![tag];
@@ -1028,7 +1033,7 @@ fn intern_opaque_aggregate_environment(
                 )?;
                 interner.intern_runtime_pointer_value_slot(
                     pointee,
-                    if shape.tagged { PointerSlot::OwnedNullable } else { PointerSlot::Owned },
+                    if nullable_references { PointerSlot::OwnedNullable } else { PointerSlot::Owned },
                 ).map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?
             };
             children.push(child);

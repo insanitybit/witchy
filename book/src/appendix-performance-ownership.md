@@ -91,6 +91,12 @@ affine field to one binding; a required field cannot be silently discarded.
 The unoptimized compiler checks that a record or tuple has all required fields
 before it crosses a call or return boundary.
 
+When a record or sum needs an opaque GC owner because one of its fields is an
+owner-bearing callable or view, construction follows the same checked field
+operations. A move-only field transfers into that owner; a consuming match
+retires the sole owner and moves the field back out. Fields without a proved
+clone or move remain unsupported.
+
 ## `var`: write-back without confusing the referent
 
 `var` is about the caller's slot, not about a hidden mutable reference:

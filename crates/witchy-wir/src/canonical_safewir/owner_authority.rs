@@ -47,7 +47,7 @@ pub(super) fn validate<S: ModuleStage>(
                 if !aggregate_types.insert(source_type.clone()) {
                     return Err(CandidateAbiBindingError::MissingCanonicalLayouts);
                 }
-                validate_aggregate_family(candidate, family, source_type, &records, &layouts)?;
+                validate_aggregate_family(candidate, family, source_type, source, &records, &layouts)?;
                 continue;
             }
             OwnerFamilySource::SharedReference(source_type) => {
@@ -517,6 +517,7 @@ fn validate_aggregate_family<S: ModuleStage>(
     candidate: &CanonicalModule<S>,
     family: &OwnerFamily,
     claimed: &witchy_syntax::ast::Type,
+    source: &witchy_canonical_source::source::CanonicalSourceView<'_>,
     records: &BTreeMap<String, witchy_syntax::ast::TypeDef>,
     layouts: &crate::layout::LayoutInterner,
 ) -> Result<(), CandidateAbiBindingError> {
@@ -533,6 +534,7 @@ fn validate_aggregate_family<S: ModuleStage>(
     }
     let mut environment_field = 1_u32;
     let mut owner_field = 2_u32;
+    let mut move_bearing = false;
     let mut expected_environment = BTreeMap::new();
     for (variant_index, (variant, constructor)) in shape.variants.iter().zip(&family.constructors).enumerate() {
         if constructor.witness.is_some()
@@ -543,6 +545,9 @@ fn validate_aggregate_family<S: ModuleStage>(
         }
         for (declared, source_field) in constructor.captures.iter().zip(
             &shape.fields[variant.first_field..variant.first_field + variant.arity]) {
+            use witchy_canonical_source::storage::ManagedAggregateFieldTransfer;
+            let managed_transfer = source.aggregate_managed_field_transfer(source_field);
+            let move_field = managed_transfer == Some(ManagedAggregateFieldTransfer::Move);
             if !value_type_matches_source(
                 declared.value_type,
                 source_field,
@@ -561,15 +566,23 @@ fn validate_aggregate_family<S: ModuleStage>(
                     (CaptureStorage::OwnerField(field), CaptureTransfer::CopyCapability(kind))
                 }
                 ValueType::Gc(_) => {
+                    if managed_transfer.is_none() { return Err(refuse()); }
+                    move_bearing |= move_field;
                     let field = owner_field;
                     owner_field = owner_field.checked_add(1).ok_or_else(refuse)?;
-                    (CaptureStorage::OwnerField(field), CaptureTransfer::CloneManaged)
+                    (CaptureStorage::OwnerField(field), if move_field {
+                        CaptureTransfer::MoveManaged
+                    } else { CaptureTransfer::CloneManaged })
                 }
                 ValueType::Ref(_) => {
+                    if managed_transfer.is_none() { return Err(refuse()); }
+                    move_bearing |= move_field;
                     let field = environment_field;
                     environment_field = environment_field.checked_add(1).ok_or_else(refuse)?;
                     expected_environment.insert(field, declared.value_type);
-                    (CaptureStorage::EnvironmentField(field), CaptureTransfer::CloneManaged)
+                    (CaptureStorage::EnvironmentField(field), if move_field {
+                        CaptureTransfer::MoveManaged
+                    } else { CaptureTransfer::CloneManaged })
                 }
                 ValueType::Int | ValueType::Float | ValueType::Bool | ValueType::Unit | ValueType::Size => {
                     let field = environment_field;
@@ -583,7 +596,7 @@ fn validate_aggregate_family<S: ModuleStage>(
             if declared.storage != storage || declared.transfer != transfer { return Err(refuse()); }
         }
     }
-    validate_environment_layout(family.environment, &expected_environment, layouts, shape.tagged)
+    validate_environment_layout(family.environment, &expected_environment, layouts, shape.tagged || move_bearing)
 }
 
 fn validate_environment_layout(

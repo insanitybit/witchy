@@ -1083,10 +1083,14 @@ recursively proved move-only fields through the unoptimized canonical route.
 A consuming `match move` must bind each affine field exactly once. The physical
 owned-pointer slots are nullable to permit checked extraction, but an untagged
 aggregate cannot cross a call or return boundary with a required affine field
-absent. Unsupported field representations still fail closed. Task scheduling with public
+absent. An opaque GC aggregate uses the same recursive checked field judgment
+for clone or move at construction. A consuming match requires its exact sole
+owner, transfers nested owner tokens and affine nullable fields, then retires
+the shell. A field with neither a lawful clone nor a proved move is refused.
+Unsupported field representations still fail closed. Task scheduling with public
 `task.Handle` values remains incomplete: a live handle cannot cross a
 suspension without cancellation disposition, and `task.Step(task.Handle)`
-does not yet have a consuming aggregate field transfer.
+remains unadmitted end to end.
 
 A persistent view requires a lawful snapshot of the storage it retains. The
 checked storage judgment walks instantiated stored fields and refuses

@@ -77,6 +77,23 @@ unoptimized CLI Wasm programs produced the independently computed outputs
 adversarial review found no remaining authority widening in this delta.
 No zero-leak audit or complete A–O evidence was performed, so no row closes.
 
+Opaque GC aggregate affine transfer (implemented but unverified, 2026-09-26):
+the checked recursive field operation now chooses clone, move, or refusal for
+each managed aggregate capture. Opaque owner construction consumes moved
+tokens, and a source- and layout-bound deconstruction transfers the exact
+unique environment and nested owner tokens before retiring the shell. The
+Wasm bridge and host enforce constructor identity, unique ownership, and
+physical nullable slots. A focused CLI program forced GC representation with
+a rooted-view lambda capture, moved a `Ticket` into the aggregate, consumed
+the aggregate, forwarded the extracted Ticket through an `own` call, and
+printed the hand-computed `9` in admitted Wasm. The feature-gated WIR source
+self-check compiled, and independent adversarial review found no authority
+widening after a stale test-surface call signature was repaired. This smoke
+does not provide the full zero-leak and admitted unoptimized-Wasm evidence
+for an A–O row, so no row closes. An older Ref aggregate path still refuses
+forwarding an extracted affine field through an `own` call; track that as a
+separate baseline composition gap.
+
 Opt admission fallback (implemented but unverified, 2026-09-26): the
 canonical compiler now retains the checked unoptimized candidate when an
 optional opt pass runs. If that pass fails final SafeWIR validation or its

@@ -25,7 +25,7 @@ use witchy_canonical_source::closure::ClosureWitness;
 use witchy_canonical_source::source::CanonicalSourceView;
 
 /// Static candidate metadata, never an SSA operand or guest bridge argument.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ConstructorId(pub u32);
 
 /// Static ordinal in the checked witness's capture vector, not a runtime key.
@@ -39,6 +39,8 @@ pub enum CaptureTransfer {
     CopyScalar,
     CopyCapability(CapabilityKindId),
     CloneManaged,
+    /// Transfer the sole managed token into a move-bearing aggregate owner.
+    MoveManaged,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -186,8 +188,13 @@ macro_rules! owner_operations {
 }
 
 owner_operations! {
-    /// Clones managed captures; every input remains live.
+    /// Clones copyable managed captures and consumes source-proved moved
+    /// captures according to the exact constructor transfer policy.
     Construct { destination: ValueId, constructor: ConstructorId, captures: Vec<ValueId> },
+    /// Retire an exact, sole owner and transfer its linear environment and
+    /// typed owner fields. `captures` lists OwnerField results in declaration
+    /// order; the caller takes affine environment slots before dropping it.
+    Deconstruct { owner: ValueId, constructor: ConstructorId, environment: ValueId, captures: Vec<ValueId> },
     ReadCapability { destination: ValueId, owner: ValueId, constructor: ConstructorId, capture: CaptureOrdinal },
     /// Reads an immutable nested owner field and returns one retained token of
     /// the field's exact registered GC type.
@@ -522,6 +529,8 @@ pub enum CaptureStorage {
 impl OwnerOperation {
     pub fn destinations(&self) -> Vec<ValueId> {
         match self {
+            Self::Deconstruct { environment, captures, .. } => std::iter::once(*environment)
+                .chain(captures.iter().copied()).collect(),
             Self::Construct { destination, .. } | Self::ReadCapability { destination, .. }
             | Self::ReadOwner { destination, .. } | Self::ReadSharedPlace { destination, .. }
             | Self::ReadSharedSlice { destination, .. }
@@ -538,6 +547,7 @@ impl OwnerOperation {
     pub fn operands(&self) -> Vec<ValueId> {
         match self {
             Self::Construct { captures, .. } => captures.clone(),
+            Self::Deconstruct { owner, .. } => vec![*owner],
             Self::NewList { elements, .. } => elements.clone(),
             Self::ReadCapability { owner, .. } | Self::ReadOwner { owner, .. }
             | Self::ReadSharedPlace { owner, .. }

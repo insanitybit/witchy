@@ -108,14 +108,50 @@ impl<'a> MemoryChecker<'a> {
             Operation::ClosureOwner(owner) => {
                 use crate::canonical_safewir::closure_owner_contract::OwnerOperation;
                 match owner {
-                    OwnerOperation::Construct { captures, .. } => {
-                        for capture in captures {
+                    OwnerOperation::Construct { constructor, captures, .. } => {
+                        let declared = self.affine_abi.and_then(|proofs| proofs.owner_captures.get(constructor));
+                        for (index, capture) in captures.iter().enumerate() {
                             if matches!(value_type(self.function, *capture)?, ValueType::Ref(_)) {
                                 self.require_complete_value_initialized(*capture, "Construct(uninitialized managed capture)")?;
                                 self.live_object(*capture)?;
-                                self.share_allocation_tokens(*capture)?;
+                                if declared.and_then(|captures| captures.get(index))
+                                    .is_some_and(|(transfer, _)| *transfer ==
+                                        crate::canonical_safewir::closure_owner_contract::CaptureTransfer::MoveManaged)
+                                {
+                                    let layout = match value_type(self.function, *capture)? {
+                                        ValueType::Ref(layout) => layout,
+                                        _ => unreachable!(),
+                                    };
+                                    let plan = self.affine_abi.and_then(|proofs| proofs.layouts.get(&layout))
+                                        .ok_or(InitialCheckError::UnsupportedMemoryOperation {
+                                            function: self.function.id, operation: "Construct lacks affine child proof",
+                                        })?;
+                                    if !self.require_affine_plan(*capture, plan)? {
+                                        return self.unsupported("Construct(unproved affine child)");
+                                    }
+                                    self.consume_call_move(*capture, ParameterOwnership::Unique)?;
+                                } else {
+                                    self.share_allocation_tokens(*capture)?;
+                                }
                             }
                         }
+                    }
+                    OwnerOperation::Deconstruct { constructor, environment, .. } => {
+                        let plan = self.affine_abi.and_then(|proofs| proofs.owner_environments.get(constructor))
+                            .ok_or(InitialCheckError::UnsupportedMemoryOperation {
+                                function: self.function.id, operation: "Deconstruct lacks source proof",
+                            })?.clone();
+                        let ValueType::Ref(layout) = value_type(self.function, *environment)? else {
+                            return self.unsupported("Deconstruct(non-reference environment)");
+                        };
+                        let extent = self.parameter_extent(layout)?;
+                        self.state.objects.insert(*environment, ObjectState {
+                            identity: *environment, owner_generation: 0, layout, extent,
+                            ownership: Ownership::Unique,
+                            allocation_class: Some(AllocationClass::ReferenceCounted),
+                            shared_immutable: false, initialized_owned_slots: true,
+                        });
+                        self.seed_affine_plan(*environment, &plan);
                     }
                     OwnerOperation::CloneEnvironment { destination, .. } => {
                         let ValueType::Ref(layout) = value_type(self.function, *destination)? else {

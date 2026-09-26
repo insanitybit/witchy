@@ -1,6 +1,8 @@
 use super::*;
 use crate::canonical_safewir::check::{AffineAbiProofs, AffinePhysicalPlan, AffineSignatureProof};
-use witchy_canonical_source::storage::{AffineStorageShape, affine_storage_shape};
+use witchy_canonical_source::storage::{AffineStorageShape, ManagedAggregateFieldTransfer,
+    affine_storage_shape};
+use crate::canonical_safewir::closure_owner_contract::{CaptureStorage, CaptureTransfer, OwnerFamilySource};
 use witchy_syntax::ast::{Convention, Type};
 
 /// Bind the checked source's affine field judgment to the already validated
@@ -34,17 +36,23 @@ pub(super) fn affine_abi_proofs<S: ModuleStage>(
                 continue;
             };
             let Some(crate::canonical_safewir::ValueType::Ref(layout)) = signature.parameters.get(index) else {
+                if matches!(signature.parameters.get(index), Some(crate::canonical_safewir::ValueType::Gc(_))) {
+                    continue;
+                }
                 return Err(CandidateAbiBindingError::SourceAbiMismatch { source_declaration: ordinal });
             };
             proof.parameters[index] = Some(bind_plan(ty, *layout, &shape, &layouts, source, &mut proofs.layouts)
                 .ok_or(CandidateAbiBindingError::SourceAbiMismatch { source_declaration: ordinal })?);
         }
         if let Some(shape) = affine_storage_shape(result, source.type_definitions()) {
-            let Some(crate::canonical_safewir::ValueType::Ref(layout)) = signature.results.first() else {
-                return Err(CandidateAbiBindingError::SourceAbiMismatch { source_declaration: ordinal });
-            };
-            proof.results[0] = Some(bind_plan(result, *layout, &shape, &layouts, source, &mut proofs.layouts)
-                .ok_or(CandidateAbiBindingError::SourceAbiMismatch { source_declaration: ordinal })?);
+            match signature.results.first() {
+                Some(crate::canonical_safewir::ValueType::Ref(layout)) => {
+                    proof.results[0] = Some(bind_plan(result, *layout, &shape, &layouts, source, &mut proofs.layouts)
+                        .ok_or(CandidateAbiBindingError::SourceAbiMismatch { source_declaration: ordinal })?);
+                }
+                Some(crate::canonical_safewir::ValueType::Gc(_)) => {}
+                _ => return Err(CandidateAbiBindingError::SourceAbiMismatch { source_declaration: ordinal }),
+            }
         } else if source.storage_plan(result.unqualified()).requires_affine_owner_token() {
             return Err(CandidateAbiBindingError::SourceAbiMismatch { source_declaration: ordinal });
         }
@@ -80,7 +88,65 @@ pub(super) fn affine_abi_proofs<S: ModuleStage>(
             }
         }
     }
+    bind_owner_environments(candidate, source, &layouts, &mut proofs)?;
     Ok(proofs)
+}
+
+fn bind_owner_environments<S: ModuleStage>(
+    candidate: &CanonicalModule<S>,
+    source: &witchy_canonical_source::source::CanonicalSourceView<'_>,
+    layouts: &crate::layout::LayoutInterner,
+    proofs: &mut AffineAbiProofs,
+) -> Result<(), CandidateAbiBindingError> {
+    use crate::layout::{LayoutKind, PointerSlot};
+    let refuse = || CandidateAbiBindingError::MissingCanonicalLayouts;
+    for family in candidate.owner_families() {
+        let OwnerFamilySource::Aggregate(source_type) = &family.source else { continue };
+        let move_bearing = family.constructors.iter().flat_map(|constructor| &constructor.captures)
+            .any(|capture| capture.transfer == CaptureTransfer::MoveManaged);
+        if !move_bearing { continue; }
+        if !source.storage_plan(source_type).requires_affine_owner_token() { return Err(refuse()); }
+        let shape = witchy_canonical_source::aggregates::scalar_aggregate_shape(source_type, source.type_definitions())
+            .filter(|shape| !shape.packed).ok_or_else(refuse)?;
+        let physical = layouts.resolve_nominal(family.environment).map_err(|_| refuse())?;
+        let Some(LayoutKind::PackedRecord { fields }) = layouts.get(physical).map(|descriptor| descriptor.kind())
+        else { return Err(refuse()) };
+        if family.constructors.len() != shape.variants.len() { return Err(refuse()); }
+        for (constructor, variant) in family.constructors.iter().zip(&shape.variants) {
+            if constructor.captures.len() != variant.arity { return Err(refuse()); }
+            if proofs.owner_captures.insert(constructor.id, constructor.captures.iter()
+                .map(|capture| (capture.transfer, capture.value_type)).collect()).is_some() { return Err(refuse()); }
+            let mut children = Vec::new();
+            for (offset, capture) in constructor.captures.iter().enumerate() {
+                let source_field = shape.fields.get(variant.first_field + offset).ok_or_else(refuse)?;
+                if capture.transfer != CaptureTransfer::MoveManaged { continue; }
+                if source.aggregate_managed_field_transfer(source_field)
+                    != Some(ManagedAggregateFieldTransfer::Move)
+                    || !source.storage_plan(source_field).requires_affine_owner_token()
+                { return Err(refuse()); }
+                if let (CaptureStorage::EnvironmentField(index), crate::canonical_safewir::ValueType::Ref(layout)) =
+                    (capture.storage, capture.value_type) {
+                    let Some(LayoutKind::RuntimePointerValueSlot { pointee, semantics: PointerSlot::OwnedNullable }) =
+                        fields.get(index as usize).and_then(|field| layouts.get(*field)).map(|slot| slot.kind())
+                    else { return Err(refuse()) };
+                    if *pointee != layout { return Err(refuse()); }
+                    let affine = affine_storage_shape(source_field, source.type_definitions()).ok_or_else(refuse)?;
+                    let child = bind_plan(source_field, layout, &affine, layouts, source, &mut proofs.layouts)
+                        .ok_or_else(refuse)?;
+                    children.push((index, layout, Box::new(child)));
+                } else if !matches!((capture.storage, capture.value_type),
+                    (CaptureStorage::OwnerField(_), crate::canonical_safewir::ValueType::Gc(_))) {
+                    return Err(refuse());
+                }
+            }
+            if proofs.owner_environments.insert(constructor.id, AffinePhysicalPlan::NullableFields {
+                fields: children, allow_absent: false,
+            }).is_some() {
+                return Err(refuse());
+            }
+        }
+    }
+    Ok(())
 }
 
 fn bind_plan(

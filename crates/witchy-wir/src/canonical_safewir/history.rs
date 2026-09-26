@@ -812,6 +812,7 @@ impl CanonicalWriter {
         use super::closure_owner_contract::OwnerOperation as O;
         let (tag, constructor, capture, family) = match operation {
             O::Construct { constructor, .. } => (0, Some(*constructor), None, None),
+            O::Deconstruct { constructor, .. } => (19, Some(*constructor), None, None),
             O::ReadCapability { constructor, capture, .. } => (1, Some(*constructor), Some(*capture), None),
             // Preserve established tags: ReadOwner was added after the original
             // twelve operations and receives the next unused value.
@@ -881,6 +882,7 @@ impl CanonicalWriter {
                         CaptureTransfer::CopyScalar => self.u8(0),
                         CaptureTransfer::CopyCapability(kind) => { self.u8(1); self.u32(kind.get()); }
                         CaptureTransfer::CloneManaged => self.u8(2),
+                        CaptureTransfer::MoveManaged => self.u8(3),
                     }
                 }
             }

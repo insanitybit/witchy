@@ -3,7 +3,7 @@
 use super::*;
 use std::borrow::Cow;
 use crate::canonical_safewir::closure_owner_contract::{
-    CaptureStorage, OwnerFamilySource, OwnerOperation as O, SharedPlaceBounds,
+    CaptureStorage, CaptureTransfer, OwnerFamilySource, OwnerOperation as O, SharedPlaceBounds,
     SharedReferenceConstructor, SharedSliceField,
 };
 
@@ -838,7 +838,8 @@ pub(super) fn emit(body: &mut WasmFunctionEncoder, function: &Function, local: &
             body.instruction(&I::I64Store(memarg(8)));
             for (capture, value) in constructor.captures.iter().zip(captures) {
                 let CaptureStorage::EnvironmentField(field) = capture.storage else { continue; };
-                let value = if matches!(capture.value_type, ValueType::Ref(_)) {
+                let value = if matches!(capture.value_type, ValueType::Ref(_))
+                    && capture.transfer == CaptureTransfer::CloneManaged {
                     function.to_mut().value_types.insert(TEMP, capture.value_type);
                     emit_clone_ref(body, &local, TEMP, *value, &function)?;
                     TEMP
@@ -852,6 +853,14 @@ pub(super) fn emit(body: &mut WasmFunctionEncoder, function: &Function, local: &
             }
             body.instruction(&I::Call(import));
             emit_set(body, &local, function.id, *destination)?;
+        }
+        O::Deconstruct { environment, captures, owner, .. } => {
+            emit_get(body, &local, function.id, *owner)?;
+            body.instruction(&I::Call(import));
+            for destination in captures.iter().rev() {
+                emit_set(body, &local, function.id, *destination)?;
+            }
+            emit_set(body, &local, function.id, *environment)?;
         }
         O::Drop { owner, .. } => {
             emit_get(body, &local, function.id, *owner)?;
@@ -920,7 +929,8 @@ pub(super) fn plan(plan: &mut Vec<PlanToken>, function: &Function, layouts: &Lay
             plan.extend([PlanToken::I64Const(constructor.environment_tag), PlanToken::I64Store { offset: 0, align: 3, memory: 0 }]);
             for (capture, value) in constructor.captures.iter().zip(captures) {
                 let CaptureStorage::EnvironmentField(field) = capture.storage else { continue; };
-                let value = if matches!(capture.value_type, ValueType::Ref(_)) {
+                let value = if matches!(capture.value_type, ValueType::Ref(_))
+                    && capture.transfer == CaptureTransfer::CloneManaged {
                     function.to_mut().value_types.insert(TEMP, capture.value_type);
                     push_share_plan(plan, &local, TEMP, *value)?;
                     TEMP
@@ -934,6 +944,14 @@ pub(super) fn plan(plan: &mut Vec<PlanToken>, function: &Function, layouts: &Lay
             }
             plan.push(PlanToken::Call(import));
             push_set(plan, &local, *destination)?;
+        }
+        O::Deconstruct { environment, captures, owner, .. } => {
+            push_get(plan, &local, *owner)?;
+            plan.push(PlanToken::Call(import));
+            for destination in captures.iter().rev() {
+                push_set(plan, &local, *destination)?;
+            }
+            push_set(plan, &local, *environment)?;
         }
         O::CloneEnvironment { owner, destination, .. } => {
             push_get(plan, &local, *owner)?;

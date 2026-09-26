@@ -16,7 +16,7 @@ use crate::abi::{CanonicalCallableAbi, CanonicalCallableAbiManifest};
 use crate::access::AccessSignature;
 use crate::carrier::CarrierElement;
 use crate::closure::ClosureWitnessManifest;
-use crate::storage::{OpaqueOwnerEvidence, StoragePlan};
+use crate::storage::{ManagedAggregateFieldTransfer, OpaqueOwnerEvidence, StoragePlan};
 use crate::specialization::LogicalSpecializationIdentity;
 
 /// Evidence that exact source bytes crossed the checked type-checking boundary.
@@ -253,6 +253,13 @@ impl<'s> CanonicalSourceView<'s> {
                 }
             })
         })
+    }
+
+    /// The recursive checked ownership operation for a managed aggregate
+    /// field. A candidate transfer must also match its physical layout and
+    /// owner family before SafeWIR admits it.
+    pub fn aggregate_managed_field_transfer(&self, ty: &Type) -> Option<ManagedAggregateFieldTransfer> {
+        crate::storage::aggregate_managed_field_transfer(ty, self.type_definitions)
     }
 
     /// Checked closure captures and declared fields jointly determine which

@@ -827,10 +827,18 @@ pub fn lower_typed_module(
             let captures = variant.fields.iter().zip(&variant.storage).map(|(field, storage)| {
                 let value_type = source_value_type(field, &layouts, &layout_catalog, &closure_layouts, &definitions)?;
                 let transfer = match value_type {
-                    ValueType::Capability(kind) => witchy_wir::canonical_safewir::closure_owner_contract::CaptureTransfer::CopyCapability(kind),
-                    ValueType::Ref(_) | ValueType::Gc(_) => witchy_wir::canonical_safewir::closure_owner_contract::CaptureTransfer::CloneManaged,
+                    ValueType::Capability(kind) => CaptureTransfer::CopyCapability(kind),
+                    ValueType::Ref(_) | ValueType::Gc(_) => match
+                        source.view().aggregate_managed_field_transfer(field)
+                    {
+                        Some(witchy_canonical_source::storage::ManagedAggregateFieldTransfer::Move) =>
+                            CaptureTransfer::MoveManaged,
+                        Some(witchy_canonical_source::storage::ManagedAggregateFieldTransfer::Clone) =>
+                            CaptureTransfer::CloneManaged,
+                        None => return Err(CanonicalLoweringError::UnsupportedType(field.clone())),
+                    },
                     ValueType::Int | ValueType::Float | ValueType::Bool | ValueType::Unit | ValueType::Size =>
-                        witchy_wir::canonical_safewir::closure_owner_contract::CaptureTransfer::CopyScalar,
+                        CaptureTransfer::CopyScalar,
                     _ => return Err(CanonicalLoweringError::UnsupportedType(field.clone())),
                 };
                 Ok(OwnerCapture { value_type, storage: *storage, transfer })
@@ -7363,6 +7371,11 @@ impl FunctionLowerer<'_> {
                 (args, 0, 0, shape.fields.len()),
             _ => return Err(CanonicalLoweringError::UnsupportedExpression("consuming aggregate pattern")),
         };
+        if matches!(self.values[&scrutinee], ValueType::Gc(_)) {
+            return self.lower_consuming_opaque_aggregate_pattern(
+                scrutinee, args, source, variant_index, shape,
+            );
+        }
         if args.len() != arity || !matches!(self.values[&scrutinee], ValueType::Ref(_)) {
             return Err(CanonicalLoweringError::UnsupportedExpression("consuming aggregate payload"));
         }
@@ -7407,6 +7420,103 @@ impl FunctionLowerer<'_> {
             bindings.push((name.clone(), value));
         }
         self.push_operation(Operation::DropRef { object: scrutinee });
+        Ok(bindings)
+    }
+
+    fn lower_consuming_opaque_aggregate_pattern(
+        &mut self,
+        scrutinee: ValueId,
+        args: &[Pattern],
+        source: &Type,
+        variant_index: usize,
+        shape: &ScalarAggregateShape,
+    ) -> Result<Vec<(String, ValueId)>, CanonicalLoweringError> {
+        let (layout, owner) = self.opaque_aggregate_family(source)?;
+        let variant = layout.variants.get(variant_index)
+            .ok_or(CanonicalLoweringError::UnsupportedExpression("opaque consuming variant"))?;
+        let constructor = owner.constructors.iter().find(|constructor|
+            constructor.environment_tag == variant.environment_tag)
+            .ok_or(CanonicalLoweringError::UnsupportedExpression("opaque consuming constructor"))?;
+        if args.len() != variant.fields.len()
+            || variant.storage.len() != args.len()
+            || constructor.captures.len() != args.len()
+            || !matches!(self.values[&scrutinee], ValueType::Gc(id) if id == layout.owner_type)
+        {
+            return Err(CanonicalLoweringError::UnsupportedExpression("opaque consuming shape"));
+        }
+        let environment = self.fresh(ValueType::Ref(layout.environment))?;
+        let mut owner_fields = Vec::new();
+        let mut owner_outputs = vec![None; args.len()];
+        for (offset, storage) in variant.storage.iter().enumerate() {
+            if matches!(storage, CaptureStorage::OwnerField(_)) {
+                let value_type = constructor.captures[offset].value_type;
+                if !matches!(value_type, ValueType::Gc(_)) {
+                    return Err(CanonicalLoweringError::UnsupportedExpression(
+                        "consuming owner field is not a GC token",
+                    ));
+                }
+                let output = self.fresh(value_type)?;
+                owner_fields.push(output);
+                owner_outputs[offset] = Some(output);
+            }
+        }
+        self.push_operation(Operation::ClosureOwner(OwnerOperation::Deconstruct {
+            owner: scrutinee,
+            constructor: constructor.id,
+            environment,
+            captures: owner_fields,
+        }));
+        let source_variant = shape.variants.get(variant_index)
+            .ok_or(CanonicalLoweringError::UnsupportedExpression("consuming source variant"))?;
+        let mut bindings = Vec::new();
+        for (offset, argument) in args.iter().enumerate() {
+            let field = &variant.fields[offset];
+            let affine = StoragePlan::classify(field, self.definitions, |_| Some(0))
+                .requires_affine_owner_token();
+            let Pattern::Var(name) = argument else {
+                if affine || !matches!(argument, Pattern::Wildcard) {
+                    return Err(CanonicalLoweringError::UnsupportedExpression("unbound affine payload"));
+                }
+                continue;
+            };
+            if name == "_" {
+                if affine {
+                    return Err(CanonicalLoweringError::UnsupportedExpression("discarded affine payload"));
+                }
+                continue;
+            }
+            let value_type = constructor.captures[offset].value_type;
+            let value = match variant.storage[offset] {
+                CaptureStorage::OwnerField(_) => owner_outputs[offset].ok_or(
+                    CanonicalLoweringError::UnsupportedExpression("missing consuming owner field"),
+                )?,
+                CaptureStorage::EnvironmentField(index) if affine => {
+                    if !matches!(value_type, ValueType::Ref(_))
+                        || !self.is_nullable_record_field(environment, index)
+                    {
+                        return Err(CanonicalLoweringError::UnsupportedExpression(
+                            "affine opaque payload lacks nullable owned slot",
+                        ));
+                    }
+                    let value = self.fresh(value_type)?;
+                    self.push_operation(Operation::Load {
+                        destination: value,
+                        place: witchy_wir::canonical_safewir::Place::projected(
+                            environment, Projection::Field { index }, value_type, AccessMode::Read,
+                        ),
+                        transfer: witchy_wir::canonical_safewir::LoadTransfer::TakeNullableUnique,
+                    });
+                    value
+                }
+                CaptureStorage::EnvironmentField(index) =>
+                    self.load_record_field(environment, index, value_type)?,
+            };
+            if shape.fields.get(source_variant.first_field + offset) != Some(field) {
+                return Err(CanonicalLoweringError::UnsupportedExpression("opaque source field drift"));
+            }
+            bindings.push((name.clone(), value));
+        }
+        self.push_operation(Operation::DropRef { object: environment });
         Ok(bindings)
     }
 
@@ -9789,12 +9899,23 @@ impl FunctionLowerer<'_> {
                         }
                     }
                     Operation::HostCall { destinations, .. } => { direct.extend(destinations.iter().copied()); }
-                    // An owner construction retains each managed capture and
-                    // leaves the input live: a view or closure over a root
-                    // shares it, just as `CloneRef` does (BUG-647).
-                    Operation::ClosureOwner(OwnerOperation::Construct { captures, .. }) => {
-                        direct.extend(captures.iter().copied()
-                            .filter(|capture| matches!(self.values.get(capture), Some(ValueType::Ref(_)))));
+                    // CloneManaged retains the input and demotes it to shared.
+                    // MoveManaged instead transfers its sole token, so it
+                    // must not acquire a shared alias in this dataflow.
+                    Operation::ClosureOwner(OwnerOperation::Construct { destination, constructor, captures }) => {
+                        let contract = match self.values.get(destination) {
+                            Some(ValueType::Gc(id)) => self.closures.owners.iter()
+                                .find(|family| family.owner_type == *id)
+                                .and_then(|family| family.constructors.iter()
+                                    .find(|candidate| candidate.id == *constructor)),
+                            _ => None,
+                        };
+                        if let Some(contract) = contract {
+                            direct.extend(captures.iter().zip(&contract.captures)
+                                .filter(|(_, field)| matches!(field.transfer, CaptureTransfer::CloneManaged))
+                                .map(|(capture, _)| *capture)
+                                .filter(|capture| matches!(self.values.get(capture), Some(ValueType::Ref(_)))));
+                        }
                     }
                     _ => {}
                 }

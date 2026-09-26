@@ -11,6 +11,20 @@ pub(super) struct Registry<'a> {
 }
 
 impl<'a> Registry<'a> {
+    pub(super) fn require_affine_proofs(&self, proofs: Option<&super::AffineAbiProofs>) -> Result<(), InitialCheckError> {
+        for family in self.families {
+            if !Self::move_bearing(family) { continue; }
+            let Some(proofs) = proofs else {
+                return Err(InitialCheckError::UnsupportedMemorySignature { signature: family.signature });
+            };
+            if family.constructors.iter().any(|constructor|
+                !proofs.owner_environments.contains_key(&constructor.id)
+                    || !proofs.owner_captures.contains_key(&constructor.id)) {
+                return Err(InitialCheckError::UnsupportedMemorySignature { signature: family.signature });
+            }
+        }
+        Ok(())
+    }
     pub(super) fn new<S: ModuleStage>(module: &'a CanonicalModule<S>) -> Result<Self, InitialCheckError> {
         let registry = Self { families: module.owner_families() };
         let (_, layouts) = crate::layout::LayoutBundle::decode_canonical(&module.layouts().canonical_bytes())
@@ -140,7 +154,11 @@ impl<'a> Registry<'a> {
                             actual == expected && field >= 2 && fields.insert((true, field))
                         }
                         (ValueType::Ref(_), CaptureStorage::EnvironmentField(field), CaptureTransfer::CloneManaged) => fields.insert((false, field)),
+                        (ValueType::Ref(_), CaptureStorage::EnvironmentField(field), CaptureTransfer::MoveManaged)
+                            if matches!(family.source, OwnerFamilySource::Aggregate(_)) => fields.insert((false, field)),
                         (ValueType::Gc(_), CaptureStorage::OwnerField(field), CaptureTransfer::CloneManaged) => field >= 2 && fields.insert((true, field)),
+                        (ValueType::Gc(_), CaptureStorage::OwnerField(field), CaptureTransfer::MoveManaged)
+                            if matches!(family.source, OwnerFamilySource::Aggregate(_)) => field >= 2 && fields.insert((true, field)),
                         (ValueType::Int | ValueType::Float | ValueType::Bool | ValueType::Unit | ValueType::Size,
                             CaptureStorage::EnvironmentField(field), CaptureTransfer::CopyScalar) => fields.insert((false, field)),
                         _ => false,
@@ -180,11 +198,16 @@ impl<'a> Registry<'a> {
             || has_owner_list(family) && family.list_type == id)
     }
 
+    fn move_bearing(family: &OwnerFamily) -> bool {
+        family.constructors.iter().flat_map(|constructor| &constructor.captures)
+            .any(|capture| capture.transfer == CaptureTransfer::MoveManaged)
+    }
+
     /// The family of an owner-list operation. Only a family with an owner list
     /// (see `has_owner_list`) admits one.
     fn list_family(&self, function: &Function, id: FunctionSignatureId, operation: &'static str) -> Result<&OwnerFamily, InitialCheckError> {
         let family = self.family(id)?;
-        if !has_owner_list(family) {
+        if !has_owner_list(family) || Self::move_bearing(family) {
             return Err(InitialCheckError::UnsupportedMemoryOperation { function: function.id, operation });
         }
         Ok(family)
@@ -210,6 +233,26 @@ impl<'a> Registry<'a> {
                     require_type(function, *value, capture.value_type)?;
                 }
             }
+            O::Deconstruct { owner, constructor, environment, captures } => {
+                let (family, constructor) = self.constructor(function, *constructor)?;
+                if !matches!(family.source, OwnerFamilySource::Aggregate(_))
+                    || !Self::move_bearing(family)
+                    || constructor.captures.iter().any(|capture| matches!(capture.storage,
+                        CaptureStorage::OwnerField(_)) && !matches!(capture.value_type, ValueType::Gc(_)))
+                {
+                    return Err(InitialCheckError::UnsupportedMemoryOperation {
+                        function: function.id, operation: "Deconstruct owner family",
+                    });
+                }
+                require_type(function, *owner, ValueType::Gc(family.owner_type))?;
+                require_type(function, *environment, ValueType::Ref(family.environment))?;
+                let expected = constructor.captures.iter().filter(|capture|
+                    matches!(capture.storage, CaptureStorage::OwnerField(_))).collect::<Vec<_>>();
+                require_arity("deconstructed owner captures", expected.len(), captures.len())?;
+                for (destination, capture) in captures.iter().zip(expected) {
+                    require_type(function, *destination, capture.value_type)?;
+                }
+            }
             O::ReadCapability { destination, owner, constructor, capture } => {
                 let (family, constructor) = self.constructor(function, *constructor)?;
                 if matches!(family.source, OwnerFamilySource::SharedReference(_)) {
@@ -224,7 +267,7 @@ impl<'a> Registry<'a> {
             }
             O::ReadOwner { destination, owner, constructor, capture } => {
                 let (family, constructor) = self.constructor(function, *constructor)?;
-                if matches!(family.source, OwnerFamilySource::SharedReference(_)) {
+                if matches!(family.source, OwnerFamilySource::SharedReference(_)) || Self::move_bearing(family) {
                     return Err(InitialCheckError::UnsupportedMemoryOperation { function: function.id, operation: "ReadOwner shared-reference family" });
                 }
                 require_type(function, *owner, ValueType::Gc(family.owner_type))?;
@@ -300,7 +343,7 @@ impl<'a> Registry<'a> {
             }
             O::CloneEnvironment { destination, owner, constructor } => {
                 let (family, _) = self.constructor(function, *constructor)?;
-                if matches!(family.source, OwnerFamilySource::SharedReference(_)) {
+                if matches!(family.source, OwnerFamilySource::SharedReference(_)) || Self::move_bearing(family) {
                     return Err(InitialCheckError::UnsupportedMemoryOperation { function: function.id, operation: "CloneEnvironment shared-reference family" });
                 }
                 require_type(function, *owner, ValueType::Gc(family.owner_type))?;
@@ -315,18 +358,28 @@ impl<'a> Registry<'a> {
                 require_type(function, *destination, ValueType::Callable(family.signature))?;
             }
             O::Clone { destination, owner, family } => {
-                let ty = ValueType::Gc(self.family(*family)?.owner_type);
+                let family = self.family(*family)?;
+                if Self::move_bearing(family) { return Err(InitialCheckError::UnsupportedMemoryOperation {
+                    function: function.id, operation: "Clone move-bearing owner",
+                }); }
+                let ty = ValueType::Gc(family.owner_type);
                 require_type(function, *owner, ty)?;
                 require_type(function, *destination, ty)?;
             }
             O::Drop { owner, family } => require_type(function, *owner, ValueType::Gc(self.family(*family)?.owner_type))?,
             O::NewList { destination, family, elements } => {
                 let family = self.list_family(function, *family, "NewList shared-reference family")?;
+                if Self::move_bearing(family) { return Err(InitialCheckError::UnsupportedMemoryOperation {
+                    function: function.id, operation: "move-bearing owner list",
+                }); }
                 require_type(function, *destination, ValueType::Gc(family.list_type))?;
                 for element in elements { require_type(function, *element, ValueType::Gc(family.owner_type))?; }
             }
             O::ListGet { destination, list, index, family } => {
                 let family = self.list_family(function, *family, "ListGet shared-reference family")?;
+                if Self::move_bearing(family) { return Err(InitialCheckError::UnsupportedMemoryOperation {
+                    function: function.id, operation: "move-bearing owner list",
+                }); }
                 require_type(function, *list, ValueType::Gc(family.list_type))?;
                 require_type(function, *index, ValueType::Size)?;
                 require_type(function, *destination, ValueType::Gc(family.owner_type))?;
@@ -462,6 +515,15 @@ pub(super) fn check(function: &Function, registry: &Registry<'_>) -> Result<(), 
             match operation {
                 Operation::ClosureOwner(owner) => {
                     match owner {
+                        OwnerOperation::Deconstruct { owner, .. } => consume(function, &mut state, *owner)?,
+                        OwnerOperation::Construct { constructor, captures, .. } => {
+                            let (_, declared) = registry.constructor(function, *constructor)?;
+                            for (value, capture) in captures.iter().zip(&declared.captures) {
+                                if is_gc(function, *value) && capture.transfer == CaptureTransfer::MoveManaged {
+                                    consume(function, &mut state, *value)?;
+                                }
+                            }
+                        }
                         OwnerOperation::Drop { owner, .. } => consume(function, &mut state, *owner)?,
                         OwnerOperation::DropList { list, .. } => consume(function, &mut state, *list)?,
                         OwnerOperation::ListPush { list, value, .. } => {
@@ -472,8 +534,7 @@ pub(super) fn check(function: &Function, registry: &Registry<'_>) -> Result<(), 
                             consume(function, &mut state, *list)?;
                             consume(function, &mut state, *value)?;
                         }
-                        OwnerOperation::Construct { .. }
-                        | OwnerOperation::ReadCapability { .. }
+                        OwnerOperation::ReadCapability { .. }
                         | OwnerOperation::ReadOwner { .. }
                         | OwnerOperation::ReadSharedPlace { .. }
                         | OwnerOperation::ReadSharedSlice { .. }

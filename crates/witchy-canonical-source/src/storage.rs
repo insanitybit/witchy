@@ -490,6 +490,29 @@ impl GraphOperations {
     }
 }
 
+/// How a managed field crosses an aggregate-owner constructor. This is the
+/// same recursive ownership judgment used by authenticated aggregate storage:
+/// a noncopyable field moves only when every child has a lawful move, while a
+/// field with neither operation cannot enter the owner at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ManagedAggregateFieldTransfer { Clone, Move }
+
+pub fn aggregate_managed_field_transfer(
+    ty: &Type,
+    definitions: &BTreeMap<String, TypeDef>,
+) -> Option<ManagedAggregateFieldTransfer> {
+    let operations = graph_storage_operations(
+        ty, definitions, &mut HashSet::new(), 0, &mut 4_096,
+    )?;
+    if operations.cloneable {
+        Some(ManagedAggregateFieldTransfer::Clone)
+    } else if operations.movable {
+        Some(ManagedAggregateFieldTransfer::Move)
+    } else {
+        None
+    }
+}
+
 /// Verify representation and ownership at every source edge. An aggregate
 /// back edge is guarded by its retained heap pointer; callable signatures
 /// carry an exact bounded key and receive separate SafeWIR ABI validation.
@@ -524,7 +547,7 @@ fn graph_storage_operations(
         Type::Qualified(_, _) | Type::Slice(_) | Type::Dyn(_, _) | Type::RecordCompose { .. } => None,
         Type::Fn(_, _, _, qualifiers) => {
             CallableStoragePlan::classify(ty, definitions).map(|_| GraphOperations {
-                cloneable: !qualifiers.once, movable: false,
+                cloneable: !qualifiers.once, movable: !qualifiers.once,
             })
         }
         Type::Named(_, _) | Type::Tuple(_) => {

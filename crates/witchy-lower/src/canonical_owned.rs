@@ -14,7 +14,7 @@ use witchy_wir::canonical_safewir::{
 };
 
 type Values = BTreeSet<ValueId>;
-use witchy_wir::canonical_safewir::closure_owner_contract::{OwnerFamily, OwnerOperation};
+use witchy_wir::canonical_safewir::closure_owner_contract::{CaptureTransfer, OwnerFamily, OwnerOperation};
 
 #[derive(Debug)]
 pub(super) enum ReleasePlacementError {
@@ -331,6 +331,7 @@ fn operation_flow(
     immortal: &Values,
     signatures: &BTreeMap<FunctionSignatureId, &FunctionSignature>,
     callees: &BTreeMap<FunctionId, FunctionSignatureId>,
+    families: &[OwnerFamily],
 ) -> Result<(), ReleasePlacementError> {
     match operation {
         Operation::ClosureOwner(owner) => {
@@ -341,14 +342,30 @@ fn operation_flow(
             }
             match owner {
                 OwnerOperation::Drop { owner, .. } => consume(owned, *owner)?,
+                OwnerOperation::Deconstruct { owner, .. } => consume(owned, *owner)?,
                 OwnerOperation::DropList { list, .. } => consume(owned, *list)?,
+                OwnerOperation::Construct { destination, constructor, captures } => {
+                    let Some(ValueType::Gc(owner_type)) = function.value_types.get(destination) else {
+                        return Err(ReleasePlacementError::UnresolvedResult(*destination));
+                    };
+                    let contract = families.iter().find(|family| family.owner_type == *owner_type)
+                        .and_then(|family| family.constructors.iter().find(|entry| entry.id == *constructor))
+                        .ok_or(ReleasePlacementError::UnresolvedResult(*destination))?;
+                    if contract.captures.len() != captures.len() {
+                        return Err(ReleasePlacementError::UnresolvedResult(*destination));
+                    }
+                    for (value, field) in captures.iter().zip(&contract.captures) {
+                        if matches!(field.transfer, CaptureTransfer::MoveManaged) {
+                            consume(owned, *value)?;
+                        }
+                    }
+                }
                 OwnerOperation::ListPush { list, value, .. }
                 | OwnerOperation::ListSet { list, value, .. } => {
                     consume(owned, *list)?;
                     consume(owned, *value)?;
                 }
-                OwnerOperation::Construct { .. }
-                | OwnerOperation::ReadCapability { .. }
+                OwnerOperation::ReadCapability { .. }
                 | OwnerOperation::ReadOwner { .. }
                 | OwnerOperation::ReadSharedPlace { .. }
                 | OwnerOperation::ReadSharedSlice { .. }
@@ -457,6 +474,7 @@ pub(super) fn insert_releases(
     signature: &FunctionSignature,
     signatures: &[FunctionSignature],
     source_functions: &HashMap<String, (FunctionId, FunctionSignatureId)>,
+    families: &[OwnerFamily],
 ) -> Result<(), ReleasePlacementError> {
     let signatures = signatures.iter().map(|signature| (signature.id, signature)).collect();
     let callees = source_functions.values().copied().collect();
@@ -500,7 +518,7 @@ pub(super) fn insert_releases(
         let mut output = Vec::new();
         release_dead(&mut owned, &live, &mut output);
         for (operation, dead) in block.operations.iter().zip(dead_after) {
-            operation_flow(function, operation, &mut owned, &immortal, &signatures, &callees)?;
+            operation_flow(function, operation, &mut owned, &immortal, &signatures, &callees, families)?;
             output.push(operation.clone());
             release_values(&mut owned, &dead, &mut output);
         }
@@ -619,7 +637,7 @@ pub(super) fn insert_releases_with_owner_families(
             if !drops.contains_key(id) { return Err(ReleasePlacementError::UnresolvedResult(*value)); }
         }
     }
-    insert_releases(function, signature, signatures, source_functions)?;
+    insert_releases(function, signature, signatures, source_functions, families)?;
     for block in &mut function.blocks {
         for operation in &mut block.operations {
             let Operation::DropRef { object } = operation else { continue };

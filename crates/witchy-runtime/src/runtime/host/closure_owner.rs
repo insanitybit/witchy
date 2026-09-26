@@ -13,7 +13,7 @@ pub(in crate::runtime) fn register(
 ) -> Result<()> {
     use std::collections::BTreeMap;
     use wasmtime::{FieldType, FuncType, Mutability, StructRef, StructRefPre, StructType, Val, ValType};
-    use witchy_wir::canonical_safewir::{ValueType, closure_owner_contract::{CaptureStorage, OwnerFamilySource}};
+    use witchy_wir::canonical_safewir::{ValueType, closure_owner_contract::{CaptureStorage, CaptureTransfer, OwnerFamilySource}};
     use witchy_wir::OwnerBridgeRecipe as R;
     let mut families = BTreeMap::new();
     let mut owner_types = BTreeMap::new();
@@ -74,6 +74,7 @@ let mut captures = Vec::new();
     for bridge in artifact.owner_bridges() {
         let constructor = match bridge.recipe() {
             R::Construct(c) | R::ReadCapability(c, _) | R::ReadOwner(c, _)
+            | R::Deconstruct(c)
             | R::CloneEnvironment(c) => *c,
             _ => bridge.family().constructors.first().ok_or_else(|| wasmtime::Error::msg("empty owner family"))?.id,
         };
@@ -91,6 +92,15 @@ let mut captures = Vec::new();
             }
         };
         let allowed_codes = bridge.callable_indices().iter().map(|(_, code)| *code as i32).collect::<Vec<_>>();
+        let move_owners = bridge.family().constructors.iter()
+            .find(|entry| entry.id == constructor)
+            .ok_or_else(|| wasmtime::Error::msg("missing owner constructor"))?
+            .captures.iter()
+            .filter_map(|capture| match (capture.storage, capture.value_type) {
+                (CaptureStorage::OwnerField(_), ValueType::Gc(_)) =>
+                    Some(capture.transfer == CaptureTransfer::MoveManaged),
+                _ => None,
+            }).collect::<Vec<_>>();
         let parameters = bridge.parameters().iter().map(&wasm_type).collect::<Result<Vec<_>>>()?;
         let mut results = if bridge.payload_result() { vec![ValType::ANYREF] } else { bridge.results().iter().map(&wasm_type).collect::<Result<Vec<_>>>()? };
         if bridge.cleanup_result() { results.push(ValType::ANYREF); }
@@ -118,7 +128,7 @@ for (field, value) in binding.capture_fields.iter().zip(&arguments[1..]) {
 
                     let pre = StructRefPre::new(&mut caller, binding.payload_type.clone());
                     let payload = StructRef::new(&mut caller, &pre, &fields)?;
-                    results[0] = Val::ExternRef(Some(binding.seal_gc(&mut caller, payload)?));
+                    results[0] = Val::ExternRef(Some(binding.seal_gc_with_moves(&mut caller, payload, &move_owners)?));
                 }
                 R::ReadCapability(_, capture) => {
                     let token = binding.capability::<OwnedRooted<StructRef>>(&caller, owner(0)?, capture.0)?;
@@ -130,6 +140,16 @@ for (field, value) in binding.capture_fields.iter().zip(&arguments[1..]) {
                     Binding::require_owner(&caller, &binding.instance, nested, expected)?;
                     Binding::retain_any(&caller, &binding.instance, nested)?;
                     results[0] = Val::ExternRef(Some(nested));
+                }
+                R::Deconstruct(_) => {
+                    let expected = binding.capture_fields.iter()
+                        .filter(|field| matches!(field.kind, CaptureFieldKind::Owner(_))).count() + 1;
+                    if results.len() != expected { bail!("owner deconstruction result arity"); }
+                    let (environment, nested) = binding.deconstruct(&mut caller, owner(0)?)?;
+                    results[0] = Val::I32(environment);
+                    for (result, child) in results[1..].iter_mut().zip(nested) {
+                        *result = Val::ExternRef(Some(child.to_rooted(&mut caller)));
+                    }
                 }
                 R::ReadTag(_) => {
                     results[0] = Val::I64(binding.family_tag(&caller, owner(0)?)?);
@@ -413,8 +433,17 @@ impl Binding {
     // A bridge call supplies neither a layout nor a field selector.
     fn seal_gc<T: CaptureAuthority>(
         &self,
+        store: impl AsContextMut<Data = T>,
+        payload: Rooted<wasmtime::StructRef>,
+    ) -> Result<Rooted<ExternRef>> {
+        self.seal_gc_with_moves(store, payload, &[])
+    }
+
+    fn seal_gc_with_moves<T: CaptureAuthority>(
+        &self,
         mut store: impl AsContextMut<Data = T>,
         payload: Rooted<wasmtime::StructRef>,
+        move_owners: &[bool],
     ) -> Result<Rooted<ExternRef>> {
         if !wasmtime::StructType::eq(&payload.ty(store.as_context())?, &self.payload_type)
             || self.payload_type.fields().any(|field| field.mutability() != wasmtime::Mutability::Const) {
@@ -438,7 +467,7 @@ impl Binding {
             }
         }
         let payload = payload.to_owned_rooted(&mut store)?;
-        self.seal_typed(&mut store, payload, capabilities, owners)
+        self.seal_typed(&mut store, payload, capabilities, owners, move_owners)
     }
 
     // P is the rooted typed GC payload in the eventual bridge. Keeping the
@@ -479,15 +508,31 @@ impl Binding {
         payload: OwnedRooted<wasmtime::StructRef>,
         capabilities: Vec<OwnedRooted<ExternRef>>,
         owners: Vec<OwnedRooted<ExternRef>>,
+        move_owners: &[bool],
     ) -> Result<Rooted<ExternRef>> {
+        if !move_owners.is_empty() && move_owners.len() != owners.len() {
+            bail!("opaque owner move policy arity");
+        }
         let creation = self.instance.next_owner.fetch_add(1, Ordering::Relaxed);
-        for owner in &owners {
+        for (index, owner) in owners.iter().enumerate() {
             let rooted = owner.to_rooted(&mut store);
             let child_creation = Self::owner_creation(store.as_context(), &self.instance, rooted)?;
             if child_creation >= creation { bail!("opaque owner graph is not newer-to-older"); }
+            if move_owners.get(index).copied().unwrap_or(false) {
+                Self::require_unique_any(store.as_context(), &self.instance, rooted)?;
+            }
+            for (prior_index, previous) in owners[..index].iter().enumerate() {
+                if !(move_owners.get(index).copied().unwrap_or(false)
+                    || move_owners.get(prior_index).copied().unwrap_or(false)) { continue; }
+                let previous = previous.to_rooted(&mut store);
+                if Rooted::ref_eq(store.as_context(), &rooted, &previous)? {
+                    bail!("duplicate moved owner capture");
+                }
+            }
         }
         let mut retained = Vec::with_capacity(owners.len());
-        for owner in &owners {
+        for (index, owner) in owners.iter().enumerate() {
+            if move_owners.get(index).copied().unwrap_or(false) { continue; }
             let rooted = owner.to_rooted(&mut store);
             if let Err(error) = Self::retain_any(store.as_context(), &self.instance, rooted) {
                 for previous in retained.into_iter().rev() {
@@ -596,6 +641,62 @@ impl Binding {
                 .ok_or_else(|| wasmtime::Error::msg("missing nested owner capture"))?;
             Ok((expected, nested))
         })
+    }
+
+    /// Transfer the unique aggregate shell's actual environment and nested
+    /// owner roots. The guest subsequently takes affine slots from the
+    /// returned environment; the host does not inspect or mutate linear memory.
+    fn deconstruct(
+        &self,
+        mut store: impl AsContextMut,
+        owner: Rooted<ExternRef>,
+    ) -> Result<(i32, Vec<OwnedRooted<ExternRef>>)> {
+        if self.capture_fields.iter().any(|field| matches!(field.kind, CaptureFieldKind::Capability(_))) {
+            bail!("capability-bearing aggregate deconstruction is unproved");
+        }
+        let expected = self.capture_fields.iter()
+            .filter(|field| matches!(field.kind, CaptureFieldKind::Owner(_))).count();
+        // All fallible reads and correspondence checks precede retirement.
+        let (payload, children) = self.access::<OwnedRooted<wasmtime::StructRef>, _>(
+            store.as_context(), owner, |live| {
+                if live.references != 1 || !live.capabilities.is_empty() || live.owners.len() != expected {
+                    bail!("aggregate deconstruction requires one owner token and exact captures");
+                }
+                let payload = live.payload.as_ref()
+                    .ok_or_else(|| wasmtime::Error::msg("aggregate owner lacks payload"))?;
+                Ok((payload.clone(), live.owners.clone()))
+            },
+        )?;
+        let payload = payload.to_rooted(&mut store);
+        let wasmtime::Val::I32(environment) = payload.field(&mut store, 0)? else {
+            bail!("aggregate environment pointer is missing");
+        };
+        let wasmtime::Val::I32(tag) = payload.field(&mut store, 1)? else {
+            bail!("aggregate constructor tag is missing");
+        };
+        if tag != i32::try_from(self.environment_tag).map_err(|_| wasmtime::Error::msg("aggregate tag exceeds physical lane"))? {
+            bail!("aggregate constructor tag mismatch");
+        }
+        for (field, child) in self.capture_fields.iter()
+            .filter(|field| matches!(field.kind, CaptureFieldKind::Owner(_)))
+            .zip(&children)
+        {
+            let CaptureFieldKind::Owner(expected_type) = field.kind else { unreachable!() };
+            let child = child.to_rooted(&mut store);
+            Self::require_owner(store.as_context(), &self.instance, child, expected_type)?;
+        }
+        let transferred = self.access::<OwnedRooted<wasmtime::StructRef>, _>(
+            store.as_context(), owner, |live| {
+                if live.references != 1 || live.payload.is_none()
+                    || !live.capabilities.is_empty() || live.owners.len() != expected {
+                    bail!("aggregate owner changed before deconstruction");
+                }
+                live.references = 0;
+                live.payload.take();
+                Ok(std::mem::take(&mut live.owners))
+            },
+        )?;
+        Ok((environment, transferred))
     }
 }
 
@@ -750,6 +851,23 @@ impl Binding {
         Self::any_owner_access(store, instance, owner, |live, _| {
             live.references = live.references.checked_add(1)
                 .ok_or_else(|| wasmtime::Error::msg("closure owner reference overflow"))?;
+            Ok(())
+        })
+    }
+
+    fn require_unique_any(
+        store: impl wasmtime::AsContext,
+        instance: &Arc<InstanceIdentity>,
+        owner: Rooted<ExternRef>,
+    ) -> Result<()> {
+        if Self::is_list(store.as_context(), owner)? {
+            return Self::any_list_access(store, instance, owner, |live, _| {
+                if live.0 != 1 { bail!("moved owner list has aliases"); }
+                Ok(())
+            });
+        }
+        Self::any_owner_access(store, instance, owner, |live, _| {
+            if live.references != 1 { bail!("moved owner has aliases"); }
             Ok(())
         })
     }

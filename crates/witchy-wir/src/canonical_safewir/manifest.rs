@@ -101,7 +101,7 @@ use EvidenceFile::{Authority, Backend, Check, Launch, Memory, OwnerBackend, Owne
 /// Reviewed nested operation census. The declaration generates the comparison
 /// list, not these entries, so a new variant requires a manifest decision.
 pub const OWNER_OPERATION_VARIANTS: &[&str] = &[
-    "Construct", "ReadCapability", "ReadOwner", "ReadSharedPlace", "ReadSharedSlice", "ReadTag", "ReadCallable", "Clone", "Drop",
+    "Construct", "Deconstruct", "ReadCapability", "ReadOwner", "ReadSharedPlace", "ReadSharedSlice", "ReadTag", "ReadCallable", "Clone", "Drop",
     "CloneEnvironment", "NewList", "ListGet", "ListLength", "CloneList",
     "ListPush", "ListSet", "DropList",
 ];
@@ -545,8 +545,8 @@ pub const RULES: &[RuleEntry] = &[
     RuleEntry {
         rule: CanonicalRuleId::ClosureOwner,
         judgment: "check/owners.rs::Registry::new and check_owner_operation",
-        predicate: "an authenticated owner family binds every constructor to a function with the body signature (leading Shared Gc owner plus declaration lanes), validates capture kind/storage/transfer, demotes every live token of a CloneManaged Ref capture to Shared, and requires registered owner/list tokens for linear clone, call, list, and drop operations",
-        semantics: "execute_owner_operation: constructs and authenticates opaque owners/lists, preserves actual capability and managed-reference captures, and releases final owner/list tokens",
+        predicate: "an authenticated owner family binds each constructor to checked source and physical storage, validates capture kind/storage/transfer, demotes CloneManaged Ref captures to Shared, consumes source-proved MoveManaged captures, and deconstructs only an exact sole move-bearing aggregate owner",
+        semantics: "execute_owner_operation: constructs opaque owners/lists, transfers a deconstructed owner's unique environment and typed nested-owner tokens, and releases final owner/list tokens",
         backend: RuleBackend::Receipt(CorrespondenceRule::ClosureOwner),
         admits: &[t(OwnerBackend, "opaque_owner_cleanup_reclaims_once_and_rejects_unknown_family"), t(Launch, "admitted_closures_are_records_of_code_and_int_captures"), t(OwnerRuntime, "opaque_owner_gc_payload_and_list_hold_actual_references")],
         refuses: &[t(OwnerCheck, "opaque_owner_affine_dead_list_and_wrong_family_refuse"), t(OwnerCheck, "opaque_owner_affine_call_requires_move_and_no_leak"), t(OwnerRuntime, "opaque_owner_list_drops_all_variants_and_refuses_dead_list")],
