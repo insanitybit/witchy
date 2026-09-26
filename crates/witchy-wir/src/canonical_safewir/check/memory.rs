@@ -1,5 +1,4 @@
 use std::ops::{Deref, DerefMut};
-use std::sync::Arc;
 
 use crate::layout::{
     FieldKind, HeaderLayout, LayoutDescriptor, LayoutInterner, LayoutKind, LayoutSize, PointerSlot,
@@ -105,10 +104,13 @@ struct OwnerGeneration {
 /// underlying collection's exact iteration/comparison behavior. Every mutable
 /// access first detaches this collection, including mutations through entries,
 /// iterators, and nested values. Other snapshots keep their original contents.
-struct CowFacts<T>(Arc<T>);
+/// Snapshots stay within one synchronous memory-CFG check. Rc avoids atomic
+/// refcounts here; moving snapshots between checker threads would require an
+/// explicit change to this private representation, not an unsafe Send impl.
+struct CowFacts<T>(Rc<T>);
 
 impl<T> Clone for CowFacts<T> {
-    fn clone(&self) -> Self { Self(Arc::clone(&self.0)) }
+    fn clone(&self) -> Self { Self(Rc::clone(&self.0)) }
 }
 
 impl<T: std::fmt::Debug> std::fmt::Debug for CowFacts<T> {
@@ -119,7 +121,7 @@ impl<T: std::fmt::Debug> std::fmt::Debug for CowFacts<T> {
 
 impl<T: PartialEq> PartialEq for CowFacts<T> {
     fn eq(&self, other: &Self) -> bool {
-        // Equality remains equality of facts, not Arc identity or a cache hit.
+        // Equality remains equality of facts, not Rc identity or a cache hit.
         self.0.as_ref() == other.0.as_ref()
     }
 }
@@ -127,7 +129,7 @@ impl<T: PartialEq> PartialEq for CowFacts<T> {
 impl<T: Eq> Eq for CowFacts<T> {}
 
 impl<T> From<T> for CowFacts<T> {
-    fn from(value: T) -> Self { Self(Arc::new(value)) }
+    fn from(value: T) -> Self { Self(Rc::new(value)) }
 }
 
 impl<T: Default> Default for CowFacts<T> {
@@ -147,7 +149,7 @@ impl<T> Deref for CowFacts<T> {
 }
 
 impl<T: Clone> DerefMut for CowFacts<T> {
-    fn deref_mut(&mut self) -> &mut T { Arc::make_mut(&mut self.0) }
+    fn deref_mut(&mut self) -> &mut T { Rc::make_mut(&mut self.0) }
 }
 
 // Keep the receiver's two-phase borrow at the wrapper boundary: callers may
@@ -155,13 +157,13 @@ impl<T: Clone> DerefMut for CowFacts<T> {
 // A DerefMut-only insert would acquire mutable access before those arguments.
 impl<K: Ord + Clone, V: Clone> CowFacts<SortedMap<K, V>> {
     fn insert(&mut self, key: K, value: V) -> Option<V> {
-        Arc::make_mut(&mut self.0).insert(key, value)
+        Rc::make_mut(&mut self.0).insert(key, value)
     }
 }
 
 impl<T: Ord + Clone> CowFacts<SortedSet<T>> {
     fn insert(&mut self, value: T) -> bool {
-        Arc::make_mut(&mut self.0).insert(value)
+        Rc::make_mut(&mut self.0).insert(value)
     }
 }
 
@@ -176,13 +178,13 @@ impl<'a, T: Clone> IntoIterator for &'a mut CowFacts<T>
 where &'a mut T: IntoIterator {
     type Item = <&'a mut T as IntoIterator>::Item;
     type IntoIter = <&'a mut T as IntoIterator>::IntoIter;
-    fn into_iter(self) -> Self::IntoIter { Arc::make_mut(&mut self.0).into_iter() }
+    fn into_iter(self) -> Self::IntoIter { Rc::make_mut(&mut self.0).into_iter() }
 }
 
 impl<T: Clone + IntoIterator> IntoIterator for CowFacts<T> {
     type Item = T::Item;
     type IntoIter = T::IntoIter;
-    fn into_iter(self) -> Self::IntoIter { Arc::unwrap_or_clone(self.0).into_iter() }
+    fn into_iter(self) -> Self::IntoIter { Rc::unwrap_or_clone(self.0).into_iter() }
 }
 
 /// All derived memory facts at one program point.  This is deliberately a
@@ -1237,6 +1239,48 @@ pub mod self_checks {
             assert!(MemoryChecker::less_equal_in(facts, unknown, COUNT));
             assert!(!MemoryChecker::less_equal_in(facts, unrelated, CAPACITY));
         });
+    }
+
+    pub fn cow_fact_mutations_preserve_snapshots_and_return_values() {
+        let original: CowFacts<SortedMap<u32, SortedSet<u32>>> =
+            SortedMap::from([(1, SortedSet::from([10])), (2, SortedSet::from([20]))]).into();
+        let frozen = (*original).clone();
+        let mut inserted = original.clone();
+        assert_eq!(inserted.insert(1, SortedSet::from([11])), Some(SortedSet::from([10])));
+        assert_eq!(inserted.insert(3, SortedSet::from([30])), None);
+        assert_eq!(*original, frozen);
+
+        let mut nested = original.clone();
+        nested.entry(1).or_default().insert(12);
+        nested.get_mut(&2).unwrap().insert(22);
+        assert_eq!(nested.get(&1), Some(&SortedSet::from([10, 12])));
+        assert_eq!(nested.get(&2), Some(&SortedSet::from([20, 22])));
+        assert_eq!(*original, frozen);
+
+        let mut iterated = original.clone();
+        for (_, values) in &mut iterated { values.insert(99); }
+        assert_eq!(iterated.get(&1), Some(&SortedSet::from([10, 99])));
+        assert_eq!(iterated.get(&2), Some(&SortedSet::from([20, 99])));
+        assert_eq!(*original, frozen);
+
+        let mut consumed: SortedMap<_, _> = original.clone().into_iter().collect();
+        consumed.entry(1).or_default().insert(100);
+        assert_eq!(*original, frozen);
+        let unique: CowFacts<SortedMap<_, _>> = consumed.clone().into();
+        assert_eq!(unique.into_iter().collect::<SortedMap<_, _>>(), consumed);
+        let independent: CowFacts<SortedMap<_, _>> = frozen.clone().into();
+        assert_eq!(original, independent);
+        assert_ne!(original, inserted);
+
+        let set: CowFacts<SortedSet<u32>> = SortedSet::from([1, 2]).into();
+        let mut changed = set.clone();
+        assert!(!changed.insert(1));
+        assert!(changed.insert(3));
+        assert!(changed.remove(&2));
+        assert_eq!(*set, SortedSet::from([1, 2]));
+        assert_eq!(*changed, SortedSet::from([1, 3]));
+        assert_eq!(set.clone().into_iter().collect::<Vec<_>>(), vec![1, 2]);
+        assert_eq!(changed.into_iter().collect::<Vec<_>>(), vec![1, 3]);
     }
 
     pub fn generation_meets_preserve_intersections_epochs_and_snapshot_isolation() {

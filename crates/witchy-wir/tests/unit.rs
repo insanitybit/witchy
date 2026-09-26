@@ -55,6 +55,7 @@ mod canonical_safewir {
                 #[test] fn clone_ref_tracks_two_affine_shared_tokens() { witchy_wir::self_checks::canonical_safewir_check_memory::clone_ref_tracks_two_affine_shared_tokens() }
                 #[test] fn complete_managed_abi_subrange_admits_bounded_clone() { witchy_wir::self_checks::canonical_safewir_check_memory::complete_managed_abi_subrange_admits_bounded_clone() }
                 #[test] fn constant_prefix_publication_rejects_gaps_and_missing_children() { witchy_wir::self_checks::canonical_safewir_check_memory::constant_prefix_publication_rejects_gaps_and_missing_children() }
+                #[test] fn cow_fact_mutations_preserve_snapshots_and_return_values() { witchy_wir::self_checks::canonical_safewir_check_memory::cow_fact_mutations_preserve_snapshots_and_return_values() }
                 #[test] fn dynamic_pointer_clone_range_shares_initialized_elements() { witchy_wir::self_checks::canonical_safewir_check_memory::dynamic_pointer_clone_range_shares_initialized_elements() }
                 #[test] fn dynamic_pointer_move_range_transfers_initialized_ownership_once() { witchy_wir::self_checks::canonical_safewir_check_memory::dynamic_pointer_move_range_transfers_initialized_ownership_once() }
                 #[test] fn dynamic_pointer_prefix_cannot_hide_an_unaccounted_child_slot() { witchy_wir::self_checks::canonical_safewir_check_memory::dynamic_pointer_prefix_cannot_hide_an_unaccounted_child_slot() }
