@@ -230,10 +230,6 @@ pub(super) struct Checker {
     /// qualifiers, so pattern extraction follows these checked declarations
     /// rather than marking every binding below a moved aggregate affine.
     pub(super) unique_ctor_field_types: HashMap<String, Vec<ast::Type>>,
-    /// For each nominal generic, which type parameters occur in stored value
-    /// fields.  This prevents a phantom `Phantom(unique T)` from becoming
-    /// affine while retaining `Box(unique T)`.
-    pub(super) unique_storage_parameters: HashMap<String, Vec<bool>>,
     pub(super) ctor_source_type_params: HashMap<String, Vec<String>>,
     /// Source parameter names paired with [`Self::fn_conventions`]. Names are
     /// diagnostic metadata only; function-type identity remains positional.

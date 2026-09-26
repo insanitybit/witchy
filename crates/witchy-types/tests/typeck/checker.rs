@@ -381,6 +381,7 @@
             "fn tuple():\n    let value: unique String = \"one\"\n    let pair = (value, 1)\n    let copied = value\n",
             "fn list():\n    let value: unique String = \"one\"\n    let values = [value]\n    let copied = value\n",
             "type Holder:\n    value: unique String\n    tag: Int\n\nfn nominal():\n    let holder = Holder(\"one\", 0)\n    let moved = holder\n    let copied = holder\n",
+            "type Holder(a):\n    Holder(unique String, a)\n\nfn nominal[a](value: Holder(a)):\n    let moved = value\n    let copied = value\n",
         ] {
             let error = check_source(source)
                 .expect_err("a shell containing unique storage cannot be copied");

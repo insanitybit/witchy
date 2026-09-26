@@ -2186,106 +2186,27 @@ impl Checker {
         }
     }
 
-    fn declared_type_carries_unique_storage(&self, t: &ast::Type) -> bool {
-        match t {
-            ast::Type::Qualified(ast::TypeQual::Unique, _) => true,
-            ast::Type::Qualified(ast::TypeQual::Frozen, inner) | ast::Type::Slice(inner) => {
-                self.declared_type_carries_unique_storage(inner)
-            }
-            // A view is a copyable carrier even when it observes qualified
-            // payload storage; it never proves unique ownership itself.
-            ast::Type::Qualified(ast::TypeQual::View, _) => false,
-            ast::Type::Qualified(
-                ast::TypeQual::Borrow(_) | ast::TypeQual::LegacyBorrow(_) | ast::TypeQual::BorrowMut(_),
-                _,
-            ) => false,
-            ast::Type::Named(name, arguments) => {
-                // Anonymous unions carry each tag payload as a source type
-                // argument on their shape-encoded head, rather than through a
-                // nominal definition in `unique_storage_parameters`.
-                if anon_union_synthetic_variants(name).is_some() {
-                    arguments
-                        .iter()
-                        .any(|argument| self.declared_type_carries_unique_storage(argument))
-                } else {
-                    self.unique_storage_parameters
-                        .get(name)
-                        .is_some_and(|positions| {
-                            positions.iter().zip(arguments).any(|(stored, argument)| {
-                                *stored && self.declared_type_carries_unique_storage(argument)
-                            })
-                        })
-                }
-            }
-            ast::Type::Tuple(items) => items
-                .iter()
-                .any(|item| self.declared_type_carries_unique_storage(item)),
-            ast::Type::Dyn(..) | ast::Type::Fn(..) => false,
-            ast::Type::RecordCompose { base, fields } => {
-                self.declared_type_carries_unique_storage(base)
-                    || fields
-                        .iter()
-                        .any(|(_, field)| self.declared_type_carries_unique_storage(field))
-            }
-        }
+    fn declared_type_carries_unique_storage(&self, ty: &ast::Type) -> bool {
+        witchy_canonical_source::storage::contains_unique_storage(
+            ty, &self.canonical_definitions,
+        ).unwrap_or(true)
     }
 
     fn ty_carries_unique_storage(&self, ty: &Ty) -> bool {
-        fn go(checker: &Checker, ty: &Ty, seen: &mut HashSet<String>) -> bool {
-            match checker.resolve(ty) {
-                Ty::List(item) => go(checker, &item, seen),
-                Ty::Tuple(items) => items.iter().any(|item| go(checker, item, seen)),
-                Ty::Dyn(..) | Ty::Fn(..) => false,
-                Ty::Named(name, arguments) => {
-                    if !seen.insert(name.to_string()) {
-                        return false;
-                    }
-                    let direct_field = checker
-                        .unique_record_fields
-                        .get(name.as_ref())
-                        .is_some_and(|fields| !fields.is_empty());
-                    let record_field = checker.record_fields.get(name.as_ref()).is_some_and(|(params, fields)| {
-                        let bindings: HashMap<u32, Ty> = params
-                            .iter()
-                            .copied()
-                            .zip(arguments.iter().cloned())
-                            .collect();
-                        fields.iter().any(|(_, field)| {
-                            go(checker, &checker.subst_vars(field, &bindings), seen)
-                        })
-                    });
-                    let variant_field = checker.adt_variants.get(name.as_ref()).is_some_and(|variants| {
-                        variants.iter().any(|variant| {
-                            checker.ctor_sigs.get(variant).is_some_and(|(payloads, result)| {
-                                let result_arguments = match checker.resolve(result) {
-                                    Ty::Named(_, result_arguments) => result_arguments,
-                                    _ => Vec::new().into(),
-                                };
-                                let bindings = result_arguments
-                                    .iter()
-                                    .zip(arguments.iter())
-                                    .filter_map(|(parameter, argument)| match parameter {
-                                        Ty::Var(id) => Some((*id, argument.clone())),
-                                        _ => None,
-                                    })
-                                    .collect::<HashMap<_, _>>();
-                                payloads.iter().any(|payload| {
-                                    go(checker, &checker.subst_vars(payload, &bindings), seen)
-                                })
-                            })
-                        })
-                    });
-                    seen.remove(name.as_ref());
-                    direct_field || record_field || variant_field
-                }
-                _ => false,
-            }
-        }
         let resolved = self.resolve(ty);
         if let Some(answer) = self.unique_storage_types.borrow().get(&resolved) {
             return *answer;
         }
-        let answer = go(self, &resolved, &mut HashSet::new());
+        // A free variable contributes no *known* unique field. Keep its
+        // position in the source shape so fixed fields of a partially known
+        // nominal are still inspected by the shared stored-child judgment.
+        // The memo is keyed by the resolved type and is invalidated as
+        // inference binds variables. Failed stored-child proofs remain affine.
+        let answer = ty_to_ast_with_unresolved(&resolved, true).map_or(true, |source| {
+            witchy_canonical_source::storage::contains_unique_storage(
+                &source, &self.canonical_definitions,
+            ).unwrap_or(true)
+        });
         self.unique_storage_types.borrow_mut().insert(resolved, answer);
         answer
     }
@@ -11992,6 +11913,10 @@ impl TypedModule {
 /// backends' type-directed machinery (eq/to_string shapes, valtypes)
 /// consumes. None where no surface form exists (free variables).
 pub fn ty_to_ast(t: &Ty) -> Option<witchy_syntax::ast::Type> {
+    ty_to_ast_with_unresolved(t, false)
+}
+
+fn ty_to_ast_with_unresolved(t: &Ty, unresolved_as_unit: bool) -> Option<witchy_syntax::ast::Type> {
     use witchy_syntax::ast::Type as T;
     let marker = |name: &str| T::Named(name.to_string(), Vec::new());
     Some(match t {
@@ -12107,29 +12032,30 @@ pub fn ty_to_ast(t: &Ty) -> Option<witchy_syntax::ast::Type> {
         Ty::BuildEnv => T::Named("BuildEnv".into(), Vec::new()),
         Ty::BuildNet => T::Named("BuildNet".into(), Vec::new()),
         Ty::BuildExec => T::Named("BuildExec".into(), Vec::new()),
-        Ty::List(e) => T::Named("List".into(), vec![ty_to_ast(e)?]),
+        Ty::List(e) => T::Named("List".into(), vec![ty_to_ast_with_unresolved(e, unresolved_as_unit)?]),
         Ty::View(payload) => T::Qualified(
             witchy_syntax::ast::TypeQual::View,
-            Box::new(ty_to_ast(payload)?),
+            Box::new(ty_to_ast_with_unresolved(payload, unresolved_as_unit)?),
         ),
         Ty::Tuple(ts) => {
-            T::Tuple(ts.iter().map(ty_to_ast).collect::<Option<Vec<_>>>()?)
+            T::Tuple(ts.iter().map(|ty| ty_to_ast_with_unresolved(ty, unresolved_as_unit)).collect::<Option<Vec<_>>>()?)
         }
         Ty::Named(n, args) => T::Named(
             n.to_string(),
-            args.iter().map(ty_to_ast).collect::<Option<Vec<_>>>()?,
+            args.iter().map(|ty| ty_to_ast_with_unresolved(ty, unresolved_as_unit)).collect::<Option<Vec<_>>>()?,
         ),
         // (RFC-0081) The existential surface form: `dyn Render(args…)`.
         Ty::Dyn(n, args) => T::Dyn(
             n.to_string(),
-            args.iter().map(ty_to_ast).collect::<Option<Vec<_>>>()?,
+            args.iter().map(|ty| ty_to_ast_with_unresolved(ty, unresolved_as_unit)).collect::<Option<Vec<_>>>()?,
         ),
         Ty::Fn(params, ret, conventions, _, qualifiers) => T::Fn(
-            params.iter().map(ty_to_ast).collect::<Option<Vec<_>>>()?,
-            Box::new(ty_to_ast(ret)?),
+            params.iter().map(|ty| ty_to_ast_with_unresolved(ty, unresolved_as_unit)).collect::<Option<Vec<_>>>()?,
+            Box::new(ty_to_ast_with_unresolved(ret, unresolved_as_unit)?),
             conventions.to_vec(),
             *qualifiers,
         ),
+        Ty::Var(_) if unresolved_as_unit => T::Tuple(Vec::new()),
         Ty::Var(_) => return None,
     })
 }
@@ -12421,7 +12347,6 @@ fn run_check_selected(
         unique_source_record_fields: HashMap::new(),
         unique_source_record_params: HashMap::new(),
         unique_ctor_field_types: HashMap::new(),
-        unique_storage_parameters: HashMap::new(),
         ctor_source_type_params: HashMap::new(),
         fn_param_names: HashMap::new(),
         ctor_sigs: HashMap::new(),
@@ -12554,18 +12479,6 @@ fn run_check_selected(
         opt_mode: false,
         current_opt_callable: false,
     };
-
-    for (name, positions) in [
-        ("List", vec![true]),
-        ("Option", vec![true]),
-        ("Result", vec![true, true]),
-        ("Dict", vec![true, true]),
-        ("Set", vec![true]),
-        ("Task", vec![true]),
-        ("Iter", vec![true]),
-    ] {
-        c.unique_storage_parameters.insert(name.into(), positions);
-    }
 
     let option_a = c.fresh();
     let option_id = match option_a {
@@ -12716,20 +12629,6 @@ fn run_check_selected(
                 // field value types, but a nominal value such as `Pair('a)`
                 // must still unify with its constructor pattern and call ABI.
                 let param_names = ast::effective_nominal_type_def_params(t);
-                c.unique_storage_parameters.insert(
-                    t.name.clone(),
-                    param_names
-                        .iter()
-                        .map(|parameter| {
-                            t.variants.iter().any(|variant| {
-                                variant
-                                    .fields
-                                    .iter()
-                                    .any(|field| type_stores_value_parameter(field, parameter))
-                            })
-                        })
-                        .collect(),
-                );
                 let mut vars: HashMap<String, Ty> = HashMap::new();
                 let mut typaram_ids: HashSet<u32> = HashSet::new();
                 let mut params_in_order: Vec<u32> = Vec::new();

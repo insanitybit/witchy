@@ -609,6 +609,18 @@ fn graph_storage_operations(
 struct StoredContainment {
     opaque_view_owner: bool,
     capability_authority: bool,
+    unique_storage: bool,
+}
+
+/// Whether a source type owns unique storage in an instantiated stored child.
+/// Views, slices, and borrowed handles do not own their referents. `None`
+/// means the finite stored-child proof was unavailable and must not authorize
+/// an ordinary copy.
+pub fn contains_unique_storage(
+    ty: &Type,
+    definitions: &BTreeMap<String, TypeDef>,
+) -> Option<bool> {
+    stored_containment(ty, definitions).map(|facts| facts.unique_storage)
 }
 
 fn stored_containment(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> Option<StoredContainment> {
@@ -625,19 +637,25 @@ fn stored_containment(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> Opt
             opaque_view_owner: view_carrier_plan(ty, definitions)
                 .is_some_and(|plan| plan.requires_opaque_owner()),
             capability_authority: crate::capabilities::representation(ty, definitions).is_some(),
+            unique_storage: matches!(ty, Type::Qualified(TypeQual::Unique, _)),
         };
+        let owns_referent = !matches!(ty,
+            Type::Qualified(TypeQual::View | TypeQual::Borrow(_) | TypeQual::BorrowMut(_)
+                | TypeQual::LegacyBorrow(_), _) | Type::Slice(_));
         if !active.insert(ty.clone()) { return Some(facts); }
-        let children = match stored_children(ty, definitions).ok()? {
-            Some(children) => children.into_types(),
-            None => match ty {
-                Type::Qualified(_, inner) | Type::Slice(inner) => vec![*inner.clone()],
-                _ => Vec::new(),
-            },
+        // A qualifier is transparent to stored shape lookup, but Unique is
+        // itself an ownership fact. Visit each wrapper before descending into
+        // the base shape so frozen unique T cannot erase the unique proof.
+        let children = match ty {
+            Type::Qualified(_, inner) | Type::Slice(inner) => vec![*inner.clone()],
+            _ => stored_children(ty, definitions).ok()?
+                .map(StoredChildren::into_types).unwrap_or_default(),
         };
         for child in &children {
             let nested = walk(child, definitions, active, depth + 1, remaining)?;
             facts.opaque_view_owner |= nested.opaque_view_owner;
             facts.capability_authority |= nested.capability_authority;
+            facts.unique_storage |= owns_referent && nested.unique_storage;
         }
         active.remove(ty);
         Some(facts)

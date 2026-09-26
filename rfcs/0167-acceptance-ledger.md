@@ -1212,6 +1212,18 @@ The focused structural case passes, and a direct `--debug` compiled smoke of
 `&Phantom(&[Int])` printed the hand-computed `7`. That smoke did not audit
 leaks or enter the A–O evidence matrix. No A–O row closes.
 
+Row G unique-storage containment (implemented but unverified, 2026-09-26):
+the declared-type and inferred-type affine classifiers now consume the same
+finite stored-child judgment as view and resource containment. The checker
+parameter-position table, its declaration walker, and its separate recursive
+inferred-type classifier are removed. Qualifiers are visited before stored
+shape lookup so a nested unique owner cannot disappear. Unresolved variables
+occupy a neutral placeholder while fixed stored fields are inspected; failed
+or exhausted stored-child proofs conservatively report unique storage. Existing unique
+storage and resource-composition cases pass; an adversarial review checked the
+authority boundary. Admitted unoptimized Wasm and zero-leak evidence remain
+pending; no A–O row closes.
+
 Row G declaration-backed sum shapes (implemented but unverified,
 2026-09-26): the shared aggregate field guard, concrete identity, scalar
 shape builder, and owned-carrier entry now derive `Option` and `Result` arity,

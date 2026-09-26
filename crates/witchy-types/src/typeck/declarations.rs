@@ -147,29 +147,6 @@ pub(super) fn is_unique_value_type(t: &ast::Type) -> bool {
     }
 }
 
-pub(super) fn type_stores_value_parameter(t: &ast::Type, parameter: &str) -> bool {
-    match t {
-        ast::Type::Qualified(
-            ast::TypeQual::Borrow(_) | ast::TypeQual::LegacyBorrow(_) | ast::TypeQual::BorrowMut(_),
-            _,
-        ) => false,
-        ast::Type::Qualified(_, inner) | ast::Type::Slice(inner) => {
-            type_stores_value_parameter(inner, parameter)
-        }
-        ast::Type::Named(name, arguments) => {
-            name == parameter || arguments.iter().any(|arg| type_stores_value_parameter(arg, parameter))
-        }
-        ast::Type::Tuple(items) => items.iter().any(|item| type_stores_value_parameter(item, parameter)),
-        ast::Type::Dyn(..) | ast::Type::Fn(..) => false,
-        ast::Type::RecordCompose { base, fields } => {
-            type_stores_value_parameter(base, parameter)
-                || fields
-                    .iter()
-                    .any(|(_, field)| type_stores_value_parameter(field, parameter))
-        }
-    }
-}
-
 pub(crate) fn type_param_names<'a>(fields: impl Iterator<Item = &'a ast::Type>) -> Vec<String> {
     ast::effective_type_params(&[], fields)
 }
