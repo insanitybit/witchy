@@ -10,12 +10,11 @@ use std::fmt;
 use sha2::{Digest, Sha256};
 use witchy_canonical_source::aggregates::{
     aggregate_key, canonical_owner_aggregate_identity, concrete_aggregate_identity,
-    is_scalar_type,
     scalar_aggregate_shape,
 };
 use witchy_canonical_source::abi::CanonicalScalarKind;
 use witchy_canonical_source::carrier::CarrierElement;
-use witchy_canonical_source::storage::{OpaqueOwnerClass, OpaqueOwnerEvidence, StoragePlan, StorageRefusal, affine_storage_shape, aggregate_uses_nullable_owned_fields, is_inline_scalar_record};
+use witchy_canonical_source::storage::{OpaqueOwnerClass, OpaqueOwnerEvidence, StoragePlan, StorageRefusal, StoredChildren, affine_storage_shape, aggregate_uses_nullable_owned_fields, is_inline_scalar_record, stored_children};
 use witchy_canonical_source::rooted_view::RootedViewStorage;
 use witchy_canonical_source::structural_identity::{AggregateOwnerKey, ClosureOwnerKey, SourceTypeKey};
 use witchy_syntax::ast::{self, Item, Type, TypeDef};
@@ -464,7 +463,7 @@ impl LayoutProjection {
     }
 
     fn visit_type(&mut self, ty: &Type) -> Result<(), CanonicalLayoutError> {
-        if matches!(ty.unqualified(), Type::Named(name, _) if name == "Dict")
+        if matches!(stored_children(ty, &self.definitions), Ok(Some(StoredChildren::Mapping(..))))
             && !matches!(StoragePlan::classify(ty.unqualified(), &self.definitions, |_| Some(0)),
                 StoragePlan::Owned(CarrierElement::Dict(_, _)) | StoragePlan::AuthenticatedPlace(_))
         {
@@ -583,18 +582,14 @@ impl LayoutProjection {
                 }
                 _ => Err(CanonicalLayoutError::UnsupportedType(name.clone())),
             },
-            Type::Named(_, arguments) if StoragePlan::classify(ty, &self.definitions, |_| Some(0))
+            Type::Named(..) if StoragePlan::classify(ty, &self.definitions, |_| Some(0))
                 .has_packed_sequence_layout() => {
-                let [element] = arguments.as_slice() else {
+                let Ok(Some(StoredChildren::Sequence(element))) = stored_children(ty, &self.definitions) else {
                     return Err(CanonicalLayoutError::UnsupportedType(format!("{ty:?}")));
                 };
-                self.visit_type(element)?;
+                self.visit_type(&element)?;
                 self.roots.push(ty.clone());
                 Ok(())
-            }
-            // A `Dict` with other than two arguments has no canonical form.
-            Type::Named(name, _) if name == "Dict" => {
-                Err(CanonicalLayoutError::UnsupportedType(format!("{ty:?}")))
             }
             // Iterators are GC/state-machine values, not linear-memory roots.
             // Their element type still participates in the layout graph because
@@ -765,7 +760,7 @@ impl LayoutProjection {
                 .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?;
             aggregate_environments.insert(source.clone(), environment);
         }
-        let mut recursive_types = recursive_heap_types(&self.roots, &self.definitions);
+        let mut recursive_types = recursive_heap_types(&self.roots, &self.definitions)?;
         recursive_types.retain(|ty| !opaque_aggregates.contains(ty));
         // Reserve all nominal cycle breakers before constructing any body.
         // A structural root such as List(Tree) may be visited before Tree;
@@ -1150,18 +1145,17 @@ fn intern_v1_layout_fields(
             .intern_runtime_buffer(byte)
             .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()));
     }
-    if let Type::Named(name, arguments) = ty.unqualified()
-        && name == "List"
-        && arguments.len() == 1
-    {
-        let element_storage = StoragePlan::classify(&arguments[0], definitions, |_| Some(0));
-        if element_storage.list_element_disposition(&arguments[0]).is_none() {
+    let source_children = stored_children(ty, definitions)
+        .map_err(|_| CanonicalLayoutError::UnsupportedType(format!("{ty:?}")))?;
+    if let Some(StoredChildren::Sequence(element_type)) = source_children {
+        let element_storage = StoragePlan::classify(&element_type, definitions, |_| Some(0));
+        if element_storage.list_element_disposition(&element_type).is_none() {
             return Err(CanonicalLayoutError::UnsupportedType(format!("{ty:?}")));
         }
         let inline = matches!(element_storage,
             StoragePlan::InlineScalar(_) | StoragePlan::Owned(CarrierElement::Scalar(_)));
         let element = if inline {
-            let scalar = scalar_kind_of(&arguments[0]).ok_or_else(|| {
+            let scalar = scalar_kind_of(&element_type).ok_or_else(|| {
                 CanonicalLayoutError::UnsupportedType(format!("{ty:?}"))
             })?;
             interner
@@ -1169,7 +1163,7 @@ fn intern_v1_layout_fields(
                 .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?
         } else {
             intern_v1_layout_checked(
-                interner, &arguments[0], definitions, recursive_types, active, closure_layouts,
+                interner, &element_type, definitions, recursive_types, active, closure_layouts,
             )?
         };
         let element = if !inline {
@@ -1272,12 +1266,12 @@ fn canonical_layout_type(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> 
 /// only cycle participants need an opaque identity reserved before their body.
 /// The graph is completed before cycle membership is classified, so the result
 /// cannot depend on which source root happened to be visited first.
-fn recursive_heap_types(roots: &[Type], definitions: &BTreeMap<String, TypeDef>) -> HashSet<Type> {
+fn recursive_heap_types(roots: &[Type], definitions: &BTreeMap<String, TypeDef>) -> Result<HashSet<Type>, CanonicalLayoutError> {
     let mut graph: HashMap<Type, HashSet<Type>> = HashMap::new();
     let mut pending = Vec::new();
     let mut reachable = HashSet::new();
     for root in roots {
-        collect_heap_targets(root, definitions, &mut pending);
+        collect_heap_targets(root, definitions, &mut pending)?;
     }
     while let Some(node) = pending.pop() {
         let node = canonical_layout_type(&node, definitions);
@@ -1285,55 +1279,57 @@ fn recursive_heap_types(roots: &[Type], definitions: &BTreeMap<String, TypeDef>)
             continue;
         }
         let mut edges = HashSet::new();
-        if let Some(shape) = scalar_aggregate_shape(&node, definitions) {
-            for field in shape.fields.iter().filter(|field| !is_scalar_type(field)) {
-                collect_heap_targets(field, definitions, &mut edges);
-            }
+        let Some(StoredChildren::Aggregate(fields)) = stored_children(&node, definitions)
+            .map_err(|_| CanonicalLayoutError::UnsupportedType(format!("{node:?}")))? else {
+            return Err(CanonicalLayoutError::UnsupportedType(format!("{node:?}")));
+        };
+        for field in &fields {
+            collect_heap_targets(field, definitions, &mut edges)?;
         }
         pending.extend(edges.iter().cloned());
         graph.insert(node, edges);
     }
 
-    graph
+    Ok(graph
         .keys()
         .filter(|node| graph_reaches(&graph, node, node, &mut HashSet::new()))
         .cloned()
-        .collect()
+        .collect())
 }
 
 fn collect_heap_targets(
     ty: &Type,
     definitions: &BTreeMap<String, TypeDef>,
     targets: &mut impl Extend<Type>,
-) {
-    let normalized = canonical_layout_type(ty, definitions);
-    let ty = normalized.unqualified();
-    if is_heap_user_type(ty, definitions) {
-        targets.extend(std::iter::once(ty.clone()));
-        return;
-    }
-    if let Some(tuple) = witchy_canonical_source::aggregates::dictionary_as_tuple(ty) {
-        collect_heap_targets(&tuple, definitions, targets);
-        return;
-    }
-    if let Some(shape) = scalar_aggregate_shape(ty, definitions) {
-        for field in shape.fields.iter().filter(|field| !is_scalar_type(field)) {
-            collect_heap_targets(field, definitions, targets);
+) -> Result<(), CanonicalLayoutError> {
+    fn walk(
+        ty: &Type,
+        definitions: &BTreeMap<String, TypeDef>,
+        targets: &mut impl Extend<Type>,
+        seen: &mut HashSet<Type>,
+        remaining: &mut usize,
+    ) -> Result<(), CanonicalLayoutError> {
+        if *remaining == 0 {
+            return Err(CanonicalLayoutError::UnsupportedType("layout child traversal exceeds resource bound".into()));
         }
-        return;
-    }
-    match ty {
-        Type::Qualified(_, inner) => collect_heap_targets(inner, definitions, targets),
-        Type::Named(name, arguments) if name == "List" && arguments.len() == 1 => {
-            collect_heap_targets(&arguments[0], definitions, targets)
+        *remaining -= 1;
+        let normalized = canonical_layout_type(ty, definitions);
+        let ty = normalized.unqualified();
+        if is_heap_user_type(ty, definitions) {
+            targets.extend(std::iter::once(ty.clone()));
+            return Ok(());
         }
-        Type::Tuple(fields) => {
-            for field in fields {
-                collect_heap_targets(field, definitions, targets);
+        if !seen.insert(ty.clone()) { return Ok(()); }
+        let children = stored_children(ty, definitions)
+            .map_err(|_| CanonicalLayoutError::UnsupportedType(format!("{ty:?}")))?;
+        if let Some(children) = children {
+            for child in children.into_types() {
+                walk(&child, definitions, targets, seen, remaining)?;
             }
         }
-        _ => {}
+        Ok(())
     }
+    walk(ty, definitions, targets, &mut HashSet::new(), &mut 16_384)
 }
 
 fn graph_reaches(

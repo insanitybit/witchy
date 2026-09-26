@@ -1515,6 +1515,19 @@ An existing admitted-Wasm scalar-sum smoke passed, and a direct generic
 `Box(Int)`/`Choice(Int)` program printed the hand-computed `12`. That direct
 smoke did not audit leaks; no additional A–O row closes.
 
+Row G stored-child layout traversal (implemented but unverified,
+2026-09-26): the lowerer's recursive heap graph and packed-sequence layout
+construction now consume the shared `StoredChildren` relation, with malformed
+children and bounded traversal refusing. SafeWIR's list owner-family element
+lookup uses the same relation, while record scalar fields match the shared
+`StoragePlan` kind against the physical layout. The superseded local
+List/Dict child walkers and scalar field name table are removed from these
+paths. A focused compiler build and existing admitted unoptimized Wasm smokes
+for records/sums, mixed aggregate lists, dictionaries, Option/Result, and
+capability capture passed; adversarial authority review found no widened
+admission. These checks do not include the independent zero-leak audit, so no
+A–O evidence row closes.
+
 Row G rooted-owner structural family check (implemented but unverified,
 2026-09-25): the scalar-place and retained-slice owner IDs derive from the
 shared bounded rooted-view storage plan. SafeWIR recomputes the ID from the

@@ -79,7 +79,9 @@ pub enum StoredChildren {
 }
 
 impl StoredChildren {
-    pub(crate) fn into_types(self) -> Vec<Type> {
+    /// Source fields that occupy storage, without physical tags or phantom
+    /// generic arguments. A consumer still checks its own representation.
+    pub fn into_types(self) -> Vec<Type> {
         match self {
             Self::Sequence(element) => vec![element],
             Self::Mapping(key, value) => vec![key, value],

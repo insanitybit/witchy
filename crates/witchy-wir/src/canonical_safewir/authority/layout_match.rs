@@ -1,6 +1,6 @@
 use super::*;
 use witchy_canonical_source::rooted_view::{OwnerCarriedViewPlan, OwnerCarriedViewStorage, RetainedRootStorage, RootedViewStorage};
-use witchy_canonical_source::storage::{StoragePlan, aggregate_uses_nullable_owned_fields};
+use witchy_canonical_source::storage::{StoragePlan, StoredChildren, aggregate_uses_nullable_owned_fields, stored_children};
 
 pub(crate) fn value_type_matches_source(
     actual: super::super::ValueType,
@@ -89,28 +89,24 @@ pub(crate) fn value_type_matches_source(
                         })));
         }
         if let super::super::closure_owner_contract::OwnerFamilySource::Aggregate(expected) = &family.source {
-            let aggregate = if id == family.list_type {
+            let list_element = if id == family.list_type {
                 if !matches!(StoragePlan::classify(source.unqualified(), records, |_| Some(0)),
                     StoragePlan::RetainedOpaqueAggregateList(_)
                         | StoragePlan::RetainedGraphList(_)) {
                     return false;
                 }
-                match source.unqualified() {
-                    witchy_syntax::ast::Type::Named(name, arguments) if name == "List" && arguments.len() == 1 => &arguments[0],
-                    _ => return false,
-                }
-            } else {
-                source
-            };
+                let Ok(Some(StoredChildren::Sequence(element))) = stored_children(source, records) else { return false };
+                Some(element)
+            } else { None };
+            let aggregate = list_element.as_ref().unwrap_or(source);
             return witchy_canonical_source::aggregates::canonical_owner_aggregate_identity(aggregate, records)
                 .is_some_and(|normalized| &normalized == expected);
         }
-        let callable = if id == family.list_type {
-            match source.unqualified() {
-                witchy_syntax::ast::Type::Named(name, args) if name == "List" && args.len() == 1 => &args[0],
-                _ => return false,
-            }
-        } else { source };
+        let list_element = if id == family.list_type {
+            let Ok(Some(StoredChildren::Sequence(element))) = stored_children(source, records) else { return false };
+            Some(element)
+        } else { None };
+        let callable = list_element.as_ref().unwrap_or(source);
         let witchy_syntax::ast::Type::Fn(parameters, result, conventions, _) = callable.unqualified() else { return false };
         let Some(declaration) = signatures.iter().find(|s| s.id == family.declaration_signature) else { return false };
         return candidate_signature_matches_source_inner(declaration, callable, parameters, result, conventions,
@@ -203,7 +199,7 @@ pub(super) fn record_layout_matches_with_closures(
     context: &mut CorrespondenceContext,
 ) -> bool {
     let mut pending = Vec::new();
-    if !enqueue_record_fields_with_closures(layout, fields, nullable_fields, layouts, &mut pending, closure_layouts) {
+    if !enqueue_record_fields_with_closures(layout, fields, nullable_fields, layouts, records, &mut pending, closure_layouts) {
         return false;
     }
     match_layout_graph(pending, layouts, records, closure_layouts, signatures, context)
@@ -214,9 +210,10 @@ pub(super) fn enqueue_record_fields(
     fields: &[witchy_syntax::ast::Type],
     nullable_fields: bool,
     layouts: &crate::layout::LayoutInterner,
+    records: &ScalarRecordFields,
     pending: &mut Vec<(crate::layout::LayoutId, witchy_syntax::ast::Type)>,
 ) -> bool {
-    enqueue_record_fields_with_closures(layout, fields, nullable_fields, layouts, pending, &BTreeMap::new())
+    enqueue_record_fields_with_closures(layout, fields, nullable_fields, layouts, records, pending, &BTreeMap::new())
 }
 
 pub(super) fn enqueue_record_fields_with_closures(
@@ -224,6 +221,7 @@ pub(super) fn enqueue_record_fields_with_closures(
     fields: &[witchy_syntax::ast::Type],
     nullable_fields: bool,
     layouts: &crate::layout::LayoutInterner,
+    records: &ScalarRecordFields,
     pending: &mut Vec<(crate::layout::LayoutId, witchy_syntax::ast::Type)>,
     _closure_layouts: &BTreeMap<crate::layout::LayoutId, super::super::FunctionSignatureId>,
 ) -> bool {
@@ -237,17 +235,18 @@ pub(super) fn enqueue_record_fields_with_closures(
             if is_unit_source_type(field) {
                 return matches!(actual.kind(), LayoutKind::Scalar(ScalarKind::Unit));
             }
-            match field.unqualified() {
-                witchy_syntax::ast::Type::Named(name, arguments) if arguments.is_empty() && matches!(name.as_str(), "Int" | "Duration" | "Float" | "Bool" | "Nil" | "Unit") => match name.as_str() {
-                    "Int" => matches!(actual.kind(), LayoutKind::Scalar(ScalarKind::Int)),
-                    "Duration" => matches!(actual.kind(), LayoutKind::Scalar(ScalarKind::Duration)),
-                    "Float" => matches!(actual.kind(), LayoutKind::Scalar(ScalarKind::Float)),
-                    "Bool" => matches!(actual.kind(), LayoutKind::Scalar(ScalarKind::Bool)),
-                    "Nil" | "Unit" => matches!(actual.kind(), LayoutKind::Scalar(ScalarKind::Unit)),
-                    _ => false,
-                },
-                // A string, list, tuple, or aggregate field lives behind an
-                // owned pointer slot whose pointee is that value's own layout.
+            match StoragePlan::classify(field.unqualified(), records, |_| Some(0)) {
+                StoragePlan::InlineScalar(kind) => matches!(actual.kind(), LayoutKind::Scalar(physical)
+                    if *physical == match kind {
+                        witchy_canonical_source::abi::CanonicalScalarKind::Unit => ScalarKind::Unit,
+                        witchy_canonical_source::abi::CanonicalScalarKind::Int => ScalarKind::Int,
+                        witchy_canonical_source::abi::CanonicalScalarKind::Duration => ScalarKind::Duration,
+                        witchy_canonical_source::abi::CanonicalScalarKind::Float => ScalarKind::Float,
+                        witchy_canonical_source::abi::CanonicalScalarKind::Bool => ScalarKind::Bool,
+                    }),
+                StoragePlan::Refused(_) => false,
+                // A retained or owned field lives behind a pointer slot whose
+                // pointee must separately match its checked source layout.
                 _ => matches!(actual.kind(), LayoutKind::RuntimePointerValueSlot { pointee, semantics }
                     if *semantics == if nullable_fields { crate::layout::PointerSlot::OwnedNullable } else { crate::layout::PointerSlot::Owned }
                         && { pending.push((*pointee, field.unqualified().clone())); true }),
@@ -346,7 +345,7 @@ pub(super) fn enqueue_layout_children(
                 | StoragePlan::AggregateView(_, _) | StoragePlan::AuthenticatedPlace(_)) {
             return false;
         }
-        return enqueue_record_fields(layout, &shape.fields, aggregate_uses_nullable_owned_fields(source, records), layouts, pending);
+        return enqueue_record_fields(layout, &shape.fields, aggregate_uses_nullable_owned_fields(source, records), layouts, records, pending);
     }
     let list_disposition = if matches!(storage, StoragePlan::MoveOnlyList(_)) {
         witchy_canonical_source::storage::ListElementDisposition::MoveOnly
