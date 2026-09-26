@@ -76,12 +76,17 @@ still a separate compiler gap.
 Opt callback aggregate origin (authority narrowed, 2026-09-26):
 the source checker no longer mints opt-compatible callback provenance from a
 record field's type, an existential result type, or a list loop element type.
-Those types prove ABI shape, not the origin of the stored callable. An
-adversarial linked-source record fixture now refuses a normal callback at the
-opt higher-order call boundary. Direct and authenticated alias provenance
-remain available. Structural opt callback transport through aggregate values
-and existential dispatch still needs a checked value-level contract; admitted
-Wasm and zero-leak evidence is pending, so no A-O row closes here.
+Those types prove ABI shape, not the origin of the stored callable. A shared
+typed value proof now carries authenticated callback origin through local
+lists, tuples, checked constructors, record fields, and pattern projections;
+block, branch, and match results are recorded while their lexical bindings
+remain live. Assignment revokes provenance, including on conditional and loop
+paths, so it cannot upgrade an ordinary callback. A linked-source fixture
+accepts a local authenticated record field and refuses both an imported
+ordinary field and a shadowed match binder. The proof is still checker-local:
+separate-compilation aggregate transport and existential dispatch need a
+source-authenticated ABI contract. Admitted Wasm and zero-leak evidence is
+pending, so no A-O row closes here.
 
 Task cancellation source boundary (implemented but unverified, 2026-09-26):
 the linked checker now type-checks and retains the same pre-CPS async source

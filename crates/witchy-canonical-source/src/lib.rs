@@ -19,6 +19,7 @@ pub mod capabilities;
 pub mod carrier;
 pub mod callable_storage;
 pub mod closure;
+pub mod opt_value;
 pub mod proper_tail;
 pub mod rooted_record;
 pub mod rooted_view;

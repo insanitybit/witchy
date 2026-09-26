@@ -162,13 +162,11 @@ pub(super) struct Checker {
     /// remains usable by normal callers, while opt higher-order entries demand
     /// the checked fact explicitly.
     pub(super) callable_opt_provenance: Vec<HashMap<String, OptCallableContract>>,
-    /// Authenticated callable facts carried by a structural value.  Function
-    /// ABI deliberately does not encode `mode opt`, so this is checker-only
-    /// evidence for the small set of container/pattern paths that can expose a
-    /// callable value again.  `Some(None)` is meaningful: it records a known
-    /// absent Option/Result payload, rather than treating an unknown container
-    /// as a trusted callback carrier.
-    pub(super) container_opt_provenance: Vec<HashMap<String, Option<OptCallableContract>>>,
+    /// Structural checked value provenance for callback-bearing aggregate
+    /// bindings. Function ABI still does not itself encode opt authority.
+    pub(super) container_opt_provenance: Vec<HashMap<String, StoredOptProof>>,
+    /// Proofs captured at source sites before block and pattern scopes close.
+    pub(super) opt_expression_proofs: HashMap<usize, StoredOptProof>,
     /// Sealed record capabilities (`capability X:` with named fields). Their
     /// fields are opaque: `.field` access is rejected so the only way to reach a
     /// carried capability is `match`, which the linker confines to the home

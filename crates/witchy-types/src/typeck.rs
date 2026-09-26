@@ -35,6 +35,7 @@ use witchy_cap_model::{CapabilityClass, CapabilityKind};
 use crate::storage::{ReferenceLeaf, ReferenceStorageClassifier};
 use witchy_canonical_source::capabilities::externref_cap_name;
 use witchy_canonical_source::storage::StoredObligationCatalog;
+use witchy_canonical_source::opt_value::OptValueProof;
 
 mod coverage;
 use coverage::{
@@ -191,6 +192,8 @@ struct OptCallableContract {
     /// a body-derived guess at the consuming module.
     result: Option<Box<OptCallableContract>>,
 }
+
+type StoredOptProof = OptValueProof<OptCallableContract>;
 
 impl OptCallableContract {
     fn from_function_type(ty: &ast::Type) -> Option<Self> {
@@ -1751,29 +1754,28 @@ impl Checker {
     }
 
     fn callable_opt_contract(&self, name: &str) -> Option<OptCallableContract> {
-        self.callable_opt_provenance
-            .iter()
-            .rev()
-            .find_map(|provenance| provenance.get(name).cloned())
-            .or_else(|| self.fn_opt_provenance.get(name).cloned())
+        for (scope, provenance) in self.scopes.iter().zip(&self.callable_opt_provenance).rev() {
+            if scope.contains_key(name) {
+                return provenance.get(name).cloned();
+            }
+        }
+        self.fn_opt_provenance.get(name).cloned()
     }
 
-    fn remember_container_opt_provenance(
-        &mut self,
-        name: String,
-        contract: Option<OptCallableContract>,
-    ) {
+    fn remember_container_opt_provenance(&mut self, name: String, proof: StoredOptProof) {
         self.container_opt_provenance
             .last_mut()
             .expect("container opt provenance tracks type scopes")
-            .insert(name, contract);
+            .insert(name, proof);
     }
 
-    fn container_opt_contract(&self, name: &str) -> Option<Option<OptCallableContract>> {
-        self.container_opt_provenance
-            .iter()
-            .rev()
-            .find_map(|provenance| provenance.get(name).cloned())
+    fn container_opt_proof(&self, name: &str) -> StoredOptProof {
+        for (scope, provenance) in self.scopes.iter().zip(&self.container_opt_provenance).rev() {
+            if scope.contains_key(name) {
+                return provenance.get(name).cloned().unwrap_or(StoredOptProof::Unknown);
+            }
+        }
+        StoredOptProof::Unknown
     }
 
     fn opt_callable_contract_from_ty(&self, ty: &Ty) -> Option<OptCallableContract> {
@@ -1787,61 +1789,110 @@ impl Checker {
         })
     }
 
-    fn container_opt_contract_for_expr(&self, expression: &Expr) -> Option<Option<OptCallableContract>> {
+    fn checked_constructor_ordinal(&self, name: &str) -> Option<usize> {
+        let (_, result) = self.ctor_sigs.get(name)?;
+        let Ty::Named(owner, _) = self.resolve(result) else { return None };
+        let variants = self.adt_variants.get(owner.as_ref())?;
+        let constructor = name.rsplit('.').next()?;
+        variants.iter().position(|variant| variant.rsplit('.').next() == Some(constructor))
+    }
+
+    fn record_opt_expression_proof(&mut self, expression: &Expr, proof: StoredOptProof) {
+        self.opt_expression_proofs.insert(expression as *const Expr as usize, proof);
+    }
+
+    fn recorded_opt_expression_proof(&self, expression: &Expr) -> StoredOptProof {
+        self.opt_expression_proofs.get(&(expression as *const Expr as usize))
+            .cloned().unwrap_or(StoredOptProof::Unknown)
+    }
+
+    fn expression_opt_value_proof(&self, expression: &Expr) -> StoredOptProof {
         match expression {
-            Expr::Var(name) => self.container_opt_contract(name),
-            Expr::List(items) => {
-                let mut contracts = items.iter().map(|item| self.expression_opt_callable_contract(item));
-                let first = contracts.next()?;
-                contracts.all(|contract| contract == first).then_some(first)
+            Expr::Var(name) => self.callable_opt_contract(name).map(StoredOptProof::Callable)
+                .unwrap_or_else(|| self.container_opt_proof(name)),
+            Expr::List(items) | Expr::Tuple(items) => StoredOptProof::Elements(
+                items.iter().map(|item| self.expression_opt_value_proof(item)).collect(),
+            ),
+            Expr::Ctor { name, args } => self.checked_constructor_ordinal(name)
+                .map(|ordinal| StoredOptProof::Variant {
+                    ordinal,
+                    fields: args.iter().map(|arg| self.expression_opt_value_proof(arg)).collect(),
+                }).unwrap_or(StoredOptProof::Unknown),
+            Expr::AnonCtor { .. } => StoredOptProof::Unknown,
+            Expr::Record { fields, spread, .. } => {
+                let mut proof = match spread.as_deref().map(|base| self.expression_opt_value_proof(base)) {
+                    Some(StoredOptProof::Fields(fields)) => fields,
+                    _ => std::collections::BTreeMap::new(),
+                };
+                for (name, value) in fields { proof.insert(name.clone(), self.expression_opt_value_proof(value)); }
+                StoredOptProof::Fields(proof)
             }
-            Expr::Ctor { name, args } if matches!(name.rsplit('.').next(), Some("None") | Some("Err")) => {
-                Some(None)
+            Expr::RecordUpdate { base, fields, .. } => {
+                let mut proof = match self.expression_opt_value_proof(base) {
+                    StoredOptProof::Fields(fields) => fields,
+                    _ => std::collections::BTreeMap::new(),
+                };
+                for (name, value) in fields { proof.insert(name.clone(), self.expression_opt_value_proof(value)); }
+                StoredOptProof::Fields(proof)
             }
-            Expr::Ctor { name, args } if matches!(name.rsplit('.').next(), Some("Some") | Some("Ok")) => {
-                (args.len() == 1).then(|| self.expression_opt_callable_contract(&args[0]))
+            Expr::Field { base, field } => {
+                let proof = self.expression_opt_value_proof(base);
+                let index = match self.place_ty(base) {
+                    Some(Ty::Named(owner, _)) => self.record_fields.get(owner.as_ref())
+                        .and_then(|(_, fields)| fields.iter().position(|(name, _)| name == field)),
+                    _ => None,
+                };
+                match proof {
+                    StoredOptProof::Fields(fields) => fields.get(field).cloned().unwrap_or(StoredOptProof::Unknown),
+                    other => index.map(|index| other.slot(index)).unwrap_or(StoredOptProof::Unknown),
+                }
             }
-            Expr::As { expr, .. } => self.container_opt_contract_for_expr(expr),
-            Expr::If { then_block, else_block: Some(else_block), .. } => {
-                let then_contract = self.block_container_opt_contract(then_block)?;
-                let else_contract = self.block_container_opt_contract(else_block)?;
-                (then_contract == else_contract).then_some(then_contract)
-            }
-            Expr::Match { arms, .. } if !arms.is_empty() => {
-                let mut contracts = arms.iter().map(|arm| self.container_opt_contract_for_expr(&arm.body));
-                let first = contracts.next()??;
-                contracts.all(|contract| contract.as_ref() == Some(&first)).then_some(first)
-            }
-            _ => None,
+            Expr::Index { base, .. } => self.expression_opt_value_proof(base).homogeneous_element(),
+            Expr::As { expr, .. } | Expr::Unary { op: UnOp::Move, expr } => self.expression_opt_value_proof(expr),
+            // These forms introduce local bindings. Their result was captured
+            // during inference, while each binding was still in scope.
+            Expr::If { .. } | Expr::Match { .. } => self.recorded_opt_expression_proof(expression),
+            Expr::Block(block) => self.recorded_opt_expression_proof_for_block(block),
+            Expr::Lambda { .. } | Expr::Call { .. } | Expr::Apply { .. } =>
+                self.expression_opt_callable_contract(expression)
+                    .map(StoredOptProof::Callable).unwrap_or(StoredOptProof::Unknown),
+            _ => StoredOptProof::Unknown,
         }
     }
 
-    fn block_container_opt_contract(&self, block: &Block) -> Option<Option<OptCallableContract>> {
+    fn recorded_opt_expression_proof_for_block(&self, block: &Block) -> StoredOptProof {
+        self.opt_expression_proofs.get(&(block as *const Block as usize))
+            .cloned().unwrap_or(StoredOptProof::Unknown)
+    }
+
+    fn block_opt_value_proof(&self, block: &Block) -> StoredOptProof {
         match block.stmts.last() {
-            Some(Stmt::Expr(expr)) | Some(Stmt::Return(Some(expr))) => {
-                self.container_opt_contract_for_expr(expr)
-            }
-            _ => None,
+            Some(Stmt::Expr(expr)) | Some(Stmt::Return(Some(expr))) => self.expression_opt_value_proof(expr),
+            _ => StoredOptProof::Unknown,
         }
     }
 
-    /// Pattern binding is a projection, not a new provenance source.  Carry a
-    /// fact only along the exact source expression/pattern slot that supplied
-    /// it; a same-shaped pattern over an unknown aggregate remains untrusted.
-    fn remember_pattern_opt_provenance(&mut self, pattern: &Pattern, value: &Expr) {
-        match (pattern, value) {
-            (Pattern::Var(name), value) => {
-                if let Some(contract) = self.expression_opt_callable_contract(value) {
-                    self.remember_opt_callable_provenance(name.clone(), contract);
+    /// Pattern binding projects only a checked source-value proof; a pattern
+    /// of the same type over unknown storage has no callback authority.
+    fn remember_pattern_opt_provenance(&mut self, pattern: &Pattern, proof: StoredOptProof) {
+        fn bind(checker: &mut Checker, pattern: &Pattern, proof: StoredOptProof) {
+            match pattern {
+                Pattern::Var(name) if name != "_" => {
+                    if let StoredOptProof::Callable(contract) = &proof {
+                        checker.remember_opt_callable_provenance(name.clone(), contract.clone());
+                    }
+                    checker.remember_container_opt_provenance(name.clone(), proof);
                 }
-            }
-            (Pattern::Tuple(patterns), Expr::Tuple(values)) => {
-                for (pattern, value) in patterns.iter().zip(values) {
-                    self.remember_pattern_opt_provenance(pattern, value);
+                Pattern::Tuple(patterns) | Pattern::Ctor { args: patterns, .. }
+                    | Pattern::AnonCtor { args: patterns, .. } => {
+                    for (index, pattern) in patterns.iter().enumerate() {
+                        bind(checker, pattern, proof.slot(index));
+                    }
                 }
+                _ => {}
             }
-            _ => {}
         }
+        bind(self, pattern, proof);
     }
 
     /// Recognize only the linker's zero-source-line eta adapter for an imported
@@ -1904,43 +1955,27 @@ impl Checker {
                 .and_then(|contract| contract.result.map(|result| *result)),
             Expr::Binary { op: ast::BinOp::Coalesce, lhs, rhs } => {
                 let fallback = self.expression_opt_callable_contract(rhs)?;
-                match self.container_opt_contract_for_expr(lhs) {
-                    // An authenticated None/Err always selects the fallback.
-                    Some(None) => Some(fallback),
-                    // A potentially present payload must carry the same
-                    // contract as the fallback: either branch may be returned.
-                    Some(Some(payload)) if payload == fallback => Some(payload),
+                match self.expression_opt_value_proof(lhs) {
+                    // The checked coalesce operator selects the first variant's
+                    // payload; every other variant selects its fallback. The
+                    // ordinal comes from the exact constructor declaration.
+                    StoredOptProof::Variant { ordinal: 0, fields }
+                        if fields.len() == 1 && fields[0].callable() == Some(fallback.clone()) => Some(fallback),
+                    StoredOptProof::Variant { ordinal, .. } if ordinal != 0 => Some(fallback),
                     _ => None,
                 }
             }
-            // A field or existential result's type describes its ABI, not the
-            // origin of the value stored there. Neither operation can mint an
-            // opt callable contract from the current body's source mode.
-            Expr::Field { .. } | Expr::ExistentialCall { .. } => None,
-            Expr::If { then_block, else_block: Some(else_block), .. } => {
-                let then_contract = self.block_opt_callable_contract(then_block)?;
-                let else_contract = self.block_opt_callable_contract(else_block)?;
-                (then_contract == else_contract).then_some(then_contract)
-            }
-            Expr::Match { arms, .. } if !arms.is_empty() => {
-                let mut contracts = arms
-                    .iter()
-                    .map(|arm| self.expression_opt_callable_contract(&arm.body));
-                let first = contracts.next()??;
-                contracts.all(|contract| contract.as_ref() == Some(&first)).then_some(first)
-            }
-            Expr::Block(block) => self.block_opt_callable_contract(block),
+            Expr::Field { .. } | Expr::Index { .. } => self.expression_opt_value_proof(expression).callable(),
+            // An existential result's ABI cannot mint source provenance.
+            Expr::ExistentialCall { .. } => None,
+            Expr::If { .. } | Expr::Match { .. } => self.recorded_opt_expression_proof(expression).callable(),
+            Expr::Block(block) => self.recorded_opt_expression_proof_for_block(block).callable(),
             _ => None,
         }
     }
 
     fn block_opt_callable_contract(&self, block: &Block) -> Option<OptCallableContract> {
-        match block.stmts.last() {
-            Some(Stmt::Expr(expr)) | Some(Stmt::Return(Some(expr))) => {
-                self.expression_opt_callable_contract(expr)
-            }
-            _ => None,
-        }
+        self.recorded_opt_expression_proof_for_block(block).callable()
     }
 
     fn require_opt_callable_provenance(
@@ -5527,6 +5562,10 @@ impl Checker {
                             &format!("binding/copy into `{name}`"),
                         )?;
                     }
+                    // Read the initializer before its binding shadows an
+                    // outer name that may carry opt callback provenance.
+                    let value_opt_proof = self.expression_opt_value_proof(value);
+                    let value_opt_callable = self.expression_opt_callable_contract(value);
                     self.define(name.clone(), vt, *mutable);
                     let binding_ty = self.lookup(name).expect("new binding retains its type");
                     self.mark_must_consume_binding(name, &binding_ty);
@@ -5584,22 +5623,19 @@ impl Checker {
                     // Unlike ordinary function type compatibility, opt
                     // provenance is never created by an ascription.  An alias
                     // carries it only when its source expression already did.
-                    if matches!(self.resolve(&binding_ty), Ty::Fn(..))
-                        && self.expression_opt_callable_contract(value).is_some()
+                    if !*mutable && matches!(self.resolve(&binding_ty), Ty::Fn(..))
+                        && value_opt_callable.is_some()
                     {
                         self.remember_opt_callable_provenance(
                             name.clone(),
-                            self.expression_opt_callable_contract(value)
-                                .expect("checked opt callable expression has a contract"),
+                            value_opt_callable.expect("checked opt callable expression has a contract"),
                         );
                     }
-                    if matches!(
+                    if !*mutable && matches!(
                         self.resolve(&binding_ty),
                         Ty::List(_) | Ty::Tuple(_) | Ty::Named(_, _)
-                    )
-                        && let Some(contract) = self.container_opt_contract_for_expr(value)
-                    {
-                        self.remember_container_opt_provenance(name.clone(), contract);
+                    ) {
+                        self.remember_container_opt_provenance(name.clone(), value_opt_proof);
                     }
                     if borrowed_shell_binding {
                         self.authorize_borrowed_shell_binding(name.clone());
@@ -5756,6 +5792,13 @@ impl Checker {
                             self.must_live.insert(binding);
                         }
                     }
+                    // Assignment can execute on only one reachable branch or
+                    // any number of loop iterations. Revoke the old fact;
+                    // a later source-site join may recover a new one.
+                    if let Some(scope) = self.scopes.iter().rposition(|scope| scope.contains_key(name)) {
+                        self.callable_opt_provenance[scope].remove(name);
+                        self.container_opt_provenance[scope].remove(name);
+                    }
                     ty = Ty::Unit;
                 }
                 Stmt::LetPattern { pattern, value } => {
@@ -5783,8 +5826,9 @@ impl Checker {
                     if let Some(reason) = self.pattern_refutable(pattern, &vt) {
                         return terr(reason);
                     }
+                    let value_opt_proof = self.expression_opt_value_proof(value);
                     self.check_pattern(pattern, &vt)?;
-                    self.remember_pattern_opt_provenance(pattern, value);
+                    self.remember_pattern_opt_provenance(pattern, value_opt_proof);
                     ty = Ty::Unit;
                 }
                 Stmt::Return(opt) => {
@@ -5916,6 +5960,8 @@ impl Checker {
             self.transfer_unique_value(expression, &ty, "block result")?;
         }
         self.reject_live_must_in_current_scope()?;
+        let proof = self.block_opt_value_proof(block);
+        self.opt_expression_proofs.insert(block as *const Block as usize, proof);
         self.pop();
         Ok(ty)
     }
@@ -6095,7 +6141,7 @@ impl Checker {
                 Ok(at)
             }
             Expr::Match { scrutinee, arms } => {
-                let at = self.infer_match_expected(scrutinee, arms, expected)?;
+                let at = self.infer_match_expected(expr, scrutinee, arms, expected)?;
                 self.finish_infer(expr, at)
             }
             Expr::If { cond, then_block, else_block } => {
@@ -6106,6 +6152,7 @@ impl Checker {
                 let once_before = self.once_invoked.clone();
                 let then_completes = block_can_complete(then_block);
                 let tt = self.infer_block_expected(then_block, expected)?;
+                let then_opt_proof = self.recorded_opt_expression_proof_for_block(then_block);
                 let consumed_then = std::mem::replace(&mut self.consumed, before.clone());
                 let must_then = std::mem::replace(&mut self.must_live, must_before.clone());
                 let once_then =
@@ -6126,6 +6173,10 @@ impl Checker {
                     })?;
                     true
                 };
+                let else_opt_proof = else_block.as_ref()
+                    .map(|block| self.recorded_opt_expression_proof_for_block(block))
+                    .unwrap_or(StoredOptProof::Unknown);
+                self.record_opt_expression_proof(expr, then_opt_proof.join(else_opt_proof));
                 let branches = [
                     (then_completes, consumed_then, must_then, once_then),
                     (
@@ -7557,9 +7608,11 @@ impl Checker {
     fn infer_transient(&mut self, e: &Expr) -> Result<Ty, TypeError> {
         let saved_types = self.type_record.take();
         let saved_packs = self.existential_pack_record.take();
+        let saved_opt_proofs = self.opt_expression_proofs.clone();
         let r = self.infer(e);
         self.type_record = saved_types;
         self.existential_pack_record = saved_packs;
+        self.opt_expression_proofs = saved_opt_proofs;
         r
     }
 
@@ -8836,6 +8889,7 @@ impl Checker {
                 let once_before = self.once_invoked.clone();
                 let then_completes = block_can_complete(then_block);
                 let tt = self.infer_block(then_block)?;
+                let then_opt_proof = self.recorded_opt_expression_proof_for_block(then_block);
                 let consumed_then = std::mem::replace(&mut self.consumed, before.clone());
                 let must_then = std::mem::replace(&mut self.must_live, must_before.clone());
                 let once_then =
@@ -8853,6 +8907,10 @@ impl Checker {
                         (true, self.resolve(&tt))
                     }
                 };
+                let else_opt_proof = else_block.as_ref()
+                    .map(|block| self.recorded_opt_expression_proof_for_block(block))
+                    .unwrap_or(StoredOptProof::Unknown);
+                self.record_opt_expression_proof(expr, then_opt_proof.join(else_opt_proof));
                 let branches = [
                     (then_completes, consumed_then, must_then, once_then),
                     (
@@ -8905,13 +8963,15 @@ impl Checker {
                     }
                 };
                 self.reject_implicit_once_copy(iter, &it, "`for` iteration")?;
+                let element_opt_proof = self.expression_opt_value_proof(iter).homogeneous_element();
                 let consumed_before_body = self.consumed.clone();
                 self.push();
                 let borrowed_element = self.is_direct_borrowed_nominal(&elem);
                 self.define(var.clone(), elem.clone(), false);
-                if let Some(contract) = self.container_opt_contract_for_expr(iter).flatten() {
+                if let Some(contract) = element_opt_proof.callable() {
                     self.remember_opt_callable_provenance(var.clone(), contract);
                 }
+                self.remember_container_opt_provenance(var.clone(), element_opt_proof);
                 // A borrowed-list loop binder is a read-only borrowed shell.
                 // Its owner roots remain live through the enclosing iterator
                 // expression; authorizing the binder admits only checked field
@@ -8924,7 +8984,7 @@ impl Checker {
                 self.reject_affine_loop_backedge(&consumed_before_body, "a `for` loop")?;
                 Ok(Ty::Unit)
             }
-            Expr::Match { scrutinee, arms } => self.infer_match(scrutinee, arms),
+            Expr::Match { scrutinee, arms } => self.infer_match(expr, scrutinee, arms),
         }
     }
 
@@ -9124,26 +9184,29 @@ impl Checker {
         }
     }
 
-    fn infer_match(&mut self, scrutinee: &Expr, arms: &[MatchArm]) -> Result<Ty, TypeError> {
-        self.infer_match_with_expected(scrutinee, arms, None)
+    fn infer_match(&mut self, expression: &Expr, scrutinee: &Expr, arms: &[MatchArm]) -> Result<Ty, TypeError> {
+        self.infer_match_with_expected(expression, scrutinee, arms, None)
     }
 
     fn infer_match_expected(
         &mut self,
+        expression: &Expr,
         scrutinee: &Expr,
         arms: &[MatchArm],
         expected: &Ty,
     ) -> Result<Ty, TypeError> {
-        self.infer_match_with_expected(scrutinee, arms, Some(expected))
+        self.infer_match_with_expected(expression, scrutinee, arms, Some(expected))
     }
 
     fn infer_match_with_expected(
         &mut self,
+        expression: &Expr,
         scrutinee: &Expr,
         arms: &[MatchArm],
         expected: Option<&Ty>,
     ) -> Result<Ty, TypeError> {
         let st = self.infer(scrutinee)?;
+        let scrutinee_opt_proof = self.expression_opt_value_proof(scrutinee);
         self.transfer_once_match_scrutinee(scrutinee, &st)?;
         self.transfer_unique_value(scrutinee, &st, "match scrutinee")?;
         if self.ty_carries_must_consume(&st) {
@@ -9168,6 +9231,7 @@ impl Checker {
         let must_before = self.must_live.clone();
         let once_before = self.once_invoked.clone();
         let mut branch_facts = Vec::with_capacity(arms.len());
+        let mut result_opt_proof: Option<StoredOptProof> = None;
         for arm in arms {
             self.consumed = before.clone();
             self.must_live = must_before.clone();
@@ -9180,6 +9244,7 @@ impl Checker {
                 ));
             }
             self.check_pattern(&arm.pattern, &st)?;
+            self.remember_pattern_opt_provenance(&arm.pattern, scrutinee_opt_proof.clone());
             if let Expr::Var(binding) = scrutinee
                 && let Some(declared) = self.unique_binding_type(binding)
             {
@@ -9210,6 +9275,13 @@ impl Checker {
                 });
             }
             self.reject_live_must_in_current_scope()?;
+            if expr_can_complete(&arm.body) {
+                let proof = self.expression_opt_value_proof(&arm.body);
+                result_opt_proof = Some(match result_opt_proof {
+                    Some(current) => current.join(proof),
+                    None => proof,
+                });
+            }
             self.pop();
             branch_facts.push((
                 expr_can_complete(&arm.body),
@@ -9225,6 +9297,10 @@ impl Checker {
                 &once_before,
                 &branch_facts,
             );
+        self.record_opt_expression_proof(
+            expression,
+            result_opt_proof.unwrap_or(StoredOptProof::Unknown),
+        );
         // Coverage analysis (exhaustiveness + unreachability) reasons per
         // alternative, so flatten a top-level `Pattern::Or` arm into one synthetic
         // arm per alternative (sharing the guard) — exactly what the old
@@ -10022,6 +10098,7 @@ impl Checker {
         self.callable_unique_contracts = vec![HashMap::new()];
         self.callable_opt_provenance = vec![HashMap::new()];
         self.container_opt_provenance = vec![HashMap::new()];
+        self.opt_expression_proofs.clear();
         self.consumed.clear();
         self.once_invoked.clear();
         self.must_live.clear();
@@ -12297,6 +12374,7 @@ fn run_check_selected(
         callable_unique_contracts: vec![HashMap::new()],
         callable_opt_provenance: vec![HashMap::new()],
         container_opt_provenance: vec![HashMap::new()],
+        opt_expression_proofs: HashMap::new(),
         sealed_types: HashSet::new(),
         construction_sealed_types: HashSet::new(),
         transparent_externref_brands: HashMap::new(),

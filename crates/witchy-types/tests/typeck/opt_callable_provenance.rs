@@ -72,6 +72,61 @@ fn main(console: Console):
     let error = super::source::checked_bundle(vec![("worker", worker), ("main", main)], "main")
         .expect_err("a field type cannot authenticate its stored callback origin");
     assert!(error.contains("requires an opt-compatible callable"), "{error}");
+
+    // The match binder shadows an authenticated parameter. Its field comes
+    // from an ordinary caller, so the enclosing name cannot bless the result.
+    let shadow_worker = r#"mode opt
+
+type Holder:
+    callback: fn(Int) -> Int
+
+pub fn plus_one(value: Int) -> Int:
+    value + 1
+
+fn invoke(callback: fn(Int) -> Int) -> Int:
+    callback(41)
+
+pub fn through_shadow(callback: fn(Int) -> Int, holder: Holder) -> Int:
+    let stored = match holder:
+        Holder(callback) -> callback
+    invoke(stored)
+"#;
+    let shadow_main = r#"import worker
+
+fn ordinary(value: Int) -> Int:
+    value + 1
+
+fn main(console: Console):
+    let holder = worker.Holder(ordinary)
+    console.print("${worker.through_shadow(worker.plus_one, holder)}")
+"#;
+    let error = super::source::checked_bundle(
+        vec![("worker", shadow_worker), ("main", shadow_main)], "main",
+    ).expect_err("a match binder cannot inherit a shadowed outer callback proof");
+    assert!(error.contains("requires an opt-compatible callable"), "{error}");
+
+    let local_worker = r#"mode opt
+
+type Holder:
+    callback: fn(Int) -> Int
+
+fn plus_one(value: Int) -> Int:
+    value + 1
+
+fn invoke(callback: fn(Int) -> Int) -> Int:
+    callback(41)
+
+pub fn local_through() -> Int:
+    let holder = Holder(plus_one)
+    invoke(holder.callback)
+"#;
+    let local_main = r#"import worker
+
+fn main(console: Console):
+    console.print("${worker.local_through()}")
+"#;
+    super::source::checked_bundle(vec![("worker", local_worker), ("main", local_main)], "main")
+        .expect("a checked local record field retains its callback proof");
 }
 
 #[test]
