@@ -195,6 +195,9 @@ The compiler does not yet prove cancellation disposition for that path. A
 source-proved owned GC token can cross an `own` call and
 result boundary, but a replayable task continuation cannot capture a live
 must-consume handle.
+The source checker also refuses `await` when another `must` value is still
+live. Consume or transfer that value before suspending; awaiting the task being
+started discharges that task's own must-start obligation.
 The compiler tracks `must` obligations through owning async frame fields and
 checks blocked-operation cancellation paths. It refuses a `must` value carried
 through a receive or released from a frame until the operation proves how

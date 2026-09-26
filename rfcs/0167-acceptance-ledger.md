@@ -62,6 +62,16 @@ is needed for soundness.
 
 ## Exact-tip evidence checkpoint
 
+Task cancellation source boundary (implemented but unverified, 2026-09-26):
+the linked checker now type-checks and retains the same pre-CPS async source
+projection before checking its executable runtime projection. The old async
+probe of an already-CPS-lowered runtime projection was removed. At each source
+`await`, live `must` bindings other than the exact task being started refuse
+without a checked cancellation disposition. The existing resource-composition
+fixture confirms the source refusal in normal and opt mode. Execution-mode
+provenance through task values and adapters, lawful cancellation disposition,
+and admitted-Wasm plus zero-leak evidence remain open; row K is not closed.
+
 Inferred qualified closure captures (implemented but unverified, 2026-09-26):
 the closure witness now carries a source-authenticated qualified view from a
 checked direct immutable root through immutable aliases and proved tuple

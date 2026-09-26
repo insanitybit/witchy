@@ -54,10 +54,7 @@ fn cancellation_cannot_drop_live_must_or_once_task_captures() {
         assert_rejected(
             "cancellation cannot abandon a live must capture",
             &format!("{mode}import chan\n\nasync fn leaf():\n    chan.yield_now().await\n\nasync fn supervisor():\n    let nested = chan.spawn(leaf()).await\n    chan.yield_now().await\n    chan.join(nested).await\n\nasync fn main():\n    let parent = chan.spawn(supervisor()).await\n    chan.cancel(parent).await\n"),
-            &[
-                "closure capture `nested` carries a must-consume obligation",
-                "spawned tasks are shallow-cancellable",
-            ],
+            &["cannot `await` while must-consume value `nested` is live"],
         );
 
         assert_rejected(

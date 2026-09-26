@@ -139,7 +139,7 @@ fn main():
 "#,
     ).expect_err("a replayable async recipe cannot carry an affine once callback").to_string();
     assert!(
-        replay.contains("closure environment captures affine once-callable")
-            && replay.contains("pass it explicitly to an `own` parameter"),
+        replay.contains("cannot capture parameter `callback` into its replayable Task recipe")
+            && replay.contains("affine once-callable storage"),
         "the source boundary must reject before a readiness carrier could bless replay: {replay}");
 }

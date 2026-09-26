@@ -691,23 +691,11 @@ fn link_checked_with(
     let typed_async_source = RefCell::new(None);
     let canonical_typed_source = RefCell::new(None);
     let check_source = |source: &witchy_syntax::source_check::ResolvedSource| {
-        let typed = typeck::check_linked_source_semantics_typed(source)?;
+        let (typed, async_source) = typeck::check_linked_source_semantics_typed(source)?;
         if capture_canonical_typed_source {
             *canonical_typed_source.borrow_mut() = Some(typed);
         }
-        let has_async = source.modules().iter().any(|(_, module)| module.items.iter().any(|item| match item {
-            witchy_syntax::ast::Item::Function(function) => function.is_async,
-            witchy_syntax::ast::Item::Impl(definition) => definition.methods.iter().any(|method| method.is_async),
-            witchy_syntax::ast::Item::Type(_) | witchy_syntax::ast::Item::Trait(_)
-            | witchy_syntax::ast::Item::Const { .. } | witchy_syntax::ast::Item::TypeAlias { .. }
-            | witchy_syntax::ast::Item::Comptime(_) => false,
-        }));
-        if has_async {
-            let projection = source.typed_async_projection().map_err(SourceLinkError::Link)?;
-            let typed = typeck::annotate_typed_async_projection(projection.module)
-                .map_err(|error| SourceLinkError::Source(SourceCheckError::new(error.message)))?;
-            *typed_async_source.borrow_mut() = Some(typed);
-        }
+        *typed_async_source.borrow_mut() = async_source;
         Ok(())
     };
     let linked = if capture_canonical_typed_source {

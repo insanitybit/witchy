@@ -8672,6 +8672,20 @@ impl Checker {
                         Ty::Named(name, arguments)
                             if (name == "Task".into() || name == "task.Task".into()) && arguments.len() == 1 =>
                         {
+                            // Starting the exact task operand discharges that
+                            // token's must-start obligation. Every other live
+                            // obligation would be abandoned if execution is
+                            // cancelled at this suspension point.
+                            let started = self.affine_place(expr)
+                                .and_then(|(root, projected)| (!projected).then_some(root));
+                            if let Some((_, name)) = self.must_live.iter()
+                                .filter(|(_, name)| started.as_deref() != Some(name.as_str()))
+                                .min()
+                            {
+                                return terr(format!(
+                                    "cannot `await` while must-consume value `{name}` is live: cancellation at this suspension has no checked disposition path; consume or transfer it before awaiting"
+                                ));
+                            }
                             let replayable = ty_to_ast(&t).is_some_and(|source| {
                                 witchy_canonical_source::storage::replay_capture_eligibility(
                                     &source, &self.canonical_definitions,
@@ -10550,52 +10564,6 @@ pub fn check(module: &Module) -> Result<(), TypeError> {
     Ok(())
 }
 
-/// Type-check source async contracts before CPS lowering erases them.
-///
-/// This is intentionally a semantic proof only.  The production executable is
-/// still lowered by the legacy path until RFC-0161's typed resumable runtime
-/// consumes the same source representation.  Keeping this pass in the normal
-/// linked-source proof makes `Task(T)` call results and `await` unwrapping
-/// independently checked now, rather than inferred from generated closures.
-fn check_source_async_contracts(module: &Module) -> Result<(), TypeError> {
-    let has_async = module.items.iter().any(|item| match item {
-        Item::Function(function) => function.is_async,
-        Item::Impl(definition) => definition.methods.iter().any(|method| method.is_async),
-        Item::Type(_)
-        | Item::Trait(_)
-        | Item::Const { .. }
-        | Item::TypeAlias { .. }
-        | Item::Comptime(_) => false,
-    });
-    if !has_async {
-        return Ok(());
-    }
-    let checked = witchy_syntax::source_check::check(module.clone())
-        .map_err(|error| TypeError { message: error.message })?;
-    let checked = witchy_syntax::generators::lower(checked)
-        .map_err(|message| TypeError { message })?;
-    let records = witchy_syntax::records::lower_for_async_typeck(checked.module().clone())
-        .map_err(|message| TypeError { message })?;
-    let trait_method_names = collect_trait_method_names(&records);
-    let trait_supertraits = records
-        .items
-        .iter()
-        .filter_map(|item| match item {
-            Item::Trait(definition) => Some((definition.name.clone(), definition.supertraits.clone())),
-            _ => None,
-        })
-        .collect::<HashMap<_, _>>();
-    let lowered = crate::traits::lower_checked(records).map_err(|message| TypeError { message })?;
-    run_check_with_trait_methods(
-        &lowered,
-        false,
-        &trait_method_names,
-        &trait_supertraits,
-        false,
-    )?;
-    Ok(())
-}
-
 /// Validate complete semantics on the expanded source set before the linker
 /// lowers generators, async functions, records, traits, or impls.
 pub fn check_linked_source_semantics(
@@ -10604,12 +10572,13 @@ pub fn check_linked_source_semantics(
     check_linked_source_semantics_typed(source).map(|_| ())
 }
 
-/// Validate expanded linked-source semantics and return the exact typed
-/// runtime projection produced by that check. The caller must retain this
-/// product rather than independently annotating a pre-link AST.
+/// Validate expanded linked-source semantics and return both typed projections
+/// produced by that check. The source async projection retains exact `await`
+/// and capture identities before CPS erases them; the runtime projection is
+/// the executable input to later canonical preparation.
 pub fn check_linked_source_semantics_typed(
     source: &witchy_syntax::source_check::ResolvedSource,
-) -> Result<TypedModule, witchy_syntax::linker::SourceLinkError> {
+) -> Result<(TypedModule, Option<TypedModule>), witchy_syntax::linker::SourceLinkError> {
     fn source_error(
         module_name: &str,
         module: &Module,
@@ -10705,10 +10674,21 @@ pub fn check_linked_source_semantics_typed(
     check_trait_names(&aggregate).map_err(source_error)?;
     check_existential_types(&aggregate.items).map_err(source_error)?;
     check_public_state_impls(&aggregate).map_err(source_error)?;
+    let has_async = source.modules().iter().any(|(_, module)| module.items.iter().any(|item| match item {
+        Item::Function(function) => function.is_async,
+        Item::Impl(definition) => definition.methods.iter().any(|method| method.is_async),
+        _ => false,
+    }));
+    let typed_async_source = if has_async {
+        let projection = source.typed_async_projection()
+            .map_err(witchy_syntax::linker::SourceLinkError::Link)?;
+        Some(annotate_typed_async_projection(projection.module).map_err(source_error)?)
+    } else {
+        None
+    };
     let body_projection = source
         .runtime_projection()
         .map_err(witchy_syntax::linker::SourceLinkError::Link)?;
-    check_source_async_contracts(&body_projection).map_err(source_error)?;
     // Check only the standard library this program can reach (see
     // std_pruning; a failure anywhere in the production route after pruning
     // reruns the route unpruned, so a pruned error is never reported).
@@ -10726,9 +10706,11 @@ pub fn check_linked_source_semantics_typed(
         })
         .collect();
     if let Some(pruned) = crate::std_pruning::prune(&body_projection, &std_impls) {
-        return check_with_compiler_syntax(&pruned, false).map_err(source_error);
+        return check_with_compiler_syntax(&pruned, false)
+            .map(|typed| (typed, typed_async_source)).map_err(source_error);
     }
-    check_with_compiler_syntax(&body_projection, false).map_err(source_error)
+    check_with_compiler_syntax(&body_projection, false)
+        .map(|typed| (typed, typed_async_source)).map_err(source_error)
 }
 
 /// Type-check the isolated program used to execute a `comptime:` block.

@@ -1135,6 +1135,9 @@ Unsupported field representations still fail closed. Task scheduling with public
 `task.Handle` values remains incomplete: a live handle cannot cross a
 suspension without cancellation disposition, and `task.Step(task.Handle)`
 remains unadmitted end to end.
+The linked source checker inspects the typed pre-CPS `await` before runtime
+lowering. It refuses suspension while any other `must` binding is live; starting
+the exact task operand discharges that task's own must-start obligation.
 The typed async frame records a recursive must-consume obligation for owning
 `own` and `var` fields. Its execution check follows both live and empty states
 through joins and checks cancellation cleanup from each blocked operation.
