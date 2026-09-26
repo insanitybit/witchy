@@ -5,9 +5,11 @@ keeps this current as refs are added.
 
 ## Local compiler services (informs RFC-0172)
 
-- **sccache, systemd service ownership, and Wasmtime precompilation/safety** —
+- **Roslyn, Kotlin, Bazel workers, BuildBuddy action merging, Nix, sccache,
+  systemd, and Wasmtime precompilation/safety** —
   [primary-source notes](compiler-service-2026/notes.md) distinguish persistent
-  coordination, protected cache ownership, and trusted native artifact loading.
+  compiler state, optional hosts, in-flight deduplication, protected cache
+  ownership, and trusted native artifact loading.
   Informed [RFC-0172](../rfcs/0172-protected-compiler-service.md); no Witchy
   performance result is implied.
 

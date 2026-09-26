@@ -22,6 +22,11 @@ compiler implementation. Start with Linux, whole-request reuse, bounded warm
 state, and in-flight deduplication. Fine-grained incremental compilation and
 native artifact delivery are later, independently gated extensions.
 
+Standalone `witchyc` remains a first-class, fully supported compiler, not a
+fallback implementation. One-shot compilation, the protected Witchy service,
+and an optional Bazel-managed worker host the same compiler library. Neither
+correctness nor availability of compiler features depends on a daemon or cache.
+
 ## Motivation and current baseline
 
 A separate process alone does not make compilation faster. Avoiding repeated
@@ -71,15 +76,69 @@ concurrency. Cold compilation and guest execution are not promised to improve.
   obligations still apply. This proposal does not revive RFC-0155 or RFC-0156
   wholesale, and does not change the implemented policy until adopted and built.
 
-Non-goals: remote/distributed compilation, a registry, an execution daemon,
-shared guest heaps, cross-user source deduplication, new optimizer passes, or
-making arbitrary broad filesystem writes harmless. Windows is lowest priority;
+Non-goals: operating our own remote/distributed build service, a registry, an
+execution daemon, shared guest heaps, cross-user source deduplication, new
+optimizer passes, or making arbitrary broad filesystem writes harmless. Windows is lowest priority;
 macOS is a later adapter. Linux-first is the working platform assumption from
 the discussion, which mentioned Linux for both present and future priorities.
+Running standalone `witchyc` inside an external remote build executor is in
+scope for the compiler interface; it does not require our service on that host.
 
 ## Design
 
+### 0. Standalone compiler, optional hosts
+
+The compiler library owns semantic compilation and admission. A host supplies
+explicit inputs, a compilation session, optional cache access, cancellation,
+and resource budgets. Host-specific IPC, process management, installation, and
+cache ownership stay outside the compiler core. Sessions must support repeated
+requests without requiring a service connection or hidden process-global state.
+
+| Host | Lifetime and scheduling | Reuse and trust |
+|---|---|---|
+| One-shot `witchyc` | One invocation, owned by the caller | No persistent state required; performs all checks locally |
+| Witchy service | Service-managed bounded workers and single-flight jobs | Protected cache ownership and warm sessions |
+| Bazel worker adapter | Bazel owns worker lifetime and action scheduling | Warm sessions within the build environment's trust boundary; no Witchy daemon required |
+
+`witchyc` executes locally by default and never implicitly contacts or starts
+the Witchy service. The project driver's service selection is a separate policy.
+The standalone interface follows RFC-0168: explicit source/dependency inputs,
+toolchain/std inputs or an identified bundled std, target/options, output paths,
+diagnostics, and exit status. It performs no implicit dependency download or
+project discovery and requires neither service installation nor administrator
+rights, a populated home directory, or a writable global cache. Build-time
+effects require explicit inputs/authority; a hermetic build cannot acquire
+undeclared environment or filesystem dependencies through the compiler.
+
+For identical logical inputs and options, all hosts preserve the same language
+semantics, diagnostics, admission obligations, and output contract. Cache state
+may change cost, not meaning. Disabling caches must not disable compiler
+features. Service-specific isolation limits can reject a request, but cannot
+define a different language or weaken the standalone admission path.
+
+A future thin Bazel adapter translates its worker request/response protocol
+into this session API. The compiler also remains runnable as an ordinary Bazel
+action with declared inputs and outputs. Bazel owns its action cache and
+scheduling; the adapter must not secretly route requests through our service or
+create a competing machine-wide worker pool. Initial worker support may process
+requests serially; multiplexing is optional and requires request-state isolation.
+The adapter scopes each request's filesystem access, options, diagnostics, and
+cancellation to that request. Retained state uses the same dependency keys and
+memory bounds as other hosts, never the previous action's incidental files.
+
+A Bazel worker is not automatically a separately owned trusted-cache service.
+It relies on the build environment's isolation and cache provenance policy.
+Externally cached source/Wasm remains subject to the relevant load/admission
+checks; a generic action-cache hit does not authorize replaying a SafeWIR verdict
+or unsafe native deserialization. No-daemon support removes the need for shared
+persistent trusted state; it does not claim equivalent protection for a
+same-user writable cache. The protected service's IPC protocol need not
+be the compiler library API or Bazel's wire protocol.
+
 ### 1. Components and ownership
+
+The following is the optional protected-service deployment, not a required
+route for one-shot compilation or a Bazel-managed worker:
 
 ```text
 driver (user identity)
@@ -273,13 +332,15 @@ with another compiler version. Cache migration is a miss unless compatibility
 is established. Request-scoped compiler flags do not mutate global process
 environment or process-global configuration read by another session.
 
-Proposed driver policy is `--compiler-service=auto|required|off`:
+Proposed project-driver policy is `--compiler-service=auto|required|off`.
+This does not change standalone `witchyc`'s local-only default:
 
 - `auto`: use a compatible protected service; if absent/unavailable, report the
   fallback in diagnostic/status output and compile locally without trusting
   persistent user-writable verdict/native caches.
 - `required`: fail if a compatible authenticated service is unavailable.
-- `off`: run the same compiler pipeline locally with that safe cache policy.
+- `off`: deliberately select the first-class standalone compiler with that safe
+  cache policy. Do not probe for, connect to, or start a service.
 
 An authentication failure is an error, not a silent downgrade. Fallback may
 recompute work but must not repeat effectful build steps already performed.
@@ -302,18 +363,21 @@ compiler's later verification phase rather than becoming service scaffolding.
 
 | Phase | Deliverable and acceptance | State |
 |---|---|---|
-| A | Explicit immutable request/result API used by both standalone and service paths; representative check/build results agree and required loader authority survives the boundary | Proposed |
+| A | Host-independent session/request/result API and first-class one-shot compiler; representative check/build results agree with service execution; standalone works with no service, empty home, no network and no persistent caches, and required loader authority survives the boundary | Proposed |
 | B | Linux protected installation, authenticated IPC, bounded warm result cache and whole-request single-flight; a cold concurrent identical-request test observes one producer, while different requests can progress concurrently | Proposed |
 | C | Protected persistence plus bounded reusable compiler contexts; demonstrate warm reuse of an existing checker/std/frontend stage without request-local identity leakage; restart preserves lawful disk hits | Proposed |
 | D | CLI integration and fallback, quotas, cancellation, crash recovery, upgrade behavior, and tests rejecting cache writes/spoofed peers/cross-user reads/native uploads by ordinary clients | Proposed |
 | E | Native artifact adapter, immutable delivery and runtime consumption with preserved launch behavior; matched startup evidence and explicit unsafe-loader review | Deferred extension |
 | F | Fine-grained dependency invalidation, incremental IDE sessions, and macOS/Windows adapters using the same contract | Deferred extension |
+| G | Thin Bazel worker adapter, independent of B-F; ordinary sandboxed one-shot action and persistent worker agree, A/B/A request sequences show no stale state, and cancellation/worker restart preserve results without contacting a Witchy service | Optional integration |
 
 A-D define the initial service. B must already enforce the identity, quotas,
 and cancellation invariants; D completes the integration and evidence, not a
 temporary authorization bypass. File ownership and shared API contracts must be
 recorded before parallel implementation. Freeze A's contract first; installer,
-scheduler, storage, and driver work can then proceed independently.
+scheduler, storage, and driver work can then proceed independently. Standalone
+acceptance in A is mandatory from the first slice; the Bazel-specific adapter
+in G can follow independently once A exists and does not block service delivery.
 
 ### Performance evidence
 
@@ -362,8 +426,13 @@ or all persistent effects of a program's granted filesystem writes.
 ## Prior art
 
 See [compiler service and native-cache notes](../external-refs/compiler-service-2026/notes.md)
-for primary sources on compiler-cache servers, Linux service ownership, and
-Wasmtime's compilation/execution split and native deserialization contract.
+for primary sources. Roslyn's bounded metadata-symbol cache is a precedent for
+warm compiler state; Kotlin and Bazel workers show optional long-lived compiler
+hosts. BuildBuddy action merging informs in-flight sharing and cancellation.
+Nix multi-user mode separates store ownership from untrusted build identities.
+These are complementary patterns, not an exact implementation to copy. Roslyn's
+compiler-JIT startup savings do not transfer to Witchy's native Rust compiler.
+The notes also cover Linux ownership and Wasmtime's native safety contract.
 
 ## Open implementation choices
 
