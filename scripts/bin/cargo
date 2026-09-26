@@ -122,10 +122,9 @@ if [ -n "$cross_target" ] && command -v rustup >/dev/null 2>&1; then
     fi
 fi
 
-# Type-checker-only, lowerer-only, snapshot-tool-only, and structural-WIR
-# selections must not inherit native oracle features from unselected workspace
-# packages. That inheritance pulls Wasmtime and AWS-LC into otherwise
-# frontend-only builds.
+# Frontend-only, lowerer-only, snapshot-tool-only, and structural-WIR selections
+# must not inherit native oracle features from unselected workspace packages.
+# That inheritance pulls Wasmtime and AWS-LC into otherwise pure builds.
 # Native WIR/workspace selections keep the single workspace feature graph;
 # these isolated graphs intentionally use their much smaller build identities.
 isolated_graph_selected=0
@@ -138,8 +137,10 @@ test_arg=0
 for arg in "$@"; do
     if [ "$package_arg" -eq 1 ]; then
         case "$arg" in
+            witchy-cap-model | witchy-syntax | witchy-canonical-source | \
             witchy-types | witchy-lower | witchy-snapshot-tools) isolated_graph_selected=1 ;;
             witchy) native_owner_selected=1; non_wir_native_owner_selected=1 ;;
+            witchy-caps | witchy-interp | witchy-runtime) native_owner_selected=1; non_wir_native_owner_selected=1 ;;
             witchy-wir) native_owner_selected=1 ;;
         esac
         package_arg=0
@@ -152,8 +153,11 @@ for arg in "$@"; do
     fi
     case "$arg" in
         -p | --package) package_arg=1 ;;
-        --package=witchy-types | --package=witchy-lower | --package=witchy-snapshot-tools) isolated_graph_selected=1 ;;
+        --package=witchy-cap-model | --package=witchy-syntax | \
+        --package=witchy-canonical-source | --package=witchy-types | \
+        --package=witchy-lower | --package=witchy-snapshot-tools) isolated_graph_selected=1 ;;
         --package=witchy) native_owner_selected=1; non_wir_native_owner_selected=1 ;;
+        --package=witchy-caps | --package=witchy-interp | --package=witchy-runtime) native_owner_selected=1; non_wir_native_owner_selected=1 ;;
         --package=witchy-wir) native_owner_selected=1 ;;
         --workspace) native_owner_selected=1; non_wir_native_owner_selected=1 ;;
         --no-default-features) no_default_features=1 ;;

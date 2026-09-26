@@ -698,6 +698,50 @@ fn cargo_shim_keeps_isolated_targets_off_the_workspace_native_feature_graph() {
         "unification=off resolver=unset channel=unset\n"
     );
 
+    for package in ["witchy-cap-model", "witchy-syntax", "witchy-canonical-source"] {
+        let frontend = run(&["nextest", "run", "-p", package]);
+        assert!(
+            frontend.status.success(),
+            "{}",
+            String::from_utf8_lossy(&frontend.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&frontend.stdout),
+            "unification=off resolver=unset channel=unset\n"
+        );
+    }
+
+    for package in ["witchy-caps", "witchy-interp", "witchy-runtime"] {
+        let native_owner = run(&["nextest", "run", "-p", package]);
+        assert!(
+            native_owner.status.success(),
+            "{}",
+            String::from_utf8_lossy(&native_owner.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&native_owner.stdout),
+            "unification=unset resolver=workspace channel=nightly\n"
+        );
+    }
+
+    let mixed_native = run(&[
+        "nextest",
+        "run",
+        "-p",
+        "witchy-types",
+        "-p",
+        "witchy-runtime",
+    ]);
+    assert!(
+        mixed_native.status.success(),
+        "{}",
+        String::from_utf8_lossy(&mixed_native.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&mixed_native.stdout),
+        "unification=unset resolver=workspace channel=nightly\n"
+    );
+
     let structural = run(&[
         "nextest",
         "run",
