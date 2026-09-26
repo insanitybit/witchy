@@ -343,7 +343,8 @@ pub(super) struct Checker {
     /// `comptime:` block; ordinary runtime modules cannot traffic in compiler
     /// syntax values such as `meta.ItemSyntax`.
     pub(super) compiler_syntax_allowed: bool,
-    /// Explicit references are an opt-mode-only source capability.
+    /// The checked declaration's own mode, reset before every function body;
+    /// imported opt bodies cannot inherit the entry module's normal mode.
     pub(super) opt_mode: bool,
     /// The source callable currently being checked may be imported from an opt
     /// module even when the linked entry module is normal.

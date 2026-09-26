@@ -1059,7 +1059,7 @@ fn facts_impl(
     // Pass 1: validate signatures and record each function's borrow relation.
     for item in &module.items {
         let Item::Function(f) = item else { continue };
-        let sig = validate_signature(f, witchy_syntax::linker::source_callable_is_opt(f, &module.modes), &catalog)?;
+        let sig = validate_signature(f, witchy_canonical_source::source::source_execution_mode(f, &module.modes).is_opt(), &catalog)?;
         sigs.insert(f.name.clone(), sig);
     }
 
@@ -1136,7 +1136,7 @@ fn facts_impl(
                 body,
                 ret,
                 &format!("lambda {} in {}", index + 1, short_name(&f.name)),
-                witchy_syntax::linker::source_callable_is_opt(f, &module.modes),
+                witchy_canonical_source::source::source_execution_mode(f, &module.modes).is_opt(),
                 LoanEnvironment { sigs: &sigs, catalog: &catalog, type_table },
                 target_facts,
             )?;

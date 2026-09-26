@@ -658,23 +658,6 @@ pub fn linked_source_module(function: &Function) -> Option<&str> {
     })
 }
 
-/// The source module owns the opt contract even when async or method lowering
-/// changes the generated callable's spelling. Unlinked standalone modules use
-/// their declared mode and qualified source name.
-pub fn source_callable_is_opt(function: &Function, modes: &[String]) -> bool {
-    if let Some(owner) = linked_source_module(function) {
-        return modes.iter().any(|mode| mode == &format!("@opt:{owner}"));
-    }
-    if !function.name.contains('.') {
-        return modes.iter().any(|mode| mode == "opt");
-    }
-    modes.iter().any(|mode| {
-        mode.strip_prefix("@opt:")
-            .and_then(|owner| function.name.strip_prefix(owner))
-            .is_some_and(|suffix| suffix.starts_with('.'))
-    })
-}
-
 /// The bundled std modules that export a `pub fn` of the given name — used to
 /// suggest a missing `import` when a call names an unimported stdlib function.
 pub fn std_modules_for_function(fn_name: &str) -> Vec<&'static str> {

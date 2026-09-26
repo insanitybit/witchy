@@ -535,7 +535,7 @@ fn verify_function(
         table,
         access,
         definitions,
-        opt_mode: witchy_syntax::linker::source_callable_is_opt(function, &module.modes),
+        opt_mode: witchy_canonical_source::source::source_execution_mode(function, &module.modes).is_opt(),
         function: &function.name,
     };
     let mut environment = Environment::new();

@@ -3144,6 +3144,9 @@ fn each_block_in_expr(e: &Expr, f: &mut impl FnMut(&Block)) {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NoCopyMiss {
     pub function: String,
+    /// The checked enclosing declaration's source mode. Nested lambda misses
+    /// inherit it directly instead of recovering authority from their names.
+    pub source_mode: witchy_canonical_source::source::SourceExecutionMode,
     pub callee: String,
     pub var: String,
     pub line: u32,
@@ -3834,6 +3837,7 @@ struct NoCopyInputs<'facts, 'module> {
 
 struct NoCopyWalker<'facts, 'module> {
     function: String,
+    source_mode: witchy_canonical_source::source::SourceExecutionMode,
     module: &'module Module,
     access: Option<&'facts witchy_types::access::CheckedAccessFacts>,
     places: &'facts witchy_canonical_source::access::CheckedPlaceFacts,
@@ -3849,6 +3853,7 @@ struct NoCopyWalker<'facts, 'module> {
 impl<'facts, 'module> NoCopyWalker<'facts, 'module> {
     fn new(
         function: String,
+        source_mode: witchy_canonical_source::source::SourceExecutionMode,
         body: &Block,
         inputs: NoCopyInputs<'facts, 'module>,
     ) -> Self {
@@ -3868,6 +3873,7 @@ impl<'facts, 'module> NoCopyWalker<'facts, 'module> {
         facts.merge_loan_kills(body, loans);
         Self {
             function,
+            source_mode,
             module,
             access,
             places,
@@ -4230,6 +4236,7 @@ impl<'facts, 'module> NoCopyWalker<'facts, 'module> {
                     .cloned();
                 let nested = NoCopyWalker::new(
                     name,
+                    self.source_mode,
                     body,
                     NoCopyInputs {
                         module: self.module,
@@ -4398,6 +4405,7 @@ impl<'facts, 'module> NoCopyWalker<'facts, 'module> {
             let Some(place) = self.places.place_at(self.module, arg) else {
                 self.misses.push(NoCopyMiss {
                     function: self.function.clone(),
+                    source_mode: self.source_mode,
                     callee: callee.to_string(),
                     var: "<computed value>".to_string(),
                     line: self.line,
@@ -4416,6 +4424,7 @@ impl<'facts, 'module> NoCopyWalker<'facts, 'module> {
                 };
                 self.misses.push(NoCopyMiss {
                     function: self.function.clone(),
+                    source_mode: self.source_mode,
                     callee: callee.to_string(),
                     var: root.to_string(),
                     line: self.line,
@@ -4451,6 +4460,7 @@ impl<'facts, 'module> NoCopyWalker<'facts, 'module> {
             if let Some(reason) = reason {
                 self.misses.push(NoCopyMiss {
                     function: self.function.clone(),
+                    source_mode: self.source_mode,
                     callee: callee.to_string(),
                     var: root.to_string(),
                     line: self.line,
@@ -4564,7 +4574,7 @@ pub fn module_boundary_repairs(module: &Module) -> Vec<BoundaryRepair> {
         .map(|misses| {
             misses
                 .into_iter()
-                .filter(|miss| !function_is_opt(module, &miss.function))
+                .filter(|miss| miss.source_mode == witchy_canonical_source::source::SourceExecutionMode::Normal)
                 .map(|miss| BoundaryRepair {
                     function: miss.function,
                     line: miss.line,
@@ -4592,26 +4602,13 @@ pub fn module_boundary_repair_ptrs(
     use foldhash::HashSetExt as _;
     let mut ptrs = foldhash::HashSet::new();
     for miss in module_no_copy_misses_with_access(module, access) {
-        if miss.call_ptr != 0 && !function_is_opt(module, &miss.function) {
+        if miss.call_ptr != 0
+            && miss.source_mode == witchy_canonical_source::source::SourceExecutionMode::Normal
+        {
             ptrs.insert(miss.call_ptr);
         }
     }
     ptrs
-}
-
-/// Linked modules retain one `@opt:<module>` mode marker per source module;
-/// an unlinked opt file retains the plain `opt` marker.  A missing no-copy
-/// proof in either form is an opt contract failure, never a normal-mode repair
-/// entry.
-pub fn function_is_opt(module: &Module, function: &str) -> bool {
-    if !function.contains('.') {
-        return module.modes.iter().any(|mode| mode == "opt");
-    }
-    module.modes.iter().any(|mode| {
-        mode.strip_prefix("@opt:")
-            .and_then(|owner| function.strip_prefix(owner))
-            .is_some_and(|suffix| suffix.starts_with('.'))
-    })
 }
 
 /// Derive the one conventional-call entry selection consumed by lowering.  The
@@ -4669,6 +4666,7 @@ fn module_no_copy_misses_with_access(
             out.extend(
                 NoCopyWalker::new(
                     function.name.clone(),
+                    witchy_canonical_source::source::source_execution_mode(function, &module.modes),
                     &function.body,
                     NoCopyInputs {
                         module,

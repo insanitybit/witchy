@@ -193,6 +193,18 @@ provenance through stored values, per-execution ownership, cancellation
 disposition, and the required Wasm and zero-leak evidence remain open. No A–O
 row closes.
 
+Source execution-mode ownership (implemented but unverified, 2026-09-26):
+the checker, loan analysis, call-scoped analysis, canonical lowerer, and legacy
+normal-copy repair telemetry now consume one typed source-mode judgment in
+`witchy-canonical-source`. Canonical lowering reads that judgment through the
+checked `CanonicalSourceView` for named and generated lambda bodies; repair
+telemetry resolves nested lambda diagnostics to a checked enclosing function.
+The old syntax-level and name-prefix classifiers are removed. This
+preserves each callable body's declaration mode when async and method lowering
+change its name; it does not yet carry task execution provenance through task
+values, aggregates, generics, trait returns, or scheduler adapters. No A-O row
+closes before admitted-Wasm and zero-leak evidence.
+
 Rows J/K replayable continuation boundary (implemented but unverified,
 2026-09-26): the checker now refuses a live must binding and a capture refined
 to must after body inference. The retired root suspension exception could move

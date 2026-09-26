@@ -267,7 +267,8 @@ pub fn enforce_performance_modes(
     let declaration_modes = |function: &str| {
         if !source_modes.is_empty() && is_entry_function(function, entry_stem) {
             Some(mode_names.as_str())
-        } else if witchy_lower::analysis::function_is_opt(linked, function) {
+        } else if witchy_canonical_source::source::named_source_execution_mode(linked, function)
+            == Some(witchy_canonical_source::source::SourceExecutionMode::Opt) {
             Some("opt")
         } else {
             None
@@ -287,7 +288,8 @@ pub fn enforce_performance_modes(
     }
 
     for miss in witchy_lower::analysis::try_module_no_copy_misses(linked)? {
-        let Some(mode_names) = declaration_modes(&miss.function) else { continue; };
+        let Some(mode_names) = declaration_modes(&miss.function)
+            .or_else(|| miss.source_mode.is_opt().then_some("opt")) else { continue; };
         let advice = if miss.reason.contains("first-class call ABI") {
             "call the function directly so its checked capacity state stays in the compiled ABI, or use normal mode for the copy-correct indirect call".to_string()
         } else {

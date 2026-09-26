@@ -12551,7 +12551,7 @@ fn run_check_selected(
             .clone()
             .unwrap_or_else(|| detect_entry_module(module)),
         compiler_syntax_allowed,
-        opt_mode: module.modes.iter().any(|mode| mode == "opt"),
+        opt_mode: false,
         current_opt_callable: false,
     };
 
@@ -12697,7 +12697,7 @@ fn run_check_selected(
                         frozen_result: f.ret.as_ref().is_some_and(is_frozen_value_type),
                     },
                 );
-                if witchy_syntax::linker::source_callable_is_opt(f, &module.modes) {
+                if witchy_canonical_source::source::source_execution_mode(f, &module.modes).is_opt() {
                     c.fn_opt_provenance
                         .insert(f.name.clone(), OptCallableContract::from_function(f));
                 }
@@ -12943,6 +12943,7 @@ fn run_check_selected(
             Item::Function(f) if selected_functions.is_none() && !f.bounds.is_empty() => {}
             Item::Function(f) => {
                 let source_callable = witchy_syntax::suspension::source_callable_name(f);
+                c.opt_mode = witchy_canonical_source::source::source_execution_mode(f, &module.modes).is_opt();
                 c.check_function(f)
                     .map_err(|e| at_loc(e, c.cur_line, &source_callable, &c.cur_module))?
             }

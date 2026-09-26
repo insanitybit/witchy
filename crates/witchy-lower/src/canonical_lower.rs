@@ -1490,12 +1490,15 @@ if capability_imports.contains("build_out_write_at") {
             functions.push(synthesize_external_wrapper(function_id, signature, import));
             continue;
         }
+        let item_ordinal = u32::try_from(item_index).map_err(|_| CanonicalLoweringError::IdOverflow)?;
+        let execution_mode = source.view().source_execution_mode_at(item_ordinal)
+            .ok_or_else(|| CanonicalLoweringError::InvalidCheckedFunctionType(function.name.clone()))?;
         let lowered = lower_function(
             function,
             &function.body,
             function_id,
-            u32::try_from(item_index).map_err(|_| CanonicalLoweringError::IdOverflow)?,
-            witchy_syntax::linker::source_callable_is_opt(function, &typed.module().modes),
+            item_ordinal,
+            execution_mode.is_opt(),
             Vec::new(),
             &lambda_names,
             signature,
@@ -1548,12 +1551,14 @@ if capability_imports.contains("build_out_write_at") {
     let mut closure_bindings = Vec::new();
     for lambda in &lambda_functions {
         let signature = &signatures[lambda.signature_id.get() as usize];
+        let execution_mode = source.view().source_execution_mode_at(lambda.item_index)
+            .ok_or_else(|| CanonicalLoweringError::InvalidCheckedFunctionType(lambda.synthesized.name.clone()))?;
         functions.push(lower_function(
             &lambda.synthesized,
             lambda.body,
             lambda.function_id,
             lambda.item_index,
-            witchy_syntax::linker::source_callable_is_opt(&lambda.synthesized, &typed.module().modes),
+            execution_mode.is_opt(),
             lambda.lambda_path.clone(),
             &lambda_names,
             signature,

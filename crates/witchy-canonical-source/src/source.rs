@@ -19,6 +19,60 @@ use crate::closure::ClosureWitnessManifest;
 use crate::storage::{ManagedAggregateFieldTransfer, OpaqueOwnerEvidence, StoragePlan};
 use crate::specialization::LogicalSpecializationIdentity;
 
+/// Declaration-owned execution mode for a source callable. A deferred task
+/// executes its body's mode; the site that constructs or awaits it cannot
+/// relabel that body. This is a source judgment, not a Task value proof.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourceExecutionMode { Normal, Opt }
+
+impl SourceExecutionMode {
+    pub fn is_opt(self) -> bool { self == Self::Opt }
+}
+
+/// Resolve linked callables against the module that declared them, including
+/// generated async resumes and closure bodies. Unlinked source uses its own
+/// module mode. This same judgment serves checking and canonical lowering.
+pub fn source_execution_mode(function: &Function, modes: &[String]) -> SourceExecutionMode {
+    let opt = if let Some(owner) = witchy_syntax::linker::linked_source_module(function) {
+        modes.iter().any(|mode| mode == &format!("@opt:{owner}"))
+    } else if !function.name.contains('.') {
+        modes.iter().any(|mode| mode == "opt")
+    } else {
+        modes.iter().any(|mode| {
+            mode.strip_prefix("@opt:")
+                .and_then(|owner| function.name.strip_prefix(owner))
+                .is_some_and(|suffix| suffix.starts_with('.'))
+        })
+    };
+    if opt { SourceExecutionMode::Opt } else { SourceExecutionMode::Normal }
+}
+
+/// Resolve a diagnostic name only when its enclosing declaration is present
+/// in this exact module. Copy repair carries the mode directly in its fact.
+pub fn named_source_execution_mode(module: &Module, name: &str) -> Option<SourceExecutionMode> {
+    // The no-copy walker names nested lambda diagnostics by appending one
+    // `::<lambda>` per lexical body. Attribute those diagnostics to their
+    // checked enclosing declaration rather than interpreting the generated
+    // name's spelling as a source-module mode.
+    let mut enclosing = name;
+    for _ in 0..=128 {
+        if let Some(mode) = module.items.iter().find_map(|item| match item {
+            Item::Function(function) if function.name == enclosing => {
+                Some(source_execution_mode(function, &module.modes))
+            }
+            Item::Impl(implementation) => implementation.methods.iter().find_map(|method| {
+                (format!("{}__{}", implementation.type_name, method.name) == enclosing)
+                    .then(|| source_execution_mode(method, &module.modes))
+            }),
+            _ => None,
+        }) {
+            return Some(mode);
+        }
+        enclosing = enclosing.strip_suffix("::<lambda>")?;
+    }
+    None
+}
+
 /// Evidence that exact source bytes crossed the checked type-checking boundary.
 ///
 /// Its fields are private so a caller cannot choose a digest and present it as
@@ -233,6 +287,16 @@ impl<'s> CanonicalSourceView<'s> {
 
     /// The exact checked AST every other fact in this view is keyed on.
     pub fn module(&self) -> &'s Module { self.module }
+
+    /// Only a function occupying this ordinal in the checked module can
+    /// authorize a body mode. Generated lambdas use their checked enclosing
+    /// function's ordinal, so they cannot supply a forged owner marker.
+    pub fn source_execution_mode_at(&self, ordinal: u32) -> Option<SourceExecutionMode> {
+        match self.module.items.get(ordinal as usize)? {
+            Item::Function(function) => Some(source_execution_mode(function, &self.module.modes)),
+            _ => None,
+        }
+    }
 
     /// The declared types of the checked module, keyed by bare and
     /// entry-qualified name (see `aggregates::type_definitions`).
