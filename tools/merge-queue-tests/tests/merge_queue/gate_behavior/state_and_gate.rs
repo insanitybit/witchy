@@ -1662,3 +1662,92 @@ fn a_gate_starved_by_the_cargo_lock_is_named_in_the_timeout_reason() {
     // No lock contention at all: nothing to say.
     assert_eq!(note("     Summary [ 12.0s] 10 tests run: 10 passed\n"), "");
 }
+
+/// The queue-fixture shard starts once the product nextest run announces
+/// itself (its Cargo build is done) and overlaps that run, while its output is
+/// still replayed inside its own stage and its status still decides the gate.
+#[test]
+fn queue_fixtures_overlap_the_product_test_run_but_report_in_their_own_stage() {
+    let root = workspace_root();
+    let temp = TempDir::new();
+    let bin = temp.path().join("bin");
+    fs::create_dir(&bin).expect("create fake tool directory");
+    let queue_started = temp.path().join("queue-started");
+    // The product run announces itself, then waits (bounded) for the queue
+    // shard to start; it reports whether the shard ran beside it.
+    let fake_tools = [
+        (
+            "cargo",
+            "#!/bin/sh\n\
+             if [ \"$1\" != nextest ] || [ \"$2\" != run ]; then exit 0; fi\n\
+             case \" $* \" in\n\
+               *' -p merge-queue-tests '*)\n\
+                 : >\"$QUEUE_STARTED\"\n\
+                 echo QUEUE-FIXTURE-OUTPUT\n\
+                 sleep 0.3\n\
+                 exit \"${FAKE_QUEUE_STATUS:-0}\" ;;\n\
+             esac\n\
+             echo ' Nextest run ID fake with nextest profile: default' >&2\n\
+             i=0\n\
+             while [ ! -e \"$QUEUE_STARTED\" ] && [ \"$i\" -lt \"$FAKE_WAIT_TICKS\" ]; do sleep 0.1; i=$((i + 1)); done\n\
+             if [ -e \"$QUEUE_STARTED\" ]; then echo PRODUCT-SAW-QUEUE; else echo PRODUCT-ALONE; fi\n\
+             exit 0\n",
+        ),
+        (
+            "git",
+            "#!/bin/sh\nif [ \"$1\" = rev-parse ] && [ \"$2\" = HEAD ]; then echo; fi\nexit 0\n",
+        ),
+        ("rustup", "#!/bin/sh\nif [ \"$1\" = which ]; then echo /usr/bin/true; fi\nexit 0\n"),
+        (
+            "find",
+            "#!/bin/sh\nif [ \"$1\" = src ]; then exit 0; fi\n\
+             PATH=/usr/bin:/bin:/usr/sbin:/sbin exec find \"$@\"\n",
+        ),
+    ];
+    for (name, body) in fake_tools {
+        let tool = bin.join(name);
+        fs::write(&tool, body).expect("write fake tool");
+        fs::set_permissions(&tool, fs::Permissions::from_mode(0o755)).expect("chmod fake tool");
+    }
+    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default());
+    let gate = |overlap: &str, queue_status: &str, wait_ticks: &str| {
+        let _ = fs::remove_file(&queue_started);
+        let output = check_sh(&root, &["--fast"])
+            .env("PATH", &path)
+            .env("CARGO_TARGET_DIR", temp.path().join("target"))
+            .env("WITCHY_GATE_QUEUE_INFRA", "1")
+            .env("WITCHY_GATE_QUEUE_INFRA_OVERLAP", overlap)
+            .env("QUEUE_STARTED", &queue_started)
+            .env("FAKE_QUEUE_STATUS", queue_status)
+            .env("FAKE_WAIT_TICKS", wait_ticks)
+            .env("WITCHY_STAGE_HEARTBEAT_INTERVAL", "0")
+            .output()
+            .expect("run fake fast gate");
+        let stdout = String::from_utf8(output.stdout).expect("check output is utf8");
+        (output.status.success(), stdout)
+    };
+    let queue_stage = |stdout: &str| stdout.find("] queue infrastructure (isolated)").unwrap();
+
+    let (green, stdout) = gate("1", "0", "100");
+    assert!(green, "overlapped fake gate failed: {stdout}");
+    assert!(stdout.contains("PRODUCT-SAW-QUEUE"), "shard did not overlap the product run: {stdout}");
+    let queue_output = stdout.find("QUEUE-FIXTURE-OUTPUT").expect("shard output replayed");
+    assert!(queue_output > queue_stage(&stdout), "shard output leaked into the product stage: {stdout}");
+    assert!(
+        stdout.contains("\"kind\":\"background\"") && stdout.contains("queue infrastructure (overlapped shard)"),
+        "overlapped shard emitted no background timing: {stdout}",
+    );
+
+    let (green, stdout) = gate("1", "3", "100");
+    assert!(!green, "a red overlapped shard must fail the gate: {stdout}");
+    assert!(
+        stdout.contains("QUEUE-FIXTURE-OUTPUT")
+            && stdout.rfind("==> [").unwrap() < queue_stage(&stdout),
+        "a red shard must fail in its own stage: {stdout}",
+    );
+
+    let (green, stdout) = gate("0", "0", "5");
+    assert!(green, "sequential fake gate failed: {stdout}");
+    assert!(stdout.contains("PRODUCT-ALONE"), "opt-out still overlapped: {stdout}");
+    assert!(stdout.find("QUEUE-FIXTURE-OUTPUT").unwrap() > queue_stage(&stdout));
+}

@@ -290,15 +290,25 @@ without treating synthetic log heartbeats as liveness.
 
 **Diff-scoped queue infrastructure.** `tools/merge-queue-tests` launches detached
 coordinators, process groups, lock holders, and nested Git repositories. It is
-excluded from the concurrent workspace test stage and runs as an isolated shard
+excluded from the workspace nextest run and runs as its own nextest shard
 with bounded concurrency when the batch changes the queue substrate. The coordinator
 sets `WITCHY_GATE_QUEUE_INFRA=1` for changes to the queue/check scripts, their
 nextest configuration, or their focused tests. A batch whose every path is
 queue-core (`merge-queue.sh`, `check.sh`, `test-for-paths.sh`, the queue
 fixtures, and riding documentation) is `queue_infra_only`: it runs that shard
 and does **not** launch unfiltered `--workspace` nextest. The shard defaults to
-three concurrent fixtures; each owns its repository, state root, and process
-group. Operators can set `WITCHY_QUEUE_INFRA_JOBS` for reliability measurements,
+six concurrent fixtures; each owns its repository, state root, and process
+group. When a product run precedes it, the shard never runs beside the
+compiler but does overlap the product TESTS: `check.sh` starts it in the
+background once the product run prints `Nextest run ID` (its Cargo build is
+done), captures its output, and the later `queue infrastructure (isolated)`
+stage replays that output and returns the shard's status. The log therefore
+keeps one stage per leg (the watchdog's `tests` budget, red classification, and
+failing-test extraction are unchanged); the shard's true span is a
+`WITCHY_TIMING` record of kind `background` named `queue infrastructure
+(overlapped shard)`. Sequentially the gate idled through each leg's tail
+(2026-09-26: a 112s product run, then 132s of fixtures).
+`WITCHY_GATE_QUEUE_INFRA_OVERLAP=0` restores the strictly sequential shard. Operators can set `WITCHY_QUEUE_INFRA_JOBS` for reliability measurements,
 run the same shard directly with `./scripts/check.sh --queue-infra`, or force it
 into an exact-master baseline with `WITCHY_GATE_QUEUE_INFRA=1 ./scripts/check.sh`.
 

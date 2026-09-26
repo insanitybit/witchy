@@ -271,17 +271,28 @@ if [ -n "$gate_deferred" ]; then
 fi
 
 # Queue fixtures spawn detached coordinators, process groups, lock holders, and
-# nested throwaway Git repositories. Running them beside 2,000 product tests
-# makes their bounded readiness assertions measure machine contention instead
-# of queue behavior. The coordinator enables this shard only when the batch
+# nested throwaway Git repositories. Scheduling them inside the product run
+# would put them beside rustc and at the product run's width, so they run as
+# their own bounded-width nextest shard. The coordinator enables it only when the batch
 # touches queue infrastructure; operators can force it for exact-master
-# reliability baselines. It runs after product/background work so process and
-# timing assertions see an idle compiler and reuse the already-built test binary.
+# reliability baselines. It never runs beside the COMPILER: it starts only once
+# the product nextest run announces itself (its Cargo build is finished) and
+# reuses the already-built test binary. It then overlaps the product test run
+# rather than following it: sequentially, the gate idled through the long tail
+# of each leg (2026-09-26: 112s product run, then 132s of fixtures at a mean
+# width of 5.6). Its output is captured and replayed in its own stage, so the
+# log still reads leg by leg. WITCHY_GATE_QUEUE_INFRA_OVERLAP=0 restores the
+# strictly sequential shard for reliability baselines.
 queue_infra="${WITCHY_GATE_QUEUE_INFRA:-0}"
 queue_infra_jobs="${WITCHY_QUEUE_INFRA_JOBS:-6}"
+queue_infra_overlap="${WITCHY_GATE_QUEUE_INFRA_OVERLAP:-1}"
 case "$queue_infra" in
     0 | 1) ;;
     *) echo "check.sh: WITCHY_GATE_QUEUE_INFRA must be 0 or 1" >&2; exit 2 ;;
+esac
+case "$queue_infra_overlap" in
+    0 | 1) ;;
+    *) echo "check.sh: WITCHY_GATE_QUEUE_INFRA_OVERLAP must be 0 or 1" >&2; exit 2 ;;
 esac
 case "$queue_infra_jobs" in
     '' | *[!0-9]* | 0)
@@ -734,7 +745,106 @@ run_product_tests() {
     if [ "${#test_cmd_extra[@]}" -gt 0 ]; then
         "${test_cmd_extra[@]}" || return "$?"
     fi
-    "${test_cmd[@]}"
+    if [ -z "$queue_overlap_dir" ]; then
+        "${test_cmd[@]}"
+        return
+    fi
+    # Copy the product stream so the overlap launcher can see nextest's run
+    # announcement. pipefail keeps nextest's status, not tee's.
+    local product_status=0
+    "${test_cmd[@]}" 2>&1 | tee -a "$queue_overlap_dir/product.log" || product_status=$?
+    : >"$queue_overlap_dir/product.done"
+    return "$product_status"
+}
+
+# Queue-fixture overlap (see WITCHY_GATE_QUEUE_INFRA_OVERLAP above). The
+# launcher waits for the product run's `Nextest run ID` line, the stable
+# boundary after which its Cargo build has released the target, then runs the
+# fixture shard with output captured to a file. `queue_infra_stage` later
+# replays that file in the ordinary "queue infrastructure" stage and returns
+# the shard's status, so the watchdog, red classification, and failing-test
+# extraction see the same log shape as the sequential shard. If the product
+# run never announced itself, nothing started and the stage runs the shard in
+# the foreground exactly as before.
+queue_overlap_dir=""
+queue_overlap_launcher=""
+arm_queue_overlap() {
+    [ "$queue_infra" -eq 1 ] && [ "$queue_infra_overlap" -eq 1 ] || return 0
+    [ "${test_cmd[*]}" != true ] || return 0
+    cargo nextest --version >/dev/null 2>&1 || return 0
+    queue_overlap_dir="$(mktemp -d "${TMPDIR:-/tmp}/witchy-queue-overlap-XXXXXX")"
+    : >"$queue_overlap_dir/product.log"
+    local dir="$queue_overlap_dir"
+    (
+        while ! grep -aqF 'Nextest run ID ' "$dir/product.log" 2>/dev/null; do
+            if [ -e "$dir/product.done" ]; then : >"$dir/not-started"; exit 0; fi
+            sleep 0.5
+        done
+        date +%s >"$dir/started"
+        # The product build just produced these binaries; an agent's seed
+        # refresh must not swap files under the product run still executing.
+        WITCHY_SEED_REFRESH=off "${queue_infra_cmd[@]}" >"$dir/queue.log" 2>&1 &
+        echo "$!" >"$dir/queue.pid"
+        shard_status=0
+        wait "$!" || shard_status=$?
+        date +%s >"$dir/finished"
+        echo "$shard_status" >"$dir/status"
+    ) &
+    queue_overlap_launcher=$!
+    trap stop_queue_overlap EXIT
+}
+
+stop_queue_overlap() {
+    [ -n "$queue_overlap_dir" ] || return 0
+    local dir="$queue_overlap_dir"
+    queue_overlap_dir=""
+    : >"$dir/product.done" 2>/dev/null || true
+    if [ -s "$dir/queue.pid" ] && [ ! -e "$dir/status" ]; then
+        kill -TERM "$(cat "$dir/queue.pid")" 2>/dev/null || true
+    fi
+    wait "$queue_overlap_launcher" 2>/dev/null || true
+    rm -rf "$dir"
+}
+
+queue_infra_stage() {
+    local dir="$queue_overlap_dir"
+    if [ -z "$dir" ]; then
+        "${queue_infra_cmd[@]}"
+        return
+    fi
+    : >"$dir/product.done"
+    while [ ! -e "$dir/started" ] && [ ! -e "$dir/not-started" ]; do
+        sleep 0.1
+    done
+    if [ ! -e "$dir/started" ]; then
+        stop_queue_overlap
+        "${queue_infra_cmd[@]}"
+        return
+    fi
+    local started; started="$(cat "$dir/started")"
+    printf 'check.sh: queue fixtures started at t+%ds beside the product test run\n' \
+        "$(( started - t_start ))"
+    local offset=0 size shard_done
+    while :; do
+        shard_done=0
+        [ -e "$dir/status" ] && shard_done=1
+        size="$(wc -c <"$dir/queue.log" | tr -d ' ')"
+        if [ "$size" -gt "$offset" ]; then
+            tail -c "+$((offset + 1))" "$dir/queue.log" | head -c "$((size - offset))"
+            offset="$size"
+        fi
+        [ "$shard_done" -eq 1 ] && break
+        sleep 1
+    done
+    local shard_status finished
+    shard_status="$(cat "$dir/status")"
+    finished="$(cat "$dir/finished")"
+    local shard_state="green"
+    [ "$shard_status" -eq 0 ] || shard_state="red"
+    emit_timing background "$step" "queue infrastructure (overlapped shard)" \
+        "$shard_state" "$started" "$finished"
+    stop_queue_overlap
+    return "$shard_status"
 }
 
 # Progress channel for the bounded macOS list phase: the list wrapper appends
@@ -993,11 +1103,12 @@ if [ "$fast" -eq 1 ]; then
     if [ "${#preflight_cmd[@]}" -gt 0 ]; then
         run "preflight (tests that red the last attempt)" "${preflight_cmd[@]}"
     fi
-    run "tests (workspace)" run_product_tests
     # Product discovery already builds the excluded merge_queue test binary.
-    # Run its hermetic shard after all product work so it reuses that artifact
-    # and no background compiler load can distort process/timing assertions.
-    [ "$queue_infra" -eq 0 ] || run "queue infrastructure (isolated)" "${queue_infra_cmd[@]}"
+    # Its hermetic shard reuses that artifact, starting once the product build
+    # is done and overlapping the product test run.
+    arm_queue_overlap
+    run "tests (workspace)" run_product_tests
+    [ "$queue_infra" -eq 0 ] || run "queue infrastructure (isolated)" queue_infra_stage
     record_shard_receipt fast
     printf '\n\033[1;32mfast gate green\033[0m — run without --fast before push (fmt + landing checks)\n'
     exit 0
@@ -1032,6 +1143,7 @@ fi
 if [ "${#preflight_cmd[@]}" -gt 0 ]; then
     run "preflight (tests that red the last attempt)" "${preflight_cmd[@]}"
 fi
+arm_queue_overlap
 run "tests (workspace)"        run_product_tests
 # Test execution is a few seconds; compiling its binaries is the expensive
 # part. Do not turn a loaded-host timing outlier into another Cargo invocation
@@ -1046,10 +1158,10 @@ fi
 run "prose style (no em dashes)"  prose_em_dash_check
 
 # Product nextest compiles every integration binary before applying its
-# filterset, including merge_queue. Reuse that artifact only after every
-# compiler leg has stopped, keeping fixture timing isolated without paying a
-# duplicate workspace build at the front of the gate.
-[ "$queue_infra" -eq 0 ] || run "queue infrastructure (isolated)" "${queue_infra_cmd[@]}"
+# filterset, including merge_queue. The shard reuses that artifact once the
+# compiler has stopped (arm_queue_overlap above); this stage replays its
+# captured output and returns its status without a duplicate workspace build.
+[ "$queue_infra" -eq 0 ] || run "queue infrastructure (isolated)" queue_infra_stage
 
 if [ "$gate_skip_rust_class" -eq 1 ]; then
     printf 'check.sh: skipping rust-class (WITCHY_GATE_SKIP_RUST_CLASS=1; --full/CI still run it)\n'
