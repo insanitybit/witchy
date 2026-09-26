@@ -4,7 +4,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
-use witchy_syntax::ast::{Item, Module, Type, TypeDef, TypeQual};
+use witchy_syntax::ast::{Item, MatchArm, Module, Pattern, Type, TypeDef, TypeQual};
 
 use crate::abi::CanonicalScalarKind;
 use crate::aggregates::{ScalarAggregateShape, ViewCarrierPlan, instantiated_declared_fields, scalar_aggregate_shape, view_carrier_plan};
@@ -790,6 +790,47 @@ impl<'a> OpaqueOwnerEvidence<'a> {
         active.remove(ty);
         result
     }
+}
+
+/// A tagged aggregate can transfer its affine fields through a match only
+/// when each successful arm binds every such field exactly once. The frontend
+/// and lowerer use this same shape and pattern judgment; physical nullable
+/// slots and owner-token moves still require SafeWIR validation.
+pub fn consuming_tagged_match_shape(
+    ty: &Type,
+    arms: &[MatchArm],
+    definitions: &BTreeMap<String, TypeDef>,
+) -> Option<ScalarAggregateShape> {
+    if !StoragePlan::classify(ty, definitions, |_| Some(0)).requires_affine_owner_token() {
+        return None;
+    }
+    let shape = scalar_aggregate_shape(ty, definitions).filter(|shape| shape.tagged)?;
+    if arms.is_empty() || arms.iter().any(|arm| {
+        if arm.guard.is_some() {
+            return true;
+        }
+        let (name, args) = match &arm.pattern {
+            Pattern::Ctor { name, args } => (name, args),
+            Pattern::AnonCtor { tag, args } => (tag, args),
+            _ => return true,
+        };
+        let Some((_, variant)) = shape.variant(name) else {
+            return true;
+        };
+        args.len() != variant.arity || args.iter().enumerate().any(|(offset, arg)| {
+            let field = &shape.fields[variant.first_field + offset];
+            match arg {
+                Pattern::Var(name) if name != "_" => false,
+                Pattern::Var(_) | Pattern::Wildcard => StoragePlan::classify(
+                    field, definitions, |_| Some(0),
+                ).requires_affine_owner_token(),
+                _ => true,
+            }
+        })
+    }) {
+        return None;
+    }
+    Some(shape)
 }
 
 impl StoragePlan {

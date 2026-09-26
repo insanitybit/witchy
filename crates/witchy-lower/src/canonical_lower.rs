@@ -6871,15 +6871,12 @@ impl FunctionLowerer<'_> {
             return Err(CanonicalLoweringError::UnsupportedExpression("empty match"));
         }
         let scrutinee_type = self.expression_type(scrutinee)?;
-        let consuming = StoragePlan::classify(&scrutinee_type, self.definitions, |_| Some(0))
+        let affine = StoragePlan::classify(&scrutinee_type, self.definitions, |_| Some(0))
             .requires_affine_owner_token();
-        if consuming && (!scalar_aggregate_shape(&scrutinee_type, self.definitions)
-            .is_some_and(|shape| shape.tagged)
-            || arms.iter().any(|arm| arm.guard.is_some() || !matches!(
-                &arm.pattern,
-                Pattern::Ctor { args, .. } | Pattern::AnonCtor { args, .. }
-                    if args.iter().all(|argument| matches!(argument, Pattern::Var(_) | Pattern::Wildcard))
-            ))) {
+        let consuming_shape = affine.then(|| witchy_canonical_source::storage::consuming_tagged_match_shape(
+            &scrutinee_type, arms, self.definitions,
+        )).flatten();
+        if affine && consuming_shape.is_none() {
             return Err(CanonicalLoweringError::UnsupportedExpression(
                 "affine aggregate match lacks a consuming tagged-pattern proof",
             ));
@@ -6940,7 +6937,7 @@ impl FunctionLowerer<'_> {
             // another alternative, and a tail body retains one source witness.
             let mut next_block = None;
             let (pattern_bindings, _) = self.lower_pattern_decision(
-                scrutinee, &arm.pattern, &scrutinee_type, &mut next_block, consuming,
+                scrutinee, &arm.pattern, &scrutinee_type, &mut next_block, consuming_shape.as_ref(),
             )?;
             let mut retry_blocks = next_block.into_iter().collect::<Vec<_>>();
             let shadowed_outer = pattern_bindings.iter()
@@ -7303,12 +7300,12 @@ impl FunctionLowerer<'_> {
         pattern: &Pattern,
         scrutinee_type: &Type,
         failure: &mut Option<BlockId>,
-        consuming: bool,
+        consuming_shape: Option<&ScalarAggregateShape>,
     ) -> Result<(Vec<(String, ValueId)>, bool), CanonicalLoweringError> {
         let condition = self.match_pattern_condition(scrutinee, pattern, scrutinee_type)?;
         let refutable = self.branch_pattern_condition(condition, failure)?;
-        let bindings = if consuming {
-            self.lower_consuming_tagged_pattern(scrutinee, pattern, scrutinee_type)?
+        let bindings = if let Some(shape) = consuming_shape {
+            self.lower_consuming_tagged_pattern(scrutinee, pattern, scrutinee_type, shape)?
         } else {
             self.lower_match_pattern(scrutinee, pattern, scrutinee_type)?
         };
@@ -7324,10 +7321,8 @@ impl FunctionLowerer<'_> {
         scrutinee: ValueId,
         pattern: &Pattern,
         source: &Type,
+        shape: &ScalarAggregateShape,
     ) -> Result<Vec<(String, ValueId)>, CanonicalLoweringError> {
-        let shape = scalar_aggregate_shape(source, self.definitions)
-            .filter(|shape| shape.tagged)
-            .ok_or(CanonicalLoweringError::UnsupportedExpression("consuming tagged shape"))?;
         let (Pattern::Ctor { name, args } | Pattern::AnonCtor { tag: name, args }) = pattern else {
             return Err(CanonicalLoweringError::UnsupportedExpression("consuming tagged pattern"));
         };
