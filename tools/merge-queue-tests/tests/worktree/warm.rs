@@ -691,6 +691,13 @@ fn cargo_shim_keeps_isolated_targets_off_the_workspace_native_feature_graph() {
         "unification=off resolver=unset channel=unset\n"
     );
 
+    let types = run(&["nextest", "run", "-p", "witchy-types"]);
+    assert!(types.status.success(), "{}", String::from_utf8_lossy(&types.stderr));
+    assert_eq!(
+        String::from_utf8_lossy(&types.stdout),
+        "unification=off resolver=unset channel=unset\n"
+    );
+
     let structural = run(&[
         "nextest",
         "run",
@@ -800,6 +807,13 @@ fn cargo_shim_keeps_isolated_and_native_artifacts_in_separate_targets() {
         ),
         "populated pure target did not return to learned mode: {}",
         String::from_utf8_lossy(&warm_lower.stdout),
+    );
+
+    let types = run(&["nextest", "run", "-p", "witchy-types"]);
+    assert!(types.status.success(), "{}", String::from_utf8_lossy(&types.stderr));
+    assert_eq!(
+        String::from_utf8_lossy(&types.stdout),
+        String::from_utf8_lossy(&warm_lower.stdout)
     );
 
     let native = run(&["build", "-p", "witchy"]);
