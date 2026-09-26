@@ -110,24 +110,26 @@ pid_is_alive() {
 }
 
 sha256_file() {
-    if command -v shasum >/dev/null 2>&1; then
-        shasum -a 256 "$1" | awk '{ print $1 }'
-    elif command -v sha256sum >/dev/null 2>&1; then
+    # Prefer native hashing for large test executables. Perl shasum produces
+    # the same digest but costs substantially more CPU on the macOS edit loop.
+    if command -v sha256sum >/dev/null 2>&1; then
         sha256sum "$1" | awk '{ print $1 }'
     elif command -v openssl >/dev/null 2>&1; then
         openssl dgst -sha256 "$1" | awk '{ print $NF }'
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 "$1" | awk '{ print $1 }'
     else
         return 1
     fi
 }
 
 sha256_stream() {
-    if command -v shasum >/dev/null 2>&1; then
-        shasum -a 256 | awk '{ print $1 }'
-    elif command -v sha256sum >/dev/null 2>&1; then
+    if command -v sha256sum >/dev/null 2>&1; then
         sha256sum | awk '{ print $1 }'
     elif command -v openssl >/dev/null 2>&1; then
         openssl dgst -sha256 | awk '{ print $NF }'
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 | awk '{ print $1 }'
     else
         return 1
     fi
