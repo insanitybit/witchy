@@ -361,16 +361,16 @@ export MBX_TARGET_SEED="${MBX_TARGET_SEED:-1}"
 # managed storage; disable only the misleading aggregate size trigger.
 export MBX_TARGET_MAX_SIZE="${MBX_TARGET_MAX_SIZE:-none}"
 
-# Bound the rest of the shared store independently of managed-target CoW
-# accounting. The upstream defaults (20 GiB of actions and 45 GiB of learned
-# incremental state) are too large for a host where agents also keep private
-# Cargo targets: on 2026-09-26 this store reached 38 GiB while the volume fell
-# to 14 GiB free. The total cap is a final guard over actions, incremental
-# state, generated output, and managed targets. Every object here is a cache;
-# eviction costs a rebuild, never source or history.
+# Bound actions and learned/generated state independently. MBX's combined
+# logical cap also budgets managed targets even with TARGET_MAX_SIZE=none:
+# it can evict warm CoW targets and leave no allowance for action results.
+# The merge coordinator instead guards physical free space (40 GiB low,
+# 60 GiB target by default) and reclaims idle caches. Without a coordinator,
+# standalone builds must monitor disk space or set an explicit total cap.
+# Abandoned-checkout cleanup and age-based collection still apply.
 export MBX_GC_MAX_SIZE="${MBX_GC_MAX_SIZE:-8GiB}"
 export MBX_GC_INCREMENTAL_MAX_SIZE="${MBX_GC_INCREMENTAL_MAX_SIZE:-8GiB}"
-export MBX_GC_MAX_TOTAL_SIZE="${MBX_GC_MAX_TOTAL_SIZE:-32GiB}"
+export MBX_GC_MAX_TOTAL_SIZE="${MBX_GC_MAX_TOTAL_SIZE:-none}"
 
 # Never run mbx's garbage collector inside a build. mbx's automatic sweep
 # ("gc.auto": sweep after a build when collection is due) runs in the

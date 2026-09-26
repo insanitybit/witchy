@@ -688,7 +688,7 @@ fn cargo_shim_schedules_queue_tooling_through_mbx() {
 
 /// Cargo 1.100 target seeding requires managed targets. The shim enables both
 /// features by default, preserves explicit caller overrides, disables the
-/// misleading APFS target-size budget, caps the complete cache store, and
+/// misleading APFS target and combined budgets, caps actions/incremental state, and
 /// still runs its pinned mbx.
 #[test]
 fn cargo_shim_runs_the_pinned_mbx_with_managed_target_seeding() {
@@ -744,7 +744,7 @@ fn cargo_shim_runs_the_pinned_mbx_with_managed_target_seeding() {
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
     assert_eq!(
         String::from_utf8_lossy(&output.stdout),
-        "pinned views=1 seed=1 target=none action=8GiB incremental=8GiB total=32GiB store=store-9.9.9\n"
+        "pinned views=1 seed=1 target=none action=8GiB incremental=8GiB total=none store=store-9.9.9\n"
     );
 
     // Before the pinned version is installed, the legacy link still runs,
@@ -754,7 +754,7 @@ fn cargo_shim_runs_the_pinned_mbx_with_managed_target_seeding() {
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
     assert_eq!(
         String::from_utf8_lossy(&output.stdout),
-        "link views=1 seed=1 target=none action=8GiB incremental=8GiB total=32GiB store=store-bin\n"
+        "link views=1 seed=1 target=none action=8GiB incremental=8GiB total=none store=store-bin\n"
     );
 
     let output = Command::new(root.join("scripts/bin/cargo"))
