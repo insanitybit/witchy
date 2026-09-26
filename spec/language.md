@@ -1110,8 +1110,11 @@ uses an owned GC result contract. SafeWIR binds its owner family to checked
 source and tracks whether each GC token came from an owned parameter, a fresh
 owner construction, or a retaining clone. Borrowed and cloned tokens cannot
 satisfy an owned GC result; direct and indirect calls and tail calls preserve
-that distinction. A recursive `unique` GC aggregate can cross an `own`
-parameter and result boundary by transferring its owner token.
+that distinction. An owned GC token crosses an `own` parameter and result
+boundary only when its source and owner-family proofs exist. A
+`must BoxView(&Int)` follows the admitted direct path: its fresh GC
+owner returns from a helper, crosses an `own` parameter, and is consumed by
+a match.
 Conditional owned-GC result relays still fail callable-contract validation,
 so the admitted path currently requires a direct owner transfer.
 Unsupported field representations still fail closed. Task scheduling with public

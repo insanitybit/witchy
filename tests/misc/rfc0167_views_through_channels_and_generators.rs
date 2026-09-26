@@ -40,23 +40,23 @@ fn main() -> Int:
 "#;
 
 const OWNED_GC_RESULT: &str = r#"
-sealed type Chain:
-    Done(Int)
-    Next(fn() -> Chain)
+must type BoxView:
+    BoxView(&Int)
 
-fn relay(own chain: unique Chain) -> unique Chain:
-    chain
+fn make() -> BoxView:
+    let n = 3
+    BoxView(&n)
+
+fn consume(own box: BoxView) -> Int:
+    match box:
+        BoxView(view) -> *view
 
 fn main() -> Int:
-    let chain: unique Chain = Done(7)
-    let moved = relay(chain)
-    match moved:
-        Done(n) -> n
-        Next(_) -> 0
+    consume(make())
 "#;
 
 #[test]
-fn channel_handle_refusal_and_owned_gc_relay() {
+fn channel_handle_refusal_and_owned_gc_result() {
     let refusal = match witchy::resolve_std_only_checked(CHANNELS) {
         Err(error) => error,
         Ok(_) => panic!("live child handle must not enter a replayable continuation"),
@@ -72,7 +72,7 @@ fn channel_handle_refusal_and_owned_gc_relay() {
         .expect_lowered("copyable view and affine field have distinct storage transfers");
 
     let checked = witchy::resolve_std_only_checked(OWNED_GC_RESULT)
-        .expect("unique recursive GC aggregate has a checked owned result");
+        .expect("must GC aggregate has a checked owned result");
     let _ = witchy::codegen::compile_checked_module_artifact(&checked)
-        .expect_lowered("owned GC result transfers an exact input owner");
+        .expect_lowered("owned GC result transfers a constructed owner");
 }

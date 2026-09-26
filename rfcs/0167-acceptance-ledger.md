@@ -1026,8 +1026,11 @@ SafeWIR tracks owned origins through parameters, owner construction and
 extraction, direct and indirect calls, branches, and tail calls. Retaining
 operations demote the source token's owned proof, while a borrowed or cloned
 token cannot satisfy `OwnedGc`. A focused checked-source and unoptimized
-SafeWIR smoke admits construction, an `own unique` relay, and consuming match
-for recursive `Chain`. This is compiler admission only; no hand-computed Wasm
+SafeWIR smoke now admits construction, return, an `own` call, and consuming
+match for `must BoxView(&Int)`. The lowerer's representation probe confirmed
+that `BoxView` is `Gc`, so this path exercises `OwnedGc`. The earlier `Chain`
+smoke used a `Ref` layout and was incorrectly labeled as GC; this corrects
+that checkpoint. This is compiler admission only; no hand-computed Wasm
 result or zero-leak audit is claimed, and no A–O row closes. The channel
 handle path remains blocked by replayable must capture; a separate opaque GC
 aggregate with a must field lacks consuming field extraction. A conditional
