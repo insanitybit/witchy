@@ -189,22 +189,15 @@ fn candidate(pointer: bool, mutation: Option<u8>) -> CanonicalModule<LoweredCand
 }
 
 pub fn unique_pop_checker_refuses_shared_container_missing_bounds_and_non_tail() {
-    for pointer in [false, true] {
-        check_initial_with_test_witness(candidate(pointer, None)).expect("positive initial check");
-        for mutation in 0..3 {
-            let module = candidate(pointer, Some(mutation));
-            assert!(check_initial_with_test_witness(module).is_err(), "mutation {mutation}, pointer={pointer}");
-        }
+    check_initial_with_test_witness(candidate(false, None)).expect("scalar initial check");
+    for mutation in 0..3 {
+        assert!(check_initial_with_test_witness(candidate(false, Some(mutation))).is_err(), "scalar mutation {mutation}");
     }
-}
-
-pub fn unique_pop_rejects_live_prefix_overwrite_direct_moved_and_unknown() {
-    for mutation in [3, 4, 7] {
-        let result = check_initial_with_test_witness(candidate(true, Some(mutation)));
-        let error = match result {
-            Err(error) => format!("{error:?}"),
-            Ok(_) => panic!("live-prefix overwrite admitted: mutation {mutation}"),
-        };
-        assert!(error.contains("Store(overwrite initialized prefix)"), "mutation {mutation}: {error}");
-    }
+    // A raw pointer-bearing parameter has no checked source element plan.
+    // Fresh local stores do not grant that missing call-boundary authority.
+    let error = match check_initial_with_test_witness(candidate(true, None)) {
+        Err(error) => error,
+        Ok(_) => panic!("raw pointer pop lacks source proof"),
+    };
+    assert!(format!("{error:?}").contains("TakeLast(reference without exclusive element proof)"));
 }

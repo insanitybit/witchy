@@ -193,7 +193,6 @@ mod canonical_wasmir {
         }
         mod unique_pop {
             #[test] fn unique_pop_checker_refuses_shared_container_missing_bounds_and_non_tail() { witchy_wir::self_checks::canonical_wasmir::unique_pop::unique_pop_checker_refuses_shared_container_missing_bounds_and_non_tail() }
-            #[test] fn unique_pop_rejects_live_prefix_overwrite_direct_moved_and_unknown() { witchy_wir::self_checks::canonical_wasmir::unique_pop::unique_pop_rejects_live_prefix_overwrite_direct_moved_and_unknown() }
         }
         #[cfg(feature = "native")]
         mod unit_storage {
