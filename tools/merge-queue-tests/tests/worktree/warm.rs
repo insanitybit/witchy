@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use super::support::{TempRepo, git, workspace_root, write};
@@ -248,7 +248,9 @@ fn cargo_shim_defaults_to_learned_mode_unless_overridden() {
 #[test]
 fn cargo_shim_niced_agent_builds_leave_the_gate_at_full_priority() {
     let repo = temp_repo();
-    let root = repo.path();
+    // Keep PATH and cwd on the same spelling of macOS's /var -> /private/var.
+    let canonical_root = repo.path().canonicalize().expect("canonical fixture root");
+    let root = canonical_root.as_path();
     write(root, "scripts/bin/cargo", include_str!("../../../../scripts/bin/cargo"));
     write(
         root,
@@ -256,7 +258,10 @@ fn cargo_shim_niced_agent_builds_leave_the_gate_at_full_priority() {
         include_str!("../../../../scripts/feature-unification.sh"),
     );
     write(root, "fake-bin/cargo", "#!/bin/sh\necho \"nice=$(ps -o nice= -p $$ | tr -d ' ')\" >&2\n");
-    for executable in ["scripts/bin/cargo", "fake-bin/cargo"] {
+    write(root, "fake-bin/git", "#!/bin/sh\nprintf 'probe\\n' >> \"$SHIM_SETUP_LOG\"\nexit 1\n");
+    write(root, "fake-bin/rustc", "#!/bin/sh\nprintf 'sysroot\\n' >> \"$SHIM_SETUP_LOG\"\nexit 1\n");
+    write(root, "fake-bin/rustup", "#!/bin/sh\nexit 1\n");
+    for executable in ["scripts/bin/cargo", "fake-bin/cargo", "fake-bin/git", "fake-bin/rustc", "fake-bin/rustup"] {
         let status = Command::new("chmod")
             .args(["+x", executable])
             .current_dir(root)
@@ -264,17 +269,27 @@ fn cargo_shim_niced_agent_builds_leave_the_gate_at_full_priority() {
             .expect("mark fixture executable");
         assert!(status.success());
     }
-    let run = |envs: &[(&str, &str)]| {
+    let run = |envs: &[(&str, &str)], cross: bool| {
+        write(root, "setup.log", "");
         let path = std::env::join_paths(
-            std::iter::once(root.join("fake-bin"))
+            [root.join("scripts/bin"), root.join("fake-bin")].into_iter()
                 .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())),
         )
         .expect("fixture PATH");
-        let mut command = Command::new(root.join("scripts/bin/cargo"));
+        // Cover PATH lookup, an explicit relative path, and an absolute path.
+        let invocation = if cross { root.join("scripts/bin/cargo") }
+            else if envs.is_empty() { PathBuf::from("cargo") }
+            else { PathBuf::from("./scripts/bin/cargo") };
+        let mut command = Command::new(invocation);
+        if cross {
+            command.args(["build", "--target", "wasm32-unknown-unknown"]);
+        } else {
+            command.arg("metadata");
+        }
         command
-            .arg("metadata")
             .current_dir(root)
             .env("PATH", path)
+            .env("SHIM_SETUP_LOG", root.join("setup.log"))
             .env_remove("WITCHY_CARGO_SHIM_ACTIVE")
             .env_remove("WITCHY_CARGO_NICED")
             .env_remove("WITCHY_AGENT_NICE")
@@ -284,6 +299,10 @@ fn cargo_shim_niced_agent_builds_leave_the_gate_at_full_priority() {
         }
         let output = command.output().expect("run cargo shim fixture");
         assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        let expected_probes = if cross { "probe\nsysroot\n" } else { "probe\n" };
+        assert_eq!(std::fs::read_to_string(root.join("setup.log")).unwrap(), expected_probes,
+            "the nice re-exec repeated shim setup: {envs:?}, cross={cross}, stderr={}",
+            String::from_utf8_lossy(&output.stderr));
         String::from_utf8_lossy(&output.stderr).into_owned()
     };
     let base: i32 = String::from_utf8_lossy(
@@ -292,12 +311,16 @@ fn cargo_shim_niced_agent_builds_leave_the_gate_at_full_priority() {
     .trim()
     .parse()
     .expect("own nice");
-    let agent = run(&[]);
+    let agent = run(&[], false);
     assert!(agent.contains(&format!("nice={}", (base + 10).min(20))), "{agent}");
-    let gate = run(&[("WITCHY_GATE_SCOPE", "all")]);
+    let gate = run(&[("WITCHY_GATE_SCOPE", "all")], false);
     assert!(gate.contains(&format!("nice={base}")), "{gate}");
-    let opted_out = run(&[("WITCHY_AGENT_NICE", "off")]);
+    let opted_out = run(&[("WITCHY_AGENT_NICE", "off")], false);
     assert!(opted_out.contains(&format!("nice={base}")), "{opted_out}");
+    let already_niced = run(&[("WITCHY_CARGO_NICED", "1")], false);
+    assert!(already_niced.contains(&format!("nice={base}")), "{already_niced}");
+    let cross = run(&[], true);
+    assert!(cross.contains(&format!("nice={}", (base + 10).min(20))), "{cross}");
 }
 
 #[test]
