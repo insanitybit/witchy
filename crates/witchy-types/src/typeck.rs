@@ -2307,6 +2307,12 @@ impl Checker {
                 self.is_unique_value_binding(name)
                     || self.is_unique_storage_binding(name)
                     || self.ty_carries_unique_storage(ty)
+                    || (!self.is_consumed_binding(name)
+                        && ty_to_ast(&self.resolve(ty)).is_some_and(|source| {
+                            witchy_canonical_source::storage::StoragePlan::classify(
+                                &source, &self.canonical_definitions, |_| Some(0),
+                            ).requires_affine_owner_token()
+                        }))
             }
             Expr::As { expr, .. } | Expr::Unary { op: UnOp::Move, expr } => {
                 self.expression_carries_unique_storage(expr, ty)
