@@ -92,8 +92,7 @@ fn names(root: &std::path::Path) -> std::collections::BTreeSet<String> {
     std::fs::read_dir(root).unwrap().map(|entry| entry.unwrap().file_name().into_string().unwrap()).collect()
 }
 
-#[test]
-fn dir_storage_response_preflight_short_capacity_and_exact_prefix() {
+pub fn dir_storage_response_preflight_short_capacity_and_exact_prefix() {
     let (root, mut vm, grant) = setup(true);
     std::fs::write(root.path().join("bytes"), [0, 0xff, 9]).unwrap();
     let response = read_path(&mut vm, grant, "bytes");
@@ -116,8 +115,7 @@ fn dir_storage_response_preflight_short_capacity_and_exact_prefix() {
     assert!(dir_bytes_length(i32::MAX as usize + 1).is_err());
 }
 
-#[test]
-fn dir_storage_full_input_preflight_precedes_file_mutation() {
+pub fn dir_storage_full_input_preflight_precedes_file_mutation() {
     let (root, mut vm, grant) = setup(true);
     std::fs::write(root.path().join("keep"), b"original").unwrap();
     for operation in ["create", "replace", "write"] {
@@ -153,8 +151,7 @@ fn dir_storage_full_input_preflight_precedes_file_mutation() {
     assert_eq!(names(root.path()), ["keep".into()].into_iter().collect());
 }
 
-#[test]
-fn dir_storage_kind_rights_and_response_issuer_precede_memory() {
+pub fn dir_storage_kind_rights_and_response_issuer_precede_memory() {
     let (_root, mut vm, grant) = setup(false);
     let read_only = attenuate(&mut vm, grant, true, false, "");
     let write_only = attenuate(&mut vm, grant, false, true, "");
@@ -185,8 +182,7 @@ fn dir_storage_kind_rights_and_response_issuer_precede_memory() {
     error(size(&mut other, Some(response)).unwrap_err(), "another instance");
 }
 
-#[test]
-fn dir_storage_entry_policy_is_preserved_for_every_file_operation() {
+pub fn dir_storage_entry_policy_is_preserved_for_every_file_operation() {
     let (root, mut vm, grant) = setup(true);
     std::fs::write(root.path().join("keep.bin"), b"original").unwrap();
     let text_only = attenuate(&mut vm, grant, true, true, "ext:.txt");
@@ -208,8 +204,7 @@ fn dir_storage_entry_policy_is_preserved_for_every_file_operation() {
 }
 
 #[cfg(unix)]
-#[test]
-fn dir_storage_symlinks_never_acquire_outside_authority() {
+pub fn dir_storage_symlinks_never_acquire_outside_authority() {
     let (root, mut vm, grant) = setup(true);
     let outside = tempfile::tempdir().unwrap();
     std::fs::write(outside.path().join("secret"), b"outside").unwrap();
@@ -234,8 +229,7 @@ fn dir_storage_symlinks_never_acquire_outside_authority() {
     assert_eq!(std::fs::read(outside.path().join("secret")).unwrap(), b"outside");
 }
 
-#[test]
-fn dir_storage_imports_remain_grant_gated() {
+pub fn dir_storage_imports_remain_grant_gated() {
     let root = tempfile::tempdir().unwrap();
     for (name, read, write) in [("dir_create_new_at", true, false), ("dir_replace_at", true, false),
         ("dir_write_bytes_at", true, false), ("dir_read_bytes_at", false, true)]

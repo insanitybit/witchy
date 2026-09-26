@@ -52,12 +52,12 @@ fn write(mut caller: Caller<'_, VmState>, token: Option<Rooted<ExternRef>>,
         format!("write_out failed for `{}`: {error}", file.display_path().display())))
 }
 
-#[cfg(test)]
-mod tests {
+#[cfg(feature = "self-checks")]
+#[doc(hidden)]
+pub mod tests {
     use super::*;
 
-    #[test]
-    fn build_out_authentication_rejects_kind_session_and_rights() {
+    pub fn build_out_authentication_rejects_kind_session_and_rights() {
         let issuer = Arc::new(());
         let directory = crate::confine::ConfinedDir::open_ambient(&std::env::temp_dir()).unwrap();
         let valid = Authority { issuer: issuer.clone(), write: true, directory };
@@ -68,8 +68,7 @@ mod tests {
         assert!(authenticate(&issuer, &denied).unwrap_err().to_string().contains("write right"));
     }
 
-    #[test]
-    fn build_out_slices_are_bounded_and_strict_utf8() {
+    pub fn build_out_slices_are_bounded_and_strict_utf8() {
         assert_eq!(read_slice_str(b"abcd", 1, 2).unwrap(), "bc");
         for (bytes, start, length) in [(&b"abcd"[..], -1, 1), (&b"abcd"[..], 3, 2),
             (&b"\xff"[..], 0, 1), (&b"abcd"[..], 0, -1)] {

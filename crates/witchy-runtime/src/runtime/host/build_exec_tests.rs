@@ -63,8 +63,7 @@ fn script_fixture(body: &str) -> (tempfile::TempDir, Vm, Token) {
     (dir, vm, grant)
 }
 
-#[test]
-fn build_exec_authenticates_kind_session_and_execute_before_memory() {
+pub fn build_exec_authenticates_kind_session_and_execute_before_memory() {
     let mut vm = vm(Capabilities { exec_allow: Some(Vec::new()), ..Capabilities::none() }, false);
     let authority = mint(vm.store.data()).unwrap();
     let forged = Some(ExternRef::new(&mut vm.store, 15u32).unwrap());
@@ -85,8 +84,7 @@ fn build_exec_authenticates_kind_session_and_execute_before_memory() {
     assert!(vm.store.data().pending.is_none());
 }
 
-#[test]
-fn build_exec_requires_explicit_resolved_grants_and_never_looks_up_guest_paths() {
+pub fn build_exec_requires_explicit_resolved_grants_and_never_looks_up_guest_paths() {
     let absent = vm(Capabilities { exec: true, ..Capabilities::none() }, false);
     assert!(mint(absent.store.data()).unwrap_err().to_string().contains("no tool grant"));
     let unresolved = vm(Capabilities { exec_allow: Some(vec!["not-resolved".into()]), ..Capabilities::none() }, false);
@@ -107,8 +105,7 @@ fn build_exec_requires_explicit_resolved_grants_and_never_looks_up_guest_paths()
     assert!(vm.output().is_empty());
 }
 
-#[test]
-fn build_exec_validates_both_complete_utf8_slices_before_any_execution() {
+pub fn build_exec_validates_both_complete_utf8_slices_before_any_execution() {
     let (dir, mut vm, grant) = script_fixture("exit 0");
     let memory = vm.instance.get_memory(&mut vm.store, "memory").unwrap();
     memory.write(&mut vm.store, 0, b"worker").unwrap();
@@ -128,8 +125,7 @@ fn build_exec_validates_both_complete_utf8_slices_before_any_execution() {
     assert!(vm.output().is_empty());
 }
 
-#[test]
-fn build_exec_response_is_not_a_root_and_requires_current_response_issuer() {
+pub fn build_exec_response_is_not_a_root_and_requires_current_response_issuer() {
     let (mut vm, grant) = empty_grant_fixture();
     let response = Some(super::super::build_read::new_response(&mut vm.store, Some("output")).unwrap());
     assert_eq!(call(&mut vm, response, "worker", "").unwrap_err().root_cause().to_string(), "run_tool: wrong capability kind");

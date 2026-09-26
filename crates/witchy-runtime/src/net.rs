@@ -11,7 +11,7 @@ use std::io::{Read, Write};
 use std::net::TcpStream;
 #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
 use std::sync::Arc;
-#[cfg(all(not(target_arch = "wasm32"), feature = "native", any(test, feature = "test-support")))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native", any(feature = "self-checks", feature = "test-support")))]
 use std::sync::{LazyLock, Mutex};
 
 /// A connected byte stream behind a socket handle. Plain `TcpStream` and TLS
@@ -287,21 +287,21 @@ pub fn dial_with_timeout(
     }
 }
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "native", any(test, feature = "test-support")))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native", any(feature = "self-checks", feature = "test-support")))]
 static TEST_TLS_ROOTS: LazyLock<Mutex<std::collections::BTreeMap<u64, std::path::PathBuf>>> =
     LazyLock::new(|| Mutex::new(std::collections::BTreeMap::new()));
-#[cfg(all(not(target_arch = "wasm32"), feature = "native", any(test, feature = "test-support")))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native", any(feature = "self-checks", feature = "test-support")))]
 static NEXT_TEST_TLS_ROOT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 /// RAII registration for a hermetic test CA. Unlike mutating
 /// `WITCHY_TLS_EXTRA_ROOTS`, this is safe under parallel test execution: every
 /// live fixture contributes its own root, and dropping the guard removes only
 /// that registration.
-#[cfg(all(not(target_arch = "wasm32"), feature = "native", any(test, feature = "test-support")))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native", any(feature = "self-checks", feature = "test-support")))]
 #[doc(hidden)]
 pub struct TestTlsRootGuard(u64);
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "native", any(test, feature = "test-support")))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native", any(feature = "self-checks", feature = "test-support")))]
 #[doc(hidden)]
 pub fn register_test_tls_root(path: impl Into<std::path::PathBuf>) -> TestTlsRootGuard {
     use std::sync::atomic::Ordering;
@@ -313,7 +313,7 @@ pub fn register_test_tls_root(path: impl Into<std::path::PathBuf>) -> TestTlsRoo
     TestTlsRootGuard(id)
 }
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "native", any(test, feature = "test-support")))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native", any(feature = "self-checks", feature = "test-support")))]
 impl Drop for TestTlsRootGuard {
     fn drop(&mut self) {
         let removed = TEST_TLS_ROOTS
@@ -336,7 +336,7 @@ fn client_config() -> Arc<rustls::ClientConfig> {
         .into_iter()
         .map(std::path::PathBuf::from)
         .collect();
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(feature = "self-checks", feature = "test-support"))]
     let extra_paths = {
         let mut with_test_roots = extra_paths;
         with_test_roots.extend(
@@ -366,12 +366,12 @@ fn client_config() -> Arc<rustls::ClientConfig> {
     Arc::new(config)
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
-mod tests {
+#[cfg(all(feature = "self-checks", not(target_arch = "wasm32")))]
+#[doc(hidden)]
+pub mod tests {
     use super::*;
 
-    #[test]
-    fn listener_binds_only_the_concrete_identity_admitted_by_policy() {
+    pub fn listener_binds_only_the_concrete_identity_admitted_by_policy() {
         let allowed = vec!["127.0.0.1:0".to_string()];
         let listener = bind_admitted_listener(&allowed, "127.0.0.1:00000")
             .expect("numeric-equivalent admitted endpoint binds");

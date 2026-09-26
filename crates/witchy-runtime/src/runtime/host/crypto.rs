@@ -6,7 +6,7 @@ use super::secret::secret_material_ref;
 use crate::value::NativeValue as Value;
 
 #[path = "crypto_extensions.rs"]
-mod extensions;
+pub(in crate::runtime) mod extensions;
 
 pub(in crate::runtime) fn link_canonical_keyed(linker: &mut Linker<VmState>) -> Result<()> {
     linker.func_wrap("witchy", "crypto_sign_into", host_crypto_sign_into)?;
@@ -190,17 +190,20 @@ fn ed25519_status(args: &[Value]) -> Result<i64> {
     }
 }
 
-#[cfg(test)]
+#[cfg(feature = "self-checks")]
+#[doc(hidden)]
 #[path = "crypto_slices_tests.rs"]
-mod slices_tests;
+pub mod slices_tests;
 
-#[cfg(test)]
+#[cfg(feature = "self-checks")]
+#[doc(hidden)]
 #[path = "crypto_hash_slices_tests.rs"]
-mod hash_slices_tests;
+pub mod hash_slices_tests;
 
-#[cfg(test)]
+#[cfg(feature = "self-checks")]
+#[doc(hidden)]
 #[path = "crypto_rsa_slices_tests.rs"]
-mod rsa_slices_tests;
+pub mod rsa_slices_tests;
 
 /// Authority-free RSA verification over three initialized read slices. Validate
 /// every range before decoding, and every string before the native provider can

@@ -137,8 +137,7 @@ impl Drop for Peer {
     }
 }
 
-#[test]
-fn fetch_host_errors_are_values_redirects_injection_and_size_remain_enforced() {
+pub fn fetch_host_errors_are_values_redirects_injection_and_size_remain_enforced() {
     let peer = Peer::new(vec![
         b"HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:1/no-follow\r\n\r\n".to_vec(),
         b"HTTP/1.1 200 OK\r\n\r\ntoo large".to_vec(),
@@ -162,8 +161,7 @@ fn fetch_host_errors_are_values_redirects_injection_and_size_remain_enforced() {
     assert_eq!(peer.finish().len(), 2, "denial/injection perform no I/O and redirects are not followed");
 }
 
-#[test]
-fn fetch_host_preflights_every_complete_utf8_input_before_io() {
+pub fn fetch_host_preflights_every_complete_utf8_input_before_io() {
     let peer = Peer::new(vec![]);
     let origin = format!("http://{}", peer.host);
     let mut vm = vm(Capabilities { fetch_grants: vec![vec![origin.clone()]], ..Capabilities::none() }, true);
@@ -184,8 +182,7 @@ fn fetch_host_preflights_every_complete_utf8_input_before_io() {
     assert!(vm.store.data().pending.is_none());
 }
 
-#[test]
-fn fetch_host_authenticates_private_kinds_and_issuer_before_memory() {
+pub fn fetch_host_authenticates_private_kinds_and_issuer_before_memory() {
     let mut vm = vm(Capabilities { fetch_grants: vec![vec![]], net_allow: Some(vec![]), ..Capabilities::none() }, false);
     let root = grant(&mut vm, 0);
     let good = mint(vm.store.data(), 0).unwrap();
@@ -214,8 +211,7 @@ fn fetch_host_authenticates_private_kinds_and_issuer_before_memory() {
     assert!(vm.output().is_empty());
 }
 
-#[test]
-fn fetch_host_net_derivation_keeps_the_post_dns_floor() {
+pub fn fetch_host_net_derivation_keeps_the_post_dns_floor() {
     let peer = Peer::new(vec![]);
     let port = peer.host.rsplit(':').next().unwrap();
     let origin = format!("http://localhost:{port}");
@@ -240,8 +236,7 @@ fn fetch_host_net_derivation_keeps_the_post_dns_floor() {
     assert!(derive.call(&mut vm.store, (net, 0, 1)).is_err());
 }
 
-#[test]
-fn fetch_host_direct_grants_are_explicit_ordinal_and_empty_is_not_missing() {
+pub fn fetch_host_direct_grants_are_explicit_ordinal_and_empty_is_not_missing() {
     let mut vm = vm(Capabilities::none(), true);
     assert!(mint(vm.store.data(), 0).is_err());
     vm.store.data_mut().fetch_grants = vec![vec![], vec!["http://127.0.0.1:1".into()]];
@@ -255,8 +250,7 @@ fn fetch_host_direct_grants_are_explicit_ordinal_and_empty_is_not_missing() {
     assert!(mint(vm.store.data(), 0).is_err());
 }
 
-#[test]
-fn fetch_host_https_does_not_downgrade_to_plaintext() {
+pub fn fetch_host_https_does_not_downgrade_to_plaintext() {
     // The unchanged rustls provider must see TLS, not an HTTP fallback. This
     // deliberately invalid TLS peer is bounded and joined, with no trust edits.
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -294,8 +288,7 @@ fn fetch_host_https_does_not_downgrade_to_plaintext() {
     assert!(bytes(&mut vm, result).starts_with(b"WITCHY_FETCH_ERROR:network:"));
 }
 
-#[test]
-fn fetch_host_legacy_mint_and_only_keep_authenticated_payload_and_attenuation() {
+pub fn fetch_host_legacy_mint_and_only_keep_authenticated_payload_and_attenuation() {
     let wat = WAT.replacen("(module", r#"(module
       (import "witchy" "mint_fetch" (func $mint (param i32) (result externref)))
       (import "witchy" "fetch_only" (func $only (param externref i32) (result externref)))
@@ -353,8 +346,7 @@ fn narrow(vm: &mut Vm, root: Token, origins: &str) -> Result<Token> {
         .call(&mut vm.store, (root, 0, origins.len() as i32))
 }
 
-#[test]
-fn fetch_host_canonical_only_preserves_subset_issuer_and_dns_floor() {
+pub fn fetch_host_canonical_only_preserves_subset_issuer_and_dns_floor() {
     let peer = Peer::new(vec![b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok".to_vec()]);
     let origin = format!("http://{}", peer.host);
     let port = peer.host.rsplit(':').next().unwrap();
@@ -396,8 +388,7 @@ fn fetch_host_canonical_only_preserves_subset_issuer_and_dns_floor() {
     assert!(vm.output().is_empty());
 }
 
-#[test]
-fn fetch_host_canonical_only_authenticates_before_memory_and_checks_full_slice() {
+pub fn fetch_host_canonical_only_authenticates_before_memory_and_checks_full_slice() {
     let mut no_memory = vm(Capabilities { fetch_grants: vec![vec![]], ..Capabilities::none() }, false);
     let authority = mint(no_memory.store.data(), 0).unwrap();
     let foreign = Some(ExternRef::new(&mut no_memory.store, Authority { issuer: Arc::new(()), ..authority }).unwrap());

@@ -6,6 +6,15 @@ publish = false            # internal workspace crate — not published standalo
 license = "MIT OR Apache-2.0"
 description = "witchy compiler — runtime values, the capability host registry, and the wasmtime sandbox (TCB)"
 
+[lib]
+# No second cfg(test) compile of this opt-level-2 crate (it was the tail of
+# every gate test build). Test bodies sit beside the internals they check,
+# behind `self-checks`, and tests/runtime.rs drives each one by its old name.
+# (No `[[test]]` table with required-features: an explicit target table makes
+# the gate's target-naming proof in test-for-paths.sh fail safe to whole
+# packages. The binary is `#![cfg(feature = "self-checks")]` instead.)
+test = false
+
 [dependencies]
 witchy-cap-model = { path = "../witchy-cap-model" }
 witchy-caps = { path = "../witchy-caps" }
@@ -20,6 +29,7 @@ sha2 = "0.11.0"
 ed25519-dalek = "2.2.0"
 regex = "1.11"
 wasmparser = { version = "0.251", optional = true }
+wasm-encoder = { version = "0.251", optional = true }
 # The wasmtime sandbox + its randomness (native-only).
 wasmtime = { version = "45.0.0", optional = true, default-features = false, features = ["anyhow","backtrace","cache","gc","gc-drc","wat","profiling","parallel-compilation","cranelift","pooling-allocator","demangle","addr2line","coredump","debug-builtins","runtime","std"] }
 getrandom = { version = "0.4.2", optional = true }
@@ -72,3 +82,8 @@ test-fixtures = ["native", "dep:witchy-test-host", "dep:witchy-testkit"]
 # Exposes the scoped TLS-root registry used by the root package's hermetic
 # integration tests. Normal builds cannot add trust anchors through this API.
 test-support = ["native"]
+# Compiles the former in-crate tests into the library as `#[doc(hidden)] pub`
+# functions for tests/runtime.rs. The root package's dev-dependency enables it,
+# so every workspace test build (and every shim `-p` selection) has it; it
+# only adds features a test build already requests.
+self-checks = ["native", "dep:wasm-encoder", "witchy-wir/native", "witchy-wir/legacy-encoder-bridge", "witchy-wir/raw-encoder-test-api", "witchy-wir/checked-source-test-api"]

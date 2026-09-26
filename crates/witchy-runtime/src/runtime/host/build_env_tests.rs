@@ -48,8 +48,7 @@ pub(in crate::runtime::host) fn get(vm: &mut Vm, grant: Token, key: &str) -> Res
     call.call(&mut vm.store, (grant, 0, key.len() as i32))
 }
 
-#[test]
-fn build_env_preserves_some_empty_unset_and_denied() {
+pub fn build_env_preserves_some_empty_unset_and_denied() {
     let (mut vm, grant) = setup();
     let some = vm.instance.get_typed_func::<Token, i32>(&mut vm.store, "some").unwrap();
     let size = vm.instance.get_typed_func::<Token, i32>(&mut vm.store, "size").unwrap();
@@ -71,8 +70,7 @@ fn build_env_preserves_some_empty_unset_and_denied() {
     assert!(vm.store.data().pending.is_none());
 }
 
-#[test]
-fn build_env_authenticates_kind_session_and_read_before_memory() {
+pub fn build_env_authenticates_kind_session_and_read_before_memory() {
     let mut vm = vm(Capabilities { build_env: Some(BTreeMap::new()), ..Capabilities::none() }, false);
     let authority = mint(vm.store.data()).unwrap();
     let wrong_kind = Some(ExternRef::new(&mut vm.store, 14u32).unwrap());
@@ -93,8 +91,7 @@ fn build_env_authenticates_kind_session_and_read_before_memory() {
     assert!(vm.store.data().pending.is_none());
 }
 
-#[test]
-fn build_env_missing_grant_and_explicit_empty_snapshot_stay_distinct() {
+pub fn build_env_missing_grant_and_explicit_empty_snapshot_stay_distinct() {
     let denied = vm(Capabilities::none(), false);
     assert!(mint(denied.store.data()).unwrap_err().to_string().contains("no environment grant"));
     let mut empty = vm(Capabilities { build_env: Some(BTreeMap::new()), ..Capabilities::none() }, true);
@@ -107,8 +104,7 @@ fn build_env_missing_grant_and_explicit_empty_snapshot_stay_distinct() {
         "read_build: wrong capability kind");
 }
 
-#[test]
-fn build_env_validates_full_key_slice_and_strict_utf8_before_lookup() {
+pub fn build_env_validates_full_key_slice_and_strict_utf8_before_lookup() {
     let (mut vm, grant) = setup();
     let memory = vm.instance.get_memory(&mut vm.store, "memory").unwrap();
     let call = vm.instance.get_typed_func::<(Token, i32, i32), Token>(&mut vm.store, "get").unwrap();
@@ -123,8 +119,7 @@ fn build_env_validates_full_key_slice_and_strict_utf8_before_lookup() {
     assert!(vm.output().is_empty());
 }
 
-#[test]
-fn build_env_none_and_foreign_responses_refuse_before_memory() {
+pub fn build_env_none_and_foreign_responses_refuse_before_memory() {
     let mut vm = vm(Capabilities { build_env: Some(BTreeMap::new()), ..Capabilities::none() }, false);
     let none = Some(super::super::build_read::new_response(&mut vm.store, None).unwrap());
     let some = Some(super::super::build_read::new_response(&mut vm.store, Some("")).unwrap());

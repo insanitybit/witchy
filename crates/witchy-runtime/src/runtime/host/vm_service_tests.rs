@@ -1,7 +1,6 @@
 use super::*;
 
-#[test]
-fn response_kind_bounds_and_immutable_short_write() -> Result<()> {
+pub fn response_kind_bounds_and_immutable_short_write() -> Result<()> {
     let mut runtime = crate::runtime::Runtime::batch()?;
     let mut vm = runtime.spawn(br#"(module
         (import "witchy" "vm_service_response_size" (func $size (param externref) (result i32)))
@@ -49,8 +48,7 @@ fn response_kind_bounds_and_immutable_short_write() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn service_start_refuses_raw_exports_and_invalid_site_numbers() -> Result<()> {
+pub fn service_start_refuses_raw_exports_and_invalid_site_numbers() -> Result<()> {
     let mut runtime = crate::runtime::Runtime::batch()?;
     let mut vm = runtime.spawn(br#"(module
         (import "witchy" "vm_service_start" (func $start (param i64 i32 i32) (result externref)))

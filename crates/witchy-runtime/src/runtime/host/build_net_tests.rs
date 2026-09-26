@@ -111,8 +111,7 @@ impl Drop for Peer {
     }
 }
 
-#[test]
-fn build_net_authenticates_kind_current_issuer_and_read_before_memory() {
+pub fn build_net_authenticates_kind_current_issuer_and_read_before_memory() {
     let mut vm = vm(Capabilities { build_net_allow: Some(Vec::new()), ..Capabilities::none() }, false);
     let authority = mint(vm.store.data()).unwrap();
     let forged = Some(ExternRef::new(&mut vm.store, BUILD_NET_CAPABILITY_KIND.get()).unwrap());
@@ -135,8 +134,7 @@ fn build_net_authenticates_kind_current_issuer_and_read_before_memory() {
     assert!(vm.store.data().pending.is_none());
 }
 
-#[test]
-fn build_net_requires_explicit_grants_and_denies_unlisted_hosts_before_network() {
+pub fn build_net_requires_explicit_grants_and_denies_unlisted_hosts_before_network() {
     let peer = Peer::new(Vec::new());
     let absent = vm(Capabilities { net_connect: true, net_allow: Some(vec![peer.host.clone()]), ..Capabilities::none() }, false);
     assert_eq!(mint(absent.store.data()).unwrap_err().to_string(), "fetch_build: no BuildNet grant");
@@ -156,8 +154,7 @@ fn build_net_requires_explicit_grants_and_denies_unlisted_hosts_before_network()
     assert!(peer.finish().is_empty(), "denied grants must not even connect");
 }
 
-#[test]
-fn build_net_preflights_both_complete_utf8_slices_without_network_or_writes() {
+pub fn build_net_preflights_both_complete_utf8_slices_without_network_or_writes() {
     let peer = Peer::new(Vec::new());
     let mut vm = vm(Capabilities { build_net_allow: Some(vec![peer.host.clone()]), ..Capabilities::none() }, true);
     let grant = grant(&mut vm);
@@ -181,8 +178,7 @@ fn build_net_preflights_both_complete_utf8_slices_without_network_or_writes() {
     assert!(vm.store.data().pending.is_none());
 }
 
-#[test]
-fn build_net_responses_are_not_roots_and_reauthenticate_the_response_issuer() {
+pub fn build_net_responses_are_not_roots_and_reauthenticate_the_response_issuer() {
     let (mut vm, grant) = empty_grant_fixture();
     let response = Some(super::super::build_read::new_response(&mut vm.store, Some("response")).unwrap());
     assert_eq!(call(&mut vm, response, "127.0.0.1:1", "/").unwrap_err().root_cause().to_string(), "fetch_build: wrong capability kind");
@@ -197,8 +193,7 @@ fn build_net_responses_are_not_roots_and_reauthenticate_the_response_issuer() {
     assert_eq!(copy.call(&mut vm.store, (response, -1, -1)).unwrap_err().root_cause().to_string(), "BuildRead response belongs to another instance");
 }
 
-#[test]
-fn build_net_legacy_staging_and_old_signature_do_not_link() {
+pub fn build_net_legacy_staging_and_old_signature_do_not_link() {
     for name in ["build_fetch_len", "build_net_fetch"] {
         let wat = format!("(module (import \"witchy\" \"{name}\" (func (param i32 i32) (result i32))) (func (export \"run\")))");
         let result = Runtime::new().unwrap().spawn(&wat,

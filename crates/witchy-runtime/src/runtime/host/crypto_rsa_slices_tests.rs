@@ -62,8 +62,7 @@ fn invoke(vm: &mut Vm, [a, b, c, d, e, f]: [i32; 6]) -> wasmtime::Result<i64> {
     result
 }
 
-#[test]
-fn rsa_slices_preflight_every_range_without_wraparound() {
+pub fn rsa_slices_preflight_every_range_without_wraparound() {
     let mut vm = setup();
     let valid = inputs(&mut vm, PUBLIC_KEY.as_bytes(), MESSAGE.as_bytes(), SIGNATURE.as_bytes());
     for slot in [0, 2, 4] {

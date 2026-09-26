@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 #[path = "vm_service.rs"]
-mod vm_service;
+pub(in crate::runtime) mod vm_service;
 
 use wasmtime::{
     Caller, Engine, Error, ExternRef, Instance, Linker, Module, Result, Rooted, Store,
@@ -696,12 +696,12 @@ fn run_server_worker(
     result
 }
 
-#[cfg(test)]
-mod server_startup_tests {
+#[cfg(feature = "self-checks")]
+#[doc(hidden)]
+pub mod server_startup_tests {
     use super::*;
 
-    #[test]
-    fn server_workers_refuse_missing_or_export_derived_admission() -> Result<()> {
+    pub fn server_workers_refuse_missing_or_export_derived_admission() -> Result<()> {
         let engine = Engine::default();
         for wasm in ["(module)", "(module (func (export \"run\")) (func (export \"f0\")))"] {
             let program = WorkerModule::Unadmitted(Module::new(&engine, wasm)?);

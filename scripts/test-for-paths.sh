@@ -621,12 +621,12 @@ for p in "${paths[@]}"; do
             add_early "cargo nextest run --test cli_subcommands -E 'test(=compile_accepts_complete_authenticated_package_owners)'" ;;
         crates/witchy-runtime/src/runtime/host/build_read.rs | \
         crates/witchy-runtime/src/runtime/host/build_read_tests.rs)
-            add_early "cargo nextest run -p witchy-runtime --features native --lib -E 'test(/^runtime::host::build_read_tests::/) or test(=runtime::host::closure_owner::tests::build_read_captures_authenticate_kind_session_projection_and_cleanup)'"
+            add_early "cargo nextest run -p witchy-runtime --features native --test runtime -E 'test(/^runtime::host::build_read::tests::/) or test(=runtime::host::closure_owner::tests::build_read_captures_authenticate_kind_session_projection_and_cleanup)'"
             add_early "cargo nextest run -p witchy --test misc -E 'test(=wasm_abi_catalog::native_host_links_every_catalog_import_with_the_declared_signature)'"
             path_has_early=1 ;;
         crates/witchy-runtime/src/runtime/host/build_env.rs | \
         crates/witchy-runtime/src/runtime/host/build_env_tests.rs)
-            add_early "cargo nextest run -p witchy-runtime --features native --lib -E 'test(/^runtime::host::build_env_tests::/) or test(=runtime::host::closure_owner::tests::build_env_captures_reauthenticate_root_and_optional_response_and_cleanup)'"
+            add_early "cargo nextest run -p witchy-runtime --features native --test runtime -E 'test(/^runtime::host::build_env::tests::/) or test(=runtime::host::closure_owner::tests::build_env_captures_reauthenticate_root_and_optional_response_and_cleanup)'"
             add_early "cargo nextest run -p witchy --test misc -E 'test(=wasm_abi_catalog::native_host_links_every_catalog_import_with_the_declared_signature)'"
             path_has_early=1 ;;
         tests/misc/rfc0103_build_step_confinement.rs)
@@ -1268,10 +1268,10 @@ elif [ "$edit_loop" -eq 1 ] && [ "$canonical_rewrite" -eq 1 ] \
         "WITCHY_ORACLE_EXAMPLE=calc cargo nextest run -p witchy --features witchy-wir/native --bin witchy --test misc --ignore-default-filter -E '${canonical_native_app_expr}' && ./scripts/nextest-admitted.sh witchy -- cargo nextest run --test cli_subcommands -E 'test(=fetch_root_requires_an_explicit_valid_origin_and_admitted_artifact)'"
     )
     if [ "$canonical_build_recipe" -eq 1 ]; then
-        cmds+=("cargo nextest run -p witchy-runtime --features native --lib -E 'test(/^runtime::host::build_read_tests::/) or test(/^runtime::host::build_env_tests::/) or test(=runtime::host::closure_owner::tests::build_read_captures_authenticate_kind_session_projection_and_cleanup) or test(=runtime::host::closure_owner::tests::build_env_captures_reauthenticate_root_and_optional_response_and_cleanup)'")
+        cmds+=("cargo nextest run -p witchy-runtime --features native --test runtime -E 'test(/^runtime::host::build_read::tests::/) or test(/^runtime::host::build_env::tests::/) or test(=runtime::host::closure_owner::tests::build_read_captures_authenticate_kind_session_projection_and_cleanup) or test(=runtime::host::closure_owner::tests::build_env_captures_reauthenticate_root_and_optional_response_and_cleanup)'")
     fi
     if [ "$canonical_crypto" -eq 1 ]; then
-        cmds+=("cargo nextest run -p witchy-runtime --features native --lib -E 'test(/^runtime::host::crypto_rsa_slices_tests::/)'")
+        cmds+=("cargo nextest run -p witchy-runtime --features native --test runtime -E 'test(/^runtime::host::crypto::rsa_slices_tests::/)'")
     fi
 elif [ "$edit_loop" -eq 1 ] && [ "$all_paths_have_early" -eq 1 ] \
     && [ "${#early_cmds[@]}" -gt 0 ]; then

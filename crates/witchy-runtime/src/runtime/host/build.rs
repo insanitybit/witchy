@@ -218,12 +218,12 @@ fn host_build_exec_run(
     Ok(len)
 }
 
-#[cfg(test)]
-mod tests {
+#[cfg(feature = "self-checks")]
+#[doc(hidden)]
+pub mod tests {
     use super::checked_build_env_len;
 
-    #[test]
-    fn build_env_length_rejects_values_outside_the_guest_abi() {
+    pub fn build_env_length_rejects_values_outside_the_guest_abi() {
         assert_eq!(checked_build_env_len("SMALL", 42).unwrap(), 42);
         let err = checked_build_env_len("HUGE", usize::MAX)
             .expect_err("a host length must not truncate into the guest ABI");

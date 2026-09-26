@@ -3,7 +3,7 @@ use std::sync::Arc;
 use witchy_wir::canonical_safewir::DIR_STORAGE_IMPORT_NAMES;
 
 #[path = "exec.rs"]
-mod canonical_exec;
+pub(in crate::runtime) mod canonical_exec;
 
 use super::super::{
     confine, fill_slice, memory_of, read_slice_str, read_wbytes, read_wstr, read_wstr_list,
@@ -583,9 +583,10 @@ fn host_dir_is_dir_at(
     Ok((visible_entry_kind(&dir, &rel).ok().flatten() == Some(true)) as i32)
 }
 
-#[cfg(test)]
+#[cfg(feature = "self-checks")]
+#[doc(hidden)]
 #[path = "filesystem_metadata_tests.rs"]
-mod metadata_tests;
+pub mod metadata_tests;
 
 /// `dir_write_at(dir, path, path_len, data, data_len)`: `dir_write`'s semantics
 /// over checked slices — the data is UTF-8 text, and the write needs `Dir[Write]`.
@@ -802,9 +803,10 @@ fn host_dir_write_bytes_at(
     }
 }
 
-#[cfg(test)]
+#[cfg(feature = "self-checks")]
+#[doc(hidden)]
 #[path = "dir_storage_tests.rs"]
-mod dir_storage_tests;
+pub mod dir_storage_tests;
 
 /// `exec_run(d, path, args, stdin) -> byte length`: spawn the executable named by
 /// `path` within Dir externref `d` (confined like `dir_read`), passing `args` (a
@@ -1024,9 +1026,10 @@ fn host_dir_rename_at(
     rename_dir_entries(&dir, &from, &to)
 }
 
-#[cfg(test)]
+#[cfg(feature = "self-checks")]
+#[doc(hidden)]
 #[path = "dir_installer_tests.rs"]
-mod dir_installer_tests;
+pub mod dir_installer_tests;
 
 /// (RFC-0095) `dir_append_bytes(h, rel, data)`: append RAW bytes to a confined file,
 /// creating it if absent — `dir_append`'s confinement/rights with `dir_write_bytes`'
@@ -1222,8 +1225,9 @@ fn rename_dir_entries(dir: &DirAuthority, from: &str, to: &str) -> Result<()> {
     }
 }
 
-#[cfg(test)]
-mod tests {
+#[cfg(feature = "self-checks")]
+#[doc(hidden)]
+pub mod tests {
     use super::super::super::{Capabilities, FsRights, Runtime};
 
     /// The same read, aimed outside the granted root.
@@ -1261,8 +1265,7 @@ mod tests {
 
     /// Confinement is the frozen route's, unchanged: a path that leaves the
     /// granted root traps rather than reading.
-    #[test]
-    fn dir_read_into_traps_on_a_path_escaping_the_root() {
+    pub fn dir_read_into_traps_on_a_path_escaping_the_root() {
         let root = seeded_root("a.txt", "hello");
         std::fs::write(root.path().parent().expect("temp parent").join("escape.txt"), "secret")
             .expect("seed a file outside the grant");
@@ -1288,8 +1291,7 @@ mod tests {
 
     /// Rights live in the authority object, so a read-only token refuses the
     /// write even when a sibling grant made the import linkable.
-    #[test]
-    fn dir_write_at_refuses_a_read_only_dir() {
+    pub fn dir_write_at_refuses_a_read_only_dir() {
         let read_only = seeded_root("a.txt", "hello");
         let writable = tempfile::tempdir().expect("writable root");
         let mut runtime = Runtime::new().expect("runtime");
@@ -1318,8 +1320,7 @@ mod tests {
 
     /// The gate before the gate: with no Write right anywhere, the canonical
     /// write import does not exist for the VM at all.
-    #[test]
-    fn dir_write_at_is_not_linked_without_a_write_grant() {
+    pub fn dir_write_at_is_not_linked_without_a_write_grant() {
         let root = seeded_root("a.txt", "hello");
         let mut runtime = Runtime::new().expect("runtime");
         let error = runtime

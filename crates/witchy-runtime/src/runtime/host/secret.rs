@@ -143,9 +143,10 @@ pub(in crate::runtime) fn secret_material_ref(
         .ok_or_else(|| Error::msg("Secret externref has wrong host data"))
 }
 
-#[cfg(test)]
+#[cfg(feature = "self-checks")]
+#[doc(hidden)]
 #[path = "registry_hosts_tests.rs"]
-pub(super) mod registry_tests;
+pub mod registry_tests;
 
 fn host_mint_secret(mut caller: Caller<'_, VmState>, i: i32) -> Result<Option<Rooted<ExternRef>>> {
     let secret = signing_secret_material(&caller, i)?;

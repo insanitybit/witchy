@@ -61,13 +61,13 @@ pub(in crate::runtime) fn link_print(linker: &mut Linker<VmState>) -> Result<()>
     Ok(())
 }
 
-#[cfg(test)]
-mod canonical_console_tests {
+#[cfg(feature = "self-checks")]
+#[doc(hidden)]
+pub mod canonical_console_tests {
     use super::*;
     use wasmtime::{ExternRef, Rooted};
 
-    #[test]
-    fn canonical_list_bounds_checks_unsigned_label_slice_and_signed_index() -> Result<()> {
+    pub fn canonical_list_bounds_checks_unsigned_label_slice_and_signed_index() -> Result<()> {
         let mut runtime = super::super::super::Runtime::new()?;
         let engine = runtime.engine.clone();
         let empty = wasmtime::Module::new(&engine, "(module)")?;
@@ -96,8 +96,7 @@ mod canonical_console_tests {
         Ok(())
     }
 
-    #[test]
-    fn canonical_abort_checks_both_unsigned_slices_without_output() -> Result<()> {
+    pub fn canonical_abort_checks_both_unsigned_slices_without_output() -> Result<()> {
         let mut runtime = super::super::super::Runtime::new()?;
         let engine = runtime.engine.clone();
         let empty = wasmtime::Module::new(&engine, "(module)")?;
@@ -129,8 +128,7 @@ mod canonical_console_tests {
         Ok(())
     }
 
-    #[test]
-    fn canonical_console_rejects_null_forged_tokens_and_missing_grants() -> Result<()> {
+    pub fn canonical_console_rejects_null_forged_tokens_and_missing_grants() -> Result<()> {
         let mut runtime = super::super::super::Runtime::new()?;
         let engine = runtime.engine.clone();
         let empty = wasmtime::Module::new(&engine, "(module)")?;

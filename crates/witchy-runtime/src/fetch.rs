@@ -512,16 +512,16 @@ fn display_host(host: &str) -> String {
     }
 }
 
-#[cfg(test)]
-mod tests {
+#[cfg(feature = "self-checks")]
+#[doc(hidden)]
+pub mod tests {
     use std::net::TcpListener;
     use std::sync::mpsc;
     use std::thread;
 
     use super::*;
 
-    #[test]
-    fn fetch_chunk_size_overflow_is_a_malformed_response_not_a_panic() {
+    pub fn fetch_chunk_size_overflow_is_a_malformed_response_not_a_panic() {
         for size in [usize::MAX, usize::MAX - 1, usize::MAX - 2] {
             let input = format!("{size:x}\r\n");
             let error = decode_chunked(input.as_bytes()).unwrap_err();
@@ -563,8 +563,7 @@ mod tests {
         }
     }
 
-    #[test]
-    fn origins_are_canonical_and_credentials_are_rejected() {
+    pub fn origins_are_canonical_and_credentials_are_rejected() {
         assert_eq!(
             Origin::parse("HTTPS://Example.COM").unwrap().as_str(),
             "https://example.com:443"
@@ -579,8 +578,7 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn narrowing_is_intersective_and_denial_precedes_io() {
+    pub fn narrowing_is_intersective_and_denial_precedes_io() {
         let policy = FetchPolicy::allow([
             "https://example.com".to_string(),
             "http://127.0.0.1:9".to_string(),
@@ -599,8 +597,7 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn resolve_failure_of_an_admitted_origin_is_network_not_denial() {
+    pub fn resolve_failure_of_an_admitted_origin_is_network_not_denial() {
         // The origin IS granted by the Net floor, but its name cannot resolve
         // (`.invalid` is reserved to never resolve, RFC 2606). This must surface as
         // a truthful network error, never a capability "not granted" lie
@@ -615,8 +612,7 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn net_derivation_is_bounded_and_preserves_the_network_floor() {
+    pub fn net_derivation_is_bounded_and_preserves_the_network_floor() {
         let allow = vec![
             "127.0.0.1:8080".to_string(),
             "!127.0.0.1:8081".to_string(),
@@ -639,8 +635,7 @@ mod tests {
         assert_eq!(fetch.network_floor, Some(allow));
     }
 
-    #[test]
-    fn redirects_are_uniform_errors_and_never_followed() {
+    pub fn redirects_are_uniform_errors_and_never_followed() {
         let (origin, _) =
             serve(b"HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:9/\r\nContent-Length: 0\r\n\r\n");
         let policy = FetchPolicy::allow([origin.clone()]).unwrap();
@@ -650,8 +645,7 @@ mod tests {
         );
     }
 
-    #[test]
-    fn request_injection_and_oversized_responses_fail_closed() {
+    pub fn request_injection_and_oversized_responses_fail_closed() {
         let policy = FetchPolicy::system();
         let mut request = get("http://127.0.0.1:9/".to_string());
         request.headers.push(("X-Test".to_string(), "ok\r\nInjected: yes".to_string()));

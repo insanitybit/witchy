@@ -13,6 +13,15 @@ fn lib_tests_disabled(manifest: &str) -> bool {
     lib.lines().any(|line| line.replace(' ', "") == "test=false")
 }
 
+/// `#[cfg(test)]`, and also `#[cfg(all(test, unix))]` or `any(test, ..)`: a
+/// bare `test` predicate outside a string (`feature = "test-fixtures"` is not
+/// one) and outside `not(..)`, which is harmless without a lib test target.
+fn cfg_mentions_test(line: &str) -> bool {
+    let unquoted: String = line.split('"').step_by(2).collect::<Vec<_>>().join(" ");
+    !unquoted.contains("not(")
+        && unquoted.split(|c: char| !c.is_alphanumeric() && c != '_').any(|word| word == "test")
+}
+
 fn in_crate_tests(dir: &Path, found: &mut Vec<String>) {
     for entry in fs::read_dir(dir).expect("read src dir") {
         let path = entry.expect("dir entry").path();
@@ -22,7 +31,7 @@ fn in_crate_tests(dir: &Path, found: &mut Vec<String>) {
             let text = fs::read_to_string(&path).expect("read source");
             let attribute = |line: &str| {
                 let line = line.trim_start();
-                line.starts_with("#[test]") || line.starts_with("#[cfg(test)]")
+                line.starts_with("#[test]") || (line.starts_with("#[cfg(") && cfg_mentions_test(line))
             };
             if text.lines().any(attribute) {
                 found.push(path.display().to_string());

@@ -42,11 +42,11 @@ fn spans_into(memory: &mut [u8], pattern: i32, pattern_len: i32,
     Ok(required)
 }
 
-#[cfg(test)]
-mod tests {
+#[cfg(feature = "self-checks")]
+#[doc(hidden)]
+pub mod tests {
     use super::*;
-    #[test]
-    fn canonical_regex_bounded_writes_and_invalid_slices() {
+    pub fn canonical_regex_bounded_writes_and_invalid_slices() {
         let mut memory = [b'!'; 80];
         memory[0] = b'.';
         let text = "\u{e9}\u{1f642}".as_bytes();

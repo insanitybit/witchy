@@ -47,8 +47,7 @@ fn transport(paths: &[&str], contents: &[&str]) -> Vec<u8> {
     bytes
 }
 
-#[test]
-fn rune_hash_slices_reject_malformed_transport_and_preserve_native_length_error() {
+pub fn rune_hash_slices_reject_malformed_transport_and_preserve_native_length_error() {
     let mut vm = setup();
     let mut trailing = transport(&[], &[]);
     trailing.push(0);
@@ -75,8 +74,7 @@ fn rune_hash_slices_reject_malformed_transport_and_preserve_native_length_error(
     memory_equals(&mut vm, &expected);
 }
 
-#[test]
-fn crypto_hash_slices_preflight_full_input_and_output_ranges() {
+pub fn crypto_hash_slices_preflight_full_input_and_output_ranges() {
     let mut vm = setup();
     for name in ["sha", "rune"] {
         let bytes = transport(&[], &[]);

@@ -272,8 +272,9 @@ fn host_compiler_doc_result_json_len(
     Ok(len)
 }
 
-#[cfg(test)]
-mod tests {
+#[cfg(feature = "self-checks")]
+#[doc(hidden)]
+pub mod tests {
     use super::{read_slice_str, write_result_bytes_to_memory};
     use crate::runtime::{Capabilities, Runtime};
     use std::sync::Arc;
@@ -356,8 +357,7 @@ mod tests {
             .unwrap();
     }
 
-    #[test]
-    fn bounded_compiler_result_requires_full_capacity_and_valid_utf8_input() {
+    pub fn bounded_compiler_result_requires_full_capacity_and_valid_utf8_input() {
         let mut memory = vec![0xa5; 32];
         memory[2..5].copy_from_slice("old".as_bytes());
         assert_eq!(read_slice_str(&memory, 2, 3).unwrap(), "old");
@@ -375,8 +375,7 @@ mod tests {
         assert!(write_result_bytes_to_memory(&mut memory, 31, 2, b"x").is_err());
     }
 
-    #[test]
-    fn bounded_compiler_imports_execute_utf8_bounds_and_no_partial_write() {
+    pub fn bounded_compiler_imports_execute_utf8_bounds_and_no_partial_write() {
         let (_runtime, mut vm) = fixture_vm();
         write_fixture_inputs(&mut vm);
         let footprint = vm
@@ -478,6 +477,7 @@ mod tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(feature = "self-checks")]
+#[doc(hidden)]
 #[path = "compiler_doc_tests.rs"]
-mod doc_tests;
+pub mod doc_tests;

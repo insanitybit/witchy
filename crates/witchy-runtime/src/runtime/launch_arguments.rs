@@ -149,18 +149,17 @@ fn bytes_image(base: u32, bytes: &[u8]) -> Result<Image> {
     Ok(Image { bytes: image, root: base + 8, end })
 }
 
-#[cfg(test)]
-mod tests {
+#[cfg(feature = "self-checks")]
+#[doc(hidden)]
+pub mod tests {
     use super::*;
 
-    #[test]
-    fn argument_image_rejects_address_overflow() {
+    pub fn argument_image_rejects_address_overflow() {
         assert!(image(u32::MAX - 7, &[]).is_err());
         assert!(image(u32::MAX - 30, &["0123456789".into()]).is_err());
     }
 
-    #[test]
-    fn service_byte_image_is_owned_binary_and_rejects_overflow() {
+    pub fn service_byte_image_is_owned_binary_and_rejects_overflow() {
         let image = bytes_image(32, &[0, 255, 128]).unwrap();
         assert_eq!((image.root, image.end), (40, 47));
         assert_eq!(&image.bytes[..12], &[1, 0, 0, 0, 7, 0, 0, 0, 3, 0, 0, 0]);

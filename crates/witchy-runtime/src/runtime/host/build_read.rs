@@ -148,6 +148,7 @@ fn response_into(
     Ok(required)
 }
 
-#[cfg(test)]
+#[cfg(feature = "self-checks")]
+#[doc(hidden)]
 #[path = "build_read_tests.rs"]
-pub(super) mod tests;
+pub mod tests;

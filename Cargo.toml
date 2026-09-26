@@ -149,7 +149,7 @@ witchy-interp = { path = "crates/witchy-interp", features = ["raw-module-test-ap
 witchy-wir = { path = "crates/witchy-wir", features = ["native", "legacy-encoder-bridge", "raw-encoder-test-api", "checked-source-test-api"] }
 # Enables only the concurrency-safe TLS fixture hook for root-package tests.
 # The ordinary runtime dependency does not expose it in production builds.
-witchy-runtime = { path = "crates/witchy-runtime", features = ["test-support"] }
+witchy-runtime = { path = "crates/witchy-runtime", features = ["test-support", "self-checks"] }
 # Snapshot harness for the diagnostic goldens (RFC-0072): every user-facing
 # error string is captured verbatim in src/snapshots/ and reviewed as a diff.
 insta = "1.48.0"

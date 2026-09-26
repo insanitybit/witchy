@@ -78,6 +78,7 @@ fn fetch(
     super::build_read::new_response(&mut caller, Some(body)).map(Some)
 }
 
-#[cfg(test)]
+#[cfg(feature = "self-checks")]
+#[doc(hidden)]
 #[path = "build_net_tests.rs"]
-pub(super) mod tests;
+pub mod tests;

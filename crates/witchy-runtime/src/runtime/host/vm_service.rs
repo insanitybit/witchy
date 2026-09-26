@@ -192,6 +192,7 @@ fn close(caller: Caller<'_, VmState>, reference: Option<Rooted<ExternRef>>) -> R
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(feature = "self-checks")]
+#[doc(hidden)]
 #[path = "vm_service_tests.rs"]
-mod tests;
+pub mod tests;

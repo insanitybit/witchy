@@ -364,12 +364,12 @@ fn worker_listener_matches(
         })
 }
 
-#[cfg(test)]
-mod tests {
+#[cfg(feature = "self-checks")]
+#[doc(hidden)]
+pub mod tests {
     use super::worker_listener_matches;
 
-    #[test]
-    fn pool_listener_is_reused_only_for_its_bound_identity_and_mode() {
+    pub fn pool_listener_is_reused_only_for_its_bound_identity_and_mode() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind fixture");
         let bound = listener.local_addr().expect("fixture address");
         let entry = (std::sync::Arc::new(listener), None);

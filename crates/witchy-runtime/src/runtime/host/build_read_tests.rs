@@ -43,8 +43,7 @@ fn bytes(vm: &Vm, token: Token) -> &[u8] {
     token.unwrap().data(&vm.store).unwrap().unwrap().downcast_ref::<Response>().unwrap().bytes.as_deref().unwrap()
 }
 
-#[test]
-fn build_read_authenticates_grants_before_memory_and_rejects_missing_grants() {
+pub fn build_read_authenticates_grants_before_memory_and_rejects_missing_grants() {
     let (root, _vm, _grant) = setup();
     let no_memory = WAT.replace("(memory (export \"memory\") 1)", "");
     let mut runtime = Runtime::new().unwrap();
@@ -74,8 +73,7 @@ fn build_read_authenticates_grants_before_memory_and_rejects_missing_grants() {
     assert!(vm.output().is_empty());
 }
 
-#[test]
-fn build_read_rejects_malformed_path_slices_before_filesystem_lookup() {
+pub fn build_read_rejects_malformed_path_slices_before_filesystem_lookup() {
     let (_root, mut vm, grant) = setup();
     let call = vm.instance.get_typed_func::<(Token, i32, i32), Token>(&mut vm.store, "read").unwrap();
     let memory = vm.instance.get_memory(&mut vm.store, "memory").unwrap();
@@ -91,8 +89,7 @@ fn build_read_rejects_malformed_path_slices_before_filesystem_lookup() {
     assert!(vm.store.data().pending.is_none());
 }
 
-#[test]
-fn build_read_response_kind_and_session_are_not_read_authority() {
+pub fn build_read_response_kind_and_session_are_not_read_authority() {
     let (_root, mut vm, grant) = setup();
     let result = read(&mut vm, grant, "sample.txt").unwrap();
     let actual = result.unwrap().data(&vm.store).unwrap().unwrap().downcast_ref::<Response>().unwrap().clone();
@@ -115,8 +112,7 @@ fn build_read_response_kind_and_session_are_not_read_authority() {
     assert!(vm.output().is_empty());
 }
 
-#[test]
-fn build_read_confines_absolute_and_parent_paths() {
+pub fn build_read_confines_absolute_and_parent_paths() {
     let (root, mut vm, grant) = setup();
     std::fs::write(root.path().join("outside.txt"), "outside").unwrap();
     for path in ["../outside.txt".to_owned(), root.path().join("outside.txt").to_str().unwrap().to_owned()] {
@@ -126,8 +122,7 @@ fn build_read_confines_absolute_and_parent_paths() {
 }
 
 #[cfg(unix)]
-#[test]
-fn build_read_confined_root_failure_can_fall_back_but_never_escape() {
+pub fn build_read_confined_root_failure_can_fall_back_but_never_escape() {
     let (root, mut vm, grant) = setup();
     std::fs::write(root.path().join("outside.txt"), "outside").unwrap();
     std::os::unix::fs::symlink(root.path().join("outside.txt"), root.path().join("a/link")).unwrap();
@@ -138,8 +133,7 @@ fn build_read_confined_root_failure_can_fall_back_but_never_escape() {
     assert!(read(&mut vm, grant, "link").is_err());
 }
 
-#[test]
-fn build_read_response_length_never_wraps_the_i32_abi() {
+pub fn build_read_response_length_never_wraps_the_i32_abi() {
     assert_eq!(checked_response_len(0).unwrap(), 0);
     assert_eq!(checked_response_len(i32::MAX as usize).unwrap(), i32::MAX);
     assert!(checked_response_len(i32::MAX as usize + 1).is_err());

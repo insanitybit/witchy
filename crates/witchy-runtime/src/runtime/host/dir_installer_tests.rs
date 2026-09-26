@@ -62,8 +62,7 @@ fn error(error: Error, expected: &str) {
     assert!(actual.contains(expected), "expected {expected:?}, got {actual}");
 }
 
-#[test]
-fn dir_installer_authentication_and_write_right_precede_memory() {
+pub fn dir_installer_authentication_and_write_right_precede_memory() {
     let (_root, mut vm, grant) = setup(false);
     let read_only = attenuate(&mut vm, grant, true, false, "");
     let forged = Some(ExternRef::new(&mut vm.store, 1u32).unwrap());
@@ -75,8 +74,7 @@ fn dir_installer_authentication_and_write_right_precede_memory() {
     }
 }
 
-#[test]
-fn dir_installer_full_buffer_preflight_prevents_filesystem_effects() {
+pub fn dir_installer_full_buffer_preflight_prevents_filesystem_effects() {
     let (root, mut vm, grant) = setup(true);
     std::fs::write(root.path().join("keep"), b"original").unwrap();
     std::fs::write(root.path().join("dest"), b"destination").unwrap();
@@ -114,8 +112,7 @@ fn dir_installer_full_buffer_preflight_prevents_filesystem_effects() {
     assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 2);
 }
 
-#[test]
-fn dir_installer_entry_policy_applies_to_both_rename_paths() {
+pub fn dir_installer_entry_policy_applies_to_both_rename_paths() {
     let (root, mut vm, grant) = setup(true);
     std::fs::write(root.path().join("keep.bin"), b"original").unwrap();
     std::fs::write(root.path().join("deny.txt"), b"denied").unwrap();
@@ -144,8 +141,7 @@ fn dir_installer_entry_policy_applies_to_both_rename_paths() {
 }
 
 #[cfg(unix)]
-#[test]
-fn dir_installer_symlink_behavior_preserves_confined_provider_policy() {
+pub fn dir_installer_symlink_behavior_preserves_confined_provider_policy() {
     use std::os::unix::fs::{symlink, PermissionsExt};
     let (root, mut vm, grant) = setup(true);
     let outside = tempfile::tempdir().unwrap();
@@ -181,8 +177,7 @@ fn dir_installer_symlink_behavior_preserves_confined_provider_policy() {
     assert_eq!(std::fs::metadata(outside.path().join("secret")).unwrap().permissions(), mode);
 }
 
-#[test]
-fn dir_installer_imports_require_existing_write_grant_linkage() {
+pub fn dir_installer_imports_require_existing_write_grant_linkage() {
     let root = tempfile::tempdir().unwrap();
     let read_only = Capabilities { dir_root: Some(root.path().to_owned()), dir_read: true, ..Capabilities::none() };
     let mut runtime = Runtime::new().unwrap();

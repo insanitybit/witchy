@@ -1185,7 +1185,7 @@ fn build_read_host_edits_keep_authority_bounds_and_abi_probes() {
         let commands = selected(&["--edit-loop", path]);
         assert_eq!(commands.len(), 2, "{path}: {commands:?}");
         assert!(
-            commands[0].contains("runtime::host::build_read_tests::")
+            commands[0].contains("runtime::host::build_read::tests::")
                 && commands[0].contains(
                     "build_read_captures_authenticate_kind_session_projection_and_cleanup",
                 ),
@@ -1215,7 +1215,7 @@ fn build_env_host_edits_keep_authority_bounds_and_abi_probes() {
         let commands = selected(&["--edit-loop", path]);
         assert_eq!(commands.len(), 2, "{path}: {commands:?}");
         assert!(
-            commands[0].contains("runtime::host::build_env_tests::")
+            commands[0].contains("runtime::host::build_env::tests::")
                 && commands[0].contains(
                     "build_env_captures_reauthenticate_root_and_optional_response_and_cleanup",
                 ),
@@ -1269,8 +1269,8 @@ fn canonical_build_recipe_edits_keep_cross_stage_contracts() {
             assert!(commands[2].contains(module), "{path}: {module}: {commands:?}");
         }
         for contract in [
-            "runtime::host::build_read_tests::",
-            "runtime::host::build_env_tests::",
+            "runtime::host::build_read::tests::",
+            "runtime::host::build_env::tests::",
             "build_read_captures_authenticate_kind_session_projection_and_cleanup",
             "build_env_captures_reauthenticate_root_and_optional_response_and_cleanup",
         ] {
@@ -1938,9 +1938,11 @@ fn gate_never_names_the_lib_of_a_crate_without_lib_tests() {
                 "{path} did not isolate the pure downstream packages: {output}",
             );
         } else {
+            // witchy-runtime is `[lib] test = false` as well: its tests are the
+            // named `runtime` integration binary, in the explicit partition.
             assert!(
-                enabled.contains("--lib") && enabled.starts_with("-p "),
-                "{path} did not isolate enabled library tests: {output}",
+                words.windows(2).any(|pair| pair == ["--test", "runtime"]) && enabled.is_empty(),
+                "{path} did not name the runtime integration binary: {output}",
             );
         }
     }

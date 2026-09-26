@@ -235,8 +235,9 @@ fn host_env_get_into(
     fill_slice(&mut caller, out_ptr, out_cap, value.as_bytes(), "environment value")
 }
 
-#[cfg(test)]
-mod tests {
+#[cfg(feature = "self-checks")]
+#[doc(hidden)]
+pub mod tests {
     use super::super::super::{Capabilities, Runtime};
 
     /// Ask about `OTHER_NAME` (10 bytes at 0), which the allow-list omits.
@@ -258,8 +259,7 @@ mod tests {
     /// A name outside the allow-list is refused loudly, exactly as the frozen
     /// `env_len` refuses it — answering `0` would turn the grant into an oracle
     /// for names it never conferred.
-    #[test]
-    fn env_has_var_traps_on_a_name_outside_the_allow_list() {
+    pub fn env_has_var_traps_on_a_name_outside_the_allow_list() {
         let mut runtime = Runtime::new().expect("runtime");
         let mut vm = runtime
             .spawn(HAS_VAR_DENIED, env_capabilities(Some(vec!["ALLOWED".to_string()])), 4)

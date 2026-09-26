@@ -24,8 +24,7 @@
         .append_to(wasm);
     }
 
-    #[test]
-    fn optimizer_policy_is_versioned_and_fails_closed() {
+    pub fn optimizer_policy_is_versioned_and_fails_closed() {
         let mut valid = WasmModule::new().finish();
         append_optimizer_policy(
             &mut valid,
@@ -46,8 +45,7 @@
         assert_eq!(optimizer_policy(b"(module)").unwrap(), OptimizerPolicy::Default);
     }
 
-    #[test]
-    fn admitted_module_builder_validates_without_binaryen_or_byte_rewriting() {
+    pub fn admitted_module_builder_validates_without_binaryen_or_byte_rewriting() {
         let runtime = Runtime::batch().expect("runtime");
         let wasm = BARE.as_bytes();
         let module = build_admitted_module(&runtime.engine, wasm)
@@ -106,8 +104,7 @@
         module.finish()
     }
 
-    #[test]
-    fn authenticated_external_library_rejects_tampering_imports_and_start() {
+    pub fn authenticated_external_library_rejects_tampering_imports_and_start() {
         let closed = WasmModule::new().finish();
         assert!(AuthenticatedExternalLibrary::from_verified_bytes(
             external_identity(&closed), closed.clone(),
@@ -131,8 +128,7 @@
         ).unwrap_err().to_string().contains("start functions are unsupported"));
     }
 
-    #[test]
-    fn artifact_layout_metadata_is_checked_before_instantiation() {
+    pub fn artifact_layout_metadata_is_checked_before_instantiation() {
         let empty = LayoutBundle::from_interner(&LayoutInterner::new(), [])
             .expect("empty canonical layout bundle");
         let valid = wasm_with_layout_payload(empty.canonical_bytes());
@@ -157,8 +153,7 @@
         );
     }
 
-    #[test]
-    fn duplicate_artifact_layout_metadata_fails_closed() {
+    pub fn duplicate_artifact_layout_metadata_fails_closed() {
         let empty = LayoutBundle::from_interner(&LayoutInterner::new(), [])
             .expect("empty canonical layout bundle");
         let mut duplicate = wasm_with_layout_payload(empty.canonical_bytes());
@@ -175,8 +170,7 @@
         assert!(error.to_string().contains("duplicate section"), "{error}");
     }
 
-    #[test]
-    fn host_imports_require_generated_layout_metadata_before_linking() {
+    pub fn host_imports_require_generated_layout_metadata_before_linking() {
         let mut runtime = Runtime::batch().expect("runtime");
         // `print` has generated ABI metadata, so its layout contract
         // authenticates with no bundle (`validate_layout_metadata` passes). Grant
@@ -226,8 +220,7 @@
           (func (export "run") (loop $l (br $l))))
     "#;
 
-    #[test]
-    fn forged_par_map_count_is_bounded_before_host_allocation() {
+    pub fn forged_par_map_count_is_bounded_before_host_allocation() {
         const FORGED_COUNT: &str = r#"
             (module
               (import "witchy" "vm_par_map_run"
@@ -266,8 +259,7 @@
         (module (memory (export "memory") 4) (func (export "run")))
     "#;
 
-    #[test]
-    fn trapped_vm_is_terminal() {
+    pub fn trapped_vm_is_terminal() {
         let mut runtime = Runtime::new().unwrap();
         let mut vm = runtime
             .spawn(TRAP_ON_FIRST_RUN, Capabilities::default(), 1)
@@ -280,8 +272,7 @@
         assert!(err.to_string().contains("aborted Witchy VM cannot be run again"), "{err}");
     }
 
-    #[test]
-    fn optimized_wasm_cache_envelope_rejects_corruption_and_swaps() {
+    pub fn optimized_wasm_cache_envelope_rejects_corruption_and_swaps() {
         let input_hash = sha256(b"original input wasm");
         let payload = b"optimized wasm payload";
         let envelope = encode_optimized_wasm(input_hash, payload);
@@ -312,8 +303,7 @@
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
-    #[test]
-    fn binaryen_requires_an_authenticated_bundle_and_runs_the_exact_recipe() {
+    pub fn binaryen_requires_an_authenticated_bundle_and_runs_the_exact_recipe() {
         use std::os::unix::fs::PermissionsExt;
 
         let temp = tempfile::tempdir().expect("temporary Binaryen fixture");
@@ -402,8 +392,7 @@ fi
         );
     }
 
-    #[test]
-    fn binaryen_pin_resolution_rejects_mismatch_partial_sets_and_cross_source_mixing() {
+    pub fn binaryen_pin_resolution_rejects_mismatch_partial_sets_and_cross_source_mixing() {
         let executable_digest = [0x11; 32];
         let library_digest = [0x22; 32];
         let executable_hex: String = executable_digest
@@ -792,8 +781,7 @@ fi
 
     /// The core thesis: a capability that was not granted simply does not exist
     /// for the VM, so it cannot even be instantiated.
-    #[test]
-    fn ungranted_capability_is_unreachable() {
+    pub fn ungranted_capability_is_unreachable() {
         let mut rt = Runtime::new().unwrap();
         let err = rt
             .spawn(IMPORTS_PRINT, Capabilities::none(), 4)
@@ -805,8 +793,7 @@ fi
         );
     }
 
-    #[test]
-    fn vm_with_dir_start_observes_only_the_delegated_dir() {
+    pub fn vm_with_dir_start_observes_only_the_delegated_dir() {
         let root = tempfile::tempdir().expect("empty delegated root");
         assert!(std::path::Path::new("Cargo.toml").exists(), "test requires workspace cwd marker");
         assert!(!root.path().join("Cargo.toml").exists());
@@ -831,8 +818,7 @@ fi
 
     /// Each VM's linear memory is its own; the runtime hands out separate
     /// `Store`s, so one VM's memory is never visible to another.
-    #[test]
-    fn vms_have_independent_memories() {
+    pub fn vms_have_independent_memories() {
         let mut rt = Runtime::new().unwrap();
         let mut a = rt.spawn(BARE, Capabilities::default(), 4).unwrap();
         let mut b = rt.spawn(BARE, Capabilities::default(), 4).unwrap();
@@ -846,8 +832,7 @@ fi
         );
     }
 
-    #[test]
-    fn memory_budget_is_enforced() {
+    pub fn memory_budget_is_enforced() {
         let mut rt = Runtime::new().unwrap();
         let err = rt.spawn(GREEDY, Capabilities::none(), 1).map(|_| ()).unwrap_err();
         assert!(
@@ -868,8 +853,7 @@ fi
         );
     }
 
-    #[test]
-    fn null_externrefs_are_rejected_by_every_capability_family() {
+    pub fn null_externrefs_are_rejected_by_every_capability_family() {
         let root = std::env::temp_dir().join(format!(
             "witchy-null-externrefs-{}-{}",
             std::process::id(),
@@ -945,8 +929,7 @@ fi
         let _ = std::fs::remove_dir_all(root);
     }
 
-    #[test]
-    fn file_read_into_validates_full_short_range_and_does_not_partially_write() {
+    pub fn file_read_into_validates_full_short_range_and_does_not_partially_write() {
         let root = tempfile::tempdir().expect("temporary capability root");
         std::fs::write(root.path().join("config.txt"), "hello").expect("fixture file");
 
@@ -968,8 +951,7 @@ fi
         assert_eq!(memory.data(&vm.store)[256..260], 5_i32.to_le_bytes());
     }
 
-    #[test]
-    fn file_read_into_rejects_invalid_path_file_utf8_and_unrelated_externrefs() {
+    pub fn file_read_into_rejects_invalid_path_file_utf8_and_unrelated_externrefs() {
         let root = tempfile::tempdir().expect("temporary capability root");
         std::fs::write(root.path().join("config.txt"), "hello").expect("valid UTF-8 fixture");
         std::fs::write(root.path().join("bad.txt"), [0xff]).expect("invalid UTF-8 fixture");
@@ -1036,8 +1018,7 @@ fi
         assert!(null_detail.contains("File externref is null"), "{null_detail}");
     }
 
-    #[test]
-    fn read_only_direct_file_does_not_link_write() {
+    pub fn read_only_direct_file_does_not_link_write() {
         let path = std::env::temp_dir().join(format!(
             "witchy-readonly-file-grant-{}-{}.txt",
             std::process::id(),
@@ -1069,8 +1050,7 @@ fi
     }
 
     /// A runaway VM that never yields is forcibly preempted by the scheduler.
-    #[test]
-    fn runaway_vm_is_preempted() {
+    pub fn runaway_vm_is_preempted() {
         let mut rt = Runtime::new().unwrap();
         let mut spinner = rt.spawn(SPINNER, Capabilities::none(), 4).unwrap();
         let err = rt
@@ -1098,8 +1078,7 @@ fi
             local.get $ptr))
     "#;
 
-    #[test]
-    fn byte_export_round_trips_non_utf8_and_enforces_output_limit() {
+    pub fn byte_export_round_trips_non_utf8_and_enforces_output_limit() {
         let mut runtime = Runtime::new().unwrap();
         let mut vm = runtime
             .spawn(BYTE_EXPORT_ECHO, Capabilities::none(), 2)
@@ -1120,8 +1099,7 @@ fi
         assert!(error.to_string().contains("over the 4-byte limit"), "{error}");
     }
 
-    #[test]
-    fn read_wstr_list_huge_count_fails_closed_not_aborts() {
+    pub fn read_wstr_list_huge_count_fails_closed_not_aborts() {
         // SEC-033: a guest claiming i32::MAX elements in a tiny buffer must NOT pre-allocate
         // ~51GB and abort the host — the capacity hint is capped at the slots that fit in
         // memory, and the read fails closed (out-of-bounds Err) on the first slot past the end.
@@ -1142,8 +1120,7 @@ fi
             (i32.store (i32.const 32) (i32.const 0))))
     "#;
 
-    #[test]
-    fn heap_check_overrun_redzone_traps() {
+    pub fn heap_check_overrun_redzone_traps() {
         let mut rt = Runtime::new().unwrap();
         let mut vm = rt.spawn(HEAP_OVERRUN, Capabilities::none(), 4).unwrap();
         let err = vm.run().map(|_| ()).unwrap_err();
@@ -1302,15 +1279,13 @@ fi
             .expect("combined checked-UAF fixture must encode")
     }
 
-    #[test]
-    fn checked_uaf_double_free_still_traps() {
+    pub fn checked_uaf_double_free_still_traps() {
         let mut rt = Runtime::new().unwrap();
         let mut vm = rt.spawn(checked_uaf_module(true), Capabilities::none(), 4).unwrap();
         vm.run().expect_err("the zero RC quarantine marker must trap a repeated free");
     }
 
-#[test]
-fn concrete_grants_have_one_complete_confinement_policy() {
+pub fn concrete_grants_have_one_complete_confinement_policy() {
     use std::collections::BTreeSet;
     use std::path::PathBuf;
     use witchy_confinement::{FsAccess, FsRule, FsScope, SyscallClass};
@@ -1401,8 +1376,7 @@ fn concrete_grants_have_one_complete_confinement_policy() {
     );
 }
 
-#[test]
-fn empty_build_grants_do_not_widen_outer_authority() {
+pub fn empty_build_grants_do_not_widen_outer_authority() {
     use witchy_confinement::SyscallClass;
 
     let policy = Capabilities {
@@ -1417,8 +1391,7 @@ fn empty_build_grants_do_not_widen_outer_authority() {
     assert!(!policy.syscall_classes.contains(&SyscallClass::Process));
 }
 
-#[test]
-fn exec_child_paths_widen_only_the_read_only_outer_fence() {
+pub fn exec_child_paths_widen_only_the_read_only_outer_fence() {
     use witchy_confinement::{FsAccess, FsRule, FsScope};
 
     let policy = Capabilities {
@@ -1437,8 +1410,7 @@ fn exec_child_paths_widen_only_the_read_only_outer_fence() {
     );
 }
 
-#[test]
-fn empty_network_grant_remains_distinct_from_no_network_grant() {
+pub fn empty_network_grant_remains_distinct_from_no_network_grant() {
     use witchy_confinement::SyscallClass;
 
     let absent = Capabilities::none().confinement_policy();
@@ -1457,8 +1429,7 @@ fn empty_network_grant_remains_distinct_from_no_network_grant() {
 }
 
 #[cfg(feature = "test-fixtures")]
-#[test]
-fn compiled_secret_fixture_keeps_material_opaque_and_scripts_crypto() {
+pub fn compiled_secret_fixture_keeps_material_opaque_and_scripts_crypto() {
     use witchy_testkit::{
         ConsoleFixture, FixtureFamily, FixtureOutcome, FixturePlan, FixtureStep, FixtureValue,
         SecretFixture, SecretStoreFixture, SecretUsage,

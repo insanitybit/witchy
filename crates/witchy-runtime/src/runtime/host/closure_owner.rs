@@ -191,7 +191,7 @@ R::DropList(_) => {
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(feature = "self-checks")]
 use super::super::ConsoleCapability;
 
 // These host-only identities will belong to the instance and its structurally
@@ -326,7 +326,7 @@ impl CaptureAuthority for super::super::VmState {
     }
 }
 
-#[cfg(test)]
+#[cfg(feature = "self-checks")]
 impl CaptureAuthority for () {
     fn require_console(&self, data: &dyn std::any::Any) -> Result<()> {
         require_production_console(data)
@@ -377,7 +377,7 @@ fn require_capability_data<T: CaptureAuthority>(state: &T, data: &dyn std::any::
     Ok(())
 }
 
-#[cfg(all(test, feature = "test-fixtures"))]
+#[cfg(all(feature = "self-checks", feature = "test-fixtures"))]
 pub(super) fn check_fixture_capture_for_test(
     store: &wasmtime::Store<super::super::VmState>, token: Rooted<ExternRef>,
     kind: witchy_wir::canonical_safewir::CapabilityKindId,
@@ -562,7 +562,7 @@ impl Binding {
         })
     }
 
-    #[cfg(test)]
+    #[cfg(feature = "self-checks")]
     fn console<P: Send + Sync + 'static>(&self, store: impl wasmtime::AsContext<Data: CaptureAuthority>, owner: Rooted<ExternRef>) -> Result<OwnedRooted<ExternRef>> {
         self.capability::<P>(store, owner, 0)
     }
@@ -1055,8 +1055,9 @@ fn release_list_payload_array(&self, mut store: impl AsContextMut, list: Rooted<
     }
 }
 
-#[cfg(test)]
-mod tests {
+#[cfg(feature = "self-checks")]
+#[doc(hidden)]
+pub mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -1106,8 +1107,7 @@ mod tests {
         binding.seal_gc(store, payload)
     }
 
-    #[test]
-    fn build_read_captures_authenticate_kind_session_projection_and_cleanup() -> Result<()> {
+    pub fn build_read_captures_authenticate_kind_session_projection_and_cleanup() -> Result<()> {
         use wasmtime::{FieldType, Mutability, StructRef, StructRefPre, StructType, Val, ValType};
         use witchy_wir::canonical_safewir::{BUILD_READ_CAPABILITY_KIND, BUILD_READ_RESPONSE_KIND};
         let (_root, mut vm, grant) = super::super::build_read::tests::setup();
@@ -1157,8 +1157,7 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn build_env_captures_reauthenticate_root_and_optional_response_and_cleanup() -> Result<()> {
+    pub fn build_env_captures_reauthenticate_root_and_optional_response_and_cleanup() -> Result<()> {
         use wasmtime::{FieldType, Mutability, StructRef, StructRefPre, StructType, Val, ValType};
         use witchy_wir::canonical_safewir::{BUILD_ENV_CAPABILITY_KIND, BUILD_READ_RESPONSE_KIND};
         let (mut vm, grant) = super::super::build_env::tests::setup();
@@ -1217,8 +1216,7 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn build_exec_captures_reauthenticate_root_response_and_release_owner() -> Result<()> {
+    pub fn build_exec_captures_reauthenticate_root_response_and_release_owner() -> Result<()> {
         use wasmtime::{FieldType, Mutability, StructRef, StructRefPre, StructType, Val, ValType};
         use witchy_wir::canonical_safewir::{BUILD_EXEC_CAPABILITY_KIND, BUILD_READ_RESPONSE_KIND};
         let (mut vm, grant) = super::super::build_exec::tests::empty_grant_fixture();
@@ -1275,8 +1273,7 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn build_net_captures_reauthenticate_root_response_and_release_owner() -> Result<()> {
+    pub fn build_net_captures_reauthenticate_root_response_and_release_owner() -> Result<()> {
         use wasmtime::{FieldType, Mutability, StructRef, StructRefPre, StructType, Val, ValType};
         use witchy_wir::canonical_safewir::{BUILD_NET_CAPABILITY_KIND, BUILD_READ_RESPONSE_KIND};
         let (mut vm, grant) = super::super::build_net::tests::empty_grant_fixture();
@@ -1333,8 +1330,7 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn fetch_captures_authenticate_kind_session_projection_and_cleanup() -> Result<()> {
+    pub fn fetch_captures_authenticate_kind_session_projection_and_cleanup() -> Result<()> {
         use wasmtime::{FieldType, Mutability, StructRef, StructRefPre, StructType, Val, ValType};
         use witchy_wir::canonical_safewir::{FETCH_CAPABILITY_KIND, FETCH_RESPONSE_KIND};
         let (mut vm, grant) = super::super::fetch::tests::empty_grant_fixture();
@@ -1387,8 +1383,7 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn registry_hosts_captures_authenticate_kind_session_projection_and_cleanup() -> Result<()> {
+    pub fn registry_hosts_captures_authenticate_kind_session_projection_and_cleanup() -> Result<()> {
         use wasmtime::{FieldType, Mutability, StructRef, StructRefPre, StructType, Val, ValType};
         use witchy_wir::canonical_safewir::{CLOCK_CAPABILITY_KIND, SECRET_STORE_CAPABILITY_KIND, SECRET_CAPABILITY_KIND};
         let (_root, mut vm, tokens) = super::super::secret::registry_tests::capture_fixture();
@@ -1437,8 +1432,7 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn exec_capture_requires_exact_host_grant_not_wrapper_or_response_kind() -> Result<()> {
+    pub fn exec_capture_requires_exact_host_grant_not_wrapper_or_response_kind() -> Result<()> {
         use wasmtime::{FieldType, Mutability, StructType, Val, ValType};
         use witchy_wir::canonical_safewir::{EXEC_CAPABILITY_KIND, EXEC_RESPONSE_KIND};
         let engine = wasmtime::Engine::default();
@@ -1474,8 +1468,7 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn carried_net_capture_requires_host_kind_not_wrapper_authority() -> Result<()> {
+    pub fn carried_net_capture_requires_host_kind_not_wrapper_authority() -> Result<()> {
         use wasmtime::{FieldType, Mutability, StructType, Val, ValType};
         use witchy_wir::canonical_safewir::{CapabilityKindId, NET_CAPABILITY_KIND};
         let engine = wasmtime::Engine::default();
@@ -1522,8 +1515,7 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn captured_owner_list_retains_reads_and_cleans_duplicate_elements_once() -> Result<()> {
+    pub fn captured_owner_list_retains_reads_and_cleans_duplicate_elements_once() -> Result<()> {
         use wasmtime::Val;
         let engine = wasmtime::Engine::default();
         let mut store = wasmtime::Store::new(&engine, ());
@@ -1551,8 +1543,7 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn captured_owner_list_rejects_wrong_kind_family_instance_and_forgery() -> Result<()> {
+    pub fn captured_owner_list_rejects_wrong_kind_family_instance_and_forgery() -> Result<()> {
         use wasmtime::{ArrayRef, ArrayRefPre, ArrayType, FieldType, Mutability, Val, ValType};
         let engine = wasmtime::Engine::default();
         let mut store = wasmtime::Store::new(&engine, ());
@@ -1583,8 +1574,7 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn captured_owner_list_mutation_preserves_age_and_copy_on_write() -> Result<()> {
+    pub fn captured_owner_list_mutation_preserves_age_and_copy_on_write() -> Result<()> {
         use wasmtime::Val;
         let engine = wasmtime::Engine::default();
         let mut store = wasmtime::Store::new(&engine, ());
@@ -1618,8 +1608,7 @@ mod tests {
         fn reclaim(self) { self.0.fetch_add(1, Ordering::SeqCst); }
     }
 
-    #[test]
-    fn opaque_owner_gc_payload_and_list_hold_actual_references() -> Result<()> {
+    pub fn opaque_owner_gc_payload_and_list_hold_actual_references() -> Result<()> {
         use wasmtime::{ArrayRef, ArrayRefPre, ArrayType, FieldType, Mutability, StructRef, StructRefPre, StructType, Val, ValType};
         let mut runtime = super::super::super::Runtime::new()?;
         let engine = runtime.engine.clone();
@@ -1687,8 +1676,7 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn opaque_owner_lifecycle_and_substitution_negatives() -> Result<()> {
+    pub fn opaque_owner_lifecycle_and_substitution_negatives() -> Result<()> {
         let mut store = wasmtime::Store::new(&wasmtime::Engine::default(), ());
         let payload_type = wasmtime::StructType::new(store.engine(), [wasmtime::FieldType::new(wasmtime::Mutability::Const, wasmtime::ValType::EXTERNREF.into())])?;
         let binding = Binding { instance: Arc::new(InstanceIdentity::default()), constructor: Arc::new(()), family: Arc::new(()), owner_type: witchy_wir::canonical_safewir::GcTypeId::new(1), list_type: witchy_wir::canonical_safewir::GcTypeId::new((witchy_wir::canonical_safewir::GcTypeId::new(1)).get() + 1000), cleanup_tag: 1, environment_tag: 1, payload_type: payload_type.clone(), capture_fields: vec![CaptureField { capture: 0, field: 0, kind: CaptureFieldKind::Capability(witchy_wir::canonical_safewir::CapabilityKindId::new(0)) }].into_boxed_slice() };
@@ -1724,8 +1712,7 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn opaque_owner_list_drops_all_variants_and_refuses_dead_list() -> Result<()> {
+    pub fn opaque_owner_list_drops_all_variants_and_refuses_dead_list() -> Result<()> {
         use wasmtime::{FieldType, Mutability, StructRef, StructRefPre, StructType, Val, ValType};
         let engine = wasmtime::Engine::default();
         let mut store = wasmtime::Store::new(&engine, ());
@@ -1772,8 +1759,7 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn nested_owner_fields_retain_read_and_cleanup_in_capture_order() -> Result<()> {
+    pub fn nested_owner_fields_retain_read_and_cleanup_in_capture_order() -> Result<()> {
         use wasmtime::{FieldType, Mutability, StructRef, StructRefPre, StructType, Val, ValType};
         let engine = wasmtime::Engine::default();
         let mut store = wasmtime::Store::new(&engine, ());
@@ -1837,8 +1823,7 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn nested_owner_construction_rejects_substitution_without_retaining() -> Result<()> {
+    pub fn nested_owner_construction_rejects_substitution_without_retaining() -> Result<()> {
         use wasmtime::{FieldType, Mutability, StructRef, StructRefPre, StructType, Val, ValType};
         let engine = wasmtime::Engine::default();
         let mut store = wasmtime::Store::new(&engine, ());
@@ -1888,8 +1873,7 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn owner_tag_is_constructor_metadata_with_family_level_authentication() -> Result<()> {
+    pub fn owner_tag_is_constructor_metadata_with_family_level_authentication() -> Result<()> {
         use wasmtime::{FieldType, Mutability, StructRef, StructRefPre, StructType, Val, ValType};
         let engine = wasmtime::Engine::default();
         let mut store = wasmtime::Store::new(&engine, ());
@@ -1952,8 +1936,7 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn owner_list_set_is_bounds_checked_copy_on_write_and_cleans_replacement_once() -> Result<()> {
+    pub fn owner_list_set_is_bounds_checked_copy_on_write_and_cleans_replacement_once() -> Result<()> {
         use wasmtime::{FieldType, Mutability, StructRef, StructRefPre, StructType, Val, ValType};
         let engine = wasmtime::Engine::default();
         let mut store = wasmtime::Store::new(&engine, ());
@@ -2053,8 +2036,7 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn owner_list_transfer_keeps_replacement_cleanup_and_duplicate_tokens() -> Result<()> {
+    pub fn owner_list_transfer_keeps_replacement_cleanup_and_duplicate_tokens() -> Result<()> {
         use wasmtime::{FieldType, Mutability, StructRef, StructRefPre, StructType, Val, ValType};
         let engine = wasmtime::Engine::default();
         let mut store = wasmtime::Store::new(&engine, ());

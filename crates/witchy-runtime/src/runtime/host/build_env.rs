@@ -58,6 +58,7 @@ fn env_at(
     super::build_read::new_response(&mut caller, value.as_deref()).map(Some)
 }
 
-#[cfg(test)]
+#[cfg(feature = "self-checks")]
+#[doc(hidden)]
 #[path = "build_env_tests.rs"]
-pub(super) mod tests;
+pub mod tests;

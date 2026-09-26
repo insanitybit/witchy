@@ -66,8 +66,7 @@ fn query(vm: &mut Vm, token: Token, path: &str, expected: i32) {
     assert!(vm.output().is_empty());
 }
 
-#[test]
-fn dir_is_dir_slices_preserve_entry_policy_without_minting_authority() {
+pub fn dir_is_dir_slices_preserve_entry_policy_without_minting_authority() {
     let (_root, mut vm, token) = setup(true);
     let directories = attenuate(&mut vm, token, "kind:dir", true);
     let files = attenuate(&mut vm, token, "kind:file", true);
@@ -82,8 +81,7 @@ fn dir_is_dir_slices_preserve_entry_policy_without_minting_authority() {
 }
 
 #[cfg(unix)]
-#[test]
-fn dir_is_dir_slices_preserve_confined_and_policy_alias_behavior() {
+pub fn dir_is_dir_slices_preserve_confined_and_policy_alias_behavior() {
     let (root, mut vm, token) = setup(true);
     let outside = tempfile::tempdir().unwrap();
     std::os::unix::fs::symlink("nested", root.path().join("inside-link")).unwrap();
@@ -98,8 +96,7 @@ fn dir_is_dir_slices_preserve_confined_and_policy_alias_behavior() {
     query(&mut vm, directories, "nested", 1);
 }
 
-#[test]
-fn dir_is_dir_slices_reject_invalid_transport_after_authentication() {
+pub fn dir_is_dir_slices_reject_invalid_transport_after_authentication() {
     let (_root, mut vm, token) = setup(true);
     let wrong = Some(ExternRef::new(&mut vm.store, "not a Dir").unwrap());
     let denied = attenuate(&mut vm, token, "", false);
@@ -126,8 +123,7 @@ fn dir_is_dir_slices_reject_invalid_transport_after_authentication() {
     assert!(call(&mut vm, token, 0, 0).unwrap_err().root_cause().to_string().contains("memory"));
 }
 
-#[test]
-fn dir_is_dir_slices_link_only_with_existing_read_grant() {
+pub fn dir_is_dir_slices_link_only_with_existing_read_grant() {
     let root = tempfile::tempdir().unwrap();
     let mut runtime = Runtime::new().unwrap();
     // No mint or legacy import can mask which import fails this boundary.

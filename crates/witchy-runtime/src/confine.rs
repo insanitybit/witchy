@@ -759,8 +759,9 @@ impl ConfinedFile {
     }
 }
 
-#[cfg(all(test, unix))]
-mod tests {
+#[cfg(all(feature = "self-checks", unix))]
+#[doc(hidden)]
+pub mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -786,8 +787,7 @@ mod tests {
         }
     }
 
-    #[test]
-    fn lexical_escape_is_rejected() {
+    pub fn lexical_escape_is_rejected() {
         let scratch = Scratch::new();
         let root = ConfinedDir::open_ambient(&scratch.0).unwrap();
         assert!(root.file("../secret", true).is_err());
@@ -796,8 +796,7 @@ mod tests {
         assert!(root.make_dir("../outside").is_err());
     }
 
-    #[test]
-    fn a_fresh_operation_rejects_a_swapped_parent() {
+    pub fn a_fresh_operation_rejects_a_swapped_parent() {
         let scratch = Scratch::new();
         std::fs::create_dir(scratch.join("root")).unwrap();
         std::fs::create_dir(scratch.join("root/parent")).unwrap();
@@ -816,8 +815,7 @@ mod tests {
         assert_eq!(std::fs::read_to_string(scratch.join("outside/secret")).unwrap(), "private");
     }
 
-    #[test]
-    fn retained_file_and_subdir_authority_survive_name_replacement() {
+    pub fn retained_file_and_subdir_authority_survive_name_replacement() {
         let scratch = Scratch::new();
         std::fs::create_dir(scratch.join("root")).unwrap();
         std::fs::create_dir(scratch.join("root/parent")).unwrap();
@@ -838,8 +836,7 @@ mod tests {
         assert_eq!(std::fs::read_to_string(scratch.join("outside/file")).unwrap(), "outside");
     }
 
-    #[test]
-    fn a_symlink_leaf_is_never_followed_for_writes() {
+    pub fn a_symlink_leaf_is_never_followed_for_writes() {
         let scratch = Scratch::new();
         let root = ConfinedDir::open_ambient(&scratch.0).unwrap();
         std::fs::write(scratch.join("secret"), "private").unwrap();
@@ -850,8 +847,7 @@ mod tests {
         assert_eq!(std::fs::read_to_string(scratch.join("secret")).unwrap(), "private");
     }
 
-    #[test]
-    fn exact_entry_identity_rejects_symlink_and_case_aliases() {
+    pub fn exact_entry_identity_rejects_symlink_and_case_aliases() {
         let scratch = Scratch::new();
         let root = ConfinedDir::open_ambient(&scratch.0).unwrap();
         std::fs::write(scratch.join("secret.key"), "private").unwrap();

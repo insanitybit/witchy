@@ -87,6 +87,7 @@ fn ecdsa_hex(caller: Caller<'_, VmState>, k: i32, kn: i32, p: i32, n: i32, s: i3
     verify(caller, intrinsics::CRYPTO_ECDSA_P256_VERIFY_HEX_STATUS, [(k, kn), (p, n), (s, sn)])
 }
 
-#[cfg(test)]
+#[cfg(feature = "self-checks")]
+#[doc(hidden)]
 #[path = "crypto_extensions_tests.rs"]
-mod tests;
+pub mod tests;

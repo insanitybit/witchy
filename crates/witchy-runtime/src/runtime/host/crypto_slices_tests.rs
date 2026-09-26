@@ -47,8 +47,7 @@ fn invoke(vm: &mut Vm, [a, b, c, d, e, f]: [i32; 6]) -> wasmtime::Result<i64> {
     result
 }
 
-#[test]
-fn ed25519_slices_reject_invalid_extents_and_utf8_without_writes() {
+pub fn ed25519_slices_reject_invalid_extents_and_utf8_without_writes() {
     let mut vm = setup();
     let valid = write_inputs(&mut vm, PUBLIC_KEY.as_bytes(), b"", SIGNATURE.as_bytes());
     for slot in [0, 2, 4] {
@@ -79,8 +78,7 @@ fn ed25519_slices_reject_invalid_extents_and_utf8_without_writes() {
         "Ed25519 input slice lies outside guest memory");
 }
 
-#[test]
-fn ed25519_slices_accept_exact_end_and_require_exported_memory() {
+pub fn ed25519_slices_accept_exact_end_and_require_exported_memory() {
     let mut vm = setup();
     let mut args = write_inputs(&mut vm, PUBLIC_KEY.as_bytes(), b"", SIGNATURE.as_bytes());
     let memory = vm.instance.get_memory(&mut vm.store, "memory").unwrap();

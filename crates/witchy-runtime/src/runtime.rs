@@ -3087,6 +3087,45 @@ fn slice(data: &[u8], ptr: i32, len: i32) -> Result<&[u8]> {
         .ok_or_else(|| Error::msg(format!("out-of-bounds guest memory access ({start}..{end})")))
 }
 
-#[cfg(test)]
+#[cfg(feature = "self-checks")]
+#[doc(hidden)]
 #[path = "runtime_tests.rs"]
-mod tests;
+pub mod tests;
+
+/// Every former in-crate test module of the sandbox, re-exported for the
+/// one-line drivers in `tests/runtime.rs` (the crate has no lib test target).
+#[cfg(feature = "self-checks")]
+#[doc(hidden)]
+pub mod self_checks {
+    pub use super::compiler::doc_tests as compiler_doc_tests;
+    pub use super::compiler::tests as compiler_tests;
+    pub use super::host::build::tests as host_build_tests;
+    pub use super::host::build_env::tests as host_build_env_tests;
+    pub use super::host::build_exec::tests as host_build_exec_tests;
+    pub use super::host::build_net::tests as host_build_net_tests;
+    pub use super::host::build_out::tests as host_build_out_tests;
+    pub use super::host::build_read::tests as host_build_read_tests;
+    #[cfg(feature = "test-fixtures")]
+    pub use super::host::canonical_fixture::tests as host_canonical_fixture_tests;
+    pub use super::host::clock_env_rand::tests as host_clock_env_rand_tests;
+    pub use super::host::closure_owner::tests as host_closure_owner_tests;
+    pub use super::host::console::canonical_console_tests as host_console_canonical_console_tests;
+    pub use super::host::crypto::extensions::tests as host_crypto_extensions_tests;
+    pub use super::host::crypto::hash_slices_tests as host_crypto_hash_slices_tests;
+    pub use super::host::crypto::rsa_slices_tests as host_crypto_rsa_slices_tests;
+    pub use super::host::crypto::slices_tests as host_crypto_slices_tests;
+    pub use super::host::fetch::tests as host_fetch_tests;
+    #[cfg(unix)]
+    pub use super::host::filesystem::canonical_exec::tests as host_filesystem_canonical_exec_tests;
+    pub use super::host::filesystem::dir_installer_tests as host_filesystem_dir_installer_tests;
+    pub use super::host::filesystem::dir_storage_tests as host_filesystem_dir_storage_tests;
+    pub use super::host::filesystem::metadata_tests as host_filesystem_metadata_tests;
+    pub use super::host::filesystem::tests as host_filesystem_tests;
+    pub use super::host::network::tests as host_network_tests;
+    pub use super::host::regex::tests as host_regex_tests;
+    pub use super::host::secret::registry_tests as host_secret_registry_tests;
+    pub use super::host::vm_worker::server_startup_tests as host_vm_worker_server_startup_tests;
+    pub use super::host::vm_worker::vm_service::tests as host_vm_worker_vm_service_tests;
+    pub use super::launch_arguments::tests as launch_arguments_tests;
+    pub use super::tests;
+}

@@ -42,8 +42,7 @@ fn invoke(vm: &mut Vm, export: &str, [a, b, c, d, e, f]: [i32; 6]) -> wasmtime::
     result
 }
 
-#[test]
-fn bounded_compiler_doc_preflights_every_range_before_provider() {
+pub fn bounded_compiler_doc_preflights_every_range_before_provider() {
     for export in ["doc", "json"] {
         let (mut vm, calls) = setup();
         let memory = vm.instance.get_memory(&mut vm.store, "memory").unwrap();
@@ -62,8 +61,7 @@ fn bounded_compiler_doc_preflights_every_range_before_provider() {
     }
 }
 
-#[test]
-fn bounded_compiler_doc_rejects_invalid_utf8_without_provider_or_writes() {
+pub fn bounded_compiler_doc_rejects_invalid_utf8_without_provider_or_writes() {
     for export in ["doc", "json"] {
         let (mut vm, calls) = setup();
         let memory = vm.instance.get_memory(&mut vm.store, "memory").unwrap();

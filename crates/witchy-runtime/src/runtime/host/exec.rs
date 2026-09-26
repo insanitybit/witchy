@@ -77,6 +77,7 @@ fn response_into(
     Ok(bytes.len() as i32)
 }
 
-#[cfg(all(test, unix))]
+#[cfg(all(feature = "self-checks", unix))]
+#[doc(hidden)]
 #[path = "exec_tests.rs"]
-mod tests;
+pub mod tests;

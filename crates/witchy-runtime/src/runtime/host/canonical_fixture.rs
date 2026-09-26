@@ -67,11 +67,11 @@ pub(super) fn print_at(
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
+#[cfg(feature = "self-checks")]
+#[doc(hidden)]
+pub mod tests {
     use super::*;
-    #[test]
-    fn canonical_console_fixture_capture_checks_the_active_store_session_and_rights() -> Result<()> {
+    pub fn canonical_console_fixture_capture_checks_the_active_store_session_and_rights() -> Result<()> {
         use super::super::closure_owner::check_fixture_capture_for_test;
         use super::super::super::{Capabilities, ConsoleCapability, Runtime, vmstate_from_caps};
         use witchy_wir::canonical_safewir::CapabilityKindId;
@@ -110,8 +110,7 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn canonical_console_fixture_tokens_are_kind_rights_and_session_checked() {
+    pub fn canonical_console_fixture_tokens_are_kind_rights_and_session_checked() {
         let first = Arc::new(Session);
         let second = Arc::new(Session);
         let token = ConsoleToken { issuer: first.clone(), kind: 0, write: true };
@@ -124,8 +123,7 @@ mod tests {
         let read_only = ConsoleToken { issuer: first.clone(), kind: 0, write: false };
         assert!(authenticate(Some(&first), &read_only).unwrap_err().to_string().contains("Write"));
     }
-    #[test]
-    fn canonical_console_fixture_slices_refuse_overflow_oob_and_invalid_utf8() {
+    pub fn canonical_console_fixture_slices_refuse_overflow_oob_and_invalid_utf8() {
         assert_eq!(text(b"hello", 1, 3).unwrap(), "ell");
         for (pointer, length) in [(-1, 1), (0, -1), (4, 2)] {
             assert!(text(b"hello", pointer, length).is_err());

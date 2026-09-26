@@ -104,8 +104,7 @@ fn error(error: Error, expected: &str) {
     assert!(message.contains(expected), "expected {expected:?}, got {message}");
 }
 
-#[test]
-fn registry_hosts_clock_grant_kind_session_and_provider() {
+pub fn registry_hosts_clock_grant_kind_session_and_provider() {
     let (_root, mut vm) = setup(Capabilities::none(), false);
     assert!(clock_env_rand::mint_clock(vm.store.data()).is_err());
     let (_root2, mut other) = setup(caps(), false);
@@ -125,8 +124,7 @@ fn registry_hosts_clock_grant_kind_session_and_provider() {
     assert!(other.output().is_empty());
 }
 
-#[test]
-fn registry_hosts_full_slice_preflight_and_invalid_seed_never_write() {
+pub fn registry_hosts_full_slice_preflight_and_invalid_seed_never_write() {
     let (_root, mut vm) = setup(caps(), true);
     let key = key(&mut vm);
     write(&mut vm, 0, &[0xff]);
@@ -155,8 +153,7 @@ fn registry_hosts_full_slice_preflight_and_invalid_seed_never_write() {
     assert_eq!(memory(&mut vm), before);
 }
 
-#[test]
-fn registry_hosts_secret_kind_and_foreign_issuer_precede_memory() {
+pub fn registry_hosts_secret_kind_and_foreign_issuer_precede_memory() {
     let (_root, mut vm) = setup(caps(), false);
     let root = store(&mut vm);
     let secret = key(&mut vm);
@@ -177,8 +174,7 @@ fn registry_hosts_secret_kind_and_foreign_issuer_precede_memory() {
     error(pk(&mut vm, secret, -1, -1).unwrap_err(), "another instance");
 }
 
-#[test]
-fn registry_hosts_make_dir_right_and_kind_precede_memory() {
+pub fn registry_hosts_make_dir_right_and_kind_precede_memory() {
     let (_root, mut vm) = setup(Capabilities::none(), false);
     let grant = dir(&mut vm);
     let mut read_only = grant.unwrap().data(&vm.store).unwrap().unwrap().downcast_ref::<DirAuthority>().unwrap().clone();
@@ -191,8 +187,7 @@ fn registry_hosts_make_dir_right_and_kind_precede_memory() {
 }
 
 #[cfg(unix)]
-#[test]
-fn registry_hosts_make_dir_rejects_outside_symlink() {
+pub fn registry_hosts_make_dir_rejects_outside_symlink() {
     let (root, mut vm) = setup(Capabilities::none(), true);
     let outside = tempfile::tempdir().unwrap();
     std::os::unix::fs::symlink(outside.path(), root.path().join("escape")).unwrap();

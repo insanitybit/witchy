@@ -34,8 +34,7 @@ fn setup() -> (tempfile::TempDir, Vm, Token, Token) {
     (root, vm, exec, dir)
 }
 
-#[test]
-fn exec_slices_require_dir_read_before_invalid_buffers_or_effects() {
+pub fn exec_slices_require_dir_read_before_invalid_buffers_or_effects() {
     let (root, mut vm, exec, dir) = setup();
     // Attenuate the real minted Dir token without changing its backing or
     // policy. The host must reject its missing right before inspecting slices.
@@ -54,8 +53,7 @@ fn exec_slices_require_dir_read_before_invalid_buffers_or_effects() {
     assert!(!root.path().join("effects").exists());
 }
 
-#[test]
-fn exec_slices_reject_wrong_authority_malformed_inputs_and_response_forgery() {
+pub fn exec_slices_reject_wrong_authority_malformed_inputs_and_response_forgery() {
     let (root, mut vm, exec, dir) = setup();
     let memory = vm.instance.get_memory(&mut vm.store, "memory").unwrap();
     let invoke = vm.instance.get_typed_func::<(Token, Token, i32, i32, i32, i32, i32, i32), Token>(&mut vm.store, "invoke").unwrap();

@@ -55,8 +55,7 @@ fn verify(vm: &mut Vm, name: &str, [a, b, c, d, e, f]: [i32; 6]) -> wasmtime::Re
         .call(&mut vm.store, (a, b, c, d, e, f))
 }
 
-#[test]
-fn crypto_extensions_slices_preflight_every_range_before_decoding() {
+pub fn crypto_extensions_slices_preflight_every_range_before_decoding() {
     let mut vm = setup();
     for (pointer, length) in [(-1, 1), (0, -1), (65535, 2), (65537, 0), (i32::MAX, i32::MAX)] {
         for slot in [0, 2] {

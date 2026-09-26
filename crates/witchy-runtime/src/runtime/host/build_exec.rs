@@ -73,6 +73,7 @@ fn run(
     super::build_read::new_response(&mut caller, Some(stdout.as_ref())).map(Some)
 }
 
-#[cfg(test)]
+#[cfg(feature = "self-checks")]
+#[doc(hidden)]
 #[path = "build_exec_tests.rs"]
-pub(super) mod tests;
+pub mod tests;
