@@ -597,6 +597,45 @@ pub(crate) fn run_comptime_module_outputs_budgeted_in_scope_with_qualifiers(
     })
 }
 
+/// Prepare `module` once and run each named zero-argument entry in its own
+/// fresh interpreter, exactly as [`run_comptime_module_budgeted_in_scope`]
+/// runs `main` (same root, budget, seed, and per-entry identifier scope). One
+/// deep-stack thread serves the whole batch. The outer `Err` is a preparation
+/// failure; each entry carries its own run result, and entries after the first
+/// failed one are not run.
+pub(crate) fn run_comptime_entries_budgeted(
+    module: Module,
+    root: impl AsRef<Path>,
+    step_limit: u64,
+    entries: Vec<(String, Option<String>)>,
+) -> Result<Vec<Result<(Vec<String>, Vec<PositionedComptimeItem>), RuntimeError>>, RuntimeError> {
+    let root = root.as_ref().to_path_buf();
+    run_on_deep_stack(move || {
+        let (module, witnesses) = prepare_runtime_module(module, None)?;
+        let mut runs = Vec::with_capacity(entries.len());
+        for (entry, fresh_ident_scope) in entries {
+            let run = run_prepared_entry_limited(module.clone(), witnesses.clone(), &entry,
+                root.clone(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), None,
+                Vec::new(), UserCapGrants::new(), step_limit, fresh_ident_scope, None, None, None,
+                Some(0))
+            .and_then(|outcome| {
+                if !outcome.comptime_exprs.is_empty() {
+                    return err("expression output is valid only during tagged-literal expansion");
+                }
+                Ok((outcome.output, outcome.comptime_items))
+            });
+            // Entries run in the order the expander reaches their blocks, and
+            // it stops at the first failure: never run a block it would not.
+            let failed = run.is_err();
+            runs.push(run);
+            if failed {
+                break;
+            }
+        }
+        Ok(runs)
+    })
+}
+
 /// Run with direct `File` grants (RFC-0012): the i-th `File` parameter of `main`
 /// maps to `file_grants[i]`. The differential-test oracle for `--file`.
 #[cfg(feature = "raw-module-test-api")]
@@ -932,6 +971,24 @@ fn run_module_inner_limited_with_catalog_and_seed(
     console_input: Option<Vec<String>>, rand_seed: Option<u64>,
 ) -> Result<InterpreterOutcome, RuntimeError> {
     let (module, witnesses) = prepare_runtime_module(module, runtime_catalog.as_ref())?;
+    run_prepared_entry_limited(module, witnesses, "main", root, dir_roots, file_grants, net_allow,
+        fetch_origins, args, signing_key, named_secrets, user_caps, step_limit, fresh_ident_scope,
+        compiler_expr_qualifiers, compiler_tag_hole_markers, console_input, rand_seed)
+}
+
+/// Run one entry function of an already prepared module. Split from preparation
+/// so compile-time expansion can prepare one batched program once and run each
+/// of its entries in a fresh interpreter (see `comptime::ComptimeBatch`).
+#[allow(clippy::too_many_arguments)]
+fn run_prepared_entry_limited(
+    module: Module, witnesses: WitnessPlan, entry: &str, root: PathBuf,
+    dir_roots: Vec<PathBuf>, file_grants: Vec<PathBuf>,
+    net_allow: Vec<String>, fetch_origins: Vec<String>, args: Vec<String>,
+    signing_key: Option<[u8; 32]>, named_secrets: Vec<(String, Vec<u8>, bool)>,
+    user_caps: UserCapGrants, step_limit: u64, fresh_ident_scope: Option<String>,
+    compiler_expr_qualifiers: Option<Vec<String>>, compiler_tag_hole_markers: Option<Vec<String>>,
+    console_input: Option<Vec<String>>, rand_seed: Option<u64>,
+) -> Result<InterpreterOutcome, RuntimeError> {
     let mut interp = Interpreter::new_with_witnesses_and_seed(module, witnesses, rand_seed);
     interp.step_limit = step_limit;
     interp.fresh_ident_scope = fresh_ident_scope;
@@ -957,7 +1014,7 @@ fn run_module_inner_limited_with_catalog_and_seed(
     for (name, bytes, sealed) in named_secrets {
         interp.secrets.insert(name, (bytes, sealed));
     }
-    let root_args = match interp.functions.get("main").cloned() {
+    let root_args = match interp.functions.get(entry).cloned() {
         Some(f) => {
             // Each `Dir` param maps positionally to a grant: the first to `root`
             // (handle 0), the rest to `dir_roots` in order (mirrors the compiled
@@ -1005,7 +1062,7 @@ fn run_module_inner_limited_with_catalog_and_seed(
         None => vec![],
     };
     let ret = interp
-        .call("main", root_args)
+        .call(entry, root_args)
         .map_err(|e| rt_at_line(e, interp.cur_line, &interp.cur_fn))?;
     // `main` returning an `Int` sets the process exit code (the C/Go/Rust
     // convention) — it is *not* printed; a program shows output via `print`.

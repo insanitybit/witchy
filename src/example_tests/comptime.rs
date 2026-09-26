@@ -136,6 +136,54 @@ fn main(console: Console):
         );
     }
 
+    /// Consecutive comptime blocks are prepared as one batch, speculated from
+    /// the module as it stood before the batch. A block must still see the
+    /// items emitted by the blocks before it: here the second block's
+    /// speculation (one type) is stale and must rerun, and the third block,
+    /// re-speculated after the type exists, is served from the new batch.
+    #[test]
+    fn comptime_batched_blocks_see_types_emitted_by_earlier_blocks() {
+        let src = r#"import meta
+
+type Seed:
+    x: Int
+
+comptime:
+    emit_item(quote item:
+        type Emitted:
+            y: Int
+    )
+
+comptime:
+    let int = quote type:
+        Int
+    emit_item(meta.function(true, meta.ident("types_seen"), [], Some(int), meta.expr_int(module_types.length())))
+
+comptime:
+    let int = quote type:
+        Int
+    emit_item(meta.function(true, meta.ident("types_seen_again"), [], Some(int), meta.expr_int(module_types.length())))
+
+fn main(console: Console):
+    console.print("${types_seen()} ${types_seen_again()}")
+"#;
+        let linked = resolve_std_src(src);
+        for name in ["types_seen", "types_seen_again"] {
+            let body = linked
+                .items
+                .iter()
+                .find_map(|item| match item {
+                    ast::Item::Function(f) if f.name.rsplit('.').next() == Some(name) => Some(&f.body),
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("`{name}` was not generated"));
+            assert!(
+                matches!(body.stmts.as_slice(), [ast::Stmt::Expr(ast::Expr::Int(2))]),
+                "`{name}` must count Seed and Emitted: {body:?}",
+            );
+        }
+    }
+
     /// RFC-0080 fourth slice: compiler syntax values are compile-time-only. The
     /// public migration seam is `emit_item(ItemSyntax)` inside `comptime:`, not
     /// ordinary runtime construction or storage of `meta.*Syntax`.

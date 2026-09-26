@@ -26,6 +26,10 @@ use std::sync::{Mutex, OnceLock};
 // FxHashMap convention (see interpreter.rs).
 use foldhash::{HashMap, HashMapExt as _};
 
+mod batch;
+
+use batch::{BatchNext, BatchStart, ComptimeBatch, MAX_BATCH_RESTARTS};
+
 const MAX_COMPTIME_BLOCKS: usize = 256;
 // Per module, after generated `gen`/`async` helpers are lowered into real items.
 const MAX_COMPTIME_GENERATED_ITEMS: usize = 4096;
@@ -53,6 +57,8 @@ fn expand_with_item_limit_and_origins(
     let mut generated_items = 0usize;
     let mut projected_item_count: Option<usize> = None;
     let mut origins = OriginTable::default();
+    let mut batch: Option<ComptimeBatch> = None;
+    let mut batch_restarts = if batch::enabled() { 0 } else { MAX_BATCH_RESTARTS };
     while i < module.items.len() {
         if !matches!(module.items[i], Item::Comptime(_)) {
             i += 1;
@@ -68,7 +74,7 @@ fn expand_with_item_limit_and_origins(
         // (`u32::MAX`/absent -> 0, "unknown"), so errors in emitted code can be
         // attributed to the block that produced it instead of a phantom offset into
         // the invisible emitted text (BUG-341).
-        let Item::Comptime(mut body) = module.items.remove(i) else {
+        let Item::Comptime(body) = module.items.remove(i) else {
             unreachable!()
         };
         let mut retained = vec![true; module.items.len() + 1];
@@ -81,134 +87,49 @@ fn expand_with_item_limit_and_origins(
             0
         };
 
-        // The block becomes a zero-argument `fn main()` in a synthetic,
-        // zero-capability program carrying the enclosing module's imports.
-        // `emit_item(meta.ItemSyntax)` is the typed RFC-0080 migration
-        // boundary. `emit_item` calls an unspellable compiler operation so a
-        // compiler-owned item can remain AST all the way back to this
-        // expander. Linked recursively
-        // (a comptime block cannot itself contain `comptime` — it is an item,
-        // not a statement).
-        body.stmts.insert(
-            0,
-            witchy_syntax::ast::Stmt::Let {
-                ty: None,
-                name: "emit_item".into(),
-                mutable: false,
-                value: witchy_syntax::ast::Expr::Lambda {
-                    params: vec![Param {
-                        name: "syntax_value".into(),
-                        ty: Some(Type::Named("ItemSyntax".into(), Vec::new())),
-                        convention: Default::default(),
-                        default: None,
-                    }],
-                    body: Block {
-                        stmts: vec![witchy_syntax::ast::Stmt::Expr(Expr::Call {
-                            name: witchy_syntax::intrinsics::COMPILER_EMIT_ITEM.into(),
-                            args: vec![Expr::Var("syntax_value".into())],
-                        })],
-                        lines: vec![0],
-                        region: None,
-                    },
-                    ret: None,
-                    qualifiers: CallableQualifiers::ORDINARY,
-                },
-            },
-        );
-        if let Some(first) = body.lines.first().copied() {
-            body.lines.insert(0, first);
-        } else {
-            body.lines.push(0);
+        let prog = build_comptime_program(module, body)?;
+        let fresh_ident_scope = Some(format!("comptime:{}:{name}:{expanded}", name.len()));
+        let mut batched = None;
+        if let Some(mut pending) = batch.take() {
+            match pending.take_next(&prog, &fresh_ident_scope) {
+                BatchNext::Ran(output) => {
+                    batched = Some(output);
+                    if !pending.is_empty() {
+                        batch = Some(pending);
+                    }
+                }
+                // Rerun alone so the diagnostic is exactly the unbatched one.
+                BatchNext::Failed => batch_restarts = MAX_BATCH_RESTARTS,
+                BatchNext::Diverged => batch_restarts += 1,
+            }
         }
-        // Expose the module's current type structures to the block as
-        // `module_types` (the comptime `typeInfo` reflection primitive).
-        // Rebuild this per block so later generators see types emitted by
-        // earlier generators in the same module.
-        body.stmts.insert(
-            0,
-            Stmt::Let {
-                ty: None,
-                name: "module_types".into(),
-                mutable: false,
-                value: Expr::List(witchy_syntax::reflect::module_type_info_exprs(module)?),
-            },
-        );
-        if let Some(first) = body.lines.first().copied() {
-            body.lines.insert(0, first);
-        } else {
-            body.lines.push(0);
+        if batched.is_none() && batch_restarts < MAX_BATCH_RESTARTS {
+            match ComptimeBatch::start(module, i, &prog, name, expanded) {
+                BatchStart::Started(output, pending) => {
+                    batched = Some(output);
+                    batch = pending;
+                }
+                BatchStart::Nothing => {}
+                BatchStart::Failed => batch_restarts = MAX_BATCH_RESTARTS,
+            }
         }
-        // The comptime program runs in an isolated, zero-capability `comptime`
-        // link: it resolves bundled std modules and a pruned closure of reachable
-        // same-module helper functions/types, but not project sibling modules.
-        // Dropping project-local imports lets a module that both `derive`s and
-        // imports a sibling (e.g. a rune's test module) still run its comptime.
-        // Preserve matching STD `from X import Y` bindings so the block sees the
-        // same unqualified std names as its enclosing source. `module_types` is
-        // `meta.TypeInfo`s, so meta is always present.
-        let mut prog_imports: Vec<String> = module
-            .imports
-            .iter()
-            .filter(|i| witchy_syntax::linker::STD_MODULES.contains(&i.as_str()))
-            .cloned()
-            .collect();
-        let mut prog_from_imports: Vec<(String, Vec<String>)> = module
-            .from_imports
-            .iter()
-            .filter(|(m, _)| witchy_syntax::linker::STD_MODULES.contains(&m.as_str()))
-            .cloned()
-            .collect();
-        ensure_from_imports(&mut prog_from_imports, "meta", &["ItemSyntax"]);
-        if !prog_imports.iter().any(|i| i == "meta") {
-            prog_imports.push("meta".into());
-        }
-        let mut prog_items = reachable_local_items(&module.items, &body);
-        prog_items.push(Item::Function(Function {
-            line: 0,
-            public: false,
-            pure: false,
-            comptime_only: false,
-            attributes: Vec::new(),
-            name: "main".into(),
-            type_params: Vec::new(),
-            params: Vec::new(),
-            ret: None,
-            body,
-            bounds: Vec::new(),
-            is_gen: false,
-            is_async: false,
-        }));
-        let prog = Module {
-            modes: Vec::new(),
-            imports: prog_imports,
-            from_imports: prog_from_imports,
-            items: prog_items,
-            import_lines: Vec::new(),
-            item_lines: Vec::new(),
-            compiler_item_syntax: module.compiler_item_syntax.clone(),
-            compiler_expr_syntax: module.compiler_expr_syntax.clone(),
-            compiler_type_syntax: module
-                .compiler_type_syntax
-                .iter()
-                .filter(|syntax| !syntax.runtime_identity)
-                .cloned()
-                .collect(),
-            compiler_pattern_syntax: module.compiler_pattern_syntax.clone(),
-            compiler_stmt_syntax: module.compiler_stmt_syntax.clone(),
-            compiler_block_syntax: module.compiler_block_syntax.clone(),
-            linked_entry: None,
+        let (lines, item_output) = match batched {
+            Some(output) => output,
+            None => {
+                let linked =
+                    crate::pipeline::link_internal(vec![("comptime".into(), prog)], "comptime")
+                        .map_err(|e| format!("module `{name}`: comptime block: {e}"))?;
+                witchy_types::typeck::check_comptime(&linked)
+                    .map_err(|e| format!("module `{name}`: comptime block: {e}"))?;
+                crate::interpreter::run_comptime_module_budgeted_in_scope(
+                    linked,
+                    ".",
+                    crate::interpreter::COMPTIME_STEP_LIMIT,
+                    fresh_ident_scope,
+                )
+                .map_err(|e| format!("module `{name}`: comptime block: {e}"))?
+            }
         };
-        let linked = crate::pipeline::link_internal(vec![("comptime".into(), prog)], "comptime")
-            .map_err(|e| format!("module `{name}`: comptime block: {e}"))?;
-        witchy_types::typeck::check_comptime(&linked)
-            .map_err(|e| format!("module `{name}`: comptime block: {e}"))?;
-        let (lines, item_output) = crate::interpreter::run_comptime_module_budgeted_in_scope(
-            linked,
-            ".",
-            crate::interpreter::COMPTIME_STEP_LIMIT,
-            Some(format!("comptime:{}:{name}:{expanded}", name.len())),
-        )
-            .map_err(|e| format!("module `{name}`: comptime block: {e}"))?;
         let emitted = decode_comptime_output(name, block_line, lines, item_output)
             .map_err(|e| format!("module `{name}`: comptime block: {e}"))?;
         let runtime_items_before_merge = match projected_item_count {
@@ -255,6 +176,129 @@ fn expand_with_item_limit_and_origins(
         // comptime blocks for this same pass to consume.
     }
     Ok(origins)
+}
+
+/// The synthetic, zero-capability program that runs one `comptime:` block
+/// against the enclosing module's current state.
+fn build_comptime_program(module: &Module, mut body: Block) -> Result<Module, String> {
+    // The block becomes a zero-argument `fn main()` in a synthetic,
+    // zero-capability program carrying the enclosing module's imports.
+    // `emit_item(meta.ItemSyntax)` is the typed RFC-0080 migration
+    // boundary. `emit_item` calls an unspellable compiler operation so a
+    // compiler-owned item can remain AST all the way back to this
+    // expander. Linked recursively
+    // (a comptime block cannot itself contain `comptime` — it is an item,
+    // not a statement).
+    body.stmts.insert(
+        0,
+        witchy_syntax::ast::Stmt::Let {
+            ty: None,
+            name: "emit_item".into(),
+            mutable: false,
+            value: witchy_syntax::ast::Expr::Lambda {
+                params: vec![Param {
+                    name: "syntax_value".into(),
+                    ty: Some(Type::Named("ItemSyntax".into(), Vec::new())),
+                    convention: Default::default(),
+                    default: None,
+                }],
+                body: Block {
+                    stmts: vec![witchy_syntax::ast::Stmt::Expr(Expr::Call {
+                        name: witchy_syntax::intrinsics::COMPILER_EMIT_ITEM.into(),
+                        args: vec![Expr::Var("syntax_value".into())],
+                    })],
+                    lines: vec![0],
+                    region: None,
+                },
+                ret: None,
+                qualifiers: CallableQualifiers::ORDINARY,
+            },
+        },
+    );
+    if let Some(first) = body.lines.first().copied() {
+        body.lines.insert(0, first);
+    } else {
+        body.lines.push(0);
+    }
+    // Expose the module's current type structures to the block as
+    // `module_types` (the comptime `typeInfo` reflection primitive).
+    // Rebuild this per block so later generators see types emitted by
+    // earlier generators in the same module.
+    body.stmts.insert(
+        0,
+        Stmt::Let {
+            ty: None,
+            name: "module_types".into(),
+            mutable: false,
+            value: Expr::List(witchy_syntax::reflect::module_type_info_exprs(module)?),
+        },
+    );
+    if let Some(first) = body.lines.first().copied() {
+        body.lines.insert(0, first);
+    } else {
+        body.lines.push(0);
+    }
+    // The comptime program runs in an isolated, zero-capability `comptime`
+    // link: it resolves bundled std modules and a pruned closure of reachable
+    // same-module helper functions/types, but not project sibling modules.
+    // Dropping project-local imports lets a module that both `derive`s and
+    // imports a sibling (e.g. a rune's test module) still run its comptime.
+    // Preserve matching STD `from X import Y` bindings so the block sees the
+    // same unqualified std names as its enclosing source. `module_types` is
+    // `meta.TypeInfo`s, so meta is always present.
+    let mut prog_imports: Vec<String> = module
+        .imports
+        .iter()
+        .filter(|i| witchy_syntax::linker::STD_MODULES.contains(&i.as_str()))
+        .cloned()
+        .collect();
+    let mut prog_from_imports: Vec<(String, Vec<String>)> = module
+        .from_imports
+        .iter()
+        .filter(|(m, _)| witchy_syntax::linker::STD_MODULES.contains(&m.as_str()))
+        .cloned()
+        .collect();
+    ensure_from_imports(&mut prog_from_imports, "meta", &["ItemSyntax"]);
+    if !prog_imports.iter().any(|i| i == "meta") {
+        prog_imports.push("meta".into());
+    }
+    let mut prog_items = reachable_local_items(&module.items, &body);
+    prog_items.push(Item::Function(Function {
+        line: 0,
+        public: false,
+        pure: false,
+        comptime_only: false,
+        attributes: Vec::new(),
+        name: "main".into(),
+        type_params: Vec::new(),
+        params: Vec::new(),
+        ret: None,
+        body,
+        bounds: Vec::new(),
+        is_gen: false,
+        is_async: false,
+    }));
+    let prog = Module {
+        modes: Vec::new(),
+        imports: prog_imports,
+        from_imports: prog_from_imports,
+        items: prog_items,
+        import_lines: Vec::new(),
+        item_lines: Vec::new(),
+        compiler_item_syntax: module.compiler_item_syntax.clone(),
+        compiler_expr_syntax: module.compiler_expr_syntax.clone(),
+        compiler_type_syntax: module
+            .compiler_type_syntax
+            .iter()
+            .filter(|syntax| !syntax.runtime_identity)
+            .cloned()
+            .collect(),
+        compiler_pattern_syntax: module.compiler_pattern_syntax.clone(),
+        compiler_stmt_syntax: module.compiler_stmt_syntax.clone(),
+        compiler_block_syntax: module.compiler_block_syntax.clone(),
+        linked_entry: None,
+    };
+    Ok(prog)
 }
 
 fn item_limit_error(name: &str, max_generated_items: usize) -> String {

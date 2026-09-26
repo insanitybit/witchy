@@ -60,6 +60,7 @@ mod value_ops;
 use value_ops::{eval_binary, match_pattern, native_to_value, value_to_native};
 mod runners;
 pub(crate) use runners::{
+    run_comptime_entries_budgeted,
     run_comptime_module_budgeted_in_scope,
     run_comptime_module_outputs_budgeted_in_scope_with_qualifiers,
 };
