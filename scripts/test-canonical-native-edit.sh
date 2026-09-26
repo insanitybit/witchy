@@ -16,7 +16,7 @@ exec "$@"
 SH
 cat > "$tmp/bin/cargo" <<'PY'
 #!/usr/bin/env python3
-import json, os, pathlib, subprocess, sys
+import json, os, pathlib, sys
 a = sys.argv[1:]
 root = pathlib.Path.cwd()
 record = {"args": a, "oracle": os.getenv("WITCHY_ORACLE_EXAMPLE"),
@@ -63,6 +63,7 @@ elif a[:2] == ["nextest", "run"]:
         stage = "runtime"
     if mode == stage: sys.exit(21)
     if mode == "head-change" and stage == "root":
+        import subprocess
         subprocess.run(["git", "commit", "--allow-empty", "-qm", "concurrent tip"], check=True)
 else:
     raise AssertionError("unexpected Cargo invocation: " + repr(a))

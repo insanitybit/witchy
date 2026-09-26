@@ -13,7 +13,7 @@ git -C "$fixture" -c user.name=Fixture -c user.email=fixture@example.invalid \
     commit -qm initial --allow-empty
 cat > "$fixture/scripts/bin/cargo" <<'MOCK'
 #!/usr/bin/env python3
-import json, os, pathlib, subprocess, sys
+import json, os, pathlib, sys
 a = sys.argv[1:]
 with open(os.environ['NATIVE_TEST_LOG'], 'a') as log:
     log.write(json.dumps(a) + '\n')
@@ -47,6 +47,7 @@ elif a[:2] == ['nextest', 'run']:
     stage = 'wir' if 'package(=witchy-wir)' in expr else 'examples'
     if mode == stage: sys.exit(19)
     if mode == 'head-change' and stage == 'examples':
+        import subprocess
         subprocess.run(['git', '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
             'commit', '-qm', 'changed', '--allow-empty'], check=True)
 else:
