@@ -93,8 +93,10 @@ projections, branch joins, and closure captures, and rejects an escaping origin.
 Only an inline scalar or an exact checked `.owned()` site clears that origin.
 Direct checked callee bodies establish independent results; indirect calls and
 intrinsics without a result proof retain provenance or fail closed. Trait
-lowering preserves the `.owned()` site for canonical lowering. Focused checker
-and existing owned/slice materialization smoke cases pass, but generic and
+lowering preserves the `.owned()` site for canonical lowering. Callback literal
+bodies now use the same origin dataflow for their own `let` inputs, including
+return and yield escapes, even when the enclosing function owns every input.
+Focused checker and existing owned/slice materialization smoke cases pass, but
 indirect callback result flow, source async/generator rewrites, and independent
 admitted-Wasm plus zero-leak evidence remain open. This is implemented but
 unverified for rows G/J/P. Checker view formation, canonical ABI identity,

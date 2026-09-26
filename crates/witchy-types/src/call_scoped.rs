@@ -165,7 +165,14 @@ impl Verifier<'_> {
                     }
                     Origins::new()
                 }
-                Stmt::Expr(value) | Stmt::Yield(value) => self.expr(value, environment)?,
+                Stmt::Yield(value) => {
+                    let origins = self.expr(value, environment)?;
+                    if !origins.is_empty() {
+                        return Err(self.error(&origins, "escape through a yield"));
+                    }
+                    Origins::new()
+                }
+                Stmt::Expr(value) => self.expr(value, environment)?,
                 Stmt::Return(None) | Stmt::Break | Stmt::Continue => Origins::new(),
             };
         }
@@ -305,6 +312,22 @@ impl Verifier<'_> {
                         origins.extend(source.iter().cloned());
                     }
                 }
+                // A callback has its own call-scoped inputs. Inspect its body
+                // now, while the checked access facts still address this AST;
+                // merely marking the closure value misses an escape or an
+                // owning call performed when the callback runs.
+                let mut nested = environment.clone();
+                for param in params {
+                    nested.insert(param.name.clone(), if param.convention == Convention::Borrow {
+                        BTreeSet::from([param.name.clone()])
+                    } else {
+                        Origins::new()
+                    });
+                }
+                let returned = self.block(body, &mut nested)?;
+                if !returned.is_empty() {
+                    return Err(self.error(&returned, "escape through a callback result"));
+                }
                 origins
             }
             Expr::RecordUpdate { base, fields, .. } => {
@@ -428,13 +451,6 @@ fn verify_function(
     access: &CheckedAccessFacts,
     function: &Function,
 ) -> Result<(), TypeError> {
-    if !function
-        .params
-        .iter()
-        .any(|param| param.convention == Convention::Borrow)
-    {
-        return Ok(());
-    }
     let verifier = Verifier {
         module,
         table,

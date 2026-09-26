@@ -15,6 +15,8 @@
             "fn escape(let text: String) -> (String, Int):\n    (text, 1)\n",
             "fn escape(let text: String) -> fn() -> String:\n    fn(): text\n",
             "fn escape(let xs: List(Int)) -> &Int:\n    &xs[0]\n",
+            "fn callback_escape():\n    fn(let text: String): text\n",
+            "fn callback_wrapper():\n    fn(let text: String): (text, 1)\n",
         ] {
             let error = check_source(source).expect_err("call-scoped access cannot escape");
             assert!(error.message.contains("call-scoped `let` parameter access"), "{error:?}");
@@ -28,6 +30,8 @@
             .expect("checked explicit materialization establishes an independent value");
         check_source("fn first(xs: List(Int)) -> &Int:\n    &xs[0]\n")
             .expect("an owned input can retain a view of its snapshot");
+        check_source("fn callback_size():\n    fn(let text: String): text.length()\n")
+            .expect("a callback may compute a scalar from call-scoped access");
     }
 
     #[test]
