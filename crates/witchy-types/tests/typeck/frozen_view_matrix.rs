@@ -11,8 +11,10 @@
 //! position, and a view keeps the value it was taken from after the root moves
 //! on.
 
+use super::source::checked;
+
 fn assert_refused(source: &str, fragment: &str) {
-    let error = witchy::resolve_std_only_checked(source)
+    let error = checked(source)
         .err()
         .unwrap_or_else(|| panic!("this shape must be refused: {source}"))
         .to_string();

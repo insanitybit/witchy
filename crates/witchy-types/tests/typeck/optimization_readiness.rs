@@ -15,9 +15,10 @@ use witchy_types::typed_async_lowering::{TypedAsyncOperationKind, TypedAsyncQueu
 use witchy_types::typed_execution::{
     ExecutionShapeId, PayloadOwnership, QueueCapacity, QueueShape, QueueShapeId,
 };
+use super::source::checked_module;
 
 fn checked(source: &str) -> witchy_types::pipeline::CheckedModule {
-    witchy::resolve_std_only_checked(source)
+    checked_module(source)
         .unwrap_or_else(|error| panic!("source must produce a checked module: {error}"))
 }
 
@@ -125,7 +126,7 @@ fn main():
     assert_eq!(rejection, AsyncReadinessError::TypedInputMismatch,
         "missing source capture identity must not be repaired from a generated frame name");
 
-    let replay = witchy::resolve_std_only_checked(
+    let replay = checked_module(
         r#"
 async fn worker(own callback: once fn() -> Int) -> Int:
     callback()

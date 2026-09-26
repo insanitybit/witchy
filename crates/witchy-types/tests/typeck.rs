@@ -2133,19 +2133,41 @@ fn main() -> Int:
 // ordinary (non-`cfg(test)`) library build.
 #[path = "typeck/access.rs"]
 mod access;
+#[path = "typeck/async_view.rs"]
+mod async_view;
+#[path = "typeck/async_view_results.rs"]
+mod async_view_results;
 #[path = "typeck/capabilities.rs"]
 mod capabilities;
 #[path = "typeck/checker.rs"]
 mod checker;
+#[path = "typeck/dict_view_diagnostic.rs"]
+mod dict_view_diagnostic;
+#[path = "typeck/frozen_view_matrix.rs"]
+mod frozen_view_matrix;
 #[path = "typeck/loans.rs"]
 mod loans;
 #[path = "typeck/own.rs"]
 mod own;
+#[path = "typeck/own_view_consumption.rs"]
+mod own_view_consumption;
+#[path = "typeck/optimization_readiness.rs"]
+mod optimization_readiness;
 #[path = "typeck/reference_erasure.rs"]
 mod reference_erasure;
+#[path = "typeck/reference_contract_matrix.rs"]
+mod reference_contract_matrix;
+#[path = "typeck/region_parent_view_results.rs"]
+mod region_parent_view_results;
 #[path = "typeck/resource_composition.rs"]
 mod resource_composition;
+#[path = "typeck/source.rs"]
+mod source;
 #[path = "typeck/std_pruning.rs"]
 mod std_pruning;
+#[path = "typeck/unit_results.rs"]
+mod unit_results;
+#[path = "typeck/unique_writeback_matrix.rs"]
+mod unique_writeback_matrix;
 #[path = "typeck/views.rs"]
 mod views;

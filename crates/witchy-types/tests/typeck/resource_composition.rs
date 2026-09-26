@@ -1,34 +1,7 @@
 //! RFC-0167 row K: checker-only resource, callable-effect, erased-payload,
 //! and suspension composition contracts.
 
-use std::collections::{HashSet, VecDeque};
-
-fn checked(source: &str) -> Result<(), String> {
-    let entry = witchy_syntax::parser::parse_module(source).map_err(|error| error.to_string())?;
-    let mut sources = vec![("main".to_string(), source.as_bytes().to_vec())];
-    let mut loaded = HashSet::from(["main".to_string()]);
-    let mut queue = VecDeque::from([entry]);
-    while let Some(module) = queue.pop_front() {
-        for name in module.imports {
-            if !loaded.insert(name.clone()) {
-                continue;
-            }
-            let bundled = witchy_syntax::linker::bundled_source(&name)
-                .ok_or_else(|| format!("unknown bundled module `{name}`"))?;
-            let parsed = witchy_syntax::parser::parse_module(bundled)
-                .map_err(|error| error.to_string())?;
-            queue.push_back(parsed);
-            sources.push((name, bundled.as_bytes().to_vec()));
-        }
-    }
-    witchy_types::pipeline::link_checked_from_source_bundle(
-        sources,
-        "main",
-        |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
-    )
-    .map(|_| ())
-    .map_err(|error| error.to_string())
-}
+use super::source::checked;
 
 fn assert_rejected(label: &str, source: &str, needles: &[&str]) {
     let error = checked(source).expect_err(label).to_lowercase();

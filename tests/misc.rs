@@ -103,24 +103,12 @@ mod rfc0167_try_context_and_leading_minus;
 mod rfc0167_opt_callable_provenance;
 #[path = "misc/rfc0167_precompiled_run_source.rs"]
 mod rfc0167_precompiled_run_source;
-#[path = "misc/rfc0167_unit_results.rs"]
-mod rfc0167_unit_results;
 #[path = "misc/rfc0167_views_through_views.rs"]
 mod rfc0167_views_through_views;
 #[path = "misc/rfc0165_owner_adapters.rs"]
 mod rfc0165_owner_adapters;
 #[path = "misc/rfc0167_reference_carrier_repros.rs"]
 mod rfc0167_reference_carrier_repros;
-#[path = "misc/rfc0167_optimization_readiness.rs"]
-mod rfc0167_optimization_readiness;
-#[path = "misc/rfc0167_reference_contract_matrix.rs"]
-mod rfc0167_reference_contract_matrix;
-#[path = "misc/rfc0167_unique_writeback_matrix.rs"]
-mod rfc0167_unique_writeback_matrix;
-#[path = "misc/rfc0167_async_view.rs"]
-mod rfc0167_async_view;
-#[path = "misc/rfc0167_async_view_results.rs"]
-mod rfc0167_async_view_results;
 #[path = "misc/rfc0167_views_through_channels_and_generators.rs"]
 mod rfc0167_views_through_channels_and_generators;
 #[path = "misc/rfc0167_installed_workflow.rs"]
@@ -137,18 +125,10 @@ mod rfc0167_var_view_parameters;
 mod rfc0167_view_locals_across_await;
 #[path = "misc/rfc0167_await_in_nested_expressions.rs"]
 mod rfc0167_await_in_nested_expressions;
-#[path = "misc/rfc0167_region_parent_view_results.rs"]
-mod rfc0167_region_parent_view_results;
-#[path = "misc/rfc0167_own_view_consumption.rs"]
-mod rfc0167_own_view_consumption;
-#[path = "misc/rfc0167_frozen_view_matrix.rs"]
-mod rfc0167_frozen_view_matrix;
 #[path = "misc/rfc0167_view_witnesses.rs"]
 mod rfc0167_view_witnesses;
 #[path = "misc/rfc0167_owned_materialization.rs"]
 mod rfc0167_owned_materialization;
-#[path = "misc/rfc0167_dict_view_diagnostic.rs"]
-mod rfc0167_dict_view_diagnostic;
 #[path = "misc/rfc0167_tuple_root_view.rs"]
 mod rfc0167_tuple_root_view;
 #[path = "misc/rfc0167_nested_list_root_view.rs"]

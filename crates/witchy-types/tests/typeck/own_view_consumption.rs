@@ -8,8 +8,10 @@
 //! CARRIER binding. Consuming it says nothing about the root the view was taken
 //! from, which stays live and can be viewed again.
 
+use super::source::checked;
+
 fn refusal(source: &str) -> String {
-    witchy::resolve_std_only_checked(source)
+    checked(source)
         .err()
         .unwrap_or_else(|| panic!("this shape must be refused: {source}"))
         .to_string()

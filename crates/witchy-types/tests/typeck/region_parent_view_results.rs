@@ -9,8 +9,10 @@
 //! with a zero-leak heap audit. SafeWIR admission is required; the canonical
 //! interpreter is not consulted.
 
+use super::source::checked;
+
 fn assert_refused(source: &str, needle: &str) {
-    let error = witchy::resolve_std_only_checked(source).err().map(|error| error.to_string())
+    let error = checked(source).err()
         .expect("the program is refused at checking");
     assert!(error.contains(needle), "refusal names the rule: {error}");
 }

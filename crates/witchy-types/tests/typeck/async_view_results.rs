@@ -10,11 +10,13 @@
 //! Evidence: an independent hand-computed expectation and admitted
 //! unoptimized Wasm with a zero-leak heap audit.
 
+use super::source::checked;
+
 /// Slice-carrier recognition keys on the checker's private `Slice` payload
 /// name, so a source type may not take that name.
 #[test]
 fn a_source_type_cannot_take_the_reserved_slice_name() {
-    let error = witchy::resolve_std_only_checked(
+    let error = checked(
         "type Slice(a):\n    items: List(a)\n\nfn main() -> Int:\n    let s = Slice(items: [1, 2])\n    s.items.length()\n",
     )
     .err()

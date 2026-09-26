@@ -5,13 +5,15 @@
 //! coverage belongs to admitted rooted-view tests, while carrier forms that
 //! are not yet admitted remain explicit checked-source cases here.
 
+use super::source::checked;
+
 fn checks(label: &str, source: &str) {
-    witchy::resolve_std_only_checked(source)
+    checked(source)
         .unwrap_or_else(|error| panic!("{label} must pass checked-source admission: {error}"));
 }
 
 fn rejects(label: &str, source: &str, required: &[&str]) {
-    let error = witchy::resolve_std_only_checked(source)
+    let error = checked(source)
         .expect_err(label)
         .to_string();
     assert!(

@@ -5,12 +5,10 @@
 //! parameter itself would create two owning outputs for one root and must be
 //! rejected before either interpreter or Wasm lowering.
 
-fn check(source: &str) -> Result<witchy_types::pipeline::CheckedModule, witchy::ResolveStdError> {
-    witchy::resolve_std_only_checked(source)
-}
+use super::source::checked;
 
 fn assert_rejects_duplicate_unique_writeback(source: &str) {
-    let error = match check(source) {
+    let error = match checked(source) {
         Ok(_) => panic!("a unique write-back root cannot also be returned as a unique result"),
         Err(error) => error.to_string(),
     };
@@ -30,4 +28,3 @@ fn duplicate(var values: unique List(Int)) -> unique List(Int):
         assert_rejects_duplicate_unique_writeback(&source);
     }
 }
-
