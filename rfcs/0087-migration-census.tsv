@@ -23,8 +23,8 @@ spec/language.md#block-17	7	expression-position-mutator	main.bump	-	-
 
 witchy-files	4
 markdown-blocks	51
-checked	54
-rejected	1
+checked	55
+rejected	0
 var-declarations	11
 resolved-var-calls	166
 mechanical-self-reassignment	0
@@ -32,6 +32,3 @@ expression-position-mutator	16
 immutable-var-argument	0
 temporary-var-argument	0
 auxiliary-result-discard	5
-
-compiler-rejections
-spec/language.md#block-43: type error: `chan.raw_handle_ids_collect`, line 222: matching would erase a must-consume obligation; transfer the value to an `own` operation before inspecting it
