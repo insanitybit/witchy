@@ -17,6 +17,8 @@ mod signature_relations;
 use self::signature_relations::*;
 mod layout_match;
 pub(crate) use self::layout_match::*;
+mod affine_abi;
+use self::affine_abi::affine_abi_proofs;
 
 /// Evidence minted by the initial checker for one exact lowered SafeWIR
 /// revision. It is not encoder authority and cannot be constructed by lowering
@@ -556,11 +558,14 @@ pub fn check_initial_with_witness(
     let expected_source = source_digest;
     validate_candidate_abi_bindings(&candidate, source)
         .map_err(InitialWitnessError::CandidateAbi)?;
+    let affine_abi = affine_abi_proofs(&candidate, source)
+        .map_err(InitialWitnessError::CandidateAbi)?;
     validate_external_imports(&candidate, source)?;
     if candidate.launch_contract_payload() != source.launch_contract_payload() {
         return Err(InitialWitnessError::LaunchContractMismatch);
     }
-    let module = super::check::check_initial(candidate).map_err(InitialWitnessError::Safety)?;
+    let module = super::check::check_initial_with_affine_abi(candidate, &affine_abi)
+        .map_err(InitialWitnessError::Safety)?;
     if module.checked_source().digest() != expected_source {
         return Err(InitialWitnessError::Safety(InitialCheckError::CheckedSourceWitnessMismatch {
             expected: expected_source,
@@ -667,7 +672,7 @@ fn validate_final_inner(
     if checked_lowering.proper_tail_manifest_digest != tail_digest(&module) {
         return Err(FinalValidationError::InitialTailManifestDoesNotMatchWitness);
     }
-    if let Some(source) = source {
+    let affine_abi = if let Some(source) = source {
         if module.checked_source().digest() != source.source_witness().source_bundle_digest()
             || checked_lowering.proper_tail_manifest_digest.bytes()
                 != source.source_witness().proper_tail_manifest_digest()
@@ -683,8 +688,12 @@ fn validate_final_inner(
         }
         validate_candidate_abi_bindings(&module, source)
             .map_err(FinalValidationError::CandidateAbi)?;
-    }
-    super::check::recheck_final(&module).map_err(FinalValidationError::Safety)?;
+        Some(affine_abi_proofs(&module, source).map_err(FinalValidationError::CandidateAbi)?)
+    } else { None };
+    match affine_abi.as_ref() {
+        Some(proofs) => super::check::recheck_final_with_affine_abi(&module, proofs),
+        None => super::check::recheck_final(&module),
+    }.map_err(FinalValidationError::Safety)?;
     let exact_module = ExactModuleWitness::derive_zero_pass(&module, &checked_lowering);
     let final_safety_witness = FinalSafeWirWitness {
         exact_module,
@@ -719,7 +728,7 @@ fn validate_optimized_final_inner(
     if checked_lowering.proper_tail_manifest_digest != tail_digest(&module) {
         return Err(FinalValidationError::InitialTailManifestDoesNotMatchWitness);
     }
-    if let Some(source) = source {
+    let affine_abi = if let Some(source) = source {
         if module.checked_source().digest() != source.source_witness().source_bundle_digest()
             || checked_lowering.proper_tail_manifest_digest.bytes()
                 != source.source_witness().proper_tail_manifest_digest()
@@ -735,8 +744,12 @@ fn validate_optimized_final_inner(
         }
         validate_candidate_abi_bindings(&module, source)
             .map_err(FinalValidationError::CandidateAbi)?;
-    }
-    super::check::recheck_final(&module).map_err(FinalValidationError::Safety)?;
+        Some(affine_abi_proofs(&module, source).map_err(FinalValidationError::CandidateAbi)?)
+    } else { None };
+    match affine_abi.as_ref() {
+        Some(proofs) => super::check::recheck_final_with_affine_abi(&module, proofs),
+        None => super::check::recheck_final(&module),
+    }.map_err(FinalValidationError::Safety)?;
     let exact_module =
         ExactModuleWitness::derive_optimized(&module, &checked_lowering, &optimizations);
     let final_safety_witness = FinalSafeWirWitness {

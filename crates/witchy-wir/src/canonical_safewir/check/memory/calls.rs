@@ -51,6 +51,26 @@ impl<'a> MemoryChecker<'a> {
                     initialized_owned_slots,
                 },
             );
+            if self.affine_abi
+                .and_then(|proofs| proofs.get(&signature.id))
+                .and_then(|proof| proof.move_only_list_parameters.get(index)) == Some(&true)
+            {
+                if ownership != Ownership::Unique {
+                    return self.unsupported("Parameter(move-only list requires unique root)");
+                }
+                self.state.affine_list_roots.insert(parameter.value);
+            }
+            if let Some(fields) = self.affine_abi
+                .and_then(|proofs| proofs.get(&signature.id))
+                .and_then(|proof| proof.parameters.get(index))
+            {
+                if !fields.is_empty() && ownership != Ownership::Unique {
+                    return self.unsupported("Parameter(affine fields require unique root)");
+                }
+                for field in fields {
+                    self.state.nullable_unique_slots.insert((parameter.value, SlotIdentity::Constant(u64::from(*field))));
+                }
+            }
             self.bind_extent_generation(parameter.value)?;
         }
         Ok(())
@@ -251,6 +271,7 @@ impl<'a> MemoryChecker<'a> {
         // relay, not a general Bump-memory ABI boundary.
         let projected_bump_write_back =
             authenticated_projected_bump_write_back_parameter(results, parameters);
+        let affine_proof = self.affine_abi.and_then(|proofs| proofs.get(&callee_signature.id));
         for (parameter_index, (argument, parameter)) in arguments.iter().zip(parameters).enumerate() {
             let value = match argument {
                 CallArgument::Value(value) | CallArgument::Move(value) => *value,
@@ -286,6 +307,21 @@ impl<'a> MemoryChecker<'a> {
                 CallArgument::Value(_) => return self.unsupported("Call(Value memory)"),
                 CallArgument::Move(value) => {
                     self.require_complete_value_initialized(*value, "Call(uninitialized owned slot)")?;
+                    if affine_proof.and_then(|proof| proof.move_only_list_parameters.get(parameter_index)) == Some(&true)
+                        && !self.exclusive_list_elements(*value)?
+                    {
+                        return self.unsupported("Call(move-only list without exclusive elements)");
+                    }
+                    if let Some(fields) = affine_proof.and_then(|proof| proof.parameters.get(parameter_index)) {
+                        if !fields.is_empty() && self.live_object(*value)?.ownership != Ownership::Unique {
+                            return self.unsupported("Call(affine argument without unique root)");
+                        }
+                        for field in fields {
+                            if !self.nullable_unique_slot_by_identity(*value, SlotIdentity::Constant(u64::from(*field))) {
+                                return self.unsupported("Call(affine argument without unique child proof)");
+                            }
+                        }
+                    }
                     // A complete scalar aggregate can be proven from its
                     // individual stored-slot facts.  A write-back call's
                     // hidden replacement carrier intentionally drops the
@@ -315,6 +351,16 @@ impl<'a> MemoryChecker<'a> {
             }
         }
         for (result_index, (destination, result)) in destinations.iter().zip(results).enumerate() {
+            let affine_result = affine_proof.and_then(|proof| proof.results.get(result_index));
+            let move_only_list_result = affine_proof
+                .and_then(|proof| proof.move_only_list_results.get(result_index)) == Some(&true);
+            if affine_result.is_some_and(|fields| !fields.is_empty())
+                || move_only_list_result
+            {
+                if !matches!(result, ResultContract::Unique { .. }) {
+                    return self.unsupported("Call(affine result without unique contract)");
+                }
+            }
             match result {
                 ResultContract::Value(value_type) if !value_type.is_linear_memory_ref() => {}
                 ResultContract::CheckedValue { layout } => {
@@ -360,6 +406,14 @@ impl<'a> MemoryChecker<'a> {
                         allocation_class: Some(AllocationClass::ReferenceCounted),
                         shared_immutable: false, initialized_owned_slots: true,
                     });
+                    if move_only_list_result {
+                        self.state.affine_list_roots.insert(*destination);
+                    }
+                    if let Some(fields) = affine_result {
+                        for field in fields {
+                            self.state.nullable_unique_slots.insert((*destination, SlotIdentity::Constant(u64::from(*field))));
+                        }
+                    }
                 }
                 ResultContract::ReallocatesParameter { parameter, layout } => {
                     let index = usize::try_from(*parameter).map_err(|_| {
@@ -687,6 +741,22 @@ impl<'a> MemoryChecker<'a> {
     ) -> Result<(), InitialCheckError> {
         let mut transferred = SortedSet::new();
         for (result_index, (value, result)) in values.iter().zip(results).enumerate() {
+            if self.affine_abi
+                .and_then(|proofs| proofs.get(&self.signature.id))
+                .and_then(|proof| proof.results.get(result_index))
+                .is_some_and(|fields| !fields.is_empty())
+                && !matches!(result, ResultContract::Unique { .. })
+            {
+                return self.unsupported("Return(affine result without unique contract)");
+            }
+            if self.affine_abi
+                .and_then(|proofs| proofs.get(&self.signature.id))
+                .and_then(|proof| proof.move_only_list_results.get(result_index)) == Some(&true)
+            {
+                if !matches!(result, ResultContract::Unique { .. }) || !self.exclusive_list_elements(*value)? {
+                    return self.unsupported("Return(move-only list without exclusive elements)");
+                }
+            }
             // Each result lane transfers one token. Repeating an SSA reference
             // does not execute CloneRef, even when both lanes claim Shared.
             if matches!(value_type(self.function, *value)?, ValueType::Ref(_))
@@ -781,6 +851,16 @@ impl<'a> MemoryChecker<'a> {
                         return Err(InitialCheckError::InvalidOwnership { function: self.function.id, object: *value });
                     }
                     self.require_complete_value_initialized(*value, "Return(uninitialized unique write-back)")?;
+                    if let Some(fields) = self.affine_abi
+                        .and_then(|proofs| proofs.get(&self.signature.id))
+                        .and_then(|proof| proof.results.get(result_index))
+                    {
+                        for field in fields {
+                            if !self.nullable_unique_slot_by_identity(*value, SlotIdentity::Constant(u64::from(*field))) {
+                                return self.unsupported("Return(affine result without unique child proof)");
+                            }
+                        }
+                    }
                 }
                 ResultContract::ReallocatesParameter { parameter, layout } => {
                     let index = usize::try_from(*parameter).map_err(|_| {

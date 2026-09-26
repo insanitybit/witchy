@@ -411,6 +411,10 @@ impl<'a> MemoryChecker<'a> {
                 self.value_type_for_layout(*element)
                     .is_ok_and(|value_type| value_type.is_memory_bearing())
             });
+        let fresh_owned_list = matches!(descriptor.kind(), LayoutKind::PackedList { element, .. }
+            if matches!(self.descriptor(*element).map(|slot| slot.kind()),
+                Ok(LayoutKind::RuntimePointerValueSlot { semantics: PointerSlot::Owned, .. })))
+            && class == AllocationClass::ReferenceCounted;
         let initialized_empty_scalar_prefix = descriptor
             .kind()
             .packed_element_layout()
@@ -433,6 +437,9 @@ impl<'a> MemoryChecker<'a> {
                 initialized_owned_slots: initialized_empty_scalar_prefix,
             },
         );
+        if fresh_owned_list {
+            self.state.affine_list_roots.insert(destination);
+        }
         self.bind_extent_generation(destination)?;
         self.bind_preallocation_extent_guards(destination)?;
         if let Some(element) = pointer_element {
@@ -565,6 +572,10 @@ impl<'a> MemoryChecker<'a> {
             || state.allocation_class != Some(AllocationClass::ReferenceCounted)
             || !self.is_sole_live_token(object, state.identity)
         { return Err(InitialCheckError::InvalidOwnership { function: self.function.id, object }); }
+        let exclusive_element = matches!(expected, ValueType::Ref(_)) && self.exclusive_list_elements(object)?;
+        if matches!(expected, ValueType::Ref(_)) && !exclusive_element {
+            return self.unsupported("TakeLast(reference without exclusive element proof)");
+        }
         let Extent::Counted { header_bytes, count, capacity, stride_bytes } = state.extent else {
             return self.unsupported("TakeLast(uncounted)");
         };
@@ -597,7 +608,7 @@ impl<'a> MemoryChecker<'a> {
             // Preserve shared children through stores, moves and publication.
             self.state.range_states.insert(
                 RangeIdentity { object, start: *index, length: *index },
-                RangeState { element, ownership: Ownership::Shared,
+                RangeState { element, ownership: Ownership::Unique,
                     allocation_class: Some(AllocationClass::ReferenceCounted),
                     initialized: true, zero_width: self.is_zero(*index), zero_start: true },
             );
@@ -623,8 +634,8 @@ impl<'a> MemoryChecker<'a> {
             let extent = self.parameter_extent(layout)?;
             // Transfer one owned reference, never manufacture child exclusivity.
             self.state.objects.insert(destination, ObjectState {
-                identity: destination, owner_generation: 0, layout, extent, ownership: Ownership::Shared,
-                allocation_class: None, shared_immutable: true, initialized_owned_slots: true,
+                identity: destination, owner_generation: 0, layout, extent, ownership: Ownership::Unique,
+                allocation_class: Some(AllocationClass::ReferenceCounted), shared_immutable: false, initialized_owned_slots: true,
             });
         }
         Ok(())
@@ -910,6 +921,9 @@ impl<'a> MemoryChecker<'a> {
                     self.state.stored_objects.get_mut(&alias)
                         .expect("recorded slot").ownership = Ownership::Shared;
                 }
+                if matches!(place.projection(), Projection::Element { .. }) {
+                    self.invalidate_affine_list_root(place.object());
+                }
                 self.state.objects.insert(destination, stored);
                 Ok(())
             }
@@ -1081,6 +1095,9 @@ impl<'a> MemoryChecker<'a> {
                     });
                 }
                 stored.ownership = Ownership::Shared;
+                if matches!(place.projection(), Projection::Element { .. }) {
+                    self.invalidate_affine_list_root(place.object());
+                }
             }
             StoreTransfer::CopyScalar => return self.unsupported("Store(reference copy)"),
         }

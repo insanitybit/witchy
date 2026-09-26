@@ -160,7 +160,29 @@ pub fn check_initial(
     mut candidate: CanonicalModule<LoweredCandidate>,
 ) -> Result<CanonicalModule<InitialValid>, InitialCheckError> {
     let summaries = install_body_derived_result_contracts(&mut candidate)?;
-    check_candidate(&candidate, candidate.abi_catalog(), summaries.as_ref())?;
+    check_candidate(&candidate, candidate.abi_catalog(), summaries.as_ref(), None)?;
+    Ok(candidate.into_initial_valid())
+}
+
+/// Source-bound affine fields that a callable must transport intact. These
+/// ordinals are derived after checked ABI and physical layout correspondence;
+/// each body and call edge still independently proves the live child tokens.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct AffineSignatureProof {
+    pub parameters: Vec<Vec<u32>>,
+    pub results: Vec<Vec<u32>>,
+    pub move_only_list_parameters: Vec<bool>,
+    pub move_only_list_results: Vec<bool>,
+}
+
+pub(super) type AffineAbiProofs = BTreeMap<FunctionSignatureId, AffineSignatureProof>;
+
+pub(super) fn check_initial_with_affine_abi(
+    mut candidate: CanonicalModule<LoweredCandidate>,
+    proofs: &AffineAbiProofs,
+) -> Result<CanonicalModule<InitialValid>, InitialCheckError> {
+    let summaries = install_body_derived_result_contracts(&mut candidate)?;
+    check_candidate(&candidate, candidate.abi_catalog(), summaries.as_ref(), Some(proofs))?;
     Ok(candidate.into_initial_valid())
 }
 
@@ -170,7 +192,7 @@ pub(crate) fn check_initial_with_catalog(
     catalog: &CanonicalAbiCatalog,
 ) -> Result<CanonicalModule<InitialValid>, InitialCheckError> {
     let summaries = install_body_derived_result_contracts(&mut candidate)?;
-    check_candidate(&candidate, Some(catalog), summaries.as_ref())?;
+    check_candidate(&candidate, Some(catalog), summaries.as_ref(), None)?;
     Ok(candidate.into_initial_valid())
 }
 
@@ -252,7 +274,14 @@ fn install_body_derived_result_contracts(
 pub(crate) fn recheck_final(
     candidate: &CanonicalModule<InitialValid>,
 ) -> Result<(), InitialCheckError> {
-    check_candidate(candidate, candidate.abi_catalog(), None)
+    check_candidate(candidate, candidate.abi_catalog(), None, None)
+}
+
+pub(super) fn recheck_final_with_affine_abi(
+    candidate: &CanonicalModule<InitialValid>,
+    proofs: &AffineAbiProofs,
+) -> Result<(), InitialCheckError> {
+    check_candidate(candidate, candidate.abi_catalog(), None, Some(proofs))
 }
 
 /// Re-establish every canonical invariant over an optimizer-produced graph.
@@ -260,7 +289,7 @@ pub(crate) fn recheck_final(
 pub(super) fn check_optimization_candidate(
     candidate: CanonicalModule<OptimizationCandidate>,
 ) -> Result<CanonicalModule<InitialValid>, InitialCheckError> {
-    check_candidate(&candidate, candidate.abi_catalog(), None)?;
+    check_candidate(&candidate, candidate.abi_catalog(), None, None)?;
     Ok(candidate.into_stage())
 }
 
@@ -268,6 +297,7 @@ fn check_candidate<S: ModuleStage>(
     candidate: &CanonicalModule<S>,
     catalog: Option<&CanonicalAbiCatalog>,
     derived: Option<&contracts::Summaries>,
+    affine_abi: Option<&AffineAbiProofs>,
 ) -> Result<(), InitialCheckError> {
     let (_, layouts) =
         crate::layout::LayoutBundle::decode_canonical(&candidate.layouts().canonical_bytes())
@@ -298,7 +328,7 @@ fn check_candidate<S: ModuleStage>(
         // A verdict is a pure function of what the key digests, so an
         // admitted function is checked once per process and replayed
         // afterwards; see `cache`. Rejections are never replayed.
-        let key = cache::key(
+        let key = affine_abi.filter(|proofs| !proofs.is_empty()).is_none().then(|| cache::key(
             function,
             &signatures,
             &imports,
@@ -307,7 +337,7 @@ fn check_candidate<S: ModuleStage>(
             &tail_obligations,
             &layouts,
             closure_layouts,
-        );
+        )).flatten();
         let discharged = match key.as_ref().and_then(cache::lookup) {
             Some(replayed) => replayed,
             None => 'check: {
@@ -329,6 +359,7 @@ fn check_candidate<S: ModuleStage>(
                     &mut discharged,
                     &layouts,
                     closure_layouts,
+                    affine_abi,
                 )?;
                 let discharged = std::sync::Arc::new(discharged);
                 match (claim, key) {
@@ -841,6 +872,7 @@ fn check_function(
     observed_tail_sites: &mut BTreeSet<TailSiteId>,
     layouts: &crate::layout::LayoutInterner,
     closure_layouts: &BTreeMap<crate::layout::LayoutId, FunctionSignatureId>,
+    affine_abi: Option<&AffineAbiProofs>,
 ) -> Result<(), InitialCheckError> {
     let signature = signatures
         .get(&function.signature)
@@ -868,7 +900,7 @@ fn check_function(
     let predecessors = predecessor_map(function, &blocks)?;
     let dominators = dominators(function, &blocks, &predecessors)?;
     let definition_sites = definition_sites(function);
-    let memory = MemoryChecker::new(function, layouts, signature, closure_layouts)?;
+    let memory = MemoryChecker::new_with_affine_abi(function, layouts, signature, closure_layouts, affine_abi)?;
     let mut all_tail_sites = BTreeSet::new();
     for block in &function.blocks {
         match &block.terminator {

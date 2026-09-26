@@ -504,6 +504,32 @@ impl<'a> MemoryChecker<'a> {
         Ok(())
     }
 
+    /// A move-only list's source ABI or an exact locally checked sequence of
+    /// unique stores establishes exclusive elements. A complete root alone
+    /// does not: ordinary lists may retain shared child references.
+    pub(super) fn exclusive_list_elements(&self, object: ValueId) -> Result<bool, InitialCheckError> {
+        let root = self.live_object(object)?;
+        if root.ownership != Ownership::Unique || !self.is_sole_live_token(object, root.identity)
+            || !self.state.affine_list_roots.iter().any(|candidate| self.same_allocation(object, *candidate))
+        {
+            return Ok(false);
+        }
+        if self.state.range_states.iter().any(|(range, state)| self.same_allocation(object, range.object)
+            && state.initialized && state.ownership != Ownership::Unique && !state.zero_width)
+            || self.state.stored_objects.iter().any(|((container, _), state)| self.same_allocation(object, *container)
+                && state.ownership != Ownership::Unique)
+        {
+            return Ok(false);
+        }
+        Ok(true)
+    }
+
+    pub(super) fn invalidate_affine_list_root(&mut self, object: ValueId) {
+        let aliases = self.state.affine_list_roots.iter().copied()
+            .filter(|root| self.same_allocation(object, *root)).collect::<Vec<_>>();
+        for root in aliases { self.state.affine_list_roots.remove(&root); }
+    }
+
     pub(super) fn slot_key(&self, object: ValueId, index: ValueId) -> (ValueId, SlotIdentity) {
         (
             object,
@@ -535,6 +561,9 @@ impl<'a> MemoryChecker<'a> {
         for (container, slot) in nullable_slots {
             self.state.nullable_unique_slots.remove(&(container, slot));
             self.state.nullable_unique_slots.insert((destination, slot));
+        }
+        if self.state.affine_list_roots.remove(&source) {
+            self.state.affine_list_roots.insert(destination);
         }
         self.state.objects.insert(destination, state);
         self.state.objects
@@ -620,6 +649,7 @@ impl<'a> MemoryChecker<'a> {
                 candidate.ownership = Ownership::Shared;
             }
         }
+        self.invalidate_affine_list_root(source);
         Ok(())
     }
 

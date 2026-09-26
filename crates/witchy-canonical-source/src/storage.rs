@@ -833,6 +833,22 @@ pub fn consuming_aggregate_match_shape(
     Some(shape)
 }
 
+/// Nullable field ordinals whose checked source storage contains an affine owner.
+/// The physical ABI must independently prove an owned nullable pointer slot at each
+/// ordinal; this judgment alone never grants a SafeWIR child token.
+pub fn affine_nullable_fields(
+    ty: &Type,
+    definitions: &BTreeMap<String, TypeDef>,
+) -> Option<Vec<u32>> {
+    let shape = scalar_aggregate_shape(ty, definitions)?;
+    if shape.packed || !shape.tagged { return None; }
+    shape.fields.iter().enumerate().filter_map(|(index, field)| {
+        StoragePlan::classify(field, definitions, |_| Some(0))
+            .requires_affine_owner_token()
+            .then(|| u32::try_from(index).ok())
+    }).collect::<Option<Vec<_>>>()
+}
+
 impl StoragePlan {
     /// An independent owned copy can be made from this checked storage.
     /// Borrowed and view-bearing plans never acquire this proof by omission.

@@ -42,6 +42,12 @@ impl<'a> MemoryChecker<'a> {
                 "MoveRange(uninitialized-source)",
             )?;
             self.require_destination_range_empty(destination)?;
+            let carries_exclusive_elements = self.exclusive_list_elements(source.object)?
+                && moved.ownership == Ownership::Unique
+                && moved.allocation_class == Some(AllocationClass::ReferenceCounted)
+                && self.is_zero(destination.start);
+            self.invalidate_affine_list_root(source.object);
+            self.invalidate_affine_list_root(destination.object);
             let source_object = source.object;
             let consumed = self.state.stored_objects.keys()
                 .filter(|(object, _)| self.same_allocation(source_object, *object))
@@ -75,6 +81,9 @@ impl<'a> MemoryChecker<'a> {
                 RangeIdentity { object: source.object, start: source.start, length: source.length },
                 RangeState { element: source.element, ownership: Ownership::Consumed, allocation_class: moved.allocation_class, initialized: false, zero_width: self.is_zero(count), zero_start: self.is_zero(source.start) },
             );
+            if carries_exclusive_elements {
+                self.state.affine_list_roots.insert(destination.object);
+            }
         } else {
             self.require_scalar_range_element(destination.element, "MoveRange")?;
             self.require_initialized_scalar_range(source, "MoveRange(uninitialized scalar source)")?;
@@ -902,6 +911,8 @@ impl<'a> MemoryChecker<'a> {
                 "CloneRange(uninitialized-source)",
             )?;
             self.require_destination_range_empty(destination)?;
+            self.invalidate_affine_list_root(source.object);
+            self.invalidate_affine_list_root(destination.object);
             // A zero-width prefix fact carries no class of its own. The
             // destination is a fresh reference-counted list; the source is
             // any managed object (a parameter's class is unknown but its

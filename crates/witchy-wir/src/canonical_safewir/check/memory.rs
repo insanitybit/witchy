@@ -201,6 +201,9 @@ pub(super) struct MemoryState {
     /// Absence satisfies the property vacuously. Unlike an exact stored child
     /// identity, this proof survives joins of independently built variants.
     nullable_unique_slots: CowFacts<SortedSet<(ValueId, SlotIdentity)>>,
+    /// Checked move-only list roots whose initialized prefix owns exclusive
+    /// child tokens. A physical list shape alone never creates this fact.
+    affine_list_roots: CowFacts<SortedSet<ValueId>>,
     /// Explicitly initialized nullable fixed slots that contain absence. This
     /// is distinct from an uninitialized slot and from a live stored edge.
     nullable_absent_slots: CowFacts<SortedSet<(ValueId, SlotIdentity)>>,
@@ -246,6 +249,7 @@ pub(super) struct MemoryChecker<'a> {
     /// closure layout carries. It is the only source of a callable lane's
     /// value type, so a layout missing from it has no readable lane.
     closure_layouts: &'a BTreeMap<crate::layout::LayoutId, FunctionSignatureId>,
+    affine_abi: Option<&'a super::AffineAbiProofs>,
     /// Which fields of a fixed layout carry owned pointers.
     ///
     /// This is a pure function of the layout graph, but consolidation asks it
@@ -273,17 +277,29 @@ impl<'a> MemoryChecker<'a> {
         signature: &'a FunctionSignature,
         closure_layouts: &'a BTreeMap<crate::layout::LayoutId, FunctionSignatureId>,
     ) -> Result<Self, InitialCheckError> {
+        Self::new_with_affine_abi(function, layouts, signature, closure_layouts, None)
+    }
+
+    pub(super) fn new_with_affine_abi(
+        function: &'a Function,
+        layouts: &'a LayoutInterner,
+        signature: &'a FunctionSignature,
+        closure_layouts: &'a BTreeMap<crate::layout::LayoutId, FunctionSignatureId>,
+        affine_abi: Option<&'a super::AffineAbiProofs>,
+    ) -> Result<Self, InitialCheckError> {
         let mut checker = Self {
             function,
             signature,
             layouts,
             closure_layouts,
+            affine_abi,
             pointer_fields: PointerFieldCache::default(),
             state: MemoryState {
                 objects: SortedMap::new().into(),
                 shared_phi_origins: SortedMap::new().into(),
                 stored_objects: SortedMap::new().into(),
                 nullable_unique_slots: SortedSet::new().into(),
+                affine_list_roots: SortedSet::new().into(),
                 nullable_absent_slots: SortedSet::new().into(),
                 range_states: SortedMap::new().into(),
                 bound_generations: SortedMap::new().into(),
