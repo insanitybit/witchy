@@ -70,6 +70,7 @@ mod canonical_safewir {
                 #[test] fn recursive_drop_layout_graph_requires_bound_supported_children() { witchy_wir::self_checks::canonical_safewir_check_memory::recursive_drop_layout_graph_requires_bound_supported_children() }
                 #[test] fn release_rejects_shared_value_without_refcount_authority() { witchy_wir::self_checks::canonical_safewir_check_memory::release_rejects_shared_value_without_refcount_authority() }
                 #[test] fn retain_is_refused_in_v1() { witchy_wir::self_checks::canonical_safewir_check_memory::retain_is_refused_in_v1() }
+                #[test] fn scalar_relation_shortcuts_match_materialized_search() { witchy_wir::self_checks::canonical_safewir_check_memory::scalar_relation_shortcuts_match_materialized_search() }
                 #[test] fn return_contract_accepts_only_sole_unique_fresh_object() { witchy_wir::self_checks::canonical_safewir_check_memory::return_contract_accepts_only_sole_unique_fresh_object() }
                 #[test] fn return_contract_rejects_fresh_allocation_class_mismatch() { witchy_wir::self_checks::canonical_safewir_check_memory::return_contract_rejects_fresh_allocation_class_mismatch() }
                 #[test] fn same_identity_ownership_meet_rejects_identity_consumption_and_alias_changes() { witchy_wir::self_checks::canonical_safewir_check_memory::same_identity_ownership_meet_rejects_identity_consumption_and_alias_changes() }

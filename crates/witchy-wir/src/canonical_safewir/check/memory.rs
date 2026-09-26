@@ -1206,6 +1206,39 @@ pub mod self_checks {
         });
     }
 
+    pub fn scalar_relation_shortcuts_match_materialized_search() {
+        with_header_promotion_checker(0, |checker, base, stride| {
+            let unknown = ValueId::new(110);
+            let sum = ValueId::new(111);
+            let equal_constant = ValueId::new(112);
+            let unrelated = ValueId::new(113);
+            checker.state.objects.get_mut(&SOURCE).unwrap().extent = Extent::Counted {
+                header_bytes: base, count: COUNT, capacity: CAPACITY, stride_bytes: stride,
+            };
+            checker.state.header_values.insert((SOURCE, HeaderField::Length), LOADED);
+            checker.state.constants.insert(equal_constant, 1);
+            checker.state.guards.insert((ComparisonOperator::LessEqualUnsigned, unknown, LOADED));
+            checker.state.exact_additions.insert(sum, (unknown, COUNT));
+            let facts = &checker.state;
+            let headers = MemoryChecker::header_length_pairs(facts);
+            let steps = UpperSteps::new(facts, |_| true);
+            let values = [COUNT, CAPACITY, ZERO, LOADED, unknown, sum, equal_constant, unrelated];
+            // Compare to the unchanged materialized evaluators, including
+            // reflexive/constants, header equality, guard/addition reachability,
+            // and missing relations. No duplicated proof algorithm in the test.
+            for left in values {
+                for right in values {
+                    assert_eq!(MemoryChecker::same_scalar_in(facts, left, right),
+                        MemoryChecker::same_scalar_with(facts, &headers, left, right), "equality {left:?} {right:?}");
+                    assert_eq!(MemoryChecker::less_equal_in(facts, left, right),
+                        MemoryChecker::less_equal_in_with(facts, &steps, left, right), "order {left:?} {right:?}");
+                }
+            }
+            assert!(MemoryChecker::less_equal_in(facts, unknown, COUNT));
+            assert!(!MemoryChecker::less_equal_in(facts, unrelated, CAPACITY));
+        });
+    }
+
     fn with_checker(
         pointer_element: bool,
         test: impl FnOnce(&mut MemoryChecker<'_>, crate::layout::LayoutId),

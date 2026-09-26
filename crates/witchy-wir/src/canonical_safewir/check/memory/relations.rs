@@ -43,7 +43,13 @@ impl<'a> MemoryChecker<'a> {
     }
 
     pub(super) fn same_scalar_in(facts: &MemoryState, left: ValueId, right: ValueId) -> bool {
-        Self::same_scalar_with(facts, &Self::header_length_pairs(facts), left, right)
+        // Discharge the scalar-only alternatives before materializing header
+        // relations. The remaining alternatives are exactly same_scalar_with.
+        if left == right || Self::constant_relation_in(facts, left, right, |left, right| left == right) {
+            return true;
+        }
+        let header_lengths = Self::header_length_pairs(facts);
+        header_lengths.contains(&(left, right)) || header_lengths.contains(&(right, left))
     }
 
     /// Every `(loaded, count)` pair where `loaded` is a `Length` header load
@@ -199,6 +205,13 @@ impl<'a> MemoryChecker<'a> {
     }
 
     pub(super) fn less_equal_in(facts: &MemoryState, left: ValueId, right: ValueId) -> bool {
+        // These are already sufficient at the search's first visited value.
+        // They need no guard/addition graph and do not authenticate any owner.
+        if left == right || Self::constant_relation_in(facts, left, right, |left, right| left <= right)
+            || facts.constants.get(&left) == Some(&0)
+        {
+            return true;
+        }
         Self::less_equal_in_with(facts, &UpperSteps::new(facts, |_| true), left, right)
     }
 
