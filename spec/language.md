@@ -2226,8 +2226,14 @@ or callback call loses its exact scope or declaration origin, the callable
 remains unproved through projections and cannot be invoked or exported. A
 lambda with an unresolved opt task input
 requirement cannot enter aggregate storage, another closure capture, a cast,
-an opaque call, or a return; public callable types do not yet carry this
-requirement.
+an opaque call, or a return. A source-linked opt declaration may receive an
+exact declaration or local lambda as a callback formal whose checked input
+stores `Task` values. Invoking that formal requires opt-compatible task proof
+for every stored task input, including tuple, list, and single-variant record
+projections. The requirement propagates through exact calls to the declaration
+and is checked against the caller's actual task values. Ordinary function
+types still cannot carry this requirement through an opaque function value,
+cast, task capture, or external ABI.
 An exact declaration value may retain its task-input requirement through a
 source-linked return or checked aggregate projection. Passing that value into
 an opaque function parameter, method, existential call, task recipe, or closure
@@ -2237,6 +2243,10 @@ An opaque producer whose checked result may contain a callable accepting Task
 storage yields an unproved callback value until an explicit contract is
 available. Propagation with `?` refuses a stored task-input obligation because
 the failure result would otherwise bypass the ordinary result summary.
+Task-input provenance is checked against the linked typed source before async
+lowering replaces `async fn` bodies with lazy task constructors. Runtime
+reannotation checks the transformed types and access rules; the retained
+source proof is rebound to executable awaits before SafeWIR admission.
 
 The checker, loan analysis, and canonical lowering use the linked source
 callable's mode when deciding opt contracts, including after async segment and

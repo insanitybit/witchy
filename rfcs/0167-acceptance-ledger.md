@@ -318,8 +318,7 @@ Adversarial review found and prompted the write-back and join fixes, then
 found no further concrete authority widening. A temporary admitted
 unoptimized Wasm program printed the hand-computed `7 7` through direct and
 nested local forwarding. A zero-leak audit remains pending; no A–O row closes.
-Public and externally
-supplied callback contracts still lack a task-input mode field.
+External callback contracts still lack a task-input mode field.
 
 Opaque callback task-input boundary (implemented but unverified, 2026-09-26):
 the shared recursive task-value proof now refuses any unresolved opt task-input
@@ -336,9 +335,38 @@ tries to pass an opt callback through an ordinary function type after tuple
 projection, and an error variant that tries to propagate it; both refuse.
 An ordinary join of callbacks with no opt task-input obligation remains
 accepted, so type shape alone does not taint a local control-flow result.
-Public callback types still cannot express the required task-input contract,
-so the intended higher-order call remains a fail-closed structural gap. No
+Ordinary callback types still cannot express the required task-input contract,
+so opaque higher-order transport remains a fail-closed structural gap. No
 admitted-Wasm or zero-leak evidence is claimed and no A–O row closes.
+
+Source-linked opt callback task inputs (implemented but unverified,
+2026-09-26): an opt declaration's checked callback formal now carries a
+symbolic task-input obligation rooted in that formal. Invocation projects
+actual arguments through the shared recursive stored-child relation and
+requires opt execution proof for each Task leaf; exact tuple children are
+discharged directly, while unknown sums, mappings, cycles, and unsupported
+storage refuse. Direct and projected callback calls propagate requirements
+to the enclosing declaration, and exact source-linked callers discharge them
+against their actual task proofs. Opaque ABI transfer still refuses. The
+existing linked checker case accepts direct, projected, and tuple callback
+relays with opt task values and refuses a normal task at the public call.
+The temporary CLI relay passed admitted Wasm and printed the independently
+expected `7`.
+The prior master canary's inherent-generator case exposed a false refusal in
+the opaque callback result scan: a recursive `Iter`/`Step` graph reached the
+depth limit without containing a task-input callback. The scan now visits each
+exact checked type and input/result context once per path, still refusing
+expanding instantiations and unresolved storage; the existing canary case
+passes its focused compiler run. Adversarial review found no task-input
+callback hidden by that cycle rule.
+The linked checker verifies retained pre-CPS typed source when async bodies
+exist; it checks the runtime projection when no async source exists. Runtime
+reannotation does not rederive erased source execution origins. Adversarial
+review found no unvalidated path from runtime reannotation to the canonical
+source witness or SafeWIR; it identified standalone `typeck::check` as a
+diagnostic checker rather than an independent source task-provenance
+certificate. Admitted Wasm and zero-leak evidence remain pending, so no A–O
+row closes.
 
 Source execution-mode ownership (implemented but unverified, 2026-09-26):
 the checker, loan analysis, call-scoped analysis, canonical lowerer, and legacy

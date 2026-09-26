@@ -5,10 +5,10 @@
 //! Unknown callbacks, dynamic dispatch, or projections fail closed at an opt
 //! await; a result type alone cannot authorize opt execution.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use witchy_canonical_source::aggregates::type_definitions;
-use witchy_canonical_source::storage::stored_children;
+use witchy_canonical_source::storage::{StoredChildren, stored_children};
 use witchy_canonical_source::source::{
     SourceExecutionMode, TaskCallableScope, TaskExecutionProof as Proof, source_execution_mode,
 };
@@ -18,6 +18,98 @@ use witchy_syntax::lambda_scan::scan_lambda;
 use crate::typeck::{Ty, TypeError, TypeTable, ty_to_ast};
 
 type Environment = BTreeMap<String, Proof>;
+
+#[derive(Clone, Copy)]
+enum TaskInputStep { Slot(usize), VariantSlot(usize, usize), AnyElement }
+
+/// Project actual invocation values through the shared checked stored-child
+/// relation. A sum or mapping needs a conditional/keyed proof we do not have;
+/// refuse that formal instead of treating its task child as an ordinary value.
+fn task_input_paths(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> Result<Vec<Vec<TaskInputStep>>, ()> {
+    fn walk(ty: &Type, definitions: &BTreeMap<String, TypeDef>,
+        active: &mut HashSet<Type>, depth: usize, remaining: &mut usize) -> Result<Vec<Vec<TaskInputStep>>, ()> {
+        if depth > 128 || *remaining == 0 { return Err(()); }
+        *remaining -= 1;
+        let source = ty.unqualified();
+        if let Type::Named(name, arguments) = source
+            && (name == "Task" || name == "task.Task") && arguments.len() == 1 {
+            return Ok(vec![Vec::new()]);
+        }
+        if let Type::Fn(inputs, _, _, _) = source {
+            for input in inputs {
+                if !walk(input, definitions, active, depth + 1, remaining)?.is_empty() {
+                    return Err(());
+                }
+            }
+            return Ok(Vec::new());
+        }
+        if !active.insert(source.clone()) { return Err(()); }
+        let result = match source {
+            Type::Tuple(_) => match stored_children(source, definitions)? {
+                Some(StoredChildren::Aggregate(fields)) => {
+                    let mut paths = Vec::new();
+                    for (index, field) in fields.iter().enumerate() {
+                        for mut path in walk(field, definitions, active, depth + 1, remaining)? {
+                            path.insert(0, TaskInputStep::Slot(index));
+                            paths.push(path);
+                        }
+                    }
+                    Ok(paths)
+                }
+                _ => Err(()),
+            },
+            Type::Named(name, _) => match stored_children(source, definitions)? {
+                Some(StoredChildren::Sequence(element)) => {
+                    let mut paths = walk(&element, definitions, active, depth + 1, remaining)?;
+                    for path in &mut paths { path.insert(0, TaskInputStep::AnyElement); }
+                    Ok(paths)
+                }
+                Some(StoredChildren::Mapping(key, value)) => {
+                    if !walk(&key, definitions, active, depth + 1, remaining)?.is_empty()
+                        || !walk(&value, definitions, active, depth + 1, remaining)?.is_empty() {
+                        Err(())
+                    } else { Ok(Vec::new()) }
+                }
+                Some(StoredChildren::Aggregate(fields)) => {
+                    let mut paths = Vec::new();
+                    let variants = definitions.get(name).ok_or(())?.variants.as_slice();
+                    let mut offset = 0_usize;
+                    for (ordinal, variant) in variants.iter().enumerate() {
+                        if offset.checked_add(variant.fields.len()).is_none_or(|end| end > fields.len()) {
+                            return Err(());
+                        }
+                        for index in 0..variant.fields.len() {
+                            for mut path in walk(&fields[offset + index], definitions, active, depth + 1, remaining)? {
+                                if variants.len() != 1 { return Err(()); }
+                                path.insert(0, TaskInputStep::VariantSlot(ordinal, index));
+                                paths.push(path);
+                            }
+                        }
+                        offset += variant.fields.len();
+                    }
+                    if offset != fields.len() { Err(()) } else { Ok(paths) }
+                }
+                None if name.chars().next().is_some_and(char::is_lowercase) && !name.contains('.') => Err(()),
+                None => Ok(Vec::new()),
+            },
+            Type::Slice(inner) => {
+                if walk(inner, definitions, active, depth + 1, remaining)?.is_empty() { Ok(Vec::new()) }
+                else { Err(()) }
+            }
+            Type::Dyn(_, arguments) => {
+                for argument in arguments {
+                    if !walk(argument, definitions, active, depth + 1, remaining)?.is_empty() { return Err(()); }
+                }
+                Ok(Vec::new())
+            }
+            Type::RecordCompose { .. } => Err(()),
+            Type::Qualified(_, _) | Type::Fn(..) => unreachable!("unqualified callable storage"),
+        };
+        active.remove(source);
+        result
+    }
+    walk(ty, definitions, &mut HashSet::new(), 0, &mut 4_096)
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Summary {
@@ -41,30 +133,92 @@ struct Analyzer<'a> {
 }
 
 impl Analyzer<'_> {
+    fn opt_callable_task_formal(&self, source: Option<&Type>) -> bool {
+        let Some(Type::Fn(inputs, _, _, _)) = source.map(Type::unqualified) else { return false };
+        inputs.iter().any(|input| task_input_paths(input, self.definitions)
+            .map_or(true, |paths| !paths.is_empty()))
+    }
+
+    fn require_opaque_opt_callback_inputs(
+        &mut self, callable: Option<&Ty>, proofs: &[Proof],
+    ) -> Result<(), TypeError> {
+        fn project(proof: Proof, step: TaskInputStep) -> Proof {
+            match (proof, step) {
+                (Proof::UnprovedCallableObligation, _) => Proof::UnprovedCallableObligation,
+                (Proof::Elements(elements), TaskInputStep::Slot(index)) =>
+                    elements.get(index).cloned().unwrap_or(Proof::Unknown),
+                (Proof::Variant { ordinal: actual, fields }, TaskInputStep::VariantSlot(ordinal, index)) => {
+                    if actual == ordinal { fields.get(index).cloned().unwrap_or(Proof::Unknown) }
+                    else { Proof::Unknown }
+                }
+                (Proof::Elements(elements), TaskInputStep::AnyElement) =>
+                    Analyzer::join_values(elements),
+                (other, TaskInputStep::Slot(index)) => Proof::Slot(Box::new(other), index),
+                (other, TaskInputStep::VariantSlot(ordinal, index)) =>
+                    Proof::VariantSlot(Box::new(other), ordinal, index),
+                (other, TaskInputStep::AnyElement) => Proof::AnyElement(Box::new(other)),
+            }
+        }
+        let Some(Ty::Fn(inputs, _, _, _, _)) = callable else {
+            return Err(TypeError { message: format!(
+                "in `{}`: opt callback invocation lacks a checked callable input type", self.function.name,
+            ) });
+        };
+        if inputs.len() != proofs.len() {
+            return Err(TypeError { message: format!(
+                "in `{}`: opt callback invocation has an incomplete checked input contract", self.function.name,
+            ) });
+        }
+        for (input, proof) in inputs.iter().zip(proofs) {
+            let source = ty_to_ast(input).ok_or_else(|| TypeError { message: format!(
+                "in `{}`: opt callback task input has no checked source type", self.function.name,
+            ) })?;
+            let paths = task_input_paths(&source, self.definitions).map_err(|()| TypeError { message: format!(
+                "in `{}`: opt callback task input lacks a recursive stored-value proof", self.function.name,
+            ) })?;
+            for path in paths {
+                let mut projected = proof.clone();
+                for step in path {
+                    projected = project(projected, step);
+                }
+                self.require_opt_task(projected)?;
+            }
+        }
+        Ok(())
+    }
+
     fn opaque_result_may_hide_task_input(&self, expression: &Expr) -> bool {
         fn walk(ty: &Type, definitions: &BTreeMap<String, TypeDef>, parameter: bool,
-            depth: usize, remaining: &mut usize) -> bool {
+            active: &mut HashSet<(Type, bool)>, depth: usize, remaining: &mut usize) -> bool {
             if depth > 128 || *remaining == 0 { return true; }
             *remaining -= 1;
-            match ty.unqualified() {
+            let source = ty.unqualified();
+            // The same checked type in the same input/result position has no
+            // further children to discover on a second visit. Growing generic
+            // instantiations still reach the depth/node limit and refuse.
+            let key = (source.clone(), parameter);
+            if !active.insert(key.clone()) { return false; }
+            let hidden = match source {
                 Type::Named(name, arguments)
                     if (name == "Task" || name == "task.Task") && arguments.len() == 1 =>
-                    parameter || walk(&arguments[0], definitions, false, depth + 1, remaining),
+                    parameter || walk(&arguments[0], definitions, false, active, depth + 1, remaining),
                 Type::Fn(inputs, result, _, _) => inputs.iter().any(|input|
-                    walk(input, definitions, true, depth + 1, remaining))
-                    || walk(result, definitions, false, depth + 1, remaining),
-                Type::Slice(inner) => walk(inner, definitions, parameter, depth + 1, remaining),
+                    walk(input, definitions, true, active, depth + 1, remaining))
+                    || walk(result, definitions, false, active, depth + 1, remaining),
+                Type::Slice(inner) => walk(inner, definitions, parameter, active, depth + 1, remaining),
                 source => match stored_children(source, definitions) {
                     Ok(Some(children)) => children.into_types().iter().any(|child|
-                        walk(child, definitions, parameter, depth + 1, remaining)),
+                        walk(child, definitions, parameter, active, depth + 1, remaining)),
                     Ok(None) => false,
                     Err(()) => true,
                 },
-            }
+            };
+            active.remove(&key);
+            hidden
         }
         let Some(ty) = self.table.type_of(expression) else { return false };
         let Some(source) = ty_to_ast(ty) else { return matches!(ty, Ty::Fn(..)) };
-        walk(&source, self.definitions, false, 0, &mut 4_096)
+        walk(&source, self.definitions, false, &mut HashSet::new(), 0, &mut 4_096)
     }
 
     fn unknown_opaque_result(&self, expression: &Expr) -> Proof {
@@ -337,8 +491,23 @@ impl Analyzer<'_> {
             .iter()
             .map(|arg| self.expr(arg, environment))
             .collect::<Result<Vec<_>, _>>()?;
-        for proof in &proofs {
-            self.reject_opaque_callable_transfer(proof, "cross a call argument")?;
+        let direct_target = if environment.contains_key(name)
+            || self.table.local_callee_type(expression).is_some() { None } else {
+            self.module.items.iter().find_map(|item| match item {
+                Item::Function(function) if function.name == name => Some(function),
+                _ => None,
+            })
+        };
+        for (index, proof) in proofs.iter().enumerate() {
+            let checked_opt_formal = direct_target.is_some_and(|function|
+                source_execution_mode(function, &self.module.modes) == SourceExecutionMode::Opt
+                    && function.params.get(index).is_some_and(|param|
+                        self.opt_callable_task_formal(param.ty.as_ref())));
+            let exact_callback = matches!(proof, Proof::DeclaredCallable { .. } | Proof::Callable { .. })
+                || proof.is_opaque_opt_callable_projection();
+            if !checked_opt_formal || !exact_callback {
+                self.reject_opaque_callable_transfer(proof, "cross a call argument")?;
+            }
         }
         // The checker records local callable resolution at the exact call
         // expression. A shadowing value cannot borrow same-spelled declaration
@@ -364,6 +533,13 @@ impl Analyzer<'_> {
                     self.invalidate_arguments(args, Some(&conventions), environment);
                     return Ok(result);
                 }
+                Some(proof) if proof.is_opaque_opt_callable_projection()
+                    && source_execution_mode(self.function, &self.module.modes) == SourceExecutionMode::Opt => {
+                    let callable = self.table.local_callee_type(expression).cloned();
+                    self.require_opaque_opt_callback_inputs(callable.as_ref(), &proofs)?;
+                    environment.values_mut().for_each(|value| *value = value.invalidated());
+                    return Ok(self.unknown_opaque_result(expression));
+                }
                 Some(proof) if proof.has_local_callable_obligation() => {
                     self.reject_local_callable_transfer(&proof, "invoke after provenance was lost")?;
                 }
@@ -372,10 +548,7 @@ impl Analyzer<'_> {
             self.invalidate_arguments(args, None, environment);
             return Ok(Proof::Unknown);
         }
-        let Some(function) = self.module.items.iter().find_map(|item| match item {
-            Item::Function(function) if function.name == name => Some(function),
-            _ => None,
-        }) else {
+        let Some(function) = direct_target else {
             self.invalidate_arguments(args, None, environment);
             return Ok(self.unknown_opaque_result(expression));
         };
@@ -758,6 +931,13 @@ impl Analyzer<'_> {
                         self.invalidate_arguments(args, Some(&conventions), environment);
                         result.instantiate(&proofs).bounded(4096)
                     }
+                    other if other.is_opaque_opt_callable_projection()
+                        && source_execution_mode(self.function, &self.module.modes) == SourceExecutionMode::Opt => {
+                        let callable_type = self.table.type_of(func).cloned();
+                        self.require_opaque_opt_callback_inputs(callable_type.as_ref(), &proofs)?;
+                        environment.values_mut().for_each(|value| *value = value.invalidated());
+                        self.unknown_opaque_result(expression)
+                    }
                     other => {
                         self.reject_local_callable_transfer(&other, "invoke after provenance was lost")?;
                         environment.values_mut().for_each(|proof| *proof = proof.invalidated());
@@ -941,7 +1121,13 @@ fn analyze_function(
         .params
         .iter()
         .enumerate()
-        .map(|(index, param)| (param.name.clone(), Proof::Parameter(index)))
+        .map(|(index, param)| {
+            let proof = if source_execution_mode(function, &module.modes) == SourceExecutionMode::Opt
+                && analyzer.opt_callable_task_formal(param.ty.as_ref()) {
+                Proof::OpaqueOptCallableParameter(index)
+            } else { Proof::Parameter(index) };
+            (param.name.clone(), proof)
+        })
         .collect();
     let tail = analyzer.block(&function.body, &mut environment)?;
     if !matches!(function.body.stmts.last(), Some(Stmt::Return(_))) {

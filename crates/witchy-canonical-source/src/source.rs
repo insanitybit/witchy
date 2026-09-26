@@ -67,6 +67,10 @@ pub enum TaskExecutionProof {
         result: Box<Self>,
     },
     Parameter(usize),
+    /// An opt declaration's callback formal whose checked input type can
+    /// receive Task storage. Its invocation has a public symbolic task-input
+    /// requirement; passing it through an uncontracted ABI is forbidden.
+    OpaqueOptCallableParameter(usize),
     /// A lambda formal cannot borrow its enclosing function's parameter proof.
     CallableParameter(TaskCallableScope, usize),
     /// Result of executing a symbolic task parameter or projection.
@@ -124,6 +128,18 @@ impl TaskAwaitProof {
 }
 
 impl TaskExecutionProof {
+    pub fn is_opaque_opt_callable_projection(&self) -> bool {
+        let mut current = self;
+        for _ in 0..=128 {
+            match current {
+                Self::OpaqueOptCallableParameter(_) => return true,
+                Self::Slot(base, _) | Self::VariantSlot(base, _, _) | Self::AnyElement(base) => current = base,
+                _ => return false,
+            }
+        }
+        false
+    }
+
     /// A checked source summary may defer an opt requirement only when it is rooted
     /// in one of that callable's checked parameters. Unknown storage cannot
     /// become a deferred obligation by being wrapped in a projection.
@@ -160,6 +176,7 @@ impl TaskExecutionProof {
                 TaskExecutionProof::Callable { required_opt_inputs, result, .. } =>
                     !required_opt_inputs.is_empty() || contains(result, only_local, depth + 1, remaining),
                 TaskExecutionProof::UnprovedCallableObligation => true,
+                TaskExecutionProof::OpaqueOptCallableParameter(_) => !only_local,
                 TaskExecutionProof::Task(_, result) | TaskExecutionProof::Awaited(result)
                 | TaskExecutionProof::Slot(result, _)
                 | TaskExecutionProof::VariantSlot(result, _, _)
@@ -336,6 +353,10 @@ impl TaskExecutionProof {
                 TaskExecutionProof::Parameter(index) if formal_scope.is_none() =>
                     arguments.get(*index).cloned().unwrap_or(TaskExecutionProof::Unknown),
                 TaskExecutionProof::Parameter(index) => TaskExecutionProof::Parameter(*index),
+                TaskExecutionProof::OpaqueOptCallableParameter(index) if formal_scope.is_none() =>
+                    arguments.get(*index).cloned().unwrap_or(TaskExecutionProof::UnprovedCallableObligation),
+                TaskExecutionProof::OpaqueOptCallableParameter(index) =>
+                    TaskExecutionProof::OpaqueOptCallableParameter(*index),
                 TaskExecutionProof::CallableParameter(scope, index) if formal_scope == Some(scope) =>
                     arguments.get(*index).cloned().unwrap_or(TaskExecutionProof::Unknown),
                 TaskExecutionProof::CallableParameter(scope, index) =>

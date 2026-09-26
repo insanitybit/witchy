@@ -152,6 +152,19 @@ pub async fn execute_nested_local_lambda(own recipe: task.Task(Int)) -> Int:
         nested()
     relay(recipe).await
 
+pub fn relay_callback(callback: fn(own task.Task(Int)) -> task.Task(Int), own recipe: task.Task(Int)) -> task.Task(Int):
+    callback(recipe)
+
+pub fn relay_projected_callback(callback: fn(own task.Task(Int)) -> task.Task(Int), own recipe: task.Task(Int)) -> task.Task(Int):
+    let pair = (callback, 0)
+    pair.0(recipe)
+
+pub fn pass_pair(own pair: (task.Task(Int), Int)) -> task.Task(Int):
+    pair.0
+
+pub fn relay_pair_callback(callback: fn(own (task.Task(Int), Int)) -> task.Task(Int), own pair: (task.Task(Int), Int)) -> task.Task(Int):
+    callback(pair)
+
 pub async fn compatible() -> Int:
     7
 
@@ -206,10 +219,25 @@ async fn main(console: Console):
     let _ = worker.execute_indirect(ordinary()).await
     let _ = worker.execute_local_lambda(ordinary()).await
     let _ = worker.execute_nested_local_lambda(ordinary()).await
+    let _ = worker.relay_callback(worker.execute, ordinary()).await
     console.print("${answer}")
 "#;
     let result = super::source::checked_bundle(vec![("worker", worker), ("main", main)], "main");
     let error = result.expect_err("a normal recipe cannot acquire opt execution provenance at the call site");
+    assert!(error.contains("opt-compatible task value provenance"), "{error}");
+
+    let normal_public_callback_main = r#"import worker
+
+async fn ordinary() -> Int:
+    7
+
+async fn main(console: Console):
+    let _ = worker.relay_callback(worker.execute, ordinary()).await
+    console.print("unreachable")
+"#;
+    let error = super::source::checked_bundle(
+        vec![("worker", worker), ("main", normal_public_callback_main)], "main",
+    ).expect_err("an opt callback formal cannot receive a normal task through a public relay");
     assert!(error.contains("opt-compatible task value provenance"), "{error}");
 
     let normal_option_main = r#"import worker
@@ -227,13 +255,26 @@ async fn main(console: Console):
     ).expect_err("a sum wrapper cannot erase normal task execution mode");
     assert!(error.contains("opt-compatible task value provenance"), "{error}");
 
-    let compatible_main = r#"import worker
+    let compatible_main = r#"import task
+import worker
+
+fn public_callback_recipe() -> task.Task(Int):
+    worker.relay_callback(worker.execute, worker.compatible())
+
+fn projected_callback_recipe() -> task.Task(Int):
+    worker.relay_projected_callback(worker.execute, worker.compatible())
+
+fn pair_callback_recipe() -> task.Task(Int):
+    worker.relay_pair_callback(worker.pass_pair, (worker.compatible(), 0))
 
 async fn main(console: Console):
     let answer = worker.execute(worker.compatible()).await
     let indirect_answer = worker.execute_indirect(worker.compatible()).await
     let local_lambda_answer = worker.execute_local_lambda(worker.compatible()).await
     let nested_local_lambda_answer = worker.execute_nested_local_lambda(worker.compatible()).await
+    let public_callback_answer = public_callback_recipe().await
+    let projected_callback_answer = projected_callback_recipe().await
+    let pair_callback_answer = pair_callback_recipe().await
     let pair_answer = worker.execute_pair((worker.compatible(), 1)).await
     let inner = worker.nested().await
     let nested_answer = inner.await
@@ -247,6 +288,9 @@ async fn main(console: Console):
     console.print("${indirect_answer}")
     console.print("${local_lambda_answer}")
     console.print("${nested_local_lambda_answer}")
+    console.print("${public_callback_answer}")
+    console.print("${projected_callback_answer}")
+    console.print("${pair_callback_answer}")
     console.print("${pair_answer}")
     console.print("${nested_answer}")
     console.print("${opt_nested_answer}")

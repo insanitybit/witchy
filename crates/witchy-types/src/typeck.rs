@@ -10570,7 +10570,9 @@ pub fn check_linked_source_semantics_typed(
     let typed_async_source = if has_async {
         let projection = source.typed_async_projection()
             .map_err(witchy_syntax::linker::SourceLinkError::Link)?;
-        Some(annotate_typed_async_projection(projection.module).map_err(source_error)?)
+        let typed = annotate_typed_async_projection(projection.module).map_err(source_error)?;
+        crate::task_provenance::verify(typed.module(), typed.table()).map_err(source_error)?;
+        Some(typed)
     } else {
         None
     };
@@ -10594,10 +10596,10 @@ pub fn check_linked_source_semantics_typed(
         })
         .collect();
     if let Some(pruned) = crate::std_pruning::prune(&body_projection, &std_impls) {
-        return check_with_compiler_syntax(&pruned, false)
+        return check_with_compiler_syntax_with_task_provenance(&pruned, false, !has_async)
             .map(|typed| (typed, typed_async_source)).map_err(source_error);
     }
-    check_with_compiler_syntax(&body_projection, false)
+    check_with_compiler_syntax_with_task_provenance(&body_projection, false, !has_async)
         .map(|typed| (typed, typed_async_source)).map_err(source_error)
 }
 
@@ -10628,7 +10630,7 @@ impl CheckedComptimeSource {
 /// Run the complete comptime check and retain its normalized source for the
 /// interpreter. Errors and their ordering are identical to [`check_comptime`].
 pub fn check_comptime_source(module: &Module) -> Result<CheckedComptimeSource, TypeError> {
-    check_with_compiler_syntax_and_source(module, true)
+    check_with_compiler_syntax_and_source(module, true, true)
         .map(|(_, module)| CheckedComptimeSource { module })
 }
 
@@ -10636,13 +10638,22 @@ fn check_with_compiler_syntax(
     module: &Module,
     compiler_syntax_allowed: bool,
 ) -> Result<TypedModule, TypeError> {
-    check_with_compiler_syntax_and_source(module, compiler_syntax_allowed)
+    check_with_compiler_syntax_with_task_provenance(module, compiler_syntax_allowed, true)
+}
+
+fn check_with_compiler_syntax_with_task_provenance(
+    module: &Module,
+    compiler_syntax_allowed: bool,
+    verify_task_provenance: bool,
+) -> Result<TypedModule, TypeError> {
+    check_with_compiler_syntax_and_source(module, compiler_syntax_allowed, verify_task_provenance)
         .map(|(typed, _)| typed)
 }
 
 fn check_with_compiler_syntax_and_source(
     module: &Module,
     compiler_syntax_allowed: bool,
+    verify_task_provenance: bool,
 ) -> Result<(TypedModule, Module), TypeError> {
     crate::views::reject_const_view_formation(module)?;
     // Catch duplicate top-level functions before lowering, while `impl` methods
@@ -10719,7 +10730,7 @@ fn check_with_compiler_syntax_and_source(
             // signatures survive lowering as `Qualified(Borrow, _)`).
             // `recs` already stays alive while the checker lowers its clone;
             // retaining it does not clone either AST or address-keyed tables.
-            typed_module_checked(lowered, type_table).map(|typed| (typed, recs))
+            typed_module_checked(lowered, type_table, verify_task_provenance).map(|typed| (typed, recs))
         }
         Err(message) => {
             // (BUG-307) Mono's "cannot infer the result type" fallback fires when
@@ -11742,7 +11753,11 @@ impl PartialEq for TypedModule {
     }
 }
 
-fn typed_module_checked(module: Module, table: TypeTable) -> Result<TypedModule, TypeError> {
+fn typed_module_checked(
+    module: Module,
+    table: TypeTable,
+    verify_source_task_provenance: bool,
+) -> Result<TypedModule, TypeError> {
     let module = Box::new(module);
     let has_views = crate::views::module_contains_canonical_view(&module);
     let has_legacy_loans = crate::views::module_contains_legacy_loan(&module);
@@ -11760,7 +11775,14 @@ fn typed_module_checked(module: Module, table: TypeTable) -> Result<TypedModule,
     let access_facts = crate::access::checked_facts(&module, &table)
         .map_err(|error| TypeError { message: error.to_string() })?;
     crate::call_scoped::verify(&module, &table, &access_facts)?;
-    crate::task_provenance::verify(&module, &table)?;
+    // The source checker runs task provenance before async lowering. Runtime
+    // reannotation sees `async fn` rewritten as `task.lazy` and has no source
+    // execution origin for that recipe. Its lowered AST cannot reconstruct
+    // the source proof; the canonical source witness binds and audits the
+    // checked await origins separately before SafeWIR admission.
+    if verify_source_task_provenance {
+        crate::task_provenance::verify(&module, &table)?;
+    }
     Ok(TypedModule {
         loan_facts: loan_facts.map(|facts| RetainedLoanFacts { module: std::ptr::from_ref(module.as_ref()), facts }),
         access_facts: Some(RetainedAccessFacts { module: std::ptr::from_ref(module.as_ref()), facts: access_facts }),
@@ -12142,7 +12164,7 @@ pub fn annotate_checked(module: Module) -> Result<TypedModule, TypeError> {
         true,
     )?
         .unwrap_or_default();
-    let mut typed = typed_module_checked(module, table)?;
+    let mut typed = typed_module_checked(module, table, false)?;
     typed.checked_as = Some(CheckedAnnotation::Runtime);
     Ok(typed)
 }
@@ -12214,7 +12236,7 @@ pub fn annotate_checked_build(mut module: Module) -> Result<TypedModule, TypeErr
             table.functions.insert("main".to_string(), signature);
         }
     }
-    let mut typed = typed_module_checked(module, table)?;
+    let mut typed = typed_module_checked(module, table, false)?;
     typed.checked_as = Some(CheckedAnnotation::BuildEntrypoint);
     Ok(typed)
 }
