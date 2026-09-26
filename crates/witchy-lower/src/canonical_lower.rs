@@ -11100,7 +11100,20 @@ impl FunctionLowerer<'_> {
             Expr::MethodCall { receiver, method, args }
                 if method == "owned" && args.is_empty() =>
             {
-                self.lower_owned_slice(expression, receiver)
+                if !self.type_table.is_compiler_owned_materialization(expression) {
+                    return Err(CanonicalLoweringError::UnsupportedExpression("unchecked .owned()"));
+                }
+                match self.expression_type(receiver)? {
+                    Type::Qualified(TypeQual::View, inner)
+                        if rooted_slice_element_with_definitions(&inner, self.definitions).is_some() =>
+                    {
+                        self.lower_owned_slice(expression, receiver)
+                    }
+                    Type::Qualified(TypeQual::View, _) => {
+                        self.lower_unary(expression, UnOp::Deref, receiver)
+                    }
+                    _ => self.lower_expr(receiver),
+                }
             }
             Expr::LabeledCall { .. }
             | Expr::LabeledMethodCall { .. }

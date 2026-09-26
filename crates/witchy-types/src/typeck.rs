@@ -10184,7 +10184,6 @@ impl Checker {
     }
 
     fn check_function(&mut self, func: &Function) -> Result<(), TypeError> {
-        borrow_escape_check(func)?;
         let source_callable = witchy_syntax::suspension::source_callable_name(func);
         let prev_compiler_syntax_allowed = self.compiler_syntax_allowed;
         if func.comptime_only {
@@ -11377,7 +11376,7 @@ fn collect_expr(
 ) -> Result<(), ProperTailManifestError> {
     path.push(ProperTailPathStep::Node(expr_kind(expr)));
     if tail && direct_tail_envelope_is_forwarded(expr, *caller)
-        && !compiler_known_slice_owned_tail(expr, caller.table)
+        && !compiler_known_owned_tail(expr, caller.table)
     {
         if let Some(dispatch) = proper_tail_dispatch(expr) {
             keys.push(ProperTailSiteKey { callable: caller.callable.clone(), path: path.clone(), dispatch });
@@ -11537,18 +11536,13 @@ fn proper_tail_dispatch(expr: &Expr) -> Option<ProperTailDispatchKind> {
     }
 }
 
-/// The checked zero-argument slice materialization is emitted inline as a
-/// fresh List, not as a callable transfer. A declared `owned` method is
-/// resolved to a call before this manifest is sealed; all other surviving
-/// method calls keep their proper-tail obligation.
-fn compiler_known_slice_owned_tail(expr: &Expr, table: &TypeTable) -> bool {
-    let Expr::MethodCall { receiver, method, args } = expr else { return false };
+/// A checked compiler-owned materialization is emitted inline, not as a
+/// callable transfer. Declared `owned` methods resolve to ordinary calls.
+fn compiler_known_owned_tail(expr: &Expr, table: &TypeTable) -> bool {
+    let Expr::MethodCall { method, args, .. } = expr else { return false };
     method == "owned"
         && args.is_empty()
         && table.compiler_owned_materializations.contains(&(expr as *const Expr as usize))
-        && matches!(table.type_of(receiver).or_else(|| table.view_type_of(receiver)), Some(Ty::View(payload))
-            if matches!(payload.as_ref(), Ty::Named(name, elements)
-                if name.as_ref() == "Slice" && elements.len() == 1))
 }
 
 fn expr_kind(expr: &Expr) -> ProperTailExprKind {
@@ -11632,6 +11626,10 @@ impl TypeTable {
 
     pub fn type_of(&self, e: &Expr) -> Option<&Ty> {
         self.types.get(&(e as *const Expr as usize))
+    }
+
+    pub fn is_compiler_owned_materialization(&self, e: &Expr) -> bool {
+        self.compiler_owned_materializations.contains(&(e as *const Expr as usize))
     }
 
     pub(crate) fn view_type_of(&self, e: &Expr) -> Option<&Ty> {
@@ -11801,6 +11799,7 @@ fn typed_module_checked(module: Module, table: TypeTable) -> Result<TypedModule,
         .transpose()?;
     let access_facts = crate::access::checked_facts(&module, &table)
         .map_err(|error| TypeError { message: error.to_string() })?;
+    crate::call_scoped::verify(&module, &table, &access_facts)?;
     Ok(TypedModule {
         loan_facts: loan_facts.map(|facts| RetainedLoanFacts { module: std::ptr::from_ref(module.as_ref()), facts }),
         access_facts: Some(RetainedAccessFacts { module: std::ptr::from_ref(module.as_ref()), facts: access_facts }),

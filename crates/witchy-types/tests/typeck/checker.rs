@@ -9,6 +9,28 @@
     }
 
     #[test]
+    fn call_scoped_access_follows_aliases_aggregates_and_captures() {
+        for source in [
+            "fn escape(let text: String) -> String:\n    let alias = text\n    alias\n",
+            "fn escape(let text: String) -> (String, Int):\n    (text, 1)\n",
+            "fn escape(let text: String) -> fn() -> String:\n    fn(): text\n",
+            "fn escape(let xs: List(Int)) -> &Int:\n    &xs[0]\n",
+        ] {
+            let error = check_source(source).expect_err("call-scoped access cannot escape");
+            assert!(error.message.contains("call-scoped `let` parameter access"), "{error:?}");
+        }
+
+        check_source("fn size(let text: String) -> Int:\n    text.length()\n")
+            .expect("a computed scalar does not retain call-scoped access");
+        check_source("fn scalar(let value: Int) -> Int:\n    value\n")
+            .expect("an inline scalar parameter carries no retained access");
+        check_source("fn copy(let text: String) -> String:\n    let independent = text.owned()\n    independent\n")
+            .expect("checked explicit materialization establishes an independent value");
+        check_source("fn first(xs: List(Int)) -> &Int:\n    &xs[0]\n")
+            .expect("an owned input can retain a view of its snapshot");
+    }
+
+    #[test]
     fn pure_function_value_calls_require_a_pure_contract() {
         check_source(
             "pure fn invoke(callback: pure fn(Int) -> Int, value: Int) -> Int:\n    callback(value)\n",
