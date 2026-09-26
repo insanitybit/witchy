@@ -6873,15 +6873,35 @@ impl FunctionLowerer<'_> {
         let scrutinee_type = self.expression_type(scrutinee)?;
         let affine = StoragePlan::classify(&scrutinee_type, self.definitions, |_| Some(0))
             .requires_affine_owner_token();
-        let consuming_shape = affine.then(|| witchy_canonical_source::storage::consuming_tagged_match_shape(
+        let consuming_shape = affine.then(|| witchy_canonical_source::storage::consuming_aggregate_match_shape(
             &scrutinee_type, arms, self.definitions,
         )).flatten();
         if affine && consuming_shape.is_none() {
             return Err(CanonicalLoweringError::UnsupportedExpression(
-                "affine aggregate match lacks a consuming tagged-pattern proof",
+                "affine aggregate match lacks a consuming pattern proof",
             ));
         }
-        let scrutinee = self.lower_expr(scrutinee)?;
+        let scrutinee_value = self.lower_expr(scrutinee)?;
+        if consuming_shape.is_some() {
+            // Each successful arm retires this owned shell after extracting
+            // its payload. The ordinary return path must not drop an entry
+            // parameter a second time after that explicit transfer.
+            let source_name = match scrutinee {
+                Expr::Var(name) => Some(name.as_str()),
+                Expr::Unary { op: UnOp::Move, expr } => match expr.as_ref() {
+                    Expr::Var(name) => Some(name.as_str()),
+                    _ => None,
+                },
+                _ => None,
+            };
+            self.owned_parameters.retain(|parameter| {
+                *parameter != scrutinee_value
+                    && self.parameter_names.get(parameter).is_none_or(|name| {
+                        Some(name.as_str()) != source_name
+                    })
+            });
+        }
+        let scrutinee = scrutinee_value;
         let string_layout = self.string_layout_id().ok();
         let facts = self.snapshot_facts();
         let outer = self.bindings.clone();
@@ -7305,7 +7325,7 @@ impl FunctionLowerer<'_> {
         let condition = self.match_pattern_condition(scrutinee, pattern, scrutinee_type)?;
         let refutable = self.branch_pattern_condition(condition, failure)?;
         let bindings = if let Some(shape) = consuming_shape {
-            self.lower_consuming_tagged_pattern(scrutinee, pattern, scrutinee_type, shape)?
+            self.lower_consuming_aggregate_pattern(scrutinee, pattern, scrutinee_type, shape)?
         } else {
             self.lower_match_pattern(scrutinee, pattern, scrutinee_type)?
         };
@@ -7316,7 +7336,7 @@ impl FunctionLowerer<'_> {
     /// nullable slots, clear those slots, then retire the empty shell before
     /// the arm body can consume its bindings. Other fields remain ordinary
     /// value reads and are released with the shell.
-    fn lower_consuming_tagged_pattern(
+    fn lower_consuming_aggregate_pattern(
         &mut self,
         scrutinee: ValueId,
         pattern: &Pattern,
@@ -7324,12 +7344,12 @@ impl FunctionLowerer<'_> {
         shape: &ScalarAggregateShape,
     ) -> Result<Vec<(String, ValueId)>, CanonicalLoweringError> {
         let (Pattern::Ctor { name, args } | Pattern::AnonCtor { tag: name, args }) = pattern else {
-            return Err(CanonicalLoweringError::UnsupportedExpression("consuming tagged pattern"));
+            return Err(CanonicalLoweringError::UnsupportedExpression("consuming aggregate pattern"));
         };
         let (variant_index, variant) = shape.variant(name)
             .ok_or_else(|| CanonicalLoweringError::MissingBinding(name.clone()))?;
         if args.len() != variant.arity || !matches!(self.values[&scrutinee], ValueType::Ref(_)) {
-            return Err(CanonicalLoweringError::UnsupportedExpression("consuming tagged payload"));
+            return Err(CanonicalLoweringError::UnsupportedExpression("consuming aggregate payload"));
         }
         let mut bindings = Vec::new();
         for (offset, argument) in args.iter().enumerate() {
@@ -7363,12 +7383,7 @@ impl FunctionLowerer<'_> {
                     place: witchy_wir::canonical_safewir::Place::projected(
                         scrutinee, Projection::Field { index: slot }, value_type, AccessMode::Read,
                     ),
-                    transfer: witchy_wir::canonical_safewir::LoadTransfer::MoveUnique,
-                });
-                self.push_operation(Operation::InitNullableOwned {
-                    place: witchy_wir::canonical_safewir::Place::projected(
-                        scrutinee, Projection::Field { index: slot }, value_type, AccessMode::Write,
-                    ),
+                    transfer: witchy_wir::canonical_safewir::LoadTransfer::TakeNullableUnique,
                 });
                 value
             } else {
@@ -9418,7 +9433,7 @@ impl FunctionLowerer<'_> {
                 match operation {
                     Operation::Alloc { destination, class: witchy_wir::canonical_safewir::AllocationClass::ReferenceCounted, .. }
                     | Operation::CloneRef { destination, .. }
-                    | Operation::Load { destination, transfer: witchy_wir::canonical_safewir::LoadTransfer::CloneShared | witchy_wir::canonical_safewir::LoadTransfer::ClonePresent | witchy_wir::canonical_safewir::LoadTransfer::TakeLast, .. } => {
+                    | Operation::Load { destination, transfer: witchy_wir::canonical_safewir::LoadTransfer::CloneShared | witchy_wir::canonical_safewir::LoadTransfer::ClonePresent | witchy_wir::canonical_safewir::LoadTransfer::TakeLast | witchy_wir::canonical_safewir::LoadTransfer::TakeNullableUnique, .. } => {
                         direct.insert(*destination);
                     }
                     Operation::Call { destinations, .. } | Operation::VarCall { destinations, .. } => {
@@ -9736,7 +9751,7 @@ impl FunctionLowerer<'_> {
                     }
                     Operation::Load {
                         destination,
-                        transfer: witchy_wir::canonical_safewir::LoadTransfer::CloneShared | witchy_wir::canonical_safewir::LoadTransfer::ClonePresent | witchy_wir::canonical_safewir::LoadTransfer::TakeLast,
+                        transfer: witchy_wir::canonical_safewir::LoadTransfer::CloneShared | witchy_wir::canonical_safewir::LoadTransfer::ClonePresent | witchy_wir::canonical_safewir::LoadTransfer::TakeLast | witchy_wir::canonical_safewir::LoadTransfer::TakeNullableUnique,
                         ..
                     } => { direct.insert(*destination); }
                     // A call's reference result is a shared token (its result
@@ -10736,10 +10751,14 @@ impl FunctionLowerer<'_> {
                         }
                         ParameterOwnership::Value => Ok(CallArgument::Value(value)),
                         ParameterOwnership::Unique => {
+                            let source_type = self.expression_type(argument)?;
+                            let affine = StoragePlan::classify(
+                                &source_type, self.definitions, |_| Some(0),
+                            ).requires_affine_owner_token();
                             let moved = if !self.opt_mode
                                 && !matches!(argument, Expr::Unary { op: UnOp::Move, .. })
+                                && !affine
                             {
-                                let source_type = self.expression_type(argument)?;
                                 self.owned_for_storage(value, &source_type)?
                             } else {
                                 self.owned_parameters.retain(|owned| *owned != value);
@@ -10754,10 +10773,14 @@ impl FunctionLowerer<'_> {
                             let owned = self.clone_string_for_storage(value)?;
                             return Ok(CallArgument::Move(owned));
                         }
+                        let source_type = self.expression_type(argument)?;
+                        let affine = StoragePlan::classify(
+                            &source_type, self.definitions, |_| Some(0),
+                        ).requires_affine_owner_token();
                         if !self.opt_mode
                             && !matches!(argument, Expr::Unary { op: UnOp::Move, .. })
+                            && !affine
                         {
-                            let source_type = self.expression_type(argument)?;
                             let owned = self.owned_for_storage(value, &source_type)?;
                             return Ok(CallArgument::Move(owned));
                         }

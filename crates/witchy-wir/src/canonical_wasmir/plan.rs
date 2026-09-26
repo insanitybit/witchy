@@ -1344,6 +1344,7 @@ pub(super) fn expected_block_operations_plan(
                         | LoadTransfer::ClonePresent
                         | LoadTransfer::MoveUnique
                         | LoadTransfer::TakeLast
+                        | LoadTransfer::TakeNullableUnique
                 ) =>
             {
                 push_memory_load_plan(&mut plan, function, layouts, &layout, place, *destination)?;
@@ -1352,6 +1353,14 @@ pub(super) fn expected_block_operations_plan(
                     LoadTransfer::ClonePresent => {
                         push_require_present_plan(&mut plan, &layout, *destination)?;
                         push_share_plan(&mut plan, &layout, *destination, *destination)?;
+                    }
+                    LoadTransfer::TakeNullableUnique => {
+                        push_require_present_plan(&mut plan, &layout, *destination)?;
+                        let writable = crate::canonical_safewir::Place::projected(
+                            place.object(), place.projection().clone(), place.value_type(),
+                            crate::canonical_safewir::AccessMode::Write,
+                        );
+                        push_init_nullable_owned_plan(&mut plan, function, layouts, &layout, &writable)?;
                     }
                     LoadTransfer::TakeLast => {
                         let Projection::Element { index } = place.projection() else { return Err(CanonicalAdmissionError::UnsupportedPlan); };

@@ -1717,6 +1717,7 @@ pub mod self_checks {
             value_types: BTreeMap::from([
                 (SOURCE, ValueType::Ref(record)), (DESTINATION, ValueType::Ref(record)),
                 (CHILD, ValueType::Ref(child)), (LOADED, ValueType::Ref(child)),
+                (ValueId::new(11), ValueType::Ref(child)),
             ]),
             blocks: vec![BasicBlock {
                 id: crate::canonical_safewir::BlockId::new(0), parameters: vec![], operations: vec![],
@@ -1759,6 +1760,28 @@ pub mod self_checks {
             // A known absent load is still a well-defined trapping operation.
             assert_eq!(checker.check(&Operation::Load { destination: LOADED, place: read, transfer: LoadTransfer::ClonePresent }), Ok(true));
             assert_eq!(checker.state.objects[&LOADED].ownership, Ownership::Shared);
+        });
+        with_nullable_checker(|checker, child| {
+            let read = nullable_field(SOURCE, child, AccessMode::Read);
+            assert!(checker.check(&Operation::Load { destination: LOADED, place: read.clone(), transfer: LoadTransfer::TakeNullableUnique }).is_err());
+            checker.check(&Operation::Store {
+                place: nullable_field(SOURCE, child, AccessMode::Write),
+                value: CHILD,
+                transfer: StoreTransfer::MoveUnique,
+            }).unwrap();
+            checker.check(&Operation::Load { destination: LOADED, place: read, transfer: LoadTransfer::TakeNullableUnique }).unwrap();
+            assert_eq!(checker.state.objects[&LOADED].ownership, Ownership::Unique);
+            assert!(checker.state.nullable_absent_slots.contains(&(SOURCE, SlotIdentity::Constant(0))));
+        });
+        with_nullable_checker(|checker, child| {
+            checker.check(&Operation::Store {
+                place: nullable_field(SOURCE, child, AccessMode::Write),
+                value: CHILD,
+                transfer: StoreTransfer::MoveUnique,
+            }).unwrap();
+            let read = nullable_field(SOURCE, child, AccessMode::Read);
+            checker.check(&Operation::Load { destination: ValueId::new(11), place: read.clone(), transfer: LoadTransfer::ClonePresent }).unwrap();
+            assert!(checker.check(&Operation::Load { destination: LOADED, place: read, transfer: LoadTransfer::TakeNullableUnique }).is_err());
         });
     }
 

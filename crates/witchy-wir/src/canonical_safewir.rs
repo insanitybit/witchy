@@ -302,6 +302,9 @@ pub enum LoadTransfer {
     /// Detach the final element of a unique packed list and publish its shorter
     /// count atomically. The element's allocation need not be unique.
     TakeLast,
+    /// Take one present reference from a nullable field of a uniquely owned
+    /// aggregate, then clear that field before its shell can be released.
+    TakeNullableUnique,
     MoveUnique,
 }
 

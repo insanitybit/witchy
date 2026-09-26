@@ -810,7 +810,7 @@ pub(super) fn lower_operation(
             let access = resolve_memory_place_for_values(function, value_types, layouts, place)?;
             let valid_transfer = match access.pointer_layout {
                 Some(pointee) if access.pointer_slot == Some(PointerSlot::OwnedNullable) => {
-                    *transfer == LoadTransfer::ClonePresent
+                    matches!(transfer, LoadTransfer::ClonePresent | LoadTransfer::TakeNullableUnique)
                         && place.value_type() == ValueType::Ref(pointee)
                 }
                 Some(pointee) => {

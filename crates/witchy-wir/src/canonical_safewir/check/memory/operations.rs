@@ -301,10 +301,10 @@ impl<'a> MemoryChecker<'a> {
                             .insert(generation);
                     }
                 }
-                if matches!(transfer, LoadTransfer::MoveUnique | LoadTransfer::TakeLast) {
+                if matches!(transfer, LoadTransfer::MoveUnique | LoadTransfer::TakeLast | LoadTransfer::TakeNullableUnique) {
                     self.invalidate_full_current_prefixes(place.object());
                 }
-                if matches!(transfer, LoadTransfer::TakeLast) {
+                if matches!(transfer, LoadTransfer::TakeLast | LoadTransfer::TakeNullableUnique) {
                     self.invalidate_owner_generation(place.object())?;
                 }
                 Ok(true)
@@ -684,8 +684,41 @@ impl<'a> MemoryChecker<'a> {
         self.require_ref_type(destination, layout)?;
         let key = self.reference_slot(place)?;
         let nullable = self.nullable_fixed_field(place)?.is_some();
-        if nullable != (transfer == LoadTransfer::ClonePresent) {
+        if nullable != matches!(transfer, LoadTransfer::ClonePresent | LoadTransfer::TakeNullableUnique) {
             return self.unsupported("Load(nullable transfer mismatch)");
+        }
+        if transfer == LoadTransfer::TakeNullableUnique {
+            let root = self.live_object(place.object())?.clone();
+            if root.ownership != Ownership::Unique
+                || root.shared_immutable
+                || root.allocation_class != Some(AllocationClass::ReferenceCounted)
+                || !self.is_sole_live_token(place.object(), root.identity)
+            {
+                return Err(InitialCheckError::InvalidOwnership {
+                    function: self.function.id,
+                    object: place.object(),
+                });
+            }
+            let stored = self.stored_slot_by_identity(key.0, key.1).cloned();
+            if !root.initialized_owned_slots && stored.is_none()
+                && !self.nullable_slot_absent(key.0, key.1)
+            {
+                return self.unsupported("Load(uninitialized nullable take)");
+            }
+            // A complete aggregate proves that the slot was initialized, but
+            // does not prove that its child is still unique. A prior retain or
+            // a control-flow join can erase that proof. Moving the child out
+            // requires the precise recorded ownership fact.
+            let Some(child) = stored else {
+                return self.unsupported("Load(nullable take without unique child proof)");
+            };
+            if !Self::is_managed_storage(&child) || child.ownership != Ownership::Unique {
+                return self.unsupported("Load(nullable take of non-unique child)");
+            }
+            self.state.stored_objects.remove(&key);
+            self.state.nullable_absent_slots.insert(key);
+            self.state.objects.insert(destination, child);
+            return Ok(());
         }
         if transfer == LoadTransfer::ClonePresent {
             let root = self.live_object(place.object())?.clone();
@@ -840,7 +873,7 @@ impl<'a> MemoryChecker<'a> {
             return Ok(());
         };
         match transfer {
-            LoadTransfer::ClonePresent | LoadTransfer::TakeLast => unreachable!("handled before ordinary reference loads"),
+            LoadTransfer::ClonePresent | LoadTransfer::TakeLast | LoadTransfer::TakeNullableUnique => unreachable!("handled before ordinary reference loads"),
             LoadTransfer::CloneShared => {
                 if !matches!(stored.ownership, Ownership::Unique | Ownership::Shared)
                     || !Self::is_managed_storage(&stored)
@@ -1196,9 +1229,9 @@ impl<'a> MemoryChecker<'a> {
     }
 
     /// Once every value-bearing field of a fixed-layout object is initialized,
-    /// the object is complete: the summary flag replaces the pointer-slot
-    /// facts (which a join could not reconcile across fresh identities), and
-    /// loads and drops rely on the flag from then on.
+    /// the object is complete. Keep precise nullable child facts so a later
+    /// consuming take can prove uniqueness; the summary flag still permits
+    /// ordinary loads and drops after joins erase those precise facts.
     pub(super) fn unit_fields_initialized(&self, object: ValueId, layout: crate::layout::LayoutId) -> Result<bool, InitialCheckError> {
         Ok(self.descriptor(layout)?.fields().iter().enumerate().all(|(index, field)| {
             field.kind() != FieldKind::Scalar(ScalarKind::Unit)
@@ -1215,8 +1248,21 @@ impl<'a> MemoryChecker<'a> {
         if !self.fixed_value_fields_initialized(object, layout)? {
             return Ok(());
         }
-        for (index, _) in pointer_fields.iter() {
-            self.state.stored_objects.remove(&(object, SlotIdentity::Constant(*index)));
+        let descriptor = self.descriptor(layout)?;
+        let nonnullable_fields = pointer_fields.iter().filter_map(|(index, _)| {
+            let field = descriptor.fields().get(*index as usize)?;
+            let nullable = match field.kind() {
+                FieldKind::Pointer { slot: PointerSlot::OwnedNullable, .. } => true,
+                FieldKind::Inline(slot) => matches!(
+                    self.layouts.get(slot).map(|slot| slot.kind()),
+                    Some(LayoutKind::RuntimePointerValueSlot { semantics: PointerSlot::OwnedNullable, .. })
+                ),
+                _ => false,
+            };
+            (!nullable).then_some(*index)
+        }).collect::<Vec<_>>();
+        for index in nonnullable_fields {
+            self.state.stored_objects.remove(&(object, SlotIdentity::Constant(index)));
         }
         self.state.objects.get_mut(&object).expect("live object exists").initialized_owned_slots = true;
         Ok(())

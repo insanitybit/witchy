@@ -663,6 +663,7 @@ impl<'a> MemoryChecker<'a> {
     pub(super) fn drop_ref(&mut self, object: ValueId) -> Result<(), InitialCheckError> {
         let state = self.live_object(object)?;
         let shared = state.ownership == Ownership::Shared;
+        let sole_owner = !shared && self.is_sole_live_token(object, state.identity);
         if !self.is_shared_immutable_storage(object, state) {
             return Err(InitialCheckError::InvalidAllocationClass {
                 function: self.function.id,
@@ -686,6 +687,17 @@ impl<'a> MemoryChecker<'a> {
             .get_mut(&object)
             .expect("live object exists")
             .ownership = Ownership::Consumed;
+        if sole_owner {
+            // The destructor consumes every remaining owned edge. Its exact
+            // child facts cannot survive into a join with a path that took
+            // those edges before destroying the parent.
+            let edges = self.state.stored_objects.keys().copied()
+                .filter(|(container, _)| self.same_allocation(object, *container))
+                .collect::<Vec<_>>();
+            for edge in edges {
+                self.state.stored_objects.remove(&edge);
+            }
+        }
         if shared {
             self.retire_shared_prefix_token(object);
         } else {

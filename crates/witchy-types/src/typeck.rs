@@ -9455,14 +9455,14 @@ impl Checker {
         if self.ty_carries_must_consume(&st) {
             self.reject_implicit_must_copy(scrutinee, "match scrutinee")?;
             if self.expression_introduces_must_obligation(scrutinee, &st) {
-                let consuming_tagged_match = ty_to_ast(&self.resolve(&st)).is_some_and(|source| {
-                    witchy_canonical_source::storage::consuming_tagged_match_shape(
+                let consuming_aggregate_match = ty_to_ast(&self.resolve(&st)).is_some_and(|source| {
+                    witchy_canonical_source::storage::consuming_aggregate_match_shape(
                         &source, arms, &self.canonical_definitions,
                     ).is_some()
                 }) && matches!(scrutinee,
                     Expr::Call { .. } | Expr::Ctor { .. } | Expr::AnonCtor { .. }
                         | Expr::Unary { op: UnOp::Move, .. });
-                if !consuming_tagged_match {
+                if !consuming_aggregate_match {
                     return terr(
                         "matching would erase a must-consume obligation; transfer the value to an `own` operation before inspecting it",
                     );

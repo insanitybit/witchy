@@ -374,7 +374,7 @@ fn operation_flow(
         // DropRef as a no-op; this pass must not make ownership depend on
         // which predecessor happened to reach the join.
         | Operation::StaticData { destination, .. }
-        | Operation::Load { destination, transfer: LoadTransfer::CloneShared | LoadTransfer::ClonePresent | LoadTransfer::MoveUnique | LoadTransfer::TakeLast, .. } => {
+        | Operation::Load { destination, transfer: LoadTransfer::CloneShared | LoadTransfer::ClonePresent | LoadTransfer::MoveUnique | LoadTransfer::TakeLast | LoadTransfer::TakeNullableUnique, .. } => {
             if is_reference(function, *destination) { owned.insert(*destination); }
         }
         Operation::CloneRef { destination, source } => {

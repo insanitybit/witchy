@@ -1390,6 +1390,18 @@ pub(super) fn emit_instruction(
             match transfer {
                 LoadTransfer::CloneShared => emit_clone_ref(body, layout, *destination, *destination, function)?,
                 LoadTransfer::ClonePresent => emit_clone_present(body, layout, *destination, function)?,
+                LoadTransfer::TakeNullableUnique => {
+                    emit_get(body, layout, function.id, *destination)?;
+                    body.instruction(&wasm_encoder::Instruction::I32Eqz);
+                    body.instruction(&wasm_encoder::Instruction::If(wasm_encoder::BlockType::Empty));
+                    body.instruction(&wasm_encoder::Instruction::Unreachable);
+                    body.instruction(&wasm_encoder::Instruction::End);
+                    let writable = crate::canonical_safewir::Place::projected(
+                        place.object(), place.projection().clone(), place.value_type(),
+                        crate::canonical_safewir::AccessMode::Write,
+                    );
+                    emit_init_nullable_owned(body, function, layout, layouts, &writable)?;
+                }
                 LoadTransfer::TakeLast => {
                     let Projection::Element { index } = place.projection() else { return Err(EncodeError::UnsupportedLayout { function: function.id, operation: "TakeLast" }); };
                     emit_update_count(body, function, layout, layouts, place.object(), *index)?;

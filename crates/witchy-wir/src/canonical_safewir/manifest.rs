@@ -293,8 +293,8 @@ pub const RULES: &[RuleEntry] = &[
     RuleEntry {
         rule: CanonicalRuleId::Load,
         judgment: "check/memory.rs::MemoryChecker::load (check_place, promote_header_extent)",
-        predicate: "a header field loads a typed scalar; an element load needs a `Bounds` guard against the logical length; a reference load takes a shared clone of a stored slot or an initialized prefix element; TakeLast requires an exclusive complete packed list and exact final index, transfers one owning edge and publishes the shorter prefix atomically",
-        semantics: "load: reads an initialized cell; cloning retains; TakeLast detaches reference cells, preserves scalar bytes (fresh storage is zero), and shortens count without retaining",
+        predicate: "a header field loads a typed scalar; an element load needs a `Bounds` guard against the logical length; a reference load takes a shared clone of a stored slot or an initialized prefix element; TakeLast requires an exclusive complete packed list and exact final index; TakeNullableUnique requires an exclusive RC aggregate and a recorded unique child in a typed nullable fixed slot",
+        semantics: "load: reads an initialized cell; cloning retains; TakeLast detaches the final reference cell and shortens count; TakeNullableUnique traps on absence, transfers the child token, and clears its slot before continuing",
         backend: RuleBackend::Receipt(CorrespondenceRule::MemoryLoad),
         admits: &[t(Check, "guarded_dynamic_element_load_is_admitted")],
         refuses: &[t(Check, "dynamic_element_load_without_guard_is_refused"), t(EvidenceFile::UniquePopBackend, "unique_pop_checker_refuses_shared_container_missing_bounds_and_non_tail"), t(EvidenceFile::UniquePopBackend, "unique_pop_rejects_live_prefix_overwrite_direct_moved_and_unknown"), t(EvidenceFile::CheckedSourceAuthority, "unique_pop_source_abi_requires_checked_unique_input_and_output"), t(Memory, "pointer_bearing_ranges_fail_closed_without_element_transfer_state"), t(Check, "uninitialized_scalar_load_is_refused")],

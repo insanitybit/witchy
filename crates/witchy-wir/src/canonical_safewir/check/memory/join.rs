@@ -588,6 +588,29 @@ impl<'a> MemoryChecker<'a> {
             }
             for (slot, object) in &state.stored_objects {
                 if other.stored_objects.get(slot) != Some(object) {
+                    // A complete aggregate already owns its nullable field
+                    // through the summary. Its exact child fact is only an
+                    // optional uniqueness proof for a consuming take. Joins
+                    // may forget that proof, while partial aggregate edges
+                    // must still match exactly to preserve obligations.
+                    let summarized_nullable = |edge: &MemoryState| {
+                        let (container, SlotIdentity::Constant(index)) = *slot else { return false };
+                        let Some(parent) = edge.objects.get(&container) else { return false };
+                        if !parent.initialized_owned_slots { return false; }
+                        let Some(field) = self.layouts.get(parent.layout)
+                            .and_then(|layout| layout.fields().get(index as usize)) else { return false };
+                        match field.kind() {
+                            FieldKind::Pointer { slot: PointerSlot::OwnedNullable, .. } => true,
+                            FieldKind::Inline(layout) => matches!(
+                                self.layouts.get(layout).map(|layout| layout.kind()),
+                                Some(LayoutKind::RuntimePointerValueSlot { semantics: PointerSlot::OwnedNullable, .. })
+                            ),
+                            _ => false,
+                        }
+                    };
+                    if summarized_nullable(state) && summarized_nullable(other) {
+                        continue;
+                    }
                     if std::env::var_os("WITCHY_CANONICAL_PLAN_DEBUG").is_some() {
                         eprintln!("canonical memory join at {:?}: stored slot {slot:?} differs: {object:#?} vs {:#?}", block.id, other.stored_objects.get(slot));
                     }

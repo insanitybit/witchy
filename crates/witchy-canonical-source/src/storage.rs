@@ -792,11 +792,11 @@ impl<'a> OpaqueOwnerEvidence<'a> {
     }
 }
 
-/// A tagged aggregate can transfer its affine fields through a match only
+/// An aggregate can transfer its affine fields through a match only
 /// when each successful arm binds every such field exactly once. The frontend
 /// and lowerer use this same shape and pattern judgment; physical nullable
 /// slots and owner-token moves still require SafeWIR validation.
-pub fn consuming_tagged_match_shape(
+pub fn consuming_aggregate_match_shape(
     ty: &Type,
     arms: &[MatchArm],
     definitions: &BTreeMap<String, TypeDef>,
@@ -804,7 +804,7 @@ pub fn consuming_tagged_match_shape(
     if !StoragePlan::classify(ty, definitions, |_| Some(0)).requires_affine_owner_token() {
         return None;
     }
-    let shape = scalar_aggregate_shape(ty, definitions).filter(|shape| shape.tagged)?;
+    let shape = scalar_aggregate_shape(ty, definitions)?;
     if arms.is_empty() || arms.iter().any(|arm| {
         if arm.guard.is_some() {
             return true;
