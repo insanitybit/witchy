@@ -26,11 +26,14 @@ must type Ticket:
 must type Packet:
     Packet(&String, Ticket)
 
+fn finish(own ticket: Ticket) -> Int:
+    match ticket:
+        Ticket(n) -> n
+
 fn consume(own packet: Packet) -> Int:
     match packet:
         Packet(view, ticket) ->
-            match move ticket:
-                Ticket(n) -> n + (*view).length()
+            finish(move ticket) + (*view).length()
 
 fn main() -> Int:
     let text = "abc"
@@ -93,7 +96,7 @@ fn channel_handle_refusal_and_owned_gc_result() {
         "unexpected refusal: {refusal}");
 
     // A copyable view child gets its own retained edge when the aggregate
-    // shell moves; the affine child still transfers its unique token.
+    // shell moves; the extracted affine child crosses an `own` call.
     let checked = witchy::resolve_std_only_checked(COPYABLE_FIELD_IN_AFFINE_SHELL)
         .expect("copyable and affine fields share one checked aggregate move plan");
     let _ = witchy::codegen::compile_checked_module_artifact(&checked)

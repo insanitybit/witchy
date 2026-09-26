@@ -102,9 +102,11 @@ printed the hand-computed `9` in admitted Wasm. The feature-gated WIR source
 self-check compiled, and independent adversarial review found no authority
 widening after a stale test-surface call signature was repaired. This smoke
 does not provide the full zero-leak and admitted unoptimized-Wasm evidence
-for an A–O row, so no row closes. An older Ref aggregate path still refuses
-forwarding an extracted affine field through an `own` call; track that as a
-separate baseline composition gap.
+for an A–O row, so no row closes. A 2026-09-26 focused checked-source and
+unoptimized SafeWIR smoke also forwards an affine child extracted from a Ref
+aggregate to an `own` call. The previously reported Ref forwarding refusal
+does not reproduce on current master; this baseline composition path is
+implemented but remains semantically unverified.
 
 Opt admission fallback (implemented but unverified, 2026-09-26): the
 canonical compiler now retains the checked unoptimized candidate when an
