@@ -676,12 +676,15 @@ pub fn is_inline_scalar_record(definition: &TypeDef) -> bool {
 /// candidate owner family cannot create this evidence by naming itself.
 pub struct OpaqueOwnerEvidence<'a> {
     definitions: &'a BTreeMap<String, TypeDef>,
-    opaque_callable_families: HashSet<Type>,
+    opaque_callable_families: std::sync::Arc<HashSet<Type>>,
 }
 
 /// [`OpaqueOwnerEvidence`] without its definitions borrow. Only
 /// `OpaqueOwnerEvidence::detach` makes one, and `reattach` accepts it only
-/// for the same definitions map, so it cannot carry a judgment across maps.
+/// for the same definitions map address. The address is the whole binding,
+/// so a detached value must not outlive the map it was judged over: another
+/// map allocated at the same address afterwards would be accepted. Keep it
+/// inside the borrow of that map (lowering holds it for one module).
 #[derive(Debug, Clone)]
 pub struct DetachedOpaqueOwnerEvidence {
     definitions: usize,
@@ -712,12 +715,12 @@ impl<'a> OpaqueOwnerEvidence<'a> {
             })
         }).collect::<Option<Vec<_>>>()?;
         if families.len() > 4_096 { return None; }
-        let mut evidence = Self { definitions, opaque_callable_families: HashSet::new() };
+        let mut evidence = Self { definitions, opaque_callable_families: Default::default() };
         loop {
             let mut changed = false;
             for (family, captures) in &families {
                 if captures.iter().any(|capture| evidence.requires_owner(capture)) {
-                    changed |= evidence.opaque_callable_families.insert(family.clone());
+                    changed |= std::sync::Arc::make_mut(&mut evidence.opaque_callable_families).insert(family.clone());
                 }
             }
             if !changed { break; }
@@ -731,7 +734,7 @@ impl<'a> OpaqueOwnerEvidence<'a> {
     pub fn detach(&self) -> DetachedOpaqueOwnerEvidence {
         DetachedOpaqueOwnerEvidence {
             definitions: std::ptr::from_ref(self.definitions) as usize,
-            opaque_callable_families: std::sync::Arc::new(self.opaque_callable_families.clone()),
+            opaque_callable_families: std::sync::Arc::clone(&self.opaque_callable_families),
         }
     }
 
@@ -744,7 +747,7 @@ impl<'a> OpaqueOwnerEvidence<'a> {
     ) -> Option<Self> {
         (detached.definitions == std::ptr::from_ref(definitions) as usize).then(|| Self {
             definitions,
-            opaque_callable_families: (*detached.opaque_callable_families).clone(),
+            opaque_callable_families: std::sync::Arc::clone(&detached.opaque_callable_families),
         })
     }
 
