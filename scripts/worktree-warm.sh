@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
-# Warm a fresh git worktree's build cache by cloning the main worktree's
-# `target/` directory. macOS uses APFS copy-on-write (`cp -c`), GNU cp uses
-# `--reflink=auto`, and other platforms fall back to an ordinary recursive copy.
+# Prepare a fresh git worktree for fast builds. Its default `target/` stays
+# absent so Cargo 1.100 and mbx can create a managed target and copy dependency
+# units directly from another checkout. Explicit target directories still use
+# the filtered clone machinery below because Cargo excludes them from managed
+# placement.
 #
-# Why this works: dependency crates are compiled from ~/.cargo/registry paths,
-# which don't vary by worktree, so their fingerprints stay valid — all ~270 dep
-# crates (wasmtime included) come up warm. Only the 8 workspace crates
-# fingerprint against the worktree path and rebuild. A cold multi-minute build
-# becomes a workspace-only build.
+# Cargo 1.100 target seeding copies registry and Git units while leaving path
+# packages to the action cache and learned incremental state. That avoids a
+# per-unit cache restore and prevents path-bound native build scripts such as
+# aws-lc-sys from compiling once per checkout.
 #
 # `incremental/` is deliberately NOT cloned: it holds only workspace-crate state
 # (deps don't compile incrementally), which is path-keyed and thus dead weight in
@@ -25,27 +26,18 @@
 #   ./scripts/worktree-warm.sh --clone-target <source> <dest>
 #                                                  # clone one Cargo generation
 #                                                  # into another (coordinator)
-#   ./scripts/worktree-warm.sh --profile-target-dir <check|clippy> <dir>
-#                                                  # seed an agent profile from
-#                                                  # the matching gate target
 #   ./scripts/worktree-warm.sh --help               # show this help
 #
-# The --target-dir form also works in a secondary worktree. It uses the
-# published build seed there, so an isolated target does not wait for the gate
-# merely because the worktree has no checkout-local target/ yet.
+# The --target-dir form clones only from the same checkout's default target.
+# Cross-checkout path units are never copied: Cargo 1.100 stores them in
+# checkout-bound per-unit directories, so mbx's action cache is the safe
+# fallback when the local default target does not exist.
 #
 # Do NOT share one CARGO_TARGET_DIR across worktrees instead: cargo's build lock
 # would serialize concurrent agents, and the local gates assume ./target
 # (BUG-020). Per-worktree target + CoW seed keeps builds parallel AND warm.
 #
-# A target cloned from the merge gate is a Cargo-incremental target. Mark that
-# provenance so scripts/bin/cargo preserves its profile instead of asking mbx
-# to replace every warm workspace unit with a non-incremental, shareable one.
-# The marker is target-local: deleting the target deletes the preference, and
-# an explicit WITCHY_MBX_MODE still overrides it.
 set -euo pipefail
-
-incremental_seed_marker=".witchy-mbx-incremental-seed"
 
 print_help() {
     sed -n '2,/^set -euo pipefail$/{ /^set -euo pipefail$/d; s/^# \{0,1\}//; p; }' "$0"
@@ -67,17 +59,6 @@ case "${1:-}" in
             echo "usage: worktree-warm.sh --clone-target <source> <dest>" >&2
             exit 2
         fi
-        ;;
-    --profile-target-dir)
-        if [[ "$#" -ne 3 || -z "${2:-}" || -z "${3:-}" ]]; then
-            echo "usage: worktree-warm.sh --profile-target-dir <check|clippy> <dir>" >&2
-            exit 2
-        fi
-        case "$2" in check | clippy) ;; *)
-            echo "worktree-warm: invalid profile '$2' (expected check or clippy)" >&2
-            exit 2
-            ;;
-        esac
         ;;
     -*)
         echo "worktree-warm: unknown option '${1}' (try --help)" >&2
@@ -212,54 +193,6 @@ if [[ "${1:-}" == "--clone-target" ]]; then
     exit 0
 fi
 
-if [[ "${1:-}" == "--profile-target-dir" ]]; then
-    profile="$2"
-    dest_target="$3"
-    root="$(git rev-parse --show-toplevel)"
-    main="$(git worktree list --porcelain | sed -n '1p' | sed 's/^worktree //')"
-    case "$dest_target" in /*) ;; *) dest_target="$root/$dest_target" ;; esac
-    if [[ -e "$dest_target" ]]; then
-        echo "worktree-warm: $dest_target already exists; leaving it alone" >&2
-        exit 0
-    fi
-    [[ -f "$main/scripts/state-paths.sh" ]] || exit 1
-    # shellcheck source=state-paths.sh
-    source "$main/scripts/state-paths.sh"
-    qdir="$(witchy_merge_queue_state_dir "$main")" || exit 1
-    [[ -f "$qdir/gate-target" ]] || exit 1
-    clone_testcache=0
-    for attempt in 1 2; do
-        selected_before="$(cat "$qdir/gate-target" 2>/dev/null || true)"
-        case "$selected_before" in target | target-prewarm) ;; *) exit 1 ;; esac
-        source_target="$main/.claude/worktrees/merge-gate/${selected_before}-${profile}"
-        [[ -d "$source_target" ]] || exit 1
-        temp_target="${dest_target}.profile-seed.$$.$attempt"
-        [[ ! -e "$temp_target" ]] || exit 1
-        clone_target "$source_target" "$temp_target"
-        selected_after="$(cat "$qdir/gate-target" 2>/dev/null || true)"
-        if [[ "$selected_before" == "$selected_after" ]]; then
-            # Publish only a complete filtered clone. `mv -n` makes concurrent
-            # check.sh callers harmless: the first wins and later clones are
-            # discarded without writing into Cargo's live directory.
-            mv -n "$temp_target" "$dest_target"
-            if [[ -d "$temp_target" ]]; then
-                rm -rf -- "$temp_target"
-            else
-                echo "worktree-warm: seeded $dest_target from $source_target ($copy_description, matching $profile profile)"
-            fi
-            exit 0
-        fi
-        # Promotion raced the clone. The old generation can now be reclaimed,
-        # so discard its snapshot and retry from the newly active generation.
-        rm -rf -- "$temp_target"
-    done
-    exit 1
-fi
-
-mark_incremental_seed() { # mark_incremental_seed <target-dir>
-    printf 'gate build seed\n' >"$1/$incremental_seed_marker"
-}
-
 # The checker's persistent verdict store (see
 # crates/witchy-wir/src/canonical_safewir/check/cache.rs). A fresh worktree
 # starts with an empty one, so every test process in it re-establishes the
@@ -292,72 +225,6 @@ seed_verdict_cache_from_best_source() { # <main> <dest-root>
     fi
 }
 
-gate_seed_source() { # gate_seed_source <main-worktree>
-    local main="$1" qdir selected="target"
-    [[ "${WITCHY_WORKTREE_WARM_GATE_LOCKED:-}" == 1 ]] || return 1
-    [[ -f "$main/scripts/state-paths.sh" ]] || return 1
-    # shellcheck source=state-paths.sh
-    source "$main/scripts/state-paths.sh"
-    qdir="$(witchy_merge_queue_state_dir "$main")" || return 1
-    if [[ -f "$qdir/gate-target" ]]; then
-        selected="$(cat "$qdir/gate-target" 2>/dev/null || true)"
-    fi
-    case "$selected" in target | target-prewarm) ;; *) return 1 ;; esac
-    [[ -d "$main/.claude/worktrees/merge-gate/$selected" ]] || return 1
-    printf '%s\n' "$main/.claude/worktrees/merge-gate/$selected"
-}
-
-clone_or_gate_fallback() { # clone_or_gate_fallback <preferred-source> <dest> <main> <original-args...>
-    local source="$1" dest="$2" main="$3" gate_seed=0
-    shift 3
-    if [[ ! -d "$source" ]]; then
-        if [[ "${WITCHY_WORKTREE_WARM_GATE_LOCKED:-}" == 1 ]]; then
-            source="$(gate_seed_source "$main")" || {
-                echo "worktree-warm: no safe warm target to clone" >&2
-                return 1
-            }
-            gate_seed=1
-            # The persistent stdlib cache is keyed by the test executable's
-            # identity. A gate-worktree binary is relinked in this checkout,
-            # so copying its thousands of cache entries only adds metadata work.
-            clone_testcache=0
-        elif [[ -x "$main/scripts/merge-queue.sh" ]]; then
-            local script
-            script="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
-            exec env WITCHY_WORKTREE_WARM_GATE_LOCKED=1 \
-                WITCHY_WORKTREE_WARM_COPY_MODE="$copy_mode" \
-                "$main/scripts/merge-queue.sh" with-lock -- "$script" "$@"
-        else
-            echo "worktree-warm: no $source to clone (run a build in the main worktree first)" >&2
-            return 1
-        fi
-    fi
-    clone_target "$source" "$dest"
-    [[ "$gate_seed" == 0 ]] || mark_incremental_seed "$dest"
-    local skipped="incremental/ and deps/*.rcgu.o skipped"
-    [[ "$clone_testcache" == 1 ]] || skipped="$skipped, stale witchy-testcache skipped"
-    echo "worktree-warm: seeded $dest from $source ($copy_description, $skipped)"
-}
-
-# The build seed (scripts/build-seed.py) is the gate's target for the latest
-# landed master plus the gate checkout's file mtimes. Applying those mtimes is
-# what lets cargo judge the workspace crates Fresh: a fresh checkout stamps
-# every file with the current time, which alone rebuilt all of them. The main
-# checkout's target/ is the fallback, but nobody builds there, so it trails
-# master by days. Returns 1 (caller falls back) when there is no usable seed.
-seed_from_build_seed() { # seed_from_build_seed <main> <dest-worktree> <target-dir>
-    local main="$1" dest="$2" target_dir="$3" seed
-    [[ "${WITCHY_BUILD_SEED:-on}" == off ]] && return 1
-    seed="$(cd "$main/state/build-seed/current" 2>/dev/null && pwd -P)" || return 1
-    [[ -f "$seed/manifest.json" && -d "$seed/target" ]] || return 1
-    clone_testcache=0
-    clone_target "$seed/target" "$target_dir" || { rm -rf "$target_dir"; return 1; }
-    mark_incremental_seed "$target_dir"
-    echo "worktree-warm: seeded $target_dir from $seed ($copy_description, incremental/ and deps/*.rcgu.o skipped)"
-    python3 "$(dirname "$0")/build-seed.py" apply "$seed" "$dest" "$target_dir" \
-        || echo "worktree-warm: could not apply seed mtimes; workspace crates will rebuild" >&2
-}
-
 if [[ "${1:-}" == "--target-dir" ]]; then
     dest="$2"
     root="$(git rev-parse --show-toplevel)"
@@ -367,12 +234,12 @@ if [[ "${1:-}" == "--target-dir" ]]; then
         echo "worktree-warm: $dest already exists; leaving it alone" >&2
         exit 0
     fi
-    if [[ "$root" != "$main" ]]; then
+    if [[ -d "$root/target" ]]; then
         clone_testcache=0
-        seed_from_build_seed "$main" "$root" "$dest" \
-            || clone_or_gate_fallback "$root/target" "$dest" "$main" "$@"
+        clone_target "$root/target" "$dest"
+        echo "worktree-warm: seeded $dest from $root/target ($copy_description, same-checkout units; incremental/ and deps/*.rcgu.o skipped)"
     else
-        clone_or_gate_fallback "$root/target" "$dest" "$main" "$@"
+        echo "worktree-warm: no same-checkout target to clone; mbx action cache will warm $dest" >&2
     fi
     seed_verdict_cache_from_best_source "$main" "$root"
     exit $?
@@ -390,9 +257,7 @@ if [[ "$dest" == "$main" ]]; then
 fi
 if [[ -e "$dest/target" ]]; then
     echo "worktree-warm: $dest/target already exists; leaving it alone" >&2
-    exit 0
+else
+    echo "worktree-warm: leaving $dest/target to Cargo 1.100 + mbx managed seeding"
 fi
-clone_testcache=0
-seed_from_build_seed "$main" "$dest" "$dest/target" \
-    || clone_or_gate_fallback "$main/target" "$dest/target" "$main" "$@"
 seed_verdict_cache_from_best_source "$main" "$dest"

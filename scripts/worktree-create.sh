@@ -6,9 +6,10 @@
 # an empty stdout fails agent spawning with "returned no worktree path").
 #
 # This creator mimics the built-in layout (.claude/worktrees/<name>, branch
-# worktree-<name> from HEAD) and then CoW-seeds the new worktree's target/ via
-# worktree-warm.sh so agents start with a warm build cache (see CLAUDE.md).
-# Warming is best-effort: a warm failure must never fail worktree creation.
+# worktree-<name> from HEAD) and then prepares its caches via worktree-warm.sh.
+# The default target stays absent for Cargo 1.100 + mbx managed seeding; verdict
+# caches are copied separately (see CLAUDE.md). Preparation is best-effort: a
+# failure must never fail worktree creation.
 set -u
 
 root="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel)}"
@@ -78,10 +79,9 @@ elif branch_unavailable "$branch"; then
 fi
 
 # RFC-0171: prefer a recycled pool worktree. Its path is one an earlier task
-# already built in, so rustc's path-keyed incremental state survives and the
-# first edit rebuilds incrementally instead of from scratch (measured 256s
-# first edit vs 43s second edit in a fresh worktree). Under the cap, a new
-# worktree is created AT a pool path so the sweep can recycle it later.
+# already built in, so its managed target and rustc's path-keyed incremental
+# state survive. Under the cap, a new worktree is created AT a pool path so the
+# sweep can recycle it later.
 # WITCHY_WORKTREE_POOL_MAX=0 turns the pool off.
 . "$script_dir/worktree-pool.sh"
 base="$(git rev-parse HEAD)"
@@ -101,10 +101,10 @@ git worktree add -b "$branch" "$dest" "$base" 1>&2 || exit 1
 
 "$root/scripts/worktree-warm.sh" "$dest" 1>&2 || true
 
-# Precompile the workspace crates in the background: the CoW seed leaves deps
-# warm but the 8 workspace crates cold (their fingerprints are path-keyed), so
-# the agent's first build pays ~1-2 min. Starting it now means that cost runs
-# during the agent's read/think phase instead of blocking its first command.
+# Optionally precompile workspace crates in the background. Cargo 1.100 target
+# seeding supplies dependencies and mbx restores unchanged path crates, so this
+# is normally unnecessary; the opt-in remains for callers that know they will
+# consume both full profiles immediately.
 # Use the new worktree's repository cargo shim: it preserves the unified feature
 # graph, shares MBX artifacts, and participates in host-wide build admission.
 # The per-target-dir Cargo lock still makes a race with the agent safe. Fully
@@ -112,8 +112,8 @@ git worktree add -b "$branch" "$dest" "$base" 1>&2 || exit 1
 # Build both dev (for the binary) and test (for nextest) profiles — the test
 # profile needs cfg(test) so it recompiles all workspace crates; doing both
 # here means the agent's first `cargo nextest run` is a no-op link.
-# The warm seed makes a fresh target immediately usable. A speculative pair of
-# full-workspace builds for every created worktree overwhelmed this 10-core host
+# A speculative pair of full-workspace builds for every created worktree
+# overwhelmed this 10-core host
 # when several agents started together. Opt in only when the caller knows it
 # will consume both profiles.
 if [ "${WITCHY_WORKTREE_CREATE_PREBUILD:-0}" = "1" ] && command -v cargo >/dev/null 2>&1; then

@@ -28,12 +28,12 @@ cd "$wt"
 ```
 
 It hands out a recycled `.claude/worktrees/pool-NN` checkout when one is free.
-That slot keeps the incremental build state of the task before it, because
-rustc keys incremental state to the path. A fresh path compiles every edited
-crate from scratch on its first build: 135 s against about 24 s for an edited
-witchy-types (2026-09-25). The script seeds the target the same way, and it
-refuses a branch name that already exists. Never reuse a worktree after its
-branch is submitted: the sweep recycles it for the next task once it lands.
+That slot keeps its mbx-managed target and incremental build state, because
+rustc keys incremental state to the path. A fresh path leaves `target/` to
+Cargo 1.100 and mbx, which copy dependency units from another checkout without
+recompiling them. The script refuses a branch name that already exists. Never
+reuse a worktree after its branch is submitted: the sweep recycles it for the
+next task once it lands.
 
 Keep `scripts/bin` first on `PATH` for every Cargo build or test in this repo.
 That routes the command through the shared MBX cache and global agent permit
@@ -151,10 +151,11 @@ load-flaky under overlap) and a merge landing mid-gate invalidates that gate.
   session; log in `state/merge-queue/coordinator.log`).
 - `./scripts/worktree-status.sh` is the dashboard of all worktrees/branches
   (dirty, ahead/behind, queued, merged-and-removable). Report-only.
-- Worktrees hold multi-GB `target/` dirs, so clean up after merge: the
+- Worktrees hold multi-GB managed targets, so clean up after merge: the
   coordinator auto-sweeps journal-merged, clean worktrees after every merge
   (`./scripts/merge-queue.sh sweep` runs the same thing manually). It will
   never touch dirty/unmerged/queued trees — remove those yourself with
-  `git worktree remove <path>` once you're done with them.
+  `git worktree remove <path>` once you're done with them. MBX then collects
+  the managed target once its checkout is gone.
 - If you genuinely need a heavyweight suite yourself, share the lock:
   `./scripts/merge-queue.sh with-lock -- <cmd>`.

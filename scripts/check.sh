@@ -32,7 +32,7 @@
 # for its OWN internal pipes; the hazard is a caller's pipe, which it cannot control.)
 set -euo pipefail
 cd "$(dirname "$0")/.."
-# One feature resolution for the gate, agents and the build seed.
+# One feature resolution for the gate and agents.
 # shellcheck source=feature-unification.sh
 . scripts/feature-unification.sh
 

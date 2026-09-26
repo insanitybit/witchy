@@ -202,9 +202,9 @@ fn root_integration_test_binaries_stay_within_budget() {
 
 /// Cargo does not fingerprint its own `CARGO_MANIFEST_DIR` value. Compiling it
 /// into a test executable therefore binds that executable to one checkout even
-/// after the build seed rebases every source dependency onto a new worktree.
-/// Runtime lookup keeps linked test artifacts portable; build-seed.py retains
-/// a conservative invalidation fallback for any future regression.
+/// when mbx safely shares compiler outputs across worktrees. Runtime lookup
+/// keeps linked test artifacts portable without copying checkout-bound path
+/// units.
 #[test]
 fn rust_tests_do_not_compile_checkout_specific_manifest_paths() {
     let root = super::workspace_root();

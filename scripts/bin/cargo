@@ -28,19 +28,11 @@
 #   - The store lives in the repo (state/mbx/store-<version>): an agent
 #     sandbox that denies writes to ~/Library/Caches makes mbx silently run
 #     uncached, while an in-repo store hits normally.
-#   - An exact target created by worktree-warm stays Cargo-incremental: the
-#     cloned gate artifacts are already the cross-worktree baseline. Replacing
-#     those warm units with mbx's non-incremental shareable profile made an
-#     identical web test build take 2,247s instead of 76s (2026-09-24).
-#     mbx bypasses workspace crates in that mode, so the store never holds
-#     master's; the gate's build seed does. Before each build in such a target
-#     `build-seed.py refresh` swaps in the CURRENT seed's copy of every
-#     workspace unit whose sources (and dependencies' sources) match it, so
-#     after a rebase or a pool claim only the crates the branch changed, and
-#     their dependents, compile: 282 -> 49 CPU-s for a stale pool target's
-#     `nextest run -p witchy --no-run` (2026-09-25; the refresh docstring in
-#     scripts/build-seed.py has the conditions). It serves only identities
-#     the gate builds.
+#   - Cargo 1.100 + mbx-managed default targets replace Witchy's cross-worktree
+#     build seed. Registry/Git units copy directly from another checkout and
+#     path crates restore through the action cache; edited crates then enter
+#     learned incremental mode. Explicit target directories remain private and
+#     use the action cache rather than copying checkout-bound Cargo units.
 #   - Cold targets cache and share workspace crates like dependencies, and mbx
 #     LEARNS which crate you are editing (MBX_LEARNED_INCREMENTAL): a crate
 #     that keeps missing with changed content compiles incrementally from
@@ -307,12 +299,8 @@ fi
 # Callers such as agent-check may explicitly promote themselves to normal.
 export MBX_SCHEDULER_PRIORITY="${MBX_SCHEDULER_PRIORITY:-low}"
 
-# worktree-warm clones the merge gate's Cargo-incremental native target.
-# Preserve that exact profile unless the caller chose a mode explicitly.
 # The pure sidecar restores every crate into an empty target once, then uses
 # mbx's learned/shareable mode; edited crates become incremental after a miss.
-seeded_target=0
-[ ! -f "$effective_target/.witchy-mbx-incremental-seed" ] || seeded_target=1
 mbx_mode="${WITCHY_MBX_MODE:-}"
 if [ -z "$mbx_mode" ]; then
     if [ "$pure_graph_target" = 1 ] \
@@ -323,45 +311,9 @@ if [ -z "$mbx_mode" ]; then
         # the sidecar in restore mode once; later invocations see the target
         # and return to learned mode so active edits become incremental.
         mbx_mode="restore"
-    elif [ "$seeded_target" = 1 ]; then
-        mbx_mode="incremental"
     else
         mbx_mode="learned"
     fi
-fi
-
-# A seeded target describes the master it was seeded from (or, for a recycled
-# pool worktree, whatever the previous task built). Once master moves, every
-# workspace crate that changed in between would recompile here although the
-# gate already built those exact sources. `build-seed.py refresh` replaces
-# each unit whose sources, and whose dependencies' sources, are identical to
-# the current seed's with the seed's copy; crates this branch edited, and
-# their dependents, compile incrementally as before. It is a no-op (a stamp
-# check, ~0.1 s) until the seed or HEAD changes, and never fails the build.
-# WITCHY_SEED_REFRESH=off disables it. It only touches that target's files,
-# never sources, so other target directories are unaffected; a build naming
-# its target some other way (--target-dir, CARGO_BUILD_TARGET_DIR) is skipped.
-# Any incremental-mode target qualifies, seeded or not: agent-check forces
-# incremental mode on the agent's own target-codex, which worktree-warm never
-# marked, and mbx bypasses workspace crates there, so without the refresh
-# every master landing recompiled them (2026-09-25: 1.14 compiler-min of
-# workspace crates per agent build after the seeded-only refresh landed).
-# A unit whose profile or features differ from the gate's has another
-# filename hash, never matches the seed, and is left alone. The seed is the
-# gate's native target only, so a `-pure` sidecar is never refreshed: it
-# would gain ~1,200 unused native-graph units per seed (4.7 s on 2026-09-26)
-# and could swap shared third-party artifacts under its own pure crates.
-explicit_target=0
-[ -z "${CARGO_BUILD_TARGET_DIR:-}" ] || explicit_target=1
-for arg in "$@"; do
-    case "$arg" in --target-dir | --target-dir=*) explicit_target=1 ;; esac
-done
-if { [ "$seeded_target" = 1 ] || [ "$mbx_mode" = incremental ]; } && [ "$explicit_target" = 0 ] \
-    && [ "$pure_graph_target" = 0 ] && [ -z "${WITCHY_GATE_SCOPE+x}" ] \
-    && [ "${WITCHY_SEED_REFRESH:-on}" != "off" ] \
-    && seed_dir="$(cd "$state_root/state/build-seed/current" 2>/dev/null && pwd -P)" \
-    && [ -f "$seed_dir/manifest.json" ]; then
-    python3 "$self_dir/../build-seed.py" refresh "$seed_dir" "$repo_root" "$effective_target" >&2 || true
 fi
 
 # One small versioned JSON report per build (mbx's MBX_STATS_REPORT), named
@@ -393,18 +345,21 @@ esac
 # same. The C it would cache is a few files.
 export MBX_CC="${MBX_CC:-off}"
 
-# Keep every target directory where Cargo puts it. mbx 1.18 otherwise moves an
-# existing `target/` under its managed root on the first non-CI build whose
-# target is not named by --target-dir, CARGO_TARGET_DIR or build.target-dir,
-# which is exactly the default <worktree>/target this shim leaves unset. Pool
-# worktrees, the build seed's `refresh`, the `.witchy-mbx-incremental-seed`
-# marker, worktree-warm's CoW clone, the merge gate's targets and
-# reclaim-build-caches.sh all address that literal path. `target.views` is
-# target placement, which mbx refuses from a repository .mbx.toml, so the
-# guard has to be this environment variable. With views off no target of ours
-# is managed, so the managed-target collection (`target.max_age` pruning of
-# unused units in live targets) never visits them either.
-export MBX_TARGET_VIEWS=0
+# Cargo 1.100 lets mbx seed a fresh checkout with registry and Git dependency
+# units from another managed target without invoking rustc or the shim once per
+# unit. This is the default worktree path: mbx leaves `target` as a symlink, so
+# Cargo-facing paths remain stable while deleted checkout storage is reclaimed.
+# Explicit CARGO_TARGET_DIR/--target-dir builds (including both gate
+# generations) are ineligible for managed placement and retain private targets
+# warmed by the action cache.
+export MBX_TARGET_VIEWS="${MBX_TARGET_VIEWS:-1}"
+export MBX_TARGET_SEED="${MBX_TARGET_SEED:-1}"
+
+# APFS reports CoW clones at their logical size. A logical-size budget can
+# therefore evict cheap, useful donors long before they cost that much disk.
+# Checkout deletion, per-unit aging, and the 30-day target age still collect
+# managed storage; disable only the misleading aggregate size trigger.
+export MBX_TARGET_MAX_SIZE="${MBX_TARGET_MAX_SIZE:-none}"
 
 # Never run mbx's garbage collector inside a build. mbx's automatic sweep
 # ("gc.auto": sweep after a build when collection is due) runs in the

@@ -83,7 +83,7 @@ run_fixture() {
 }
 
 run_fixture gate-seed env
-grep -F 'strip=symbols priority=normal nextest=2 target=target-codex args=--edit-loop --run docs/probe.md' \
+grep -F 'strip=unset priority=normal nextest=2 target=target-codex args=--edit-loop --run docs/probe.md' \
     "$tmp/env.log" >/dev/null
 
 rm -rf "$fixture/target-codex"
@@ -104,9 +104,9 @@ grep -F 'strip=unset priority=normal nextest=2 target=target-codex args=--edit-l
 
 test "$(wc -l <"$tmp/warm.log" | tr -d ' ')" = 3
 
-# A linked worktree reuses whichever private target the agent already seeded.
-# Keep the non-git fixture above as the shared-checkout fallback, then exercise
-# Git's actual linked-worktree metadata for both conventions here.
+# A linked worktree always uses its mbx-managed default target. Keep the
+# non-git fixture above as the shared-checkout fallback, then exercise Git's
+# actual linked-worktree metadata with and without a legacy target-codex.
 main_fixture="$tmp/main-repo"
 linked_fixture="$tmp/linked-repo"
 mkdir -p "$main_fixture/scripts"
@@ -122,17 +122,17 @@ git -C "$main_fixture" commit -qm initial
 git -C "$main_fixture" worktree add -qb linked "$linked_fixture"
 env -u CARGO_TARGET_DIR AGENT_CHECK_ENV_LOG="$tmp/linked-env.log" FAKE_AGENT_PLAN=shell \
     "$linked_fixture/scripts/agent-check.sh" edit docs/probe.md >/dev/null
-grep -F 'strip=unset priority=normal nextest=2 target=target args=--edit-loop --run docs/probe.md' \
+grep -F 'strip=unset priority=normal nextest=2 target=unset args=--edit-loop --run docs/probe.md' \
     "$tmp/linked-env.log" >/dev/null
 mkdir -p "$linked_fixture/target-codex"
 env -u CARGO_TARGET_DIR AGENT_CHECK_ENV_LOG="$tmp/linked-codex-env.log" \
     "$linked_fixture/scripts/agent-check.sh" edit docs/probe.md >/dev/null
-grep -F 'strip=unset priority=normal nextest=2 target=target-codex args=--edit-loop --run docs/probe.md' \
+grep -F 'strip=unset priority=normal nextest=2 target=unset args=--edit-loop --run docs/probe.md' \
     "$tmp/linked-codex-env.log" >/dev/null
 
 echo "agent-check focused commands use utility QoS only while the gate is live"
 echo "agent-check focused commands use normal MBX priority and preserve overrides"
 echo "agent-check focused nextest uses bounded concurrency and preserves overrides"
-echo "agent-check matches gate-seeded test profiles and preserves explicit symbols"
+echo "agent-check uses the default test profile and preserves explicit symbols"
 echo "agent-check skips target seeding for shell-only edit plans"
-echo "agent-check reuses the seeded private target of a linked worktree"
+echo "agent-check uses the managed default target of a linked worktree"

@@ -1001,9 +1001,9 @@ pub fn bundled_source_dir() -> Option<&'static std::path::Path> {
 ///
 /// The directory is resolved at RUN time, never baked in at compile time:
 /// compiled `witchy-syntax` units are shared across worktrees (the mbx cache
-/// remaps the workspace root; the build seed copies the gate checkout's units
-/// into agent targets), so a compile-time path would make one worktree read
-/// another's std — silently stale code. Each file is read once per process and
+/// remaps the workspace root and restores them through its action cache), so a
+/// compile-time path would make one worktree read another's std — silently
+/// stale code. Each file is read once per process and
 /// leaked, keeping `&'static str` sources and the process-constant premise of
 /// the pulled-std expansion cache.
 #[cfg(all(debug_assertions, not(target_arch = "wasm32")))]

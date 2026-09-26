@@ -348,7 +348,11 @@ fn coordinator_skips_only_fully_patch_equivalent_submissions() {
         }
         let prepared_while_lock_held = prepared_worktree.join("new-patch").exists();
         let duplicate_sweep_was_deferred = landed_worktree_during_prepare.exists();
-        while !lock_wait_marker_for_thread.exists() && Instant::now() < deadline {
+        // Candidate preparation and lock acquisition are separate phases. Do
+        // not let a busy host consume the lock-handshake budget while the
+        // coordinator is still preparing the worktree.
+        let lock_deadline = Instant::now() + Duration::from_secs(20);
+        while !lock_wait_marker_for_thread.exists() && Instant::now() < lock_deadline {
             thread::sleep(Duration::from_millis(25));
         }
         let coordinator_waited_for_lock = lock_wait_marker_for_thread.exists();
@@ -391,7 +395,9 @@ fn coordinator_skips_only_fully_patch_equivalent_submissions() {
     );
     assert!(
         waited_for_external_lock,
-        "coordinator never attempted to acquire the external gate lock",
+        "coordinator never attempted to acquire the external gate lock\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
     );
     assert!(
         !landed_worktree.exists(),

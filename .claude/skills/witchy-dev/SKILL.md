@@ -332,12 +332,14 @@ Only the coordinator fast-forwards it. In particular:
   checkouts of `master` are also forbidden by git; renaming `master` to
   dodge that is the same crime.
 
-Fresh worktrees need a seeded build cache: agent worktrees get it
-automatically via the `WorktreeCreate` hook (an APFS clone of `target/`; the
-`mbx` cache then restores whatever the new path invalidates), but for a manual
-`git worktree add` run `./scripts/worktree-warm.sh <path>` (it APFS-CoW-clones
-`target/`, so dependencies come up warm). Don't point `CARGO_TARGET_DIR` at
-a shared dir — cargo's build lock would serialize concurrent agents.
+Fresh worktrees need cache preparation: agent worktrees get it automatically
+via the `WorktreeCreate` hook. Cargo 1.100 and mbx leave a managed `target`
+symlink and copy registry/Git dependency units from another checkout; a
+recycled pool path retains its learned incremental state. For a manual worktree
+run `./scripts/worktree-warm.sh <path>` to seed the non-Cargo verdict cache and
+leave the default target to mbx. Explicit `CARGO_TARGET_DIR`s still need
+`./scripts/worktree-warm.sh --target-dir <dir>`. Never point one at a shared
+directory — Cargo's build lock would serialize concurrent agents.
 
 **Do not build a fresh `CARGO_TARGET_DIR` under `/private/tmp` per task.** A
 cold target is 30-60 GB, and abandoned ones filled the disk twice in one

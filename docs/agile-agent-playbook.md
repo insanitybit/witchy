@@ -110,9 +110,11 @@ Defaults:
 - `agent-check.sh target --package <name> [--filter <cargo-filter>]` runs the
   package test target in isolated agent env:
   `cargo test -p <name>`.
-- In a linked worktree, `agent-check.sh` reuses that worktree's seeded `target/`.
-  In the shared main checkout it defaults to `target-codex` so concurrent agents
-  do not share Cargo's build lock. An explicit `CARGO_TARGET_DIR` still wins.
+- In a linked worktree, `agent-check.sh` uses that worktree's mbx-managed
+  `target/`. In the shared main checkout it defaults to `target-codex` so
+  concurrent agents do not share Cargo's build lock. An explicit
+  `CARGO_TARGET_DIR` still wins and is warmed from the same checkout or MBX's
+  action cache.
 - `agent-check.sh paths <path-pattern...>` routes paths through
   `scripts/test-for-paths.sh --run`.
 - `agent-check.sh syntax` / `agent-check.sh link` / `agent-check.sh parity`

@@ -18,20 +18,21 @@ repeat the rules; consult it when you're working inside one of these areas.
 ## Gotchas the briefing compresses
 
 - **Worktree seeding.** The `WorktreeCreate` hook (`.claude/settings.json`) runs
-  `scripts/worktree-create.sh`, which creates the worktree AND seeds it. That
-  hook REPLACES the built-in creation — it must print the new worktree's path as
-  its **only** stdout; everything else goes to stderr. The seed is
-  `state/build-seed/current`: the gate's target for the last landed master,
-  republished by the coordinator after every green merge, plus the gate
-  checkout's file mtimes, which `scripts/build-seed.py apply` copies onto every
-  identical file. Without those mtimes a fresh checkout's "now" timestamps make
-  cargo rebuild every workspace crate. New worktrees are created at
-  `.claude/worktrees/pool-<NN>` (RFC-0171). When the queue lands a pool
+  `scripts/worktree-create.sh`, which creates the worktree and prepares its
+  caches. That hook REPLACES the built-in creation — it must print the new
+  worktree's path as its **only** stdout; everything else goes to stderr. A
+  fresh checkout leaves `target/` absent: Cargo 1.100 and mbx create a managed
+  target, copy registry/Git dependency units from another checkout, and leave
+  `target` as a symlink. Path crates come from mbx's action cache, then use
+  learned incremental state after edits. Explicit target directories are not
+  managed; `worktree-warm.sh --target-dir` may clone only the same checkout's
+  default target and otherwise leaves MBX's action cache to warm it. New worktrees are created
+  at `.claude/worktrees/pool-<NN>` (RFC-0171). When the queue lands a pool
   worktree's branch, the sweep recycles it in place, detached at master, for
-  the next agent. rustc's incremental state is keyed to the path, so the next
-  first edit rebuilds incrementally. A worktree at any other path is removed on
-  merge as before. Never reuse your worktree after submitting: the recycled
-  path will soon belong to another agent. What
+  the next agent. The pool path and its managed target persist, so rustc's
+  path-keyed incremental state remains useful. A worktree at any other path is
+  removed on merge as before. Never reuse your worktree after submitting: the
+  recycled path will soon belong to another agent. What
   gets left behind is abandoned checkouts, not merged ones (569 registered on
   2026-09-19, 362 untouched for two weeks): `scripts/worktree-status.sh
   --prune-stale --dry-run` lists them and `--prune-stale` removes them,
@@ -195,18 +196,14 @@ permit pool, so do not use it for repo builds.
 The shim also runs every non-gate cargo (and the tests it launches) at
 `nice 10`, so agent builds yield the CPU to the serialized merge gate under
 contention; `WITCHY_AGENT_NICE=off` opts out when timing a build.
-`WITCHY_BUILD_CACHE=off` is the kill switch. In a cold target, workspace crates
-are cached and shared across worktrees too; mbx learns which crate you are
-editing and compiles that one incrementally. A target seeded from the gate
-(every pool worktree: `.witchy-mbx-incremental-seed`) instead stays
-Cargo-incremental, and mbx bypasses its workspace crates, so the store never
-holds master's. Their shared source is the build seed: before each build in
-any incremental-mode target (seeded, or `agent-check`'s `target-codex`) the
-shim runs `scripts/build-seed.py refresh`, which swaps in the current seed's
-copy of every workspace unit whose sources and dependencies match it. After a
-rebase or a pool claim, only the crates your branch changed and their
-dependents compile (`WITCHY_SEED_REFRESH=off` disables it). The
-serialized gate uses that incremental mode with mbx scheduling disabled: it
+`WITCHY_BUILD_CACHE=off` is the kill switch. Default worktree targets are mbx
+managed: Cargo 1.100 copies dependency units from another checkout without
+calling rustc, workspace crates share through the action cache, and mbx learns
+which crate you are editing so later edits compile incrementally. Explicit
+targets use a same-checkout clone when one exists and otherwise restore from
+the action cache; Cargo 1.100's checkout-bound path units are never copied
+between worktrees. The serialized gate keeps its two persistent incremental
+targets with mbx scheduling disabled: it
 keeps its own full parallelism while restoring stable dependencies such as
 Wasmtime and AWS-LC from the shared cache. Every shim build leaves a small JSON
 report under `state/mbx/reports/`; `scripts/mbx-report.py --since 24h --by worktree`
@@ -235,8 +232,8 @@ opt-in, exactly as `scripts/bin/cargo` is for the build cache; the first run
 pays to populate the store and every later one collects. A `witchy` invoked
 from outside the repo keeps the untouched default.
 
-`./scripts/check.sh` in the shared `target/` tree is still authoritative, but
-coordinate before running it there. While another agent is active, prefer
+The coordinator's explicit gate target remains authoritative. Do not run a
+full gate yourself. While another agent is active, prefer
 `CARGO_TARGET_DIR=target-<agent> ./scripts/check.sh --fast`.
 
 ## Measuring the compiler

@@ -66,16 +66,15 @@ export NEXTEST_TEST_THREADS="${NEXTEST_TEST_THREADS:-2}"
 # neutralise the global sccache config for the plain-cargo fallback, and the
 # shim ignores them.
 run_in_agent_env() {
+    local env_args=(-u RUSTC_WRAPPER CARGO_BUILD_RUSTC_WRAPPER= "PATH=$PWD/scripts/bin:$PATH")
+    case "$AGENT_TARGET_DIR" in
+        target | "$PWD/target") ;;
+        *) env_args+=("CARGO_TARGET_DIR=$AGENT_TARGET_DIR") ;;
+    esac
     if [ "$agent_target_from_gate" -eq 1 ] && [ -z "${CARGO_PROFILE_TEST_STRIP+x}" ]; then
-        env -u RUSTC_WRAPPER CARGO_BUILD_RUSTC_WRAPPER= \
-            "PATH=$PWD/scripts/bin:$PATH" \
-            CARGO_PROFILE_TEST_STRIP=symbols CARGO_TARGET_DIR="$AGENT_TARGET_DIR" \
-            "${agent_priority[@]}" "$@"
-    else
-        env -u RUSTC_WRAPPER CARGO_BUILD_RUSTC_WRAPPER= \
-            "PATH=$PWD/scripts/bin:$PATH" CARGO_TARGET_DIR="$AGENT_TARGET_DIR" \
-            "${agent_priority[@]}" "$@"
+        env_args+=(CARGO_PROFILE_TEST_STRIP=symbols)
     fi
+    env "${env_args[@]}" "${agent_priority[@]}" "$@"
 }
 
 run_paths_checks() {
@@ -97,10 +96,7 @@ run_edit_checks() {
     if printf '%s\n' "$edit_plan" | grep -Eq '^  .*(cargo|check[.]sh)'; then
         ensure_agent_target
     fi
-    # The gate's warm seed uses incremental Cargo artifacts. Keep the edit
-    # loop on that profile unless the caller explicitly selects another mode.
-    WITCHY_MBX_MODE="${WITCHY_MBX_MODE:-incremental}" \
-        run_in_agent_env ./scripts/test-for-paths.sh --edit-loop --run "$@"
+    run_in_agent_env ./scripts/test-for-paths.sh --edit-loop --run "$@"
     # With no explicit paths, test-for-paths derived its selection from the
     # entire branch diff. An explicit path list is equally safe only when its
     # pathspec expansion covers that complete committed diff; partial probes
@@ -145,6 +141,9 @@ report_bounded_edit_gap() {
 }
 
 ensure_agent_target() {
+    case "$AGENT_TARGET_DIR" in
+        target | "$PWD/target") return 0 ;;
+    esac
     if [ -d "$AGENT_TARGET_DIR" ]; then
         # Agents commonly seed this directory before invoking us. Keep the
         # gate's test profile for that existing seed too, or Cargo rebuilds
@@ -156,12 +155,10 @@ ensure_agent_target() {
     fi
     if [ -d target ]; then
         ./scripts/worktree-warm.sh --target-dir "$AGENT_TARGET_DIR"
-    elif ./scripts/worktree-warm.sh --target-dir "$AGENT_TARGET_DIR"; then
-        # With no checkout-local target, worktree-warm uses the coordinator's
-        # active generation. Match its test profile so Cargo can reuse it.
-        agent_target_from_gate=1
     else
-        echo "agent-check: warm target unavailable; continuing with a cold isolated target" >&2
+        ./scripts/worktree-warm.sh --target-dir "$AGENT_TARGET_DIR" || \
+            echo "agent-check: warm target unavailable; continuing with an action-cache target" >&2
+        [ ! -f "$AGENT_TARGET_DIR/.witchy-mbx-incremental-seed" ] || agent_target_from_gate=1
     fi
 }
 
@@ -173,14 +170,9 @@ default_agent_target() {
     }
     main_worktree="$(git worktree list --porcelain 2>/dev/null | sed -n '1s/^worktree //p')"
     if [ -n "$main_worktree" ] && [ "$repo_root" != "$main_worktree" ]; then
-        # Current agent setup seeds target-codex/ in linked worktrees. Prefer
-        # that warm directory when it exists, while retaining target/ for
-        # older worktrees that already keep their private build there.
-        if [ -d "$repo_root/target-codex" ]; then
-            printf 'target-codex\n'
-        else
-            printf 'target\n'
-        fi
+        # Always use the checkout-local mbx-managed target. A caller that
+        # deliberately needs another directory can still set CARGO_TARGET_DIR.
+        printf 'target\n'
     else
         # Agents sharing the main checkout still need independent Cargo locks.
         printf 'target-codex\n'

@@ -15,22 +15,19 @@ runs:
     - name: Install toolchain
       shell: bash
       env:
-        # Pin the toolchain here, in one place, rather than tracking a moving
-        # `stable` — a compiler bump is then a reviewed one-line change, not a
-        # silent drift. rustup ships preinstalled on GitHub runners, so we drive
-        # it directly instead of a third-party toolchain action.
-        TOOLCHAIN: "1.96.1"
         COMPONENTS: ${{ inputs.components }}
         TARGETS: ${{ inputs.targets }}
       run: |
-        args=(--profile minimal)
+        # rust-toolchain.toml is the one reviewed pin for local development,
+        # the merge gate, and CI. With no explicit name rustup installs that
+        # active toolchain, including its base components and targets.
+        args=(--no-self-update)
         if [ -n "$COMPONENTS" ]; then
           args+=(--component $COMPONENTS)
         fi
         if [ -n "$TARGETS" ]; then
           args+=(--target $TARGETS)
         fi
-        rustup toolchain install "$TOOLCHAIN" "${args[@]}"
-        rustup default "$TOOLCHAIN"
+        rustup toolchain install "${args[@]}"
 
     - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
