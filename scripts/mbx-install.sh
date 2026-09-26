@@ -20,14 +20,17 @@
 # verified, nothing is pinned here. A new version gets its own store directory
 # (scripts/bin/cargo keys the store on the version), so the first build after
 # an upgrade is cold and the old store is dead weight to delete once no
-# session still links the old binary. The binary and the bin/mbx link are
-# shared by every worktree: an older worktree whose installer pins the previous
-# version flips the link back on its next SessionStart, and a newer one flips
-# it forward again. Each flip only re-downloads; builds already running keep
-# their binary and store.
+# session still links the old binary. Every version installs side by side
+# under state/mbx/<version>/, shared by all worktrees, and scripts/bin/cargo
+# runs the version pinned by ITS checkout's copy of this file, so a checkout
+# gets a new mbx together with the shim policy written for it. (mbx 1.18
+# moves an unguarded `target/` under its managed root on the first build; a
+# shared "current" binary would have handed it to shims that predate the
+# guard.) state/mbx/bin/mbx is kept only for shims older than that rule: it is
+# created when missing or dangling and never flipped to a newer version.
 set -euo pipefail
 
-MBX_VERSION="1.17.0"
+MBX_VERSION="1.18.0"
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 # Install under the MAIN checkout's state/ so every worktree shares one binary
@@ -51,12 +54,12 @@ case "${1:-}" in
 esac
 
 installed() {
-    [ -x "$binary" ] && [ -L "$link" ] && [ "$(readlink "$link")" = "$binary" ]
+    [ -x "$binary" ] && [ -x "$link" ]
 }
 
 if [ "$mode" = "check" ]; then
     if installed; then
-        echo "mbx $MBX_VERSION installed at $link"
+        echo "mbx $MBX_VERSION installed at $binary"
         exit 0
     fi
     echo "mbx $MBX_VERSION not installed (run ./scripts/mbx-install.sh)"
@@ -117,7 +120,7 @@ rm -rf "$install_dir"
 mkdir -p "$install_dir" "$bin_dir"
 cp "$extracted" "$binary"
 chmod +x "$binary"
-ln -sfn "$binary" "$link"
+[ -x "$link" ] || ln -sfn "$binary" "$link"
 
 "$binary" --version >/dev/null 2>&1 || { echo "mbx-install: installed binary does not run" >&2; exit 1; }
-echo "mbx-install: installed mbx $MBX_VERSION at $link"
+echo "mbx-install: installed mbx $MBX_VERSION at $binary"

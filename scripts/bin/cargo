@@ -269,7 +269,14 @@ fi
 [ "${WITCHY_BUILD_CACHE:-mbx}" != "off" ] || passthrough "$@"
 [ "${MBX_DISABLE:-0}" != "1" ] || passthrough "$@"
 
-mbx="$state_root/state/mbx/bin/mbx"
+# Run the mbx this checkout pins, not a machine-wide "current" one: every
+# version installs side by side (scripts/mbx-install.sh), and the policy below
+# is written for the version pinned next to it. state/mbx/bin/mbx remains the
+# fallback for an install that has not happened yet; the guards below are
+# harmless to an older binary and binding on a newer one.
+mbx_pinned="$(sed -n 's/^MBX_VERSION="\([^"]*\)".*/\1/p' "$self_dir/../mbx-install.sh" 2>/dev/null | head -1)"
+mbx="$state_root/state/mbx/$mbx_pinned/mbx"
+[ -n "$mbx_pinned" ] && [ -x "$mbx" ] || mbx="$state_root/state/mbx/bin/mbx"
 [ -x "$mbx" ] || passthrough "$@"
 
 # `cargo +toolchain ...` selects a toolchain; leave it to the real cargo.
@@ -381,6 +388,19 @@ esac
 # and everything above it, and every mbx upgrade changes the path and does the
 # same. The C it would cache is a few files.
 export MBX_CC="${MBX_CC:-off}"
+
+# Keep every target directory where Cargo puts it. mbx 1.18 otherwise moves an
+# existing `target/` under its managed root on the first non-CI build whose
+# target is not named by --target-dir, CARGO_TARGET_DIR or build.target-dir,
+# which is exactly the default <worktree>/target this shim leaves unset. Pool
+# worktrees, the build seed's `refresh`, the `.witchy-mbx-incremental-seed`
+# marker, worktree-warm's CoW clone, the merge gate's targets and
+# reclaim-build-caches.sh all address that literal path. `target.views` is
+# target placement, which mbx refuses from a repository .mbx.toml, so the
+# guard has to be this environment variable. With views off no target of ours
+# is managed, so the managed-target collection (`target.max_age` pruning of
+# unused units in live targets) never visits them either.
+export MBX_TARGET_VIEWS=0
 
 # Keep mbx's interactive display out of agent logs; plain cargo output.
 export CARGO_TERM_PROGRESS_WHEN="${CARGO_TERM_PROGRESS_WHEN:-never}"

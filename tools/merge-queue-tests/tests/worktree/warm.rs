@@ -973,6 +973,68 @@ fn cargo_shim_schedules_queue_tooling_through_mbx() {
     }
 }
 
+/// mbx 1.18 moves an unnamed `target/` under its managed root on the first
+/// build unless target views are off; every worktree path convention here
+/// (build seed, pool targets, reclaim) depends on `<worktree>/target` staying
+/// a real directory. The shim also runs the version its own checkout pins,
+/// so an older shim never inherits a newer mbx without that guard.
+#[test]
+fn cargo_shim_runs_the_pinned_mbx_with_target_views_off() {
+    let repo = temp_repo();
+    let root = repo.path();
+    write(root, "scripts/bin/cargo", include_str!("../../../../scripts/bin/cargo"));
+    write(
+        root,
+        "scripts/feature-unification.sh",
+        include_str!("../../../../scripts/feature-unification.sh"),
+    );
+    write(root, "scripts/mbx-install.sh", "#!/bin/sh\nMBX_VERSION=\"9.9.9\"\n");
+    write(root, "fake-bin/cargo", "#!/bin/sh\nexit 0\n");
+    let print = |who: &str| {
+        format!("#!/bin/sh\nprintf '{who} views=%s store=%s\\n' \"${{MBX_TARGET_VIEWS-unset}}\" \"${{MBX_CACHE_DIR##*/}}\"\n")
+    };
+    write(root, "state/mbx/9.9.9/mbx", &print("pinned"));
+    write(root, "state/mbx/bin/mbx", &print("link"));
+    for executable in ["scripts/bin/cargo", "fake-bin/cargo", "state/mbx/9.9.9/mbx", "state/mbx/bin/mbx"] {
+        let status = Command::new("chmod")
+            .args(["+x", executable])
+            .current_dir(root)
+            .status()
+            .expect("mark fixture executable");
+        assert!(status.success());
+    }
+    let path = std::env::join_paths(
+        std::iter::once(root.join("fake-bin"))
+            .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())),
+    )
+    .expect("fixture PATH");
+    let run = || {
+        Command::new(root.join("scripts/bin/cargo"))
+            .args(["check", "-p", "witchy"])
+            .current_dir(root)
+            .env("PATH", &path)
+            .env("MBX_STATS_REPORT", root.join("mbx-report.json"))
+            .env("MBX_TARGET_VIEWS", "1")
+            .env_remove("MBX_CACHE_DIR")
+            .env_remove("WITCHY_BUILD_CACHE")
+            .env_remove("WITCHY_CARGO_SHIM_ACTIVE")
+            .env_remove("WITCHY_GATE_SCOPE")
+            .output()
+            .expect("run cargo shim fixture")
+    };
+
+    let output = run();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "pinned views=0 store=store-9.9.9\n");
+
+    // Before the pinned version is installed, the legacy link still runs,
+    // under the same guard.
+    std::fs::remove_file(root.join("state/mbx/9.9.9/mbx")).expect("uninstall pinned mbx");
+    let output = run();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "link views=0 store=store-bin\n");
+}
+
 #[test]
 fn cargo_shim_bounds_direct_agent_test_fanout_but_not_the_serialized_gate() {
     let repo = temp_repo();
