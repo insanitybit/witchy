@@ -7,6 +7,7 @@
 use std::collections::VecDeque;
 
 use witchy_syntax::ast::Type;
+use witchy_canonical_source::source::SourceExecutionMode;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ExecutionShapeId(pub u32);
@@ -155,6 +156,8 @@ pub struct CancellationTransition {
 #[derive(Debug, Clone, PartialEq)]
 pub struct TypedExecutionShape {
     pub id: ExecutionShapeId,
+    /// Checked declaration mode retained through task execution lowering.
+    pub mode: SourceExecutionMode,
     pub entry: ExecutionStateId,
     pub frame: Vec<FrameLane>,
     /// Ordered completed-value ABI. Runtime bindings may use a direct scalar

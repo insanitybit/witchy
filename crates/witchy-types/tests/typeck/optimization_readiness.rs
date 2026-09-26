@@ -88,10 +88,20 @@ fn main():
     assert!(cancellation_error.contains("undisposed"), "{cancellation_error}");
     let mut program = AsyncProgram::from_final_typed_executions(vec![execution])
         .expect("typed execution forms a canonical async program");
+    let mut forged_mode = program.execution_shapes.clone();
+    forged_mode[0].mode = witchy_canonical_source::source::SourceExecutionMode::Opt;
+    let forged_mode = AsyncProgram::new(forged_mode)
+        .expect("a mode change can carry a fresh self-consistent fingerprint");
+    assert_eq!(
+        checked.checked_async_readiness(&input, &forged_mode).unwrap_err(),
+        AsyncReadinessError::ProgramIdentityMismatch,
+        "a fingerprint cannot relabel the checked async body mode",
+    );
     let readiness = checked
         .checked_async_readiness(&input, &program)
         .expect("one checked product binds immutable rooted values/access, typed captures, and scheduling");
     assert_eq!(readiness.cancellation_count(), 1);
+    assert_eq!((readiness.normal_callable_count(), readiness.opt_callable_count()), (1, 0));
     assert!(readiness.uses_rooted_view_contract(),
         "canonical async readiness must retain the RFC-0167 rooted-value product, not recreate lexical loans");
     readiness

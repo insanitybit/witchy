@@ -208,6 +208,17 @@ change its name; it does not yet carry task execution provenance through task
 values, aggregates, generics, trait returns, or scheduler adapters. No A-O row
 closes before admitted-Wasm and zero-leak evidence.
 
+Async execution-shape mode binding (implemented but unverified, 2026-09-26):
+the checked source callable's mode now travels through typed execution into
+the canonical async shape and its versioned semantic fingerprint. The backend
+binding must match that mode, and readiness compares the final shape against
+the source inventory even if a candidate recomputes a self-consistent
+fingerprint. The existing readiness case exercises a forged mode near miss.
+This binds a known async callable's mode through the execution program; it
+does not yet prove task-value provenance through aggregates, generic or trait
+results, or scheduler adapters. Admitted Wasm and zero-leak evidence remain
+pending; no A–O row closes.
+
 Rows J/K replayable continuation boundary (implemented but unverified,
 2026-09-26): the checker now refuses a live must binding and a capture refined
 to must after body inference. The retired root suspension exception could move

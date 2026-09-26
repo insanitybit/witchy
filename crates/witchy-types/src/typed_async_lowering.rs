@@ -446,7 +446,7 @@ impl TypedAsyncLoweringInput {
             state.frame.iter().filter_map(|input| input.source_binding.map(|binding| (binding, FrameLaneId(input.parameter)))).collect::<BTreeMap<_, _>>()
         }).unwrap_or_default();
         let execution = TypedExecutionShape {
-            id: shape,
+            id: shape, mode: self.source[0].mode,
             entry: ExecutionStateId(0),
             frame,
             result_lanes: Vec::new(),
@@ -524,7 +524,7 @@ impl TypedAsyncLoweringInput {
             initially_initialized: false,
         });
         let execution = TypedExecutionShape {
-            id: shape,
+            id: shape, mode: self.source[0].mode,
             entry: ExecutionStateId(0),
             frame,
             result_lanes: vec![result],
@@ -601,7 +601,7 @@ impl TypedAsyncLoweringInput {
         let result = FrameLaneId(u32::try_from(frame.len()).map_err(|_| "RFC-0161 continuation receive result lane exceeds u32")?);
         frame.push(FrameLane { id: result, ty: continuation.frame[0].ty.clone(), ownership: continuation.frame[0].ownership, initially_initialized: false });
         let execution = TypedExecutionShape {
-            id: shape, entry: ExecutionStateId(0), frame, result_lanes: vec![result],
+            id: shape, mode: self.source[0].mode, entry: ExecutionStateId(0), frame, result_lanes: vec![result],
             states: vec![
                 ExecutionState { id: ExecutionStateId(0), transitions: vec![ExecutionTransition { condition: ExecutionEdgeCondition::Always, actions: Vec::new(), outcome: ExecutionOutcome::Blocked { operation: OperationSiteId(0), retry: ExecutionStateId(1) } }] },
                 ExecutionState { id: ExecutionStateId(1), transitions: vec![ExecutionTransition { condition: ExecutionEdgeCondition::Always, actions: Vec::new(), outcome: ExecutionOutcome::Complete }] },
@@ -647,7 +647,7 @@ impl TypedAsyncLoweringInput {
         let payload = entry.frame.iter().find_map(|input| (input.source_binding == Some(operation.operand_bindings[1])).then_some(FrameLaneId(input.parameter)))
             .ok_or_else(|| "RFC-0161 terminal send payload must be an entry-frame binding".to_string())?;
         let execution = TypedExecutionShape {
-            id: shape, entry: ExecutionStateId(0), frame: std::mem::take(&mut frame), result_lanes: Vec::new(),
+            id: shape, mode: self.source[0].mode, entry: ExecutionStateId(0), frame: std::mem::take(&mut frame), result_lanes: Vec::new(),
             states: vec![
                 ExecutionState { id: ExecutionStateId(0), transitions: vec![ExecutionTransition { condition: ExecutionEdgeCondition::Always, actions: Vec::new(), outcome: ExecutionOutcome::Blocked { operation: OperationSiteId(0), retry: ExecutionStateId(1) } }] },
                 ExecutionState { id: ExecutionStateId(1), transitions: vec![ExecutionTransition { condition: ExecutionEdgeCondition::Always, actions: vec![crate::typed_execution::LaneAction::Discharge { lane: payload }], outcome: ExecutionOutcome::Complete }] },
@@ -698,7 +698,7 @@ impl TypedAsyncLoweringInput {
             Some(lane)
         } else { None };
         let execution = TypedExecutionShape {
-            id: shape, entry: ExecutionStateId(0), frame, result_lanes: Vec::new(),
+            id: shape, mode: self.source[0].mode, entry: ExecutionStateId(0), frame, result_lanes: Vec::new(),
             states: vec![
                 ExecutionState { id: ExecutionStateId(0), transitions: vec![ExecutionTransition { condition: ExecutionEdgeCondition::Always, actions: Vec::new(), outcome: ExecutionOutcome::Blocked { operation: OperationSiteId(0), retry: ExecutionStateId(1) } }] },
                 ExecutionState { id: ExecutionStateId(1), transitions: vec![ExecutionTransition { condition: ExecutionEdgeCondition::Always, actions: vec![crate::typed_execution::LaneAction::Discharge { lane: payload }], outcome: ExecutionOutcome::Complete }] },
@@ -751,7 +751,7 @@ impl TypedAsyncLoweringInput {
         // bindings in a different order.  Arm identity is endpoint-based;
         // positional collection would silently pair the wrong queue shape.
         let execution = TypedExecutionShape {
-            id: shape, entry: ExecutionStateId(0), frame, result_lanes: vec![result],
+            id: shape, mode: self.source[0].mode, entry: ExecutionStateId(0), frame, result_lanes: vec![result],
             states: vec![
                 ExecutionState { id: ExecutionStateId(0), transitions: vec![ExecutionTransition { condition: ExecutionEdgeCondition::Always, actions: Vec::new(), outcome: ExecutionOutcome::Blocked { operation: OperationSiteId(0), retry: ExecutionStateId(1) } }] },
                 ExecutionState { id: ExecutionStateId(1), transitions },
@@ -809,7 +809,7 @@ impl TypedAsyncLoweringInput {
         }
         let transitions = arms.iter().map(|arm| ExecutionTransition { condition: ExecutionEdgeCondition::SelectArm { operation: OperationSiteId(0), arm: arm.ordinal }, actions: Vec::new(), outcome: ExecutionOutcome::Complete }).collect();
         let execution = TypedExecutionShape {
-            id: shape, entry: ExecutionStateId(0), frame, result_lanes: vec![result],
+            id: shape, mode: self.source[0].mode, entry: ExecutionStateId(0), frame, result_lanes: vec![result],
             states: vec![
                 ExecutionState { id: ExecutionStateId(0), transitions: vec![ExecutionTransition { condition: ExecutionEdgeCondition::Always, actions: Vec::new(), outcome: ExecutionOutcome::Blocked { operation: OperationSiteId(0), retry: ExecutionStateId(1) } }] },
                 ExecutionState { id: ExecutionStateId(1), transitions },
@@ -854,7 +854,7 @@ impl TypedAsyncLoweringInput {
             }
         }
         let execution = TypedExecutionShape {
-            id: shape,
+            id: shape, mode: self.source[0].mode,
             entry: ExecutionStateId(0),
             frame: vec![FrameLane { id: crate::typed_execution::FrameLaneId(0), ty: entry.frame[0].ty.clone(), ownership: entry.frame[0].ownership, initially_initialized: true }],
             result_lanes: Vec::new(),

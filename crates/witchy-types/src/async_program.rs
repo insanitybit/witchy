@@ -4,9 +4,10 @@
 //! has no generated callable names and no legacy scalar-transition fallback.
 
 use crate::typed_async_lowering::FinalCallableIndex;
+use witchy_canonical_source::source::SourceExecutionMode;
 use crate::typed_execution::{ExecutionEdgeCondition, ExecutionOperation, ExecutionOutcome, ExecutionShapeId, ExecutionState, ExecutionStateId, ExecutionTransition, FrameLane, FrameLaneId, LaneAction, OperationArm, OperationSite, OperationSiteId, PayloadOwnership, QueueShape, QueueShapeId, TypedExecutionShape};
 
-pub const ASYNC_PROGRAM_SCHEMA_VERSION: u32 = 1;
+pub const ASYNC_PROGRAM_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct AsyncProgramStateId(pub u32);
@@ -72,6 +73,7 @@ pub struct AsyncCancellationTransition {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AsyncBackendBinding {
     pub shape: ExecutionShapeId,
+    pub mode: SourceExecutionMode,
     pub closure_layout_fingerprint: [u8; 32],
     pub states: Vec<AsyncBackendStateBinding>,
 }
@@ -118,6 +120,7 @@ pub enum DynamicAsyncBoundary {
 #[derive(Debug, Clone, PartialEq)]
 pub struct AsyncExecutionShape {
     pub id: ExecutionShapeId,
+    pub mode: SourceExecutionMode,
     pub closure_layout_fingerprint: [u8; 32],
     pub frame: Vec<FrameLane>,
     pub entry: AsyncProgramStateId,
@@ -184,6 +187,10 @@ impl AsyncProgram {
         push_len(&mut bytes, self.execution_shapes.len())?;
         for shape in &self.execution_shapes {
             push_u32(&mut bytes, shape.id.0);
+            bytes.push(match shape.mode {
+                SourceExecutionMode::Normal => 0,
+                SourceExecutionMode::Opt => 1,
+            });
             bytes.extend_from_slice(&shape.closure_layout_fingerprint);
             push_len(&mut bytes, shape.frame.len())?;
             for lane in &shape.frame {
@@ -328,6 +335,7 @@ impl AsyncProgram {
             // the common typed execution validator before fingerprinting.
             let binding = AsyncBackendBinding {
                 shape: shape.id,
+                mode: shape.mode,
                 closure_layout_fingerprint: shape.closure_layout_fingerprint,
                 states: shape.states.iter().map(|state| AsyncBackendStateBinding {
                     state: state.state,
@@ -365,6 +373,7 @@ impl FinalTypedAsyncExecution {
         }
         let TypedExecutionShape {
             id,
+            mode,
             entry,
             frame,
             result_lanes,
@@ -405,6 +414,7 @@ impl FinalTypedAsyncExecution {
         }).collect();
         Ok(AsyncExecutionShape {
             id,
+            mode,
             closure_layout_fingerprint,
             frame,
             entry: AsyncProgramStateId(entry.0),
@@ -482,6 +492,9 @@ impl AsyncExecutionShape {
         if binding.shape != self.id {
             return Err("async backend binding names a different execution shape".into());
         }
+        if binding.mode != self.mode {
+            return Err("async backend execution mode drifted from checked source".into());
+        }
         if binding.closure_layout_fingerprint != self.closure_layout_fingerprint {
             return Err("async backend closure layout fingerprint drifted".into());
         }
@@ -508,6 +521,7 @@ impl AsyncExecutionShape {
         let entry = self.entry;
         let shape = TypedExecutionShape {
             id: self.id,
+            mode: self.mode,
             entry: ExecutionStateId(entry.0),
             frame: self.frame,
             result_lanes: self.result_lanes.into_iter().map(FrameLaneId).collect(),

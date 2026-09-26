@@ -297,6 +297,9 @@ fn validate_program_binding(
     }
     for (shape_index, source) in input.source.iter().enumerate() {
         let shape = &program.execution_shapes[shape_index];
+        if shape.mode != source.mode {
+            return Err(AsyncReadinessError::ProgramIdentityMismatch);
+        }
         let states = input.states.iter().filter(|state| state.callable == source.callable).collect::<Vec<_>>();
         for state in states {
             // Scheduler states may share one final callable (for example the
