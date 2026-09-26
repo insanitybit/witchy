@@ -361,6 +361,17 @@ export MBX_TARGET_SEED="${MBX_TARGET_SEED:-1}"
 # managed storage; disable only the misleading aggregate size trigger.
 export MBX_TARGET_MAX_SIZE="${MBX_TARGET_MAX_SIZE:-none}"
 
+# Bound the rest of the shared store independently of managed-target CoW
+# accounting. The upstream defaults (20 GiB of actions and 45 GiB of learned
+# incremental state) are too large for a host where agents also keep private
+# Cargo targets: on 2026-09-26 this store reached 38 GiB while the volume fell
+# to 14 GiB free. The total cap is a final guard over actions, incremental
+# state, generated output, and managed targets. Every object here is a cache;
+# eviction costs a rebuild, never source or history.
+export MBX_GC_MAX_SIZE="${MBX_GC_MAX_SIZE:-8GiB}"
+export MBX_GC_INCREMENTAL_MAX_SIZE="${MBX_GC_INCREMENTAL_MAX_SIZE:-8GiB}"
+export MBX_GC_MAX_TOTAL_SIZE="${MBX_GC_MAX_TOTAL_SIZE:-32GiB}"
+
 # Never run mbx's garbage collector inside a build. mbx's automatic sweep
 # ("gc.auto": sweep after a build when collection is due) runs in the
 # FOREGROUND after Cargo has exited, and a build that finds collection due

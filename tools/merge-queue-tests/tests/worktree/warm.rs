@@ -688,7 +688,8 @@ fn cargo_shim_schedules_queue_tooling_through_mbx() {
 
 /// Cargo 1.100 target seeding requires managed targets. The shim enables both
 /// features by default, preserves explicit caller overrides, disables the
-/// misleading APFS logical-size budget, and still runs its pinned mbx.
+/// misleading APFS target-size budget, caps the complete cache store, and
+/// still runs its pinned mbx.
 #[test]
 fn cargo_shim_runs_the_pinned_mbx_with_managed_target_seeding() {
     let repo = temp_repo();
@@ -702,7 +703,7 @@ fn cargo_shim_runs_the_pinned_mbx_with_managed_target_seeding() {
     write(root, "scripts/mbx-install.sh", "#!/bin/sh\nMBX_VERSION=\"9.9.9\"\n");
     write(root, "fake-bin/cargo", "#!/bin/sh\nexit 0\n");
     let print = |who: &str| {
-        format!("#!/bin/sh\nprintf '{who} views=%s seed=%s max=%s store=%s\\n' \"${{MBX_TARGET_VIEWS-unset}}\" \"${{MBX_TARGET_SEED-unset}}\" \"${{MBX_TARGET_MAX_SIZE-unset}}\" \"${{MBX_CACHE_DIR##*/}}\"\n")
+        format!("#!/bin/sh\nprintf '{who} views=%s seed=%s target=%s action=%s incremental=%s total=%s store=%s\\n' \"${{MBX_TARGET_VIEWS-unset}}\" \"${{MBX_TARGET_SEED-unset}}\" \"${{MBX_TARGET_MAX_SIZE-unset}}\" \"${{MBX_GC_MAX_SIZE-unset}}\" \"${{MBX_GC_INCREMENTAL_MAX_SIZE-unset}}\" \"${{MBX_GC_MAX_TOTAL_SIZE-unset}}\" \"${{MBX_CACHE_DIR##*/}}\"\n")
     };
     write(root, "state/mbx/9.9.9/mbx", &print("pinned"));
     write(root, "state/mbx/bin/mbx", &print("link"));
@@ -728,6 +729,9 @@ fn cargo_shim_runs_the_pinned_mbx_with_managed_target_seeding() {
             .env_remove("MBX_TARGET_VIEWS")
             .env_remove("MBX_TARGET_SEED")
             .env_remove("MBX_TARGET_MAX_SIZE")
+            .env_remove("MBX_GC_MAX_SIZE")
+            .env_remove("MBX_GC_INCREMENTAL_MAX_SIZE")
+            .env_remove("MBX_GC_MAX_TOTAL_SIZE")
             .env_remove("MBX_CACHE_DIR")
             .env_remove("WITCHY_BUILD_CACHE")
             .env_remove("WITCHY_CARGO_SHIM_ACTIVE")
@@ -740,7 +744,7 @@ fn cargo_shim_runs_the_pinned_mbx_with_managed_target_seeding() {
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
     assert_eq!(
         String::from_utf8_lossy(&output.stdout),
-        "pinned views=1 seed=1 max=none store=store-9.9.9\n"
+        "pinned views=1 seed=1 target=none action=8GiB incremental=8GiB total=32GiB store=store-9.9.9\n"
     );
 
     // Before the pinned version is installed, the legacy link still runs,
@@ -750,7 +754,7 @@ fn cargo_shim_runs_the_pinned_mbx_with_managed_target_seeding() {
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
     assert_eq!(
         String::from_utf8_lossy(&output.stdout),
-        "link views=1 seed=1 max=none store=store-bin\n"
+        "link views=1 seed=1 target=none action=8GiB incremental=8GiB total=32GiB store=store-bin\n"
     );
 
     let output = Command::new(root.join("scripts/bin/cargo"))
@@ -761,6 +765,9 @@ fn cargo_shim_runs_the_pinned_mbx_with_managed_target_seeding() {
         .env("MBX_TARGET_VIEWS", "0")
         .env("MBX_TARGET_SEED", "0")
         .env("MBX_TARGET_MAX_SIZE", "12GiB")
+        .env("MBX_GC_MAX_SIZE", "4GiB")
+        .env("MBX_GC_INCREMENTAL_MAX_SIZE", "3GiB")
+        .env("MBX_GC_MAX_TOTAL_SIZE", "20GiB")
         .env_remove("MBX_CACHE_DIR")
         .env_remove("WITCHY_BUILD_CACHE")
         .env_remove("WITCHY_CARGO_SHIM_ACTIVE")
@@ -770,7 +777,7 @@ fn cargo_shim_runs_the_pinned_mbx_with_managed_target_seeding() {
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
     assert_eq!(
         String::from_utf8_lossy(&output.stdout),
-        "link views=0 seed=0 max=12GiB store=store-bin\n"
+        "link views=0 seed=0 target=12GiB action=4GiB incremental=3GiB total=20GiB store=store-bin\n"
     );
 }
 
