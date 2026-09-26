@@ -75,13 +75,27 @@ fn main(console: Console):
 }
 
 #[test]
-fn opt_async_accepts_copyable_task_parameter() {
+fn opt_async_task_parameter_requires_opt_execution_origin() {
     let worker = r#"mode opt
 
 import task
 
 pub async fn execute(own recipe: task.Task(Int)) -> Int:
     recipe.await
+
+pub async fn compatible() -> Int:
+    7
+
+pub async fn execute_pair(own pair: (task.Task(Int), Int)) -> Int:
+    let (recipe, _) = pair
+    recipe.await
+
+pub async fn nested() -> task.Task(Int):
+    compatible()
+
+pub async fn execute_nested() -> Int:
+    let inner = nested().await
+    inner.await
 "#;
     let main = r#"import worker
 
@@ -93,5 +107,22 @@ async fn main(console: Console):
     console.print("${answer}")
 "#;
     let result = super::source::checked_bundle(vec![("worker", worker), ("main", main)], "main");
+    let error = result.expect_err("a normal recipe cannot acquire opt execution provenance at the call site");
+    assert!(error.contains("opt-compatible task value provenance"), "{error}");
+
+    let compatible_main = r#"import worker
+
+async fn main(console: Console):
+    let answer = worker.execute(worker.compatible()).await
+    let pair_answer = worker.execute_pair((worker.compatible(), 1)).await
+    let inner = worker.nested().await
+    let nested_answer = inner.await
+    let opt_nested_answer = worker.execute_nested().await
+    console.print("${answer}")
+    console.print("${pair_answer}")
+    console.print("${nested_answer}")
+    console.print("${opt_nested_answer}")
+"#;
+    let result = super::source::checked_bundle(vec![("worker", worker), ("main", compatible_main)], "main");
     assert!(result.is_ok(), "{result:?}");
 }

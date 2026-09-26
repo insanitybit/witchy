@@ -11602,6 +11602,7 @@ fn typed_module_checked(module: Module, table: TypeTable) -> Result<TypedModule,
     let access_facts = crate::access::checked_facts(&module, &table)
         .map_err(|error| TypeError { message: error.to_string() })?;
     crate::call_scoped::verify(&module, &table, &access_facts)?;
+    crate::task_provenance::verify(&module, &table)?;
     Ok(TypedModule {
         loan_facts: loan_facts.map(|facts| RetainedLoanFacts { module: std::ptr::from_ref(module.as_ref()), facts }),
         access_facts: Some(RetainedAccessFacts { module: std::ptr::from_ref(module.as_ref()), facts: access_facts }),

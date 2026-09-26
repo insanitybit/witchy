@@ -187,11 +187,12 @@ the shared aggregate shape guard accepts the compiler-reserved erased message
 lane inside a declared scheduler signature. It still requires the independent
 recursive storage proof before copying a value: `Task(Int)` has a copyable
 closure field, while `Step(Int)` carrying an erased message has no replay
-snapshot proof. The opt checker accepts an owned `Task(Int)` parameter, and a
-cross-module unoptimized compiled run printed `7`. Task execution-mode
-provenance through stored values, per-execution ownership, cancellation
-disposition, and the required Wasm and zero-leak evidence remain open. No A–O
-row closes.
+snapshot proof. An earlier opt checker run accepted an owned `Task(Int)`
+parameter and a cross-module normal recipe printed `7`; that run predates the
+task-value mode rule below and is no longer acceptance evidence. Opt task
+inputs now require opt-compatible source provenance at each checked direct
+call. Per-execution ownership, cancellation disposition, and the required
+Wasm and zero-leak evidence remain open. No A–O row closes.
 
 Source execution-mode ownership (implemented but unverified, 2026-09-26):
 the checker, loan analysis, call-scoped analysis, canonical lowerer, and legacy
@@ -218,6 +219,18 @@ This binds a known async callable's mode through the execution program; it
 does not yet prove task-value provenance through aggregates, generic or trait
 results, or scheduler adapters. Admitted Wasm and zero-leak evidence remain
 pending; no A–O row closes.
+
+Task-value mode provenance (implemented but unverified, 2026-09-26): a
+post-typecheck value-flow judgment now follows a task body's authenticated
+source mode through direct async calls, aliases, aggregate construction and
+projection, and symbolic direct-call summaries. An opt await requires opt
+task provenance; an opt function that awaits an input task passes the proof
+requirement transitively to its direct callers. Generic local callables cannot
+borrow a same-spelled declaration's mode, and calls invalidate storage proofs
+they may mutate. Unknown indirect, trait, existential, and scheduler-adapter
+task results fail closed at opt await. Their checked transfer contracts,
+public task-parameter ABI metadata, and admitted-Wasm/zero-leak evidence are
+still open; no A–O row closes.
 
 Rows J/K replayable continuation boundary (implemented but unverified,
 2026-09-26): the checker now refuses a live must binding and a capture refined

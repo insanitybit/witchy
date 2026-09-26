@@ -13,6 +13,7 @@ pub mod access;
 pub mod canonical_abi;
 pub mod canonical_closure;
 mod call_scoped;
+mod task_provenance;
 mod canonical_dictionary;
 mod canonical_equality;
 mod canonical_render;

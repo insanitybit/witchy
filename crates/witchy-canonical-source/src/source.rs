@@ -29,6 +29,115 @@ impl SourceExecutionMode {
     pub fn is_opt(self) -> bool { self == Self::Opt }
 }
 
+/// Checked value-flow proof for a deferred task. A `Task(T)` result type does
+/// not identify the declaration mode of the code which runs when it is driven.
+/// Parameter references are symbolic until a checked direct call supplies its
+/// exact argument proofs; unknown producers never acquire opt authority.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TaskExecutionProof {
+    Unknown,
+    Task(SourceExecutionMode, Box<Self>),
+    Parameter(usize),
+    /// Result of executing a symbolic task parameter or projection.
+    Awaited(Box<Self>),
+    /// Checked positional projection from a tuple or nominal aggregate.
+    Slot(Box<Self>, usize),
+    /// Dynamic index into a checked homogeneous sequence.
+    AnyElement(Box<Self>),
+    Elements(Vec<Self>),
+    Fields(BTreeMap<String, Self>),
+}
+
+impl TaskExecutionProof {
+    /// A checked source summary may defer an opt requirement only when it is rooted
+    /// in one of that callable's checked parameters. Unknown storage cannot
+    /// become a deferred obligation by being wrapped in a projection.
+    pub fn is_parameter_projection(&self) -> bool {
+        match self {
+            Self::Parameter(_) => true,
+            Self::Slot(base, _) | Self::AnyElement(base) | Self::Awaited(base) => base.is_parameter_projection(),
+            _ => false,
+        }
+    }
+
+    /// Keep recursively composed summaries finite even for recursive source
+    /// functions that repeatedly wrap their own result.
+    pub fn bounded(self, max_nodes: usize) -> Self {
+        fn within(proof: &TaskExecutionProof, remaining: &mut usize, depth: usize) -> bool {
+            if depth > 128 || *remaining == 0 { return false; }
+            *remaining -= 1;
+            match proof {
+                TaskExecutionProof::Elements(elements) => elements.iter().all(|child| within(child, remaining, depth + 1)),
+                TaskExecutionProof::Fields(fields) => fields.values().all(|child| within(child, remaining, depth + 1)),
+                TaskExecutionProof::Task(_, result) | TaskExecutionProof::Awaited(result)
+                    | TaskExecutionProof::Slot(result, _) | TaskExecutionProof::AnyElement(result) => within(result, remaining, depth + 1),
+                _ => true,
+            }
+        }
+        let mut remaining = max_nodes;
+        if within(&self, &mut remaining, 0) { self } else { Self::Unknown }
+    }
+
+    /// Join alternative control-flow paths. A mixed or missing proof is
+    /// unknown, including one path which lacks task provenance.
+    pub fn join(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Task(left_mode, left_result), Self::Task(right_mode, right_result)) if left_mode == right_mode => {
+                Self::Task(left_mode, Box::new((*left_result).join(*right_result)))
+            }
+            (Self::Awaited(left), Self::Awaited(right)) => Self::Awaited(Box::new((*left).join(*right))),
+            (Self::Elements(left), Self::Elements(right)) if left.len() == right.len() => {
+                Self::Elements(left.into_iter().zip(right).map(|(a, b)| a.join(b)).collect())
+            }
+            (Self::Fields(left), Self::Fields(mut right)) if left.keys().eq(right.keys()) => {
+                Self::Fields(left.into_iter().map(|(key, value)| {
+                    let other = right.remove(&key).expect("matching field keys");
+                    (key, value.join(other))
+                }).collect())
+            }
+            (Self::Slot(left, a), Self::Slot(right, b)) if a == b => Self::Slot(Box::new((*left).join(*right)), a),
+            (Self::AnyElement(left), Self::AnyElement(right)) => Self::AnyElement(Box::new((*left).join(*right))),
+            (left, right) if left == right => left,
+            _ => Self::Unknown,
+        }
+    }
+
+    /// Instantiate an interprocedural summary with the exact checked call's
+    /// argument proofs. Bounded recursion keeps malformed summaries closed.
+    pub fn instantiate(&self, arguments: &[Self]) -> Self {
+        fn go(proof: &TaskExecutionProof, arguments: &[TaskExecutionProof], depth: usize) -> TaskExecutionProof {
+            if depth > 128 { return TaskExecutionProof::Unknown; }
+            match proof {
+                TaskExecutionProof::Unknown => TaskExecutionProof::Unknown,
+                TaskExecutionProof::Task(mode, result) => TaskExecutionProof::Task(*mode, Box::new(go(result, arguments, depth + 1))),
+                TaskExecutionProof::Parameter(index) => arguments.get(*index).cloned().unwrap_or(TaskExecutionProof::Unknown),
+                TaskExecutionProof::Awaited(base) => match go(base, arguments, depth + 1) {
+                    TaskExecutionProof::Task(_, result) => *result,
+                    TaskExecutionProof::Unknown => TaskExecutionProof::Unknown,
+                    other => TaskExecutionProof::Awaited(Box::new(other)),
+                },
+                TaskExecutionProof::Slot(base, index) => match go(base, arguments, depth + 1) {
+                    TaskExecutionProof::Elements(elements) => elements.get(*index).cloned().unwrap_or(TaskExecutionProof::Unknown),
+                    TaskExecutionProof::Unknown => TaskExecutionProof::Unknown,
+                    other => TaskExecutionProof::Slot(Box::new(other), *index),
+                },
+                TaskExecutionProof::AnyElement(base) => match go(base, arguments, depth + 1) {
+                    TaskExecutionProof::Elements(elements) => elements.into_iter().reduce(TaskExecutionProof::join).unwrap_or(TaskExecutionProof::Unknown),
+                    TaskExecutionProof::Unknown => TaskExecutionProof::Unknown,
+                    other => TaskExecutionProof::AnyElement(Box::new(other)),
+                },
+                TaskExecutionProof::Elements(elements) => TaskExecutionProof::Elements(
+                    elements.iter().map(|child| go(child, arguments, depth + 1)).collect(),
+                ),
+                TaskExecutionProof::Fields(fields) => TaskExecutionProof::Fields(
+                    fields.iter().map(|(name, child)| (name.clone(), go(child, arguments, depth + 1))).collect(),
+                ),
+            }
+        }
+        go(self, arguments, 0)
+    }
+}
+
 /// Resolve linked callables against the module that declared them, including
 /// generated async resumes and closure bodies. Unlinked source uses its own
 /// module mode. This same judgment serves checking and canonical lowering.
