@@ -77,6 +77,22 @@ write-back order. Such errors should identify the source value and operation,
 not require the programmer to understand SafeWIR carriers. Unsupported compiler
 representations are implementation gaps, not additional language semantics.
 
+### Adversarial review clarification, 2026-09-26
+
+The user-authorized review clarification preserves the selected snapshot,
+view, write-back, and replayable-task contracts. It makes the normal/opt type
+boundary and resource-disposition requirements explicit below. These are target
+requirements, not new implementation evidence or completed acceptance rows.
+
+Single execution, required disposition, and eventual completion are separate
+properties. Resource-owning operations need a checked lifecycle, but that does
+not select a universal must-start Task or remove replayable recipes. Section 12
+records the decisions and migration witnesses required before changing that
+surface. The [implementation handoff](0167-adversarial-review-handoff.md) indexes
+the challenged assumptions and separates current-contract work from deferred
+language choices. Ordinary-mode usability, opt usability, and performance remain
+claims to establish with representative programs and measurements.
+
 ### Runtime authority and executable evidence
 
 Checked canonical SafeWIR is the sole executable language contract. Production
@@ -572,6 +588,13 @@ Generic instantiation, callbacks, trait witnesses, and function values preserve
 these entry contracts. Copy preparation belongs to a normal call site, not a
 second function identity that can leak through a function pointer.
 
+Preparation must establish the preconditions of the actual operation, including
+nested storage when it will be mutated. A unique outer shell is not proof of
+unique children. Normal-side preparation cannot repair a consumed binding,
+escaping call-scoped access, a live disposition obligation, missing callable
+provenance, an authority violation, or an unsupported carrier/layout. None of
+these failures authorizes an implicit await, cleanup effect, or mode switch.
+
 Opt modules may depend on opt modules and authenticated standard-library
 contracts. They do not import arbitrary normal user modules or invoke
 unqualified normal callbacks whose hidden repair behavior would defeat their
@@ -591,6 +614,33 @@ The normal root does not disable an imported module's source checks. Conversely,
 an opt dependency does not opt the normal root into stricter syntax. The runtime
 carrier ABI must preserve these facts without relying on optional inlining,
 specialization, ownership extraction, or bounds-check elimination.
+
+### Normal code using opt-defined types
+
+Execution mode belongs to the declared callable body, not to the module of a
+value's nominal type. Importing an opt-defined type does not opt its normal
+consumer into stricter source rules. It also does not erase qualifications,
+stored obligations, authority, or representation requirements. Invoking an opt
+method, constructor callable, or trait witness uses that callable's entry
+contract; reading or moving admitted data does not itself switch modes.
+
+| Imported value | Required semantics in normal code | Additional requirement at an opt call |
+|---|---|---|
+| Plain copyable record | Ordinary snapshot copying and lawful mutation; preserve nominal identity. | The callee's conventions and ownership preconditions. |
+| Record with unique storage | Preserve affine handles; an independent data copy needs a lawful operation and its own proof. | Prove the root or child actually being mutated; outer uniqueness is insufficient. |
+| Frozen payload | Preserve deep immutability; whole-value transfer or replacement remains legal. | No permission to mutate frozen payloads. |
+| Must-bearing value | Preserve or discharge each live obligation on every structured exit. | A checked consuming/transfer operation; no resource copy as repair. |
+| Eligible immutable view | Preserve its retained root and projection, including nested carriers. | The admitted signature and authenticated carrier; no hidden conversion to owned data. |
+| Stored callback, task, or iterator | Preserve its actual invocation, lifecycle, and execution contract. | Authenticate the behavior used by the callee; the enclosing type's module is not evidence. |
+| Sealed, packed, or existential value | Preserve construction authority, admitted layout, and actual witness identity. | Preserve those same facts through the supported ABI and selected callable. |
+
+This table applies to admitted operations. An opt-only packed declaration does
+not imply that every normal-side operation or external ABI supports that layout.
+Likewise, an opt-defined record containing a function does not authenticate an
+arbitrary function stored in it. Construction, updates, projection, generic
+transport, and trait dispatch must preserve the actual callable proof or refuse
+a use that requires it. Exported contracts must carry sufficient evidence without
+depending on optional specialization or inspecting another module's body.
 
 ### Callback compatibility is an API contract
 
@@ -630,6 +680,12 @@ kernels without becoming opt itself. Conditional callback-effect contracts or
 an exception for ordinary callbacks require a separate language decision; this
 amendment adds neither.
 
+An opt factory is one way to supply compatible behavior, not a usability proof.
+Its captures, dependencies, and returned callables must satisfy their contracts.
+A normal factory returning an opt function or task is still a normal callable.
+Moving input evaluation into a factory can also change capture time, effects,
+and replay behavior; equal result types do not establish an equivalent API.
+
 ## 7. Resources, effects, and suspension
 
 `must type T` makes disposition an obligation. No live instance may be dropped,
@@ -639,6 +695,23 @@ returns from a consuming operation must account for it. Unconditional program
 abort is not an implicit cleanup protocol. `must` propagates through aggregates
 and admitted suspension frames; callable capture restrictions are specified
 below. No implicit destructor or finalizer is added.
+
+Recursive stored-resource classification must be combined with control-flow
+transfer and checked consuming operations. For a must-bearing `Ticket`,
+discarding the possible error of `Result(Int, Ticket)` with `?? 0` is rejected.
+For `Result(Ticket, String)`, fallback can instead transfer the success Ticket
+or construct one on the error path while dropping only the String; the resulting
+Ticket still needs disposition. Phantom arguments and callable signatures alone
+do not store their mentioned resources. A nominal must value does not become
+discardable because its fields happen to be empty. Any discharge based on
+absence of a structural payload needs a checked rule, not a generic erasure or
+an assumed exemption for an empty container.
+
+Transfer into deferred work preserves the obligation; it does not prove that
+the work ran. Converting an owner into raw state, a callback, a task, an error,
+or a generic wrapper cannot make a pending obligation disappear. Require checked
+storage and consuming/disposition paths or reject the operation. An outer must
+wrapper does not by itself authorize resource captures in an opaque callable.
 
 `pure fn(A) -> B` forbids externally observable authority effects and caller
 mutation, including `var` write-back. Immutable view reads are permitted. It
@@ -703,6 +776,12 @@ adapters. A task result type alone does not establish this property. This extend
 the existing transitive callable rule to deferred execution without adding a
 surface effect qualifier or granting a scheduler blanket authority to erase it.
 
+The same rule covers generated resume and cancellation/disposition paths.
+Normal orchestration may drive opt work and perform normal work in its own
+body; it cannot delegate an arbitrary normal callback to an opt operation by
+placing it behind a scheduler or cleanup adapter. Unrelated normal tasks on the
+same cooperative VM do not change an opt body's declaration mode.
+
 ```text
 // Accepted target: replay observes the captured snapshot twice, producing 22.
 async fn size(items: &List(Int)) -> Int:
@@ -735,6 +814,15 @@ rejected in both modes. An error result or an unexecuted cleanup callback does
 not by itself discharge an obligation. This selects no new cleanup syntax or
 single-use task type.
 
+Cancellation safety does not promise termination. A task may fail to observe a
+request or wait on a host operation that cannot be cancelled. Nor does an error
+from cleanup authorize abandoning other live obligations. A recoverable deadlock
+or cancellation result must preserve or discharge outstanding frame, child-result,
+and message obligations; destroying them and returning an ordinary error is
+invalid. Whole-program abort is a distinct boundary with no implicit language
+cleanup guarantee. These constraints apply in both modes and across their call
+boundary, independently of the future cancellation API selected in section 12.
+
 ### Scheduling and suspension boundaries
 
 The proposed RFC-0161 changes to must-start Task values, scoped Child types,
@@ -743,7 +831,9 @@ by this consolidation. They remain a separate deferred surface decision; their
 implementation/evidence ledger is preserved. Adopting them must amend this
 section first. Typed-runtime representation work that preserves the selected
 semantics remains independent. This makes the quiescence choice explicit rather
-than treating both closure models as simultaneously normative.
+than treating both closure models as simultaneously normative. The lifecycle
+review in section 12 is required before such an amendment; it is not permission
+to implement a second Task meaning behind the unchanged public contract.
 
 `gen fn ... -> Iter(T)` and `yield` remain. A generator resumes an owned frame;
 it never replays earlier body effects to find the next yield. `Iter(T)` yields
@@ -761,6 +851,14 @@ parameters cannot span suspension. Unsupported carriers reject rather than
 erasing a view.
 Cancellation must not silently abandon `must` captures: require a checked
 cleanup/transfer path, or reject creation of the frame.
+
+The same obligation applies when an iterator is abandoned or an adapter stops
+early. A resource-bearing frame must remain obligation-visible and have a checked
+disposition or transfer path; the yielded element type alone cannot erase it.
+A synchronous consumer cannot silently acquire an await or arbitrary cleanup
+effects. This selects no new close method, asynchronous iterator syntax, or
+implicit destructor. A resource composition lacking an admitted disposition
+protocol is rejected; ordinary data iterators do not thereby become must-bearing.
 
 ## 8. Regions, layout, reflection, and libraries
 
@@ -927,10 +1025,11 @@ production code or performance result changes here.
 
 ## 11. Composition clarification follow-through
 
-The 2026-09-25 decisions are accepted target rules, with implementation and
-semantic evidence pending. Existing broad row labels do not establish these
-additional cases. Keep changes to the implementation and current-behavior spec
-separate from this decision record until their behavior is established.
+The 2026-09-25 and 2026-09-26 clarifications are accepted target rules, with
+implementation and semantic evidence pending. Existing broad row labels do not
+establish these additional cases. Keep changes to the implementation and
+current-behavior spec separate from this decision record until their behavior is
+established.
 
 | Contract | Required representative acceptance and refusal | Ledger rows |
 |---|---|---|
@@ -940,9 +1039,64 @@ separate from this decision record until their behavior is established.
 | Higher-order boundary | Admit an opt-compatible callback from a normal caller; reject incompatible provenance through direct, generic, trait, and indirect interfaces. | I, J |
 | Deferred execution | Replay a captured ordinary snapshot independently; reject affine or borrowed recipe captures and loss of execution-mode metadata. | J, K |
 | Cancellation | Release ordinary view roots; require disposition for every live `must` obligation or reject the suspension. | K |
+| Nested ownership preparation | Normal callers establish the actual mutated child's preconditions while preserving old snapshots; opt callers supply proof or explicit materialization. Reject root-only proofs for shared children. | E, H, I, P |
+| Imported types | Normal use of an opt-defined plain record retains normal snapshot semantics; unique, frozen, must, view, sealed, and layout contracts survive import. Calling a method uses its declared mode. | E, F, G, I, J, K, L, M |
+| Stored behavior | Preserve authenticated callbacks/tasks through admitted constructors, updates, aggregates, generics, and witnesses; reject behavior inferred only from the containing type's module or result type. | I, J, K |
+| Disposition through exits | Account for resource-bearing errors, deferred owners, completed results, and abandoned generator remainders; reject any path that loses an obligation. | J, K |
 
 Use shared recursive type/storage judgments and dataflow rules for these
 obligations. The table calls for representative semantic witnesses, not separate
 compiler implementations or exhaustive concrete-type tests for every nesting.
 Neither the table nor this documentation change claims a completed acceptance
 row, an allocation bound, or measured performance.
+
+Exercise the applicable cases in normal code, opt code, normal-to-opt calls, and
+normal consumers of opt-defined types. Include source-linked boundaries and
+separately compiled interfaces where admitted; missing or incompatible metadata
+must refuse the affected use. Unsupported carriers remain implementation gaps.
+Use independent values, diagnostics, ordered effects, and ownership/suspension
+invariants with admitted unoptimized Wasm and focused structural checks.
+Optimized execution may corroborate them; it cannot provide missing semantics.
+
+## 12. Deferred resource lifecycle decisions
+
+This section constrains a future amendment. It does not replace the replayable
+Task, quiescent closure, or iterator surface selected in section 7. Existing
+resource-loss paths still violate the current contract and must be fixed or
+rejected; their safety is not deferred with the new APIs.
+
+Before replacing Task, compare a universal owned single-execution Task with a
+distinct owned operation alongside replayable recipes. Eligible snapshot replay
+is coherent. Affinity alone does not require starting a cold operation whose
+captures can lawfully be abandoned. For a proposed resource-owning operation,
+its printed result type alone does not establish that its captures can be dropped.
+A uniform must-dispose type with checked abandonment and a type exposing
+conditional obligations have different generic, export, and usability costs.
+Select the public contract explicitly; do not introduce a universal discard
+operation or implicit execution.
+
+| Decision | Required answer and adversarial witness |
+|---|---|
+| Cold operations and factories | Specify capture-time evaluation, abandonment/recovery, and one-time transfer. Compare an unused data-only operation with one owning a Ticket. Show that a factory preserves snapshots and effects and cannot transfer one unique capture repeatedly. |
+| Owned execution frames | Specify checked capture storage, activation, suspension, terminal state, and export metadata. Ordinary reusable/once closures cannot hide must captures merely because Task is nominally must-bearing. |
+| Structured scopes and join | Account for cold operations, running children, and completed must-bearing results when a sibling fails. Specify handle escape, deterministic exit order, `var` commitment, and pending cleanup's effect on tail calls. Completion-only join can block where quiescent join returned. |
+| Cancellation and deadlock | Separate request, observation, cleanup failure, result recovery, and terminal completion. State the behavior of uncooperative tasks and uncancellable host operations. A recoverable failure cannot erase suspended obligations. |
+| Channels and selection | Separate admission-close from final queue disposal. Account for buffered resources with no receiver. Define reserve/commit/recovery so exactly one of delivery or payload recovery occurs, with no duplicated argument effects or automatic resurrection of a consumed binding. Choose send conventions for copyable and affine payloads explicitly. |
+| Resource generators | Specify ownership of the remainder on early exit, adapter abandonment, and cleanup requiring suspension. Select synchronous/asynchronous disposition explicitly without imposing resource obligations on ordinary data iterators. |
+| Modes, types, and metadata | Preserve the section 6 boundary through callbacks, methods, traits, generics, and generated cleanup. Include a normal callback stored in an opt-defined type and a normal factory returning opt work; neither gains opt provenance from its container/result. |
+| Migration and evidence | Account for changed collection APIs, closure captures, retained-view eligibility, error propagation, and ABI. Universal must Tasks propagate obligations into ordinary aggregates. Compare representative normal and opt programs before claiming the usability goals are met. |
+
+These answers must agree across all four contexts in section 11. Test the selected
+semantics against independent expected results and admitted unoptimized Wasm;
+test ownership and authority at their checked boundaries. Performance claims
+require measurements including normal-side preparation, allocation, and copies.
+Source ownership alone proves neither allocation freedom nor a speedup.
+
+The current resource-root view restriction and transitive opt callback rule
+remain selected. Their usability costs require representative library examples:
+data inside a resource-bearing root may need separate storage or explicit lawful
+materialization, and moving callback factories to opt modules may require moving
+their dependencies too. Relaxing either rule or adding a local opt-callable
+spelling requires an explicit amendment with preserved ownership and provenance.
+Independently valid implementation of the current contract can proceed while
+these additional language choices are evaluated.
