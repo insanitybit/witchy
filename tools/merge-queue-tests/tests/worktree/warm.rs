@@ -580,6 +580,22 @@ fn cargo_shim_keeps_isolated_and_native_artifacts_in_separate_targets() {
         "shared-target learned=1\n"
     );
 
+    // A pure package participating in a native selection does not make the
+    // combined graph pure. Keep its native artifacts out of the sidecar.
+    for args in [
+        vec!["nextest", "list", "-p", "witchy-lower", "-p", "witchy",
+            "--features", "witchy-wir/native"],
+        vec!["nextest", "list", "--package=witchy", "--package=witchy-types"],
+        vec!["test", "-p", "witchy-lower", "-p", "witchy-wir",
+            "--features", "witchy-wir/native"],
+        vec!["check", "-p", "witchy-types", "--workspace"],
+    ] {
+        let mixed = run(&args);
+        assert!(mixed.status.success(), "{}", String::from_utf8_lossy(&mixed.stderr));
+        assert_eq!(String::from_utf8_lossy(&mixed.stdout), "shared-target learned=1\n",
+            "mixed native graph was routed into the pure sidecar: {args:?}");
+    }
+
     let explicit = run(&["build", "-p", "witchy-lower", "--target-dir", "chosen"]);
     assert!(explicit.status.success(), "{}", String::from_utf8_lossy(&explicit.stderr));
     assert_eq!(

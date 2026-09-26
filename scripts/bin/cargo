@@ -246,7 +246,8 @@ for arg in "$@"; do
     case "$arg" in --target-dir | --target-dir=*) explicit_target_arg=1 ;; esac
 done
 pure_graph_target=0
-if [ "$isolated_graph_selected" -eq 1 ] && [ "$explicit_target_arg" -eq 0 ] \
+if [ "$isolated_graph_selected" -eq 1 ] && [ "$native_owner_selected" -eq 0 ] \
+    && [ "$explicit_target_arg" -eq 0 ] \
     && [ -z "${CARGO_BUILD_TARGET_DIR:-}" ]; then
     pure_graph_target=1
     case "$effective_target" in
