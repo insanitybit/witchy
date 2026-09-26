@@ -1,6 +1,12 @@
 path	line	category	callee	parameter	root
 benchmarks/dict_count.witchy	9	expression-position-mutator	dict.insert__Int__Int	-	-
 examples/dice/src/dice.witchy	14	expression-position-mutator	prng.Rng__next_below	-	-
+projects/glamour/src/glamour.witchy	574	expression-position-mutator	dict.insert__String__Int	-	-
+projects/glamour/src/glamour.witchy	580	expression-position-mutator	dict.insert__String__Int	-	-
+projects/glamour/src/glamour.witchy	496	expression-position-mutator	dict.insert__Int__Int	-	-
+projects/glamour/src/glamour.witchy	504	expression-position-mutator	dict.insert__Int__Bool	-	-
+projects/glamour/src/glamour.witchy	511	expression-position-mutator	dict.insert__Int__Int	-	-
+projects/glamour/src/glamour.witchy	545	expression-position-mutator	dict.insert__Int__Bool	-	-
 std/dict.witchy	34	auxiliary-result-discard	dict.insert	-	-
 std/dict.witchy	40	auxiliary-result-discard	dict.__insert_extract	-	-
 std/dict.witchy	110	auxiliary-result-discard	dict.remove	-	-
@@ -13,15 +19,16 @@ book/src/mutating-methods.md#block-1	2	auxiliary-result-discard	list.pop	-	-
 book/src/mutating-methods.md#block-4	3	expression-position-mutator	dict.insert__String__Int	-	-
 book/src/mutating-methods.md#block-4	4	expression-position-mutator	dict.insert__String__Int	-	-
 book/src/mutating-methods.md#block-4	5	expression-position-mutator	dict.remove__String__Int	-	-
+spec/language.md#block-17	7	expression-position-mutator	main.bump	-	-
 
-witchy-files	3
-markdown-blocks	7
-checked	10
+witchy-files	4
+markdown-blocks	51
+checked	55
 rejected	0
-var-declarations	4
-resolved-var-calls	18
+var-declarations	11
+resolved-var-calls	166
 mechanical-self-reassignment	0
-expression-position-mutator	9
+expression-position-mutator	16
 immutable-var-argument	0
 temporary-var-argument	0
 auxiliary-result-discard	5
