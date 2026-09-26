@@ -167,10 +167,10 @@ fn gate_nextest_example_tests_only_is_not_workspace() {
 
 #[test]
 fn gate_nextest_misc_module_runs_only_that_module() {
-    let module = "rfc0167_resource_composition";
+    let module = "rfc0167_dict_root_view";
     let output = gate_nextest(&[
         "crates/witchy-types/src/typeck.rs",
-        "tests/misc/rfc0167_resource_composition.rs",
+        "tests/misc/rfc0167_dict_root_view.rs",
     ]);
     assert!(
         output.contains("-p witchy --test typeck --test misc"),
@@ -1796,6 +1796,26 @@ fn script_rules_gate_on_the_binary_their_focused_check_names() {
             "{path} did not select {binary}, the binary that covers it: {output}",
         );
     }
+}
+
+#[test]
+fn check_script_gate_runs_only_its_direct_behavior_modules() {
+    let direct = gate_nextest(&[
+        "scripts/check.sh",
+        "tools/merge-queue-tests/tests/merge_queue/gate_behavior/state_and_gate.rs",
+    ]);
+    assert!(direct.contains("--test merge_queue"), "check gate lost its binary: {direct}");
+    assert!(
+        direct.contains("test(/^gate_behavior::(state_and_gate|preflight_reuse)::/)"),
+        "check gate still selected unrelated coordinator fixtures: {direct}",
+    );
+
+    let mixed = gate_nextest(&["scripts/check.sh", "scripts/merge-queue.sh"]);
+    assert!(mixed.contains("--test merge_queue"), "mixed queue gate lost its binary: {mixed}");
+    assert!(
+        !mixed.contains("test(/^gate_behavior::(state_and_gate|preflight_reuse)::/)"),
+        "a merge-queue core edit was unsafely narrowed: {mixed}",
+    );
 }
 
 

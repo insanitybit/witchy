@@ -682,6 +682,12 @@ if cargo nextest --version >/dev/null 2>&1; then
     fi
     queue_infra_cmd=(cargo nextest run -p merge-queue-tests "${queue_infra_targets[@]}" -j "$queue_infra_jobs" \
         --ignore-default-filter --profile nightly)
+    # A queue-only serialized selection can carry a fail-safe module filter
+    # from test-for-paths.sh. Product expressions are never forwarded here:
+    # mixed diffs clear the narrow filter before the mapper emits it.
+    if [ "$main_queue_only" -eq 1 ] && [ -n "$gate_nextest_expr" ]; then
+        queue_infra_cmd+=(-E "$gate_nextest_expr")
+    fi
     repo_contracts_cmd=(cargo nextest run -p repo-tests --test repo_hygiene)
     # Keep the long coordinator-reexec case and the sub-second timing-accounting
     # case in the complete landing shard, not this fast edit sample. On
@@ -692,7 +698,7 @@ if cargo nextest --version >/dev/null 2>&1; then
     # remain covered before merge without making every queue edit depend on
     # wall-clock outliers.
     queue_infra_edit_cmd=("${queue_infra_cmd[@]}" -E \
-        'test(/^(coordinator::(a_code_submission_without_a_receipt_still_warns|a_red_remembers_its_failing_tests_for_the_next_attempt|mixed_failure_targets_keep_the_broad_preflight_build_scope|concurrent_daemon_starts_create_exactly_one_coordinator|concurrent_dependency_updates_cannot_commit_opposite_cycle_edges|queue_substrate_change_requests_the_isolated_fixture_shard|ready_queue_items_run_before_post_merge_worktree_sweep|submit_journals_whether_a_presubmit_receipt_covers_the_tip|submit_wrapper_changes_are_presubmit_eligible_queue_infrastructure|sweep_batches_historical_branch_pruning|sweep_caches_merged_history_but_keeps_queue_admission_live|sweep_defers_branch_pruning_while_ready_work_waits|sweep_skips_only_unchanged_superseded_refs_already_swept|sweep_yields_when_ready_work_arrives_during_branch_pruning)|gate_behavior::preflight_reuse::(workspace_preflight_narrows_its_target_and_partitions_the_main_run|invalid_or_missing_preflight_target_fails_safe_to_the_workspace|scoped_preflight_keeps_the_complete_main_selection)|gate_behavior::state_and_gate::(gate_report_is_read_only_and_aggregates_batches_failures_and_phases|state_path_prefers_fresh_canonical_layout_and_preserves_legacy_until_cutover|unrelated_red_batch_evicts_the_culprit_and_rebatches_the_rest)|packaged_source_surfaces_run_the_unsafe_input_probe_first)$/)')
+        'test(/^(coordinator::(a_code_submission_without_a_receipt_still_warns|a_red_remembers_its_failing_tests_for_the_next_attempt|mixed_failure_targets_keep_the_broad_preflight_build_scope|concurrent_daemon_starts_create_exactly_one_coordinator|concurrent_dependency_updates_cannot_commit_opposite_cycle_edges|queue_substrate_change_requests_the_isolated_fixture_shard|ready_queue_items_run_before_post_merge_worktree_sweep|submit_journals_whether_a_presubmit_receipt_covers_the_tip|submit_wrapper_changes_are_presubmit_eligible_queue_infrastructure|sweep_batches_historical_branch_pruning|sweep_caches_merged_history_but_keeps_queue_admission_live|sweep_defers_branch_pruning_while_ready_work_waits|sweep_skips_only_unchanged_superseded_refs_already_swept|sweep_yields_when_ready_work_arrives_during_branch_pruning)|gate_behavior::preflight_reuse::(workspace_preflight_narrows_its_target_and_partitions_the_main_run|invalid_or_missing_preflight_target_fails_safe_to_the_workspace|scoped_preflight_keeps_the_complete_main_selection)|gate_behavior::state_and_gate::(gate_report_is_read_only_and_aggregates_batches_failures_and_phases|state_path_prefers_fresh_canonical_layout_and_preserves_legacy_until_cutover|unrelated_red_batch_evicts_the_culprit_and_rebatches_the_rest)|packaged_source_surfaces_run_the_unsafe_input_probe_first|check_script_gate_runs_only_its_direct_behavior_modules)$/)')
 else
     preflight_cmd=()
     # Plain cargo test runs integration binaries sequentially, so the queue

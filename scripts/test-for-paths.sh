@@ -104,6 +104,19 @@ gate_need_conformance=0
 gate_need_std_roots=0
 gate_pure_wir=0
 gate_native_wir=0
+# `check.sh` is exercised directly by state_and_gate and preflight_reuse. When
+# a diff is confined to the script and its primary fixture, running unrelated
+# coordinator/daemon fixtures added 178 seconds to a gate whose compilation
+# took 10 seconds. Any third path clears the filter and falls back to the
+# complete selected binary.
+gate_queue_expr='test(/^gate_behavior::(state_and_gate|preflight_reuse)::/)'
+for gate_queue_path in "${paths[@]}"; do
+    case "$gate_queue_path" in
+        scripts/check.sh | \
+        tools/merge-queue-tests/tests/merge_queue/gate_behavior/state_and_gate.rs) ;;
+        *) gate_queue_expr=""; break ;;
+    esac
+done
 add_pkg() {
     local p="$1" x
     for x in ${gate_pkgs[0]+"${gate_pkgs[@]}"}; do [ "$x" = "$p" ] && return; done
@@ -192,6 +205,7 @@ emit_gate_nextest() {
             args="${args:+$args }--test $t"
         done
         printf '%s\n' "$args"
+        [ -z "$gate_queue_expr" ] || printf '%s\n' "$gate_queue_expr"
         return 0
     fi
     for p in ${gate_pkgs[0]+"${gate_pkgs[@]}"}; do

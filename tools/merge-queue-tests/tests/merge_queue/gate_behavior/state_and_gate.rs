@@ -637,6 +637,10 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
             "WITCHY_GATE_NEXTEST",
             "--test merge_queue --test test_for_paths --test worktree",
         )
+        .env(
+            "WITCHY_GATE_NEXTEST_EXPR",
+            "test(/^gate_behavior::(state_and_gate|preflight_reuse)::/)",
+        )
         .env("FAKE_CARGO_ARGS_FILE", &cargo_args_file)
         .env("WITCHY_FAILFAST_POLL", "0.05")
         .env("WITCHY_STAGE_HEARTBEAT_INTERVAL", "0")
@@ -660,6 +664,13 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
             .lines()
             .any(|line| line.starts_with(override_queue_prefix)),
         "queue-only selection did not honor the configured bounded width: {queue_only_args}",
+    );
+    assert!(
+        queue_only_args.lines().any(|line| {
+            line.starts_with(override_queue_prefix)
+                && line.contains("-E test(/^gate_behavior::(state_and_gate|preflight_reuse)::/)")
+        }),
+        "queue-only selection dropped its mapper filter: {queue_only_args}",
     );
     fs::write(&cargo_args_file, "").expect("clear fake cargo arguments");
     let worktree_only = check_sh(&root, &["--fast"])
