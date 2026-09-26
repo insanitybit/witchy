@@ -562,7 +562,7 @@ fn main() -> Int:
     total
 "#,
             "immutable List iteration remains fail-closed until view receivers are supported",
-            "expected `List(?)`, found `&List(Point)`",
+            "view storage has no recursive checked snapshot proof",
         );
     }
 

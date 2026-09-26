@@ -3461,7 +3461,7 @@ impl Checker {
     /// prevents a generic body from manufacturing `&a` and later specializing
     /// `a` to authority, must-consume, or affine storage.
     fn admit_view_payload(&mut self, ty: &Ty, context: &str) -> Result<(), TypeError> {
-        use witchy_canonical_source::storage::{SnapshotRefusal, snapshot_eligibility};
+        use witchy_canonical_source::storage::{SnapshotRefusal, StoragePlan, snapshot_eligibility};
         fn collect(checker: &Checker, ty: &Ty, variables: &mut HashSet<u32>) {
             match checker.resolve(ty) {
                 Ty::Var(variable) => {
@@ -3516,6 +3516,12 @@ impl Checker {
                 SnapshotRefusal::UnprovedStorage => "view storage has no recursive checked snapshot proof",
             };
             return terr(format!("{context} cannot form an immutable view: {explanation}"));
+        }
+        let view = ast::Type::Qualified(ast::TypeQual::View, Box::new(source));
+        if !matches!(StoragePlan::classify(&view, &self.canonical_definitions, |_| Some(0)),
+            StoragePlan::RootedView(_))
+        {
+            return terr(format!("{context} cannot form an immutable view without an authenticated storage carrier"));
         }
         Ok(())
     }

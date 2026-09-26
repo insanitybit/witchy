@@ -1005,11 +1005,9 @@ fn type_requires_opaque_owner(
     // deliberately to the installed opaque carriers, the direct `&Int` place
     // owner and the `&[T]` rooted-slice owners; token-carried whole-root
     // views occupy an ordinary managed field.
-    if matches!(ty, Type::Qualified(ast::TypeQual::View, inner)
-        if matches!(inner.unqualified(), Type::Named(name, arguments)
-            if name == "Int" && arguments.is_empty()))
-        || CarrierElement::from_view_type_with_definitions(ty, definitions).is_some()
-    {
+    if matches!(StoragePlan::classify(ty, definitions, |_| Some(0)),
+        StoragePlan::RootedView(RootedViewStorage::ScalarCell(_)
+            | RootedViewStorage::RetainedProjection(_))) {
         return true;
     }
     if witchy_canonical_source::capabilities::representation(ty, definitions).is_some() {
@@ -1137,15 +1135,10 @@ fn type_has_opaque_owner_membership(
     closure_has: impl Fn(&Type) -> bool,
     aggregate_has: impl Fn(&Type) -> bool,
 ) -> bool {
-    if matches!(ty, Type::Qualified(ast::TypeQual::View, inner)
-        if matches!(inner.unqualified(), Type::Named(name, arguments)
-            if name == "Int" && arguments.is_empty()))
-    {
-        return true;
-    }
-    // A captured `&[T]` retains its rooted-slice owner, one family per
-    // admitted element; the carrier is never unpacked into its root.
-    if CarrierElement::from_view_type_with_definitions(ty, definitions).is_some() {
+    // Scalar cells and projected slices carry authenticated opaque owners.
+    if matches!(StoragePlan::classify(ty, definitions, |_| Some(0)),
+        StoragePlan::RootedView(RootedViewStorage::ScalarCell(_)
+            | RootedViewStorage::RetainedProjection(_))) {
         return true;
     }
     if matches!(ty.unqualified(), Type::Fn(..)) {

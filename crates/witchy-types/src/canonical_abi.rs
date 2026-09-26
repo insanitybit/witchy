@@ -487,12 +487,15 @@ pub fn rooted_view_from_ast(
     if !within_canonical_abi_ast_budget(payload) {
         return Err(CanonicalAbiError::Unsupported("rooted view payload exceeds canonical ABI bounds".into()));
     }
-    witchy_canonical_source::rooted_view::RootedViewStorage::classify(
-        payload,
+    let view = Type::Qualified(ast::TypeQual::View, Box::new(payload.clone()));
+    match witchy_canonical_source::storage::StoragePlan::classify(
+        &view,
         &context.definitions,
         |name| context.declares_type(name).then(|| context.nominal(name).ok()).flatten(),
-    )
-    .and_then(|plan| plan.canonical_reference())
+    ) {
+        witchy_canonical_source::storage::StoragePlan::RootedView(plan) => plan.canonical_reference(),
+        _ => None,
+    }
     .ok_or_else(|| CanonicalAbiError::Unsupported(
         "rooted view payload has no admitted authenticated carrier".into(),
     ))

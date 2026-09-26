@@ -255,7 +255,14 @@ pub enum SharedSliceField {
 /// Structural identity of a checked rooted slice. This is independent of a
 /// candidate's owner ID and of how a source type is printed.
 pub fn rooted_slice_carrier(source_type: &witchy_syntax::ast::Type) -> Option<witchy_canonical_source::carrier::CarrierElement> {
-    witchy_canonical_source::carrier::CarrierElement::from_view_type(source_type)
+    match witchy_canonical_source::storage::StoragePlan::classify(
+        source_type, &std::collections::BTreeMap::new(), |_| None,
+    ) {
+        witchy_canonical_source::storage::StoragePlan::RootedView(
+            witchy_canonical_source::rooted_view::RootedViewStorage::RetainedProjection(element)
+        ) => Some(element),
+        _ => None,
+    }
 }
 
 /// Match every element's physical storage and ownership recursively. An owned

@@ -674,13 +674,6 @@ pub fn is_inline_scalar_view_payload(ty: &Type) -> bool {
             crate::rooted_view::RootedViewStorage::InlineScalar(_)))
 }
 
-/// A whole `&List(T)` view (`ListRoot`) uses the recursive checked carrier
-/// grammar. Physical ownership and layout still require independent SafeWIR
-/// validation; this source predicate alone grants no authority.
-pub fn is_list_root_payload(ty: &Type) -> bool {
-    crate::carrier::CarrierElement::from_list_root_payload_type(ty).is_some()
-}
-
 /// A whole view of this value is a `RecordRoot`: the retained aggregate
 /// object is the snapshot.  Admitted for a declared user record or sum, or
 /// builtin `Option`/`Result`, with a non-packed heap shape that holds no view
@@ -761,9 +754,10 @@ fn view_carrier_plan_at(
     if let Some(plan) = crate::rooted_view::OwnerCarriedViewPlan::classify(ty, definitions) {
         if plan.admitted_aggregate_field() { return Some(ViewCarrierPlan::Direct(plan)); }
     }
-    if let Type::Qualified(witchy_syntax::ast::TypeQual::View, payload) = ty
-        && let Some(plan @ crate::rooted_view::RootedViewStorage::RetainedRoot(_)) =
-            crate::rooted_view::RootedViewStorage::classify(payload, definitions, |_| Some(0))
+    if matches!(ty, Type::Qualified(witchy_syntax::ast::TypeQual::View, _))
+        && let crate::storage::StoragePlan::RootedView(
+            plan @ crate::rooted_view::RootedViewStorage::RetainedRoot(_)
+        ) = crate::storage::StoragePlan::classify(ty, definitions, |_| Some(0))
     {
         return Some(ViewCarrierPlan::DirectRetainedRoot(plan));
     }

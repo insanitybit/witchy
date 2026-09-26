@@ -81,8 +81,11 @@ lowering preserves the `.owned()` site for canonical lowering. Focused checker
 and existing owned/slice materialization smoke cases pass, but generic and
 indirect callback result flow, source async/generator rewrites, and independent
 admitted-Wasm plus zero-leak evidence remain open. This is implemented but
-unverified for rows G/J/P. Resource-view eligibility still needs a shared proof
-for lawful callable snapshots without admitting retained resource obligations;
+unverified for rows G/J/P. Checker view formation, canonical ABI identity,
+lowerer view/root selection, layout selection, and SafeWIR owner-family
+correspondence now consume the same typed storage plan. The shared stored-field
+snapshot proof rejects retained resource obligations; lawful closure-capture
+snapshots still need integration with checked capture witnesses;
 normal-to-opt copy preparation and transitive callback contracts require
 cross-boundary representative checks; task execution-mode provenance and
 per-execution ownership have not been reconciled through generic and indirect

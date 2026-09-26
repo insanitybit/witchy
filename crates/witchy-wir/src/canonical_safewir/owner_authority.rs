@@ -50,9 +50,12 @@ pub(super) fn validate<S: ModuleStage>(
                 continue;
             }
             OwnerFamilySource::SharedReference(source_type) => {
-                let checked = witchy_canonical_source::carrier::CarrierElement::from_view_type_with_definitions(
-                    source_type, &records,
-                );
+                let checked = match source.storage_plan(source_type) {
+                    witchy_canonical_source::storage::StoragePlan::RootedView(
+                        witchy_canonical_source::rooted_view::RootedViewStorage::RetainedProjection(element)
+                    ) => Some(element),
+                    _ => None,
+                };
                 if family.slice_carrier != checked
                     || checked.as_ref().is_some_and(|element| !source.admits_slice_carrier(element)) {
                     return Err(CandidateAbiBindingError::MissingCanonicalLayouts);
@@ -359,12 +362,11 @@ pub(super) fn validate<S: ModuleStage>(
     Ok(())
 }
 
-fn is_shared_int_reference(source_type: &witchy_syntax::ast::Type) -> bool {
-    matches!(source_type,
-        witchy_syntax::ast::Type::Qualified(
-            witchy_syntax::ast::TypeQual::View, inner,
-        ) if matches!(inner.as_ref(), witchy_syntax::ast::Type::Named(name, arguments)
-                if name == "Int" && arguments.is_empty()))
+fn is_shared_scalar_cell_reference(source_type: &witchy_syntax::ast::Type) -> bool {
+    matches!(witchy_canonical_source::storage::StoragePlan::classify(
+        source_type, &BTreeMap::new(), |_| None,
+    ), witchy_canonical_source::storage::StoragePlan::RootedView(
+        witchy_canonical_source::rooted_view::RootedViewStorage::ScalarCell(_)))
 }
 
 fn is_rooted_int_slice_reference(source_type: &witchy_syntax::ast::Type) -> bool {
@@ -394,7 +396,7 @@ fn validate_shared_reference_family(
     layouts: &crate::layout::LayoutInterner,
 ) -> Result<(), CandidateAbiBindingError> {
     let refuse = || CandidateAbiBindingError::MissingCanonicalLayouts;
-    if !(is_shared_int_reference(source_type) || family.slice_carrier.is_some())
+    if !(is_shared_scalar_cell_reference(source_type) || family.slice_carrier.is_some())
         || family.constructors.is_empty()
     {
         return Err(refuse());
@@ -415,7 +417,7 @@ fn validate_shared_reference_family(
             let CaptureStorage::EnvironmentField(index_field) = index_capture.storage else { return Err(refuse()) };
             if index_capture.value_type != ValueType::Size
                 || index_capture.transfer != CaptureTransfer::CopyScalar
-                || !is_shared_int_reference(source_type)
+                || !is_shared_scalar_cell_reference(source_type)
                 || slice.0 != 0 || index.0 != 1 || slice_field != 2 || !kinds.insert(3_u8)
                 || !families.iter().any(|candidate| {
                     candidate.owner_type == slice_type
@@ -437,7 +439,7 @@ fn validate_shared_reference_family(
         let physical = layouts.resolve_nominal(root_layout).map_err(|_| refuse())?;
         match kind {
             SharedReferenceConstructor::WholeIntCell { root } => {
-                if !is_shared_int_reference(source_type) || root.0 != 0 || !kinds.insert(0_u8)
+                if !is_shared_scalar_cell_reference(source_type) || root.0 != 0 || !kinds.insert(0_u8)
                     || !matches!(layouts.get(physical).map(|descriptor| descriptor.kind()),
                         Some(crate::layout::LayoutKind::Scalar(crate::layout::ScalarKind::Int)))
                 {
@@ -451,7 +453,7 @@ fn validate_shared_reference_family(
                 let Some(crate::layout::LayoutKind::PackedList { element, rc: crate::layout::RcHeader::Required }) =
                     layouts.get(physical).map(|descriptor| descriptor.kind())
                 else { return Err(refuse()) };
-                if !is_shared_int_reference(source_type) || root.0 != 0 || index.0 != 1 || !kinds.insert(1_u8)
+                if !is_shared_scalar_cell_reference(source_type) || root.0 != 0 || index.0 != 1 || !kinds.insert(1_u8)
                     || !matches!(layouts.get(*element).map(|descriptor| descriptor.kind()),
                         Some(crate::layout::LayoutKind::Scalar(crate::layout::ScalarKind::Int)))
                 {

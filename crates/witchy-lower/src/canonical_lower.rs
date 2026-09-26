@@ -105,7 +105,7 @@ impl std::ops::Deref for ClosureValueLayouts {
 
 impl ClosureValueLayouts {
     fn opaque_type(&self, source: &Type, definitions: &BTreeMap<String, TypeDef>) -> Option<GcTypeId> {
-        if rooted_view_inner(source).is_some_and(is_direct_shared_int) {
+        if rooted_view_inner(source).is_some_and(is_scalar_cell_view_payload) {
             return self.shared_int_reference;
         }
         if let Some(element) = rooted_view_inner(source)
@@ -119,7 +119,7 @@ impl ClosureValueLayouts {
             Type::Named(name, args) if name == "List" && args.len() == 1 => {
                 // A list of `&Int` views is an owner list of the shared place
                 // family: each element is one retained, authenticated carrier.
-                if rooted_view_inner(&args[0]).is_some_and(is_direct_shared_int) {
+                if rooted_view_inner(&args[0]).is_some_and(is_scalar_cell_view_payload) {
                     return self.shared_int_reference.map(|owner| GcTypeId::new(owner.get() + 1));
                 }
                 if matches!(args[0].unqualified(), Type::Fn(..)) {
@@ -2850,8 +2850,8 @@ fn is_callable_reference_carrier(ty: &Type) -> bool {
             Type::Named(name, arguments) if name == "String" && arguments.is_empty());
     let rooted_view = matches!(parameters.as_slice(), [parameter]
         if matches!(conventions.as_slice(), [] | [Convention::Let])
-            && rooted_view_inner(parameter).is_some_and(is_direct_shared_int))
-        && rooted_view_inner(result).is_some_and(is_direct_shared_int);
+            && rooted_view_inner(parameter).is_some_and(is_scalar_cell_view_payload))
+        && rooted_view_inner(result).is_some_and(is_scalar_cell_view_payload);
     exclusive_write_back || rooted_view
 }
 
@@ -3202,7 +3202,7 @@ fn is_direct_exclusive_owned_object(ty: &Type) -> bool {
 /// the broad direct-reference predicate: the declaration body, access loan,
 /// and result projection still have to name this field exactly.
 fn is_projected_exclusive_leaf(ty: &Type) -> bool {
-    is_direct_exclusive_owned_object(ty) || is_direct_shared_int(ty)
+    is_direct_exclusive_owned_object(ty) || is_scalar_cell_view_payload(ty)
 }
 
 /// The declaration-derived write-back ABI has a managed `String` token carrier
@@ -3211,7 +3211,7 @@ fn is_projected_exclusive_leaf(ty: &Type) -> bool {
 /// aggregate, callable, alias, generic, `var`, and `own` carriers remain
 /// outside it.
 fn is_direct_exclusive_referent(ty: &Type) -> bool {
-    is_direct_exclusive_owned_object(ty) || is_direct_shared_int(ty)
+    is_direct_exclusive_owned_object(ty) || is_scalar_cell_view_payload(ty)
 }
 
 fn is_direct_exclusive_reference(ty: &Type) -> bool {
@@ -3269,8 +3269,8 @@ fn exact_callable_shared_alias_contract(signature: &AccessSignature) -> bool {
 fn exact_callable_rooted_int_view_contract(signature: &AccessSignature) -> bool {
     matches!(signature.params(), [parameter]
         if parameter.kind() == AccessKind::OwnedImmutable
-            && rooted_view_inner(parameter.ty()).is_some_and(is_direct_shared_int))
-        && rooted_view_inner(signature.result().ty()).is_some_and(is_direct_shared_int)
+            && rooted_view_inner(parameter.ty()).is_some_and(is_scalar_cell_view_payload))
+        && rooted_view_inner(signature.result().ty()).is_some_and(is_scalar_cell_view_payload)
         && signature.borrow_relations().is_empty()
 }
 
@@ -3287,19 +3287,11 @@ fn callable_reference_carrier(signature: &AccessSignature) -> Option<CallableRef
     }
 }
 
-fn is_direct_shared_int(ty: &Type) -> bool {
-    matches!(
-        ty.unqualified(),
-        Type::Named(name, arguments) if name == "Int" && arguments.is_empty()
-    )
+fn is_scalar_cell_view_payload(ty: &Type) -> bool {
+    matches!(classified_view_storage(ty, &BTreeMap::new()),
+        Some(RootedViewStorage::ScalarCell(_)))
 }
 
-/// A whole immutable `&String` view.  Its carrier is the retained String
-/// object token itself (`CanonicalRootedViewCarrier::RetainedRoot`): the
-/// payload is immutable and shared by retain, so the token is the snapshot.
-fn is_rooted_string(ty: &Type) -> bool {
-    matches!(ty.unqualified(), Type::Named(name, arguments) if name == "String" && arguments.is_empty())
-}
 
 /// The base of a checked view source: the fact's root binding, dereferenced
 /// exactly when the fact says the view is formed through a view.
@@ -3419,12 +3411,12 @@ fn rooted_gc_view_owner_type(
     layouts: &ClosureValueLayouts,
     definitions: &BTreeMap<String, TypeDef>,
 ) -> Option<GcTypeId> {
-    let inner = rooted_view_inner(ty)?;
-    if is_direct_shared_int(inner) {
-        layouts.shared_int_reference
-    } else {
-        let element = CarrierElement::from_view_type_with_definitions(ty, definitions)?;
-        layouts.slice_owners.get(&element).copied()
+    match StoragePlan::classify(ty, definitions, |_| Some(0)) {
+        StoragePlan::RootedView(RootedViewStorage::ScalarCell(_)) => layouts.shared_int_reference,
+        StoragePlan::RootedView(RootedViewStorage::RetainedProjection(element)) => {
+            layouts.slice_owners.get(&element).copied()
+        }
+        _ => None,
     }
 }
 
@@ -4692,7 +4684,7 @@ impl<'a> FunctionLowerer<'a> {
     fn shared_int_reference_family(&self) -> Result<&OwnerFamily, CanonicalLoweringError> {
         self.closures.owners.iter().find(|family| {
             matches!(&family.source, OwnerFamilySource::SharedReference(source)
-                if rooted_view_inner(source).is_some_and(is_direct_shared_int))
+                if rooted_view_inner(source).is_some_and(is_scalar_cell_view_payload))
         }).ok_or(CanonicalLoweringError::UnsupportedExpression("shared Int reference family"))
     }
 
@@ -5506,7 +5498,7 @@ impl FunctionLowerer<'_> {
             && let Some(field) = self.projected_scalar_places.get(&root).copied()
         {
             let reference = self.expression_type(&arguments[0])?;
-            if !is_direct_shared_int(&reference)
+            if !is_scalar_cell_view_payload(&reference)
             {
                 return Err(CanonicalLoweringError::UnsupportedExpression(
                     "projected scalar write has non-Int reference witness",
@@ -9894,7 +9886,7 @@ impl FunctionLowerer<'_> {
             self.access_facts.call_at(self.checked_module, call_site),
         )
             && exclusive_reference_parts(access.result().ty())
-                .is_some_and(|(_, leaf)| is_direct_shared_int(leaf))
+                .is_some_and(|(_, leaf)| is_scalar_cell_view_payload(leaf))
         {
             self.projected_scalar_places.insert(destination, *field);
         }
@@ -14296,15 +14288,25 @@ impl FunctionLowerer<'_> {
         operand: &Expr,
     ) -> Result<ValueId, CanonicalLoweringError> {
         let fact = self.checked_rooted_view_fact(expression)?;
-        let record_root = matches!(fact.payload(), Ty::Named(..) | Ty::Tuple(..))
-            && witchy_types::typeck::ty_to_ast(fact.payload()).is_some_and(|payload| {
-                witchy_canonical_source::aggregates::is_record_root_payload(&payload, self.definitions)
-                    || CarrierElement::retained_structural_root(&payload, self.definitions).is_some()
-            });
-        let byte_buffer_root = witchy_types::typeck::ty_to_ast(fact.payload()).is_some_and(|payload| {
-            matches!(RootedViewStorage::classify(&payload, self.definitions, |_| Some(0)),
-                Some(RootedViewStorage::RetainedRoot(RetainedRootStorage::ByteBuffer(_))))
+        let storage = witchy_types::typeck::ty_to_ast(fact.payload()).map(|payload| {
+            StoragePlan::classify(
+                &Type::Qualified(witchy_syntax::ast::TypeQual::View, Box::new(payload)),
+                self.definitions,
+                |_| Some(0),
+            )
         });
+        let byte_buffer_root = matches!(storage.as_ref(),
+            Some(StoragePlan::RootedView(RootedViewStorage::RetainedRoot(
+                RetainedRootStorage::ByteBuffer(_)
+            )))
+        );
+        let record_root = matches!(storage.as_ref(),
+            Some(StoragePlan::RootedView(RootedViewStorage::RetainedRoot(
+                RetainedRootStorage::Sequence(_)
+                    | RetainedRootStorage::StructuralRecord(_)
+                    | RetainedRootStorage::CheckedAggregate(_)
+            )))
+        );
         if matches!(fact.payload(), Ty::Float | Ty::Bool | Ty::Duration) {
             // A scalar-value view is the value read at formation: a whole
             // local, or a checked field chain from it, directly or through a
@@ -14339,13 +14341,6 @@ impl FunctionLowerer<'_> {
             }
             return Ok(value);
         }
-        let list_root = witchy_types::typeck::ty_to_ast(fact.payload())
-            .as_ref()
-            .and_then(|payload| witchy_canonical_source::carrier::CarrierElement::from_list_root_payload_type_with_definitions(
-                payload, self.definitions,
-            ))
-            .is_some();
-        let record_root = record_root || list_root;
         if (byte_buffer_root || record_root)
             && !fact.place().steps().is_empty()
         {
@@ -14586,7 +14581,7 @@ impl FunctionLowerer<'_> {
         // contract's checked fixed projection is reattached at the call site;
         // do not materialize a scalar copy or an address derived from layout.
         if returned_mut_projected_field
-            && borrowed_mut_source.as_ref().is_some_and(is_direct_shared_int)
+            && borrowed_mut_source.as_ref().is_some_and(is_scalar_cell_view_payload)
             && let Expr::Field { base, .. } = operand
             && let Expr::Var(owner) = base.as_ref()
             && let Some(field) = self.returned_exclusive_projected_aliases.get(owner).copied()
