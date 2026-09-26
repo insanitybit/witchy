@@ -939,9 +939,12 @@ across await; one-shot continuation and cancellation ownership remain a
 separate structural gap. Moving its join before the next suspension clears
 that refusal but exposes a second baseline lowering gap: the `Done` field of
 `task.Step(task.Handle)` lacks a consuming extraction. Its outer storage plan
-does not establish an affine move, while the field plan requires one. The moved
-fixture is a diagnostic probe, not row K evidence. Adversarial review found
-no authority bypass in the local list composition.
+does not establish an affine move, while the field plan requires one. The
+existing channel test now pins the fail-closed refusal rather than claiming
+admitted-Wasm row K evidence. The moved fixture is a diagnostic probe, not row
+K evidence. Adversarial review found no authority bypass in the local list
+composition. Opaque GC owners still need a consuming, source-bound field take
+before the shared graph move judgment can admit this combination.
 
 Row G storage-proof consumers (implemented but unverified, 2026-09-25):
 the checker now requires the shared rooted-slice projection and bounded
