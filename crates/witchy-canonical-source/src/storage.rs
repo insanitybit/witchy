@@ -540,6 +540,8 @@ fn graph_storage_operations(
                 | RetainedRootStorage::Sequence(_)
                 | RetainedRootStorage::StructuralRecord(_)
                 | RetainedRootStorage::CheckedAggregate(_)) => Some(GraphOperations { cloneable: true, movable: false }),
+            RootedViewStorage::RetainedProjection(element) if element.within_resource_bounds() =>
+                Some(GraphOperations { cloneable: true, movable: false }),
             RootedViewStorage::ScalarCell(_) | RootedViewStorage::RetainedProjection(_) => None,
             },
             _ => None,
