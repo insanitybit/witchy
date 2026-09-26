@@ -2626,14 +2626,31 @@ fn sweep_defers_branch_pruning_while_ready_work_waits() {
     );
 }
 
+// These sweep fixtures need many refs, not many Git process launches. Keep
+// real Git refs and the production sweep; batch only fixture construction.
+fn create_branches_at_master(root: &Path, branches: &[String]) {
+    let master = git(root, &["rev-parse", "master"]);
+    let mut child = Command::new("git").arg("-C").arg(root)
+        .args(["update-ref", "--stdin"])
+        .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped())
+        .spawn().expect("start fixture branch creation");
+    let mut input = child.stdin.take().expect("branch creation stdin");
+    for branch in branches {
+        writeln!(input, "create refs/heads/{branch} {master}").expect("write fixture ref");
+    }
+    drop(input);
+    let output = child.wait_with_output().expect("create fixture branches");
+    assert!(output.status.success(), "create fixture branches: {}", String::from_utf8_lossy(&output.stderr));
+}
+
 #[test]
 fn sweep_batches_historical_branch_pruning() {
     let fixture = QueueFixture::stack(&["a.txt"]);
     fixture.mq_ok(&["status"], "true");
+    let branches = (0..33).map(|index| format!("landed-batch-{index:02}")).collect::<Vec<_>>();
+    create_branches_at_master(&fixture.root, &branches);
     let mut journal = String::new();
-    for index in 0..33 {
-        let branch = format!("landed-batch-{index:02}");
-        run_git(&fixture.root, &["branch", &branch, "master"]);
+    for branch in &branches {
         journal.push_str(&format!(
             "{{\"event\":\"merged\",\"branch\":\"{branch}\"}}\n"
         ));
@@ -2651,19 +2668,12 @@ fn sweep_batches_historical_branch_pruning() {
         combined.contains("checked 33 historical branch candidate(s) in 3 batch(es)"),
         "sweep did not prune in bounded batches: {combined}",
     );
-    for index in 0..33 {
+    let refs = git(&fixture.root, &["for-each-ref", "--format=%(refname:short)", "refs/heads/"]);
+    let remaining = refs.lines().collect::<BTreeSet<_>>();
+    for branch in &branches {
         assert!(
-            !git_output(
-                &fixture.root,
-                &[
-                    "show-ref",
-                    "--verify",
-                    &format!("refs/heads/landed-batch-{index:02}"),
-                ],
-            )
-            .status
-            .success(),
-            "sweep retained landed-batch-{index:02}",
+            !remaining.contains(branch.as_str()),
+            "sweep retained {branch}",
         );
     }
 }
@@ -2727,10 +2737,10 @@ fn sweep_skips_only_unchanged_superseded_refs_already_swept() {
 fn sweep_yields_when_ready_work_arrives_during_branch_pruning() {
     let fixture = QueueFixture::stack(&["a.txt"]);
     fixture.mq_ok(&["status"], "true");
+    let branches = (0..32).map(|index| format!("landed-{index:02}")).collect::<Vec<_>>();
+    create_branches_at_master(&fixture.root, &branches);
     let mut journal = String::new();
-    for index in 0..32 {
-        let branch = format!("landed-{index:02}");
-        run_git(&fixture.root, &["branch", &branch, "master"]);
+    for branch in &branches {
         journal.push_str(&format!(
             "{{\"event\":\"merged\",\"branch\":\"{branch}\"}}\n"
         ));
@@ -2764,20 +2774,9 @@ fn sweep_yields_when_ready_work_arrives_during_branch_pruning() {
         combined.contains("ready queue work arrived; deferring"),
         "sweep did not yield after admission changed: {combined}",
     );
-    let retained = (0..32)
-        .filter(|index| {
-            git_output(
-                &fixture.root,
-                &[
-                    "show-ref",
-                    "--verify",
-                    &format!("refs/heads/landed-{index:02}"),
-                ],
-            )
-            .status
-            .success()
-        })
-        .count();
+    let refs = git(&fixture.root, &["for-each-ref", "--format=%(refname:short)", "refs/heads/"]);
+    let remaining = refs.lines().collect::<BTreeSet<_>>();
+    let retained = branches.iter().filter(|branch| remaining.contains(branch.as_str())).count();
     assert!(retained > 0, "sweep finished every branch before yielding");
 }
 
