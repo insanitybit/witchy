@@ -4,10 +4,15 @@ use super::temp_dir::TempDir;
 use std::process::Command;
 
 fn owners() -> AuthenticatedModuleOwners {
+    owners_for(["generator"])
+}
+
+fn owners_for<'a>(user_modules: impl IntoIterator<Item = &'a str>) -> AuthenticatedModuleOwners {
     let workspace = PackageCoordinate::new(PackageSource::Workspace, "test/ordered-comptime", "1").unwrap();
     let toolchain = PackageCoordinate::new(PackageSource::Toolchain, "witchy/std", "1").unwrap();
-    let assignments = [("generator".into(), ModuleLoadIdentity::new(workspace, ["generator"]).unwrap())]
-        .into_iter().chain(witchy_syntax::linker::STD_MODULES.iter().map(|name| (
+    let assignments = user_modules.into_iter().map(|name| (
+        name.to_owned(), ModuleLoadIdentity::new(workspace.clone(), [name]).unwrap(),
+    )).chain(witchy_syntax::linker::STD_MODULES.iter().map(|name| (
             (*name).to_owned(), ModuleLoadIdentity::new(toolchain.clone(), ["std", *name]).unwrap(),
         )));
     AuthenticatedModuleOwners::from_loader_assignments(assignments).unwrap()
@@ -556,19 +561,25 @@ fn imported_blocks_follow_admitted_dependency_graph() {
     std::fs::write(folder.join("left.witchy"), "comptime:\n    emit_item(quote item:\n        pub fn value() -> Int:\n            19\n    )\n").unwrap();
     std::fs::write(folder.join("right.witchy"), "import left\ncomptime:\n    if left.value() == 19:\n        emit_item(quote item:\n            pub fn value() -> Int:\n                23\n        )\n").unwrap();
     std::fs::write(folder.join("extra.witchy"), "comptime:\n    emit_item(quote item:\n        pub fn value() -> Int:\n            23\n    )\n").unwrap();
-    std::fs::write(&entry, "import left\nimport right\nimport extra\ncomptime:\n    if right.value() == 23:\n        emit_item(quote item:\n            fn answer() -> Int:\n                left.value() + extra.value()\n        )\nfn main(console: Console):\n    console.print(\"${answer()}\")\n").unwrap();
+    let main_source = "import left\nimport right\nimport extra\ncomptime:\n    if right.value() == 23:\n        emit_item(quote item:\n            fn answer() -> Int:\n                left.value() + extra.value()\n        )\nfn main(console: Console):\n    console.print(\"${answer()}\")\n";
+    std::fs::write(&entry, main_source).unwrap();
     let run = Command::new(env!("CARGO_BIN_EXE_witchy")).arg(&entry).output().unwrap();
     assert!(run.status.success(), "{}", String::from_utf8_lossy(&run.stderr));
     assert_eq!(String::from_utf8_lossy(&run.stdout), "42\n");
 
-    std::fs::write(folder.join("left.witchy"), "comptime:\n    emit_item(quote item:\n        pub fn value() -> Int:\n            \"wrong\"\n    )\n").unwrap();
-    std::fs::write(folder.join("right.witchy"), "import left\ncomptime:\n    fail(\"later producer ran\")\n").unwrap();
-    let check = Command::new(env!("CARGO_BIN_EXE_witchy"))
-        .arg("check").arg(&entry).output().unwrap();
-    assert!(!check.status.success());
-    let error = String::from_utf8_lossy(&check.stderr);
-    assert!(error.contains("Int") && error.contains("String"), "{error}");
-    assert!(!error.contains("later producer ran"), "{error}");
+    let sources = vec![
+        ("left".into(), "comptime:\n    emit_item(quote item:\n        pub fn value() -> Int:\n            \"wrong\"\n    )\n".as_bytes().to_vec()),
+        ("right".into(), "import left\ncomptime:\n    fail(\"later producer ran\")\n".as_bytes().to_vec()),
+        ("extra".into(), "comptime:\n    emit_item(quote item:\n        pub fn value() -> Int:\n            23\n    )\n".as_bytes().to_vec()),
+        ("main".into(), main_source.as_bytes().to_vec()),
+    ];
+    let producers = ["left", "right", "extra", "main"].map(str::to_owned);
+    let user_modules = std::collections::HashSet::from(["left".into(), "right".into(), "extra".into(), "main".into()]);
+    let check = witchy::canonical_comptime::check_and_expand_source_bundle_with_producer_graph(
+        sources, "main", &producers, user_modules, owners_for(["left", "right", "extra", "main"]), limits(),
+    ).expect_err("invalid first producer must stop the dependent graph");
+    assert!(check.contains("Int") && check.contains("String"), "{check}");
+    assert!(!check.contains("later producer ran"), "{check}");
 }
 
 #[test]
