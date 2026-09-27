@@ -72,8 +72,26 @@ use crate::{interpreter, parser, typeck};
     fn derive_deserialize_scalar_list_option_error_and_generic_paths_agree() {
         let src = "import json\n\ntype Record derive(Deserialize):\n    n: Int\n    ratio: Float\n    ok: Bool\n    text: String\n    xs: List(Int)\n    maybe: Option(String)\n\ntype Box(a) derive(Deserialize):\n    value: a\n\nfn main(console: Console):\n    match json.decode(\"{\\\"n\\\": 4, \\\"ratio\\\": 2, \\\"ok\\\": true, \\\"text\\\": \\\"hi\\\", \\\"xs\\\": [1, 2], \\\"maybe\\\": null}\"):\n        Ok(doc) ->\n            match Record.from_json(doc):\n                Ok(r) -> console.print(\"${r.n} ${r.ratio} ${r.ok} ${r.text} ${r.xs} ${r.maybe}\")\n                Err(_) -> console.print(\"valid-error\")\n        Err(_) -> console.print(\"parse-error\")\n    match json.decode(\"{\\\"value\\\": [1, null, 3]}\"):\n        Ok(doc) ->\n            let nested: Result(Box(List(Option(Int))), json.DeserializeError) = Box.from_json(doc)\n            match nested:\n                Ok(b) -> console.print(\"${b.value}\")\n                Err(_) -> console.print(\"generic-error\")\n        Err(_) -> console.print(\"parse-error\")\n    match json.decode(\"{\\\"n\\\": 4}\"):\n        Ok(doc) ->\n            match Record.from_json(doc):\n                Ok(_) -> console.print(\"missing-not-rejected\")\n                Err(_) -> console.print(\"missing-error\")\n        Err(_) -> console.print(\"parse-error\")\n";
         let expected = ["4 2.0 true hi [1, 2] None", "[Some(1), None, Some(3)]", "missing-error"];
-        assert_eq!(link_run(src), expected, "interp: deserialize scalar/list/option/generic/error paths");
-        assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "compiled: deserialize scalar/list/option/generic/error paths");
+        witchy_interp::compiler_natives::install();
+        let linked = prepared_module(src);
+        let (interpreted, compiled) = std::thread::scope(|scope| {
+            let interpreter = scope.spawn(|| {
+                interpreter::run_module(linked.clone(), ".", Vec::new())
+                    .expect("interpreter run")
+            });
+            let bytes = codegen::compile_module_binary(&linked)
+                .expect_lowered("the binary path lowers this program");
+            let compiled = run_bytes_print_only(&bytes);
+            (interpreter.join().expect("interpreter worker"), compiled)
+        });
+        assert_eq!(
+            interpreted, expected,
+            "interp: deserialize scalar/list/option/generic/error paths"
+        );
+        assert_eq!(
+            compiled, expected,
+            "compiled: deserialize scalar/list/option/generic/error paths"
+        );
     }
 
     /// (BUG-496) `derive(Deserialize)` must not bind decoded fields under source
@@ -101,4 +119,3 @@ use crate::{interpreter, parser, typeck};
         assert!(!err.contains("Tuple2"), "must not leak generated tuple fallback: {err}");
         assert!(!err.contains("from_json"), "must not leak generated from_json fallback: {err}");
     }
-
