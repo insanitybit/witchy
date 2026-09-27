@@ -114,6 +114,14 @@ The independent result is `(39 + 3) + [8, 9][1] = 51`, with zero owned heap
 leaks in both modes. Row M remains partial for other typed syntax forms and
 installed consumers.
 
+Row M update (2026-09-27): `meta.expr_list` and `meta.expr_tuple` now compose
+sealed current-session expression handles through the bounded admitted wire.
+Generated functions returning `List(Int)` and `(Int, Int)` pass destination
+checking and admitted unoptimized Wasm in normal and opt mode. The independent
+sum of their elements is `5 + 6 + 7 + 8 = 26`, with zero owned heap leaks in
+both modes. Row M remains partial for remaining syntax forms and installed
+consumers.
+
 Row R update (2026-09-27): admitted `meta.type_expr`, typed parameter and
 expression-body function items, inherent method items, and `meta.expr_try`
 composition are merged. `program_defined_builder_uses_type_info_in_both_modes`

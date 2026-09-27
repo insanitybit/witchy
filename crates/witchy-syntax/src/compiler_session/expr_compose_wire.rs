@@ -13,6 +13,8 @@ pub enum Composition {
     Range { lo: String, hi: String, inclusive: bool },
     Binary { op: String, lhs: String, rhs: String },
     Index { base: String, index: String },
+    List { elements: Vec<String> },
+    Tuple { elements: Vec<String> },
     Block { body: String },
     If { cond: String, then_body: String, else_body: Option<String> },
     Match { scrutinee: String, arms: Vec<String> },
@@ -107,6 +109,8 @@ pub fn decode(bytes: &[u8]) -> Result<Composition, String> {
         }
         "Y" => Composition::Binary { op: reader.line()?.to_owned(), lhs: reader.handle()?, rhs: reader.handle()? },
         "K" => Composition::Index { base: reader.handle()?, index: reader.handle()? },
+        "L" => Composition::List { elements: reader.args()? },
+        "P" => Composition::Tuple { elements: reader.args()? },
         "B" => Composition::Block { body: reader.handle()? },
         "I" => {
             let cond = reader.handle()?;
@@ -194,6 +198,8 @@ impl Composition {
             Self::Index { base, index } => Ok(Expr::Index {
                 base: Box::new(resolve(&base)?), index: Box::new(resolve(&index)?),
             }),
+            Self::List { elements } => Ok(Expr::List(arguments(elements, &mut resolve)?)),
+            Self::Tuple { elements } => Ok(Expr::Tuple(arguments(elements, &mut resolve)?)),
             Self::Block { body } => Ok(Expr::Block(resolve_block(&body)?)),
             Self::If { cond, then_body, else_body } => Ok(Expr::If {
                 cond: Box::new(resolve(&cond)?),

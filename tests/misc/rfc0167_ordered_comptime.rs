@@ -565,3 +565,36 @@ fn main(console: Console):
         assert_eq!(vm.canonical_heap_leaks().unwrap(), Some(0));
     }
 }
+#[test]
+fn admitted_typed_list_and_tuple_generation_in_both_modes() {
+    for mode in ["", "mode opt\n"] {
+        let source = format!(r#"{mode}import meta
+comptime:
+    let list_ty = quote type:
+        List(Int)
+    let pair_ty = quote type:
+        (Int, Int)
+    let values = meta.expr_list([meta.expr_int(5), meta.expr_int(6)])
+    emit_item(meta.function(true, meta.ident("values"), [], Some(list_ty), values))
+    let pair = meta.expr_tuple([meta.expr_int(7), meta.expr_int(8)])
+    emit_item(meta.function(true, meta.ident("pair"), [], Some(pair_ty), pair))
+fn main(console: Console):
+    let xs = values()
+    let p = pair()
+    console.print("${{xs[0] + xs[1] + p.0 + p.1}}")
+"#);
+        let checked = witchy::canonical_comptime::check_source_bundle(
+            vec![("generator".into(), source.into_bytes()),
+                ("meta".into(), witchy_syntax::linker::bundled_source("meta").unwrap().as_bytes().to_vec())],
+            "generator", ["generator".to_owned()].into_iter().collect(), owners(), limits(),
+        ).expect("typed list and tuple items enter destination checking");
+        let artifact = witchy_lower::codegen::compile_checked_module_artifact(&checked)
+            .expect_lowered("typed list and tuple admit on unoptimized Wasm");
+        let mut runtime = Runtime::batch().unwrap();
+        let mut vm = runtime.spawn_admitted(&artifact,
+            Capabilities { print: true, quiet: true, ..Capabilities::none() }, 64).unwrap();
+        vm.run().unwrap();
+        assert_eq!(vm.output(), ["26"]); // 5 + 6 + 7 + 8
+        assert_eq!(vm.canonical_heap_leaks().unwrap(), Some(0));
+    }
+}

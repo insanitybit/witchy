@@ -451,7 +451,7 @@ fn __meta_expr_range(lo: ExprSyntax, hi: ExprSyntax, inclusive: Bool) -> ExprSyn
 // A compiler-owned list expression. Each element stays a typed expression node;
 // the bridge never joins their rendered source.
 pub fn expr_list(elements: List(ExprSyntax)) -> ExprSyntax:
-    __meta_expr_list(elements)
+    __meta_expr_compose_wire("L\n" + expr_wire_args(elements))
 
 fn __meta_expr_list(elements: List(ExprSyntax)) -> ExprSyntax:
     __meta_expr_list(elements)
@@ -459,7 +459,7 @@ fn __meta_expr_list(elements: List(ExprSyntax)) -> ExprSyntax:
 // A compiler-owned tuple expression. Each member remains an expression node;
 // tuple punctuation is introduced by the AST builder rather than source text.
 pub fn expr_tuple(elements: List(ExprSyntax)) -> ExprSyntax:
-    __meta_expr_tuple(elements)
+    __meta_expr_compose_wire("P\n" + expr_wire_args(elements))
 
 fn __meta_expr_tuple(elements: List(ExprSyntax)) -> ExprSyntax:
     __meta_expr_tuple(elements)
