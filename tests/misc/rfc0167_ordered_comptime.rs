@@ -555,7 +555,7 @@ fn imported_original_block_feeds_authenticated_entry() {
 }
 
 #[test]
-fn independent_imported_blocks_share_one_admitted_destination() {
+fn imported_blocks_follow_admitted_dependency_graph() {
     let folder = TempDir::new("admitted-imported-comptime-graph");
     let entry = folder.join("main.witchy");
     std::fs::write(folder.join("left.witchy"), "comptime:\n    emit_item(quote item:\n        pub fn value() -> Int:\n            19\n    )\n").unwrap();
@@ -575,12 +575,17 @@ fn independent_imported_blocks_share_one_admitted_destination() {
     assert!(!error.contains("later producer ran"), "{error}");
 
     std::fs::write(folder.join("left.witchy"), "comptime:\n    emit_item(quote item:\n        pub fn value() -> Int:\n            19\n    )\n").unwrap();
-    std::fs::write(folder.join("right.witchy"), "import left\ncomptime:\n    emit_item(quote item:\n        pub fn value() -> Int:\n            left.value() + 4\n    )\n").unwrap();
+    std::fs::write(folder.join("right.witchy"), "import left\ncomptime:\n    if left.value() == 19:\n        emit_item(quote item:\n            pub fn value() -> Int:\n                23\n        )\n").unwrap();
     let dependent = Command::new(env!("CARGO_BIN_EXE_witchy"))
-        .arg("check").arg(&entry).output().unwrap();
-    assert!(!dependent.status.success());
-    assert!(String::from_utf8_lossy(&dependent.stderr)
-        .contains("dependent comptime producers require an admitted predecessor recipe"));
+        .arg(&entry).output().unwrap();
+    assert!(dependent.status.success(), "{}", String::from_utf8_lossy(&dependent.stderr));
+    assert_eq!(String::from_utf8_lossy(&dependent.stdout), "42\n");
+
+    std::fs::write(&entry, "import left\nimport right\ncomptime:\n    if right.value() == 23:\n        emit_item(quote item:\n            fn answer() -> Int:\n                left.value() + right.value()\n        )\nfn main(console: Console):\n    console.print(\"${answer()}\")\n").unwrap();
+    let entry_block = Command::new(env!("CARGO_BIN_EXE_witchy"))
+        .arg(&entry).output().unwrap();
+    assert!(entry_block.status.success(), "{}", String::from_utf8_lossy(&entry_block.stderr));
+    assert_eq!(String::from_utf8_lossy(&entry_block.stdout), "42\n");
 }
 
 #[test]

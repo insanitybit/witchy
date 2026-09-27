@@ -105,9 +105,63 @@ fn refuse(message: impl Into<String>) -> PipelineError {
 }
 
 impl ComptimeSourceSession {
-    pub fn producer_depends_on_any(&self, producers: &[String]) -> bool {
-        self.producer_dependencies().iter().any(|dependency|
-            dependency != &self.selected && producers.contains(dependency))
+    pub fn producer_dependency_names(&self, producers: &[String]) -> Vec<String> {
+        let dependencies = self.producer_dependencies();
+        producers.iter().filter(|name| *name != &self.selected && dependencies.contains(*name))
+            .cloned().collect()
+    }
+
+    /// Build a producer's stage from admitted predecessors. The caller owns
+    /// runtime authentication; every stage rechecks complete output prefixes
+    /// and binds their syntax to the successor recipe digest.
+    pub fn from_source_bundle_with_predecessors(
+        sources: Vec<(String, Vec<u8>)>, selected: &str,
+        user_modules: HashSet<String>, owners: AuthenticatedModuleOwners,
+        predecessors: &[(String, Vec<PriorComptimeBlockOutput>)],
+    ) -> Result<Self, PipelineError> {
+        let mut session = Self::from_source_bundle(sources, selected, user_modules, owners)?;
+        let producers = session.modules.iter().filter(|(name, module)|
+            session.user_modules.contains(name) && module.items.iter().any(|item| matches!(item, Item::Comptime(_))))
+            .map(|(name, _)| name.clone()).collect::<Vec<_>>();
+        let expected = session.producer_dependency_names(&producers);
+        if expected.len() != predecessors.len() || expected.iter().any(|name|
+            !predecessors.iter().any(|(predecessor, _)| predecessor == name)) {
+            return Err(refuse("comptime producer requires all admitted dependency outputs"));
+        }
+        let mut seen = HashSet::new();
+        let mut hash = blake3::Hasher::new();
+        hash.update(b"witchy.comptime-predecessor-stage.v1\0");
+        hash.update(&REWRITE_VERSION.to_le_bytes());
+        hash.update(&session.original_digest);
+        for (predecessor, prior) in predecessors {
+            if !seen.insert(predecessor.clone()) || predecessor == selected {
+                return Err(refuse("comptime predecessor outputs must be unique and acyclic"));
+            }
+            let mut stage = Self::from_source_bundle(
+                session.raw_sources.clone(), predecessor,
+                session.user_modules.clone(), session.owners.clone(),
+            )?;
+            stage.modules = session.modules.clone();
+            let dependencies = stage.producer_dependency_names(&producers);
+            if dependencies.iter().any(|name| !seen.contains(name)) {
+                return Err(refuse("comptime predecessor outputs are out of dependency order"));
+            }
+            stage.check_completed_prefix(prior)?;
+            if prior.iter().flat_map(|output| &output.items).any(|(item, _)|
+                matches!(item, Item::Function(function) if function.name == "main")) {
+                return Err(refuse("comptime predecessor cannot displace a source main"));
+            }
+            let (_, original) = stage.modules.iter().find(|(name, _)| name == predecessor)
+                .expect("predecessor raw module retained");
+            let expanded = materialize_prior(original, prior, true, false);
+            session.modules.iter_mut().find(|(name, _)| name == predecessor)
+                .expect("predecessor raw module retained").1 = expanded;
+            hash.update(&(predecessor.len() as u64).to_le_bytes());
+            hash.update(predecessor.as_bytes());
+            hash_prior_items(&mut hash, prior)?;
+        }
+        session.original_digest = *hash.finalize().as_bytes();
+        Ok(session)
     }
 
     pub fn check_completed_prefix(&self, prior: &[PriorComptimeBlockOutput]) -> Result<(), PipelineError> {
@@ -456,22 +510,25 @@ impl ComptimeSourceSession {
         hash.update(b"witchy.comptime-expanded-graph.v1\0");
         hash.update(&REWRITE_VERSION.to_le_bytes());
         hash.update(&self.original_digest);
-        let mut previous = None;
+        let producers = outputs.iter().map(|(name, _)| name.clone()).collect::<Vec<_>>();
+        let mut seen = HashSet::new();
         for (producer, prior) in outputs {
-            if previous.is_some_and(|name: &str| name >= producer.as_str())
-                || !self.user_modules.contains(producer) {
-                return Err(refuse("comptime graph requires unique ordered loader-owned producers"));
+            if !seen.insert(producer.clone()) || !self.user_modules.contains(producer) {
+                return Err(refuse("comptime graph requires unique loader-owned producers"));
             }
-            previous = Some(producer);
-            let session = Self::from_source_bundle(
+            let baseline = Self::from_source_bundle(
                 self.raw_sources.clone(), producer, self.user_modules.clone(), self.owners.clone(),
+            )?;
+            let dependencies = baseline.producer_dependency_names(&producers);
+            let predecessors = outputs.iter().filter(|(name, _)| dependencies.contains(name)
+                && name != producer && seen.contains(name))
+                .cloned().collect::<Vec<_>>();
+            let session = Self::from_source_bundle_with_predecessors(
+                self.raw_sources.clone(), producer, self.user_modules.clone(), self.owners.clone(),
+                &predecessors,
             )?;
             if session.original_block_items().is_empty() || session.next_block_site(prior)?.is_some() {
                 return Err(refuse("comptime graph requires every producer block output in order"));
-            }
-            if session.producer_dependencies().iter().any(|dependency|
-                dependency != producer && outputs.iter().any(|(name, _)| name == dependency)) {
-                return Err(refuse("dependent comptime producers require an admitted predecessor recipe"));
             }
             session.check_prior_items(prior)?;
             if prior.iter().flat_map(|output| &output.items).any(|(item, _)|

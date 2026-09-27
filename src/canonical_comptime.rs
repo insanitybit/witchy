@@ -149,9 +149,9 @@ fn run_source_bundle_for_entry(
     Ok(CheckedExpansion { checked, selected_module })
 }
 
-/// Execute each independent source producer from the same authenticated raw
-/// bundle. A producer that imports another producer is refused before any
-/// execution: its recipe would need the predecessor's generated declarations.
+/// Execute imported producers in dependency order from the authenticated raw
+/// bundle. Every successor recipe binds admitted predecessor syntax and its
+/// digest before execution; the final destination replays that same chain.
 pub fn check_and_expand_source_bundle_with_producer_graph(
     sources: Vec<(String, Vec<u8>)>, entry: &str, producers: &[String],
     user_modules: HashSet<String>, owners: AuthenticatedModuleOwners,
@@ -161,18 +161,35 @@ pub fn check_and_expand_source_bundle_with_producer_graph(
         sources.clone(), entry, user_modules.clone(), owners.clone(),
     ).map_err(|error| error.to_string())?;
     let mut outputs = Vec::new();
-    for producer in producers {
-        let session = ComptimeSourceSession::from_source_bundle(
-            sources.clone(), producer, user_modules.clone(), owners.clone(),
-        ).map_err(|error| error.to_string())?;
-        // The destination checker repeats this proof. Refuse before running
-        // any dependent producer so it cannot observe stale raw declarations.
-        if session.producer_depends_on_any(producers) {
-            return Err("dependent comptime producers require an admitted predecessor recipe".into());
+    let mut pending = producers.to_vec();
+    pending.sort();
+    if pending.windows(2).any(|pair| pair[0] == pair[1]) {
+        return Err("comptime graph has duplicate producers".into());
+    }
+    while !pending.is_empty() {
+        let mut ready = None;
+        for (index, producer) in pending.iter().enumerate() {
+            let baseline = ComptimeSourceSession::from_source_bundle(
+                sources.clone(), producer, user_modules.clone(), owners.clone(),
+            ).map_err(|error| error.to_string())?;
+            let dependencies = baseline.producer_dependency_names(producers);
+            if dependencies.iter().all(|name| outputs.iter().any(|(done, _)| done == name)) {
+                ready = Some((index, dependencies));
+                break;
+            }
         }
+        let Some((index, dependencies)) = ready else {
+            return Err("comptime producer import graph is cyclic".into());
+        };
+        let producer = pending.remove(index);
+        let predecessors = outputs.iter().filter(|(name, _)| dependencies.contains(name))
+            .cloned().collect::<Vec<_>>();
+        let session = ComptimeSourceSession::from_source_bundle_with_predecessors(
+            sources.clone(), &producer, user_modules.clone(), owners.clone(), &predecessors,
+        ).map_err(|error| error.to_string())?;
         let prior = execute_source_blocks(&session, limits)?;
         session.check_completed_prefix(&prior).map_err(|error| error.to_string())?;
-        outputs.push((producer.clone(), prior));
+        outputs.push((producer, prior));
     }
     entry_session.check_expanded_producer_graph_for_entry(&outputs, entry)
         .map_err(|error| error.to_string())
