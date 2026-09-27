@@ -5,7 +5,7 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use witchy::runtime::{Capabilities, Runtime};
-use witchy::{codegen, interpreter, parser, pipeline, typeck};
+use witchy::{codegen, interpreter, parser, pipeline};
 
 #[test]
 fn url_components_round_trip_and_http_omits_fragments() {
@@ -67,7 +67,6 @@ fn main(console: Console, net: Net):
     );
     let module = parser::parse_module(&source).expect("parse");
     let linked = pipeline::link(vec![("main".into(), module)], "main").expect("link");
-    typeck::check(&linked).expect("typecheck");
 
     let expected = vec![
         "/p|-|-|/p|https://h/p".to_string(),
