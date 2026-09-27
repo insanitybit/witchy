@@ -59,12 +59,16 @@ use crate::{ast, codegen, parser, typeck};
     /// (an in-guest disclosure). I1's categorical `ptr >= heap_base` floor on `$rc_free`
     /// (matching `$dup`/`$drop`) kills the class. Assert byte-identical output across the
     /// FULL opt sweep — the leak fired under `rc-floor` alone, so the sweep is the net.
+    /// The override is thread-local, so bounded batches compile independent settings
+    /// concurrently while sharing the one checked source module.
     #[test]
     fn rc_free_at_overwrite_does_not_free_a_literal_sec_039() {
         use crate::opt::{self, Opt, OptSet};
         let src = include_str!("../../tests/fixtures/rfc0162-sec/sec039-literal-overwrite.witchy");
         let oracle = link_run(src);
         assert_eq!(oracle, vec!["[1, 2, 3]", "[abc]"], "oracle shape changed");
+        witchy_interp::compiler_natives::install();
+        let linked = prepared_module(src);
         let mut settings: Vec<(String, OptSet)> = vec![
             ("none".into(), OptSet::none()),
             ("all".into(), OptSet::all()),
@@ -73,12 +77,62 @@ use crate::{ast, codegen, parser, typeck};
         for o in Opt::ALL {
             settings.push((format!("-{}", o.name()), OptSet::default_set().without(o)));
         }
-        for (label, set) in settings {
-            opt::set_for_tests(Some(set));
-            let out = wasm_run(src);
-            opt::set_for_tests(None);
+        let outputs = std::thread::scope(|scope| {
+            let handles = settings
+                .chunks(6)
+                .map(|batch| {
+                    let linked = &linked;
+                    scope.spawn(move || {
+                        batch
+                            .iter()
+                            .map(|(label, set)| {
+                                opt::set_for_tests(Some(*set));
+                                let out = wasm_run_with_current_opt(linked);
+                                opt::set_for_tests(None);
+                                (label.clone(), out)
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                })
+                .collect::<Vec<_>>();
+            handles
+                .into_iter()
+                .flat_map(|handle| handle.join().expect("optimizer sweep worker"))
+                .collect::<Vec<_>>()
+        });
+        for (label, out) in outputs {
             assert_eq!(out, oracle, "SEC-039: WITCHY_OPT={label} leaked/diverged (freed a non-object literal)");
         }
+    }
+
+    fn wasm_run_with_current_opt(module: &ast::Module) -> Vec<String> {
+        let bytes = codegen::compile_module_binary(module)
+            .expect_lowered("the binary path lowers this program");
+        with_batch_runtime(|rt| {
+            let mut actor = rt
+                .spawn(
+                    &bytes,
+                    crate::runtime::Capabilities {
+                        print: true,
+                        print_int: true,
+                        quiet: true,
+                        clock: true,
+                        rand: true,
+                        env: true,
+                        dir_root: Some(std::path::PathBuf::from(".")),
+                        dir_read: true,
+                        dir_write: true,
+                        net_allow: Some(Vec::new()),
+                        net_connect: true,
+                        net_listen: true,
+                        ..Default::default()
+                    },
+                    crate::RUN_MEMORY_PAGES,
+                )
+                .expect("spawn");
+            actor.run().expect("run");
+            actor.output()
+        })
     }
 
     /// (SEC-078) A dependency call may return its String input unchanged. The
@@ -478,4 +532,3 @@ use crate::{ast, codegen, parser, typeck};
             diverged.join("\n")
         );
     }
-
