@@ -747,21 +747,35 @@ fn __meta_block_region(body: BlockSyntax, result: Option(TypeSyntax)) -> BlockSy
 // A function parameter and function item constructors. The single-expression
 // form now delegates to the block form so item generation has one body shape.
 pub fn param(name: Ident, ty: TypeSyntax) -> ParamSyntax:
-    __meta_param("default", name, ty)
+    __meta_param_wire("default\n" + binding_source(name) + "\n" + type_handle_wire(ty))
 
 // Construct an explicit `let` parameter. The checker enforces its no-escape
 // borrow rule after the generated item is linked.
 pub fn param_let(name: Ident, ty: TypeSyntax) -> ParamSyntax:
-    __meta_param("let", name, ty)
+    __meta_param_wire("let\n" + binding_source(name) + "\n" + type_handle_wire(ty))
 
 // Construct a `var` parameter with an ordinary write-back lane. Suspended
 // generated functions reject `var` before an item handle is issued.
 pub fn param_var(name: Ident, ty: TypeSyntax) -> ParamSyntax:
-    __meta_param("var", name, ty)
+    __meta_param_wire("var\n" + binding_source(name) + "\n" + type_handle_wire(ty))
 
 // Construct an `own` parameter, consuming the caller's binding.
 pub fn param_own(name: Ident, ty: TypeSyntax) -> ParamSyntax:
-    __meta_param("own", name, ty)
+    __meta_param_wire("own\n" + binding_source(name) + "\n" + type_handle_wire(ty))
+
+fn binding_source(name: Ident) -> String:
+    match name:
+        CallSiteIdent(_) -> fail("meta parameter requires a definition-site name")
+        _ -> ()
+
+    ident_source(name)
+
+fn type_handle_wire(ty: TypeSyntax) -> String:
+    match ty:
+        CompilerTypeSyntax(handle) -> "${handle.length()}\n" + handle
+
+fn __meta_param_wire(wire: String) -> ParamSyntax:
+    __meta_param_wire(wire)
 
 // Compiler-owned parameter construction. Binding and type remain typed through
 // generated function construction.
@@ -769,7 +783,24 @@ fn __meta_param(convention: String, name: Ident, ty: TypeSyntax) -> ParamSyntax:
     __meta_param(convention, name, ty)
 
 pub fn function(public: Bool, name: Ident, params: List(ParamSyntax), ret: Option(TypeSyntax), body: ExprSyntax) -> ItemSyntax:
-    function_block(public, name, params, ret, block([], Some(body)))
+    match name:
+        CallSiteIdent(_) -> fail("meta.function requires a definition-site name")
+        _ -> ()
+
+    var wire = if public: "1\n" else: "0\n"
+    wire = wire + ident_source(name) + "\n${params.length()}\n"
+    for param in params:
+        match param:
+            CompilerParamSyntax(handle) -> wire = wire + "${handle.length()}\n" + handle
+    match ret:
+        Some(ty) -> wire = wire + "1\n" + type_handle_wire(ty)
+        None -> wire = wire + "0\n"
+    match body:
+        CompilerExprSyntax(handle) -> wire = wire + "${handle.length()}\n" + handle
+    __meta_function_expr_wire(wire)
+
+fn __meta_function_expr_wire(wire: String) -> ItemSyntax:
+    __meta_function_expr_wire(wire)
 
 pub fn function_block(public: Bool, name: Ident, params: List(ParamSyntax), ret: Option(TypeSyntax), body: BlockSyntax) -> ItemSyntax:
     __meta_function_block(public, false, false, name, params, ret, body)

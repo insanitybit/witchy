@@ -1346,7 +1346,9 @@ if capability_imports.contains("build_out_write_at") {
                     witchy_wir::canonical_safewir::COMPILER_RECORD_TYPE_IMPORT,
                     witchy_wir::canonical_safewir::COMPILER_EXPR_LEAF_IMPORT,
                     witchy_wir::canonical_safewir::COMPILER_TYPE_EXPR_IMPORT,
-                    witchy_wir::canonical_safewir::COMPILER_EXPR_COMPOSE_IMPORT] {
+                    witchy_wir::canonical_safewir::COMPILER_EXPR_COMPOSE_IMPORT,
+                    witchy_wir::canonical_safewir::COMPILER_PARAM_IMPORT,
+                    witchy_wir::canonical_safewir::COMPILER_FUNCTION_EXPR_IMPORT] {
                     if !compiler_imports.contains(name) { continue; }
                     let signature = if name == witchy_wir::canonical_safewir::COMPILER_EXPR_LEAF_IMPORT {
                         push_import_signature(vec![text, text, text], vec![ValueType::Size], Some(2))?
@@ -1356,7 +1358,9 @@ if capability_imports.contains("build_out_write_at") {
                         push_import_signature(vec![text, ValueType::Int, text], vec![ValueType::Size], Some(2))?
                     } else if matches!(name, witchy_wir::canonical_safewir::COMPILER_RECORD_TYPE_IMPORT
                         | witchy_wir::canonical_safewir::COMPILER_TYPE_EXPR_IMPORT
-                        | witchy_wir::canonical_safewir::COMPILER_EXPR_COMPOSE_IMPORT) {
+                        | witchy_wir::canonical_safewir::COMPILER_EXPR_COMPOSE_IMPORT
+                        | witchy_wir::canonical_safewir::COMPILER_PARAM_IMPORT
+                        | witchy_wir::canonical_safewir::COMPILER_FUNCTION_EXPR_IMPORT) {
                         push_import_signature(vec![text, text], vec![ValueType::Size], Some(1))?
                     } else { push_import_signature(vec![text], Vec::new(), None)? };
                     catalog = catalog.with_compiler_syntax_import(name, signature, string_layout)
@@ -13478,7 +13482,9 @@ impl FunctionLowerer<'_> {
         let layout = self.string_layout_id()?;
         if witchy_syntax::intrinsics::is_meta_record_type_wire(name)
             || witchy_syntax::intrinsics::is_meta_type_expr_wire(name)
-            || witchy_syntax::intrinsics::is_meta_expr_compose_wire(name) {
+            || witchy_syntax::intrinsics::is_meta_expr_compose_wire(name)
+            || witchy_syntax::intrinsics::is_meta_param_wire(name)
+            || witchy_syntax::intrinsics::is_meta_function_expr_wire(name) {
             let wire = self.lower_string_argument(&args[0])?;
             let input = self.string_slice_argument(wire, layout)?;
             let handle = self.lower_bounded_host_result(import, vec![input])?;
@@ -13489,6 +13495,8 @@ impl FunctionLowerer<'_> {
                 "meta.CompilerTypeSyntax"
             } else if witchy_syntax::intrinsics::is_meta_expr_compose_wire(name) {
                 "meta.CompilerExprSyntax"
+            } else if witchy_syntax::intrinsics::is_meta_param_wire(name) {
+                "meta.CompilerParamSyntax"
             } else { "meta.ItemSyntax" };
             let (index, variant) = shape.variant(variant_name)
                 .ok_or(CanonicalLoweringError::UnsupportedExpression("compiler syntax constructor"))?;
@@ -20479,6 +20487,12 @@ fn compiler_service_import(name: &str) -> Option<(&'static str, usize)> {
     }
     if witchy_syntax::intrinsics::is_meta_expr_compose_wire(name) {
         return Some((witchy_wir::canonical_safewir::COMPILER_EXPR_COMPOSE_IMPORT, 1));
+    }
+    if witchy_syntax::intrinsics::is_meta_param_wire(name) {
+        return Some((witchy_wir::canonical_safewir::COMPILER_PARAM_IMPORT, 1));
+    }
+    if witchy_syntax::intrinsics::is_meta_function_expr_wire(name) {
+        return Some((witchy_wir::canonical_safewir::COMPILER_FUNCTION_EXPR_IMPORT, 1));
     }
     if witchy_syntax::intrinsics::is_meta_expr_leaf(name) {
         return Some((witchy_wir::canonical_safewir::COMPILER_EXPR_LEAF_IMPORT, 2));

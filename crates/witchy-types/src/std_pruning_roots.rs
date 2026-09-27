@@ -312,6 +312,7 @@ pub const COMPILER_STD_NAMES: &[&str] = &[
     "meta.expr_while",
     "meta.expr_while_let",
     "meta.fresh",
+    "meta.function",
     "meta.function_block",
     "meta.ident",
     "meta.impl_block",

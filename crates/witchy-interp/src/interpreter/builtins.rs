@@ -1684,6 +1684,58 @@ impl Interpreter {
                 }
                 _ => err("meta.param expects a supported convention, Ident, and TypeSyntax"),
             },
+            name if intrinsics::is_meta_param_wire(name) => match one(args)? {
+                Value::Str(wire) => {
+                    if self.compiler_syntax.fresh_ident_scope().is_none() {
+                        return err("meta.param is available only during compile-time expansion");
+                    }
+                    let spec = witchy_syntax::compiler_session::function_wire::decode_param(wire.as_bytes())
+                        .map_err(|message| RuntimeError { message })?;
+                    let ty = self.compiler_syntax.types().get(&spec.ty).cloned()
+                        .ok_or_else(|| RuntimeError { message: "meta.param requires current-session type syntax".into() })?;
+                    let convention = match spec.convention.as_str() {
+                        "default" => Convention::Let, "let" => Convention::Borrow,
+                        "var" => Convention::Var, "own" => Convention::Own,
+                        _ => unreachable!("decoder checked convention"),
+                    };
+                    let handle = self.next_compiler_syntax_handle("parameter")?;
+                    self.compiler_syntax.insert_param(handle.clone(), Param {
+                        name: spec.name, ty: Some(ty), convention, default: None,
+                    });
+                    Ok(Some(Value::Ctor { name: "meta.CompilerParamSyntax".into(),
+                        fields: Rc::new(vec![Value::str(handle)]) }))
+                }
+                _ => err("meta.param expects framed parameter data"),
+            },
+            name if intrinsics::is_meta_function_expr_wire(name) => match one(args)? {
+                Value::Str(wire) => {
+                    if self.compiler_syntax.fresh_ident_scope().is_none() {
+                        return err("meta.function is available only during compile-time expansion");
+                    }
+                    let spec = witchy_syntax::compiler_session::function_wire::decode_function(wire.as_bytes())
+                        .map_err(|message| RuntimeError { message })?;
+                    let params = spec.params.iter().map(|handle| self.compiler_syntax.params().get(handle)
+                        .cloned().ok_or_else(|| RuntimeError { message: "meta.function requires current-session parameters".into() }))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    let ret = spec.ret.as_ref().map(|handle| self.compiler_syntax.types().get(handle)
+                        .cloned().ok_or_else(|| RuntimeError { message: "meta.function requires current-session return type".into() }))
+                        .transpose()?;
+                    let body = self.compiler_syntax.expressions().get(&spec.body).cloned()
+                        .ok_or_else(|| RuntimeError { message: "meta.function requires a current-session expression body".into() })?;
+                    let item = Item::Function(Function {
+                        line: 1, public: spec.public, pure: false, comptime_only: false,
+                        attributes: Vec::new(), name: spec.name, type_params: Vec::new(),
+                        params, ret, body: Block { stmts: vec![Stmt::Expr(body)],
+                            lines: vec![1], region: None }, bounds: Vec::new(),
+                        is_gen: false, is_async: false,
+                    });
+                    let handle = self.next_compiler_syntax_handle("function-item")?;
+                    self.compiler_syntax.insert_item(handle.clone(), item);
+                    Ok(Some(Value::Ctor { name: OWNED_ITEM_SYNTAX_CTOR.into(),
+                        fields: Rc::new(vec![Value::str(handle), Value::Int(i64::from(self.cur_line))]) }))
+                }
+                _ => err("meta.function expects framed function data"),
+            },
             name if intrinsics::is_meta_function_block(name) => match args {
                 [Value::Bool(public), Value::Bool(is_async), Value::Bool(is_gen), name, params, ret, body] => {
                     if self.compiler_syntax.fresh_ident_scope().is_none() {
