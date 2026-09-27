@@ -40,6 +40,9 @@ for the sum arm actually supplied. A known `None` has no task to run; a
 `Some(task)` must carry opt-compatible execution origin. The compiler keeps a
 checked carrier for the scheduler's private message fields even when a program
 does not send a channel message.
+Nested tuple fields and list elements keep a task's checked execution origin
+through each projection. In opt code, the task obtained at the end must still
+come from an opt-compatible producer.
 
 ```witchy
 async fn double(n: Int) -> Int:

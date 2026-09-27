@@ -283,6 +283,18 @@ await. Adversarial review found and prompted the exclusive-reference fix and
 found no remaining authority bypass in this change. No zero-leak audit or
 A–O closure is claimed; generic and indirect transport remains incomplete.
 
+Task result projection composition (implemented but unverified, 2026-09-26):
+one symbolic `TaskExecutionProof` projection rule now serves tuple fields,
+sum arms, sequence indices, pattern bindings, callback task-input paths,
+and summary substitution. Nested projections preserve the checked task
+origin until the actual opt await or call requirement is checked. The focused
+source-linked checker case accepts a nested tuple containing an opt recipe
+and refuses the same shape with a normal recipe. Adversarial review found no
+mode upgrade through unknown or mixed origins, and inactive arms remain
+ineligible for execution. Dynamic trait and scheduler result contracts,
+per-execution ownership, cancellation disposition, and admitted-Wasm with
+zero-leak evidence remain open; no A–O row closes.
+
 Declared task-producing function values (implemented but unverified,
 2026-09-26): the checked task-provenance flow now binds an exact checked
 declaration reference to its symbolic result, source execution mode, and

@@ -2267,6 +2267,9 @@ projections. The requirement propagates through exact calls to the declaration
 and is checked against the caller's actual task values. Ordinary function
 types still cannot carry this requirement through an opaque function value,
 cast, task capture, or external ABI.
+Checked positional fields, sum arms, and sequence indices compose through
+multiple stored layers before that call-site check. An unknown layer or a
+mixture of normal and opt task origins still cannot authorize an opt await.
 For a checked sum input, each variant's task requirement applies only when
 that variant can be present. An exact constructor or joined set of constructors
 can prove an arm absent; an unknown arm cannot. This conditional discharge
