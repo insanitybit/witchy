@@ -49,9 +49,9 @@ pub fn check_integration_test_driver(
         derived_source_digest: *hash.finalize().as_bytes(),
         selected_declaration: selected.to_owned(), declaration_ordinal,
     };
-    if let Some(admitted) = &suite.admitted_entry {
-        *entry = admitted.clone();
-    }
+    if let Some(admitted) = &suite.admitted_modules { modules = admitted.clone(); }
+    let (_, entry) = modules.iter_mut().find(|(name, _)| name == &suite.entry)
+        .ok_or_else(|| refused("admitted integration entry source is missing"))?;
     let template = if asynchronous {
         "fn main() -> ():\n    task.run(())\n"
     } else {
@@ -87,7 +87,7 @@ pub fn check_integration_test_driver(
     }
     entry.items.extend(generated.items);
     entry.item_lines.push(0);
-    let expand = if suite.admitted_entry.is_some() {
+    let expand = if suite.admitted_modules.is_some() {
         super::super::comptime_recipe::expansion_free_expander()
     } else { expand };
     let (checked, typed) = link_checked_with(

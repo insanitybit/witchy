@@ -71,6 +71,18 @@ pub fn check_test_suite_source_bundle(
     session.check_expanded_test_suite(&prior).map_err(|error| error.to_string())
 }
 
+pub fn check_test_suite_source_bundle_with_imported_blocks(
+    sources: Vec<(String, Vec<u8>)>, entry: &str, selected: &str,
+    user_modules: HashSet<String>, owners: AuthenticatedModuleOwners,
+    limits: ComptimeLimits,
+) -> Result<witchy_types::pipeline::CheckedTestSuite, String> {
+    let session = ComptimeSourceSession::from_source_bundle(sources, selected, user_modules, owners)
+        .map_err(|error| error.to_string())?;
+    let prior = execute_original_blocks(&session, limits)?;
+    session.check_expanded_test_suite_for_entry(&prior, entry)
+        .map_err(|error| error.to_string())
+}
+
 pub fn check_and_expand_source_bundle_with_imported_blocks(
     sources: Vec<(String, Vec<u8>)>, entry: &str, selected: &str,
     user_modules: HashSet<String>, owners: AuthenticatedModuleOwners,

@@ -19,7 +19,7 @@ pub struct CheckedTestSuite {
     user_modules: HashSet<String>,
     checked: CheckedModule,
     original_source_digest: [u8; 32],
-    admitted_entry: Option<Module>,
+    admitted_modules: Option<Vec<(String, Module)>>,
     admitted_digest: Option<[u8; 32]>,
 }
 
@@ -85,26 +85,27 @@ pub fn link_checked_test_suite_from_source_bundle(
     )?;
     Ok(CheckedTestSuite {
         sources, entry: entry.to_owned(), user_modules: user_modules.clone(),
-        checked, original_source_digest, admitted_entry: None, admitted_digest: None,
+        checked, original_source_digest, admitted_modules: None, admitted_digest: None,
     })
 }
 
 pub(super) fn seal_admitted_test_suite(
     sources: Vec<(String, Vec<u8>)>, entry: &str,
     user_modules: &HashSet<String>, owners: AuthenticatedModuleOwners,
-    admitted_entry: Module, admitted_digest: [u8; 32],
+    admitted_modules: Vec<(String, Module)>, admitted_digest: [u8; 32],
 ) -> Result<CheckedTestSuite, PipelineError> {
     let original_source_digest = checked_source_digest(&sources, entry, &PrecompiledDeclarationEnvironment::default());
-    let mut modules = parse_sources(&sources)?;
-    let (_, module) = modules.iter_mut().find(|(name, _)| name == entry)
-        .ok_or_else(|| refused("test source bundle lacks its entry"))?;
-    *module = admitted_entry.clone();
-    let (checked, _) = link_checked_with(modules, entry,
+    let raw = parse_sources(&sources)?;
+    if raw.len() != admitted_modules.len() || raw.iter().zip(&admitted_modules)
+        .any(|((raw_name, _), (admitted_name, _))| raw_name != admitted_name) {
+        return Err(refused("admitted test modules do not match the raw source bundle"));
+    }
+    let (checked, _) = link_checked_with(admitted_modules.clone(), entry,
         super::comptime_recipe::expansion_free_expander(), LinkMode::Test,
         Some(user_modules), false, Some(owners))?;
     Ok(CheckedTestSuite {
         sources, entry: entry.to_owned(), user_modules: user_modules.clone(), checked,
-        original_source_digest, admitted_entry: Some(admitted_entry), admitted_digest: Some(admitted_digest),
+        original_source_digest, admitted_modules: Some(admitted_modules), admitted_digest: Some(admitted_digest),
     })
 }
 
@@ -157,9 +158,9 @@ pub fn check_bare_test_driver(
         derived_source_digest: *hasher.finalize().as_bytes(),
         selected_declaration: selected.to_owned(), declaration_ordinal,
     };
-    if let Some(admitted) = &suite.admitted_entry {
-        *entry = admitted.clone();
-    }
+    if let Some(admitted) = &suite.admitted_modules { modules = admitted.clone(); }
+    let (_, entry) = modules.iter_mut().find(|(name, _)| name == &suite.entry)
+        .ok_or_else(|| refused("admitted test entry source is missing"))?;
 
     // This fixed compiler template is not user input. Use the local source
     // declaration before linking, never a guessed post-link callable spelling.
@@ -194,7 +195,7 @@ pub fn check_bare_test_driver(
     }
     entry.items.extend(generated.items);
     entry.item_lines.push(0);
-    let expand = if suite.admitted_entry.is_some() {
+    let expand = if suite.admitted_modules.is_some() {
         super::comptime_recipe::expansion_free_expander()
     } else { expand };
     let (checked, typed) = link_checked_with(

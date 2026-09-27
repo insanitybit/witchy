@@ -49,9 +49,9 @@ pub fn check_console_fixture_test_driver(
         derived_source_digest: *hash.finalize().as_bytes(),
         selected_declaration: selected.to_owned(), declaration_ordinal,
     };
-    if let Some(admitted) = &suite.admitted_entry {
-        *entry = admitted.clone();
-    }
+    if let Some(admitted) = &suite.admitted_modules { modules = admitted.clone(); }
+    let (_, entry) = modules.iter_mut().find(|(name, _)| name == &suite.entry)
+        .ok_or_else(|| refused("admitted fixture entry source is missing"))?;
     // Separate from the held bare recipe: this entry explicitly promises `()`.
     let mut generated = witchy_syntax::parser::parse_module("fn main() -> ():\n    ()\n")
         .map_err(|error| refused(format!("invalid compiler Console recipe: {error}")))?;
@@ -73,7 +73,7 @@ pub fn check_console_fixture_test_driver(
     }
     entry.items.extend(generated.items);
     entry.item_lines.push(0);
-    let expand = if suite.admitted_entry.is_some() {
+    let expand = if suite.admitted_modules.is_some() {
         super::super::comptime_recipe::expansion_free_expander()
     } else { expand };
     let (checked, typed) = link_checked_with(

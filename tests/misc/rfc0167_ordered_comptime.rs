@@ -106,3 +106,22 @@ fn bare_test_driver_uses_admitted_original_block_helpers() {
         String::from_utf8_lossy(&forged.stdout));
     assert!(error.contains("unknown or ambiguous entry test") || error.contains("declared in the entry source"), "{error}");
 }
+
+#[test]
+fn imported_original_block_feeds_bare_test_driver() {
+    let folder = TempDir::new("admitted-imported-comptime-test");
+    let entry = folder.join("tests.witchy");
+    let producer = folder.join("dep.witchy");
+    std::fs::write(&producer, "comptime:\n    emit_item(quote item:\n        pub fn answer() -> Int:\n            42\n    )\n").unwrap();
+    std::fs::write(&entry, "import dep\nfn test_answer():\n    if dep.answer() != 42:\n        fail(\"wrong imported helper\")\n").unwrap();
+    let run = Command::new(env!("CARGO_BIN_EXE_witchy"))
+        .arg("test").arg(&entry).output().unwrap();
+    assert!(run.status.success(), "{}", String::from_utf8_lossy(&run.stderr));
+
+    std::fs::write(&producer, "comptime:\n    emit_item(quote item:\n        pub fn answer() -> Int:\n            \"wrong\"\n    )\n").unwrap();
+    let invalid = Command::new(env!("CARGO_BIN_EXE_witchy"))
+        .arg("test").arg(&entry).output().unwrap();
+    assert!(!invalid.status.success(), "invalid imported output reached the test driver");
+    let error = String::from_utf8_lossy(&invalid.stderr);
+    assert!(error.contains("Int") && error.contains("String"), "{error}");
+}

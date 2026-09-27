@@ -300,13 +300,26 @@ impl ComptimeSourceSession {
     pub fn check_expanded_test_suite(
         &self, prior: &[PriorComptimeBlockOutput],
     ) -> Result<super::super::CheckedTestSuite, PipelineError> {
-        let (checked, expanded) = self.check_expanded_for_entry(prior, &self.selected)?;
+        self.check_expanded_test_suite_for_entry(prior, &self.selected)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn check_expanded_test_suite_for_entry(
+        &self, prior: &[PriorComptimeBlockOutput], entry: &str,
+    ) -> Result<super::super::CheckedTestSuite, PipelineError> {
+        let (checked, _) = self.check_expanded_for_entry(prior, entry)?;
         let digest = checked.canonical_source_witness()
             .ok_or_else(|| refuse("admitted test source lacks canonical authority"))?
             .source_bundle_digest();
+        let (_, original) = self.modules.iter().find(|(name, _)| name == &self.selected)
+            .expect("selected raw producer retained");
+        let expanded = materialize_prior(original, prior, true);
+        let admitted_modules = self.modules.iter().map(|(name, module)| (
+            name.clone(), if name == &self.selected { expanded.clone() } else { module.clone() },
+        )).collect();
         super::super::test_driver::seal_admitted_test_suite(
-            self.raw_sources.clone(), &self.selected, &self.user_modules,
-            self.owners.clone(), expanded, digest,
+            self.raw_sources.clone(), entry, &self.user_modules,
+            self.owners.clone(), admitted_modules, digest,
         )
     }
 }
