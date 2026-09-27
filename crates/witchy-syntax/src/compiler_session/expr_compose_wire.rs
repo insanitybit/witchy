@@ -19,6 +19,7 @@ pub enum Composition {
     If { cond: String, then_body: String, else_body: Option<String> },
     For { binding: String, iter: String, body: String },
     While { cond: String, body: String },
+    WhileLet { pattern: String, scrutinee: String, body: String },
     Match { scrutinee: String, arms: Vec<String> },
 }
 
@@ -126,6 +127,7 @@ pub fn decode(bytes: &[u8]) -> Result<Composition, String> {
         }
         "O" => Composition::For { binding: reader.identifier()?, iter: reader.handle()?, body: reader.handle()? },
         "H" => Composition::While { cond: reader.handle()?, body: reader.handle()? },
+        "Z" => Composition::WhileLet { pattern: reader.handle()?, scrutinee: reader.handle()?, body: reader.handle()? },
         "M" => Composition::Match { scrutinee: reader.handle()?, arms: reader.args()? },
         _ => return Err("unknown compiler expression composition".into()),
     };
@@ -137,7 +139,8 @@ impl Composition {
     pub fn build(self, mut resolve: impl FnMut(&str) -> Result<crate::ast::Expr, String>,
         mut resolve_type: impl FnMut(&str) -> Result<crate::ast::Type, String>,
         mut resolve_block: impl FnMut(&str) -> Result<crate::ast::Block, String>,
-        mut resolve_arm: impl FnMut(&str) -> Result<crate::ast::MatchArm, String>)
+        mut resolve_arm: impl FnMut(&str) -> Result<crate::ast::MatchArm, String>,
+        mut resolve_pattern: impl FnMut(&str) -> Result<crate::ast::Pattern, String>)
         -> Result<crate::ast::Expr, String> {
         use crate::ast::Expr;
         fn arguments(handles: Vec<String>, resolve: &mut impl FnMut(&str) -> Result<Expr, String>)
@@ -216,6 +219,9 @@ impl Composition {
             Self::While { cond, body } => Ok(Expr::While {
                 cond: Box::new(resolve(&cond)?), body: resolve_block(&body)?,
             }),
+            Self::WhileLet { pattern, scrutinee, body } => Ok(crate::parser::desugar_while_let(
+                resolve_pattern(&pattern)?, resolve(&scrutinee)?, resolve_block(&body)?,
+            )),
             Self::Match { scrutinee, arms } => {
                 if arms.is_empty() { return Err("compiler match requires an arm".into()); }
                 Ok(Expr::Match { scrutinee: Box::new(resolve(&scrutinee)?),

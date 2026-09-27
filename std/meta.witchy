@@ -563,7 +563,9 @@ fn __meta_expr_while(cond: ExprSyntax, body: BlockSyntax) -> ExprSyntax:
 // Builds a loop that matches each scrutinee before executing its body.
 // All three inputs must be compiler-owned syntax handles.
 pub fn expr_while_let(pattern: PatternSyntax, scrutinee: ExprSyntax, body: BlockSyntax) -> ExprSyntax:
-    __meta_expr_while_let(pattern, scrutinee, body)
+    match pattern:
+        CompilerPatternSyntax(handle) ->
+            __meta_expr_compose_wire("Z\n${handle.length()}\n" + handle + expr_wire_handle(scrutinee) + block_wire_handle(body))
 
 fn __meta_expr_while_let(pattern: PatternSyntax, scrutinee: ExprSyntax, body: BlockSyntax) -> ExprSyntax:
     __meta_expr_while_let(pattern, scrutinee, body)

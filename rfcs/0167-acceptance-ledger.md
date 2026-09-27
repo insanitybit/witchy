@@ -139,6 +139,15 @@ program-defined tuple-pattern let and tuple expression return `20 + 22 = 42`
 on admitted unoptimized Wasm in normal and opt mode, with zero owned heap
 leaks. Row M remains partial for remaining syntax and installed consumers.
 
+Row M update (2026-09-27): `meta.expr_while_let` now composes current-session
+sealed pattern, expression, and block handles through the bounded typed wire.
+The host retains pattern hole ancestry and structurally desugars the loop;
+ordinary destination checking decides whether the generated pattern and body
+are legal. A generated function matches `Some(item)`, adds it to a sum, then
+sets the scrutinee to `None`. It prints the independently expected `1` on
+admitted unoptimized Wasm in normal and opt mode, with zero owned heap leaks.
+Row M remains partial for remaining syntax and installed consumers.
+
 Row R update (2026-09-27): admitted `meta.type_expr`, typed parameter and
 expression-body function items, inherent method items, and `meta.expr_try`
 composition are merged. `program_defined_builder_uses_type_info_in_both_modes`

@@ -308,6 +308,7 @@ impl Interpreter {
                     let mut type_ancestry = Vec::new();
                     let mut block_ancestry = Vec::new();
                     let mut arm_ancestry = Vec::new();
+                    let mut pattern_ancestry = Vec::new();
                     let expr = composition.build(|handle| {
                         if let Some(origin) = self.compiler_syntax.expression_origins().get(handle) {
                             hole_ancestry.extend(origin.hole_ancestry.iter().cloned());
@@ -332,10 +333,17 @@ impl Interpreter {
                         }
                         self.compiler_syntax.match_arms().get(handle).cloned()
                             .ok_or("meta expression composition requires a typed match arm payload".into())
+                    }, |handle| {
+                        if let Some(origin) = self.compiler_syntax.pattern_origins().get(handle) {
+                            pattern_ancestry.extend(origin.hole_ancestry.iter().cloned());
+                        }
+                        self.compiler_syntax.patterns().get(handle).cloned()
+                            .ok_or("meta expression composition requires a typed pattern payload".into())
                     }).map_err(|message| RuntimeError { message })?;
                     hole_ancestry.extend(type_ancestry);
                     hole_ancestry.extend(block_ancestry);
                     hole_ancestry.extend(arm_ancestry);
+                    hole_ancestry.extend(pattern_ancestry);
                     Ok(Some(self.store_compiler_expr_syntax(
                         "expression-compose", expr, hole_ancestry,
                     )?))

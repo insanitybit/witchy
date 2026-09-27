@@ -262,6 +262,7 @@ fn expression_compose_into(mut caller: Caller<'_, VmState>, pointer: i32, length
     let mut type_origins = Vec::new();
     let mut block_origins = Vec::new();
     let mut arm_origins = Vec::new();
+    let mut pattern_origins = Vec::new();
     let expression = composition.build(|handle| {
         if !state.costs.contains_key(handle) {
             return Err("compiler expression requires current-session syntax".into());
@@ -294,6 +295,14 @@ fn expression_compose_into(mut caller: Caller<'_, VmState>, pointer: i32, length
             .ok_or("compiler expression match arm handle has no origin")?.clone());
         state.syntax.match_arms().get(handle).cloned()
             .ok_or("compiler expression match arm handle has no typed payload".into())
+    }, |handle| {
+        if !state.pattern_costs.contains_key(handle) {
+            return Err("compiler expression requires current-session pattern syntax".into());
+        }
+        pattern_origins.push(state.syntax.pattern_origins().get(handle)
+            .ok_or("compiler expression pattern handle has no origin")?.clone());
+        state.syntax.patterns().get(handle).cloned()
+            .ok_or("compiler expression pattern handle has no typed payload".into())
     }).map_err(Error::msg)?;
     let cost = measure_dynamic(&expression).map_err(Error::msg)?;
     let required = state.syntax.syntax_handle_byte_len("expression").map_err(Error::msg)?;
@@ -312,7 +321,7 @@ fn expression_compose_into(mut caller: Caller<'_, VmState>, pointer: i32, length
     state.syntax.insert_expression(handle.clone(), expression);
     state.syntax.insert_expression_origin(handle.clone(), ComptimeSyntaxOrigin {
         definition_line: 1,
-        hole_ancestry: origins.into_iter().chain(type_origins).chain(block_origins).chain(arm_origins)
+        hole_ancestry: origins.into_iter().chain(type_origins).chain(block_origins).chain(arm_origins).chain(pattern_origins)
             .flat_map(|origin| origin.hole_ancestry).collect(),
     });
     state.costs.insert(handle.clone(), cost);
