@@ -1,7 +1,6 @@
 //! Frontend inspection command services: `check`, `expand`, and `doc`.
 
 use super::compile::compile_checked_to_wasm;
-use witchy_interp::comptime;
 use witchy_syntax::{doc, parser};
 use witchy::enforce_performance_modes;
 use crate::{link_file_checked, linked_has_main};
@@ -79,9 +78,6 @@ fn document_files(files: &[String]) -> Result<String, String> {
             .map_err(|e| format!("{f}: {e}"))?;
         if module.items.iter().any(|item| matches!(item, witchy_syntax::ast::Item::Comptime(_))) {
             (src, module) = checked_expanded_entry_source(f)?;
-        } else {
-            comptime::expand(stem, &mut module)
-                .map_err(|e| format!("{f}: {e}"))?;
         }
         let markdown = doc::render_module(stem, &src, &module)
             .map_err(|e| format!("{f}: {e}"))?;

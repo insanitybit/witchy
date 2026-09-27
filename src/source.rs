@@ -348,7 +348,6 @@ pub(crate) fn checked_expanded_entry_source(path: &str) -> Result<(String, ast::
         return Ok((original, expanded));
     }
     let _checked = check_loaded_source_bundle(sources, &entry, path, user_modules, owners)?;
-    comptime::expand(&entry, &mut module).map_err(|error| format!("{path}: {error}"))?;
     Ok((original, module))
 }
 
