@@ -1343,9 +1343,12 @@ if capability_imports.contains("build_out_write_at") {
                     witchy_wir::canonical_safewir::COMPILER_QUOTE_ITEM_IMPORT,
                     witchy_wir::canonical_safewir::COMPILER_EMIT_ITEM_IMPORT,
                     witchy_wir::canonical_safewir::COMPILER_QUOTE_TYPE_IMPORT,
-                    witchy_wir::canonical_safewir::COMPILER_RECORD_TYPE_IMPORT] {
+                    witchy_wir::canonical_safewir::COMPILER_RECORD_TYPE_IMPORT,
+                    witchy_wir::canonical_safewir::COMPILER_EXPR_LEAF_IMPORT] {
                     if !compiler_imports.contains(name) { continue; }
-                    let signature = if matches!(name, witchy_wir::canonical_safewir::COMPILER_QUOTE_EXPR_IMPORT
+                    let signature = if name == witchy_wir::canonical_safewir::COMPILER_EXPR_LEAF_IMPORT {
+                        push_import_signature(vec![text, text, text], vec![ValueType::Size], Some(2))?
+                    } else if matches!(name, witchy_wir::canonical_safewir::COMPILER_QUOTE_EXPR_IMPORT
                         | witchy_wir::canonical_safewir::COMPILER_QUOTE_ITEM_IMPORT
                         | witchy_wir::canonical_safewir::COMPILER_QUOTE_TYPE_IMPORT) {
                         push_import_signature(vec![text, ValueType::Int, text], vec![ValueType::Size], Some(2))?
@@ -13484,21 +13487,32 @@ impl FunctionLowerer<'_> {
             }
             return self.lower_aggregate_for_source(&source, &shape, index, vec![handle]);
         }
-        if matches!(name, witchy_syntax::intrinsics::COMPILER_QUOTE_EXPR
+        if witchy_syntax::intrinsics::is_meta_expr_leaf(name)
+            || matches!(name, witchy_syntax::intrinsics::COMPILER_QUOTE_EXPR
             | witchy_syntax::intrinsics::COMPILER_QUOTE_ITEM
             | witchy_syntax::intrinsics::COMPILER_QUOTE_TYPE) {
-            let variant_name = if name == witchy_syntax::intrinsics::COMPILER_QUOTE_EXPR {
+            let variant_name = if witchy_syntax::intrinsics::is_meta_expr_leaf(name)
+                || name == witchy_syntax::intrinsics::COMPILER_QUOTE_EXPR {
                 "meta.CompilerExprSyntax"
             } else if name == witchy_syntax::intrinsics::COMPILER_QUOTE_TYPE {
                 "meta.CompilerTypeSyntax"
             } else { "meta.ItemSyntax" };
-            let seed = self.lower_string_argument(&args[0])?;
-            let seed = self.clone_reference_token(seed)?;
-            // Preserve evaluation of the spelling operand, but never parse it
-            // or pass it as syntax authority to the compiler host.
-            self.lower_string_argument(&args[1])?;
-            let site = self.lower_expr(&args[2])?;
-            let inputs = vec![self.string_slice_argument(seed, layout)?, HostCallArgument::Value(site)];
+            let inputs = if witchy_syntax::intrinsics::is_meta_expr_leaf(name) {
+                let kind = self.lower_string_argument(&args[0])?;
+                let kind = self.clone_reference_token(kind)?;
+                let payload = self.lower_string_argument(&args[1])?;
+                let payload = self.clone_reference_token(payload)?;
+                vec![self.string_slice_argument(kind, layout)?,
+                    self.string_slice_argument(payload, layout)?]
+            } else {
+                let seed = self.lower_string_argument(&args[0])?;
+                let seed = self.clone_reference_token(seed)?;
+                // Preserve evaluation of the spelling operand, but never parse it
+                // or pass it as syntax authority to the compiler host.
+                self.lower_string_argument(&args[1])?;
+                let site = self.lower_expr(&args[2])?;
+                vec![self.string_slice_argument(seed, layout)?, HostCallArgument::Value(site)]
+            };
             let handle = self.lower_bounded_host_result(import, inputs)?;
             let source = self.expression_storage_type(expression)?;
             let shape = scalar_aggregate_shape(&source, self.definitions)
@@ -20448,6 +20462,9 @@ fn compiler_service_import(name: &str) -> Option<(&'static str, usize)> {
     }
     if witchy_syntax::intrinsics::is_meta_record_type_wire(name) {
         return Some((witchy_wir::canonical_safewir::COMPILER_RECORD_TYPE_IMPORT, 1));
+    }
+    if witchy_syntax::intrinsics::is_meta_expr_leaf(name) {
+        return Some((witchy_wir::canonical_safewir::COMPILER_EXPR_LEAF_IMPORT, 2));
     }
     match name {
         witchy_syntax::intrinsics::COMPILER_QUOTE_EXPR => Some((witchy_wir::canonical_safewir::COMPILER_QUOTE_EXPR_IMPORT, 3)),

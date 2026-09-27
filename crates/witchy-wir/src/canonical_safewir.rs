@@ -101,7 +101,7 @@ pub use vm_service::{CandidateVmService, VM_SERVICE_IMPORT_NAMES, VM_SERVICE_KIN
 mod compiler_session;
 pub use compiler_session::{COMPILER_FRESH_IMPORT, COMPILER_QUOTE_EXPR_IMPORT, COMPILER_EMIT_EXPR_IMPORT,
     COMPILER_QUOTE_ITEM_IMPORT, COMPILER_EMIT_ITEM_IMPORT, COMPILER_QUOTE_TYPE_IMPORT,
-    COMPILER_RECORD_TYPE_IMPORT};
+    COMPILER_RECORD_TYPE_IMPORT, COMPILER_EXPR_LEAF_IMPORT};
 
 /// Stable identity supplied by canonical type checking. It identifies the
 /// checked source but grants no validation or encoding authority by itself.

@@ -84,6 +84,28 @@ fn limits() -> ComptimeLimits {
 }
 
 #[test]
+fn canonical_dynamic_expression_leaves_are_typed_and_session_bounded() {
+    use witchy_syntax::ast::Expr;
+    let source = "import meta\nfn main() -> Int:\n    emit_expr(meta.expr_int(42))\n    emit_expr(meta.expr_bool(true))\n    emit_expr(meta.expr_string(\"hello\"))\n    0\n";
+    let recipe = witchy_types::pipeline::check_comptime_recipe_from_source_bundle(
+        vec![("comptime".into(), source.as_bytes().to_vec())], "dynamic-leaves", witchy_interp::comptime::EXPANDER,
+        &["comptime".to_owned()].into_iter().collect(), owners(),
+    ).expect("checked expression constructors");
+    let artifact = witchy_lower::codegen::compile_checked_comptime_recipe_artifact(&recipe)
+        .expect_lowered("admitted expression constructors");
+    let first = Runtime::run_comptime(&artifact, limits()).expect("host-owned expression leaves");
+    let second = Runtime::run_comptime(&artifact, limits()).expect("fresh deterministic session");
+    assert_eq!(first.result, 0);
+    assert_eq!(first.heap_leaks, 0);
+    assert_eq!(first.expressions, second.expressions);
+    assert!(matches!(first.expressions.as_slice(), [a, b, c]
+        if matches!(a.expression, Expr::Int(42))
+            && matches!(b.expression, Expr::Bool(true))
+            && matches!(&c.expression, Expr::Str(value) if value == "hello")));
+    assert!(Runtime::run_comptime(&artifact, ComptimeLimits { syntax_nodes: 0, ..limits() }).is_err());
+}
+
+#[test]
 fn canonical_type_quotation_uses_checked_type_seed_in_both_modes() {
     for mode in ["", "mode opt\n"] {
         let source = format!("{mode}import meta\nfn main() -> Int:\n    let ty = quote type:\n        List(Int)\n    42\n");

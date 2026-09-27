@@ -15,6 +15,7 @@ pub(in super::super) fn register(linker: &mut Linker<VmState>) -> Result<()> {
     linker.func_wrap("witchy", "compiler_syntax_emit_item", emit::<ItemCategory>)?;
     linker.func_wrap("witchy", "compiler_syntax_quote_type_into", quote_into::<TypeCategory>)?;
     linker.func_wrap("witchy", "compiler_syntax_record_type_into", record_type_into)?;
+    linker.func_wrap("witchy", "compiler_syntax_expr_leaf_into", expression_leaf_into)?;
     Ok(())
 }
 
@@ -113,6 +114,72 @@ fn decode_record_wire(wire: &[u8]) -> Result<(&str, Vec<(&str, &str)>)> {
     }
     if !remaining.is_empty() { return Err(Error::msg("trailing compiler record data")); }
     Ok((name, fields))
+}
+
+fn expression_leaf_into(mut caller: Caller<'_, VmState>, kind_ptr: i32, kind_len: i32,
+    payload_ptr: i32, payload_len: i32, out: i32, capacity: i32) -> Result<i32> {
+    let memory = memory_of(&mut caller)?;
+    let kind_range = range(memory.data_size(&caller), kind_ptr, kind_len)?;
+    let payload_range = range(memory.data_size(&caller), payload_ptr, payload_len)?;
+    let output = range(memory.data_size(&caller), out, capacity)?;
+    let state = caller.data().compiler_syntax.as_ref()
+        .ok_or_else(|| Error::msg("compiler syntax session unavailable"))?;
+    let input_len = kind_range.len().checked_add(payload_range.len())
+        .ok_or_else(|| Error::msg("compiler expression leaf input overflow"))?;
+    if kind_range.len() > 16 || input_len as u64 > state.input_bytes {
+        return Err(Error::msg("compiler expression leaf input budget exceeded"));
+    }
+    let required = state.syntax.syntax_handle_byte_len("expression").map_err(Error::msg)?;
+    let cost = SyntaxCost { nodes: 4, bytes: payload_range.len() as u64 + 64 };
+    if cost.nodes > state.nodes.remaining() || cost.bytes > state.syntax_bytes.remaining()
+        || required as u64 > state.bytes.remaining() {
+        return Err(Error::msg("compiler syntax arena budget exceeded"));
+    }
+    let work = (input_len as u64).checked_add(required as u64)
+        .and_then(|n| n.checked_add(cost.work()?))
+        .ok_or_else(|| Error::msg("compiler syntax fuel overflow"))?;
+    charge_fuel(&mut caller, work)?;
+    let bytes = memory.data(&caller);
+    let kind = std::str::from_utf8(&bytes[kind_range])
+        .map_err(|_| Error::msg("compiler expression leaf kind is not UTF-8"))?;
+    let payload = std::str::from_utf8(&bytes[payload_range])
+        .map_err(|_| Error::msg("compiler expression leaf payload is not UTF-8"))?;
+    let expression = match kind {
+        "int" => Expr::Int(payload.parse().map_err(|_| Error::msg("meta.expr_int carried an invalid Int payload"))?),
+        "duration_ms" => Expr::Duration(payload.parse().map_err(|_| Error::msg("meta.expr_duration_ms carried an invalid Int payload"))?),
+        "float" => {
+            let value: f64 = payload.parse().map_err(|_| Error::msg("meta.expr_float carried an invalid Float payload"))?;
+            if !value.is_finite() { return Err(Error::msg("meta.expr_float requires a finite Float value")); }
+            Expr::Float(value)
+        }
+        "bool" => Expr::Bool(payload.parse().map_err(|_| Error::msg("meta.expr_bool carried an invalid Bool payload"))?),
+        "string" => Expr::Str(payload.to_owned()),
+        "name" => {
+            let mut chars = payload.chars();
+            if !chars.next().is_some_and(|ch| ch.is_ascii_alphabetic() || ch == '_')
+                || !chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+                || payload == "_" || payload.contains("__") {
+                return Err(Error::msg("meta expression name is not a valid identifier"));
+            }
+            if payload.chars().next().is_some_and(char::is_uppercase) {
+                Expr::Ctor { name: payload.to_owned(), args: Vec::new() }
+            } else { Expr::Var(payload.to_owned()) }
+        }
+        _ => return Err(Error::msg("unknown compiler-owned expression leaf")),
+    };
+    if output.len() < required { return Ok(required as i32); }
+    let state = caller.data_mut().compiler_syntax.as_mut().expect("checked session");
+    state.nodes.charge(cost.nodes).map_err(|_| Error::msg("compiler syntax arena budget exceeded"))?;
+    state.syntax_bytes.charge(cost.bytes).map_err(|_| Error::msg("compiler syntax arena budget exceeded"))?;
+    state.bytes.charge(required as u64).map_err(|_| Error::msg("compiler syntax handle budget exceeded"))?;
+    let handle = state.syntax.next_syntax_handle("expression").map_err(Error::msg)?;
+    state.syntax.insert_expression(handle.clone(), expression);
+    state.syntax.insert_expression_origin(handle.clone(), ComptimeSyntaxOrigin {
+        definition_line: 0, hole_ancestry: Vec::new(),
+    });
+    state.costs.insert(handle.clone(), cost);
+    memory.data_mut(&mut caller)[output.start..output.start + required].copy_from_slice(handle.as_bytes());
+    Ok(required as i32)
 }
 
 fn charge_fuel(caller: &mut Caller<'_, VmState>, work: u64) -> Result<()> {
