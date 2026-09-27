@@ -352,7 +352,7 @@ pub fn __handle_from_raw(id: Int) -> Handle:
     Handle(id)
 
 pub fn __handle_into_raw(own h: Handle) -> Int:
-    match h:
+    match move h:
         Handle(id) -> id
 
 // Start `child` as a concurrent task. Mint the public `must` Handle only at
