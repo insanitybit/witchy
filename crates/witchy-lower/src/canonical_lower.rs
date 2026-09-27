@@ -13,6 +13,8 @@ mod owned;
 
 #[path = "canonical_regex.rs"]
 mod regex;
+#[path = "canonical_constructor_storage.rs"]
+mod constructor_storage;
 #[path = "canonical_vm_service.rs"]
 mod vm_service;
 
@@ -11837,8 +11839,7 @@ impl FunctionLowerer<'_> {
             Expr::Tuple(items) => {
                 let shape = scalar_aggregate_shape(&declared, self.definitions)
                     .ok_or(CanonicalLoweringError::UnsupportedExpression("affine tuple shape"))?;
-                let values = items.iter().map(|item| self.lower_expr(item))
-                    .collect::<Result<Vec<_>, _>>()?;
+                let values = self.lower_checked_aggregate_payload(items, &shape, 0)?;
                 self.lower_aggregate_for_source(&declared, &shape, 0, values)
             }
             Expr::AnonCtor { tag, args } => {
@@ -11851,8 +11852,7 @@ impl FunctionLowerer<'_> {
                         callee: format!(".{tag}"), expected: variant.arity, actual: args.len(),
                     });
                 }
-                let values = args.iter().map(|item| self.lower_expr(item))
-                    .collect::<Result<Vec<_>, _>>()?;
+                let values = self.lower_checked_aggregate_payload(args, &shape, index)?;
                 self.lower_aggregate_for_source(&declared, &shape, index, values)
             }
             Expr::Record { name, fields, spread } =>
@@ -11937,10 +11937,7 @@ impl FunctionLowerer<'_> {
                 callee: name.to_owned(), expected: variant.arity, actual: arguments.len(),
             });
         }
-        let mut values = Vec::with_capacity(arguments.len());
-        for argument in arguments {
-            values.push(self.lower_expr(argument)?);
-        }
+        let values = self.lower_checked_aggregate_payload(arguments, &shape, index)?;
         let result = self.lower_aggregate_for_source(&source_type, &shape, index, values)?;
         self.complete_region_must_transfer(expression, result)?;
         Ok(result)
