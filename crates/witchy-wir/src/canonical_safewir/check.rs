@@ -1001,7 +1001,26 @@ fn check_memory_cfg(
 ) -> Result<(), InitialCheckError> {
     let mut incoming = BTreeMap::new();
     incoming.insert(function.entry, memory.snapshot());
-    let mut pending = VecDeque::from([function.entry]);
+    // Visit forward edges before loop backedges. The static CFG was already
+    // validated by predecessor_map, so every visited target has a block.
+    // A queued block reads the latest joined input when it runs; additional
+    // predecessor updates need not enqueue duplicate copies of that block.
+    let mut seen = BTreeSet::new();
+    let mut postorder = Vec::new();
+    let mut walk = vec![(function.entry, false)];
+    while let Some((id, expanded)) = walk.pop() {
+        if expanded {
+            postorder.push(id);
+        } else if seen.insert(id) {
+            walk.push((id, true));
+            for next in successors(&blocks[&id].terminator).into_iter().rev() {
+                walk.push((next, false));
+            }
+        }
+    }
+    let ranks = postorder.into_iter().rev().enumerate()
+        .map(|(rank, id)| (id, rank)).collect::<BTreeMap<_, _>>();
+    let mut pending = BTreeSet::from([(ranks[&function.entry], function.entry)]);
     let mut iterations = 0usize;
     let maximum_iterations = function
         .blocks
@@ -1016,7 +1035,7 @@ fn check_memory_cfg(
     // admits it. Only a failure that stands once every state has converged
     // is reported (the earliest block's).
     let mut failures: BTreeMap<BlockId, InitialCheckError> = BTreeMap::new();
-    while let Some(block_id) = pending.pop_front() {
+    while let Some((_, block_id)) = pending.pop_first() {
         iterations += 1;
         if iterations > maximum_iterations {
             return Err(InitialCheckError::MemoryDataflowNonConvergence {
@@ -1042,7 +1061,7 @@ fn check_memory_cfg(
         for (target, next) in updates {
             if incoming.get(&target) != Some(&next) {
                 incoming.insert(target, next);
-                pending.push_back(target);
+                pending.insert((ranks[&target], target));
             }
         }
     }
