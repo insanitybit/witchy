@@ -150,35 +150,66 @@ fn main(console: Console):
 "#;
     // Independent oracle: the interpreter, which has no specialized layouts.
     let expected = interp(source);
-    // Parity + always-on checked heap: run_linked_on_wasm runs the module on the
-    // real runtime, whose Runtime::run performs the trailing-redzone poison sweep
-    // (heap_sweep) after execution — a packed write past an object end or a UAF of
-    // a reclaimed packed buffer would trap here rather than diverge silently.
-    assert_eq!(
-        run_linked_on_wasm(&[("main", source)], "main"),
-        expected,
-        "compiled specialized layout diverges from the interpreter oracle (checked heap)",
-    );
-
     // Cross-lever de-opt sweep: none, all, and each single lever toggled off from
     // all. Every configuration must reproduce the exact oracle value, so no lever
-    // (or its removal) silently changes a specialized-layout result. `set_for_tests`
-    // is thread-local; reset it after each run.
-    use crate::opt::{Opt, OptSet};
-    let mut sets: Vec<(String, OptSet)> =
-        vec![("none".to_string(), OptSet::none()), ("all".to_string(), OptSet::all())];
-    for opt in Opt::ALL {
-        sets.push((format!("all-without-{}", opt.name()), OptSet::all().without(opt)));
-    }
-    for (label, set) in sets {
-        crate::opt::set_for_tests(Some(set));
+    // (or its removal) silently changes a specialized-layout result. The `all`
+    // variant also supplies the compiled-Wasm parity and checked-heap run: the
+    // print-only runtime still performs Runtime::run's trailing-redzone poison
+    // sweep. Linking only depends on the Fold lever; share its two checked
+    // snapshots and compile the rest of the independent configurations in
+    // bounded parallel batches.
+    use crate::opt::{self, Opt, OptSet};
+    let link_with = |set| {
+        opt::set_for_tests(Some(set));
         let module = parser::parse_module(source).expect("parse");
         let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
-        let bytes = codegen::compile_module_binary(&linked)
-            .expect_lowered("specialized layout lowers under every lever");
-        let got = run_bytes_print_only(&bytes);
-        crate::opt::set_for_tests(None);
-        assert_eq!(got, expected, "specialized-layout result diverges under WITCHY_OPT={label}");
+        opt::set_for_tests(None);
+        linked
+    };
+    let unfolded_linked = link_with(OptSet::none());
+    let folded_linked = link_with(OptSet::all());
+    let mut sets: Vec<(String, OptSet, bool)> = vec![
+        ("none".to_string(), OptSet::none(), false),
+        ("all".to_string(), OptSet::all(), true),
+    ];
+    for opt in Opt::ALL {
+        sets.push((
+            format!("all-without-{}", opt.name()),
+            OptSet::all().without(opt),
+            opt != Opt::Fold,
+        ));
+    }
+    let outputs = std::thread::scope(|scope| {
+        let workers = sets
+            .chunks(6)
+            .map(|batch| {
+                let unfolded_linked = &unfolded_linked;
+                let folded_linked = &folded_linked;
+                scope.spawn(move || {
+                    batch
+                        .iter()
+                        .map(|(label, set, folded)| {
+                            crate::opt::set_for_tests(Some(*set));
+                            let linked = if *folded { folded_linked } else { unfolded_linked };
+                            let bytes = codegen::compile_module_binary(linked)
+                                .expect_lowered("specialized layout lowers under every lever");
+                            let got = run_bytes_print_only(&bytes);
+                            crate::opt::set_for_tests(None);
+                            (label.clone(), got)
+                        })
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect::<Vec<_>>();
+        workers
+            .into_iter()
+            .flat_map(|worker| worker.join().expect("optimizer sweep worker"))
+            .collect::<Vec<_>>()
+    });
+    for (label, got) in outputs {
+        assert_eq!(
+            got, expected,
+            "specialized-layout result diverges under WITCHY_OPT={label}"
+        );
     }
 }
-
