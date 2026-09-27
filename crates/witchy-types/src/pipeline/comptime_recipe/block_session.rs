@@ -2,6 +2,7 @@
 //! prior-output chain, whose execution authenticity is established by the
 //! compiler-owned runtime driver.
 use super::*;
+use std::sync::Arc;
 use witchy_syntax::ast::{Expr, Function, Stmt};
 use witchy_syntax::compiler_session::ComptimeSyntaxOrigin;
 
@@ -144,8 +145,8 @@ pub struct PriorComptimeBlockOutput {
 /// bytes and loader assignments; no mutable module accessor is exposed.
 pub struct ComptimeSourceSession {
     original_digest: [u8; 32],
-    raw_sources: Vec<(String, Vec<u8>)>,
-    modules: Vec<(String, Module)>,
+    raw_sources: Arc<Vec<(String, Vec<u8>)>>,
+    modules: Arc<Vec<(String, Module)>>,
     selected: String,
     owners: AuthenticatedModuleOwners,
     user_modules: HashSet<String>,
@@ -180,8 +181,8 @@ impl ComptimeSourceSession {
             original_digest: checked_source_digest(
                 &self.raw_sources, selected, &PrecompiledDeclarationEnvironment::default(),
             ),
-            raw_sources: self.raw_sources.clone(),
-            modules: self.modules.clone(),
+            raw_sources: Arc::clone(&self.raw_sources),
+            modules: Arc::clone(&self.modules),
             selected: selected.into(),
             owners: self.owners.clone(),
             user_modules: self.user_modules.clone(),
@@ -238,7 +239,7 @@ impl ComptimeSourceSession {
             let (_, original) = stage.modules.iter().find(|(name, _)| name == predecessor)
                 .expect("predecessor raw module retained");
             let expanded = materialize_prior(original, prior, true, false);
-            session.modules.iter_mut().find(|(name, _)| name == predecessor)
+            Arc::make_mut(&mut session.modules).iter_mut().find(|(name, _)| name == predecessor)
                 .expect("predecessor raw module retained").1 = expanded;
             hash.update(&(predecessor.len() as u64).to_le_bytes());
             hash.update(predecessor.as_bytes());
@@ -379,7 +380,7 @@ impl ComptimeSourceSession {
         let mut reachable = HashSet::from([self.selected.clone()]);
         loop {
             let mut changed = false;
-            for (name, module) in &self.modules {
+            for (name, module) in self.modules.iter() {
                 if reachable.contains(name) {
                     for import in &module.imports {
                         changed |= reachable.insert(import.clone());
@@ -456,7 +457,7 @@ impl ComptimeSourceSession {
                 .map_err(|error| refuse(format!("comptime source `{name}` failed to parse: {error}")))?;
             Ok((name.clone(), module))
         }).collect::<Result<_, PipelineError>>()?;
-        Ok(Self { original_digest, raw_sources: sources, modules, selected: selected.into(), owners, user_modules })
+        Ok(Self { original_digest, raw_sources: Arc::new(sources), modules: Arc::new(modules), selected: selected.into(), owners, user_modules })
     }
 
     /// Select an original item with genuinely empty prior output. Replaying
@@ -708,7 +709,7 @@ impl ComptimeSourceSession {
         if self.selected != entry || !self.user_modules.contains(entry) {
             return Err(refuse("comptime graph requires the loader-owned entry session"));
         }
-        let mut expanded = self.modules.clone();
+        let mut expanded = self.modules.as_ref().clone();
         let mut origins = Vec::new();
         let mut hash = blake3::Hasher::new();
         hash.update(b"witchy.comptime-expanded-graph.v1\0");
@@ -772,7 +773,7 @@ impl ComptimeSourceSession {
     fn materialized_graph_modules(
         &self, outputs: &[(String, Vec<PriorComptimeBlockOutput>)],
     ) -> Vec<(String, Module)> {
-        let mut modules = self.modules.clone();
+        let mut modules = self.modules.as_ref().clone();
         for (producer, prior) in outputs {
             let (_, original) = self.modules.iter().find(|(name, _)| name == producer)
                 .expect("validated graph producer is a raw module");
@@ -813,7 +814,7 @@ impl ComptimeSourceSession {
             .ok_or_else(|| refuse("admitted test graph lacks canonical authority"))?
             .source_bundle_digest();
         super::super::test_driver::seal_admitted_test_suite(
-            self.raw_sources.clone(), entry, &self.user_modules,
+            self.raw_sources.as_ref().clone(), entry, &self.user_modules,
             self.owners.clone(), self.materialized_graph_modules(outputs), digest,
         )
     }
@@ -877,7 +878,7 @@ impl ComptimeSourceSession {
             name.clone(), if name == &self.selected { expanded.clone() } else { module.clone() },
         )).collect();
         super::super::test_driver::seal_admitted_test_suite(
-            self.raw_sources.clone(), entry, &self.user_modules,
+            self.raw_sources.as_ref().clone(), entry, &self.user_modules,
             self.owners.clone(), admitted_modules, digest,
         )
     }
