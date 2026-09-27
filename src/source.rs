@@ -675,17 +675,23 @@ fn sibling_module_owner(
 }
 
 pub(crate) fn expand_file_source(path: &str) -> Result<String, String> {
-    let (mut modules, entry_stem, _) =
-        load_file_modules(path, &std::collections::HashMap::new())?;
+    let entry_path = std::path::Path::new(path);
+    let entry_stem = entry_path.file_stem().and_then(|stem| stem.to_str())
+        .ok_or_else(|| format!("invalid file name: {path}"))?;
+    let owner = workspace_module_owner(entry_path, entry_stem)?;
+    let (sources, entry_stem, user_modules, owners) = load_file_modules_authenticated(
+        path, &HashMap::new(), owner, &HashMap::new(),
+    )?;
+    let mut modules = sources.iter().map(|(name, source)| {
+        let source = std::str::from_utf8(source)
+            .map_err(|error| format!("{name}: source is not UTF-8: {error}"))?;
+        let module = parser::parse_module(source).map_err(|error| format!("{name}: {error}"))?;
+        Ok((name.clone(), module))
+    }).collect::<Result<SourceModules, String>>()?;
     if modules.iter().find(|(name, _)| name == &entry_stem)
         .is_some_and(|(_, module)| module.items.iter().any(|item| matches!(item, ast::Item::Comptime(_)))) {
-        let entry_path = std::path::Path::new(path);
-        let owner = workspace_module_owner(entry_path, &entry_stem)?;
-        let (sources, entry, user_modules, owners) = load_file_modules_authenticated(
-            path, &HashMap::new(), owner, &HashMap::new(),
-        )?;
         let expanded = witchy::canonical_comptime::expand_source_bundle(
-            sources, &entry, user_modules, owners, witchy::canonical_comptime::source_limits(),
+            sources, &entry_stem, user_modules, owners, witchy::canonical_comptime::source_limits(),
         )?;
         return Ok(format::module(&expanded, &[]));
     }
