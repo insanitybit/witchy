@@ -20157,6 +20157,22 @@ fn scalar_type(source: &Type) -> Result<ValueType, CanonicalLoweringError> {
     })
 }
 
+fn source_scalar_layout_kind(
+    source: &Type,
+    definitions: &BTreeMap<String, TypeDef>,
+) -> Option<ScalarKind> {
+    let StoragePlan::InlineScalar(kind) = StoragePlan::classify(source.unqualified(), definitions, |_| None) else {
+        return None;
+    };
+    Some(match kind {
+        CanonicalScalarKind::Unit => ScalarKind::Unit,
+        CanonicalScalarKind::Bool => ScalarKind::Bool,
+        CanonicalScalarKind::Int => ScalarKind::Int,
+        CanonicalScalarKind::Float => ScalarKind::Float,
+        CanonicalScalarKind::Duration => ScalarKind::Duration,
+    })
+}
+
 fn source_value_type(
     source: &Type,
     layout_bundle: &LayoutBundle,
@@ -20349,8 +20365,9 @@ fn aggregate_layout(
     let mut expected = Vec::with_capacity(expected_fields.len());
     for field in expected_fields {
         let slot = match source_value_type(field, layout_bundle, layouts, closure_layouts, definitions)? {
-            scalar @ (ValueType::Int | ValueType::Float | ValueType::Bool | ValueType::Unit) =>
-                (Some(scalar), None),
+            ValueType::Int | ValueType::Float | ValueType::Bool | ValueType::Unit =>
+                (Some(source_scalar_layout_kind(field, definitions)
+                    .ok_or_else(|| CanonicalLoweringError::UnsupportedType(field.clone()))?), None),
             ValueType::Ref(pointee) => (None, Some(pointee)),
             _ => return Err(CanonicalLoweringError::UnsupportedType(field.clone())),
         };
@@ -20369,10 +20386,7 @@ fn aggregate_layout(
         }
         let matches = fields.iter().zip(&expected).all(|(field, (scalar, pointee))| {
             match (layouts.get(*field).map(|field| field.kind()), scalar, pointee) {
-                (Some(LayoutKind::Scalar(ScalarKind::Int | ScalarKind::Duration)), Some(ValueType::Int), None) => true,
-                (Some(LayoutKind::Scalar(ScalarKind::Float)), Some(ValueType::Float), None) => true,
-                (Some(LayoutKind::Scalar(ScalarKind::Bool)), Some(ValueType::Bool), None) => true,
-                (Some(LayoutKind::Scalar(ScalarKind::Unit)), Some(ValueType::Unit), None) => true,
+                (Some(LayoutKind::Scalar(actual)), Some(expected), None) => actual == expected,
                 (
                     Some(LayoutKind::RuntimePointerValueSlot { pointee: actual, semantics }),
                     None,
@@ -20409,13 +20423,10 @@ fn packed_scalar_layout(
         };
         if fields.len() == expected_fields.len() && fields.iter().zip(expected_fields).all(|(field, expected)| {
             let actual = match layouts.get(*field).map(|field| field.kind()) {
-                Some(LayoutKind::Scalar(ScalarKind::Int | ScalarKind::Duration)) => ValueType::Int,
-                Some(LayoutKind::Scalar(ScalarKind::Float)) => ValueType::Float,
-                Some(LayoutKind::Scalar(ScalarKind::Bool)) => ValueType::Bool,
-                Some(LayoutKind::Scalar(ScalarKind::Unit)) => ValueType::Unit,
+                Some(LayoutKind::Scalar(kind)) => *kind,
                 _ => return false,
             };
-            scalar_type(expected).is_ok_and(|expected| expected == actual)
+            source_scalar_layout_kind(expected, &BTreeMap::new()).is_some_and(|expected| expected == actual)
         }) {
             candidates.push(*root);
         }

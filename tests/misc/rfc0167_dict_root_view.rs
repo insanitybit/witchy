@@ -1,5 +1,4 @@
-//! RFC-0167 row G: whole `&Dict(String, Int)`, `&Dict(String, Bool)`, and
-//! `&Dict(String, Float)` views retain their exact roots. This witness uses admitted
+//! RFC-0167 row G: whole scalar dictionary views retain their exact roots. This witness uses admitted
 //! unoptimized Wasm and a zero-leak audit.
 
 use witchy::codegen;
@@ -20,7 +19,8 @@ fn dictionary_root_and_retained_value_views_keep_snapshots() {
     // The Bool view still reads true (100) after its owner replaces it with
     // false (0). The Float view still reads 1.5 (1000) after its owner stores
     // 9.5 (0). The retained String value contributes eight bytes. The
-    // independent result is 12 + 100 + 1000 + 0 + 8 = 1120.
+    // Duration retains 5ms (2000) after its owner stores 9ms. The independent
+    // result is 12 + 100 + 1000 + 2000 + 0 + 8 = 3120.
     let source = r#"
 fn count(v: &Dict(String, Int)) -> Int:
     (*v).length()
@@ -30,6 +30,9 @@ fn old_bool(v: &Dict(String, Bool)) -> Int:
 
 fn old_float(v: &Dict(String, Float)) -> Int:
     if (*v).at("a") == 1.5: 1000 else: 0
+
+fn old_duration(v: &Dict(String, Duration)) -> Int:
+    if (*v).at("a") == 5ms: 2000 else: 0
 
 fn main() -> Int:
     var d: Dict(String, Int) = dict.new()
@@ -44,10 +47,14 @@ fn main() -> Int:
     let _ = measures.insert("a", 1.5)
     let old_measures = &measures
     let _ = measures.insert("a", 9.5)
+    var periods: Dict(String, Duration) = dict.new()
+    let _ = periods.insert("a", 5ms)
+    let old_periods = &periods
+    let _ = periods.insert("a", 9ms)
     let text = "snapshot"
     var views: Dict(String, &String) = dict.new()
     let _ = views.insert("a", &text)
-    count(v) * 10 + d.length() + old_bool(old_flags) + old_float(old_measures) + (*views.at("a")).length() + (if flags.at("a"): 10000 else: 0) + (if measures.at("a") == 9.5: 0 else: 10000)
+    count(v) * 10 + d.length() + old_bool(old_flags) + old_float(old_measures) + old_duration(old_periods) + (*views.at("a")).length() + (if flags.at("a"): 10000 else: 0) + (if measures.at("a") == 9.5: 0 else: 10000) + (if periods.at("a") == 9ms: 0 else: 10000)
 "#;
     opt::set_for_tests(Some(OptSet::none()));
     let _reset = ResetOptimizationOverride;
@@ -61,7 +68,7 @@ fn main() -> Int:
         128,
     ).expect("admitted Wasm instance");
     vm.run().expect("admitted Wasm execution");
-    assert_eq!(vm.output(), vec!["1120".to_string()], "hand-computed dictionary snapshots");
+    assert_eq!(vm.output(), vec!["3120".to_string()], "hand-computed dictionary snapshots");
     assert_eq!(vm.canonical_heap_leaks().expect("canonical heap audit"), Some(0));
 }
 
@@ -91,7 +98,15 @@ fn main() -> Int:
         &d
     0
 "#;
-    for source in [int_source, bool_source, float_source] {
+    let duration_source = r#"
+fn main() -> Int:
+    let v = region -> &Dict(String, Duration):
+        var d: Dict(String, Duration) = dict.new()
+        let _ = d.insert("a", 5ms)
+        &d
+    0
+"#;
+    for source in [int_source, bool_source, float_source, duration_source] {
         let error = witchy::resolve_std_only_checked(source).err()
             .map(|error| error.to_string())
             .expect("region-born dictionary root cannot escape");
