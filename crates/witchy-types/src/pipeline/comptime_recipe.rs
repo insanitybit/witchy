@@ -66,7 +66,7 @@ fn bind_recipe(mut checked: CheckedModule, contract: &CompilerSessionContract) -
 /// Compiler-owned typed bridge declarations enter before ordinary resolution
 /// and checking. Names select no authority: only the private checked-recipe
 /// route installs these bodies, and final imports still require admission.
-/// Quote expressions already have parser-owned intrinsic calls and payloads.
+/// Quotes already have parser-owned intrinsic calls and payloads.
 pub(super) fn install_services(module: &mut Module) {
     use witchy_syntax::ast::{Block, Expr, Function, Param, Stmt};
     if !module.imports.iter().any(|name| name == "meta") { module.imports.push("meta".into()); }
@@ -78,6 +78,17 @@ pub(super) fn install_services(module: &mut Module) {
         ret: Some(Type::Tuple(Vec::new())),
         body: Block { stmts: vec![Stmt::Expr(Expr::Call {
             name: witchy_syntax::intrinsics::COMPILER_EMIT_EXPR.into(), args: vec![Expr::Var("syntax_value".into())],
+        })], lines: vec![0], region: None },
+        bounds: Vec::new(), is_gen: false, is_async: false,
+    }));
+    module.items.push(Item::Function(Function {
+        line: 0, public: false, pure: false, comptime_only: false,
+        attributes: Vec::new(), name: "emit_item".into(), type_params: Vec::new(),
+        params: vec![Param { name: "syntax_value".into(), ty: Some(Type::Named("meta.ItemSyntax".into(), Vec::new())),
+            convention: Default::default(), default: None }],
+        ret: Some(Type::Tuple(Vec::new())),
+        body: Block { stmts: vec![Stmt::Expr(Expr::Call {
+            name: witchy_syntax::intrinsics::COMPILER_EMIT_ITEM.into(), args: vec![Expr::Var("syntax_value".into())],
         })], lines: vec![0], region: None },
         bounds: Vec::new(), is_gen: false, is_async: false,
     }));

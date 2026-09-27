@@ -6,25 +6,28 @@ use witchy_syntax::compiler_session::CompilerSessionContract;
 pub const COMPILER_FRESH_IMPORT: &str = "compiler_syntax_fresh_into";
 pub const COMPILER_QUOTE_EXPR_IMPORT: &str = "compiler_syntax_quote_expr_into";
 pub const COMPILER_EMIT_EXPR_IMPORT: &str = "compiler_syntax_emit_expr";
+pub const COMPILER_QUOTE_ITEM_IMPORT: &str = "compiler_syntax_quote_item_into";
+pub const COMPILER_EMIT_ITEM_IMPORT: &str = "compiler_syntax_emit_item";
 
 fn metered(name: &str) -> bool {
-    matches!(name, COMPILER_FRESH_IMPORT | COMPILER_QUOTE_EXPR_IMPORT | COMPILER_EMIT_EXPR_IMPORT)
+    matches!(name, COMPILER_FRESH_IMPORT | COMPILER_QUOTE_EXPR_IMPORT | COMPILER_EMIT_EXPR_IMPORT
+        | COMPILER_QUOTE_ITEM_IMPORT | COMPILER_EMIT_ITEM_IMPORT)
 }
 
 impl CanonicalAbiCatalog {
-    pub fn with_compiler_expression_import(
+    pub fn with_compiler_syntax_import(
         mut self, name: &str, signature: FunctionSignatureId, string_layout: LayoutId,
     ) -> Result<Self, String> {
         use crate::wir_prelude::WasmTy::{I32, I64};
         let read = HostParameterRole::Buffer { value_type: ValueType::Ref(string_layout), access: AccessMode::Read, extent: HostBufferExtent::Slice };
         let write = HostParameterRole::Buffer { value_type: ValueType::Ref(string_layout), access: AccessMode::Write, extent: HostBufferExtent::Slice };
         let import = match name {
-            COMPILER_QUOTE_EXPR_IMPORT => authenticated_import(name, &[I32, I32, I64, I32, I32], &[I32], signature,
+            COMPILER_QUOTE_EXPR_IMPORT | COMPILER_QUOTE_ITEM_IMPORT => authenticated_import(name, &[I32, I32, I64, I32, I32], &[I32], signature,
                 vec![read, HostParameterRole::Value(ValueType::Int), write], vec![HostResultRole::Value(ValueType::Size)],
                 HostMutation::WriteBuffers, ImportAuthentication::CompilerSession)?,
-            COMPILER_EMIT_EXPR_IMPORT => authenticated_import(name, &[I32, I32], &[], signature,
+            COMPILER_EMIT_EXPR_IMPORT | COMPILER_EMIT_ITEM_IMPORT => authenticated_import(name, &[I32, I32], &[], signature,
                 vec![read], vec![], HostMutation::ReadOnly, ImportAuthentication::CompilerSession)?,
-            _ => return Err("unknown compiler expression import".into()),
+            _ => return Err("unknown compiler syntax import".into()),
         };
         self.imports.insert(import.id, import);
         Ok(self)
