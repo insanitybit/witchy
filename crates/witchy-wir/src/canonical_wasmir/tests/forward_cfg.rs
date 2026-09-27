@@ -50,12 +50,16 @@ pub fn source_edges_and_forward_schedule_remain_checked() {
     let b = BlockId::new;
     let graph = BTreeMap::from([(b(0),vec![b(2),b(1)]),(b(1),vec![b(2)]),(b(2),vec![])]);
     assert_eq!(super::super::forward_cfg::schedule(b(0),&graph), Ok(Some(vec![b(0),b(1),b(2)])));
+    assert_eq!(super::super::forward_cfg::region(b(0),&graph,&[b(2)]), Ok(Some(vec![b(0),b(1)])));
     let mut missing = graph.clone(); missing.get_mut(&b(1)).unwrap().push(b(7));
     assert_eq!(super::super::forward_cfg::schedule(b(0),&missing), Err(()));
+    assert_eq!(super::super::forward_cfg::region(b(0),&missing,&[b(7)]), Err(()));
     let mut unreachable = graph.clone(); unreachable.insert(b(7),vec![]);
     assert_eq!(super::super::forward_cfg::schedule(b(0),&unreachable), Err(()));
     let mut cyclic = graph; cyclic.get_mut(&b(2)).unwrap().push(b(1));
     assert_eq!(super::super::forward_cfg::schedule(b(0),&cyclic), Ok(None));
+    assert_eq!(super::super::forward_cfg::region(b(0),&cyclic,&[]), Ok(None));
+    assert_eq!(super::super::forward_cfg::region(b(0),&cyclic,&[b(2)]), Ok(Some(vec![b(0),b(1)])));
 }
 
 #[cfg(feature = "native")]

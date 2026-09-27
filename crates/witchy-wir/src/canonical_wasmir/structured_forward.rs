@@ -9,7 +9,11 @@ impl StructuredEmitter<'_> {
         }
         for (position, id) in order.iter().enumerate() {
             if position > 0 { self.body.instruction(&wasm_encoder::Instruction::End); }
-            self.emitted.insert(*id);
+            if !self.emitted.insert(*id) {
+                return Err(EncodeError::Lowering(LoweringError::UnsupportedControlFlow {
+                    function: self.source_function.id, operation: "forward block emitted twice",
+                }));
+            }
             let block = self.block(*id)?.clone();
             for instruction in &block.instructions {
                 emit_instruction(self.body, self.source_function, self.layout,
@@ -19,6 +23,10 @@ impl StructuredEmitter<'_> {
             }
             let depth = |target, conditional| {
                 positions.get(&target).and_then(|target| forward_cfg::depth(position, *target, conditional))
+                    .or_else(|| self.escape_label(target).and_then(|label| {
+                        let extra = u32::try_from(order.len() - position - 1 + usize::from(conditional)).ok()?;
+                        self.label_depth(label).checked_add(extra)
+                    }))
                     .ok_or(EncodeError::Lowering(LoweringError::UnsupportedControlFlow {
                         function: self.source_function.id, operation: "non-forward scheduled edge",
                     }))

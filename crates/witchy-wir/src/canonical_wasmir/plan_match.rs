@@ -644,6 +644,11 @@ impl<'a> PlanEmitter<'a> {
         if self.is_loop_header(start)? {
             return self.emit_loop(start, stop);
         }
+        if !self.loops.is_empty() && stop.is_none_or(|target| self.escape_label(target).is_some()) {
+            let order = forward_cfg::region(start, &self.successors_by_block, &self.escape_targets())
+                .map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
+            if let Some(order) = order { return self.emit_forward(&order); }
+        }
         if !self.emitted.insert(start) {
             return Err(CanonicalAdmissionError::UnsupportedPlan);
         }

@@ -2287,12 +2287,28 @@ re-extract it in another pattern; borrowed inspection remains permitted.
 transfer of nested resources in normal, opt, normal-to-opt calls and normal
 consumers of opt-defined types. Controls retain borrowing, unconditional guard
 disposition, refutable patterns, lazy guard skips and unreachable-arm behavior.
-This is a source safety repair, not admitted execution evidence. The lawful
-positive with independent result **131313** remains blocked by ownership
-placement at the guarded-match dispatch header (`IncompatibleOwnedEdge`);
-the pending witness and both failed lowerings are preserved in
-`state/agents/match-guard-disposition-20260927.md`. No heap audit completed and
-no semantic acceptance row closes.
+The initial source repair had no admitted execution evidence: its lawful
+**131313** witness failed ownership placement at the synthetic guarded-match
+dispatch header (`IncompatibleOwnedEdge`). Those failed lowerings remain in
+`state/agents/match-guard-disposition-20260927.md`.
+
+The follow-up removes that synthetic backedge and carries completed false-guard
+writebacks through the existing typed binding/extent join. Pattern-skip and
+guard-false paths stay distinct; only completed guard effects reach later arms.
+Generic forward CFG regions cut only already-active loop header/exit labels,
+validate every target and require all remaining edges to be acyclic. Nested
+cycles retain the existing loop path, and direct emission and source-plan
+admission preserve simultaneous edge-argument transfer.
+
+`misc::rfc0167_match_guard_disposition` now executes admitted unoptimized Wasm
+in normal and opt modes with independently computed results **131313** (resource
+disposition across local, cross-mode and imported opt-defined types),
+**2931179** (ordered or-pattern guards, later disposal and nested loops), and
+**11002211** (scalar and String false-guard writeback, including skipped guards).
+All six executions report zero live canonical heap objects. A separate
+unique-List diagnostic is preserved outside the default suite, but is not valid
+positive evidence: it reuses a unique value after an owned `length` call.
+This bounded evidence does not close a semantic acceptance row.
 
 ### 2026-09-27: admitted expression quotation and typed emission (row Q partial)
 

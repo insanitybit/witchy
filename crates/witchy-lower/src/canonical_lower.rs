@@ -19,6 +19,8 @@ mod constructor_storage;
 mod call_storage;
 #[path = "canonical_flow_storage.rs"]
 mod flow_storage;
+#[path = "canonical_match_flow.rs"]
+mod match_flow;
 #[path = "canonical_vm_service.rs"]
 mod vm_service;
 
@@ -7092,17 +7094,17 @@ impl FunctionLowerer<'_> {
         // the structured backend refuses an unreachable block rather than
         // guessing it is dead (BUG-canonical-match-cfg-unstructured-block).
         let mut next = Some(self.current);
-
+        let mut fallthrough_bindings = outer.clone();
+        let mut fallthrough_facts = facts.clone();
         let mut continuing_facts = Vec::new();
         for (arm_index, arm) in arms.iter().enumerate() {
             let Some(current) = next else { break };
-            // Each arm starts from the facts before the `match`; every arm's
-            // facts are merged back for the join's lane planning.
-            if arm_index > 0 {
-                self.restore_snapshot(facts.clone());
-            }
+            // Guard-false effects reach later arms; arm-body effects do not.
+            self.restore_snapshot(fallthrough_facts.clone());
             self.current = current;
-            self.bindings = outer.clone();
+            self.bindings = fallthrough_bindings.clone();
+            let arm_outer = fallthrough_bindings.clone();
+            let arm_facts = fallthrough_facts.clone();
             // Every alternative selects bindings before the one original
             // guard/body. A failed guard advances to the next source arm, not
             // another alternative, and a tail body retains one source witness.
@@ -7111,16 +7113,16 @@ impl FunctionLowerer<'_> {
                 scrutinee, &arm.pattern, &scrutinee_type, &mut next_block, consuming_shape.as_ref(),
             )?;
             let shadowed_outer = pattern_bindings.iter()
-                .filter_map(|(name, _)| outer.get(name).map(|value| (name.clone(), *value)))
+                .filter_map(|(name, _)| arm_outer.get(name).map(|value| (name.clone(), *value)))
                 .collect::<Vec<_>>();
             for (name, value) in pattern_bindings {
                 self.bindings.insert(name, value);
             }
             if let Some(guard) = &arm.guard {
-                if next_block.is_none() {
-                    next_block = Some(self.new_block(&[])?);
-                }
-                let guard_failure = next_block.expect("a guarded arm has a fallthrough");
+                // Pattern failure skips the guard; guard failure completed
+                // it. Keep distinct edges until their outer bindings join.
+                let pattern_failure = next_block;
+                let guard_failure = self.new_block(&[])?;
                 let guard = self.lower_expr(guard)?;
                 if self.values[&guard] != ValueType::Bool {
                     return Err(CanonicalLoweringError::UnsupportedExpression("non-boolean match guard"));
@@ -7139,6 +7141,33 @@ impl FunctionLowerer<'_> {
                     else_target: guard_failure,
                     else_arguments: Vec::new(),
                 })?;
+                let body_bindings = self.bindings.clone();
+                let body_facts = self.snapshot_facts();
+                let mut guard_outer = arm_outer.clone();
+                for (name, value) in &mut guard_outer {
+                    if !shadowed_outer.iter().any(|(shadowed, _)| shadowed == name) {
+                        *value = self.bindings[name];
+                    }
+                }
+                if let Some(pattern_failure) = pattern_failure {
+                    let mut changed = arm_outer.keys().filter(|name| guard_outer[*name] != arm_outer[*name])
+                        .cloned().collect::<Vec<_>>();
+                    changed.sort();
+                    let joined = self.join_match_binding_paths(
+                        vec![(pattern_failure, arm_outer.clone()), (guard_failure, guard_outer)],
+                        changed, vec![arm_facts.clone(), body_facts.clone()], arm_facts,
+                    )?;
+                    fallthrough_bindings = arm_outer;
+                    fallthrough_bindings.extend(joined);
+                    fallthrough_facts = self.snapshot_facts();
+                    next_block = Some(self.current);
+                } else {
+                    fallthrough_bindings = guard_outer;
+                    fallthrough_facts = body_facts.clone();
+                    next_block = Some(guard_failure);
+                }
+                self.bindings = body_bindings;
+                self.restore_snapshot(body_facts);
                 self.current = body_block;
             }
             if let Some(tail) = &tail {
@@ -7715,61 +7744,7 @@ impl FunctionLowerer<'_> {
                 return Err(CanonicalLoweringError::UnsupportedExpression("inconsistent or-pattern bindings"));
             }
         }
-        self.restore_snapshot(facts.clone());
-        for arm_facts in continuing_facts.iter().cloned() {
-            self.absorb_facts(arm_facts);
-        }
-        let edges = successes.iter().map(|(block, bindings)| (*block, bindings)).collect::<Vec<_>>();
-        let plans = self.plan_binding_lanes(&edges, &names, &mut continuing_facts)?;
-        let mut parameter_types = Vec::new();
-        for plan in &plans {
-            parameter_types.push(self.values[&plan.values[0]]);
-            if plan.has_lanes() {
-                parameter_types.extend([ValueType::Size, ValueType::Size]);
-            }
-        }
-        let join = self.new_block(&parameter_types)?;
-        let parameters = self.blocks[join.get() as usize].parameters.clone();
-        let mut bindings = Vec::new();
-        let mut parameter_index = 0;
-        for plan in &plans {
-            let parameter = parameters[parameter_index].value;
-            if let Some(phi) = plan.phi {
-                self.blocks[join.get() as usize].parameters[parameter_index].ownership = Some(phi);
-            }
-            if plan.all_tokens {
-                self.token_join_parameters.insert(parameter);
-            }
-            bindings.push((plan.name.clone(), parameter));
-            parameter_index += 1 + if plan.has_lanes() { 2 } else { 0 };
-        }
-        for (edge, (block, _)) in successes.iter().enumerate() {
-            let mut arguments = Vec::new();
-            for plan in &plans {
-                arguments.push(plan.values[edge]);
-                if let (true, Some(extents)) = (plan.has_lanes(), &plan.extents) {
-                    arguments.extend([extents[edge].0, extents[edge].1]);
-                }
-            }
-            self.graph_version += 1;
-            self.blocks[block.get() as usize].terminator = Some(Terminator::Branch { target: join, arguments });
-        }
-        self.restore_facts(facts, join);
-        self.current = join;
-        parameter_index = 0;
-        for plan in &plans {
-            if plan.has_lanes() {
-                let value = parameters[parameter_index].value;
-                let count = parameters[parameter_index + 1].value;
-                let capacity = parameters[parameter_index + 2].value;
-                if let Some(family) = plan.family {
-                    self.record_joined_dynamic_extent(value, count, capacity, family);
-                    self.guard_joined_dynamic_extent(value, count, capacity, family)?;
-                }
-            }
-            parameter_index += 1 + if plan.has_lanes() { 2 } else { 0 };
-        }
-        Ok(bindings)
+        self.join_match_binding_paths(successes, names, continuing_facts, facts)
     }
 
     fn lower_match_pattern(

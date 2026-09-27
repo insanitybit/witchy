@@ -7,7 +7,7 @@ impl PlanEmitter<'_> {
         for _ in order.iter().skip(1) { self.plan.push(PlanToken::Block("Empty".into())); }
         for (position, id) in order.iter().enumerate() {
             if position > 0 { self.plan.push(PlanToken::End); }
-            self.emitted.insert(*id);
+            if !self.emitted.insert(*id) { return Err(CanonicalAdmissionError::UnsupportedPlan); }
             let block = self.block(*id)?;
             self.plan.extend(expected_block_operations_plan(self.source_function, block,
                 self.layout, self.layouts, self.function_indices, self.signature_indices,
@@ -15,6 +15,10 @@ impl PlanEmitter<'_> {
                 &mut self.aggregates, self.owner_cleanup_function)?);
             let depth = |target, conditional| positions.get(&target)
                 .and_then(|target| forward_cfg::depth(position, *target, conditional))
+                .or_else(|| self.escape_label(target).and_then(|label| {
+                    let extra = u32::try_from(order.len() - position - 1 + usize::from(conditional)).ok()?;
+                    self.label_depth(label).checked_add(extra)
+                }))
                 .ok_or(CanonicalAdmissionError::UnsupportedPlan);
             match &block.terminator {
                 Terminator::Branch { target, arguments } => {

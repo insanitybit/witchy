@@ -92,19 +92,30 @@ fn guarded(p: (Int, Int)) -> Int:
     match p:
         (x, 2) | (1, x) if x == 2 -> x
         _ -> 9
-fn inspect(let value: fast.Box(fast.Ticket)) -> Bool:
-    false
 fn after(n: Int) -> Int:
     let token = fast.Box(fast.Ticket(n))
     let chosen = match n:
-        0 | 7 if inspect(token) -> 4
+        0 | 7 if n < 0 -> 4
         _ -> 5
     let disposed = if fast.finish(token): 1 else: 3
     chosen * 10 + disposed
+fn looping() -> Int:
+    var round = 0
+    var total = 0
+    while round < 2:
+        var index = 0
+        while index < 3:
+            let value = match index:
+                0 | 1 if index == 1 -> 7
+                _ -> 2
+            total = total + value
+            index = index + 1
+        round = round + 1
+    total
 fn main() -> Int:
     let ordering = select((1, 2)) + select((1, 3)) * 10 + guarded((1, 2)) * 100 + guarded((2, 2)) * 1000
-    ordering * 1000 + after(0) + after(7) + after(9)
-"#, "2931157");
+    ordering * 1000 + after(0) + after(7) + after(9) + looping()
+"#, "2931179");
 }
 
 #[test]
@@ -118,7 +129,16 @@ fn pick(code: Int) -> Int:
         1 | 2 if bump(n) -> 7
         _ -> n
     chosen * 10 + n
+fn append(var values: String) -> Bool:
+    values = values + "!"
+    false
+fn pick_reference(code: Int) -> Int:
+    var values = "x"
+    let chosen = match code:
+        1 | 2 if append(values) -> 7
+        _ -> values.length()
+    chosen * 10 + values.length()
 fn main() -> Int:
-    pick(1) * 100 + pick(0)
-"#, "1100");
+    (pick(1) * 100 + pick(0)) * 10000 + pick_reference(1) * 100 + pick_reference(0)
+"#, "11002211");
 }

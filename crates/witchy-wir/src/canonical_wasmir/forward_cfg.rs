@@ -41,3 +41,26 @@ pub(super) fn depth(current: usize, target: usize, conditional: bool) -> Option<
     let depth = target.checked_sub(current)?.checked_sub(1)?;
     u32::try_from(depth.checked_add(usize::from(conditional))?).ok()
 }
+
+/// An acyclic portion of an existing structured loop. Boundaries are only
+/// the caller's active loop header/exit labels, not guessed forward joins.
+pub(super) fn region(
+    entry: BlockId,
+    edges: &BTreeMap<BlockId, Vec<BlockId>>,
+    boundaries: &[BlockId],
+) -> Result<Option<Vec<BlockId>>, ()> {
+    if boundaries.contains(&entry) { return Err(()); }
+    let mut portion = BTreeMap::new();
+    let mut pending = vec![entry];
+    while let Some(block) = pending.pop() {
+        if portion.contains_key(&block) { continue; }
+        let mut successors = Vec::new();
+        for target in edges.get(&block).ok_or(())? {
+            if !edges.contains_key(target) { return Err(()); }
+            if !boundaries.contains(target) { successors.push(*target); }
+        }
+        pending.extend(&successors);
+        portion.insert(block, successors);
+    }
+    schedule(entry, &portion)
+}
