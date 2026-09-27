@@ -126,15 +126,29 @@ fn task_handles_must_be_joined_cancelled_or_returned_on_every_path() {
 }
 
 #[test]
-fn affine_handle_list_has_no_cloneable_safewir_carrier() {
+fn affine_handle_list_admits_owned_transport_but_not_copying() {
     let checked = witchy::resolve_std_only_checked(r#"import task
 
 pub fn make(own handle: task.Handle) -> List(task.Handle):
     [handle]
 
+pub fn forward(own handles: List(task.Handle)) -> List(task.Handle):
+    handles
+
 fn main():
     ()
 "#).expect("an affine list can be checked without an async library bridge");
+    // This pins admission of construction and owned ABI transport, not a
+    // runtime handle disposition or a zero-leak execution witness.
     witchy::codegen::compile_checked_module_artifact(&checked)
-        .expect_unsupported("List(task.Handle) has no move-only SafeWIR carrier proof");
+        .expect_lowered("the checked affine list has an admitted move-only carrier");
+
+    let dir = TempDir::new("affine-handle-list-copy");
+    assert_rejected(
+        &dir,
+        "copy-handle-list",
+        "import task\n\npub fn copy(let handles: List(task.Handle)) -> List(task.Handle):\n    handles.owned()\n\nfn main():\n    ()\n",
+        &["cannot copy must-consume"],
+    );
+    std::fs::remove_dir_all(dir).unwrap();
 }
