@@ -43,7 +43,7 @@ fn context<'a>(function: &'a Function, local: &'a LocalLayout<'a>, op: &O) -> Re
     if SYNTHETIC.iter().any(|id| function.value_types.contains_key(id)) { return Err(error()); }
     // Only environment construction/extraction uses the synthetic locals.
     // Ordinary owner calls borrow the function and layout unchanged.
-    if !matches!(op, O::Construct { .. } | O::CloneEnvironment { .. } | O::ReadSharedPlace { .. } | O::ReadSharedSlice { .. }) {
+    if !matches!(op, O::Construct { .. } | O::CloneEnvironment { .. } | O::ReadEnvironmentField { .. } | O::ReadSharedPlace { .. } | O::ReadSharedSlice { .. }) {
         return Ok((Cow::Borrowed(function), Cow::Borrowed(local), bridge, scratch[2]));
     }
     // Reuse this function's parked copy when there is one; the base tables
@@ -869,6 +869,27 @@ pub(super) fn emit(body: &mut WasmFunctionEncoder, function: &Function, local: &
                 LoweringError::UnsupportedOperation { function: function.id, operation: "owner cleanup helper" },
             ))?));
         }
+        O::ReadEnvironmentField { owner, destination, constructor, capture } => {
+            let field = bridge.family().constructors.iter().find(|entry| entry.id == *constructor)
+                .and_then(|entry| entry.captures.get(capture.0 as usize))
+                .filter(|entry| function.value_types.get(destination) == Some(&entry.value_type))
+                .and_then(|entry| entry.copyable_environment_field())
+                .ok_or(EncodeError::Lowering(LoweringError::UnsupportedOperation {
+                    function: function.id, operation: "owner environment field",
+                }))?;
+            emit_get(body, &local, function.id, *owner)?;
+            body.instruction(&I::Call(import));
+            body.instruction(&I::RefCastNonNull(wasm_encoder::HeapType::Concrete(bridge.payload_type_index())));
+            body.instruction(&I::StructGet { struct_type_index: bridge.payload_type_index(), field_index: 0 });
+            emit_set(body, &local, function.id, ENV)?;
+            let access = field_access(function.id, layouts, ENV, bridge.family().environment, field)
+                .map_err(EncodeError::Lowering)?;
+            emit_typed_load(body, &function, &local, access, *destination)?;
+            if matches!(function.value_types[destination], ValueType::Ref(_)) {
+                emit_clone_ref(body, &local, *destination, *destination, &function)?;
+            }
+            // ENV is a kernel-local borrow held alive by owner, not an RC token.
+        }
         O::CloneEnvironment { owner, destination, .. } => {
             emit_get(body, &local, function.id, *owner)?;
             body.instruction(&I::Call(import));
@@ -952,6 +973,26 @@ pub(super) fn plan(plan: &mut Vec<PlanToken>, function: &Function, layouts: &Lay
                 push_set(plan, &local, *destination)?;
             }
             push_set(plan, &local, *environment)?;
+        }
+        O::ReadEnvironmentField { owner, destination, constructor, capture } => {
+            let field = bridge.family().constructors.iter().find(|entry| entry.id == *constructor)
+                .and_then(|entry| entry.captures.get(capture.0 as usize))
+                .filter(|entry| function.value_types.get(destination) == Some(&entry.value_type))
+                .and_then(|entry| entry.copyable_environment_field())
+                .ok_or(CanonicalAdmissionError::UnsupportedPlan)?;
+            push_get(plan, &local, *owner)?;
+            plan.push(PlanToken::Call(import));
+            plan.extend([
+                PlanToken::RefCastNonNull(bridge.payload_type_index()),
+                PlanToken::StructGet { struct_type_index: bridge.payload_type_index(), field_index: 0 },
+            ]);
+            push_set(plan, &local, ENV)?;
+            let access = field_access(function.id, layouts, ENV, bridge.family().environment, field)
+                .map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
+            push_typed_load_plan(plan, &function, &local, access, *destination)?;
+            if matches!(function.value_types[destination], ValueType::Ref(_)) {
+                push_share_plan(plan, &local, *destination, *destination)?;
+            }
         }
         O::CloneEnvironment { owner, destination, .. } => {
             push_get(plan, &local, *owner)?;

@@ -841,6 +841,10 @@ fn propagate_operation_origins(
             use crate::canonical_safewir::closure_owner_contract::OwnerOperation as O;
             for destination in owner.destinations() {
                 let origin = match owner {
+                    O::ReadEnvironmentField { .. } => match function.value_types.get(&destination) {
+                        Some(ValueType::Ref(layout)) => Origin::Shared(*layout),
+                        _ => Origin::Unknown,
+                    },
                     O::CloneEnvironment { .. } => {
                         match function.value_types.get(&destination) {
                             Some(ValueType::Ref(layout)) => Origin::Shared(*layout),
@@ -1174,6 +1178,7 @@ fn derive_operation(
                     O::Drop { .. } | O::DropList { .. } | O::Deconstruct { .. } => MemoryEffect::Release,
                     O::Clone { .. } | O::CloneList { .. } | O::Construct { .. } | O::NewList { .. } => MemoryEffect::Retain,
                     O::ReadCapability { .. }
+                    | O::ReadEnvironmentField { .. }
                     | O::ReadOwner { .. }
                     | O::ReadSharedPlace { .. }
                     | O::ReadSharedSlice { .. }
@@ -1189,6 +1194,7 @@ fn derive_operation(
                 let escapes = match owner {
                     O::Construct { .. } | O::NewList { .. } | O::ListPush { .. } | O::ListSet { .. } => true,
                     O::ReadCapability { .. }
+                    | O::ReadEnvironmentField { .. }
                     | O::ReadOwner { .. }
                     | O::ReadSharedPlace { .. }
                     | O::ReadSharedSlice { .. }
@@ -1209,6 +1215,10 @@ fn derive_operation(
             }
             for destination in owner.destinations() {
                 let origin = match owner {
+                    O::ReadEnvironmentField { .. } => match function.value_types.get(&destination) {
+                        Some(ValueType::Ref(layout)) => Origin::Shared(*layout),
+                        _ => Origin::Unknown,
+                    },
                     O::CloneEnvironment { .. } => match function.value_types.get(&destination) {
                         Some(ValueType::Ref(layout)) => Origin::Shared(*layout),
                         _ => return Err(InitialCheckError::UnsupportedMemoryOperation { function: function.id, operation: "CloneEnvironment contract" }),

@@ -31,6 +31,9 @@ impl OwnerBridgeRecipe {
             O::Deconstruct { constructor, .. } => Self::Deconstruct(*constructor),
             O::ReadCapability { constructor, capture, .. } => Self::ReadCapability(*constructor, *capture),
             O::ReadOwner { constructor, capture, .. } => Self::ReadOwner(*constructor, *capture),
+            // The bridge borrows the authenticated payload; the kernel reads
+            // only the checked capture and retains that child, not its shell.
+            O::ReadEnvironmentField { constructor, .. } => Self::CloneEnvironment(*constructor),
             // The operation is implemented from this family-authenticated tag
             // bridge plus one admitted CloneEnvironment bridge per constructor.
             O::ReadSharedPlace { family, .. } => Self::ReadTag(*family),

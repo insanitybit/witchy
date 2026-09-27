@@ -6,7 +6,7 @@ Generated from `crates/witchy-wir/src/canonical_safewir/manifest.rs`; the test
 
 Evidence files: check = `crates/witchy-wir/src/canonical_safewir/check.rs`, memory = `crates/witchy-wir/src/canonical_safewir/check/memory.rs`, backend = `crates/witchy-wir/src/canonical_wasmir.rs`, launch = `tests/misc/rfc0165_admitted_launch.rs`, authority = `crates/witchy-wir/src/canonical_safewir/authority.rs`, owner checker = `crates/witchy-wir/src/canonical_safewir/check/owners.rs`, owner backend = `crates/witchy-wir/src/canonical_wasmir/closure_owner_kernel.rs`, owner runtime = `crates/witchy-runtime/src/runtime/host/closure_owner.rs`.
 
-Opaque-owner operation variants: Construct, Deconstruct, ReadCapability, ReadOwner, ReadSharedPlace, ReadSharedSlice, ReadTag, ReadCallable, Clone, Drop, CloneEnvironment, NewList, ListGet, ListLength, CloneList, ListPush, ListSet, DropList.
+Opaque-owner operation variants: Construct, Deconstruct, ReadCapability, ReadOwner, ReadSharedPlace, ReadSharedSlice, ReadTag, ReadCallable, Clone, Drop, CloneEnvironment, ReadEnvironmentField, NewList, ListGet, ListLength, CloneList, ListPush, ListSet, DropList.
 
 ## B1/B7: canonical rules
 

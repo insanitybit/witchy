@@ -367,6 +367,7 @@ fn operation_flow(
                 }
                 OwnerOperation::ReadCapability { .. }
                 | OwnerOperation::ReadOwner { .. }
+                | OwnerOperation::ReadEnvironmentField { .. }
                 | OwnerOperation::ReadSharedPlace { .. }
                 | OwnerOperation::ReadSharedSlice { .. }
                 | OwnerOperation::ReadCallable { .. }

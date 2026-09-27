@@ -276,6 +276,7 @@ pub(super) fn validate<S: ModuleStage>(
                         }
                     }
                     Operation::ClosureOwner(OwnerOperation::ReadCapability { owner, constructor, .. }
+                        | OwnerOperation::ReadEnvironmentField { owner, constructor, .. }
                         | OwnerOperation::CloneEnvironment { owner, constructor, .. }) => {
                         let family = candidate.owner_families().iter().find(|family|
                             family.constructors.iter().any(|entry| entry.id == *constructor))

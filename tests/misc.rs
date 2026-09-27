@@ -97,6 +97,8 @@ mod rfc0167_checked_call_storage;
 mod rfc0167_eta_storage_signature;
 #[path = "misc/rfc0167_control_flow_storage.rs"]
 mod rfc0167_control_flow_storage;
+#[path = "misc/rfc0167_opaque_environment_field.rs"]
+mod rfc0167_opaque_environment_field;
 #[path = "misc/rfc0167_nested_opt_callable_contracts.rs"]
 mod rfc0167_nested_opt_callable_contracts;
 #[path = "misc/rfc0167_consuming_record_reconstruction.rs"]

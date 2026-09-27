@@ -818,6 +818,7 @@ impl CanonicalWriter {
             // Preserve established tags: ReadOwner was added after the original
             // twelve operations and receives the next unused value.
             O::ReadOwner { constructor, capture, .. } => (12, Some(*constructor), Some(*capture), None),
+            O::ReadEnvironmentField { constructor, capture, .. } => (20, Some(*constructor), Some(*capture), None),
             O::ReadTag { family, .. } => (13, None, None, Some(*family)),
             O::ReadSharedPlace { family, .. } => (15, None, None, Some(*family)),
             O::ReadSharedSlice { family, field, .. } => (match field {

@@ -153,6 +153,16 @@ impl<'a> MemoryChecker<'a> {
                         });
                         self.seed_affine_plan(*environment, &plan);
                     }
+                    OwnerOperation::ReadEnvironmentField { destination, .. }
+                        if matches!(value_type(self.function, *destination)?, ValueType::Ref(_)) => {
+                        let ValueType::Ref(layout) = value_type(self.function, *destination)? else { unreachable!() };
+                        let extent = self.parameter_extent(layout)?;
+                        self.state.objects.insert(*destination, ObjectState {
+                            identity: *destination, owner_generation: 0, layout, extent, ownership: Ownership::Shared,
+                            allocation_class: Some(AllocationClass::ReferenceCounted),
+                            shared_immutable: true, initialized_owned_slots: true,
+                        });
+                    }
                     OwnerOperation::CloneEnvironment { destination, .. } => {
                         let ValueType::Ref(layout) = value_type(self.function, *destination)? else {
                             return self.unsupported("CloneEnvironment(non-reference)");
@@ -186,6 +196,7 @@ impl<'a> MemoryChecker<'a> {
                         });
                     }
                     OwnerOperation::ReadCapability { .. }
+                    | OwnerOperation::ReadEnvironmentField { .. }
                     | OwnerOperation::ReadOwner { .. }
                     | OwnerOperation::ReadSharedPlace { .. }
                     | OwnerOperation::ReadSharedSlice { .. }

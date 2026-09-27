@@ -198,6 +198,9 @@ owner_operations! {
     /// Reads an immutable nested owner field and returns one retained token of
     /// the field's exact registered GC type.
     ReadOwner { destination: ValueId, owner: ValueId, constructor: ConstructorId, capture: CaptureOrdinal },
+    /// Copy one authenticated, copyable environment capture. The owner stays
+    /// live; no environment token is exposed and managed children are retained.
+    ReadEnvironmentField { destination: ValueId, owner: ValueId, constructor: ConstructorId, capture: CaptureOrdinal },
     /// Reads an Int through an opaque, read-only place-reference family. The
     /// authenticated constructor metadata selects the root/projection; no
     /// guest operand can select a layout or reinterpret the carrier.
@@ -426,6 +429,18 @@ pub struct OwnerCapture {
     pub transfer: CaptureTransfer,
 }
 
+impl OwnerCapture {
+    pub(crate) fn copyable_environment_field(&self) -> Option<u32> {
+        let CaptureStorage::EnvironmentField(field) = self.storage else { return None; };
+        match (self.value_type, self.transfer) {
+            (ValueType::Ref(_), CaptureTransfer::CloneManaged)
+            | (ValueType::Int | ValueType::Float | ValueType::Bool | ValueType::Unit | ValueType::Size,
+                CaptureTransfer::CopyScalar) => Some(field),
+            _ => None,
+        }
+    }
+}
+
 impl OwnerConstructor {
     /// Recognize the only two authenticated constructor schemas in the first
     /// shared-place slice. Layout identity is checked independently by source
@@ -504,6 +519,7 @@ impl OwnerOperation {
                 .chain(captures.iter().copied()).collect(),
             Self::Construct { destination, .. } | Self::ReadCapability { destination, .. }
             | Self::ReadOwner { destination, .. } | Self::ReadSharedPlace { destination, .. }
+            | Self::ReadEnvironmentField { destination, .. }
             | Self::ReadSharedSlice { destination, .. }
             | Self::ReadTag { destination, .. }
             | Self::ReadCallable { destination, .. } | Self::Clone { destination, .. }
@@ -521,6 +537,7 @@ impl OwnerOperation {
             Self::Deconstruct { owner, .. } => vec![*owner],
             Self::NewList { elements, .. } => elements.clone(),
             Self::ReadCapability { owner, .. } | Self::ReadOwner { owner, .. }
+            | Self::ReadEnvironmentField { owner, .. }
             | Self::ReadSharedPlace { owner, .. }
             | Self::ReadSharedSlice { owner, .. }
             | Self::ReadTag { owner, .. }

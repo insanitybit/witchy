@@ -102,7 +102,7 @@ use EvidenceFile::{Authority, Backend, Check, Launch, Memory, OwnerBackend, Owne
 /// list, not these entries, so a new variant requires a manifest decision.
 pub const OWNER_OPERATION_VARIANTS: &[&str] = &[
     "Construct", "Deconstruct", "ReadCapability", "ReadOwner", "ReadSharedPlace", "ReadSharedSlice", "ReadTag", "ReadCallable", "Clone", "Drop",
-    "CloneEnvironment", "NewList", "ListGet", "ListLength", "CloneList",
+    "CloneEnvironment", "ReadEnvironmentField", "NewList", "ListGet", "ListLength", "CloneList",
     "ListPush", "ListSet", "DropList",
 ];
 

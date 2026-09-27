@@ -290,6 +290,21 @@ impl<'a> Registry<'a> {
                 };
                 require_type(function, *destination, ValueType::Gc(nested_type))?;
             }
+            O::ReadEnvironmentField { destination, owner, constructor, capture } => {
+                let (family, constructor) = self.constructor(function, *constructor)?;
+                if matches!(family.source, OwnerFamilySource::SharedReference(_)) {
+                    return Err(InitialCheckError::UnsupportedMemoryOperation {
+                        function: function.id, operation: "ReadEnvironmentField shared-reference family",
+                    });
+                }
+                let field = constructor.captures.get(capture.0 as usize)
+                    .filter(|field| field.copyable_environment_field().is_some())
+                    .ok_or(InitialCheckError::UnsupportedMemoryOperation {
+                        function: function.id, operation: "ReadEnvironmentField noncopyable or missing capture",
+                    })?;
+                require_type(function, *owner, ValueType::Gc(family.owner_type))?;
+                require_type(function, *destination, field.value_type)?;
+            }
             O::ReadSharedPlace { destination, owner, family } => {
                 let family = self.family(*family)?;
                 if !matches!(family.source, OwnerFamilySource::SharedReference(_)) {
@@ -541,6 +556,7 @@ pub(super) fn check(function: &Function, registry: &Registry<'_>) -> Result<(), 
                             consume(function, &mut state, *value)?;
                         }
                         OwnerOperation::ReadCapability { .. }
+                        | OwnerOperation::ReadEnvironmentField { .. }
                         | OwnerOperation::ReadOwner { .. }
                         | OwnerOperation::ReadSharedPlace { .. }
                         | OwnerOperation::ReadSharedSlice { .. }

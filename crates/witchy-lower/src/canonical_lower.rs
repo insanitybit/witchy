@@ -10724,15 +10724,14 @@ impl FunctionLowerer<'_> {
                 }));
                 Ok(destination)
             }
-            (CaptureStorage::EnvironmentField(index), _) => {
-                let environment = self.fresh(ValueType::Ref(layout.environment))?;
-                self.push_operation(Operation::ClosureOwner(OwnerOperation::CloneEnvironment {
-                    destination: environment,
+            (CaptureStorage::EnvironmentField(_), _) => {
+                let value = self.fresh(value_type)?;
+                self.push_operation(Operation::ClosureOwner(OwnerOperation::ReadEnvironmentField {
+                    destination: value,
                     owner: object,
                     constructor: constructor.id,
+                    capture: CaptureOrdinal(u32::try_from(field_offset).map_err(|_| CanonicalLoweringError::IdOverflow)?),
                 }));
-                let value = self.load_record_field(environment, index, value_type)?;
-                self.push_operation(Operation::DropRef { object: environment });
                 Ok(value)
             }
             _ => Err(CanonicalLoweringError::UnsupportedExpression("opaque aggregate field type")),
