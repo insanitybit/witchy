@@ -8,6 +8,17 @@ use witchy_runtime::runtime::{Runtime, comptime::ComptimeLimits};
 use witchy_types::pipeline::{CheckedModule, ComptimeSourceSession, PriorComptimeBlockOutput};
 use witchy_types::runtime_type::AuthenticatedModuleOwners;
 
+/// Fixed compiler-service limits for production source loading. Each original
+/// block receives a fresh zero-grant session with these independent ceilings.
+pub fn source_limits() -> ComptimeLimits {
+    ComptimeLimits {
+        fuel: 50_000_000, memory_pages: 256, fresh_identifiers: 4096,
+        host_output_bytes: 1_048_576, syntax_nodes: 100_000,
+        syntax_bytes: 1_048_576, emitted_nodes: 4096,
+        emitted_bytes: 1_048_576,
+    }
+}
+
 /// Compile original blocks in source order, then check their generated items
 /// in the ordinary destination. The loader remains responsible for obtaining
 /// raw bytes and owners; this function accepts neither an AST nor a prior

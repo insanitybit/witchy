@@ -2507,9 +2507,40 @@ The paired negative emits a function declared `Int` but returning `String`;
 destination checking rejects it before the next block's deliberate `fail`
 could run. The previous first-original-block witness still passes.
 
-This is not a row-Q closure or a default-loader switch. Typed expression output
+At this checkpoint, this was not a row-Q closure or a default-loader switch. Typed expression output
 has no original-block destination and therefore rejects in this driver;
 generated comptime blocks, other syntax categories, and full generated-item
-origin/hygiene propagation remain outstanding. The interpreter remains the
-default comptime/build adapter, while this explicit lane proves ordered
+origin/hygiene propagation remain outstanding. The interpreter remained the
+default comptime/build adapter, while this explicit lane proved ordered
 canonical item execution and destination checking.
+
+### 2026-09-27: selected original blocks in the production source loader (row Q partial)
+
+The ordinary authenticated file loader now detects original `comptime:` items
+in its selected user module and checks that source bundle through the ordered
+canonical driver. Each block executes as admitted unoptimized Wasm with fixed
+fuel, memory, syntax, fresh-name, and emitted-output limits; the emitted typed
+items pass destination checking before the next block executes. Closed package
+source without precompiled library declarations uses the same loader seam.
+There is no source-walker fallback after this selected-module route begins.
+The checked compiler recipe retains original source functions reachable from
+the selected block, including transitive helpers, while leaving unrelated
+runtime capability functions to the final destination check. Prior emitted
+functions stay in each successor check even when unreferenced, so an invalid
+generated item still rejects before that successor runs.
+
+`rfc0167_ordered_comptime::production_source_loader_executes_original_blocks_through_admitted_wasm`
+drives the production binary on a two-block source and expects `42`; its
+invalid first output must be rejected before a deliberately failing second
+block runs. Its positive source includes a transitive helper and an unused
+Console helper; the latter cannot enter the zero-grant recipe. The existing
+`rfc0165_packaged_source` fixture also runs and rechecks a closed source with
+comptime item output and an unrelated Console helper. This is a production
+routing witness, alongside the direct
+canonical driver's admitted-Wasm and zero-leak checks above.
+
+Imported modules with compile-time work, generated compile-time blocks, tagged
+literal expansion, and precompiled declaration graphs still use or require
+separate linker support. The test and build command adapters still use their
+existing compiler-service routes. The source tree walker therefore remains in
+the workspace, and row Q is partial.

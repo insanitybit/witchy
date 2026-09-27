@@ -1,5 +1,7 @@
 use witchy_runtime::runtime::{Capabilities, Runtime, comptime::ComptimeLimits};
 use witchy_types::runtime_type::{AuthenticatedModuleOwners, ModuleLoadIdentity, PackageCoordinate, PackageSource};
+use super::temp_dir::TempDir;
+use std::process::Command;
 
 fn owners() -> AuthenticatedModuleOwners {
     let workspace = PackageCoordinate::new(PackageSource::Workspace, "test/ordered-comptime", "1").unwrap();
@@ -49,4 +51,22 @@ fn generated_item_is_rechecked_before_successor_executes() {
     ) { Ok(_) => panic!("invalid generated item entered destination"), Err(error) => error };
     assert!(error.contains("Int") && error.contains("String"), "{error}");
     assert!(!error.contains("second block must not execute"), "{error}");
+}
+
+#[test]
+fn production_source_loader_executes_original_blocks_through_admitted_wasm() {
+    let folder = TempDir::new("admitted-comptime-loader");
+    let source = folder.join("main.witchy");
+    std::fs::write(&source, "fn helper() -> Int:\n    39\nfn relay() -> Int:\n    helper() + 1\nfn unused(console: Console):\n    console.print(\"must stay out of the compiler session\")\ncomptime:\n    if relay() == 40:\n        emit_item(quote item:\n            fn answer() -> Int:\n                40\n        )\ncomptime:\n    emit_item(quote item:\n        fn result() -> Int:\n            answer() + 2\n    )\nfn main(console: Console):\n    console.print(\"${result()}\")\n").unwrap();
+    let run = Command::new(env!("CARGO_BIN_EXE_witchy")).arg(&source).output().unwrap();
+    assert!(run.status.success(), "{}", String::from_utf8_lossy(&run.stderr));
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "42\n");
+
+    std::fs::write(&source, "comptime:\n    emit_item(quote item:\n        fn answer() -> Int:\n            \"wrong\"\n    )\ncomptime:\n    fail(\"second block must not execute\")\nfn main() -> Int:\n    0\n").unwrap();
+    let check = Command::new(env!("CARGO_BIN_EXE_witchy"))
+        .arg("check").arg(&source).output().unwrap();
+    assert!(!check.status.success(), "invalid generated source was accepted");
+    let diagnostic = String::from_utf8_lossy(&check.stderr);
+    assert!(diagnostic.contains("Int") && diagnostic.contains("String"), "{diagnostic}");
+    assert!(!diagnostic.contains("second block must not execute"), "{diagnostic}");
 }

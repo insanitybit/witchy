@@ -221,19 +221,35 @@ pub(crate) fn link_file_checked_authenticated_with_deps(
         .collect();
     let (sources, entry_stem, user_modules, owners) =
         load_file_modules_authenticated(path, &paths, entry_owner, &dep_owners)?;
-    let checked = pipeline::link_checked_authenticated_from_source_bundle_with_user_modules(
-        sources,
-        &entry_stem,
-        &user_modules,
-        owners,
-    )
-    .map_err(|error| match error {
-        pipeline::PipelineError::Ownership(error) => format!("{path}: {error}"),
-        pipeline::PipelineError::Link(error) => error.to_string(),
-        pipeline::PipelineError::Source(error) => format!("{path}: {error}"),
-        pipeline::PipelineError::Type(error) => format!("{path}: {error}"),
-    })?;
+    let checked = check_loaded_source_bundle(sources, &entry_stem, path, user_modules, owners)?;
     Ok((checked, entry_stem))
+}
+
+/// Original blocks in the selected source use the admitted compiler session
+/// by default. Other source graphs retain the existing linker path until the
+/// session can authenticate imported and generated expansion as well.
+fn check_loaded_source_bundle(
+    sources: Vec<(String, Vec<u8>)>, entry: &str, diagnostic_path: &str,
+    user_modules: UserModuleSet, owners: AuthenticatedModuleOwners,
+) -> Result<pipeline::CheckedModule, String> {
+    let selected = sources.iter().find(|(name, _)| name == entry)
+        .ok_or_else(|| format!("loaded source lacks entry `{entry}`"))?;
+    let source = std::str::from_utf8(&selected.1)
+        .map_err(|error| format!("{entry}: source is not UTF-8: {error}"))?;
+    let module = parser::parse_module(source).map_err(|error| format!("{entry}: {error}"))?;
+    if module.items.iter().any(|item| matches!(item, ast::Item::Comptime(_))) {
+        return witchy::canonical_comptime::check_source_bundle(
+            sources, entry, user_modules, owners, witchy::canonical_comptime::source_limits(),
+        );
+    }
+    pipeline::link_checked_authenticated_from_source_bundle_with_user_modules(
+        sources, entry, &user_modules, owners,
+    ).map_err(|error| match error {
+        pipeline::PipelineError::Ownership(error) => format!("{diagnostic_path}: {error}"),
+        pipeline::PipelineError::Source(error) => format!("{diagnostic_path}: {error}"),
+        pipeline::PipelineError::Link(error) => error.to_string(),
+        pipeline::PipelineError::Type(error) => format!("{diagnostic_path}: {error}"),
+    })
 }
 
 /// Production loader-to-pipeline seam for verified precompiled libraries.
@@ -276,9 +292,13 @@ pub(crate) fn checked_precompiled_source_bundle(
         external_libraries.push(dependency.library.runtime_library(alias.clone())?);
     }
     let environment = witchy_types::precompiled_declarations::PrecompiledDeclarationEnvironment::new(declarations)?;
-    let checked = witchy_types::pipeline::link_checked_authenticated_from_source_bundle_with_precompiled_declarations(
-        sources, &entry, comptime::EXPANDER, &user_modules, owners, environment,
-    ).map_err(|error| error.to_string())?;
+    let checked = if precompiled.is_empty() {
+        check_loaded_source_bundle(sources, &entry, &entry, user_modules, owners)?
+    } else {
+        witchy_types::pipeline::link_checked_authenticated_from_source_bundle_with_precompiled_declarations(
+            sources, &entry, comptime::EXPANDER, &user_modules, owners, environment,
+        ).map_err(|error| error.to_string())?
+    };
     Ok(PrecompiledCheckedModule { checked, entry, external_libraries })
 }
 

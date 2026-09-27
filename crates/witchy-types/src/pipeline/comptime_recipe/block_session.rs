@@ -132,6 +132,10 @@ impl ComptimeSourceSession {
             bounds: Vec::new(), is_gen: false, is_async: false,
         }));
         prepared.item_lines.push(line);
+        let prior_functions = prior.iter().flat_map(|output| &output.items)
+            .filter_map(|(item, _)| match item { Item::Function(function) => Some(function.name.clone()), _ => None })
+            .collect();
+        retain_referenced_functions(&mut prepared, &prior_functions);
         install_services(&mut prepared);
         // Relocation selects the existing compiler syntax namespace, while the
         // declaration owner remains the exact loader identity of the source.
@@ -191,6 +195,39 @@ impl ComptimeSourceSession {
         let typed = typed.ok_or_else(|| refuse("comptime destination did not retain checked source"))?;
         finish_canonical_source(checked, typed, digest, PrecompiledDeclarationEnvironment::default())
     }
+}
+
+/// A compiler recipe executes only its selected block and helpers reachable
+/// from that block. Runtime functions elsewhere in the source can require
+/// capabilities unavailable to this zero-grant session. The Debug rendering
+/// over-approximates names across calls, function values and generated syntax;
+/// an omitted real reference still fails closed during ordinary checking.
+fn retain_referenced_functions(module: &mut Module, prior_functions: &HashSet<String>) {
+    let entry = module.items.len() - 1;
+    let mut keep: Vec<bool> = module.items.iter().enumerate().map(|(index, item)|
+        index == entry || !matches!(item, Item::Function(_))
+            || matches!(item, Item::Function(function) if prior_functions.contains(&function.name))).collect();
+    let mut referenced = String::new();
+    for (index, item) in module.items.iter().enumerate() {
+        if keep[index] { referenced.push_str(&format!("{item:?}")); }
+    }
+    loop {
+        let mut added = false;
+        for (index, item) in module.items.iter().enumerate() {
+            if keep[index] { continue; }
+            let Item::Function(function) = item else { continue; };
+            if referenced.contains(&format!("{:?}", function.name)) {
+                keep[index] = true;
+                referenced.push_str(&format!("{item:?}"));
+                added = true;
+            }
+        }
+        if !added { break; }
+    }
+    let mut index = 0;
+    module.items.retain(|_| { let retained = keep[index]; index += 1; retained });
+    let mut index = 0;
+    module.item_lines.retain(|_| { let retained = keep[index]; index += 1; retained });
 }
 
 fn materialize_prior(module: &Module, prior: &[PriorComptimeBlockOutput], keep_main: bool) -> Module {
