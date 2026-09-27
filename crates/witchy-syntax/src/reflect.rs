@@ -61,8 +61,12 @@ pub fn module_type_info_exprs(module: &Module) -> Result<Vec<Expr>, String> {
 /// The returned expression is data for generation; callers retain the source
 /// module and its loader identity in the checked recipe.
 pub fn type_info_expr_for_type(module: &Module, mut requested: Type) -> Result<Expr, String> {
+    type_info_definition(module, &mut requested).map(|definition| type_info_expr(&definition))
+}
+
+fn type_info_definition(module: &Module, requested: &mut Type) -> Result<TypeDef, String> {
     let aliases = crate::aliases::resolved_map(module)?;
-    crate::aliases::resolve_type_aliases(&mut requested, &aliases)?;
+    crate::aliases::resolve_type_aliases(requested, &aliases)?;
     let Type::Named(name, args) = requested else {
         return Err("type_info requires a declared nominal type".into());
     };
@@ -70,7 +74,7 @@ pub fn type_info_expr_for_type(module: &Module, mut requested: Type) -> Result<E
         .items
         .iter()
         .find_map(|item| match item {
-            Item::Type(definition) if definition.name == name => Some(definition),
+            Item::Type(definition) if definition.name == *name => Some(definition),
             _ => None,
         })
         .ok_or_else(|| format!("type_info cannot resolve declared type `{name}`"))?;
@@ -85,7 +89,7 @@ pub fn type_info_expr_for_type(module: &Module, mut requested: Type) -> Result<E
         ));
     }
     if !args.is_empty() {
-        let arguments: HashMap<_, _> = definition.params.iter().cloned().zip(args).collect();
+        let arguments: HashMap<_, _> = definition.params.iter().cloned().zip(args.iter().cloned()).collect();
         for variant in &mut definition.variants {
             for field in &mut variant.fields {
                 substitute_type_parameters(field, &arguments);
@@ -96,6 +100,58 @@ pub fn type_info_expr_for_type(module: &Module, mut requested: Type) -> Result<E
     for variant in &definition.variants {
         for field in &variant.fields {
             check_reflectable_type(field)?;
+        }
+    }
+    Ok(definition)
+}
+
+/// Resolve an admitted lookup in the selected module's type namespace, then
+/// read the declaration in its defining module. Both modules came from the
+/// loader-authenticated source bundle; the caller includes their assignments
+/// and the staged source in the executable recipe digest.
+pub fn type_info_expr_for_type_in_modules(
+    modules: &[(String, Module)], selected: &str,
+    user_modules: &std::collections::HashSet<String>, mut requested: Type,
+) -> Result<Expr, String> {
+    let selected_module = modules.iter().find(|(name, _)| name == selected)
+        .ok_or_else(|| format!("type_info has no selected module `{selected}`"))?;
+    let aliases = crate::aliases::resolved_map(&selected_module.1)?;
+    crate::aliases::resolve_type_aliases(&mut requested, &aliases)?;
+    let resolved = crate::type_resolve::resolve_comptime_type_operand(
+        modules, selected, user_modules, requested,
+    ).map_err(|error| error.to_string())?;
+    let Type::Named(name, args) = resolved else {
+        return Err("type_info requires a declared nominal type".into());
+    };
+    let (home, local_name) = name.split_once('.')
+        .ok_or_else(|| format!("type_info cannot resolve declared type `{name}`"))?;
+    let owner = modules.iter().find(|(module, _)| module == home)
+        .ok_or_else(|| format!("type_info has no defining module `{home}`"))?;
+    let original = owner.1.items.iter().find_map(|item| match item {
+        Item::Type(definition) if definition.name == local_name => Some(definition),
+        _ => None,
+    }).ok_or_else(|| format!("type_info cannot resolve declared type `{name}`"))?;
+    let parameters = crate::ast::effective_nominal_type_def_params(original);
+    if parameters.len() != args.len() {
+        return Err(format!("type_info expects {} type arguments for `{name}`", parameters.len()));
+    }
+    // The definition's own written types resolve in its namespace. Concrete
+    // arguments were already resolved in the caller's namespace and may name
+    // modules the definition never imported.
+    let placeholders = parameters.iter().map(|param| Type::Named(param.clone(), Vec::new())).collect();
+    let mut definition = type_info_definition(&owner.1,
+        &mut Type::Named(local_name.into(), placeholders))?;
+    for variant in &mut definition.variants {
+        for field in &mut variant.fields {
+            *field = crate::type_resolve::resolve_comptime_type_operand(
+                modules, home, user_modules, field.clone(),
+            ).map_err(|error| error.to_string())?;
+        }
+    }
+    let arguments: HashMap<_, _> = parameters.into_iter().zip(args).collect();
+    for variant in &mut definition.variants {
+        for field in &mut variant.fields {
+            substitute_type_parameters(field, &arguments);
         }
     }
     Ok(type_info_expr(&definition))

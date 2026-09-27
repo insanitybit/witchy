@@ -119,7 +119,7 @@ fn admitted_type_info_resolves_staged_type_names_before_execution() {
     assert!(!missing.status.success());
     assert!(
         String::from_utf8_lossy(&missing.stderr)
-            .contains("type_info cannot resolve declared type `Missing`")
+            .contains("unknown type `Missing`")
     );
 
     std::fs::write(&source, "import meta\ncomptime:\n    let name = \"User\"\n    let _ = type_info(name)\nfn main() -> Int:\n    0\n").unwrap();
@@ -131,6 +131,34 @@ fn admitted_type_info_resolves_staged_type_names_before_execution() {
     assert!(
         String::from_utf8_lossy(&value.stderr).contains("type_info operand must be a type name")
     );
+}
+
+#[test]
+fn admitted_type_info_uses_imported_definition_identity_across_modes() {
+    let folder = TempDir::new("admitted-imported-type-info");
+    let source = folder.join("main.witchy");
+    let dependency = folder.join("dep.witchy");
+    for (dependency_mode, entry_mode) in [("", ""), ("mode opt\n", ""), ("mode opt\n", "mode opt\n")] {
+        std::fs::write(&dependency, format!("{dependency_mode}type Inner:\n    value: Int\ntype Wrapper:\n    child: Inner\ntype Boxed(a):\n    item: a\n")).unwrap();
+        std::fs::write(&source, format!("{entry_mode}import dep\nfrom dep import Boxed\nimport meta\ncomptime:\n    let wrapped = type_info(dep.Wrapper)\n    let boxed = type_info(Boxed(Int))\n    let qualified = type_info(dep.Boxed(Int))\n    match wrapped.fields[0].type_expr:\n        meta.TNamed(name, _) ->\n            if name == \"dep.Inner\" && boxed.fields[0].name == \"item\" && qualified.fields[0].name == \"item\":\n                emit_item(quote item:\n                    fn answer() -> Int:\n                        44\n                )\n        _ -> fail(\"wrong imported type identity\")\nfn main(console: Console):\n    console.print(\"${{answer()}}\")\n")).unwrap();
+        let run = Command::new(env!("CARGO_BIN_EXE_witchy")).arg(&source).output().unwrap();
+        assert!(run.status.success(), "{}", String::from_utf8_lossy(&run.stderr));
+        assert_eq!(String::from_utf8_lossy(&run.stdout), "44\n");
+    }
+
+    std::fs::write(folder.join("other.witchy"), "type Inner:\n    x: Int\n").unwrap();
+    std::fs::write(&dependency, "type Boxed(a):\n    item: a\n").unwrap();
+    std::fs::write(&source, "import dep\nimport other\nimport meta\ncomptime:\n    let info = type_info(dep.Boxed(other.Inner))\n    match info.fields[0].type_expr:\n        meta.TNamed(name, _) ->\n            if name == \"other.Inner\":\n                emit_item(quote item:\n                    fn answer() -> Int:\n                        45\n                )\n        _ -> fail(\"wrong caller type argument\")\nfn main(console: Console):\n    console.print(\"${answer()}\")\n").unwrap();
+    let cross = Command::new(env!("CARGO_BIN_EXE_witchy")).arg(&source).output().unwrap();
+    assert!(cross.status.success(), "{}", String::from_utf8_lossy(&cross.stderr));
+    assert_eq!(String::from_utf8_lossy(&cross.stdout), "45\n");
+
+    std::fs::write(folder.join("other.witchy"), "type Hidden:\n    x: Int\n").unwrap();
+    std::fs::write(&dependency, "import other\ntype Wrapper:\n    child: other.Hidden\n").unwrap();
+    std::fs::write(&source, "import dep\ncomptime:\n    let _ = type_info(other.Hidden)\nfn main() -> Int:\n    0\n").unwrap();
+    let hidden = Command::new(env!("CARGO_BIN_EXE_witchy")).arg(&source).output().unwrap();
+    assert!(!hidden.status.success());
+    assert!(String::from_utf8_lossy(&hidden.stderr).contains("module `other` is not imported"));
 }
 
 #[test]

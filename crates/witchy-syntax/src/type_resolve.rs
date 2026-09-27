@@ -635,6 +635,23 @@ pub fn resolve_with_user_modules(
     resolve_with_user_modules_and_declarations(modules, user_modules).map(|_| ())
 }
 
+/// Resolve one compile-time type operand with the same import, mode, and type
+/// namespace rules as an ordinary source annotation. The caller retains the
+/// loader-assigned module identities; this returns only the canonical type key.
+pub fn resolve_comptime_type_operand(
+    modules: &[(String, Module)], home: &str,
+    user_modules: &std::collections::HashSet<String>, mut ty: Type,
+) -> Result<Type, LinkError> {
+    validate_link_set_imports(modules)?;
+    let module = modules.iter().find(|(name, _)| name == home)
+        .ok_or_else(|| LinkError { message: format!("unknown type lookup module `{home}`"), location: None })?;
+    let world = World::build(modules);
+    let scope = Scope::build(home, user_modules.contains(home), &module.1.imports,
+        &module.1.from_imports, &world)?;
+    scope.resolve_type(&mut ty)?;
+    Ok(ty)
+}
+
 /// Canonicalize types and retain the source declaration behind each resulting
 /// compiler key. Package identity is deliberately supplied later by the loader;
 /// this pass records facts it uniquely knows and does not guess filesystem or

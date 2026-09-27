@@ -5,7 +5,7 @@ use super::*;
 use witchy_syntax::ast::{Expr, Function, Stmt};
 use witchy_syntax::compiler_session::ComptimeSyntaxOrigin;
 
-const REWRITE_VERSION: u32 = 4;
+const REWRITE_VERSION: u32 = 5;
 
 fn type_operand(expression: &Expr) -> Result<Type, PipelineError> {
     match expression {
@@ -13,6 +13,9 @@ fn type_operand(expression: &Expr) -> Result<Type, PipelineError> {
             name.clone(),
             args.iter().map(type_operand).collect::<Result<_, _>>()?,
         )),
+        Expr::Call { name, args } if name.split_once('.').is_some_and(|(_, type_name)|
+            type_name.chars().next().is_some_and(char::is_uppercase)) =>
+            Ok(Type::Named(name.clone(), args.iter().map(type_operand).collect::<Result<_, _>>()?)),
         Expr::Field { base, field } if matches!(&**base, Expr::Var(_)) => {
             let Expr::Var(module) = &**base else {
                 unreachable!()
@@ -27,7 +30,7 @@ fn type_operand(expression: &Expr) -> Result<Type, PipelineError> {
 
 fn resolve_type_info_calls(
     body: &mut witchy_syntax::ast::Block,
-    stage: &Module,
+    stage: &[(String, Module)], selected: &str, user_modules: &HashSet<String>,
 ) -> Result<bool, PipelineError> {
     let mut used = false;
     witchy_syntax::ast::visit::visit_block_mut(body, &mut |expression| {
@@ -37,8 +40,9 @@ fn resolve_type_info_calls(
                     return Err(refuse("type_info expects exactly one type operand"));
                 }
                 let requested = type_operand(&args[0])?;
-                *expression = witchy_syntax::reflect::type_info_expr_for_type(stage, requested)
-                    .map_err(refuse)?;
+                *expression = witchy_syntax::reflect::type_info_expr_for_type_in_modules(
+                    stage, selected, user_modules, requested,
+                ).map_err(refuse)?;
                 used = true;
             }
         }
@@ -276,11 +280,15 @@ impl ComptimeSourceSession {
         // belongs in its zero-grant executable recipe; unrelated emitted
         // functions may require runtime capabilities.
         retain_referenced_functions(&mut prepared, &HashSet::new(), true);
-        let type_stage = prepared.clone();
+        let type_stage = self.modules.iter().map(|(name, module)| (
+            name.clone(), if name == &self.selected { prepared.clone() } else { module.clone() },
+        )).collect::<Vec<_>>();
         let mut uses_type_info = false;
         for item in &mut prepared.items {
             if let Item::Function(function) = item {
-                uses_type_info |= resolve_type_info_calls(&mut function.body, &type_stage)?;
+                uses_type_info |= resolve_type_info_calls(
+                    &mut function.body, &type_stage, &self.selected, &self.user_modules,
+                )?;
             }
         }
         if uses_type_info && !prepared.imports.iter().any(|name| name == "meta") {
