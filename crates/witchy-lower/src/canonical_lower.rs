@@ -299,7 +299,7 @@ pub fn lower_typed_module(
                         .then_some(physical)
                 })
             })
-            .chain(function.ret.iter().map(result_physical_type))
+            .chain(function.ret.iter().map(|result| result_physical_type(result, &definitions)))
             .find(|ty| {
                 !has_checked_direct_carrier(ty, &definitions)
                     && contains_deferred_v1_qualifier(ty, &definitions)
@@ -2413,7 +2413,7 @@ fn checked_signature(
             },
         };
     } else if function.ret.as_ref().is_some_and(|result| {
-        is_root_unique(result) || witchy_syntax::ast::is_direct_unique_result_ok_collection(result)
+        is_root_unique(result) || witchy_canonical_source::storage::affine_storage_shape(result, definitions).is_some()
     }) {
         // The declaration result remains the leading lane.  `var` parameters
         // append independent authenticated write-back lanes, so a direct
@@ -2640,9 +2640,9 @@ fn signature_from_type(
                 .then_some(physical)
         })
         .chain(std::iter::once(
-            (!has_checked_direct_carrier(&result_physical_type(result), definitions)
-                && contains_deferred_v1_qualifier(&result_physical_type(result), definitions))
-                .then_some(result_physical_type(result)),
+            (!has_checked_direct_carrier(&result_physical_type(result, definitions), definitions)
+                && contains_deferred_v1_qualifier(&result_physical_type(result, definitions), definitions))
+                .then_some(result_physical_type(result, definitions)),
         ))
         .flatten()
         .next()
@@ -2816,8 +2816,8 @@ fn parameter_physical_type(ty: &Type, convention: Convention) -> Type {
     }
 }
 
-fn result_physical_type(ty: &Type) -> Type {
-    if let Some(physical) = witchy_syntax::ast::direct_unique_result_ok_collection_physical_type(ty) {
+fn result_physical_type(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> Type {
+    if let Some(physical) = witchy_canonical_source::storage::affine_aggregate_physical_type(ty, definitions) {
         return physical;
     }
     match ty {
@@ -2891,7 +2891,7 @@ fn contains_deferred_v1_qualifier(ty: &Type, definitions: &BTreeMap<String, Type
                     let convention = conventions.get(index).copied().unwrap_or_default();
                     contains_deferred_v1_qualifier(&parameter_physical_type(parameter, convention), definitions)
                 })
-                || contains_deferred_v1_qualifier(&result_physical_type(result), definitions)
+                || contains_deferred_v1_qualifier(&result_physical_type(result, definitions), definitions)
         }
     }
 }
@@ -7498,8 +7498,7 @@ impl FunctionLowerer<'_> {
         for (offset, argument) in args.iter().enumerate() {
             let slot = first_field + offset;
             let field = &shape.fields[slot];
-            let affine = StoragePlan::classify(field, self.definitions, |_| Some(0))
-                .requires_affine_owner_token();
+            let affine = witchy_canonical_source::storage::affine_storage_shape(field, self.definitions).is_some();
             let Pattern::Var(name) = argument else {
                 if affine || !matches!(argument, Pattern::Wildcard) {
                     return Err(CanonicalLoweringError::UnsupportedExpression("unbound affine payload"));
@@ -7586,8 +7585,7 @@ impl FunctionLowerer<'_> {
         let mut bindings = Vec::new();
         for (offset, argument) in args.iter().enumerate() {
             let field = &variant.fields[offset];
-            let affine = StoragePlan::classify(field, self.definitions, |_| Some(0))
-                .requires_affine_owner_token();
+            let affine = witchy_canonical_source::storage::affine_storage_shape(field, self.definitions).is_some();
             let Pattern::Var(name) = argument else {
                 if affine || !matches!(argument, Pattern::Wildcard) {
                     return Err(CanonicalLoweringError::UnsupportedExpression("unbound affine payload"));
@@ -11904,8 +11902,9 @@ impl FunctionLowerer<'_> {
         // The lazy default may write back any ordinary var argument. Use the
         // same per-edge binding, ownership, and extent join as if/short-circuit
         // expressions instead of joining only the expression's result.
-        let affine_result = StoragePlan::classify(&shape.fields[success_field], self.definitions, |_| Some(0))
-            .requires_affine_owner_token();
+        let affine_result = witchy_canonical_source::storage::affine_storage_shape(
+            &shape.fields[success_field], self.definitions,
+        ).is_some();
         let consuming_patterns = if affine_result {
             let failure_name = if shape.name == "Option" { "None" } else { "Err" };
             let (_, failure) = shape.variant(failure_name)

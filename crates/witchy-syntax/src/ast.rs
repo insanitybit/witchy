@@ -769,54 +769,6 @@ impl Type {
     }
 }
 
-/// The one nested ownership carrier with a canonical v1 ABI: a direct
-/// `Result(unique List|Dict, E)` Ok payload. Both collection arguments and
-/// `E` must be qualifier-free; this is deliberately not a general rule for
-/// erasing qualifiers inside aggregates or callable types.
-pub fn is_direct_unique_result_ok_collection(ty: &Type) -> bool {
-    let Type::Named(name, arguments) = ty else { return false };
-    let [payload, error] = arguments.as_slice() else { return false };
-    name == "Result" && is_direct_unique_collection(payload) && !contains_qualifier(error)
-}
-
-/// The physical type for the one nested ownership carrier accepted above.
-/// Keeping this projection beside its predicate prevents independent lowering
-/// sites from accidentally widening which nested qualifier is erased.
-pub fn direct_unique_result_ok_collection_physical_type(ty: &Type) -> Option<Type> {
-    if !is_direct_unique_result_ok_collection(ty) {
-        return None;
-    }
-    let Type::Named(name, arguments) = ty else { unreachable!("predicate established Result") };
-    let [payload, error] = arguments.as_slice() else { unreachable!("predicate established arity") };
-    Some(Type::Named(
-        name.clone(),
-        vec![payload.unqualified().clone(), error.clone()],
-    ))
-}
-
-fn is_direct_unique_collection(ty: &Type) -> bool {
-    let Type::Qualified(TypeQual::Unique, inner) = ty else { return false };
-    let Type::Named(name, arguments) = inner.as_ref() else { return false };
-    matches!((name.as_str(), arguments.len()), ("List", 1) | ("Dict", 2))
-        && !contains_qualifier(inner)
-}
-
-fn contains_qualifier(ty: &Type) -> bool {
-    match ty {
-        Type::Qualified(_, _) => true,
-        Type::Named(_, arguments) | Type::Tuple(arguments) | Type::Dyn(_, arguments) => {
-            arguments.iter().any(contains_qualifier)
-        }
-        Type::Slice(inner) => contains_qualifier(inner),
-        Type::RecordCompose { base, fields } => {
-            contains_qualifier(base) || fields.iter().any(|(_, field)| contains_qualifier(field))
-        }
-        Type::Fn(parameters, result, _, _) => {
-            parameters.iter().any(contains_qualifier) || contains_qualifier(result)
-        }
-    }
-}
-
 #[cfg_attr(
     not(target_arch = "wasm32"),
     derive(serde::Serialize, serde::Deserialize)

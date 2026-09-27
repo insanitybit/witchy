@@ -664,6 +664,25 @@ pub fn aggregate_managed_field_transfer(
     }
 }
 
+/// `unique` requires an owned pointer, proved by the checked physical storage
+/// class. This intentionally does not recurse into the graph operation query:
+/// a recursive nominal may refer to itself through this qualifier.
+fn unique_owned_pointer_type(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> bool {
+    if matches!(ty, Type::Qualified(..) | Type::Fn(..) | Type::Slice(..) | Type::Dyn(..)) {
+        return false;
+    }
+    if scalar_aggregate_shape(ty, definitions).is_some_and(|shape| !shape.packed) {
+        return true;
+    }
+    if matches!(stored_children(ty, definitions), Ok(Some(StoredChildren::Sequence(_) | StoredChildren::Mapping(_, _)))) {
+        return true;
+    }
+    matches!(CarrierElement::from_checked_type_with_definitions(ty, definitions),
+        Some(CarrierElement::String | CarrierElement::Bytes | CarrierElement::List(_)
+            | CarrierElement::Dict(_, _) | CarrierElement::Tuple(_)
+            | CarrierElement::Record { .. } | CarrierElement::Sum { .. }))
+}
+
 /// Verify representation and ownership at every source edge. An aggregate
 /// back edge is guarded by its retained heap pointer; callable signatures
 /// carry an exact bounded key and receive separate SafeWIR ABI validation.
@@ -682,7 +701,12 @@ fn graph_storage_operations(
     match ty {
         Type::Qualified(TypeQual::Frozen, inner) => child(inner, active, remaining),
         Type::Qualified(TypeQual::Unique, inner) => {
-            child(inner, active, remaining).map(|_| GraphOperations::REFUSED)
+            if !unique_owned_pointer_type(inner, definitions) { return None; }
+            child(inner, active, remaining).map(|operations| GraphOperations {
+                cloneable: false,
+                movable: operations.movable || operations.cloneable,
+                direct_capability_field: operations.direct_capability_field,
+            })
         }
         Type::Qualified(TypeQual::View, _) => match StoragePlan::classify(ty, definitions, |_| Some(0)) {
             StoragePlan::RootedView(storage) => match storage {
@@ -1103,6 +1127,13 @@ pub fn affine_storage_shape(
     ty: &Type,
     definitions: &BTreeMap<String, TypeDef>,
 ) -> Option<AffineStorageShape> {
+    fn unique_leaf(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> Option<AffineStorageShape> {
+        let Type::Qualified(TypeQual::Unique, inner) = ty else { return None; };
+        if !unique_owned_pointer_type(inner, definitions) { return None; }
+        graph_storage_operations(ty, definitions, &mut HashSet::new(), 0, &mut 4_096)
+            .filter(|operations| operations.finish().movable)
+            .map(|_| AffineStorageShape::Leaf)
+    }
     fn walk(
         plan: &StoragePlan, definitions: &BTreeMap<String, TypeDef>,
         active: &mut HashSet<Type>, depth: usize, remaining: &mut usize,
@@ -1127,6 +1158,10 @@ pub fn affine_storage_shape(
                 for (index, field) in shape.fields.iter().enumerate() {
                     if *remaining == 0 { return None; }
                     *remaining -= 1;
+                    if let Some(leaf) = unique_leaf(field, definitions) {
+                        children.push((u32::try_from(index).ok()?, leaf));
+                        continue;
+                    }
                     let child = StoragePlan::classify(field, definitions, |_| Some(0));
                     if child.requires_affine_owner_token() {
                         children.push((u32::try_from(index).ok()?, walk(&child, definitions, active, depth + 1, remaining)?));
@@ -1140,8 +1175,40 @@ pub fn affine_storage_shape(
         active.remove(source);
         result
     }
+    if let Some(leaf) = unique_leaf(ty, definitions) { return Some(leaf); }
     let plan = StoragePlan::classify(ty.unqualified(), definitions, |_| Some(0));
     walk(&plan, definitions, &mut HashSet::new(), 0, &mut 4_096)
+}
+
+/// Physical type of an affine aggregate result after its checked unique
+/// child tokens have been separated from value layout. The source type and
+/// ownership shape remain in the callable ABI proof; this only selects the
+/// corresponding linear-memory layout identity.
+pub fn affine_aggregate_physical_type(
+    ty: &Type,
+    definitions: &BTreeMap<String, TypeDef>,
+) -> Option<Type> {
+    if matches!(ty, Type::Qualified(..)) || affine_storage_shape(ty, definitions).is_none() {
+        return None;
+    }
+    fn erase(ty: &Type, definitions: &BTreeMap<String, TypeDef>, depth: usize, remaining: &mut usize) -> Option<Type> {
+        if depth > 128 || *remaining == 0 { return None; }
+        *remaining -= 1;
+        match ty {
+            Type::Qualified(TypeQual::Unique, inner)
+                if affine_storage_shape(ty, definitions).is_some() =>
+                    erase(inner, definitions, depth + 1, remaining),
+            Type::Qualified(..) | Type::Fn(..) | Type::Dyn(..) | Type::RecordCompose { .. } => None,
+            Type::Named(name, arguments) => Some(Type::Named(name.clone(), arguments.iter()
+                .map(|argument| erase(argument, definitions, depth + 1, remaining))
+                .collect::<Option<Vec<_>>>()?)),
+            Type::Tuple(fields) => Some(Type::Tuple(fields.iter()
+                .map(|field| erase(field, definitions, depth + 1, remaining))
+                .collect::<Option<Vec<_>>>()?)),
+            Type::Slice(inner) => Some(Type::Slice(Box::new(erase(inner, definitions, depth + 1, remaining)?))),
+        }
+    }
+    erase(ty, definitions, 0, &mut 4_096)
 }
 
 impl StoragePlan {

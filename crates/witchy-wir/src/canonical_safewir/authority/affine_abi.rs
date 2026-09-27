@@ -247,7 +247,7 @@ fn bind_owner_environments<S: ModuleStage>(
                 if capture.transfer != CaptureTransfer::MoveManaged { continue; }
                 if source.aggregate_managed_field_transfer(source_field)
                     != Some(ManagedAggregateFieldTransfer::Move)
-                    || !source.storage_plan(source_field).requires_affine_owner_token()
+                    || affine_storage_shape(source_field, source.type_definitions()).is_none()
                 { return Err(refuse()); }
                 if let (CaptureStorage::EnvironmentField(index), crate::canonical_safewir::ValueType::Ref(layout)) =
                     (capture.storage, capture.value_type) {
@@ -287,9 +287,13 @@ fn bind_plan(
     let descriptor = layouts.get(physical)?;
     let plan = match shape {
         AffineStorageShape::Leaf => {
-            let source_shape = witchy_canonical_source::aggregates::scalar_aggregate_shape(source_type, source.type_definitions())?;
-            if !matches!(descriptor.kind(), LayoutKind::PackedRecord { .. })
-                || descriptor.fields().len() != source_shape.fields.len() { return None; }
+            if let Type::Qualified(witchy_syntax::ast::TypeQual::Unique, inner) = source_type {
+                if !layout_matches_source(layout, inner, layouts, source.type_definitions()) { return None; }
+            } else {
+                let source_shape = witchy_canonical_source::aggregates::scalar_aggregate_shape(source_type, source.type_definitions())?;
+                if !matches!(descriptor.kind(), LayoutKind::PackedRecord { .. })
+                    || descriptor.fields().len() != source_shape.fields.len() { return None; }
+            }
             AffinePhysicalPlan::Leaf
         }
         AffineStorageShape::NullableFields(children) => {

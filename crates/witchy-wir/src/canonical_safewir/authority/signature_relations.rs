@@ -119,7 +119,7 @@ pub(super) fn candidate_signature_matches_source_inner(
     // Unique contract above proves the exact declared Ok carrier, so only this
     // bounded case compares the physical projection rather than recursively
     // erasing nested qualifiers during correspondence.
-    let physical_result = witchy_syntax::ast::direct_unique_result_ok_collection_physical_type(result);
+    let physical_result = witchy_canonical_source::storage::affine_aggregate_physical_type(result, records);
     let ordinary_results = usize::from(!result_is_unit);
     let write_back_parameters = parameters.iter().enumerate()
         .filter(|(index, _)| matches!(convention_at(*index), witchy_syntax::ast::Convention::Var))
@@ -141,7 +141,7 @@ pub(super) fn candidate_signature_matches_source_inner(
     let abi_ordinary_results = ordinary_results + disjunctive_selector_lanes;
     let source_unique_result = matches!(result,
         witchy_syntax::ast::Type::Qualified(witchy_syntax::ast::TypeQual::Unique, _))
-        || witchy_syntax::ast::is_direct_unique_result_ok_collection(result)
+        || physical_result.is_some()
         || witchy_canonical_source::storage::StoragePlan::classify(
             result.unqualified(), records, |_| Some(0),
         ).requires_affine_owner_token();

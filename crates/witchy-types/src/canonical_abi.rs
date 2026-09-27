@@ -124,7 +124,9 @@ pub fn checked_declaration_signature(typed: &TypedModule, name: &str) -> Result<
         }
     }
     if let Some(declared) = declaration.ret.as_ref()
-        && let Some(physical) = ast::direct_unique_result_ok_collection_physical_type(declared)
+        && let Some(physical) = witchy_canonical_source::storage::affine_aggregate_physical_type(
+            declared, &context.definitions,
+        )
         && result.as_ref() == &physical
     {
         // The finalized value type establishes the physical Result shape;

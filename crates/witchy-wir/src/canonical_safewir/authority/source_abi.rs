@@ -251,7 +251,7 @@ pub(super) fn source_abi_qualifiers_supported(
     let mut pending = (!(is_direct_shared_reference(result)
         || is_storage_backed_direct_view_carrier(result, records)
         || is_direct_exclusive_reference(result)
-        || witchy_syntax::ast::is_direct_unique_result_ok_collection(result)))
+        || witchy_canonical_source::storage::affine_aggregate_physical_type(result, records).is_some()))
         .then_some((result.as_ref(), true))
         .into_iter()
         .collect::<Vec<_>>();
