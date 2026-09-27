@@ -21,7 +21,7 @@ fn closure_snapshot_scopes_preserve_must_and_once_capture_rejections() {
     for mode in ["", "mode opt\n\n"] {
         for qualifier in ["fn", "once fn"] {
             let must = format!(
-                "{mode}must type Ticket:\n    Ticket(Int)\n\nfn finish(own ticket: Ticket) -> Int:\n    1\n\nfn exercise():\n    let ticket = Ticket(1)\n    let callback = {qualifier}() -> Int: finish(ticket)\n    let _ = callback\n"
+                "{mode}must type Ticket:\n    Ticket(Int)\n\nfn finish(own ticket: Ticket) -> Int:\n    match move ticket:\n        Ticket(_) -> 1\n\nfn exercise():\n    let ticket = Ticket(1)\n    let callback = {qualifier}() -> Int: finish(ticket)\n    let _ = callback\n"
             );
             let error = check_str(&must).expect_err("an opaque closure cannot hide a must-consume capture");
             assert!(error.contains("closure capture `ticket` carries a must-consume obligation"), "{must}\n{error}");

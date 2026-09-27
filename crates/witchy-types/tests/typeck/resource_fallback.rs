@@ -35,7 +35,7 @@ fn fallback_preserves_resource_errors_across_opt_calls_and_imported_types() {
 #[test]
 fn generic_fallback_rechecks_the_instantiated_error_obligation() {
     for mode in ["", "mode opt\n"] {
-        let program = format!("{mode}\nmust type Ticket:\n    Ticket(Int)\n\nfn recover[a](own input: Result(Int, a)) -> Int:\n    input ?? 0\n\nfn failed() -> Result(Int, Ticket):\n    Err(Ticket(7))\n\nfn main() -> Int:\n    recover(failed())\n");
+        let program = format!("{mode}\nmust type Ticket:\n    Ticket(Int)\n\nfn recover[a](own input: Result(Int, a)) -> Int:\n    (move input) ?? 0\n\nfn failed() -> Result(Int, Ticket):\n    Err(Ticket(7))\n\nfn main() -> Int:\n    recover(failed())\n");
         assert_resource_error(source::checked(&program));
     }
 }
@@ -43,7 +43,7 @@ fn generic_fallback_rechecks_the_instantiated_error_obligation() {
 #[test]
 fn fallback_keeps_success_obligations_and_ignores_nonstored_mentions() {
     for mode in ["", "mode opt\n"] {
-        let prelude = format!("{mode}\nmust type Ticket:\n    Ticket(Int)\n\nfn finish(own ticket: Ticket) -> Int:\n    match ticket:\n        Ticket(value) -> value\n\nfn success(flag: Bool) -> Result(Ticket, String):\n    if flag:\n        Ok(Ticket(7))\n    else:\n        Err(\"retry\")\n");
+        let prelude = format!("{mode}\nmust type Ticket:\n    Ticket(Int)\n\nfn finish(own ticket: Ticket) -> Int:\n    match move ticket:\n        Ticket(value) -> value\n\nfn success(flag: Bool) -> Result(Ticket, String):\n    if flag:\n        Ok(Ticket(7))\n    else:\n        Err(\"retry\")\n");
         source::checked(&format!("{prelude}\nfn main() -> Int:\n    let ticket = success(true) ?? Ticket(9)\n    finish(ticket)\n"))
             .expect("fallback transfers or constructs the success resource");
         let error = source::checked(&format!("{prelude}\nfn main():\n    let ticket = success(true) ?? Ticket(9)\n"))

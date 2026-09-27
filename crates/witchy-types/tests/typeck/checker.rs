@@ -218,7 +218,7 @@
 
     #[test]
     fn must_consume_requires_disposition_on_every_path() {
-        let prelude = "must type Ticket:\n    Ticket(Int)\n\nfn make() -> Ticket:\n    Ticket(1)\n\nfn finish(own ticket: Ticket):\n    let _ = 0\n\n";
+        let prelude = "must type Ticket:\n    Ticket(Int)\n\nfn make() -> Ticket:\n    Ticket(1)\n\nfn finish(own ticket: Ticket):\n    match move ticket:\n        Ticket(_) -> ()\n\n";
 
         let missing = check_source(&format!(
             "{prelude}fn main():\n    let ticket = make()\n"
@@ -230,7 +230,7 @@
             "{prelude}fn run(flag: Bool):\n    let ticket = make()\n    if flag:\n        finish(ticket)\n\nfn main():\n    run(true)\n"
         ))
         .expect_err("one branch cannot discharge an all-path obligation");
-        assert!(one_branch.message.contains("must-consume value `ticket`"));
+        assert!(one_branch.message.contains("must-consume value `ticket`"), "{one_branch:?}");
 
         check_source(&format!(
             "{prelude}fn run(flag: Bool):\n    let ticket = make()\n    if flag:\n        finish(ticket)\n    else:\n        finish(ticket)\n\nfn main():\n    run(true)\n"
@@ -238,14 +238,14 @@
         .expect("both branches consume the obligation");
 
         check_source(&format!(
-            "{prelude}fn score(own ticket: Ticket) -> Int:\n    1\n\nfn run(flag: Bool) -> Int:\n    let ticket = make()\n    let result: Int = if flag:\n        score(ticket)\n    else:\n        score(ticket)\n    result\n\nfn main():\n    let _ = run(true)\n"
+            "{prelude}fn score(own ticket: Ticket) -> Int:\n    match move ticket:\n        Ticket(_) -> 1\n\nfn run(flag: Bool) -> Int:\n    let ticket = make()\n    let result: Int = if flag:\n        score(ticket)\n    else:\n        score(ticket)\n    result\n\nfn main():\n    let _ = run(true)\n"
         ))
         .expect("expected-type checking isolates moves made by sibling branches");
     }
 
     #[test]
     fn loop_backedges_cannot_repeat_must_consume_transfers() {
-        let prelude = "must type Ticket:\n    Ticket(Int)\n\nfn finish(own ticket: Ticket):\n    let _ = 0\n\n";
+        let prelude = "must type Ticket:\n    Ticket(Int)\n\nfn finish(own ticket: Ticket):\n    match move ticket:\n        Ticket(_) -> ()\n\n";
         for (loop_name, source) in [
             (
                 "for",
@@ -651,7 +651,7 @@
         }
 
         let main = witchy_syntax::parser::parse_module(
-            "import task\n\nmust type Ticket:\n    Ticket(Int)\n\nfn finish(own ticket: Ticket) -> Int:\n    1\n\nasync fn pause() -> Int:\n    0\n\nasync fn main():\n    let ticket = Ticket(1)\n    let value = pause().await\n    let _ = finish(ticket) + value\n",
+            "import task\n\nmust type Ticket:\n    Ticket(Int)\n\nfn finish(own ticket: Ticket) -> Int:\n    match move ticket:\n        Ticket(_) -> 1\n\nasync fn pause() -> Int:\n    0\n\nasync fn main():\n    let ticket = Ticket(1)\n    let value = pause().await\n    let _ = finish(ticket) + value\n",
         )
         .expect("root-suspension fixture parses");
         let linked = witchy_syntax::linker::link(vec![("main".into(), main)], "main", witchy_syntax::linker::ComptimeExpander::new(no_comptime))

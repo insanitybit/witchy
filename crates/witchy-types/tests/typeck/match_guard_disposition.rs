@@ -6,7 +6,9 @@ const WORKER: &str = r#"must type Ticket:
 type Box(a):
     Box(a)
 pub fn finish(own value: Box(Ticket)) -> Bool:
-    false
+    match move value:
+        Box(token) -> match move token:
+            Ticket(_) -> false
 pub fn inspect(let value: Box(Ticket)) -> Bool:
     false
 "#;
@@ -32,7 +34,7 @@ const CONTEXTS: [(&str, &str, bool); 4] = [
 
 fn local_consumer(main: &str, local: bool) -> String {
     if !local { return main.into(); }
-    main.replace("worker.finish", "finish").replace("import worker\n", "import worker\nfn finish(own value: worker.Box(worker.Ticket)) -> Bool:\n    false\n")
+    main.replace("worker.finish", "finish").replace("import worker\n", "import worker\nfn finish(own value: worker.Box(worker.Ticket)) -> Bool:\n    match move value:\n        worker.Box(token) -> match move token:\n            worker.Ticket(_) -> false\n")
 }
 
 #[test]
@@ -80,19 +82,28 @@ fn skipped_pattern_or_lazy_guard_cannot_claim_definite_disposition() {
 }
 
 #[test]
-fn guard_cannot_consume_a_pattern_payload_before_fallthrough() {
+fn guarded_consuming_match_refuses_pattern_payload_fallthrough() {
     for mode in ["", "mode opt\n"] {
-        let program = format!("{mode}\n{WORKER}\nfn finish_ticket(own value: Ticket) -> Bool:\n    false\nfn run(own box: Box(Ticket)) -> Int:\n    match box:\n        Box(token) if finish_ticket(token) -> 1\n        Box(token) -> if finish_ticket(token): 2 else: 3\nfn main() -> Int:\n    run(Box(Ticket(7)))\n");
-        let error = source::checked(&program).expect_err("a false guard cannot revive the extracted resource in the next pattern");
-        assert!(error.contains("consumed") || error.contains("transferred") || error.contains("match guard"), "{error}");
+        let program = format!("{mode}\n{WORKER}\nfn finish_ticket(own value: Ticket) -> Bool:\n    match move value:\n        Ticket(_) -> false\nfn run(own box: Box(Ticket)) -> Int:\n    match move box:\n        Box(token) if finish_ticket(token) -> 1\n        Box(token) -> if finish_ticket(token): 2 else: 3\nfn main() -> Int:\n    run(Box(Ticket(7)))\n");
+        let error = source::checked(&program).expect_err("guarded extraction cannot prove disposition across fallthrough");
+        assert!(error.contains("matching would erase a must-consume obligation"), "{error}");
     }
 }
 
 #[test]
-fn borrowed_pattern_guard_and_unreachable_arm_keep_their_boundaries() {
+fn borrowed_pattern_guard_is_fail_closed_but_unguarded_extraction_is_valid() {
     for mode in ["", "mode opt\n"] {
-        let program = format!("{mode}\n{WORKER}\nfn finish_ticket(own value: Ticket) -> Int:\n    match value:\n        Ticket(n) -> n\nfn inspect_ticket(let value: Ticket) -> Bool:\n    false\nfn run(own box: Box(Ticket)) -> Int:\n    match box:\n        Box(token) if inspect_ticket(token) -> finish_ticket(token)\n        Box(token) -> finish_ticket(token)\nfn main() -> Int:\n    run(Box(Ticket(7)))\n");
-        source::checked(&program).expect("borrowing a pattern resource does not consume it before arm selection");
+        let program = format!("{mode}\n{WORKER}\nfn finish_ticket(own value: Ticket) -> Int:\n    match move value:\n        Ticket(n) -> n\nfn inspect_ticket(let value: Ticket) -> Bool:\n    false\nfn run(own box: Box(Ticket)) -> Int:\n    match move box:\n        Box(token) if inspect_ticket(token) -> finish_ticket(token)\n        Box(token) -> finish_ticket(token)\nfn main() -> Int:\n    run(Box(Ticket(7)))\n");
+        let error = source::checked(&program).expect_err("guarded extraction remains unsupported even when the guard only borrows");
+        assert!(error.contains("matching would erase a must-consume obligation"), "{error}");
+        let unguarded = format!("{mode}\n{WORKER}\nfn finish_ticket(own value: Ticket) -> Int:\n    match move value:\n        Ticket(n) -> n\nfn run(own box: Box(Ticket)) -> Int:\n    match move box:\n        Box(token) -> finish_ticket(token)\nfn main() -> Int:\n    run(Box(Ticket(7)))\n");
+        source::checked(&unguarded).expect("unguarded extraction transfers and disposes the nested resource");
+    }
+}
+
+#[test]
+fn unreachable_arm_keeps_its_boundary_after_guard_disposition() {
+    for mode in ["", "mode opt\n"] {
         let unreachable = DUPLICATE.replace("_ if worker.finish(token) -> 1", "_ -> if worker.finish(token): 1 else: 3")
             .replace("_ -> if worker.finish(token): 2 else: 3", "_ -> 0");
         checked(mode, mode, &unreachable).expect("a permitted redundant final wildcard cannot resurrect disposed obligations");

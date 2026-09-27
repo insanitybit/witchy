@@ -5,7 +5,9 @@ const WORKER: &str = r#"must type Ticket:
 type Box(a):
     Box(a)
 pub fn consume(own token: Box(Ticket), value: Int) -> Result(Int, String):
-    Ok(value)
+    match move token:
+        Box(ticket) -> match move ticket:
+            Ticket(_) -> Ok(value)
 "#;
 
 #[test]
@@ -25,7 +27,7 @@ fn main() -> Int:
 "#);
         if local {
             main = main.replace("worker.consume(", "consume(");
-            main.push_str("\nfn consume(own token: worker.Box(worker.Ticket), value: Int) -> Result(Int, String):\n    Ok(value)\n");
+            main.push_str("\nfn consume(own token: worker.Box(worker.Ticket), value: Int) -> Result(Int, String):\n    match move token:\n        worker.Box(ticket) -> match move ticket:\n            worker.Ticket(_) -> Ok(value)\n");
         }
         let error = source::checked_bundle(vec![("main", &main), ("worker", &worker)], "main")
             .err().expect("a later error edge abandons the earlier owned operand");
@@ -53,12 +55,20 @@ fn maybe() -> Result(Int, String):
 fn make(x: Int) -> Ticket:
     Ticket(x)
 fn consume(own t: Ticket, x: Int) -> Result(Int, String):
-    Ok(x)
+    match move t:
+        Ticket(_) -> Ok(x)
 fn finish_pair(own t: Pair(Ticket, Int)) -> Result(Int, String):
-    Ok(1)
+    match move t:
+        Pair(ticket, _) -> match move ticket:
+            Ticket(_) -> Ok(1)
 fn finish_tuple(own t: (Ticket, Int)) -> Result(Int, String):
-    Ok(1)
+    match move t:
+        (ticket, _) -> match move ticket:
+            Ticket(_) -> Ok(1)
 fn finish_list(own t: List(Ticket)) -> Result(Int, String):
+    for ticket in move t:
+        match move ticket:
+            Ticket(_) -> 0
     Ok(1)
 fn choose() -> Result(Int, String):
     let callback = consume
@@ -85,7 +95,8 @@ fn structured_exit_checks_only_operands_in_the_exited_context() {
             let input = format!(r#"{mode}must type Ticket:
     Ticket(Int)
 fn consume(own token: Ticket, x: Int) -> Result(Int, String):
-    Ok(x)
+    match move token:
+        Ticket(_) -> Ok(x)
 fn maybe() -> Result(Int, String):
     Err("stop")
 fn choose() -> Result(Int, String):
@@ -119,7 +130,8 @@ fn error_payload() -> Result(Int, Ticket):
 fn relay() -> Result(Int, Ticket):
     Ok(error_payload()?)
 fn consume(own token: Ticket, callback: fn() -> Result(Int, String)) -> Result(Int, String):
-    callback()
+    match move token:
+        Ticket(_) -> callback()
 fn deferred() -> Result(Int, String):
     consume(Ticket(7), fn() -> Result(Int, String):
         Ok(maybe()?)
@@ -137,7 +149,8 @@ fn suspension_cannot_abandon_a_completed_resource_argument() {
         let input = format!(r#"{mode}must type Ticket:
     Ticket(Int)
 fn consume(own token: Ticket, x: Int) -> Int:
-    x
+    match move token:
+        Ticket(_) -> x
 async fn value() -> Int:
     9
 async fn main():
@@ -160,7 +173,8 @@ fn trailing_base_cleanup_cannot_discharge_an_earlier_override_exit() {
 type Box:
     count: Int
 pub fn cleanup(own token: Ticket) -> Box:
-    Box(7)
+    match move token:
+        Ticket(_) -> Box(7)
 "#);
         let mut input = format!(r#"{root_mode}import worker
 fn maybe(bad: Bool) -> Result(Int, String):
@@ -173,7 +187,7 @@ fn main() -> Int:
 "#);
         if local {
             input = input.replace("worker.cleanup(", "cleanup(");
-            input.push_str("\nfn cleanup(own token: worker.Ticket) -> worker.Box:\n    worker.Box(7)\n");
+            input.push_str("\nfn cleanup(own token: worker.Ticket) -> worker.Box:\n    match move token:\n        worker.Ticket(_) -> worker.Box(7)\n");
         }
         let error = source::checked_bundle(vec![("main", &input), ("worker", &worker)], "main")
             .err().expect("the override returns before the trailing cleanup executes");

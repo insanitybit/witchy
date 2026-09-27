@@ -5,14 +5,14 @@ must type Ticket:
     Ticket(Int)
 
 fn finish(own ticket: Ticket) -> Int:
-    match ticket:
+    match move ticket:
         Ticket(n) -> n
 "#;
 
 #[test]
 fn resource_sum_extraction_cannot_reuse_its_input() {
     for mode in ["", "mode opt\n"] {
-        for expression in ["value ?? Ticket(9)", "value?"] {
+        for expression in ["(move value) ?? Ticket(9)", "(move value)?"] {
             let source = format!("{mode}{RESOURCE}\nfn duplicate(own value: Result(Ticket, String)) -> Result(Int, String):\n    let first = {expression}\n    let second = {expression}\n    Ok(finish(first) + finish(second))\n");
             let error = super::source::checked(&source).expect_err("extracting the first payload transfers the input owner");
             assert!(error.contains("value") && error.contains("after")
@@ -24,7 +24,7 @@ fn resource_sum_extraction_cannot_reuse_its_input() {
 #[test]
 fn fallback_cannot_reuse_its_consumed_left_input() {
     for mode in ["", "mode opt\n"] {
-        let source = format!("{mode}{RESOURCE}\nfn nested(own value: Option(Ticket)) -> Ticket:\n    value ?? (value ?? Ticket(9))\n");
+        let source = format!("{mode}{RESOURCE}\nfn nested(own value: Option(Ticket)) -> Ticket:\n    (move value) ?? ((move value) ?? Ticket(9))\n");
         let error = super::source::checked(&source).expect_err("the left wrapper is consumed before its fallback executes");
         assert!(error.contains("value") && error.contains("after")
             && (error.contains("moved") || error.contains("transferred")), "{error}");
@@ -36,12 +36,12 @@ fn generic_extraction_rechecks_instantiated_storage() {
     for mode in ["", "mode opt\n"] {
         let source = format!(r#"{mode}{RESOURCE}
 fn duplicate[a](own value: Result(a, String)) -> Result((a, a), String):
-    let first = value?
-    let second = value?
+    let first = (move value)?
+    let second = (move value)?
     Ok((first, second))
 
 fn finish_pair(own value: Result((Ticket, Ticket), String)) -> Int:
-    match value:
+    match move value:
         Ok((first, second)) -> finish(first) + finish(second)
         Err(_) -> 0
 
@@ -70,11 +70,11 @@ fn extraction_requires_the_whole_owned_resource() {
 
 #[test]
 fn imported_resource_identity_does_not_enable_repeated_extraction() {
-    let fast = "mode opt\nmust type Ticket:\n    Ticket(Int)\n\npub fn finish(own ticket: Ticket) -> Int:\n    match ticket:\n        Ticket(n) -> n\n";
+    let fast = "mode opt\nmust type Ticket:\n    Ticket(Int)\n\npub fn finish(own ticket: Ticket) -> Int:\n    match move ticket:\n        Ticket(n) -> n\n";
     let main = r#"import fast
 fn duplicate(own value: Result(fast.Ticket, String)) -> Int:
-    let first = value ?? fast.Ticket(9)
-    let second = value ?? fast.Ticket(9)
+    let first = (move value) ?? fast.Ticket(9)
+    let second = (move value) ?? fast.Ticket(9)
     fast.finish(first) + fast.finish(second)
 
 fn main() -> Int:
@@ -106,10 +106,10 @@ fn ordinary(value: Option(Int)) -> Int:
     (value ?? 2) + (value ?? 3)
 
 fn fallback(own value: Option(Ticket)) -> Ticket:
-    value ?? Ticket(9)
+    (move value) ?? Ticket(9)
 
 fn propagate(own value: Result(Ticket, String)) -> Result(Int, String):
-    let ticket = value?
+    let ticket = (move value)?
     Ok(finish(ticket))
 
 fn explicit() -> Int:
