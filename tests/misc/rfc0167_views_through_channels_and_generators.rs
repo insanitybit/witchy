@@ -1,6 +1,11 @@
 //! RFC-0167 row K channel boundary. A live `must` child handle cannot enter
 //! the replayable Task continuation installed by `await`.
 
+struct ResetOptimizationOverride;
+impl Drop for ResetOptimizationOverride {
+    fn drop(&mut self) { witchy::opt::set_for_tests(None); }
+}
+
 const CHANNELS: &str = r#"
 from chan import Sender
 
@@ -195,4 +200,115 @@ fn channel_handle_refusal_and_owned_gc_result() {
         .expect("affine rebinding consumes each old owner");
     let _ = witchy::codegen::compile_checked_module_artifact(&checked)
         .expect_lowered("affine GC bindings cross conditional and loop joins");
+}
+
+#[test]
+fn mixed_view_and_affine_packet_runs_without_losing_either_child() {
+    use witchy::runtime::{Capabilities, Runtime};
+    witchy::opt::set_for_tests(Some(witchy::opt::OptSet::none()));
+    let _reset = ResetOptimizationOverride;
+
+    let body = r#"
+must type Ticket:
+    Ticket(Int)
+
+must type Packet:
+    Packet(&String, Ticket)
+
+fn consume(own packet: Packet) -> Int:
+    match packet:
+        Packet(view, ticket) ->
+            match move ticket:
+                Ticket(n) -> n + (*view).length()
+
+async fn main(console: Console):
+    let text = "abc"
+    let packet = Packet(&text, Ticket(7))
+    console.print("${consume(packet)}")
+"#;
+    for mode in ["", "mode opt\n"] {
+        let source = format!("{mode}{body}");
+        let checked = witchy::resolve_std_only_checked(&source)
+            .expect("mixed packet type-checks");
+        let artifact = witchy::codegen::compile_checked_module_artifact(&checked)
+            .expect_lowered("admitted unoptimized mixed packet Wasm");
+        let mut runtime = Runtime::batch().expect("runtime");
+        let mut vm = runtime.spawn_admitted(&artifact,
+            Capabilities { print: true, quiet: true, ..Capabilities::none() }, 128,
+        ).expect("admitted mixed packet launch");
+        vm.run().expect("mixed packet execution");
+        assert_eq!(vm.output(), vec!["10"], "mode {mode:?}");
+        assert_eq!(vm.canonical_heap_leaks().expect("ownership audit"), Some(0), "mode {mode:?}");
+    }
+}
+
+#[test]
+fn normal_caller_transfers_opt_defined_mixed_packet_without_losing_children() {
+    use witchy::runtime::{Capabilities, Runtime};
+    use witchy_types::runtime_type::{AuthenticatedModuleOwners, ModuleLoadIdentity, PackageCoordinate, PackageSource};
+    witchy::opt::set_for_tests(Some(witchy::opt::OptSet::none()));
+    let _reset = ResetOptimizationOverride;
+
+    let worker = r#"mode opt
+must type Ticket:
+    Ticket(Int)
+
+must type Packet:
+    Packet(&String, Ticket)
+
+must type Envelope:
+    Envelope(Packet)
+
+pub fn make(view: &String, n: Int) -> Packet:
+    Packet(view, Ticket(n))
+
+pub fn wrap(own packet: Packet) -> Envelope:
+    Envelope(packet)
+
+pub fn consume(own packet: Packet) -> Int:
+    match packet:
+        Packet(view, ticket) ->
+            match move ticket:
+                Ticket(n) -> n + (*view).length()
+
+pub fn consume_wrapped(own envelope: Envelope) -> Int:
+    match envelope:
+        Envelope(packet) -> consume(packet)
+"#;
+    let main = r#"import worker
+
+async fn main(console: Console):
+    let text = "abc"
+    let packet = worker.make(&text, 7)
+    console.print("${worker.consume(packet)}")
+    let nested = worker.wrap(worker.make(&text, 9))
+    console.print("${worker.consume_wrapped(nested)}")
+"#;
+    let workspace = PackageCoordinate::new(PackageSource::Workspace, "example/mixed-packet", "0.1.0")
+        .expect("workspace coordinate");
+    let toolchain = PackageCoordinate::new(PackageSource::Toolchain, "witchy/std", "0.1.0")
+        .expect("toolchain coordinate");
+    let mut assignments = ["main", "worker"].map(|name| (
+        name.to_owned(), ModuleLoadIdentity::new(workspace.clone(), [name]).expect("user owner"),
+    )).to_vec();
+    assignments.extend(witchy_syntax::linker::STD_MODULES.iter().map(|name| (
+        (*name).to_owned(), ModuleLoadIdentity::new(toolchain.clone(), ["std", *name]).expect("std owner"),
+    )));
+    let owners = AuthenticatedModuleOwners::from_loader_assignments(assignments).expect("owners");
+    let checked = witchy_types::pipeline::link_checked_authenticated_from_source_bundle_with_user_modules(
+        vec![("worker".into(), worker.as_bytes().to_vec()),
+             ("main".into(), main.as_bytes().to_vec())],
+        "main", witchy_syntax::linker::ComptimeExpander::new(
+            |_, _, _| Ok(witchy_syntax::origin::OriginTable::default())),
+        &std::collections::HashSet::from(["main".into(), "worker".into()]), owners,
+    ).expect("normal caller and opt-defined packet type-check");
+    let artifact = witchy::codegen::compile_checked_module_artifact(&checked)
+        .expect_lowered("admitted unoptimized cross-mode mixed packet Wasm");
+    let mut runtime = Runtime::batch().expect("runtime");
+    let mut vm = runtime.spawn_admitted(&artifact,
+        Capabilities { print: true, quiet: true, ..Capabilities::none() }, 128,
+    ).expect("admitted mixed packet launch");
+    vm.run().expect("cross-mode mixed packet execution");
+    assert_eq!(vm.output(), vec!["10", "12"]);
+    assert_eq!(vm.canonical_heap_leaks().expect("ownership audit"), Some(0));
 }

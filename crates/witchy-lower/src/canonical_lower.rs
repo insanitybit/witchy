@@ -12678,6 +12678,12 @@ impl FunctionLowerer<'_> {
                             witchy_wir::canonical_safewir::StoreTransfer::CopyScalar
                         })
                     };
+                    if reference && !clone_reference {
+                        // The field now owns the incoming token. Do not also
+                        // schedule the entry parameter's exit-time drop;
+                        // release placement independently checks the move.
+                        self.owned_parameters.retain(|owned| *owned != value);
+                    }
                     self.push_operation(Operation::Store {
                         place,
                         value,

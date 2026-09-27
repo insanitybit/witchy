@@ -1492,15 +1492,22 @@ admitted-Wasm row K evidence. The moved fixture is a diagnostic probe, not row
 K evidence. Adversarial review found no authority bypass in the local list
 composition. Opaque GC consuming field transfer is tracked above.
 
-Row G mixed aggregate transfer (implemented but unverified, 2026-09-26):
+Row G mixed aggregate transfer (bounded runtime evidence, 2026-09-27):
 the recursive checked storage judgment now permits an owned aggregate shell
 when every child can either move uniquely or be lawfully cloned. The lowerer
 uses that same child judgment to retain copyable managed fields and transfer
-affine managed fields when building the shell. An existing compiler smoke
-admits a `Packet(&String, Ticket)` through checked source and unoptimized
-SafeWIR lowering; the live-handle channel refusal remains fail closed. This
-does not establish hand-computed admitted-Wasm behavior or a zero-leak audit,
-so no A–O row closes. The owned GC result ABI is now implemented separately;
+affine managed fields when building the shell. The
+`rfc0167_views_through_channels_and_generators` witness consumes a
+`Packet(&String, Ticket)` in normal and opt mode: hand-computed `7 + 3 = 10`,
+admitted unoptimized Wasm `10`, zero canonical heap leaks. A normal caller
+also obtains this opt-defined Packet and passes it to opt code, then does the
+same through an enclosing `Envelope(Packet)`: hand-computed `10` and `9 + 3 =
+12`, admitted output `10`/`12`, zero leaks. The nested case exposed a duplicate
+parameter drop after moving an owned managed field; aggregate construction
+now retires that entry cleanup when the field takes its token. These are
+representative recursive transport results, not full row G or lifecycle
+coverage; the live-handle channel refusal remains fail closed. The owned GC
+result ABI is implemented separately;
 `task.Step(task.Handle)` still needs a lawful one-shot task capture and
 consuming aggregate extraction before it can be admitted end to end.
 
