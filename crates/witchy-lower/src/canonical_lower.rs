@@ -12081,15 +12081,10 @@ impl FunctionLowerer<'_> {
     /// same error) from a terminal block.
     fn lower_try(&mut self, inner: &Expr) -> Result<ValueId, CanonicalLoweringError> {
         let inner_type = self.expression_storage_type(inner)?;
-        if witchy_canonical_source::storage::affine_storage_shape(
+        let affine = witchy_canonical_source::storage::affine_storage_shape(
             &inner_type, self.definitions,
         ).is_some() || StoragePlan::classify(&inner_type, self.definitions, |_| Some(0))
-            .requires_affine_owner_token()
-        {
-            return Err(CanonicalLoweringError::UnsupportedExpression(
-                "try on affine storage requires consuming payload extraction",
-            ));
-        }
+            .requires_affine_owner_token();
         let shape = scalar_aggregate_shape(&inner_type, self.definitions)
             .filter(|shape| matches!(shape.name.as_str(), "Option" | "Result"))
             .ok_or(CanonicalLoweringError::UnsupportedExpression("try operand"))?;
@@ -12112,12 +12107,35 @@ impl FunctionLowerer<'_> {
         if success.arity != 1 || failure.arity != destination_failure.arity {
             return Err(CanonicalLoweringError::UnsupportedExpression("try operand variant arity"));
         }
+        let consuming_patterns = if affine {
+            let success_pattern = Pattern::Ctor {
+                name: success_name.to_string(),
+                args: vec![Pattern::Var("__try_success".to_string())],
+            };
+            let failure_pattern = Pattern::Ctor {
+                name: failure_name.to_string(),
+                args: (0..failure.arity).map(|index| Pattern::Var(format!("__try_failure_{index}"))).collect(),
+            };
+            if witchy_canonical_source::storage::consuming_aggregate_pattern_shape(
+                &inner_type, &success_pattern, self.definitions,
+            ).is_none() || witchy_canonical_source::storage::consuming_aggregate_pattern_shape(
+                &inner_type, &failure_pattern, self.definitions,
+            ).is_none() {
+                return Err(CanonicalLoweringError::UnsupportedExpression(
+                    "affine try lacks consuming variant proof",
+                ));
+            }
+            Some((success_pattern, failure_pattern))
+        } else { None };
         // The operand is either a plain tagged record or, when a payload is a
         // reference carrier such as `&Int`, an opaque owner aggregate whose
         // tag and payloads are read through its owner family. Both routes
         // go through the source-aggregate readers, as `match` does, so a
         // payload read from an owner carries its own releasable token.
         let object = self.lower_expr(inner)?;
+        if consuming_patterns.is_some() {
+            self.retire_consumed_aggregate_parameter(inner, object);
+        }
         let tag = if matches!(self.values[&object], ValueType::Gc(_)) {
             self.opaque_aggregate_tag(object, &inner_type)?
         } else {
@@ -12136,13 +12154,23 @@ impl FunctionLowerer<'_> {
         })?;
         self.current = fail;
         let mut failure_payload = Vec::with_capacity(failure.arity);
+        let mut consumed_failure = if let Some((_, pattern)) = &consuming_patterns {
+            self.lower_consuming_aggregate_pattern(object, pattern, &inner_type, &shape)?
+                .into_iter().map(|(_, value)| value).collect::<Vec<_>>().into_iter()
+        } else { Vec::new().into_iter() };
         for offset in 0..failure.arity {
             let source_error = &shape.fields[failure.first_field + offset];
             let destination_error = &failure_shape.fields[destination_failure.first_field + offset];
-            let error = self.load_source_aggregate_field(
-                object, &inner_type, failure_index, offset, failure.first_field + offset,
-                self.field_value_type(source_error)?,
-            )?;
+            let error = if consuming_patterns.is_some() {
+                consumed_failure.next().ok_or(CanonicalLoweringError::UnsupportedExpression(
+                    "affine try failure payload",
+                ))?
+            } else {
+                self.load_source_aggregate_field(
+                    object, &inner_type, failure_index, offset, failure.first_field + offset,
+                    self.field_value_type(source_error)?,
+                )?
+            };
             let error = if self.field_value_type(source_error)? == self.field_value_type(destination_error)? {
                 error
             } else {
@@ -12158,7 +12186,15 @@ impl FunctionLowerer<'_> {
         self.finish_current(terminator)?;
         self.current = proceed;
         let payload_type = self.field_value_type(&shape.fields[success.first_field])?;
-        self.load_source_aggregate_field(object, &inner_type, success_index, 0, success.first_field, payload_type)
+        if let Some((pattern, _)) = &consuming_patterns {
+            let mut fields = self.lower_consuming_aggregate_pattern(object, pattern, &inner_type, &shape)?;
+            if fields.len() != 1 {
+                return Err(CanonicalLoweringError::UnsupportedExpression("affine try success payload"));
+            }
+            Ok(fields.pop().expect("one success payload").1)
+        } else {
+            self.load_source_aggregate_field(object, &inner_type, success_index, 0, success.first_field, payload_type)
+        }
     }
 
     /// Convert a checked anonymous-union subset into its checked widening

@@ -1879,6 +1879,18 @@ through a wildcard both refuse. Resource-bearing patterns still require their
 separate must-consume proof. Hand-computed admitted-Wasm and zero-leak evidence
 has not been recorded for these new forms, so no A-O row closes.
 
+Affine `?` propagation (implemented but unverified, 2026-09-26):
+`Option` and `Result` now consume a recursively proved affine wrapper on both
+branches. Success moves its checked payload out of a nullable owned slot;
+failure moves any error payload into the enclosing result before returning.
+The checker carries the qualified success type through a checked direct call,
+so an extracted unique value remains affine after a local binding. Focused
+normal-mode programs execute both success and failure paths for each carrier,
+returning the expected lengths 2 and 4 respectively; a second use after an
+alias transfer and reuse of a consumed `?` operand both refuse. Other unproved
+operand origins remain fail closed.
+These checks do not include a zero-leak audit or the full A-O matrix.
+
 ## Optimization-readiness carrier audit
 
 This inventory identifies production carriers already capable of preserving the

@@ -1223,6 +1223,19 @@ pub fn affine_aggregate_erased_type(
     erase(ty, definitions, 0, &mut 4_096)
 }
 
+/// Checked HM erasure for either a root affine owner or an aggregate carrying
+/// one. This is a type-equality witness, never permission to clone a token.
+pub fn affine_storage_erased_type(
+    ty: &Type,
+    definitions: &BTreeMap<String, TypeDef>,
+) -> Option<Type> {
+    affine_storage_shape(ty, definitions)?;
+    match ty {
+        Type::Qualified(TypeQual::Unique, inner) => Some((**inner).clone()),
+        _ => affine_aggregate_erased_type(ty, definitions),
+    }
+}
+
 /// Identity for a linear-memory aggregate layout. A proved affine field
 /// changes its pointer slot to owned-nullable, so its checked qualifier is
 /// part of the layout key even though HM type equality erases that qualifier.

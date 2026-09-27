@@ -2119,6 +2119,8 @@ impl Checker {
             Expr::As { expr, .. } | Expr::Unary { op: UnOp::Move, expr } => {
                 self.expression_carries_unique_storage(expr, ty)
             }
+            Expr::Try(_) => self.inferred_unique_source_type(expression, ty)
+                .is_some_and(|source| self.declared_type_carries_unique_storage(&source)),
             Expr::Unary { op: UnOp::Borrow | UnOp::BorrowMut | UnOp::Deref, .. } => false,
             Expr::Field { base, field } => {
                 if self
@@ -2677,6 +2679,41 @@ impl Checker {
                 if !self.scopes.iter().any(|scope| scope.contains_key(name)) =>
                 self.fn_source_result_types.get(name).cloned(),
             Expr::Unary { op: UnOp::Move, expr } => self.inferred_unique_source_type(expr, ty),
+            Expr::Try(inner) => {
+                let source = self.inferred_unique_source_type(inner, ty)?;
+                let shape = witchy_canonical_source::aggregates::scalar_aggregate_shape(
+                    &source, &self.canonical_definitions,
+                )?;
+                let (success_name, failure_name) = match shape.name.as_str() {
+                    "Option" => ("Some", "None"),
+                    "Result" => ("Ok", "Err"),
+                    _ => return None,
+                };
+                let (_, success) = shape.variant(success_name)?;
+                let (_, failure) = shape.variant(failure_name)?;
+                if success.arity != 1 { return None; }
+                let result = shape.fields.get(success.first_field)?.clone();
+                let success_pattern = Pattern::Ctor {
+                    name: success_name.to_string(),
+                    args: vec![Pattern::Var("__try_success".to_string())],
+                };
+                let failure_pattern = Pattern::Ctor {
+                    name: failure_name.to_string(),
+                    args: (0..failure.arity).map(|index| Pattern::Var(format!("__try_failure_{index}"))).collect(),
+                };
+                witchy_canonical_source::storage::consuming_aggregate_pattern_shape(
+                    &source, &success_pattern, &self.canonical_definitions,
+                )?;
+                witchy_canonical_source::storage::consuming_aggregate_pattern_shape(
+                    &source, &failure_pattern, &self.canonical_definitions,
+                )?;
+                if witchy_canonical_source::storage::affine_storage_erased_type(
+                    &result, &self.canonical_definitions,
+                ) != ty_to_ast(&self.resolve(ty)) {
+                    return None;
+                }
+                Some(result)
+            }
             Expr::As { ty, .. } => Some(ty.clone()),
             Expr::Tuple(items) => Some(ast::Type::Tuple(
                 items
@@ -6032,9 +6069,12 @@ impl Checker {
         if self.type_record.is_some()
             && let Some(source) = self.expression_source_type_for_unique_storage(expr)
                 .or_else(|| self.inferred_unique_source_type(expr, &t))
-            && witchy_canonical_source::storage::affine_aggregate_erased_type(
+            && (witchy_canonical_source::storage::affine_aggregate_erased_type(
                 &source, &self.canonical_definitions,
-            ).is_some()
+            ).is_some() || matches!(expr, Expr::Try(_))
+                && witchy_canonical_source::storage::affine_storage_erased_type(
+                    &source, &self.canonical_definitions,
+                ).is_some())
         {
             self.affine_expression_types.insert(expr as *const Expr as usize, source);
         }
@@ -8855,6 +8895,7 @@ impl Checker {
                         ))
                     }
                 };
+                self.transfer_unique_value(inner, &it, "`?` operand")?;
                 // `?` has an implicit error-return edge after its operand has
                 // been evaluated. Check obligations at exactly that point: an
                 // `own` operand call has already discharged its argument, while
@@ -13098,7 +13139,7 @@ fn run_check_selected(
             .collect();
         let affine_expression_types = c.affine_expression_types.into_iter().filter(|(site, source)| {
             types.get(site).and_then(ty_to_ast)
-                == witchy_canonical_source::storage::affine_aggregate_erased_type(
+                == witchy_canonical_source::storage::affine_storage_erased_type(
                     source, &c.canonical_definitions,
                 )
         }).collect();
