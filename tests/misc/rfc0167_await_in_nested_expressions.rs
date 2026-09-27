@@ -46,11 +46,11 @@ fn assert_async_output(label: &str, source: &str, expected: &[&str]) {
         "{label} admitted Wasm releases all roots");
 }
 
-const NESTED: &str = r#"import chan
+const NESTED: &str = r#"from task import yield_now
 
 async fn get(console: Console, n: Int) -> Int:
     console.print("get ${n}")
-    chan.yield_now().await
+    yield_now().await
     n
 
 fn stamp(console: Console, n: Int) -> Int:
@@ -61,11 +61,11 @@ fn pair(a: Int, b: Int) -> String:
     "${a}/${b}"
 
 async fn parse(n: Int) -> Result(Int, String):
-    chan.yield_now().await
+    yield_now().await
     if n > 0: Ok(n) else: Err("negative ${n}")
 
 async fn find(n: Int) -> Option(Int):
-    chan.yield_now().await
+    yield_now().await
     if n > 0: Some(n * 10) else: None
 
 async fn total(n: Int) -> Result(Int, String):

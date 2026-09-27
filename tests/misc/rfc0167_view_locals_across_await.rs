@@ -51,7 +51,7 @@ fn view_locals_are_held_across_await() {
     // async function still reads 3.
     assert_async_output(
         "view locals across await",
-        "import chan\n\ntype P:\n    x: Int\n    y: Int\n\nasync fn count(v: &List(Int)) -> Int:\n    chan.yield_now().await\n    (*v).length()\n\nasync fn main(console: Console):\n    let n = 41\n    let iv = &n\n    let xs = [1, 2, 3]\n    let lv = &xs\n    let s = \"abc\" + \"def\"\n    let sv = &s\n    let p = P(x: 3, y: 4)\n    let pv = &p\n    var ys = [1, 2, 3]\n    let yv = &ys\n    chan.yield_now().await\n    ys.push(4)\n    chan.yield_now().await\n    console.print(\"${(*iv) + 1}\")\n    console.print(\"${(*lv).length()}\")\n    console.print(\"${(*sv).length()}\")\n    console.print(\"${(*pv).x + (*pv).y}\")\n    console.print(\"${(*yv).length()} ${ys.length()}\")\n    let c = count(lv).await\n    console.print(\"${c}\")\n",
+        "from task import yield_now\n\ntype P:\n    x: Int\n    y: Int\n\nasync fn count(v: &List(Int)) -> Int:\n    yield_now().await\n    (*v).length()\n\nasync fn main(console: Console):\n    let n = 41\n    let iv = &n\n    let xs = [1, 2, 3]\n    let lv = &xs\n    let s = \"abc\" + \"def\"\n    let sv = &s\n    let p = P(x: 3, y: 4)\n    let pv = &p\n    var ys = [1, 2, 3]\n    let yv = &ys\n    yield_now().await\n    ys.push(4)\n    yield_now().await\n    console.print(\"${(*iv) + 1}\")\n    console.print(\"${(*lv).length()}\")\n    console.print(\"${(*sv).length()}\")\n    console.print(\"${(*pv).x + (*pv).y}\")\n    console.print(\"${(*yv).length()} ${ys.length()}\")\n    let c = count(lv).await\n    console.print(\"${c}\")\n",
         &["42", "3", "6", "7", "3 4", "3"],
     );
 }

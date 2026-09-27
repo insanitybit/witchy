@@ -57,18 +57,18 @@ fn slice_subscripts_read_elements_inside_async_functions() {
     assert_async_output(
         "slice subscripts in async",
         r#"
-import chan
+from task import yield_now
 
 fn first(xs: &[Int]) -> Int:
     xs[0]
 
 async fn pick(xs: &[Int], i: Int) -> Int:
     let head = xs[0]
-    chan.yield_now().await
+    yield_now().await
     xs[i] + head - head
 
 async fn word(ws: &[String], i: Int) -> String:
-    chan.yield_now().await
+    yield_now().await
     ws[i] + "!"
 
 async fn main(console: Console):
@@ -77,11 +77,11 @@ async fn main(console: Console):
     var ws = ["ab", "cd", "ef"]
     let w = &ws[1..3]
     let pending = pick(s, 2)
-    chan.yield_now().await
+    yield_now().await
     ns[3] = 7
     ns.push(50)
     ws[1] = "zz"
-    chan.yield_now().await
+    yield_now().await
     console.print("${s[0]} ${s[2]} ${s.length()} ${ns[3]} ${ns.length()}")
     let picked = pending.await
     console.print("${picked} ${first(s)}")

@@ -50,18 +50,18 @@ fn scalar_value_views_cross_await() {
     // that yield before reading: 2.5 / 2 = 1.25, !true = false, 30s + 30s =
     // 60s.
     assert_async_output("scalar views across await", r#"
-import chan
+from task import yield_now
 
 async fn half(v: &Float) -> Float:
-    chan.yield_now().await
+    yield_now().await
     (*v) / 2.0
 
 async fn flip(v: &Bool) -> Bool:
-    chan.yield_now().await
+    yield_now().await
     !(*v)
 
 async fn twice(v: &Duration) -> Duration:
-    chan.yield_now().await
+    yield_now().await
     (*v) + (*v)
 
 async fn main(console: Console):
@@ -71,11 +71,11 @@ async fn main(console: Console):
     let bv = &b
     var d = 30s
     let dv = &d
-    chan.yield_now().await
+    yield_now().await
     f = 9.0
     b = false
     d = 1s
-    chan.yield_now().await
+    yield_now().await
     console.print("${*fv} ${f}")
     console.print("${*bv} ${b}")
     console.print("${(*dv) == 30s} ${d == 1s}")
