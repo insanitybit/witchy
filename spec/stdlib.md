@@ -4594,6 +4594,10 @@ Normal-mode compiler-generated test recipes use this only after the checked asyn
 
 Normal-mode compiler-generated test recipes use this only when the checked async source classifies every await as cooperative yield. Other scheduler effects remain a loud failure so a stale classification cannot drop work.
 
+#### `fn __compiler_run_channel_only(root: Task(()))`
+
+Normal-mode compiler-generated test recipes use this only after the checked async source inventory proves every suspension is yield or a single-task channel operation. Spawn, join, select, host effects, and implicit async-for suspension stay on the general scheduler. With one task, the general scheduler's quiescence pass resumes an empty receive with None and releases a blocked send into the queue; these direct transitions preserve that behavior.
+
 ## `testing`
 
 The Witchy test support module. `witchy test <file>` discovers `test_*` functions and reports each as passing unless it aborts. Plain tests receive zero real authority. Deterministic capability parameters come only from a validated external fixture plan; this module provides assertions and ordinary collaborators, not capability constructors.

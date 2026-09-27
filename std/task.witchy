@@ -1559,3 +1559,77 @@ pub fn __compiler_run_yield_only(root: Task(())):
             Done(_) -> finished = true
             Yield(next) -> current = next
             _ -> fail("compiler-proven yield-only Task produced another scheduler effect")
+
+// Normal-mode compiler-generated test recipes use this only after the checked
+// async source inventory proves every suspension is yield or a single-task
+// channel operation. Spawn, join, select, host effects, and implicit async-for
+// suspension stay on the general scheduler. With one task, the general
+// scheduler's quiescence pass resumes an empty receive with None and releases a
+// blocked send into the queue; these direct transitions preserve that behavior.
+pub fn __compiler_run_channel_only(root: Task(())):
+    var current = root
+    var channels: List((List(__Msg), Int, Int, Int)) = []
+    var typed_i64_channels: List(Option(__TypedI64Ring)) = []
+    var finished = false
+    while !finished:
+        match poll(current):
+            Done(_) -> finished = true
+            Yield(next) -> current = next
+            Open(cap, cont) ->
+                let cid = list.length(channels)
+                list.push(channels, ring_new(cap))
+                list.push(typed_i64_channels, None)
+                current = cont(cid)
+            OpenI64(cap, cont) ->
+                let cid = list.length(channels)
+                list.push(channels, ring_new(cap))
+                list.push(typed_i64_channels, Some(typed_i64_ring_new(cap)))
+                current = cont(cid)
+            Push(ch, msg, cont) ->
+                materialize_typed_i64_channel(ch, channels, typed_i64_channels)
+                let (buf, head, count, cap) = list.at(channels, ch)
+                list.set_at(channels, ch, ring_put(buf, head, count, msg, cap))
+                current = cont(unit())
+            Pull(ch, cont) ->
+                materialize_typed_i64_channel(ch, channels, typed_i64_channels)
+                let (buf, head, count, cap) = list.at(channels, ch)
+                if count == 0:
+                    current = cont(None)
+                else:
+                    let msg = list.at(buf, head)
+                    list.set_at(channels, ch, (buf, (head + 1) % list.length(buf), count - 1, cap))
+                    current = cont(Some(msg))
+            PushI64(ch, msg, cont) ->
+                match list.at(typed_i64_channels, ch):
+                    Some((buf, head, count, cap)) ->
+                        if cap > 0 && count >= cap:
+                            list.set_at(channels, ch, typed_i64_materialize(buf, head, count, cap))
+                            list.set_at(typed_i64_channels, ch, None)
+                            let (erased, erased_head, erased_count, erased_cap) = list.at(channels, ch)
+                            list.set_at(channels, ch, ring_put(erased, erased_head, erased_count, __erase(msg), erased_cap))
+                        else:
+                            list.set_at(typed_i64_channels, ch, Some(typed_i64_ring_put(buf, head, count, msg, cap)))
+                    None ->
+                        let (buf, head, count, cap) = list.at(channels, ch)
+                        list.set_at(channels, ch, ring_put(buf, head, count, __erase(msg), cap))
+                current = cont(unit())
+            PullI64(ch, cont) ->
+                match list.at(typed_i64_channels, ch):
+                    Some((buf, head, count, cap)) ->
+                        if count == 0:
+                            list.set_at(channels, ch, typed_i64_materialize(buf, head, count, cap))
+                            list.set_at(typed_i64_channels, ch, None)
+                            current = cont(None)
+                        else:
+                            let msg = list.at(buf, head)
+                            list.set_at(typed_i64_channels, ch, Some((buf, (head + 1) % list.length(buf), count - 1, cap)))
+                            current = cont(Some(msg))
+                    None ->
+                        let (buf, head, count, cap) = list.at(channels, ch)
+                        if count == 0:
+                            current = cont(None)
+                        else:
+                            let msg = list.at(buf, head)
+                            list.set_at(channels, ch, (buf, (head + 1) % list.length(buf), count - 1, cap))
+                            current = cont(unerase_i64_option(Some(msg)))
+            _ -> fail("compiler-proven channel-only Task produced another scheduler effect")

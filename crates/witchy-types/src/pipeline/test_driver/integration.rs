@@ -1,11 +1,11 @@
-//! Integration recipe v4 (v5 with admitted expansion): real grants are a launch concern, never source proof.
+//! Integration recipe v5 (v6 with admitted expansion): real grants are a launch concern, never source proof.
 //! Select one declaration from retained entry bytes, generate an explicit Unit
 //! entry, and rederive every witness through the ordinary source pipeline.
 use super::*;
 use crate::typeck::Ty;
 use witchy_syntax::ast::Convention;
 
-const INTEGRATION_RECIPE_VERSION: u32 = 4;
+const INTEGRATION_RECIPE_VERSION: u32 = 5;
 
 pub fn check_integration_test_driver(
     suite: &CheckedTestSuite, selected: &str, expand: ComptimeExpander,
@@ -58,6 +58,7 @@ pub fn check_integration_test_driver(
         match async_test_driver(suite, declaration_ordinal) {
             AsyncTestDriver::Ready => "fn main() -> ():\n    task.__compiler_run_ready(())\n",
             AsyncTestDriver::YieldOnly => "fn main() -> ():\n    task.__compiler_run_yield_only(())\n",
+            AsyncTestDriver::ChannelOnly => "fn main() -> ():\n    task.__compiler_run_channel_only(())\n",
             AsyncTestDriver::General => "fn main() -> ():\n    task.run(())\n",
         }
     } else {

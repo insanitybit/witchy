@@ -1,4 +1,4 @@
-//! Bare test recipe v5. Raw bytes and loader ownership survive discovery; a
+//! Bare test recipe v6. Raw bytes and loader ownership survive discovery; a
 //! fresh parse/check of the compiler-created entry derives ALL driver witnesses.
 //! Async tests are driven to completion; parameterized, fixture and integration
 //! recipes are separate obligations.
@@ -10,7 +10,7 @@ pub use console_fixture::check_console_fixture_test_driver;
 mod integration;
 pub use integration::check_integration_test_driver;
 
-const BARE_RECIPE_VERSION: u32 = 5;
+const BARE_RECIPE_VERSION: u32 = 6;
 
 #[derive(Debug)]
 pub struct CheckedTestSuite {
@@ -43,6 +43,7 @@ pub struct TestDriverIdentity {
 enum AsyncTestDriver {
     Ready,
     YieldOnly,
+    ChannelOnly,
     General,
 }
 
@@ -60,6 +61,13 @@ fn async_test_driver(suite: &CheckedTestSuite, ordinal: u64) -> AsyncTestDriver 
     if source.mode != witchy_canonical_source::source::SourceExecutionMode::Normal {
         return AsyncTestDriver::General;
     }
+    // Async `for` may suspend through iterator protocol without a source await.
+    // Keep it on the scheduler until that implicit effect is represented here.
+    if source.controls.iter().any(|control| {
+        control.kind == crate::async_control_flow::SourceControlKind::For
+    }) {
+        return AsyncTestDriver::General;
+    }
     let awaits = input.operations.iter().filter(|operation| {
         operation.callable == source.callable
             && operation.kind == crate::async_control_flow::SourceAsyncOperationKind::Await
@@ -71,6 +79,14 @@ fn async_test_driver(suite: &CheckedTestSuite, ordinal: u64) -> AsyncTestDriver 
     })
     {
         AsyncTestDriver::YieldOnly
+    } else if !awaits.is_empty() && awaits.iter().all(|operation| matches!(
+        operation.runtime_kind,
+        crate::typed_async_lowering::TypedAsyncOperationKind::Yield
+            | crate::typed_async_lowering::TypedAsyncOperationKind::ChannelCreate
+            | crate::typed_async_lowering::TypedAsyncOperationKind::ChannelSend
+            | crate::typed_async_lowering::TypedAsyncOperationKind::ChannelReceive
+    )) {
+        AsyncTestDriver::ChannelOnly
     } else {
         AsyncTestDriver::General
     }
@@ -205,6 +221,7 @@ pub fn check_bare_test_driver(
         match async_test_driver(suite, declaration_ordinal) {
             AsyncTestDriver::Ready => "fn main() -> ():\n    task.__compiler_run_ready(())\n",
             AsyncTestDriver::YieldOnly => "fn main() -> ():\n    task.__compiler_run_yield_only(())\n",
+            AsyncTestDriver::ChannelOnly => "fn main() -> ():\n    task.__compiler_run_channel_only(())\n",
             AsyncTestDriver::General => "fn main() -> ():\n    task.run(())\n",
         }
     } else {
