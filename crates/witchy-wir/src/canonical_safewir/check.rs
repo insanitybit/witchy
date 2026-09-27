@@ -1019,6 +1019,9 @@ fn check_memory_cfg(
     // An unchanged incoming state gives the same checked block body. Keep
     // edge transfer and meet live: they depend on the current successor state.
     let mut checked_bodies = BTreeMap::new();
+    // Dominance depends on the fixed SSA graph, not the incoming memory
+    // state. Preserve the first visit's check order, then reuse its success.
+    let mut dominance_checked = BTreeSet::new();
     while let Some(block_id) = pending.pop_front() {
         iterations += 1;
         if iterations > maximum_iterations {
@@ -1031,6 +1034,7 @@ fn check_memory_cfg(
         let checked = check_block_flow(
             function, block, signature, signatures, imports, catalog, functions, blocks,
             definition_sites, dominators, &mut memory, &incoming, &mut checked_bodies,
+            &mut dominance_checked,
         );
         let updates = match checked {
             Ok(updates) => {
@@ -1090,31 +1094,38 @@ fn check_block_flow(
     memory: &mut MemoryChecker<'_>,
     incoming: &BTreeMap<BlockId, memory::MemoryState>,
     checked_bodies: &mut BTreeMap<BlockId, (memory::MemoryState, memory::MemoryState)>,
+    dominance_checked: &mut BTreeSet<BlockId>,
 ) -> Result<Vec<(BlockId, memory::MemoryState)>, InitialCheckError> {
     let input = memory.snapshot();
     if let Some((previous_input, body_result)) = checked_bodies.get(&block.id)
         && previous_input == &input {
         memory.restore(body_result.clone());
     } else {
+        let check_dominance = !dominance_checked.contains(&block.id);
         for (operation_index, operation) in block.operations.iter().enumerate() {
+            if check_dominance {
+                check_uses_dominate(
+                    function,
+                    block.id,
+                    operation_index,
+                    operation_uses(operation),
+                    definition_sites,
+                    dominators,
+                )?;
+            }
+            check_operation(function, operation, signatures, imports, catalog, functions, memory)?;
+        }
+        if check_dominance {
             check_uses_dominate(
                 function,
                 block.id,
-                operation_index,
-                operation_uses(operation),
+                block.operations.len(),
+                terminator_uses(&block.terminator),
                 definition_sites,
                 dominators,
             )?;
-            check_operation(function, operation, signatures, imports, catalog, functions, memory)?;
+            dominance_checked.insert(block.id);
         }
-        check_uses_dominate(
-            function,
-            block.id,
-            block.operations.len(),
-            terminator_uses(&block.terminator),
-            definition_sites,
-            dominators,
-        )?;
         check_terminator(
             function,
             block.id,
