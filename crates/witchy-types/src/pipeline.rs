@@ -149,6 +149,7 @@ pub struct CanonicalCheckedSource {
     task_await_items: BTreeMap<u32, usize>,
     task_operand_items: BTreeMap<u32, Vec<usize>>,
     task_behaviors: BTreeMap<u32, TaskBehaviorContract>,
+    final_task_behaviors: BTreeMap<u32, TaskBehaviorContract>,
     deferred_task_role: Option<DeferredTaskRole>,
 }
 
@@ -177,6 +178,7 @@ impl CanonicalCheckedSource {
             task_await_items: &self.task_await_items,
             task_operand_items: &self.task_operand_items,
             task_behaviors: &self.task_behaviors,
+            final_task_behaviors: &self.final_task_behaviors,
             deferred_task_role: self.deferred_task_role.as_ref(),
         })
     }
@@ -1258,8 +1260,21 @@ fn attach_canonical_source(
     runtime_catalog: Option<&RuntimeDeclarationCatalog>,
 ) -> Result<CheckedModule, PipelineError> {
     let deferred_task_role = checked_deferred_task_role(typed.module(), runtime_catalog);
-    let closure_contracts = crate::task_provenance::checked_lambda_contracts(
-        &typed, &closure_witness, &closure_sites, deferred_task_role.as_ref()).into_iter().map(|(id, summary)| {
+    let final_behavior = crate::task_provenance::checked_final_execution_contracts(
+        &typed, &closure_witness, &closure_sites, deferred_task_role.as_ref());
+    let mut declarations = final_behavior.declarations;
+    let mut final_task_behaviors = BTreeMap::new();
+    for (item, definition) in typed.module().items.iter().enumerate() {
+        let Item::Function(function) = definition else { continue };
+        let Some(summary) = declarations.remove(&(function as *const witchy_syntax::ast::Function as usize)) else { continue };
+        let item = u32::try_from(item).map_err(|_| PipelineError::Type(TypeError {
+            message: "final task behavior item count exceeds u32".into(),
+        }))?;
+        let identity = TaskBehaviorIdentity::FinalDeclaration { source_bundle_digest, item };
+        final_task_behaviors.insert(item, TaskBehaviorContract::from_checked_frontend(identity,
+            summary.source_mode, summary.conventions, summary.result, summary.required_opt_inputs, None));
+    }
+    let closure_contracts = final_behavior.lambdas.into_iter().map(|(id, summary)| {
             let contract = witchy_canonical_source::closure::ClosureExecutionContract::from_checked_frontend(
                 id.clone(), summary.source_mode, summary.captures, summary.conventions,
                 summary.formal_scope, summary.result, summary.required_opt_inputs);
@@ -1376,6 +1391,7 @@ fn attach_canonical_source(
             proper_tail_manifest_digest: proper_tail_manifest.digest(),
             callable_abi_manifest_digest: callable_witness.abi_manifest.digest(),
             closure_witness_digest: closure_witness.digest(),
+            task_behavior_manifest_digest: witchy_canonical_source::source::task_behavior_manifest_digest(&final_task_behaviors),
             launch_contract_digest,
             obligations_digest: obligations_digest(&obligations),
             precompiled_declarations_digest: precompiled_declarations.digest(),
@@ -1394,6 +1410,7 @@ fn attach_canonical_source(
         task_await_items,
         task_operand_items,
         task_behaviors,
+        final_task_behaviors,
         deferred_task_role,
     });
     Ok(checked)

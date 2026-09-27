@@ -149,8 +149,38 @@ fn authenticated_step_roles_preserve_passive_results_and_executable_fields() {
     let Item::Function(factory) = &view.module().items[thunk.id().item as usize] else {
         panic!("thunk belongs to the checked factory")
     };
-    let [witchy_syntax::ast::Stmt::Expr(witchy_syntax::ast::Expr::Call { name: wrapper, .. })] =
+    let [witchy_syntax::ast::Stmt::Expr(witchy_syntax::ast::Expr::Call { name: wrapper, args, .. })] =
         factory.body.stmts.as_slice() else { panic!("checked async factory dispatch") };
+    let [witchy_syntax::ast::Expr::Lambda { body, .. }] = args.as_slice() else {
+        panic!("checked factory passes the exact thunk")
+    };
+    let [witchy_syntax::ast::Stmt::Expr(witchy_syntax::ast::Expr::Call { name: completion, .. })] =
+        body.stmts.as_slice() else { panic!("fixture thunk returns a checked completion call") };
+    let completion_item = view.module().items.iter().position(|item|
+        matches!(item, Item::Function(function) if &function.name == completion)).expect("retained completion callee") as u32;
+    let completion_contract = view.final_task_behavior_at(completion_item).expect("successful exact local dependency exported");
+    assert_eq!(completion_contract.source_identity(),
+        &witchy_canonical_source::source::TaskBehaviorIdentity::FinalDeclaration {
+            source_bundle_digest: view.source_witness().source_bundle_digest(), item: completion_item,
+        });
+    assert!(completion_contract.async_source_identity().is_none(), "final helper cannot claim original async identity");
+    assert_eq!(completion_contract.source_mode(), Mode::Normal);
+    assert_eq!(completion_contract.result().instantiate(&[Proof::Unknown]), *thunk.result(),
+        "callee body proof is the same checked recipe used to derive the thunk, not an opt grant");
+    let final_contracts = view.module().items.iter().enumerate().filter_map(|(item, _)|
+        view.final_task_behavior_at(item as u32).cloned().map(|contract| (item as u32, contract)))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let digest = witchy_canonical_source::source::task_behavior_manifest_digest(&final_contracts);
+    assert_eq!(view.source_witness().task_behavior_manifest_digest(), digest);
+    let mut omitted = final_contracts.clone();
+    omitted.remove(&completion_item);
+    assert_ne!(witchy_canonical_source::source::task_behavior_manifest_digest(&omitted), digest);
+    let mut relabeled = omitted;
+    relabeled.insert(u32::MAX, completion_contract.clone());
+    assert_ne!(witchy_canonical_source::source::task_behavior_manifest_digest(&relabeled), digest);
+    let recursive = view.module().items.iter().position(|item|
+        matches!(item, Item::Function(function) if function.name == "worker.recursive_scalar")).unwrap();
+    assert!(view.final_task_behavior_at(recursive as u32).is_none(), "failed recursive demand does not export a contract");
     let (lazy_witness, lazy_poll) = lambda_contract(wrapper);
     assert_eq!(lazy_poll.source_mode(), Mode::Normal);
     assert_eq!(lazy_poll.captures(), lazy_witness.captures().iter()

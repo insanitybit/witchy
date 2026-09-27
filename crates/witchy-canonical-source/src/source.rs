@@ -127,13 +127,54 @@ pub struct TaskInvocationContract {
     pub result: TaskExecutionProof,
 }
 
-/// Stable checked source identity, independent of final item placement.
+/// Checked declaration identity. Linked/async identities survive placement;
+/// final declarations are scoped to their exact checked bundle and AST item.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum TaskBehaviorIdentity {
     AsyncSource { module: String, item: u32, method: Option<u32> },
     /// Length-delimited digest of the loader-authenticated declaration
     /// catalog identity, not a compiler name or a final item ordinal.
     LinkedDeclaration([u8; 32]),
+    FinalDeclaration { source_bundle_digest: [u8; 32], item: u32 },
+}
+
+impl TaskBehaviorIdentity {
+    fn encode(&self, bytes: &mut Vec<u8>) {
+        match self {
+            Self::LinkedDeclaration(digest) => { bytes.push(0); bytes.extend_from_slice(digest); }
+            Self::AsyncSource { module, item, method } => {
+                bytes.push(1);
+                crate::closure::put_bytes(bytes, module.as_bytes());
+                bytes.extend_from_slice(&item.to_le_bytes());
+                bytes.push(u8::from(method.is_some()));
+                if let Some(method) = method { bytes.extend_from_slice(&method.to_le_bytes()); }
+            }
+            Self::FinalDeclaration { source_bundle_digest, item } => {
+                bytes.push(2); bytes.extend_from_slice(source_bundle_digest);
+                bytes.extend_from_slice(&item.to_le_bytes());
+            }
+        }
+    }
+}
+
+/// Canonical commitment to independently derived final declaration behavior.
+/// This hashes promises, not candidate execution or physical instruction bodies.
+pub fn task_behavior_manifest_digest(contracts: &BTreeMap<u32, TaskBehaviorContract>) -> [u8; 32] {
+    let mut bytes = b"witchy.final-task-behavior.v1".to_vec();
+    bytes.extend_from_slice(&(contracts.len() as u64).to_le_bytes());
+    for (item, contract) in contracts {
+        bytes.extend_from_slice(&item.to_le_bytes());
+        contract.identity.encode(&mut bytes);
+        bytes.push(u8::from(contract.source_mode.is_opt()));
+        bytes.extend_from_slice(&(contract.conventions.len() as u64).to_le_bytes());
+        for convention in &contract.conventions { bytes.push(*convention as u8); }
+        contract.result.encode(&mut bytes);
+        bytes.extend_from_slice(&(contract.required_opt_inputs.len() as u64).to_le_bytes());
+        for requirement in &contract.required_opt_inputs { requirement.encode(&mut bytes); }
+        bytes.push(u8::from(contract.async_thunk.is_some()));
+        if let Some(thunk) = &contract.async_thunk { crate::closure::encode_callable(thunk, &mut bytes); }
+    }
+    *blake3::hash(&bytes).as_bytes()
 }
 
 /// Authenticated polymorphic scheduler storage role. This identifies where a
@@ -310,7 +351,7 @@ impl TaskBehaviorContract {
     pub fn async_source_identity(&self) -> Option<(&str, u32, Option<u32>)> {
         match &self.identity {
             TaskBehaviorIdentity::AsyncSource { module, item, method } => Some((module, *item, *method)),
-            TaskBehaviorIdentity::LinkedDeclaration(_) => None,
+            TaskBehaviorIdentity::LinkedDeclaration(_) | TaskBehaviorIdentity::FinalDeclaration { .. } => None,
         }
     }
 
@@ -375,16 +416,7 @@ impl TaskExecutionProof {
             for value in values { value.encode(bytes); }
         }
         fn identity(bytes: &mut Vec<u8>, role: &TaskBehaviorIdentity) {
-            match role {
-                TaskBehaviorIdentity::LinkedDeclaration(digest) => { bytes.push(0); bytes.extend_from_slice(digest); }
-                TaskBehaviorIdentity::AsyncSource { module, item, method } => {
-                    bytes.push(1);
-                    crate::closure::put_bytes(bytes, module.as_bytes());
-                    bytes.extend_from_slice(&item.to_le_bytes());
-                    bytes.push(u8::from(method.is_some()));
-                    if let Some(method) = method { bytes.extend_from_slice(&method.to_le_bytes()); }
-                }
-            }
+            role.encode(bytes);
         }
         match self {
             Self::Unknown => bytes.push(0),
@@ -928,6 +960,7 @@ pub struct CheckedSourceWitness {
     proper_tail_manifest_digest: [u8; 32],
     callable_abi_manifest_digest: [u8; 32],
     closure_witness_digest: [u8; 32],
+    task_behavior_manifest_digest: [u8; 32],
     launch_contract_digest: [u8; 32],
     obligations_digest: [u8; 32],
     precompiled_declarations_digest: [u8; 32],
@@ -939,6 +972,7 @@ pub struct CheckedSourceDigests {
     pub proper_tail_manifest_digest: [u8; 32],
     pub callable_abi_manifest_digest: [u8; 32],
     pub closure_witness_digest: [u8; 32],
+    pub task_behavior_manifest_digest: [u8; 32],
     pub launch_contract_digest: [u8; 32],
     pub obligations_digest: [u8; 32],
     pub precompiled_declarations_digest: [u8; 32],
@@ -953,6 +987,7 @@ impl CheckedSourceWitness {
             proper_tail_manifest_digest,
             callable_abi_manifest_digest,
             closure_witness_digest,
+            task_behavior_manifest_digest,
             launch_contract_digest,
             obligations_digest,
             precompiled_declarations_digest,
@@ -962,6 +997,7 @@ impl CheckedSourceWitness {
             proper_tail_manifest_digest,
             callable_abi_manifest_digest,
             closure_witness_digest,
+            task_behavior_manifest_digest,
             launch_contract_digest,
             obligations_digest,
             precompiled_declarations_digest,
@@ -1000,6 +1036,10 @@ impl CheckedSourceWitness {
 
     pub fn closure_witness_digest(&self) -> [u8; 32] {
         self.closure_witness_digest
+    }
+
+    pub fn task_behavior_manifest_digest(&self) -> [u8; 32] {
+        self.task_behavior_manifest_digest
     }
 
     pub fn launch_contract_digest(&self) -> [u8; 32] {
@@ -1064,6 +1104,7 @@ pub struct CanonicalSourceParts<'s> {
     pub task_await_items: &'s BTreeMap<u32, usize>,
     pub task_operand_items: &'s BTreeMap<u32, Vec<usize>>,
     pub task_behaviors: &'s BTreeMap<u32, TaskBehaviorContract>,
+    pub final_task_behaviors: &'s BTreeMap<u32, TaskBehaviorContract>,
     pub deferred_task_role: Option<&'s DeferredTaskRole>,
 }
 
@@ -1090,6 +1131,7 @@ pub struct CanonicalSourceView<'s> {
     task_await_items: &'s BTreeMap<u32, usize>,
     task_operand_items: &'s BTreeMap<u32, Vec<usize>>,
     task_behaviors: &'s BTreeMap<u32, TaskBehaviorContract>,
+    final_task_behaviors: &'s BTreeMap<u32, TaskBehaviorContract>,
     deferred_task_role: Option<&'s DeferredTaskRole>,
 }
 
@@ -1119,6 +1161,7 @@ impl<'s> CanonicalSourceView<'s> {
             task_await_items,
             task_operand_items,
             task_behaviors,
+            final_task_behaviors,
             deferred_task_role,
         } = parts;
         Self {
@@ -1142,6 +1185,7 @@ impl<'s> CanonicalSourceView<'s> {
             task_await_items,
             task_operand_items,
             task_behaviors,
+            final_task_behaviors,
             deferred_task_role,
         }
     }
@@ -1155,6 +1199,13 @@ impl<'s> CanonicalSourceView<'s> {
     /// generated or method contracts are unknown, never inferred from mode.
     pub fn task_behavior_at(&self, item: u32) -> Option<&'s TaskBehaviorContract> {
         self.task_behaviors.get(&item)
+    }
+
+    /// Demand-derived behavior of the exact final checked function body,
+    /// including specializations without a loader declaration identity.
+    /// Missing/cyclic/unsupported bodies remain unknown. This is not WIR proof.
+    pub fn final_task_behavior_at(&self, item: u32) -> Option<&'s TaskBehaviorContract> {
+        self.final_task_behaviors.get(&item)
     }
 
     pub fn deferred_task_role(&self) -> Option<&'s DeferredTaskRole> { self.deferred_task_role }

@@ -157,6 +157,11 @@ pub(crate) struct LambdaBehaviorSummary {
     pub required_opt_inputs: Vec<Proof>,
 }
 
+pub(crate) struct CheckedFinalBehavior {
+    pub lambdas: BTreeMap<witchy_canonical_source::proper_tail::ProperTailCallableId, LambdaBehaviorSummary>,
+    pub declarations: BTreeMap<usize, TaskBehaviorSummary>,
+}
+
 struct Analyzer<'a> {
     module: &'a Module,
     table: &'a TypeTable,
@@ -1224,12 +1229,12 @@ pub(crate) fn checked_task_behavior(
 /// coordinates carried by the closure witness. Failure to summarize a body
 /// leaves its contract absent; it never changes source acceptance or grants
 /// execution from its signature. Existing source verification runs separately.
-pub(crate) fn checked_lambda_contracts(
+pub(crate) fn checked_final_execution_contracts(
     typed: &crate::typeck::TypedModule,
     witness: &witchy_canonical_source::closure::ClosureWitnessManifest,
     sites: &[crate::canonical_closure::LambdaSite],
     deferred_task_role: Option<&DeferredTaskRole>,
-) -> BTreeMap<witchy_canonical_source::proper_tail::ProperTailCallableId, LambdaBehaviorSummary> {
+) -> CheckedFinalBehavior {
     let module = typed.module();
     let table = typed.table();
     let definitions = type_definitions(module);
@@ -1304,7 +1309,15 @@ pub(crate) fn checked_lambda_contracts(
             result, required_opt_inputs: analyzer.required_opt_inputs,
         });
     }
-    contracts
+    // Export only successful, independently derived dependencies already
+    // needed by these exact lambdas. No additional whole-module analysis and
+    // no identity inferred from a specialization's printed name.
+    let declarations = demand.summaries.into_iter().filter_map(|(name, summary)| {
+        let function = demand.functions.get(name.as_str())?;
+        Some((*function as *const Function as usize,
+            TaskBehaviorSummary::from_summary(module, function, summary)))
+    }).collect();
+    CheckedFinalBehavior { lambdas: contracts, declarations }
 }
 
 /// Only exact checked call targets needed by a particular final lambda are
