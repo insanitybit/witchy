@@ -163,25 +163,43 @@ fn live_tail(references: &References, block: &BasicBlock, live_in: &BTreeMap<Blo
 
 fn liveness(function: &Function, references: &References) -> BTreeMap<BlockId, Values> {
     let mut live_in: BTreeMap<_, Values> = function.blocks.iter().map(|block| (block.id, Values::new())).collect();
-    // Monotone finite-set iteration: no guessed loop trip count or range fact.
-    loop {
-        let mut changed = false;
-        for block in function.blocks.iter().rev() {
-            let mut live = live_tail(references, block, &live_in);
-            for operation in block.operations.iter().rev() {
-                for value in definitions(operation) {
-                    if references.contains(value) { live.remove(&value); }
-                }
-                live.extend(uses(operation).into_iter().filter(|value| references.contains(*value)));
-            }
-            for parameter in &block.parameters { live.remove(&parameter.value); }
-            if live_in.get(&block.id) != Some(&live) {
-                live_in.insert(block.id, live);
-                changed = true;
+    // The same monotone finite-set equations as a full reverse sweep, but
+    // reschedule only predecessors of a block whose live-in set changed.
+    let blocks: BTreeMap<_, _> = function.blocks.iter().map(|block| (block.id, block)).collect();
+    let mut predecessors: BTreeMap<BlockId, Vec<BlockId>> =
+        function.blocks.iter().map(|block| (block.id, Vec::new())).collect();
+    for block in &function.blocks {
+        for (target, _) in edges(&block.terminator) {
+            if let Some(sources) = predecessors.get_mut(&target) {
+                sources.push(block.id);
             }
         }
-        if !changed { return live_in; }
     }
+    let mut pending: VecDeque<_> = function.blocks.iter().rev().map(|block| block.id).collect();
+    let mut queued: BTreeSet<_> = pending.iter().copied().collect();
+    while let Some(id) = pending.pop_front() {
+        queued.remove(&id);
+        let block = blocks[&id];
+        let mut live = live_tail(references, block, &live_in);
+        for operation in block.operations.iter().rev() {
+            for value in definitions(operation) {
+                if references.contains(value) { live.remove(&value); }
+            }
+            live.extend(uses(operation).into_iter().filter(|value| references.contains(*value)));
+        }
+        for parameter in &block.parameters { live.remove(&parameter.value); }
+        if live_in.get(&id) != Some(&live) {
+            live_in.insert(id, live);
+            if let Some(sources) = predecessors.get(&id) {
+                for source in sources {
+                    if queued.insert(*source) {
+                        pending.push_back(*source);
+                    }
+                }
+            }
+        }
+    }
+    live_in
 }
 
 fn release_dead(owned: &mut Values, live: &Values, output: &mut Vec<Operation>) {
