@@ -968,8 +968,46 @@ fn check_function(
         }
     }
     if function.blocks.len() >= 256 {
-        let ranks = reverse_postorder_ranks(function.entry, &blocks);
         let before_cfg_sites = observed_tail_sites.clone();
+        // Lowering emits compact structured regions in block-ID order. For a
+        // moderately large graph that order often settles each local loop
+        // before its enclosing continuation. Every successful priority run
+        // still rechecks its final states and edges in check_memory_cfg.
+        let memory = if function.blocks.len() < 1024 {
+            let ranks = blocks.keys().enumerate()
+                .map(|(rank, block)| (*block, rank))
+                .collect::<BTreeMap<_, _>>();
+            if check_memory_cfg(
+                function,
+                signature,
+                signatures,
+                imports,
+                catalog,
+                functions,
+                &blocks,
+                &definition_sites,
+                &dominators,
+                memory,
+                tail_obligations,
+                observed_tail_sites,
+                Some(&ranks),
+            )
+            .is_ok()
+            {
+                return Ok(());
+            }
+            *observed_tail_sites = before_cfg_sites.clone();
+            MemoryChecker::new_with_affine_abi(
+                function,
+                layouts,
+                signature,
+                closure_layouts,
+                affine_abi,
+            )?
+        } else {
+            memory
+        };
+        let ranks = reverse_postorder_ranks(function.entry, &blocks);
         if check_memory_cfg(
             function,
             signature,
