@@ -195,7 +195,7 @@ impl CanonicalWriter {
         self.fixed_bytes(&site.digest());
     }
 
-    fn value_type(&mut self, value_type: ValueType) {
+    pub(super) fn value_type(&mut self, value_type: ValueType) {
         match value_type {
             ValueType::Int => self.u8(0),
             ValueType::Float => self.u8(1),

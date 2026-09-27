@@ -23,9 +23,11 @@
 //!
 //! The in-process memo is bounded. `WITCHY_SAFEWIR_CHECK_CACHE=off` disables
 //! memoization entirely, so every function is checked on every pass.
-//! Functions with affine ABI proofs use a separate in-process verdict table:
-//! the function digest and exact equality of all source-derived affine proof
-//! maps must both match. These verdicts never enter the persistent store.
+//! Functions with affine ABI proofs also bind every proof lookup reachable
+//! from the function to the key. Their in-process verdict table additionally
+//! checks exact equality of the source-derived maps. Persisted verdicts use
+//! the projected key, so unrelated user proofs do not invalidate a shared
+//! standard-library function's verdict.
 //!
 //! # The persistent store
 //!
@@ -60,13 +62,14 @@ use std::time::Duration;
 use super::super::identity::{CanonicalWriter, References};
 use super::super::{
     CanonicalAbiCatalog, Function, FunctionSignature, FunctionSignatureId, ImportContract, ImportId,
-    ProperTailLocation, TailSiteId,
+    Operation, ProperTailLocation, TailSiteId,
 };
-use super::{AffineAbiProofs, FunctionIndex};
+use super::{AffineAbiProofs, AffinePhysicalPlan, AffineSignatureProof, FunctionIndex};
+use super::super::closure_owner_contract::{CaptureTransfer, OwnerOperation};
 use crate::layout::{FieldKind, LayoutDescriptor, LayoutId, LayoutInterner, LayoutKind};
 
-const SERIALIZATION_VERSION: u32 = 1;
-const DOMAIN: &[u8] = b"witchy/canonical-safewir/function-check/v1";
+const SERIALIZATION_VERSION: u32 = 2;
+const DOMAIN: &[u8] = b"witchy/canonical-safewir/function-check/v2";
 const MAX_ENTRIES: usize = 1 << 16;
 /// Verdicts cheaper than this are not worth a file: re-checking them costs
 /// less than the open would.
@@ -85,9 +88,8 @@ pub(super) type Discharged = Arc<BTreeSet<TailSiteId>>;
 
 static VERDICTS: OnceLock<Mutex<HashMap<FunctionCheckKey, Discharged, foldhash::fast::RandomState>>> =
     OnceLock::new();
-// Affine verdicts stay in process: the persistent key intentionally omits
-// checked-source affine proofs. Exact proof equality supplements the ordinary
-// function key here, including fields the function may reach through calls.
+// Keep an extra exact-map check for in-process affine hits. Persisted hits
+// instead use the function key's complete projection of reachable proofs.
 static AFFINE_VERDICTS: OnceLock<Mutex<HashMap<
     FunctionCheckKey,
     (Arc<AffineAbiProofs>, Discharged),
@@ -113,6 +115,7 @@ pub(super) fn key(
     tail_obligations: &BTreeMap<TailSiteId, ProperTailLocation>,
     layouts: &LayoutInterner,
     closure_layouts: &BTreeMap<LayoutId, FunctionSignatureId>,
+    affine_abi: Option<&AffineAbiProofs>,
 ) -> Option<FunctionCheckKey> {
     if !enabled() {
         return None;
@@ -245,7 +248,142 @@ pub(super) fn key(
         }
     }
 
+    write_affine_projection(&mut writer, function, &done, affine_abi)?;
+
     Some(FunctionCheckKey(*blake3::hash(&writer.finish()).as_bytes()))
+}
+
+/// Bind the value of every source-affine lookup performed by this function,
+/// including absence. The canonical function encoding above records all
+/// referenced signatures and layouts; closure constructors are read only by
+/// Construct and Deconstruct operations. Module-wide owner and signature
+/// checks run before any per-function verdict is replayed.
+fn write_affine_projection(
+    writer: &mut CanonicalWriter,
+    function: &Function,
+    references: &References,
+    proofs: Option<&AffineAbiProofs>,
+) -> Option<()> {
+    writer.u8(u8::from(proofs.is_some()));
+    let Some(proofs) = proofs else { return Some(()) };
+    writer.u8(b'A');
+    writer.len(references.signatures.len());
+    for id in &references.signatures {
+        writer.u32(id.get());
+        match proofs.signatures.get(id) {
+            Some(proof) => {
+                writer.u8(1);
+                write_affine_signature(writer, proof, &references.layouts)?;
+            }
+            None => writer.u8(0),
+        }
+    }
+    writer.len(references.layouts.len());
+    for id in &references.layouts {
+        writer.fixed_bytes(id.as_bytes());
+        match proofs.layouts.get(id) {
+            Some(plan) => {
+                writer.u8(1);
+                write_affine_plan(writer, plan, 0, &references.layouts)?;
+            }
+            None => writer.u8(0),
+        }
+    }
+    let mut constructors = BTreeSet::new();
+    for block in &function.blocks {
+        for operation in &block.operations {
+            match operation {
+                Operation::ClosureOwner(OwnerOperation::Construct { constructor, .. }
+                    | OwnerOperation::Deconstruct { constructor, .. }) => {
+                    constructors.insert(*constructor);
+                }
+                _ => {}
+            }
+        }
+    }
+    writer.len(constructors.len());
+    for constructor in constructors {
+        writer.u32(constructor.0);
+        match proofs.owner_environments.get(&constructor) {
+            Some(plan) => {
+                writer.u8(1);
+                write_affine_plan(writer, plan, 0, &references.layouts)?;
+            }
+            None => writer.u8(0),
+        }
+        match proofs.owner_captures.get(&constructor) {
+            Some(captures) => {
+                writer.u8(1);
+                writer.len(captures.len());
+                for (transfer, value_type) in captures {
+                    match transfer {
+                        CaptureTransfer::CopyScalar => writer.u8(0),
+                        CaptureTransfer::CopyCapability(kind) => {
+                            writer.u8(1);
+                            writer.u32(kind.get());
+                        }
+                        CaptureTransfer::CloneManaged => writer.u8(2),
+                        CaptureTransfer::MoveManaged => writer.u8(3),
+                    }
+                    writer.value_type(*value_type);
+                }
+            }
+            None => writer.u8(0),
+        }
+    }
+    Some(())
+}
+
+fn write_affine_signature(
+    writer: &mut CanonicalWriter,
+    proof: &AffineSignatureProof,
+    layouts: &BTreeSet<LayoutId>,
+) -> Option<()> {
+    for plans in [&proof.parameters, &proof.results] {
+        writer.len(plans.len());
+        for plan in plans {
+            match plan {
+                Some(plan) => {
+                    writer.u8(1);
+                    write_affine_plan(writer, plan, 0, layouts)?;
+                }
+                None => writer.u8(0),
+            }
+        }
+    }
+    Some(())
+}
+
+fn write_affine_plan(
+    writer: &mut CanonicalWriter,
+    plan: &AffinePhysicalPlan,
+    depth: usize,
+    layouts: &BTreeSet<LayoutId>,
+) -> Option<()> {
+    // The key must never truncate an ownership proof. Deep or cyclic input
+    // simply disables verdict reuse; the ordinary checker still decides it.
+    if depth >= 128 { return None; }
+    match plan {
+        AffinePhysicalPlan::Leaf => writer.u8(0),
+        AffinePhysicalPlan::NullableFields { fields, allow_absent } => {
+            writer.u8(1);
+            writer.u8(u8::from(*allow_absent));
+            writer.len(fields.len());
+            for (ordinal, layout, child) in fields {
+                if !layouts.contains(layout) { return None; }
+                writer.u32(*ordinal);
+                writer.fixed_bytes(layout.as_bytes());
+                write_affine_plan(writer, child, depth + 1, layouts)?;
+            }
+        }
+        AffinePhysicalPlan::Sequence { element, child } => {
+            if !layouts.contains(element) { return None; }
+            writer.u8(2);
+            writer.fixed_bytes(element.as_bytes());
+            write_affine_plan(writer, child, depth + 1, layouts)?;
+        }
+    }
+    Some(())
 }
 
 fn merge(pending: &mut References, more: References) {
@@ -337,23 +475,42 @@ pub(super) fn lookup_affine(key: &FunctionCheckKey, proofs: &AffineAbiProofs) ->
     });
     if found.is_some() {
         HITS.fetch_add(1, Ordering::Relaxed);
-    } else {
-        MISSES.fetch_add(1, Ordering::Relaxed);
+        return found;
     }
-    found
+    if let Some(discharged) = store::dir().and_then(|dir| store::read(dir, key)) {
+        STORE_HITS.fetch_add(1, Ordering::Relaxed);
+        if debug() {
+            eprintln!("safewir-check-cache: replayed affine {} from the store", key.hex());
+        }
+        let discharged = Arc::new(discharged);
+        record_affine(*key, Arc::new(proofs.clone()), Arc::clone(&discharged), Duration::ZERO);
+        return Some(discharged);
+    }
+    MISSES.fetch_add(1, Ordering::Relaxed);
+    None
 }
 
 pub(super) fn record_affine(
     key: FunctionCheckKey,
     proofs: Arc<AffineAbiProofs>,
     discharged: Discharged,
+    elapsed: Duration,
 ) {
     let verdicts = AFFINE_VERDICTS.get_or_init(Default::default);
+    let to_persist = Arc::clone(&discharged);
     if let Ok(mut verdicts) = verdicts.lock() {
         if verdicts.len() >= MAX_ENTRIES {
             verdicts.clear();
         }
         verdicts.insert(key, (proofs, discharged));
+    }
+    if elapsed >= PERSIST_THRESHOLD
+        && let Some(dir) = store::dir()
+    {
+        if debug() {
+            eprintln!("safewir-check-cache: stored affine {} after {elapsed:?}", key.hex());
+        }
+        store::write(dir, key, &to_persist);
     }
 }
 
@@ -616,9 +773,16 @@ pub(crate) mod store {
         use std::sync::Arc;
 
         use super::super::super::super::TailSiteId;
-        use super::super::{AffineAbiProofs, FunctionCheckKey, lookup_affine, record_affine};
+        use super::super::{
+            AffineAbiProofs, AffinePhysicalPlan, CanonicalWriter, FunctionCheckKey, References,
+            lookup_affine, record_affine, write_affine_projection,
+        };
         use super::{read, stamp_dir, write};
-        use crate::canonical_safewir::{ValueType, closure_owner_contract::{CaptureTransfer, ConstructorId}};
+        use crate::canonical_safewir::{
+            BasicBlock, BlockId, Function, FunctionId, FunctionSignatureId, Operation, Terminator,
+            ValueId, ValueType, closure_owner_contract::{CaptureTransfer, ConstructorId, OwnerOperation},
+        };
+        use crate::layout::LayoutId;
 
         fn scratch(name: &str) -> std::path::PathBuf {
             let dir = std::env::temp_dir()
@@ -675,9 +839,57 @@ pub(crate) mod store {
                 ConstructorId(2), vec![(CaptureTransfer::CopyScalar, ValueType::Int)],
             );
             let sites = [TailSiteId::from_digest([3; 32])].into_iter().collect::<BTreeSet<_>>();
-            record_affine(key, Arc::new(checked.clone()), Arc::new(sites.clone()));
+            record_affine(key, Arc::new(checked.clone()), Arc::new(sites.clone()), std::time::Duration::ZERO);
             assert_eq!(lookup_affine(&key, &checked).as_deref(), Some(&sites));
             assert!(lookup_affine(&key, &different).is_none(), "different source-affine obligations must miss");
+
+            // The persistent key binds only proof lookups this function can
+            // perform. An unrelated user constructor cannot invalidate a
+            // shared scheduler function's verdict, while a changed reachable
+            // constructor, signature, or layout must produce another key.
+            let layout = LayoutId::from_bytes([4; 32]);
+            let references = References {
+                signatures: [FunctionSignatureId::new(1)].into(),
+                layouts: [layout].into(),
+                ..References::default()
+            };
+            let function = Function {
+                id: FunctionId::new(1),
+                signature: FunctionSignatureId::new(1),
+                entry: BlockId::new(0),
+                value_types: Default::default(),
+                blocks: vec![BasicBlock {
+                    id: BlockId::new(0),
+                    parameters: vec![],
+                    operations: vec![Operation::ClosureOwner(OwnerOperation::Construct {
+                        destination: ValueId::new(0),
+                        constructor: ConstructorId(1),
+                        captures: vec![],
+                    })],
+                    terminator: Terminator::Return { values: vec![] },
+                }],
+            };
+            let project = |proofs: &AffineAbiProofs| {
+                let mut writer = CanonicalWriter::collecting(2, b"affine-projection-test");
+                write_affine_projection(&mut writer, &function, &references, Some(proofs))?;
+                Some(writer.finish())
+            };
+            assert_eq!(project(&checked), project(&different));
+            let mut changed = checked.clone();
+            changed.owner_captures.insert(ConstructorId(1), vec![(CaptureTransfer::MoveManaged, ValueType::Int)]);
+            assert_ne!(project(&checked), project(&changed));
+            changed = checked.clone();
+            changed.signatures.insert(FunctionSignatureId::new(1), super::super::AffineSignatureProof {
+                parameters: vec![Some(AffinePhysicalPlan::Leaf)], results: vec![],
+            });
+            assert_ne!(project(&checked), project(&changed));
+            changed = checked.clone();
+            changed.layouts.insert(layout, AffinePhysicalPlan::Leaf);
+            assert_ne!(project(&checked), project(&changed));
+            changed.layouts.insert(layout, AffinePhysicalPlan::Sequence {
+                element: LayoutId::from_bytes([5; 32]), child: Box::new(AffinePhysicalPlan::Leaf),
+            });
+            assert!(project(&changed).is_none(), "unclosed proof layout must disable reuse");
         }
 
     }

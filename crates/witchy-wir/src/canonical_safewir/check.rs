@@ -355,10 +355,8 @@ fn check_candidate<S: ModuleStage>(
     )?;
     let mut observed_tail_sites = BTreeSet::new();
     let closure_layouts = candidate.closure_layouts();
-    // The ordinary function key covers every non-affine input. Retain the
-    // exact source-derived affine proofs beside an in-process verdict, so a
-    // second check of this unchanged graph can replay it without admitting
-    // the same function under a different affine obligation.
+    // The key binds reachable affine proofs for persistent replay. Keep exact
+    // source-derived maps beside in-process verdicts as an additional check.
     let affine_cache_proofs = affine_abi.filter(|proofs| !proofs.is_empty())
         .map(|proofs| std::sync::Arc::new(proofs.clone()));
 
@@ -375,6 +373,7 @@ fn check_candidate<S: ModuleStage>(
             &tail_obligations,
             &layouts,
             closure_layouts,
+            affine_abi,
         );
         let replayed = key.as_ref().and_then(|key| match affine_cache_proofs.as_deref() {
             Some(proofs) => cache::lookup_affine(key, proofs),
@@ -385,8 +384,7 @@ fn check_candidate<S: ModuleStage>(
             None => 'check: {
                 // A large function may be under check in another process
                 // right now; wait for it and replay its verdict if it lands.
-                let claim = key.as_ref().filter(|_| affine_cache_proofs.is_none())
-                    .and_then(|key| cache::claim(key, function.blocks.len()));
+                let claim = key.as_ref().and_then(|key| cache::claim(key, function.blocks.len()));
                 if let Some(published) = claim.as_ref().and_then(cache::Claim::published) {
                     break 'check published;
                 }
@@ -410,7 +408,7 @@ fn check_candidate<S: ModuleStage>(
                     (None, Some(key)) => {
                         if let Some(proofs) = &affine_cache_proofs {
                             cache::record_affine(key, std::sync::Arc::clone(proofs),
-                                std::sync::Arc::clone(&discharged));
+                                std::sync::Arc::clone(&discharged), stopwatch.elapsed());
                         } else {
                             cache::record(key, std::sync::Arc::clone(&discharged), stopwatch.elapsed());
                         }
