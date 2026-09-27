@@ -101,6 +101,7 @@ impl ComptimeSourceSession {
             matches!(item, Item::Comptime(_)) || matches!(item, Item::Function(function) if function.name == "main")) {
             return Err(refuse("comptime session cannot use a generated comptime block or displaced main as prior output"));
         }
+        self.check_prior_items(prior)?;
         let Item::Comptime(body) = &module.items[item] else { unreachable!("first block selected") };
         let line = module.item_lines.get(item).copied().unwrap_or(0);
         let mut hash = blake3::Hasher::new();
@@ -132,10 +133,10 @@ impl ComptimeSourceSession {
             bounds: Vec::new(), is_gen: false, is_async: false,
         }));
         prepared.item_lines.push(line);
-        let prior_functions = prior.iter().flat_map(|output| &output.items)
-            .filter_map(|(item, _)| match item { Item::Function(function) => Some(function.name.clone()), _ => None })
-            .collect();
-        retain_referenced_functions(&mut prepared, &prior_functions);
+        // Earlier output was checked above. Only behavior called by this block
+        // belongs in its zero-grant executable recipe; unrelated emitted
+        // functions may require runtime capabilities.
+        retain_referenced_functions(&mut prepared, &HashSet::new(), true);
         install_services(&mut prepared);
         // Relocation selects the existing compiler syntax namespace, while the
         // declaration owner remains the exact loader identity of the source.
@@ -155,6 +156,28 @@ impl ComptimeSourceSession {
         let typed = typed.ok_or_else(|| refuse("comptime block link did not retain checked source"))?;
         let checked = finish_canonical_source(checked, typed, digest, PrecompiledDeclarationEnvironment::default())?;
         bind_recipe(checked, &contract)
+    }
+
+    /// Check prior admitted items as source data before running a successor.
+    /// The source main and unrelated functions can refer to later output, so
+    /// they do not belong in this prefix check. Final destination checking
+    /// still checks the complete module after all blocks execute.
+    fn check_prior_items(&self, prior: &[PriorComptimeBlockOutput]) -> Result<(), PipelineError> {
+        if prior.is_empty() { return Ok(()); }
+        let (_, original) = self.modules.iter().find(|(name, _)| name == &self.selected)
+            .expect("selected raw module retained");
+        let mut prepared = materialize_prior(original, prior, false);
+        let emitted_functions = prior.iter().flat_map(|output| &output.items)
+            .filter_map(|(item, _)| match item { Item::Function(function) => Some(function.name.clone()), _ => None })
+            .collect();
+        retain_referenced_functions(&mut prepared, &emitted_functions, false);
+        let modules = self.modules.iter().map(|(name, module)| (
+            name.clone(), if name == &self.selected { prepared.clone() } else { module.clone() },
+        )).collect();
+        let expand = ComptimeExpander::with_sibling_request(require_expansion_free, |_| false);
+        let _ = link_checked_with(modules, &self.selected, expand, LinkMode::Production,
+            Some(&self.user_modules), true, Some(self.owners.clone()))?;
+        Ok(())
     }
 
     /// Check the ordinary destination after all original blocks have run.
@@ -214,10 +237,10 @@ impl ComptimeSourceSession {
 /// capabilities unavailable to this zero-grant session. The Debug rendering
 /// over-approximates names across calls, function values and generated syntax;
 /// an omitted real reference still fails closed during ordinary checking.
-fn retain_referenced_functions(module: &mut Module, prior_functions: &HashSet<String>) {
+fn retain_referenced_functions(module: &mut Module, prior_functions: &HashSet<String>, keep_entry: bool) {
     let entry = module.items.len() - 1;
     let mut keep: Vec<bool> = module.items.iter().enumerate().map(|(index, item)|
-        index == entry || !matches!(item, Item::Function(_))
+        (keep_entry && index == entry) || !matches!(item, Item::Function(_))
             || matches!(item, Item::Function(function) if prior_functions.contains(&function.name))).collect();
     let mut referenced = String::new();
     for (index, item) in module.items.iter().enumerate() {

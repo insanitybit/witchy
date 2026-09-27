@@ -49,6 +49,18 @@ pub fn expand_source_bundle(
         .map(|output| output.selected_module)
 }
 
+/// Give source inspection the checked destination and its exact displayed
+/// entry from one admitted compiler session. The module is presentation data;
+/// only the checked result carries canonical admission authority.
+pub fn check_and_expand_source_bundle(
+    sources: Vec<(String, Vec<u8>)>, selected: &str,
+    user_modules: HashSet<String>, owners: AuthenticatedModuleOwners,
+    limits: ComptimeLimits,
+) -> Result<(CheckedModule, Module), String> {
+    run_source_bundle(sources, selected, user_modules, owners, limits)
+        .map(|output| (output.checked, output.selected_module))
+}
+
 fn run_source_bundle(
     sources: Vec<(String, Vec<u8>)>, selected: &str,
     user_modules: HashSet<String>, owners: AuthenticatedModuleOwners,

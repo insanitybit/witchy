@@ -1,30 +1,14 @@
 //! Capability inspection, diffing, and grant-check command services.
 
 use witchy_caps::{capabilities as capability_model, grants};
-use witchy_interp::comptime;
-use witchy_syntax::parser;
-use crate::link_file_checked;
+use crate::source::checked_entry_for_capabilities;
 
 /// Read, parse, and compute the host-capability footprint of a source file.
 pub(crate) fn analyze_file(path: &str) -> Result<capability_model::Footprint, String> {
-    // BUG-179: a footprint computed over code that doesn't type-check is meaningless
-    // (an undefined-function call, a type error). Link + type-check the whole program
-    // first, so `caps`/`caps-diff` refuse a source that `check` would reject rather
-    // than reporting a footprint for it.
-    let (_checked, _stem) = link_file_checked(path)?;
-    // Report the footprint of the ENTRY file's own items (unprefixed names, matching
-    // the existing per-function output) — but with its `comptime:` blocks EXPANDED
-    // (BUG-178). A `comptime:` block that `emit`s `pub fn generated(net: Net)` adds a
-    // real capability-bearing API; `capabilities::analyze` treats generated code
-    // exactly like handwritten code, so it must see the expanded items. This is the
-    // same additive per-module pass the linker runs, applied to the single module.
-    let src = std::fs::read_to_string(path).map_err(|e| format!("cannot read `{path}`: {e}"))?;
-    let mut module = parser::parse_module(&src).map_err(|e| e.to_string())?;
-    let stem = std::path::Path::new(path)
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or(path);
-    comptime::expand(stem, &mut module).map_err(|e| format!("{path}: {e}"))?;
+    // BUG-178/179: count generated entry APIs only after the same source bytes
+    // have passed destination checking. Selected original blocks run through
+    // admitted Wasm, so inspection cannot silently use the frozen walker.
+    let module = checked_entry_for_capabilities(path)?;
     Ok(capability_model::analyze(&module))
 }
 
