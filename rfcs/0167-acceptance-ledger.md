@@ -742,6 +742,15 @@ unoptimized admitted-Wasm witness for `Dict(String, &String)` returns the
 hand-computed `1120` and audits zero heap leaks. The broader composition
 matrix remains open; no A–O row closes here.
 
+Aggregate constructor source qualification (implemented, semantic evidence
+unchanged, 2026-09-26): every production heap-record constructor now passes
+its checked aggregate source type to layout selection, including the host
+`Option(String)` result. The dead shape-only constructors are removed. Layout
+selection verifies the shared checked aggregate fields and refuses a missing
+nominal identity when a retained child requires one; it never infers that
+identity from coincidentally matching physical fields. This is a structural
+fail-closed change, not an additional A–O proof.
+
 Row G retained byte-buffer layout class (architecture implemented, semantic
 evidence unchanged, 2026-09-25): the shared source-storage projection now
 classifies exact `Bytes` as a retained raw-byte buffer, and the list-element

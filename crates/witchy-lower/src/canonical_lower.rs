@@ -11983,7 +11983,7 @@ impl FunctionLowerer<'_> {
         }
         let move_only = witchy_canonical_source::storage::affine_storage_shape(source_type, self.definitions).is_some();
         let nullable_fields = aggregate_uses_nullable_owned_fields(source_type, self.definitions) || shape.tagged;
-        self.lower_heap_record_with_slots(Some(source_type), &shape.name, &shape.fields, values, move_only, nullable_fields)
+        self.lower_heap_record_with_slots(source_type, &shape.name, &shape.fields, values, move_only, nullable_fields)
     }
 
     /// `lower_aggregate` whose reference payloads are fresh owned tokens the
@@ -12009,7 +12009,7 @@ impl FunctionLowerer<'_> {
             };
             values.push(value);
         }
-        self.lower_heap_record_with_slots(Some(source_type), &shape.name, &shape.fields, values, true, shape.tagged)
+        self.lower_heap_record_with_slots(source_type, &shape.name, &shape.fields, values, true, shape.tagged)
     }
 
     fn push_zero(&mut self, value_type: ValueType) -> Result<ValueId, CanonicalLoweringError> {
@@ -12604,15 +12604,6 @@ impl FunctionLowerer<'_> {
         }
     }
 
-    fn lower_heap_record(
-        &mut self,
-        name: &str,
-        field_types: &[Type],
-        values: Vec<ValueId>,
-    ) -> Result<ValueId, CanonicalLoweringError> {
-        self.lower_heap_record_with_source(None, name, field_types, values, false, false)
-    }
-
     fn lower_heap_record_for_source(
         &mut self,
         source_type: &Type,
@@ -12621,35 +12612,13 @@ impl FunctionLowerer<'_> {
         values: Vec<ValueId>,
     ) -> Result<ValueId, CanonicalLoweringError> {
         let affine = witchy_canonical_source::storage::affine_storage_shape(source_type, self.definitions).is_some();
-        self.lower_heap_record_with_source(Some(source_type), name, field_types, values, affine,
+        self.lower_heap_record_with_source(source_type, name, field_types, values, affine,
             aggregate_uses_nullable_owned_fields(source_type, self.definitions))
-    }
-
-    /// `lower_heap_record` for the kernels: `move_references` stores a
-    /// reference value's own token into its slot (the value is a fresh
-    /// owned object the kernel built for exactly this slot) instead of an
-    /// owned copy of it.
-    fn lower_heap_record_with(
-        &mut self,
-        name: &str,
-        field_types: &[Type],
-        values: Vec<ValueId>,
-        move_references: bool,
-        nullable_references: bool,
-    ) -> Result<ValueId, CanonicalLoweringError> {
-        self.lower_heap_record_with_source(
-            None,
-            name,
-            field_types,
-            values,
-            move_references,
-            nullable_references,
-        )
     }
 
     fn lower_heap_record_with_source(
         &mut self,
-        source_type: Option<&Type>,
+        source_type: &Type,
         name: &str,
         field_types: &[Type],
         values: Vec<ValueId>,
@@ -12668,16 +12637,17 @@ impl FunctionLowerer<'_> {
 
     fn lower_heap_record_with_slots(
         &mut self,
-        source_type: Option<&Type>,
+        source_type: &Type,
         name: &str,
         field_types: &[Type],
         values: Vec<Option<ValueId>>,
         move_references: bool,
         nullable_references: bool,
     ) -> Result<ValueId, CanonicalLoweringError> {
-        if let Some(source_type) = source_type
-            && self.closures.layouts.opaque_type(source_type, self.definitions).is_some()
-        {
+        if values.len() != field_types.len() {
+            return Err(CanonicalLoweringError::UnsupportedType(source_type.clone()));
+        }
+        if self.closures.layouts.opaque_type(source_type, self.definitions).is_some() {
             if move_references || nullable_references {
                 return Err(CanonicalLoweringError::UnsupportedExpression("opaque aggregate storage mode"));
             }
@@ -12685,25 +12655,15 @@ impl FunctionLowerer<'_> {
                 .ok_or(CanonicalLoweringError::UnsupportedExpression("opaque aggregate inactive field"))?;
             return self.lower_opaque_aggregate(source_type, 0, values);
         }
-        let layout = match source_type {
-            Some(source_type) => aggregate_layout_for_source(
-                source_type,
-                field_types,
-                nullable_references,
-                self.layout_bundle,
-                self.layouts,
-                &self.closures.layouts,
-                self.definitions,
-            )?,
-            None => aggregate_layout(
-                field_types,
-                nullable_references,
-                self.layout_bundle,
-                self.layouts,
-                &self.closures.layouts,
-                self.definitions,
-            )?,
-        };
+        let layout = aggregate_layout_for_source(
+            source_type,
+            field_types,
+            nullable_references,
+            self.layout_bundle,
+            self.layouts,
+            &self.closures.layouts,
+            self.definitions,
+        )?;
         let physical_layout = self
             .layouts
             .resolve_nominal(layout)
@@ -12740,7 +12700,7 @@ impl FunctionLowerer<'_> {
                         });
                     }
                     let reference = matches!(expected, ValueType::Ref(_));
-                    let clone_reference = if reference && move_references && source_type.is_some() {
+                    let clone_reference = if reference && move_references {
                         match aggregate_managed_field_transfer(field_type, self.definitions) {
                             Some(ManagedAggregateFieldTransfer::Clone) => true,
                             Some(ManagedAggregateFieldTransfer::Move) => false,
@@ -13416,7 +13376,8 @@ impl FunctionLowerer<'_> {
                 let some_tag = self.push_const_int(i64::try_from(some_index).map_err(|_| CanonicalLoweringError::IdOverflow)?)?;
                 let none_tag = self.push_const_int(i64::try_from(none_index).map_err(|_| CanonicalLoweringError::IdOverflow)?)?;
                 let tag = self.lower_int_select(present, some_tag, none_tag)?;
-                let record = self.lower_heap_record_with(
+                let record = self.lower_heap_record_with_source(
+                    &option_type,
                     &shape.name,
                     &shape.fields,
                     vec![tag, joined[0]],
@@ -20228,6 +20189,11 @@ fn aggregate_layout_for_source(
     closure_layouts: &ClosureValueLayouts,
     definitions: &BTreeMap<String, TypeDef>,
 ) -> Result<witchy_wir::layout::LayoutId, CanonicalLoweringError> {
+    let checked_shape = scalar_aggregate_shape(source, definitions)
+        .ok_or_else(|| CanonicalLoweringError::UnsupportedType(source.clone()))?;
+    if checked_shape.fields != expected_fields {
+        return Err(CanonicalLoweringError::UnsupportedType(source.clone()));
+    }
     if let Ok(nominal) = crate::canonical_layouts::recursive_nominal_layout_id_for_shape(source, definitions)
         && layout_bundle.roots().contains(&nominal)
         && matches!(layouts.get(nominal).map(|descriptor| descriptor.kind()), Some(LayoutKind::OpaqueNominal { .. }))
@@ -20236,6 +20202,9 @@ fn aggregate_layout_for_source(
             return Err(CanonicalLoweringError::MissingLayout(source.clone()));
         }
         return Ok(nominal);
+    }
+    if witchy_canonical_source::storage::retained_child_layout_identity(source, definitions).is_some() {
+        return Err(CanonicalLoweringError::MissingLayout(source.clone()));
     }
     aggregate_layout(
         expected_fields,
