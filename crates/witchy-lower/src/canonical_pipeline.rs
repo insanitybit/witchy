@@ -74,7 +74,7 @@ fn admit_checked_source_with_observer<R>(
         });
         match first {
             Ok(admitted) => Ok(admitted),
-            Err(_) if source_uses_opt(source) => {
+            Err(_) if use_bounds_guard_pass(source) => {
                 // A transformation has no authority to make the baseline
                 // unexecutable. Retry from checked source through every
                 // checker and Wasm admission stage, never from its output.
@@ -90,6 +90,11 @@ fn admit_checked_source_with_observer<R>(
 
 fn source_uses_opt(source: &CanonicalCheckedSource) -> bool {
     source.typed_module().module().modes.iter().any(|mode| mode == "opt")
+}
+
+fn use_bounds_guard_pass(source: &CanonicalCheckedSource) -> bool {
+    source_uses_opt(source)
+        && witchy_syntax::opt::enabled(witchy_syntax::opt::Opt::BoundsElide)
 }
 
 fn validate_unoptimized_checked_source(
@@ -142,7 +147,7 @@ fn validate_checked_source_inner(
     let candidate = lower_typed_module(source, layouts)
         .map_err(CanonicalPipelineError::Lowering)?
         .with_launch_contract_payload(source.launch_contract_payload().to_vec());
-    let baseline_candidate = source_uses_opt(source).then(|| candidate.clone());
+    let baseline_candidate = use_bounds_guard_pass(source).then(|| candidate.clone());
     let checked = check_initial_with_witness(candidate, &source.view())
         .map_err(CanonicalPipelineError::InitialValidation)?;
     if let Some(baseline_candidate) = baseline_candidate {
