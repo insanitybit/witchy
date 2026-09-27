@@ -73,6 +73,15 @@ opt mode. The independent result is `-4 + 1 + 4 = 1`, with zero owned heap
 leaks in both modes. This closes the unary/range evidence gap, not row M's
 remaining generation breadth or installed-consumer work.
 
+Row M update (2026-09-27): `meta.expr_binary` and `meta.expr_index` now use
+the same bounded typed-expression wire. The host accepts only current-session
+sealed child handles and the fixed source binary operator set; index checking
+remains with the destination checker. A source-generated binary function and
+indexed list function pass admitted unoptimized Wasm in normal and opt mode.
+The independent result is `(39 + 3) + [8, 9][1] = 51`, with zero owned heap
+leaks in both modes. Row M remains partial for other typed syntax forms and
+installed consumers.
+
 Row R update (2026-09-27): admitted `meta.type_expr`, typed parameter and
 expression-body function items, inherent method items, and `meta.expr_try`
 composition are merged. `program_defined_builder_uses_type_info_in_both_modes`

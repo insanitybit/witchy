@@ -394,7 +394,7 @@ fn __meta_expr_field(base: ExprSyntax, field: Ident) -> ExprSyntax:
 // Construct a subscript from sealed base and index expressions. Ordinary
 // checking keeps the index operation subject to its usual type and bounds rules.
 pub fn expr_index(base: ExprSyntax, index: ExprSyntax) -> ExprSyntax:
-    __meta_expr_index(base, index)
+    __meta_expr_compose_wire("K\n" + expr_wire_handle(base) + expr_wire_handle(index))
 
 fn __meta_expr_index(base: ExprSyntax, index: ExprSyntax) -> ExprSyntax:
     __meta_expr_index(base, index)
@@ -422,7 +422,7 @@ pub fn expr_string(value: String) -> ExprSyntax:
 // A compiler-owned binary expression. `op` is admitted by the compiler's
 // fixed source-operator whitelist; it is never parsed as a source fragment.
 pub fn expr_binary(op: String, lhs: ExprSyntax, rhs: ExprSyntax) -> ExprSyntax:
-    __meta_expr_binary(op, lhs, rhs)
+    __meta_expr_compose_wire("Y\n" + op + "\n" + expr_wire_handle(lhs) + expr_wire_handle(rhs))
 
 // Interpreter-owned compile-time hook for `expr_binary`. Both children retain
 // their compiler-owned expression identity through the constructed AST node.

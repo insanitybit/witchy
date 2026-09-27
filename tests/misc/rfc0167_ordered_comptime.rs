@@ -533,3 +533,35 @@ fn imported_original_block_feeds_bare_test_driver() {
     let error = String::from_utf8_lossy(&invalid.stderr);
     assert!(error.contains("Int") && error.contains("String"), "{error}");
 }
+
+#[test]
+fn admitted_typed_binary_and_index_generation_in_both_modes() {
+    for mode in ["", "mode opt\n"] {
+        let source = format!(r#"{mode}import meta
+comptime:
+    let int_ty = quote type:
+        Int
+    let answer = meta.expr_binary("+", meta.expr_int(39), meta.expr_int(3))
+    emit_item(meta.function(true, meta.ident("answer"), [], Some(int_ty), answer))
+    let values = quote expr:
+        [8, 9]
+    let second = meta.expr_index(values, meta.expr_int(1))
+    emit_item(meta.function(true, meta.ident("second"), [], Some(int_ty), second))
+fn main(console: Console):
+    console.print("${{answer() + second()}}")
+"#);
+        let checked = witchy::canonical_comptime::check_source_bundle(
+            vec![("generator".into(), source.into_bytes()),
+                ("meta".into(), witchy_syntax::linker::bundled_source("meta").unwrap().as_bytes().to_vec())],
+            "generator", ["generator".to_owned()].into_iter().collect(), owners(), limits(),
+        ).expect("typed binary and index items enter destination checking");
+        let artifact = witchy_lower::codegen::compile_checked_module_artifact(&checked)
+            .expect_lowered("typed binary and index admit on unoptimized Wasm");
+        let mut runtime = Runtime::batch().unwrap();
+        let mut vm = runtime.spawn_admitted(&artifact,
+            Capabilities { print: true, quiet: true, ..Capabilities::none() }, 64).unwrap();
+        vm.run().unwrap();
+        assert_eq!(vm.output(), ["51"]); // (39 + 3) + [8, 9][1]
+        assert_eq!(vm.canonical_heap_leaks().unwrap(), Some(0));
+    }
+}

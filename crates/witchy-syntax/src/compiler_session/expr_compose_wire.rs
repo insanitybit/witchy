@@ -11,6 +11,8 @@ pub enum Composition {
     Try { value: String },
     Unary { op: String, value: String },
     Range { lo: String, hi: String, inclusive: bool },
+    Binary { op: String, lhs: String, rhs: String },
+    Index { base: String, index: String },
     Block { body: String },
     If { cond: String, then_body: String, else_body: Option<String> },
     Match { scrutinee: String, arms: Vec<String> },
@@ -103,6 +105,8 @@ pub fn decode(bytes: &[u8]) -> Result<Composition, String> {
             };
             Composition::Range { lo: reader.handle()?, hi: reader.handle()?, inclusive }
         }
+        "Y" => Composition::Binary { op: reader.line()?.to_owned(), lhs: reader.handle()?, rhs: reader.handle()? },
+        "K" => Composition::Index { base: reader.handle()?, index: reader.handle()? },
         "B" => Composition::Block { body: reader.handle()? },
         "I" => {
             let cond = reader.handle()?;
@@ -172,6 +176,24 @@ impl Composition {
             Self::Range { lo, hi, inclusive } => Ok(crate::parser::desugar_range(
                 resolve(&lo)?, resolve(&hi)?, inclusive,
             )),
+            Self::Binary { op, lhs, rhs } => {
+                use crate::ast::BinOp;
+                let op = match op.as_str() {
+                    "+" => BinOp::Add, "-" => BinOp::Sub, "*" => BinOp::Mul,
+                    "/" => BinOp::Div, "%" => BinOp::Mod,
+                    "==" => BinOp::Eq, "!=" => BinOp::NotEq,
+                    "<" => BinOp::Lt, "<=" => BinOp::LtEq,
+                    ">" => BinOp::Gt, ">=" => BinOp::GtEq,
+                    "&&" => BinOp::And, "||" => BinOp::Or, "??" => BinOp::Coalesce,
+                    "&" => BinOp::BitAnd, "|" => BinOp::BitOr, "^" => BinOp::BitXor,
+                    "<<" => BinOp::Shl, ">>" => BinOp::Shr,
+                    _ => return Err(format!("unsupported compiler binary operator `{op}`")),
+                };
+                Ok(Expr::Binary { op, lhs: Box::new(resolve(&lhs)?), rhs: Box::new(resolve(&rhs)?) })
+            }
+            Self::Index { base, index } => Ok(Expr::Index {
+                base: Box::new(resolve(&base)?), index: Box::new(resolve(&index)?),
+            }),
             Self::Block { body } => Ok(Expr::Block(resolve_block(&body)?)),
             Self::If { cond, then_body, else_body } => Ok(Expr::If {
                 cond: Box::new(resolve(&cond)?),
