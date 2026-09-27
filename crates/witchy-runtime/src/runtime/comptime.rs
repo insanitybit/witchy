@@ -23,6 +23,14 @@ pub struct ComptimeOutcome {
     pub heap_leaks: usize,
     pub expressions: Vec<EmittedExpression>,
     pub items: Vec<EmittedItem>,
+    source_digest: [u8; 32],
+}
+
+impl ComptimeOutcome {
+    /// Identity of the admitted source recipe, never supplied by the guest.
+    /// The compiler can compare this with the expected checked predecessor
+    /// before consuming any generated syntax.
+    pub fn source_digest(&self) -> [u8; 32] { self.source_digest }
 }
 
 pub(super) struct SessionState {
@@ -88,6 +96,7 @@ impl Runtime {
         let fuel_consumed = limits.fuel - vm.store.get_fuel()?;
         let session = vm.store.data_mut().compiler_syntax.take().expect("comptime session installed");
         Ok(ComptimeOutcome { result, fresh_identifiers: session.issued, fuel_consumed, heap_leaks,
-            expressions: session.expressions, items: session.items })
+            expressions: session.expressions, items: session.items,
+            source_digest: contract.source_digest() })
     }
 }
