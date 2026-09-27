@@ -2055,13 +2055,26 @@ impl Checker {
             .any(|bindings| bindings.contains(name))
     }
 
-    /// Whether `value` is a call whose result is inferred fresh without a
-    /// declared `unique` result: the only shape that yields an inferred owner.
-    fn call_yields_inferred_owner(&self, value: &Expr) -> bool {
-        self.opt_mode
-            && matches!(value, Expr::Call { name, .. }
-                if self.fresh_result_fns.contains(name)
-                    && !self.callable_unique_contract(name).is_some_and(|contract| contract.unique_result))
+    /// Whether an opt expression yields a fresh linear owner without a
+    /// declared `unique` result. The shared storage judgment distinguishes
+    /// a materialized copy from a retained opaque token.
+    fn copy_materializes_fresh_owner(&self, ty: &Ty) -> bool {
+        ty_to_ast(&self.resolve(ty)).is_some_and(|source| {
+            self.storage_plan(&source).materializes_fresh_linear_owner()
+        })
+    }
+
+    fn expression_yields_inferred_owner(&self, value: &Expr, ty: &Ty) -> bool {
+        self.opt_mode && match value {
+            Expr::Call { name, .. } => self.fresh_result_fns.contains(name)
+                && !self.callable_unique_contract(name).is_some_and(|contract| contract.unique_result),
+            Expr::MethodCall { method, args, .. }
+                if method == OWNED_MATERIALIZATION && args.is_empty() =>
+            {
+                self.copy_materializes_fresh_owner(ty)
+            }
+            _ => false,
+        }
     }
 
     fn forget_inferred_owner_binding(&mut self, name: &str) {
@@ -2171,6 +2184,11 @@ impl Checker {
             Expr::Apply { func, .. } => self
                 .callable_unique_contract_for_expr(func)
                 .is_some_and(|contract| contract.unique_result),
+            Expr::MethodCall { method, args, .. }
+                if method == OWNED_MATERIALIZATION && args.is_empty() =>
+            {
+                self.opt_mode && self.copy_materializes_fresh_owner(ty)
+            }
             _ => self.ty_carries_unique_storage(ty),
         }
     }
@@ -2225,6 +2243,11 @@ impl Checker {
             Expr::Apply { func, .. } => self
                 .callable_unique_contract_for_expr(func)
                 .is_some_and(|contract| contract.unique_result),
+            Expr::MethodCall { method, args, .. }
+                if method == OWNED_MATERIALIZATION && args.is_empty() =>
+            {
+                self.copy_materializes_fresh_owner(ty)
+            }
             Expr::If { then_block, else_block: Some(else_block), .. } => {
                 self.block_establishes_unique_storage(then_block)
                     && self.block_establishes_unique_storage(else_block)
@@ -5651,12 +5674,12 @@ impl Checker {
                                 // an `as` coercion. Annotating a declared `unique`
                                 // result with an ordinary type is a weakening and
                                 // drops the proof.
-                                || self.call_yields_inferred_owner(value)
+                                || self.expression_yields_inferred_owner(value, &binding_ty)
                         },
                     )
                     {
                         self.authorize_unique_storage_binding(name.clone());
-                        if self.call_yields_inferred_owner(value)
+                        if self.expression_yields_inferred_owner(value, &binding_ty)
                             && !decl.as_ref().is_some_and(|ty| self.declared_type_carries_unique_storage(ty))
                         {
                             self.inferred_owner_bindings
@@ -5840,7 +5863,7 @@ impl Checker {
                             || self.ty_carries_unique_storage(&existing)
                         {
                             self.authorize_unique_storage_binding(name.clone());
-                            if self.call_yields_inferred_owner(value) {
+                            if self.expression_yields_inferred_owner(value, &vt) {
                                 self.inferred_owner_bindings
                                     .last_mut()
                                     .expect("inferred owner bindings track type scopes")
@@ -7802,9 +7825,9 @@ impl Checker {
             }
             // RFC-0167 §5: `.owned()` is a compiler-known operation, not a
             // library method. Trait lowering leaves it in place until the
-            // receiver's checked type is in the table, then lowers it to the
-            // view read `*view` (or identity on an owned value). An admitted
-            // slice keeps the call for its checked projection-copy lowering.
+            // receiver's checked type is in the table. Canonical lowering
+            // copies the checked value after reading a view, or copies an
+            // owned receiver directly. A slice uses its projection copy.
             Expr::MethodCall { receiver, method, args }
                 if method == OWNED_MATERIALIZATION && args.is_empty() =>
             {

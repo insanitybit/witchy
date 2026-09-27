@@ -11599,16 +11599,28 @@ impl FunctionLowerer<'_> {
                 if !self.type_table.is_compiler_owned_materialization(expression) {
                     return Err(CanonicalLoweringError::UnsupportedExpression("unchecked .owned()"));
                 }
-                match self.expression_type(receiver)? {
-                    Type::Qualified(TypeQual::View, inner)
-                        if rooted_slice_element_with_definitions(&inner, self.definitions).is_some() =>
-                    {
-                        self.lower_owned_slice(expression, receiver)
-                    }
-                    Type::Qualified(TypeQual::View, _) => {
-                        self.lower_unary(expression, UnOp::Deref, receiver)
-                    }
-                    _ => self.lower_expr(receiver),
+                let receiver_type = self.expression_type(receiver)?;
+                if matches!(&receiver_type, Type::Qualified(TypeQual::View, inner)
+                    if rooted_slice_element_with_definitions(inner, self.definitions).is_some())
+                {
+                    return self.lower_owned_slice(expression, receiver);
+                }
+                let result_type = self.expression_type(expression)?;
+                let storage = StoragePlan::classify(&result_type, self.definitions, |_| Some(0));
+                if !storage.admits_owned_copy() {
+                    return Err(CanonicalLoweringError::UnsupportedExpression(
+                        ".owned() lacks a checked copy operation",
+                    ));
+                }
+                let value = if matches!(receiver_type, Type::Qualified(TypeQual::View, _)) {
+                    self.lower_unary(expression, UnOp::Deref, receiver)?
+                } else {
+                    self.lower_expr(receiver)?
+                };
+                if matches!(storage, StoragePlan::InlineScalar(_)) {
+                    Ok(value)
+                } else {
+                    self.owned_for_storage(value, &result_type)
                 }
             }
             Expr::LabeledCall { .. }

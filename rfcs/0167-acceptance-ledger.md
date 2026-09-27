@@ -62,6 +62,18 @@ is needed for soundness.
 
 ## Exact-tip evidence checkpoint
 
+Owned-value materialization (production path migrated, 2026-09-26): the
+compiler-known `.owned()` now uses the shared checked storage judgment for
+fresh linear-owner provenance in the checker and no-copy analysis, and
+canonical lowering makes the physical copy for both owned receivers and
+whole-root views. The old owned-receiver identity path is gone. Opaque GC
+retention does not establish a fresh unique root. The existing nested-mode
+test now runs indexed and viewed list copies on admitted unoptimized Wasm,
+with independently computed results 119 and 19 and zero heap leaks. Direct
+computed `own` calls also use the exact checked materialization marker; raw
+unresolved method calls remain refused. Broader generic and cross-boundary
+composition remains open, so no A–O row is closed by these cases.
+
 Lazy-operand disposition (bounded repair, 2026-09-26): `&&`, `||`, and `??`
 now join the skipped edge with the completing RHS edge using the same ownership
 dataflow as conditional expressions. A conditional transfer cannot discharge a

@@ -3828,6 +3828,8 @@ fn merge_no_copy_env(
 struct NoCopyInputs<'facts, 'module> {
     module: &'module Module,
     access: Option<&'facts witchy_types::access::CheckedAccessFacts>,
+    types: Option<&'facts witchy_types::typeck::TypeTable>,
+    definitions: &'facts std::collections::BTreeMap<String, witchy_syntax::ast::TypeDef>,
     places: &'facts witchy_canonical_source::access::CheckedPlaceFacts,
     required: &'facts HashMap<String, Vec<usize>>,
     unique_results: &'facts HashSet<String>,
@@ -3840,6 +3842,8 @@ struct NoCopyWalker<'facts, 'module> {
     source_mode: witchy_canonical_source::source::SourceExecutionMode,
     module: &'module Module,
     access: Option<&'facts witchy_types::access::CheckedAccessFacts>,
+    types: Option<&'facts witchy_types::typeck::TypeTable>,
+    definitions: &'facts std::collections::BTreeMap<String, witchy_syntax::ast::TypeDef>,
     places: &'facts witchy_canonical_source::access::CheckedPlaceFacts,
     required: &'facts HashMap<String, Vec<usize>>,
     unique_results: &'facts HashSet<String>,
@@ -3860,6 +3864,8 @@ impl<'facts, 'module> NoCopyWalker<'facts, 'module> {
         let NoCopyInputs {
             module,
             access,
+            types,
+            definitions,
             places,
             required,
             unique_results,
@@ -3876,6 +3882,8 @@ impl<'facts, 'module> NoCopyWalker<'facts, 'module> {
             source_mode,
             module,
             access,
+            types,
+            definitions,
             places,
             required,
             unique_results,
@@ -4194,10 +4202,13 @@ impl<'facts, 'module> NoCopyWalker<'facts, 'module> {
                 }
                 NoCopyProof::Unavailable("an indirect call has no declared no-copy proof".to_string())
             }
-            Expr::MethodCall { receiver, args, .. } => {
+            Expr::MethodCall { receiver, method, args } => {
                 let _ = self.expr(receiver, stmt, env);
                 for arg in args {
                     let _ = self.expr(arg, stmt, env);
+                }
+                if method == "owned" && args.is_empty() && self.checked_fresh_materialization(expr) {
+                    return NoCopyProof::Available;
                 }
                 NoCopyProof::Unavailable("unresolved method call".to_string())
             }
@@ -4241,6 +4252,8 @@ impl<'facts, 'module> NoCopyWalker<'facts, 'module> {
                     NoCopyInputs {
                         module: self.module,
                         access: self.access,
+                        types: self.types,
+                        definitions: self.definitions,
                         places: self.places,
                         required: self.required,
                         unique_results: self.unique_results,
@@ -4381,6 +4394,17 @@ impl<'facts, 'module> NoCopyWalker<'facts, 'module> {
             .and_then(|access| checked_call_ownership_fact(self.module, access, expression))
     }
 
+    fn checked_fresh_materialization(&self, expression: &Expr) -> bool {
+        self.types.is_some_and(|table| table.is_compiler_owned_materialization(expression))
+            && self.types.and_then(|table| table.type_of(expression))
+                .and_then(witchy_types::typeck::ty_to_ast)
+                .is_some_and(|source| {
+                    witchy_canonical_source::storage::StoragePlan::classify(
+                        &source, self.definitions, |_| Some(0),
+                    ).materializes_fresh_linear_owner()
+                })
+    }
+
     fn record_call_misses(
         &mut self,
         args: &[&Expr],
@@ -4399,7 +4423,7 @@ impl<'facts, 'module> NoCopyWalker<'facts, 'module> {
             // counterpart of the place-based `var` proof; without it, widening
             // the detector to `own unique` (criterion 2) would wrongly reject an
             // owner-threaded call like `scan(ScanState(0, 0), n)`.
-            if no_copy_fresh_owned(arg) {
+            if no_copy_fresh_owned(arg) || self.checked_fresh_materialization(arg) {
                 continue;
             }
             let Some(place) = self.places.place_at(self.module, arg) else {
@@ -4480,7 +4504,7 @@ impl<'facts, 'module> NoCopyWalker<'facts, 'module> {
 pub fn module_no_copy_misses(module: &Module) -> Vec<NoCopyMiss> {
     try_module_no_copy_misses(module).unwrap_or_else(|_| {
         let lowered = witchy_types::traits::lower(module.clone());
-        module_no_copy_misses_with_access(&lowered, None)
+        module_no_copy_misses_with_access(&lowered, None, None)
     })
 }
 
@@ -4496,7 +4520,7 @@ pub fn try_module_no_copy_misses(module: &Module) -> Result<Vec<NoCopyMiss>, Str
         .map_err(|error| format!("checked ownership/access analysis failed: {error}"))?;
     let access = witchy_types::access::checked_facts(typed.module(), typed.table())
         .map_err(|error| format!("checked ownership/access analysis failed: {error}"))?;
-    Ok(module_no_copy_misses_with_access(typed.module(), Some(&access)))
+    Ok(module_no_copy_misses_with_access(typed.module(), Some(&access), Some(typed.table())))
 }
 
 /// (RFC-0110 criterion 2/9) A normal-mode one-copy repair site, keyed by source
@@ -4598,10 +4622,11 @@ pub fn module_boundary_repairs(module: &Module) -> Vec<BoundaryRepair> {
 pub fn module_boundary_repair_ptrs(
     module: &Module,
     access: Option<&witchy_types::access::CheckedAccessFacts>,
+    types: Option<&witchy_types::typeck::TypeTable>,
 ) -> foldhash::HashSet<usize> {
     use foldhash::HashSetExt as _;
     let mut ptrs = foldhash::HashSet::new();
-    for miss in module_no_copy_misses_with_access(module, access) {
+    for miss in module_no_copy_misses_with_access(module, access, types) {
         if miss.call_ptr != 0
             && miss.source_mode == witchy_canonical_source::source::SourceExecutionMode::Normal
         {
@@ -4618,8 +4643,9 @@ pub fn module_boundary_repair_ptrs(
 pub fn boundary_entry_selection(
     module: &Module,
     access: Option<&witchy_types::access::CheckedAccessFacts>,
+    types: Option<&witchy_types::typeck::TypeTable>,
 ) -> BoundaryEntrySelection {
-    let repair_sites = module_boundary_repair_ptrs(module, access);
+    let repair_sites = module_boundary_repair_ptrs(module, access, types);
     let Some(access) = access else {
         return BoundaryEntrySelection::default();
     };
@@ -4647,7 +4673,9 @@ pub fn boundary_entry_selection(
 fn module_no_copy_misses_with_access(
     module: &Module,
     access: Option<&witchy_types::access::CheckedAccessFacts>,
+    types: Option<&witchy_types::typeck::TypeTable>,
 ) -> Vec<NoCopyMiss> {
+    let definitions = witchy_canonical_source::aggregates::type_definitions(module);
     let places = witchy_canonical_source::access::checked_place_facts(module);
     let required = no_copy_requirements(module, access);
     if required.is_empty() {
@@ -4671,6 +4699,8 @@ fn module_no_copy_misses_with_access(
                     NoCopyInputs {
                         module,
                         access,
+                        types,
+                        definitions: &definitions,
                         places: &places,
                         required: &required,
                         unique_results: &unique_results,

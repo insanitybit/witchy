@@ -101,6 +101,11 @@ A generic whole-list view `&List(a)` can also call `.owned()`. The compiler
 checks each concrete specialization before it can copy the retained list;
 unproved or authority-bearing element types are refused.
 
+Calling `.owned()` on a copyable owned value also gives the result its own
+ownership token. Linear storage is copied; an opaque immutable owner may be
+retained. In opt mode, the result supplies a fresh `unique` root only when its
+checked storage plan allocates a new linear owner.
+
 ## Ownership, `own`, `unique`, and `frozen`
 
 The view carrier retains its backing root while any view copy can still reach

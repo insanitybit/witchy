@@ -1305,6 +1305,13 @@ impl StoragePlan {
         }
     }
 
+    /// A copy of this representation allocates an independent linear owner.
+    /// Opaque GC references can gain a second retained token, but that token
+    /// does not prove a fresh unique root for mutation.
+    pub fn materializes_fresh_linear_owner(&self) -> bool {
+        matches!(self, Self::Owned(_))
+    }
+
     /// A copy also severs a call-scoped origin only when no callable capture
     /// or opaque aggregate field can hide another borrowed origin.
     pub fn admits_call_scoped_copy(&self) -> bool {

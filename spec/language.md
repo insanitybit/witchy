@@ -1221,6 +1221,12 @@ retained list. Its generic body has no executable fallback: each concrete
 specialization must prove the list element's storage and ownership operations.
 An unproved or authority-bearing element is refused.
 
+For any other admitted copyable owned value, `.owned()` produces its own
+lawful ownership token rather than returning the receiver's token. Linear
+storage is copied into a new owner. An opt-mode copy can supply a fresh
+`unique` root only when the shared storage judgment proves that new linear
+owner; retaining an opaque GC token does not establish uniqueness.
+
 #### Roots, projections, and snapshots
 
 Taking `&place` records the exact checked root and projection. Field and index

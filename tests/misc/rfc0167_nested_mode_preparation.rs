@@ -103,4 +103,26 @@ fn main() -> Int:
     fast.set_first(independent)
     rows[0][0] * 100 + rows[1][0] * 10 + independent[0]
 "#, "119");
+
+    assert_execution(r#"mode opt
+import fast
+
+fn main() -> Int:
+    let child = [1, 2]
+    let rows = [child, child]
+    var independent = rows[0].owned()
+    fast.set_first(independent)
+    rows[0][0] * 100 + rows[1][0] * 10 + independent[0]
+"#, "119");
+
+    assert_execution(r#"mode opt
+import fast
+
+fn main() -> Int:
+    let root = [1, 2]
+    let view = &root
+    var independent: unique List(Int) = view.owned()
+    fast.set_first(independent)
+    root[0] * 10 + independent[0]
+"#, "19");
 }
