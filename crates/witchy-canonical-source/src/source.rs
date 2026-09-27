@@ -390,28 +390,12 @@ impl TaskExecutionProof {
                     TaskExecutionProof::Unknown => TaskExecutionProof::Unknown,
                     other => TaskExecutionProof::Awaited(Box::new(other)),
                 },
-                TaskExecutionProof::Slot(base, index) => match go(base, arguments, formal_scope, depth + 1) {
-                    TaskExecutionProof::Elements(elements) => elements.get(*index).cloned().unwrap_or(TaskExecutionProof::Unknown),
-                    TaskExecutionProof::InactiveVariant => TaskExecutionProof::InactiveVariant,
-                    TaskExecutionProof::Unknown => TaskExecutionProof::Unknown,
-                    other => TaskExecutionProof::Slot(Box::new(other), *index),
-                },
-                TaskExecutionProof::VariantSlot(base, ordinal, index) => match go(base, arguments, formal_scope, depth + 1) {
-                    TaskExecutionProof::Variant { ordinal: actual, fields } if actual == *ordinal =>
-                        fields.get(*index).cloned().unwrap_or(TaskExecutionProof::Unknown),
-                    TaskExecutionProof::Variants(mut variants) => variants.remove(ordinal)
-                        .map(|fields| fields.get(*index).cloned().unwrap_or(TaskExecutionProof::Unknown))
-                        .unwrap_or(TaskExecutionProof::InactiveVariant),
-                    TaskExecutionProof::Variant { .. } | TaskExecutionProof::InactiveVariant => TaskExecutionProof::InactiveVariant,
-                    TaskExecutionProof::Unknown => TaskExecutionProof::Unknown,
-                    other => TaskExecutionProof::VariantSlot(Box::new(other), *ordinal, *index),
-                },
-                TaskExecutionProof::AnyElement(base) => match go(base, arguments, formal_scope, depth + 1) {
-                    TaskExecutionProof::Elements(elements) => elements.into_iter().reduce(TaskExecutionProof::join).unwrap_or(TaskExecutionProof::Unknown),
-                    TaskExecutionProof::InactiveVariant => TaskExecutionProof::InactiveVariant,
-                    TaskExecutionProof::Unknown => TaskExecutionProof::Unknown,
-                    other => TaskExecutionProof::AnyElement(Box::new(other)),
-                },
+                TaskExecutionProof::Slot(base, index) =>
+                    go(base, arguments, formal_scope, depth + 1).project_slot(*index),
+                TaskExecutionProof::VariantSlot(base, ordinal, index) =>
+                    go(base, arguments, formal_scope, depth + 1).project_variant_slot(*ordinal, *index),
+                TaskExecutionProof::AnyElement(base) =>
+                    go(base, arguments, formal_scope, depth + 1).project_any_element(),
                 TaskExecutionProof::Elements(elements) => TaskExecutionProof::Elements(
                     elements.iter().map(|child| go(child, arguments, formal_scope, depth + 1)).collect(),
                 ),
@@ -437,6 +421,41 @@ impl TaskExecutionProof {
 
     pub fn instantiate_callback(&self, scope: &TaskCallableScope, arguments: &[Self]) -> Self {
         self.substitute(arguments, Some(scope))
+    }
+
+    /// Compose a checked positional projection with a symbolic task origin.
+    /// The caller must have checked the container type; substitution resolves
+    /// the path against the exact argument at the invocation boundary.
+    pub fn project_slot(self, index: usize) -> Self {
+        match self {
+            Self::Elements(elements) => elements.get(index).cloned().unwrap_or(Self::Unknown),
+            proof @ (Self::Unknown | Self::InactiveVariant | Self::UnprovedCallableObligation) => proof,
+            other => Self::Slot(Box::new(other), index),
+        }
+    }
+
+    /// Project one checked sum arm. An absent arm is an inactive obligation,
+    /// never evidence that a task may execute.
+    pub fn project_variant_slot(self, ordinal: usize, index: usize) -> Self {
+        match self {
+            Self::Variant { ordinal: actual, fields } if actual == ordinal =>
+                fields.get(index).cloned().unwrap_or(Self::Unknown),
+            Self::Variant { .. } | Self::InactiveVariant => Self::InactiveVariant,
+            Self::Variants(mut variants) => variants.remove(&ordinal)
+                .map(|fields| fields.get(index).cloned().unwrap_or(Self::Unknown))
+                .unwrap_or(Self::InactiveVariant),
+            proof @ (Self::Unknown | Self::UnprovedCallableObligation) => proof,
+            other => Self::VariantSlot(Box::new(other), ordinal, index),
+        }
+    }
+
+    /// A dynamic index must be valid for every possible element origin.
+    pub fn project_any_element(self) -> Self {
+        match self {
+            Self::Elements(elements) => elements.into_iter().reduce(Self::join).unwrap_or(Self::Unknown),
+            proof @ (Self::Unknown | Self::InactiveVariant | Self::UnprovedCallableObligation) => proof,
+            other => Self::AnyElement(Box::new(other)),
+        }
     }
 }
 

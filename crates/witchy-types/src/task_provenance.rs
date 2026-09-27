@@ -142,25 +142,10 @@ impl Analyzer<'_> {
         &mut self, callable: Option<&Ty>, proofs: &[Proof],
     ) -> Result<(), TypeError> {
         fn project(proof: Proof, step: TaskInputStep) -> Proof {
-            match (proof, step) {
-                (Proof::UnprovedCallableObligation, _) => Proof::UnprovedCallableObligation,
-                (Proof::Elements(elements), TaskInputStep::Slot(index)) =>
-                    elements.get(index).cloned().unwrap_or(Proof::Unknown),
-                (Proof::Variant { ordinal: actual, fields }, TaskInputStep::VariantSlot(ordinal, index)) => {
-                    if actual == ordinal { fields.get(index).cloned().unwrap_or(Proof::Unknown) }
-                    else { Proof::InactiveVariant }
-                }
-                (Proof::Variants(mut variants), TaskInputStep::VariantSlot(ordinal, index)) =>
-                    variants.remove(&ordinal)
-                        .map(|fields| fields.get(index).cloned().unwrap_or(Proof::Unknown))
-                        .unwrap_or(Proof::InactiveVariant),
-                (Proof::InactiveVariant, _) => Proof::InactiveVariant,
-                (Proof::Elements(elements), TaskInputStep::AnyElement) =>
-                    Analyzer::join_values(elements),
-                (other, TaskInputStep::Slot(index)) => Proof::Slot(Box::new(other), index),
-                (other, TaskInputStep::VariantSlot(ordinal, index)) =>
-                    Proof::VariantSlot(Box::new(other), ordinal, index),
-                (other, TaskInputStep::AnyElement) => Proof::AnyElement(Box::new(other)),
+            match step {
+                TaskInputStep::Slot(index) => proof.project_slot(index),
+                TaskInputStep::VariantSlot(ordinal, index) => proof.project_variant_slot(ordinal, index),
+                TaskInputStep::AnyElement => proof.project_any_element(),
             }
         }
         let Some(Ty::Fn(inputs, _, _, _, _)) = callable else {
@@ -286,7 +271,7 @@ impl Analyzer<'_> {
             }
             Proof::UnprovedCallableObligation => Proof::UnprovedCallableObligation,
             Proof::Parameter(_) | Proof::Slot(_, _) | Proof::VariantSlot(_, _, _)
-                | Proof::AnyElement(_) => Proof::VariantSlot(Box::new(proof), 0, 0),
+                | Proof::AnyElement(_) => proof.project_variant_slot(0, 0),
             other => other.invalidated(),
         }
     }
@@ -379,11 +364,12 @@ impl Analyzer<'_> {
                     Self::bind(pattern, value, None, environment);
                 }
             }
-            (Pattern::Tuple(patterns), proof @ (Proof::Parameter(_) | Proof::Slot(_, _))) => {
+            (Pattern::Tuple(patterns), proof @ (Proof::Parameter(_) | Proof::Slot(_, _)
+                | Proof::VariantSlot(_, _, _) | Proof::AnyElement(_))) => {
                 for (index, pattern) in patterns.iter().enumerate() {
                     Self::bind(
                         pattern,
-                        Proof::Slot(Box::new(proof.clone()), index),
+                        proof.clone().project_slot(index),
                         None,
                         environment,
                     );
@@ -414,11 +400,12 @@ impl Analyzer<'_> {
                 }
             }
             (Pattern::Ctor { args, .. } | Pattern::AnonCtor { args, .. },
-                proof @ (Proof::Parameter(_) | Proof::Slot(_, _) | Proof::VariantSlot(_, _, _)))
+                proof @ (Proof::Parameter(_) | Proof::Slot(_, _) | Proof::VariantSlot(_, _, _)
+                    | Proof::AnyElement(_)))
                 if ordinal.is_some() => {
                 let ordinal = ordinal.expect("checked above");
                 for (index, pattern) in args.iter().enumerate() {
-                    Self::bind(pattern, Proof::VariantSlot(Box::new(proof.clone()), ordinal, index), None, environment);
+                    Self::bind(pattern, proof.clone().project_variant_slot(ordinal, index), None, environment);
                 }
             }
             (pattern, proof) => {
@@ -727,12 +714,13 @@ impl Analyzer<'_> {
             Expr::Field { base, field } => match self.expr(base, environment)? {
                 Proof::UnprovedCallableObligation => Proof::UnprovedCallableObligation,
                 Proof::Fields(mut fields) => fields.remove(field).unwrap_or(Proof::Unknown),
-                Proof::Elements(elements) if matches!(self.table.type_of(base), Some(Ty::Tuple(_))) =>
-                    field.parse::<usize>().ok()
-                        .and_then(|index| elements.get(index).cloned())
-                        .unwrap_or(Proof::Unknown),
-                proof @ (Proof::Variant { .. } | Proof::Parameter(_) | Proof::Slot(_, _) | Proof::VariantSlot(_, _, _)) => {
-                    let index = match self.table.type_of(base) {
+                proof => {
+                    if matches!(self.table.type_of(base), Some(Ty::Tuple(_))) {
+                        field.parse::<usize>().ok()
+                            .map(|index| proof.project_slot(index))
+                            .unwrap_or(Proof::Unknown)
+                    } else {
+                        let index = match self.table.type_of(base) {
                         Some(Ty::Named(name, _)) => self
                             .definitions
                             .get(name.as_ref())
@@ -743,30 +731,17 @@ impl Analyzer<'_> {
                                     .iter()
                                     .position(|name| name == field)
                             }),
-                        _ => None,
-                    };
-                    index
-                        .map(|index| match proof {
-                            Proof::Variant { ordinal: 0, fields } =>
-                                fields.get(index).cloned().unwrap_or(Proof::Unknown),
-                            Proof::Variant { .. } => Proof::Unknown,
-                            other => Proof::VariantSlot(Box::new(other), 0, index),
-                        })
-                        .unwrap_or(Proof::Unknown)
+                            _ => None,
+                        };
+                        index.map(|index| proof.project_variant_slot(0, index))
+                            .unwrap_or(Proof::Unknown)
+                    }
                 }
-                _ => Proof::Unknown,
             },
             Expr::Index { base, index } => {
                 let base = self.expr(base, environment)?;
                 self.expr(index, environment)?;
-                match base {
-                    Proof::UnprovedCallableObligation => Proof::UnprovedCallableObligation,
-                    Proof::Elements(elements) => Self::join_values(elements),
-                    proof @ (Proof::Parameter(_) | Proof::Slot(_, _)) => {
-                        Proof::AnyElement(Box::new(proof))
-                    }
-                    _ => Proof::Unknown,
-                }
+                base.project_any_element()
             }
             Expr::Unary {
                 op: UnOp::Await,
@@ -1028,14 +1003,7 @@ impl Analyzer<'_> {
             Expr::For { var, iter, body } => {
                 self.loop_body(environment, |this, environment| {
                     let source = this.expr(iter, environment)?;
-                    let element = match source {
-                        Proof::UnprovedCallableObligation => Proof::UnprovedCallableObligation,
-                        Proof::Elements(elements) => Self::join_values(elements),
-                        proof @ (Proof::Parameter(_) | Proof::Slot(_, _)) => {
-                            Proof::AnyElement(Box::new(proof))
-                        }
-                        _ => Proof::Unknown,
-                    };
+                    let element = source.project_any_element();
                     environment.insert(var.clone(), element);
                     this.block(body, environment)?;
                     Ok(())

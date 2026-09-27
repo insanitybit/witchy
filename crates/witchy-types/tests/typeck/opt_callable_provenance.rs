@@ -187,6 +187,9 @@ pub async fn execute_pair(own pair: (task.Task(Int), Int)) -> Int:
     let (recipe, _) = pair
     recipe.await
 
+pub async fn execute_nested_pair(own pair: ((task.Task(Int), Int), Int)) -> Int:
+    pair.0.0.await
+
 pub async fn nested() -> task.Task(Int):
     compatible()
 
@@ -220,6 +223,7 @@ async fn main(console: Console):
     let _ = worker.execute_local_lambda(ordinary()).await
     let _ = worker.execute_nested_local_lambda(ordinary()).await
     let _ = worker.relay_callback(worker.execute, ordinary()).await
+    let _ = worker.execute_nested_pair(((ordinary(), 0), 0)).await
     console.print("${answer}")
 "#;
     let result = super::source::checked_bundle(vec![("worker", worker), ("main", main)], "main");
@@ -276,6 +280,7 @@ async fn main(console: Console):
     let projected_callback_answer = projected_callback_recipe().await
     let pair_callback_answer = pair_callback_recipe().await
     let pair_answer = worker.execute_pair((worker.compatible(), 1)).await
+    let nested_pair_answer = worker.execute_nested_pair(((worker.compatible(), 1), 2)).await
     let inner = worker.nested().await
     let nested_answer = inner.await
     let opt_nested_answer = worker.execute_nested().await
@@ -292,6 +297,7 @@ async fn main(console: Console):
     console.print("${projected_callback_answer}")
     console.print("${pair_callback_answer}")
     console.print("${pair_answer}")
+    console.print("${nested_pair_answer}")
     console.print("${nested_answer}")
     console.print("${opt_nested_answer}")
     console.print("${opt_option_answer}")
