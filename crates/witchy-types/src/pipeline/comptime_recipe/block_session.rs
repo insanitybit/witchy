@@ -278,9 +278,19 @@ impl ComptimeSourceSession {
     pub fn check_expanded_build_recipe(
         &self, prior: &[PriorComptimeBlockOutput],
     ) -> Result<super::super::CheckedBuildRecipe, PipelineError> {
-        let (original, expanded) = self.check_expanded_for_entry(prior, &self.selected)?;
-        let (_, raw_entry) = self.modules.iter().find(|(name, _)| name == &self.selected)
+        self.check_expanded_build_recipe_for_entry(prior, &self.selected)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn check_expanded_build_recipe_for_entry(
+        &self, prior: &[PriorComptimeBlockOutput], entry: &str,
+    ) -> Result<super::super::CheckedBuildRecipe, PipelineError> {
+        let (original, _) = self.check_expanded_for_entry(prior, entry)?;
+        let (_, raw_entry) = self.modules.iter().find(|(name, _)| name == entry)
             .expect("selected raw entry retained");
+        let (_, raw_producer) = self.modules.iter().find(|(name, _)| name == &self.selected)
+            .expect("selected raw producer retained");
+        let expanded = materialize_prior(raw_producer, prior, true);
         let mut modules = self.modules.iter().map(|(name, module)| (
             name.clone(), if name == &self.selected { expanded.clone() } else { module.clone() },
         )).collect();
@@ -289,9 +299,11 @@ impl ComptimeSourceSession {
             .ok_or_else(|| refuse("admitted build source lacks canonical authority"))?;
         let original_typed = admitted.typed_module();
         let admitted_digest = admitted.source_witness().source_bundle_digest();
+        let original_digest = checked_source_digest(&self.raw_sources, entry,
+            &PrecompiledDeclarationEnvironment::default());
         let (checked, identity) = super::super::build_recipe::finish_build_recipe_from_checked_original(
-            &mut modules, &self.selected, expand, &self.user_modules, self.owners.clone(),
-            original_typed, self.original_digest, Some(raw_entry), Some(admitted_digest),
+            &mut modules, entry, expand, &self.user_modules, self.owners.clone(),
+            original_typed, original_digest, Some(raw_entry), Some(admitted_digest),
         )?;
         Ok(super::super::build_recipe::seal_admitted_build_recipe(original, checked, identity))
     }

@@ -123,6 +123,12 @@ pub(crate) fn link_build_file(path: &str) -> Result<witchy_types::pipeline::Chec
             sources, &entry, user_modules, owners, witchy::canonical_comptime::source_limits(),
         );
     }
+    if let Some(producer) = single_imported_block_producer(&sources, &entry, &user_modules)? {
+        return witchy::canonical_comptime::check_build_recipe_source_bundle_with_imported_blocks(
+            sources, &entry, &producer, user_modules, owners,
+            witchy::canonical_comptime::source_limits(),
+        );
+    }
     witchy_types::pipeline::check_build_recipe_from_source_bundle(
         sources, &entry, comptime::EXPANDER, &user_modules, owners,
     ).map_err(|error| error.to_string())

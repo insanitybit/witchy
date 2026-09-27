@@ -96,6 +96,30 @@ fn build_recipe_uses_admitted_original_comptime_output() {
 }
 
 #[test]
+fn build_recipe_uses_admitted_imported_comptime_output() {
+    let dir = TempDir::new("build-imported-admitted-comptime");
+    let source = dir.join("build.witchy");
+    let producer = dir.join("dep.witchy");
+    let out = dir.join("out");
+    std::fs::write(&producer, "comptime:\n    emit_item(quote item:\n        pub fn generated_text() -> String:\n            \"fn value() -> Int:\\n    42\\n\"\n    )\n").unwrap();
+    std::fs::write(&source, "import dep\nfn build(out: BuildOut):\n    out.write_out(\"generated.witchy\", dep.generated_text())\n").unwrap();
+    let run = Command::new(BIN).args([
+        "build-step", source.to_str().unwrap(), "--out", out.to_str().unwrap(),
+    ]).output().unwrap();
+    assert!(run.status.success(), "{}", String::from_utf8_lossy(&run.stderr));
+    assert_eq!(std::fs::read_to_string(out.join("generated.witchy")).unwrap(),
+        "fn value() -> Int:\n    42\n");
+
+    std::fs::write(&producer, "comptime:\n    emit_item(quote item:\n        pub fn generated_text() -> String:\n            42\n    )\n").unwrap();
+    let invalid = Command::new(BIN).args([
+        "build-step", source.to_str().unwrap(), "--out", out.to_str().unwrap(),
+    ]).output().unwrap();
+    assert!(!invalid.status.success(), "invalid imported output reached build execution");
+    let error = String::from_utf8_lossy(&invalid.stderr);
+    assert!(error.contains("String") && error.contains("Int"), "{error}");
+}
+
+#[test]
 fn production_build_read_uses_ordered_explicit_roots_in_the_confined_child() {
     let dir = TempDir::new("build-read-child");
     let first = dir.mkdir("first");
