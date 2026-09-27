@@ -2275,6 +2275,28 @@ all result forms and batching still need canonical execution coverage. The first
 operation creates no AST arena nodes; name quotas are not arena evidence.
 Row Q remains **PARTIAL** and no semantic acceptance row is closed.
 
+### 2026-09-27: pending expression-operand disposition
+
+One scoped operand-frame mechanism retains completed owned temporary types
+until the enclosing call or aggregate construction executes. The existing
+recursive stored-obligation judgment checks those pending values on return,
+`?`, await cancellation and loop exit. Named places remain under existing
+binding facts, lambda bodies have separate frames, and an inner-loop exit does
+not abandon an enclosing operand. No concrete resource/type-shape cases were
+added, and the operation's own transferred error payload remains legal.
+
+The baseline `consume(Box(Ticket(7)), maybe(bad)?)` was source-accepted in normal,
+opt, normal-to-opt and normal use of opt-defined types. Admitted unoptimized
+execution printed **9** with heap0, but its error path skipped the consuming
+operation after creating the resource. The new source controls refuse that
+loss, plus indirect calls, nested aggregate operands, moved values, explicit
+returns and cancellation; borrowed and deferred-body controls remain accepted.
+The lawful witness evaluates `maybe?` first. Its error branch returns0 before
+creating a resource, and its success branch transfers the resource and returns9;
+`error * 10 + success` prints **9** with zero canonical heap leaks in all four
+contexts. This is bounded source-flow and runtime evidence, not independent
+admission enforcement against arbitrary candidate mutation or row closure.
+
 ### 2026-09-27: loop-exit resource disposition
 
 The checker records the lexical scope exited by each loop's `break` or

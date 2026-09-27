@@ -330,6 +330,14 @@ a must-consume value carry the obligation transitively. The marker is erased
 after checking: it adds no finalizer, destructor, or backend-specific runtime
 behavior.
 
+Argument and aggregate-field evaluation precedes that transfer. If an earlier
+operand produces or moves a must-consume value, a later operand cannot leave
+it pending by returning, propagating `?`, suspending at `await`, or exiting its
+loop. Evaluate the potentially exiting operand first, then create or move the
+resource. Borrowed places do not create another owned obligation, and a `?`
+operand's own error payload may still be transferred to the caller. Deferred
+lambda bodies have their own evaluation context.
+
 ## 3. Bindings and assignment
 
 ```witchy

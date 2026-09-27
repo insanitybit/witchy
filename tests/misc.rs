@@ -168,3 +168,6 @@ mod rfc0167_match_guard_disposition;
 
 #[path = "misc/resource_exit_disposition.rs"]
 mod resource_exit_disposition;
+
+#[path = "misc/expression_exit_disposition.rs"]
+mod expression_exit_disposition;

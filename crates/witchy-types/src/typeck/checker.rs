@@ -296,6 +296,10 @@ pub(super) struct Checker {
     /// Lexical scope floor exited by the innermost break/continue. Owners in
     /// outer scopes survive that edge; iteration-local obligations do not.
     pub(super) loop_exit_scopes: Vec<usize>,
+    /// Completed owned operands awaiting transfer to their enclosing operation.
+    /// The scope index distinguishes an abandoned loop-body expression from an
+    /// outer operand that remains live while an inner loop runs.
+    pub(super) pending_operands: Vec<(usize, Vec<Ty>)>,
     /// Must-consume values received through `let`/`var` borrowing conventions.
     /// The caller retains their obligation, so the callee may inspect or mutate
     /// through the borrow but may not move, return, replace, or pass them to an

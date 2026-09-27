@@ -2210,3 +2210,6 @@ mod match_guard_disposition;
 
 #[path = "typeck/resource_exit_disposition.rs"]
 mod resource_exit_disposition;
+
+#[path = "typeck/expression_exit_disposition.rs"]
+mod expression_exit_disposition;

@@ -4063,6 +4063,7 @@ impl Checker {
     }
 
     fn reject_all_live_must_before_return(&self) -> Result<(), TypeError> {
+        self.reject_pending_must_operands(0, "return")?;
         if let Some((_, name)) = self.must_live.iter().next() {
             return terr(format!(
                 "return leaves must-consume value `{name}` undisposed; consume it on this path or return that value"
@@ -4076,6 +4077,55 @@ impl Checker {
         let result = self.infer_block(body);
         self.loop_exit_scopes.pop();
         result
+    }
+
+    fn with_operand_frame<T>(
+        &mut self,
+        infer: impl FnOnce(&mut Self) -> Result<T, TypeError>,
+    ) -> Result<T, TypeError> {
+        self.pending_operands.push((self.scopes.len().saturating_sub(1), Vec::new()));
+        let result = infer(self);
+        self.pending_operands.pop();
+        result
+    }
+
+    fn remember_owned_operand(&mut self, expression: &Expr, ty: &Ty) {
+        // A place is still governed by its named binding's disposition facts;
+        // evaluating a borrow does not create a second pending owned value.
+        // `move`, constructors and call results instead produce an independent
+        // value, whose transfer has not happened until the parent executes.
+        if self.affine_place(expression).is_some() {
+            return;
+        }
+        let resolved = self.resolve(ty);
+        if (ty_has_var(&resolved) || self.ty_carries_must_consume(&resolved))
+            && let Some((_, operands)) = self.pending_operands.last_mut()
+        {
+            operands.push(ty.clone());
+        }
+    }
+
+    fn infer_operand(&mut self, expression: &Expr) -> Result<Ty, TypeError> {
+        let ty = self.infer(expression)?;
+        self.remember_owned_operand(expression, &ty);
+        Ok(ty)
+    }
+
+    fn infer_expected_operand(&mut self, expression: &Expr, expected: &Ty) -> Result<Ty, TypeError> {
+        let ty = self.infer_expected(expression, expected)?;
+        self.remember_owned_operand(expression, &ty);
+        Ok(ty)
+    }
+
+    fn reject_pending_must_operands(&self, scope: usize, exit: &str) -> Result<(), TypeError> {
+        if self.pending_operands.iter().any(|(operand_scope, operands)| {
+            *operand_scope >= scope && operands.iter().any(|ty| self.ty_carries_must_consume(ty))
+        }) {
+            return terr(format!(
+                "{exit} leaves an already evaluated must-consume operand undisposed before its enclosing operation executes; evaluate the exiting operand before creating or moving the resource"
+            ));
+        }
+        Ok(())
     }
     /// Walk frames inner→outer, returning the binding at the first frame that
     /// defines the name (inner bindings shadow outer ones).
@@ -5987,6 +6037,9 @@ impl Checker {
                 // expected type — letting `match x { _ -> { break } ... }` work.
                 // Misuse outside a loop is caught by codegen (no enclosing label).
                 Stmt::Break | Stmt::Continue => {
+                    if let Some(scope) = self.loop_exit_scopes.last() {
+                        self.reject_pending_must_operands(*scope, "loop exit")?;
+                    }
                     if let Some(scope) = self.loop_exit_scopes.last()
                         && let Some((_, name)) = self.must_live.iter()
                             .filter(|(binding_scope, _)| binding_scope >= scope).min()
@@ -6086,6 +6139,13 @@ impl Checker {
     }
 
     fn infer_expected_inner(&mut self, expr: &Expr, expected: &Ty) -> Result<Ty, TypeError> {
+        if matches!(expr, Expr::List(_) | Expr::Tuple(_) | Expr::Ctor { .. } | Expr::AnonCtor { .. }) {
+            return self.with_operand_frame(|checker| checker.infer_expected_sequence(expr, expected));
+        }
+        self.infer_expected_sequence(expr, expected)
+    }
+
+    fn infer_expected_sequence(&mut self, expr: &Expr, expected: &Ty) -> Result<Ty, TypeError> {
         match expr {
             Expr::AnonCtor { tag, args } => {
                 self.check_anon_ctor(tag, args, expected)?;
@@ -6094,7 +6154,7 @@ impl Checker {
             Expr::List(items) => {
                 if let Ty::List(elem) = self.resolve(expected) {
                     for item in items {
-                        let at = self.infer_expected(item, &elem)?;
+                        let at = self.infer_expected_operand(item, &elem)?;
                         self.coerce_arg(&elem, &at)?;
                     }
                     if self.ty_carries_must_consume(expected) {
@@ -6124,7 +6184,7 @@ impl Checker {
                 if let Ty::Tuple(slots) = self.resolve(expected) {
                     if slots.len() == items.len() {
                         for (item, slot) in items.iter().zip(slots.iter()) {
-                            let at = self.infer_expected(item, slot)?;
+                            let at = self.infer_expected_operand(item, slot)?;
                             self.coerce_arg(slot, &at)?;
                         }
                         if self.ty_carries_must_consume(expected) {
@@ -6179,9 +6239,9 @@ impl Checker {
                     }
                     for (arg, fty) in args.iter().zip(&fields) {
                         let at = if self.ty_is_direct_externref_value(fty) {
-                            self.infer(arg)?
+                            self.infer_operand(arg)?
                         } else {
-                            self.infer_expected(arg, fty)?
+                            self.infer_expected_operand(arg, fty)?
                         };
                         self.coerce_arg(fty, &at).map_err(|e| TypeError {
                             message: format!("in constructor `{name}`: {}", e.message),
@@ -6281,6 +6341,15 @@ impl Checker {
     }
 
     fn infer_call(
+        &mut self,
+        name: &str,
+        args: &[Expr],
+        expected: Option<&Ty>,
+    ) -> Result<Ty, TypeError> {
+        self.with_operand_frame(|checker| checker.infer_call_operands(name, args, expected))
+    }
+
+    fn infer_call_operands(
         &mut self,
         name: &str,
         args: &[Expr],
@@ -6410,7 +6479,7 @@ impl Checker {
                     }
                     for (index, (arg, pty)) in args.iter().zip(param_tys.iter()).enumerate() {
                         let at = self
-                            .infer_expected(arg, pty)
+                            .infer_expected_operand(arg, pty)
                             .map_err(|e| in_call_context(&display, e))?;
                         if opt_callable {
                             self.require_opt_value_provenance(arg, &self.opt_value_requirement(pty), &display, index)?;
@@ -6484,7 +6553,7 @@ impl Checker {
                     }
                     let mut argtys = Vec::new();
                     for arg in args {
-                        let arg_ty = self.infer(arg)?;
+                        let arg_ty = self.infer_operand(arg)?;
                         self.reject_borrowed_nominal_runtime_ty(
                             &arg_ty,
                             &format!("call to function value `{name}`"),
@@ -6703,6 +6772,7 @@ impl Checker {
                 self.infer_expected(arg, param_ty)
             };
             let at = inferred.map_err(|e| in_call_context(&display, e))?;
+            self.remember_owned_operand(arg, &at);
             if opt_callable {
                 self.require_opt_value_provenance(arg, &self.opt_value_requirement(param_ty), &display, index)?;
             } else {
@@ -7637,7 +7707,7 @@ impl Checker {
                     ));
                 }
                 for (arg, fty) in args.iter().zip(fields) {
-                    let at = self.infer_expected(arg, fty)?;
+                    let at = self.infer_expected_operand(arg, fty)?;
                     self.coerce_arg(fty, &at).map_err(|e| TypeError {
                         message: format!("in anonymous union tag `.{tag}`: {}", e.message),
                     })?;
@@ -7733,6 +7803,13 @@ impl Checker {
     }
 
     fn infer_inner(&mut self, expr: &Expr) -> Result<Ty, TypeError> {
+        if matches!(expr, Expr::List(_) | Expr::Tuple(_) | Expr::Ctor { .. } | Expr::Apply { .. } | Expr::ExistentialCall { .. }) {
+            return self.with_operand_frame(|checker| checker.infer_sequence(expr));
+        }
+        self.infer_sequence(expr)
+    }
+
+    fn infer_sequence(&mut self, expr: &Expr) -> Result<Ty, TypeError> {
         match expr {
             // Expanded away by `crate::tagged` during linking, before checking.
             Expr::TaggedLit { tag, .. } => {
@@ -7825,13 +7902,13 @@ impl Checker {
                         "pure callable cannot invoke existential method `{owner_trait}.{method}` because its implementation is not statically effect-classified"
                     ));
                 }
-                let receiver_ty = self.infer(receiver)?;
+                let receiver_ty = self.infer_operand(receiver)?;
                 self.reject_borrowed_nominal_runtime_ty(
                     &receiver_ty,
                     &format!("existential method call `{owner_trait}.{method}`"),
                 )?;
                 for arg in args {
-                    let arg_ty = self.infer(arg)?;
+                    let arg_ty = self.infer_operand(arg)?;
                     self.reject_borrowed_nominal_runtime_ty(
                         &arg_ty,
                         &format!("existential method call `{owner_trait}.{method}`"),
@@ -7918,7 +7995,7 @@ impl Checker {
                 }
                 let elem = self.fresh();
                 for it in items {
-                    let t = self.infer(it)?;
+                    let t = self.infer_operand(it)?;
                     self.unify(&elem, &t)?;
                 }
                 let ty = Ty::List(Box::new(elem.clone()).into());
@@ -7948,7 +8025,7 @@ impl Checker {
                 }
                 let tys = items
                     .iter()
-                    .map(|e| self.infer(e))
+                    .map(|e| self.infer_operand(e))
                     .collect::<Result<Vec<_>, _>>()?;
                 let ty = Ty::Tuple(tys.into());
                 if let Ty::Tuple(item_tys) = &ty {
@@ -8246,6 +8323,7 @@ impl Checker {
                 let saved_ret = self.current_ret.replace(lambda_ret.clone());
                 // A deferred callable body cannot exit an enclosing loop.
                 let saved_loop_scopes = std::mem::take(&mut self.loop_exit_scopes);
+                let saved_pending_operands = std::mem::take(&mut self.pending_operands);
                 let body_result = if declared.is_some() {
                     self.infer_block_tail_expected(body, &lambda_ret).map_err(|e| {
                         type_mismatch_context(
@@ -8257,6 +8335,7 @@ impl Checker {
                     self.infer_block(body)
                 };
                 self.loop_exit_scopes = saved_loop_scopes;
+                self.pending_operands = saved_pending_operands;
                 let body_ty = body_result?;
                 self.unify(&lambda_ret, &body_ty).map_err(|e| TypeError {
                     message: format!("closure body type does not match its declared return type: {}", e.message),
@@ -8322,7 +8401,7 @@ impl Checker {
                 // The callee is an arbitrary expression of function type; unify
                 // it with `fn(argtys) -> r` and yield `r`.
                 let unique_contract = self.callable_unique_contract_for_expr(func);
-                let fty = self.infer(func)?;
+                let fty = self.infer_operand(func)?;
                 // Branch/block proofs are recorded during inference; inspect
                 // them only after the callee expression has been checked.
                 let callee_proof = self.expression_opt_value_proof(func);
@@ -8345,7 +8424,7 @@ impl Checker {
                         ));
                     }
                     for (index, (arg, pty)) in args.iter().zip(param_tys.iter()).enumerate() {
-                        let at = self.infer_expected(arg, pty)?;
+                        let at = self.infer_expected_operand(arg, pty)?;
                         if opt_callable {
                             self.require_opt_value_provenance(arg, &self.opt_value_requirement(pty), "function value", index)?;
                         } else {
@@ -8408,7 +8487,7 @@ impl Checker {
                 }
                 let mut argtys = Vec::new();
                 for arg in args {
-                    let arg_ty = self.infer(arg)?;
+                    let arg_ty = self.infer_operand(arg)?;
                     self.reject_borrowed_nominal_runtime_ty(
                         &arg_ty,
                         "function-value application",
@@ -8464,9 +8543,9 @@ impl Checker {
                             &format!("constructor `{name}`"),
                         )?;
                         let at = if self.ty_is_direct_externref_value(fty) {
-                            self.infer(arg)?
+                            self.infer_operand(arg)?
                         } else {
-                            self.infer_expected(arg, fty)?
+                            self.infer_expected_operand(arg, fty)?
                         };
                         // A capability field accepts a broader argument (a full
                         // `Net` into a `Net[Connect]` field), like a call boundary.
@@ -8569,6 +8648,7 @@ impl Checker {
                         Ty::Named(name, arguments)
                             if (name == "Task".into() || name == "task.Task".into()) && arguments.len() == 1 =>
                         {
+                            self.reject_pending_must_operands(0, "await cancellation")?;
                             // Starting the exact task operand discharges that
                             // token's must-start obligation. Every other live
                             // obligation would be abandoned if execution is
@@ -10242,6 +10322,7 @@ impl Checker {
         self.once_invoked.clear();
         self.must_live.clear();
         self.loop_exit_scopes.clear();
+        self.pending_operands.clear();
         self.must_borrowed.clear();
         self.once_borrowed.clear();
         self.current_storage_obligations.clear();
@@ -12626,6 +12707,7 @@ fn run_check_selected(
         stored_obligations,
         must_live: HashSet::new(),
         loop_exit_scopes: Vec::new(),
+        pending_operands: Vec::new(),
         must_borrowed: HashSet::new(),
         once_borrowed: HashSet::new(),
         region_locals: Vec::new(),
