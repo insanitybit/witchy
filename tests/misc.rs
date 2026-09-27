@@ -165,3 +165,6 @@ mod rfc0167_deferred_handle_disposition;
 mod rfc0167_canonical_comptime;
 #[path = "misc/rfc0167_match_guard_disposition.rs"]
 mod rfc0167_match_guard_disposition;
+
+#[path = "misc/resource_exit_disposition.rs"]
+mod resource_exit_disposition;

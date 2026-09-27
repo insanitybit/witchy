@@ -4070,6 +4070,13 @@ impl Checker {
         }
         Ok(())
     }
+
+    fn infer_loop_body(&mut self, body: &Block, exit_scope: usize) -> Result<Ty, TypeError> {
+        self.loop_exit_scopes.push(exit_scope);
+        let result = self.infer_block(body);
+        self.loop_exit_scopes.pop();
+        result
+    }
     /// Walk frames inner→outer, returning the binding at the first frame that
     /// defines the name (inner bindings shadow outer ones).
     fn resolve_binding(&self, name: &str) -> Option<&(Ty, bool)> {
@@ -5980,6 +5987,15 @@ impl Checker {
                 // expected type — letting `match x { _ -> { break } ... }` work.
                 // Misuse outside a loop is caught by codegen (no enclosing label).
                 Stmt::Break | Stmt::Continue => {
+                    if let Some(scope) = self.loop_exit_scopes.last()
+                        && let Some((_, name)) = self.must_live.iter()
+                            .filter(|(binding_scope, _)| binding_scope >= scope).min()
+                    {
+                        let exit = if matches!(stmt, Stmt::Break) { "break" } else { "continue" };
+                        return terr(format!(
+                            "`{exit}` leaves must-consume value `{name}` undisposed in the exited loop scope; consume or transfer it before this exit"
+                        ));
+                    }
                     ty = self.fresh();
                 }
             }
@@ -7885,7 +7901,7 @@ impl Checker {
                 let must_before = self.must_live.clone();
                 self.push();
                 self.check_pattern(pattern, &scrutinee_ty)?;
-                self.infer_block(body)?;
+                self.infer_loop_body(body, self.scopes.len() - 1)?;
                 self.pop();
                 self.reject_affine_loop_backedge(&consumed_before, "a `while let` loop")?;
                 self.must_live = &must_before | &self.must_live;
@@ -8228,16 +8244,20 @@ impl Checker {
                 let declared = ret.as_ref().map(|t| self.to_ty(t));
                 let lambda_ret = declared.clone().unwrap_or_else(|| self.fresh());
                 let saved_ret = self.current_ret.replace(lambda_ret.clone());
-                let body_ty = if declared.is_some() {
+                // A deferred callable body cannot exit an enclosing loop.
+                let saved_loop_scopes = std::mem::take(&mut self.loop_exit_scopes);
+                let body_result = if declared.is_some() {
                     self.infer_block_tail_expected(body, &lambda_ret).map_err(|e| {
                         type_mismatch_context(
                             || "closure body type does not match its declared return type".to_string(),
                             e,
                         )
-                    })?
+                    })
                 } else {
-                    self.infer_block(body)?
+                    self.infer_block(body)
                 };
+                self.loop_exit_scopes = saved_loop_scopes;
+                let body_ty = body_result?;
                 self.unify(&lambda_ret, &body_ty).map_err(|e| TypeError {
                     message: format!("closure body type does not match its declared return type: {}", e.message),
                 })?;
@@ -8991,7 +9011,7 @@ impl Checker {
                     message: format!("`while` condition: {}", e.message),
                 })?;
                 let must_before = self.must_live.clone();
-                self.infer_block(body)?;
+                self.infer_loop_body(body, self.scopes.len())?;
                 self.reject_affine_loop_backedge(&consumed_before, "a `while` loop")?;
                 self.must_live = &must_before | &self.must_live;
                 Ok(Ty::Unit)
@@ -9033,7 +9053,7 @@ impl Checker {
                 if borrowed_element {
                     self.authorize_borrowed_shell_binding(var.clone());
                 }
-                self.infer_block(body)?;
+                self.infer_loop_body(body, self.scopes.len() - 1)?;
                 self.pop();
                 self.reject_affine_loop_backedge(&consumed_before_body, "a `for` loop")?;
                 Ok(Ty::Unit)
@@ -10221,6 +10241,7 @@ impl Checker {
         self.consumed.clear();
         self.once_invoked.clear();
         self.must_live.clear();
+        self.loop_exit_scopes.clear();
         self.must_borrowed.clear();
         self.once_borrowed.clear();
         self.current_storage_obligations.clear();
@@ -12604,6 +12625,7 @@ fn run_check_selected(
         once_invoked: HashSet::new(),
         stored_obligations,
         must_live: HashSet::new(),
+        loop_exit_scopes: Vec::new(),
         must_borrowed: HashSet::new(),
         once_borrowed: HashSet::new(),
         region_locals: Vec::new(),

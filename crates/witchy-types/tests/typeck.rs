@@ -2207,3 +2207,6 @@ mod deferred_task_roles;
 
 #[path = "typeck/match_guard_disposition.rs"]
 mod match_guard_disposition;
+
+#[path = "typeck/resource_exit_disposition.rs"]
+mod resource_exit_disposition;

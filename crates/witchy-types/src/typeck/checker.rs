@@ -293,6 +293,9 @@ pub(super) struct Checker {
     /// one control-flow path. Branch joins use union: a value is discharged
     /// only when every path consumes or returns it.
     pub(super) must_live: HashSet<(usize, String)>,
+    /// Lexical scope floor exited by the innermost break/continue. Owners in
+    /// outer scopes survive that edge; iteration-local obligations do not.
+    pub(super) loop_exit_scopes: Vec<usize>,
     /// Must-consume values received through `let`/`var` borrowing conventions.
     /// The caller retains their obligation, so the callee may inspect or mutate
     /// through the borrow but may not move, return, replace, or pass them to an

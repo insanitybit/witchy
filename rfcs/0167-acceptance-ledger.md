@@ -2275,6 +2275,28 @@ all result forms and batching still need canonical execution coverage. The first
 operation creates no AST arena nodes; name quotas are not arena evidence.
 Row Q remains **PARTIAL** and no semantic acceptance row is closed.
 
+### 2026-09-27: loop-exit resource disposition
+
+The checker records the lexical scope exited by each loop's `break` or
+`continue`. It refuses a live recursively classified must obligation in that
+scope or any nested scope before following the exit; cleanup text after the
+exit cannot discharge it. Outer owners remain live after the loop, nested loops
+use their own boundary, and deferred lambda checking does not inherit a caller's
+loop boundary. The same rule handles while, while-let and for loops without
+new type-shape cases or implicit cleanup.
+
+`typeck::resource_exit_disposition` pins both exit refusals in normal, opt,
+normal-to-opt and normal use of opt-defined types, plus iteration syntax,
+shadowed binding and nested-loop near misses. The baseline incorrectly admitted
+the lost-resource program and returned **99** with zero live heap objects;
+storage reclamation did not prove disposition. The repaired source boundary
+rejects that path. The lawful `misc::resource_exit_disposition` witness disposes
+the inner resource before either exit and the surviving outer resource afterward:
+four calls each compute `8 + 7`, producing **15151515** in admitted unoptimized
+Wasm with zero canonical heap leaks in both modes. This is bounded source-flow
+and runtime evidence, not a general proof against candidate-body mutation or an
+acceptance-row closure.
+
 ### 2026-09-27: match-guard fallthrough disposition (source refusal repair)
 
 The checker carries completed guard effects to later arms rather than restoring
