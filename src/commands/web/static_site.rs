@@ -24,6 +24,7 @@ const MAX_STATIC_CONTENT_FILE_BYTES: usize = 4 * 1024 * 1024;
 const MAX_STATIC_CONTENT_BYTES: usize = 64 * 1024 * 1024;
 const MAX_STATIC_SITE_WIRE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_STATIC_SITE_WIRE_NODES: usize = 100_000;
+const MAX_STATIC_EVALUATION_PAGES: usize = 4096;
 
 fn static_site_value_from_json(text: &str) -> Result<witchy_interp::interpreter::CompilerValue, WebCommandError> {
     use witchy_interp::interpreter::CompilerValue;
@@ -83,21 +84,15 @@ fn static_site_value_from_json(text: &str) -> Result<witchy_interp::interpreter:
 }
 
 pub(super) fn check_static_project(project: Project) -> Result<CheckedStaticSite, WebCommandError> {
-    let (checked, recipe) = if project.content.is_none() {
-        let (checked, recipe, _) = crate::link_static_site_checked_with_output(path_text(&project.entry)?)
-            .map_err(WebCommandError::failure)?;
-        (checked, recipe)
-    } else {
-        let (checked, _) = crate::link_file_checked(path_text(&project.entry)?)
-            .map_err(WebCommandError::failure)?;
-        (checked, None)
-    };
+    let (checked, recipe, _) = crate::link_static_site_checked_with_output(
+        path_text(&project.entry)?, project.content.is_some(),
+    ).map_err(WebCommandError::failure)?;
     let entry = static_entry_name(&project)?;
     authenticate_static_entry(&checked, &entry, project.content.is_some())?;
     let packages = package_records(&checked)?;
-    let (arguments, content_inputs) = static_content_arguments(&project)?;
+    let (arguments, content_inputs, runtime_arguments) = static_content_arguments(&project)?;
     let (pages, actions, styles, preloads, assets, islands) = static_site_from_value(
-        evaluate_static_site_value(&checked, recipe.as_ref(), &entry, arguments)?,
+        evaluate_static_site_value(&checked, recipe.as_ref(), &entry, arguments, runtime_arguments)?,
     )?;
     let grant = load_web_ui_grant(&project, !islands.is_empty())?;
     let mut island_metadata = witchy_lower::codegen::checked_glamour_islands(&checked)
@@ -3723,19 +3718,13 @@ fn checked_wire_id(
 pub(super) fn evaluate_static_site(
     project: &Project,
 ) -> Result<EvaluatedStaticSite, WebCommandError> {
-    let (checked, recipe) = if project.content.is_none() {
-        let (checked, recipe, _) = crate::link_static_site_checked_with_output(path_text(&project.entry)?)
-            .map_err(WebCommandError::failure)?;
-        (checked, recipe)
-    } else {
-        let (checked, _) = crate::link_file_checked(path_text(&project.entry)?)
-            .map_err(WebCommandError::failure)?;
-        (checked, None)
-    };
+    let (checked, recipe, _) = crate::link_static_site_checked_with_output(
+        path_text(&project.entry)?, project.content.is_some(),
+    ).map_err(WebCommandError::failure)?;
     let entry = static_entry_name(project)?;
     authenticate_static_entry(&checked, &entry, project.content.is_some())?;
-    let (arguments, _content_inputs) = static_content_arguments(project)?;
-    let value = evaluate_static_site_value(&checked, recipe.as_ref(), &entry, arguments)?;
+    let (arguments, _content_inputs, runtime_arguments) = static_content_arguments(project)?;
+    let value = evaluate_static_site_value(&checked, recipe.as_ref(), &entry, arguments, runtime_arguments)?;
     static_site_from_value(value)
 }
 
@@ -3744,6 +3733,7 @@ fn evaluate_static_site_value(
     recipe: Option<&witchy_types::pipeline::CheckedStaticEvaluationRecipe>,
     entry: &str,
     arguments: Vec<witchy_interp::interpreter::CompilerValue>,
+    runtime_arguments: Vec<String>,
 ) -> Result<witchy_interp::interpreter::CompilerValue, WebCommandError> {
     if let Some(recipe) = recipe {
         match witchy_lower::codegen::compile_checked_module_artifact(recipe.checked()) {
@@ -3752,9 +3742,10 @@ fn evaluate_static_site_value(
                     .map_err(|error| WebCommandError::failure(error.to_string()))?;
                 let mut vm = runtime.spawn_admitted(&artifact, witchy_runtime::runtime::Capabilities {
                     print: true, quiet: true,
+                    args: runtime_arguments,
                     capture_output_limit_bytes: Some(MAX_STATIC_SITE_WIRE_BYTES),
                     ..Default::default()
-                }, 256).map_err(|error| WebCommandError::failure(error.to_string()))?;
+                }, MAX_STATIC_EVALUATION_PAGES).map_err(|error| WebCommandError::failure(error.to_string()))?;
                 runtime.run_with_budget(&mut vm, std::time::Duration::from_secs(10))
                     .map_err(|error| WebCommandError::failure(error.to_string()))?;
                 let output = vm.output();
@@ -3868,11 +3859,11 @@ fn is_toolchain_glamour_type(
 
 fn static_content_arguments(
     project: &Project,
-) -> Result<(Vec<witchy_interp::interpreter::CompilerValue>, Vec<ArtifactRecord>), WebCommandError> {
+) -> Result<(Vec<witchy_interp::interpreter::CompilerValue>, Vec<ArtifactRecord>, Vec<String>), WebCommandError> {
     use witchy_interp::interpreter::CompilerValue;
 
     let Some(root) = &project.content else {
-        return Ok((Vec::new(), Vec::new()));
+        return Ok((Vec::new(), Vec::new(), Vec::new()));
     };
     let mut files = Vec::new();
     collect_static_content(root, root, &mut files)?;
@@ -3885,6 +3876,8 @@ fn static_content_arguments(
     let mut total = 0usize;
     let mut values = Vec::with_capacity(files.len());
     let mut records = Vec::with_capacity(files.len());
+    let mut runtime_arguments = Vec::with_capacity(files.len() * 2);
+    let mut runtime_bytes = 0usize;
     for path in files {
         let relative = path.strip_prefix(root).map_err(|error| {
             WebCommandError::failure(format!("cannot relativize static content: {error}"))
@@ -3920,11 +3913,18 @@ fn static_content_arguments(
                 "static content `{relative}` is not UTF-8 text"
             ))
         })?;
+        runtime_bytes = runtime_bytes.checked_add(relative.len()).and_then(|n| n.checked_add(text.len()))
+            .ok_or_else(|| WebCommandError::failure("static content argument size overflowed"))?;
+        if runtime_bytes > MAX_STATIC_CONTENT_BYTES {
+            return Err(WebCommandError::failure("static content arguments exceed their byte limit"));
+        }
         records.push(ArtifactRecord {
             path: relative.clone(),
             bytes: bytes.len(),
             sha256: sha256(&bytes),
         });
+        runtime_arguments.push(relative.clone());
+        runtime_arguments.push(text.clone());
         values.push(CompilerValue::Constructor {
             name: "glamour.StaticContentFile".into(),
             fields: vec![
@@ -3939,6 +3939,7 @@ fn static_content_arguments(
             fields: vec![CompilerValue::List(values)],
         }],
         records,
+        runtime_arguments,
     ))
 }
 
@@ -7292,14 +7293,49 @@ mod admitted_static_output_tests {
             public: root.join("public"), manifest: root.join("witchy.toml"), grants: None,
             css: None, content: None, hosting: HostingProfile::Portable,
         };
-        let (checked, recipe, _) = crate::link_static_site_checked_with_output(entry_path.to_str().unwrap()).unwrap();
+        let (checked, recipe, _) = crate::link_static_site_checked_with_output(entry_path.to_str().unwrap(), false).unwrap();
         let entry = static_entry_name(&project).unwrap();
         authenticate_static_entry(&checked, &entry, false).unwrap();
-        let value = evaluate_static_site_value(&checked, recipe.as_ref(), &entry, Vec::new()).unwrap();
+        let value = evaluate_static_site_value(&checked, recipe.as_ref(), &entry, Vec::new(), Vec::new()).unwrap();
         let (pages, _, _, _, _, _) = static_site_from_value(value).unwrap();
         assert_eq!(pages.len(), 1);
         assert_eq!(pages[0].route, "/");
         assert!(pages[0].html.contains("hello"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn content_backed_page_runs_from_the_file_snapshot_on_admitted_wasm() {
+        let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+            .unwrap().as_nanos();
+        let root = std::env::temp_dir().join(format!("witchy-static-content-{}-{nonce}", std::process::id()));
+        let content_root = root.join("content");
+        std::fs::create_dir_all(&content_root).unwrap();
+        std::fs::write(content_root.join("greeting.txt"), "hello from content").unwrap();
+        let entry_path = root.join("main.witchy");
+        std::fs::write(&entry_path, "import glamour\npub fn web(content: glamour.StaticContent) -> glamour.Site:\n    let text = glamour.static_content_get(content, \"greeting.txt\").unwrap_or(\"missing\")\n    let body: glamour.Ui(()) = glamour.ui(glamour.text(text))\n    glamour.site([glamour.static_page(\"/\", body)])\n").unwrap();
+        let project = Project {
+            root: root.clone(), name: "static-content".into(), version: "0.1.0".into(),
+            delivery: Delivery::Static, entry: entry_path.clone(), index: root.join("index.html"),
+            public: root.join("public"), manifest: root.join("witchy.toml"), grants: None,
+            css: None, content: Some(content_root), hosting: HostingProfile::Portable,
+        };
+        let (checked, recipe, _) = crate::link_static_site_checked_with_output(
+            entry_path.to_str().unwrap(), true,
+        ).unwrap();
+        let recipe = recipe.unwrap();
+        witchy_lower::codegen::compile_checked_module_artifact(recipe.checked())
+            .expect_lowered("content-backed site admits");
+        let entry = static_entry_name(&project).unwrap();
+        authenticate_static_entry(&checked, &entry, true).unwrap();
+        let (arguments, records, runtime_arguments) = static_content_arguments(&project).unwrap();
+        assert_eq!(records.len(), 1);
+        let value = evaluate_static_site_value(
+            &checked, Some(&recipe), &entry, arguments, runtime_arguments,
+        ).unwrap();
+        let (pages, _, _, _, _, _) = static_site_from_value(value).unwrap();
+        assert_eq!(pages.len(), 1);
+        assert!(pages[0].html.contains("hello from content"));
         std::fs::remove_dir_all(root).unwrap();
     }
 }

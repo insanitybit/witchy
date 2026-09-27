@@ -2847,6 +2847,16 @@ type StaticContentFile:
 type StaticContent:
     StaticContent(List(StaticContentFile))
 
+pub fn static_content_from_args(args: List(String)) -> StaticContent:
+    if args.length() % 2 != 0:
+        fail("static content arguments must be path/text pairs")
+    var files: List(StaticContentFile) = []
+    var index = 0
+    while index < args.length():
+        files.push(StaticContentFile(args.at(index), args.at(index + 1)))
+        index = index + 2
+    StaticContent(files)
+
 type Site derive(Reflect):
     Site(List(StaticPage), List(StaticAction), List(StaticStyle), List(StaticPreload), List(StaticAsset), List(IslandPlan))
 

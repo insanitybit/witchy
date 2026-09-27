@@ -235,6 +235,7 @@ pub(crate) fn link_static_evaluation_file(
 /// loader snapshot. Reopening a path between them would split their authority.
 pub(crate) fn link_static_site_checked_with_output(
     path: &str,
+    has_content: bool,
 ) -> Result<(pipeline::CheckedModule, Option<pipeline::CheckedStaticEvaluationRecipe>, String), String> {
     let entry_path = std::path::Path::new(path);
     let stem = entry_path.file_stem().and_then(|stem| stem.to_str())
@@ -256,7 +257,7 @@ pub(crate) fn link_static_site_checked_with_output(
         None
     } else {
         Some(witchy_types::pipeline::link_checked_static_site_output_from_source_bundle(
-            sources, &entry, comptime::EXPANDER, &user_modules, owners,
+            sources, &entry, comptime::EXPANDER, &user_modules, owners, has_content,
         ).map_err(|error| error.to_string())?)
     };
     Ok((checked, output, entry))
@@ -975,7 +976,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let entry = dir.join("main.witchy");
         std::fs::write(&entry, "from glamour import Site, StaticPage\nfn web() -> Site:\n    Site([StaticPage(\"/\", \"hello\", [], [])], [], [], [], [], [])\n").unwrap();
-        let (_, recipe, _) = super::link_static_site_checked_with_output(entry.to_str().unwrap())
+        let (_, recipe, _) = super::link_static_site_checked_with_output(entry.to_str().unwrap(), false)
             .expect("authenticated static output recipe");
         let recipe = recipe.expect("source without main gets output adapter");
         let artifact = witchy_lower::codegen::compile_checked_module_artifact(recipe.checked())
@@ -996,7 +997,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let entry = dir.join("main.witchy");
         std::fs::write(&entry, "import glamour\nfn web() -> glamour.Site:\n    let body: glamour.Ui(()) = glamour.ui(glamour.text(\"hello\"))\n    glamour.site([glamour.static_page(\"/\", body)])\n").unwrap();
-        let (_, recipe, _) = super::link_static_site_checked_with_output(entry.to_str().unwrap())
+        let (_, recipe, _) = super::link_static_site_checked_with_output(entry.to_str().unwrap(), false)
             .expect("authenticated static output recipe");
         let recipe = recipe.expect("source without main gets output adapter");
         let artifact = witchy_lower::codegen::compile_checked_module_artifact(recipe.checked())

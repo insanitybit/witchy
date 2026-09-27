@@ -10,7 +10,7 @@ use crate::runtime_type::{DeclarationIdentity, ModuleLoadIdentity, PackageSource
 use sha2::{Digest, Sha256};
 use witchy_syntax::ast::{Expr, Item, Module};
 
-const RECIPE_VERSION: u32 = 2;
+const RECIPE_VERSION: u32 = 3;
 
 #[derive(Debug)]
 pub struct CheckedStaticEvaluationRecipe {
@@ -39,7 +39,7 @@ pub fn link_checked_static_evaluation_from_source_bundle(
     user_modules: &HashSet<String>,
     owners: AuthenticatedModuleOwners,
 ) -> Result<CheckedStaticEvaluationRecipe, PipelineError> {
-    link_static_evaluation_recipe(sources, entry, expand, user_modules, owners, false)
+    link_static_evaluation_recipe(sources, entry, expand, user_modules, owners, None)
 }
 
 /// Add the fixed, compiler-owned `main` that emits one reflected Site value.
@@ -50,13 +50,14 @@ pub fn link_checked_static_site_output_from_source_bundle(
     expand: ComptimeExpander,
     user_modules: &HashSet<String>,
     owners: AuthenticatedModuleOwners,
+    has_content: bool,
 ) -> Result<CheckedStaticEvaluationRecipe, PipelineError> {
-    link_static_evaluation_recipe(sources, entry, expand, user_modules, owners, true)
+    link_static_evaluation_recipe(sources, entry, expand, user_modules, owners, Some(has_content))
 }
 
 fn link_static_evaluation_recipe(
     mut sources: Vec<(String, Vec<u8>)>, entry: &str, expand: ComptimeExpander,
-    user_modules: &HashSet<String>, owners: AuthenticatedModuleOwners, output: bool,
+    user_modules: &HashSet<String>, owners: AuthenticatedModuleOwners, output_content: Option<bool>,
 ) -> Result<CheckedStaticEvaluationRecipe, PipelineError> {
     sources.sort_by(|left, right| left.0.cmp(&right.0));
     if sources.iter().any(|(name, _)| name.is_empty())
@@ -88,22 +89,26 @@ fn link_static_evaluation_recipe(
         )))?;
         rewrite_module(module, owner)?;
     }
-    if output {
+    if let Some(has_content) = output_content {
         let (_, selected) = modules.iter_mut().find(|(name, _)| name == entry)
             .ok_or_else(|| refused("static output entry is missing"))?;
         if selected.items.iter().any(|item| matches!(item, Item::Function(function) if function.name == "main")) {
             return Err(refused("static output recipe requires an entry without `main`"));
         }
-        let generated = witchy_syntax::parser::parse_module(
-            "fn main(console: Console):\n    console.print(glamour.static_site_json(web()))\n",
-        ).map_err(|error| refused(format!("invalid compiler static output adapter: {error}")))?;
+        let adapter = if has_content {
+            "fn main(console: Console, args: List(String)):\n    console.print(glamour.static_site_json(web(glamour.static_content_from_args(args))))\n"
+        } else {
+            "fn main(console: Console):\n    console.print(glamour.static_site_json(web()))\n"
+        };
+        let generated = witchy_syntax::parser::parse_module(adapter)
+            .map_err(|error| refused(format!("invalid compiler static output adapter: {error}")))?;
         selected.item_lines.extend(std::iter::repeat_n(0, generated.items.len()));
         selected.items.extend(generated.items);
     }
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"witchy.checked-static-evaluation-recipe.v1");
     hasher.update(&RECIPE_VERSION.to_le_bytes());
-    hasher.update(&[u8::from(output)]);
+    hasher.update(&[match output_content { None => 0, Some(false) => 1, Some(true) => 2 }]);
     hasher.update(&original);
     hasher.update(&(entry.len() as u64).to_le_bytes());
     hasher.update(entry.as_bytes());
