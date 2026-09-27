@@ -20,6 +20,8 @@ pub mod async_lower;
 pub mod async_surface;
 pub mod build_entry;
 pub mod cap_ops;
+#[doc(hidden)]
+pub mod compiler_session;
 pub mod consts;
 pub mod derive;
 pub mod diag;

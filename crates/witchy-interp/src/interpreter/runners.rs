@@ -1002,9 +1002,7 @@ fn run_prepared_entry_limited(
 ) -> Result<InterpreterOutcome, RuntimeError> {
     let mut interp = Interpreter::new_with_witnesses_and_seed(module, witnesses, rand_seed);
     interp.step_limit = step_limit;
-    interp.fresh_ident_scope = fresh_ident_scope;
-    interp.compiler_expr_qualifiers = compiler_expr_qualifiers;
-    interp.compiler_tag_hole_markers = compiler_tag_hole_markers;
+    interp.compiler_syntax.set_invocation(fresh_ident_scope, compiler_expr_qualifiers, compiler_tag_hole_markers);
     interp.root = root;
     interp.dir_roots = dir_roots;
     interp.file_grants = file_grants;
@@ -1087,11 +1085,12 @@ fn run_prepared_entry_limited(
     if interp.output.is_empty() && !matches!(ret, Value::Unit | Value::Int(_)) {
         interp.output.push(format!("{ret}"));
     }
+    let (comptime_items, comptime_exprs) = interp.compiler_syntax.into_emissions();
     Ok(InterpreterOutcome {
         output: interp.output,
         exit_code,
-        comptime_items: interp.comptime_item_output,
-        comptime_exprs: interp.comptime_expr_output,
+        comptime_items,
+        comptime_exprs,
     })
 }
 

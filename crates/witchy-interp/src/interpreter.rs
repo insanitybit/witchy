@@ -271,49 +271,11 @@ fn contains_existential(value: &Value) -> bool {
 
 const OWNED_ITEM_SYNTAX_CTOR: &str = "@owned_item_syntax";
 
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) enum ComptimeItemEmission {
-    ModuleSyntax {
-        module: Box<Module>,
-        definition_line: u32,
-        hole_ancestry: Vec<ComptimeHoleOrigin>,
-    },
-    Syntax {
-        item: Box<Item>,
-        definition_line: u32,
-        hole_ancestry: Vec<ComptimeHoleOrigin>,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) struct ComptimeHoleOrigin {
-    pub category: SyntaxCategory,
-    pub definition_line: u32,
-    pub invocation_line: u32,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-struct ComptimeSyntaxOrigin {
-    definition_line: u32,
-    hole_ancestry: Vec<ComptimeHoleOrigin>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) enum ComptimeExprEmission {
-    Syntax(Box<Expr>),
-}
-
-pub(crate) struct ComptimeOutputs {
-    pub output: Vec<String>,
-    pub items: Vec<PositionedComptimeItem>,
-    pub exprs: Vec<ComptimeExprEmission>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) struct PositionedComptimeItem {
-    pub output_position: usize,
-    pub emission: ComptimeItemEmission,
-}
+pub(crate) use witchy_syntax::compiler_session::{
+    ComptimeItemEmission, ComptimeHoleOrigin, ComptimeSyntaxOrigin, ComptimeExprEmission,
+    ComptimeOutputs, PositionedComptimeItem,
+};
+use witchy_syntax::compiler_session::CompilerSyntaxSession;
 
 struct InterpreterOutcome {
     output: Vec<String>,
@@ -661,32 +623,7 @@ pub struct Interpreter {
     /// A derived (structural) impl is NOT here, so its containers keep the fast
     /// structural compare — behavior-identical to before.
     custom_eq_types: FxHashSet<String>,
-    /// Deterministic namespace and sequence for RFC-0080 `meta.fresh`. They are
-    /// present only in a compile-time evaluator; ordinary runtime interpreters
-    /// reject the compiler-private hook instead of minting generated names.
-    fresh_ident_scope: Option<String>,
-    fresh_ident_counter: u64,
-    compiler_syntax_instance_counter: u64,
-    compiler_item_syntax: HashMap<String, Item>,
-    compiler_item_modules: HashMap<String, Module>,
-    compiler_expr_syntax: HashMap<String, Expr>,
-    /// Module names that dynamic generated expressions may use as qualifiers.
-    /// Populated only for tagged-literal compile-time evaluation.
-    compiler_expr_qualifiers: Option<Vec<String>>,
-    /// Exact opaque sentinels issued for the active tagged literal. Structural
-    /// tag-hole construction may use one of these, never an arbitrary name.
-    compiler_tag_hole_markers: Option<Vec<String>>,
-    compiler_type_syntax: HashMap<String, Type>,
-    compiler_pattern_syntax: HashMap<String, Pattern>,
-    compiler_match_arm_syntax: HashMap<String, MatchArm>,
-    compiler_param_syntax: HashMap<String, Param>,
-    compiler_expr_origins: HashMap<String, ComptimeSyntaxOrigin>,
-    compiler_type_origins: HashMap<String, ComptimeSyntaxOrigin>,
-    compiler_pattern_origins: HashMap<String, ComptimeSyntaxOrigin>,
-    compiler_stmt_syntax: HashMap<String, Stmt>,
-    compiler_block_syntax: HashMap<String, Block>,
-    comptime_item_output: Vec<PositionedComptimeItem>,
-    comptime_expr_output: Vec<ComptimeExprEmission>,
+    compiler_syntax: CompilerSyntaxSession,
     /// Evaluation-step counter and ceiling. Unlike the runtime's epoch
     /// preemption, the tree-walker can't be interrupted, so a `while true {}`
     /// would hang the host — this bounds total work and errors out instead.
@@ -731,16 +668,6 @@ pub struct Interpreter {
 /// thread can hold (debug frames are large), but far deeper than any reasonable
 /// program recurses.
 const DEFAULT_DEPTH_LIMIT: u32 = 25_000;
-
-fn encode_fresh_scope(scope: &str) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut encoded = String::with_capacity(scope.len().saturating_mul(2));
-    for byte in scope.bytes() {
-        encoded.push(char::from(HEX[usize::from(byte >> 4)]));
-        encoded.push(char::from(HEX[usize::from(byte & 0x0f)]));
-    }
-    encoded
-}
 
 /// Default ceiling on evaluation steps for one program run. High enough that no
 /// realistic program reaches it, low enough that an infinite loop fails in
@@ -815,40 +742,8 @@ impl Interpreter {
         Self::new_with_witnesses_and_seed(module, witnesses, witchy_runtime::rand::seed_from_env())
     }
 
-    fn new_with_witnesses_and_seed(module: Module, witnesses: WitnessPlan, rand_seed: Option<u64>) -> Self {
-        let compiler_item_syntax = module
-            .compiler_item_syntax
-            .into_iter()
-            .map(|syntax| (syntax.handle, syntax.item))
-            .collect();
-        let compiler_expr_syntax = module
-            .compiler_expr_syntax
-            .into_iter()
-            .map(|syntax| (syntax.handle, syntax.expr))
-            .collect();
-        let compiler_type_syntax = module
-            .compiler_type_syntax
-            .into_iter()
-            .map(|syntax| (syntax.handle, syntax.ty))
-            .collect();
-        let compiler_pattern_syntax = module
-            .compiler_pattern_syntax
-            .into_iter()
-            .map(|syntax| (syntax.handle, syntax.pattern))
-            .collect();
-        let compiler_expr_origins = HashMap::new();
-        let compiler_type_origins = HashMap::new();
-        let compiler_pattern_origins = HashMap::new();
-        let compiler_stmt_syntax = module
-            .compiler_stmt_syntax
-            .into_iter()
-            .map(|syntax| (syntax.handle, syntax.stmt))
-            .collect();
-        let compiler_block_syntax = module
-            .compiler_block_syntax
-            .into_iter()
-            .map(|syntax| (syntax.handle, syntax.block))
-            .collect();
+    fn new_with_witnesses_and_seed(mut module: Module, witnesses: WitnessPlan, rand_seed: Option<u64>) -> Self {
+        let compiler_syntax = CompilerSyntaxSession::take_module_payloads(&mut module);
         let mut functions = FxHashMap::new();
         let mut record_fields = FxHashMap::new();
         let mut ctor_type_name: FxHashMap<String, String> = FxHashMap::new();
@@ -923,25 +818,7 @@ impl Interpreter {
             record_fields,
             ctor_type_name,
             custom_eq_types,
-            fresh_ident_scope: None,
-            fresh_ident_counter: 0,
-            compiler_syntax_instance_counter: 0,
-            compiler_item_syntax,
-            compiler_item_modules: HashMap::new(),
-            compiler_expr_syntax,
-            compiler_expr_qualifiers: None,
-            compiler_tag_hole_markers: None,
-            compiler_type_syntax,
-            compiler_pattern_syntax,
-            compiler_match_arm_syntax: HashMap::new(),
-            compiler_param_syntax: HashMap::new(),
-            compiler_expr_origins,
-            compiler_type_origins,
-            compiler_pattern_origins,
-            compiler_stmt_syntax,
-            compiler_block_syntax,
-            comptime_item_output: Vec::new(),
-            comptime_expr_output: Vec::new(),
+            compiler_syntax,
             steps: 0,
             step_limit: DEFAULT_STEP_LIMIT,
             cur_line: 0,
@@ -1359,29 +1236,11 @@ impl Interpreter {
     }
 
     fn next_fresh_ident(&mut self, hint: &str) -> Result<String, RuntimeError> {
-        let Some(scope) = self.fresh_ident_scope.as_deref() else {
-            return err("meta.fresh is available only during compile-time expansion");
-        };
-        let ordinal = self.fresh_ident_counter;
-        self.fresh_ident_counter = self
-            .fresh_ident_counter
-            .checked_add(1)
-            .ok_or_else(|| RuntimeError { message: "meta.fresh identifier counter overflowed".into() })?;
-        Ok(format!(
-            "__witchy_fresh_{}_{ordinal}_{hint}",
-            encode_fresh_scope(scope)
-        ))
+        self.compiler_syntax.next_fresh_ident(hint).map_err(|message| RuntimeError { message })
     }
 
     fn next_compiler_syntax_handle(&mut self, category: &str) -> Result<String, RuntimeError> {
-        let ordinal = self.compiler_syntax_instance_counter;
-        self.compiler_syntax_instance_counter = self
-            .compiler_syntax_instance_counter
-            .checked_add(1)
-            .ok_or_else(|| RuntimeError {
-                message: "compiler syntax instance counter overflowed".into(),
-            })?;
-        Ok(format!("\0compiler-syntax-instance\0{category}\0{ordinal}"))
+        self.compiler_syntax.next_syntax_handle(category).map_err(|message| RuntimeError { message })
     }
 
     fn store_compiler_stmt_syntax(
@@ -1390,7 +1249,7 @@ impl Interpreter {
         stmt: Stmt,
     ) -> Result<Value, RuntimeError> {
         let handle = self.next_compiler_syntax_handle(category)?;
-        self.compiler_stmt_syntax.insert(handle.clone(), stmt);
+        self.compiler_syntax.insert_statement(handle.clone(), stmt);
         Ok(Value::Ctor {
             name: "meta.CompilerStmtSyntax".into(),
             fields: Rc::new(vec![Value::str(handle)]),
@@ -1404,8 +1263,8 @@ impl Interpreter {
         hole_ancestry: Vec<ComptimeHoleOrigin>,
     ) -> Result<Value, RuntimeError> {
         let handle = self.next_compiler_syntax_handle(category)?;
-        self.compiler_expr_syntax.insert(handle.clone(), expr);
-        self.compiler_expr_origins.insert(
+        self.compiler_syntax.insert_expression(handle.clone(), expr);
+        self.compiler_syntax.insert_expression_origin(
             handle.clone(),
             ComptimeSyntaxOrigin {
                 definition_line: self.cur_line,
@@ -1425,8 +1284,8 @@ impl Interpreter {
         hole_ancestry: Vec<ComptimeHoleOrigin>,
     ) -> Result<Value, RuntimeError> {
         let handle = self.next_compiler_syntax_handle(category)?;
-        self.compiler_type_syntax.insert(handle.clone(), ty);
-        self.compiler_type_origins.insert(
+        self.compiler_syntax.insert_type(handle.clone(), ty);
+        self.compiler_syntax.insert_type_origin(
             handle.clone(),
             ComptimeSyntaxOrigin {
                 definition_line: self.cur_line,
@@ -1446,8 +1305,8 @@ impl Interpreter {
         hole_ancestry: Vec<ComptimeHoleOrigin>,
     ) -> Result<Value, RuntimeError> {
         let handle = self.next_compiler_syntax_handle(category)?;
-        self.compiler_pattern_syntax.insert(handle.clone(), pattern);
-        self.compiler_pattern_origins.insert(
+        self.compiler_syntax.insert_pattern(handle.clone(), pattern);
+        self.compiler_syntax.insert_pattern_origin(
             handle.clone(),
             ComptimeSyntaxOrigin {
                 definition_line: self.cur_line,

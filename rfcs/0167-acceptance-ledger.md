@@ -2216,3 +2216,21 @@ track restores it; the tests themselves are unchanged and run under `--full`.
 | ~~retired `View(T,'a)` callable relations~~ **retired 2026-09-21**: `tests/rfc0112.rs` deleted. All FOUR of its tests were deferred (two here, two in the RFC-0165 list) and all four fixtures are written in the grammar RFC-0167 removed — `type Holder('a)`, `input: &'a String`, `fn(let &'supplied String, ...) -> &'supplied String`. They cannot be migrated without asserting semantics the contract deleted, which is the same call row B already made for the RFC-0122 corpora. `crates/witchy-types/src/access.rs` is NOT deleted with them: `access::checked_facts` is live production machinery for codegen assembly, analysis, and specialization. The negative contract stays pinned by `rfc0167_reference_contract_matrix` and by `reference_type_rejects_retired_explicit_lifetimes`, `type_aliases_reject_lifetime_parameters_at_the_declaration`, and `rfc0167_bracketed_function_type_params_reject_lifetimes`; the positive contract is the 18-file `rfc0167_*` view corpus. | `tests/rfc0112.rs` ×4 — removed from both deferred lists | — |
 | ~~BUG-639: `chan.select` payload desugar emits a compiler-private intrinsic into user code~~ **fixed and restored 2026-09-21.** A `select` whose match is a VALUE (not just side-effecting arms) makes the desugar emit `chan.selectN_frame_payload`/`_decode` into the USER's module, and the scheduler-bridge privacy rule rejected the compiler's own output. That rule exists to stop SOURCE from forging scheduler authority, so it now applies to source-written calls only: a desugar tags what it generates with the `@` prefix, which source cannot produce (`@` lexes as `Tok::At` and never begins an identifier), and the linker strips the tag while skipping only the privacy gate. `MESSAGE_BRIDGE_CALLERS` is unchanged. The census also needed two book blocks migrated to `let _ =` — RFC-0167 row C removed the non-unit `var`-call exemption and their prose still described it. | `rfc0087_migration_census` — back in the default gate | — |
 | ~~opt mode refuses `dict.new()` as a fresh `unique` owner~~ **restored 2026-09-20** (same change) | `lsp::tests::mode_opt_no_copy_violation_names_the_alias_reason` — back in the default gate | — |
+
+### 2026-09-27: neutral typed compiler syntax session (row Q structural slice)
+
+The existing compile-time syntax arenas, origin and hole-ancestry records,
+fresh-name sequencing, invocation context and ordered typed emissions now live
+in the runtime-neutral syntax crate. Interpreter adapters retain the same Value
+conversion, intrinsic guards, lookup/error behavior and execution-step checks.
+Focused session controls and the existing typed-generation/hygiene/tag suite
+pass. This is a structural extraction, not a new execution route.
+
+The explicit deterministic budget counter defines checked unit accounting only;
+it is not yet connected to canonical execution or host allocation/output limits.
+The session itself confers no admission authority, and its per-session ordinal
+handle strings are not globally unique tokens. Comptime still executes through
+the frozen interpreter. A checked canonical comptime recipe, authenticated
+compiler-only host ABI, deterministic fuel enforcement and an independent
+expected-result/admitted-unoptimized-Wasm witness remain required. Row Q stays
+PARTIAL; this entry closes no semantic acceptance row.

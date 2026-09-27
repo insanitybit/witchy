@@ -277,7 +277,7 @@ impl Interpreter {
             },
             name if intrinsics::is_meta_expr_leaf(name) => match args {
                 [Value::Str(kind), Value::Str(payload)] => {
-                    if self.fresh_ident_scope.is_none() {
+                    if self.compiler_syntax.fresh_ident_scope().is_none() {
                         return err("meta expression builders are available only during compile-time expansion");
                     }
                     let expr = compiler_expr_leaf(kind, payload)?;
@@ -294,8 +294,7 @@ impl Interpreter {
                     let valid_shape = marker
                         .strip_prefix("__witchy_hole_")
                         .is_some_and(|index| !index.is_empty() && index.bytes().all(|byte| byte.is_ascii_digit()));
-                    let active = self
-                        .compiler_tag_hole_markers
+                    let active = self.compiler_syntax.tag_hole_markers()
                         .as_ref()
                         .is_some_and(|markers| markers.iter().any(|candidate| candidate.as_str() == marker.as_str()));
                     if !valid_shape || !active {
@@ -315,7 +314,7 @@ impl Interpreter {
             },
             name if intrinsics::is_meta_expr_tagged(name) => match args {
                 [tag, Value::List(parts), Value::List(holes)] => {
-                    if self.fresh_ident_scope.is_none() {
+                    if self.compiler_syntax.fresh_ident_scope().is_none() {
                         return err(
                             "meta.expr_tagged is available only during compile-time expansion",
                         );
@@ -339,7 +338,7 @@ impl Interpreter {
                         holes,
                         SyntaxCategory::Expr,
                         "CompilerExprSyntax",
-                        &self.compiler_expr_origins,
+                        self.compiler_syntax.expression_origins(),
                         self.cur_line,
                     );
                     let holes = holes
@@ -347,7 +346,7 @@ impl Interpreter {
                         .map(|hole| {
                             compiler_owned_expr_syntax_value(
                                 hole,
-                                &self.compiler_expr_syntax,
+                                self.compiler_syntax.expressions(),
                                 "meta.expr_tagged",
                             )
                             .map(|expr| TaggedHole::Owned(Box::new(expr)))
@@ -370,7 +369,7 @@ impl Interpreter {
             },
             name if intrinsics::is_meta_pattern_leaf(name) => match args {
                 [Value::Str(kind), Value::Str(first), Value::Str(second), Value::Bool(inclusive)] => {
-                    if self.fresh_ident_scope.is_none() {
+                    if self.compiler_syntax.fresh_ident_scope().is_none() {
                         return err("meta pattern builders are available only during compile-time expansion");
                     }
                     let pattern = compiler_pattern_leaf(kind, first, second, *inclusive)?;
@@ -384,7 +383,7 @@ impl Interpreter {
             },
             name if intrinsics::is_meta_stmt_leaf(name) => match args {
                 [Value::Str(kind)] => {
-                    if self.fresh_ident_scope.is_none() {
+                    if self.compiler_syntax.fresh_ident_scope().is_none() {
                         return err("meta statement builders are available only during compile-time expansion");
                     }
                     let stmt = compiler_stmt_leaf(kind)?;
@@ -394,15 +393,15 @@ impl Interpreter {
             },
             name if intrinsics::is_meta_call_site_expr(name) => match one(args)? {
                 Value::Str(name) => {
-                    if self.fresh_ident_scope.is_none() {
+                    if self.compiler_syntax.fresh_ident_scope().is_none() {
                         return err(
                             "meta.call_site is available only during compile-time expansion",
                         );
                     }
                     let expr = witchy_syntax::linker::call_site_expr(name.as_str());
                     let handle = self.next_compiler_syntax_handle("call-site-expression")?;
-                    self.compiler_expr_syntax.insert(handle.clone(), expr);
-                    self.compiler_expr_origins.insert(
+                    self.compiler_syntax.insert_expression(handle.clone(), expr);
+                    self.compiler_syntax.insert_expression_origin(
                         handle.clone(),
                         ComptimeSyntaxOrigin {
                             definition_line: self.cur_line,
@@ -418,7 +417,7 @@ impl Interpreter {
             },
             name if intrinsics::is_meta_call_site_type(name) => match args {
                 [Value::Str(name), Value::List(args)] => {
-                    if self.fresh_ident_scope.is_none() {
+                    if self.compiler_syntax.fresh_ident_scope().is_none() {
                         return err(
                             "meta.call_site is available only during compile-time expansion",
                         );
@@ -427,15 +426,15 @@ impl Interpreter {
                         args,
                         SyntaxCategory::Type,
                         "CompilerTypeSyntax",
-                        &self.compiler_type_origins,
+                        self.compiler_syntax.type_origins(),
                         self.cur_line,
                     );
-                    let args = compiler_type_holes(args, &self.compiler_type_syntax)?;
+                    let args = compiler_type_holes(args, self.compiler_syntax.types())?;
                     validate_compiler_named_type(name, &args)?;
                     let ty = witchy_syntax::linker::call_site_type(name, args);
                     let handle = self.next_compiler_syntax_handle("call-site-type")?;
-                    self.compiler_type_syntax.insert(handle.clone(), ty);
-                    self.compiler_type_origins.insert(
+                    self.compiler_syntax.insert_type(handle.clone(), ty);
+                    self.compiler_syntax.insert_type_origin(
                         handle.clone(),
                         ComptimeSyntaxOrigin {
                             definition_line: self.cur_line,
@@ -451,7 +450,7 @@ impl Interpreter {
             },
             name if intrinsics::is_meta_type_named(name) => match args {
                 [Value::Str(name), Value::List(args)] => {
-                    if self.fresh_ident_scope.is_none() {
+                    if self.compiler_syntax.fresh_ident_scope().is_none() {
                         return err(
                             "meta.type_named is available only during compile-time expansion",
                         );
@@ -460,10 +459,10 @@ impl Interpreter {
                         args,
                         SyntaxCategory::Type,
                         "CompilerTypeSyntax",
-                        &self.compiler_type_origins,
+                        self.compiler_syntax.type_origins(),
                         self.cur_line,
                     );
-                    let args = compiler_type_holes(args, &self.compiler_type_syntax)?;
+                    let args = compiler_type_holes(args, self.compiler_syntax.types())?;
                     validate_compiler_named_type(name, &args)?;
                     let ty = Type::Named(name.to_string(), args);
                     Ok(Some(self.store_compiler_type_syntax(
@@ -476,7 +475,7 @@ impl Interpreter {
             },
             name if intrinsics::is_meta_type_tuple(name) => match args {
                 [Value::List(types)] => {
-                    if self.fresh_ident_scope.is_none() {
+                    if self.compiler_syntax.fresh_ident_scope().is_none() {
                         return err(
                             "meta.type_tuple is available only during compile-time expansion",
                         );
@@ -485,10 +484,10 @@ impl Interpreter {
                         types,
                         SyntaxCategory::Type,
                         "CompilerTypeSyntax",
-                        &self.compiler_type_origins,
+                        self.compiler_syntax.type_origins(),
                         self.cur_line,
                     );
-                    let types = compiler_type_holes(types, &self.compiler_type_syntax)?;
+                    let types = compiler_type_holes(types, self.compiler_syntax.types())?;
                     Ok(Some(self.store_compiler_type_syntax(
                         "tuple-type",
                         Type::Tuple(types),
@@ -499,7 +498,7 @@ impl Interpreter {
             },
             name if intrinsics::is_meta_type_fn(name) => match args {
                 [Value::List(params), conventions, Value::Bool(pure), Value::Bool(once), ret] => {
-                    if self.fresh_ident_scope.is_none() {
+                    if self.compiler_syntax.fresh_ident_scope().is_none() {
                         return err(
                             "meta.type_fn is available only during compile-time expansion",
                         );
@@ -510,13 +509,13 @@ impl Interpreter {
                         &inputs,
                         SyntaxCategory::Type,
                         "CompilerTypeSyntax",
-                        &self.compiler_type_origins,
+                        self.compiler_syntax.type_origins(),
                         self.cur_line,
                     );
-                    let params = compiler_type_holes(params, &self.compiler_type_syntax)?;
+                    let params = compiler_type_holes(params, self.compiler_syntax.types())?;
                     let conventions =
                         compiler_function_conventions(conventions, params.len(), "meta.type_fn")?;
-                    let ret = compiler_type_syntax_value(ret, &self.compiler_type_syntax)?;
+                    let ret = compiler_type_syntax_value(ret, self.compiler_syntax.types())?;
                     Ok(Some(self.store_compiler_type_syntax(
                         "function-type",
                         Type::Fn(
@@ -534,7 +533,7 @@ impl Interpreter {
             },
             name if intrinsics::is_meta_type_qualified(name) => match args {
                 [Value::Str(qualifier), ty] => {
-                    if self.fresh_ident_scope.is_none() {
+                    if self.compiler_syntax.fresh_ident_scope().is_none() {
                         return err(
                             "meta.type_qualified is available only during compile-time expansion",
                         );
@@ -543,7 +542,7 @@ impl Interpreter {
                         std::slice::from_ref(ty),
                         SyntaxCategory::Type,
                         "CompilerTypeSyntax",
-                        &self.compiler_type_origins,
+                        self.compiler_syntax.type_origins(),
                         self.cur_line,
                     );
                     let qualifier = match qualifier.as_str() {
@@ -555,7 +554,7 @@ impl Interpreter {
                             ));
                         }
                     };
-                    let ty = compiler_type_syntax_value(ty, &self.compiler_type_syntax)?;
+                    let ty = compiler_type_syntax_value(ty, self.compiler_syntax.types())?;
                     Ok(Some(self.store_compiler_type_syntax(
                         "qualified-type",
                         Type::Qualified(qualifier, Box::new(ty)),
@@ -566,7 +565,7 @@ impl Interpreter {
             },
             name if intrinsics::is_meta_type_expr(name) => match args {
                 [ty] => {
-                    if self.fresh_ident_scope.is_none() {
+                    if self.compiler_syntax.fresh_ident_scope().is_none() {
                         return err(
                             "meta.type_expr is available only during compile-time expansion",
                         );
@@ -582,7 +581,7 @@ impl Interpreter {
             },
             name if intrinsics::is_meta_type_capability(name) => match args {
                 [head, Value::List(rights)] => {
-                    if self.fresh_ident_scope.is_none() {
+                    if self.compiler_syntax.fresh_ident_scope().is_none() {
                         return err(
                             "meta.type_capability is available only during compile-time expansion",
                         );
@@ -598,10 +597,10 @@ impl Interpreter {
                         rights,
                         SyntaxCategory::Type,
                         "CompilerTypeSyntax",
-                        &self.compiler_type_origins,
+                        self.compiler_syntax.type_origins(),
                         self.cur_line,
                     );
-                    let rights = compiler_type_holes(rights, &self.compiler_type_syntax)?;
+                    let rights = compiler_type_holes(rights, self.compiler_syntax.types())?;
                     Ok(Some(self.store_compiler_type_syntax(
                         "capability-type",
                         Type::Named(head, rights),
@@ -612,7 +611,7 @@ impl Interpreter {
             },
             name if intrinsics::is_meta_call_site_pattern(name) => match args {
                 [Value::Str(name), Value::List(args)] => {
-                    if self.fresh_ident_scope.is_none() {
+                    if self.compiler_syntax.fresh_ident_scope().is_none() {
                         return err(
                             "meta.call_site is available only during compile-time expansion",
                         );
@@ -621,11 +620,11 @@ impl Interpreter {
                         args,
                         SyntaxCategory::Pattern,
                         "CompilerPatternSyntax",
-                        &self.compiler_pattern_origins,
+                        self.compiler_syntax.pattern_origins(),
                         self.cur_line,
                     );
                     let args =
-                        compiler_pattern_holes(args, &self.compiler_pattern_syntax)?;
+                        compiler_pattern_holes(args, self.compiler_syntax.patterns())?;
                     let pattern = if let Some(tag) = name.strip_prefix('.') {
                         if tag.is_empty() || tag.contains('.') {
                             return err("meta.pattern_anon_ctor expected one anonymous tag");
@@ -635,8 +634,8 @@ impl Interpreter {
                         witchy_syntax::linker::call_site_pattern(name, args)
                     };
                     let handle = self.next_compiler_syntax_handle("call-site-pattern")?;
-                    self.compiler_pattern_syntax.insert(handle.clone(), pattern);
-                    self.compiler_pattern_origins.insert(
+                    self.compiler_syntax.insert_pattern(handle.clone(), pattern);
+                    self.compiler_syntax.insert_pattern_origin(
                         handle.clone(),
                         ComptimeSyntaxOrigin {
                             definition_line: self.cur_line,
@@ -654,7 +653,7 @@ impl Interpreter {
             },
             name if intrinsics::is_meta_pattern_ctor(name) => match args {
                 [Value::Str(name), Value::List(args)] => {
-                    if self.fresh_ident_scope.is_none() {
+                    if self.compiler_syntax.fresh_ident_scope().is_none() {
                         return err(
                             "meta.pattern_ctor is available only during compile-time expansion",
                         );
@@ -663,10 +662,10 @@ impl Interpreter {
                         args,
                         SyntaxCategory::Pattern,
                         "CompilerPatternSyntax",
-                        &self.compiler_pattern_origins,
+                        self.compiler_syntax.pattern_origins(),
                         self.cur_line,
                     );
-                    let args = compiler_pattern_holes(args, &self.compiler_pattern_syntax)?;
+                    let args = compiler_pattern_holes(args, self.compiler_syntax.patterns())?;
                     let pattern = if let Some(tag) = name.strip_prefix('.') {
                         if tag.is_empty() || tag.contains('.') {
                             return err("meta.pattern_anon_ctor expected one anonymous tag");
@@ -683,7 +682,7 @@ impl Interpreter {
             },
             name if intrinsics::is_meta_pattern_tuple(name) => match args {
                 [Value::List(patterns)] => {
-                    if self.fresh_ident_scope.is_none() {
+                    if self.compiler_syntax.fresh_ident_scope().is_none() {
                         return err(
                             "meta.pattern_tuple is available only during compile-time expansion",
                         );
@@ -692,11 +691,11 @@ impl Interpreter {
                         patterns,
                         SyntaxCategory::Pattern,
                         "CompilerPatternSyntax",
-                        &self.compiler_pattern_origins,
+                        self.compiler_syntax.pattern_origins(),
                         self.cur_line,
                     );
                     let patterns =
-                        compiler_pattern_holes(patterns, &self.compiler_pattern_syntax)?;
+                        compiler_pattern_holes(patterns, self.compiler_syntax.patterns())?;
                     Ok(Some(self.store_compiler_pattern_syntax(
                         "tuple-pattern",
                         Pattern::Tuple(patterns),
@@ -707,7 +706,7 @@ impl Interpreter {
             },
             name if intrinsics::is_meta_pattern_list(name) => match args {
                 [Value::List(patterns)] => {
-                    if self.fresh_ident_scope.is_none() {
+                    if self.compiler_syntax.fresh_ident_scope().is_none() {
                         return err(
                             "meta.pattern_list is available only during compile-time expansion",
                         );
@@ -716,10 +715,10 @@ impl Interpreter {
                         patterns,
                         SyntaxCategory::Pattern,
                         "CompilerPatternSyntax",
-                        &self.compiler_pattern_origins,
+                        self.compiler_syntax.pattern_origins(),
                         self.cur_line,
                     );
-                    let elems = compiler_pattern_holes(patterns, &self.compiler_pattern_syntax)?;
+                    let elems = compiler_pattern_holes(patterns, self.compiler_syntax.patterns())?;
                     Ok(Some(self.store_compiler_pattern_syntax(
                         "list-pattern",
                         Pattern::List { elems, rest: None },
@@ -730,7 +729,7 @@ impl Interpreter {
             },
             name if intrinsics::is_meta_pattern_list_rest(name) => match args {
                 [Value::List(patterns), rest] => {
-                    if self.fresh_ident_scope.is_none() {
+                    if self.compiler_syntax.fresh_ident_scope().is_none() {
                         return err(
                             "meta.pattern_list_rest is available only during compile-time expansion",
                         );
@@ -739,10 +738,10 @@ impl Interpreter {
                         patterns,
                         SyntaxCategory::Pattern,
                         "CompilerPatternSyntax",
-                        &self.compiler_pattern_origins,
+                        self.compiler_syntax.pattern_origins(),
                         self.cur_line,
                     );
-                    let elems = compiler_pattern_holes(patterns, &self.compiler_pattern_syntax)?;
+                    let elems = compiler_pattern_holes(patterns, self.compiler_syntax.patterns())?;
                     let rest = match rest {
                         Value::Ctor { name, fields }
                             if compiler_ctor_tail(name) == "None" && fields.is_empty() =>
@@ -774,7 +773,7 @@ impl Interpreter {
             },
             name if intrinsics::is_meta_pattern_or(name) => match args {
                 [Value::List(patterns)] => {
-                    if self.fresh_ident_scope.is_none() {
+                    if self.compiler_syntax.fresh_ident_scope().is_none() {
                         return err(
                             "meta.pattern_or is available only during compile-time expansion",
                         );
@@ -783,11 +782,11 @@ impl Interpreter {
                         patterns,
                         SyntaxCategory::Pattern,
                         "CompilerPatternSyntax",
-                        &self.compiler_pattern_origins,
+                        self.compiler_syntax.pattern_origins(),
                         self.cur_line,
                     );
                     let patterns =
-                        compiler_pattern_holes(patterns, &self.compiler_pattern_syntax)?;
+                        compiler_pattern_holes(patterns, self.compiler_syntax.patterns())?;
                     if patterns.is_empty() {
                         return err("meta.pattern_or requires at least one alternative");
                     }
@@ -801,7 +800,7 @@ impl Interpreter {
             },
             name if intrinsics::is_meta_expr_call(name) => match args {
                 [callee, Value::List(args)] => {
-                    if self.fresh_ident_scope.is_none() {
+                    if self.compiler_syntax.fresh_ident_scope().is_none() {
                         return err(
                             "meta.expr_call is available only during compile-time expansion",
                         );
@@ -813,13 +812,13 @@ impl Interpreter {
                         &inputs,
                         SyntaxCategory::Expr,
                         "CompilerExprSyntax",
-                        &self.compiler_expr_origins,
+                        self.compiler_syntax.expression_origins(),
                         self.cur_line,
                     );
-                    let callee = compiler_expr_syntax_value(callee, &self.compiler_expr_syntax)?;
+                    let callee = compiler_expr_syntax_value(callee, self.compiler_syntax.expressions())?;
                     let args = args
                         .iter()
-                        .map(|arg| compiler_expr_syntax_value(arg, &self.compiler_expr_syntax))
+                        .map(|arg| compiler_expr_syntax_value(arg, self.compiler_syntax.expressions()))
                         .collect::<Result<Vec<_>, _>>()?;
                     let expr = match callee {
                         Expr::Ctor { name, args: existing } if existing.is_empty() => {
@@ -828,8 +827,8 @@ impl Interpreter {
                         callee => Expr::Apply { func: Box::new(callee), args },
                     };
                     let handle = self.next_compiler_syntax_handle("expression-call")?;
-                    self.compiler_expr_syntax.insert(handle.clone(), expr);
-                    self.compiler_expr_origins.insert(
+                    self.compiler_syntax.insert_expression(handle.clone(), expr);
+                    self.compiler_syntax.insert_expression_origin(
                         handle.clone(),
                         ComptimeSyntaxOrigin { definition_line: self.cur_line, hole_ancestry },
                     );
@@ -842,7 +841,7 @@ impl Interpreter {
             },
             name if intrinsics::is_meta_expr_named_call(name) => match args {
                 [callee, Value::List(args)] => {
-                    if self.fresh_ident_scope.is_none() {
+                    if self.compiler_syntax.fresh_ident_scope().is_none() {
                         return err(
                             "meta.expr_named_call is available only during compile-time expansion",
                         );
@@ -851,13 +850,13 @@ impl Interpreter {
                         args,
                         SyntaxCategory::Expr,
                         "CompilerExprSyntax",
-                        &self.compiler_expr_origins,
+                        self.compiler_syntax.expression_origins(),
                         self.cur_line,
                     );
                     let name = compiler_ident_name(callee, "meta.expr_named_call")?;
                     let args = args
                         .iter()
-                        .map(|arg| compiler_expr_syntax_value(arg, &self.compiler_expr_syntax))
+                        .map(|arg| compiler_expr_syntax_value(arg, self.compiler_syntax.expressions()))
                         .collect::<Result<Vec<_>, _>>()?;
                     Ok(Some(self.store_compiler_expr_syntax(
                         "expression-named-call",
@@ -869,21 +868,21 @@ impl Interpreter {
             },
             name if intrinsics::is_meta_expr_try(name) => match args {
                 [value] => {
-                    if self.fresh_ident_scope.is_none() {
+                    if self.compiler_syntax.fresh_ident_scope().is_none() {
                         return err("meta.expr_try is available only during compile-time expansion");
                     }
                     let hole_ancestry = compiler_direct_hole_origins(
                         std::slice::from_ref(value),
                         SyntaxCategory::Expr,
                         "CompilerExprSyntax",
-                        &self.compiler_expr_origins,
+                        self.compiler_syntax.expression_origins(),
                         self.cur_line,
                     );
-                    let value = compiler_expr_syntax_value(value, &self.compiler_expr_syntax)?;
+                    let value = compiler_expr_syntax_value(value, self.compiler_syntax.expressions())?;
                     let expr = Expr::Try(Box::new(value));
                     let handle = self.next_compiler_syntax_handle("expression-try")?;
-                    self.compiler_expr_syntax.insert(handle.clone(), expr);
-                    self.compiler_expr_origins.insert(
+                    self.compiler_syntax.insert_expression(handle.clone(), expr);
+                    self.compiler_syntax.insert_expression_origin(
                         handle.clone(),
                         ComptimeSyntaxOrigin { definition_line: self.cur_line, hole_ancestry },
                     );
@@ -896,19 +895,19 @@ impl Interpreter {
             },
             name if intrinsics::is_meta_expr_lambda(name) => match args {
                 [params, ret, body] => {
-                    if self.fresh_ident_scope.is_none() {
+                    if self.compiler_syntax.fresh_ident_scope().is_none() {
                         return err("meta.expr_lambda is available only during compile-time expansion");
                     }
-                    let params = compiler_params(params, &self.compiler_param_syntax)?;
-                    let ret = compiler_optional_type_syntax_value(ret, &self.compiler_type_syntax)?;
+                    let params = compiler_params(params, self.compiler_syntax.params())?;
+                    let ret = compiler_optional_type_syntax_value(ret, self.compiler_syntax.types())?;
                     let hole_ancestry = compiler_direct_hole_origins(
                         std::slice::from_ref(body),
                         SyntaxCategory::Expr,
                         "CompilerExprSyntax",
-                        &self.compiler_expr_origins,
+                        self.compiler_syntax.expression_origins(),
                         self.cur_line,
                     );
-                    let body = compiler_expr_syntax_value(body, &self.compiler_expr_syntax)?;
+                    let body = compiler_expr_syntax_value(body, self.compiler_syntax.expressions())?;
                     let expr = Expr::Lambda {
                         params,
                         body: Block { stmts: vec![Stmt::Expr(body)], lines: vec![0], region: None },
@@ -916,8 +915,8 @@ impl Interpreter {
                         qualifiers: CallableQualifiers::ORDINARY,
                     };
                     let handle = self.next_compiler_syntax_handle("expression-lambda")?;
-                    self.compiler_expr_syntax.insert(handle.clone(), expr);
-                    self.compiler_expr_origins.insert(
+                    self.compiler_syntax.insert_expression(handle.clone(), expr);
+                    self.compiler_syntax.insert_expression_origin(
                         handle.clone(),
                         ComptimeSyntaxOrigin { definition_line: self.cur_line, hole_ancestry },
                     );
@@ -930,7 +929,7 @@ impl Interpreter {
             },
             name if intrinsics::is_meta_expr_method_call(name) => match args {
                 [receiver, method, Value::List(args)] => {
-                    if self.fresh_ident_scope.is_none() {
+                    if self.compiler_syntax.fresh_ident_scope().is_none() {
                         return err("meta.expr_method_call is available only during compile-time expansion");
                     }
                     let mut inputs = Vec::with_capacity(args.len() + 1);
@@ -940,19 +939,19 @@ impl Interpreter {
                         &inputs,
                         SyntaxCategory::Expr,
                         "CompilerExprSyntax",
-                        &self.compiler_expr_origins,
+                        self.compiler_syntax.expression_origins(),
                         self.cur_line,
                     );
-                    let receiver = compiler_expr_syntax_value(receiver, &self.compiler_expr_syntax)?;
+                    let receiver = compiler_expr_syntax_value(receiver, self.compiler_syntax.expressions())?;
                     let method = compiler_ident_name(method, "meta.expr_method_call")?;
                     let args = args
                         .iter()
-                        .map(|arg| compiler_expr_syntax_value(arg, &self.compiler_expr_syntax))
+                        .map(|arg| compiler_expr_syntax_value(arg, self.compiler_syntax.expressions()))
                         .collect::<Result<Vec<_>, _>>()?;
                     let expr = Expr::MethodCall { receiver: Box::new(receiver), method, args };
                     let handle = self.next_compiler_syntax_handle("expression-method")?;
-                    self.compiler_expr_syntax.insert(handle.clone(), expr);
-                    self.compiler_expr_origins.insert(
+                    self.compiler_syntax.insert_expression(handle.clone(), expr);
+                    self.compiler_syntax.insert_expression_origin(
                         handle.clone(),
                         ComptimeSyntaxOrigin { definition_line: self.cur_line, hole_ancestry },
                     );
@@ -965,20 +964,20 @@ impl Interpreter {
             },
             name if intrinsics::is_meta_expr_qualified_call(name) => match args {
                 [module, member, Value::List(args)] => {
-                    if self.fresh_ident_scope.is_none() { return err("meta.expr_qualified_call is available only during compile-time expansion"); }
+                    if self.compiler_syntax.fresh_ident_scope().is_none() { return err("meta.expr_qualified_call is available only during compile-time expansion"); }
                     let module = compiler_ident_name(module, "meta.expr_qualified_call")?;
                     let member = compiler_ident_name(member, "meta.expr_qualified_call")?;
-                    let args = args.iter().map(|arg| compiler_expr_syntax_value(arg, &self.compiler_expr_syntax)).collect::<Result<Vec<_>, _>>()?;
+                    let args = args.iter().map(|arg| compiler_expr_syntax_value(arg, self.compiler_syntax.expressions())).collect::<Result<Vec<_>, _>>()?;
                     let expr = Expr::Call { name: format!("{module}.{member}"), args };
                     let handle = self.next_compiler_syntax_handle("expression-qualified-call")?;
-                    self.compiler_expr_syntax.insert(handle.clone(), expr);
+                    self.compiler_syntax.insert_expression(handle.clone(), expr);
                     Ok(Some(Value::Ctor { name: "meta.CompilerExprSyntax".into(), fields: Rc::new(vec![Value::str(handle)]) }))
                 }
                 _ => err("meta.expr_qualified_call expects Ident, Ident, and List(ExprSyntax)"),
             },
             name if intrinsics::is_meta_expr_qualified_call_path(name) => match args {
                 [Value::List(path), member, Value::List(args)] => {
-                    if self.fresh_ident_scope.is_none() {
+                    if self.compiler_syntax.fresh_ident_scope().is_none() {
                         return err(
                             "meta.expr_qualified_call_path is available only during compile-time expansion",
                         );
@@ -995,7 +994,7 @@ impl Interpreter {
                     let member = compiler_ident_name(member, "meta.expr_qualified_call_path")?;
                     let args = args
                         .iter()
-                        .map(|arg| compiler_expr_syntax_value(arg, &self.compiler_expr_syntax))
+                        .map(|arg| compiler_expr_syntax_value(arg, self.compiler_syntax.expressions()))
                         .collect::<Result<Vec<_>, _>>()?;
                     // A path supplied by `meta.expr_qualified_call_path` names a
                     // TYPE, not a module function.  Preserve that distinction in
@@ -1017,7 +1016,7 @@ impl Interpreter {
                         args,
                     };
                     let handle = self.next_compiler_syntax_handle("expression-qualified-call-path")?;
-                    self.compiler_expr_syntax.insert(handle.clone(), expr);
+                    self.compiler_syntax.insert_expression(handle.clone(), expr);
                     Ok(Some(Value::Ctor {
                         name: "meta.CompilerExprSyntax".into(),
                         fields: Rc::new(vec![Value::str(handle)]),
@@ -1029,18 +1028,18 @@ impl Interpreter {
             },
             name if intrinsics::is_meta_expr_dynamic_descriptor(name) => match args {
                 [value] => {
-                    if self.fresh_ident_scope.is_none() { return err("meta.expr_dynamic_descriptor is available only during compile-time expansion"); }
-                    let value = compiler_expr_syntax_value(value, &self.compiler_expr_syntax)?;
+                    if self.compiler_syntax.fresh_ident_scope().is_none() { return err("meta.expr_dynamic_descriptor is available only during compile-time expansion"); }
+                    let value = compiler_expr_syntax_value(value, self.compiler_syntax.expressions())?;
                     let expr = Expr::Call { name: witchy_syntax::intrinsics::DYNAMIC_DESCRIPTOR_ID.into(), args: vec![value] };
                     let handle = self.next_compiler_syntax_handle("expression-dynamic-descriptor")?;
-                    self.compiler_expr_syntax.insert(handle.clone(), expr);
+                    self.compiler_syntax.insert_expression(handle.clone(), expr);
                     Ok(Some(Value::Ctor { name: "meta.CompilerExprSyntax".into(), fields: Rc::new(vec![Value::str(handle)]) }))
                 }
                 _ => err("meta.expr_dynamic_descriptor expects ExprSyntax"),
             },
             name if intrinsics::is_meta_expr_field(name) => match args {
                 [base, field] => {
-                    if self.fresh_ident_scope.is_none() {
+                    if self.compiler_syntax.fresh_ident_scope().is_none() {
                         return err(
                             "meta.expr_field is available only during compile-time expansion",
                         );
@@ -1049,15 +1048,15 @@ impl Interpreter {
                         std::slice::from_ref(base),
                         SyntaxCategory::Expr,
                         "CompilerExprSyntax",
-                        &self.compiler_expr_origins,
+                        self.compiler_syntax.expression_origins(),
                         self.cur_line,
                     );
-                    let base = compiler_expr_syntax_value(base, &self.compiler_expr_syntax)?;
+                    let base = compiler_expr_syntax_value(base, self.compiler_syntax.expressions())?;
                     let field = compiler_ident_name(field, "meta.expr_field")?;
                     let expr = Expr::Field { base: Box::new(base), field };
                     let handle = self.next_compiler_syntax_handle("expression-field")?;
-                    self.compiler_expr_syntax.insert(handle.clone(), expr);
-                    self.compiler_expr_origins.insert(
+                    self.compiler_syntax.insert_expression(handle.clone(), expr);
+                    self.compiler_syntax.insert_expression_origin(
                         handle.clone(),
                         ComptimeSyntaxOrigin { definition_line: self.cur_line, hole_ancestry },
                     );
@@ -1070,7 +1069,7 @@ impl Interpreter {
             },
             name if intrinsics::is_meta_expr_index(name) => match args {
                 [base, index] => {
-                    if self.fresh_ident_scope.is_none() {
+                    if self.compiler_syntax.fresh_ident_scope().is_none() {
                         return err("meta.expr_index is available only during compile-time expansion");
                     }
                     let inputs = [base.clone(), index.clone()];
@@ -1078,11 +1077,11 @@ impl Interpreter {
                         &inputs,
                         SyntaxCategory::Expr,
                         "CompilerExprSyntax",
-                        &self.compiler_expr_origins,
+                        self.compiler_syntax.expression_origins(),
                         self.cur_line,
                     );
-                    let base = compiler_expr_syntax_value(base, &self.compiler_expr_syntax)?;
-                    let index = compiler_expr_syntax_value(index, &self.compiler_expr_syntax)?;
+                    let base = compiler_expr_syntax_value(base, self.compiler_syntax.expressions())?;
+                    let index = compiler_expr_syntax_value(index, self.compiler_syntax.expressions())?;
                     Ok(Some(self.store_compiler_expr_syntax(
                         "expression-index",
                         Expr::Index { base: Box::new(base), index: Box::new(index) },
@@ -1093,7 +1092,7 @@ impl Interpreter {
             },
             name if intrinsics::is_meta_expr_binary(name) => match args {
                 [Value::Str(op), lhs, rhs] => {
-                    if self.fresh_ident_scope.is_none() {
+                    if self.compiler_syntax.fresh_ident_scope().is_none() {
                         return err(
                             "meta.expr_binary is available only during compile-time expansion",
                         );
@@ -1125,11 +1124,11 @@ impl Interpreter {
                         &inputs,
                         SyntaxCategory::Expr,
                         "CompilerExprSyntax",
-                        &self.compiler_expr_origins,
+                        self.compiler_syntax.expression_origins(),
                         self.cur_line,
                     );
-                    let lhs = compiler_expr_syntax_value(lhs, &self.compiler_expr_syntax)?;
-                    let rhs = compiler_expr_syntax_value(rhs, &self.compiler_expr_syntax)?;
+                    let lhs = compiler_expr_syntax_value(lhs, self.compiler_syntax.expressions())?;
+                    let rhs = compiler_expr_syntax_value(rhs, self.compiler_syntax.expressions())?;
                     Ok(Some(self.store_compiler_expr_syntax(
                         "expression-binary",
                         Expr::Binary { op, lhs: Box::new(lhs), rhs: Box::new(rhs) },
@@ -1140,7 +1139,7 @@ impl Interpreter {
             },
             name if intrinsics::is_meta_expr_unary(name) => match args {
                 [Value::Str(op), value] => {
-                    if self.fresh_ident_scope.is_none() {
+                    if self.compiler_syntax.fresh_ident_scope().is_none() {
                         return err("meta.expr_unary is available only during compile-time expansion");
                     }
                     let op = match op.as_str() {
@@ -1155,10 +1154,10 @@ impl Interpreter {
                         std::slice::from_ref(value),
                         SyntaxCategory::Expr,
                         "CompilerExprSyntax",
-                        &self.compiler_expr_origins,
+                        self.compiler_syntax.expression_origins(),
                         self.cur_line,
                     );
-                    let value = compiler_expr_syntax_value(value, &self.compiler_expr_syntax)?;
+                    let value = compiler_expr_syntax_value(value, self.compiler_syntax.expressions())?;
                     Ok(Some(self.store_compiler_expr_syntax(
                         "expression-unary",
                         Expr::Unary { op, expr: Box::new(value) },
@@ -1169,7 +1168,7 @@ impl Interpreter {
             },
             name if intrinsics::is_meta_expr_range(name) => match args {
                 [lo, hi, Value::Bool(inclusive)] => {
-                    if self.fresh_ident_scope.is_none() {
+                    if self.compiler_syntax.fresh_ident_scope().is_none() {
                         return err("meta.expr_range is available only during compile-time expansion");
                     }
                     let inputs = [lo.clone(), hi.clone()];
@@ -1177,11 +1176,11 @@ impl Interpreter {
                         &inputs,
                         SyntaxCategory::Expr,
                         "CompilerExprSyntax",
-                        &self.compiler_expr_origins,
+                        self.compiler_syntax.expression_origins(),
                         self.cur_line,
                     );
-                    let lo = compiler_expr_syntax_value(lo, &self.compiler_expr_syntax)?;
-                    let hi = compiler_expr_syntax_value(hi, &self.compiler_expr_syntax)?;
+                    let lo = compiler_expr_syntax_value(lo, self.compiler_syntax.expressions())?;
+                    let hi = compiler_expr_syntax_value(hi, self.compiler_syntax.expressions())?;
                     Ok(Some(self.store_compiler_expr_syntax(
                         "expression-range",
                         witchy_syntax::parser::desugar_range(lo, hi, *inclusive),
@@ -1192,7 +1191,7 @@ impl Interpreter {
             },
             name if intrinsics::is_meta_expr_list(name) => match args {
                 [Value::List(elements)] => {
-                    if self.fresh_ident_scope.is_none() {
+                    if self.compiler_syntax.fresh_ident_scope().is_none() {
                         return err(
                             "meta.expr_list is available only during compile-time expansion",
                         );
@@ -1201,13 +1200,13 @@ impl Interpreter {
                         elements,
                         SyntaxCategory::Expr,
                         "CompilerExprSyntax",
-                        &self.compiler_expr_origins,
+                        self.compiler_syntax.expression_origins(),
                         self.cur_line,
                     );
                     let elements = elements
                         .iter()
                         .map(|element| {
-                            compiler_expr_syntax_value(element, &self.compiler_expr_syntax)
+                            compiler_expr_syntax_value(element, self.compiler_syntax.expressions())
                         })
                         .collect::<Result<Vec<_>, _>>()?;
                     Ok(Some(self.store_compiler_expr_syntax(
@@ -1220,7 +1219,7 @@ impl Interpreter {
             },
             name if intrinsics::is_meta_expr_tuple(name) => match args {
                 [Value::List(elements)] => {
-                    if self.fresh_ident_scope.is_none() {
+                    if self.compiler_syntax.fresh_ident_scope().is_none() {
                         return err(
                             "meta.expr_tuple is available only during compile-time expansion",
                         );
@@ -1229,13 +1228,13 @@ impl Interpreter {
                         elements,
                         SyntaxCategory::Expr,
                         "CompilerExprSyntax",
-                        &self.compiler_expr_origins,
+                        self.compiler_syntax.expression_origins(),
                         self.cur_line,
                     );
                     let elements = elements
                         .iter()
                         .map(|element| {
-                            compiler_expr_syntax_value(element, &self.compiler_expr_syntax)
+                            compiler_expr_syntax_value(element, self.compiler_syntax.expressions())
                         })
                         .collect::<Result<Vec<_>, _>>()?;
                     Ok(Some(self.store_compiler_expr_syntax(
@@ -1248,7 +1247,7 @@ impl Interpreter {
             },
             name if intrinsics::is_meta_expr_record(name) => match args {
                 [name, Value::List(fields), base] => {
-                    if self.fresh_ident_scope.is_none() {
+                    if self.compiler_syntax.fresh_ident_scope().is_none() {
                         return err(
                             "meta.expr_record is available only during compile-time expansion",
                         );
@@ -1277,7 +1276,7 @@ impl Interpreter {
                         }
                         _ => None,
                     };
-                    let base = compiler_optional_expr_syntax_value(base, &self.compiler_expr_syntax)?;
+                    let base = compiler_optional_expr_syntax_value(base, self.compiler_syntax.expressions())?;
                     if let Some(base_input) = base_input {
                         inputs.push(base_input);
                     }
@@ -1285,7 +1284,7 @@ impl Interpreter {
                         &inputs,
                         SyntaxCategory::Expr,
                         "CompilerExprSyntax",
-                        &self.compiler_expr_origins,
+                        self.compiler_syntax.expression_origins(),
                         self.cur_line,
                     );
                     let mut seen = std::collections::HashSet::with_capacity(fields.len());
@@ -1305,7 +1304,7 @@ impl Interpreter {
                             }
                             Ok((
                                 field_name,
-                                compiler_expr_syntax_value(value, &self.compiler_expr_syntax)?,
+                                compiler_expr_syntax_value(value, self.compiler_syntax.expressions())?,
                             ))
                         })
                         .collect::<Result<Vec<_>, _>>()?;
@@ -1321,16 +1320,16 @@ impl Interpreter {
             },
             name if intrinsics::is_meta_match_arm(name) => match args {
                 [pattern, body] => {
-                    if self.fresh_ident_scope.is_none() {
+                    if self.compiler_syntax.fresh_ident_scope().is_none() {
                         return err(
                             "meta.match_arm is available only during compile-time expansion",
                         );
                     }
                     let pattern = compiler_pattern_syntax_value(
                         pattern,
-                        &self.compiler_pattern_syntax,
+                        self.compiler_syntax.patterns(),
                     )?;
-                    let body = compiler_expr_syntax_value(body, &self.compiler_expr_syntax)?;
+                    let body = compiler_expr_syntax_value(body, self.compiler_syntax.expressions())?;
                     let arm = MatchArm {
                         line: self.cur_line,
                         pattern,
@@ -1338,7 +1337,7 @@ impl Interpreter {
                         body,
                     };
                     let handle = self.next_compiler_syntax_handle("match-arm")?;
-                    self.compiler_match_arm_syntax.insert(handle.clone(), arm);
+                    self.compiler_syntax.insert_match_arm(handle.clone(), arm);
                     Ok(Some(Value::Ctor {
                         name: "meta.CompilerMatchArmSyntax".into(),
                         fields: Rc::new(vec![Value::str(handle)]),
@@ -1348,7 +1347,7 @@ impl Interpreter {
             },
             name if intrinsics::is_meta_expr_match(name) => match args {
                 [scrutinee, arms] => {
-                    if self.fresh_ident_scope.is_none() {
+                    if self.compiler_syntax.fresh_ident_scope().is_none() {
                         return err(
                             "meta.expr_match is available only during compile-time expansion",
                         );
@@ -1357,16 +1356,16 @@ impl Interpreter {
                         std::slice::from_ref(scrutinee),
                         SyntaxCategory::Expr,
                         "CompilerExprSyntax",
-                        &self.compiler_expr_origins,
+                        self.compiler_syntax.expression_origins(),
                         self.cur_line,
                     );
                     let scrutinee =
-                        compiler_expr_syntax_value(scrutinee, &self.compiler_expr_syntax)?;
-                    let arms = compiler_match_arms(arms, &self.compiler_match_arm_syntax)?;
+                        compiler_expr_syntax_value(scrutinee, self.compiler_syntax.expressions())?;
+                    let arms = compiler_match_arms(arms, self.compiler_syntax.match_arms())?;
                     let expr = Expr::Match { scrutinee: Box::new(scrutinee), arms };
                     let handle = self.next_compiler_syntax_handle("expression-match")?;
-                    self.compiler_expr_syntax.insert(handle.clone(), expr);
-                    self.compiler_expr_origins.insert(
+                    self.compiler_syntax.insert_expression(handle.clone(), expr);
+                    self.compiler_syntax.insert_expression_origin(
                         handle.clone(),
                         ComptimeSyntaxOrigin { definition_line: self.cur_line, hole_ancestry },
                     );
@@ -1379,23 +1378,23 @@ impl Interpreter {
             },
             name if intrinsics::is_meta_expr_block(name) => match args {
                 [body] => {
-                    if self.fresh_ident_scope.is_none() { return err("meta.expr_block is available only during compile-time expansion"); }
-                    let body = compiler_block_syntax_value(body, &self.compiler_block_syntax)?;
+                    if self.compiler_syntax.fresh_ident_scope().is_none() { return err("meta.expr_block is available only during compile-time expansion"); }
+                    let body = compiler_block_syntax_value(body, self.compiler_syntax.blocks())?;
                     let expr = Expr::Block(body);
                     let handle = self.next_compiler_syntax_handle("expression-block")?;
-                    self.compiler_expr_syntax.insert(handle.clone(), expr);
+                    self.compiler_syntax.insert_expression(handle.clone(), expr);
                     Ok(Some(Value::Ctor { name: "meta.CompilerExprSyntax".into(), fields: Rc::new(vec![Value::str(handle)]) }))
                 }
                 _ => err("meta.expr_block expects BlockSyntax"),
             },
             name if intrinsics::is_meta_expr_if(name) => match args {
                 [cond, then_body, else_body] => {
-                    if self.fresh_ident_scope.is_none() {
+                    if self.compiler_syntax.fresh_ident_scope().is_none() {
                         return err("meta.expr_if is available only during compile-time expansion");
                     }
-                    let cond = compiler_expr_syntax_value(cond, &self.compiler_expr_syntax)?;
-                    let then_block = compiler_block_syntax_value(then_body, &self.compiler_block_syntax)?;
-                    let else_block = compiler_optional_block_syntax_value(else_body, &self.compiler_block_syntax)?;
+                    let cond = compiler_expr_syntax_value(cond, self.compiler_syntax.expressions())?;
+                    let then_block = compiler_block_syntax_value(then_body, self.compiler_syntax.blocks())?;
+                    let else_block = compiler_optional_block_syntax_value(else_body, self.compiler_syntax.blocks())?;
                     let expr = Expr::If { cond: Box::new(cond), then_block, else_block };
                     Ok(Some(self.store_compiler_expr_syntax("expression-if", expr, Vec::new())?))
                 }
@@ -1403,12 +1402,12 @@ impl Interpreter {
             },
             name if intrinsics::is_meta_expr_for(name) => match args {
                 [binding, iter, body] => {
-                    if self.fresh_ident_scope.is_none() {
+                    if self.compiler_syntax.fresh_ident_scope().is_none() {
                         return err("meta.expr_for is available only during compile-time expansion");
                     }
                     let var = compiler_binding_ident_name(binding, "meta.expr_for")?;
-                    let iter = compiler_expr_syntax_value(iter, &self.compiler_expr_syntax)?;
-                    let body = compiler_block_syntax_value(body, &self.compiler_block_syntax)?;
+                    let iter = compiler_expr_syntax_value(iter, self.compiler_syntax.expressions())?;
+                    let body = compiler_block_syntax_value(body, self.compiler_syntax.blocks())?;
                     let expr = Expr::For { var, iter: Box::new(iter), body };
                     Ok(Some(self.store_compiler_expr_syntax("expression-for", expr, Vec::new())?))
                 }
@@ -1416,11 +1415,11 @@ impl Interpreter {
             },
             name if intrinsics::is_meta_expr_while(name) => match args {
                 [cond, body] => {
-                    if self.fresh_ident_scope.is_none() {
+                    if self.compiler_syntax.fresh_ident_scope().is_none() {
                         return err("meta.expr_while is available only during compile-time expansion");
                     }
-                    let cond = compiler_expr_syntax_value(cond, &self.compiler_expr_syntax)?;
-                    let body = compiler_block_syntax_value(body, &self.compiler_block_syntax)?;
+                    let cond = compiler_expr_syntax_value(cond, self.compiler_syntax.expressions())?;
+                    let body = compiler_block_syntax_value(body, self.compiler_syntax.blocks())?;
                     let expr = Expr::While { cond: Box::new(cond), body };
                     Ok(Some(self.store_compiler_expr_syntax("expression-while", expr, Vec::new())?))
                 }
@@ -1428,26 +1427,26 @@ impl Interpreter {
             },
             name if intrinsics::is_meta_expr_while_let(name) => match args {
                 [pattern, scrutinee, body] => {
-                    if self.fresh_ident_scope.is_none() {
+                    if self.compiler_syntax.fresh_ident_scope().is_none() {
                         return err("meta.expr_while_let is available only during compile-time expansion");
                     }
                     let mut hole_ancestry = compiler_direct_hole_origins(
                         std::slice::from_ref(pattern),
                         SyntaxCategory::Pattern,
                         "CompilerPatternSyntax",
-                        &self.compiler_pattern_origins,
+                        self.compiler_syntax.pattern_origins(),
                         self.cur_line,
                     );
                     hole_ancestry.extend(compiler_direct_hole_origins(
                         std::slice::from_ref(scrutinee),
                         SyntaxCategory::Expr,
                         "CompilerExprSyntax",
-                        &self.compiler_expr_origins,
+                        self.compiler_syntax.expression_origins(),
                         self.cur_line,
                     ));
-                    let pattern = compiler_pattern_syntax_value(pattern, &self.compiler_pattern_syntax)?;
-                    let scrutinee = compiler_expr_syntax_value(scrutinee, &self.compiler_expr_syntax)?;
-                    let body = compiler_block_syntax_value(body, &self.compiler_block_syntax)?;
+                    let pattern = compiler_pattern_syntax_value(pattern, self.compiler_syntax.patterns())?;
+                    let scrutinee = compiler_expr_syntax_value(scrutinee, self.compiler_syntax.expressions())?;
+                    let body = compiler_block_syntax_value(body, self.compiler_syntax.blocks())?;
                     let expr = witchy_syntax::parser::desugar_while_let(pattern, scrutinee, body);
                     Ok(Some(self.store_compiler_expr_syntax(
                         "expression-while-let",
@@ -1459,10 +1458,10 @@ impl Interpreter {
             },
             name if intrinsics::is_meta_expr_await(name) => match args {
                 [value] => {
-                    if self.fresh_ident_scope.is_none() {
+                    if self.compiler_syntax.fresh_ident_scope().is_none() {
                         return err("meta.expr_await is available only during compile-time expansion");
                     }
-                    let value = compiler_expr_syntax_value(value, &self.compiler_expr_syntax)?;
+                    let value = compiler_expr_syntax_value(value, self.compiler_syntax.expressions())?;
                     let expr = Expr::Unary { op: UnOp::Await, expr: Box::new(value) };
                     Ok(Some(self.store_compiler_expr_syntax("expression-await", expr, Vec::new())?))
                 }
@@ -1470,13 +1469,13 @@ impl Interpreter {
             },
             name if intrinsics::is_meta_stmt_expr(name) => match args {
                 [expr] => {
-                    if self.fresh_ident_scope.is_none() {
+                    if self.compiler_syntax.fresh_ident_scope().is_none() {
                         return err(
                             "meta.stmt_expr is available only during compile-time expansion",
                         );
                     }
                     let expr =
-                        compiler_expr_syntax_value(expr, &self.compiler_expr_syntax)?;
+                        compiler_expr_syntax_value(expr, self.compiler_syntax.expressions())?;
                     Ok(Some(self.store_compiler_stmt_syntax(
                         "expression-statement",
                         Stmt::Expr(expr),
@@ -1486,13 +1485,13 @@ impl Interpreter {
             },
             name if intrinsics::is_meta_stmt_return(name) => match args {
                 [expr] => {
-                    if self.fresh_ident_scope.is_none() {
+                    if self.compiler_syntax.fresh_ident_scope().is_none() {
                         return err(
                             "meta.stmt_return is available only during compile-time expansion",
                         );
                     }
                     let expr =
-                        compiler_expr_syntax_value(expr, &self.compiler_expr_syntax)?;
+                        compiler_expr_syntax_value(expr, self.compiler_syntax.expressions())?;
                     Ok(Some(self.store_compiler_stmt_syntax(
                         "return-statement",
                         Stmt::Return(Some(expr)),
@@ -1502,17 +1501,17 @@ impl Interpreter {
             },
             name if intrinsics::is_meta_stmt_yield(name) => match args {
                 [value] => {
-                    if self.fresh_ident_scope.is_none() {
+                    if self.compiler_syntax.fresh_ident_scope().is_none() {
                         return err("meta.stmt_yield is available only during compile-time expansion");
                     }
-                    let value = compiler_expr_syntax_value(value, &self.compiler_expr_syntax)?;
+                    let value = compiler_expr_syntax_value(value, self.compiler_syntax.expressions())?;
                     Ok(Some(self.store_compiler_stmt_syntax("yield-statement", Stmt::Yield(value))?))
                 }
                 _ => err("meta.stmt_yield expects ExprSyntax"),
             },
             name if intrinsics::is_meta_stmt_let(name) => match args {
                 [Value::Bool(mutable), binding, ty, value] => {
-                    if self.fresh_ident_scope.is_none() {
+                    if self.compiler_syntax.fresh_ident_scope().is_none() {
                         return err(
                             "meta.stmt_let is available only during compile-time expansion",
                         );
@@ -1520,10 +1519,10 @@ impl Interpreter {
                     let name = compiler_binding_ident_name(binding, "meta.stmt_let")?;
                     let ty = compiler_optional_type_syntax_value(
                         ty,
-                        &self.compiler_type_syntax,
+                        self.compiler_syntax.types(),
                     )?;
                     let value =
-                        compiler_expr_syntax_value(value, &self.compiler_expr_syntax)?;
+                        compiler_expr_syntax_value(value, self.compiler_syntax.expressions())?;
                     Ok(Some(self.store_compiler_stmt_syntax(
                         "let-statement",
                         Stmt::Let { name, ty, mutable: *mutable, value },
@@ -1535,11 +1534,11 @@ impl Interpreter {
             },
             name if intrinsics::is_meta_stmt_let_pattern(name) => match args {
                 [pattern, value] => {
-                    if self.fresh_ident_scope.is_none() {
+                    if self.compiler_syntax.fresh_ident_scope().is_none() {
                         return err("meta.stmt_let_pattern is available only during compile-time expansion");
                     }
-                    let pattern = compiler_pattern_syntax_value(pattern, &self.compiler_pattern_syntax)?;
-                    let value = compiler_expr_syntax_value(value, &self.compiler_expr_syntax)?;
+                    let pattern = compiler_pattern_syntax_value(pattern, self.compiler_syntax.patterns())?;
+                    let value = compiler_expr_syntax_value(value, self.compiler_syntax.expressions())?;
                     Ok(Some(self.store_compiler_stmt_syntax(
                         "let-pattern-statement",
                         Stmt::LetPattern { pattern, value },
@@ -1549,11 +1548,11 @@ impl Interpreter {
             },
             name if intrinsics::is_meta_stmt_assign(name) => match args {
                 [binding, value] => {
-                    if self.fresh_ident_scope.is_none() {
+                    if self.compiler_syntax.fresh_ident_scope().is_none() {
                         return err("meta.stmt_assign is available only during compile-time expansion");
                     }
                     let name = compiler_binding_ident_name(binding, "meta.stmt_assign")?;
-                    let value = compiler_expr_syntax_value(value, &self.compiler_expr_syntax)?;
+                    let value = compiler_expr_syntax_value(value, self.compiler_syntax.expressions())?;
                     Ok(Some(self.store_compiler_stmt_syntax(
                         "assign-statement",
                         Stmt::Assign { name, value, place_depth: 0 },
@@ -1563,17 +1562,17 @@ impl Interpreter {
             },
             name if intrinsics::is_meta_block(name) => match args {
                 [Value::List(stmts), tail] => {
-                    if self.fresh_ident_scope.is_none() {
+                    if self.compiler_syntax.fresh_ident_scope().is_none() {
                         return err("meta.block is available only during compile-time expansion");
                     }
                     let mut stmts = stmts
                         .iter()
                         .map(|stmt| {
-                            compiler_stmt_syntax_value(stmt, &self.compiler_stmt_syntax)
+                            compiler_stmt_syntax_value(stmt, self.compiler_syntax.statements())
                         })
                         .collect::<Result<Vec<_>, _>>()?;
                     if let Some(tail) =
-                        compiler_optional_expr_syntax_value(tail, &self.compiler_expr_syntax)?
+                        compiler_optional_expr_syntax_value(tail, self.compiler_syntax.expressions())?
                     {
                         stmts.push(Stmt::Expr(tail));
                     }
@@ -1588,7 +1587,7 @@ impl Interpreter {
                         region: None,
                     };
                     let handle = self.next_compiler_syntax_handle("block-builder")?;
-                    self.compiler_block_syntax.insert(handle.clone(), block);
+                    self.compiler_syntax.insert_block(handle.clone(), block);
                     Ok(Some(Value::Ctor {
                         name: "meta.CompilerBlockSyntax".into(),
                         fields: Rc::new(vec![Value::str(handle)]),
@@ -1598,17 +1597,17 @@ impl Interpreter {
             },
             name if intrinsics::is_meta_block_region(name) => match args {
                 [body, result] => {
-                    if self.fresh_ident_scope.is_none() {
+                    if self.compiler_syntax.fresh_ident_scope().is_none() {
                         return err("meta.block_region is available only during compile-time expansion");
                     }
-                    let mut body = compiler_block_syntax_value(body, &self.compiler_block_syntax)?;
+                    let mut body = compiler_block_syntax_value(body, self.compiler_syntax.blocks())?;
                     if body.region.is_some() {
                         return err("meta.block_region cannot nest an annotation on the same block");
                     }
-                    let ty = compiler_optional_type_syntax_value(result, &self.compiler_type_syntax)?;
+                    let ty = compiler_optional_type_syntax_value(result, self.compiler_syntax.types())?;
                     body.region = Some(RegionAnn { ty });
                     let handle = self.next_compiler_syntax_handle("region-block")?;
-                    self.compiler_block_syntax.insert(handle.clone(), body);
+                    self.compiler_syntax.insert_block(handle.clone(), body);
                     Ok(Some(Value::Ctor {
                         name: "meta.CompilerBlockSyntax".into(),
                         fields: Rc::new(vec![Value::str(handle)]),
@@ -1618,7 +1617,7 @@ impl Interpreter {
             },
             name if intrinsics::is_meta_param(name) => match args {
                 [Value::Str(convention), binding, ty] => {
-                    if self.fresh_ident_scope.is_none() {
+                    if self.compiler_syntax.fresh_ident_scope().is_none() {
                         return err("meta.param is available only during compile-time expansion");
                     }
                     let convention = match convention.as_str() {
@@ -1629,7 +1628,7 @@ impl Interpreter {
                         _ => return err("meta.param: unsupported parameter convention"),
                     };
                     let name = compiler_binding_ident_name(binding, "meta.param")?;
-                    let ty = compiler_type_syntax_value(ty, &self.compiler_type_syntax)?;
+                    let ty = compiler_type_syntax_value(ty, self.compiler_syntax.types())?;
                     let param = Param {
                         name,
                         ty: Some(ty),
@@ -1637,7 +1636,7 @@ impl Interpreter {
                         default: None,
                     };
                     let handle = self.next_compiler_syntax_handle("parameter")?;
-                    self.compiler_param_syntax.insert(handle.clone(), param);
+                    self.compiler_syntax.insert_param(handle.clone(), param);
                     Ok(Some(Value::Ctor {
                         name: "meta.CompilerParamSyntax".into(),
                         fields: Rc::new(vec![Value::str(handle)]),
@@ -1647,7 +1646,7 @@ impl Interpreter {
             },
             name if intrinsics::is_meta_function_block(name) => match args {
                 [Value::Bool(public), Value::Bool(is_async), Value::Bool(is_gen), name, params, ret, body] => {
-                    if self.fresh_ident_scope.is_none() {
+                    if self.compiler_syntax.fresh_ident_scope().is_none() {
                         return err(
                             "meta.function_block is available only during compile-time expansion",
                         );
@@ -1656,7 +1655,7 @@ impl Interpreter {
                         return err("meta.function_block cannot be both async and generator");
                     }
                     let name = compiler_binding_ident_name(name, "meta.function_block")?;
-                    let params = compiler_params(params, &self.compiler_param_syntax)?;
+                    let params = compiler_params(params, self.compiler_syntax.params())?;
                     if (*is_async || *is_gen)
                         && let Some(param) = params.iter().find(|param| param.convention == Convention::Var)
                     {
@@ -1667,9 +1666,9 @@ impl Interpreter {
                     }
                     let ret = compiler_optional_type_syntax_value(
                         ret,
-                        &self.compiler_type_syntax,
+                        self.compiler_syntax.types(),
                     )?;
-                    let body = compiler_block_syntax_value(body, &self.compiler_block_syntax)?;
+                    let body = compiler_block_syntax_value(body, self.compiler_syntax.blocks())?;
                     if body.region.is_some() {
                         return err("meta.function_block expects an ordinary function body; use meta.expr_block for a region expression");
                     }
@@ -1700,7 +1699,7 @@ impl Interpreter {
                         is_async: *is_async,
                     });
                     let handle = self.next_compiler_syntax_handle("function-item")?;
-                    self.compiler_item_syntax.insert(handle.clone(), item);
+                    self.compiler_syntax.insert_item(handle.clone(), item);
                     Ok(Some(Value::Ctor {
                         name: OWNED_ITEM_SYNTAX_CTOR.into(),
                         fields: Rc::new(vec![
@@ -1715,20 +1714,20 @@ impl Interpreter {
             },
             name if intrinsics::is_meta_impl_block(name) => match args {
                 [trait_ty, target_ty, items] => {
-                    if self.fresh_ident_scope.is_none() {
+                    if self.compiler_syntax.fresh_ident_scope().is_none() {
                         return err(
                             "meta.impl_block is available only during compile-time expansion",
                         );
                     }
                     let trait_ty =
-                        compiler_type_syntax_value(trait_ty, &self.compiler_type_syntax)?;
+                        compiler_type_syntax_value(trait_ty, self.compiler_syntax.types())?;
                     let target_ty =
-                        compiler_type_syntax_value(target_ty, &self.compiler_type_syntax)?;
+                        compiler_type_syntax_value(target_ty, self.compiler_syntax.types())?;
                     let (trait_name, trait_args) =
                         compiler_impl_head(trait_ty, "trait", "meta.impl_block")?;
                     let (type_name, target_args) =
                         compiler_impl_head(target_ty, "target", "meta.impl_block")?;
-                    let methods = compiler_impl_methods(items, &self.compiler_item_syntax)?;
+                    let methods = compiler_impl_methods(items, self.compiler_syntax.items())?;
                     let item = Item::Impl(ImplDef {
                         origin: ImplOrigin::Source,
                         trait_name: Some(trait_name),
@@ -1739,7 +1738,7 @@ impl Interpreter {
                         methods,
                     });
                     let handle = self.next_compiler_syntax_handle("impl-item")?;
-                    self.compiler_item_syntax.insert(handle.clone(), item);
+                    self.compiler_syntax.insert_item(handle.clone(), item);
                     Ok(Some(Value::Ctor {
                         name: OWNED_ITEM_SYNTAX_CTOR.into(),
                         fields: Rc::new(vec![
@@ -1754,18 +1753,18 @@ impl Interpreter {
             },
             name if intrinsics::is_meta_impl_block_where(name) => match args {
                 [trait_ty, target_ty, bounds, items] => {
-                    if self.fresh_ident_scope.is_none() {
+                    if self.compiler_syntax.fresh_ident_scope().is_none() {
                         return err("meta.impl_block_where is available only during compile-time expansion");
                     }
-                    let trait_ty = compiler_type_syntax_value(trait_ty, &self.compiler_type_syntax)?;
-                    let target_ty = compiler_type_syntax_value(target_ty, &self.compiler_type_syntax)?;
+                    let trait_ty = compiler_type_syntax_value(trait_ty, self.compiler_syntax.types())?;
+                    let target_ty = compiler_type_syntax_value(target_ty, self.compiler_syntax.types())?;
                     let (trait_name, trait_args) = compiler_impl_head(trait_ty, "trait", "meta.impl_block_where")?;
                     let (type_name, target_args) = compiler_impl_head(target_ty, "target", "meta.impl_block_where")?;
                     let bounds = compiler_impl_bounds(bounds)?;
-                    let methods = compiler_impl_methods(items, &self.compiler_item_syntax)?;
+                    let methods = compiler_impl_methods(items, self.compiler_syntax.items())?;
                     let item = Item::Impl(ImplDef { origin: ImplOrigin::Source, trait_name: Some(trait_name), trait_args, type_name, target_args, bounds, methods });
                     let handle = self.next_compiler_syntax_handle("impl-item")?;
-                    self.compiler_item_syntax.insert(handle.clone(), item);
+                    self.compiler_syntax.insert_item(handle.clone(), item);
                     Ok(Some(Value::Ctor { name: OWNED_ITEM_SYNTAX_CTOR.into(), fields: Rc::new(vec![Value::str(handle), Value::Int(i64::from(self.cur_line))]) }))
                 }
                 _ => err("meta.impl_block_where expects TypeSyntax, TypeSyntax, List((Ident, Ident)), and List(ItemSyntax)"),
@@ -1775,7 +1774,7 @@ impl Interpreter {
                     if &**name == OWNED_ITEM_SYNTAX_CTOR
                         && matches!(fields.as_slice(), [Value::Str(_), Value::Int(_)]) =>
                 {
-                    if self.fresh_ident_scope.is_none() {
+                    if self.compiler_syntax.fresh_ident_scope().is_none() {
                         return err(
                             "meta.item_with_imports is available only during compile-time expansion",
                         );
@@ -1797,16 +1796,14 @@ impl Interpreter {
                     let Value::Str(item_handle) = &fields[0] else {
                         unreachable!()
                     };
-                    let item = self
-                        .compiler_item_syntax
+                    let item = self.compiler_syntax.items()
                         .get(item_handle.as_str())
                         .cloned()
                         .ok_or_else(|| RuntimeError {
                             message: "meta.item_with_imports referenced an invalid compiler-owned item handle"
                                 .into(),
                         })?;
-                    let mut module = self
-                        .compiler_item_modules
+                    let mut module = self.compiler_syntax.item_modules()
                         .get(item_handle.as_str())
                         .cloned()
                         .unwrap_or_else(|| Module {
@@ -1830,8 +1827,8 @@ impl Interpreter {
                         }
                     }
                     let handle = self.next_compiler_syntax_handle("item-with-imports")?;
-                    self.compiler_item_syntax.insert(handle.clone(), item);
-                    self.compiler_item_modules.insert(handle.clone(), module);
+                    self.compiler_syntax.insert_item(handle.clone(), item);
+                    self.compiler_syntax.insert_item_module(handle.clone(), module);
                     Ok(Some(Value::Ctor {
                         name: OWNED_ITEM_SYNTAX_CTOR.into(),
                         fields: Rc::new(vec![
@@ -1845,19 +1842,19 @@ impl Interpreter {
                 ),
             },
             name if name == intrinsics::COMPILER_QUOTE_EXPR => {
-                if self.fresh_ident_scope.is_none() {
+                if self.compiler_syntax.fresh_ident_scope().is_none() {
                     return err(
                         "compiler-owned expression quotation is available only during compile-time expansion",
                     );
                 }
                 match args {
                     [Value::Str(handle), Value::Str(_source)]
-                        if self.compiler_expr_syntax.contains_key(handle.as_str()) =>
+                        if self.compiler_syntax.expressions().contains_key(handle.as_str()) =>
                     {
-                        let expr = self.compiler_expr_syntax[handle.as_str()].clone();
+                        let expr = self.compiler_syntax.expressions()[handle.as_str()].clone();
                         let instance_handle = self.next_compiler_syntax_handle("expression")?;
-                        self.compiler_expr_syntax.insert(instance_handle.clone(), expr);
-                        self.compiler_expr_origins.insert(
+                        self.compiler_syntax.insert_expression(instance_handle.clone(), expr);
+                        self.compiler_syntax.insert_expression_origin(
                             instance_handle.clone(),
                             ComptimeSyntaxOrigin {
                                 definition_line: self.cur_line,
@@ -1876,7 +1873,7 @@ impl Interpreter {
                 }
             }
             name if name == intrinsics::COMPILER_QUOTE_EXPR_HOLES => {
-                if self.fresh_ident_scope.is_none() {
+                if self.compiler_syntax.fresh_ident_scope().is_none() {
                     return err(
                         "compiler-owned expression quotation is available only during compile-time expansion",
                     );
@@ -1886,8 +1883,7 @@ impl Interpreter {
                         if parts.len() == holes.len() + 1
                             && parts.iter().all(|part| matches!(part, Value::Str(_))) =>
                     {
-                        let template = self
-                            .compiler_expr_syntax
+                        let template = self.compiler_syntax.expressions()
                             .get(handle.as_str())
                             .cloned()
                             .ok_or_else(|| RuntimeError {
@@ -1897,31 +1893,31 @@ impl Interpreter {
                         let definition_line = self.cur_line;
                         let hole_ancestry = compiler_item_hole_origins(
                             holes,
-                            &self.compiler_expr_origins,
-                            &self.compiler_type_origins,
-                            &self.compiler_pattern_origins,
+                            self.compiler_syntax.expression_origins(),
+                            self.compiler_syntax.type_origins(),
+                            self.compiler_syntax.pattern_origins(),
                             self.cur_line,
                         );
                         let holes = compiler_item_holes(
                             holes,
-                            &self.compiler_expr_syntax,
-                            &self.compiler_type_syntax,
-                            &self.compiler_pattern_syntax,
+                            self.compiler_syntax.expressions(),
+                            self.compiler_syntax.types(),
+                            self.compiler_syntax.patterns(),
                         )?;
                         let expr =
                             witchy_syntax::syntax_holes::instantiate_expr_mixed(&template, holes)
                                 .map_err(|message| RuntimeError { message })?;
                         let instance_handle = self.next_compiler_syntax_handle("expression")?;
-                        if let Some(existing) = self.compiler_expr_syntax.get(&instance_handle) {
+                        if let Some(existing) = self.compiler_syntax.expressions().get(&instance_handle) {
                             if existing != &expr {
                                 return err(
                                     "compiler-owned expression instance handle collided with a different AST",
                                 );
                             }
                         } else {
-                            self.compiler_expr_syntax.insert(instance_handle.clone(), expr);
+                            self.compiler_syntax.insert_expression(instance_handle.clone(), expr);
                         }
-                        self.compiler_expr_origins.insert(
+                        self.compiler_syntax.insert_expression_origin(
                             instance_handle.clone(),
                             ComptimeSyntaxOrigin { definition_line, hole_ancestry },
                         );
@@ -1939,19 +1935,19 @@ impl Interpreter {
                 }
             }
             name if name == intrinsics::COMPILER_QUOTE_TYPE => {
-                if self.fresh_ident_scope.is_none() {
+                if self.compiler_syntax.fresh_ident_scope().is_none() {
                     return err(
                         "compiler-owned type quotation is available only during compile-time expansion",
                     );
                 }
                 match args {
                     [Value::Str(handle), Value::Str(_source)]
-                        if self.compiler_type_syntax.contains_key(handle.as_str()) =>
+                        if self.compiler_syntax.types().contains_key(handle.as_str()) =>
                     {
-                        let ty = self.compiler_type_syntax[handle.as_str()].clone();
+                        let ty = self.compiler_syntax.types()[handle.as_str()].clone();
                         let instance_handle = self.next_compiler_syntax_handle("type")?;
-                        self.compiler_type_syntax.insert(instance_handle.clone(), ty);
-                        self.compiler_type_origins.insert(
+                        self.compiler_syntax.insert_type(instance_handle.clone(), ty);
+                        self.compiler_syntax.insert_type_origin(
                             instance_handle.clone(),
                             ComptimeSyntaxOrigin {
                                 definition_line: self.cur_line,
@@ -1970,7 +1966,7 @@ impl Interpreter {
                 }
             }
             name if name == intrinsics::COMPILER_QUOTE_TYPE_HOLES => {
-                if self.fresh_ident_scope.is_none() {
+                if self.compiler_syntax.fresh_ident_scope().is_none() {
                     return err(
                         "compiler-owned type quotation is available only during compile-time expansion",
                     );
@@ -1980,8 +1976,7 @@ impl Interpreter {
                         if parts.len() == holes.len() + 1
                             && parts.iter().all(|part| matches!(part, Value::Str(_))) =>
                     {
-                        let template = self
-                            .compiler_type_syntax
+                        let template = self.compiler_syntax.types()
                             .get(handle.as_str())
                             .cloned()
                             .ok_or_else(|| RuntimeError {
@@ -1993,23 +1988,23 @@ impl Interpreter {
                             holes,
                             SyntaxCategory::Type,
                             "CompilerTypeSyntax",
-                            &self.compiler_type_origins,
+                            self.compiler_syntax.type_origins(),
                             self.cur_line,
                         );
-                        let holes = compiler_type_holes(holes, &self.compiler_type_syntax)?;
+                        let holes = compiler_type_holes(holes, self.compiler_syntax.types())?;
                         let ty = witchy_syntax::syntax_holes::instantiate_type(&template, holes)
                             .map_err(|message| RuntimeError { message })?;
                         let instance_handle = self.next_compiler_syntax_handle("type")?;
-                        if let Some(existing) = self.compiler_type_syntax.get(&instance_handle) {
+                        if let Some(existing) = self.compiler_syntax.types().get(&instance_handle) {
                             if existing != &ty {
                                 return err(
                                     "compiler-owned type instance handle collided with a different AST",
                                 );
                             }
                         } else {
-                            self.compiler_type_syntax.insert(instance_handle.clone(), ty);
+                            self.compiler_syntax.insert_type(instance_handle.clone(), ty);
                         }
-                        self.compiler_type_origins.insert(
+                        self.compiler_syntax.insert_type_origin(
                             instance_handle.clone(),
                             ComptimeSyntaxOrigin { definition_line, hole_ancestry },
                         );
@@ -2027,19 +2022,19 @@ impl Interpreter {
                 }
             }
             name if name == intrinsics::COMPILER_QUOTE_PATTERN => {
-                if self.fresh_ident_scope.is_none() {
+                if self.compiler_syntax.fresh_ident_scope().is_none() {
                     return err(
                         "compiler-owned pattern quotation is available only during compile-time expansion",
                     );
                 }
                 match args {
                     [Value::Str(handle), Value::Str(_source)]
-                        if self.compiler_pattern_syntax.contains_key(handle.as_str()) =>
+                        if self.compiler_syntax.patterns().contains_key(handle.as_str()) =>
                     {
-                        let pattern = self.compiler_pattern_syntax[handle.as_str()].clone();
+                        let pattern = self.compiler_syntax.patterns()[handle.as_str()].clone();
                         let instance_handle = self.next_compiler_syntax_handle("pattern")?;
-                        self.compiler_pattern_syntax.insert(instance_handle.clone(), pattern);
-                        self.compiler_pattern_origins.insert(
+                        self.compiler_syntax.insert_pattern(instance_handle.clone(), pattern);
+                        self.compiler_syntax.insert_pattern_origin(
                             instance_handle.clone(),
                             ComptimeSyntaxOrigin {
                                 definition_line: self.cur_line,
@@ -2058,7 +2053,7 @@ impl Interpreter {
                 }
             }
             name if name == intrinsics::COMPILER_QUOTE_PATTERN_HOLES => {
-                if self.fresh_ident_scope.is_none() {
+                if self.compiler_syntax.fresh_ident_scope().is_none() {
                     return err(
                         "compiler-owned pattern quotation is available only during compile-time expansion",
                     );
@@ -2068,8 +2063,7 @@ impl Interpreter {
                         if parts.len() == holes.len() + 1
                             && parts.iter().all(|part| matches!(part, Value::Str(_))) =>
                     {
-                        let template = self
-                            .compiler_pattern_syntax
+                        let template = self.compiler_syntax.patterns()
                             .get(handle.as_str())
                             .cloned()
                             .ok_or_else(|| RuntimeError {
@@ -2081,26 +2075,25 @@ impl Interpreter {
                             holes,
                             SyntaxCategory::Pattern,
                             "CompilerPatternSyntax",
-                            &self.compiler_pattern_origins,
+                            self.compiler_syntax.pattern_origins(),
                             self.cur_line,
                         );
                         let holes =
-                            compiler_pattern_holes(holes, &self.compiler_pattern_syntax)?;
+                            compiler_pattern_holes(holes, self.compiler_syntax.patterns())?;
                         let pattern =
                             witchy_syntax::syntax_holes::instantiate_pattern(&template, holes)
                                 .map_err(|message| RuntimeError { message })?;
                         let instance_handle = self.next_compiler_syntax_handle("pattern")?;
-                        if let Some(existing) = self.compiler_pattern_syntax.get(&instance_handle) {
+                        if let Some(existing) = self.compiler_syntax.patterns().get(&instance_handle) {
                             if existing != &pattern {
                                 return err(
                                     "compiler-owned pattern instance handle collided with a different AST",
                                 );
                             }
                         } else {
-                            self.compiler_pattern_syntax
-                                .insert(instance_handle.clone(), pattern);
+                            self.compiler_syntax.insert_pattern(instance_handle.clone(), pattern);
                         }
-                        self.compiler_pattern_origins.insert(
+                        self.compiler_syntax.insert_pattern_origin(
                             instance_handle.clone(),
                             ComptimeSyntaxOrigin { definition_line, hole_ancestry },
                         );
@@ -2118,14 +2111,14 @@ impl Interpreter {
                 }
             }
             name if name == intrinsics::COMPILER_QUOTE_STMT => {
-                if self.fresh_ident_scope.is_none() {
+                if self.compiler_syntax.fresh_ident_scope().is_none() {
                     return err(
                         "compiler-owned statement quotation is available only during compile-time expansion",
                     );
                 }
                 match args {
                     [Value::Str(handle), Value::Str(_source)]
-                        if self.compiler_stmt_syntax.contains_key(handle.as_str()) =>
+                        if self.compiler_syntax.statements().contains_key(handle.as_str()) =>
                     {
                         Ok(Some(Value::Ctor {
                             name: "meta.CompilerStmtSyntax".into(),
@@ -2139,7 +2132,7 @@ impl Interpreter {
                 }
             }
             name if name == intrinsics::COMPILER_QUOTE_STMT_HOLES => {
-                if self.fresh_ident_scope.is_none() {
+                if self.compiler_syntax.fresh_ident_scope().is_none() {
                     return err(
                         "compiler-owned statement quotation is available only during compile-time expansion",
                     );
@@ -2149,8 +2142,7 @@ impl Interpreter {
                         if parts.len() == holes.len() + 1
                             && parts.iter().all(|part| matches!(part, Value::Str(_))) =>
                     {
-                        let template = self
-                            .compiler_stmt_syntax
+                        let template = self.compiler_syntax.statements()
                             .get(handle.as_str())
                             .cloned()
                             .ok_or_else(|| RuntimeError {
@@ -2159,23 +2151,23 @@ impl Interpreter {
                             })?;
                         let holes = compiler_item_holes(
                             holes,
-                            &self.compiler_expr_syntax,
-                            &self.compiler_type_syntax,
-                            &self.compiler_pattern_syntax,
+                            self.compiler_syntax.expressions(),
+                            self.compiler_syntax.types(),
+                            self.compiler_syntax.patterns(),
                         )?;
                         let stmt = witchy_syntax::syntax_holes::instantiate_stmt(&template, holes)
                             .map_err(|message| RuntimeError { message })?;
                         let source = witchy_syntax::format::stmt_str(&stmt);
                         let instance_handle =
                             format!("{handle}\0compiler-owned-statement-instance\0{source}");
-                        if let Some(existing) = self.compiler_stmt_syntax.get(&instance_handle) {
+                        if let Some(existing) = self.compiler_syntax.statements().get(&instance_handle) {
                             if existing != &stmt {
                                 return err(
                                     "compiler-owned statement instance handle collided with a different AST",
                                 );
                             }
                         } else {
-                            self.compiler_stmt_syntax.insert(instance_handle.clone(), stmt);
+                            self.compiler_syntax.insert_statement(instance_handle.clone(), stmt);
                         }
                         Ok(Some(Value::Ctor {
                             name: "meta.CompilerStmtSyntax".into(),
@@ -2191,14 +2183,14 @@ impl Interpreter {
                 }
             }
             name if name == intrinsics::COMPILER_QUOTE_BLOCK => {
-                if self.fresh_ident_scope.is_none() {
+                if self.compiler_syntax.fresh_ident_scope().is_none() {
                     return err(
                         "compiler-owned block quotation is available only during compile-time expansion",
                     );
                 }
                 match args {
                     [Value::Str(handle), Value::Str(_source)]
-                        if self.compiler_block_syntax.contains_key(handle.as_str()) =>
+                        if self.compiler_syntax.blocks().contains_key(handle.as_str()) =>
                     {
                         Ok(Some(Value::Ctor {
                             name: "meta.CompilerBlockSyntax".into(),
@@ -2212,7 +2204,7 @@ impl Interpreter {
                 }
             }
             name if name == intrinsics::COMPILER_QUOTE_BLOCK_HOLES => {
-                if self.fresh_ident_scope.is_none() {
+                if self.compiler_syntax.fresh_ident_scope().is_none() {
                     return err(
                         "compiler-owned block quotation is available only during compile-time expansion",
                     );
@@ -2222,8 +2214,7 @@ impl Interpreter {
                         if parts.len() == holes.len() + 1
                             && parts.iter().all(|part| matches!(part, Value::Str(_))) =>
                     {
-                        let template = self
-                            .compiler_block_syntax
+                        let template = self.compiler_syntax.blocks()
                             .get(handle.as_str())
                             .cloned()
                             .ok_or_else(|| RuntimeError {
@@ -2232,9 +2223,9 @@ impl Interpreter {
                             })?;
                         let holes = compiler_item_holes(
                             holes,
-                            &self.compiler_expr_syntax,
-                            &self.compiler_type_syntax,
-                            &self.compiler_pattern_syntax,
+                            self.compiler_syntax.expressions(),
+                            self.compiler_syntax.types(),
+                            self.compiler_syntax.patterns(),
                         )?;
                         let block =
                             witchy_syntax::syntax_holes::instantiate_block(&template, holes)
@@ -2242,14 +2233,14 @@ impl Interpreter {
                         let source = witchy_syntax::format::block_str(&block);
                         let instance_handle =
                             format!("{handle}\0compiler-owned-block-instance\0{source}");
-                        if let Some(existing) = self.compiler_block_syntax.get(&instance_handle) {
+                        if let Some(existing) = self.compiler_syntax.blocks().get(&instance_handle) {
                             if existing != &block {
                                 return err(
                                     "compiler-owned block instance handle collided with a different AST",
                                 );
                             }
                         } else {
-                            self.compiler_block_syntax.insert(instance_handle.clone(), block);
+                            self.compiler_syntax.insert_block(instance_handle.clone(), block);
                         }
                         Ok(Some(Value::Ctor {
                             name: "meta.CompilerBlockSyntax".into(),
@@ -2265,14 +2256,14 @@ impl Interpreter {
                 }
             }
             name if name == intrinsics::COMPILER_QUOTE_ITEM => {
-                if self.fresh_ident_scope.is_none() {
+                if self.compiler_syntax.fresh_ident_scope().is_none() {
                     return err(
                         "compiler-owned item quotation is available only during compile-time expansion",
                     );
                 }
                 match args {
                     [Value::Str(handle), Value::Str(_source)]
-                        if self.compiler_item_syntax.contains_key(handle.as_str()) =>
+                        if self.compiler_syntax.items().contains_key(handle.as_str()) =>
                     {
                         Ok(Some(Value::Ctor {
                             name: OWNED_ITEM_SYNTAX_CTOR.into(),
@@ -2289,14 +2280,14 @@ impl Interpreter {
                 }
             }
             name if name == intrinsics::COMPILER_QUOTE_ITEM_HOLES => {
-                if self.fresh_ident_scope.is_none() {
+                if self.compiler_syntax.fresh_ident_scope().is_none() {
                     return err(
                         "compiler-owned item quotation is available only during compile-time expansion",
                     );
                 }
                 match args {
                     [Value::Str(handle), Value::List(parts), Value::List(holes)]
-                        if self.compiler_item_syntax.contains_key(handle.as_str())
+                        if self.compiler_syntax.items().contains_key(handle.as_str())
                             && parts.len() == holes.len() + 1
                             && parts.iter().all(|part| matches!(part, Value::Str(_))) =>
                     {
@@ -2316,7 +2307,7 @@ impl Interpreter {
                 }
             }
             name if name == intrinsics::COMPILER_EMIT_ITEM => {
-                if self.fresh_ident_scope.is_none() {
+                if self.compiler_syntax.fresh_ident_scope().is_none() {
                     return err("item emission is available only during compile-time expansion");
                 }
                 let emission = match one(args)? {
@@ -2329,15 +2320,14 @@ impl Interpreter {
                             unreachable!()
                         };
                         let definition_line = u32::try_from(*definition_line).unwrap_or(0);
-                        if let Some(module) = self.compiler_item_modules.get(handle.as_str()) {
+                        if let Some(module) = self.compiler_syntax.item_modules().get(handle.as_str()) {
                             ComptimeItemEmission::ModuleSyntax {
                                 module: Box::new(module.clone()),
                                 definition_line,
                                 hole_ancestry: Vec::new(),
                             }
                         } else {
-                            let item = self
-                                .compiler_item_syntax
+                            let item = self.compiler_syntax.items()
                                 .get(handle.as_str())
                                 .cloned()
                                 .ok_or_else(|| RuntimeError {
@@ -2363,8 +2353,7 @@ impl Interpreter {
                         else {
                             unreachable!()
                         };
-                        let template = self
-                            .compiler_item_syntax
+                        let template = self.compiler_syntax.items()
                             .get(handle.as_str())
                             .ok_or_else(|| RuntimeError {
                                 message: "compiler-owned item emission referenced an invalid syntax handle"
@@ -2372,16 +2361,16 @@ impl Interpreter {
                             })?;
                         let hole_ancestry = compiler_item_hole_origins(
                             holes,
-                            &self.compiler_expr_origins,
-                            &self.compiler_type_origins,
-                            &self.compiler_pattern_origins,
+                            self.compiler_syntax.expression_origins(),
+                            self.compiler_syntax.type_origins(),
+                            self.compiler_syntax.pattern_origins(),
                             u32::try_from(*invocation_line).unwrap_or(0),
                         );
                         let holes = compiler_item_holes(
                             holes,
-                            &self.compiler_expr_syntax,
-                            &self.compiler_type_syntax,
-                            &self.compiler_pattern_syntax,
+                            self.compiler_syntax.expressions(),
+                            self.compiler_syntax.types(),
+                            self.compiler_syntax.patterns(),
                         )?;
                         let item = witchy_syntax::syntax_holes::instantiate_item(template, holes)
                             .map_err(|message| RuntimeError { message })?;
@@ -2393,14 +2382,14 @@ impl Interpreter {
                     }
                     _ => return err("emit_item expects meta.ItemSyntax"),
                 };
-                self.comptime_item_output.push(PositionedComptimeItem {
+                self.compiler_syntax.emit_item(PositionedComptimeItem {
                     output_position: self.output.len(),
                     emission,
                 });
                 Ok(Some(Value::Unit))
             }
             name if name == intrinsics::COMPILER_EMIT_EXPR => {
-                if self.fresh_ident_scope.is_none() {
+                if self.compiler_syntax.fresh_ident_scope().is_none() {
                     return err("expression emission is available only during compile-time expansion");
                 }
                 let emission = match one(args)? {
@@ -2411,8 +2400,7 @@ impl Interpreter {
                         let [Value::Str(handle)] = fields.as_slice() else {
                             return err("CompilerExprSyntax carried an invalid payload");
                         };
-                        let expr = self
-                            .compiler_expr_syntax
+                        let expr = self.compiler_syntax.expressions()
                             .get(handle.as_str())
                             .cloned()
                             .ok_or_else(|| RuntimeError {
@@ -2423,7 +2411,7 @@ impl Interpreter {
                     }
                     _ => return err("expression emission expects meta.ExprSyntax"),
                 };
-                self.comptime_expr_output.push(emission);
+                self.compiler_syntax.emit_expression(emission);
                 Ok(Some(Value::Unit))
             }
             // Pure builtins need no capability.

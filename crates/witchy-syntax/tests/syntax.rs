@@ -25,3 +25,5 @@ mod parser;
 mod source_check;
 #[path = "syntax/type_resolve.rs"]
 mod type_resolve;
+#[path = "syntax/compiler_session.rs"]
+mod compiler_session;
