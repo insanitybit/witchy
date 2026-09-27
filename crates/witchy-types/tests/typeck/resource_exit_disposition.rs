@@ -93,3 +93,13 @@ fn main() -> Int:
         checked(root, worker, local, body).expect("only iteration-local live obligations are lost by the exit");
     }
 }
+
+#[test]
+fn own_parameter_transfer_does_not_erase_the_callees_must_obligation() {
+    for mode in ["", "mode opt\n"] {
+        let source = format!("{mode}must type Ticket:\n    Ticket(Int)\n\nfn vanish(own ticket: Ticket) -> Int:\n    1\n\nfn main() -> Int:\n    vanish(Ticket(7))\n");
+        let error = source::checked(&source)
+            .expect_err("the callee must dispose of its received Ticket on ordinary return");
+        assert!(error.contains("ticket") && error.contains("must-consume"), "{error}");
+    }
+}

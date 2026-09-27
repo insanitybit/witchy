@@ -10390,9 +10390,6 @@ impl Checker {
             &ret,
             &format!("return type of `{}`", diagnostic_callable_name(&source_callable)),
         )?;
-        let suspension_frame = func.attributes.iter().any(|attribute| {
-            attribute == witchy_syntax::suspension::FRAME_FUNCTION_ATTRIBUTE
-        });
         for (param, ty) in func.params.iter().zip(&params) {
             let lazy_recipe = func.is_async && func.name != "main";
             if lazy_recipe && param.convention == Convention::Borrow {
@@ -10449,18 +10446,17 @@ impl Checker {
                 // `Task`; it does not execute the body or establish a checked
                 // cancellation cleanup.  Moving a must-consume parameter into
                 // that recipe would let the caller discard or replay the
-                // obligation before the first suspension.  Compiler-generated
-                // frame functions are checked separately below and retain the
-                // one exact non-cancellable root-transfer exception.
+                // obligation before the first suspension. Compiler-generated
+                // frame functions still receive a concrete local obligation;
+                // constructing a frame is not a general disposal operation.
                 match param.convention {
-                    // An `own` parameter is the declaration of a consuming
-                    // operation. The caller's obligation is discharged at the
-                    // call boundary; a must value returned by this function
-                    // creates a fresh obligation for its caller.
-                    Convention::Own if suspension_frame => {
+                    // The caller transfers its obligation at this boundary,
+                    // but that is not disposition inside the callee. The
+                    // received value must itself be consumed or forwarded on
+                    // every completing path, including error-valued returns.
+                    Convention::Own => {
                         self.mark_must_consume_binding(&param.name, ty);
                     }
-                    Convention::Own => {}
                     Convention::Borrow | Convention::Var => {
                         self.mark_borrowed_must_binding(&param.name);
                     }
