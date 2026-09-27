@@ -187,7 +187,8 @@ fn checked_source_only_module(src: &str, op: &str) -> Result<Module, String> {
         }
     }
 
-    witchy_types::pipeline::link_checked(modules, "main", expand_source)
+    witchy_types::pipeline::link_checked(modules, "main",
+        witchy_syntax::linker::ComptimeExpander::new(expand_source))
         .map_err(|e| e.to_string())?;
     // The public source-string footprint is the submitted module's footprint,
     // not the linked program's transitive std footprint. Linking/type-checking

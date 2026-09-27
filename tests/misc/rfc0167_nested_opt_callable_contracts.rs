@@ -50,7 +50,7 @@ fn main() -> Int:
 "#;
     let checked = witchy_types::pipeline::link_checked_from_source_bundle(
         vec![("worker".into(), worker.as_bytes().to_vec()), ("main".into(), main.as_bytes().to_vec())],
-        "main", witchy_interp::comptime::expand_compile_time,
+        "main", witchy_interp::comptime::EXPANDER,
     ).expect("source-linked recursive callback contracts");
     let artifact = codegen::compile_checked_module_artifact(&checked)
         .expect_lowered("canonical SafeWIR admission without optional optimization");

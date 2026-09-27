@@ -1089,11 +1089,7 @@ mod bundled_sources_on_disk {
 /// agnostic of how compile-time code is evaluated (RFC-0018): it never names
 /// `comptime`/`tagged`. `crate::comptime::expand_compile_time` is the production
 /// implementation; `crate::pipeline::link` wires it in.
-pub type ComptimeExpander = fn(
-    &str,
-    &mut Module,
-    &[(String, Module)],
-) -> Result<crate::origin::OriginTable, String>;
+pub use crate::expansion::ComptimeExpander;
 
 /// The ordinary linked runtime AST plus compiler-only generated-node metadata.
 /// Backends keep using [`link`] and therefore consume exactly the same `Module`;
@@ -1136,7 +1132,7 @@ impl LinkedModule {
 /// cannot claim reserved names). The single sibling-reading pass — tagged-
 /// literal expansion — is excluded by construction: a std source that even
 /// mentions `tag"` is never cached (see `pulled_std_cache_insert`). Keyed by
-/// the expander fn pointer so a non-standard `ComptimeExpander` gets its own
+/// the expander and context-request identities so a non-standard `ComptimeExpander` gets its own
 /// entries, never another expander's output. Native cargo test executables add
 /// a second, process-shared tier below this map; both tiers store the exact
 /// expanded source `Module` and its compiler-only `OriginTable` in an executable-
@@ -1150,14 +1146,14 @@ struct CachedStdExpansion {
 }
 
 static PULLED_STD_EXPANSION_CACHE: std::sync::OnceLock<
-    std::sync::Mutex<HashMap<(usize, String), CachedStdExpansion>>,
+    std::sync::Mutex<HashMap<((usize, usize), String), CachedStdExpansion>>,
 > = std::sync::OnceLock::new();
 
 fn pulled_std_cache_get(expand: ComptimeExpander, name: &str) -> Option<CachedStdExpansion> {
     if let Some(expansion) = PULLED_STD_EXPANSION_CACHE
         .get()
         .and_then(|cache| cache.lock().ok())
-        .and_then(|map| map.get(&(expand as usize, name.to_string())).cloned())
+        .and_then(|map| map.get(&(expand.cache_identity(), name.to_string())).cloned())
     {
         return Some(expansion);
     }
@@ -1166,7 +1162,7 @@ fn pulled_std_cache_get(expand: ComptimeExpander, name: &str) -> Option<CachedSt
     let cache =
         PULLED_STD_EXPANSION_CACHE.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
     if let Ok(mut map) = cache.lock() {
-        map.insert((expand as usize, name.to_string()), expansion.clone());
+        map.insert((expand.cache_identity(), name.to_string()), expansion.clone());
     }
     Some(expansion)
 }
@@ -1188,7 +1184,7 @@ fn pulled_std_cache_insert(
         PULLED_STD_EXPANSION_CACHE.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
     let expansion = CachedStdExpansion { module: module.clone(), origins: origins.clone() };
     if let Ok(mut map) = cache.lock() {
-        map.insert((expand as usize, name.to_string()), expansion.clone());
+        map.insert((expand.cache_identity(), name.to_string()), expansion.clone());
     }
     persistent_std_cache_insert(expand, name, &expansion);
 }
@@ -1263,12 +1259,15 @@ fn persistent_std_cache_path(expand: ComptimeExpander, name: &str) -> Option<std
         .ok()?
         .as_nanos();
     let anchor = persistent_std_cache_anchor as *const () as usize;
-    let expander_offset = (expand as *const () as usize).wrapping_sub(anchor);
+    let (callback, request) = expand.cache_identity();
+    let expander_offset = callback.wrapping_sub(anchor);
+    let request_offset = request.wrapping_sub(anchor);
     let mut identity = blake3::Hasher::new();
     identity.update(executable.file_name()?.to_string_lossy().as_bytes());
     identity.update(&metadata.len().to_le_bytes());
     identity.update(&modified.to_le_bytes());
     identity.update(&expander_offset.to_le_bytes());
+    identity.update(&request_offset.to_le_bytes());
     #[cfg(debug_assertions)]
     identity.update(bundled_sources_on_disk::digest());
     let identity = identity.finalize().to_hex();
@@ -2450,10 +2449,11 @@ where
         let expansion_sources = modules.clone();
         let names: Vec<String> = modules.iter().map(|(n, _)| n.clone()).collect();
         for (i, name) in names.iter().enumerate() {
+            let needs_siblings = expansion_uses_siblings && expand.needs_siblings(&modules[i].1);
             let siblings: Vec<(String, Module)> = modules
                 .iter()
                 .enumerate()
-                .filter(|(j, _)| expansion_uses_siblings && *j != i)
+                .filter(|(j, _)| needs_siblings && *j != i)
                 .map(|(j, (module_name, module))| {
                     (
                         module_name.clone(),
@@ -2461,7 +2461,7 @@ where
                     )
                 })
                 .collect();
-            let origins = expand(name, &mut modules[i].1, &siblings)
+            let origins = expand.run(name, &mut modules[i].1, &siblings)
                 .map_err(|message| LinkError { message, location: None })?;
             origin_tables.insert(name.clone(), origins);
         }
@@ -2543,15 +2543,16 @@ where
             continue;
         }
         let name = modules[k].0.clone();
+        let needs_siblings = expansion_uses_siblings && expand.needs_siblings(&modules[k].1);
         let siblings: Vec<(String, Module)> = modules
             .iter()
             .enumerate()
-            .filter(|(j, _)| expansion_uses_siblings && *j != k)
+            .filter(|(j, _)| needs_siblings && *j != k)
             .map(|(_, m)| m.clone())
             .collect();
         let imports_before =
             (modules[k].1.imports.clone(), modules[k].1.from_imports.clone());
-        let origins = expand(&name, &mut modules[k].1, &siblings)
+        let origins = expand.run(&name, &mut modules[k].1, &siblings)
             .map_err(|message| LinkError { message, location: None })?;
         origin_tables.insert(name, origins);
         pulled_imports_before.insert(k, imports_before);

@@ -109,7 +109,7 @@ fn checked_graph(main: &str) -> witchy_types::pipeline::CheckedModule {
             ("main".into(), main.as_bytes().to_vec()),
         ],
         "main",
-        witchy_interp::comptime::expand_compile_time,
+        witchy_interp::comptime::EXPANDER,
     )
     .expect("a normal module imports an opt module's view-bearing record")
 }

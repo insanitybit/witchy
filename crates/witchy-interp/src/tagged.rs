@@ -899,7 +899,7 @@ fn expand_one(
             linked_entry: None,
         },
     ));
-    let linked = witchy_syntax::linker::link(modules, &entry_module, expand_tag_program)
+    let linked = witchy_syntax::linker::link(modules, &entry_module, witchy_syntax::linker::ComptimeExpander::new(expand_tag_program))
         .map_err(|e| format!("{}: {e}", where_()))?;
     witchy_types::typeck::check_comptime(&linked).map_err(|e| format!("{}: {e}", where_()))?;
     let crate::interpreter::ComptimeOutputs {

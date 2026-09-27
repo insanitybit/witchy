@@ -47,7 +47,7 @@ impl<'a> Files<'a> {
                 ("registry_recipe".into(), include_bytes!("registry_verify.witchy").to_vec()),
                 ("gm_core".into(), include_bytes!("../../../projects/grimoire/src/gm_core.witchy").to_vec()),
                 ("coven_artifact".into(), include_bytes!("../../../projects/coven/src/coven_artifact.witchy").to_vec()),
-            ], "registry_recipe", comptime::expand_compile_time, &user_modules, owners)
+            ], "registry_recipe", comptime::EXPANDER, &user_modules, owners)
                 .map_err(|error| error.to_string())?);
         }
         Ok(self.verifier.as_ref().expect("registry verifier initialized"))

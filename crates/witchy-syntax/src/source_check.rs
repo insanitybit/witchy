@@ -222,7 +222,7 @@ impl ResolvedSource {
         crate::linker::link_with_user_modules_with_mode_and_origins_and_source_check_stage_fold_policy(
             modules,
             &self.entry,
-            no_expand,
+            crate::linker::ComptimeExpander::new(no_expand),
             false,
             &self.user_modules,
             self.mode,
@@ -351,7 +351,7 @@ impl ResolvedSource {
         crate::linker::link_with_user_modules_with_mode_and_origins_and_source_check_stage_fold_policy(
             modules,
             &self.entry,
-            no_expand,
+            crate::linker::ComptimeExpander::new(no_expand),
             false,
             &self.user_modules,
             self.mode,

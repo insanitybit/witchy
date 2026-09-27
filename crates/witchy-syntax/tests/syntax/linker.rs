@@ -3,13 +3,66 @@
     use witchy_syntax::ast::*;
 
     #[test]
+    fn expansion_context_is_explicit_and_default_callbacks_keep_siblings() {
+        fn full(name: &str, _: &mut Module, siblings: &[(String, Module)])
+            -> Result<witchy_syntax::origin::OriginTable, String>
+        {
+            if name == "main" {
+                assert!(siblings.iter().any(|(name, _)| name == "dependency"));
+            }
+            Ok(Default::default())
+        }
+        fn empty(_: &str, _: &mut Module, siblings: &[(String, Module)])
+            -> Result<witchy_syntax::origin::OriginTable, String>
+        {
+            assert!(siblings.is_empty());
+            Ok(Default::default())
+        }
+        fn no_context(_: &Module) -> bool { false }
+        let modules = vec![
+            ("main".into(), witchy_syntax::parser::parse_module(
+                "import dependency\nfn main() -> Int:\n    dependency.value()\n",
+            ).unwrap()),
+            ("dependency".into(), witchy_syntax::parser::parse_module(
+                "pub fn value() -> Int:\n    7\n",
+            ).unwrap()),
+        ];
+        let expected = link_with_origins(modules.clone(), "main", ComptimeExpander::new(full)).unwrap();
+        let actual = link_with_origins(modules, "main",
+            ComptimeExpander::with_sibling_request(empty, no_context)).unwrap();
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn expansion_cache_namespaces_include_context_policy() {
+        fn sensitive(name: &str, _: &mut Module, siblings: &[(String, Module)])
+            -> Result<witchy_syntax::origin::OriginTable, String>
+        {
+            if name == "option" && siblings.is_empty() {
+                return Err("option received the explicitly empty context".into());
+            }
+            Ok(Default::default())
+        }
+        fn no_context(_: &Module) -> bool { false }
+        let input = vec![("main".into(), witchy_syntax::parser::parse_module(
+            "import option\nfn main():\n    ()\n",
+        ).unwrap())];
+        let full = ComptimeExpander::new(sensitive);
+        let empty = ComptimeExpander::with_sibling_request(sensitive, no_context);
+        let expected = link_with_origins(input.clone(), "main", full).unwrap();
+        let error = link_with_origins(input.clone(), "main", empty).unwrap_err();
+        assert_eq!(error.message, "option received the explicitly empty context");
+        assert_eq!(link_with_origins(input, "main", full).unwrap(), expected);
+    }
+
+    #[test]
     fn typed_source_projection_stays_distinct_from_warm_runtime_cache() {
         let input = witchy_syntax::parser::parse_module(
             "async fn answer() -> Int:\n    7\n\nfn main():\n    ()\n",
         ).unwrap();
         let observed = std::cell::Cell::new(false);
         link_canonical_with_origins_and_source_check(
-            vec![("main".into(), input)], "main", noop_expand,
+            vec![("main".into(), input)], "main", witchy_syntax::linker::ComptimeExpander::new(noop_expand),
             LinkMode::Production, |source| {
                 let runtime = source.runtime_projection().unwrap();
                 assert_eq!(runtime, source.runtime_projection().unwrap());
@@ -130,7 +183,7 @@
         link_with_mode(
             vec![("sealed_lib".to_string(), libm), ("user".to_string(), userm)],
             "user",
-            noop_expand,
+            witchy_syntax::linker::ComptimeExpander::new(noop_expand),
             mode,
         )
         .map(|_| ())
@@ -139,7 +192,7 @@
 
     fn link_main(src: &str) -> Result<(), String> {
         let module = witchy_syntax::parser::parse_module(src).expect("parses");
-        link(vec![("main".to_string(), module)], "main", noop_expand)
+        link(vec![("main".to_string(), module)], "main", witchy_syntax::linker::ComptimeExpander::new(noop_expand))
             .map(|_| ())
             .map_err(|e| e.message)
     }
@@ -148,7 +201,7 @@
     fn async_generated_calls_keep_their_module_when_a_local_shadows_it() {
         let source = "async fn value() -> Int:\n    7\n\nasync fn main(console: Console):\n    let task = 1\n    let result = value().await\n    console.print(\"${result + task}\")\n";
         let parsed = witchy_syntax::parser::parse_module(source).expect("async source parses");
-        let linked = link(vec![("main".to_string(), parsed)], "main", noop_expand)
+        let linked = link(vec![("main".to_string(), parsed)], "main", witchy_syntax::linker::ComptimeExpander::new(noop_expand))
             .expect("generated task calls link despite the local binding");
         let mut generated_task_calls = 0;
         for item in &linked.items {
@@ -186,7 +239,7 @@
         let err = link(
             vec![("bytes".to_string(), bytes), ("main".to_string(), main)],
             "main",
-            noop_expand,
+            witchy_syntax::linker::ComptimeExpander::new(noop_expand),
         )
         .expect_err("default in-memory linking must reserve bundled std module names")
         .message;
@@ -304,7 +357,7 @@
         assert!(err.contains("`__channel_open` is a compiler-private intrinsic"), "{err}");
 
         let bytes = witchy_syntax::parser::parse_module(std_source("bytes").expect("std bytes")).expect("bytes parses");
-        link(vec![("bytes".to_string(), bytes)], "bytes", noop_expand)
+        link(vec![("bytes".to_string(), bytes)], "bytes", witchy_syntax::linker::ComptimeExpander::new(noop_expand))
             .expect("std/bytes may use the private bytes bridge");
 
         let task = witchy_syntax::parser::parse_module(std_source("task").expect("std task")).expect("task parses");
@@ -312,7 +365,7 @@
         link(
             vec![("task".to_string(), task), ("chan".to_string(), chan)],
             "chan",
-            noop_expand,
+            witchy_syntax::linker::ComptimeExpander::new(noop_expand),
         )
         .expect("std/chan may use task's private channel bridge");
     }
@@ -466,7 +519,7 @@
                 ("glamour".to_string(), witchy_syntax::parser::parse_module(glamour).expect("parse Glamour fixture")),
                 ("main".to_string(), witchy_syntax::parser::parse_module(&main).expect("parse caller fixture")),
             ];
-            let error = link_with_mode(modules, "main", noop_expand, LinkMode::Production)
+            let error = link_with_mode(modules, "main", witchy_syntax::linker::ComptimeExpander::new(noop_expand), LinkMode::Production)
                 .expect_err("ordinary production source cannot call compiler-owned origin constructor")
                 .to_string();
             assert!(
@@ -490,7 +543,7 @@
         let error = link(
             vec![("api".into(), api), ("normal".into(), normal)],
             "normal",
-            noop_expand,
+            witchy_syntax::linker::ComptimeExpander::new(noop_expand),
         )
         .expect_err("normal source must not name a reference-bearing opt type");
         assert!(
@@ -513,7 +566,7 @@
         let error = link(
             vec![("views".into(), views), ("user".into(), user)],
             "user",
-            noop_expand,
+            witchy_syntax::linker::ComptimeExpander::new(noop_expand),
         )
         .expect_err("exclusive references must remain visible across imports");
         assert!(error.message.contains("remains live across `await`"), "{}", error.message);
@@ -608,7 +661,7 @@
                 ("user".to_string(), user),
             ],
             "user",
-            noop_expand,
+            witchy_syntax::linker::ComptimeExpander::new(noop_expand),
             LinkMode::Test,
         )
         .expect_err("only the entry test module receives sealed data construction privilege")

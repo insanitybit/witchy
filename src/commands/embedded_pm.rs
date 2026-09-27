@@ -158,7 +158,7 @@ pub(crate) fn run_embedded_pm(raw: Vec<String>) -> ! {
         // These exact bytes come only from the compiler's embedded sources.
         // Parsing to discover imports must not discard canonical source proof.
         witchy_types::pipeline::link_checked_from_source_bundle(
-            modules, entry, witchy_interp::comptime::expand_compile_time,
+            modules, entry, witchy_interp::comptime::EXPANDER,
         ).map_err(|e| e.to_string())
     })();
     let checked = match checked {

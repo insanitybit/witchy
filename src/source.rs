@@ -114,7 +114,7 @@ pub(crate) fn link_build_file(path: &str) -> Result<witchy_types::pipeline::Chec
         path, &HashMap::new(), owner, &HashMap::new(),
     )?;
     witchy_types::pipeline::check_build_recipe_from_source_bundle(
-        sources, &entry, comptime::expand_compile_time, &user_modules, owners,
+        sources, &entry, comptime::EXPANDER, &user_modules, owners,
     ).map_err(|error| error.to_string())
 }
 
@@ -277,7 +277,7 @@ pub(crate) fn checked_precompiled_source_bundle(
     }
     let environment = witchy_types::precompiled_declarations::PrecompiledDeclarationEnvironment::new(declarations)?;
     let checked = witchy_types::pipeline::link_checked_authenticated_from_source_bundle_with_precompiled_declarations(
-        sources, &entry, comptime::expand_compile_time, &user_modules, owners, environment,
+        sources, &entry, comptime::EXPANDER, &user_modules, owners, environment,
     ).map_err(|error| error.to_string())?;
     Ok(PrecompiledCheckedModule { checked, entry, external_libraries })
 }

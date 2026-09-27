@@ -24,6 +24,7 @@ pub mod consts;
 pub mod derive;
 pub mod diag;
 pub mod doc;
+mod expansion;
 pub mod fmt;
 pub mod format;
 pub mod generators;

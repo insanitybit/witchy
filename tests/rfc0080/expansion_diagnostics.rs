@@ -111,6 +111,29 @@ fn link(modules: Vec<(&str, &str)>) -> Result<(), String> {
 }
 
 #[test]
+fn comptime_generated_tags_keep_imported_sibling_context() {
+    link(vec![
+        ("tags", "import meta\n\npub comptime fn answer(parts: List(String), holes: List(meta.TagHole)) -> meta.ExprSyntax:\n    meta.expr_int(42)\n"),
+        ("main", r#"
+import meta
+import tags
+
+comptime fn generated_item() -> meta.ItemSyntax:
+    let call = meta.expr_tagged(meta.ident("answer"), [""], [])
+    quote item:
+        pub fn generated() -> Int:
+            ${call}
+
+comptime:
+    emit_item(generated_item())
+
+fn main() -> Int:
+    generated()
+"#),
+    ]).expect("a comptime block can generate the first imported tag in a module");
+}
+
+#[test]
 fn quote_hole_diagnostics_keep_definition_and_invocation_context() {
     let parsed = parser::parse_module(
         r#"

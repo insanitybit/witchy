@@ -54,7 +54,7 @@ fn main(console: Console) -> Int:
         let mut sources = vec![("main".into(), main.into_bytes())];
         if imported { sources.push(("fast".into(), fast.into_bytes())); }
         let program = witchy_types::pipeline::link_checked_from_source_bundle(
-            sources, "main", witchy_interp::comptime::expand_compile_time,
+            sources, "main", witchy_interp::comptime::EXPANDER,
         ).expect("source check");
         let artifact = witchy::codegen::compile_checked_module_artifact(&program)
             .expect_lowered("unoptimized canonical SafeWIR admission");

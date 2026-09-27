@@ -109,7 +109,7 @@ pub(super) fn checked_bundle(
     witchy_types::pipeline::link_checked_authenticated_from_source_bundle_with_user_modules(
         sources,
         entry,
-        |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
+        witchy_syntax::linker::ComptimeExpander::new(|_, _, _| Ok(witchy_syntax::origin::OriginTable::default())),
         &user_modules,
         owners,
     )

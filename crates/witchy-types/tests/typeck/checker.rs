@@ -654,7 +654,7 @@
             "import task\n\nmust type Ticket:\n    Ticket(Int)\n\nfn finish(own ticket: Ticket) -> Int:\n    1\n\nasync fn pause() -> Int:\n    0\n\nasync fn main():\n    let ticket = Ticket(1)\n    let value = pause().await\n    let _ = finish(ticket) + value\n",
         )
         .expect("root-suspension fixture parses");
-        let linked = witchy_syntax::linker::link(vec![("main".into(), main)], "main", no_comptime)
+        let linked = witchy_syntax::linker::link(vec![("main".into(), main)], "main", witchy_syntax::linker::ComptimeExpander::new(no_comptime))
             .expect("root-suspension fixture links with std task");
         let error = annotate_checked_source(linked)
             .expect_err("a root continuation cannot hide a must obligation in a replayable Task");

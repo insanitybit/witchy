@@ -15,7 +15,7 @@ fn try_checked(
     witchy_types::pipeline::link_checked_from_source_bundle(
         vec![("main".to_string(), source.as_bytes().to_vec())],
         "main",
-        no_expand,
+        witchy_syntax::linker::ComptimeExpander::new(no_expand),
     )
 }
 

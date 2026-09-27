@@ -28,7 +28,7 @@
         let linked = witchy_syntax::linker::link(
             vec![("main".into(), main), ("api".into(), api)],
             "main",
-            no_comptime,
+            witchy_syntax::linker::ComptimeExpander::new(no_comptime),
         )
         .map_err(|error| witchy_types::typeck::TypeError { message: error.to_string() })?;
         check(&linked)
@@ -36,7 +36,7 @@
 
     fn linked_main(source: &str) -> Result<(), witchy_types::typeck::TypeError> {
         let main = witchy_syntax::parser::parse_reference_migration(source).expect("parse linked main");
-        let linked = witchy_syntax::linker::link(vec![("main".into(), main)], "main", no_comptime)
+        let linked = witchy_syntax::linker::link(vec![("main".into(), main)], "main", witchy_syntax::linker::ComptimeExpander::new(no_comptime))
             .expect("link main with bundled std modules");
         check(&linked)
     }
@@ -155,7 +155,7 @@
         let err = witchy_syntax::linker::link(
             vec![("main".into(), main)],
             "main",
-            no_comptime,
+            witchy_syntax::linker::ComptimeExpander::new(no_comptime),
         )
         .expect_err("a shared reference cannot cross an async function boundary");
         assert!(

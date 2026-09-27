@@ -88,7 +88,7 @@ fn assert_wasm(main: &str, expected: &str) {
         let checked = witchy_types::pipeline::link_checked_from_source_bundle(
             vec![("main".into(), main.into_bytes()), ("fast".into(), FAST.as_bytes().to_vec())],
             "main",
-            witchy_interp::comptime::expand_compile_time,
+            witchy_interp::comptime::EXPANDER,
         ).expect("resource success transfer checks");
         let artifact = witchy::codegen::compile_checked_module_artifact(&checked)
             .expect_lowered("unoptimized canonical SafeWIR admission");

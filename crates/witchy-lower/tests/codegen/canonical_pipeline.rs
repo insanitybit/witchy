@@ -19,7 +19,7 @@ fn checked(source: &str) -> CheckedModule {
     witchy_types::pipeline::link_checked_from_source_bundle(
         vec![("main".to_string(), source.as_bytes().to_vec())],
         "main",
-        no_expand,
+        witchy_syntax::linker::ComptimeExpander::new(no_expand),
     )
     .expect("checked source")
 }
@@ -198,14 +198,14 @@ fn clock_does_not_select_monotonic_or_other_capabilities() {
     assert!(!imports.iter().any(|name| name == "now_monotonic"), "{imports:?}");
     assert!(witchy_types::pipeline::link_checked_from_source_bundle(
         vec![("wrong".into(), b"fn main(console: Console) -> Int:\n    console.now()\n".to_vec())],
-        "wrong", no_expand).is_err(), "Console must not carry Clock authority");
+        "wrong", witchy_syntax::linker::ComptimeExpander::new(no_expand)).is_err(), "Console must not carry Clock authority");
 }
 
 #[test]
 fn shared_callable_cannot_satisfy_unique_function_value_contract() {
     let source = "mode opt\n\nfn shared(var values: List(Int), value: Int) -> ():\n    values.push(value)\n\nfn apply(callback: fn(var unique List(Int), Int) -> (), var values: unique List(Int)) -> ():\n    callback(values, 3)\n\nfn main() -> Int:\n    var values: unique List(Int) = [1, 2]\n    apply(shared, values)\n    values.length()\n";
     let error = match witchy_types::pipeline::link_checked_from_source_bundle(
-        vec![("main".to_string(), source.as_bytes().to_vec())], "main", no_expand)
+        vec![("main".to_string(), source.as_bytes().to_vec())], "main", witchy_syntax::linker::ComptimeExpander::new(no_expand))
     {
         Ok(_) => panic!("an ordinary callable must not satisfy var unique callback contract"),
         Err(error) => error,
@@ -237,7 +237,7 @@ fn dynamic_construction_rejects_a_transitive_capability_before_lowering() {
     let error = witchy_types::pipeline::link_checked_authenticated_from_source_bundle_with_user_modules(
         vec![("main".to_owned(), source.as_bytes().to_vec())],
         "main",
-        no_expand,
+        witchy_syntax::linker::ComptimeExpander::new(no_expand),
         &std::collections::HashSet::from(["main".to_owned()]),
         owners,
     )

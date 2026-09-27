@@ -205,7 +205,7 @@ mod tests {
         witchy_syntax::linker::link_with_user_modules(
             modules,
             entry,
-            no_comptime_expansion,
+            witchy_syntax::linker::ComptimeExpander::new(no_comptime_expansion),
             user_modules,
         )
         .expect("link lowering test modules")
@@ -242,7 +242,7 @@ mod tests {
         witchy_syntax::linker::link(
             vec![("app".to_string(), app)],
             "app",
-            no_comptime_expansion,
+            witchy_syntax::linker::ComptimeExpander::new(no_comptime_expansion),
         )
         .expect("link bundled consumer app")
     }
@@ -345,7 +345,7 @@ mod tests {
         let users = std::collections::HashSet::from(["main".to_owned()]);
         let recipe = witchy_types::pipeline::check_build_recipe_from_source_bundle(
             vec![("main".to_owned(), source.as_bytes().to_vec())],
-            "main", no_comptime_expansion, &users, owners,
+            "main", witchy_syntax::linker::ComptimeExpander::new(no_comptime_expansion), &users, owners,
         ).expect("check original build source and generated recipe");
         let artifact = witchy_lower::codegen::compile_checked_build_recipe_artifact(&recipe)
             .expect_lowered("admit grantful build recipe");
@@ -926,7 +926,7 @@ fn main():
             let module = witchy_syntax::linker::link(
                 vec![("main".to_string(), entry)],
                 "main",
-                no_comptime,
+                witchy_syntax::linker::ComptimeExpander::new(no_comptime),
             )
             .expect("link bundled std without checking types");
             let error = compile_module_binary(&module)
@@ -1033,7 +1033,7 @@ fn main() -> Int:
         let checked = witchy_types::pipeline::link_checked_authenticated(
             vec![("main".into(), module)],
             "main",
-            no_expand,
+            witchy_syntax::linker::ComptimeExpander::new(no_expand),
             owners,
         )
         .expect("authenticated Dynamic checked link");
@@ -1567,7 +1567,7 @@ fn main() -> Int:
         let checked = witchy_types::pipeline::link_checked(
             vec![("app".to_string(), app)],
             "app",
-            no_comptime_expansion,
+            witchy_syntax::linker::ComptimeExpander::new(no_comptime_expansion),
         )
         .expect("link forced-copy knucleotide fixture");
         let result = compile_checked_module_binary(&checked);

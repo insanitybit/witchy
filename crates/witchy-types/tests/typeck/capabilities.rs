@@ -168,7 +168,7 @@ mod pipeline {
         use witchy_syntax::ast::{Expr, Item, Type};
         let source = b"import dynamic\n\n@dynamic\npub fn announce(self: Int, console: Console) -> Int:\n    console.print(\"called\")\n    self\n\nfn main(console: Console):\n    let value = dynamic.dynamic(7)\n    let _ = dynamic.call_with(value, \"announce\", [], console)\n";
         let checked = link_checked_source_bundle_with(
-            vec![("main".into(), source.to_vec())], "main", no_expand, None,
+            vec![("main".into(), source.to_vec())], "main", witchy_syntax::linker::ComptimeExpander::new(no_expand), None,
             Some(dynamic_source_owners("example/dynamic-capability")),
             None,
         ).expect("capability arguments remain statically checked values");
@@ -200,7 +200,7 @@ mod pipeline {
         for (declaration, receiver) in [("", "Console"), ("type Stash:\n    console: Console\n\n", "Stash")] {
             let source = format!("import dynamic\n\n{declaration}@dynamic\npub fn bad(self: {receiver}) -> Int:\n    0\n\nfn main() -> Int:\n    0\n");
             let error = link_checked_source_bundle_with(
-                vec![("main".into(), source.into_bytes())], "main", no_expand, None,
+                vec![("main".into(), source.into_bytes())], "main", witchy_syntax::linker::ComptimeExpander::new(no_expand), None,
                 Some(dynamic_source_owners("example/forbidden-payload")),
                 None,
             ).expect_err("direct and transitive capability payloads must refuse");
@@ -219,7 +219,7 @@ mod pipeline {
                 b"fn peek(dir: Dir[Read]) -> Int:\n    1\n\nfn main(dir: Dir) -> Int:\n    peek(dir)\n".to_vec(),
             )],
             "main",
-            no_expand,
+            witchy_syntax::linker::ComptimeExpander::new(no_expand),
         )
         .expect("a valid program with a rights-qualified capability checks");
         let canonical = checked.canonical_source().expect("canonical source");

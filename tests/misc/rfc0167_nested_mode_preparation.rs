@@ -18,7 +18,7 @@ fn checked(main: &str) -> Result<witchy_types::pipeline::CheckedModule, String> 
         vec![("fast".into(), FAST.as_bytes().to_vec()),
              ("main".into(), main.as_bytes().to_vec())],
         "main",
-        witchy_interp::comptime::expand_compile_time,
+        witchy_interp::comptime::EXPANDER,
     ).map_err(|error| error.to_string())
 }
 

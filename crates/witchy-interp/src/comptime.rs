@@ -734,6 +734,15 @@ fn stamp_expr(e: &mut Expr, line: u32) {
     }
 }
 
+/// The linker needs sibling snapshots only when expansion can consult them.
+pub const EXPANDER: witchy_syntax::linker::ComptimeExpander =
+    witchy_syntax::linker::ComptimeExpander::with_sibling_request(expand_compile_time, needs_expansion);
+
+fn needs_expansion(module: &Module) -> bool {
+    module.items.iter().any(|item| matches!(item, Item::Comptime(_)))
+        || crate::tagged::needs_expansion(module)
+}
+
 /// Run both compile-time expansion passes for one module, in order: `comptime:`
 /// blocks first, then `tag"…"` tagged literals. This is the expander callback
 /// the linker invokes per module — the linker stays agnostic of how compile-time
@@ -747,8 +756,7 @@ pub fn expand_compile_time(
     // Ordinary modules have no expensive expansion to memoize. Keep running
     // both passes and finalization below, but avoid hashing sibling ASTs and
     // retaining a cloned result just to cache an expansion-free module.
-    let key = (module.items.iter().any(|item| matches!(item, Item::Comptime(_)))
-        || crate::tagged::needs_expansion(module))
+    let key = needs_expansion(module)
         .then(|| expansion_cache_key(name, module, siblings));
     if let Some(key) = key
         && let Ok(cache) = expansion_cache().lock()

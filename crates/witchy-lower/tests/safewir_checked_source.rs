@@ -21,7 +21,7 @@ impl SourceChecker for Frontend {
         let checked = witchy_types::pipeline::link_checked_from_source_bundle(
             vec![(entry.to_string(), source.to_vec())],
             entry,
-            |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
+            witchy_syntax::linker::ComptimeExpander::new(|_, _, _| Ok(witchy_syntax::origin::OriginTable::default())),
         )
         .expect("checked source");
         let source = checked.canonical_source().expect("canonical source");
@@ -145,7 +145,7 @@ mod closure_owner_contract {
     fn opaque_closure_contract_does_not_enable_pure_capability_capture() {
         let checked = witchy_types::pipeline::link_checked_from_source_bundle(
             vec![("main".into(), b"fn main(console: Console):\n    let bad = pure fn(msg: String): console.print(msg)\n    bad(\"no\")\n".to_vec())],
-            "main", |_, _, _| Ok(Default::default()),
+            "main", witchy_syntax::linker::ComptimeExpander::new(|_, _, _| Ok(Default::default())),
         );
         assert!(checked.is_err(), "pure capture restrictions remain a source obligation");
     }

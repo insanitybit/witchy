@@ -82,7 +82,7 @@ pub fn link_with_origins(
     witchy_syntax::linker::link_with_origins(
         modules,
         entry,
-        crate::comptime::expand_compile_time,
+        crate::comptime::EXPANDER,
     )
     .map(|linked| ToolingLinkedModule { linked })
 }
@@ -95,7 +95,7 @@ pub(crate) fn link_with_mode(
     witchy_syntax::linker::link_with_mode(
         modules,
         entry,
-        crate::comptime::expand_compile_time,
+        crate::comptime::EXPANDER,
         mode,
     )
 }
@@ -110,7 +110,7 @@ pub fn link_checked(
     witchy_types::pipeline::link_checked(
         modules,
         entry,
-        crate::comptime::expand_compile_time,
+        crate::comptime::EXPANDER,
     )
 }
 
@@ -123,7 +123,7 @@ pub fn link_checked_authenticated(
     witchy_types::pipeline::link_checked_authenticated(
         modules,
         entry,
-        crate::comptime::expand_compile_time,
+        crate::comptime::EXPANDER,
         module_owners,
     )
 }
@@ -137,7 +137,7 @@ pub fn link_checked_test_with_user_modules(
     witchy_types::pipeline::link_checked_test_with_user_modules(
         modules,
         entry,
-        crate::comptime::expand_compile_time,
+        crate::comptime::EXPANDER,
         user_modules,
     )
 }
@@ -163,7 +163,7 @@ pub fn link_with_user_modules_with_mode(
     witchy_syntax::linker::link_with_user_modules_with_mode(
         modules,
         entry,
-        crate::comptime::expand_compile_time,
+        crate::comptime::EXPANDER,
         user_modules,
         mode,
     )
@@ -183,7 +183,7 @@ pub fn migration_census(
     let linked = witchy_syntax::linker::link_with_user_modules(
         modules,
         entry,
-        crate::comptime::expand_compile_time,
+        crate::comptime::EXPANDER,
         user_modules,
     )?;
     Ok(witchy_types::migration::census_linked(&linked, entry))
@@ -200,7 +200,7 @@ pub fn async_migration_census(
     let linked = witchy_syntax::linker::link_with_user_modules(
         modules,
         entry,
-        crate::comptime::expand_compile_time,
+        crate::comptime::EXPANDER,
         user_modules,
     )?;
     Ok(witchy_types::async_migration::census_linked(&linked, entry))
@@ -216,7 +216,7 @@ pub fn link_checked_authenticated_with_user_modules(
     witchy_types::pipeline::link_checked_authenticated_with_user_modules(
         modules,
         entry,
-        crate::comptime::expand_compile_time,
+        crate::comptime::EXPANDER,
         user_modules,
         module_owners,
     )
@@ -233,7 +233,7 @@ pub fn link_checked_authenticated_from_source_bundle_with_user_modules(
     witchy_types::pipeline::link_checked_authenticated_from_source_bundle_with_user_modules(
         sources,
         entry,
-        crate::comptime::expand_compile_time,
+        crate::comptime::EXPANDER,
         user_modules,
         module_owners,
     )
@@ -251,7 +251,7 @@ pub fn link_checked_static_evaluation_from_source_bundle(
     witchy_types::pipeline::link_checked_static_evaluation_from_source_bundle(
         sources,
         entry,
-        crate::comptime::expand_compile_time,
+        crate::comptime::EXPANDER,
         user_modules,
         module_owners,
     )
@@ -265,7 +265,7 @@ pub fn link_checked_test_suite_from_source_bundle(
     owners: AuthenticatedModuleOwners,
 ) -> Result<witchy_types::pipeline::CheckedTestSuite, PipelineError> {
     witchy_types::pipeline::link_checked_test_suite_from_source_bundle(
-        sources, entry, crate::comptime::expand_compile_time, user_modules, owners,
+        sources, entry, crate::comptime::EXPANDER, user_modules, owners,
     )
 }
 
@@ -275,7 +275,7 @@ pub fn check_bare_test_driver(
     target: &str,
 ) -> Result<witchy_types::pipeline::CheckedTestDriverModule, PipelineError> {
     witchy_types::pipeline::check_bare_test_driver(
-        suite, target, crate::comptime::expand_compile_time,
+        suite, target, crate::comptime::EXPANDER,
     )
 }
 
@@ -284,7 +284,7 @@ pub fn check_console_fixture_test_driver(
     suite: &witchy_types::pipeline::CheckedTestSuite, target: &str,
 ) -> Result<witchy_types::pipeline::CheckedTestDriverModule, PipelineError> {
     witchy_types::pipeline::check_console_fixture_test_driver(
-        suite, target, crate::comptime::expand_compile_time,
+        suite, target, crate::comptime::EXPANDER,
     )
 }
 
@@ -294,6 +294,6 @@ pub fn check_integration_test_driver(
     suite: &witchy_types::pipeline::CheckedTestSuite, target: &str,
 ) -> Result<witchy_types::pipeline::CheckedTestDriverModule, PipelineError> {
     witchy_types::pipeline::check_integration_test_driver(
-        suite, target, crate::comptime::expand_compile_time,
+        suite, target, crate::comptime::EXPANDER,
     )
 }
