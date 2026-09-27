@@ -33,7 +33,7 @@ fn admitted_original_blocks_feed_checked_successors_in_normal_and_opt() {
             .expect_lowered("generated destination passes ordinary checking and admission");
         let mut runtime = Runtime::batch().unwrap();
         let mut vm = runtime.spawn_admitted(&artifact,
-            Capabilities { print_int: true, quiet: true, ..Capabilities::none() }, 64).unwrap();
+            Capabilities { print: true, quiet: true, ..Capabilities::none() }, 64).unwrap();
         vm.run().unwrap();
         assert_eq!(vm.output(), ["42"], "independent expectation: generated answer 40 + 2");
         assert_eq!(vm.canonical_heap_leaks().unwrap(), Some(0));

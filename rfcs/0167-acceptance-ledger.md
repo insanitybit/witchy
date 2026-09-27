@@ -2483,3 +2483,33 @@ valid. The compiler entry does not silently replace a source call target.
 The default interpreter-based expander is unchanged. This first-entry lane
 does not implement prior generated-item ingestion, reflection, all syntax
 categories or full definition-module hygiene. Row Q remains **PARTIAL**.
+
+### 2026-09-27: ordered admitted original-block execution and typed item output (row Q partial)
+
+The explicit canonical source-bundle driver now selects original `comptime:`
+blocks in source order. Each block becomes a checked recipe with a digest of
+the loader-owned raw bundle, selected original item, ordered structurally
+encoded prior typed items and their origins, and owner assignments. The driver
+executes only the admitted unoptimized Wasm recipe in a fresh zero-grant
+compiler session, compares the runtime outcome's private recipe digest to the
+expected checked recipe, then supplies the actual typed `emit_item` output to
+the next source check. The final ordinary destination is checked again; a
+caller cannot insert prior AST or claim a digest through this driver. The
+lower-level successor checker accepts prior syntax as data and confers no
+execution authority by itself.
+
+`rfc0167_ordered_comptime::admitted_original_blocks_feed_checked_successors_in_normal_and_opt`
+uses a first block to emit `answer() = 40` and a second block that calls it
+before emitting `result() = answer() + 2`. Both normal and opt modes execute
+the admitted unoptimized compiler blocks, then the ordinary admitted program
+prints the independently expected **42** with **zero canonical heap leaks**.
+The paired negative emits a function declared `Int` but returning `String`;
+destination checking rejects it before the next block's deliberate `fail`
+could run. The previous first-original-block witness still passes.
+
+This is not a row-Q closure or a default-loader switch. Typed expression output
+has no original-block destination and therefore rejects in this driver;
+generated comptime blocks, other syntax categories, and full generated-item
+origin/hygiene propagation remain outstanding. The interpreter remains the
+default comptime/build adapter, while this explicit lane proves ordered
+canonical item execution and destination checking.
