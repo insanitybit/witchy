@@ -50,9 +50,29 @@ fn qualifier_erasure_cannot_hide_must_once_or_capability_contracts() {
 
 #[test]
 fn cancellation_cannot_drop_live_must_or_once_task_captures() {
+    // Check normal and opt instantiations in one source graph. The task
+    // substrate and canonical witnesses are shared across both modules.
+    let worker = r#"pub async fn replay(own value: a) -> a:
+    value
+
+pub async fn replay_list(own values: List(a)) -> Int:
+    values.length()
+"#;
+    let opt_worker = format!("mode opt\n\n{worker}");
+    let main = r#"import ordinary
+import optimized
+
+async fn main():
+    let _ = ordinary.replay(7).await
+    let _ = ordinary.replay_list([1, 2]).await
+    let _ = optimized.replay(7).await
+    let _ = optimized.replay_list([1, 2]).await
+"#;
+    let result = super::source::checked_bundle(
+        vec![("ordinary", worker), ("optimized", &opt_worker), ("main", main)], "main",
+    );
+    assert!(result.is_ok(), "copyable generic replay captures must instantiate in both modes: {result:?}");
     for mode in ["", "mode opt\n\n"] {
-        let copyable = format!("{mode}async fn replay(own value: a) -> a:\n    value\n\nasync fn replay_list(own values: List(a)) -> Int:\n    values.length()\n\nasync fn main(console: Console):\n    let answer = replay(7).await\n    let length = replay_list([1, 2]).await\n    console.print(\"${{answer}}/${{length}}\")\n");
-        assert!(checked(&copyable).is_ok(), "concrete and recursively stored generic replay captures must instantiate: {copyable}");
         assert_rejected(
             "a generic replay capture cannot instantiate with an affine callable",
             &format!("{mode}async fn replay(own value: a) -> a:\n    value\n\nasync fn main():\n    let callback: once fn() -> Int = once fn(): 7\n    let value = replay(callback).await\n    value()\n"),
