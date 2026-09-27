@@ -95,6 +95,15 @@ explicit_paths_cover_tip() {
 run_edit_checks() {
     local explicit_paths="$#" started_at="$SECONDS"
     local edit_plan
+    # The full gate checks this generated compiler-root census before running
+    # tests. Catch a missing std name here as well: an otherwise green focused
+    # receipt would only turn red after queue preparation and a gate attempt.
+    if [ -f scripts/gen-std-pruning-roots.py ]; then
+        python3 scripts/gen-std-pruning-roots.py --check || {
+            echo "agent-check: compiler std roots are stale; run scripts/gen-std-pruning-roots.py" >&2
+            return 1
+        }
+    fi
     edit_plan="$(./scripts/test-for-paths.sh --edit-loop "$@")"
     if printf '%s\n' "$edit_plan" | grep -Eq '^  .*(cargo|check[.]sh)'; then
         ensure_agent_target

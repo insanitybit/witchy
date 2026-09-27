@@ -107,6 +107,20 @@ grep -F 'strip=unset priority=normal nextest=2 target=target-codex args=--edit-l
 
 test "$(wc -l <"$tmp/warm.log" | tr -d ' ')" = 3
 
+# A stale compiler std-root list must fail before a focused receipt can be
+# recorded or a Cargo build started. The real gate runs this same generator.
+cat >"$fixture/scripts/gen-std-pruning-roots.py" <<'EOF'
+import sys
+sys.exit(1 if "--check" in sys.argv else 0)
+EOF
+if run_fixture stale-roots env >"$tmp/stale-roots.out" 2>&1; then
+    echo "agent-check accepted stale compiler std roots" >&2
+    exit 1
+fi
+grep -F 'agent-check: compiler std roots are stale' "$tmp/stale-roots.out" >/dev/null
+test "$(wc -l <"$tmp/warm.log" | tr -d ' ')" = 3
+rm "$fixture/scripts/gen-std-pruning-roots.py"
+
 # A linked worktree always uses its mbx-managed default target. Keep the
 # non-git fixture above as the shared-checkout fallback, then exercise Git's
 # actual linked-worktree metadata with and without a legacy target-codex.
