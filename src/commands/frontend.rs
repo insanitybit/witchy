@@ -5,7 +5,7 @@ use witchy_interp::comptime;
 use witchy_syntax::{doc, parser};
 use witchy::enforce_performance_modes;
 use crate::{link_file_checked, linked_has_main};
-use crate::source::expand_file_source;
+use crate::source::{checked_expanded_entry_source, expand_file_source};
 
 #[derive(Debug, PartialEq, Eq)]
 struct CommandOutput {
@@ -73,12 +73,16 @@ fn document_files(files: &[String]) -> Result<String, String> {
             .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or(f);
-        let src = std::fs::read_to_string(f)
+        let mut src = std::fs::read_to_string(f)
             .map_err(|e| format!("cannot read `{f}`: {e}"))?;
         let mut module = parser::parse_module(&src)
             .map_err(|e| format!("{f}: {e}"))?;
-        comptime::expand(stem, &mut module)
-            .map_err(|e| format!("{f}: {e}"))?;
+        if module.items.iter().any(|item| matches!(item, witchy_syntax::ast::Item::Comptime(_))) {
+            (src, module) = checked_expanded_entry_source(f)?;
+        } else {
+            comptime::expand(stem, &mut module)
+                .map_err(|e| format!("{f}: {e}"))?;
+        }
         let markdown = doc::render_module(stem, &src, &module)
             .map_err(|e| format!("{f}: {e}"))?;
         out.push_str(&markdown);

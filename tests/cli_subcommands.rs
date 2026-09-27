@@ -753,12 +753,13 @@ fn doc_counts_comptime_emitted_apis() {
     let src = write(
         &dir,
         "d.witchy",
-        "comptime:\n    emit_item(quote item:\n        pub fn generated(net: Net) -> Int:\n            7\n    )\n\npub fn direct() -> Int:\n    0\n",
+        "comptime:\n    emit_item(quote item:\n        pub fn generated(net: Net) -> Int:\n            7\n    )\ncomptime:\n    emit_item(quote item:\n        pub fn generated_after() -> Int:\n            42\n    )\n\npub fn direct() -> Int:\n    0\n",
     );
     let out = run(&["doc", &src]);
     assert!(out.status.success(), "doc should succeed: {}", String::from_utf8_lossy(&out.stderr));
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("#### `fn generated(net: Net) -> Int`"), "generated API must render: {stdout}");
+    assert!(stdout.contains("#### `fn generated_after() -> Int`"), "later admitted API must render: {stdout}");
     assert!(stdout.contains("#### `fn direct() -> Int`"), "handwritten API must still render: {stdout}");
 }
 

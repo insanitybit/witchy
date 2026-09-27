@@ -1,14 +1,14 @@
 //! Capability inspection, diffing, and grant-check command services.
 
 use witchy_caps::{capabilities as capability_model, grants};
-use crate::source::checked_entry_for_capabilities;
+use crate::source::checked_expanded_entry_source;
 
 /// Read, parse, and compute the host-capability footprint of a source file.
 pub(crate) fn analyze_file(path: &str) -> Result<capability_model::Footprint, String> {
     // BUG-178/179: count generated entry APIs only after the same source bytes
     // have passed destination checking. Selected original blocks run through
     // admitted Wasm, so inspection cannot silently use the frozen walker.
-    let module = checked_entry_for_capabilities(path)?;
+    let (_, module) = checked_expanded_entry_source(path)?;
     Ok(capability_model::analyze(&module))
 }
 
