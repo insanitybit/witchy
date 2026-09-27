@@ -199,7 +199,7 @@ fn admitted_typed_inherent_method_dispatches_in_both_modes() {
     witchy::opt::set_for_tests(Some(witchy::opt::OptSet::none()));
     let _reset = ResetOptimization;
     for mode in ["", "mode opt\n"] {
-        let source = format!("{mode}import meta\ntype Counter:\n    value: Int\ncomptime:\n    let counter_ty = quote type:\n        Counter\n    let int_ty = quote type:\n        Int\n    let self_param = meta.param(meta.ident(\"self\"), counter_ty)\n    let method = meta.function(true, meta.ident(\"answer\"), [self_param], Some(int_ty), meta.expr_int(42))\n    emit_item(meta.inherent_impl(counter_ty, [method]))\nfn main(console: Console):\n    let c = Counter(0)\n    console.print(\"${{c.answer()}}\")\n");
+        let source = format!("{mode}import meta\ntype Counter:\n    value: Int\ncomptime:\n    let counter_ty = quote type:\n        Counter\n    let int_ty = quote type:\n        Int\n    let self_param = meta.param_own(meta.ident(\"self\"), counter_ty)\n    let method = meta.function(true, meta.ident(\"answer\"), [self_param], Some(int_ty), meta.expr_int(42))\n    emit_item(meta.inherent_impl(counter_ty, [method]))\nfn main(console: Console):\n    let c = Counter(0)\n    console.print(\"${{c.answer()}}\")\n");
         let checked = witchy::canonical_comptime::check_source_bundle(
             vec![("generator".into(), source.into_bytes())], "generator",
             ["generator".to_owned()].into_iter().collect(), owners_for("generator"), limits(),
