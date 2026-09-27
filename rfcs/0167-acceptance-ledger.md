@@ -319,6 +319,21 @@ ineligible for execution. Dynamic trait and scheduler result contracts,
 per-execution ownership, cancellation disposition, and admitted-Wasm with
 zero-leak evidence remain open; no A–O row closes.
 
+Generic Task provenance through actual aggregate transport (partial,
+2026-09-27): linker-owned generic specializations now export a symbolic
+Task-behavior summary derived from their checked body. SafeWIR matches a
+symbolic relay result to its physical returned value and carries the
+origin proof through layout-derived record and tuple fields, including a
+nested tuple. A normal caller can relay an opt recipe directly, through an
+opt-defined record, through a tuple, and through a nested tuple into an opt
+consumer. The independent expected result is 7 for each path, producing
+7777 in admitted unoptimized Wasm with zero heap leaks. A normal recipe
+relayed through an opt-defined record is rejected before lowering: neither
+the record's definition mode nor the generic result type grants opt
+authority. This covers these exact source/ABI paths, not arbitrary
+callbacks, indirect calls, scheduler adapters, cancellation, or every
+aggregate layout; no A–O row closes.
+
 Declared task-producing function values (implemented but unverified,
 2026-09-26): the checked task-provenance flow now binds an exact checked
 declaration reference to its symbolic result, source execution mode, and

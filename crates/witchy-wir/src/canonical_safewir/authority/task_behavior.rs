@@ -2,7 +2,7 @@
 //!
 //! A source mode or result type is not a property of an arbitrary WIR value.
 //! Facts below originate at an exact checked call target and travel through
-//! the actual SSA operands and layout-checked single-carrier storage. Unknown
+//! the actual SSA operands and layout-derived aggregate storage. Unknown
 //! transport does not acquire execution authority.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -46,6 +46,36 @@ impl Flow {
 
     fn task(&self, value: ValueId) -> TaskExecutionProof {
         self.tasks.get(&value).cloned().unwrap_or(TaskExecutionProof::Unknown)
+    }
+
+    fn task_with_fields(
+        &self, value: ValueId, function: &Function, layouts: &LayoutInterner,
+    ) -> TaskExecutionProof {
+        let direct = self.task(value);
+        let root = self.root(value);
+        let Some(ValueType::Ref(layout)) = function.value_types.get(&root) else {
+            return direct;
+        };
+        let Some(descriptor) = layouts.resolve_nominal(*layout).ok().and_then(|id| layouts.get(id)) else {
+            return direct;
+        };
+        if !matches!(descriptor.kind(), LayoutKind::PackedRecord { .. } | LayoutKind::Tuple { .. }) {
+            return direct;
+        }
+        let fields = (0..descriptor.fields().len())
+            .map(|index| self.slots.get(&(root, index as u32)).cloned())
+            .collect::<Option<Vec<_>>>();
+        match (descriptor.kind(), fields) {
+            // A packed Task carrier has already been authenticated as an
+            // executable Task. Reinterpreting its storage as an arbitrary
+            // record would erase that authority at the opt call boundary.
+            (LayoutKind::PackedRecord { .. }, _) if matches!(&direct, TaskExecutionProof::Task(..)) =>
+                direct,
+            (LayoutKind::PackedRecord { .. }, Some(fields)) =>
+                TaskExecutionProof::Variant { ordinal: 0, fields },
+            (LayoutKind::Tuple { .. }, Some(fields)) => TaskExecutionProof::Elements(fields),
+            _ => direct,
+        }
     }
 
     fn set_task(&mut self, value: ValueId, proof: TaskExecutionProof) {
@@ -157,7 +187,7 @@ impl Flow {
             Operation::Store { place, value, .. } => {
                 if let Projection::Field { index } = place.projection() {
                     let object = self.root(place.object());
-                    let proof = self.task(*value);
+                    let proof = self.task_with_fields(*value, function, layouts);
                     self.invalidate_root_task(object);
                     self.slots.insert((object, *index), proof.clone());
                     if Self::single_pointer_field(function, place.object(), layouts) == Some(*index) {
@@ -205,7 +235,8 @@ impl Flow {
                 self.carry(*destination, *owner);
             }
             Operation::Call { destinations, callee, arguments } => {
-                let arguments = arguments.iter().map(|argument| self.task(call_value(argument))).collect::<Vec<_>>();
+                let arguments = arguments.iter().map(|argument|
+                    self.task_with_fields(call_value(argument), function, layouts)).collect::<Vec<_>>();
                 check_requirements(*callee, &arguments, requirements, owner)?;
                 self.invalidate_unproved_call_effects();
                 if let (Some(destination), Some(result)) = (destinations.first(), results.get(callee)) {
@@ -213,7 +244,8 @@ impl Flow {
                 }
             }
             Operation::VarCall { destinations, callee, signature, arguments } => {
-                let arguments = arguments.iter().map(|argument| self.task(call_value(argument))).collect::<Vec<_>>();
+                let arguments = arguments.iter().map(|argument|
+                    self.task_with_fields(call_value(argument), function, layouts)).collect::<Vec<_>>();
                 if let Some(possible) = indirect.get(signature) {
                     let Some(actual) = self.callables.get(callee).copied() else {
                         return Err(CandidateAbiBindingError::TaskBehaviorMismatch { function: owner });
@@ -665,21 +697,21 @@ fn prove_async_factory<S: ModuleStage>(
     actual.len() == 1 && actual.contains(&thunk_function)
 }
 
-/// Match a checked recursive result proof to the actual constructor graph.
+/// Match a checked recursive result proof to the actual value graph.
 /// A result type or container's defining mode alone cannot authenticate a
 /// stored callback/Task: every symbolic formal must occupy its promised
 /// physical field of the returned object. Unsupported producers fail closed.
-fn constructor_returns_checked_proof(
+fn returns_checked_proof(
     function: &Function,
     parameter_count: usize,
     expected: &TaskExecutionProof,
     layouts: &LayoutInterner,
 ) -> bool {
     let [block] = function.blocks.as_slice() else { return false };
-    if block.parameters.len() != parameter_count { return false; }
     let Terminator::Return { values } = &block.terminator else { return false };
-    let [returned] = values.as_slice() else { return false };
     let Some(graph) = ValueGraph::constructor(function) else { return false };
+    if block.parameters.len() != parameter_count { return false; }
+    let [returned] = values.as_slice() else { return false };
     fn matches(
         proof: &TaskExecutionProof, node: Node, graph: &ValueGraph,
         function: &Function, layouts: &LayoutInterner, depth: usize,
@@ -721,7 +753,8 @@ pub(super) fn validate<S: ModuleStage>(
     let mut indirect = BTreeMap::<crate::canonical_safewir::FunctionSignatureId, Vec<FunctionId>>::new();
     for binding in candidate.source_abi_bindings().entries() {
         let Some(item) = source.closed_callable_item_ordinal(binding.source_declaration_ordinal()) else { continue };
-        let Some(contract) = source.task_behavior_at(item) else { continue };
+        let Some(contract) = source.task_behavior_at(item)
+            .or_else(|| source.final_task_behavior_at(item)) else { continue };
         let Some(function) = functions.get(&binding.function()) else { continue };
         let result = contract.result();
         if (matches!(result, TaskExecutionProof::Task(SourceExecutionMode::Opt, _))
@@ -737,9 +770,11 @@ pub(super) fn validate<S: ModuleStage>(
             // Normal is not opt authority. Symbolic synchronous relays need
             // body correspondence before their result may grant opt authority.
             TaskExecutionProof::Task(SourceExecutionMode::Normal, _) => true,
-            TaskExecutionProof::Variant { .. } | TaskExecutionProof::Elements(_) =>
+            TaskExecutionProof::Parameter(_)
+            | TaskExecutionProof::Variant { .. }
+            | TaskExecutionProof::Elements(_) =>
                 source.closed_callable_declaration(binding.source_declaration_ordinal())
-                .is_some_and(|declaration| constructor_returns_checked_proof(
+                .is_some_and(|declaration| returns_checked_proof(
                     function, declaration.params.len(), result, &layouts,
                 )),
             _ => false,
@@ -760,7 +795,8 @@ pub(super) fn validate<S: ModuleStage>(
                 flow.operation(operation, function, &layouts, &results, &requirements, &indirect, function.id)?;
             }
             if let Terminator::TailCall { callee, arguments, .. } = &block.terminator {
-                let arguments = arguments.iter().map(|argument| flow.task(call_value(argument))).collect::<Vec<_>>();
+                let arguments = arguments.iter().map(|argument|
+                    flow.task_with_fields(call_value(argument), function, &layouts)).collect::<Vec<_>>();
                 check_requirements(*callee, &arguments, &requirements, function.id)?;
             }
             if let Terminator::VarTailCall { callee, signature, arguments, .. } = &block.terminator
@@ -772,7 +808,8 @@ pub(super) fn validate<S: ModuleStage>(
                 if !possible.contains(&actual) {
                     return Err(CandidateAbiBindingError::TaskBehaviorMismatch { function: function.id });
                 }
-                let arguments = arguments.iter().map(|argument| flow.task(call_value(argument))).collect::<Vec<_>>();
+                let arguments = arguments.iter().map(|argument|
+                    flow.task_with_fields(call_value(argument), function, &layouts)).collect::<Vec<_>>();
                 check_requirements(actual, &arguments, &requirements, function.id)?;
             }
         }

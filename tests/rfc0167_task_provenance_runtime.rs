@@ -51,8 +51,8 @@ fn cross_mode_recipe_replays_with_independent_expected_result_and_no_leaks() {
 
 #[test]
 fn an_opt_defined_record_does_not_authenticate_a_normal_task() {
-    let worker = "mode opt\nimport task\n\ntype Stored:\n    recipe: task.Task(Int)\n\npub fn store(own recipe: task.Task(Int)) -> Stored:\n    Stored(recipe: recipe)\n\npub async fn execute(own recipe: task.Task(Int)) -> Int:\n    recipe.await\n";
-    let main = "import worker\n\nasync fn ordinary() -> Int:\n    9\n\nasync fn main(console: Console):\n    let stored = worker.store(ordinary())\n    console.print(\"${worker.execute(stored.recipe).await}\")\n";
+    let worker = "mode opt\nimport task\n\ntype Stored:\n    recipe: task.Task(Int)\n\npub fn store(own recipe: task.Task(Int)) -> Stored:\n    Stored(recipe: recipe)\n\npub fn relay[a](own value: a) -> a:\n    value\n\npub async fn execute(own recipe: task.Task(Int)) -> Int:\n    recipe.await\n";
+    let main = "import worker\n\nasync fn ordinary() -> Int:\n    9\n\nasync fn main(console: Console):\n    let stored = worker.relay(worker.store(ordinary()))\n    console.print(\"${worker.execute(stored.recipe).await}\")\n";
     let checked = witchy_types::pipeline::link_checked_authenticated_from_source_bundle_with_user_modules(
         vec![("worker".into(), worker.as_bytes().to_vec()),
              ("main".into(), main.as_bytes().to_vec())],
@@ -65,4 +65,28 @@ fn an_opt_defined_record_does_not_authenticate_a_normal_task() {
     let error = checked.expect_err("normal Task must not acquire opt authority through imported storage");
     assert!(format!("{error:?}").contains("opt task execution requires checked opt-compatible task value provenance"),
         "unexpected rejection: {error:?}");
+}
+
+#[test]
+fn generic_identity_preserves_actual_task_origin_across_normal_to_opt_call() {
+    opt::set_for_tests(Some(OptSet::none()));
+    let _reset = ResetOptimizationOverride;
+    let worker = "mode opt\nimport task\n\ntype Stored:\n    recipe: task.Task(Int)\n\npub async fn compatible() -> Int:\n    7\n\npub fn store(own recipe: task.Task(Int)) -> Stored:\n    Stored(recipe: recipe)\n\npub fn relay[a](own value: a) -> a:\n    value\n\npub async fn execute(own recipe: task.Task(Int)) -> Int:\n    recipe.await\n";
+    let main = "import worker\n\nasync fn main(console: Console):\n    let direct = worker.execute(worker.relay(worker.compatible())).await\n    let stored = worker.relay(worker.store(worker.compatible()))\n    let imported = worker.execute(stored.recipe).await\n    let pair = worker.relay((worker.compatible(), 3))\n    let tuple = worker.execute(pair.0).await\n    let nested = worker.relay((3, (worker.compatible(), 4)))\n    let nested_task = worker.execute(nested.1.0).await\n    console.print(\"${direct * 1000 + imported * 100 + tuple * 10 + nested_task}\")\n";
+    let checked = witchy_types::pipeline::link_checked_authenticated_from_source_bundle_with_user_modules(
+        vec![("worker".into(), worker.as_bytes().to_vec()),
+             ("main".into(), main.as_bytes().to_vec())],
+        "main", witchy_syntax::linker::ComptimeExpander::new(
+            |_, _, _| Ok(witchy_syntax::origin::OriginTable::default())),
+        &std::collections::HashSet::from(["main".into(), "worker".into()]), authenticated_owners(),
+    ).expect("checked generic cross-mode task sources");
+    let artifact = witchy::codegen::compile_checked_module_artifact(&checked)
+        .expect_lowered("admitted unoptimized generic task Wasm");
+    let mut runtime = Runtime::batch().expect("runtime");
+    let mut vm = runtime.spawn_admitted(&artifact,
+        Capabilities { print: true, quiet: true, ..Capabilities::none() }, 128,
+    ).expect("admitted task launch");
+    vm.run().expect("generic cross-mode deferred execution");
+    assert_eq!(vm.output(), vec!["7777"]);
+    assert_eq!(vm.canonical_heap_leaks().expect("ownership audit"), Some(0));
 }

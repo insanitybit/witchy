@@ -1239,6 +1239,7 @@ pub(crate) fn checked_final_execution_contracts(
     witness: &witchy_canonical_source::closure::ClosureWitnessManifest,
     sites: &[crate::canonical_closure::LambdaSite],
     deferred_task_role: Option<&DeferredTaskRole>,
+    generic_instances: &BTreeMap<String, witchy_canonical_source::specialization::LogicalSpecializationIdentity>,
 ) -> CheckedFinalBehavior {
     let module = typed.module();
     let table = typed.table();
@@ -1314,9 +1315,16 @@ pub(crate) fn checked_final_execution_contracts(
             result, required_opt_inputs: analyzer.required_opt_inputs,
         });
     }
-    // Export only successful, independently derived dependencies already
-    // needed by these exact lambdas. No additional whole-module analysis and
-    // no identity inferred from a specialization's printed name.
+    // A monomorphized callable can relay an authenticated Task from a normal
+    // caller into an opt consumer. Export its checked body summary by the
+    // exact linker-owned specialization identity; an unavailable or recursive
+    // body remains absent and cannot grant behavior from its result type.
+    for name in generic_instances.keys() {
+        let mut remaining = 4_096;
+        let _ = demand.function(name, &mut remaining, 0);
+    }
+    // Export only successful, independently derived bodies requested by
+    // exact lambdas or linker-owned generic specializations.
     let declarations = demand.summaries.into_iter().filter_map(|(name, summary)| {
         let function = demand.functions.get(name.as_str())?;
         Some((*function as *const Function as usize,

@@ -1261,7 +1261,8 @@ fn attach_canonical_source(
 ) -> Result<CheckedModule, PipelineError> {
     let deferred_task_role = checked_deferred_task_role(typed.module(), runtime_catalog);
     let final_behavior = crate::task_provenance::checked_final_execution_contracts(
-        &typed, &closure_witness, &closure_sites, deferred_task_role.as_ref());
+        &typed, &closure_witness, &closure_sites, deferred_task_role.as_ref(),
+        &callable_witness.generic_instances);
     let mut declarations = final_behavior.declarations;
     let mut final_task_behaviors = BTreeMap::new();
     for (item, definition) in typed.module().items.iter().enumerate() {
