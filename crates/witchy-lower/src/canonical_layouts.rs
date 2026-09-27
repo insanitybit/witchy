@@ -9,7 +9,7 @@ use std::fmt;
 
 use sha2::{Digest, Sha256};
 use witchy_canonical_source::aggregates::{
-    aggregate_key, canonical_owner_aggregate_identity, concrete_aggregate_identity,
+    aggregate_key,
     scalar_aggregate_shape,
 };
 use witchy_canonical_source::abi::CanonicalScalarKind;
@@ -378,6 +378,13 @@ fn project_layouts(
                 )
             })
             .map_err(|error| error)?;
+        }
+
+        for declared in typed.table().affine_declared_types() {
+            projection.visit_type(declared)?;
+        }
+        for source in typed.table().affine_expression_types() {
+            projection.visit_type(source)?;
         }
 
         Ok(())
@@ -1246,7 +1253,7 @@ pub(crate) fn recursive_nominal_layout_id_for_shape(
     ty: &Type,
     definitions: &BTreeMap<String, TypeDef>,
 ) -> Result<LayoutId, CanonicalLayoutError> {
-    let identity = concrete_aggregate_identity(ty, definitions).ok_or_else(|| {
+    let identity = witchy_canonical_source::storage::aggregate_layout_identity(ty, definitions).ok_or_else(|| {
         CanonicalLayoutError::UnsupportedType(format!("recursive nominal layout {ty:?}"))
     })?;
     intern_recursive_nominal(&mut LayoutInterner::new(), &identity)
@@ -1258,7 +1265,8 @@ pub(crate) fn recursive_nominal_layout_id_for_shape(
 /// become one `main.Stack(Int)` node before cycle detection or nominal hashing.
 /// Non-aggregate types retain their checked structural spelling.
 fn canonical_layout_type(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> Type {
-    canonical_owner_aggregate_identity(ty, definitions).unwrap_or_else(|| ty.unqualified().clone())
+    witchy_canonical_source::storage::aggregate_layout_identity(ty, definitions)
+        .unwrap_or_else(|| ty.unqualified().clone())
 }
 
 /// Find the reachable user-defined heap types that are actually on a source

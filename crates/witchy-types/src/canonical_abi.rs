@@ -110,6 +110,13 @@ pub fn checked_declaration_signature(typed: &TypedModule, name: &str) -> Result<
     }
     for (index, (parameter, declared)) in parameters.iter_mut().zip(&declaration.params).enumerate() {
         if let Some(source) = declared.ty.as_ref()
+            && witchy_canonical_source::storage::affine_aggregate_erased_type(
+                source, &context.definitions,
+            ).as_ref() == Some(parameter)
+        {
+            *parameter = source.clone();
+        }
+        if let Some(source) = declared.ty.as_ref()
             && qualified_rooted_view(source)
         {
             restore_qualified_rooted_view(parameter, source, &context)?;
@@ -124,7 +131,7 @@ pub fn checked_declaration_signature(typed: &TypedModule, name: &str) -> Result<
         }
     }
     if let Some(declared) = declaration.ret.as_ref()
-        && let Some(physical) = witchy_canonical_source::storage::affine_aggregate_physical_type(
+        && let Some(physical) = witchy_canonical_source::storage::affine_aggregate_erased_type(
             declared, &context.definitions,
         )
         && result.as_ref() == &physical

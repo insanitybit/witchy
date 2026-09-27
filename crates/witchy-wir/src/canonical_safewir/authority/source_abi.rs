@@ -233,9 +233,8 @@ pub(super) fn is_list_of_rooted_scalar_places(ty: &witchy_syntax::ast::Type) -> 
 
 /// Check the original source graph before any ABI comparison erases wrappers.
 /// A root Unique on an own/var input or result is represented by the callable
-/// ownership contract. The exact Result-Ok collection carrier and a
-/// `List(&Int)` parameter or result are the authenticated nested exceptions;
-/// all other nested qualifiers remain unsupported.
+/// ownership contract. Nested affine aggregates use the shared recursive
+/// storage proof; other nested qualifiers remain unsupported.
 pub(super) fn source_abi_qualifiers_supported(
     source: &witchy_syntax::ast::Type,
     records: &ScalarRecordFields,
@@ -251,7 +250,7 @@ pub(super) fn source_abi_qualifiers_supported(
     let mut pending = (!(is_direct_shared_reference(result)
         || is_storage_backed_direct_view_carrier(result, records)
         || is_direct_exclusive_reference(result)
-        || witchy_canonical_source::storage::affine_aggregate_physical_type(result, records).is_some()))
+        || witchy_canonical_source::storage::affine_aggregate_erased_type(result, records).is_some()))
         .then_some((result.as_ref(), true))
         .into_iter()
         .collect::<Vec<_>>();
@@ -259,6 +258,8 @@ pub(super) fn source_abi_qualifiers_supported(
         (!(
             is_direct_shared_reference(parameter)
             || is_storage_backed_direct_view_carrier(parameter, records)
+            || (matches!(conventions.get(index), Some(Convention::Own | Convention::Var))
+                && witchy_canonical_source::storage::affine_aggregate_erased_type(parameter, records).is_some())
             || (matches!(conventions.get(index), Some(Convention::Let | Convention::Own))
                 && is_direct_exclusive_reference(parameter))
             || projected_exclusive_signature_parameter(parameters, result, conventions) == Some(index)

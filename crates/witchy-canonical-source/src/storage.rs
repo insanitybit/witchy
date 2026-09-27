@@ -1128,7 +1128,12 @@ pub fn affine_storage_shape(
     definitions: &BTreeMap<String, TypeDef>,
 ) -> Option<AffineStorageShape> {
     fn unique_leaf(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> Option<AffineStorageShape> {
-        let Type::Qualified(TypeQual::Unique, inner) = ty else { return None; };
+        let mut storage = ty;
+        for _ in 0..128 {
+            let Type::Qualified(TypeQual::Frozen, inner) = storage else { break };
+            storage = inner;
+        }
+        let Type::Qualified(TypeQual::Unique, inner) = storage else { return None; };
         if !unique_owned_pointer_type(inner, definitions) { return None; }
         graph_storage_operations(ty, definitions, &mut HashSet::new(), 0, &mut 4_096)
             .filter(|operations| operations.finish().movable)
@@ -1180,11 +1185,10 @@ pub fn affine_storage_shape(
     walk(&plan, definitions, &mut HashSet::new(), 0, &mut 4_096)
 }
 
-/// Physical type of an affine aggregate result after its checked unique
-/// child tokens have been separated from value layout. The source type and
-/// ownership shape remain in the callable ABI proof; this only selects the
-/// corresponding linear-memory layout identity.
-pub fn affine_aggregate_physical_type(
+/// The HM type corresponding to a proved affine aggregate. This erases
+/// ownership qualifiers for checked type equality only; physical layout
+/// identity retains the child qualifiers through `aggregate_layout_identity`.
+pub fn affine_aggregate_erased_type(
     ty: &Type,
     definitions: &BTreeMap<String, TypeDef>,
 ) -> Option<Type> {
@@ -1195,6 +1199,8 @@ pub fn affine_aggregate_physical_type(
         if depth > 128 || *remaining == 0 { return None; }
         *remaining -= 1;
         match ty {
+            Type::Qualified(TypeQual::Frozen, inner) =>
+                erase(inner, definitions, depth + 1, remaining),
             Type::Qualified(TypeQual::Unique, inner)
                 if affine_storage_shape(ty, definitions).is_some() =>
                     erase(inner, definitions, depth + 1, remaining),
@@ -1209,6 +1215,22 @@ pub fn affine_aggregate_physical_type(
         }
     }
     erase(ty, definitions, 0, &mut 4_096)
+}
+
+/// Identity for a linear-memory aggregate layout. A proved affine field
+/// changes its pointer slot to owned-nullable, so its checked qualifier is
+/// part of the layout key even though HM type equality erases that qualifier.
+pub fn aggregate_layout_identity(
+    ty: &Type,
+    definitions: &BTreeMap<String, TypeDef>,
+) -> Option<Type> {
+    if affine_storage_shape(ty, definitions).is_some()
+        && scalar_aggregate_shape(ty, definitions).is_some_and(|shape| !shape.packed)
+    {
+        Some(ty.unqualified().clone())
+    } else {
+        crate::aggregates::canonical_owner_aggregate_identity(ty, definitions)
+    }
 }
 
 impl StoragePlan {

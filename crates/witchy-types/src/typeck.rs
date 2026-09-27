@@ -2673,6 +2673,7 @@ impl Checker {
     fn inferred_unique_source_type(&self, expression: &Expr, ty: &Ty) -> Option<ast::Type> {
         match expression {
             Expr::Var(name) => self.unique_binding_type(name),
+            Expr::Unary { op: UnOp::Move, expr } => self.inferred_unique_source_type(expr, ty),
             Expr::As { ty, .. } => Some(ty.clone()),
             Expr::Tuple(items) => Some(ast::Type::Tuple(
                 items
@@ -5561,6 +5562,13 @@ impl Checker {
                             "binding `{name}` cannot repair ordinary storage into `unique` in `mode opt`; pass an existing unique owner or construct fresh storage"
                         ));
                     }
+                    if let Some(declared) = decl.as_ref()
+                        && witchy_canonical_source::storage::affine_storage_shape(
+                            declared, &self.canonical_definitions,
+                        ).is_some()
+                    {
+                        self.affine_declared_types.insert(declared.clone());
+                    }
                     let borrowed_shell_binding = self.is_direct_borrowed_nominal(&vt)
                         && Self::borrowed_shell_binding_source(value);
                     let borrowed_list_binding = self.is_direct_borrowed_nominal_list(&vt)
@@ -6003,6 +6011,15 @@ impl Checker {
         };
         if let Some(rec) = &mut self.type_record {
             rec.insert(expr as *const Expr as usize, (t.clone(), !expr_can_complete(expr), local_callee));
+        }
+        if self.type_record.is_some()
+            && let Some(source) = self.expression_source_type_for_unique_storage(expr)
+                .or_else(|| self.inferred_unique_source_type(expr, &t))
+            && witchy_canonical_source::storage::affine_aggregate_erased_type(
+                &source, &self.canonical_definitions,
+            ).is_some()
+        {
+            self.affine_expression_types.insert(expr as *const Expr as usize, source);
         }
         Ok(t)
     }
@@ -10867,6 +10884,8 @@ impl RegionPromotionFact {
 #[derive(Debug, Default, PartialEq)]
 pub struct TypeTable {
     types: HashMap<usize, Ty>,
+    affine_declared_types: HashSet<ast::Type>,
+    affine_expression_types: HashMap<usize, ast::Type>,
     /// Expression identity produced by the checker branch for the
     /// compiler-known `.owned()` operation. Structural rewrites must rebuild
     /// this table before any authority or tail-manifest consumer uses it.
@@ -11566,6 +11585,18 @@ fn encode_site_key(key: &ProperTailSiteKey, bytes: &mut Vec<u8>) {
 }
 
 impl TypeTable {
+    pub fn affine_declared_types(&self) -> impl Iterator<Item = &ast::Type> {
+        self.affine_declared_types.iter()
+    }
+
+    pub fn affine_expression_type(&self, e: &Expr) -> Option<&ast::Type> {
+        self.affine_expression_types.get(&(e as *const Expr as usize))
+    }
+
+    pub fn affine_expression_types(&self) -> impl Iterator<Item = &ast::Type> {
+        self.affine_expression_types.values()
+    }
+
     /// Whether this exact checked expression cannot complete normally.
     /// Absence means unknown or completing, never permission to omit a type.
     pub fn is_non_completing(&self, e: &Expr) -> bool {
@@ -12483,6 +12514,8 @@ fn run_check_selected(
         unique_storage_bindings: vec![HashSet::new()],
         opt_viewed_roots: HashSet::new(),
         unique_binding_types: vec![HashMap::new()],
+        affine_declared_types: HashSet::new(),
+        affine_expression_types: HashMap::new(),
         callable_unique_contracts: vec![HashMap::new()],
         callable_opt_provenance: vec![HashMap::new()],
         container_opt_provenance: vec![HashMap::new()],
@@ -13027,8 +13060,16 @@ fn run_check_selected(
                 })
             })
             .collect();
+        let affine_expression_types = c.affine_expression_types.into_iter().filter(|(site, source)| {
+            types.get(site).and_then(ty_to_ast)
+                == witchy_canonical_source::storage::affine_aggregate_erased_type(
+                    source, &c.canonical_definitions,
+                )
+        }).collect();
         return Ok(Some(TypeTable {
             types,
+            affine_declared_types: c.affine_declared_types,
+            affine_expression_types,
             compiler_owned_materializations: c.compiler_owned_materializations,
             declared_function_values: c.declared_function_values,
             view_types,

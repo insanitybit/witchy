@@ -284,7 +284,7 @@ fn nominal_layout_matches_source_identity(
     let Some(crate::layout::LayoutKind::OpaqueNominal { key }) =
         layouts.get(layout).map(|descriptor| descriptor.kind())
     else { return true };
-    let Some(identity) = witchy_canonical_source::aggregates::canonical_owner_aggregate_identity(
+    let Some(identity) = witchy_canonical_source::storage::aggregate_layout_identity(
         source, records,
     ) else { return false };
     witchy_canonical_source::structural_identity::recursive_nominal_layout_key(&identity)

@@ -155,6 +155,12 @@ pub(super) struct Checker {
     /// Original declared types for bindings carrying unique storage. Pattern
     /// extraction needs these because `Ty` has already erased nested qualifiers.
     pub(super) unique_binding_types: Vec<HashMap<String, ast::Type>>,
+    /// Checked local ascriptions whose recursive affine storage plan must
+    /// remain visible to the canonical layout and SafeWIR authority stages.
+    pub(super) affine_declared_types: HashSet<ast::Type>,
+    /// Expression identities whose source storage qualifiers follow a
+    /// checked binding/projection origin rather than an HM type rendering.
+    pub(super) affine_expression_types: HashMap<usize, ast::Type>,
     /// Source callable contracts keyed by local binding. Runtime callable
     /// identity erases qualifiers, so indirect source calls recover both the
     /// parameter and result facts rather than silently repairing aliases in

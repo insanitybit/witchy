@@ -115,11 +115,9 @@ pub(super) fn candidate_signature_matches_source_inner(
         return false;
     }
     let result_is_unit = is_unit_source_type(result);
-    // The Result wrapper has the ordinary physical layout. Its authenticated
-    // Unique contract above proves the exact declared Ok carrier, so only this
-    // bounded case compares the physical projection rather than recursively
-    // erasing nested qualifiers during correspondence.
-    let physical_result = witchy_canonical_source::storage::affine_aggregate_physical_type(result, records);
+    // HM equality erases child qualifiers; layout correspondence below uses
+    // the declared aggregate so its owned-nullable child slots stay visible.
+    let physical_result = witchy_canonical_source::storage::affine_aggregate_erased_type(result, records);
     let ordinary_results = usize::from(!result_is_unit);
     let write_back_parameters = parameters.iter().enumerate()
         .filter(|(index, _)| matches!(convention_at(*index), witchy_syntax::ast::Convention::Var))
@@ -208,7 +206,7 @@ pub(super) fn candidate_signature_matches_source_inner(
         || projected_scalar_result_matches
         || value_type_matches_source(
             actual.results[0],
-            physical_result.as_ref().unwrap_or(result),
+            result,
             layouts,
             signatures,
             context,

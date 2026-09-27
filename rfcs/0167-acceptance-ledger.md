@@ -1643,8 +1643,9 @@ now use the shared storage plan and owner-carried representation class. Legacy
 direct shared/exclusive reference leaves retain their exact conventions while
 their referents use scalar or owned storage classes. Lowering unwraps only
 proved inline scalar and retained structural/checked aggregate view roots.
-The exact Result(unique collection) and callable write-back source grammars
-remain closed pending their separate authority contract. Focused compiler and
+The callable write-back source grammar remains closed pending its separate
+authority contract. Affine aggregate results and own inputs now follow the
+recursive checked storage proof described below. Focused compiler and
 existing view smokes plus an adversarial authority read passed; admitted-Wasm
 expected-result and zero-leak evidence remain outstanding, so no row closes.
 
@@ -1848,10 +1849,23 @@ unoptimized Wasm with zero canonical heap leaks. Borrowed extraction and double
 use refuse in both modes (currently source call-scoped access and lowering
 MissingToken respectively); earlier ownership-specific source refusal is also
 accepted by the regression. Existing consuming-match GC-result evidence stays
-green. Option/Result(unique List(Int)) conditional probes still fail with
-UnsupportedType before this cleanup path; those lawful carrier gaps are
-preserved outside the gate, not cemented as desired refusals. This is bounded
-evidence, not full aggregate coverage or an A-O row closure.
+green. Affine aggregate carriers now have the structural implementation
+described below; the earlier conditional refusal is no longer current. This
+is bounded evidence, not full aggregate coverage or an A-O row closure.
+
+Affine aggregate carrier composition (implemented but unverified, 2026-09-26):
+the checker preserves source-qualified aggregate storage facts through checked
+declarations, local annotations, and inferred move aliases. The same recursive
+storage judgment selects ABI identity, physical aggregate layouts, lowering
+move operations, and SafeWIR admission for nested unique owned fields. The
+direct Result(unique collection) grammar is removed. Option(unique List(Int))
+in normal and opt modes, tuple and nominal unique fields, annotated locals,
+move aliases, and own nominal arguments pass focused compiler admission; the
+normal Option probe also executes. A near miss that tries to wrap an ordinary
+owned list as unique refuses before admitted Wasm. Field projection without
+consuming proof, affine record spread, affine let patterns, and affine `?`
+remain fail closed. These focused checks are structural evidence only: no
+hand-computed admitted-Wasm and zero-leak audit was added, and no A-O row closes.
 
 ## Optimization-readiness carrier audit
 

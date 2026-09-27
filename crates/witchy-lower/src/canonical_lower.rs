@@ -2817,8 +2817,10 @@ fn parameter_physical_type(ty: &Type, convention: Convention) -> Type {
 }
 
 fn result_physical_type(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> Type {
-    if let Some(physical) = witchy_canonical_source::storage::affine_aggregate_physical_type(ty, definitions) {
-        return physical;
+    if witchy_canonical_source::storage::affine_aggregate_erased_type(ty, definitions).is_some() {
+        // Its checked child qualifiers select nullable owned slots. The
+        // source layout, not the HM erasure, is the physical ABI root.
+        return ty.clone();
     }
     match ty {
         Type::Qualified(TypeQual::Unique, inner) => (**inner).clone(),
@@ -2831,6 +2833,11 @@ fn is_root_unique(ty: &Type) -> bool {
 }
 
 fn contains_deferred_v1_qualifier(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> bool {
+    if scalar_aggregate_shape(ty, definitions).is_some_and(|shape| !shape.packed)
+        && witchy_canonical_source::storage::affine_storage_shape(ty, definitions).is_some()
+    {
+        return false;
+    }
     // An aggregate carrier is not an erased reference just because its
     // references occur below a tuple or list shell.  This syntactic gate only
     // keeps the bounded physical layout representable; checked_signature and
@@ -5162,8 +5169,8 @@ impl FunctionLowerer<'_> {
                     // `let _ = e` keeps `e`'s effects and discards its value.
                     self.lower_effect_expr(value)?;
                 }
-                Stmt::Let { name, mutable, value, .. } => {
-                    let value = self.lower_let_value(*mutable, value)?;
+                Stmt::Let { name, mutable, ty, value, .. } => {
+                    let value = self.lower_let_value(*mutable, value, ty.as_ref())?;
                     self.bind_lexical(name, value, *mutable)?;
                 }
                 Stmt::Assign { name, value, place_depth } => {
@@ -5183,6 +5190,9 @@ impl FunctionLowerer<'_> {
                     }
                     if self.try_lower_place_assignment(name, value, *place_depth)? { continue; }
                     let value = self.lower_expr(value)?;
+                    if self.values[&self.bindings[name]] != self.values[&value] {
+                        return Err(CanonicalLoweringError::UnsupportedExpression("assignment changes checked storage layout"));
+                    }
                     self.bindings.insert(name.clone(), value);
                 }
                 Stmt::Return(value) => {
@@ -5408,7 +5418,9 @@ impl FunctionLowerer<'_> {
                     // tail sites is lowered in tail context: each arm exits
                     // the function, with proper tail calls at the sites.
                     if matches!(value, Expr::If { .. } | Expr::Match { .. } | Expr::Block(_))
-                        && self.has_nested_tail_sites(&self.tail_path(index, ProperTailPathStep::Value)?)
+                        && (self.has_nested_tail_sites(&self.tail_path(index, ProperTailPathStep::Value)?)
+                            || self.result_type.as_ref().is_some_and(|ty|
+                                witchy_canonical_source::storage::affine_storage_shape(ty, self.definitions).is_some()))
                     {
                         return self.lower_tail_expr(value, self.tail_path(index, ProperTailPathStep::Value)?);
                     }
@@ -5426,7 +5438,7 @@ impl FunctionLowerer<'_> {
                             };
                             value
                         }
-                        _ => self.lower_expr(value)?,
+                        _ => self.lower_result_expr(value)?,
                     };
                     let terminator = self.return_value(Some(value), results)?;
                     self.finish_current(terminator)?;
@@ -5662,8 +5674,8 @@ impl FunctionLowerer<'_> {
                     // `let _ = e` keeps `e`'s effects and discards its value.
                     self.lower_effect_expr(value)?;
                 }
-                Stmt::Let { name, mutable, value, .. } => {
-                    let value = self.lower_let_value(*mutable, value)?;
+                Stmt::Let { name, mutable, ty, value, .. } => {
+                    let value = self.lower_let_value(*mutable, value, ty.as_ref())?;
                     self.bind_lexical(name, value, *mutable)?;
                 }
                 Stmt::Assign { name, value, place_depth } => {
@@ -5683,6 +5695,9 @@ impl FunctionLowerer<'_> {
                     }
                     if self.try_lower_place_assignment(name, value, *place_depth)? { continue; }
                     let value = self.lower_expr(value)?;
+                    if self.values[&self.bindings[name]] != self.values[&value] {
+                        return Err(CanonicalLoweringError::UnsupportedExpression("assignment changes checked storage layout"));
+                    }
                     self.bindings.insert(name.clone(), value);
                 }
                 Stmt::Expr(value) => self.lower_effect_expr(value)?,
@@ -5804,8 +5819,8 @@ impl FunctionLowerer<'_> {
                     // `let _ = e` keeps `e`'s effects and discards its value.
                     self.lower_effect_expr(value)?;
                 }
-                Stmt::Let { name, mutable, value, .. } => {
-                    let value = self.lower_let_value(*mutable, value)?;
+                Stmt::Let { name, mutable, ty, value, .. } => {
+                    let value = self.lower_let_value(*mutable, value, ty.as_ref())?;
                     self.bind_lexical(name, value, *mutable)?;
                 }
                 Stmt::Assign { name, value, place_depth } => {
@@ -5825,6 +5840,9 @@ impl FunctionLowerer<'_> {
                     }
                     if self.try_lower_place_assignment(name, value, *place_depth)? { continue; }
                     let value = self.lower_expr(value)?;
+                    if self.values[&self.bindings[name]] != self.values[&value] {
+                        return Err(CanonicalLoweringError::UnsupportedExpression("assignment changes checked storage layout"));
+                    }
                     self.bindings.insert(name.clone(), value);
                 }
                 Stmt::Expr(value) => self.lower_effect_expr(value)?,
@@ -5869,7 +5887,12 @@ impl FunctionLowerer<'_> {
     /// the value (a shared clone for a reference slot); the value itself is
     /// a temporary released by placement.
     fn lower_let_pattern(&mut self, pattern: &Pattern, value: &Expr) -> Result<(), CanonicalLoweringError> {
-        let value_type = self.expression_type(value)?;
+        let value_type = self.expression_storage_type(value)?;
+        if witchy_canonical_source::storage::affine_storage_shape(&value_type, self.definitions).is_some() {
+            return Err(CanonicalLoweringError::UnsupportedExpression(
+                "affine let pattern requires consuming field proof",
+            ));
+        }
         let lowered = self.lower_expr(value)?;
         for (name, bound) in self.lower_match_pattern(lowered, pattern, &value_type)? {
             self.bind_lexical(&name, bound, false)?;
@@ -5922,10 +5945,13 @@ impl FunctionLowerer<'_> {
         Ok(())
     }
 
-    fn lower_let_value(&mut self, mutable: bool, expression: &Expr) -> Result<ValueId, CanonicalLoweringError> {
-        let value = self.lower_expr(expression)?;
+    fn lower_let_value(&mut self, mutable: bool, expression: &Expr, declared: Option<&Type>) -> Result<ValueId, CanonicalLoweringError> {
+        let value = self.lower_expr_for_storage(expression, declared)?;
+        let affine = declared.is_some_and(|ty|
+            witchy_canonical_source::storage::affine_storage_shape(ty, self.definitions).is_some())
+            || self.affine_expression_result(expression)?;
         if matches!(self.values[&value], ValueType::Gc(_)) {
-            if self.affine_expression_result(expression)? {
+            if affine {
                 if self.bindings.values().any(|bound| *bound == value)
                     && !matches!(expression, Expr::Unary { op: UnOp::Move, .. })
                 {
@@ -5942,9 +5968,7 @@ impl FunctionLowerer<'_> {
         if !matches!(self.values[&value], ValueType::Ref(_)) {
             return Ok(value);
         }
-        if StoragePlan::classify(&self.expression_type(expression)?, self.definitions, |_| Some(0))
-            .requires_affine_owner_token()
-        {
+        if affine {
             if self.bindings.values().any(|bound| *bound == value)
                 && !matches!(expression, Expr::Unary { op: UnOp::Move, .. })
             {
@@ -6079,7 +6103,7 @@ impl FunctionLowerer<'_> {
                 return self.lower_tail_expr(expression, path);
             }
         }
-        let value = expression.map(|value| self.lower_expr(value)).transpose()?;
+        let value = expression.map(|value| self.lower_result_expr(value)).transpose()?;
         let results = self.results.clone();
         let terminator = self.return_value(value, &results)?;
         self.finish_current(terminator)
@@ -6177,7 +6201,7 @@ impl FunctionLowerer<'_> {
                     self.lower_effect_expr(expression)?;
                     None
                 } else {
-                    Some(self.lower_expr(expression)?)
+                    Some(self.lower_result_expr(expression)?)
                 };
                 // A divergent expression already owns this block's exit.
                 // Do not append a return or type a fictitious result after it.
@@ -6223,8 +6247,8 @@ impl FunctionLowerer<'_> {
                     // `let _ = e` keeps `e`'s effects and discards its value.
                     self.lower_effect_expr(value)?;
                 }
-                Stmt::Let { name, mutable, value, .. } => {
-                    let value = self.lower_let_value(*mutable, value)?;
+                Stmt::Let { name, mutable, ty, value, .. } => {
+                    let value = self.lower_let_value(*mutable, value, ty.as_ref())?;
                     self.bind_lexical(name, value, *mutable)?;
                 }
                 Stmt::Assign { name, value, place_depth } => {
@@ -6244,6 +6268,9 @@ impl FunctionLowerer<'_> {
                     }
                     if self.try_lower_place_assignment(name, value, *place_depth)? { continue; }
                     let value = self.lower_expr(value)?;
+                    if self.values[&self.bindings[name]] != self.values[&value] {
+                        return Err(CanonicalLoweringError::UnsupportedExpression("assignment changes checked storage layout"));
+                    }
                     self.bindings.insert(name.clone(), value);
                 }
                 Stmt::Expr(value) => self.lower_effect_expr(value)?,
@@ -6995,8 +7022,10 @@ impl FunctionLowerer<'_> {
         if arms.is_empty() {
             return Err(CanonicalLoweringError::UnsupportedExpression("empty match"));
         }
-        let scrutinee_type = self.expression_type(scrutinee)?;
-        let affine = StoragePlan::classify(&scrutinee_type, self.definitions, |_| Some(0))
+        let scrutinee_type = self.expression_storage_type(scrutinee)?;
+        let affine = witchy_canonical_source::storage::affine_storage_shape(
+            &scrutinee_type, self.definitions,
+        ).is_some() || StoragePlan::classify(&scrutinee_type, self.definitions, |_| Some(0))
             .requires_affine_owner_token();
         let consuming_shape = affine.then(|| witchy_canonical_source::storage::consuming_aggregate_match_shape(
             &scrutinee_type, arms, self.definitions,
@@ -11029,8 +11058,10 @@ impl FunctionLowerer<'_> {
                         }
                         ParameterOwnership::Value => Ok(CallArgument::Value(value)),
                         ParameterOwnership::Unique => {
-                            let source_type = self.expression_type(argument)?;
-                            let affine = StoragePlan::classify(
+                            let source_type = self.expression_storage_type(argument)?;
+                            let affine = witchy_canonical_source::storage::affine_storage_shape(
+                                &source_type, self.definitions,
+                            ).is_some() || StoragePlan::classify(
                                 &source_type, self.definitions, |_| Some(0),
                             ).requires_affine_owner_token();
                             let moved = if !self.opt_mode
@@ -11051,8 +11082,10 @@ impl FunctionLowerer<'_> {
                             let owned = self.clone_string_for_storage(value)?;
                             return Ok(CallArgument::Move(owned));
                         }
-                        let source_type = self.expression_type(argument)?;
-                        let affine = StoragePlan::classify(
+                        let source_type = self.expression_storage_type(argument)?;
+                        let affine = witchy_canonical_source::storage::affine_storage_shape(
+                            &source_type, self.definitions,
+                        ).is_some() || StoragePlan::classify(
                             &source_type, self.definitions, |_| Some(0),
                         ).requires_affine_owner_token();
                         if !self.opt_mode
@@ -11576,7 +11609,7 @@ impl FunctionLowerer<'_> {
                 if items.is_empty() {
                     return self.push_zero(ValueType::Unit);
                 }
-                let source_type = self.expression_type(expression)?;
+                let source_type = self.expression_storage_type(expression)?;
                 let shape = scalar_aggregate_shape(&source_type, self.definitions)
                     .ok_or(CanonicalLoweringError::UnsupportedExpression("tuple type"))?;
                 let mut values = Vec::with_capacity(items.len());
@@ -11585,9 +11618,9 @@ impl FunctionLowerer<'_> {
                 }
                 self.lower_aggregate_for_source(&source_type, &shape, 0, values)
             }
-            Expr::Ctor { name, args } => self.lower_record_constructor(expression, name, args),
+            Expr::Ctor { name, args } => self.lower_record_constructor(expression, name, args, None),
             Expr::AnonCtor { tag, args } => {
-                let source_type = self.expression_type(expression)?;
+                let source_type = self.expression_storage_type(expression)?;
                 let shape = scalar_aggregate_shape(&source_type, self.definitions).ok_or(
                     CanonicalLoweringError::UnsupportedExpression("anonymous union constructor"),
                 )?;
@@ -11633,13 +11666,13 @@ impl FunctionLowerer<'_> {
                 self.alloc_closure(layout, signature, function, family, environment.tag, values)
             }
             Expr::Record { name, fields, spread } => {
-                self.lower_record_literal(expression, name, fields, spread.as_deref())
+                self.lower_record_literal(expression, name, fields, spread.as_deref(), None)
             }
             Expr::RecordUpdate { base, fields, .. } => {
                 let Type::Named(name, _) = self.expression_type(expression)?.unqualified().clone() else {
                     return Err(CanonicalLoweringError::UnsupportedExpression("record update type"));
                 };
-                self.lower_record_literal(expression, &name, fields, Some(base))
+                self.lower_record_literal(expression, &name, fields, Some(base), None)
             }
             Expr::Try(inner) => self.lower_try(inner),
             // `as` narrows a capability or ascribes an alias; at the value
@@ -11688,9 +11721,90 @@ impl FunctionLowerer<'_> {
             .ok_or_else(|| CanonicalLoweringError::MissingCheckedExpressionType(format!("{expression:?}")))
     }
 
+    /// A direct call retains its checked declaration's storage qualifiers when
+    /// the finalized expression type proves the same physical result. Generic
+    /// or shadowed calls have no such exact source result here.
+    fn expression_storage_type(&self, expression: &Expr) -> Result<Type, CanonicalLoweringError> {
+        let physical = self.expression_type(expression)?;
+        if let Some(source) = self.type_table.affine_expression_type(expression) {
+            return Ok(source.clone());
+        }
+        let Expr::Call { name, .. } = expression else { return Ok(physical) };
+        if self.bindings.contains_key(name) || !self.functions.contains_key(name) {
+            return Ok(physical);
+        }
+        let Some(declared) = self.checked_module.items.iter().find_map(|item| match item {
+            Item::Function(function) if function.name == *name => function.ret.as_ref(),
+            _ => None,
+        }) else { return Ok(physical) };
+        let Some(layout_type) = witchy_canonical_source::storage::affine_aggregate_erased_type(
+            declared, self.definitions,
+        ) else { return Ok(physical) };
+        if layout_type == physical { Ok(declared.clone()) } else { Ok(physical) }
+    }
+
+    fn lower_result_expr(&mut self, expression: &Expr) -> Result<ValueId, CanonicalLoweringError> {
+        let declared = self.result_type.clone();
+        self.lower_expr_for_storage(expression, declared.as_ref())
+    }
+
+    fn lower_expr_for_storage(
+        &mut self,
+        expression: &Expr,
+        declared: Option<&Type>,
+    ) -> Result<ValueId, CanonicalLoweringError> {
+        let Some(declared) = declared else { return self.lower_expr(expression) };
+        let Some(erased) = witchy_canonical_source::storage::affine_aggregate_erased_type(
+            &declared, self.definitions,
+        ) else { return self.lower_expr(expression) };
+        if erased != self.expression_type(expression)? {
+            return Err(CanonicalLoweringError::UnsupportedExpression("affine storage ascription changes checked value type"));
+        }
+        match expression {
+            Expr::Ctor { name, args } =>
+                self.lower_record_constructor(expression, name, args, Some(&declared)),
+            Expr::Tuple(items) => {
+                let shape = scalar_aggregate_shape(&declared, self.definitions)
+                    .ok_or(CanonicalLoweringError::UnsupportedExpression("affine tuple shape"))?;
+                let values = items.iter().map(|item| self.lower_expr(item))
+                    .collect::<Result<Vec<_>, _>>()?;
+                self.lower_aggregate_for_source(&declared, &shape, 0, values)
+            }
+            Expr::AnonCtor { tag, args } => {
+                let shape = scalar_aggregate_shape(&declared, self.definitions)
+                    .ok_or(CanonicalLoweringError::UnsupportedExpression("affine sum shape"))?;
+                let (index, variant) = shape.variant(tag)
+                    .ok_or_else(|| CanonicalLoweringError::MissingBinding(tag.clone()))?;
+                if args.len() != variant.arity {
+                    return Err(CanonicalLoweringError::CallArityMismatch {
+                        callee: format!(".{tag}"), expected: variant.arity, actual: args.len(),
+                    });
+                }
+                let values = args.iter().map(|item| self.lower_expr(item))
+                    .collect::<Result<Vec<_>, _>>()?;
+                self.lower_aggregate_for_source(&declared, &shape, index, values)
+            }
+            Expr::Record { name, fields, spread: None } =>
+                self.lower_record_literal(expression, name, fields, None, Some(&declared)),
+            Expr::Record { spread: Some(_), .. } | Expr::RecordUpdate { .. } =>
+                Err(CanonicalLoweringError::UnsupportedExpression("affine record spread requires consuming field proof")),
+            _ => {
+                let value = self.lower_expr(expression)?;
+                if self.values[&value] != self.field_value_type(declared)? {
+                    return Err(CanonicalLoweringError::UnsupportedExpression(
+                        "affine storage ascription lacks a matching source layout",
+                    ));
+                }
+                Ok(value)
+            }
+        }
+    }
+
     fn affine_expression_result(&self, expression: &Expr) -> Result<bool, CanonicalLoweringError> {
-        Ok(StoragePlan::classify(&self.expression_type(expression)?, self.definitions, |_| Some(0))
-            .requires_affine_owner_token())
+        let source = self.expression_storage_type(expression)?;
+        Ok(witchy_canonical_source::storage::affine_storage_shape(&source, self.definitions).is_some()
+            || StoragePlan::classify(&source, self.definitions, |_| Some(0))
+                .requires_affine_owner_token())
     }
 
     fn lower_record_constructor(
@@ -11698,8 +11812,9 @@ impl FunctionLowerer<'_> {
         expression: &Expr,
         name: &str,
         arguments: &[Expr],
+        declared_storage: Option<&Type>,
     ) -> Result<ValueId, CanonicalLoweringError> {
-        let source_type = self.expression_type(expression)?;
+        let source_type = declared_storage.cloned().unwrap_or(self.expression_storage_type(expression)?);
         if witchy_canonical_source::capabilities::representation(&source_type, self.definitions).is_some() {
             let payload = capability_constructor_payload(&source_type, name, self.definitions)?;
             let expected = usize::from(payload.is_some());
@@ -11820,7 +11935,13 @@ impl FunctionLowerer<'_> {
             let value = if shape.tagged && slot == 0 {
                 Some(self.push_const_int(i64::try_from(index).map_err(|_| CanonicalLoweringError::IdOverflow)?)?)
             } else if slot >= variant.first_field && slot < variant.first_field + variant.arity {
-                Some(payload[slot - variant.first_field])
+                let value = payload[slot - variant.first_field];
+                Some(if source_type.is_some()
+                    && witchy_canonical_source::storage::affine_storage_shape(field, self.definitions).is_some()
+                    && self.is_static_string(value)
+                {
+                    self.clone_string_for_storage(value)?
+                } else { value })
             } else if shape.tagged && matches!(self.field_value_type(field)?, ValueType::Ref(_)) {
                 None
             } else {
@@ -11828,10 +11949,8 @@ impl FunctionLowerer<'_> {
             };
             values.push(value);
         }
-        let move_only = source_type.is_some_and(|source| {
-            StoragePlan::classify(source.unqualified(), self.definitions, |_| Some(0))
-                .requires_affine_owner_token()
-        });
+        let move_only = source_type.is_some_and(|source|
+            witchy_canonical_source::storage::affine_storage_shape(source, self.definitions).is_some());
         let nullable_fields = source_type.is_some_and(|source|
             aggregate_uses_nullable_owned_fields(source, self.definitions)) || shape.tagged;
         self.lower_heap_record_with_slots(source_type, &shape.name, &shape.fields, values, move_only, nullable_fields)
@@ -11879,7 +11998,7 @@ impl FunctionLowerer<'_> {
     /// aggregate layouts put the success variant first. The checked shape
     /// selects its payload slot, including opaque owner-carried aggregates.
     fn lower_coalesce(&mut self, left: &Expr, right: &Expr) -> Result<ValueId, CanonicalLoweringError> {
-        let left_type = self.expression_type(left)?;
+        let left_type = self.expression_storage_type(left)?;
         let shape = scalar_aggregate_shape(&left_type, self.definitions)
             .filter(|shape| matches!(shape.name.as_str(), "Option" | "Result"))
             .ok_or(CanonicalLoweringError::UnsupportedExpression("coalesce operand"))?;
@@ -11953,8 +12072,10 @@ impl FunctionLowerer<'_> {
     /// return the function's own failure (`None`, or `Err` carrying the
     /// same error) from a terminal block.
     fn lower_try(&mut self, inner: &Expr) -> Result<ValueId, CanonicalLoweringError> {
-        let inner_type = self.expression_type(inner)?;
-        if StoragePlan::classify(&inner_type, self.definitions, |_| Some(0))
+        let inner_type = self.expression_storage_type(inner)?;
+        if witchy_canonical_source::storage::affine_storage_shape(
+            &inner_type, self.definitions,
+        ).is_some() || StoragePlan::classify(&inner_type, self.definitions, |_| Some(0))
             .requires_affine_owner_token()
         {
             return Err(CanonicalLoweringError::UnsupportedExpression(
@@ -12138,11 +12259,21 @@ impl FunctionLowerer<'_> {
         name: &str,
         fields: &[(String, Expr)],
         spread: Option<&Expr>,
+        declared_storage: Option<&Type>,
     ) -> Result<ValueId, CanonicalLoweringError> {
-        let source_type = self.expression_type(expression)?;
+        let source_type = declared_storage.cloned().unwrap_or(self.expression_storage_type(expression)?);
         let shape = scalar_aggregate_shape(&source_type, self.definitions)
             .filter(|shape| !shape.tagged)
             .ok_or(CanonicalLoweringError::UnsupportedExpression("non-record literal"))?;
+        if let Some(base) = spread
+            && witchy_canonical_source::storage::affine_storage_shape(
+                &self.expression_storage_type(base)?, self.definitions,
+            ).is_some()
+        {
+            return Err(CanonicalLoweringError::UnsupportedExpression(
+                "affine record spread requires consuming field proof",
+            ));
+        }
         if shape.packed {
             return Err(CanonicalLoweringError::UnsupportedExpression("packed record literal"));
         }
@@ -12162,7 +12293,16 @@ impl FunctionLowerer<'_> {
         let mut overrides = Vec::with_capacity(fields.len());
         for (field, expression) in fields {
             let value = self.lower_expr(expression)?;
-            let value = if matches!(self.values[&value], ValueType::Ref(_) | ValueType::Gc(_)) {
+            let index = field_names.iter().position(|name| name == field)
+                .ok_or_else(|| CanonicalLoweringError::MissingBinding(field.clone()))?;
+            let affine = witchy_canonical_source::storage::affine_storage_shape(
+                &field_types[index], self.definitions,
+            ).is_some();
+            let value = if affine && self.is_static_string(value) {
+                self.clone_string_for_storage(value)?
+            } else if affine {
+                value
+            } else if matches!(self.values[&value], ValueType::Ref(_) | ValueType::Gc(_)) {
                 self.clone_reference_token(value)?
             } else { value };
             overrides.push((field, value));
@@ -12405,7 +12545,9 @@ impl FunctionLowerer<'_> {
         field_types: &[Type],
         values: Vec<ValueId>,
     ) -> Result<ValueId, CanonicalLoweringError> {
-        self.lower_heap_record_with_source(Some(source_type), name, field_types, values, false, false)
+        let affine = witchy_canonical_source::storage::affine_storage_shape(source_type, self.definitions).is_some();
+        self.lower_heap_record_with_source(Some(source_type), name, field_types, values, affine,
+            aggregate_uses_nullable_owned_fields(source_type, self.definitions))
     }
 
     /// `lower_heap_record` for the kernels: `move_references` stores a
@@ -12608,12 +12750,15 @@ impl FunctionLowerer<'_> {
     }
 
     fn lower_record_field(&mut self, base: &Expr, field: &str) -> Result<ValueId, CanonicalLoweringError> {
-        let base_type = self.expression_type(base)?;
+        let base_type = self.expression_storage_type(base)?;
         if let Type::Tuple(items) = base_type.unqualified() {
             // `pair.1`: the item's slot.
             let index = field.parse::<usize>().ok().filter(|index| *index < items.len())
                 .ok_or_else(|| CanonicalLoweringError::MissingBinding(field.to_owned()))?;
             let value_type = self.field_value_type(&items[index])?;
+            if witchy_canonical_source::storage::affine_storage_shape(&items[index], self.definitions).is_some() {
+                return Err(CanonicalLoweringError::UnsupportedExpression("affine field projection requires consuming pattern"));
+            }
             let object = self.lower_expr(base)?;
             // A tuple carrying a rooted view is an owner-family aggregate;
             // read its slot exactly as a tuple pattern does, so `frame.0` of
@@ -12640,6 +12785,9 @@ impl FunctionLowerer<'_> {
         let field_type = shape.fields.get(index).ok_or_else(|| {
             CanonicalLoweringError::MissingBinding(field.to_owned())
         })?;
+        if witchy_canonical_source::storage::affine_storage_shape(field_type, self.definitions).is_some() {
+            return Err(CanonicalLoweringError::UnsupportedExpression("affine field projection requires consuming pattern"));
+        }
         let value_type = self.field_value_type(field_type)?;
         let object = self.lower_expr(base)?;
         if !matches!(self.values[&object], ValueType::Ref(_) | ValueType::Gc(_)) {
@@ -13376,7 +13524,7 @@ impl FunctionLowerer<'_> {
         expression: &Expr,
         items: &[Expr],
     ) -> Result<ValueId, CanonicalLoweringError> {
-        let logical_type = self.expression_type(expression)?;
+        let logical_type = self.expression_storage_type(expression)?;
         if let Some(list_type) = self.closures.layouts.opaque_type(&logical_type, self.definitions) {
             let family = self.closures.owners.iter().find(|family| family.list_type == list_type).cloned()
                 .ok_or(CanonicalLoweringError::UnsupportedExpression("opaque list literal family"))?;
@@ -13442,6 +13590,9 @@ impl FunctionLowerer<'_> {
                 StoragePlan::classify(&logical_type, self.definitions, |_| Some(0)),
                 StoragePlan::MoveOnlyList(_),
             );
+            if move_only && self.is_static_string(value) {
+                value = self.clone_string_for_storage(value)?;
+            }
             if matches!(element_type, ValueType::Ref(_)) && !move_only {
                 if self.string_lengths.contains_key(&value) {
                     value = self.clone_string_for_storage(value)?;

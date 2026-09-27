@@ -287,7 +287,12 @@ fn bind_plan(
     let descriptor = layouts.get(physical)?;
     let plan = match shape {
         AffineStorageShape::Leaf => {
-            if let Type::Qualified(witchy_syntax::ast::TypeQual::Unique, inner) = source_type {
+            let mut storage = source_type;
+            for _ in 0..128 {
+                let Type::Qualified(witchy_syntax::ast::TypeQual::Frozen, inner) = storage else { break };
+                storage = inner;
+            }
+            if let Type::Qualified(witchy_syntax::ast::TypeQual::Unique, inner) = storage {
                 if !layout_matches_source(layout, inner, layouts, source.type_definitions()) { return None; }
             } else {
                 let source_shape = witchy_canonical_source::aggregates::scalar_aggregate_shape(source_type, source.type_definitions())?;
