@@ -239,61 +239,10 @@ fn lower_with_item_mapping_for(
     checked: GeneratorsLoweredModule,
     destination: GeneratedCallDestination,
 ) -> Result<(AsyncLoweredModule, Vec<Vec<usize>>), String> {
-    let borrowed_shells = BorrowedShellCatalog::from_module(checked.module());
-    // Callables whose call result is a borrowed view. An `async fn` is never
-    // one: calling it produces its `Task`, and the task carries a direct view
-    // result by value (RFC-0167 section 7).
-    let view_fns: HashSet<String> = checked
-        .module()
-        .items
-        .iter()
-        .flat_map(|item| match item {
-            Item::Function(function) => {
-                let mut names = Vec::new();
-                if !function.is_async
-                    && function
-                        .ret
-                        .as_ref()
-                        .is_some_and(|ty| borrowed_shells.type_is_borrowed(ty))
-                {
-                    names.push(function.name.clone());
-                }
-                if function
-                    .ret
-                    .as_ref()
-                    .is_some_and(|ty| type_is_view_callable(ty, &borrowed_shells))
-                {
-                    names.push(format!("@callable:{}", function.name));
-                }
-                names
-            }
-            Item::Impl(definition) => definition
-                .methods
-                .iter()
-                .flat_map(|method| {
-                    let mut names = Vec::new();
-                    if !method.is_async
-                        && method
-                            .ret
-                            .as_ref()
-                            .is_some_and(|ty| borrowed_shells.type_is_borrowed(ty))
-                    {
-                        names.push(format!("@method:{}", method.name));
-                    }
-                    if method
-                        .ret
-                        .as_ref()
-                        .is_some_and(|ty| type_is_view_callable(ty, &borrowed_shells))
-                    {
-                        names.push(format!("@callable-method:{}", method.name));
-                    }
-                    names
-                })
-                .collect(),
-            _ => Vec::new(),
-        })
-        .collect();
-    lower_with_view_fns_and_item_mapping_for(checked, &view_fns, destination)
+    // The shared entry point derives local borrowed-view callables after its
+    // no-async fast path. Precomputing them here rebuilt the catalog and
+    // scanned every signature a second time before async lowering started.
+    lower_with_view_fns_and_item_mapping_for(checked, &HashSet::new(), destination)
 }
 
 pub(crate) fn lower_with_view_fns_and_item_mapping(
