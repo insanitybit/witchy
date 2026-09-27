@@ -17,6 +17,12 @@ pub struct FunctionSpec {
     pub body: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InherentImplSpec {
+    pub target: String,
+    pub methods: Vec<String>,
+}
+
 struct Reader<'a>(&'a [u8]);
 
 impl Reader<'_> {
@@ -95,4 +101,14 @@ pub fn decode_function(bytes: &[u8]) -> Result<FunctionSpec, String> {
     let body = reader.handle()?;
     reader.end()?;
     Ok(FunctionSpec { public, name, params, ret, body })
+}
+
+pub fn decode_inherent_impl(bytes: &[u8]) -> Result<InherentImplSpec, String> {
+    if bytes.len() > 65_536 { return Err("compiler inherent impl input limit exceeded".into()); }
+    let mut reader = Reader(bytes);
+    let target = reader.handle()?;
+    let count = reader.count()?;
+    let methods = (0..count).map(|_| reader.handle()).collect::<Result<_, _>>()?;
+    reader.end()?;
+    Ok(InherentImplSpec { target, methods })
 }

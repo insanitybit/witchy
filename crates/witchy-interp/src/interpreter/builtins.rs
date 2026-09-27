@@ -1870,6 +1870,33 @@ impl Interpreter {
                 }
                 _ => err("meta.inherent_impl expects TypeSyntax and List(ItemSyntax)"),
             },
+            name if intrinsics::is_meta_inherent_impl_wire(name) => match one(args)? {
+                Value::Str(wire) => {
+                    if self.compiler_syntax.fresh_ident_scope().is_none() {
+                        return err("meta.inherent_impl is available only during compile-time expansion");
+                    }
+                    let spec = witchy_syntax::compiler_session::function_wire::decode_inherent_impl(wire.as_bytes())
+                        .map_err(|message| RuntimeError { message })?;
+                    let target = self.compiler_syntax.types().get(&spec.target).cloned()
+                        .ok_or_else(|| RuntimeError { message: "meta.inherent_impl requires current-session target syntax".into() })?;
+                    let (type_name, target_args) = compiler_impl_head(target, "target", "meta.inherent_impl")?;
+                    let methods = spec.methods.iter().map(|handle| {
+                        match self.compiler_syntax.items().get(handle) {
+                            Some(Item::Function(function)) if !function.is_async && !function.is_gen => Ok(function.clone()),
+                            Some(Item::Function(_)) => err("meta.inherent_impl cannot attach async or generator methods"),
+                            _ => err("meta.inherent_impl requires current-session function items"),
+                        }
+                    }).collect::<Result<Vec<_>, _>>()?;
+                    let item = Item::Impl(ImplDef { origin: ImplOrigin::Source,
+                        trait_name: None, trait_args: Vec::new(), type_name, target_args,
+                        bounds: Vec::new(), methods });
+                    let handle = self.next_compiler_syntax_handle("impl-item")?;
+                    self.compiler_syntax.insert_item(handle.clone(), item);
+                    Ok(Some(Value::Ctor { name: OWNED_ITEM_SYNTAX_CTOR.into(),
+                        fields: Rc::new(vec![Value::str(handle), Value::Int(i64::from(self.cur_line))]) }))
+                }
+                _ => err("meta.inherent_impl expects framed implementation data"),
+            },
             name if intrinsics::is_meta_impl_block_where(name) => match args {
                 [trait_ty, target_ty, bounds, items] => {
                     if self.compiler_syntax.fresh_ident_scope().is_none() {

@@ -846,7 +846,14 @@ pub fn impl_block(trait_ty: TypeSyntax, target_ty: TypeSyntax, items: List(ItemS
 
 // Construct methods owned by a concrete type without inventing a trait.
 pub fn inherent_impl(target_ty: TypeSyntax, items: List(ItemSyntax)) -> ItemSyntax:
-    __meta_inherent_impl(target_ty, items)
+    var wire = type_handle_wire(target_ty) + "${items.length()}\n"
+    for item in items:
+        match item:
+            ItemSyntax(handle) -> wire = wire + "${handle.length()}\n" + handle
+    __meta_inherent_impl_wire(wire)
+
+fn __meta_inherent_impl_wire(wire: String) -> ItemSyntax:
+    __meta_inherent_impl_wire(wire)
 
 fn __meta_inherent_impl(target_ty: TypeSyntax, items: List(ItemSyntax)) -> ItemSyntax:
     __meta_inherent_impl(target_ty, items)

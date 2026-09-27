@@ -239,6 +239,7 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
   (import "witchy" "compiler_syntax_expr_compose_into" (func $compiler_syntax_expr_compose_into_host (param i32 i32 i32 i32) (result i32)))
   (import "witchy" "compiler_syntax_param_into" (func $compiler_syntax_param_into_host (param i32 i32 i32 i32) (result i32)))
   (import "witchy" "compiler_syntax_function_expr_into" (func $compiler_syntax_function_expr_into_host (param i32 i32 i32 i32) (result i32)))
+  (import "witchy" "compiler_syntax_inherent_impl_into" (func $compiler_syntax_inherent_impl_into_host (param i32 i32 i32 i32) (result i32)))
   (import "witchy" "compiler_diff_into" (func $compiler_diff_into_host (param i32 i32 i32 i32 i32 i32) (result i32)))
   (import "witchy" "compiler_doc_into" (func $compiler_doc_into_host (param i32 i32 i32 i32 i32 i32) (result i32)))
   (import "witchy" "compiler_doc_result_json_into" (func $compiler_doc_result_json_into_host (param i32 i32 i32 i32 i32 i32) (result i32)))
@@ -697,7 +698,8 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         | "compiler_syntax_quote_type_into" | "compiler_syntax_record_type_into"
         | "compiler_syntax_expr_leaf_into" | "compiler_syntax_type_expr_into"
         | "compiler_syntax_expr_compose_into" | "compiler_syntax_param_into"
-        | "compiler_syntax_function_expr_into" => C::CompilerSession,
+        | "compiler_syntax_function_expr_into" | "compiler_syntax_inherent_impl_into"
+            => C::CompilerSession,
 
         "compiler_footprint_len"
         | "compiler_diff_len"

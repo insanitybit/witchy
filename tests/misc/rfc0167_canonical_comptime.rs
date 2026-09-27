@@ -193,6 +193,29 @@ fn admitted_typed_parameters_build_a_checked_function_in_both_modes() {
 }
 
 #[test]
+fn admitted_typed_inherent_method_dispatches_in_both_modes() {
+    struct ResetOptimization;
+    impl Drop for ResetOptimization { fn drop(&mut self) { witchy::opt::set_for_tests(None); } }
+    witchy::opt::set_for_tests(Some(witchy::opt::OptSet::none()));
+    let _reset = ResetOptimization;
+    for mode in ["", "mode opt\n"] {
+        let source = format!("{mode}import meta\ntype Counter:\n    value: Int\ncomptime:\n    let counter_ty = quote type:\n        Counter\n    let int_ty = quote type:\n        Int\n    let self_param = meta.param(meta.ident(\"self\"), counter_ty)\n    let method = meta.function(true, meta.ident(\"answer\"), [self_param], Some(int_ty), meta.expr_int(42))\n    emit_item(meta.inherent_impl(counter_ty, [method]))\nfn main(console: Console):\n    let c = Counter(0)\n    console.print(\"${{c.answer()}}\")\n");
+        let checked = witchy::canonical_comptime::check_source_bundle(
+            vec![("generator".into(), source.into_bytes())], "generator",
+            ["generator".to_owned()].into_iter().collect(), owners_for("generator"), limits(),
+        ).expect("generated inherent method enters destination checking");
+        let artifact = witchy_lower::codegen::compile_checked_module_artifact(&checked)
+            .expect_lowered("generated method admits on unoptimized Wasm");
+        let mut runtime = Runtime::batch().unwrap();
+        let mut vm = runtime.spawn_admitted(&artifact,
+            Capabilities { print: true, quiet: true, ..Capabilities::none() }, 64).unwrap();
+        vm.run().unwrap();
+        assert_eq!(vm.output(), ["42"]);
+        assert_eq!(vm.canonical_heap_leaks().unwrap(), Some(0));
+    }
+}
+
+#[test]
 fn admitted_expression_composition_preserves_typed_children_in_both_modes() {
     use witchy_syntax::ast::Expr;
     struct ResetOptimization;

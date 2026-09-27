@@ -3,7 +3,7 @@
 use super::super::{comptime::SessionState, memory_of, VmState};
 use std::sync::Arc;
 use wasmtime::{Caller, Error, Linker, Result};
-use witchy_syntax::{ast::{Block, Convention, Expr, Function, Item, Param, Stmt, Type, TypeDef, Variant}, compiler_session::{
+use witchy_syntax::{ast::{Block, Convention, Expr, Function, ImplDef, ImplOrigin, Item, Param, Stmt, Type, TypeDef, Variant}, compiler_session::{
     seeds::{measure_dynamic, EmittedExpression, EmittedItem, SyntaxCost, SyntaxSeed}, ComptimeSyntaxOrigin,
 }};
 
@@ -17,6 +17,7 @@ pub(in super::super) fn register(linker: &mut Linker<VmState>) -> Result<()> {
     linker.func_wrap("witchy", "compiler_syntax_record_type_into", record_type_into)?;
     linker.func_wrap("witchy", "compiler_syntax_param_into", param_into)?;
     linker.func_wrap("witchy", "compiler_syntax_function_expr_into", function_expr_into)?;
+    linker.func_wrap("witchy", "compiler_syntax_inherent_impl_into", inherent_impl_into)?;
     linker.func_wrap("witchy", "compiler_syntax_expr_leaf_into", expression_leaf_into)?;
     linker.func_wrap("witchy", "compiler_syntax_type_expr_into", type_expr_into)?;
     linker.func_wrap("witchy", "compiler_syntax_expr_compose_into", expression_compose_into)?;
@@ -67,6 +68,68 @@ fn expression_compose_into(mut caller: Caller<'_, VmState>, pointer: i32, length
         hole_ancestry: origins.into_iter().flat_map(|origin| origin.hole_ancestry).collect(),
     });
     state.costs.insert(handle.clone(), cost);
+    memory.data_mut(&mut caller)[output.start..output.start + required].copy_from_slice(handle.as_bytes());
+    Ok(required as i32)
+}
+
+fn inherent_impl_into(mut caller: Caller<'_, VmState>, pointer: i32, length: i32,
+    out: i32, capacity: i32) -> Result<i32> {
+    let memory = memory_of(&mut caller)?;
+    let input = range(memory.data_size(&caller), pointer, length)?;
+    let output = range(memory.data_size(&caller), out, capacity)?;
+    let state = caller.data().compiler_syntax.as_ref()
+        .ok_or_else(|| Error::msg("compiler syntax session unavailable"))?;
+    if input.len() as u64 > state.input_bytes {
+        return Err(Error::msg("compiler inherent impl input budget exceeded"));
+    }
+    charge_fuel(&mut caller, input.len() as u64 + 1)?;
+    let spec = witchy_syntax::compiler_session::function_wire::decode_inherent_impl(&memory.data(&caller)[input])
+        .map_err(Error::msg)?;
+    let state = caller.data().compiler_syntax.as_ref().expect("checked session");
+    if !state.type_costs.contains_key(&spec.target) {
+        return Err(Error::msg("compiler inherent impl requires current-session target syntax"));
+    }
+    let target = state.syntax.types().get(&spec.target)
+        .ok_or_else(|| Error::msg("compiler inherent impl target has no typed payload"))?;
+    let Type::Named(type_name, target_args) = target else {
+        return Err(Error::msg("compiler inherent impl target must name a concrete type"));
+    };
+    let mut origin = state.syntax.type_origins().get(&spec.target).cloned();
+    let methods = spec.methods.iter().map(|handle| {
+        if !state.item_costs.contains_key(handle) {
+            return Err(Error::msg("compiler inherent impl requires current-session function items"));
+        }
+        if origin.is_none() { origin = state.item_origins.get(handle).cloned(); }
+        match state.syntax.items().get(handle) {
+            Some(Item::Function(function)) if !function.is_async && !function.is_gen => Ok(function.clone()),
+            Some(Item::Function(_)) => Err(Error::msg("compiler inherent impl cannot attach async or generator methods")),
+            _ => Err(Error::msg("compiler inherent impl method is not a function item")),
+        }
+    }).collect::<Result<Vec<_>>>()?;
+    let item = Item::Impl(ImplDef {
+        origin: ImplOrigin::Source, trait_name: None, trait_args: Vec::new(),
+        type_name: type_name.clone(), target_args: target_args.clone(),
+        bounds: Vec::new(), methods,
+    });
+    let cost = measure_dynamic(&item).map_err(Error::msg)?;
+    let required = state.syntax.syntax_handle_byte_len("item").map_err(Error::msg)?;
+    if cost.nodes > state.nodes.remaining() || cost.bytes > state.syntax_bytes.remaining()
+        || required as u64 > state.bytes.remaining() {
+        return Err(Error::msg("compiler syntax arena budget exceeded"));
+    }
+    charge_fuel(&mut caller, cost.work().and_then(|work| work.checked_add(required as u64))
+        .ok_or_else(|| Error::msg("compiler syntax fuel overflow"))?)?;
+    if output.len() < required { return Ok(required as i32); }
+    let state = caller.data_mut().compiler_syntax.as_mut().expect("checked session");
+    state.nodes.charge(cost.nodes).map_err(|_| Error::msg("compiler syntax arena budget exceeded"))?;
+    state.syntax_bytes.charge(cost.bytes).map_err(|_| Error::msg("compiler syntax arena budget exceeded"))?;
+    state.bytes.charge(required as u64).map_err(|_| Error::msg("compiler syntax handle budget exceeded"))?;
+    let handle = state.syntax.next_syntax_handle("item").map_err(Error::msg)?;
+    state.syntax.insert_item(handle.clone(), item);
+    state.item_origins.insert(handle.clone(), origin.unwrap_or(ComptimeSyntaxOrigin {
+        definition_line: 1, hole_ancestry: Vec::new(),
+    }));
+    state.item_costs.insert(handle.clone(), cost);
     memory.data_mut(&mut caller)[output.start..output.start + required].copy_from_slice(handle.as_bytes());
     Ok(required as i32)
 }

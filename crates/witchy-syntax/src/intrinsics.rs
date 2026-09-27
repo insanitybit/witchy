@@ -121,6 +121,7 @@ pub enum IntrinsicId {
     MetaFunctionExprWire,
     MetaImplBlock,
     MetaInherentImpl,
+    MetaInherentImplWire,
     MetaImplBlockWhere,
     CompilerFootprint,
     CompilerDiff,
@@ -722,6 +723,7 @@ pub(crate) const META_FUNCTION_BLOCK: &str = "__meta_function_block";
 pub(crate) const META_FUNCTION_EXPR_WIRE: &str = "__meta_function_expr_wire";
 pub(crate) const META_IMPL_BLOCK: &str = "__meta_impl_block";
 pub(crate) const META_INHERENT_IMPL: &str = "__meta_inherent_impl";
+pub(crate) const META_INHERENT_IMPL_WIRE: &str = "__meta_inherent_impl_wire";
 pub(crate) const META_IMPL_BLOCK_WHERE: &str = "__meta_impl_block_where";
 
 pub const COMPILER_FOOTPRINT: &str = "compiler.footprint";
@@ -2519,6 +2521,21 @@ pub const ALL: &[IntrinsicSpec] = &[
         id: IntrinsicId::MetaInherentImpl,
         name: META_INHERENT_IMPL,
         arity: 2,
+        signature: IntrinsicSignature::DeclaredInSource,
+        effect: IntrinsicEffect::Toolchain,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::FrontendGenerated,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: NO_HELPERS,
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: "meta.inherent_impl",
+        private_callers: META_BRIDGE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::MetaInherentImplWire,
+        name: META_INHERENT_IMPL_WIRE,
+        arity: 1,
         signature: IntrinsicSignature::DeclaredInSource,
         effect: IntrinsicEffect::Toolchain,
         capability_effect: CapabilityEffect::None,
@@ -4338,6 +4355,10 @@ pub fn is_meta_impl_block(name: &str) -> bool {
 
 pub fn is_meta_inherent_impl(name: &str) -> bool {
     lookup(name).is_some_and(|spec| spec.id == IntrinsicId::MetaInherentImpl)
+}
+
+pub fn is_meta_inherent_impl_wire(name: &str) -> bool {
+    lookup(name).is_some_and(|spec| spec.id == IntrinsicId::MetaInherentImplWire)
 }
 
 pub fn is_meta_impl_block_where(name: &str) -> bool {
