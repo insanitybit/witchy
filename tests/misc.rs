@@ -91,6 +91,8 @@ mod wasm_abi_catalog;
 mod rfc0167_stored_callback_invocation;
 #[path = "misc/rfc0167_recursive_constructor_storage.rs"]
 mod rfc0167_recursive_constructor_storage;
+#[path = "misc/rfc0167_checked_call_storage.rs"]
+mod rfc0167_checked_call_storage;
 #[path = "misc/rfc0167_nested_opt_callable_contracts.rs"]
 mod rfc0167_nested_opt_callable_contracts;
 #[path = "misc/rfc0167_consuming_record_reconstruction.rs"]

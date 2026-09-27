@@ -15,6 +15,8 @@ mod owned;
 mod regex;
 #[path = "canonical_constructor_storage.rs"]
 mod constructor_storage;
+#[path = "canonical_call_storage.rs"]
+mod call_storage;
 #[path = "canonical_vm_service.rs"]
 mod vm_service;
 
@@ -11014,6 +11016,11 @@ impl FunctionLowerer<'_> {
         if conventions.len() != parameters.len() {
             return Err(CanonicalLoweringError::MissingCheckedCallConventions(signature_id));
         }
+        let checked_access = call_site
+            .and_then(|site| self.access_facts.call_at(self.checked_module, site));
+        if checked_access.is_some_and(|access| access.params().len() != parameters.len()) {
+            return Err(CanonicalLoweringError::UnsupportedExpression("checked call storage arity"));
+        }
         // This vector belongs to this invocation. Nested calls while capturing
         // an index cannot replace the outer call's prepared coordinates.
         let mut write_backs = Vec::new();
@@ -11022,6 +11029,8 @@ impl FunctionLowerer<'_> {
             .zip(parameters)
             .enumerate()
             .map(|(parameter, (argument, contract))| {
+                let declared_storage = checked_access
+                    .and_then(|access| access.params().get(parameter)).map(|parameter| parameter.ty());
                 // This is deliberately selected from the exact retained call
                 // access type, not the physical `Ref` lane. A source `var`
                 // or `own` direct `&mut` argument is an ephemeral handle: its
@@ -11079,7 +11088,7 @@ impl FunctionLowerer<'_> {
                     write_backs.push(place);
                     value
                 } else {
-                    self.lower_expr(argument)?
+                    self.lower_expr_for_storage(argument, declared_storage)?
                 };
                 let actual = self.values[&value];
                 if actual != contract.value_type {
@@ -11118,7 +11127,7 @@ impl FunctionLowerer<'_> {
                         }
                         ParameterOwnership::Value => Ok(CallArgument::Value(value)),
                         ParameterOwnership::Unique => {
-                            let source_type = self.expression_storage_type(argument)?;
+                            let source_type = self.call_argument_storage_type(argument, value, declared_storage)?;
                             let affine = witchy_canonical_source::storage::affine_storage_shape(
                                 &source_type, self.definitions,
                             ).is_some() || StoragePlan::classify(
@@ -11142,7 +11151,7 @@ impl FunctionLowerer<'_> {
                             let owned = self.clone_string_for_storage(value)?;
                             return Ok(CallArgument::Move(owned));
                         }
-                        let source_type = self.expression_storage_type(argument)?;
+                        let source_type = self.call_argument_storage_type(argument, value, declared_storage)?;
                         let affine = witchy_canonical_source::storage::affine_storage_shape(
                             &source_type, self.definitions,
                         ).is_some() || StoragePlan::classify(
