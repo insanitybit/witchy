@@ -422,30 +422,19 @@ impl Interpreter {
             },
             name if intrinsics::is_meta_pattern_wire(name) => match one(args)? {
                 Value::Str(wire) => {
-                    use witchy_syntax::compiler_session::pattern_match_wire::PatternSpec;
                     if self.compiler_syntax.fresh_ident_scope().is_none() {
                         return err("meta pattern builders are available only during compile-time expansion");
                     }
                     let spec = witchy_syntax::compiler_session::pattern_match_wire::decode_pattern(wire.as_bytes())
                         .map_err(|message| RuntimeError { message })?;
                     let mut ancestry = Vec::new();
-                    let pattern = match spec {
-                        PatternSpec::Wildcard => Pattern::Wildcard,
-                        PatternSpec::Var(name) => Pattern::Var(name),
-                        PatternSpec::Bool(value) => Pattern::Bool(value),
-                        PatternSpec::Int(value) => Pattern::Int(value),
-                        PatternSpec::Ctor { name, args } => {
-                            let mut patterns = Vec::with_capacity(args.len());
-                            for handle in args {
-                                if let Some(origin) = self.compiler_syntax.pattern_origins().get(&handle) {
-                                    ancestry.extend(origin.hole_ancestry.iter().cloned());
-                                }
-                                patterns.push(self.compiler_syntax.patterns().get(&handle).cloned()
-                                    .ok_or_else(|| RuntimeError { message: "meta pattern requires typed child syntax".into() })?);
-                            }
-                            Pattern::Ctor { name, args: patterns }
+                    let pattern = spec.build(|handle| {
+                        if let Some(origin) = self.compiler_syntax.pattern_origins().get(handle) {
+                            ancestry.extend(origin.hole_ancestry.iter().cloned());
                         }
-                    };
+                        self.compiler_syntax.patterns().get(handle).cloned()
+                            .ok_or("meta pattern requires typed child syntax".into())
+                    }).map_err(|message| RuntimeError { message })?;
                     Ok(Some(self.store_compiler_pattern_syntax("pattern-wire", pattern, ancestry)?))
                 }
                 _ => err("meta pattern builder expects framed data"),

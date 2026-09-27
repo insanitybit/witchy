@@ -6,7 +6,9 @@ use witchy_syntax::origin::SyntaxCategory;
 use super::{err, ComptimeHoleOrigin, ComptimeSyntaxOrigin, RuntimeError, Value};
 
 pub(super) fn compiler_expr_leaf(kind: &str, payload: &str) -> Result<Expr, RuntimeError> {
-    if kind == "name" && payload.chars().next().is_some_and(char::is_uppercase) {
+    if kind == "call-site-name" {
+        Ok(witchy_syntax::linker::call_site_expr(payload))
+    } else if kind == "name" && payload.chars().next().is_some_and(char::is_uppercase) {
         Ok(Expr::Ctor { name: payload.to_string(), args: Vec::new() })
     } else if kind == "name" {
         Ok(Expr::Var(payload.to_string()))

@@ -268,7 +268,7 @@ fn admitted_match_builder_binds_constructor_payload_in_both_modes() {
     witchy::opt::set_for_tests(Some(witchy::opt::OptSet::none()));
     let _reset = ResetOptimization;
     for mode in ["", "mode opt\n"] {
-        let source = format!("{mode}import meta\ncomptime:\n    let option_ty = quote type:\n        Option(Int)\n    let int_ty = quote type:\n        Int\n    let value = meta.param(meta.ident(\"value\"), option_ty)\n    let scrutinee = quote expr:\n        value\n    let n_expr = quote expr:\n        n\n    let some = meta.match_arm(meta.pattern_ctor(meta.ident(\"Some\"), [meta.pattern_var(meta.ident(\"n\"))]), n_expr)\n    let none = meta.match_arm(meta.pattern_ctor(meta.ident(\"None\"), []), meta.expr_int(0))\n    emit_item(meta.function(true, meta.ident(\"read\"), [value], Some(int_ty), meta.expr_match(scrutinee, [some, none])))\nfn main(console: Console):\n    console.print(\"${{read(Some(42))}}:${{read(None)}}\")\n");
+        let source = format!("{mode}import meta\ncomptime:\n    let option_ty = quote type:\n        Option(Int)\n    let int_ty = quote type:\n        Int\n    let value = meta.param(meta.ident(\"value\"), option_ty)\n    let scrutinee = quote expr:\n        value\n    let some = meta.match_arm(meta.pattern_ctor(meta.ident(\"Some\"), [meta.pattern_var(meta.ident(\"n\"))]), meta.expr_name(meta.ident(\"n\")))\n    let none = meta.match_arm(meta.pattern_ctor(meta.ident(\"None\"), []), meta.expr_int(0))\n    emit_item(meta.function(true, meta.ident(\"read\"), [value], Some(int_ty), meta.expr_match(scrutinee, [some, none])))\nfn main(console: Console):\n    console.print(\"${{read(Some(42))}}:${{read(None)}}\")\n");
         let checked = witchy::canonical_comptime::check_source_bundle(
             vec![("generator".into(), source.into_bytes())], "generator",
             ["generator".to_owned()].into_iter().collect(), owners_for("generator"), limits(),
@@ -280,6 +280,29 @@ fn admitted_match_builder_binds_constructor_payload_in_both_modes() {
             Capabilities { print: true, quiet: true, ..Capabilities::none() }, 64).unwrap();
         vm.run().unwrap();
         assert_eq!(vm.output(), ["42:0"]);
+        assert_eq!(vm.canonical_heap_leaks().unwrap(), Some(0));
+    }
+}
+
+#[test]
+fn admitted_pattern_composition_checks_list_and_or_patterns_in_both_modes() {
+    struct ResetOptimization;
+    impl Drop for ResetOptimization { fn drop(&mut self) { witchy::opt::set_for_tests(None); } }
+    witchy::opt::set_for_tests(Some(witchy::opt::OptSet::none()));
+    let _reset = ResetOptimization;
+    for mode in ["", "mode opt\n"] {
+        let source = format!("{mode}import meta\ncomptime:\n    let list_ty = quote type:\n        List(Int)\n    let int_ty = quote type:\n        Int\n    let xs = meta.param(meta.ident(\"xs\"), list_ty)\n    let xs_expr = quote expr:\n        xs\n    let nonempty = meta.match_arm(meta.pattern_list_rest([meta.pattern_var(meta.ident(\"head\"))], None), meta.expr_name(meta.ident(\"head\")))\n    let empty = meta.match_arm(meta.pattern_list([]), meta.expr_int(0))\n    emit_item(meta.function(true, meta.ident(\"first\"), [xs], Some(int_ty), meta.expr_match(xs_expr, [nonempty, empty])))\n    let n = meta.param(meta.ident(\"n\"), int_ty)\n    let n_expr = quote expr:\n        n\n    let small = meta.match_arm(meta.pattern_or([meta.pattern_int(1), meta.pattern_int(2)]), meta.expr_int(1))\n    let other = meta.match_arm(meta.pattern_wildcard(), meta.expr_int(0))\n    emit_item(meta.function(true, meta.ident(\"is_small\"), [n], Some(int_ty), meta.expr_match(n_expr, [small, other])))\nfn main(console: Console):\n    console.print(\"${{first([42, 7])}}:${{first([])}}:${{is_small(2)}}:${{is_small(8)}}\")\n");
+        let checked = witchy::canonical_comptime::check_source_bundle(
+            vec![("generator".into(), source.into_bytes())], "generator",
+            ["generator".to_owned()].into_iter().collect(), owners_for("generator"), limits(),
+        ).expect("composed patterns enter destination checking");
+        let artifact = witchy_lower::codegen::compile_checked_module_artifact(&checked)
+            .expect_lowered("composed patterns admit on unoptimized Wasm");
+        let mut runtime = Runtime::batch().unwrap();
+        let mut vm = runtime.spawn_admitted(&artifact,
+            Capabilities { print: true, quiet: true, ..Capabilities::none() }, 64).unwrap();
+        vm.run().unwrap();
+        assert_eq!(vm.output(), ["42:0:1:0"]);
         assert_eq!(vm.canonical_heap_leaks().unwrap(), Some(0));
     }
 }

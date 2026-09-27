@@ -133,7 +133,7 @@ fn ident_source(id: Ident) -> String:
 fn expr_ident(id: Ident) -> ExprSyntax:
     match id:
         Ident(source) -> __meta_expr_leaf("name", source)
-        CallSiteIdent(source) -> __meta_call_site_expr(source)
+        CallSiteIdent(source) -> __meta_expr_leaf("call-site-name", source)
 
 // Compiler-owned literal/name construction. The bridge decodes the typed
 // payload directly into an Expr node; it never renders and reparses source.
@@ -603,15 +603,15 @@ fn __meta_pattern_wire(wire: String) -> PatternSyntax:
 
 // A string literal pattern.
 pub fn pattern_str(value: String) -> PatternSyntax:
-    __meta_pattern_leaf("string", value, "", false)
+    __meta_pattern_wire("S\n${value.length()}\n" + value)
 
 // A duration literal pattern from its whole-millisecond value.
 pub fn pattern_duration_ms(ms: Int) -> PatternSyntax:
-    __meta_pattern_leaf("duration", "${ms}", "", false)
+    __meta_pattern_wire("D\n${ms}\n")
 
 // An integer range pattern.
 pub fn pattern_range(lo: Int, hi: Int, inclusive: Bool) -> PatternSyntax:
-    __meta_pattern_leaf("range", "${lo}", "${hi}", inclusive)
+    __meta_pattern_wire("R\n${lo}\n${hi}\n" + if inclusive: "1\n" else: "0\n")
 
 // Compiler-owned pattern leaf construction. Scalar payloads are validated and
 // decoded directly into Pattern variants by the compiler bridge.
@@ -620,13 +620,8 @@ fn __meta_pattern_leaf(kind: String, first: String, second: String, inclusive: B
 
 pub fn pattern_ctor(name: Ident, args: List(PatternSyntax)) -> PatternSyntax:
     match name:
-        Ident(source) ->
-            var wire = "C\n" + source + "\n${args.length()}\n"
-            for arg in args:
-                match arg:
-                    CompilerPatternSyntax(handle) -> wire = wire + "${handle.length()}\n" + handle
-            __meta_pattern_wire(wire)
-        CallSiteIdent(_) -> __meta_pattern_wire("X\n")
+        Ident(source) -> __meta_pattern_wire("C\n" + source + "\n" + pattern_wire_args(args))
+        CallSiteIdent(source) -> __meta_pattern_wire("K\n" + source + "\n" + pattern_wire_args(args))
 
 // Compiler-owned definition-site constructor-pattern construction. Arguments
 // retain their own origin and structure.
@@ -642,31 +637,38 @@ fn __meta_call_site_pattern(name: String, args: List(PatternSyntax)) -> PatternS
 pub fn pattern_qualified_ctor(module: Ident, name: Ident, args: List(PatternSyntax)) -> PatternSyntax:
     let member = ident_source(name)
     match module:
-        Ident(source) -> __meta_pattern_ctor(source + "." + member, args)
-        CallSiteIdent(source) -> __meta_call_site_pattern(source + "." + member, args)
+        Ident(source) -> __meta_pattern_wire("C\n" + source + "." + member + "\n" + pattern_wire_args(args))
+        CallSiteIdent(source) -> __meta_pattern_wire("K\n" + source + "." + member + "\n" + pattern_wire_args(args))
 
 pub fn pattern_anon_ctor(tag: Ident, args: List(PatternSyntax)) -> PatternSyntax:
     match tag:
-        Ident(source) -> __meta_pattern_ctor("." + source, args)
-        CallSiteIdent(source) -> __meta_call_site_pattern("." + source, args)
+        Ident(source) -> __meta_pattern_wire("A\n" + source + "\n" + pattern_wire_args(args))
+        CallSiteIdent(source) -> __meta_pattern_wire("K\n." + source + "\n" + pattern_wire_args(args))
 
 // A tuple pattern.
 pub fn pattern_tuple(patterns: List(PatternSyntax)) -> PatternSyntax:
-    __meta_pattern_tuple(patterns)
+    __meta_pattern_wire("T\n" + pattern_wire_args(patterns))
 
 fn __meta_pattern_tuple(patterns: List(PatternSyntax)) -> PatternSyntax:
     __meta_pattern_tuple(patterns)
 
 // An exact-length list pattern.
 pub fn pattern_list(patterns: List(PatternSyntax)) -> PatternSyntax:
-    __meta_pattern_list(patterns)
+    __meta_pattern_wire("L\n" + pattern_wire_args(patterns) + "0\n")
 
 fn __meta_pattern_list(patterns: List(PatternSyntax)) -> PatternSyntax:
     __meta_pattern_list(patterns)
 
 // A list pattern with `..` or `..rest`.
 pub fn pattern_list_rest(patterns: List(PatternSyntax), rest: Option(Ident)) -> PatternSyntax:
-    __meta_pattern_list_rest(patterns, rest)
+    var wire = "L\n" + pattern_wire_args(patterns)
+    match rest:
+        None -> wire = wire + "1\n"
+        Some(id) ->
+            match id:
+                Ident(source) -> wire = wire + "2\n" + source + "\n"
+                CallSiteIdent(_) -> wire = "X\n"
+    __meta_pattern_wire(wire)
 
 fn __meta_pattern_list_rest(patterns: List(PatternSyntax), rest: Option(Ident)) -> PatternSyntax:
     __meta_pattern_list_rest(patterns, rest)
@@ -675,7 +677,14 @@ fn __meta_pattern_list_rest(patterns: List(PatternSyntax), rest: Option(Ident)) 
 pub fn pattern_or(patterns: List(PatternSyntax)) -> PatternSyntax:
     if list.is_empty(patterns):
         fail("meta.pattern_or: at least one alternative is required")
-    __meta_pattern_or(patterns)
+    __meta_pattern_wire("O\n" + pattern_wire_args(patterns))
+
+fn pattern_wire_args(patterns: List(PatternSyntax)) -> String:
+    var wire = "${patterns.length()}\n"
+    for pattern in patterns:
+        match pattern:
+            CompilerPatternSyntax(handle) -> wire = wire + "${handle.length()}\n" + handle
+    wire
 
 fn __meta_pattern_or(patterns: List(PatternSyntax)) -> PatternSyntax:
     __meta_pattern_or(patterns)

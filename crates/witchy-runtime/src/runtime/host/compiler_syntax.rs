@@ -3,7 +3,7 @@
 use super::super::{comptime::SessionState, memory_of, VmState};
 use std::sync::Arc;
 use wasmtime::{Caller, Error, Linker, Result};
-use witchy_syntax::{ast::{Block, Convention, Expr, Function, ImplDef, ImplOrigin, Item, MatchArm, Param, Pattern, Stmt, Type, TypeDef, Variant}, compiler_session::{
+use witchy_syntax::{ast::{Block, Convention, Expr, Function, ImplDef, ImplOrigin, Item, MatchArm, Param, Stmt, Type, TypeDef, Variant}, compiler_session::{
     seeds::{measure_dynamic, EmittedExpression, EmittedItem, SyntaxCost, SyntaxSeed}, ComptimeSyntaxOrigin,
 }};
 
@@ -31,7 +31,6 @@ pub(in super::super) fn register(linker: &mut Linker<VmState>) -> Result<()> {
 
 fn pattern_into(mut caller: Caller<'_, VmState>, pointer: i32, length: i32,
     out: i32, capacity: i32) -> Result<i32> {
-    use witchy_syntax::compiler_session::pattern_match_wire::PatternSpec;
     let memory = memory_of(&mut caller)?;
     let input = range(memory.data_size(&caller), pointer, length)?;
     let output = range(memory.data_size(&caller), out, capacity)?;
@@ -43,24 +42,14 @@ fn pattern_into(mut caller: Caller<'_, VmState>, pointer: i32, length: i32,
         .map_err(Error::msg)?;
     let state = caller.data().compiler_syntax.as_ref().expect("checked session");
     let mut ancestry = Vec::new();
-    let pattern = match spec {
-        PatternSpec::Wildcard => Pattern::Wildcard,
-        PatternSpec::Var(name) => Pattern::Var(name),
-        PatternSpec::Bool(value) => Pattern::Bool(value),
-        PatternSpec::Int(value) => Pattern::Int(value),
-        PatternSpec::Ctor { name, args } => {
-            let mut patterns = Vec::with_capacity(args.len());
-            for handle in args {
-                if !state.pattern_costs.contains_key(&handle) { return Err(Error::msg("compiler pattern requires current-session child syntax")); }
-                patterns.push(state.syntax.patterns().get(&handle).cloned()
-                    .ok_or_else(|| Error::msg("compiler pattern child has no payload"))?);
-                ancestry.extend(state.syntax.pattern_origins().get(&handle)
-                    .ok_or_else(|| Error::msg("compiler pattern child has no origin"))?
-                    .hole_ancestry.iter().cloned());
-            }
-            Pattern::Ctor { name, args: patterns }
-        }
-    };
+    let pattern = spec.build(|handle| {
+        if !state.pattern_costs.contains_key(handle) { return Err("compiler pattern requires current-session child syntax".into()); }
+        let child = state.syntax.patterns().get(handle).cloned()
+            .ok_or("compiler pattern child has no payload")?;
+        ancestry.extend(state.syntax.pattern_origins().get(handle)
+            .ok_or("compiler pattern child has no origin")?.hole_ancestry.iter().cloned());
+        Ok(child)
+    }).map_err(Error::msg)?;
     let cost = measure_dynamic(&pattern).map_err(Error::msg)?;
     let required = state.syntax.syntax_handle_byte_len("pattern").map_err(Error::msg)?;
     if cost.nodes > state.nodes.remaining() || cost.bytes > state.syntax_bytes.remaining()
@@ -714,14 +703,16 @@ fn expression_leaf_into(mut caller: Caller<'_, VmState>, kind_ptr: i32, kind_len
         }
         "bool" => Expr::Bool(payload.parse().map_err(|_| Error::msg("meta.expr_bool carried an invalid Bool payload"))?),
         "string" => Expr::Str(payload.to_owned()),
-        "name" => {
+        "name" | "call-site-name" => {
             let mut chars = payload.chars();
             if !chars.next().is_some_and(|ch| ch.is_ascii_alphabetic() || ch == '_')
                 || !chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
                 || payload == "_" || payload.contains("__") {
                 return Err(Error::msg("meta expression name is not a valid identifier"));
             }
-            if payload.chars().next().is_some_and(char::is_uppercase) {
+            if kind == "call-site-name" {
+                witchy_syntax::linker::call_site_expr(payload)
+            } else if payload.chars().next().is_some_and(char::is_uppercase) {
                 Expr::Ctor { name: payload.to_owned(), args: Vec::new() }
             } else { Expr::Var(payload.to_owned()) }
         }
