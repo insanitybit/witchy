@@ -154,6 +154,80 @@ fn admitted_reflected_field_types_build_a_typed_record_in_both_modes() {
 }
 
 #[test]
+fn program_defined_builder_uses_type_info_in_both_modes() {
+    let folder = TempDir::new("program-defined-builder");
+    let source = folder.join("main.witchy");
+    let program = r#"import meta
+type User:
+    name: String
+    age: Int
+comptime fn builder_items(info: meta.TypeInfo) -> List(meta.ItemSyntax):
+    let builder_name = info.name + "Builder"
+    let builder_ty = meta.type_expr(meta.TNamed(builder_name, []))
+    let user_ty = meta.type_expr(meta.TNamed(info.name, []))
+    let some_expr = quote expr:
+        Some
+    let value_expr = quote expr:
+        value
+    let self_expr = quote expr:
+        self
+    var slots = []
+    for field in info.fields:
+        slots.push((meta.ident(field.name), meta.type_expr(meta.TNamed("Option", [field.type_expr]))))
+    var methods = []
+    for field in info.fields:
+        var values = []
+        for other in info.fields:
+            let value = if other.name == field.name:
+                meta.expr_call(some_expr, [value_expr])
+            else:
+                meta.expr_field(self_expr, meta.ident(other.name))
+            values.push((meta.ident(other.name), value))
+        methods.push(meta.function(true, meta.ident("with_" + field.name),
+            [meta.param_own(meta.ident("self"), builder_ty), meta.param_own(meta.ident("value"), meta.type_expr(field.type_expr))],
+            Some(builder_ty), meta.expr_record(meta.ident(builder_name), values)))
+    var user_values = []
+    for field in info.fields:
+        user_values.push((meta.ident(field.name), meta.expr_try(meta.expr_field(self_expr, meta.ident(field.name)))))
+    let user = meta.expr_record(meta.ident(info.name), user_values)
+    methods.push(meta.function(true, meta.ident("build"), [meta.param_own(meta.ident("self"), builder_ty)],
+        Some(meta.type_expr(meta.TNamed("Option", [meta.TNamed(info.name, [])]))),
+        meta.expr_call(some_expr, [user])))
+    [meta.record_type(meta.ident(builder_name), slots), meta.inherent_impl(builder_ty, methods)]
+comptime:
+    for item in builder_items(type_info(User)):
+        emit_item(item)
+fn main(console: Console):
+    let complete = UserBuilder(None, None).with_name("Ada").with_age(42).build()
+    let incomplete = UserBuilder(None, None).with_name("Ada").build()
+    match complete:
+        Some(user) -> console.print("${user.name}/${user.age}")
+        None -> console.print("missing")
+    match incomplete:
+        Some(_) -> console.print("unexpected")
+        None -> console.print("None")
+"#;
+    for mode in ["", "mode opt\n"] {
+        std::fs::write(&source, format!("{mode}{program}")).unwrap();
+        let run = Command::new(env!("CARGO_BIN_EXE_witchy")).arg(&source).output().unwrap();
+        assert!(run.status.success(), "{}", String::from_utf8_lossy(&run.stderr));
+        assert_eq!(String::from_utf8_lossy(&run.stdout), "Ada/42\nNone\n");
+
+        let expanded = program.replacen("    age: Int\n", "    age: Int\n    email: String\n", 1);
+        std::fs::write(&source, format!("{mode}{expanded}")).unwrap();
+        let stale = Command::new(env!("CARGO_BIN_EXE_witchy")).arg(&source).output().unwrap();
+        assert!(!stale.status.success(), "old two-slot construction must fail after adding a field");
+
+        let updated = expanded.replace("UserBuilder(None, None)", "UserBuilder(None, None, None)")
+            .replace(".with_age(42).build()", ".with_age(42).with_email(\"ada@example.com\").build()");
+        std::fs::write(&source, format!("{mode}{updated}")).unwrap();
+        let run = Command::new(env!("CARGO_BIN_EXE_witchy")).arg(&source).output().unwrap();
+        assert!(run.status.success(), "{}", String::from_utf8_lossy(&run.stderr));
+        assert_eq!(String::from_utf8_lossy(&run.stdout), "Ada/42\nNone\n");
+    }
+}
+
+#[test]
 fn admitted_type_info_uses_imported_definition_identity_across_modes() {
     let folder = TempDir::new("admitted-imported-type-info");
     let source = folder.join("main.witchy");
