@@ -180,8 +180,8 @@ fn test_abort(console: Console):
 
 #[test]
 fn source_integration_async_recipe_drives_body_and_preserves_its_abort() {
-    // One invocation selects both async tests: compiling the async executor
-    // dominates, so a second filtered invocation would pay it again.
+    // Keep the success and abort outcomes in one integration-suite invocation
+    // so this checks both compiled test-driver results together.
     let temp = TempDir::new("integration-recipe-async");
     let suite = temp.write("suite.witchy", r#"import testing
 async fn test_pass():

@@ -4586,6 +4586,10 @@ Cancel the spawned task behind `h`: it is stepped no further and is treated as f
 
 Drive `root` (and everything it spawns) to completion on a deterministic round-robin schedule. An async `main` lowers to a single `run` of its body.
 
+#### `fn __compiler_run_ready(root: Task(()))`
+
+Compiler-generated test recipes use this only after the checked async source inventory proves the selected body contains no suspension point. Keep the failure arm: a broken effect proof must fail the test rather than silently dropping a task operation.
+
 ## `testing`
 
 The Witchy test support module. `witchy test <file>` discovers `test_*` functions and reports each as passing unless it aborts. Plain tests receive zero real authority. Deterministic capability parameters come only from a validated external fixture plan; this module provides assertions and ordinary collaborators, not capability constructors.

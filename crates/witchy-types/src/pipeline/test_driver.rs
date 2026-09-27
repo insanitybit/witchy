@@ -1,4 +1,4 @@
-//! Bare test recipe v3. Raw bytes and loader ownership survive discovery; a
+//! Bare test recipe v4. Raw bytes and loader ownership survive discovery; a
 //! fresh parse/check of the compiler-created entry derives ALL driver witnesses.
 //! Async tests are driven to completion; parameterized, fixture and integration
 //! recipes are separate obligations.
@@ -10,7 +10,7 @@ pub use console_fixture::check_console_fixture_test_driver;
 mod integration;
 pub use integration::check_integration_test_driver;
 
-const BARE_RECIPE_VERSION: u32 = 3;
+const BARE_RECIPE_VERSION: u32 = 4;
 
 #[derive(Debug)]
 pub struct CheckedTestSuite {
@@ -37,6 +37,18 @@ pub struct TestDriverIdentity {
     derived_source_digest: [u8; 32],
     selected_declaration: String,
     declaration_ordinal: u64,
+}
+
+fn async_test_has_no_await(suite: &CheckedTestSuite, ordinal: u64) -> bool {
+    suite.checked.source_async_control_flow().ok()
+        .and_then(|inventory| inventory.callables.into_iter().find(|flow| {
+            flow.callable.module == suite.entry
+                && u64::from(flow.callable.surface.item) == ordinal
+                && flow.callable.surface.method.is_none()
+        }))
+        .is_some_and(|flow| !flow.operations.iter().any(|operation| {
+            operation.kind == crate::async_control_flow::SourceAsyncOperationKind::Await
+        }))
 }
 
 impl TestDriverIdentity {
@@ -164,7 +176,9 @@ pub fn check_bare_test_driver(
 
     // This fixed compiler template is not user input. Use the local source
     // declaration before linking, never a guessed post-link callable spelling.
-    let recipe = if is_async {
+    let recipe = if is_async && async_test_has_no_await(suite, declaration_ordinal) {
+        "fn main() -> ():\n    task.__compiler_run_ready(())\n"
+    } else if is_async {
         "fn main() -> ():\n    task.run(())\n"
     } else {
         "fn main() -> ():\n    ()\n"

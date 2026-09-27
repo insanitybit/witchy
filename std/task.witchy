@@ -1538,3 +1538,12 @@ pub fn run(root: Task(())):
             go = true
         else:
             go = false
+
+// Compiler-generated test recipes use this only after the checked async
+// source inventory proves the selected body contains no suspension point.
+// Keep the failure arm: a broken effect proof must fail the test rather than
+// silently dropping a task operation.
+pub fn __compiler_run_ready(root: Task(())):
+    match poll(root):
+        Done(_) -> unit()
+        _ -> fail("compiler-proven ready Task produced a scheduler effect")
