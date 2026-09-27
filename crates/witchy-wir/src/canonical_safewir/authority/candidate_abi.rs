@@ -48,7 +48,6 @@ fn validate_candidate_abi_bindings_with<S: ModuleStage>(
     use witchy_canonical_source::abi::CanonicalTargetPolicy;
     super::super::compiler_session::validate(candidate, source).map_err(CandidateAbiBindingError::CompilerSession)?;
     super::super::vm_service::validate(candidate, source).map_err(CandidateAbiBindingError::VmService)?;
-    super::super::owner_authority::validate(candidate, source)?;
 
     let source_entries = source.callable_abi_manifest().entries().iter().filter_map(|entry| {
         let CanonicalTargetPolicy::ClosedLocal(target) = entry.target_policy else { return None };
@@ -95,6 +94,11 @@ fn validate_candidate_abi_bindings_with<S: ModuleStage>(
             return Err(CandidateAbiBindingError::DuplicateCandidateFunction { function: function.id });
         }
     }
+    // Deferred-task correspondence depends on the checked source and the
+    // candidate graph, not on the later owner or signature judgments. Refuse
+    // a broken task path before traversing every owner family and binding.
+    super::task_behavior::validate(candidate, source, &functions)?;
+    super::super::owner_authority::validate(candidate, source)?;
     for binding in candidate.source_abi_bindings().entries() {
         let ordinal = binding.source_declaration_ordinal();
         let item = source.closed_callable_item_ordinal(ordinal)
@@ -436,7 +440,6 @@ fn validate_candidate_abi_bindings_with<S: ModuleStage>(
             .copied().unwrap_or_else(|| *bound_functions.keys().next().expect("nonempty mismatch"));
         return Err(CandidateAbiBindingError::MissingCandidateFunction { function });
     }
-    super::task_behavior::validate(candidate, source, &functions)?;
     Ok(())
 }
 
