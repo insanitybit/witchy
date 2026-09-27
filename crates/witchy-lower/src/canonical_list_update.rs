@@ -301,12 +301,10 @@ impl FunctionLowerer<'_> {
                 output, Projection::Element { index }, element_type, AccessMode::Write,
             ),
             value,
-            transfer: if matches!(StoragePlan::classify(element_source_type, self.definitions, |_| Some(0)),
-                StoragePlan::RootedView(RootedViewStorage::RetainedRoot(_)))
-                && !retained_byte_buffer_view(element_source_type, self.definitions) {
-                witchy_wir::canonical_safewir::StoreTransfer::CloneShared
-            } else if matches!(element_type, ValueType::Ref(_)) { witchy_wir::canonical_safewir::StoreTransfer::MoveUnique }
-                else { witchy_wir::canonical_safewir::StoreTransfer::CopyScalar },
+            transfer: sequence_element_store_transfer(
+                RetainedElementTransfer::for_element(element_source_type, self.definitions),
+                element_type,
+            )?,
         });
         self.push_operation(Operation::UpdateCount { object: output, count: next });
         Ok(())

@@ -597,6 +597,35 @@ pub enum ListElementDisposition {
     MoveOnly,
 }
 
+/// Preparation and ownership transfer for a retained view stored as one
+/// sequence element. A byte-buffer view may denote static storage, so it
+/// must first materialize a fresh owned buffer. Other retained roots keep
+/// their authenticated token and transfer a shared reference.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RetainedElementTransfer {
+    MaterializeOwnedBuffer,
+    RetainReference,
+}
+
+impl RetainedElementTransfer {
+    pub fn for_element(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> Option<Self> {
+        match StoragePlan::classify(ty, definitions, |_| Some(0)) {
+            StoragePlan::RootedView(RootedViewStorage::RetainedRoot(RetainedRootStorage::ByteBuffer(_))) =>
+                Some(Self::MaterializeOwnedBuffer),
+            StoragePlan::RootedView(RootedViewStorage::RetainedRoot(_)) =>
+                Some(Self::RetainReference),
+            _ => None,
+        }
+    }
+
+    pub fn for_sequence(source: &Type, definitions: &BTreeMap<String, TypeDef>) -> Option<Self> {
+        let Ok(Some(StoredChildren::Sequence(element))) = stored_children(source, definitions) else {
+            return None;
+        };
+        Self::for_element(&element, definitions)
+    }
+}
+
 impl AggregateGraphPlan {
     pub fn source(&self) -> &Type { &self.source }
     pub fn shape(&self) -> &ScalarAggregateShape { &self.shape }

@@ -52,7 +52,7 @@ use witchy_syntax::ast::{BinOp, Convention, Expr, Item, Pattern, Stmt, Type, Typ
 use witchy_canonical_source::aggregates::{canonical_owner_aggregate_identity, concrete_aggregate_identity, scalar_aggregate_shape, ScalarAggregateShape, ScalarVariant};
 use witchy_canonical_source::carrier::CarrierElement;
 use witchy_canonical_source::rooted_view::{RetainedRootStorage, RootedViewStorage};
-use witchy_canonical_source::storage::{StoragePlan, ManagedAggregateFieldTransfer, aggregate_managed_field_transfer, aggregate_uses_nullable_owned_fields, is_inline_scalar_record};
+use witchy_canonical_source::storage::{StoragePlan, RetainedElementTransfer, ManagedAggregateFieldTransfer, aggregate_managed_field_transfer, aggregate_uses_nullable_owned_fields, is_inline_scalar_record};
 use witchy_canonical_source::structural_identity::SourceTypeKey;
 use witchy_canonical_source::abi::CanonicalScalarKind;
 use witchy_canonical_source::access::{
@@ -12413,13 +12413,13 @@ impl FunctionLowerer<'_> {
         if matches!(self.values[&value], ValueType::Gc(_)) {
             return self.clone_reference_token(value);
         }
-        if retained_byte_buffer_view(ty, self.definitions) {
-            self.ensure_string_extent(value)?;
-            return self.clone_string_for_storage(value);
-        }
-        if matches!(StoragePlan::classify(ty, self.definitions, |_| Some(0)),
-            StoragePlan::RootedView(RootedViewStorage::RetainedRoot(_))) {
-            return self.clone_reference_token(value);
+        match RetainedElementTransfer::for_element(ty, self.definitions) {
+            Some(RetainedElementTransfer::MaterializeOwnedBuffer) => {
+                self.ensure_string_extent(value)?;
+                return self.clone_string_for_storage(value);
+            }
+            Some(RetainedElementTransfer::RetainReference) => return self.clone_reference_token(value),
+            None => {}
         }
         match ty.unqualified() {
             Type::Named(name, arguments) if matches!(name.as_str(), "String" | "Bytes") && arguments.is_empty() => {
@@ -13624,7 +13624,7 @@ impl FunctionLowerer<'_> {
             StoragePlan::classify(&logical_type, self.definitions, |_| Some(0)),
             StoragePlan::MoveOnlyList(_),
         );
-        let retained_view_element = retained_root_list_element(&logical_type, self.definitions);
+        let retained_element = RetainedElementTransfer::for_sequence(&logical_type, self.definitions);
         let element_source = if move_only {
             let Type::Named(_, arguments) = logical_type.unqualified() else {
                 return Err(CanonicalLoweringError::UnsupportedListElement(logical_type.clone()));
@@ -13643,7 +13643,7 @@ impl FunctionLowerer<'_> {
                 value = self.clone_string_for_storage(value)?;
             }
             if matches!(element_type, ValueType::Ref(_)) && !move_only {
-                if retained_view_element {
+                if retained_element.is_some() {
                     let Type::Named(_, arguments) = logical_type.unqualified() else {
                         return Err(CanonicalLoweringError::UnsupportedListElement(logical_type.clone()));
                     };
@@ -13685,13 +13685,7 @@ impl FunctionLowerer<'_> {
                     witchy_wir::canonical_safewir::AccessMode::Write,
                 ),
                 value,
-                transfer: if retained_view_element && !retained_byte_buffer_list_element(&logical_type, self.definitions) {
-                    witchy_wir::canonical_safewir::StoreTransfer::CloneShared
-                } else if matches!(element_type, ValueType::Ref(_)) {
-                    witchy_wir::canonical_safewir::StoreTransfer::MoveUnique
-                } else {
-                    witchy_wir::canonical_safewir::StoreTransfer::CopyScalar
-                },
+                transfer: sequence_element_store_transfer(retained_element, element_type)?,
             });
             if matches!(element_type, ValueType::Ref(_)) {
                 // Preparing the next element can branch or trap. Cleanup
@@ -13995,8 +13989,8 @@ impl FunctionLowerer<'_> {
                 "move-only list append requires an explicit element transfer",
             ));
         }
-        let retained_view_element = retained_root_list_element(&list_type, self.definitions);
-        if pointer_elements && !move_only && retained_view_element {
+        let retained_element = RetainedElementTransfer::for_sequence(&list_type, self.definitions);
+        if pointer_elements && !move_only && retained_element.is_some() {
             let Type::Named(_, arguments) = list_type.unqualified() else {
                 return Err(CanonicalLoweringError::UnsupportedListElement(list_type.clone()));
             };
@@ -14052,7 +14046,7 @@ impl FunctionLowerer<'_> {
             return Err(CanonicalLoweringError::UnsupportedListElement(list_type));
         }
         if matches!(element_type, ValueType::Ref(_)) {
-            if retained_root_list_element(&list_type, self.definitions) {
+            if RetainedElementTransfer::for_sequence(&list_type, self.definitions).is_some() {
                 let Type::Named(_, parameters) = list_type.unqualified() else {
                     return Err(CanonicalLoweringError::UnsupportedListElement(list_type));
                 };
@@ -14405,14 +14399,10 @@ impl FunctionLowerer<'_> {
                 AccessMode::Write,
             ),
             value,
-            transfer: if matches!(StoragePlan::classify(element_source_type, self.definitions, |_| Some(0)),
-                StoragePlan::RootedView(RootedViewStorage::RetainedRoot(_))) {
-                witchy_wir::canonical_safewir::StoreTransfer::CloneShared
-            } else if matches!(element_type, ValueType::Ref(_)) {
-                witchy_wir::canonical_safewir::StoreTransfer::MoveUnique
-            } else {
-                witchy_wir::canonical_safewir::StoreTransfer::CopyScalar
-            },
+            transfer: sequence_element_store_transfer(
+                RetainedElementTransfer::for_element(element_source_type, self.definitions),
+                element_type,
+            )?,
         });
         let count_fits = self.push_compare(
             ComparisonOperator::LessUnsigned,
@@ -14482,14 +14472,9 @@ impl FunctionLowerer<'_> {
                 AccessMode::Write,
             ),
             value,
-            transfer: if retained_root_list_element(list_type, self.definitions)
-                && !retained_byte_buffer_list_element(list_type, self.definitions) {
-                witchy_wir::canonical_safewir::StoreTransfer::CloneShared
-            } else if matches!(element_type, ValueType::Ref(_)) {
-                witchy_wir::canonical_safewir::StoreTransfer::MoveUnique
-            } else {
-                witchy_wir::canonical_safewir::StoreTransfer::CopyScalar
-            },
+            transfer: sequence_element_store_transfer(
+                RetainedElementTransfer::for_sequence(list_type, self.definitions), element_type,
+            )?,
         });
         let one = self.push_const_size(1)?;
         let next = self.push_arithmetic(
@@ -14762,14 +14747,9 @@ impl FunctionLowerer<'_> {
                 witchy_wir::canonical_safewir::AccessMode::Write,
             ),
             value,
-            transfer: if retained_root_list_element(list_type, self.definitions)
-                && !retained_byte_buffer_list_element(list_type, self.definitions) {
-                witchy_wir::canonical_safewir::StoreTransfer::CloneShared
-            } else if pointer_elements {
-                witchy_wir::canonical_safewir::StoreTransfer::MoveUnique
-            } else {
-                witchy_wir::canonical_safewir::StoreTransfer::CopyScalar
-            },
+            transfer: sequence_element_store_transfer(
+                RetainedElementTransfer::for_sequence(list_type, self.definitions), element_type,
+            )?,
         });
         let new_count_fits = self.fresh(ValueType::Bool)?;
         self.push_operation(Operation::Compare {
@@ -20712,22 +20692,19 @@ fn is_console_print(name: &str) -> bool {
     name == "__capop.print"
 }
 
-fn retained_root_list_element(source: &Type, definitions: &BTreeMap<String, TypeDef>) -> bool {
-    let Type::Named(name, arguments) = source.unqualified() else { return false };
-    let [element] = arguments.as_slice() else { return false };
-    name == "List" && matches!(StoragePlan::classify(element, definitions, |_| Some(0)),
-        StoragePlan::RootedView(RootedViewStorage::RetainedRoot(_)))
-}
-
-fn retained_byte_buffer_view(source: &Type, definitions: &BTreeMap<String, TypeDef>) -> bool {
-    matches!(StoragePlan::classify(source, definitions, |_| Some(0)),
-        StoragePlan::RootedView(RootedViewStorage::RetainedRoot(RetainedRootStorage::ByteBuffer(_))))
-}
-
-fn retained_byte_buffer_list_element(source: &Type, definitions: &BTreeMap<String, TypeDef>) -> bool {
-    let Type::Named(_, arguments) = source.unqualified() else { return false };
-    let [element] = arguments.as_slice() else { return false };
-    retained_byte_buffer_view(element, definitions)
+fn sequence_element_store_transfer(
+    retained: Option<RetainedElementTransfer>,
+    physical: ValueType,
+) -> Result<witchy_wir::canonical_safewir::StoreTransfer, CanonicalLoweringError> {
+    use witchy_wir::canonical_safewir::StoreTransfer;
+    match (retained, physical) {
+        (Some(RetainedElementTransfer::RetainReference), ValueType::Ref(_)) => Ok(StoreTransfer::CloneShared),
+        (Some(RetainedElementTransfer::MaterializeOwnedBuffer) | None, ValueType::Ref(_)) =>
+            Ok(StoreTransfer::MoveUnique),
+        (None, _) => Ok(StoreTransfer::CopyScalar),
+        (Some(_), _) => Err(CanonicalLoweringError::UnsupportedExpression(
+            "retained sequence element has no pointer representation")),
+    }
 }
 
 fn list_layout(

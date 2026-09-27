@@ -751,6 +751,18 @@ nominal identity when a retained child requires one; it never infers that
 identity from coincidentally matching physical fields. This is a structural
 fail-closed change, not an additional A–O proof.
 
+Retained sequence element transfer (implemented, row G still open,
+2026-09-26): one typed storage judgment now distinguishes a retained
+byte-buffer view that must materialize an owned buffer from a retained root
+whose authenticated reference is shared. List literals, both push forms,
+preallocated append, concat/copy loops, indexed replacement, and dictionary
+value lists consume that same result when selecting SafeWIR store transfer.
+The superseded boolean classifiers and independent list-copy transfer checks
+are removed. The existing retained-root list witness produces its
+hand-computed 6/32/3 results on admitted unoptimized Wasm with zero heap
+leaks, and the dictionary retained-value witness still produces 1120 with
+zero leaks. The broader row G composition matrix remains open.
+
 Row G retained byte-buffer layout class (architecture implemented, semantic
 evidence unchanged, 2026-09-25): the shared source-storage projection now
 classifies exact `Bytes` as a retained raw-byte buffer, and the list-element
