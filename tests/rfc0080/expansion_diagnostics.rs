@@ -265,28 +265,51 @@ fn tag_evaluator_reentry_and_tagged_constants_remain_rejected() {
 
 #[test]
 fn nested_structural_tags_keep_definition_site_and_hole_ancestry() {
-    let hole_error = link(vec![("main", "import meta\n\ncomptime fn inner(parts: List(String), holes: List(meta.TagHole)) -> meta.ExprSyntax:\n    missing_inner()\n\ncomptime fn passthrough(parts: List(String), holes: List(meta.TagHole)) -> meta.ExprSyntax:\n    meta.expr_tag_hole_typed(holes.at(0))\n\nfn main(console: Console):\n    console.print(\"${passthrough\"${inner\"nested\"}\"}\")\n")])
-        .expect_err("nested structural hole fails with ancestry");
+    // These cases link separate source graphs and share no outputs. Run their
+    // independent frontend work together so this conformance test does not
+    // serialize four full compiler walks.
+    let (hole_error, private_nested, imported_nested, nested_hole) =
+        std::thread::scope(|scope| {
+            let hole_error = scope.spawn(|| {
+                link(vec![("main", "import meta\n\ncomptime fn inner(parts: List(String), holes: List(meta.TagHole)) -> meta.ExprSyntax:\n    missing_inner()\n\ncomptime fn passthrough(parts: List(String), holes: List(meta.TagHole)) -> meta.ExprSyntax:\n    meta.expr_tag_hole_typed(holes.at(0))\n\nfn main(console: Console):\n    console.print(\"${passthrough\"${inner\"nested\"}\"}\")\n")])
+            });
+            let private_nested = scope.spawn(|| {
+                link(vec![
+                    ("tags", "import meta\n\ncomptime fn inner(parts: List(String), holes: List(meta.TagHole)) -> meta.ExprSyntax:\n    meta.expr_int(42)\n\npub comptime fn outer(parts: List(String), holes: List(meta.TagHole)) -> meta.ExprSyntax:\n    meta.expr_tagged(meta.ident(\"inner\"), [\"\"], [])\n"),
+                    ("main", "import tags\n\nfn main() -> Int:\n    outer\"value\"\n"),
+                ])
+            });
+            let imported_nested = scope.spawn(|| {
+                link(vec![
+                    ("inner_tags", "import meta\n\npub comptime fn inner(parts: List(String), holes: List(meta.TagHole)) -> meta.ExprSyntax:\n    meta.expr_int(42)\n"),
+                    ("outer_tags", "import inner_tags\nimport meta\n\npub comptime fn outer(parts: List(String), holes: List(meta.TagHole)) -> meta.ExprSyntax:\n    meta.expr_tagged(meta.ident(\"inner\"), [\"\"], [])\n"),
+                    ("main", "import outer_tags\n\nfn main() -> Int:\n    outer\"value\"\n"),
+                ])
+            });
+            let nested_hole = scope.spawn(|| {
+                let module = parser::parse_module(
+                    "import meta\n\ncomptime fn inner(parts: List(String), holes: List(meta.TagHole)) -> meta.ExprSyntax:\n    meta.expr_tag_hole_typed(holes.at(0))\n\npub comptime fn outer(parts: List(String), holes: List(meta.TagHole)) -> meta.ExprSyntax:\n    meta.expr_tagged(meta.ident(\"inner\"), [\"\", \"\"], [meta.expr_tag_hole_typed(holes.at(0))])\n\nfn main() -> Int:\n    outer\"${41}\"\n",
+                )
+                .expect("parse structural nested-hole fixture");
+                pipeline::link(vec![("main".into(), module)], "main")
+                .expect("owned nested tag hole remains structural")
+            });
+            (
+                hole_error.join().expect("hole diagnostic worker"),
+                private_nested.join().expect("private nested tag worker"),
+                imported_nested.join().expect("imported nested tag worker"),
+                nested_hole.join().expect("nested hole worker"),
+            )
+        });
+    let hole_error = hole_error.expect_err("nested structural hole fails with ancestry");
     assert!(hole_error.contains("tagged literal `inner`") && hole_error.contains("tagged literal `passthrough`") && hole_error.contains("expansion trace:"), "{hole_error}");
     assert!(hole_error.contains("tagged literal `passthrough` at invocation line 10"), "{hole_error}");
     assert!(hole_error.contains("hole 1 at hole-local line 1, column 15"), "{hole_error}");
 
-    link(vec![
-        ("tags", "import meta\n\ncomptime fn inner(parts: List(String), holes: List(meta.TagHole)) -> meta.ExprSyntax:\n    meta.expr_int(42)\n\npub comptime fn outer(parts: List(String), holes: List(meta.TagHole)) -> meta.ExprSyntax:\n    meta.expr_tagged(meta.ident(\"inner\"), [\"\"], [])\n"),
-        ("main", "import tags\n\nfn main() -> Int:\n    outer\"value\"\n"),
-    ]).expect("definition-site private nested tag remains available");
+    private_nested.expect("definition-site private nested tag remains available");
+    imported_nested.expect("definition-site imported nested tag remains available");
 
-    link(vec![
-        ("inner_tags", "import meta\n\npub comptime fn inner(parts: List(String), holes: List(meta.TagHole)) -> meta.ExprSyntax:\n    meta.expr_int(42)\n"),
-        ("outer_tags", "import inner_tags\nimport meta\n\npub comptime fn outer(parts: List(String), holes: List(meta.TagHole)) -> meta.ExprSyntax:\n    meta.expr_tagged(meta.ident(\"inner\"), [\"\"], [])\n"),
-        ("main", "import outer_tags\n\nfn main() -> Int:\n    outer\"value\"\n"),
-    ]).expect("definition-site imported nested tag remains available");
-
-    let nested_hole = parser::parse_module(
-        "import meta\n\ncomptime fn inner(parts: List(String), holes: List(meta.TagHole)) -> meta.ExprSyntax:\n    meta.expr_tag_hole_typed(holes.at(0))\n\npub comptime fn outer(parts: List(String), holes: List(meta.TagHole)) -> meta.ExprSyntax:\n    meta.expr_tagged(meta.ident(\"inner\"), [\"\", \"\"], [meta.expr_tag_hole_typed(holes.at(0))])\n\nfn main() -> Int:\n    outer\"${41}\"\n",
-    ).expect("parse structural nested-hole fixture");
-    let linked = pipeline::link(vec![("main".into(), nested_hole)], "main")
-        .expect("owned nested tag hole remains structural");
+    let linked = nested_hole;
     typeck::check(&linked).expect("typecheck owned nested tag hole");
     assert_eq!(
         witchy::interpreter::run_module(linked, ".", Vec::new())
