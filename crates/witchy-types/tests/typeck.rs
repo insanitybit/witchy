@@ -2213,3 +2213,6 @@ mod resource_exit_disposition;
 
 #[path = "typeck/expression_exit_disposition.rs"]
 mod expression_exit_disposition;
+
+#[path = "typeck/expression_operand_specialization.rs"]
+mod expression_operand_specialization;
