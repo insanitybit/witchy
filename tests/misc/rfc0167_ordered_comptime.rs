@@ -598,3 +598,45 @@ fn main(console: Console):
         assert_eq!(vm.canonical_heap_leaks().unwrap(), Some(0));
     }
 }
+#[test]
+fn admitted_typed_for_while_and_assignment_generation_in_both_modes() {
+    for mode in ["", "mode opt\n"] {
+        let source = format!(r#"{mode}import meta
+comptime:
+    let int_ty = quote type:
+        Int
+    let sum = meta.ident("sum")
+    let i = meta.ident("i")
+    let add = quote expr:
+        sum + i
+    let for_body = meta.block([meta.stmt_assign(sum, add)], None)
+    let span = meta.expr_range(meta.expr_int(1), meta.expr_int(4), true)
+    let for_loop = meta.expr_for(i, span, for_body)
+    let condition = quote expr:
+        sum < 12
+    let increment = quote expr:
+        sum + 1
+    let while_body = meta.block([meta.stmt_assign(sum, increment)], None)
+    let while_loop = meta.expr_while(condition, while_body)
+    let result = quote expr:
+        sum
+    let body = meta.block([meta.stmt_let(true, sum, Some(int_ty), meta.expr_int(0)), meta.stmt_expr(for_loop), meta.stmt_expr(while_loop)], Some(result))
+    emit_item(meta.function_block(true, meta.ident("sum_loops"), [], Some(int_ty), body))
+fn main(console: Console):
+    console.print("${{sum_loops()}}")
+"#);
+        let checked = witchy::canonical_comptime::check_source_bundle(
+            vec![("generator".into(), source.into_bytes()),
+                ("meta".into(), witchy_syntax::linker::bundled_source("meta").unwrap().as_bytes().to_vec())],
+            "generator", ["generator".to_owned()].into_iter().collect(), owners(), limits(),
+        ).expect("typed loop and assignment items enter destination checking");
+        let artifact = witchy_lower::codegen::compile_checked_module_artifact(&checked)
+            .expect_lowered("typed loops admit on unoptimized Wasm");
+        let mut runtime = Runtime::batch().unwrap();
+        let mut vm = runtime.spawn_admitted(&artifact,
+            Capabilities { print: true, quiet: true, ..Capabilities::none() }, 64).unwrap();
+        vm.run().unwrap();
+        assert_eq!(vm.output(), ["12"]); // 1 + 2 + 3 + 4, then two increments
+        assert_eq!(vm.canonical_heap_leaks().unwrap(), Some(0));
+    }
+}

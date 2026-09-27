@@ -144,6 +144,10 @@ fn statement_into(mut caller: Caller<'_, VmState>, pointer: i32, length: i32,
                 }).transpose()?;
                 (Stmt::Let { name, ty, mutable, value }, origin)
             }
+            StatementSpec::Assign { name, value } => {
+                let (value, origin) = resolve_expr(&value)?;
+                (Stmt::Assign { place_depth: 0, name, value }, origin)
+            }
             StatementSpec::Expr(handle) => {
                 let (expr, origin) = resolve_expr(&handle)?;
                 (Stmt::Expr(expr), origin)

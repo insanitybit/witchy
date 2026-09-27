@@ -4,6 +4,7 @@
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StatementSpec {
     Let { mutable: bool, name: String, ty: Option<String>, value: String },
+    Assign { name: String, value: String },
     Expr(String),
     Return(String),
 }
@@ -74,6 +75,7 @@ pub fn decode_statement(bytes: &[u8]) -> Result<StatementSpec, String> {
     let spec = match reader.line()? {
         "L" => StatementSpec::Let { mutable: reader.boolean()?, name: reader.identifier()?,
             ty: reader.optional_handle()?, value: reader.handle()? },
+        "A" => StatementSpec::Assign { name: reader.identifier()?, value: reader.handle()? },
         "E" => StatementSpec::Expr(reader.handle()?),
         "R" => StatementSpec::Return(reader.handle()?),
         _ => return Err("unknown compiler statement builder".into()),

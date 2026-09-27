@@ -17,6 +17,8 @@ pub enum Composition {
     Tuple { elements: Vec<String> },
     Block { body: String },
     If { cond: String, then_body: String, else_body: Option<String> },
+    For { binding: String, iter: String, body: String },
+    While { cond: String, body: String },
     Match { scrutinee: String, arms: Vec<String> },
 }
 
@@ -122,6 +124,8 @@ pub fn decode(bytes: &[u8]) -> Result<Composition, String> {
             };
             Composition::If { cond, then_body, else_body }
         }
+        "O" => Composition::For { binding: reader.identifier()?, iter: reader.handle()?, body: reader.handle()? },
+        "H" => Composition::While { cond: reader.handle()?, body: reader.handle()? },
         "M" => Composition::Match { scrutinee: reader.handle()?, arms: reader.args()? },
         _ => return Err("unknown compiler expression composition".into()),
     };
@@ -205,6 +209,12 @@ impl Composition {
                 cond: Box::new(resolve(&cond)?),
                 then_block: resolve_block(&then_body)?,
                 else_block: else_body.as_deref().map(&mut resolve_block).transpose()?,
+            }),
+            Self::For { binding, iter, body } => Ok(Expr::For {
+                var: binding, iter: Box::new(resolve(&iter)?), body: resolve_block(&body)?,
+            }),
+            Self::While { cond, body } => Ok(Expr::While {
+                cond: Box::new(resolve(&cond)?), body: resolve_block(&body)?,
             }),
             Self::Match { scrutinee, arms } => {
                 if arms.is_empty() { return Err("compiler match requires an arm".into()); }

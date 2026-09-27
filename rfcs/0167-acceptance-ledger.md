@@ -122,6 +122,15 @@ sum of their elements is `5 + 6 + 7 + 8 = 26`, with zero owned heap leaks in
 both modes. Row M remains partial for remaining syntax forms and installed
 consumers.
 
+Row M update (2026-09-27): `meta.expr_for`, `meta.expr_while`, and
+`meta.stmt_assign` now use bounded structural wires with current-session
+expression and block handles. Assignment targets an existing local at zero
+place depth; `meta.call_site` binders are refused before issue. A generated
+function sums an inclusive range, then increments in a while loop. It passes
+destination checking and admitted unoptimized Wasm in normal and opt mode,
+printing the independently expected `12` with zero owned heap leaks. This
+does not close row M's remaining syntax and installed-consumer work.
+
 Row R update (2026-09-27): admitted `meta.type_expr`, typed parameter and
 expression-body function items, inherent method items, and `meta.expr_try`
 composition are merged. `program_defined_builder_uses_type_info_in_both_modes`

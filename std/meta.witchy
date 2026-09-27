@@ -549,13 +549,13 @@ fn __meta_expr_if(cond: ExprSyntax, then_body: BlockSyntax, else_body: Option(Bl
     __meta_expr_if(cond, then_body, else_body)
 
 pub fn expr_for(binding: Ident, iter: ExprSyntax, body: BlockSyntax) -> ExprSyntax:
-    __meta_expr_for(binding, iter, body)
+    __meta_expr_compose_wire("O\n" + binding_source(binding) + "\n" + expr_wire_handle(iter) + block_wire_handle(body))
 
 fn __meta_expr_for(binding: Ident, iter: ExprSyntax, body: BlockSyntax) -> ExprSyntax:
     __meta_expr_for(binding, iter, body)
 
 pub fn expr_while(cond: ExprSyntax, body: BlockSyntax) -> ExprSyntax:
-    __meta_expr_while(cond, body)
+    __meta_expr_compose_wire("H\n" + expr_wire_handle(cond) + block_wire_handle(body))
 
 fn __meta_expr_while(cond: ExprSyntax, body: BlockSyntax) -> ExprSyntax:
     __meta_expr_while(cond, body)
@@ -739,7 +739,7 @@ fn __meta_stmt_let_pattern(pattern: PatternSyntax, value: ExprSyntax) -> StmtSyn
 // Construct an assignment to an existing mutable local from a sealed name
 // and expression. Field and index assignments are not supported.
 pub fn stmt_assign(name: Ident, value: ExprSyntax) -> StmtSyntax:
-    __meta_stmt_assign(name, value)
+    __meta_statement_wire("A\n" + binding_source(name) + "\n" + expr_wire_handle(value))
 
 fn __meta_stmt_assign(name: Ident, value: ExprSyntax) -> StmtSyntax:
     __meta_stmt_assign(name, value)

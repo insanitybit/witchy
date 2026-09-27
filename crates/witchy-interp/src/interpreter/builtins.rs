@@ -1608,6 +1608,9 @@ impl Interpreter {
                                 .ok_or_else(|| RuntimeError { message: "meta statement requires current-session type syntax".into() })).transpose()?;
                             Stmt::Let { name, ty, mutable, value: resolve_expr(&value)? }
                         }
+                        StatementSpec::Assign { name, value } => Stmt::Assign {
+                            place_depth: 0, name, value: resolve_expr(&value)?,
+                        },
                         StatementSpec::Expr(handle) => Stmt::Expr(resolve_expr(&handle)?),
                         StatementSpec::Return(handle) => Stmt::Return(Some(resolve_expr(&handle)?)),
                     };
