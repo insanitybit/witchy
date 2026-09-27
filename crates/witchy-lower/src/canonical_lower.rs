@@ -7082,19 +7082,10 @@ impl FunctionLowerer<'_> {
         let outer = self.bindings.clone();
         let mut result_type = None;
         let mut arm_results = Vec::with_capacity(arms.len());
-        // Pattern failure and guard failure must not share a forward escape
-        // around the successful body's join. For guarded matches, advance an
-        // arm index on distinct backedges instead. The index starts at zero
-        // and only advances to the following source arm; bindings, guards and
-        // bodies are still lowered once, with no fabricated failure payloads.
-        let dispatch = if arms.iter().any(|arm| arm.guard.is_some()) {
-            let zero = self.push_const_int(0)?;
-            let header = self.new_block(&[ValueType::Int])?;
-            let index = self.blocks[header.get() as usize].parameters[0].value;
-            self.finish_current(Terminator::Branch { target: header, arguments: vec![zero] })?;
-            self.current = header;
-            Some((header, index))
-        } else { None };
+        // Source arms form an ordered decision ladder, not a loop: a false
+        // guard may have consumed an outer owner that was live at entry.
+        // Returning to a common dispatch header would merge those incompatible
+        // ownership states and falsely imply an earlier guard may run again.
         // The dispatch block the next arm tests in. It is `None` once an
         // irrefutable arm has ended dispatch: allocating a fallthrough block
         // for an arm that cannot fail would leave a block no edge reaches, and
@@ -7112,21 +7103,6 @@ impl FunctionLowerer<'_> {
             }
             self.current = current;
             self.bindings = outer.clone();
-            let dispatch_next = if let Some((_, index)) = dispatch {
-                let selected = self.new_block(&[])?;
-                let next = self.new_block(&[])?;
-                let expected = self.push_const_int(i64::try_from(arm_index).map_err(|_| CanonicalLoweringError::IdOverflow)?)?;
-                let condition = self.push_compare(ComparisonOperator::Equal, index, expected)?;
-                self.finish_current(Terminator::BranchIf {
-                    condition,
-                    then_target: selected,
-                    then_arguments: Vec::new(),
-                    else_target: next,
-                    else_arguments: Vec::new(),
-                })?;
-                self.current = selected;
-                Some(next)
-            } else { None };
             // Every alternative selects bindings before the one original
             // guard/body. A failed guard advances to the next source arm, not
             // another alternative, and a tail body retains one source witness.
@@ -7134,7 +7110,6 @@ impl FunctionLowerer<'_> {
             let (pattern_bindings, _) = self.lower_pattern_decision(
                 scrutinee, &arm.pattern, &scrutinee_type, &mut next_block, consuming_shape.as_ref(),
             )?;
-            let mut retry_blocks = next_block.into_iter().collect::<Vec<_>>();
             let shadowed_outer = pattern_bindings.iter()
                 .filter_map(|(name, _)| outer.get(name).map(|value| (name.clone(), *value)))
                 .collect::<Vec<_>>();
@@ -7145,12 +7120,7 @@ impl FunctionLowerer<'_> {
                 if next_block.is_none() {
                     next_block = Some(self.new_block(&[])?);
                 }
-                let guard_failure = if dispatch.is_some() && !retry_blocks.is_empty() {
-                    self.new_block(&[])?
-                } else {
-                    next_block.expect("a guarded arm has a fallthrough")
-                };
-                retry_blocks.push(guard_failure);
+                let guard_failure = next_block.expect("a guarded arm has a fallthrough");
                 let guard = self.lower_expr(guard)?;
                 if self.values[&guard] != ValueType::Bool {
                     return Err(CanonicalLoweringError::UnsupportedExpression("non-boolean match guard"));
@@ -7171,15 +7141,6 @@ impl FunctionLowerer<'_> {
                 })?;
                 self.current = body_block;
             }
-            if let Some((header, _)) = dispatch {
-                let body_start = self.current;
-                for retry in retry_blocks {
-                    self.current = retry;
-                    let next_index = self.push_const_int(i64::try_from(arm_index + 1).map_err(|_| CanonicalLoweringError::IdOverflow)?)?;
-                    self.finish_current(Terminator::Branch { target: header, arguments: vec![next_index] })?;
-                }
-                self.current = body_start;
-            }
             if let Some(tail) = &tail {
                 // Tail mode: every arm exits the function itself, so the
                 // match has no join.
@@ -7190,7 +7151,7 @@ impl FunctionLowerer<'_> {
                 ]);
                 self.lower_tail_expr(&arm.body, arm_path)?;
                 self.bindings = outer.clone();
-                next = dispatch_next.or(next_block);
+                next = next_block;
                 continue;
             }
             let value = if with_value {
@@ -7227,27 +7188,14 @@ impl FunctionLowerer<'_> {
                 arm_results.push((body_end, bindings, value));
             }
             self.bindings = outer.clone();
-            next = dispatch_next.or(next_block);
+            next = next_block;
         }
         // Exhaustiveness is the type checker's judgment; a dispatch that falls
         // off the last refutable arm is unreachable by that judgment and traps.
         self.bindings = outer.clone();
         if let Some(fallthrough) = next {
             self.current = fallthrough;
-            if let Some((header, index)) = dispatch {
-                // No checked source arm accepts this index. Keep the trap as
-                // a checked operation so the dispatch CFG has only structured
-                // exits/backedges, including its impossible-index path.
-                let impossible = self.fresh(ValueType::Bool)?;
-                self.push_operation(Operation::ConstBool { destination: impossible, value: false });
-                let held = self.fresh(ValueType::Bool)?;
-                self.push_operation(Operation::ConstBool { destination: held, value: true });
-                let rejected = self.push_compare(ComparisonOperator::Equal, impossible, held)?;
-                self.push_guard(rejected, witchy_wir::canonical_safewir::GuardKind::DynamicType);
-                self.finish_current(Terminator::Branch { target: header, arguments: vec![index] })?;
-            } else {
-                self.finish_current(Terminator::Trap)?;
-            }
+            self.finish_current(Terminator::Trap)?;
         }
         if tail.is_some() {
             self.bindings = outer;
