@@ -42,12 +42,17 @@ pub(crate) fn value_type_matches_source(
                     layouts, layout, &plan,
                 );
             }
-            Some(RootedViewStorage::RetainedRoot(RetainedRootStorage::Sequence(_carrier))) => {
+            Some(RootedViewStorage::RetainedRoot(RetainedRootStorage::Sequence(carrier))) => {
                 // The source view proof establishes the recursive carrier;
                 // validate its exact list root and children through the same
                 // source-bound nominal correspondence as owned lists.
                 let super::super::ValueType::Ref(layout) = actual else { return false };
-                if witchy_canonical_source::storage::aggregate_layout_identity(payload.unqualified(), records).is_some()
+                // Identity availability is broader than the allocation rule:
+                // ordinary cloneable lists still use structural roots. Only
+                // stored retained-view children require the nominal root for
+                // this checked cloneable sequence carrier, as in list_layout.
+                // Any nominal root still has its exact key checked below.
+                if carrier.contains_retained_root_view()
                     && !matches!(layouts.get(layout).map(|descriptor| descriptor.kind()),
                         Some(crate::layout::LayoutKind::OpaqueNominal { .. })) {
                     return false;
