@@ -317,13 +317,11 @@ struct EtaSig {
     arity: usize,
     /// Parameter conventions copied onto the forwarding lambda.
     conventions: Vec<Convention>,
-    /// Qualifier-bearing parameter types copied onto the forwarding lambda. A
-    /// function value has the same callable contract as the declaration it
-    /// names, so an eta parameter cannot discard `unique` (or another
-    /// qualifier) and ask type checking to reconstruct it from an unqualified
-    /// forwarding call. Ordinary types remain inferred, preserving generic
-    /// eta expansion.
-    qualified_parameter_types: Vec<Option<Type>>,
+    /// Canonicalized parameter types copied onto a nongeneric forwarding
+    /// lambda. Storage qualifiers may be nested or hidden in nominal fields;
+    /// inference from an erased forwarding call cannot reconstruct them.
+    /// Generic method aliases retain their existing inference path.
+    parameter_types: Vec<Option<Type>>,
     /// A generic callable value must retain the declaration identity until its
     /// use site selects concrete type arguments.  Eta-expanding it here would
     /// put source type variables (such as `unique a`) in a non-generic lambda,
@@ -2644,11 +2642,7 @@ where
                     EtaSig {
                         arity: f.params.len(),
                         conventions: f.params.iter().map(|param| param.convention).collect(),
-                        qualified_parameter_types: f
-                            .params
-                            .iter()
-                            .map(qualified_parameter_type)
-                            .collect(),
+                        parameter_types: eta_parameter_types(f),
                         generic: function_has_type_parameters(f),
                         pure: f.pure,
                         public: f.public,
@@ -2686,11 +2680,7 @@ where
                                 .iter()
                                 .map(|param| param.convention)
                                 .collect(),
-                            qualified_parameter_types: method
-                                .params
-                                .iter()
-                                .map(qualified_parameter_type)
-                                .collect(),
+                            parameter_types: eta_parameter_types(method),
                             generic: function_has_type_parameters(method),
                             pure: method.pure,
                             public: true,
@@ -3487,11 +3477,7 @@ pub fn mark_definition_site_expr(
                             .iter()
                             .map(|param| param.convention)
                             .collect(),
-                        qualified_parameter_types: function
-                            .params
-                            .iter()
-                            .map(qualified_parameter_type)
-                            .collect(),
+                        parameter_types: eta_parameter_types(function),
                         generic: function_has_type_parameters(function),
                         pure: function.pure,
                         public: function.public,
@@ -3917,7 +3903,7 @@ fn eta_lambda(qualified: &str, sig: EtaSig) -> Expr {
         .enumerate()
         .map(|(index, n)| Param {
             name: n.clone(),
-            ty: sig.qualified_parameter_types.get(index).cloned().unwrap_or(None),
+            ty: sig.parameter_types.get(index).cloned().unwrap_or(None),
             convention: sig.conventions.get(index).copied().unwrap_or(Convention::Let),
             default: None,
         })
@@ -3946,15 +3932,17 @@ fn fn_sig(fns: &FnTable, qualified: &str) -> Option<EtaSig> {
     fns.get(modname).and_then(|s| s.get(fname)).cloned()
 }
 
-/// Eta expansion normally leaves types to the checker so implicit generic
-/// parameters continue to infer at every use site. A top-level type qualifier
-/// is different: it is a callable ABI fact, not inference context, and must
-/// survive from the authenticated declaration into the generated lambda.
-fn qualified_parameter_type(param: &Param) -> Option<Type> {
-    match param.ty.as_ref() {
-        Some(ty @ Type::Qualified(_, _)) => Some(ty.clone()),
+/// Nongeneric declarations already have canonicalized type identities. Retain
+/// their entire parameter storage contract, not just a top-level qualifier.
+/// Generic function values bypass eta expansion; generic method aliases keep
+/// their existing inference behavior rather than placing free type variables
+/// into a nongeneric lambda annotation.
+fn eta_parameter_types(function: &Function) -> Vec<Option<Type>> {
+    let generic = function_has_type_parameters(function);
+    function.params.iter().map(|param| match param.ty.as_ref() {
+        Some(ty) if !generic || matches!(ty, Type::Qualified(_, _)) => Some(ty.clone()),
         _ => None,
-    }
+    }).collect()
 }
 
 fn function_has_type_parameters(function: &Function) -> bool {
