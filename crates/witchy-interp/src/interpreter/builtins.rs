@@ -305,13 +305,21 @@ impl Interpreter {
                     let composition = witchy_syntax::compiler_session::expr_compose_wire::decode(wire.as_bytes())
                         .map_err(|message| RuntimeError { message })?;
                     let mut hole_ancestry = Vec::new();
+                    let mut type_ancestry = Vec::new();
                     let expr = composition.build(|handle| {
                         if let Some(origin) = self.compiler_syntax.expression_origins().get(handle) {
                             hole_ancestry.extend(origin.hole_ancestry.iter().cloned());
                         }
                         self.compiler_syntax.expressions().get(handle).cloned()
                             .ok_or("meta expression composition requires a typed expression payload".into())
+                    }, |handle| {
+                        if let Some(origin) = self.compiler_syntax.type_origins().get(handle) {
+                            type_ancestry.extend(origin.hole_ancestry.iter().cloned());
+                        }
+                        self.compiler_syntax.types().get(handle).cloned()
+                            .ok_or("meta expression composition requires a typed type payload".into())
                     }).map_err(|message| RuntimeError { message })?;
+                    hole_ancestry.extend(type_ancestry);
                     Ok(Some(self.store_compiler_expr_syntax(
                         "expression-compose", expr, hole_ancestry,
                     )?))

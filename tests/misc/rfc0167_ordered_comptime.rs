@@ -272,6 +272,19 @@ fn type_info_descriptor_cannot_be_forged_or_rewritten() {
 }
 
 #[test]
+fn admitted_typed_record_head_preserves_imported_nominal_identity() {
+    let folder = TempDir::new("typed-imported-record-head");
+    let source = folder.join("main.witchy");
+    std::fs::write(folder.join("dep.witchy"),
+        "mode opt\ntype User:\n    name: String\n    age: Int\n").unwrap();
+    std::fs::write(&source,
+        "import dep\nimport meta\ncomptime:\n    let user_ty = quote type:\n        dep.User\n    let user = meta.expr_record_type(user_ty, [(meta.ident(\"name\"), meta.expr_string(\"Ada\")), (meta.ident(\"age\"), meta.expr_int(42))])\n    emit_item(meta.function(true, meta.ident(\"make_user\"), [], Some(user_ty), user))\nfn main(console: Console):\n    let user = make_user()\n    console.print(\"${user.name}/${user.age}\")\n").unwrap();
+    let run = Command::new(env!("CARGO_BIN_EXE_witchy")).arg(&source).output().unwrap();
+    assert!(run.status.success(), "{}", String::from_utf8_lossy(&run.stderr));
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "Ada/42\n");
+}
+
+#[test]
 fn admitted_comptime_helper_looks_up_prior_emitted_type() {
     let folder = TempDir::new("admitted-comptime-helper-type-info");
     let source = folder.join("main.witchy");

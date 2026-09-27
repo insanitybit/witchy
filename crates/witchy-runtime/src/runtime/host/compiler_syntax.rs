@@ -158,6 +158,7 @@ fn expression_compose_into(mut caller: Caller<'_, VmState>, pointer: i32, length
         .map_err(Error::msg)?;
     let state = caller.data().compiler_syntax.as_ref().expect("checked session");
     let mut origins = Vec::new();
+    let mut type_origins = Vec::new();
     let expression = composition.build(|handle| {
         if !state.costs.contains_key(handle) {
             return Err("compiler expression requires current-session syntax".into());
@@ -166,6 +167,14 @@ fn expression_compose_into(mut caller: Caller<'_, VmState>, pointer: i32, length
             .ok_or("compiler expression handle has no origin")?.clone());
         state.syntax.expressions().get(handle).cloned()
             .ok_or("compiler expression handle has no typed payload".into())
+    }, |handle| {
+        if !state.type_costs.contains_key(handle) {
+            return Err("compiler record requires current-session type syntax".into());
+        }
+        type_origins.push(state.syntax.type_origins().get(handle)
+            .ok_or("compiler record type handle has no origin")?.clone());
+        state.syntax.types().get(handle).cloned()
+            .ok_or("compiler record type handle has no typed payload".into())
     }).map_err(Error::msg)?;
     let cost = measure_dynamic(&expression).map_err(Error::msg)?;
     let required = state.syntax.syntax_handle_byte_len("expression").map_err(Error::msg)?;
@@ -184,7 +193,8 @@ fn expression_compose_into(mut caller: Caller<'_, VmState>, pointer: i32, length
     state.syntax.insert_expression(handle.clone(), expression);
     state.syntax.insert_expression_origin(handle.clone(), ComptimeSyntaxOrigin {
         definition_line: 1,
-        hole_ancestry: origins.into_iter().flat_map(|origin| origin.hole_ancestry).collect(),
+        hole_ancestry: origins.into_iter().chain(type_origins)
+            .flat_map(|origin| origin.hole_ancestry).collect(),
     });
     state.costs.insert(handle.clone(), cost);
     memory.data_mut(&mut caller)[output.start..output.start + required].copy_from_slice(handle.as_bytes());

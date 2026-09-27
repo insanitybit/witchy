@@ -2912,6 +2912,10 @@ One named record field. A tuple is sufficient here: both parts are already seale
 
 Compiler-owned construction of an explicitly named record. The record head and labels are definition-site identifiers; invocation-site identifiers are references and are rejected rather than having their origin erased.
 
+#### `fn expr_record_type(target: TypeSyntax, fields: List((Ident, ExprSyntax))) -> ExprSyntax`
+
+Construct a record using compiler-owned type syntax. Destination checking resolves a qualified imported head without parsing a reflected display name.
+
 #### `fn expr_record_update(name: Ident, fields: List((Ident, ExprSyntax)), base: ExprSyntax) -> ExprSyntax`
 
 #### `fn expr_match(scrutinee: ExprSyntax, arms: List(MatchArmSyntax)) -> ExprSyntax`

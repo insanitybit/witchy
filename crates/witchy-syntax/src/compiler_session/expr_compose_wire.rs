@@ -7,6 +7,7 @@ pub enum Composition {
     Call { name: String, args: Vec<String> },
     Field { name: String, base: String },
     Record { name: String, fields: Vec<(String, String)> },
+    TypedRecord { target: String, fields: Vec<(String, String)> },
     Try { value: String },
 }
 
@@ -76,6 +77,18 @@ pub fn decode(bytes: &[u8]) -> Result<Composition, String> {
             }
             Composition::Record { name, fields }
         }
+        "Q" => {
+            let target = reader.handle()?;
+            let count = reader.count()?;
+            let mut seen = std::collections::BTreeSet::new();
+            let mut fields = Vec::with_capacity(count);
+            for _ in 0..count {
+                let field = reader.identifier()?;
+                if !seen.insert(field.clone()) { return Err("duplicate compiler record field".into()); }
+                fields.push((field, reader.handle()?));
+            }
+            Composition::TypedRecord { target, fields }
+        }
         "T" => Composition::Try { value: reader.handle()? },
         _ => return Err("unknown compiler expression composition".into()),
     };
@@ -84,7 +97,8 @@ pub fn decode(bytes: &[u8]) -> Result<Composition, String> {
 }
 
 impl Composition {
-    pub fn build(self, mut resolve: impl FnMut(&str) -> Result<crate::ast::Expr, String>)
+    pub fn build(self, mut resolve: impl FnMut(&str) -> Result<crate::ast::Expr, String>,
+        mut resolve_type: impl FnMut(&str) -> Result<crate::ast::Type, String>)
         -> Result<crate::ast::Expr, String> {
         use crate::ast::Expr;
         fn arguments(handles: Vec<String>, resolve: &mut impl FnMut(&str) -> Result<Expr, String>)
@@ -103,6 +117,15 @@ impl Composition {
             Self::Call { name, args } => Ok(Expr::Call { name, args: arguments(args, &mut resolve)? }),
             Self::Field { name, base } => Ok(Expr::Field { base: Box::new(resolve(&base)?), field: name }),
             Self::Record { name, fields } => {
+                let fields = fields.into_iter().map(|(field, handle)|
+                    Ok((field, resolve(&handle)?))).collect::<Result<_, String>>()?;
+                Ok(Expr::Record { name, fields, spread: None })
+            }
+            Self::TypedRecord { target, fields } => {
+                let crate::ast::Type::Named(name, args) = resolve_type(&target)? else {
+                    return Err("compiler record target must name a type".into());
+                };
+                if !args.is_empty() { return Err("compiler record target cannot have type arguments".into()); }
                 let fields = fields.into_iter().map(|(field, handle)|
                     Ok((field, resolve(&handle)?))).collect::<Result<_, String>>()?;
                 Ok(Expr::Record { name, fields, spread: None })

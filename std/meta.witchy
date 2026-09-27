@@ -487,6 +487,19 @@ pub fn expr_record(name: Ident, fields: List((Ident, ExprSyntax))) -> ExprSyntax
         wire = wire + ident_source(field_name) + "\n" + expr_wire_handle(value)
     __meta_expr_compose_wire(wire)
 
+// Construct a record using compiler-owned type syntax. Destination checking
+// resolves a qualified imported head without parsing a reflected display name.
+pub fn expr_record_type(target: TypeSyntax, fields: List((Ident, ExprSyntax))) -> ExprSyntax:
+    var wire = "Q\n" + type_handle_wire(target) + "${fields.length()}\n"
+    for field in fields:
+        let (field_name, value) = field
+        match field_name:
+            CallSiteIdent(_) -> fail("meta.expr_record_type requires definition-site field names")
+            _ -> ()
+
+        wire = wire + ident_source(field_name) + "\n" + expr_wire_handle(value)
+    __meta_expr_compose_wire(wire)
+
 fn expr_wire_handle(value: ExprSyntax) -> String:
     match value:
         CompilerExprSyntax(handle) -> "${handle.length()}\n" + handle
