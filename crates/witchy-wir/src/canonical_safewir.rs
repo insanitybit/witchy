@@ -98,6 +98,8 @@ pub use crypto::{CRYPTO_SHA512_IMPORT, CRYPTO_SHA3_256_IMPORT, CRYPTO_HMAC_SHA25
     CRYPTO_ECDSA_P256_VERIFY_HEX_IMPORT, CRYPTO_EXTENSION_IMPORT_NAMES};
 mod vm_service;
 pub use vm_service::{CandidateVmService, VM_SERVICE_IMPORT_NAMES, VM_SERVICE_KIND, VM_SERVICE_RESPONSE_KIND};
+mod compiler_session;
+pub use compiler_session::COMPILER_FRESH_IMPORT;
 
 /// Stable identity supplied by canonical type checking. It identifies the
 /// checked source but grants no validation or encoding authority by itself.
@@ -630,6 +632,7 @@ fn authenticated_capability_import(
 enum ImportAuthentication<'a> {
     PureInfrastructure,
     InternalService,
+    CompilerSession,
     RuntimeDiagnostic,
     Capability(&'a [crate::wir_prelude::AbiImportAuthority]),
 }
@@ -670,6 +673,11 @@ fn authenticated_import(
         ImportAuthentication::InternalService => {
             if info.class != AbiImportClass::InternalService || !info.authorities.is_empty() {
                 return Err(format!("generated witchy.{name} ABI is not an authority-free internal service"));
+            }
+        }
+        ImportAuthentication::CompilerSession => {
+            if info.class != AbiImportClass::CompilerSession || !info.authorities.is_empty() {
+                return Err(format!("generated witchy.{name} ABI is not a compiler-session operation"));
             }
         }
         ImportAuthentication::RuntimeDiagnostic => {

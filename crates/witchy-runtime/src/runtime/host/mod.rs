@@ -1,4 +1,5 @@
 pub(super) mod build;
+pub(super) mod compiler_syntax;
 pub(super) mod build_out;
 pub(super) mod build_read;
 pub(super) mod clock_env_rand;

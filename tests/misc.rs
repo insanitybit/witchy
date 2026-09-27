@@ -153,3 +153,5 @@ mod rfc0167_resource_fallback;
 mod rfc0167_consuming_coalesce;
 #[path = "misc/rfc0167_deferred_handle_disposition.rs"]
 mod rfc0167_deferred_handle_disposition;
+#[path = "misc/rfc0167_canonical_comptime.rs"]
+mod rfc0167_canonical_comptime;

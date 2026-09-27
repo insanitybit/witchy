@@ -24,6 +24,7 @@ use witchy_wir::optimizer_policy::{OptimizerPolicy, SECTION_NAME as OPTIMIZER_PO
 use witchy_wir::wir_prelude::abi_import_info;
 
 mod compiler;
+pub mod comptime;
 mod host;
 mod launch_arguments;
 #[cfg(feature = "test-fixtures")]
@@ -1315,6 +1316,7 @@ impl WorkerModule {
 }
 
 pub struct VmState {
+    compiler_syntax: Option<comptime::SessionState>,
     id: VmId,
     caps: Capabilities,
     /// The compiler services exposed to trusted programs; injected from above
@@ -2206,7 +2208,14 @@ impl Runtime {
         opt_level: wasmtime::OptLevel,
         executable_cache: bool,
     ) -> Result<Self> {
+        Self::configured_with_fuel(preempt, opt_level, executable_cache, false)
+    }
+
+    fn configured_with_fuel(
+        preempt: bool, opt_level: wasmtime::OptLevel, executable_cache: bool, fuel: bool,
+    ) -> Result<Self> {
         let mut config = Config::new();
+        config.consume_fuel(fuel);
         // Production batch/new keep Speed. `batch_quick` uses None so a
         // 10-line differential case is not paying an optimizing JIT.
         config.cranelift_opt_level(opt_level);
@@ -2343,6 +2352,9 @@ impl Runtime {
         caps: Capabilities,
         memory_pages_max: usize,
     ) -> Result<Vm> {
+        if artifact.compiler_session().is_some() {
+            bail!("compiler recipe requires the dedicated comptime launcher");
+        }
         let module = WorkerModule::from_admitted(&self.engine, artifact)?;
         self.instantiate_module(module, caps, memory_pages_max, artifact.entry().cloned(), &[])
     }
@@ -2369,6 +2381,18 @@ impl Runtime {
         entry: Option<CanonicalEntry>,
         external_libraries: &[AuthenticatedExternalLibrary],
     ) -> Result<Vm> {
+        self.instantiate_module_with_session(module, caps, memory_pages_max, entry, external_libraries, None)
+    }
+
+    fn instantiate_module_with_session(
+        &mut self, module: WorkerModule, caps: Capabilities, memory_pages_max: usize,
+        entry: Option<CanonicalEntry>, external_libraries: &[AuthenticatedExternalLibrary],
+        session: Option<(comptime::SessionState, u64)>,
+    ) -> Result<Vm> {
+        let compiler_recipe = matches!(&module, WorkerModule::Admitted(program) if program.artifact.compiler_session().is_some());
+        if compiler_recipe != session.is_some() {
+            bail!("compiler recipe and dedicated session launch must match");
+        }
         let id = self.next_id;
 
         let limits = StoreLimitsBuilder::new()
@@ -2386,8 +2410,14 @@ impl Runtime {
         )?;
         state.module = module.clone();
 
+        let compiler_fuel = session.map(|(session, fuel)| {
+            state.compiler_syntax = Some(session);
+            fuel
+        });
+
         let mut store = Store::new(&self.engine, state);
         store.limiter(|s| &mut s.limits);
+        if let Some(fuel) = compiler_fuel { store.set_fuel(fuel)?; }
         // Deadline of 1 epoch; we never advance the engine epoch during a
         // normal run, so this is never tripped. The scheduler advances it to preempt.
         // Only meaningful when the engine has epoch interruption enabled.
@@ -2397,6 +2427,7 @@ impl Runtime {
 
         let mut linker: Linker<VmState> = Linker::new(&self.engine);
         link_capability_imports(&mut linker, &caps)?;
+        if compiler_fuel.is_some() { host::compiler_syntax::register(&mut linker)?; }
         if let WorkerModule::Admitted(program) = &module {
             host::closure_owner::register(&mut linker, &program.artifact)?;
             link_authenticated_external_imports(
@@ -2862,6 +2893,7 @@ fn vmstate_from_caps(
         .collect::<std::result::Result<_, _>>()
         .map_err(|error| Error::msg(error.0))?;
     Ok(VmState {
+        compiler_syntax: None,
         id,
         caps: caps.clone(),
         compiler_services,

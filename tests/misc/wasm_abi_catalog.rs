@@ -106,11 +106,21 @@ fn maximal_capabilities() -> Capabilities {
 
 #[test]
 fn native_host_links_every_catalog_import_with_the_declared_signature() {
-    let wasm = importing_module(&prelude().imports);
+    let (compiler_only, ordinary): (Vec<_>, Vec<_>) = prelude().imports.iter().cloned().partition(|import|
+        abi_import_info(&import.name).expect("catalog metadata").class == AbiImportClass::CompilerSession);
+    let wasm = importing_module(&ordinary);
     let mut runtime = Runtime::new().expect("native runtime");
     let _vm = runtime
         .spawn(wasm, maximal_capabilities(), 4)
-        .expect("a maximal native host must satisfy the complete compiler ABI");
+        .expect("a maximal native host must satisfy the complete ordinary ABI");
+    // Compiler-session imports are intentionally absent even with maximal
+    // application grants. The admitted comptime witness checks their positive
+    // signature/execution through the dedicated launcher.
+    for import in compiler_only {
+        let error = runtime.spawn(importing_module(std::slice::from_ref(&import)), maximal_capabilities(), 4)
+            .err().expect("ordinary native launch must omit compiler-session imports");
+        assert!(error.to_string().contains(&import.name), "{error}");
+    }
 }
 
 #[test]

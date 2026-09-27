@@ -7092,6 +7092,13 @@ pub fn compile_checked_build_recipe_artifact(
     canonical_artifact_outcome(crate::canonical_pipeline::admit_checked_source(checked.canonical_source()))
 }
 
+/// Explicit, zero-pass canonical execution path for a checked compiler recipe.
+pub fn compile_checked_comptime_recipe_artifact(
+    recipe: &witchy_types::pipeline::CheckedComptimeRecipe,
+) -> LoweringOutcome<witchy_wir::AdmittedCanonicalArtifact> {
+    canonical_artifact_outcome(crate::canonical_pipeline::admit_unoptimized_checked_source(recipe.canonical_source()))
+}
+
 /// Compile a build module that crossed the canonical linked type-check boundary.
 pub fn compile_checked_build_module(
     _checked: &witchy_types::pipeline::CheckedModule,

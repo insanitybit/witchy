@@ -52,6 +52,14 @@ pub(crate) fn admit_checked_source(
     admit_checked_source_with_observer(source, |_, _| ()).map(|(artifact, ())| artifact)
 }
 
+pub(crate) fn admit_unoptimized_checked_source(
+    source: &CanonicalCheckedSource,
+) -> Result<AdmittedCanonicalArtifact, CanonicalPipelineError> {
+    let validated = validate_unoptimized_checked_source(source)?;
+    witchy_wir::admit_canonical_with_observer(validated, &source.view(), |_, _| ())
+        .map(|(artifact, ())| artifact).map_err(CanonicalPipelineError::Admission)
+}
+
 fn admit_checked_source_with_observer<R>(
     source: &CanonicalCheckedSource,
     observe: impl FnOnce(&ValidatedSafeWir, &AdmittedCanonicalArtifact) -> R,

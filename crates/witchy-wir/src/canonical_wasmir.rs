@@ -422,6 +422,7 @@ impl AdmittedExternalWasmImport {
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct AdmittedCanonicalArtifact {
+    compiler_session: Option<witchy_syntax::compiler_session::CompilerSessionContract>,
     vm_services: Vec<AdmittedVmService>,
     external_imports: Vec<AdmittedExternalWasmImport>,
     owner_bridges: Vec<AdmittedOwnerBridge>,
@@ -635,6 +636,9 @@ impl CanonicalEntry {
 }
 
 impl AdmittedCanonicalArtifact {
+    pub fn compiler_session(&self) -> Option<&witchy_syntax::compiler_session::CompilerSessionContract> {
+        self.compiler_session.as_ref()
+    }
     pub fn vm_services(&self) -> &[AdmittedVmService] { &self.vm_services }
     /// Exact separately compiled scalar Wasm imports the launcher must bind.
     /// An empty list is not permission to supply arbitrary external modules.
@@ -1020,6 +1024,7 @@ fn admit_parts(
     }
     let wasm_digest = digest_bytes(b"witchy/canonical-wasmir/wasm/v1", &[&bytes]);
     Ok(AdmittedCanonicalArtifact {
+        compiler_session: witchy_syntax::compiler_session::CompilerSessionContract::decode(_source.launch_contract_payload()),
         vm_services: _source.vm_services().iter().map(|site| AdmittedVmService {
             id: site.id(), callback_export: format!("f{}", site.callback().get()),
         }).collect(),

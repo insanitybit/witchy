@@ -109,3 +109,35 @@ fn explicit_deterministic_budget_accounts_exact_units_and_refuses_without_overfl
     assert_eq!(maximum.remaining(), 0);
     assert_eq!(maximum.charge(u64::MAX), Err(BudgetExceeded));
 }
+
+#[test]
+fn compiler_contract_and_nonallocating_fresh_probe_preserve_exact_namespace() {
+    let contract = CompilerSessionContract::for_source([7; 32], "a/b".into()).unwrap();
+    let encoded = contract.encode();
+    assert_eq!(CompilerSessionContract::decode(&encoded), Some(contract.clone()));
+    assert_eq!(contract.source_digest(), [7; 32]);
+    assert_eq!(contract.scope(), "a/b");
+    for length in 0..encoded.len() {
+        assert!(CompilerSessionContract::decode(&encoded[..length]).is_none());
+    }
+    let mut trailing = encoded;
+    trailing.push(0);
+    assert!(CompilerSessionContract::decode(&trailing).is_none());
+    let mut invalid_utf8 = contract.encode();
+    invalid_utf8[38] = 255;
+    assert!(CompilerSessionContract::decode(&invalid_utf8).is_none());
+    let mut oversized = contract.encode();
+    oversized[34..38].copy_from_slice(&u32::MAX.to_le_bytes());
+    assert!(CompilerSessionContract::decode(&oversized).is_none());
+    assert!(CompilerSessionContract::for_source([7; 32], String::new()).is_err());
+    assert!(CompilerSessionContract::for_source([7; 32], "x".repeat(4097)).is_err());
+    let mut session = CompilerSyntaxSession::default();
+    session.set_invocation(Some("scope/é".into()), None, None);
+    for ordinal in 0..101 {
+        let expected = format!("__witchy_fresh_73636f70652fc3a9_{ordinal}_名");
+        assert_eq!(session.fresh_ident_byte_len("名".len()).unwrap(), expected.len());
+        assert_eq!(session.preview_fresh_ident("名").unwrap(), expected);
+        assert_eq!(session.next_fresh_ident("名").unwrap(), expected);
+    }
+    assert!(session.fresh_ident_byte_len(usize::MAX).is_err());
+}

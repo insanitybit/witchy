@@ -46,6 +46,7 @@ fn validate_candidate_abi_bindings_with<S: ModuleStage>(
     byte_buffer_view_records: &ScalarRecordFields,
 ) -> Result<(), CandidateAbiBindingError> {
     use witchy_canonical_source::abi::CanonicalTargetPolicy;
+    super::super::compiler_session::validate(candidate, source).map_err(CandidateAbiBindingError::CompilerSession)?;
     super::super::vm_service::validate(candidate, source).map_err(CandidateAbiBindingError::VmService)?;
     super::super::owner_authority::validate(candidate, source)?;
 

@@ -511,6 +511,7 @@ pub enum CandidateAbiBindingError {
     MissingClosureEnvironmentParameter { function: super::FunctionId },
     AdapterShapeMismatch { adapter: super::FunctionId },
     VmService(String),
+    CompilerSession(String),
 }
 
 impl fmt::Display for CandidateAbiBindingError {

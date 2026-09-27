@@ -2248,3 +2248,29 @@ the frozen interpreter. A checked canonical comptime recipe, authenticated
 compiler-only host ABI, deterministic fuel enforcement and an independent
 expected-result/admitted-unoptimized-Wasm witness remain required. Row Q stays
 PARTIAL; this entry closes no semantic acceptance row.
+
+### 2026-09-27: first admitted compiler-session operation (row Q partial)
+
+An explicit source-backed comptime recipe now binds loader ownership, original
+source identity and a bounded invocation scope into its launch contract.
+Unoptimized canonical SafeWIR admission permits the compiler-only fresh-name
+host operation only under that contract. A dedicated production runtime launch
+creates the session, enforces deterministic Wasm/host-work fuel, name/output-byte
+quotas and memory limits; ordinary launch cannot activate these imports.
+Other host computation remains unsupported until it has a deterministic budget
+contract. Generic typed `meta.Ident` construction and equality use the existing
+compiler paths, not a special evaluator for the witness's source shape.
+
+`rfc0167_canonical_comptime::canonical_fresh_names_execute_with_session_and_budget_boundaries`
+executes an admitted unoptimized artifact: scope `a/b` and two `fresh("x")`
+calls produce exactly `__witchy_fresh_612f62_0_x` and
+`__witchy_fresh_612f62_1_x`, hence the hand-computed result **42**, with **zero
+canonical heap leaks**. Repeat execution preserves names/fuel; zero fuel,
+exhausted host quotas, ordinary launches and missing source recipe authority
+refuse. The companion test refuses an unmetered floating-render host import.
+
+This does not retire the interpreter or migrate the default expander. Typed
+quotation/builders/emissions, their arena accounting, original block selection,
+all result forms and batching still need canonical execution coverage. The first
+operation creates no AST arena nodes; name quotas are not arena evidence.
+Row Q remains **PARTIAL** and no semantic acceptance row is closed.

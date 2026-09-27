@@ -63,6 +63,7 @@ pub use glamour_metadata::{
 };
 pub use assembly::{
     compile_checked_build_module, compile_checked_build_recipe_artifact,
+    compile_checked_comptime_recipe_artifact,
     check_glamour_island_executable, compile_checked_development_module,
     compile_checked_glamour_island_execution_binary, compile_checked_module_binary,
     compile_checked_module_artifact, compile_checked_module_artifact_with_observer,

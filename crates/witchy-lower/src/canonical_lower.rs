@@ -1327,6 +1327,11 @@ if capability_imports.contains("build_out_write_at") {
                 };
                 catalog = catalog.with_compiler_imports(compiler_signatures, string_layout)
                     .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
+                if compiler_imports.contains(witchy_wir::canonical_safewir::COMPILER_FRESH_IMPORT) {
+                    let signature = push_import_signature(vec![text, text], vec![ValueType::Size], Some(1))?;
+                    catalog = catalog.with_compiler_session_import(signature, string_layout)
+                        .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
+                }
             }
             if regex_spans {
                 let signature = push_import_signature(vec![text, text, text], vec![ValueType::Size], Some(2))?;
@@ -20379,6 +20384,9 @@ const CAPABILITY_IMPORTS: [&str; 37] =
 const DIRECTORY_LISTING_SEPARATOR: &str = "\u{0}";
 
 fn compiler_service_import(name: &str) -> Option<(&'static str, usize)> {
+    if witchy_syntax::intrinsics::is_meta_fresh_ident(name) {
+        return Some((witchy_wir::canonical_safewir::COMPILER_FRESH_IMPORT, 1));
+    }
     match name {
         witchy_syntax::intrinsics::COMPILER_FOOTPRINT => Some(("compiler_footprint_into", 1)),
         witchy_syntax::intrinsics::COMPILER_DIFF => Some(("compiler_diff_into", 2)),

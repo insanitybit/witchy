@@ -20,7 +20,7 @@ breaking ABI change that must bump `WITCHY_ABI_VERSION`.
 
 ## ABI version
 
-The current ABI version is **14**. The JavaScript host pins it as
+The current ABI version is **15**. The JavaScript host pins it as
 `WITCHY_ABI_VERSION` (exported from `web/witchy-runtime/witchy-runtime.mjs`). The
 version covers: the import module name `"witchy"`, the set of import names and
 their `(params) -> results` signatures, the value/memory representation, and the
@@ -48,6 +48,11 @@ Version 13 adds native-only `regex_match_spans_into`: two UTF-8 read slices,
 one capacity-bounded output slice, and a returned byte length. It writes the
 complete character-span encoding only when capacity suffices; otherwise it
 writes nothing. Invalid patterns or slices trap. No pending state is involved.
+
+Version 15 adds the compiler-session-only `compiler_syntax_fresh_into` import.
+It is not installed by ordinary native or browser launchers, regardless of
+application capabilities. A checked source-bound comptime recipe and dedicated
+bounded compiler-session launcher are required.
 
 Version 14 adds native canonical Net slice adapters. `net_listen_at` receives
 an authenticated Net and an address read slice; it uses the existing admitted
@@ -162,7 +167,7 @@ It does **not** implement unavailable capability sizing imports
 
 ## The imports
 
-ABI version 8 declares **96 imports** (`IMPORT_COUNT` in
+ABI version 15 declares **177 imports** (`IMPORT_COUNT` in
 `crates/witchy-wir/src/wir_prelude.rs`). That file owns the ordered signatures
 and the explicit metadata rendered below. The classes are:
 
@@ -170,6 +175,7 @@ and the explicit metadata rendered below. The classes are:
 - **capability authority**: only linked when the corresponding grant is present;
 - **launch input**: data selected by the host at launch, not ambient authority;
 - **internal/toolchain service**: compiler, reflection, or worker-runtime plumbing;
+- **compiler session only**: available solely to an admitted comptime recipe under its deterministic compiler-session limits, never to ordinary runtime launches;
 - **runtime diagnostic**: checked-heap or abort reporting, no application authority.
 
 `browser: provided` is the exact deny-by-omission surface implemented by the
@@ -197,6 +203,7 @@ An empty set is an authenticated reject-all contract, never a wildcard.
 | `compiler_footprint_len` | `(i32) -> i32` | internal/toolchain service | none | omitted |
 | `compiler_diff_len` | `(i32, i32) -> i32` | internal/toolchain service | none | omitted |
 | `compiler_footprint_into` | `(i32, i32, i32, i32) -> i32` | internal/toolchain service | none | omitted |
+| `compiler_syntax_fresh_into` | `(i32, i32, i32, i32) -> i32` | compiler session only | none | omitted |
 | `compiler_diff_into` | `(i32, i32, i32, i32, i32, i32) -> i32` | internal/toolchain service | none | omitted |
 | `compiler_doc_into` | `(i32, i32, i32, i32, i32, i32) -> i32` | internal/toolchain service | none | omitted |
 | `compiler_doc_result_json_into` | `(i32, i32, i32, i32, i32, i32) -> i32` | internal/toolchain service | none | omitted |
