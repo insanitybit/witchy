@@ -10,7 +10,7 @@ use crate::runtime_type::{DeclarationIdentity, ModuleLoadIdentity, PackageSource
 use sha2::{Digest, Sha256};
 use witchy_syntax::ast::{Expr, Item, Module};
 
-const RECIPE_VERSION: u32 = 1;
+const RECIPE_VERSION: u32 = 2;
 
 #[derive(Debug)]
 pub struct CheckedStaticEvaluationRecipe {
@@ -33,11 +33,30 @@ fn refused(message: impl Into<String>) -> PipelineError {
 /// original bytes and module owners plus this fixed rewrite version; callers
 /// cannot substitute a transformed AST or claim a digest.
 pub fn link_checked_static_evaluation_from_source_bundle(
-    mut sources: Vec<(String, Vec<u8>)>,
+    sources: Vec<(String, Vec<u8>)>,
     entry: &str,
     expand: ComptimeExpander,
     user_modules: &HashSet<String>,
     owners: AuthenticatedModuleOwners,
+) -> Result<CheckedStaticEvaluationRecipe, PipelineError> {
+    link_static_evaluation_recipe(sources, entry, expand, user_modules, owners, false)
+}
+
+/// Add the fixed, compiler-owned `main` that emits one reflected Site value.
+/// Only the exact loader-owned source bundle can mint the resulting witness.
+pub fn link_checked_static_site_output_from_source_bundle(
+    sources: Vec<(String, Vec<u8>)>,
+    entry: &str,
+    expand: ComptimeExpander,
+    user_modules: &HashSet<String>,
+    owners: AuthenticatedModuleOwners,
+) -> Result<CheckedStaticEvaluationRecipe, PipelineError> {
+    link_static_evaluation_recipe(sources, entry, expand, user_modules, owners, true)
+}
+
+fn link_static_evaluation_recipe(
+    mut sources: Vec<(String, Vec<u8>)>, entry: &str, expand: ComptimeExpander,
+    user_modules: &HashSet<String>, owners: AuthenticatedModuleOwners, output: bool,
 ) -> Result<CheckedStaticEvaluationRecipe, PipelineError> {
     sources.sort_by(|left, right| left.0.cmp(&right.0));
     if sources.iter().any(|(name, _)| name.is_empty())
@@ -69,9 +88,22 @@ pub fn link_checked_static_evaluation_from_source_bundle(
         )))?;
         rewrite_module(module, owner)?;
     }
+    if output {
+        let (_, selected) = modules.iter_mut().find(|(name, _)| name == entry)
+            .ok_or_else(|| refused("static output entry is missing"))?;
+        if selected.items.iter().any(|item| matches!(item, Item::Function(function) if function.name == "main")) {
+            return Err(refused("static output recipe requires an entry without `main`"));
+        }
+        let generated = witchy_syntax::parser::parse_module(
+            "fn main(console: Console):\n    console.print(glamour.static_site_json(web()))\n",
+        ).map_err(|error| refused(format!("invalid compiler static output adapter: {error}")))?;
+        selected.item_lines.extend(std::iter::repeat_n(0, generated.items.len()));
+        selected.items.extend(generated.items);
+    }
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"witchy.checked-static-evaluation-recipe.v1");
     hasher.update(&RECIPE_VERSION.to_le_bytes());
+    hasher.update(&[u8::from(output)]);
     hasher.update(&original);
     hasher.update(&(entry.len() as u64).to_le_bytes());
     hasher.update(entry.as_bytes());

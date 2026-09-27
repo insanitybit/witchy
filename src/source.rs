@@ -225,13 +225,41 @@ pub(crate) fn link_static_evaluation_file(
         &HashMap::new(),
     )?;
     let recipe = pipeline::link_checked_static_evaluation_from_source_bundle(
-        sources,
-        &entry,
-        &user_modules,
-        owners,
+        sources, &entry, &user_modules, owners,
     )
     .map_err(|error| error.to_string())?;
     Ok((recipe, entry))
+}
+
+/// Check the original and the compiler's static-output recipe from one exact
+/// loader snapshot. Reopening a path between them would split their authority.
+pub(crate) fn link_static_site_checked_with_output(
+    path: &str,
+) -> Result<(pipeline::CheckedModule, Option<pipeline::CheckedStaticEvaluationRecipe>, String), String> {
+    let entry_path = std::path::Path::new(path);
+    let stem = entry_path.file_stem().and_then(|stem| stem.to_str())
+        .ok_or_else(|| format!("invalid file name: {path}"))?;
+    let owner = workspace_module_owner(entry_path, stem)?;
+    let (sources, entry, user_modules, owners) = load_file_modules_authenticated(
+        path, &HashMap::new(), owner, &HashMap::new(),
+    )?;
+    let selected = sources.iter().find(|(name, _)| name == &entry)
+        .ok_or_else(|| format!("loaded static source lacks entry `{entry}`"))?;
+    let source = std::str::from_utf8(&selected.1)
+        .map_err(|error| format!("{entry}: source is not UTF-8: {error}"))?;
+    let module = parser::parse_module(source).map_err(|error| format!("{entry}: {error}"))?;
+    let has_main = module.items.iter().any(|item| matches!(item, ast::Item::Function(function) if function.name == "main"));
+    let checked = check_loaded_source_bundle(
+        sources.clone(), &entry, path, user_modules.clone(), owners.clone(),
+    )?;
+    let output = if has_main {
+        None
+    } else {
+        Some(witchy_types::pipeline::link_checked_static_site_output_from_source_bundle(
+            sources, &entry, comptime::EXPANDER, &user_modules, owners,
+        ).map_err(|error| error.to_string())?)
+    };
+    Ok((checked, output, entry))
 }
 
 pub(crate) fn link_file_checked_with_deps(
@@ -940,6 +968,27 @@ mod tests {
     }
 
     fn external_owner() -> ModuleLoadIdentity { external_owner_named("acme/math") }
+
+    #[test]
+    fn static_site_output_recipe_runs_closed_site_on_admitted_wasm() {
+        let dir = unique_dir("static_site_output");
+        std::fs::create_dir_all(&dir).unwrap();
+        let entry = dir.join("main.witchy");
+        std::fs::write(&entry, "from glamour import Site, StaticPage\nfn web() -> Site:\n    Site([StaticPage(\"/\", \"hello\", [], [])], [], [], [], [], [])\n").unwrap();
+        let (_, recipe, _) = super::link_static_site_checked_with_output(entry.to_str().unwrap())
+            .expect("authenticated static output recipe");
+        let recipe = recipe.expect("source without main gets output adapter");
+        let artifact = witchy_lower::codegen::compile_checked_module_artifact(recipe.checked())
+            .expect_lowered("static output adapter admits");
+        let mut runtime = witchy_runtime::runtime::Runtime::batch().unwrap();
+        let mut vm = runtime.spawn_admitted(&artifact, witchy_runtime::runtime::Capabilities {
+            print: true, quiet: true, ..Default::default()
+        }, 256).unwrap();
+        vm.run().unwrap();
+        assert_eq!(vm.output(), ["{\"$variant\":\"Site\",\"$values\":[[{\"$variant\":\"StaticPage\",\"$values\":[\"/\",\"hello\",[],[]]}],[],[],[],[],[]]}"]);
+        assert_eq!(vm.canonical_heap_leaks().unwrap(), Some(0));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn checked_source_schedules_derive_before_expansion_free_dispatch() {

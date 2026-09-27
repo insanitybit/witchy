@@ -161,31 +161,31 @@ type TemplatePlan:
 // A resumable island is generic only while it is checked. The public plan is
 // sealed closed data so heterogeneous islands can share one Site registry
 // without erasing programs, models, or messages to strings.
-type Activation:
+type Activation derive(Reflect):
     OnLoad
     OnIdle
     OnVisible
     OnMedia(MediaQuery)
     OnInteraction
 
-type Prefetch:
+type Prefetch derive(Reflect):
     NoPrefetch
     PrefetchIdle
     PrefetchVisible
     PrefetchMedia(MediaQuery)
     PrefetchIntent
 
-sealed type MediaQuery:
+sealed type MediaQuery derive(Reflect):
     MediaQuery(String)
 
-sealed type IslandMarkup:
+sealed type IslandMarkup derive(Reflect):
     IslandMarkup(String, String, String, String)
 
-sealed type IslandStart:
+sealed type IslandStart derive(Reflect):
     Resumable(String)
     Fresh
 
-sealed type IslandPlan:
+sealed type IslandPlan derive(Reflect):
     IslandPlan(String, String, Activation, Prefetch, Option(String), IslandStart, IslandMarkup)
 
 sealed type Interactive:
@@ -716,7 +716,7 @@ pub fn aria_attribute(name: String, value: String) -> Attr(msg):
 // image-valued declaration. The tag scopes every selector to its immutable
 // sheet ID, records declared class handles, and exposes deterministic extracted
 // text to the web build.
-type CssSheet:
+type CssSheet derive(Reflect):
     CssSheet(String, String, String, String, List(String))
 
 type CssClass:
@@ -2810,20 +2810,20 @@ pub fn to_html(node: VNode(msg)) -> String:
 // A static site is an ordinary, closed Witchy value. Each page is rendered
 // eagerly while `web()` runs on the capability-free native build evaluator, so
 // no message representation or browser closure enters the build manifest.
-type StaticPage:
+type StaticPage derive(Reflect):
     StaticPage(String, String, List(String), List(IslandPlan))
 
-type StaticActionField:
+type StaticActionField derive(Reflect):
     StaticActionField(String, String, String, Bool)
 
-type StaticAction:
+type StaticAction derive(Reflect):
     StaticAction(String, String, String, List(StaticActionField))
 
 // A stylesheet is attached only to the declared routes. Routes in
 // `critical_routes` receive the checked rules inline; the remaining routes
 // receive one content-addressed extracted asset. Keeping both sets explicit
 // makes critical-CSS decisions reviewable build data rather than a heuristic.
-type StaticStyle:
+type StaticStyle derive(Reflect):
     StaticStyle(CssSheet, List(String), List(String))
 
 type StaticPreloadKind:
@@ -2831,10 +2831,10 @@ type StaticPreloadKind:
     PreloadFont
     PreloadImage
 
-type StaticPreload:
+type StaticPreload derive(Reflect):
     StaticPreload(String, String, String)
 
-type StaticAsset:
+type StaticAsset derive(Reflect):
     StaticAsset(String)
 
 // A declared static-build input is snapshotted by the Witchy build tool and
@@ -2847,8 +2847,11 @@ type StaticContentFile:
 type StaticContent:
     StaticContent(List(StaticContentFile))
 
-type Site:
+type Site derive(Reflect):
     Site(List(StaticPage), List(StaticAction), List(StaticStyle), List(StaticPreload), List(StaticAsset), List(IslandPlan))
+
+pub fn static_site_json(site: Site) -> String:
+    json.stringify(site)
 
 pub fn static_content_files(content: StaticContent) -> List(StaticContentFile):
     match content:

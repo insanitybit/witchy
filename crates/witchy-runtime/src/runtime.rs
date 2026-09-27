@@ -896,6 +896,9 @@ pub struct Capabilities {
     /// Capture output without echoing it to stdout (used by tests,
     /// which compares the captured lines rather than showing them).
     pub quiet: bool,
+    /// Bound captured Console output before allocating host-side text. Used by
+    /// compiler-owned evaluation; ordinary runs retain their existing limit.
+    pub capture_output_limit_bytes: Option<usize>,
     /// Stream Console output live to stdout as each line is printed, cleanly
     /// (no `[vm N]` debug prefix) and flushed immediately. This is for
     /// long-running servers (`coven-serve`) whose `main` never returns: the
@@ -1327,6 +1330,7 @@ pub struct VmState {
     /// Everything the VM has printed (via the `print`/`print_int`
     /// capabilities), so the host can observe a compiled program's output.
     pub(crate) output: Arc<Mutex<Vec<String>>>,
+    pub(crate) captured_output_bytes: usize,
     /// Remaining Console input fixture; `None` delegates to process stdin.
     pub(crate) console_input: Option<std::collections::VecDeque<String>>,
     /// Root `Dir` grants awaiting wrapper-local `mint_dir(i)`. A live guest `Dir`
@@ -2899,6 +2903,7 @@ fn vmstate_from_caps(
         compiler_services,
         limits,
         output: Arc::new(Mutex::new(Vec::new())),
+        captured_output_bytes: 0,
         console_input: caps.console_input.clone().map(Into::into),
         dirs,
         files,

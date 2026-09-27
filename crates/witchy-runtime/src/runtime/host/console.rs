@@ -264,7 +264,15 @@ fn host_print(mut caller: Caller<'_, VmState>, ptr: i32, len: i32) -> Result<()>
     let mem = memory_of(&mut caller)?;
     let data = mem.data(&caller);
     let bytes = slice(data, ptr, len)?;
-    let text = String::from_utf8_lossy(bytes);
+    let next_bytes = caller.data().captured_output_bytes.checked_add(bytes.len())
+        .ok_or_else(|| wasmtime::Error::msg("captured Console output size overflow"))?;
+    if let Some(limit) = caller.data().caps.capture_output_limit_bytes {
+        if next_bytes > limit {
+            bail!("captured Console output exceeds its byte limit");
+        }
+    }
+    let text = String::from_utf8_lossy(bytes).into_owned();
+    caller.data_mut().captured_output_bytes = next_bytes;
     let id = caller.data().id;
     if caller.data().caps.live_output {
         use std::io::Write;

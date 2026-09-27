@@ -22,19 +22,82 @@ type EvaluatedStaticSite = (
 const MAX_STATIC_CONTENT_FILES: usize = 4096;
 const MAX_STATIC_CONTENT_FILE_BYTES: usize = 4 * 1024 * 1024;
 const MAX_STATIC_CONTENT_BYTES: usize = 64 * 1024 * 1024;
+const MAX_STATIC_SITE_WIRE_BYTES: usize = 64 * 1024 * 1024;
+const MAX_STATIC_SITE_WIRE_NODES: usize = 100_000;
+
+fn static_site_value_from_json(text: &str) -> Result<witchy_interp::interpreter::CompilerValue, WebCommandError> {
+    use witchy_interp::interpreter::CompilerValue;
+
+    if text.len() > MAX_STATIC_SITE_WIRE_BYTES {
+        return Err(WebCommandError::failure("static Site output exceeds its byte limit"));
+    }
+    let value: Value = serde_json::from_str(text)
+        .map_err(|error| WebCommandError::failure(format!("invalid reflected static Site: {error}")))?;
+    fn decode(value: Value, depth: usize, remaining: &mut usize) -> Result<CompilerValue, WebCommandError> {
+        if depth > 128 || *remaining == 0 {
+            return Err(WebCommandError::failure("reflected static Site exceeds its structural limit"));
+        }
+        *remaining -= 1;
+        match value {
+            Value::Null => Ok(CompilerValue::Unit),
+            Value::Bool(value) => Ok(CompilerValue::Bool(value)),
+            Value::String(value) => Ok(CompilerValue::String(value)),
+            Value::Number(value) => value.as_i64().map(CompilerValue::Int)
+                .or_else(|| value.as_f64().map(CompilerValue::Float))
+                .ok_or_else(|| WebCommandError::failure("reflected static Site has an invalid number")),
+            Value::Array(values) => values.into_iter().map(|value| decode(value, depth + 1, remaining))
+                .collect::<Result<Vec<_>, _>>().map(CompilerValue::List),
+            Value::Object(mut object) => {
+                if object.len() != 2 {
+                    return Err(WebCommandError::failure("reflected static Site has an invalid constructor shape"));
+                }
+                let Some(Value::String(variant)) = object.remove("$variant") else {
+                    return Err(WebCommandError::failure("reflected static Site lacks a constructor variant"));
+                };
+                let Some(Value::Array(values)) = object.remove("$values") else {
+                    return Err(WebCommandError::failure("reflected static Site lacks constructor fields"));
+                };
+                if !variant.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'_') {
+                    return Err(WebCommandError::failure("reflected static Site has an invalid variant name"));
+                }
+                let mut fields = Vec::with_capacity(values.len());
+                for (index, value) in values.into_iter().enumerate() {
+                    if variant == "IslandPlan" && index == 4 {
+                        fields.push(match value {
+                            Value::Null => CompilerValue::Constructor { name: "None".into(), fields: Vec::new() },
+                            Value::String(value) => CompilerValue::Constructor {
+                                name: "Some".into(), fields: vec![CompilerValue::String(value)],
+                            },
+                            _ => return Err(WebCommandError::failure("reflected static island name is invalid")),
+                        });
+                    } else {
+                        fields.push(decode(value, depth + 1, remaining)?);
+                    }
+                }
+                Ok(CompilerValue::Constructor { name: format!("glamour.{variant}"), fields })
+            }
+        }
+    }
+    let mut remaining = MAX_STATIC_SITE_WIRE_NODES;
+    decode(value, 0, &mut remaining)
+}
 
 pub(super) fn check_static_project(project: Project) -> Result<CheckedStaticSite, WebCommandError> {
-    let (checked, _) = crate::link_file_checked(path_text(&project.entry)?)
-        .map_err(WebCommandError::failure)?;
+    let (checked, recipe) = if project.content.is_none() {
+        let (checked, recipe, _) = crate::link_static_site_checked_with_output(path_text(&project.entry)?)
+            .map_err(WebCommandError::failure)?;
+        (checked, recipe)
+    } else {
+        let (checked, _) = crate::link_file_checked(path_text(&project.entry)?)
+            .map_err(WebCommandError::failure)?;
+        (checked, None)
+    };
     let entry = static_entry_name(&project)?;
     authenticate_static_entry(&checked, &entry, project.content.is_some())?;
     let packages = package_records(&checked)?;
     let (arguments, content_inputs) = static_content_arguments(&project)?;
-    let evaluation = witchy_lower::codegen::checked_glamour_static_evaluation_module(&checked)
-        .map_err(|error| WebCommandError::failure(error.to_string()))?;
     let (pages, actions, styles, preloads, assets, islands) = static_site_from_value(
-        witchy_interp::interpreter::evaluate_compiler_module(&evaluation, &entry, arguments)
-        .map_err(|error| WebCommandError::failure(error.message))?,
+        evaluate_static_site_value(&checked, recipe.as_ref(), &entry, arguments)?,
     )?;
     let grant = load_web_ui_grant(&project, !islands.is_empty())?;
     let mut island_metadata = witchy_lower::codegen::checked_glamour_islands(&checked)
@@ -3660,20 +3723,60 @@ fn checked_wire_id(
 pub(super) fn evaluate_static_site(
     project: &Project,
 ) -> Result<EvaluatedStaticSite, WebCommandError> {
-    let (checked, _) = crate::link_file_checked(path_text(&project.entry)?)
-        .map_err(WebCommandError::failure)?;
+    let (checked, recipe) = if project.content.is_none() {
+        let (checked, recipe, _) = crate::link_static_site_checked_with_output(path_text(&project.entry)?)
+            .map_err(WebCommandError::failure)?;
+        (checked, recipe)
+    } else {
+        let (checked, _) = crate::link_file_checked(path_text(&project.entry)?)
+            .map_err(WebCommandError::failure)?;
+        (checked, None)
+    };
     let entry = static_entry_name(project)?;
     authenticate_static_entry(&checked, &entry, project.content.is_some())?;
     let (arguments, _content_inputs) = static_content_arguments(project)?;
-    let evaluation = witchy_lower::codegen::checked_glamour_static_evaluation_module(&checked)
-        .map_err(|error| WebCommandError::failure(error.to_string()))?;
-    let value = witchy_interp::interpreter::evaluate_compiler_module(
-        &evaluation,
-        &entry,
-        arguments,
-    )
-    .map_err(|error| WebCommandError::failure(error.message))?;
+    let value = evaluate_static_site_value(&checked, recipe.as_ref(), &entry, arguments)?;
     static_site_from_value(value)
+}
+
+fn evaluate_static_site_value(
+    checked: &witchy_types::pipeline::CheckedModule,
+    recipe: Option<&witchy_types::pipeline::CheckedStaticEvaluationRecipe>,
+    entry: &str,
+    arguments: Vec<witchy_interp::interpreter::CompilerValue>,
+) -> Result<witchy_interp::interpreter::CompilerValue, WebCommandError> {
+    if let Some(recipe) = recipe {
+        match witchy_lower::codegen::compile_checked_module_artifact(recipe.checked()) {
+            witchy_lower::codegen::LoweringOutcome::Lowered(artifact) => {
+                let mut runtime = witchy_runtime::runtime::Runtime::new()
+                    .map_err(|error| WebCommandError::failure(error.to_string()))?;
+                let mut vm = runtime.spawn_admitted(&artifact, witchy_runtime::runtime::Capabilities {
+                    print: true, quiet: true,
+                    capture_output_limit_bytes: Some(MAX_STATIC_SITE_WIRE_BYTES),
+                    ..Default::default()
+                }, 256).map_err(|error| WebCommandError::failure(error.to_string()))?;
+                runtime.run_with_budget(&mut vm, std::time::Duration::from_secs(10))
+                    .map_err(|error| WebCommandError::failure(error.to_string()))?;
+                let output = vm.output();
+                if output.len() != 1 || vm.canonical_heap_leaks()
+                    .map_err(|error| WebCommandError::failure(error.to_string()))? != Some(0)
+                {
+                    return Err(WebCommandError::failure("admitted static Site produced an invalid output or leaked heap objects"));
+                }
+                return static_site_value_from_json(&output[0]);
+            }
+            // The source evaluator remains a temporary compiler service for
+            // static-site expressions the canonical backend has not lowered.
+            witchy_lower::codegen::LoweringOutcome::Unsupported(_) => {}
+            witchy_lower::codegen::LoweringOutcome::Rejected(error) => {
+                return Err(WebCommandError::failure(error.to_string()));
+            }
+        }
+    }
+    let evaluation = witchy_lower::codegen::checked_glamour_static_evaluation_module(checked)
+        .map_err(|error| WebCommandError::failure(error.to_string()))?;
+    witchy_interp::interpreter::evaluate_compiler_module(&evaluation, entry, arguments)
+        .map_err(|error| WebCommandError::failure(error.message))
 }
 
 fn static_entry_name(project: &Project) -> Result<String, WebCommandError> {
@@ -7169,4 +7272,38 @@ pub(super) fn audit_static_artifacts(
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod admitted_static_output_tests {
+    use super::*;
+
+    #[test]
+    fn production_static_value_uses_admitted_closed_site() {
+        let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+            .unwrap().as_nanos();
+        let root = std::env::temp_dir().join(format!("witchy-static-admitted-{}-{nonce}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let entry_path = root.join("main.witchy");
+        std::fs::write(&entry_path, "from glamour import Site, StaticPage\npub fn web() -> Site:\n    Site([StaticPage(\"/\", \"hello\", [], [])], [], [], [], [], [])\n").unwrap();
+        let project = Project {
+            root: root.clone(), name: "static-admitted".into(), version: "0.1.0".into(),
+            delivery: Delivery::Static, entry: entry_path.clone(), index: root.join("index.html"),
+            public: root.join("public"), manifest: root.join("witchy.toml"), grants: None,
+            css: None, content: None, hosting: HostingProfile::Portable,
+        };
+        let (checked, recipe, _) = crate::link_static_site_checked_with_output(entry_path.to_str().unwrap()).unwrap();
+        let entry = static_entry_name(&project).unwrap();
+        authenticate_static_entry(&checked, &entry, false).unwrap();
+        let value = evaluate_static_site_value(&checked, recipe.as_ref(), &entry, Vec::new()).unwrap();
+        let witchy_interp::interpreter::CompilerValue::Constructor { name, fields } = value else {
+            panic!("static output must be a Site constructor");
+        };
+        assert_eq!(name, "glamour.Site");
+        let witchy_interp::interpreter::CompilerValue::List(pages) = &fields[0] else {
+            panic!("Site pages must be a list");
+        };
+        assert_eq!(pages.len(), 1);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }
