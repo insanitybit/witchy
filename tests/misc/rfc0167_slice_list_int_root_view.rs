@@ -55,6 +55,40 @@ fn main() -> Int:
 }
 
 #[test]
+fn scalar_list_slices_retain_exact_owned_children() {
+    opt::set_for_tests(Some(OptSet::none()));
+    let _reset = ResetOptimizationOverride;
+    for (ty, first, second, replacement, appended) in [
+        ("Float", "1.5", "3.5", "9.5", "4.5"),
+        ("Bool", "true", "false", "false", "true"),
+        ("Duration", "5ms", "7ms", "9ms", "11ms"),
+    ] {
+        let source = format!(r#"
+fn relay(rows: &[List({ty})]) -> &[List({ty})]:
+    rows
+
+fn main() -> Int:
+    var rows: List(List({ty})) = [[{first}], [{second}]]
+    let old = relay(&rows[0..2])
+    rows[0][0] = {replacement}
+    rows.push([{appended}])
+    (if old[0][0] == {first}: 1000 else: 0) + (if old[1][0] == {second}: 100 else: 0) + (if rows[0][0] == {replacement}: 10 else: 0) + rows.length()
+"#);
+        let checked = witchy::resolve_std_only_checked(&source)
+            .unwrap_or_else(|error| panic!("{ty} owned child type-checks: {error}"));
+        let artifact = codegen::compile_checked_module_artifact(&checked)
+            .expect_lowered("exact scalar list child layout admits");
+        let mut runtime = Runtime::batch().expect("runtime");
+        let mut vm = runtime.spawn_admitted(&artifact,
+            Capabilities { print_int: true, quiet: true, ..Capabilities::none() }, 128)
+            .expect("admitted Wasm instance");
+        vm.run().expect("admitted Wasm execution");
+        assert_eq!(vm.output(), ["1113"], "{ty} retains both old children and current owner");
+        assert_eq!(vm.canonical_heap_leaks().expect("canonical heap audit"), Some(0));
+    }
+}
+
+#[test]
 fn a_qualified_list_child_cannot_borrow_slice_authority() {
     let refusal = witchy::resolve_std_only_checked(
         r#"
