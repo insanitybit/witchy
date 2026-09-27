@@ -73,6 +73,57 @@ fn resolve_stage_type_info(
     Ok(())
 }
 
+fn local_tag_recipe_digest(
+    session: &ComptimeSourceSession,
+    prior: &[PriorComptimeBlockOutput],
+    tag: &str,
+    part: &str,
+    line: u32,
+) -> Result<[u8; 32], PipelineError> {
+    let mut hash = blake3::Hasher::new();
+    hash.update(b"witchy.comptime-local-tag-recipe.v1\0");
+    hash.update(&REWRITE_VERSION.to_le_bytes());
+    hash.update(&session.original_digest);
+    hash.update(&(session.selected.len() as u64).to_le_bytes());
+    hash.update(session.selected.as_bytes());
+    hash.update(&line.to_le_bytes());
+    hash.update(&(tag.len() as u64).to_le_bytes());
+    hash.update(tag.as_bytes());
+    hash.update(&(part.len() as u64).to_le_bytes());
+    hash.update(part.as_bytes());
+    #[cfg(not(target_arch = "wasm32"))]
+    hash_prior_items(&mut hash, prior)?;
+    for (name, owner) in session.owners.assignments() {
+        super::super::static_evaluation::hash_owner_assignment(&mut hash, name, owner);
+    }
+    Ok(*hash.finalize().as_bytes())
+}
+
+fn first_local_tag_identity(
+    session: &ComptimeSourceSession,
+    prior: &[PriorComptimeBlockOutput],
+) -> Result<(String, String, u32, [u8; 32]), PipelineError> {
+    let (_, original) = session.modules.iter().find(|(name, _)| name == &session.selected)
+        .expect("selected raw module retained");
+    let display = materialize_prior(original, prior, true, false);
+    let mut selected = None;
+    witchy_syntax::ast::visit::visit_module_exprs(&display, &mut |expression| {
+        if selected.is_none() {
+            if let Expr::TaggedLit { tag, parts, holes, line, .. } = expression {
+                selected = Some((tag.clone(), parts.clone(), holes.len(), *line));
+            }
+        }
+        Ok::<_, ()>(())
+    }).expect("tag selection cannot fail");
+    let (tag, parts, holes, line) = selected
+        .ok_or_else(|| refuse("source session has no tagged literal"))?;
+    if holes != 0 || parts.len() != 1 {
+        return Err(refuse("admitted local tag recipe requires one static part and no holes"));
+    }
+    let digest = local_tag_recipe_digest(session, prior, &tag, &parts[0], line)?;
+    Ok((tag, parts[0].clone(), line, digest))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ComptimeBlockSite {
     Original(usize),
@@ -214,20 +265,7 @@ impl ComptimeSourceSession {
         self.check_completed_prefix(prior)?;
         let (_, original) = self.modules.iter().find(|(name, _)| name == &self.selected)
             .expect("selected raw module retained");
-        let display = materialize_prior(original, prior, true, false);
-        let mut selected = None;
-        witchy_syntax::ast::visit::visit_module_exprs(&display, &mut |expression| {
-            if selected.is_none() {
-                if let Expr::TaggedLit { tag, parts, holes, line, .. } = expression {
-                    selected = Some((tag.clone(), parts.clone(), holes.len(), *line));
-                }
-            }
-            Ok::<_, ()>(())
-        }).expect("tag selection cannot fail");
-        let (tag, parts, holes, line) = selected.ok_or_else(|| refuse("source session has no tagged literal"))?;
-        if holes != 0 || parts.len() != 1 {
-            return Err(refuse("admitted local tag recipe requires one static part and no holes"));
-        }
+        let (tag, part, line, digest) = first_local_tag_identity(self, prior)?;
         let mut prepared = materialize_prior(original, prior, true, true);
         let function = prepared.items.iter().find_map(|item| match item {
             Item::Function(function) if function.name == tag => Some(function),
@@ -239,23 +277,6 @@ impl ComptimeSourceSession {
         {
             return Err(refuse("admitted local tag must be a comptime function returning meta.ExprSyntax with two parameters"));
         }
-        let mut hash = blake3::Hasher::new();
-        hash.update(b"witchy.comptime-local-tag-recipe.v1\0");
-        hash.update(&REWRITE_VERSION.to_le_bytes());
-        hash.update(&self.original_digest);
-        hash.update(&(self.selected.len() as u64).to_le_bytes());
-        hash.update(self.selected.as_bytes());
-        hash.update(&line.to_le_bytes());
-        hash.update(&(tag.len() as u64).to_le_bytes());
-        hash.update(tag.as_bytes());
-        hash.update(&(parts[0].len() as u64).to_le_bytes());
-        hash.update(parts[0].as_bytes());
-        #[cfg(not(target_arch = "wasm32"))]
-        hash_prior_items(&mut hash, prior)?;
-        for (name, owner) in self.owners.assignments() {
-            super::super::static_evaluation::hash_owner_assignment(&mut hash, name, owner);
-        }
-        let digest = *hash.finalize().as_bytes();
         let scope = format!("comptime:tag:{}:{}", self.selected, line);
         let contract = CompilerSessionContract::for_source(digest, scope).map_err(refuse)?;
         if let Some(index) = prepared.items.iter().position(|item|
@@ -263,7 +284,7 @@ impl ComptimeSourceSession {
             prepared.items.remove(index);
             prepared.item_lines.remove(index);
         }
-        let call = Expr::Call { name: tag, args: vec![Expr::List(vec![Expr::Str(parts[0].clone())]), Expr::List(Vec::new())] };
+        let call = Expr::Call { name: tag, args: vec![Expr::List(vec![Expr::Str(part)]), Expr::List(Vec::new())] };
         let body = witchy_syntax::ast::Block {
             stmts: vec![Stmt::Expr(Expr::Call { name: "emit_expr".into(), args: vec![call] }), Stmt::Expr(Expr::Int(0))],
             lines: vec![line, line], region: None,
@@ -302,17 +323,19 @@ impl ComptimeSourceSession {
     }
 
     /// Recheck one actual admitted tag result in the ordinary destination.
-    /// The compiler driver compares the runtime receipt with `recipe_digest`
-    /// before passing its expression here; this method also reselects that
-    /// recipe from the immutable source and binds the output to its witness.
+    /// The compiler driver compares the runtime receipt with the sealed
+    /// recipe's digest before passing its expression here; this method binds
+    /// that recipe back to the immutable source and exact prior outputs.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn check_expanded_first_local_tag_output(
-        &self, prior: &[PriorComptimeBlockOutput], recipe_digest: [u8; 32],
+        &self, prior: &[PriorComptimeBlockOutput], recipe: &CheckedComptimeRecipe,
         expression: Expr, origin: ComptimeSyntaxOrigin,
     ) -> Result<CheckedModule, PipelineError> {
-        if self.check_first_local_tag_recipe(prior)?.session_source_digest() != recipe_digest {
+        let (_, _, _, expected_digest) = first_local_tag_identity(self, prior)?;
+        if recipe.session_source_digest() != expected_digest {
             return Err(refuse("admitted tag result belongs to a different source recipe"));
         }
+        let recipe_digest = recipe.session_source_digest();
         let (_, original) = self.modules.iter().find(|(name, _)| name == &self.selected)
             .expect("selected raw module retained");
         let (mut expanded, emitted_origins) = materialize_prior_with_origins(original, prior, true, false);

@@ -63,7 +63,7 @@ pub fn check_source_bundle_with_local_tag(
         return Err("local tag must emit exactly one expression and no items".into());
     }
     let emitted = outcome.expressions.remove(0);
-    session.check_expanded_first_local_tag_output(&prior, digest, emitted.expression, emitted.origin)
+    session.check_expanded_first_local_tag_output(&prior, &recipe, emitted.expression, emitted.origin)
         .map_err(|error| error.to_string())
 }
 
