@@ -1,22 +1,28 @@
-//! Source-selected compiler entry. The first block accepts only raw source;
-//! successor checking accepts typed prior-output data, whose execution
-//! authenticity must be established by the compiler-owned runtime driver.
+//! Source-selected compiler entry. Each block accepts the complete ordered
+//! prior-output chain, whose execution authenticity is established by the
+//! compiler-owned runtime driver.
 use super::*;
 use witchy_syntax::ast::{Expr, Function, Stmt};
 use witchy_syntax::compiler_session::ComptimeSyntaxOrigin;
 
-const REWRITE_VERSION: u32 = 2;
+const REWRITE_VERSION: u32 = 3;
 
-/// Checked syntax data from one preceding original block. This is not an
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ComptimeBlockSite {
+    Original(usize),
+    Generated { parent_output: usize, emitted_item: usize },
+}
+
+/// Checked syntax data from one preceding source or generated block. This is not an
 /// execution receipt: the compiler-owned caller must compare the runtime's
 /// admitted recipe digest before handing its actual output to this checker.
 #[derive(Clone)]
 pub struct PriorComptimeBlockOutput {
-    pub original_item: usize,
+    pub site: ComptimeBlockSite,
     pub items: Vec<(Item, ComptimeSyntaxOrigin)>,
 }
 
-/// Immutable original-source session. This is an explicit recipe lane, not the
+/// Immutable source session. This is an explicit recipe lane, not the
 /// default expansion implementation. Its private fields contain parsed raw
 /// bytes and loader assignments; no mutable module accessor is exposed.
 pub struct ComptimeSourceSession {
@@ -53,6 +59,43 @@ impl ComptimeSourceSession {
             .expect("selected raw module retained");
         module.items.iter().enumerate().filter_map(|(index, item)|
             matches!(item, Item::Comptime(_)).then_some(index)).collect()
+    }
+
+    /// Validate the entire admitted prefix and select exactly the next block
+    /// in source order, including blocks emitted by an earlier block.
+    pub fn next_block_site(
+        &self, prior: &[PriorComptimeBlockOutput],
+    ) -> Result<Option<ComptimeBlockSite>, PipelineError> {
+        fn visit(
+            site: ComptimeBlockSite, prior: &[PriorComptimeBlockOutput], cursor: &mut usize,
+        ) -> Result<Option<ComptimeBlockSite>, PipelineError> {
+            let Some(output) = prior.get(*cursor) else { return Ok(Some(site)); };
+            if output.site != site {
+                return Err(refuse("comptime session requires the complete ordered block output prefix"));
+            }
+            let parent_output = *cursor;
+            *cursor += 1;
+            for (emitted_item, (item, _)) in output.items.iter().enumerate() {
+                if matches!(item, Item::Comptime(_)) {
+                    let generated = ComptimeBlockSite::Generated { parent_output, emitted_item };
+                    if let Some(next) = visit(generated, prior, cursor)? { return Ok(Some(next)); }
+                }
+            }
+            Ok(None)
+        }
+        let mut cursor = 0;
+        for original_item in self.original_block_items() {
+            if let Some(next) = visit(ComptimeBlockSite::Original(original_item), prior, &mut cursor)? {
+                if cursor != prior.len() {
+                    return Err(refuse("comptime session has output after an unexecuted predecessor"));
+                }
+                return Ok(Some(next));
+            }
+        }
+        if cursor != prior.len() {
+            return Err(refuse("comptime session has output beyond its source blocks"));
+        }
+        Ok(None)
     }
 
     pub fn from_source_bundle(
@@ -101,32 +144,48 @@ impl ComptimeSourceSession {
     pub fn check_block_with_prior_output(
         &self, item: usize, prior: &[PriorComptimeBlockOutput],
     ) -> Result<CheckedComptimeRecipe, PipelineError> {
+        self.check_site_with_prior_output(ComptimeBlockSite::Original(item), prior)
+    }
+
+    pub fn check_next_block_with_prior_output(
+        &self, prior: &[PriorComptimeBlockOutput],
+    ) -> Result<CheckedComptimeRecipe, PipelineError> {
+        let site = self.next_block_site(prior)?
+            .ok_or_else(|| refuse("comptime session has no remaining block"))?;
+        self.check_site_with_prior_output(site, prior)
+    }
+
+    fn check_site_with_prior_output(
+        &self, site: ComptimeBlockSite, prior: &[PriorComptimeBlockOutput],
+    ) -> Result<CheckedComptimeRecipe, PipelineError> {
         let (_, module) = self.modules.iter().find(|(name, _)| name == &self.selected)
             .expect("selected raw module retained");
-        let blocks: Vec<_> = module.items.iter().enumerate()
-            .filter_map(|(index, item)| matches!(item, Item::Comptime(_)).then_some(index)).collect();
-        let Some(ordinal) = blocks.iter().position(|index| *index == item) else {
-            return Err(refuse("comptime session requires the first original block or an ordered original successor"));
-        };
-        if prior.len() != ordinal || prior.iter().zip(&blocks).any(|(output, index)| output.original_item != *index) {
-            return Err(refuse("comptime session requires the complete ordered original-block output prefix"));
+        if self.next_block_site(prior)? != Some(site) {
+            return Err(refuse("comptime session requires the next authenticated block in source order"));
         }
         #[cfg(target_arch = "wasm32")]
         if !prior.is_empty() { return Err(refuse("ordered comptime source sessions require the native compiler")); }
         if prior.iter().flat_map(|output| &output.items).any(|(item, _)|
-            matches!(item, Item::Comptime(_)) || matches!(item, Item::Function(function) if function.name == "main")) {
-            return Err(refuse("comptime session cannot use a generated comptime block or displaced main as prior output"));
+            matches!(item, Item::Function(function) if function.name == "main")) {
+            return Err(refuse("comptime session cannot use a displaced main as prior output"));
         }
         self.check_prior_items(prior)?;
-        let Item::Comptime(body) = &module.items[item] else { unreachable!("first block selected") };
-        let line = module.item_lines.get(item).copied().unwrap_or(0);
+        let (block, line) = match site {
+            ComptimeBlockSite::Original(item) => (&module.items[item],
+                module.item_lines.get(item).copied().unwrap_or(0)),
+            ComptimeBlockSite::Generated { parent_output, emitted_item } => {
+                let (item, origin) = &prior[parent_output].items[emitted_item];
+                (item, origin.definition_line)
+            }
+        };
+        let Item::Comptime(body) = block else { unreachable!("next site is a block") };
         let mut hash = blake3::Hasher::new();
         hash.update(b"witchy.comptime-block-recipe.v1\0");
         hash.update(&REWRITE_VERSION.to_le_bytes());
         hash.update(&self.original_digest);
         hash.update(&(self.selected.len() as u64).to_le_bytes());
         hash.update(self.selected.as_bytes());
-        hash.update(&(item as u64).to_le_bytes());
+        hash_block_site(&mut hash, site);
         hash.update(&line.to_le_bytes());
         #[cfg(not(target_arch = "wasm32"))]
         hash_prior_items(&mut hash, prior)?;
@@ -136,7 +195,7 @@ impl ComptimeSourceSession {
             super::super::static_evaluation::hash_owner_assignment(&mut hash, name, owner);
         }
         let digest = *hash.finalize().as_bytes();
-        let scope = format!("comptime:{}:{}:{}", self.selected.len(), self.selected, ordinal + 1);
+        let scope = format!("comptime:{}:{}:{}", self.selected.len(), self.selected, prior.len() + 1);
         let contract = CompilerSessionContract::for_source(digest, scope).map_err(refuse)?;
         let mut prepared = materialize_prior(module, prior, false);
         let mut body = body.clone();
@@ -199,7 +258,7 @@ impl ComptimeSourceSession {
         Ok(())
     }
 
-    /// Check the ordinary destination after all original blocks have run.
+    /// Check the ordinary destination after all source and generated blocks have run.
     /// The caller must have verified every predecessor's admitted outcome;
     /// this method independently rechecks the generated items in context.
     #[cfg(not(target_arch = "wasm32"))]
@@ -231,13 +290,12 @@ impl ComptimeSourceSession {
             || !self.modules.iter().any(|(name, _)| name == entry) {
             return Err(refuse("comptime destination entry is not a loader-owned source module"));
         }
-        let blocks = self.original_block_items();
-        if blocks.len() != prior.len() || prior.iter().zip(&blocks)
-            .any(|(output, index)| output.original_item != *index) {
-            return Err(refuse("comptime destination requires every original block output in order"));
+        if self.next_block_site(prior)?.is_some() {
+            return Err(refuse("comptime destination requires every original and generated block output in order"));
         }
-        if prior.iter().flat_map(|output| &output.items).any(|(item, _)| matches!(item, Item::Comptime(_))) {
-            return Err(refuse("generated comptime blocks need a separate authenticated execution step"));
+        if prior.iter().flat_map(|output| &output.items).any(|(item, _)|
+            matches!(item, Item::Function(function) if function.name == "main")) {
+            return Err(refuse("comptime destination cannot displace its source main"));
         }
         let (_, original) = self.modules.iter().find(|(name, _)| name == &self.selected)
             .expect("selected raw module retained");
@@ -342,6 +400,7 @@ impl ComptimeSourceSession {
 /// over-approximates names across calls, function values and generated syntax;
 /// an omitted real reference still fails closed during ordinary checking.
 fn retain_referenced_functions(module: &mut Module, prior_functions: &HashSet<String>, keep_entry: bool) {
+    if module.items.is_empty() { return; }
     let entry = module.items.len() - 1;
     let mut keep: Vec<bool> = module.items.iter().enumerate().map(|(index, item)|
         (keep_entry && index == entry) || !matches!(item, Item::Function(_))
@@ -370,19 +429,30 @@ fn retain_referenced_functions(module: &mut Module, prior_functions: &HashSet<St
 }
 
 fn materialize_prior(module: &Module, prior: &[PriorComptimeBlockOutput], keep_main: bool) -> Module {
+    fn append_output(
+        prepared: &mut Module, prior: &[PriorComptimeBlockOutput], cursor: &mut usize,
+        site: ComptimeBlockSite,
+    ) {
+        let Some(output) = prior.get(*cursor).filter(|output| output.site == site) else { return; };
+        let parent_output = *cursor;
+        *cursor += 1;
+        for (emitted_item, (generated, origin)) in output.items.iter().enumerate() {
+            if matches!(generated, Item::Comptime(_)) {
+                append_output(prepared, prior, cursor,
+                    ComptimeBlockSite::Generated { parent_output, emitted_item });
+            } else {
+                prepared.items.push(generated.clone());
+                prepared.item_lines.push(origin.definition_line);
+            }
+        }
+    }
     let mut prepared = module.clone();
     prepared.items.clear();
     prepared.item_lines.clear();
-    let mut prior_cursor = 0;
+    let mut cursor = 0;
     for (index, original) in module.items.iter().enumerate() {
         if matches!(original, Item::Comptime(_)) {
-            if prior_cursor < prior.len() && prior[prior_cursor].original_item == index {
-                for (generated, origin) in &prior[prior_cursor].items {
-                    prepared.items.push(generated.clone());
-                    prepared.item_lines.push(origin.definition_line);
-                }
-                prior_cursor += 1;
-            }
+            append_output(&mut prepared, prior, &mut cursor, ComptimeBlockSite::Original(index));
         } else if keep_main || !matches!(original, Item::Function(function) if function.name == "main") {
             prepared.items.push(original.clone());
             prepared.item_lines.push(module.item_lines.get(index).copied().unwrap_or(0));
@@ -395,7 +465,7 @@ fn materialize_prior(module: &Module, prior: &[PriorComptimeBlockOutput], keep_m
 fn hash_prior_items(hash: &mut blake3::Hasher, prior: &[PriorComptimeBlockOutput]) -> Result<(), PipelineError> {
     hash.update(&(prior.len() as u64).to_le_bytes());
     for output in prior {
-        hash.update(&(output.original_item as u64).to_le_bytes());
+        hash_block_site(hash, output.site);
         hash.update(&(output.items.len() as u64).to_le_bytes());
         for (item, origin) in &output.items {
             let bytes = postcard::to_allocvec(&(item, origin))
@@ -405,6 +475,20 @@ fn hash_prior_items(hash: &mut blake3::Hasher, prior: &[PriorComptimeBlockOutput
         }
     }
     Ok(())
+}
+
+fn hash_block_site(hash: &mut blake3::Hasher, site: ComptimeBlockSite) {
+    match site {
+        ComptimeBlockSite::Original(item) => {
+            hash.update(&[0]);
+            hash.update(&(item as u64).to_le_bytes());
+        }
+        ComptimeBlockSite::Generated { parent_output, emitted_item } => {
+            hash.update(&[1]);
+            hash.update(&(parent_output as u64).to_le_bytes());
+            hash.update(&(emitted_item as u64).to_le_bytes());
+        }
+    }
 }
 
 // This fixed callback never mutates any module. A public callback here could

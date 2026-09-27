@@ -5,7 +5,7 @@ use crate::runtime_type::PackageSource;
 use witchy_syntax::compiler_session::CompilerSessionContract;
 
 mod block_session;
-pub use block_session::{ComptimeSourceSession, PriorComptimeBlockOutput};
+pub use block_session::{ComptimeBlockSite, ComptimeSourceSession, PriorComptimeBlockOutput};
 
 pub(super) fn expansion_free_expander() -> ComptimeExpander {
     ComptimeExpander::with_sibling_request(block_session::require_expansion_free, |_| false)

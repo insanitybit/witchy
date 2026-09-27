@@ -1,4 +1,4 @@
-//! Compiler-owned sequencing of original compile-time blocks. No caller can
+//! Compiler-owned sequencing of source and generated compile-time blocks. No caller can
 //! insert generated syntax between steps: every prefix comes from an admitted
 //! zero-grant Wasm execution of the exact recipe selected from raw source.
 
@@ -25,7 +25,7 @@ pub fn source_limits() -> ComptimeLimits {
     }
 }
 
-/// Compile original blocks in source order, then check their generated items
+/// Compile source and generated blocks in source order, then check their items
 /// in the ordinary destination. The loader remains responsible for obtaining
 /// raw bytes and owners; this function accepts neither an AST nor a prior
 /// output or digest from its caller. Unsupported emission fails closed.
@@ -37,7 +37,7 @@ pub fn check_source_bundle(
     run_source_bundle(sources, selected, user_modules, owners, limits).map(|output| output.checked)
 }
 
-/// Execute original blocks in one imported source module, then check the
+/// Execute source and generated blocks in one imported module, then check the
 /// loader's actual entry against their admitted output. No generated source
 /// bytes or caller-provided AST cross the source-session boundary.
 pub fn check_source_bundle_with_imported_blocks(
@@ -56,7 +56,7 @@ pub fn check_build_recipe_source_bundle(
 ) -> Result<witchy_types::pipeline::CheckedBuildRecipe, String> {
     let session = ComptimeSourceSession::from_source_bundle(sources, entry, user_modules, owners)
         .map_err(|error| error.to_string())?;
-    let prior = execute_original_blocks(&session, limits)?;
+    let prior = execute_source_blocks(&session, limits)?;
     session.check_expanded_build_recipe(&prior).map_err(|error| error.to_string())
 }
 
@@ -67,7 +67,7 @@ pub fn check_build_recipe_source_bundle_with_imported_blocks(
 ) -> Result<witchy_types::pipeline::CheckedBuildRecipe, String> {
     let session = ComptimeSourceSession::from_source_bundle(sources, selected, user_modules, owners)
         .map_err(|error| error.to_string())?;
-    let prior = execute_original_blocks(&session, limits)?;
+    let prior = execute_source_blocks(&session, limits)?;
     session.check_expanded_build_recipe_for_entry(&prior, entry)
         .map_err(|error| error.to_string())
 }
@@ -79,7 +79,7 @@ pub fn check_test_suite_source_bundle(
 ) -> Result<witchy_types::pipeline::CheckedTestSuite, String> {
     let session = ComptimeSourceSession::from_source_bundle(sources, entry, user_modules, owners)
         .map_err(|error| error.to_string())?;
-    let prior = execute_original_blocks(&session, limits)?;
+    let prior = execute_source_blocks(&session, limits)?;
     session.check_expanded_test_suite(&prior).map_err(|error| error.to_string())
 }
 
@@ -90,7 +90,7 @@ pub fn check_test_suite_source_bundle_with_imported_blocks(
 ) -> Result<witchy_types::pipeline::CheckedTestSuite, String> {
     let session = ComptimeSourceSession::from_source_bundle(sources, selected, user_modules, owners)
         .map_err(|error| error.to_string())?;
-    let prior = execute_original_blocks(&session, limits)?;
+    let prior = execute_source_blocks(&session, limits)?;
     session.check_expanded_test_suite_for_entry(&prior, entry)
         .map_err(|error| error.to_string())
 }
@@ -143,18 +143,21 @@ fn run_source_bundle_for_entry(
 ) -> Result<CheckedExpansion, String> {
     let session = ComptimeSourceSession::from_source_bundle(sources, selected, user_modules, owners)
         .map_err(|error| error.to_string())?;
-    let prior = execute_original_blocks(&session, limits)?;
+    let prior = execute_source_blocks(&session, limits)?;
     let (checked, selected_module) = session.check_expanded_for_entry(&prior, entry)
         .map_err(|error| error.to_string())?;
     Ok(CheckedExpansion { checked, selected_module })
 }
 
-fn execute_original_blocks(
+fn execute_source_blocks(
     session: &ComptimeSourceSession, limits: ComptimeLimits,
 ) -> Result<Vec<PriorComptimeBlockOutput>, String> {
     let mut prior = Vec::new();
-    for original_item in session.original_block_items() {
-        let recipe = session.check_block_with_prior_output(original_item, &prior)
+    while let Some(site) = session.next_block_site(&prior).map_err(|error| error.to_string())? {
+        if prior.len() >= 256 {
+            return Err("comptime source session exceeded its 256-block execution limit".into());
+        }
+        let recipe = session.check_next_block_with_prior_output(&prior)
             .map_err(|error| error.to_string())?;
         let expected_digest = recipe.session_source_digest();
         let artifact = match codegen::compile_checked_comptime_recipe_artifact(&recipe) {
@@ -170,7 +173,7 @@ fn execute_original_blocks(
             return Err("compiler session expression outputs require a typed destination site".into());
         }
         prior.push(PriorComptimeBlockOutput {
-            original_item,
+            site,
             items: outcome.items.into_iter().map(|emitted| (emitted.item, emitted.origin)).collect(),
         });
     }

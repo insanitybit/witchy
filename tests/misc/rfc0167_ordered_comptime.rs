@@ -54,6 +54,16 @@ fn generated_item_is_rechecked_before_successor_executes() {
 }
 
 #[test]
+fn generated_block_executes_before_next_original_block() {
+    let folder = TempDir::new("admitted-generated-comptime-block");
+    let source = folder.join("main.witchy");
+    std::fs::write(&source, "comptime:\n    emit_item(quote item:\n        comptime:\n            emit_item(quote item:\n                fn first() -> Int:\n                    40\n            )\n    )\ncomptime:\n    emit_item(quote item:\n        fn answer() -> Int:\n            first() + 2\n    )\nfn main(console: Console):\n    console.print(\"${answer()}\")\n").unwrap();
+    let run = Command::new(env!("CARGO_BIN_EXE_witchy")).arg(&source).output().unwrap();
+    assert!(run.status.success(), "{}", String::from_utf8_lossy(&run.stderr));
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "42\n");
+}
+
+#[test]
 fn production_source_loader_executes_original_blocks_through_admitted_wasm() {
     let folder = TempDir::new("admitted-comptime-loader");
     let source = folder.join("main.witchy");
