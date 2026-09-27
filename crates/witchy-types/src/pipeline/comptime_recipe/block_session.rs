@@ -569,6 +569,56 @@ impl ComptimeSourceSession {
         Ok((checked, display))
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    fn materialized_graph_modules(
+        &self, outputs: &[(String, Vec<PriorComptimeBlockOutput>)],
+    ) -> Vec<(String, Module)> {
+        let mut modules = self.modules.clone();
+        for (producer, prior) in outputs {
+            let (_, original) = self.modules.iter().find(|(name, _)| name == producer)
+                .expect("validated graph producer is a raw module");
+            modules.iter_mut().find(|(name, _)| name == producer)
+                .expect("validated graph producer retained").1 =
+                materialize_prior(original, prior, true, false);
+        }
+        modules
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn check_expanded_producer_graph_build_recipe(
+        &self, outputs: &[(String, Vec<PriorComptimeBlockOutput>)], entry: &str,
+    ) -> Result<super::super::CheckedBuildRecipe, PipelineError> {
+        let (original, _) = self.check_expanded_producer_graph_for_entry(outputs, entry)?;
+        let (_, raw_entry) = self.modules.iter().find(|(name, _)| name == entry)
+            .expect("validated graph entry retained");
+        let mut modules = self.materialized_graph_modules(outputs);
+        let expand = ComptimeExpander::with_sibling_request(require_expansion_free, |_| false);
+        let admitted = original.canonical_source()
+            .ok_or_else(|| refuse("admitted build graph lacks canonical authority"))?;
+        let original_digest = checked_source_digest(&self.raw_sources, entry,
+            &PrecompiledDeclarationEnvironment::default());
+        let (checked, identity) = super::super::build_recipe::finish_build_recipe_from_checked_original(
+            &mut modules, entry, expand, &self.user_modules, self.owners.clone(),
+            admitted.typed_module(), original_digest, Some(raw_entry),
+            Some(admitted.source_witness().source_bundle_digest()),
+        )?;
+        Ok(super::super::build_recipe::seal_admitted_build_recipe(original, checked, identity))
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn check_expanded_producer_graph_test_suite(
+        &self, outputs: &[(String, Vec<PriorComptimeBlockOutput>)], entry: &str,
+    ) -> Result<super::super::CheckedTestSuite, PipelineError> {
+        let (checked, _) = self.check_expanded_producer_graph_for_entry(outputs, entry)?;
+        let digest = checked.canonical_source_witness()
+            .ok_or_else(|| refuse("admitted test graph lacks canonical authority"))?
+            .source_bundle_digest();
+        super::super::test_driver::seal_admitted_test_suite(
+            self.raw_sources.clone(), entry, &self.user_modules,
+            self.owners.clone(), self.materialized_graph_modules(outputs), digest,
+        )
+    }
+
     /// Derive the sealed build wrapper from the same admitted expansion that
     /// checked the original source. Target selection stays on the raw entry;
     /// emitted syntax may supply helpers but cannot mint a new `build` target.

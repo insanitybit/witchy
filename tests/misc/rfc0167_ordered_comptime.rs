@@ -611,8 +611,10 @@ fn imported_original_block_feeds_bare_test_driver() {
     let folder = TempDir::new("admitted-imported-comptime-test");
     let entry = folder.join("tests.witchy");
     let producer = folder.join("dep.witchy");
+    let relay = folder.join("relay.witchy");
     std::fs::write(&producer, "comptime:\n    emit_item(quote item:\n        pub fn answer() -> Int:\n            42\n    )\n").unwrap();
-    std::fs::write(&entry, "import dep\nfn test_answer():\n    if dep.answer() != 42:\n        fail(\"wrong imported helper\")\n").unwrap();
+    std::fs::write(&relay, "import dep\ncomptime:\n    if dep.answer() == 42:\n        emit_item(quote item:\n            pub fn answer() -> Int:\n                dep.answer()\n        )\n").unwrap();
+    std::fs::write(&entry, "import relay\nfn test_answer():\n    if relay.answer() != 42:\n        fail(\"wrong imported helper\")\n").unwrap();
     let run = Command::new(env!("CARGO_BIN_EXE_witchy"))
         .arg("test").arg(&entry).output().unwrap();
     assert!(run.status.success(), "{}", String::from_utf8_lossy(&run.stderr));

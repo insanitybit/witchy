@@ -119,6 +119,7 @@ fn build_recipe_uses_admitted_imported_comptime_output() {
     let valid_dir = TempDir::new("build-imported-admitted-comptime");
     let valid_source = valid_dir.join("build.witchy");
     let valid_producer = valid_dir.join("dep.witchy");
+    let valid_relay = valid_dir.join("relay.witchy");
     let valid_out = valid_dir.join("out");
     std::fs::write(
         &valid_producer,
@@ -126,8 +127,13 @@ fn build_recipe_uses_admitted_imported_comptime_output() {
     )
     .unwrap();
     std::fs::write(
+        &valid_relay,
+        "import dep\ncomptime:\n    if dep.generated_text().length() > 0:\n        emit_item(quote item:\n            pub fn generated_text() -> String:\n                dep.generated_text()\n        )\n",
+    )
+    .unwrap();
+    std::fs::write(
         &valid_source,
-        "import dep\nfn build(out: BuildOut):\n    out.write_out(\"generated.witchy\", dep.generated_text())\n",
+        "import relay\nfn build(out: BuildOut):\n    out.write_out(\"generated.witchy\", relay.generated_text())\n",
     )
     .unwrap();
 

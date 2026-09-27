@@ -125,8 +125,12 @@ pub(crate) fn link_build_file(path: &str) -> Result<witchy_types::pipeline::Chec
     let source = std::str::from_utf8(&selected.1)
         .map_err(|error| format!("{entry}: source is not UTF-8: {error}"))?;
     let module = parser::parse_module(source).map_err(|error| format!("{entry}: {error}"))?;
-    if source_block_producers(&sources, &user_modules)?.len() > 1 {
-        return Err("build recipes with multiple comptime producers require an admitted graph recipe".into());
+    let producers = source_block_producers(&sources, &user_modules)?;
+    if producers.len() > 1 {
+        return witchy::canonical_comptime::check_build_recipe_source_bundle_with_producer_graph(
+            sources, &entry, &producers, user_modules, owners,
+            witchy::canonical_comptime::source_limits(),
+        );
     }
     if module.items.iter().any(|item| matches!(item, ast::Item::Comptime(_))) {
         return witchy::canonical_comptime::check_build_recipe_source_bundle(
@@ -165,11 +169,16 @@ pub(crate) fn link_test_file(
         .map_err(|error| TestFileError::Load(format!("{entry_stem}: source is not UTF-8: {error}")))?;
     let module = parser::parse_module(source)
         .map_err(|error| TestFileError::Load(format!("{entry_stem}: {error}")))?;
-    if source_block_producers(&sources, &user_modules)
-        .map_err(TestFileError::Load)?.len() > 1 {
-        return Err(TestFileError::Load(
-            "test suites with multiple comptime producers require an admitted graph recipe".into(),
-        ));
+    let producers = source_block_producers(&sources, &user_modules)
+        .map_err(TestFileError::Load)?;
+    if producers.len() > 1 {
+        let checked = witchy::canonical_comptime::check_test_suite_source_bundle_with_producer_graph(
+            sources, &entry_stem, &producers, user_modules, owners,
+            witchy::canonical_comptime::source_limits(),
+        ).map_err(|message| TestFileError::Pipeline(pipeline::PipelineError::Type(
+            witchy_types::typeck::TypeError { message },
+        )))?;
+        return Ok((checked, entry_stem));
     }
     if module.items.iter().any(|item| matches!(item, ast::Item::Comptime(_))) {
         let checked = witchy::canonical_comptime::check_test_suite_source_bundle(

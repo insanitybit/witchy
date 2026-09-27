@@ -157,6 +157,42 @@ pub fn check_and_expand_source_bundle_with_producer_graph(
     user_modules: HashSet<String>, owners: AuthenticatedModuleOwners,
     limits: ComptimeLimits,
 ) -> Result<(CheckedModule, Module), String> {
+    let (entry_session, outputs) = execute_source_producer_graph(
+        sources, entry, producers, user_modules, owners, limits,
+    )?;
+    entry_session.check_expanded_producer_graph_for_entry(&outputs, entry)
+        .map_err(|error| error.to_string())
+}
+
+pub fn check_build_recipe_source_bundle_with_producer_graph(
+    sources: Vec<(String, Vec<u8>)>, entry: &str, producers: &[String],
+    user_modules: HashSet<String>, owners: AuthenticatedModuleOwners,
+    limits: ComptimeLimits,
+) -> Result<witchy_types::pipeline::CheckedBuildRecipe, String> {
+    let (session, outputs) = execute_source_producer_graph(
+        sources, entry, producers, user_modules, owners, limits,
+    )?;
+    session.check_expanded_producer_graph_build_recipe(&outputs, entry)
+        .map_err(|error| error.to_string())
+}
+
+pub fn check_test_suite_source_bundle_with_producer_graph(
+    sources: Vec<(String, Vec<u8>)>, entry: &str, producers: &[String],
+    user_modules: HashSet<String>, owners: AuthenticatedModuleOwners,
+    limits: ComptimeLimits,
+) -> Result<witchy_types::pipeline::CheckedTestSuite, String> {
+    let (session, outputs) = execute_source_producer_graph(
+        sources, entry, producers, user_modules, owners, limits,
+    )?;
+    session.check_expanded_producer_graph_test_suite(&outputs, entry)
+        .map_err(|error| error.to_string())
+}
+
+fn execute_source_producer_graph(
+    sources: Vec<(String, Vec<u8>)>, entry: &str, producers: &[String],
+    user_modules: HashSet<String>, owners: AuthenticatedModuleOwners,
+    limits: ComptimeLimits,
+) -> Result<(ComptimeSourceSession, Vec<(String, Vec<PriorComptimeBlockOutput>)>), String> {
     let entry_session = ComptimeSourceSession::from_source_bundle(
         sources.clone(), entry, user_modules.clone(), owners.clone(),
     ).map_err(|error| error.to_string())?;
@@ -191,8 +227,7 @@ pub fn check_and_expand_source_bundle_with_producer_graph(
         session.check_completed_prefix(&prior).map_err(|error| error.to_string())?;
         outputs.push((producer, prior));
     }
-    entry_session.check_expanded_producer_graph_for_entry(&outputs, entry)
-        .map_err(|error| error.to_string())
+    Ok((entry_session, outputs))
 }
 
 fn execute_source_blocks(
