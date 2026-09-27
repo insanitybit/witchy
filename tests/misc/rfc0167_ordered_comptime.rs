@@ -52,8 +52,12 @@ comptime:
         Int
     let base_body = meta.block([], Some(meta.expr_int(42)))
     emit_item(meta.function_async(true, meta.ident("base"), [], Some(int_ty), base_body))
+    let call = meta.expr_named_call(meta.ident("base"), [])
+    let answer_body = meta.block([], Some(meta.expr_await(call)))
+    emit_item(meta.function_async(true, meta.ident("answer"), [], Some(int_ty), answer_body))
 async fn main(console: Console):
     console.print("${{base().await}}")
+    console.print("${{answer().await}}")
 "#);
         let checked = witchy::canonical_comptime::check_source_bundle(
             vec![("generator".into(), source.into_bytes()),
@@ -66,38 +70,9 @@ async fn main(console: Console):
         let mut vm = runtime.spawn_admitted(&artifact,
             Capabilities { print: true, quiet: true, ..Capabilities::none() }, 64).unwrap();
         vm.run().unwrap();
-        assert_eq!(vm.output(), ["42"]);
+        assert_eq!(vm.output(), ["42", "42"]);
         assert_eq!(vm.canonical_heap_leaks().unwrap(), Some(0));
     }
-}
-
-#[test]
-fn admitted_typed_await_inside_generated_async_function() {
-    let source = r#"import meta
-comptime:
-    let int_ty = quote type:
-        Int
-    let base_body = meta.block([], Some(meta.expr_int(42)))
-    emit_item(meta.function_async(true, meta.ident("base"), [], Some(int_ty), base_body))
-    let call = meta.expr_named_call(meta.ident("base"), [])
-    let answer_body = meta.block([], Some(meta.expr_await(call)))
-    emit_item(meta.function_async(true, meta.ident("answer"), [], Some(int_ty), answer_body))
-async fn main(console: Console):
-    console.print("${answer().await}")
-"#;
-    let checked = witchy::canonical_comptime::check_source_bundle(
-        vec![("generator".into(), source.as_bytes().to_vec()),
-            ("meta".into(), witchy_syntax::linker::bundled_source("meta").unwrap().as_bytes().to_vec())],
-        "generator", ["generator".to_owned()].into_iter().collect(), owners(), limits(),
-    ).expect("typed await enters generated async destination");
-    let artifact = witchy_lower::codegen::compile_checked_module_artifact(&checked)
-        .expect_lowered("typed await admits on unoptimized Wasm");
-    let mut runtime = Runtime::batch().unwrap();
-    let mut vm = runtime.spawn_admitted(&artifact,
-        Capabilities { print: true, quiet: true, ..Capabilities::none() }, 64).unwrap();
-    vm.run().unwrap();
-    assert_eq!(vm.output(), ["42"]);
-    assert_eq!(vm.canonical_heap_leaks().unwrap(), Some(0));
 }
 
 fn limits() -> ComptimeLimits {
