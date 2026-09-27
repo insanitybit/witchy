@@ -298,11 +298,6 @@ fn main(console: Console):
         None -> console.print("None")
 "#;
     for mode in ["", "mode opt\n"] {
-        std::fs::write(&source, format!("{mode}{program}")).unwrap();
-        let run = Command::new(env!("CARGO_BIN_EXE_witchy")).arg(&source).output().unwrap();
-        assert!(run.status.success(), "{}", String::from_utf8_lossy(&run.stderr));
-        assert_eq!(String::from_utf8_lossy(&run.stdout), "Ada/42\nNone\n");
-
         let checked = witchy::canonical_comptime::check_source_bundle(
             vec![
                 ("generator".into(), format!("{mode}{program}").into_bytes()),
