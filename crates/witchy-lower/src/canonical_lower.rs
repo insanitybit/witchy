@@ -2837,6 +2837,9 @@ fn is_root_unique(ty: &Type) -> bool {
 }
 
 fn contains_deferred_v1_qualifier(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> bool {
+    if matches!(StoragePlan::classify(ty, definitions, |_| Some(0)), StoragePlan::MoveOnlyList(_)) {
+        return false;
+    }
     if scalar_aggregate_shape(ty, definitions).is_some_and(|shape| !shape.packed)
         && witchy_canonical_source::storage::affine_storage_shape(ty, definitions).is_some()
     {
@@ -11766,6 +11769,12 @@ impl FunctionLowerer<'_> {
         declared: Option<&Type>,
     ) -> Result<ValueId, CanonicalLoweringError> {
         let Some(declared) = declared else { return self.lower_expr(expression) };
+        if let Type::Qualified(TypeQual::Unique, inner) = declared
+            && matches!(StoragePlan::classify(declared, self.definitions, |_| Some(0)), StoragePlan::MoveOnlyOwned(_))
+            && witchy_canonical_source::storage::affine_storage_shape(inner, self.definitions).is_some()
+        {
+            return self.lower_expr_for_storage(expression, Some(inner));
+        }
         let Some(erased) = witchy_canonical_source::storage::affine_aggregate_erased_type(
             &declared, self.definitions,
         ) else { return self.lower_expr(expression) };
@@ -20737,6 +20746,9 @@ fn list_layout(
         StoragePlan::MoveOnlyList(_) => {
             ValueType::Ref(list_layout(&arguments[0], layout_bundle, layouts, closure_layouts, definitions)?.0)
         }
+        StoragePlan::MoveOnlyOwned(_) => source_value_type(
+            &arguments[0], layout_bundle, layouts, closure_layouts, definitions,
+        )?,
         StoragePlan::Owned(CarrierElement::Tuple(_)
             | CarrierElement::Dict(_, _)
             | CarrierElement::Record { .. }
@@ -20752,7 +20764,7 @@ fn list_layout(
     // A move-only sequence has a source-bound nominal allocation identity.
     // Physical equality with a cloneable sequence cannot authorize its
     // affine owner plan, in either direction.
-    let affine_nominal = if matches!(StoragePlan::classify(source, definitions, |_| Some(0)), StoragePlan::MoveOnlyList(_)) {
+    let affine_nominal = if matches!(StoragePlan::classify(source.unqualified(), definitions, |_| Some(0)), StoragePlan::MoveOnlyList(_)) {
         Some(crate::canonical_layouts::recursive_nominal_layout_id_for_shape(source, definitions)
             .map_err(|_| CanonicalLoweringError::UnsupportedType(source.clone()))?)
     } else {

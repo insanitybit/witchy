@@ -1917,6 +1917,16 @@ refuses at the source-to-layout boundary. The recursive admission is structural
 evidence only; hand-computed admitted-Wasm and zero-leak audits are pending,
 and no A-O row closes.
 
+Move-only owned sequence leaves (implemented but unverified, 2026-09-26): the
+shared storage judgment now classifies a checked `unique` owned pointer as a
+movable, noncopyable list element. Layout collection, source-bound nested list
+identity, literal ascription, lowering, and SafeWIR correspondence consume that
+judgment. `List(unique String)` and `List(unique List(unique String))` both
+reach admitted Wasm and execute with expected lengths 2 and 1; an outer
+`unique &String` is rejected by the checker. `Dict(String, unique String)`
+still lacks a consuming dictionary update and is not claimed. These smoke
+results do not include a zero-leak audit or close an A-O row.
+
 The affine direct-result ABI also preserves the checked `OwnedGc` contract
 for an opaque owner result. The existing owned-GC channel/generator smoke
 case passes again; SafeWIR still requires an owned origin for that family.

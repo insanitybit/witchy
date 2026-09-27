@@ -122,6 +122,10 @@ snapshot but means a later `var` mutation must detach when necessary. Coercing
 unique storage to ordinary `T` consumes the unique handle; an untracked alias
 does not establish uniqueness.
 
+A list containing `unique T` transfers each proved owned pointer leaf into
+move-only list storage. Nested lists retain their checked ownership and layout
+identity; reading a move-only element by copy remains unavailable.
+
 `frozen T` describes deeply immutable owned payload. Moving or replacing a
 frozen value is legal, but changing a field or element is not. A frozen shell
 may contain immutable views; freezing does not alter the view's root or grant

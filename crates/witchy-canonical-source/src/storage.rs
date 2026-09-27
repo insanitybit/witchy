@@ -538,6 +538,9 @@ pub enum StoragePlan {
     /// A checked packed record whose fields are all inline scalar lanes.
     InlineAggregate(ScalarAggregateShape),
     Owned(CarrierElement),
+    /// A checked unique owner of otherwise proved owned storage. Its physical
+    /// pointee is the child's, but duplication is forbidden.
+    MoveOnlyOwned(Box<StoragePlan>),
     /// A checked finite aggregate graph whose recursive edges are retained
     /// pointer or callable edges. Its layout and each owner operation still
     /// require physical validation; it is not a slice carrier proof.
@@ -1133,6 +1136,15 @@ pub fn affine_storage_shape(
     ty: &Type,
     definitions: &BTreeMap<String, TypeDef>,
 ) -> Option<AffineStorageShape> {
+    if let Type::Qualified(TypeQual::Unique, inner) = ty {
+        let mut remaining = 16_384;
+        if !within_source_bounds(ty, definitions, &mut BTreeSet::new(), 0, &mut remaining) {
+            return None;
+        }
+        if let Some(shape) = affine_storage_shape(inner, definitions) {
+            return Some(shape);
+        }
+    }
     fn unique_leaf(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> Option<AffineStorageShape> {
         let mut storage = ty;
         for _ in 0..128 {
@@ -1151,6 +1163,13 @@ pub fn affine_storage_shape(
     ) -> Option<AffineStorageShape> {
         if depth > 128 || *remaining == 0 || !plan.requires_affine_owner_token() { return None; }
         *remaining -= 1;
+        if let StoragePlan::MoveOnlyOwned(child) = plan {
+            return if child.requires_affine_owner_token() {
+                walk(child, definitions, active, depth + 1, remaining)
+            } else {
+                Some(AffineStorageShape::Leaf)
+            };
+        }
         let source = match plan {
             StoragePlan::MoveOnlyList(sequence) => sequence.source(),
             StoragePlan::AuthenticatedPlace(graph) | StoragePlan::AggregateView(_, graph) => graph.source(),
@@ -1243,6 +1262,12 @@ pub fn aggregate_layout_identity(
     ty: &Type,
     definitions: &BTreeMap<String, TypeDef>,
 ) -> Option<Type> {
+    if let Type::Qualified(TypeQual::Unique, inner) = ty
+        && affine_storage_shape(ty, definitions).is_some()
+        && affine_storage_shape(inner, definitions).is_some()
+    {
+        return aggregate_layout_identity(inner, definitions);
+    }
     if !matches!(ty, Type::Qualified(..)) && affine_storage_shape(ty, definitions).is_some() {
         Some(ty.unqualified().clone())
     } else {
@@ -1275,7 +1300,7 @@ impl StoragePlan {
             | Self::RetainedOwnerList(_) => true,
             Self::AuthenticatedPlace(plan) | Self::AggregateView(_, plan) | Self::RetainedGraphList(plan)
             | Self::RetainedOpaqueAggregateList(plan) => plan.cloneable(),
-            Self::MoveOnlyList(_) | Self::RootedView(_)
+            Self::MoveOnlyOwned(_) | Self::MoveOnlyList(_) | Self::RootedView(_)
             | Self::Refused(_) => false,
         }
     }
@@ -1289,7 +1314,7 @@ impl StoragePlan {
     /// An affine aggregate has exactly one transferable owner token. The
     /// source graph proves moves and recursive release but supplies no clone.
     pub fn requires_affine_owner_token(&self) -> bool {
-        matches!(self, Self::MoveOnlyList(_))
+        matches!(self, Self::MoveOnlyOwned(_) | Self::MoveOnlyList(_))
             || matches!(self, Self::AuthenticatedPlace(plan) | Self::AggregateView(_, plan)
                 if plan.movable() && !plan.cloneable())
     }
@@ -1307,6 +1332,7 @@ impl StoragePlan {
             Self::AuthenticatedPlace(plan) if plan.movable() => Some(ListElementDisposition::MoveOnly),
             Self::RetainedGraphList(plan) if plan.cloneable() => Some(ListElementDisposition::Cloneable),
             Self::MoveOnlyList(_) => Some(ListElementDisposition::MoveOnly),
+            Self::MoveOnlyOwned(_) => Some(ListElementDisposition::MoveOnly),
             _ => None,
         }
     }
@@ -1380,6 +1406,21 @@ impl StoragePlan {
             return RootedViewStorage::classify(payload, definitions, nominal)
                 .map(Self::RootedView)
                 .unwrap_or(Self::Refused(StorageRefusal::UnprovedView));
+        }
+        if let Type::Qualified(TypeQual::Unique, inner) = ty {
+            if !unique_owned_pointer_type(inner, definitions)
+                || !graph_storage_operations(ty, definitions, &mut HashSet::new(), 0, &mut 4_096)
+                    .is_some_and(|operations| operations.finish().movable)
+            {
+                return Self::Refused(StorageRefusal::UnprovedOwnership);
+            }
+            let child = Self::classify_inner(inner, definitions, nominal);
+            return if matches!(child, Self::Owned(_) | Self::AuthenticatedPlace(_)
+                | Self::MoveOnlyList(_) | Self::RetainedGraphList(_)) {
+                Self::MoveOnlyOwned(Box::new(child))
+            } else {
+                Self::Refused(StorageRefusal::UnprovedOwnership)
+            };
         }
         if matches!(ty, Type::Qualified(..)) {
             return Self::Refused(StorageRefusal::UnprovedQualifier);

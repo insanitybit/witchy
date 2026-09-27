@@ -182,7 +182,7 @@ pub(crate) fn value_type_matches_source(
             }
             _ => false,
         },
-        StoragePlan::InlineAggregate(_) | StoragePlan::RootedView(_)
+        StoragePlan::MoveOnlyOwned(_) | StoragePlan::InlineAggregate(_) | StoragePlan::RootedView(_)
             | StoragePlan::RetainedOwnerList(_) | StoragePlan::RetainedOpaqueAggregateList(_)
             | StoragePlan::Refused(_) => false,
     }
@@ -403,6 +403,11 @@ pub(super) fn enqueue_layout_children(
                     return matches!(element.kind(), LayoutKind::RuntimePointerValueSlot {
                         pointee, semantics: PointerSlot::Owned,
                     } if { pending.push((*pointee, source_element.clone())); true });
+                }
+                StoragePlan::MoveOnlyOwned(_) => {
+                    return matches!(element.kind(), LayoutKind::RuntimePointerValueSlot {
+                        pointee, semantics: PointerSlot::Owned,
+                    } if { pending.push((*pointee, source_element.unqualified().clone())); true });
                 }
                 _ => return false,
             }

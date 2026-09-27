@@ -1113,6 +1113,10 @@ the allocated physical layout. A candidate layout by itself grants no move
 authority.
 This admits nested lists, tagged sums, untagged records, and tuples with
 recursively proved move-only fields through the unoptimized canonical route.
+An owned pointer leaf such as `unique String` can enter a move-only list when
+its checked storage proof permits transfer and release. The rule composes
+through nested uniquely owned lists; an ordinary list's clone operation never
+inherits that move-only authority.
 A consuming `match move` must bind each affine field exactly once. The physical
 owned-pointer slots are nullable to permit checked extraction, but an untagged
 aggregate cannot cross a call or return boundary with a required affine field
