@@ -12,6 +12,15 @@ fn assert_rejected(label: &str, source: &str, needles: &[&str]) {
 }
 
 #[test]
+fn replayable_tasks_do_not_publish_lists_of_must_handles() {
+    assert_rejected(
+        "a replayable task cannot return public must handles",
+        "import chan\nfn main():\n    let _ = chan.spawn_all([chan.ready_unit()])\n",
+        &["module `chan` has no function `spawn_all`"],
+    );
+}
+
+#[test]
 fn qualifier_erasure_cannot_hide_must_once_or_capability_contracts() {
     for mode in ["", "mode opt\n\n"] {
         assert_rejected(

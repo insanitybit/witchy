@@ -270,12 +270,12 @@ use crate::{ast, codegen, parser, typeck};
             ),
             (
                 "normal must region transfers one fresh constructor result",
-                "must type Ticket:\n    Ticket(Int)\n\nfn make() -> Ticket:\n    region -> Ticket:\n        Ticket(42)\n\nfn finish(own ticket: Ticket):\n    let _ = 0\n\nfn main():\n    finish(make())\n",
+                "must type Ticket:\n    Ticket(Int)\n\nfn make() -> Ticket:\n    region -> Ticket:\n        Ticket(42)\n\nfn finish(own ticket: Ticket):\n    match move ticket:\n        Ticket(_value) -> ()\n\nfn main():\n    finish(make())\n",
                 Vec::new(),
             ),
             (
                 "normal must region transfers an explicit constructor return",
-                "must type Ticket:\n    Ticket(Int)\n\nfn make() -> Ticket:\n    region -> Ticket:\n        return Ticket(42)\n\nfn finish(own ticket: Ticket):\n    let _ = 0\n\nfn main():\n    finish(make())\n",
+                "must type Ticket:\n    Ticket(Int)\n\nfn make() -> Ticket:\n    region -> Ticket:\n        return Ticket(42)\n\nfn finish(own ticket: Ticket):\n    match move ticket:\n        Ticket(_value) -> ()\n\nfn main():\n    finish(make())\n",
                 Vec::new(),
             ),
         ] {
@@ -309,7 +309,7 @@ use crate::{ast, codegen, parser, typeck};
             ),
             (
                 "must-bearing region local lacks an exact must-transfer identity",
-                "must type Ticket:\n    Ticket(Int)\n\nfn make() -> Ticket:\n    region -> Ticket:\n        let ticket = Ticket(1)\n        ticket\n\nfn finish(own ticket: Ticket):\n    let _ = 0\n\nfn main():\n    finish(make())\n",
+                "must type Ticket:\n    Ticket(Int)\n\nfn make() -> Ticket:\n    region -> Ticket:\n        let ticket = Ticket(1)\n        ticket\n\nfn finish(own ticket: Ticket):\n    match move ticket:\n        Ticket(_value) -> ()\n\nfn main():\n    finish(make())\n",
                 ["region", "must-bearing"],
             ),
         ] {

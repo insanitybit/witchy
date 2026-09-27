@@ -17,7 +17,7 @@ type Batch:
     Batch(Transaction)
 
 fn finish_batch(own batch: Batch) -> String:
-    match batch:
+    match move batch:
         Batch(pending) -> transaction.rollback(pending)
 
 fn resolve(flag: Bool) -> String:

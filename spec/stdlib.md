@@ -360,21 +360,17 @@ Wait for the spawned task behind `h` while the executor can make progress. If th
 
 Cancel the spawned task behind `h`: it is stepped no further and is treated as finished, so anyone `join`ing it unblocks immediately. Cancellation is shallow - it stops this one task, not any tasks it itself spawned - and idempotent (already finished or already cancelled is a no-op). Deterministic on the cooperative schedule, hence byte-identical on both backends. Used by `race` to drop the loser.
 
-#### `fn spawn_all(children: List(Task(()))) -> Task(List(Handle))`
-
-Spawn every task in `children` concurrently, returning their handles. The children begin running on the next executor turns; nothing is joined yet.
-
 #### `fn join_all(own hs: List(Handle)) -> Task(())`
 
 Join every handle in `hs` while the executor can make progress. Like `join`, quiescence releases a parked join even if a child has a continuation that will run afterward.
 
 #### `fn cancel_all(own hs: List(Handle)) -> Task(())`
 
-Cancel every handle in `hs` - the companion to `spawn_all`/`join_all`. Each is stopped and treated as finished; idempotent, so cancelling an already-finished handle is a no-op. Used by `race_n` to drop the losers.
+Cancel every handle in `hs` - the companion to `join_all`. Each is stopped and treated as finished; idempotent, so cancelling an already-finished handle is a no-op. Used by `race_n` to drop the losers.
 
 #### `fn scope(children: List(Task(()))) -> Task(())`
 
-STRUCTURED concurrency (a "nursery"): run every task in `children` concurrently and wait for their handles while the executor can make progress. No handle escapes the call, so the normal case has no leaked tasks; if the whole executor reaches quiescence, `join_all` releases just like `join`. Prefer this over a bare `spawn` whose handle you must remember to `join`. The children interleave on the cooperative executor, so a concurrent run is byte-identical on both backends (the parity contract). Results flow out over channels, as with any task (a child returns `()`).
+STRUCTURED concurrency (a "nursery"): run every task in `children` concurrently and wait for their raw scheduler IDs while the executor can make progress. No public handle is created, so the normal case has no leaked tasks; if the whole executor reaches quiescence, the joins release just like `join`. Prefer this over a bare `spawn` whose handle you must remember to `join`. The children interleave on the cooperative executor, so a concurrent run is byte-identical on both backends (the parity contract). Results flow out over channels, as with any task (a child returns `()`).
 
 #### `fn gather(jobs: List(Task(m))) -> Task(List(m))`
 
@@ -2272,6 +2268,10 @@ The number of elements.
 #### `fn at(xs: List(a), index: Int) -> a`
 
 The element at `index` (0-based). Out of bounds is a runtime error on every backend.
+
+#### `fn __pop_extract(var xs: List(a)) -> Option(a)`
+
+Remove the final element and return its old leaf. The repaired list travels through the same `var` write-back channel as every public mutator.
 
 #### `fn push(var xs: List(a), x: a)`
 

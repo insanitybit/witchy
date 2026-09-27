@@ -22,7 +22,7 @@ pub fn begin(original: String, proposed: String, revision: Int) -> Transaction:
 // mismatch consumes the attempt and returns the original text with both
 // revisions so retry policy stays explicit.
 pub fn commit(own transaction: Transaction, actual_revision: Int) -> Result(String, CommitError):
-    match transaction:
+    match move transaction:
         Pending(original, proposed, expected_revision) ->
             if expected_revision == actual_revision:
                 Ok(proposed)
@@ -32,5 +32,5 @@ pub fn commit(own transaction: Transaction, actual_revision: Int) -> Result(Stri
 // Consume a transaction without publishing its replacement and recover the
 // original text.
 pub fn rollback(own transaction: Transaction) -> String:
-    match transaction:
+    match move transaction:
         Pending(original, _proposed, _revision) -> original
