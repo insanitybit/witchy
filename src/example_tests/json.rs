@@ -110,12 +110,23 @@ fn assert_json_contract_cases(cases: &[(&str, &str, &[&str])]) {
         .collect();
         // The generated `reflect` makes trait calls that need std/reflect linked,
         // so resolve std for the interpreter path too (link_run's single-module
-        // typeck can't see it); the real `witchy run` path resolves std the same way.
+        // typeck can't see it). Reuse that linked graph for Wasm rather than
+        // resolving and checking the complete std graph a second time.
         let linked = resolve_std_src(src);
         typeck::check(&linked).expect("typecheck");
-        let interp = interpreter::run_module(linked, ".", Vec::new()).expect("interpreter run");
+        witchy_interp::compiler_natives::install();
+        let (interp, wasm) = std::thread::scope(|scope| {
+            let interpreter = scope.spawn(|| {
+                interpreter::run_module(linked.clone(), ".", Vec::new())
+                    .expect("interpreter run")
+            });
+            let bytes = codegen::compile_module_binary(&linked)
+                .expect_lowered("the binary path lowers this program");
+            let wasm = run_bytes_print_only(&bytes);
+            (interpreter.join().expect("interpreter worker"), wasm)
+        });
         assert_eq!(interp, want, "interpreter");
-        assert_eq!(wasm_run(src), want, "wasm");
+        assert_eq!(wasm, want, "wasm");
     }
 
     /// Ordinary `std/json` API contracts share one table while keeping each
