@@ -16,7 +16,7 @@ mod test_driver;
 pub use test_driver::{CheckedTestSuite, TestDriverIdentity, check_bare_test_driver, check_console_fixture_test_driver, check_integration_test_driver, link_checked_test_suite_from_source_bundle};
 
 mod static_evaluation;
-pub use static_evaluation::{CheckedStaticEvaluationRecipe, link_checked_static_evaluation_from_source_bundle, link_checked_static_site_output_from_source_bundle};
+pub use static_evaluation::{CheckedStaticEvaluationRecipe, link_checked_static_evaluation_from_source_bundle, link_checked_static_site_output_from_source_bundle, link_checked_static_island_output_from_source_bundle};
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};

@@ -84,7 +84,7 @@ fn static_site_value_from_json(text: &str) -> Result<witchy_interp::interpreter:
 }
 
 pub(super) fn check_static_project(project: Project) -> Result<CheckedStaticSite, WebCommandError> {
-    let (checked, recipe, _) = crate::link_static_site_checked_with_output(
+    let (checked, recipe, _, snapshot) = crate::source::link_static_site_checked_with_output_snapshot(
         path_text(&project.entry)?, project.content.is_some(),
     ).map_err(WebCommandError::failure)?;
     let entry = static_entry_name(&project)?;
@@ -99,7 +99,7 @@ pub(super) fn check_static_project(project: Project) -> Result<CheckedStaticSite
         .map_err(|error| WebCommandError::failure(error.to_string()))?;
     bind_interactive_metadata(&islands, &mut island_metadata)?;
     authenticate_static_islands(&islands, &island_metadata)?;
-    let island_plans = compile_static_island_plans(&checked, &pages, &islands, &island_metadata)?;
+    let island_plans = compile_static_island_plans(&snapshot, &pages, &islands, &island_metadata)?;
     let island_publication =
         prepare_static_island_publication(
             &checked,
@@ -211,7 +211,7 @@ fn authenticate_static_islands(
 }
 
 fn compile_static_island_plans(
-    module: &witchy_types::pipeline::CheckedModule,
+    snapshot: &crate::source::StaticSourceSnapshot,
     pages: &[StaticPage],
     islands: &[StaticIsland],
     metadata: &[witchy_lower::codegen::GlamourIslandMetadata],
@@ -223,7 +223,7 @@ fn compile_static_island_plans(
             .find(|candidate| candidate.key == island.key)
             .expect("authenticated islands have matching compiler metadata");
         let live_island = if checked.mode == "fresh" {
-            Some(evaluate_fresh_island(module, pages, island, checked)?)
+            Some(evaluate_fresh_island(snapshot, pages, island, checked)?)
         } else {
             None
         };
@@ -560,7 +560,7 @@ fn static_island_owner_instances(
 }
 
 fn evaluate_fresh_island(
-    module: &witchy_types::pipeline::CheckedModule,
+    snapshot: &crate::source::StaticSourceSnapshot,
     pages: &[StaticPage],
     fallback: &StaticIsland,
     metadata: &witchy_lower::codegen::GlamourIslandMetadata,
@@ -571,48 +571,36 @@ fn evaluate_fresh_island(
         .iter()
         .find(|page| page.island_keys.iter().any(|key| key == &fallback.key))
         .expect("authenticated fresh island has one page");
-    let evaluation = witchy_lower::codegen::checked_glamour_static_evaluation_module(module)
-        .map_err(|error| WebCommandError::failure(error.to_string()))?;
-    let start = CompilerValue::Constructor {
-        name: "glamour.Start".into(),
-        fields: vec![
-            CompilerValue::String(page.route.clone()),
-            CompilerValue::String(String::new()),
-        ],
+    let recipe = snapshot.check_fresh_island_output(&metadata.initial_name, &metadata.view_name)
+        .map_err(WebCommandError::failure)?;
+    let artifact = match witchy_lower::codegen::compile_checked_module_artifact(recipe.checked()) {
+        witchy_lower::codegen::LoweringOutcome::Lowered(artifact) => artifact,
+        witchy_lower::codegen::LoweringOutcome::Unsupported(reason) => return Err(
+            WebCommandError::failure(format!(
+                "fresh client region `{}` cannot admit its live graph: {reason}", fallback.key,
+            ))),
+        witchy_lower::codegen::LoweringOutcome::Rejected(error) => return Err(
+            WebCommandError::failure(error.to_string())),
     };
-    let model = witchy_interp::interpreter::evaluate_compiler_module(
-        &evaluation,
-        &metadata.initial_name,
-        vec![start],
-    )
-    .map_err(|error| {
-        WebCommandError::failure(format!(
-            "fresh client region `{}` could not derive its capability-free model: {}",
-            fallback.key, error.message,
-        ))
-    })?;
-    let rendered = witchy_interp::interpreter::evaluate_compiler_module(
-        &evaluation,
-        &metadata.view_name,
-        vec![model],
-    )
-    .map_err(|error| {
-        WebCommandError::failure(format!(
-            "fresh client region `{}` could not derive its capability-free live view: {}",
-            fallback.key, error.message,
-        ))
-    })?;
-    let value = witchy_interp::interpreter::evaluate_compiler_module(
-        &evaluation,
-        "glamour.client_region_live_graph",
-        vec![CompilerValue::String(fallback.key.clone()), rendered],
-    )
-    .map_err(|error| {
-        WebCommandError::failure(format!(
-            "fresh client region `{}` could not authenticate its live graph: {}",
-            fallback.key, error.message,
-        ))
-    })?;
+    let mut runtime = witchy_runtime::runtime::Runtime::new()
+        .map_err(|error| WebCommandError::failure(error.to_string()))?;
+    let mut vm = runtime.spawn_admitted(&artifact, witchy_runtime::runtime::Capabilities {
+        print: true, quiet: true,
+        args: vec![page.route.clone(), fallback.key.clone()],
+        capture_output_limit_bytes: Some(MAX_STATIC_SITE_WIRE_BYTES),
+        ..Default::default()
+    }, MAX_STATIC_EVALUATION_PAGES)
+        .map_err(|error| WebCommandError::failure(error.to_string()))?;
+    runtime.run_with_budget(&mut vm, std::time::Duration::from_secs(10))
+        .map_err(|error| WebCommandError::failure(error.to_string()))?;
+    let output = vm.output();
+    if output.len() != 1 || vm.canonical_heap_leaks()
+        .map_err(|error| WebCommandError::failure(error.to_string()))? != Some(0) {
+        return Err(WebCommandError::failure("fresh client region produced an invalid output or leaked heap objects"));
+    }
+    let fields: Vec<String> = serde_json::from_str(&output[0])
+        .map_err(|error| WebCommandError::failure(format!("invalid admitted fresh-island graph: {error}")))?;
+    let value = CompilerValue::Tuple(fields.into_iter().map(CompilerValue::String).collect());
     let CompilerValue::Tuple(fields) = value else {
         return Err(WebCommandError::failure(format!(
             "fresh client region `{}` produced no authenticated live markup",
@@ -7278,6 +7266,36 @@ pub(super) fn audit_static_artifacts(
 #[cfg(test)]
 mod admitted_static_output_tests {
     use super::*;
+
+    #[test]
+    fn fresh_island_live_graph_runs_from_admitted_source_snapshot() {
+        let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+            .unwrap().as_nanos();
+        let root = std::env::temp_dir().join(format!("witchy-fresh-admitted-{}-{nonce}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let entry_path = root.join("main.witchy");
+        std::fs::write(&entry_path, "import glamour\nfrom glamour import Cmd, Program, Start, Sub, Ui, UiRoot\ntype Msg:\n    Increment\nfn authorize(_root: UiRoot) -> ():\n    ()\nfn initial(start: Start) -> Int:\n    match start:\n        Start(\"/\", \"\") -> 42\n        _ -> 0\nfn start(_auth: (), _model: Int) -> Cmd(Msg):\n    NoCmd\nfn update(_auth: (), model: Int, _message: Msg) -> (Int, Cmd(Msg)):\n    (model + 1, NoCmd)\nfn view(model: Int) -> Ui(Msg):\n    glamour.ui(glamour.text(\"${model}\"))\nfn subscriptions(_auth: (), _model: Int) -> Sub(Msg):\n    NoSub\nfn app() -> Program((), Int, Msg):\n    glamour.program(authorize, initial, start, update, view, subscriptions)\npub fn web() -> glamour.Site:\n    let editor = glamour.client_region(app(), glamour.static_ui(glamour.text(\"Loading\")))\n    glamour.site([glamour.static_page(\"/\", glamour.ui(glamour.embed(editor)))])\n").unwrap();
+        let project = Project {
+            root: root.clone(), name: "fresh-admitted".into(), version: "0.1.0".into(),
+            delivery: Delivery::Static, entry: entry_path.clone(), index: root.join("index.html"),
+            public: root.join("public"), manifest: root.join("witchy.toml"), grants: None,
+            css: None, content: None, hosting: HostingProfile::Portable,
+        };
+        let (checked, recipe, _, snapshot) = crate::source::link_static_site_checked_with_output_snapshot(
+            entry_path.to_str().unwrap(), false,
+        ).unwrap();
+        let entry = static_entry_name(&project).unwrap();
+        let value = evaluate_static_site_value(&checked, recipe.as_ref(), &entry, Vec::new(), Vec::new()).unwrap();
+        let (pages, _, _, _, _, islands) = static_site_from_value(value).unwrap();
+        let mut metadata = witchy_lower::codegen::checked_glamour_islands(&checked).unwrap();
+        bind_interactive_metadata(&islands, &mut metadata).unwrap();
+        authenticate_static_islands(&islands, &metadata).unwrap();
+        std::fs::write(&entry_path, "invalid replacement source\n").unwrap();
+        let live = evaluate_fresh_island(&snapshot, &pages, &islands[0], &metadata[0]).unwrap();
+        assert!(live.html.contains("42"), "{}", live.html);
+        assert!(!serde_json::to_string(&live.resume).unwrap().is_empty());
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn production_static_value_uses_admitted_glamour_page() {

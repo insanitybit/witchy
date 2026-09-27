@@ -41,6 +41,29 @@ pub(crate) struct PrecompiledCheckedModule {
     pub external_libraries: Vec<witchy_runtime::runtime::AuthenticatedExternalLibrary>,
 }
 
+/// The exact loader snapshot used to check a static Site. Later compiler
+/// recipes derive from these bytes and owner assignments, never a reopened path.
+pub(crate) struct StaticSourceSnapshot {
+    sources: Vec<(String, Vec<u8>)>,
+    entry: String,
+    user_modules: UserModuleSet,
+    owners: AuthenticatedModuleOwners,
+}
+
+impl StaticSourceSnapshot {
+    pub(crate) fn check_fresh_island_output(
+        &self, initial: &str, view: &str,
+    ) -> Result<pipeline::CheckedStaticEvaluationRecipe, String> {
+        if !source_block_producers(&self.sources, &self.user_modules)?.is_empty() {
+            return Err("fresh-island comptime requires an admitted static recipe".into());
+        }
+        witchy_types::pipeline::link_checked_static_island_output_from_source_bundle(
+            self.sources.clone(), &self.entry, comptime::EXPANDER,
+            &self.user_modules, self.owners.clone(), initial, view,
+        ).map_err(|error| error.to_string())
+    }
+}
+
 #[derive(Debug)]
 pub(crate) enum TestFileError {
     Load(String),
@@ -255,6 +278,13 @@ pub(crate) fn link_static_site_checked_with_output(
     path: &str,
     has_content: bool,
 ) -> Result<(pipeline::CheckedModule, Option<pipeline::CheckedStaticEvaluationRecipe>, String), String> {
+    let (checked, output, entry, _) = link_static_site_checked_with_output_snapshot(path, has_content)?;
+    Ok((checked, output, entry))
+}
+
+pub(crate) fn link_static_site_checked_with_output_snapshot(
+    path: &str, has_content: bool,
+) -> Result<(pipeline::CheckedModule, Option<pipeline::CheckedStaticEvaluationRecipe>, String, StaticSourceSnapshot), String> {
     let entry_path = std::path::Path::new(path);
     let stem = entry_path.file_stem().and_then(|stem| stem.to_str())
         .ok_or_else(|| format!("invalid file name: {path}"))?;
@@ -262,6 +292,10 @@ pub(crate) fn link_static_site_checked_with_output(
     let (sources, entry, user_modules, owners) = load_file_modules_authenticated(
         path, &HashMap::new(), owner, &HashMap::new(),
     )?;
+    let snapshot = StaticSourceSnapshot {
+        sources: sources.clone(), entry: entry.clone(),
+        user_modules: user_modules.clone(), owners: owners.clone(),
+    };
     let selected = sources.iter().find(|(name, _)| name == &entry)
         .ok_or_else(|| format!("loaded static source lacks entry `{entry}`"))?;
     let source = std::str::from_utf8(&selected.1)
@@ -278,7 +312,7 @@ pub(crate) fn link_static_site_checked_with_output(
             sources, &entry, comptime::EXPANDER, &user_modules, owners, has_content,
         ).map_err(|error| error.to_string())?)
     };
-    Ok((checked, output, entry))
+    Ok((checked, output, entry, snapshot))
 }
 
 pub(crate) fn link_file_checked_with_deps(

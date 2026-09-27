@@ -39,7 +39,7 @@ pub fn link_checked_static_evaluation_from_source_bundle(
     user_modules: &HashSet<String>,
     owners: AuthenticatedModuleOwners,
 ) -> Result<CheckedStaticEvaluationRecipe, PipelineError> {
-    link_static_evaluation_recipe(sources, entry, expand, user_modules, owners, None)
+    link_static_evaluation_recipe(sources, entry, expand, user_modules, owners, None, None)
 }
 
 /// Add the fixed, compiler-owned `main` that emits one reflected Site value.
@@ -52,13 +52,41 @@ pub fn link_checked_static_site_output_from_source_bundle(
     owners: AuthenticatedModuleOwners,
     has_content: bool,
 ) -> Result<CheckedStaticEvaluationRecipe, PipelineError> {
-    link_static_evaluation_recipe(sources, entry, expand, user_modules, owners, Some(has_content))
+    link_static_evaluation_recipe(sources, entry, expand, user_modules, owners, Some(has_content), None)
+}
+
+/// A compiler-owned fresh-island entry built from the same loader snapshot as
+/// the checked Site. The selected callable names come from checked island
+/// metadata; this recipe still resolves and checks the complete destination.
+pub fn link_checked_static_island_output_from_source_bundle(
+    sources: Vec<(String, Vec<u8>)>, entry: &str, expand: ComptimeExpander,
+    user_modules: &HashSet<String>, owners: AuthenticatedModuleOwners,
+    initial: &str, view: &str,
+) -> Result<CheckedStaticEvaluationRecipe, PipelineError> {
+    link_static_evaluation_recipe(sources, entry, expand, user_modules, owners,
+        None, Some((initial, view)))
+}
+
+fn source_callable_name(name: &str) -> bool {
+    !name.is_empty() && name.split('.').all(|part| {
+        let mut bytes = part.bytes();
+        bytes.next().is_some_and(|first| first.is_ascii_alphabetic() || first == b'_')
+            && bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+    })
 }
 
 fn link_static_evaluation_recipe(
     mut sources: Vec<(String, Vec<u8>)>, entry: &str, expand: ComptimeExpander,
-    user_modules: &HashSet<String>, owners: AuthenticatedModuleOwners, output_content: Option<bool>,
+    user_modules: &HashSet<String>, owners: AuthenticatedModuleOwners,
+    output_content: Option<bool>, fresh_island: Option<(&str, &str)>,
 ) -> Result<CheckedStaticEvaluationRecipe, PipelineError> {
+    if output_content.is_some() && fresh_island.is_some() {
+        return Err(refused("static recipe cannot select two output adapters"));
+    }
+    if fresh_island.is_some_and(|(initial, view)|
+        !source_callable_name(initial) || !source_callable_name(view)) {
+        return Err(refused("fresh-island callable name is not a source declaration"));
+    }
     sources.sort_by(|left, right| left.0.cmp(&right.0));
     if sources.iter().any(|(name, _)| name.is_empty())
         || sources.windows(2).any(|pair| pair[0].0 == pair[1].0)
@@ -105,10 +133,35 @@ fn link_static_evaluation_recipe(
         selected.item_lines.extend(std::iter::repeat_n(0, generated.items.len()));
         selected.items.extend(generated.items);
     }
+    if let Some((initial, view)) = fresh_island {
+        let (_, glamour) = modules.iter_mut().find(|(name, _)| name == "glamour")
+            .expect("authenticated toolchain Glamour retained");
+        let helpers = witchy_syntax::parser::parse_module(
+            "pub fn compiler_fresh_start(route: String) -> Start:\n    Start(route, \"\")\npub fn compiler_fresh_graph(key: String, rendered: Ui(msg)) -> String:\n    json.stringify(client_region_live_graph(key, rendered))\n",
+        ).map_err(|error| refused(format!("invalid compiler fresh-island helpers: {error}")))?;
+        glamour.item_lines.extend(std::iter::repeat_n(0, helpers.items.len()));
+        glamour.items.extend(helpers.items);
+        let (_, selected) = modules.iter_mut().find(|(name, _)| name == entry)
+            .expect("raw entry retained");
+        if selected.items.iter().any(|item| matches!(item, Item::Function(function) if function.name == "main")) {
+            return Err(refused("fresh-island recipe requires an entry without `main`"));
+        }
+        let adapter = format!(
+            "fn main(console: Console, args: List(String)):\n    console.print(glamour.compiler_fresh_graph(args.at(1), {view}({initial}(glamour.compiler_fresh_start(args.at(0))))))\n"
+        );
+        let generated = witchy_syntax::parser::parse_module(&adapter)
+            .map_err(|error| refused(format!("invalid compiler fresh-island adapter: {error}")))?;
+        selected.item_lines.extend(std::iter::repeat_n(0, generated.items.len()));
+        selected.items.extend(generated.items);
+    }
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"witchy.checked-static-evaluation-recipe.v1");
     hasher.update(&RECIPE_VERSION.to_le_bytes());
-    hasher.update(&[match output_content { None => 0, Some(false) => 1, Some(true) => 2 }]);
+    hasher.update(&[if fresh_island.is_some() { 3 } else { match output_content { None => 0, Some(false) => 1, Some(true) => 2 } }]);
+    if let Some((initial, view)) = fresh_island {
+        hash_text(&mut hasher, initial);
+        hash_text(&mut hasher, view);
+    }
     hasher.update(&original);
     hasher.update(&(entry.len() as u64).to_le_bytes());
     hasher.update(entry.as_bytes());
