@@ -251,7 +251,9 @@ fn program_defined_builder_uses_type_info_in_both_modes() {
 type User:
     name: String
     age: Int
-comptime fn builder_items(info: meta.TypeInfo, user_ty: meta.TypeSyntax, build_ty: meta.TypeSyntax) -> List(meta.ItemSyntax):
+comptime fn builder_items(info: meta.TypeInfo) -> List(meta.ItemSyntax):
+    builder_items_for(info, meta.type_expr(meta.TNamed(info.name, [])), meta.type_expr(meta.TNamed("Option", [meta.TNamed(info.name, [])])))
+comptime fn builder_items_for(info: meta.TypeInfo, user_ty: meta.TypeSyntax, build_ty: meta.TypeSyntax) -> List(meta.ItemSyntax):
     let builder_name = info.name + "Builder"
     let builder_ty = meta.type_expr(meta.TNamed(builder_name, []))
     let some_expr = quote expr:
@@ -284,7 +286,7 @@ comptime fn builder_items(info: meta.TypeInfo, user_ty: meta.TypeSyntax, build_t
         meta.expr_call(some_expr, [user])))
     [meta.record_type(meta.ident(builder_name), slots), meta.inherent_impl(builder_ty, methods)]
 comptime:
-    for item in builder_items(type_info(User), meta.type_expr(meta.TNamed("User", [])), meta.type_expr(meta.TNamed("Option", [meta.TNamed("User", [])]))):
+    for item in builder_items(type_info(User)):
         emit_item(item)
 fn main(console: Console):
     let complete = UserBuilder(None, None).with_name("Ada").with_age(42).build()
@@ -384,8 +386,8 @@ fn main(console: Console):
     let imported = program
         .replacen("type User:\n    name: String\n    age: Int\n", "from dep import User\n", 1)
         .replacen(
-            "    for item in builder_items(type_info(User), meta.type_expr(meta.TNamed(\"User\", [])), meta.type_expr(meta.TNamed(\"Option\", [meta.TNamed(\"User\", [])]))):\n        emit_item(item)",
-            "    for item in builder_items(type_info(dep.User), meta.type_expr(meta.TNamed(\"User\", [])), meta.type_expr(meta.TNamed(\"Option\", [meta.TNamed(\"User\", [])]))):\n        emit_item(item)\n    for item in builder_items(type_info(dep.Account), meta.type_expr(meta.TNamed(\"dep.Account\", [])), meta.type_expr(meta.TNamed(\"Option\", [meta.TNamed(\"dep.Account\", [])]))):\n        emit_item(item)",
+            "    for item in builder_items(type_info(User)):\n        emit_item(item)",
+            "    for item in builder_items(type_info(dep.User)):\n        emit_item(item)\n    for item in builder_items_for(type_info(dep.Account), meta.type_expr(meta.TNamed(\"dep.Account\", [])), meta.type_expr(meta.TNamed(\"Option\", [meta.TNamed(\"dep.Account\", [])]))):\n        emit_item(item)",
             1,
         );
     let imported = imported.replace(
@@ -448,6 +450,22 @@ fn type_info_descriptor_cannot_be_forged_or_rewritten() {
         assert!(!run.status.success(), "TypeInfo authority must survive source checking");
         let error = String::from_utf8_lossy(&run.stderr);
         assert!(error.contains("sealed") && error.contains("TypeInfo"), "{error}");
+    }
+}
+
+#[test]
+fn type_info_refuses_runtime_use_and_unknown_nominals() {
+    let folder = TempDir::new("type-info-refusals");
+    let source = folder.join("main.witchy");
+    for (program, expected) in [
+        ("import meta\ntype User:\n    name: String\nfn main() -> Int:\n    let info = type_info(User)\n    0\n", "unknown function `type_info`"),
+        ("import meta\ncomptime:\n    let info = type_info(Missing)\nfn main() -> Int:\n    0\n", "unknown type `Missing`"),
+    ] {
+        std::fs::write(&source, program).unwrap();
+        let run = Command::new(env!("CARGO_BIN_EXE_witchy")).arg("check").arg(&source).output().unwrap();
+        assert!(!run.status.success(), "type_info must stay in the checked compile-time type namespace");
+        let error = String::from_utf8_lossy(&run.stderr);
+        assert!(error.contains(expected), "{error}");
     }
 }
 
