@@ -73,9 +73,15 @@ execution in normal and opt mode. The program-defined helper emits a typed
 Adding `email: String` rejects stale two-slot construction; supplying the
 third slot and setter succeeds. A normal entry calling the generated methods
 of an opt module gets the same result, while reuse of a `String` consumed by
-an opt setter is refused with an ownership diagnostic. The row remains partial
-for generated-item origin audit, qualified imported generation, and a direct
-zero-leak audit of this full builder. `meta.TypeInfo` is now
+an opt setter is refused with an ownership diagnostic. Qualified
+`type_info(dep.User)` also drives the same builder when `User` is explicitly
+imported into the generating module; both normal and opt-defined dependencies
+produce `Ada/42` and `None`. With only `import dep`, the helper accepts typed
+`dep.User` and `Option(dep.User)` heads and uses `meta.expr_record_type` to
+construct the qualified nominal, again passing with normal and opt-defined
+dependencies. The full builder also passes direct admitted unoptimized Wasm
+execution with a zero-owned-leak audit in normal and opt mode. The row remains
+partial for generated-item origin audit. `meta.TypeInfo` is now
 sealed: source construction and record update refuse, while compiler-issued
 `type_info` and derive descriptors cross sealing through an unspellable marker
 restored immediately afterward. The builder witness and explicit forge/update

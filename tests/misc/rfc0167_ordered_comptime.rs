@@ -213,6 +213,24 @@ fn main(console: Console):
         assert!(run.status.success(), "{}", String::from_utf8_lossy(&run.stderr));
         assert_eq!(String::from_utf8_lossy(&run.stdout), "Ada/42\nNone\n");
 
+        let checked = witchy::canonical_comptime::check_source_bundle(
+            vec![
+                ("generator".into(), format!("{mode}{program}").into_bytes()),
+                ("meta".into(), witchy_syntax::linker::bundled_source("meta")
+                    .expect("bundled meta").as_bytes().to_vec()),
+            ],
+            "generator", ["generator".to_owned()].into_iter().collect(),
+            owners(), witchy::canonical_comptime::source_limits(),
+        ).expect("reflected builder enters ordinary destination checking");
+        let artifact = witchy_lower::codegen::compile_checked_module_artifact(&checked)
+            .expect_lowered("generated builder admits on unoptimized Wasm");
+        let mut runtime = Runtime::batch().unwrap();
+        let mut vm = runtime.spawn_admitted(&artifact,
+            Capabilities { print: true, quiet: true, ..Capabilities::none() }, 64).unwrap();
+        vm.run().unwrap();
+        assert_eq!(vm.output(), ["Ada/42", "None"]);
+        assert_eq!(vm.canonical_heap_leaks().unwrap(), Some(0));
+
         let expanded = program.replacen("    age: Int\n", "    age: Int\n    email: String\n", 1);
         std::fs::write(&source, format!("{mode}{expanded}")).unwrap();
         let stale = Command::new(env!("CARGO_BIN_EXE_witchy")).arg(&source).output().unwrap();
@@ -258,6 +276,50 @@ fn main(console: Console):
             .any(|word| error.contains(word)),
         "{error}",
     );
+
+    let imported = program
+        .replacen("type User:\n    name: String\n    age: Int\n", "from dep import User\n", 1)
+        .replacen("type_info(User)", "type_info(dep.User)", 1);
+    let imported = format!("import dep\n{imported}");
+    for dependency_mode in ["", "mode opt\n"] {
+        std::fs::write(folder.join("dep.witchy"), format!(
+            "{dependency_mode}type User:\n    name: String\n    age: Int\n",
+        )).unwrap();
+        std::fs::write(&source, &imported).unwrap();
+        let run = Command::new(env!("CARGO_BIN_EXE_witchy")).arg(&source).output().unwrap();
+        assert!(run.status.success(), "{}", String::from_utf8_lossy(&run.stderr));
+        assert_eq!(String::from_utf8_lossy(&run.stdout), "Ada/42\nNone\n");
+    }
+
+    let qualified_only = program
+        .replacen("type User:\n    name: String\n    age: Int\n", "", 1)
+        .replace(
+            "builder_items(info: meta.TypeInfo)",
+            "builder_items(info: meta.TypeInfo, user_ty: meta.TypeSyntax, build_ty: meta.TypeSyntax)",
+        )
+        .replace("    let user_ty = meta.type_expr(meta.TNamed(info.name, []))\n", "")
+        .replace(
+            "meta.expr_record(meta.ident(info.name), user_values)",
+            "meta.expr_record_type(user_ty, user_values)",
+        )
+        .replace(
+            "Some(meta.type_expr(meta.TNamed(\"Option\", [meta.TNamed(info.name, [])])))",
+            "Some(build_ty)",
+        )
+        .replace(
+            "builder_items(type_info(User))",
+            "builder_items(type_info(dep.User), meta.type_expr(meta.TNamed(\"dep.User\", [])), meta.type_expr(meta.TNamed(\"Option\", [meta.TNamed(\"dep.User\", [])])))",
+        );
+    let qualified_only = format!("import dep\n{qualified_only}");
+    for dependency_mode in ["", "mode opt\n"] {
+        std::fs::write(folder.join("dep.witchy"), format!(
+            "{dependency_mode}type User:\n    name: String\n    age: Int\n",
+        )).unwrap();
+        std::fs::write(&source, &qualified_only).unwrap();
+        let run = Command::new(env!("CARGO_BIN_EXE_witchy")).arg(&source).output().unwrap();
+        assert!(run.status.success(), "{}", String::from_utf8_lossy(&run.stderr));
+        assert_eq!(String::from_utf8_lossy(&run.stdout), "Ada/42\nNone\n");
+    }
 }
 
 #[test]
