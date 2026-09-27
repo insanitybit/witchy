@@ -425,6 +425,11 @@ admitted unoptimized CLI program parses and formats `1.2.3` and prints the
 hand-computed `1.2.3`. The generator
 iteration probe also passes this provenance boundary but reaches a separate
 SafeWIR closure-capture refusal for its owned iterator state. No A–O row closes.
+The bounded proof projection now retains proven outer task and aggregate
+structure while invalidating only unrepresentable children, including hidden
+callback obligations. The summary consumer checks one additional round so a
+depth-bounded recursive result can stabilize before whole-result widening.
+This is a structural dataflow repair, not new A–O semantic evidence.
 
 Inferred replayable task operands (implemented but unverified, 2026-09-26):
 source await ownership now asks the shared recursive replay judgment about the

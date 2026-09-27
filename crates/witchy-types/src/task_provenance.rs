@@ -1165,7 +1165,9 @@ pub(crate) fn checked_await_origins(
     let mut widened = BTreeSet::new();
     let mut converged = false;
     for _round in 0..=functions.len() {
-        for _ in 0..128 {
+        // A unary recursive result reaches the depth boundary on round 128;
+        // the following round observes the stable truncated child.
+        for _ in 0..=128 {
             let mut next = summaries.clone();
             for function in &functions {
                 let mut summary = analyze_function(module, table, &definitions, &summaries, function, false)?.0;

@@ -210,33 +210,51 @@ impl TaskExecutionProof {
         else { Self::Unknown }
     }
 
-    /// Keep recursively composed summaries finite even for recursive source
-    /// functions that repeatedly wrap their own result.
+    /// Bound recursively composed summaries while retaining proved outer
+    /// structure. Losing an unrepresentable child must also retain any
+    /// callable obligation hidden in that child.
     pub fn bounded(self, max_nodes: usize) -> Self {
-        fn within(proof: &TaskExecutionProof, remaining: &mut usize, depth: usize) -> bool {
-            if depth > 128 || *remaining == 0 { return false; }
+        fn children<'a>(
+            count: usize,
+            children: impl Iterator<Item = &'a mut TaskExecutionProof>,
+            remaining: &mut usize,
+            depth: usize,
+        ) -> bool {
+            if count > *remaining || (depth == 128 && count != 0) { return false; }
+            // Reserve one node for each sibling before spending the rest on
+            // any child. A later sibling cannot silently disappear.
+            *remaining -= count;
+            for child in children {
+                *remaining += 1;
+                *child = project(std::mem::replace(child, TaskExecutionProof::Unknown), remaining, depth + 1);
+            }
+            true
+        }
+        fn project(mut proof: TaskExecutionProof, remaining: &mut usize, depth: usize) -> TaskExecutionProof {
+            if depth > 128 || *remaining == 0 { return proof.invalidated(); }
             *remaining -= 1;
-            match proof {
-                TaskExecutionProof::Elements(elements) => elements.iter().all(|child| within(child, remaining, depth + 1)),
-                TaskExecutionProof::Fields(fields) => fields.values().all(|child| within(child, remaining, depth + 1)),
-                TaskExecutionProof::Variant { fields, .. } => fields.iter().all(|child| within(child, remaining, depth + 1)),
-                TaskExecutionProof::Variants(variants) => variants.values().flatten().all(|child| within(child, remaining, depth + 1)),
+            let retained = match &mut proof {
+                TaskExecutionProof::Elements(elements) => children(elements.len(), elements.iter_mut(), remaining, depth),
+                TaskExecutionProof::Fields(fields) => children(fields.len(), fields.values_mut(), remaining, depth),
+                TaskExecutionProof::Variant { fields, .. } => children(fields.len(), fields.iter_mut(), remaining, depth),
+                TaskExecutionProof::Variants(variants) => {
+                    let count = variants.values().fold(0usize, |count, fields| count.saturating_add(fields.len()));
+                    children(count, variants.values_mut().flatten(), remaining, depth)
+                }
                 TaskExecutionProof::Task(_, result) | TaskExecutionProof::Awaited(result)
                     | TaskExecutionProof::Slot(result, _) | TaskExecutionProof::VariantSlot(result, _, _)
-                    | TaskExecutionProof::AnyElement(result) => within(result, remaining, depth + 1),
-                TaskExecutionProof::Callable { required_opt_inputs, result, .. } =>
-                    required_opt_inputs.iter().all(|child| within(child, remaining, depth + 1))
-                        && within(result, remaining, depth + 1),
-                TaskExecutionProof::DeclaredCallable { required_opt_inputs, result, .. } =>
-                    required_opt_inputs.iter().all(|child| within(child, remaining, depth + 1))
-                        && within(result, remaining, depth + 1),
+                    | TaskExecutionProof::AnyElement(result) =>
+                    children(1, std::iter::once(result.as_mut()), remaining, depth),
+                TaskExecutionProof::Callable { required_opt_inputs, result, .. }
+                | TaskExecutionProof::DeclaredCallable { required_opt_inputs, result, .. } =>
+                    children(required_opt_inputs.len().saturating_add(1),
+                        required_opt_inputs.iter_mut().chain(std::iter::once(result.as_mut())), remaining, depth),
                 _ => true,
-            }
+            };
+            if retained { proof } else { proof.invalidated() }
         }
         let mut remaining = max_nodes;
-        if within(&self, &mut remaining, 0) { self }
-        else if self.has_callable_input_obligation(false) { Self::UnprovedCallableObligation }
-        else { Self::Unknown }
+        project(self, &mut remaining, 0)
     }
 
     /// Join alternative control-flow paths. A mixed or missing proof is
