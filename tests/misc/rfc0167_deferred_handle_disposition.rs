@@ -50,7 +50,7 @@ pub fn pending(own h: task.Handle) -> task.Task(()):
     let user_modules = ["main".to_string(), "fast".to_string()].into_iter().collect();
     for body in [
         "fn relay[a](own value: a, operation: fn(own a) -> task.Task(())) -> task.Task(()):\n    operation(value)\nfn pending(own h: task.Handle):\n    let recipe = relay(h, fast.pending)\n",
-        "fn pending(own value: fast.Envelope):\n    let recipe = match value:\n        fast.Envelope(h) -> task.join(h)\n",
+        "fn pending(own value: fast.Envelope):\n    let recipe = match move value:\n        fast.Envelope(h) -> task.join(h)\n",
     ] {
         let main = format!("import task\nimport fast\n{body}\nfn main():\n    ()\n");
         let error = match witchy_types::pipeline::link_checked_authenticated_from_source_bundle_with_user_modules(
@@ -75,7 +75,7 @@ fn synchronous_resource_disposition_can_return_replayable_data() {
 must type Ticket:
     Ticket(Int)
 fn finish(own ticket: Ticket) -> task.Task(Int):
-    let value = match ticket:
+    let value = match move ticket:
         Ticket(value) -> value
     task.done(value)
 async fn main(console: Console):

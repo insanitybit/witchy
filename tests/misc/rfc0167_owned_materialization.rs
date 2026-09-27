@@ -108,7 +108,7 @@ must type Ticket:
     Ticket(Int)
 
 fn finish(own ticket: Ticket) -> Int:
-    match ticket:
+    match move ticket:
         Ticket(n) -> n
 
 fn main() -> Int:

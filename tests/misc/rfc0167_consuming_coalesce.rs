@@ -16,7 +16,7 @@ pub fn choose(flag: Bool) -> Result(Ticket, String):
         Err("retry")
 
 pub fn finish(own ticket: Ticket) -> Int:
-    match ticket:
+    match move ticket:
         Ticket(value) -> value
 "#;
 
@@ -32,11 +32,11 @@ fn choose(flag: Bool) -> Result(Local, String):
         Err("retry")
 
 fn finish(own value: Local) -> Int:
-    match value:
+    match move value:
         Local(n) -> n
 
 fn unwrap(own result: Result(Local, String)) -> Local:
-    result ?? Local(9)
+    (move result) ?? Local(9)
 
 fn local(flag: Bool) -> Int:
     // Both arms consume an entry parameter, not just a fresh call result.
@@ -118,19 +118,19 @@ must type Ticket:
     Ticket(Int)
 
 fn finish(own ticket: Ticket) -> Int:
-    match ticket:
+    match move ticket:
         Ticket(n) -> n
 
 fn success(own value: Result(Ticket, String)) -> Result(Int, String):
-    let ticket = value?
+    let ticket = (move value)?
     Ok(finish(ticket))
 
 fn error(own value: Result(Int, Ticket)) -> Result(Int, Ticket):
-    let n = value?
+    let n = (move value)?
     Ok(n)
 
 fn receive(own value: Result(Int, Ticket)) -> Int:
-    match value:
+    match move value:
         Ok(n) -> n
         Err(ticket) -> finish(ticket)
 
@@ -161,10 +161,10 @@ fn main() -> Int:
 fn consuming_fallback_cannot_steal_or_duplicate_an_owner() {
     opt::set_for_tests(Some(OptSet::none()));
     let _reset = ResetOptimizationOverride;
-    let prelude = "must type Ticket:\n    Ticket(Int)\n\nfn finish(own ticket: Ticket) -> Int:\n    match ticket:\n        Ticket(n) -> n\n\n";
+    let prelude = "must type Ticket:\n    Ticket(Int)\n\nfn finish(own ticket: Ticket) -> Int:\n    match move ticket:\n        Ticket(n) -> n\n\n";
     for (body, boundary, expected) in [
-        ("fn twice(own value: Result(Ticket, String)) -> Int:\n    let first = value ?? Ticket(9)\n    let second = value ?? Ticket(9)\n    finish(first) + finish(second)\n\nfn main() -> Int:\n    twice(Ok(Ticket(7)))\n", "lowering", "OwnedReleasePlacement(\"MissingToken("),
-        ("fn steal(let value: Result(Ticket, String)) -> Ticket:\n    value ?? Ticket(9)\n\nfn main() -> Int:\n    let value: Result(Ticket, String) = Ok(Ticket(7))\n    let stolen = steal(value)\n    let score = finish(stolen)\n    match move value:\n        Ok(ticket) -> score + finish(ticket)\n        Err(_) -> score\n", "source", "cannot consume borrowed must-consume value `value`"),
+        ("fn twice(own value: Result(Ticket, String)) -> Int:\n    let first = (move value) ?? Ticket(9)\n    let second = (move value) ?? Ticket(9)\n    finish(first) + finish(second)\n\nfn main() -> Int:\n    twice(Ok(Ticket(7)))\n", "lowering", "OwnedReleasePlacement(\"MissingToken("),
+        ("fn steal(let value: Result(Ticket, String)) -> Ticket:\n    (move value) ?? Ticket(9)\n\nfn main() -> Int:\n    let value: Result(Ticket, String) = Ok(Ticket(7))\n    let stolen = steal(value)\n    let score = finish(stolen)\n    match move value:\n        Ok(ticket) -> score + finish(ticket)\n        Err(_) -> score\n", "source", "cannot consume borrowed must-consume value `value`"),
     ] {
       for mode in ["", "mode opt\n"] {
         let source = format!("{mode}{prelude}{body}");

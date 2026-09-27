@@ -8,10 +8,10 @@ must type Ticket:
 type Box(a):
     Box(a)
 pub fn finish(own value: Box(Ticket)) -> Bool:
-    match value:
+    match move value:
         Box(ticket) -> finish_ticket(ticket)
 fn finish_ticket(own ticket: Ticket) -> Bool:
-    match ticket:
+    match move ticket:
         Ticket(n) -> n == 0
 "#;
 
@@ -21,16 +21,16 @@ must type Ticket:
 type Box(a):
     Box(a)
 fn finish(own value: Box(Ticket)) -> Bool:
-    match value:
+    match move value:
         Box(ticket) -> finish_ticket(ticket)
 fn finish_ticket(own ticket: Ticket) -> Bool:
-    match ticket:
+    match move ticket:
         Ticket(n) -> n == 0
 fn imported_finish(own value: fast.Box(fast.Ticket)) -> Bool:
-    match value:
+    match move value:
         fast.Box(ticket) -> imported_finish_ticket(ticket)
 fn imported_finish_ticket(own ticket: fast.Ticket) -> Bool:
-    match ticket:
+    match move ticket:
         fast.Ticket(n) -> n == 0
 fn local(n: Int) -> Int:
     let token = Box(Ticket(n))

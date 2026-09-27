@@ -7,10 +7,10 @@ const WORKER: &str = r#"must type Ticket:
 type Box(a):
     Box(a)
 fn finish(own value: Box(Ticket)) -> Int:
-    match value:
+    match move value:
         Box(ticket) -> finish_ticket(ticket)
 fn finish_ticket(own ticket: Ticket) -> Int:
-    match ticket:
+    match move ticket:
         Ticket(n) -> n
 pub fn choose(skip: Bool) -> Int:
     let outer = Box(Ticket(7))
@@ -36,10 +36,10 @@ fn loop_exit_preserves_outer_owner_and_completed_disposition_across_modes() {
     let _reset = Reset;
     let fast = format!("mode opt\n{WORKER}");
     let imported = r#"fn finish_imported(own value: fast.Box(fast.Ticket)) -> Int:
-    match value:
+    match move value:
         fast.Box(ticket) -> finish_imported_ticket(ticket)
 fn finish_imported_ticket(own ticket: fast.Ticket) -> Int:
-    match ticket:
+    match move ticket:
         fast.Ticket(n) -> n
 fn imported(skip: Bool) -> Int:
     let outer = fast.Box(fast.Ticket(7))

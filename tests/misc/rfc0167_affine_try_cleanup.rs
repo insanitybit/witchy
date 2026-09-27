@@ -12,12 +12,12 @@ pub fn choose(ok: Bool) -> Result(Box(Ticket), Box(Ticket)):
     if ok: Ok(Box(Ticket(7))) else: Err(Box(Ticket(9)))
 
 pub fn finish(own box: Box(Ticket)) -> Int:
-    match box:
+    match move box:
         Box(ticket) -> match move ticket:
             Ticket(n) -> n
 
 pub fn relay(own value: Result(Box(Ticket), Box(Ticket))) -> Result(Int, Box(Ticket)):
-    let box = value?
+    let box = (move value)?
     Ok(finish(box))
 "#;
 
@@ -40,7 +40,7 @@ fn nested_resource_try_transfers_both_branches_in_four_contexts() {
             "cross" => String::new(),
             "imported" => r#"
 fn relay(own value: Result(worker.Box(worker.Ticket), worker.Box(worker.Ticket))) -> Result(Int, worker.Box(worker.Ticket)):
-    let box = value?
+    let box = (move value)?
     Ok(worker.finish(box))
 "#.to_owned(),
             _ => r#"
@@ -51,11 +51,11 @@ type Box(a):
 fn choose(ok: Bool) -> Result(Box(Ticket), Box(Ticket)):
     if ok: Ok(Box(Ticket(7))) else: Err(Box(Ticket(9)))
 fn finish(own box: Box(Ticket)) -> Int:
-    match box:
+    match move box:
         Box(ticket) -> match move ticket:
             Ticket(n) -> n
 fn relay(own value: Result(Box(Ticket), Box(Ticket))) -> Result(Int, Box(Ticket)):
-    let box = value?
+    let box = (move value)?
     Ok(finish(box))
 "#.to_owned(),
         };
@@ -101,7 +101,7 @@ fn early_error_cannot_abandon_an_unrelated_live_resource() {
             r#"must type Ticket:
     Ticket(Int)
 fn finish(own ticket: Ticket) -> Int:
-    match ticket:
+    match move ticket:
         Ticket(n) -> n
 "#
         } else { "" };

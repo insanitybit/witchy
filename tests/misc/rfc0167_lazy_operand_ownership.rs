@@ -14,7 +14,7 @@ must type Ticket:
     Ticket(Int)
 
 pub fn finish(console: Console, own ticket: Ticket) -> Int:
-    match ticket:
+    match move ticket:
         Ticket(n) ->
             console.print("${n}")
             n

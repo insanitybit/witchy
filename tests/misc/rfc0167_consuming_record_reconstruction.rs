@@ -12,22 +12,23 @@ type Box(a):
     count: Int
 
 fn bump[a](own box: Box(a)) -> Box(a):
-    Box(count: box.count + 1, ..box)
+    let count = box.count + 1
+    Box(count: count, ..move box)
 
 fn finish(own box: Box(Ticket)) -> Int:
-    match box:
+    match move box:
         Box(ticket, count) -> match move ticket:
             Ticket(value) -> value * 10 + count
 
 fn nested(own box: Box(Box(Ticket))) -> Int:
-    match box:
+    match move box:
         Box(inner, count) -> finish(inner) * 10 + count
 
 fn replace(own box: Box(unique String)) -> Box(unique String):
-    Box(value: "xy", ..box)
+    Box(value: "xy", ..move box)
 
 fn size(own box: Box(unique String)) -> Int:
-    match box:
+    match move box:
         Box(value, count) -> value.length() * 10 + count
 
 fn initial_nested() -> Box(Box(unique String)):
@@ -35,10 +36,10 @@ fn initial_nested() -> Box(Box(unique String)):
     Box(inner, 2)
 
 fn replace_nested(own box: Box(Box(unique String))) -> Box(Box(unique String)):
-    Box(value: Box("z", 4), ..box)
+    Box(value: Box("z", 4), ..move box)
 
 fn nested_size(own box: Box(Box(unique String))) -> Int:
-    match box:
+    match move box:
         Box(inner, count) -> size(inner) * 10 + count
 
 type Viewed(a):
@@ -47,14 +48,14 @@ type Viewed(a):
     count: Int
 
 fn bump_viewed[a](own box: Viewed(a)) -> Viewed(a):
-    Viewed(count: 3, ..box)
+    Viewed(count: 3, ..move box)
 
 fn replace_view[a](own box: Viewed(a)) -> Viewed(a):
     let root = 11
-    Viewed(snapshot: &root, ..box)
+    Viewed(snapshot: &root, ..move box)
 
 fn finish_viewed(own box: Viewed(Ticket)) -> Int:
-    match box:
+    match move box:
         Viewed(ticket, snapshot, count) -> match move ticket:
             Ticket(value) -> value * 10 + count + (*snapshot)
 

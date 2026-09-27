@@ -21,7 +21,7 @@ pub fn make(var created: Int) -> Box(Ticket):
     created = created + 1
     Box(Ticket(7), 0)
 pub fn finish(own box: Box(Ticket)) -> Int:
-    match box:
+    match move box:
         Box(ticket, count) -> match move ticket:
             Ticket(value) -> value * 10 + count
 "#);
@@ -76,7 +76,9 @@ fn ordered_error_operand_preserves_resource_disposition() {
 type Box(a):
     Box(a)
 pub fn consume(own token: Box(Ticket), value: Int) -> Result(Int, String):
-    Ok(value)
+    match move token:
+        Box(ticket) -> match move ticket:
+            Ticket(_n) -> Ok(value)
 "#);
         let mut source = format!(r#"{root_mode}import worker
 fn maybe(bad: Bool) -> Result(Int, String):
@@ -89,7 +91,7 @@ fn main() -> Int:
 "#);
         if local {
             source = source.replace("worker.consume(", "consume(");
-            source.push_str("\nfn consume(own token: worker.Box(worker.Ticket), value: Int) -> Result(Int, String):\n    Ok(value)\n");
+            source.push_str("\nfn consume(own token: worker.Box(worker.Ticket), value: Int) -> Result(Int, String):\n    match move token:\n        worker.Box(ticket) -> match move ticket:\n            worker.Ticket(_n) -> Ok(value)\n");
         }
         let checked = witchy_types::pipeline::link_checked_from_source_bundle(
             vec![("main".into(), source.into_bytes()), ("worker".into(), worker.into_bytes())],
@@ -126,7 +128,8 @@ pub fn make(var created: Int) -> Ticket:
     Ticket(7)
 pub fn cleanup(own token: Ticket, var disposed: Int) -> Box:
     disposed = disposed + 1
-    Box(7)
+    match move token:
+        Ticket(_n) -> Box(7)
 "#);
         let mut source = format!(r#"{root_mode}import worker
 fn maybe(bad: Bool) -> Result(Int, String):
@@ -144,7 +147,7 @@ fn main() -> Int:
 "#);
         if local {
             source = source.replace("worker.make(", "make(").replace("worker.cleanup(", "cleanup(");
-            source.push_str("\nfn make(var created: Int) -> worker.Ticket:\n    created = created + 1\n    worker.Ticket(7)\nfn cleanup(own token: worker.Ticket, var disposed: Int) -> worker.Box:\n    disposed = disposed + 1\n    worker.Box(7)\n");
+            source.push_str("\nfn make(var created: Int) -> worker.Ticket:\n    created = created + 1\n    worker.Ticket(7)\nfn cleanup(own token: worker.Ticket, var disposed: Int) -> worker.Box:\n    disposed = disposed + 1\n    match move token:\n        worker.Ticket(_n) -> worker.Box(7)\n");
         }
         let checked = witchy_types::pipeline::link_checked_from_source_bundle(
             vec![("main".into(), source.into_bytes()), ("worker".into(), worker.into_bytes())], "main",

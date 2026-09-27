@@ -13,10 +13,11 @@ type Viewed(a):
     label: String
 
 pub fn bump[a](own box: Viewed(a)) -> Viewed(a):
-    Viewed(count: box.count + 1, ..box)
+    let count = box.count + 1
+    Viewed(count: count, ..move box)
 
 pub fn wrap_ticket(own ticket: Ticket, snapshot: &Int) -> Viewed(Ticket):
-    Viewed(ticket, snapshot, 0, "x")
+    Viewed(move ticket, snapshot, 0, "x")
 
 pub fn finish(own box: Viewed(Ticket)) -> Int:
     let label = if box.count > 0: box.label else: box.label

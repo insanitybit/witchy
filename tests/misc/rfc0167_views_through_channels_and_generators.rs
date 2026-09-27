@@ -32,11 +32,11 @@ must type Packet:
     Packet(&String, Ticket)
 
 fn finish(own ticket: Ticket) -> Int:
-    match ticket:
+    match move ticket:
         Ticket(n) -> n
 
 fn consume(own packet: Packet) -> Int:
-    match packet:
+    match move packet:
         Packet(view, ticket) ->
             finish(move ticket) + (*view).length()
 
@@ -56,7 +56,7 @@ fn make() -> BoxView:
     BoxView(&n)
 
 fn consume(own box: BoxView) -> Int:
-    match box:
+    match move box:
         BoxView(view) -> *view
 
 fn main() -> Int:
@@ -75,7 +75,7 @@ fn make() -> Cell:
     Cell(&n, Token(7))
 
 fn consume(own cell: Cell) -> Int:
-    match cell:
+    match move cell:
         Cell(view, token) ->
             match move token:
                 Token(n) -> n + *view
@@ -106,7 +106,7 @@ fn choose(flag: Bool) -> BoxView:
         make(4)
 
 fn consume(own box: BoxView) -> Int:
-    match box:
+    match move box:
         BoxView(view) -> *view
 
 fn main() -> Int:
@@ -129,7 +129,7 @@ fn make(n: Int) -> BoxView:
     BoxView(&value)
 
 fn consume(own box: BoxView) -> Int:
-    match box:
+    match move box:
         BoxView(view) -> *view
 
 fn main() -> Int:
@@ -216,7 +216,7 @@ must type Packet:
     Packet(&String, Ticket)
 
 fn consume(own packet: Packet) -> Int:
-    match packet:
+    match move packet:
         Packet(view, ticket) ->
             match move ticket:
                 Ticket(n) -> n + (*view).length()
@@ -263,16 +263,16 @@ pub fn make(view: &String, n: Int) -> Packet:
     Packet(view, Ticket(n))
 
 pub fn wrap(own packet: Packet) -> Envelope:
-    Envelope(packet)
+    Envelope(move packet)
 
 pub fn consume(own packet: Packet) -> Int:
-    match packet:
+    match move packet:
         Packet(view, ticket) ->
             match move ticket:
                 Ticket(n) -> n + (*view).length()
 
 pub fn consume_wrapped(own envelope: Envelope) -> Int:
-    match envelope:
+    match move envelope:
         Envelope(packet) -> consume(packet)
 "#;
     let main = r#"import worker

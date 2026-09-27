@@ -130,7 +130,7 @@ fn affine_handle_list_admits_owned_transport_but_not_copying() {
     let checked = witchy::resolve_std_only_checked(r#"import task
 
 pub fn make(own handle: task.Handle) -> List(task.Handle):
-    [handle]
+    [move handle]
 
 pub fn forward(own handles: List(task.Handle)) -> List(task.Handle):
     handles
