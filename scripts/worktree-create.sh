@@ -94,6 +94,50 @@ if [ "$(worktree_pool_max)" -gt 0 ]; then
     if slot="$(worktree_pool_reserve_new "$root")"; then
         dest="$(worktree_pool_slot_path "$root" "$slot")"
         trap 'worktree_pool_unreserve "$root" "$slot"' EXIT
+    else
+        # The sweep may have released a slot between the first claim and the
+        # failed reservation. Recheck before consulting queue state.
+        if pooled="$(worktree_pool_claim "$root" "$branch" "$base")"; then
+            echo "worktree-create: recycled pool worktree $pooled on $branch" >&2
+            echo "$pooled"
+            exit 0
+        fi
+        # A queued pool branch commonly frees a warm path within one gate.
+        # Waiting briefly is cheaper than giving the next task a fresh source
+        # path and recompiling its workspace crates. Never wait merely because
+        # slots are occupied: an active but unqueued agent may hold them all.
+        pool_wait_seconds="${WITCHY_WORKTREE_POOL_WAIT_SECS:-45}"
+        case "$pool_wait_seconds" in
+            ''|*[!0-9]*) pool_wait_seconds=0 ;;
+        esac
+        if [ "$pool_wait_seconds" -gt 0 ]; then
+            queue_status="$("$root/scripts/merge-queue.sh" status 2>/dev/null || true)"
+            release_expected=0
+            for candidate in "$root"/.claude/worktrees/pool-[0-9][0-9]; do
+                [ -d "$candidate" ] || continue
+                candidate_branch="$(git -C "$candidate" symbolic-ref --quiet --short HEAD 2>/dev/null)" || continue
+                if printf '%s\n' "$queue_status" | jq -e --arg branch "$candidate_branch" '
+                    any(.queue[]?; .branch == $branch and .readiness == "ready")
+                    or .gate_lock.branch == $branch
+                ' >/dev/null 2>&1; then
+                    release_expected=1
+                    break
+                fi
+            done
+            if [ "$release_expected" -eq 1 ]; then
+                echo "worktree-create: waiting up to ${pool_wait_seconds}s for a queued warm pool slot" >&2
+                pool_deadline=$((SECONDS + pool_wait_seconds))
+                while [ "$SECONDS" -lt "$pool_deadline" ]; do
+                    sleep 1
+                    if pooled="$(worktree_pool_claim "$root" "$branch" "$base")"; then
+                        echo "worktree-create: recycled pool worktree $pooled on $branch" >&2
+                        echo "$pooled"
+                        exit 0
+                    fi
+                done
+                echo "worktree-create: warm-slot wait expired; creating a fresh worktree" >&2
+            fi
+        fi
     fi
 fi
 

@@ -30,7 +30,11 @@ repeat the rules; consult it when you're working inside one of these areas.
   at `.claude/worktrees/pool-<NN>` (RFC-0171). When the queue lands a pool
   worktree's branch, the sweep recycles it in place, detached at master, for
   the next agent. The pool path and its managed target persist, so rustc's
-  path-keyed incremental state remains useful. A worktree at any other path is
+  path-keyed incremental state remains useful. When the pool is full and a
+  pool branch is ready in the merge queue, creation waits up to 45 seconds
+  for its slot to be swept before falling back to a fresh path; set
+  `WITCHY_WORKTREE_POOL_WAIT_SECS=0` to skip that bounded wait. A worktree at
+  any other path is
   removed on merge as before. Never reuse your worktree after submitting: the
   recycled path will soon belong to another agent. What
   gets left behind is abandoned checkouts, not merged ones (569 registered on

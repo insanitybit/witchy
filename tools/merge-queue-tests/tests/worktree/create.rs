@@ -1,4 +1,5 @@
 use std::fs;
+use std::io::{BufRead, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 #[cfg(unix)]
@@ -355,6 +356,45 @@ fn worktree_create_past_the_pool_cap_makes_a_named_worktree() {
     );
     let reserved = create(root, "pool-07");
     assert!(!reserved.status.success(), "a caller claimed a pool path by name");
+}
+
+#[cfg(unix)]
+#[test]
+fn worktree_create_waits_for_a_queued_pool_branch_to_release_its_warm_slot() {
+    let repo = temp_repo();
+    let root = repo.path();
+    let cap = [("WITCHY_WORKTREE_POOL_MAX", "1")];
+    let first = created_path(&create_with(root, "first", &cap));
+    let incremental = plant_incremental_state(&first);
+    let fake_queue = root.join("scripts/merge-queue.sh");
+    fs::create_dir_all(fake_queue.parent().expect("scripts parent")).expect("create scripts");
+    write_executable(&fake_queue,
+        "#!/bin/sh\nprintf '%s\\n' '{\"queue\":[{\"branch\":\"worktree-first\",\"readiness\":\"ready\"}],\"gate_lock\":null}'\n");
+
+    let mut child = create_command(root, "second", &[
+        ("WITCHY_WORKTREE_POOL_MAX", "1"),
+        ("WITCHY_WORKTREE_POOL_WAIT_SECS", "3"),
+    ])
+    .stdout(std::process::Stdio::piped())
+    .stderr(std::process::Stdio::piped())
+    .spawn()
+    .expect("start waiting creator");
+    let mut stderr = std::io::BufReader::new(child.stderr.take().expect("creator stderr"));
+    let mut line = String::new();
+    loop {
+        assert!(stderr.read_line(&mut line).expect("read creator status") > 0,
+            "creator exited before waiting: {line}");
+        if line.contains("waiting up to") { break; }
+        line.clear();
+    }
+    release(root, &first);
+    let mut stdout = String::new();
+    child.stdout.take().expect("creator stdout").read_to_string(&mut stdout).expect("read path");
+    let status = child.wait().expect("wait for creator");
+    assert!(status.success(), "creator failed after release");
+    assert_eq!(stdout.trim(), first.to_string_lossy());
+    assert!(incremental.is_file(), "waiting lost the slot's incremental state");
+    assert_eq!(git(&first, &["branch", "--show-current"]), "worktree-second");
 }
 
 #[test]
