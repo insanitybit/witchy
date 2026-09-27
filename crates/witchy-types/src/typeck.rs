@@ -69,6 +69,7 @@ mod module_checks;
 pub use module_checks::*;
 mod checker;
 use checker::Checker;
+mod ownership;
 mod compiler_syntax;
 use compiler_syntax::{
     check_compiler_syntax_declarations, compiler_syntax_allowed_module, compiler_syntax_type_name,
@@ -8918,15 +8919,12 @@ impl Checker {
                         ))
                     }
                 };
-                self.transfer_unique_value(inner, &it, "`?` operand")?;
+                self.transfer_consuming_sum_operand(inner, &it, "`?` operand")?;
                 // `?` has an implicit error-return edge after its operand has
                 // been evaluated. Check obligations at exactly that point: an
                 // `own` operand call has already discharged its argument, while
                 // every unrelated live resource would be abandoned on Err/None.
                 self.reject_all_live_must_before_return()?;
-                if self.ty_carries_once_callable(&value_ty) {
-                    self.reject_implicit_once_copy(inner, &resolved, "`?` extraction")?;
-                }
                 Ok(value_ty)
             }
             Expr::As { expr: payload, ty } => {
@@ -9105,6 +9103,12 @@ impl Checker {
     fn infer_binary(&mut self, op: ast::BinOp, lhs: &Expr, rhs: &Expr) -> Result<Ty, TypeError> {
         use ast::BinOp::*;
         let lt = self.infer(lhs)?;
+        if op == Coalesce && matches!(self.resolve(&lt), Ty::Named(name, args)
+            if (name == "Option".into() && args.len() == 1)
+                || (name == "Result".into() && args.len() == 2))
+        {
+            self.transfer_consuming_sum_operand(lhs, &lt, "`??` left operand")?;
+        }
         // The left operand always runs. A lazy right operand has an additional
         // skipped edge: consuming a resource there cannot discharge the owner
         // on that edge. Reuse the ordinary conditional ownership join.
@@ -9280,7 +9284,6 @@ impl Checker {
                             ),
                         })?;
                         if self.ty_carries_once_callable(&t) {
-                            self.reject_implicit_once_copy(lhs, &lt, "`??` left operand")?;
                             self.reject_implicit_once_copy(rhs, &t, "`??` fallback")?;
                         }
                         Ok(t)
@@ -9305,7 +9308,6 @@ impl Checker {
                             ),
                         })?;
                         if self.ty_carries_once_callable(&t) {
-                            self.reject_implicit_once_copy(lhs, &lt, "`??` left operand")?;
                             self.reject_implicit_once_copy(rhs, &t, "`??` fallback")?;
                         }
                         Ok(t)

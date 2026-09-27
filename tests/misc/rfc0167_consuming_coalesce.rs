@@ -110,6 +110,36 @@ fn fallback_transfers_success_resources_in_both_modes_and_across_imports() {
 }
 
 #[test]
+fn propagation_transfers_success_and_error_resources() {
+    // Success extraction consumes Ticket(7); propagated String selects 9.
+    // Scalar success gives 7; propagated Ticket(9) is consumed by the receiver.
+    assert_wasm(r#"
+must type Ticket:
+    Ticket(Int)
+
+fn finish(own ticket: Ticket) -> Int:
+    match ticket:
+        Ticket(n) -> n
+
+fn success(own value: Result(Ticket, String)) -> Result(Int, String):
+    let ticket = value?
+    Ok(finish(ticket))
+
+fn error(own value: Result(Int, Ticket)) -> Result(Int, Ticket):
+    let n = value?
+    Ok(n)
+
+fn receive(own value: Result(Int, Ticket)) -> Int:
+    match value:
+        Ok(n) -> n
+        Err(ticket) -> finish(ticket)
+
+fn main() -> Int:
+    (success(Ok(Ticket(7))) ?? 0) * 1000 + (success(Err("retry")) ?? 9) * 100 + receive(error(Ok(7))) * 10 + receive(error(Err(Ticket(9))))
+"#, "7979");
+}
+
+#[test]
 fn conditional_consumption_preserves_cleanup_on_the_other_path() {
     // Extract and discard Some/None: 7. Skip either discardable owner: 4.
     // The false arm must release its original parameter without extracting it.
@@ -134,7 +164,7 @@ fn consuming_fallback_cannot_steal_or_duplicate_an_owner() {
     let prelude = "must type Ticket:\n    Ticket(Int)\n\nfn finish(own ticket: Ticket) -> Int:\n    match ticket:\n        Ticket(n) -> n\n\n";
     for (body, boundary, expected) in [
         ("fn twice(own value: Result(Ticket, String)) -> Int:\n    let first = value ?? Ticket(9)\n    let second = value ?? Ticket(9)\n    finish(first) + finish(second)\n\nfn main() -> Int:\n    twice(Ok(Ticket(7)))\n", "lowering", "OwnedReleasePlacement(\"MissingToken("),
-        ("fn steal(let value: Result(Ticket, String)) -> Ticket:\n    value ?? Ticket(9)\n\nfn main() -> Int:\n    let value: Result(Ticket, String) = Ok(Ticket(7))\n    let stolen = steal(value)\n    let score = finish(stolen)\n    match move value:\n        Ok(ticket) -> score + finish(ticket)\n        Err(_) -> score\n", "source", "call-scoped `let` parameter access from `value` cannot escape"),
+        ("fn steal(let value: Result(Ticket, String)) -> Ticket:\n    value ?? Ticket(9)\n\nfn main() -> Int:\n    let value: Result(Ticket, String) = Ok(Ticket(7))\n    let stolen = steal(value)\n    let score = finish(stolen)\n    match move value:\n        Ok(ticket) -> score + finish(ticket)\n        Err(_) -> score\n", "source", "cannot consume borrowed must-consume value `value`"),
     ] {
       for mode in ["", "mode opt\n"] {
         let source = format!("{mode}{prelude}{body}");
@@ -151,7 +181,8 @@ fn consuming_fallback_cannot_steal_or_duplicate_an_owner() {
         let earlier_transfer_refusal = boundary == "lowering"
             && actual_boundary == "source"
             && refusal.contains("value")
-            && ["already transferred", "already consumed", "already used"]
+            && refusal.contains("after")
+            && ["transferred", "consumed", "used", "moved"]
                 .iter().any(|message| refusal.contains(message));
         assert!(earlier_transfer_refusal || refusal.contains(expected), "{actual_boundary}: {refusal}");
       }

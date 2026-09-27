@@ -2193,3 +2193,5 @@ mod vm_service;
 mod vm_worker_isolation;
 #[path = "typeck/lazy_operand_ownership.rs"]
 mod lazy_operand_ownership;
+#[path = "typeck/consuming_sum_operands.rs"]
+mod consuming_sum_operands;

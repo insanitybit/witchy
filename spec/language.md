@@ -1918,6 +1918,12 @@ by `??`; use `?` to transfer it or `match` to consume it. This applies in both
 modes and across imports. A resource-bearing success may be transferred by
 fallback, but the resulting value still needs disposition. Phantom type
 arguments and callable signatures alone do not store an obligation.
+Extracting an affine payload with `?` or `??` transfers the whole wrapper.
+You cannot reuse that wrapper afterward, including inside the lazy fallback.
+Borrowed resource wrappers and partial resource fields cannot supply this
+transfer; pass the complete owner to an `own` operation. A bound once-callable
+wrapper requires explicit `move`, including when only its error arm stores the
+callable. Ordinary copyable `Option` and `Result` values remain reusable.
 Canonical lowering transfers affine success payloads using the same consuming
 storage operations as `match`; both selected paths retire the wrapper. This
 supports resource payloads, including nested nominal payloads, in the admitted

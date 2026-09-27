@@ -1895,12 +1895,28 @@ including an owned Result parameter and nested Option(Box(resource)) payload.
 A separate conditional Option(once fn() -> Int) witness produces 7744 while
 disposing the untouched owner on the sibling path. Both run admitted
 unoptimized Wasm with zero canonical heap leaks. Borrowed extraction and double
-use refuse in both modes (currently source call-scoped access and lowering
-MissingToken respectively); earlier ownership-specific source refusal is also
-accepted by the regression. Existing consuming-match GC-result evidence stays
+use refuse in both modes. The source ownership repair below advances duplicate
+extraction from a lowering MissingToken refusal to the source transfer check.
+Existing consuming-match GC-result evidence stays
 green. Affine aggregate carriers now have the structural implementation
 described below; the earlier conditional refusal is no longer current. This
 is bounded evidence, not full aggregate coverage or an A-O row closure.
+
+Consuming-sum source flow (bounded ownership repair, 2026-09-26): `?` and `??`
+share the checked transfer operation for their complete operand before the
+error-return or lazy-fallback split. Recursive must/once/unique classification
+and ordinary binding transfer facts replace payload-only checking. Reusing an
+owned resource wrapper afterward or inside its fallback now refuses at source,
+including after generic instantiation and with an opt-defined payload. Borrowed
+and partial resource extraction refuse; explicit moves and ordinary copyable
+sums remain valid. A once-bearing error arm also requires the complete wrapper
+transfer. Seven `consuming_sum_operands` source groups and ten existing lazy
+edge/resource-fallback groups pass. Source diagnostics do not establish runtime
+correctness: the separate admitted unoptimized witnesses produce 79797979 for
+fallback across modes/imports, 7744 for sibling-path cleanup, and 7979 for
+success-resource extraction plus error-resource propagation in both modes.
+Each has zero canonical heap leaks. The existing rooted-view `?` witness also
+passes. No general partial-move support or broad acceptance row is claimed.
 
 Affine aggregate carrier composition (implemented but unverified, 2026-09-26):
 the checker preserves source-qualified aggregate storage facts through checked
