@@ -261,6 +261,7 @@ fn program_defined_builder_uses_type_info_in_both_modes() {
 type User:
     name: String
     age: Int
+    email: String
 comptime fn builder_items(info: meta.TypeInfo) -> List(meta.ItemSyntax):
     builder_items_for(info, meta.type_expr(meta.TNamed(info.name, [])), meta.type_expr(meta.TNamed("Option", [meta.TNamed(info.name, [])])))
 comptime fn builder_items_for(info: meta.TypeInfo, user_ty: meta.TypeSyntax, build_ty: meta.TypeSyntax) -> List(meta.ItemSyntax):
@@ -299,10 +300,10 @@ comptime:
     for item in builder_items(type_info(User)):
         emit_item(item)
 fn main(console: Console):
-    let complete = UserBuilder(None, None).with_name("Ada").with_age(42).build()
-    let incomplete = UserBuilder(None, None).with_name("Ada").build()
+    let complete = UserBuilder(None, None, None).with_name("Ada").with_age(42).with_email("ada@example.com").build()
+    let incomplete = UserBuilder(None, None, None).with_name("Ada").build()
     match complete:
-        Some(user) -> console.print("${user.name}/${user.age}")
+        Some(user) -> console.print("${user.name}/${user.age}/${user.email}")
         None -> console.print("missing")
     match incomplete:
         Some(_) -> console.print("unexpected")
@@ -344,23 +345,15 @@ fn main(console: Console):
         let mut vm = runtime.spawn_admitted(&artifact,
             Capabilities { print: true, quiet: true, ..Capabilities::none() }, 64).unwrap();
         vm.run().unwrap();
-        assert_eq!(vm.output(), ["Ada/42", "None"]);
+        assert_eq!(vm.output(), ["Ada/42/ada@example.com", "None"]);
         assert_eq!(vm.canonical_heap_leaks().unwrap(), Some(0));
 
-        let expanded = program.replacen("    age: Int\n", "    age: Int\n    email: String\n", 1);
         if mode.is_empty() {
-            std::fs::write(&source, format!("{mode}{expanded}")).unwrap();
+            let stale = program.replace("UserBuilder(None, None, None)", "UserBuilder(None, None)")
+                .replace(".with_age(42).with_email(\"ada@example.com\")", ".with_age(42)");
+            std::fs::write(&source, format!("{mode}{stale}")).unwrap();
             let stale = Command::new(env!("CARGO_BIN_EXE_witchy")).arg(&source).output().unwrap();
-            assert!(!stale.status.success(), "old two-slot construction must fail after adding a field");
-        }
-
-        let updated = expanded.replace("UserBuilder(None, None)", "UserBuilder(None, None, None)")
-            .replace(".with_age(42).build()", ".with_age(42).with_email(\"ada@example.com\").build()");
-        if mode == "mode opt\n" {
-            std::fs::write(&source, format!("{mode}{updated}")).unwrap();
-            let run = Command::new(env!("CARGO_BIN_EXE_witchy")).arg(&source).output().unwrap();
-            assert!(run.status.success(), "{}", String::from_utf8_lossy(&run.stderr));
-            assert_eq!(String::from_utf8_lossy(&run.stdout), "Ada/42\nNone\n");
+            assert!(!stale.status.success(), "old two-slot construction must fail with the added field");
         }
     }
 
@@ -369,10 +362,10 @@ fn main(console: Console):
     std::fs::write(folder.join("dep.witchy"), format!("mode opt\n{builder_definition}")).unwrap();
     let entry = r#"import dep
 fn main(console: Console):
-    let complete = dep.UserBuilder(None, None).with_name("Ada").with_age(42).build()
-    let incomplete = dep.UserBuilder(None, None).with_name("Ada").build()
+    let complete = dep.UserBuilder(None, None, None).with_name("Ada").with_age(42).with_email("ada@example.com").build()
+    let incomplete = dep.UserBuilder(None, None, None).with_name("Ada").build()
     match complete:
-        Some(user) -> console.print("${user.name}/${user.age}")
+        Some(user) -> console.print("${user.name}/${user.age}/${user.email}")
         None -> console.print("missing")
     match incomplete:
         Some(_) -> console.print("unexpected")
@@ -381,11 +374,11 @@ fn main(console: Console):
     std::fs::write(&source, entry).unwrap();
     let normal_to_opt = Command::new(env!("CARGO_BIN_EXE_witchy")).arg(&source).output().unwrap();
     assert!(normal_to_opt.status.success(), "{}", String::from_utf8_lossy(&normal_to_opt.stderr));
-    assert_eq!(String::from_utf8_lossy(&normal_to_opt.stdout), "Ada/42\nNone\n");
+    assert_eq!(String::from_utf8_lossy(&normal_to_opt.stdout), "Ada/42/ada@example.com\nNone\n");
 
     let reused_name = entry.replace(
-        "    let complete = dep.UserBuilder(None, None).with_name(\"Ada\")",
-        "    let name = \"Ada\"\n    let complete = dep.UserBuilder(None, None).with_name(name)",
+        "    let complete = dep.UserBuilder(None, None, None).with_name(\"Ada\")",
+        "    let name = \"Ada\"\n    let complete = dep.UserBuilder(None, None, None).with_name(name)",
     ) + "    console.print(name)\n";
     std::fs::write(&source, reused_name).unwrap();
     let rejected = Command::new(env!("CARGO_BIN_EXE_witchy")).arg(&source).output().unwrap();
@@ -398,28 +391,28 @@ fn main(console: Console):
     );
 
     let imported = program
-        .replacen("type User:\n    name: String\n    age: Int\n", "from dep_normal import User\n", 1)
+        .replacen("type User:\n    name: String\n    age: Int\n    email: String\n", "from dep_normal import User\n", 1)
         .replacen(
             "    for item in builder_items(type_info(User)):\n        emit_item(item)",
             "    for item in builder_items(type_info(dep_normal.User)):\n        emit_item(item)\n    for item in builder_items_for(type_info(dep_normal.Account), meta.type_expr(meta.TNamed(\"dep_normal.Account\", [])), meta.type_expr(meta.TNamed(\"Option\", [meta.TNamed(\"dep_normal.Account\", [])]))):\n        emit_item(item)\n    for item in builder_items(type_info(dep_opt.OptUser)):\n        emit_item(item)\n    for item in builder_items_for(type_info(dep_opt.OptAccount), meta.type_expr(meta.TNamed(\"dep_opt.OptAccount\", [])), meta.type_expr(meta.TNamed(\"Option\", [meta.TNamed(\"dep_opt.OptAccount\", [])]))):\n        emit_item(item)",
             1,
         );
     let imported = imported.replace(
-        "fn main(console: Console):\n    let complete = UserBuilder(None, None).with_name(\"Ada\").with_age(42).build()",
-        "fn main(console: Console):\n    let account = AccountBuilder(None, None).with_name(\"Grace\").with_age(37).build()\n    let opt_complete = OptUserBuilder(None, None).with_name(\"Beth\").with_age(28).build()\n    let opt_incomplete = OptUserBuilder(None, None).with_name(\"Beth\").build()\n    let opt_account = OptAccountBuilder(None, None).with_name(\"Ivy\").with_age(33).build()\n    let complete = UserBuilder(None, None).with_name(\"Ada\").with_age(42).build()",
+        "fn main(console: Console):\n    let complete = UserBuilder(None, None, None).with_name(\"Ada\").with_age(42).with_email(\"ada@example.com\").build()",
+        "fn main(console: Console):\n    let account = AccountBuilder(None, None).with_name(\"Grace\").with_age(37).build()\n    let opt_complete = OptUserBuilder(None, None).with_name(\"Beth\").with_age(28).build()\n    let opt_incomplete = OptUserBuilder(None, None).with_name(\"Beth\").build()\n    let opt_account = OptAccountBuilder(None, None).with_name(\"Ivy\").with_age(33).build()\n    let complete = UserBuilder(None, None, None).with_name(\"Ada\").with_age(42).with_email(\"ada@example.com\").build()",
     ).replace(
         "        None -> console.print(\"None\")\n",
         "        None -> console.print(\"None\")\n    match account:\n        Some(value) -> console.print(\"${value.name}/${value.age}\")\n        None -> console.print(\"missing account\")\n    match opt_complete:\n        Some(value) -> console.print(\"${value.name}/${value.age}\")\n        None -> console.print(\"missing opt user\")\n    match opt_incomplete:\n        Some(_) -> console.print(\"unexpected opt user\")\n        None -> console.print(\"None\")\n    match opt_account:\n        Some(value) -> console.print(\"${value.name}/${value.age}\")\n        None -> console.print(\"missing opt account\")\n",
     );
     let imported = format!("import dep_normal\nimport dep_opt\nfrom dep_opt import OptUser, OptAccount\n{imported}");
     std::fs::write(folder.join("dep_normal.witchy"),
-        "type User:\n    name: String\n    age: Int\ntype Account:\n    name: String\n    age: Int\n").unwrap();
+        "type User:\n    name: String\n    age: Int\n    email: String\ntype Account:\n    name: String\n    age: Int\n").unwrap();
     std::fs::write(folder.join("dep_opt.witchy"),
         "mode opt\ntype OptUser:\n    name: String\n    age: Int\ntype OptAccount:\n    name: String\n    age: Int\n").unwrap();
     std::fs::write(&source, &imported).unwrap();
     let run = Command::new(env!("CARGO_BIN_EXE_witchy")).arg(&source).output().unwrap();
     assert!(run.status.success(), "{}", String::from_utf8_lossy(&run.stderr));
-    assert_eq!(String::from_utf8_lossy(&run.stdout), "Ada/42\nNone\nGrace/37\nBeth/28\nNone\nIvy/33\n");
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "Ada/42/ada@example.com\nNone\nGrace/37\nBeth/28\nNone\nIvy/33\n");
 }
 
 #[test]
