@@ -59,6 +59,8 @@ pub mod trusted_publisher;
 // (wasm-safe); the wasmtime sandbox `runtime` is native-only.
 #[cfg(feature = "native")]
 pub use witchy_runtime::runtime;
+#[cfg(feature = "native")]
+pub mod canonical_comptime;
 // RFC-0018: the frozen source evaluator used temporarily for compile-time
 // evaluation lives in the `witchy-interp` crate.
 pub use witchy_interp::{comptime, interpreter, pipeline};

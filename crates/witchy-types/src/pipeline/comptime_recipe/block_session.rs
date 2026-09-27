@@ -2,8 +2,18 @@
 //! enter this session. Later blocks need an authenticated output receipt.
 use super::*;
 use witchy_syntax::ast::{Expr, Function, Stmt};
+use witchy_syntax::compiler_session::ComptimeSyntaxOrigin;
 
-const REWRITE_VERSION: u32 = 1;
+const REWRITE_VERSION: u32 = 2;
+
+/// Checked syntax data from one preceding original block. This is not an
+/// execution receipt: the compiler-owned caller must compare the runtime's
+/// admitted recipe digest before handing its actual output to this checker.
+#[derive(Clone)]
+pub struct PriorComptimeBlockOutput {
+    pub original_item: usize,
+    pub items: Vec<(Item, ComptimeSyntaxOrigin)>,
+}
 
 /// Compiler-owned immutable source session for the first original block.
 /// This is an explicit recipe lane, not the default expansion implementation.
@@ -22,6 +32,13 @@ fn refuse(message: impl Into<String>) -> PipelineError {
 }
 
 impl ComptimeSourceSession {
+    pub fn original_block_items(&self) -> Vec<usize> {
+        let (_, module) = self.modules.iter().find(|(name, _)| name == &self.selected)
+            .expect("selected raw module retained");
+        module.items.iter().enumerate().filter_map(|(index, item)|
+            matches!(item, Item::Comptime(_)).then_some(index)).collect()
+    }
+
     pub fn from_source_bundle(
         mut sources: Vec<(String, Vec<u8>)>, selected: &str,
         user_modules: HashSet<String>, owners: AuthenticatedModuleOwners,
@@ -47,9 +64,8 @@ impl ComptimeSourceSession {
         Ok(Self { original_digest, modules, selected: selected.into(), owners, user_modules })
     }
 
-    /// Select an original item, never a statement/body supplied by the caller.
-    /// Only the first original comptime block has authenticated empty prior
-    /// output. Replaying this immutable recipe creates a fresh runtime session.
+    /// Select an original item with genuinely empty prior output. Replaying
+    /// this immutable recipe creates a fresh runtime session.
     pub fn check_block(&self, item: usize) -> Result<CheckedComptimeRecipe, PipelineError> {
         let (_, module) = self.modules.iter().find(|(name, _)| name == &self.selected)
             .expect("selected raw module retained");
@@ -57,6 +73,33 @@ impl ComptimeSourceSession {
             .ok_or_else(|| refuse("comptime session has no original block"))?;
         if item != first {
             return Err(refuse("comptime session requires the first original block; later blocks need authenticated prior output"));
+        }
+        self.check_block_with_prior_output(item, &[])
+    }
+
+    /// Low-level successor checker. Prior items are data, not proof that the
+    /// preceding recipe ran; only a compiler-owned orchestration path that
+    /// checks the admitted runtime outcome's recipe digest may call this as an
+    /// authenticated sequence. The prefix/order and every destination item
+    /// are independently checked here.
+    pub fn check_block_with_prior_output(
+        &self, item: usize, prior: &[PriorComptimeBlockOutput],
+    ) -> Result<CheckedComptimeRecipe, PipelineError> {
+        let (_, module) = self.modules.iter().find(|(name, _)| name == &self.selected)
+            .expect("selected raw module retained");
+        let blocks: Vec<_> = module.items.iter().enumerate()
+            .filter_map(|(index, item)| matches!(item, Item::Comptime(_)).then_some(index)).collect();
+        let Some(ordinal) = blocks.iter().position(|index| *index == item) else {
+            return Err(refuse("comptime session requires the first original block or an ordered original successor"));
+        };
+        if prior.len() != ordinal || prior.iter().zip(&blocks).any(|(output, index)| output.original_item != *index) {
+            return Err(refuse("comptime session requires the complete ordered original-block output prefix"));
+        }
+        #[cfg(target_arch = "wasm32")]
+        if !prior.is_empty() { return Err(refuse("ordered comptime source sessions require the native compiler")); }
+        if prior.iter().flat_map(|output| &output.items).any(|(item, _)|
+            matches!(item, Item::Comptime(_)) || matches!(item, Item::Function(function) if function.name == "main")) {
+            return Err(refuse("comptime session cannot use a generated comptime block or displaced main as prior output"));
         }
         let Item::Comptime(body) = &module.items[item] else { unreachable!("first block selected") };
         let line = module.item_lines.get(item).copied().unwrap_or(0);
@@ -68,24 +111,17 @@ impl ComptimeSourceSession {
         hash.update(self.selected.as_bytes());
         hash.update(&(item as u64).to_le_bytes());
         hash.update(&line.to_le_bytes());
-        // The only supported prior-output state is genuinely empty; no caller
-        // can provide a digest purporting to authenticate generated ASTs.
+        #[cfg(not(target_arch = "wasm32"))]
+        hash_prior_items(&mut hash, prior)?;
+        #[cfg(target_arch = "wasm32")]
         hash.update(&0_u64.to_le_bytes());
         for (name, owner) in self.owners.assignments() {
             super::super::static_evaluation::hash_owner_assignment(&mut hash, name, owner);
         }
         let digest = *hash.finalize().as_bytes();
-        let scope = format!("comptime:{}:{}:1", self.selected.len(), self.selected);
+        let scope = format!("comptime:{}:{}:{}", self.selected.len(), self.selected, ordinal + 1);
         let contract = CompilerSessionContract::for_source(digest, scope).map_err(refuse)?;
-        let mut prepared = module.clone();
-        let keep = |item: &Item| match item {
-            Item::Comptime(_) => false,
-            Item::Function(function) if function.name == "main" => false,
-            _ => true,
-        };
-        prepared.items = module.items.iter().filter(|item| keep(item)).cloned().collect();
-        prepared.item_lines = module.items.iter().enumerate().filter(|(_, item)| keep(item))
-            .map(|(index, _)| module.item_lines.get(index).copied().unwrap_or(0)).collect();
+        let mut prepared = materialize_prior(module, prior, false);
         let mut body = body.clone();
         body.stmts.push(Stmt::Expr(Expr::Int(0)));
         body.lines.push(line);
@@ -116,6 +152,83 @@ impl ComptimeSourceSession {
         let checked = finish_canonical_source(checked, typed, digest, PrecompiledDeclarationEnvironment::default())?;
         bind_recipe(checked, &contract)
     }
+
+    /// Check the ordinary destination after all original blocks have run.
+    /// The caller must have verified every predecessor's admitted outcome;
+    /// this method independently rechecks the generated items in context.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn check_expanded_with_prior_output(
+        &self, prior: &[PriorComptimeBlockOutput],
+    ) -> Result<CheckedModule, PipelineError> {
+        let blocks = self.original_block_items();
+        if blocks.len() != prior.len() || prior.iter().zip(&blocks)
+            .any(|(output, index)| output.original_item != *index) {
+            return Err(refuse("comptime destination requires every original block output in order"));
+        }
+        if prior.iter().flat_map(|output| &output.items).any(|(item, _)| matches!(item, Item::Comptime(_))) {
+            return Err(refuse("generated comptime blocks need a separate authenticated execution step"));
+        }
+        let (_, original) = self.modules.iter().find(|(name, _)| name == &self.selected)
+            .expect("selected raw module retained");
+        let expanded = materialize_prior(original, prior, true);
+        let modules = self.modules.iter().map(|(name, module)| (
+            name.clone(), if name == &self.selected { expanded.clone() } else { module.clone() },
+        )).collect();
+        let mut hash = blake3::Hasher::new();
+        hash.update(b"witchy.comptime-expanded-source.v1\0");
+        hash.update(&REWRITE_VERSION.to_le_bytes());
+        hash.update(&self.original_digest);
+        hash.update(&(self.selected.len() as u64).to_le_bytes());
+        hash.update(self.selected.as_bytes());
+        hash_prior_items(&mut hash, prior)?;
+        for (name, owner) in self.owners.assignments() {
+            super::super::static_evaluation::hash_owner_assignment(&mut hash, name, owner);
+        }
+        let digest = *hash.finalize().as_bytes();
+        let expand = ComptimeExpander::with_sibling_request(require_expansion_free, |_| false);
+        let (checked, typed) = link_checked_with(modules, &self.selected, expand, LinkMode::Production,
+            Some(&self.user_modules), true, Some(self.owners.clone()))?;
+        let typed = typed.ok_or_else(|| refuse("comptime destination did not retain checked source"))?;
+        finish_canonical_source(checked, typed, digest, PrecompiledDeclarationEnvironment::default())
+    }
+}
+
+fn materialize_prior(module: &Module, prior: &[PriorComptimeBlockOutput], keep_main: bool) -> Module {
+    let mut prepared = module.clone();
+    prepared.items.clear();
+    prepared.item_lines.clear();
+    let mut prior_cursor = 0;
+    for (index, original) in module.items.iter().enumerate() {
+        if matches!(original, Item::Comptime(_)) {
+            if prior_cursor < prior.len() && prior[prior_cursor].original_item == index {
+                for (generated, origin) in &prior[prior_cursor].items {
+                    prepared.items.push(generated.clone());
+                    prepared.item_lines.push(origin.definition_line);
+                }
+                prior_cursor += 1;
+            }
+        } else if keep_main || !matches!(original, Item::Function(function) if function.name == "main") {
+            prepared.items.push(original.clone());
+            prepared.item_lines.push(module.item_lines.get(index).copied().unwrap_or(0));
+        }
+    }
+    prepared
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn hash_prior_items(hash: &mut blake3::Hasher, prior: &[PriorComptimeBlockOutput]) -> Result<(), PipelineError> {
+    hash.update(&(prior.len() as u64).to_le_bytes());
+    for output in prior {
+        hash.update(&(output.original_item as u64).to_le_bytes());
+        hash.update(&(output.items.len() as u64).to_le_bytes());
+        for (item, origin) in &output.items {
+            let bytes = postcard::to_allocvec(&(item, origin))
+                .map_err(|error| refuse(format!("comptime prior item could not be encoded: {error}")))?;
+            hash.update(&(bytes.len() as u64).to_le_bytes());
+            hash.update(&bytes);
+        }
+    }
+    Ok(())
 }
 
 // This fixed callback never mutates any module. A public callback here could

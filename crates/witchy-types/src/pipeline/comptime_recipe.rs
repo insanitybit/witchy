@@ -5,7 +5,7 @@ use crate::runtime_type::PackageSource;
 use witchy_syntax::compiler_session::CompilerSessionContract;
 
 mod block_session;
-pub use block_session::ComptimeSourceSession;
+pub use block_session::{ComptimeSourceSession, PriorComptimeBlockOutput};
 
 #[derive(Debug)]
 pub struct CheckedComptimeRecipe { checked: CheckedModule }
@@ -13,6 +13,14 @@ pub struct CheckedComptimeRecipe { checked: CheckedModule }
 impl CheckedComptimeRecipe {
     pub fn canonical_source(&self) -> &CanonicalCheckedSource {
         self.checked.canonical_source().expect("checked comptime recipe retains source")
+    }
+
+    /// Exact source identity carried by the admitted compiler-session launch.
+    /// The runtime repeats this identity in its opaque execution outcome.
+    pub fn session_source_digest(&self) -> [u8; 32] {
+        CompilerSessionContract::decode(self.canonical_source().launch_contract_payload())
+            .expect("checked comptime recipe retains its bound compiler session")
+            .source_digest()
     }
 }
 

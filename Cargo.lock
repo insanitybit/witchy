@@ -2986,6 +2986,7 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "foldhash 0.2.0",
+ "postcard",
  "sha2 0.11.0",
  "witchy-canonical-source",
  "witchy-cap-model",

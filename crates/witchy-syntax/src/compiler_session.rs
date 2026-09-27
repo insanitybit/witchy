@@ -63,6 +63,7 @@ pub enum ComptimeItemEmission {
     },
 }
 
+#[cfg_attr(not(target_arch = "wasm32"), derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, PartialEq)]
 pub struct ComptimeHoleOrigin {
     pub category: SyntaxCategory,
@@ -70,6 +71,7 @@ pub struct ComptimeHoleOrigin {
     pub invocation_line: u32,
 }
 
+#[cfg_attr(not(target_arch = "wasm32"), derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, PartialEq)]
 pub struct ComptimeSyntaxOrigin {
     pub definition_line: u32,
