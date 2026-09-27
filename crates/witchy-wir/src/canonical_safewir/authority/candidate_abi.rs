@@ -97,22 +97,23 @@ fn validate_candidate_abi_bindings_with<S: ModuleStage>(
     }
     for binding in candidate.source_abi_bindings().entries() {
         let ordinal = binding.source_declaration_ordinal();
-        for proof in source.task_operand_proofs_at(ordinal) {
-            if source.source_execution_mode_at(ordinal) != Some(proof.source_mode())
+        let item = source.closed_callable_item_ordinal(ordinal)
+            .ok_or(CandidateAbiBindingError::SourceAbiMismatch { source_declaration: ordinal })?;
+        for proof in source.task_operand_proofs_at(item) {
+            if source.source_execution_mode_at(item) != Some(proof.source_mode())
                 || (proof.source_mode().is_opt() && !proof.opt_compatible())
             {
                 return Err(CandidateAbiBindingError::SourceAbiMismatch { source_declaration: ordinal });
             }
         }
         if let Some(witchy_syntax::ast::Item::Function(source_function)) =
-            source.module().items.get(binding.source_declaration_ordinal() as usize)
+            source.module().items.get(item as usize)
             && witchy_syntax::suspension::source_suspension(source_function).is_some()
         {
-            let ordinal = binding.source_declaration_ordinal();
-            let Some(proof) = source.task_await_proof_at(ordinal) else {
+            let Some(proof) = source.task_await_proof_at(item) else {
                 return Err(CandidateAbiBindingError::SourceAbiMismatch { source_declaration: ordinal });
             };
-            if source.source_execution_mode_at(ordinal) != Some(proof.source_mode())
+            if source.source_execution_mode_at(item) != Some(proof.source_mode())
                 || (proof.source_mode().is_opt() && !proof.opt_compatible())
             {
                 return Err(CandidateAbiBindingError::SourceAbiMismatch { source_declaration: ordinal });
@@ -435,6 +436,7 @@ fn validate_candidate_abi_bindings_with<S: ModuleStage>(
             .copied().unwrap_or_else(|| *bound_functions.keys().next().expect("nonempty mismatch"));
         return Err(CandidateAbiBindingError::MissingCandidateFunction { function });
     }
+    super::task_behavior::validate(candidate, source, &functions)?;
     Ok(())
 }
 

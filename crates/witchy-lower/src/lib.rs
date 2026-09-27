@@ -18,5 +18,8 @@ mod canonical_layouts;
 #[doc(hidden)]
 pub use canonical_layouts::self_checks as canonical_layout_self_checks;
 mod canonical_pipeline;
+#[doc(hidden)]
+#[path = "canonical_pipeline_checks.rs"]
+pub mod canonical_pipeline_checks;
 pub mod codegen;
 pub mod escape;

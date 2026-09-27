@@ -105,6 +105,11 @@ mod authority {
     fn final_authority_refuses_a_mismatched_closure_witness() {
         cases::authority::final_authority_refuses_a_mismatched_closure_witness(&Frontend);
     }
+
+    #[test]
+    fn final_authority_refuses_a_mismatched_task_behavior_manifest() {
+        cases::authority::final_authority_refuses_a_mismatched_task_behavior_manifest(&Frontend);
+    }
 }
 
 /// Formerly `witchy-wir` `canonical_safewir::owner_authority::tests`.

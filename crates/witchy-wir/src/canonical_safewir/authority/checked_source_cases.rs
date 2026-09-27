@@ -340,3 +340,17 @@ pub fn final_authority_refuses_a_mismatched_closure_witness(checker: &dyn Source
         ));
     });
 }
+
+pub fn final_authority_refuses_a_mismatched_task_behavior_manifest(checker: &dyn SourceChecker) {
+    with_source(checker, &mut |checked| {
+        let source = checked.view;
+        let mut checked = check_initial_with_witness(candidate_bound_to_source(&source), &source)
+            .expect("initial authority");
+        checked.witness.checked_source_witness.task_behavior_manifest_digest = [0xa5; 32];
+
+        assert!(matches!(
+            validate_final(checked, &source),
+            Err(FinalValidationError::SourceWitnessDoesNotMatchInitial)
+        ));
+    });
+}

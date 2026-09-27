@@ -7,6 +7,11 @@
 use witchy_lower::codegen::{compile_checked_module_artifact, compile_checked_module_binary};
 use witchy_types::pipeline::CheckedModule;
 
+#[test]
+fn task_producer_substitution_requires_actual_execution_provenance() {
+    witchy_lower::canonical_pipeline_checks::task_producer_substitution_requires_actual_execution_provenance();
+}
+
 fn no_expand(
     _name: &str,
     _module: &mut witchy_syntax::ast::Module,

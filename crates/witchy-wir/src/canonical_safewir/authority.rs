@@ -11,6 +11,7 @@ use super::{
 
 mod candidate_abi;
 use self::candidate_abi::*;
+mod task_behavior;
 mod source_abi;
 pub(crate) use self::source_abi::*;
 mod signature_relations;
@@ -42,6 +43,7 @@ struct CheckedSourceWitness {
     proper_tail_manifest_digest: ModuleDigest,
     callable_abi_manifest_digest: [u8; 32],
     closure_witness_digest: [u8; 32],
+    task_behavior_manifest_digest: [u8; 32],
     launch_contract_digest: [u8; 32],
     obligations_digest: [u8; 32],
 }
@@ -295,6 +297,8 @@ impl ValidatedSafeWir {
                 != self.checked_source_witness.callable_abi_manifest_digest
             || witness.closure_witness_digest()
                 != self.checked_source_witness.closure_witness_digest
+            || witness.task_behavior_manifest_digest()
+                != self.checked_source_witness.task_behavior_manifest_digest
             || witness.launch_contract_digest()
                 != self.checked_source_witness.launch_contract_digest
             || witness.obligations_digest()
@@ -322,6 +326,7 @@ impl ExactModuleWitness {
                     &checked_lowering.proper_tail_manifest_digest.bytes(),
                     &checked_lowering.checked_source_witness.callable_abi_manifest_digest,
                     &checked_lowering.checked_source_witness.closure_witness_digest,
+                    &checked_lowering.checked_source_witness.task_behavior_manifest_digest,
                     &checked_lowering.checked_source_witness.obligations_digest,
                 ],
             )
@@ -510,6 +515,7 @@ pub enum CandidateAbiBindingError {
     ClosureSignatureMismatch { closure: u32 },
     MissingClosureEnvironmentParameter { function: super::FunctionId },
     AdapterShapeMismatch { adapter: super::FunctionId },
+    TaskBehaviorMismatch { function: super::FunctionId },
     VmService(String),
     CompilerSession(String),
 }
@@ -590,6 +596,7 @@ pub fn check_initial_with_witness(
         proper_tail_manifest_digest: expected,
         callable_abi_manifest_digest: source.callable_abi_manifest().digest(),
         closure_witness_digest: source.source_witness().closure_witness_digest(),
+        task_behavior_manifest_digest: source.source_witness().task_behavior_manifest_digest(),
         launch_contract_digest: source.source_witness().launch_contract_digest(),
         obligations_digest: source
             .source_witness()
@@ -681,6 +688,8 @@ fn validate_final_inner(
                 != source.callable_abi_manifest().digest()
             || checked_lowering.checked_source_witness.closure_witness_digest
                 != source.source_witness().closure_witness_digest()
+            || checked_lowering.checked_source_witness.task_behavior_manifest_digest
+                != source.source_witness().task_behavior_manifest_digest()
             || checked_lowering.checked_source_witness.launch_contract_digest
                 != source.source_witness().launch_contract_digest()
             || module.launch_contract_payload() != source.launch_contract_payload()
@@ -737,6 +746,8 @@ fn validate_optimized_final_inner(
                 != source.callable_abi_manifest().digest()
             || checked_lowering.checked_source_witness.closure_witness_digest
                 != source.source_witness().closure_witness_digest()
+            || checked_lowering.checked_source_witness.task_behavior_manifest_digest
+                != source.source_witness().task_behavior_manifest_digest()
             || checked_lowering.checked_source_witness.launch_contract_digest
                 != source.source_witness().launch_contract_digest()
             || module.launch_contract_payload() != source.launch_contract_payload()
@@ -821,6 +832,7 @@ fn check_initial_with_expected_digest(
         proper_tail_manifest_digest: expected,
         callable_abi_manifest_digest: [0; 32],
         closure_witness_digest: [0; 32],
+        task_behavior_manifest_digest: [0; 32],
         obligations_digest: [0; 32],
         launch_contract_digest: [0; 32],
     };
