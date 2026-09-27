@@ -1016,6 +1016,9 @@ fn check_memory_cfg(
     // admits it. Only a failure that stands once every state has converged
     // is reported (the earliest block's).
     let mut failures: BTreeMap<BlockId, InitialCheckError> = BTreeMap::new();
+    // An unchanged incoming state gives the same checked block body. Keep
+    // edge transfer and meet live: they depend on the current successor state.
+    let mut checked_bodies = BTreeMap::new();
     while let Some(block_id) = pending.pop_front() {
         iterations += 1;
         if iterations > maximum_iterations {
@@ -1027,7 +1030,7 @@ fn check_memory_cfg(
         memory.restore(incoming[&block_id].clone());
         let checked = check_block_flow(
             function, block, signature, signatures, imports, catalog, functions, blocks,
-            definition_sites, dominators, &mut memory, &incoming,
+            definition_sites, dominators, &mut memory, &incoming, &mut checked_bodies,
         );
         let updates = match checked {
             Ok(updates) => {
@@ -1086,36 +1089,44 @@ fn check_block_flow(
     dominators: &Dominators,
     memory: &mut MemoryChecker<'_>,
     incoming: &BTreeMap<BlockId, memory::MemoryState>,
+    checked_bodies: &mut BTreeMap<BlockId, (memory::MemoryState, memory::MemoryState)>,
 ) -> Result<Vec<(BlockId, memory::MemoryState)>, InitialCheckError> {
-    for (operation_index, operation) in block.operations.iter().enumerate() {
+    let input = memory.snapshot();
+    if let Some((previous_input, body_result)) = checked_bodies.get(&block.id)
+        && previous_input == &input {
+        memory.restore(body_result.clone());
+    } else {
+        for (operation_index, operation) in block.operations.iter().enumerate() {
+            check_uses_dominate(
+                function,
+                block.id,
+                operation_index,
+                operation_uses(operation),
+                definition_sites,
+                dominators,
+            )?;
+            check_operation(function, operation, signatures, imports, catalog, functions, memory)?;
+        }
         check_uses_dominate(
             function,
             block.id,
-            operation_index,
-            operation_uses(operation),
+            block.operations.len(),
+            terminator_uses(&block.terminator),
             definition_sites,
             dominators,
         )?;
-        check_operation(function, operation, signatures, imports, catalog, functions, memory)?;
+        check_terminator(
+            function,
+            block.id,
+            &block.terminator,
+            signature,
+            signatures,
+            functions,
+            blocks,
+            memory,
+        )?;
+        checked_bodies.insert(block.id, (input, memory.snapshot()));
     }
-    check_uses_dominate(
-        function,
-        block.id,
-        block.operations.len(),
-        terminator_uses(&block.terminator),
-        definition_sites,
-        dominators,
-    )?;
-    check_terminator(
-        function,
-        block.id,
-        &block.terminator,
-        signature,
-        signatures,
-        functions,
-        blocks,
-        memory,
-    )?;
     let mut updates: Vec<(BlockId, memory::MemoryState)> = Vec::new();
     for (target, arguments) in memory_successor_edges(&block.terminator, memory) {
         let target_block = blocks[&target];
