@@ -92,6 +92,47 @@ pub enum TaskExecutionProof {
     Variants(BTreeMap<usize, Vec<Self>>),
 }
 
+/// Symbolic behavior of one exact checked source declaration. This describes
+/// its call result, not merely the mode of the declaring body: async results
+/// are wrapped once in `Task`, while synchronous relays retain projections of
+/// their actual arguments. Candidate admission must verify the transformed
+/// body and actual value flow before relying on this contract.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskBehaviorContract {
+    source_module: String,
+    source_item: u32,
+    source_method: Option<u32>,
+    source_mode: SourceExecutionMode,
+    conventions: Vec<Convention>,
+    result: TaskExecutionProof,
+    required_opt_inputs: Vec<TaskExecutionProof>,
+}
+
+impl TaskBehaviorContract {
+    #[doc(hidden)]
+    pub fn from_checked_frontend(
+        source_module: String,
+        source_item: u32,
+        source_method: Option<u32>,
+        source_mode: SourceExecutionMode,
+        conventions: Vec<Convention>,
+        result: TaskExecutionProof,
+        required_opt_inputs: Vec<TaskExecutionProof>,
+    ) -> Self {
+        Self { source_module, source_item, source_method, source_mode,
+            conventions, result, required_opt_inputs }
+    }
+
+    pub fn source_identity(&self) -> (&str, u32, Option<u32>) {
+        (&self.source_module, self.source_item, self.source_method)
+    }
+
+    pub fn source_mode(&self) -> SourceExecutionMode { self.source_mode }
+    pub fn conventions(&self) -> &[Convention] { &self.conventions }
+    pub fn result(&self) -> &TaskExecutionProof { &self.result }
+    pub fn required_opt_inputs(&self) -> &[TaskExecutionProof] { &self.required_opt_inputs }
+}
+
 /// One checked pre-CPS await and the exact value-flow proof for its operand.
 /// The source coordinate is stable across final function renaming; an optional
 /// final item binding is established only after CPS and specialization.

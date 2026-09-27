@@ -116,6 +116,38 @@ struct Summary {
     required_opt_inputs: Vec<Proof>,
 }
 
+/// A declaration summary from the exact checked AST. Unlike the internal
+/// fixpoint's body result, `result` is the value produced by calling it.
+pub(crate) struct TaskBehaviorSummary {
+    pub source_mode: SourceExecutionMode,
+    pub conventions: Vec<Convention>,
+    pub result: Proof,
+    pub required_opt_inputs: Vec<Proof>,
+}
+
+impl TaskBehaviorSummary {
+    fn from_summary(module: &Module, function: &Function, summary: Summary) -> Self {
+        let source_mode = source_execution_mode(function, &module.modes);
+        let result = if function.is_async {
+            Proof::Task(source_mode, Box::new(summary.result))
+        } else { summary.result };
+        Self {
+            source_mode,
+            conventions: function.params.iter().map(|parameter| parameter.convention).collect(),
+            result: result.bounded(4096),
+            required_opt_inputs: summary.required_opt_inputs,
+        }
+    }
+}
+
+/// Pointer keys are transient identities in the exact checked AST allocation,
+/// never serialized IDs. The pipeline binds both maps to checked source
+/// coordinates before moving or transforming that AST.
+pub(crate) struct CheckedTaskBehavior {
+    pub await_origins: BTreeMap<usize, Proof>,
+    pub declarations: BTreeMap<usize, TaskBehaviorSummary>,
+}
+
 struct Analyzer<'a> {
     module: &'a Module,
     table: &'a TypeTable,
@@ -1127,6 +1159,21 @@ pub(crate) fn checked_await_origins(
     module: &Module,
     table: &TypeTable,
 ) -> Result<BTreeMap<usize, Proof>, TypeError> {
+    analyze_task_behavior(module, table, false).map(|behavior| behavior.await_origins)
+}
+
+pub(crate) fn checked_task_behavior(
+    module: &Module,
+    table: &TypeTable,
+) -> Result<CheckedTaskBehavior, TypeError> {
+    analyze_task_behavior(module, table, true)
+}
+
+fn analyze_task_behavior(
+    module: &Module,
+    table: &TypeTable,
+    export_declarations: bool,
+) -> Result<CheckedTaskBehavior, TypeError> {
     let definitions = type_definitions(module);
     let functions: Vec<_> = module
         .items
@@ -1181,19 +1228,37 @@ pub(crate) fn checked_await_origins(
         return Err(TypeError { message: "task execution provenance summaries did not converge after bounded result widening".into() });
     }
     let mut awaits = BTreeMap::new();
-    for function in functions {
+    for function in &functions {
         awaits.extend(analyze_function(module, table, &definitions, &summaries, function, true)?.1);
     }
+    let mut declarations = BTreeMap::new();
     for item in &module.items {
         if let Item::Impl(definition) = item {
             for method in &definition.methods {
                 if method.is_async {
-                    awaits.extend(analyze_function(module, table, &definitions, &summaries, method, true)?.1);
+                    let (summary, origins) = analyze_function(module, table, &definitions, &summaries, method, true)?;
+                    awaits.extend(origins);
+                    if export_declarations {
+                        declarations.insert(method as *const Function as usize,
+                            TaskBehaviorSummary::from_summary(module, method, summary));
+                    }
                 }
             }
         }
     }
-    Ok(awaits)
+    if export_declarations {
+        for function in functions {
+            // Export the converged result, including any conservative widening,
+            // rather than a fresh unfolding of a recursive body. The separate
+            // validation pass above still checks every opt requirement.
+            let summary = summaries.remove(&function.name).ok_or_else(|| TypeError {
+                message: format!("checked task behavior lacks declaration `{}`", function.name),
+            })?;
+            declarations.insert(function as *const Function as usize,
+                TaskBehaviorSummary::from_summary(module, function, summary));
+        }
+    }
+    Ok(CheckedTaskBehavior { await_origins: awaits, declarations })
 }
 
 pub(crate) fn verify(module: &Module, table: &TypeTable) -> Result<(), TypeError> {
