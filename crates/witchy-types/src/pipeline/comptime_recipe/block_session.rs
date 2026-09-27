@@ -720,17 +720,12 @@ impl ComptimeSourceSession {
             if !seen.insert(producer.clone()) || !self.user_modules.contains(producer) {
                 return Err(refuse("comptime graph requires unique loader-owned producers"));
             }
-            let baseline = Self::from_source_bundle(
-                self.raw_sources.clone(), producer, self.user_modules.clone(), self.owners.clone(),
-            )?;
+            let baseline = self.select_module(producer)?;
             let dependencies = baseline.producer_dependency_names(&producers);
             let predecessors = outputs.iter().filter(|(name, _)| dependencies.contains(name)
                 && name != producer && seen.contains(name))
                 .cloned().collect::<Vec<_>>();
-            let session = Self::from_source_bundle_with_predecessors(
-                self.raw_sources.clone(), producer, self.user_modules.clone(), self.owners.clone(),
-                &predecessors,
-            )?;
+            let session = baseline.with_predecessors(&predecessors)?;
             if session.original_block_items().is_empty() || session.next_block_site(prior)?.is_some() {
                 return Err(refuse("comptime graph requires every producer block output in order"));
             }
