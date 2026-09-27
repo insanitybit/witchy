@@ -18,9 +18,9 @@ fn variant(index: usize) -> String { format!("{PAYLOAD}_{index}") }
 /// are consumed before structural mutation; the caller derives final witnesses
 /// from the fallibly rechecked result, retaining source bytes and loader owners.
 ///
-/// The flag reports whether any message site was rewritten. Without one the
-/// typed module is returned untouched: nothing was pruned or retained, so no
-/// post-message specialization can be pending.
+/// The flag reports whether a message bridge was rewritten. A reachable
+/// reserved message type still needs a closed checked carrier when no bridge
+/// exists; the empty-site carrier has no constructible source value.
 pub(crate) fn prepare(
     typed: TypedModule,
     catalog: Option<&RuntimeDeclarationCatalog>,
@@ -83,7 +83,9 @@ pub(crate) fn prepare(
             Ok(())
         })?;
     }
-    if sites.is_empty() { return Ok((typed, false)); }
+    if sites.is_empty() && !module_contains_message(typed.module()) {
+        return Ok((typed, false));
+    }
     // Generated names are source-unspellable; also reject collisions in any
     // compiler input rather than treating a matching name as authority.
     for item in &typed.module().items {
@@ -134,9 +136,18 @@ pub(crate) fn prepare(
         Item::Comptime(_) => false,
         _ => true,
     });
-    let variants = payloads.values().enumerate().map(|(index, ty)| Variant {
+    let mut variants: Vec<_> = payloads.values().enumerate().map(|(index, ty)| Variant {
         name: variant(index), line: 0, fields: vec![ty.clone()], field_names: vec![], field_lines: vec![],
     }).collect();
+    if variants.is_empty() {
+        // The checker and physical layout require a closed, nonempty sum.
+        // No bridge can produce this private tag; a Unit payload supplies a
+        // physical representation without granting a message construction.
+        variants.push(Variant {
+            name: variant(0), line: 0, fields: vec![Type::Tuple(vec![])],
+            field_names: vec![], field_lines: vec![],
+        });
+    }
     module.items.push(Item::Type(TypeDef {
         name: PAYLOAD.into(), params: vec![], variants, derives: vec![],
         must_consume: false, sealed: true, is_capability: false, grantable: false,
@@ -161,8 +172,35 @@ pub(crate) fn prepare(
         }
     }
     typeck::annotate_checked(module)
-        .map(|typed| (typed, true))
+        .map(|typed| (typed, !sites.is_empty()))
         .map_err(|error| format!("canonical message recheck: {error}"))
+}
+
+fn type_contains_message(ty: &Type) -> bool {
+    if matches!(ty, Type::Named(name, args) if name == "__Msg" && args.is_empty()) {
+        return true;
+    }
+    match ty {
+        Type::Named(_, args) | Type::Dyn(_, args) | Type::Tuple(args) =>
+            args.iter().any(type_contains_message),
+        Type::Qualified(_, inner) | Type::Slice(inner) => type_contains_message(inner),
+        Type::Fn(args, result, _, _) =>
+            args.iter().any(type_contains_message) || type_contains_message(result),
+        Type::RecordCompose { base, fields } =>
+            type_contains_message(base) || fields.iter().any(|(_, ty)| type_contains_message(ty)),
+    }
+}
+
+fn module_contains_message(module: &witchy_syntax::ast::Module) -> bool {
+    module.items.iter().any(|item| match item {
+        Item::Type(definition) => definition.variants.iter()
+            .any(|variant| variant.fields.iter().any(type_contains_message)),
+        Item::TypeAlias { ty, .. } => type_contains_message(ty),
+        Item::Function(function) => function.params.iter()
+            .any(|parameter| parameter.ty.as_ref().is_some_and(type_contains_message))
+            || function.ret.as_ref().is_some_and(type_contains_message),
+        _ => false,
+    })
 }
 
 /// The fresh checker sees only the pruned module produced by message rewriting.
