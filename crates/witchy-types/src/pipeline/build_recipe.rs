@@ -1,5 +1,6 @@
-//! Production BuildOut/BuildRead/BuildEnv/BuildExec/BuildNet recipe v2. Raw source and loader ownership are inputs;
-//! no AST, selected ordinal, generated body, or claimed digest is accepted.
+//! Production BuildOut/BuildRead/BuildEnv/BuildExec/BuildNet recipes. The v2
+//! source route binds raw bytes; v3 also binds admitted comptime output. Loader
+//! ownership and original declaration selection remain compiler controlled.
 use super::*;
 use witchy_syntax::ast::{Convention, Expr, Item, Stmt, Type};
 
@@ -8,6 +9,7 @@ const WRAPPER: &str = "witchy_build_recipe_entry";
 
 #[derive(Debug)]
 pub struct BuildRecipeIdentity {
+    version: u32,
     original: [u8; 32],
     derived: [u8; 32],
     declaration: String,
@@ -20,7 +22,7 @@ impl BuildRecipeIdentity {
     pub fn derived_source_digest(&self) -> [u8; 32] { self.derived }
     pub fn selected_declaration(&self) -> &str { &self.declaration }
     pub fn declaration_ordinal(&self) -> u64 { self.ordinal }
-    pub fn recipe_version(&self) -> u32 { VERSION }
+    pub fn recipe_version(&self) -> u32 { self.version }
     /// Ordered canonical host kinds, derived from the original checked signature.
     pub fn parameter_kinds(&self) -> &[u8] { &self.parameter_kinds }
 }
@@ -38,6 +40,12 @@ impl CheckedBuildRecipe {
         self.checked.canonical_source.as_ref().expect("sealed build recipe has source")
     }
     pub fn identity(&self) -> &BuildRecipeIdentity { &self.identity }
+}
+
+pub(super) fn seal_admitted_build_recipe(
+    original: CheckedModule, checked: CheckedModule, identity: BuildRecipeIdentity,
+) -> CheckedBuildRecipe {
+    CheckedBuildRecipe { original, checked, identity }
 }
 
 fn refused(message: impl Into<String>) -> PipelineError {
@@ -77,12 +85,25 @@ pub fn check_build_recipe_from_source_bundle(
     let (original, original_typed) = link_checked_with(modules.clone(), entry, expand,
         LinkMode::Production, Some(user_modules), true, Some(owners.clone()))?;
     let original_typed = original_typed.ok_or_else(|| refused("original build check returned no typed source"))?;
+    let original_digest = checked_source_digest(&sources, entry, &PrecompiledDeclarationEnvironment::default());
+    let (checked, identity) = finish_build_recipe_from_checked_original(
+        &mut modules, entry, expand, user_modules, owners, &original_typed, original_digest, None, None,
+    )?;
+    Ok(CheckedBuildRecipe { original, checked, identity })
+}
+
+pub(super) fn finish_build_recipe_from_checked_original(
+    modules: &mut Vec<(String, Module)>, entry: &str, expand: ComptimeExpander,
+    user_modules: &HashSet<String>, owners: AuthenticatedModuleOwners,
+    original_typed: &typeck::TypedModule, original_digest: [u8; 32],
+    raw_entry: Option<&Module>, admitted_digest: Option<[u8; 32]>,
+) -> Result<(CheckedModule, BuildRecipeIdentity), PipelineError> {
     let (_, module) = modules.iter_mut().find(|(name, _)| name == entry)
         .ok_or_else(|| refused("build entry source missing"))?;
     if module.items.iter().any(|item| matches!(item, Item::Function(f) if f.name == WRAPPER)) {
         return Err(refused("build source collides with the compiler recipe entry"));
     }
-    let targets = module.items.iter().enumerate().filter_map(|(index, item)| match item {
+    let targets = raw_entry.unwrap_or(module).items.iter().enumerate().filter_map(|(index, item)| match item {
         Item::Function(f) if f.name == "build" => Some((index, f)), _ => None,
     }).collect::<Vec<_>>();
     let [(ordinal, target)] = targets.as_slice() else {
@@ -124,18 +145,21 @@ pub fn check_build_recipe_from_source_bundle(
     for kind in &parameter_kinds {
         parameter_abi.extend_from_slice(&[*kind, 1]); // private Write or Read right
     }
-    let original_digest = checked_source_digest(&sources, entry, &PrecompiledDeclarationEnvironment::default());
     let mut hash = blake3::Hasher::new();
     hash.update(b"witchy.checked-build-recipe.production.build-io\0");
-    hash.update(&VERSION.to_le_bytes());
+    // A build wrapper over admitted output needs a distinct recipe identity:
+    // raw bytes alone do not bind the generated helper bodies it will execute.
+    let version = if admitted_digest.is_some() { VERSION + 1 } else { VERSION };
+    hash.update(&version.to_le_bytes());
     hash.update(&original_digest);
+    if let Some(digest) = admitted_digest { hash.update(&digest); }
     hash.update(&(entry.len() as u64).to_le_bytes());
     hash.update(entry.as_bytes());
     hash.update(&ordinal.to_le_bytes());
     hash.update(&(declaration.len() as u64).to_le_bytes());
     hash.update(declaration.as_bytes());
     hash.update(&parameter_abi);
-    let identity = BuildRecipeIdentity { original: original_digest, derived: *hash.finalize().as_bytes(), declaration, ordinal, parameter_kinds };
+    let identity = BuildRecipeIdentity { version, original: original_digest, derived: *hash.finalize().as_bytes(), declaration, ordinal, parameter_kinds };
 
     // A build capability is intentionally NOT legal in ordinary main. A fixed
     // compiler wrapper is checked as an ordinary callable; only the sealed
@@ -158,7 +182,7 @@ pub fn check_build_recipe_from_source_bundle(
     }
     module.items.extend(generated.items);
     module.item_lines.push(0);
-    let (checked, typed) = link_checked_with(modules, entry, expand, LinkMode::Production,
+    let (checked, typed) = link_checked_with(std::mem::take(modules), entry, expand, LinkMode::Production,
         Some(user_modules), true, Some(owners))?;
     let typed = typed.ok_or_else(|| refused("build recipe check returned no typed source"))?;
     let entry_name = format!("{entry}.{WRAPPER}");
@@ -204,5 +228,5 @@ pub fn check_build_recipe_from_source_bundle(
     payload.extend_from_slice(&parameter_abi);
     bind_checked_recipe_launch_contract(source, payload);
     source.build_entry = Some(entry_name);
-    Ok(CheckedBuildRecipe { original, checked, identity })
+    Ok((checked, identity))
 }

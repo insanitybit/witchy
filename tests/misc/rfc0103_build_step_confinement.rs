@@ -74,6 +74,28 @@ fn production_build_step_runs_in_a_confined_child() {
 }
 
 #[test]
+fn build_recipe_uses_admitted_original_comptime_output() {
+    let dir = TempDir::new("build-admitted-comptime");
+    let source = dir.join("build.witchy");
+    let out = dir.join("out");
+    std::fs::write(&source, "comptime:\n    emit_item(quote item:\n        fn generated_text() -> String:\n            \"fn value() -> Int:\\n    42\\n\"\n    )\nfn build(out: BuildOut):\n    out.write_out(\"generated.witchy\", generated_text())\n").unwrap();
+    let result = Command::new(BIN).args([
+        "build-step", source.to_str().unwrap(), "--out", out.to_str().unwrap(),
+    ]).output().unwrap();
+    assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+    assert_eq!(std::fs::read_to_string(out.join("generated.witchy")).unwrap(),
+        "fn value() -> Int:\n    42\n");
+
+    std::fs::write(&source, "comptime:\n    emit_item(quote item:\n        fn build(out: BuildOut):\n            out.write_out(\"forged.witchy\", \"bad\")\n    )\n").unwrap();
+    let forged = Command::new(BIN).args([
+        "build-step", source.to_str().unwrap(), "--out", out.to_str().unwrap(),
+    ]).output().unwrap();
+    assert!(!forged.status.success(), "generated syntax cannot select a build declaration");
+    assert!(String::from_utf8_lossy(&forged.stderr).contains("exactly one `build` declaration"));
+    assert!(!out.join("forged.witchy").exists());
+}
+
+#[test]
 fn production_build_read_uses_ordered_explicit_roots_in_the_confined_child() {
     let dir = TempDir::new("build-read-child");
     let first = dir.mkdir("first");

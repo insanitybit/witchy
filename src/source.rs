@@ -113,6 +113,16 @@ pub(crate) fn link_build_file(path: &str) -> Result<witchy_types::pipeline::Chec
     let (sources, entry, user_modules, owners) = load_file_modules_authenticated(
         path, &HashMap::new(), owner, &HashMap::new(),
     )?;
+    let selected = sources.iter().find(|(name, _)| name == &entry)
+        .ok_or_else(|| format!("loaded build source lacks entry `{entry}`"))?;
+    let source = std::str::from_utf8(&selected.1)
+        .map_err(|error| format!("{entry}: source is not UTF-8: {error}"))?;
+    let module = parser::parse_module(source).map_err(|error| format!("{entry}: {error}"))?;
+    if module.items.iter().any(|item| matches!(item, ast::Item::Comptime(_))) {
+        return witchy::canonical_comptime::check_build_recipe_source_bundle(
+            sources, &entry, user_modules, owners, witchy::canonical_comptime::source_limits(),
+        );
+    }
     witchy_types::pipeline::check_build_recipe_from_source_bundle(
         sources, &entry, comptime::EXPANDER, &user_modules, owners,
     ).map_err(|error| error.to_string())

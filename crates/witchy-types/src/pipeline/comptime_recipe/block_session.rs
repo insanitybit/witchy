@@ -269,6 +269,31 @@ impl ComptimeSourceSession {
         let checked = finish_canonical_source(checked, typed, digest, PrecompiledDeclarationEnvironment::default())?;
         Ok((checked, display))
     }
+
+    /// Derive the sealed build wrapper from the same admitted expansion that
+    /// checked the original source. Target selection stays on the raw entry;
+    /// emitted syntax may supply helpers but cannot mint a new `build` target.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn check_expanded_build_recipe(
+        &self, prior: &[PriorComptimeBlockOutput],
+    ) -> Result<super::super::CheckedBuildRecipe, PipelineError> {
+        let (original, expanded) = self.check_expanded_for_entry(prior, &self.selected)?;
+        let (_, raw_entry) = self.modules.iter().find(|(name, _)| name == &self.selected)
+            .expect("selected raw entry retained");
+        let mut modules = self.modules.iter().map(|(name, module)| (
+            name.clone(), if name == &self.selected { expanded.clone() } else { module.clone() },
+        )).collect();
+        let expand = ComptimeExpander::with_sibling_request(require_expansion_free, |_| false);
+        let admitted = original.canonical_source()
+            .ok_or_else(|| refuse("admitted build source lacks canonical authority"))?;
+        let original_typed = admitted.typed_module();
+        let admitted_digest = admitted.source_witness().source_bundle_digest();
+        let (checked, identity) = super::super::build_recipe::finish_build_recipe_from_checked_original(
+            &mut modules, &self.selected, expand, &self.user_modules, self.owners.clone(),
+            original_typed, self.original_digest, Some(raw_entry), Some(admitted_digest),
+        )?;
+        Ok(super::super::build_recipe::seal_admitted_build_recipe(original, checked, identity))
+    }
 }
 
 /// A compiler recipe executes only its selected block and helpers reachable
