@@ -3919,6 +3919,7 @@ fn lower_function(
         source_body: body,
         next_value: 0,
         values: BTreeMap::new(),
+        static_data_values: HashSet::new(),
         bindings: HashMap::new(),
         binding_scopes: vec![HashMap::new()],
         string_lengths: HashMap::new(),
@@ -4527,6 +4528,9 @@ struct FunctionLowerer<'a> {
     source_body: &'a witchy_syntax::ast::Block,
     next_value: u32,
     values: BTreeMap<ValueId, ValueType>,
+    /// StaticData operations only append, so their destinations can be
+    /// answered without searching every block built so far.
+    static_data_values: HashSet<ValueId>,
     bindings: HashMap<String, ValueId>,
     /// Declarations in each active lexical block. A declaration may shadow
     /// an outer binding, while assignments to other outer names survive the
@@ -9653,6 +9657,9 @@ impl FunctionLowerer<'_> {
     }
 
     fn push_operation(&mut self, operation: Operation) {
+        if let Operation::StaticData { destination, .. } = &operation {
+            self.static_data_values.insert(*destination);
+        }
         // The release placer proves that each managed token is consumed once.
         // Keep the lowerer's older exit-cleanup list in sync with those same
         // operation-level transfers, rather than teaching every aggregate or
@@ -9701,11 +9708,7 @@ impl FunctionLowerer<'_> {
     /// lowering materializes a fresh reference-counted copy, which is
     /// source-unobservable under value semantics (RFC-0165 static class).
     fn is_static_string(&self, value: ValueId) -> bool {
-        self.blocks.iter().any(|block| {
-            block.operations.iter().any(|operation| {
-                matches!(operation, Operation::StaticData { destination, .. } if *destination == value)
-            })
-        })
+        self.static_data_values.contains(&value)
     }
 
     /// Whether `value` holds a reference-count token the release placer
