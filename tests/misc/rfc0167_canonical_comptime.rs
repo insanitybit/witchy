@@ -106,6 +106,26 @@ fn canonical_dynamic_expression_leaves_are_typed_and_session_bounded() {
 }
 
 #[test]
+fn admitted_nested_tag_builder_retains_owned_holes_and_static_parts() {
+    use witchy_syntax::ast::{Expr, TaggedHole};
+    let source = "import meta\nfn main() -> Int:\n    emit_expr(meta.expr_tagged(meta.ident(\"inner\"), [\"a\\nb\", \"é\"], [meta.expr_int(42)]))\n    0\n";
+    let recipe = witchy_types::pipeline::check_comptime_recipe_from_source_bundle(
+        vec![("comptime".into(), source.as_bytes().to_vec())], "nested-tag",
+        witchy_interp::comptime::EXPANDER,
+        &["comptime".to_owned()].into_iter().collect(), owners(),
+    ).expect("nested tag recipe is checked");
+    let artifact = witchy_lower::codegen::compile_checked_comptime_recipe_artifact(&recipe)
+        .expect_lowered("nested tag construction admits on unoptimized Wasm");
+    let output = Runtime::run_comptime(&artifact, limits()).expect("nested tag uses owned syntax");
+    assert_eq!(output.heap_leaks, 0);
+    let [emitted] = output.expressions.as_slice() else { panic!("expected one expression") };
+    let Expr::TaggedLit { tag, parts, holes, .. } = &emitted.expression else { panic!("expected tagged expression") };
+    assert_eq!(tag, "inner");
+    assert_eq!(parts, &["a\nb", "é"]);
+    assert!(matches!(holes.as_slice(), [TaggedHole::Owned(hole)] if matches!(hole.as_ref(), Expr::Int(42))));
+}
+
+#[test]
 fn canonical_type_quotation_uses_checked_type_seed_in_both_modes() {
     for mode in ["", "mode opt\n"] {
         let source = format!("{mode}import meta\nfn main() -> Int:\n    let ty = quote type:\n        List(Int)\n    42\n");

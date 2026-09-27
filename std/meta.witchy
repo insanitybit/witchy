@@ -154,7 +154,10 @@ fn __meta_expr_tag_hole(marker: String) -> ExprSyntax:
 // never concatenates or reparses source. `parts` must have exactly one more
 // member than `holes`.
 pub fn expr_tagged(tag: Ident, parts: List(String), holes: List(ExprSyntax)) -> ExprSyntax:
-    __meta_expr_tagged(tag, parts, holes)
+    var wire = "V\n" + ident_source(tag) + "\n" + "${parts.length()}\n"
+    for part in parts:
+        wire = wire + "${part.length()}\n" + part
+    __meta_expr_compose_wire(wire + expr_wire_args(holes))
 
 fn __meta_expr_tagged(tag: Ident, parts: List(String), holes: List(ExprSyntax)) -> ExprSyntax:
     __meta_expr_tagged(tag, parts, holes)

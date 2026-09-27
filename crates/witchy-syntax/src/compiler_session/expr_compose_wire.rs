@@ -23,6 +23,7 @@ pub enum Composition {
     While { cond: String, body: String },
     WhileLet { pattern: String, scrutinee: String, body: String },
     Match { scrutinee: String, arms: Vec<String> },
+    Tagged { tag: String, parts: Vec<String>, holes: Vec<String> },
 }
 
 struct Reader<'a>(&'a [u8]);
@@ -53,6 +54,16 @@ impl Reader<'_> {
             .map_err(|_| "compiler expression handle is not UTF-8")?;
         self.0 = &self.0[len..];
         Ok(handle.to_owned())
+    }
+
+    fn part(&mut self) -> Result<String, String> {
+        let len = self.line()?.parse::<usize>()
+            .map_err(|_| "invalid compiler tagged part length")?;
+        if len > self.0.len() { return Err("truncated compiler tagged part".into()); }
+        let part = std::str::from_utf8(&self.0[..len])
+            .map_err(|_| "compiler tagged part is not UTF-8")?;
+        self.0 = &self.0[len..];
+        Ok(part.to_owned())
     }
 
     fn identifier(&mut self) -> Result<String, String> {
@@ -133,6 +144,16 @@ pub fn decode(bytes: &[u8]) -> Result<Composition, String> {
         "H" => Composition::While { cond: reader.handle()?, body: reader.handle()? },
         "Z" => Composition::WhileLet { pattern: reader.handle()?, scrutinee: reader.handle()?, body: reader.handle()? },
         "M" => Composition::Match { scrutinee: reader.handle()?, arms: reader.args()? },
+        "V" => {
+            let tag = reader.identifier()?;
+            let part_count = reader.count()?;
+            let parts = (0..part_count).map(|_| reader.part()).collect::<Result<Vec<_>, _>>()?;
+            let holes = reader.args()?;
+            if parts.len() != holes.len() + 1 {
+                return Err("compiler tagged literal requires one more part than hole".into());
+            }
+            Composition::Tagged { tag, parts, holes }
+        }
         _ => return Err("unknown compiler expression composition".into()),
     };
     if !reader.0.is_empty() { return Err("trailing compiler expression data".into()); }
@@ -236,6 +257,13 @@ impl Composition {
                 if arms.is_empty() { return Err("compiler match requires an arm".into()); }
                 Ok(Expr::Match { scrutinee: Box::new(resolve(&scrutinee)?),
                     arms: arms.iter().map(|handle| resolve_arm(handle)).collect::<Result<Vec<_>, _>>()? })
+            }
+            Self::Tagged { tag, parts, holes } => {
+                let holes = arguments(holes, &mut resolve)?.into_iter()
+                    .map(|expression| crate::ast::TaggedHole::Owned(Box::new(expression)))
+                    .collect::<Vec<_>>();
+                let hole_spans = vec![(0, 0); holes.len()];
+                Ok(Expr::TaggedLit { tag, parts, holes, hole_spans, line: 0 })
             }
         }
     }
