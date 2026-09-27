@@ -48,6 +48,13 @@ fn recipe_substitution_retains_obligations_and_bounding_is_idempotent() {
         assert_eq!(bounded.clone().bounded(budget), bounded);
     }
     assert!(recipe.invocation_contract(&[]).is_none(), "recipe is not callable or completed Task");
+    let step = Proof::Step { role: TaskBehaviorIdentity::LinkedDeclaration([8; 32]),
+        value: Box::new(Proof::Variant { ordinal: 1, fields: vec![recipe] }) };
+    assert_eq!(step.clone().bounded(1), Proof::UnprovedCallableObligation);
+    for budget in [0, 1, 2, 3, 8, 32] {
+        let bounded = step.clone().bounded(budget);
+        assert_eq!(bounded.clone().bounded(budget), bounded);
+    }
 
     let declared = Proof::DeclaredCallable { execution_mode: Mode::Opt, conventions: vec![Convention::Own],
         required_opt_inputs: vec![Proof::Parameter(0)], result: Box::new(Proof::Parameter(0)) };

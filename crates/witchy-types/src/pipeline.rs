@@ -39,7 +39,7 @@ use witchy_canonical_source::rooted_view::RootedViewStorage;
 use witchy_canonical_source::storage::StoragePlan;
 use witchy_canonical_source::source::{
     CanonicalSourceParts, CanonicalSourceView, CheckedAccessQuery, CheckedSourceDigests,
-    CheckedSourceWitness, DeferredTaskRole, PrecompiledExport, TaskAwaitProof, TaskBehaviorContract, TaskBehaviorIdentity,
+    CheckedSourceWitness, DeferredExecutionRole, DeferredTaskRole, PrecompiledExport, TaskAwaitProof, TaskBehaviorContract, TaskBehaviorIdentity,
 };
 use crate::precompiled_declarations::PrecompiledDeclarationEnvironment;
 use crate::optimization_readiness::OptimizationReadiness;
@@ -877,10 +877,97 @@ fn checked_deferred_task_role(module: &Module, catalog: Option<&RuntimeDeclarati
     if !arguments.is_empty() || !conventions.is_empty() || qualifiers.once
         || catalog.resolve(result_name, DeclarationKind::Type) != Some(step_identity)
         || result_arguments.as_slice() != [Type::Named(task.params[0].clone(), Vec::new())] { return None; }
+    let definitions = witchy_canonical_source::aggregates::type_definitions(module);
+    let mut remaining = 4096;
+    let mut active = HashSet::new();
+    let step_variants = step.variants.iter().enumerate().map(|(ordinal, variant)| {
+        let roles = variant.fields.iter().map(|field| deferred_execution_role(
+            field, &step.params[0], catalog, task_identity, &definitions, &mut active, &mut remaining, 0,
+        )).collect::<Option<Vec<_>>>()?;
+        Some((ordinal, roles))
+    }).collect::<Option<BTreeMap<_, _>>>()?;
     Some(DeferredTaskRole::from_checked_frontend(
         task.name.clone(), linked_task_behavior_identity(task_identity),
-        step.name.clone(), linked_task_behavior_identity(step_identity),
+        step.name.clone(), linked_task_behavior_identity(step_identity), step_variants,
     ))
+}
+
+/// Derive conservative possible execution from the generic declaration, not
+/// its concrete instantiation. In particular completed data `a` remains data
+/// even for `Step(Task(Int))`; explicitly stored recipes/callbacks do not.
+fn deferred_execution_role(
+    field: &Type,
+    completed_parameter: &str,
+    catalog: &RuntimeDeclarationCatalog,
+    task_identity: &crate::runtime_type::DeclarationIdentity,
+    definitions: &BTreeMap<String, witchy_syntax::ast::TypeDef>,
+    active: &mut HashSet<Type>,
+    remaining: &mut usize,
+    depth: usize,
+) -> Option<DeferredExecutionRole> {
+    use witchy_canonical_source::storage::{StoredChildren, stored_children};
+    use DeferredExecutionRole as Role;
+    if depth > 128 || *remaining == 0 { return None; }
+    *remaining -= 1;
+    let field = field.unqualified();
+    if let Type::Named(name, parameters) = field {
+        if name == completed_parameter && parameters.is_empty() { return Some(Role::Passive); }
+        if catalog.resolve(name, DeclarationKind::Type) == Some(task_identity) {
+            return (parameters.len() == 1).then_some(Role::Recipe);
+        }
+    }
+    if !active.insert(field.clone()) { return None; }
+    let result = (|| {
+        let mut child = |field: &Type| deferred_execution_role(field, completed_parameter, catalog,
+            task_identity, definitions, active, remaining, depth + 1);
+        if let Type::Fn(parameters, result, conventions, qualifiers) = field {
+            if qualifiers.once || (!conventions.is_empty() && conventions.len() != parameters.len()) { return None; }
+            let conventions = if conventions.is_empty() {
+                vec![witchy_syntax::ast::Convention::Let; parameters.len()]
+            } else { conventions.clone() };
+            return Some(Role::Invoke { conventions, result: Box::new(child(result)?) });
+        }
+        let role = match stored_children(field, definitions).ok()? {
+            Some(StoredChildren::Sequence(element)) => {
+                let element = child(&element)?;
+                if element == Role::Passive { Role::Passive } else { Role::Sequence(Box::new(element)) }
+            }
+            Some(StoredChildren::Mapping(key, value)) => {
+                let (key, value) = (child(&key)?, child(&value)?);
+                if key == Role::Passive && value == Role::Passive { Role::Passive }
+                else { Role::Mapping(Box::new(key), Box::new(value)) }
+            }
+            Some(StoredChildren::Aggregate(fields)) => {
+                let roles = fields.iter().map(&mut child).collect::<Option<Vec<_>>>()?;
+                if roles.iter().all(|role| role == &Role::Passive) { Role::Passive }
+                else if matches!(field, Type::Tuple(_)) { Role::Elements(roles) }
+                else {
+                    let Type::Named(name, _) = field else { return None };
+                    let arities = if let Some(definition) = definitions.get(name) {
+                        definition.variants.iter().map(|variant| variant.fields.len()).collect::<Vec<_>>()
+                    } else {
+                        witchy_canonical_source::aggregates::scalar_aggregate_shape(field, definitions)?
+                            .variants.iter().map(|variant| variant.arity).collect()
+                    };
+                    let mut offset = 0_usize;
+                    let mut variants = BTreeMap::new();
+                    for (ordinal, arity) in arities.into_iter().enumerate() {
+                        let end = offset.checked_add(arity)?;
+                        variants.insert(ordinal, roles.get(offset..end)?.to_vec());
+                        offset = end;
+                    }
+                    if offset != roles.len() { return None; }
+                    Role::Variants(variants)
+                }
+            }
+            None if witchy_canonical_source::is_erased_message_type(field)
+                || !matches!(StoragePlan::classify(field, definitions, |_| Some(0)), StoragePlan::Refused(_)) => Role::Passive,
+            None => return None,
+        };
+        Some(role)
+    })();
+    active.remove(field);
+    result
 }
 
 fn bind_task_behaviors(

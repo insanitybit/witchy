@@ -387,6 +387,10 @@ impl Analyzer<'_> {
     }
 
     fn bind(pattern: &Pattern, proof: Proof, ordinal: Option<usize>, environment: &mut Environment) {
+        if matches!(pattern, Pattern::Ctor { .. } | Pattern::AnonCtor { .. })
+            && let Proof::Step { value, .. } = proof {
+            return Self::bind(pattern, *value, ordinal, environment);
+        }
         match (pattern, proof) {
             (Pattern::Var(name), proof) if name != "_" => {
                 environment.insert(name.clone(), proof);
@@ -716,6 +720,15 @@ impl Analyzer<'_> {
                 if let (Some(role), [poll]) = (recipe_role, values.as_slice()) {
                     self.reject_opaque_callable_transfer(poll, "enter a task recipe without a callable contract")?;
                     return Ok(Proof::Recipe { role: role.task_identity().clone(), poll: Box::new(poll.clone()) });
+                }
+                if let Some(role) = self.deferred_task_role
+                    && matches!(self.table.type_of(expression), Some(Ty::Named(actual, parameters))
+                        if actual.as_ref() == role.step_name() && parameters.len() == 1)
+                    && let Some(ordinal) = self.checked_variant_ordinal(expression, name)
+                    && role.step_variants().get(&ordinal).is_some_and(|fields| fields.len() == values.len())
+                {
+                    return Ok(Proof::Step { role: role.step_identity().clone(),
+                        value: Box::new(Proof::Variant { ordinal, fields: values }) });
                 }
                 if self.task_result(expression) {
                     for value in &values {

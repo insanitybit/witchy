@@ -2201,3 +2201,6 @@ mod vm_worker_isolation;
 mod lazy_operand_ownership;
 #[path = "typeck/consuming_sum_operands.rs"]
 mod consuming_sum_operands;
+
+#[path = "typeck/deferred_task_roles.rs"]
+mod deferred_task_roles;

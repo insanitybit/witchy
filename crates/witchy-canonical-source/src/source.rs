@@ -79,6 +79,9 @@ pub enum TaskExecutionProof {
     /// produces a scheduler step, not the task's completed result. This term
     /// never grants `Task(Opt, _)` merely from its callback's result type.
     Recipe { role: TaskBehaviorIdentity, poll: Box<Self> },
+    /// Exact scheduler Step value, retaining its ordinary variant/payload
+    /// proofs. Its role describes possible execution, not scheduler ordering.
+    Step { role: TaskBehaviorIdentity, value: Box<Self> },
     Parameter(usize),
     /// An opt declaration's callback formal whose checked input type can
     /// receive Task storage. Its invocation has a public symbolic task-input
@@ -128,18 +131,116 @@ pub struct DeferredTaskRole {
     task_identity: TaskBehaviorIdentity,
     step_name: String,
     step_identity: TaskBehaviorIdentity,
+    step_variants: BTreeMap<usize, Vec<DeferredExecutionRole>>,
+}
+
+/// Conservative possible execution selected from a generic scheduler field.
+/// Generic completed data stays passive before substitution, even when the
+/// caller later instantiates that data with a Task or callable type.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeferredExecutionRole {
+    /// Scheduler data transport, not proof that the value contains no callable
+    /// or resource. Completed `T` and erased messages may contain either.
+    Passive,
+    Recipe,
+    Invoke { conventions: Vec<Convention>, result: Box<Self> },
+    Elements(Vec<Self>),
+    Variants(BTreeMap<usize, Vec<Self>>),
+    Sequence(Box<Self>),
+    Mapping(Box<Self>, Box<Self>),
+}
+
+/// An obligation on actual transported values, never permission by itself.
+/// Invocation arguments and result transport must be checked at the execution
+/// site. These requirements establish neither order nor cancellation completion.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeferredExecutionRequirement {
+    Recipe(TaskExecutionProof),
+    Invoke {
+        callable: TaskExecutionProof,
+        conventions: Vec<Convention>,
+        result: DeferredExecutionRole,
+    },
 }
 
 impl DeferredTaskRole {
     #[doc(hidden)]
     pub fn from_checked_frontend(task_name: String, task_identity: TaskBehaviorIdentity,
-        step_name: String, step_identity: TaskBehaviorIdentity) -> Self {
-        Self { task_name, task_identity, step_name, step_identity }
+        step_name: String, step_identity: TaskBehaviorIdentity,
+        step_variants: BTreeMap<usize, Vec<DeferredExecutionRole>>) -> Self {
+        Self { task_name, task_identity, step_name, step_identity, step_variants }
     }
     pub fn task_name(&self) -> &str { &self.task_name }
     pub fn task_identity(&self) -> &TaskBehaviorIdentity { &self.task_identity }
     pub fn step_name(&self) -> &str { &self.step_name }
     pub fn step_identity(&self) -> &TaskBehaviorIdentity { &self.step_identity }
+    pub fn step_variants(&self) -> &BTreeMap<usize, Vec<DeferredExecutionRole>> { &self.step_variants }
+
+    /// Collect possible execution obligations from an actual checked Step.
+    /// A missing identity, malformed variant, or unrepresentable value path
+    /// refuses; an empty result means passive fields, not task completion proof.
+    pub fn step_requirements(&self, proof: &TaskExecutionProof) -> Option<Vec<DeferredExecutionRequirement>> {
+        let TaskExecutionProof::Step { role, value } = proof else { return None };
+        if role != &self.step_identity { return None; }
+        let mut requirements = Vec::new();
+        let mut remaining = 4096;
+        match value.as_ref() {
+            TaskExecutionProof::Variant { ordinal, fields } => {
+                self.collect_step_variant(*ordinal, fields, &mut requirements, &mut remaining)?;
+            }
+            TaskExecutionProof::Variants(variants) => {
+                if variants.is_empty() { return None; }
+                for (ordinal, fields) in variants {
+                    self.collect_step_variant(*ordinal, fields, &mut requirements, &mut remaining)?;
+                }
+            }
+            _ => return None,
+        }
+        Some(requirements)
+    }
+
+    fn collect_step_variant(&self, ordinal: usize, fields: &[TaskExecutionProof],
+        requirements: &mut Vec<DeferredExecutionRequirement>, remaining: &mut usize) -> Option<()> {
+        let roles = self.step_variants.get(&ordinal)?;
+        if fields.len() != roles.len() { return None; }
+        for (role, field) in roles.iter().zip(fields) {
+            role.collect_requirements(field, requirements, remaining, 0)?;
+        }
+        Some(())
+    }
+}
+
+impl DeferredExecutionRole {
+    fn collect_requirements(&self, value: &TaskExecutionProof,
+        output: &mut Vec<DeferredExecutionRequirement>, remaining: &mut usize, depth: usize) -> Option<()> {
+        if depth > 128 || *remaining == 0 { return None; }
+        *remaining -= 1;
+        if value == &TaskExecutionProof::InactiveVariant { return Some(()); }
+        match self {
+            Self::Passive => {}
+            Self::Recipe => output.push(DeferredExecutionRequirement::Recipe(value.clone())),
+            Self::Invoke { conventions, result } => output.push(DeferredExecutionRequirement::Invoke {
+                callable: value.clone(), conventions: conventions.clone(), result: *result.clone(),
+            }),
+            Self::Elements(roles) => {
+                for (index, role) in roles.iter().enumerate() {
+                    role.collect_requirements(&value.clone().project_slot(index), output, remaining, depth + 1)?;
+                }
+            }
+            Self::Variants(variants) => {
+                for (ordinal, roles) in variants {
+                    for (index, role) in roles.iter().enumerate() {
+                        role.collect_requirements(&value.clone().project_variant_slot(*ordinal, index), output, remaining, depth + 1)?;
+                    }
+                }
+            }
+            Self::Sequence(role) => role.collect_requirements(&value.clone().project_any_element(), output, remaining, depth + 1)?,
+            // Key/value behavior projections are not represented in the proof
+            // algebra yet. Never silently treat such a container as passive.
+            Self::Mapping(..) => return None,
+        }
+        Some(())
+    }
 }
 
 /// Symbolic behavior of one exact checked source declaration. Async call
@@ -282,7 +383,8 @@ impl TaskExecutionProof {
                 | TaskExecutionProof::Slot(result, _)
                 | TaskExecutionProof::VariantSlot(result, _, _)
                 | TaskExecutionProof::AnyElement(result) => contains(result, only_local, depth + 1, remaining),
-                TaskExecutionProof::Recipe { poll, .. } => contains(poll, only_local, depth + 1, remaining),
+                TaskExecutionProof::Recipe { poll, .. } | TaskExecutionProof::Step { value: poll, .. } =>
+                    contains(poll, only_local, depth + 1, remaining),
                 TaskExecutionProof::Invocation { callable, arguments } =>
                     contains(callable, only_local, depth + 1, remaining)
                         || arguments.iter().any(|argument| contains(argument, only_local, depth + 1, remaining)),
@@ -354,7 +456,7 @@ impl TaskExecutionProof {
                 | TaskExecutionProof::DeclaredCallable { required_opt_inputs, result, .. } =>
                     children(required_opt_inputs.len().saturating_add(1),
                         required_opt_inputs.iter_mut().chain(std::iter::once(result.as_mut())), remaining, depth),
-                TaskExecutionProof::Recipe { poll, .. } =>
+                TaskExecutionProof::Recipe { poll, .. } | TaskExecutionProof::Step { value: poll, .. } =>
                     children(1, std::iter::once(poll.as_mut()), remaining, depth),
                 TaskExecutionProof::Invocation { callable, arguments } =>
                     children(arguments.len().saturating_add(1),
@@ -400,6 +502,9 @@ impl TaskExecutionProof {
             (Self::Recipe { role: left_role, poll: left }, Self::Recipe { role: right_role, poll: right })
                 if left_role == right_role =>
                 Self::Recipe { role: left_role, poll: Box::new((*left).join(*right)) },
+            (Self::Step { role: left_role, value: left }, Self::Step { role: right_role, value: right })
+                if left_role == right_role =>
+                Self::Step { role: left_role, value: Box::new((*left).join(*right)) },
             (Self::Invocation { callable: left, arguments: left_args },
                 Self::Invocation { callable: right, arguments: right_args }) if left_args.len() == right_args.len() =>
                 Self::Invocation { callable: Box::new((*left).join(*right)),
@@ -491,6 +596,9 @@ impl TaskExecutionProof {
                 TaskExecutionProof::Recipe { role, poll } => TaskExecutionProof::Recipe {
                     role: role.clone(), poll: Box::new(go(poll, arguments, formal_scope, depth + 1)),
                 },
+                TaskExecutionProof::Step { role, value } => TaskExecutionProof::Step {
+                    role: role.clone(), value: Box::new(go(value, arguments, formal_scope, depth + 1)),
+                },
                 TaskExecutionProof::Invocation { callable, arguments: inputs } => TaskExecutionProof::Invocation {
                     callable: Box::new(go(callable, arguments, formal_scope, depth + 1)),
                     arguments: inputs.iter().map(|input| go(input, arguments, formal_scope, depth + 1)).collect(),
@@ -578,6 +686,7 @@ impl TaskExecutionProof {
     /// never evidence that a task may execute.
     pub fn project_variant_slot(self, ordinal: usize, index: usize) -> Self {
         match self {
+            Self::Step { value, .. } => value.project_variant_slot(ordinal, index),
             Self::Recipe { poll, .. } if ordinal == 0 && index == 0 => *poll,
             Self::Recipe { .. } => Self::Unknown,
             Self::Variant { ordinal: actual, fields } if actual == ordinal =>
