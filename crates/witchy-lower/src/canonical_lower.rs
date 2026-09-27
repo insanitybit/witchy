@@ -17,6 +17,8 @@ mod regex;
 mod constructor_storage;
 #[path = "canonical_call_storage.rs"]
 mod call_storage;
+#[path = "canonical_flow_storage.rs"]
+mod flow_storage;
 #[path = "canonical_vm_service.rs"]
 mod vm_service;
 
@@ -5553,17 +5555,17 @@ impl FunctionLowerer<'_> {
                 cond,
                 then_block,
                 else_block: Some(else_block),
-            } => self.lower_if(cond, then_block, else_block, false, false).map(|_| ()),
+            } => self.lower_if(cond, then_block, else_block, false, false, None).map(|_| ()),
             Expr::If { cond, then_block, else_block: None } => {
                 let empty = witchy_syntax::ast::Block {
                     stmts: Vec::new(),
                     lines: Vec::new(),
                     region: None,
                 };
-                self.lower_if(cond, then_block, &empty, false, false).map(|_| ())
+                self.lower_if(cond, then_block, &empty, false, false, None).map(|_| ())
             }
             Expr::Match { scrutinee, arms } => {
-                self.lower_match(scrutinee, arms, false, None, false).map(|_| ())
+                self.lower_match(scrutinee, arms, false, None, false, None).map(|_| ())
             }
             _ => {
                 self.lower_expr(expression)?;
@@ -5761,34 +5763,12 @@ impl FunctionLowerer<'_> {
         )
     }
 
-    /// Lower a value expression that may terminate every control-flow arm.
-    /// `None` means the current block is already terminated and no join value
-    /// may be fabricated for a path that cannot continue.
-    fn lower_flow_value_expr(
-        &mut self,
-        expression: &Expr,
-    ) -> Result<Option<ValueId>, CanonicalLoweringError> {
-        match expression {
-            Expr::Call { name, args } if name == "fail" => {
-                self.lower_abort(expression, args)?;
-                Ok(None)
-            }
-            Expr::If {
-                cond,
-                then_block,
-                else_block: Some(else_block),
-            } => self.lower_if(cond, then_block, else_block, true, self.affine_expression_result(expression)?),
-            Expr::Match { scrutinee, arms } => self.lower_match(scrutinee, arms, true, None, self.affine_expression_result(expression)?),
-            Expr::Block(block) => self.lower_block_flow_value(block),
-            _ => self.lower_expr(expression).map(Some),
-        }
-    }
-
     /// A terminating arm contributes no value or edge to a value join.
     /// Stop at its terminator instead of lowering an unreachable tail.
-    fn lower_block_flow_value(
+    fn lower_block_flow_value_for_storage(
         &mut self,
         block: &witchy_syntax::ast::Block,
+        declared: Option<&Type>,
     ) -> Result<Option<ValueId>, CanonicalLoweringError> {
         let must_transfer = self.require_region_promotion(block)?;
         if let Some(tail) = must_transfer {
@@ -5799,7 +5779,7 @@ impl FunctionLowerer<'_> {
             }
             self.active_region_must_transfers.push(tail);
         }
-        let lowered = self.with_binding_scope(|lowerer| lowerer.lower_block_flow_value_scoped(block));
+        let lowered = self.with_binding_scope(|lowerer| lowerer.lower_block_flow_value_scoped(block, declared));
         if let Some(tail) = must_transfer {
             let active = self.active_region_must_transfers.pop();
             if active != Some(tail) {
@@ -5831,6 +5811,7 @@ impl FunctionLowerer<'_> {
     fn lower_block_flow_value_scoped(
         &mut self,
         block: &witchy_syntax::ast::Block,
+        declared: Option<&Type>,
     ) -> Result<Option<ValueId>, CanonicalLoweringError> {
         let outer = self.bindings.keys().cloned().collect::<Vec<_>>();
         let (tail, statements) = block
@@ -5888,7 +5869,7 @@ impl FunctionLowerer<'_> {
             }
         }
         let value = match tail {
-            Stmt::Expr(value) => self.lower_flow_value_expr(value)?,
+            Stmt::Expr(value) => self.lower_flow_value_expr_for_storage(value, declared)?,
             Stmt::Return(value) => {
                 self.lower_explicit_return(value.as_ref())?;
                 self.drop_bindings_except(&outer);
@@ -6198,7 +6179,7 @@ impl FunctionLowerer<'_> {
             Expr::Match { scrutinee, arms } => {
                 let mut match_path = path;
                 match_path.push(ProperTailPathStep::Node(ProperTailExprKind::Match));
-                self.lower_match(scrutinee, arms, !results.is_empty(), Some(match_path), false).map(|_| ())
+                self.lower_match(scrutinee, arms, !results.is_empty(), Some(match_path), false, None).map(|_| ())
             }
             Expr::Block(block) => {
                 let mut block_path = path;
@@ -6531,11 +6512,12 @@ impl FunctionLowerer<'_> {
         else_block: &witchy_syntax::ast::Block,
         with_value: bool,
         affine_result: bool,
+        declared: Option<&Type>,
     ) -> Result<Option<ValueId>, CanonicalLoweringError> {
         let condition = self.lower_expr(condition)?;
         self.lower_conditional_branches(condition, affine_result, |this| {
             if with_value {
-                match this.lower_block_flow_value(then_block)? {
+                match this.lower_block_flow_value_for_storage(then_block, declared)? {
                     Some(value) => Ok(Some(this.detach_bound_result(value, affine_result)?)),
                     None => Ok(None),
                 }
@@ -6545,7 +6527,7 @@ impl FunctionLowerer<'_> {
             }
         }, |this| {
             if with_value {
-                match this.lower_block_flow_value(else_block)? {
+                match this.lower_block_flow_value_for_storage(else_block, declared)? {
                     Some(value) => Ok(Some(this.detach_bound_result(value, affine_result)?)),
                     None => Ok(None),
                 }
@@ -7064,6 +7046,7 @@ impl FunctionLowerer<'_> {
         with_value: bool,
         tail: Option<Vec<ProperTailPathStep>>,
         affine_result: bool,
+        declared: Option<&Type>,
     ) -> Result<Option<ValueId>, CanonicalLoweringError> {
         if arms.is_empty() {
             return Err(CanonicalLoweringError::UnsupportedExpression("empty match"));
@@ -7203,10 +7186,7 @@ impl FunctionLowerer<'_> {
                 continue;
             }
             let value = if with_value {
-                let value = match &arm.body {
-                    Expr::Block(block) => self.lower_block_flow_value(block)?,
-                    _ => Some(self.lower_expr(&arm.body)?),
-                };
+                let value = self.lower_flow_value_expr_for_storage(&arm.body, declared)?;
                 value.map(|value| self.detach_bound_result(value, affine_result)).transpose()?
             } else {
                 self.lower_effect_expr(&arm.body)?;
@@ -11777,11 +11757,11 @@ impl FunctionLowerer<'_> {
                 then_block,
                 else_block: Some(else_block),
             } => self
-                .lower_if(cond, then_block, else_block, true, self.affine_expression_result(expression)?)?
+                .lower_if(cond, then_block, else_block, true, self.affine_expression_result(expression)?, None)?
                 .ok_or(CanonicalLoweringError::UnsupportedExpression("if value")),
             Expr::If { .. } => Err(CanonicalLoweringError::UnsupportedExpression("if without else")),
             Expr::Match { scrutinee, arms } => self
-                .lower_match(scrutinee, arms, true, None, self.affine_expression_result(expression)?)?
+                .lower_match(scrutinee, arms, true, None, self.affine_expression_result(expression)?, None)?
                 .ok_or(CanonicalLoweringError::UnsupportedExpression("match value")),
             Expr::Block(block) => self.lower_block_value(block),
             Expr::While { .. } => Err(CanonicalLoweringError::UnsupportedExpression("while value")),
@@ -11850,6 +11830,10 @@ impl FunctionLowerer<'_> {
         match expression {
             Expr::Ctor { name, args } =>
                 self.lower_record_constructor(expression, name, args, Some(&declared)),
+            Expr::If { else_block: Some(_), .. } | Expr::Match { .. } | Expr::Block(_) =>
+                self.lower_flow_value_expr_for_storage(expression, Some(declared))?.ok_or(
+                    CanonicalLoweringError::UnsupportedExpression("divergent storage expression used as a value"),
+                ),
             Expr::Tuple(items) => {
                 let shape = scalar_aggregate_shape(&declared, self.definitions)
                     .ok_or(CanonicalLoweringError::UnsupportedExpression("affine tuple shape"))?;
