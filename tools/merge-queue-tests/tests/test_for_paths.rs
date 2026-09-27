@@ -1160,6 +1160,40 @@ fn broad_misc_run_subsumes_the_same_filtered_binary_run() {
 }
 
 #[test]
+fn package_supersets_do_not_repeat_covered_test_suites() {
+    let syntax = "crates/witchy-syntax/src/lib.rs";
+    let types = "crates/witchy-types/src/lib.rs";
+    for mode in ["--focused", "--edit-loop"] {
+        for paths in [[syntax, types], [types, syntax]] {
+            let commands = selected(&[mode, paths[0], paths[1]]);
+            assert_eq!(commands, ["cargo nextest run -p witchy-syntax -p witchy-types"],
+                "covered package suite was scheduled twice: {commands:?}");
+        }
+    }
+    for paths in [
+        ["crates/witchy-canonical-source/src/storage.rs", types],
+        [types, "crates/witchy-canonical-source/src/storage.rs"],
+    ] {
+        let commands = selected_focused(&paths);
+        assert!(commands.iter().any(|c| c == "cargo nextest run -p witchy-canonical-source -p witchy-types"),
+            "{commands:?}");
+        assert!(!commands.iter().any(|c| c == "cargo nextest run -p witchy-types"),
+            "covered type suite repeated: {commands:?}");
+    }
+    // A package is not covered merely because another command mentions it:
+    // pure/no-default-features and native/admitted runs retain their policies.
+    let commands = selected_focused(&[
+        "crates/witchy-syntax/src/lib.rs",
+        "crates/witchy-wir/src/canonical_safewir/check/memory.rs",
+        "tests/misc/rfc0167_deferred_handle_disposition.rs",
+    ]);
+    assert!(commands.iter().any(|c| c == "cargo nextest run -p witchy-syntax -p witchy-types"),
+        "{commands:?}");
+    assert!(commands.iter().any(|c| c.contains("--no-default-features")), "{commands:?}");
+    assert!(commands.iter().any(|c| c.starts_with("./scripts/nextest-admitted.sh")), "{commands:?}");
+}
+
+#[test]
 fn exact_filters_for_the_same_test_target_share_one_build() {
     let commands = selected(&[
         "--edit-loop",

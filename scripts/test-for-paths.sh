@@ -1390,6 +1390,43 @@ for c in ${cmds[0]+"${cmds[@]}"}; do
 done
 cmds=(${subsumed_cmds[0]+"${subsumed_cmds[@]}"})
 
+# Current multi-package routes share the frontend's default feature graph.
+# Drop a run whose entire package set is already covered by another run; never
+# union partially overlapping sets into a new feature-resolution combination.
+# Recognize only this closed grammar: flags, filters, targets, wrappers and
+# shell policies must retain their independent execution semantics.
+plain_package_run_covers() {
+    local broad="$1" narrow="$2" token
+    local grammar='^cargo nextest run( -p [a-zA-Z0-9_-]+)+$'
+    [[ "$broad" =~ $grammar && "$narrow" =~ $grammar ]] || return 1
+    for token in ${narrow#cargo nextest run}; do
+        [ "$token" = -p ] && continue
+        case "$broad " in
+            *" -p $token "*) ;;
+            *) return 1 ;;
+        esac
+    done
+}
+package_cmds=()
+for i in ${cmds[0]+"${!cmds[@]}"}; do
+    c="${cmds[$i]}"
+    subsumed=0
+    for j in ${cmds[0]+"${!cmds[@]}"}; do
+        [ "$i" != "$j" ] || continue
+        broad="${cmds[$j]}"
+        if plain_package_run_covers "$broad" "$c"; then
+            # Equivalent sets in a different order keep the first command;
+            # a strict superset wins regardless of path-selection order.
+            if [ "$j" -lt "$i" ] || ! plain_package_run_covers "$c" "$broad"; then
+                subsumed=1
+                break
+            fi
+        fi
+    done
+    [ "$subsumed" -eq 1 ] || package_cmds+=("$c")
+done
+cmds=(${package_cmds[0]+"${package_cmds[@]}"})
+
 # Cargo builds a complete selected test target before nextest applies `-E`.
 # Combined paths can select several exact probes from that same target (for
 # example project-resolver and CLI edits both select `cli_subcommands`). Running
