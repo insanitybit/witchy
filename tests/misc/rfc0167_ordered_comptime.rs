@@ -251,10 +251,9 @@ fn program_defined_builder_uses_type_info_in_both_modes() {
 type User:
     name: String
     age: Int
-comptime fn builder_items(info: meta.TypeInfo) -> List(meta.ItemSyntax):
+comptime fn builder_items(info: meta.TypeInfo, user_ty: meta.TypeSyntax, build_ty: meta.TypeSyntax) -> List(meta.ItemSyntax):
     let builder_name = info.name + "Builder"
     let builder_ty = meta.type_expr(meta.TNamed(builder_name, []))
-    let user_ty = meta.type_expr(meta.TNamed(info.name, []))
     let some_expr = quote expr:
         Some
     let value_expr = quote expr:
@@ -279,13 +278,13 @@ comptime fn builder_items(info: meta.TypeInfo) -> List(meta.ItemSyntax):
     var user_values = []
     for field in info.fields:
         user_values.push((meta.ident(field.name), meta.expr_try(meta.expr_field(self_expr, meta.ident(field.name)))))
-    let user = meta.expr_record(meta.ident(info.name), user_values)
+    let user = meta.expr_record_type(user_ty, user_values)
     methods.push(meta.function(true, meta.ident("build"), [meta.param_own(meta.ident("self"), builder_ty)],
-        Some(meta.type_expr(meta.TNamed("Option", [meta.TNamed(info.name, [])]))),
+        Some(build_ty),
         meta.expr_call(some_expr, [user])))
     [meta.record_type(meta.ident(builder_name), slots), meta.inherent_impl(builder_ty, methods)]
 comptime:
-    for item in builder_items(type_info(User)):
+    for item in builder_items(type_info(User), meta.type_expr(meta.TNamed("User", [])), meta.type_expr(meta.TNamed("Option", [meta.TNamed("User", [])]))):
         emit_item(item)
 fn main(console: Console):
     let complete = UserBuilder(None, None).with_name("Ada").with_age(42).build()
@@ -384,46 +383,27 @@ fn main(console: Console):
 
     let imported = program
         .replacen("type User:\n    name: String\n    age: Int\n", "from dep import User\n", 1)
-        .replacen("type_info(User)", "type_info(dep.User)", 1);
+        .replacen(
+            "    for item in builder_items(type_info(User), meta.type_expr(meta.TNamed(\"User\", [])), meta.type_expr(meta.TNamed(\"Option\", [meta.TNamed(\"User\", [])]))):\n        emit_item(item)",
+            "    for item in builder_items(type_info(dep.User), meta.type_expr(meta.TNamed(\"User\", [])), meta.type_expr(meta.TNamed(\"Option\", [meta.TNamed(\"User\", [])]))):\n        emit_item(item)\n    for item in builder_items(type_info(dep.Account), meta.type_expr(meta.TNamed(\"dep.Account\", [])), meta.type_expr(meta.TNamed(\"Option\", [meta.TNamed(\"dep.Account\", [])]))):\n        emit_item(item)",
+            1,
+        );
+    let imported = imported.replace(
+        "fn main(console: Console):\n    let complete = UserBuilder(None, None).with_name(\"Ada\").with_age(42).build()",
+        "fn main(console: Console):\n    let account = AccountBuilder(None, None).with_name(\"Grace\").with_age(37).build()\n    let complete = UserBuilder(None, None).with_name(\"Ada\").with_age(42).build()",
+    ).replace(
+        "        None -> console.print(\"None\")\n",
+        "        None -> console.print(\"None\")\n    match account:\n        Some(value) -> console.print(\"${value.name}/${value.age}\")\n        None -> console.print(\"missing account\")\n",
+    );
     let imported = format!("import dep\n{imported}");
     for dependency_mode in ["", "mode opt\n"] {
         std::fs::write(folder.join("dep.witchy"), format!(
-            "{dependency_mode}type User:\n    name: String\n    age: Int\n",
+            "{dependency_mode}type User:\n    name: String\n    age: Int\ntype Account:\n    name: String\n    age: Int\n",
         )).unwrap();
         std::fs::write(&source, &imported).unwrap();
         let run = Command::new(env!("CARGO_BIN_EXE_witchy")).arg(&source).output().unwrap();
         assert!(run.status.success(), "{}", String::from_utf8_lossy(&run.stderr));
-        assert_eq!(String::from_utf8_lossy(&run.stdout), "Ada/42\nNone\n");
-    }
-
-    let qualified_only = program
-        .replacen("type User:\n    name: String\n    age: Int\n", "", 1)
-        .replace(
-            "builder_items(info: meta.TypeInfo)",
-            "builder_items(info: meta.TypeInfo, user_ty: meta.TypeSyntax, build_ty: meta.TypeSyntax)",
-        )
-        .replace("    let user_ty = meta.type_expr(meta.TNamed(info.name, []))\n", "")
-        .replace(
-            "meta.expr_record(meta.ident(info.name), user_values)",
-            "meta.expr_record_type(user_ty, user_values)",
-        )
-        .replace(
-            "Some(meta.type_expr(meta.TNamed(\"Option\", [meta.TNamed(info.name, [])])))",
-            "Some(build_ty)",
-        )
-        .replace(
-            "builder_items(type_info(User))",
-            "builder_items(type_info(dep.User), meta.type_expr(meta.TNamed(\"dep.User\", [])), meta.type_expr(meta.TNamed(\"Option\", [meta.TNamed(\"dep.User\", [])])))",
-        );
-    let qualified_only = format!("import dep\n{qualified_only}");
-    for dependency_mode in ["", "mode opt\n"] {
-        std::fs::write(folder.join("dep.witchy"), format!(
-            "{dependency_mode}type User:\n    name: String\n    age: Int\n",
-        )).unwrap();
-        std::fs::write(&source, &qualified_only).unwrap();
-        let run = Command::new(env!("CARGO_BIN_EXE_witchy")).arg(&source).output().unwrap();
-        assert!(run.status.success(), "{}", String::from_utf8_lossy(&run.stderr));
-        assert_eq!(String::from_utf8_lossy(&run.stdout), "Ada/42\nNone\n");
+        assert_eq!(String::from_utf8_lossy(&run.stdout), "Ada/42\nNone\nGrace/37\n");
     }
 }
 
