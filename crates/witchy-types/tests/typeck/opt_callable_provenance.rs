@@ -214,14 +214,18 @@ pub async fn execute_conditional(choose: Bool) -> Option(Int):
 "#;
     // Rejection cases need only the producer and relay being rejected. The
     // complete worker is checked once below for the positive composition.
-    let entry_worker = r#"mode opt
+    let execute_worker = r#"mode opt
 import task
 
 pub async fn execute(own recipe: task.Task(Int)) -> Int:
     recipe.await
+"#;
+    let callback_worker = format!(r#"{execute_worker}
 
 pub fn relay_callback(callback: fn(own task.Task(Int)) -> task.Task(Int), own recipe: task.Task(Int)) -> task.Task(Int):
     callback(recipe)
+"#);
+    let option_worker = format!(r#"{execute_worker}
 
 pub async fn execute_option(own recipe: Option(task.Task(Int))) -> Option(Int):
     match recipe:
@@ -231,7 +235,7 @@ pub async fn execute_option(own recipe: Option(task.Task(Int))) -> Option(Int):
 pub async fn execute_try(own recipe: Option(task.Task(Int))) -> Option(Int):
     let recipe_value = recipe?
     Some(recipe_value.await)
-"#;
+"#);
     let main = r#"import worker
 
 async fn ordinary() -> Int:
@@ -241,7 +245,7 @@ async fn main(console: Console):
     let answer = worker.execute(ordinary()).await
     console.print("${answer}")
 "#;
-    let result = super::source::checked_bundle(vec![("worker", entry_worker), ("main", main)], "main");
+    let result = super::source::checked_bundle(vec![("worker", execute_worker), ("main", main)], "main");
     let error = result.expect_err("a normal recipe cannot acquire opt execution provenance at the call site");
     assert!(error.contains("opt-compatible task value provenance"), "{error}");
 
@@ -255,7 +259,7 @@ async fn main(console: Console):
     console.print("unreachable")
 "#;
     let error = super::source::checked_bundle(
-        vec![("worker", entry_worker), ("main", normal_public_callback_main)], "main",
+        vec![("worker", &callback_worker), ("main", normal_public_callback_main)], "main",
     ).expect_err("an opt callback formal cannot receive a normal task through a public relay");
     assert!(error.contains("opt-compatible task value provenance"), "{error}");
 
@@ -270,7 +274,7 @@ async fn main(console: Console):
     console.print("done")
 "#;
     let error = super::source::checked_bundle(
-        vec![("worker", entry_worker), ("main", normal_option_main)], "main",
+        vec![("worker", &option_worker), ("main", normal_option_main)], "main",
     ).expect_err("a sum wrapper cannot erase normal task execution mode");
     assert!(error.contains("opt-compatible task value provenance"), "{error}");
 
