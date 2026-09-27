@@ -738,6 +738,24 @@ fn stamp_expr(e: &mut Expr, line: u32) {
 pub const EXPANDER: witchy_syntax::linker::ComptimeExpander =
     witchy_syntax::linker::ComptimeExpander::with_sibling_request(expand_compile_time, needs_expansion);
 
+/// Ordinary authenticated user modules require no source evaluation. Bundled
+/// standard modules still use their compiler-owned compatibility expansion;
+/// the loader and linker reserve those names for exact toolchain sources.
+pub const EXPANSION_FREE_USER_EXPANDER: witchy_syntax::linker::ComptimeExpander =
+    witchy_syntax::linker::ComptimeExpander::with_sibling_request(
+        expand_trusted_std_or_free_user, needs_expansion,
+    );
+
+fn expand_trusted_std_or_free_user(
+    name: &str, module: &mut Module, siblings: &[(String, Module)],
+) -> Result<OriginTable, String> {
+    if witchy_syntax::linker::STD_MODULES.contains(&name) {
+        expand_compile_time(name, module, siblings)
+    } else {
+        witchy_types::pipeline::require_expansion_free(name, module, siblings)
+    }
+}
+
 fn needs_expansion(module: &Module) -> bool {
     module.items.iter().any(|item| matches!(item, Item::Comptime(_)))
         || crate::tagged::needs_expansion(module)

@@ -306,8 +306,18 @@ fn check_loaded_source_bundle(
             witchy::canonical_comptime::source_limits(),
         );
     }
-    pipeline::link_checked_authenticated_from_source_bundle_with_user_modules(
-        sources, entry, &user_modules, owners,
+    let needs_legacy_expansion = sources.iter().any(|(name, bytes)| {
+        if name == entry { return module_needs_legacy_expansion(&module); }
+        let parsed = std::str::from_utf8(bytes).ok().and_then(|source| parser::parse_module(source).ok());
+        parsed.as_ref().is_none_or(module_needs_legacy_expansion)
+    });
+    let expand = if needs_legacy_expansion {
+        comptime::EXPANDER
+    } else {
+        comptime::EXPANSION_FREE_USER_EXPANDER
+    };
+    witchy_types::pipeline::link_checked_authenticated_from_source_bundle_with_user_modules(
+        sources, entry, expand, &user_modules, owners,
     ).map_err(|error| match error {
         pipeline::PipelineError::Ownership(error) => format!("{diagnostic_path}: {error}"),
         pipeline::PipelineError::Source(error) => format!("{diagnostic_path}: {error}"),
@@ -804,16 +814,7 @@ pub(crate) fn expand_file_source(path: &str) -> Result<String, String> {
     // The compatibility expander only changes comptime items, tagged
     // expressions, and compile-time-only helpers. Plain source can be
     // formatted directly without invoking the source tree walker.
-    let needs_legacy_expansion = modules.iter().any(|(_, module)| {
-        !module.compiler_item_syntax.is_empty() || !module.compiler_expr_syntax.is_empty()
-            || !module.compiler_type_syntax.is_empty() || !module.compiler_pattern_syntax.is_empty()
-            || !module.compiler_stmt_syntax.is_empty() || !module.compiler_block_syntax.is_empty()
-            || module.items.iter().any(|item| matches!(item, ast::Item::Comptime(_))
-            || matches!(item, ast::Item::Function(function) if function.comptime_only))
-            || witchy_syntax::ast::visit::visit_module_exprs(module, &mut |expr| {
-                if matches!(expr, ast::Expr::TaggedLit { .. }) { Err(()) } else { Ok(()) }
-            }).is_err()
-    });
+    let needs_legacy_expansion = modules.iter().any(|(_, module)| module_needs_legacy_expansion(module));
     if !needs_legacy_expansion {
         let (_, module) = modules.iter().find(|(name, _)| name == &entry_stem)
             .ok_or_else(|| format!("internal error: entry module `{entry_stem}` was not loaded"))?;
@@ -834,6 +835,17 @@ pub(crate) fn expand_file_source(path: &str) -> Result<String, String> {
         return Err(format!("internal error: entry module `{entry_stem}` was not loaded"));
     };
     Ok(format::module(&module, &[]))
+}
+
+fn module_needs_legacy_expansion(module: &ast::Module) -> bool {
+    !module.compiler_item_syntax.is_empty() || !module.compiler_expr_syntax.is_empty()
+        || !module.compiler_type_syntax.is_empty() || !module.compiler_pattern_syntax.is_empty()
+        || !module.compiler_stmt_syntax.is_empty() || !module.compiler_block_syntax.is_empty()
+        || module.items.iter().any(|item| matches!(item, ast::Item::Comptime(_))
+        || matches!(item, ast::Item::Function(function) if function.comptime_only))
+        || witchy_syntax::ast::visit::visit_module_exprs(module, &mut |expr| {
+            if matches!(expr, ast::Expr::TaggedLit { .. }) { Err(()) } else { Ok(()) }
+        }).is_err()
 }
 
 #[derive(Clone)]

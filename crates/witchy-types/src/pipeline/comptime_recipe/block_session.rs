@@ -647,7 +647,7 @@ fn hash_block_site(hash: &mut blake3::Hasher, site: ComptimeBlockSite) {
 // This fixed callback never mutates any module. A public callback here could
 // replace the selected body or execute sibling comptime against unrecorded
 // prior output. Pending expansion instead stays outside this first-entry lane.
-pub(super) fn require_expansion_free(
+pub fn require_expansion_free(
     name: &str, module: &mut Module, _: &[(String, Module)],
 ) -> Result<witchy_syntax::origin::OriginTable, String> {
     let refusal = || format!("comptime session module `{name}` requires authenticated prior expansion");
