@@ -7279,13 +7279,13 @@ mod admitted_static_output_tests {
     use super::*;
 
     #[test]
-    fn production_static_value_uses_admitted_closed_site() {
+    fn production_static_value_uses_admitted_glamour_page() {
         let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
             .unwrap().as_nanos();
         let root = std::env::temp_dir().join(format!("witchy-static-admitted-{}-{nonce}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
         let entry_path = root.join("main.witchy");
-        std::fs::write(&entry_path, "from glamour import Site, StaticPage\npub fn web() -> Site:\n    Site([StaticPage(\"/\", \"hello\", [], [])], [], [], [], [], [])\n").unwrap();
+        std::fs::write(&entry_path, "import glamour\npub fn web() -> glamour.Site:\n    let body: glamour.Ui(()) = glamour.ui(glamour.text(\"hello\"))\n    glamour.site([glamour.static_page(\"/\", body)])\n").unwrap();
         let project = Project {
             root: root.clone(), name: "static-admitted".into(), version: "0.1.0".into(),
             delivery: Delivery::Static, entry: entry_path.clone(), index: root.join("index.html"),
@@ -7296,14 +7296,10 @@ mod admitted_static_output_tests {
         let entry = static_entry_name(&project).unwrap();
         authenticate_static_entry(&checked, &entry, false).unwrap();
         let value = evaluate_static_site_value(&checked, recipe.as_ref(), &entry, Vec::new()).unwrap();
-        let witchy_interp::interpreter::CompilerValue::Constructor { name, fields } = value else {
-            panic!("static output must be a Site constructor");
-        };
-        assert_eq!(name, "glamour.Site");
-        let witchy_interp::interpreter::CompilerValue::List(pages) = &fields[0] else {
-            panic!("Site pages must be a list");
-        };
+        let (pages, _, _, _, _, _) = static_site_from_value(value).unwrap();
         assert_eq!(pages.len(), 1);
+        assert_eq!(pages[0].route, "/");
+        assert!(pages[0].html.contains("hello"));
         std::fs::remove_dir_all(root).unwrap();
     }
 }

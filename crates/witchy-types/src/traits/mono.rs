@@ -195,6 +195,7 @@ impl Mono<'_> {
             !template.bounds.is_empty() || self.skip_walk.contains(&template.name);
         let mut bindings = HashMap::new();
         let mut table_confirmed = HashSet::new();
+        let mut instance_confirmed = HashSet::new();
 
         for (param, arg) in template.params.iter().zip(args) {
             let Some(pattern) = &param.ty else { continue };
@@ -208,6 +209,35 @@ impl Mono<'_> {
                 Expr::Var(name) => scope.get(name).cloned(),
                 _ => None,
             };
+            // A concrete local inside an already registered specialization is
+            // rechecked with that specialized body before canonical admission.
+            let concrete_instance_local = matches!(arg, Expr::Var(name) if scope.is_local(name))
+                && self.specializations.contains_key(&self.current_function)
+                && scoped_local.as_ref().is_some_and(|ty| {
+                    let mut variables = Vec::new();
+                    collect_type_vars(ty, &mut variables);
+                    variables.is_empty()
+                });
+            // The preceding round's table still gives nested calls in a
+            // generated specialization their generic template result. Once
+            // the inner call has been rewritten to its authenticated concrete
+            // instance, its registered signature is the stronger result fact.
+            let concrete_instance_result = match arg {
+                Expr::Call { name, .. }
+                    if self.specializations.contains_key(&self.current_function)
+                        && self.specializations.contains_key(name) =>
+                {
+                    declared_expr_type(arg, scope, &self.fn_sigs, &|nested| {
+                        self.type_ast(nested, scope)
+                    })
+                }
+                _ => None,
+            }
+            .filter(|ty| {
+                let mut variables = Vec::new();
+                collect_type_vars(ty, &mut variables);
+                variables.is_empty()
+            });
             let actual = from_table
                 .as_ref()
                 .filter(|ty| {
@@ -216,7 +246,8 @@ impl Mono<'_> {
                     variables.is_empty()
                 })
                 .cloned()
-                .or(scoped_local)
+                .or(scoped_local.clone())
+                .or(concrete_instance_result.clone())
                 .or(from_table.clone())
                 .or_else(|| self.type_ast(arg, scope));
             let Some(actual) = actual else { continue };
@@ -227,6 +258,24 @@ impl Mono<'_> {
                 let mut confirmed = HashMap::new();
                 if bind_ast_type_vars(pattern, &table_ty, &mut confirmed) {
                     table_confirmed.extend(confirmed.into_keys());
+                }
+            }
+            if let Some(instance_ty) = concrete_instance_result {
+                let mut confirmed = HashMap::new();
+                if instance_ty == actual
+                    && bind_ast_type_vars(pattern, &instance_ty, &mut confirmed)
+                {
+                    instance_confirmed.extend(confirmed.into_keys());
+                }
+            }
+            if concrete_instance_local && scoped_local.as_ref() == Some(&actual) {
+                let mut confirmed = HashMap::new();
+                if bind_ast_type_vars(
+                    pattern,
+                    scoped_local.as_ref().expect("checked concrete local"),
+                    &mut confirmed,
+                ) {
+                    instance_confirmed.extend(confirmed.into_keys());
                 }
             }
             if let Some(checked_parameter) = self.checked_instance_parameter_type(arg, scope) {
@@ -261,6 +310,7 @@ impl Mono<'_> {
                     && !self.type_carries_once_identity(&ty)
                     && (!self.mono_unbounded
                         || (!table_confirmed.contains(&var)
+                            && !instance_confirmed.contains(&var)
                             && !is_specializable_type_arg(&key)))
                 {
                     return None;

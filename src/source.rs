@@ -991,6 +991,29 @@ mod tests {
     }
 
     #[test]
+    fn static_site_output_recipe_lowers_glamour_page() {
+        let dir = unique_dir("static_glamour_page");
+        std::fs::create_dir_all(&dir).unwrap();
+        let entry = dir.join("main.witchy");
+        std::fs::write(&entry, "import glamour\nfn web() -> glamour.Site:\n    let body: glamour.Ui(()) = glamour.ui(glamour.text(\"hello\"))\n    glamour.site([glamour.static_page(\"/\", body)])\n").unwrap();
+        let (_, recipe, _) = super::link_static_site_checked_with_output(entry.to_str().unwrap())
+            .expect("authenticated static output recipe");
+        let recipe = recipe.expect("source without main gets output adapter");
+        let artifact = witchy_lower::codegen::compile_checked_module_artifact(recipe.checked())
+            .expect_lowered("ordinary Glamour static page admits");
+        let mut runtime = witchy_runtime::runtime::Runtime::batch().unwrap();
+        let mut vm = runtime.spawn_admitted(&artifact, witchy_runtime::runtime::Capabilities {
+            print: true, quiet: true, ..Default::default()
+        }, 256).unwrap();
+        vm.run().unwrap();
+        assert_eq!(vm.output().len(), 1);
+        assert!(vm.output()[0].contains("<!doctype html>"));
+        assert!(vm.output()[0].contains("hello"));
+        assert_eq!(vm.canonical_heap_leaks().unwrap(), Some(0));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn checked_source_schedules_derive_before_expansion_free_dispatch() {
         let dir = unique_dir("checked_derive_dispatch");
         std::fs::create_dir_all(&dir).unwrap();
