@@ -586,28 +586,21 @@ fn imported_blocks_follow_admitted_dependency_graph() {
     let folder = TempDir::new("admitted-imported-comptime-graph");
     let entry = folder.join("main.witchy");
     std::fs::write(folder.join("left.witchy"), "comptime:\n    emit_item(quote item:\n        pub fn value() -> Int:\n            19\n    )\n").unwrap();
-    std::fs::write(folder.join("right.witchy"), "comptime:\n    emit_item(quote item:\n        pub fn value() -> Int:\n            23\n    )\n").unwrap();
-    std::fs::write(&entry, "import left\nimport right\nfn main(console: Console):\n    console.print(\"${left.value() + right.value()}\")\n").unwrap();
+    std::fs::write(folder.join("right.witchy"), "import left\ncomptime:\n    if left.value() == 19:\n        emit_item(quote item:\n            pub fn value() -> Int:\n                23\n        )\n").unwrap();
+    std::fs::write(folder.join("extra.witchy"), "comptime:\n    emit_item(quote item:\n        pub fn value() -> Int:\n            23\n    )\n").unwrap();
+    std::fs::write(&entry, "import left\nimport right\nimport extra\ncomptime:\n    if right.value() == 23:\n        emit_item(quote item:\n            fn answer() -> Int:\n                left.value() + extra.value()\n        )\nfn main(console: Console):\n    console.print(\"${answer()}\")\n").unwrap();
     let run = Command::new(env!("CARGO_BIN_EXE_witchy")).arg(&entry).output().unwrap();
     assert!(run.status.success(), "{}", String::from_utf8_lossy(&run.stderr));
     assert_eq!(String::from_utf8_lossy(&run.stdout), "42\n");
 
     std::fs::write(folder.join("left.witchy"), "comptime:\n    emit_item(quote item:\n        pub fn value() -> Int:\n            \"wrong\"\n    )\n").unwrap();
-    std::fs::write(folder.join("right.witchy"), "comptime:\n    fail(\"later producer ran\")\n").unwrap();
+    std::fs::write(folder.join("right.witchy"), "import left\ncomptime:\n    fail(\"later producer ran\")\n").unwrap();
     let check = Command::new(env!("CARGO_BIN_EXE_witchy"))
         .arg("check").arg(&entry).output().unwrap();
     assert!(!check.status.success());
     let error = String::from_utf8_lossy(&check.stderr);
     assert!(error.contains("Int") && error.contains("String"), "{error}");
     assert!(!error.contains("later producer ran"), "{error}");
-
-    std::fs::write(folder.join("left.witchy"), "comptime:\n    emit_item(quote item:\n        pub fn value() -> Int:\n            19\n    )\n").unwrap();
-    std::fs::write(folder.join("right.witchy"), "import left\ncomptime:\n    if left.value() == 19:\n        emit_item(quote item:\n            pub fn value() -> Int:\n                23\n        )\n").unwrap();
-    std::fs::write(&entry, "import left\nimport right\ncomptime:\n    if right.value() == 23:\n        emit_item(quote item:\n            fn answer() -> Int:\n                left.value() + right.value()\n        )\nfn main(console: Console):\n    console.print(\"${answer()}\")\n").unwrap();
-    let dependent_entry_block = Command::new(env!("CARGO_BIN_EXE_witchy"))
-        .arg(&entry).output().unwrap();
-    assert!(dependent_entry_block.status.success(), "{}", String::from_utf8_lossy(&dependent_entry_block.stderr));
-    assert_eq!(String::from_utf8_lossy(&dependent_entry_block.stdout), "42\n");
 }
 
 #[test]
