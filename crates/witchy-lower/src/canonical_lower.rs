@@ -9776,6 +9776,10 @@ impl FunctionLowerer<'_> {
                     Operation::Call { destinations, .. } | Operation::VarCall { destinations, .. } => {
                         direct.extend(destinations.iter().copied());
                     }
+                    Operation::ClosureOwner(OwnerOperation::ReadEnvironmentField { destination, .. })
+                        if matches!(self.values.get(destination), Some(ValueType::Ref(_))) => {
+                        direct.insert(*destination);
+                    }
                     _ => {}
                 }
             }
@@ -10088,6 +10092,10 @@ impl FunctionLowerer<'_> {
                         transfer: witchy_wir::canonical_safewir::LoadTransfer::CloneShared | witchy_wir::canonical_safewir::LoadTransfer::ClonePresent | witchy_wir::canonical_safewir::LoadTransfer::TakeLast,
                         ..
                     } => { direct.insert(*destination); }
+                    Operation::ClosureOwner(OwnerOperation::ReadEnvironmentField { destination, .. })
+                        if matches!(self.values.get(destination), Some(ValueType::Ref(_))) => {
+                        direct.insert(*destination);
+                    }
                     // TakeNullableUnique transfers a proved sole child token,
                     // not a shared read. A later CloneRef still demotes it.
                     // A call's reference result is a shared token (its result
