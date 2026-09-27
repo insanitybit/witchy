@@ -93,6 +93,8 @@ pub(super) fn requirement(ty: &ast::Type, definitions: &BTreeMap<String, ast::Ty
 
 pub(super) fn has_callable(proof: &StoredOptProof) -> bool {
     match proof {
+        StoredOptProof::MayRequireOpt => true,
+        StoredOptProof::Alternatives(values) => values.iter().any(has_callable),
         StoredOptProof::Callable(_) => true,
         StoredOptProof::Elements(fields) | StoredOptProof::Variant { fields, .. } => fields.iter().any(has_callable),
         StoredOptProof::Variants(variants) => variants.values().flatten().any(has_callable),
@@ -104,6 +106,8 @@ pub(super) fn has_callable(proof: &StoredOptProof) -> bool {
 
 pub(super) fn has_higher_order(proof: &StoredOptProof) -> bool {
     match proof {
+        StoredOptProof::MayRequireOpt => true,
+        StoredOptProof::Alternatives(values) => values.iter().any(has_higher_order),
         StoredOptProof::Callable(contract) => contract.has_higher_order_boundary(),
         StoredOptProof::Elements(fields) | StoredOptProof::Variant { fields, .. } => fields.iter().any(has_higher_order),
         StoredOptProof::Variants(variants) => variants.values().flatten().any(has_higher_order),
@@ -116,6 +120,7 @@ pub(super) fn has_higher_order(proof: &StoredOptProof) -> bool {
 pub(super) fn satisfies(actual: &StoredOptProof, required: &StoredOptProof) -> bool {
     if !has_callable(required) { return true }
     match (actual, required) {
+        (StoredOptProof::Alternatives(values), _) => !values.is_empty() && values.iter().all(|actual| satisfies(actual, required)),
         (StoredOptProof::Callable(actual), StoredOptProof::Callable(required)) => actual == required,
         (StoredOptProof::Elements(actual), StoredOptProof::Elements(required)) => slots_satisfy(actual, required),
         (StoredOptProof::Variant { ordinal, fields }, StoredOptProof::Variants(variants)) => variants.get(ordinal).is_some_and(|required| slots_satisfy(fields, required)),

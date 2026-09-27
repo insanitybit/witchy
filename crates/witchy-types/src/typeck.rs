@@ -1745,18 +1745,7 @@ impl Checker {
             Expr::Index { base, .. } => self.expression_opt_value_proof(base).homogeneous_element(),
             Expr::Binary { op: ast::BinOp::Coalesce, lhs, rhs } => {
                 let fallback = self.expression_opt_value_proof(rhs);
-                let select = |ordinal: usize, fields: Vec<StoredOptProof>| {
-                    if ordinal == 0 {
-                        if fields.len() == 1 { fields[0].clone() } else { StoredOptProof::Unknown }
-                    } else { fallback.clone() }
-                };
-                match self.expression_opt_value_proof(lhs) {
-                    StoredOptProof::Variant { ordinal, fields } => select(ordinal, fields),
-                    StoredOptProof::Variants(variants) => variants.into_iter()
-                        .map(|(ordinal, fields)| select(ordinal, fields))
-                        .reduce(StoredOptProof::join).unwrap_or(StoredOptProof::Unknown),
-                    _ => StoredOptProof::Unknown,
-                }
+                self.expression_opt_value_proof(lhs).select_variant_slot(0, 0, &fallback)
             }
             Expr::As { expr, .. } | Expr::Unary { op: UnOp::Move, expr } => self.expression_opt_value_proof(expr),
             // These forms introduce local bindings. Their result was captured
@@ -1888,9 +1877,13 @@ impl Checker {
 
     /// Invocation needs the callee's actual checked origin, even when none of
     /// its arguments is itself callable. A nominal field type is not proof.
-    fn require_opt_invocation_provenance(&self, authenticated: bool) -> Result<(), TypeError> {
+    fn require_opt_invocation_provenance(&self, proof: &StoredOptProof) -> Result<(), TypeError> {
+        let authenticated = proof.callable().is_some();
         if self.current_opt_callable && !authenticated {
             return terr("invocation in opt code requires an opt-compatible callable; the callee value has no authenticated opt provenance");
+        }
+        if !authenticated {
+            self.reject_opt_proof_erasure(proof, "invocation with uncertain callable preconditions")?;
         }
         Ok(())
     }
@@ -1903,12 +1896,29 @@ impl Checker {
         argument: &Expr,
         context: &str,
     ) -> Result<(), TypeError> {
-        if opt_contract::has_higher_order(&self.expression_opt_value_proof(argument)) {
+        self.reject_opt_proof_erasure(&self.expression_opt_value_proof(argument), context)
+    }
+
+    fn reject_opt_proof_erasure(&self, proof: &StoredOptProof, context: &str) -> Result<(), TypeError> {
+        if opt_contract::has_higher_order(proof) {
             return terr(format!(
                 "{context} cannot erase an opt-compatible callable into an ordinary callable contract; pass it directly through an opt-compatible interface"
             ));
         }
         Ok(())
+    }
+
+    /// All callable exits publish the same contract, regardless of whether the
+    /// source uses an explicit return, a completing tail, or a closure body.
+    fn check_opt_callable_result(&self, proof: &StoredOptProof, required: Option<&StoredOptProof>) -> Result<(), TypeError> {
+        match required {
+            Some(required) if !opt_contract::has_callable(required) =>
+                self.reject_opt_proof_erasure(proof, "callable result without a transported behavior contract"),
+            Some(required) if !opt_contract::satisfies(proof, required) =>
+                terr("opt callable returns a value without opt-compatible provenance"),
+            Some(_) => Ok(()),
+            None => self.reject_opt_proof_erasure(proof, "ordinary callable result"),
+        }
     }
 
     /// Recover the erased source `frozen` result contract for a value binding.
@@ -5569,6 +5579,11 @@ impl Checker {
                     // outer name that may carry opt callback provenance.
                     let value_opt_proof = self.expression_opt_value_proof(value);
                     let value_opt_callable = self.expression_opt_callable_contract(value);
+                    if *mutable {
+                        // Mutable bindings discard positive origin facts. They
+                        // must not also discard a callable's entry obligations.
+                        self.reject_opt_callable_erasure(value, &format!("mutable binding `{name}`"))?;
+                    }
                     self.define(name.clone(), vt, *mutable);
                     let binding_ty = self.lookup(name).expect("new binding retains its type");
                     self.mark_must_consume_binding(name, &binding_ty);
@@ -5634,10 +5649,9 @@ impl Checker {
                             value_opt_callable.expect("checked opt callable expression has a contract"),
                         );
                     }
-                    if !*mutable && matches!(
-                        self.resolve(&binding_ty),
-                        Ty::List(_) | Ty::Tuple(_) | Ty::Named(_, _)
-                    ) {
+                    // Possible obligations matter even when this is a function
+                    // value without one definite authenticated callable origin.
+                    if !*mutable && !matches!(value_opt_proof, StoredOptProof::Unknown) {
                         self.remember_container_opt_provenance(name.clone(), value_opt_proof);
                     }
                     if borrowed_shell_binding {
@@ -5731,6 +5745,9 @@ impl Checker {
                     self.borrowed_shell_update_target = saved_shell_target;
                     self.must_self_update_target = saved_must_target;
                     let vt = inferred?;
+                    // Reassignment invalidates stored callback provenance below.
+                    // Check the actual RHS after inference, before losing it.
+                    self.reject_opt_callable_erasure(value, &format!("assignment to `{name}`"))?;
                     if self.ty_carries_must_consume(&vt) {
                         self.reject_implicit_must_copy(value, &format!("assignment to `{name}`"))?;
                     }
@@ -5852,6 +5869,10 @@ impl Checker {
                         },
                         None => Ty::Unit,
                     };
+                    if let Some(expression) = opt {
+                        let required = self.current_opt_callable.then(|| self.opt_value_requirement(&t));
+                        self.check_opt_callable_result(&self.expression_opt_value_proof(expression), required.as_ref())?;
+                    }
                     if let Some(ret) = self.current_ret.clone() {
                         self.coerce_arg(&ret, &t).map_err(|e| TypeError {
                             message: format!("`return` value: {}", e.message),
@@ -6327,8 +6348,9 @@ impl Checker {
                 self.consume_once_callee(&callee, &vty)?;
                 self.infer(&callee)?;
             }
-            let opt_callable = self.callable_opt_contract(name).is_some();
-            self.require_opt_invocation_provenance(opt_callable)?;
+            let callee_proof = self.expression_opt_value_proof(&Expr::Var(name.to_owned()));
+            let opt_callable = callee_proof.callable().is_some();
+            self.require_opt_invocation_provenance(&callee_proof)?;
             match self.resolve(&vty) {
                 Ty::Fn(param_tys, ret, conventions, reference_params, qualifiers) => {
                     if self.current_pure && !qualifiers.pure {
@@ -8082,7 +8104,8 @@ impl Checker {
                     if !self.ty_carries_must_consume(&captured_ty) {
                         let mutable = self.is_mutable(&capture).unwrap_or(false);
                         let frozen = self.is_frozen_binding(&capture);
-                        copied_captures.push((capture, captured_ty, mutable, frozen));
+                        let opt_proof = self.expression_opt_value_proof(&Expr::Var(capture.clone()));
+                        copied_captures.push((capture, captured_ty, mutable, frozen, opt_proof));
                     }
                 }
                 let saved_pure = std::mem::replace(&mut self.current_pure, qualifiers.pure);
@@ -8094,11 +8117,16 @@ impl Checker {
                 // private binding. Known obligation-bearing capture types
                 // are left to the final checked closure witness; unresolved
                 // captures are rechecked below after body inference.
-                for (capture, ty, mutable, frozen) in &copied_captures {
+                for (capture, ty, mutable, frozen, opt_proof) in &copied_captures {
                     // These analysis-only bindings do not allocate storage in
                     // the enclosing lexical region, unlike a source `let`.
                     self.scopes.last_mut().unwrap()
                         .insert(capture.clone(), (ty.clone(), *mutable));
+                    // Snapshotting changes the binding identity, not the
+                    // captured value's checked origin or entry obligations.
+                    if !matches!(opt_proof, StoredOptProof::Unknown) {
+                        self.bind_opt_value_proof(capture, opt_proof.clone());
+                    }
                     if *frozen {
                         self.authorize_frozen_binding(capture.clone());
                     }
@@ -8201,10 +8229,15 @@ impl Checker {
                 self.unify(&lambda_ret, &body_ty).map_err(|e| TypeError {
                     message: format!("closure body type does not match its declared return type: {}", e.message),
                 })?;
+                let result_requirement = match &eta_contract {
+                    Some(target) => target.as_ref().map(|contract| *contract.result.clone()),
+                    None => self.current_opt_callable.then(|| self.opt_value_requirement(&lambda_ret)),
+                };
+                self.check_opt_callable_result(&self.recorded_opt_expression_proof_for_block(body), result_requirement.as_ref())?;
                 // Body inference can refine a generic capture. Recheck the
                 // resolved storage before granting a reusable callable: even
                 // a root continuation is wrapped in a replayable Task recipe.
-                for (capture, captured_ty, _, _) in &copied_captures {
+                for (capture, captured_ty, _, _, _) in &copied_captures {
                     if self.ty_carries_must_consume(captured_ty) {
                         return terr(format!(
                             "closure capture `{capture}` carries a must-consume obligation; an ordinary callable cannot hide it or enter a replayable task"
@@ -8260,8 +8293,9 @@ impl Checker {
                 let fty = self.infer(func)?;
                 // Branch/block proofs are recorded during inference; inspect
                 // them only after the callee expression has been checked.
-                let opt_callable = self.expression_opt_callable_contract(func).is_some();
-                self.require_opt_invocation_provenance(opt_callable)?;
+                let callee_proof = self.expression_opt_value_proof(func);
+                let opt_callable = callee_proof.callable().is_some();
+                self.require_opt_invocation_provenance(&callee_proof)?;
                 if let Ty::Fn(param_tys, ret, conventions, reference_params, qualifiers) =
                     self.resolve(&fty)
                 {
@@ -10335,15 +10369,8 @@ impl Checker {
         // declaration contract.  Its completing tail must therefore carry the
         // checked origin too; a normal imported function cannot be relabelled
         // merely by returning it from an opt body.
-        if self.current_opt_callable && !opt_contract::satisfies(
-            &self.recorded_opt_expression_proof_for_block(&func.body),
-            &self.opt_value_requirement(&body_ret),
-        ) {
-            return terr(format!(
-                "opt function `{}` returns a callable without opt-compatible provenance",
-                diagnostic_callable_name(&source_callable),
-            ));
-        }
+        let result_requirement = self.current_opt_callable.then(|| self.opt_value_requirement(&body_ret));
+        self.check_opt_callable_result(&self.recorded_opt_expression_proof_for_block(&func.body), result_requirement.as_ref())?;
         // A broader capability may be returned where a narrower one is declared
         // (`-> Net[Connect]` returning a full `Net`), mirroring call-argument
         // narrowing; `coerce_arg` falls back to unification for everything else.
