@@ -555,6 +555,35 @@ fn imported_original_block_feeds_authenticated_entry() {
 }
 
 #[test]
+fn independent_imported_blocks_share_one_admitted_destination() {
+    let folder = TempDir::new("admitted-imported-comptime-graph");
+    let entry = folder.join("main.witchy");
+    std::fs::write(folder.join("left.witchy"), "comptime:\n    emit_item(quote item:\n        pub fn value() -> Int:\n            19\n    )\n").unwrap();
+    std::fs::write(folder.join("right.witchy"), "comptime:\n    emit_item(quote item:\n        pub fn value() -> Int:\n            23\n    )\n").unwrap();
+    std::fs::write(&entry, "import left\nimport right\nfn main(console: Console):\n    console.print(\"${left.value() + right.value()}\")\n").unwrap();
+    let run = Command::new(env!("CARGO_BIN_EXE_witchy")).arg(&entry).output().unwrap();
+    assert!(run.status.success(), "{}", String::from_utf8_lossy(&run.stderr));
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "42\n");
+
+    std::fs::write(folder.join("left.witchy"), "comptime:\n    emit_item(quote item:\n        pub fn value() -> Int:\n            \"wrong\"\n    )\n").unwrap();
+    std::fs::write(folder.join("right.witchy"), "comptime:\n    fail(\"later producer ran\")\n").unwrap();
+    let check = Command::new(env!("CARGO_BIN_EXE_witchy"))
+        .arg("check").arg(&entry).output().unwrap();
+    assert!(!check.status.success());
+    let error = String::from_utf8_lossy(&check.stderr);
+    assert!(error.contains("Int") && error.contains("String"), "{error}");
+    assert!(!error.contains("later producer ran"), "{error}");
+
+    std::fs::write(folder.join("left.witchy"), "comptime:\n    emit_item(quote item:\n        pub fn value() -> Int:\n            19\n    )\n").unwrap();
+    std::fs::write(folder.join("right.witchy"), "import left\ncomptime:\n    emit_item(quote item:\n        pub fn value() -> Int:\n            left.value() + 4\n    )\n").unwrap();
+    let dependent = Command::new(env!("CARGO_BIN_EXE_witchy"))
+        .arg("check").arg(&entry).output().unwrap();
+    assert!(!dependent.status.success());
+    assert!(String::from_utf8_lossy(&dependent.stderr)
+        .contains("dependent comptime producers require an admitted predecessor recipe"));
+}
+
+#[test]
 fn bare_test_driver_uses_admitted_original_block_helpers() {
     let folder = TempDir::new("admitted-comptime-test-driver");
     let source = folder.join("tests.witchy");

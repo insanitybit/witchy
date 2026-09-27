@@ -105,6 +105,18 @@ fn refuse(message: impl Into<String>) -> PipelineError {
 }
 
 impl ComptimeSourceSession {
+    pub fn producer_depends_on_any(&self, producers: &[String]) -> bool {
+        self.producer_dependencies().iter().any(|dependency|
+            dependency != &self.selected && producers.contains(dependency))
+    }
+
+    pub fn check_completed_prefix(&self, prior: &[PriorComptimeBlockOutput]) -> Result<(), PipelineError> {
+        if self.next_block_site(prior)?.is_some() {
+            return Err(refuse("comptime producer has unexecuted blocks"));
+        }
+        self.check_prior_items(prior)
+    }
+
     fn producer_dependencies(&self) -> HashSet<String> {
         let mut reachable = HashSet::from([self.selected.clone()]);
         loop {
@@ -425,6 +437,78 @@ impl ComptimeSourceSession {
         retain_emitted_origins(&mut checked, &self.selected, &emitted_origins);
         let typed = typed.ok_or_else(|| refuse("comptime destination did not retain checked source"))?;
         let checked = finish_canonical_source(checked, typed, digest, PrecompiledDeclarationEnvironment::default())?;
+        Ok((checked, display))
+    }
+
+    /// Seal an entry after independently admitted imported producers have all
+    /// finished. The compiler driver supplies actual runtime outputs; this
+    /// method checks their complete prefixes and their ordinary destination.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn check_expanded_producer_graph_for_entry(
+        &self, outputs: &[(String, Vec<PriorComptimeBlockOutput>)], entry: &str,
+    ) -> Result<(CheckedModule, Module), PipelineError> {
+        if self.selected != entry || !self.user_modules.contains(entry) {
+            return Err(refuse("comptime graph requires the loader-owned entry session"));
+        }
+        let mut expanded = self.modules.clone();
+        let mut origins = Vec::new();
+        let mut hash = blake3::Hasher::new();
+        hash.update(b"witchy.comptime-expanded-graph.v1\0");
+        hash.update(&REWRITE_VERSION.to_le_bytes());
+        hash.update(&self.original_digest);
+        let mut previous = None;
+        for (producer, prior) in outputs {
+            if previous.is_some_and(|name: &str| name >= producer.as_str())
+                || !self.user_modules.contains(producer) {
+                return Err(refuse("comptime graph requires unique ordered loader-owned producers"));
+            }
+            previous = Some(producer);
+            let session = Self::from_source_bundle(
+                self.raw_sources.clone(), producer, self.user_modules.clone(), self.owners.clone(),
+            )?;
+            if session.original_block_items().is_empty() || session.next_block_site(prior)?.is_some() {
+                return Err(refuse("comptime graph requires every producer block output in order"));
+            }
+            if session.producer_dependencies().iter().any(|dependency|
+                dependency != producer && outputs.iter().any(|(name, _)| name == dependency)) {
+                return Err(refuse("dependent comptime producers require an admitted predecessor recipe"));
+            }
+            session.check_prior_items(prior)?;
+            if prior.iter().flat_map(|output| &output.items).any(|(item, _)|
+                matches!(item, Item::Function(function) if function.name == "main")) {
+                return Err(refuse("comptime destination cannot displace its source main"));
+            }
+            let (_, original) = session.modules.iter().find(|(name, _)| name == producer)
+                .expect("selected raw module retained");
+            let (module, emitted_origins) = materialize_prior_with_origins(original, prior, true, false);
+            expanded.iter_mut().find(|(name, _)| name == producer)
+                .expect("producer raw module retained").1 = module;
+            origins.push((producer.clone(), emitted_origins));
+            hash.update(&(producer.len() as u64).to_le_bytes());
+            hash.update(producer.as_bytes());
+            hash_prior_items(&mut hash, prior)?;
+        }
+        let expected = self.modules.iter().filter(|(name, module)|
+            self.user_modules.contains(name) && module.items.iter().any(|item| matches!(item, Item::Comptime(_))))
+            .map(|(name, _)| name).collect::<Vec<_>>();
+        if expected.len() != outputs.len() || expected.iter().any(|name|
+            !outputs.iter().any(|(producer, _)| producer == *name)) {
+            return Err(refuse("comptime graph omitted a source producer"));
+        }
+        for (name, owner) in self.owners.assignments() {
+            super::super::static_evaluation::hash_owner_assignment(&mut hash, name, owner);
+        }
+        let display = expanded.iter().find(|(name, _)| name == entry)
+            .expect("entry raw module retained").1.clone();
+        let expand = ComptimeExpander::with_sibling_request(require_expansion_free, |_| false);
+        let (mut checked, typed) = link_checked_with(expanded, entry, expand, LinkMode::Production,
+            Some(&self.user_modules), true, Some(self.owners.clone()))?;
+        for (producer, emitted_origins) in &origins {
+            retain_emitted_origins(&mut checked, producer, emitted_origins);
+        }
+        let typed = typed.ok_or_else(|| refuse("comptime destination did not retain checked source"))?;
+        let checked = finish_canonical_source(checked, typed, *hash.finalize().as_bytes(),
+            PrecompiledDeclarationEnvironment::default())?;
         Ok((checked, display))
     }
 

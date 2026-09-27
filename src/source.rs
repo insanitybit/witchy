@@ -125,6 +125,9 @@ pub(crate) fn link_build_file(path: &str) -> Result<witchy_types::pipeline::Chec
     let source = std::str::from_utf8(&selected.1)
         .map_err(|error| format!("{entry}: source is not UTF-8: {error}"))?;
     let module = parser::parse_module(source).map_err(|error| format!("{entry}: {error}"))?;
+    if source_block_producers(&sources, &user_modules)?.len() > 1 {
+        return Err("build recipes with multiple comptime producers require an admitted graph recipe".into());
+    }
     if module.items.iter().any(|item| matches!(item, ast::Item::Comptime(_))) {
         return witchy::canonical_comptime::check_build_recipe_source_bundle(
             sources, &entry, user_modules, owners, witchy::canonical_comptime::source_limits(),
@@ -162,6 +165,12 @@ pub(crate) fn link_test_file(
         .map_err(|error| TestFileError::Load(format!("{entry_stem}: source is not UTF-8: {error}")))?;
     let module = parser::parse_module(source)
         .map_err(|error| TestFileError::Load(format!("{entry_stem}: {error}")))?;
+    if source_block_producers(&sources, &user_modules)
+        .map_err(TestFileError::Load)?.len() > 1 {
+        return Err(TestFileError::Load(
+            "test suites with multiple comptime producers require an admitted graph recipe".into(),
+        ));
+    }
     if module.items.iter().any(|item| matches!(item, ast::Item::Comptime(_))) {
         let checked = witchy::canonical_comptime::check_test_suite_source_bundle(
             sources, &entry_stem, user_modules, owners,
@@ -325,6 +334,23 @@ fn single_imported_block_producer(
     Ok(producer)
 }
 
+fn source_block_producers(
+    sources: &[(String, Vec<u8>)], user_modules: &UserModuleSet,
+) -> Result<Vec<String>, String> {
+    let mut producers = Vec::new();
+    for (name, bytes) in sources {
+        if !user_modules.contains(name) { continue; }
+        let source = std::str::from_utf8(bytes)
+            .map_err(|error| format!("{name}: source is not UTF-8: {error}"))?;
+        let module = parser::parse_module(source).map_err(|error| format!("{name}: {error}"))?;
+        if module.items.iter().any(|item| matches!(item, ast::Item::Comptime(_))) {
+            producers.push(name.clone());
+        }
+    }
+    producers.sort();
+    Ok(producers)
+}
+
 /// Original blocks in the entry or its sole imported producer use the
 /// admitted compiler session. Other source graphs retain the existing path.
 fn check_loaded_source_bundle(
@@ -336,6 +362,13 @@ fn check_loaded_source_bundle(
     let source = std::str::from_utf8(&selected.1)
         .map_err(|error| format!("{entry}: source is not UTF-8: {error}"))?;
     let module = parser::parse_module(source).map_err(|error| format!("{entry}: {error}"))?;
+    let producers = source_block_producers(&sources, &user_modules)?;
+    if producers.len() > 1 {
+        return witchy::canonical_comptime::check_and_expand_source_bundle_with_producer_graph(
+            sources, entry, &producers, user_modules, owners,
+            witchy::canonical_comptime::source_limits(),
+        ).map(|(checked, _)| checked);
+    }
     if module.items.iter().any(|item| matches!(item, ast::Item::Comptime(_))) {
         return witchy::canonical_comptime::check_source_bundle(
             sources, entry, user_modules, owners, witchy::canonical_comptime::source_limits(),
@@ -385,6 +418,14 @@ pub(crate) fn checked_expanded_entry_source(path: &str) -> Result<(String, ast::
         .map_err(|error| format!("{entry}: source is not UTF-8: {error}"))?;
     let original = source.to_owned();
     let mut module = parser::parse_module(source).map_err(|error| format!("{entry}: {error}"))?;
+    let producers = source_block_producers(&sources, &user_modules)?;
+    if producers.len() > 1 {
+        let (_, expanded) = witchy::canonical_comptime::check_and_expand_source_bundle_with_producer_graph(
+            sources, &entry, &producers, user_modules, owners,
+            witchy::canonical_comptime::source_limits(),
+        )?;
+        return Ok((original, expanded));
+    }
     if module.items.iter().any(|item| matches!(item, ast::Item::Comptime(_))) {
         let (_, expanded) = witchy::canonical_comptime::check_and_expand_source_bundle(
             sources, &entry, user_modules, owners, witchy::canonical_comptime::source_limits(),
@@ -445,6 +486,9 @@ pub(crate) fn checked_precompiled_source_bundle(
     let checked = if precompiled.is_empty() {
         check_loaded_source_bundle(sources, &entry, &entry, user_modules, owners)?
     } else {
+        if !source_block_producers(&sources, &user_modules)?.is_empty() {
+            return Err("comptime producers with precompiled dependencies require an admitted declaration recipe".into());
+        }
         witchy_types::pipeline::link_checked_authenticated_from_source_bundle_with_precompiled_declarations(
             sources, &entry, comptime::EXPANDER, &user_modules, owners, environment,
         ).map_err(|error| error.to_string())?
@@ -838,6 +882,14 @@ pub(crate) fn expand_file_source(path: &str) -> Result<String, String> {
         let module = parser::parse_module(source).map_err(|error| format!("{name}: {error}"))?;
         Ok((name.clone(), module))
     }).collect::<Result<SourceModules, String>>()?;
+    let producers = source_block_producers(&sources, &user_modules)?;
+    if producers.len() > 1 {
+        let (_, expanded) = witchy::canonical_comptime::check_and_expand_source_bundle_with_producer_graph(
+            sources, &entry_stem, &producers, user_modules, owners,
+            witchy::canonical_comptime::source_limits(),
+        )?;
+        return Ok(format::module(&expanded, &[]));
+    }
     if modules.iter().find(|(name, _)| name == &entry_stem)
         .is_some_and(|(_, module)| module.items.iter().any(|item| matches!(item, ast::Item::Comptime(_)))) {
         let expanded = witchy::canonical_comptime::expand_source_bundle(
