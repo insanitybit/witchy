@@ -41,7 +41,7 @@ fn __push(own xs: List(a), x: a) -> List(a):
 
 // Remove the final element and return its old leaf. The repaired list travels
 // through the same `var` write-back channel as every public mutator.
-fn __pop_extract(var xs: List(a)) -> Option(a):
+pub fn __pop_extract(var xs: List(a)) -> Option(a):
     list.__pop_extract(xs)
 
 // Append `x` in place. For an admitted retained-root view element, append

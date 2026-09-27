@@ -9445,6 +9445,20 @@ impl Checker {
                 ));
             }
             self.check_pattern(&arm.pattern, &st)?;
+            // The catalogued pop intrinsic writes back the shortened list and
+            // returns `None` exactly when that list is empty. On this arm an
+            // owned list cannot retain a stored must obligation. Require the
+            // intrinsic itself, a direct place, and an unguarded None pattern;
+            // an ordinary function named `pop` supplies no such proof.
+            if arm.guard.is_none()
+                && matches!(&arm.pattern, Pattern::Ctor { name, args }
+                    if name.rsplit('.').next() == Some("None") && args.is_empty())
+                && let Expr::Call { name, args } = scrutinee
+                && witchy_syntax::intrinsics::is_list_pop_extract(name)
+                && let [Expr::Var(binding)] = args.as_slice()
+            {
+                self.consume_must_binding(binding);
+            }
             self.remember_pattern_opt_provenance(&arm.pattern, scrutinee_opt_proof.clone());
             if let Expr::Var(binding) = scrutinee
                 && let Some(declared) = self.unique_binding_type(binding)

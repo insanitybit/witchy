@@ -219,7 +219,7 @@ fn raw_handle_ids_in_order(ids: List(Int)) -> List(Int):
     ordered
 
 fn raw_handle_ids_collect(own hs: List(Handle), own ids: List(Int)) -> List(Int):
-    match list.pop(hs):
+    match list.__pop_extract(hs):
         Some(h) -> raw_handle_ids_collect(hs, appended(ids, task.__handle_into_raw(h)))
         None -> raw_handle_ids_in_order(ids)
 

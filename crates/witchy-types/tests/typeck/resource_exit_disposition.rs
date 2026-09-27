@@ -120,3 +120,26 @@ fn own_parameter_transfer_does_not_erase_the_callees_must_obligation() {
         .expect_err("an opt-defined type cannot authenticate a normal callee's dropped resource");
     assert!(error.contains("ticket") && error.contains("must-consume"), "{error}");
 }
+
+#[test]
+fn exact_pop_none_disposes_only_an_empty_owned_list() {
+    let source = r#"import list
+must type Ticket:
+    Ticket(Int)
+fn finish(own ticket: Ticket):
+    match move ticket:
+        Ticket(_) -> ()
+fn drain(own tickets: List(Ticket)):
+    match list.__pop_extract(tickets):
+        Some(ticket) ->
+            finish(ticket)
+            drain(tickets)
+        None -> ()
+fn main():
+    drain([Ticket(1), Ticket(2)])
+"#;
+    source::checked(source).expect("None from the exact pop intrinsic proves the owned list is empty");
+    let wrapper = source.replace("list.__pop_extract", "list.pop");
+    let error = source::checked(&wrapper).expect_err("a source wrapper supplies no intrinsic empty-list proof");
+    assert!(error.contains("tickets") && error.contains("must-consume"), "{error}");
+}
