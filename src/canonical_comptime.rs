@@ -194,7 +194,7 @@ fn execute_source_producer_graph(
     limits: ComptimeLimits,
 ) -> Result<(ComptimeSourceSession, Vec<(String, Vec<PriorComptimeBlockOutput>)>), String> {
     let entry_session = ComptimeSourceSession::from_source_bundle(
-        sources.clone(), entry, user_modules.clone(), owners.clone(),
+        sources, entry, user_modules, owners,
     ).map_err(|error| error.to_string())?;
     let mut outputs = Vec::new();
     let mut pending = producers.to_vec();
@@ -205,9 +205,8 @@ fn execute_source_producer_graph(
     while !pending.is_empty() {
         let mut ready = None;
         for (index, producer) in pending.iter().enumerate() {
-            let baseline = ComptimeSourceSession::from_source_bundle(
-                sources.clone(), producer, user_modules.clone(), owners.clone(),
-            ).map_err(|error| error.to_string())?;
+            let baseline = entry_session.select_module(producer)
+                .map_err(|error| error.to_string())?;
             let dependencies = baseline.producer_dependency_names(producers);
             if dependencies.iter().all(|name| outputs.iter().any(|(done, _)| done == name)) {
                 ready = Some((index, dependencies));
@@ -220,9 +219,10 @@ fn execute_source_producer_graph(
         let producer = pending.remove(index);
         let predecessors = outputs.iter().filter(|(name, _)| dependencies.contains(name))
             .cloned().collect::<Vec<_>>();
-        let session = ComptimeSourceSession::from_source_bundle_with_predecessors(
-            sources.clone(), &producer, user_modules.clone(), owners.clone(), &predecessors,
-        ).map_err(|error| error.to_string())?;
+        let session = entry_session.select_module(&producer)
+            .map_err(|error| error.to_string())?
+            .with_predecessors(&predecessors)
+            .map_err(|error| error.to_string())?;
         let prior = execute_source_blocks(&session, limits)?;
         session.check_completed_prefix(&prior).map_err(|error| error.to_string())?;
         outputs.push((producer, prior));

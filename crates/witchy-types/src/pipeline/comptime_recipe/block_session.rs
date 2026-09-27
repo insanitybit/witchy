@@ -111,6 +111,32 @@ impl ComptimeSourceSession {
             .cloned().collect()
     }
 
+    /// Select another loader-owned module from this already authenticated,
+    /// immutable bundle without reparsing the raw source modules.
+    pub fn select_module(&self, selected: &str) -> Result<Self, PipelineError> {
+        if self.raw_sources.iter().any(|(name, _)| name.is_empty())
+            || self.raw_sources.windows(2).any(|pair| pair[0].0 == pair[1].0)
+            || !self.raw_sources.iter().any(|(name, _)| name == selected)
+            || (selected != "comptime" && self.raw_sources.iter().any(|(name, _)| name == "comptime"))
+        {
+            return Err(refuse("comptime session requires unique raw sources and an unambiguous selected module"));
+        }
+        self.owners.validate_module_names(self.raw_sources.iter().map(|(name, _)| name.clone()))?;
+        if !self.user_modules.contains(selected) {
+            return Err(refuse("comptime session selected module is not a loader-owned user module"));
+        }
+        Ok(Self {
+            original_digest: checked_source_digest(
+                &self.raw_sources, selected, &PrecompiledDeclarationEnvironment::default(),
+            ),
+            raw_sources: self.raw_sources.clone(),
+            modules: self.modules.clone(),
+            selected: selected.into(),
+            owners: self.owners.clone(),
+            user_modules: self.user_modules.clone(),
+        })
+    }
+
     /// Build a producer's stage from admitted predecessors. The caller owns
     /// runtime authentication; every stage rechecks complete output prefixes
     /// and binds their syntax to the successor recipe digest.
@@ -119,7 +145,18 @@ impl ComptimeSourceSession {
         user_modules: HashSet<String>, owners: AuthenticatedModuleOwners,
         predecessors: &[(String, Vec<PriorComptimeBlockOutput>)],
     ) -> Result<Self, PipelineError> {
-        let mut session = Self::from_source_bundle(sources, selected, user_modules, owners)?;
+        Self::from_source_bundle(sources, selected, user_modules, owners)?
+            .with_predecessors(predecessors)
+    }
+
+    /// Apply authenticated predecessor outputs to a previously selected
+    /// module. This keeps graph traversal on the same parsed source bundle.
+    pub fn with_predecessors(
+        self,
+        predecessors: &[(String, Vec<PriorComptimeBlockOutput>)],
+    ) -> Result<Self, PipelineError> {
+        let mut session = self;
+        let selected = session.selected.clone();
         let producers = session.modules.iter().filter(|(name, module)|
             session.user_modules.contains(name) && module.items.iter().any(|item| matches!(item, Item::Comptime(_))))
             .map(|(name, _)| name.clone()).collect::<Vec<_>>();
@@ -134,14 +171,10 @@ impl ComptimeSourceSession {
         hash.update(&REWRITE_VERSION.to_le_bytes());
         hash.update(&session.original_digest);
         for (predecessor, prior) in predecessors {
-            if !seen.insert(predecessor.clone()) || predecessor == selected {
+            if !seen.insert(predecessor.clone()) || predecessor == &selected {
                 return Err(refuse("comptime predecessor outputs must be unique and acyclic"));
             }
-            let mut stage = Self::from_source_bundle(
-                session.raw_sources.clone(), predecessor,
-                session.user_modules.clone(), session.owners.clone(),
-            )?;
-            stage.modules = session.modules.clone();
+            let stage = session.select_module(predecessor)?;
             let dependencies = stage.producer_dependency_names(&producers);
             if dependencies.iter().any(|name| !seen.contains(name)) {
                 return Err(refuse("comptime predecessor outputs are out of dependency order"));
