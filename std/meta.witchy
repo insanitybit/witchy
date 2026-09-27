@@ -572,7 +572,7 @@ fn __meta_expr_while_let(pattern: PatternSyntax, scrutinee: ExprSyntax, body: Bl
 
 // The generated function is checked as async before this suspension is lowered.
 pub fn expr_await(value: ExprSyntax) -> ExprSyntax:
-    __meta_expr_await(value)
+    __meta_expr_compose_wire("W\n" + expr_wire_handle(value))
 
 fn __meta_expr_await(value: ExprSyntax) -> ExprSyntax:
     __meta_expr_await(value)
@@ -862,6 +862,7 @@ pub fn function(public: Bool, name: Ident, params: List(ParamSyntax), ret: Optio
         _ -> ()
 
     var wire = if public: "1\n" else: "0\n"
+    wire = wire + "0\n"
     wire = wire + ident_source(name) + "\n${params.length()}\n"
     for param in params:
         match param:
@@ -876,12 +877,13 @@ pub fn function(public: Bool, name: Ident, params: List(ParamSyntax), ret: Optio
 fn __meta_function_expr_wire(wire: String) -> ItemSyntax:
     __meta_function_expr_wire(wire)
 
-pub fn function_block(public: Bool, name: Ident, params: List(ParamSyntax), ret: Option(TypeSyntax), body: BlockSyntax) -> ItemSyntax:
+fn function_block_with_async(public: Bool, is_async: Bool, name: Ident, params: List(ParamSyntax), ret: Option(TypeSyntax), body: BlockSyntax) -> ItemSyntax:
     match name:
         CallSiteIdent(_) -> fail("meta.function_block requires a definition-site name")
         _ -> ()
 
     var wire = if public: "1\n" else: "0\n"
+    wire = wire + if is_async: "1\n" else: "0\n"
     wire = wire + ident_source(name) + "\n${params.length()}\n"
     for param in params:
         match param:
@@ -893,11 +895,14 @@ pub fn function_block(public: Bool, name: Ident, params: List(ParamSyntax), ret:
         CompilerBlockSyntax(handle) -> wire = wire + "${handle.length()}\n" + handle
     __meta_function_block_wire(wire)
 
+pub fn function_block(public: Bool, name: Ident, params: List(ParamSyntax), ret: Option(TypeSyntax), body: BlockSyntax) -> ItemSyntax:
+    function_block_with_async(public, false, name, params, ret, body)
+
 fn __meta_function_block_wire(wire: String) -> ItemSyntax:
     __meta_function_block_wire(wire)
 
 pub fn function_async(public: Bool, name: Ident, params: List(ParamSyntax), ret: Option(TypeSyntax), body: BlockSyntax) -> ItemSyntax:
-    __meta_function_block(public, true, false, name, params, ret, body)
+    function_block_with_async(public, true, name, params, ret, body)
 
 pub fn function_generator(public: Bool, name: Ident, params: List(ParamSyntax), ret: Option(TypeSyntax), body: BlockSyntax) -> ItemSyntax:
     __meta_function_block(public, false, true, name, params, ret, body)

@@ -9,6 +9,7 @@ pub enum Composition {
     Record { name: String, fields: Vec<(String, String)> },
     TypedRecord { target: String, fields: Vec<(String, String)> },
     Try { value: String },
+    Await { value: String },
     Unary { op: String, value: String },
     Range { lo: String, hi: String, inclusive: bool },
     Binary { op: String, lhs: String, rhs: String },
@@ -102,6 +103,7 @@ pub fn decode(bytes: &[u8]) -> Result<Composition, String> {
             Composition::TypedRecord { target, fields }
         }
         "T" => Composition::Try { value: reader.handle()? },
+        "W" => Composition::Await { value: reader.handle()? },
         "U" => Composition::Unary { op: reader.line()?.to_owned(), value: reader.handle()? },
         "G" => {
             let inclusive = match reader.line()? {
@@ -173,6 +175,9 @@ impl Composition {
                 Ok(Expr::Record { name, fields, spread: None })
             }
             Self::Try { value } => Ok(Expr::Try(Box::new(resolve(&value)?))),
+            Self::Await { value } => Ok(Expr::Unary {
+                op: crate::ast::UnOp::Await, expr: Box::new(resolve(&value)?),
+            }),
             Self::Unary { op, value } => {
                 let op = match op.as_str() {
                     "-" => crate::ast::UnOp::Neg,

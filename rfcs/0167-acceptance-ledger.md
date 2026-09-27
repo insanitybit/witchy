@@ -148,6 +148,16 @@ sets the scrutinee to `None`. It prints the independently expected `1` on
 admitted unoptimized Wasm in normal and opt mode, with zero owned heap leaks.
 Row M remains partial for remaining syntax and installed consumers.
 
+Row M update (2026-09-27): `meta.function_async` now emits a typed async
+function item through the authenticated function wire, and `meta.expr_await`
+composes a current-session expression handle without parsing source. A
+generated async `base()` returns 42 and is awaited by `main` on admitted
+unoptimized Wasm in normal and opt mode; a second generated async function
+awaits `base()` in normal mode. Both witnesses print the independently
+expected `42` with zero owned heap leaks. Opt async functions awaiting another
+opt task still fail task-behavior admission in equivalent hand-written source,
+so this does not establish nested opt task provenance or close row M.
+
 Row R update (2026-09-27): admitted `meta.type_expr`, typed parameter and
 expression-body function items, inherent method items, and `meta.expr_try`
 composition are merged. `program_defined_builder_uses_type_info_in_both_modes`

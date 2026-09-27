@@ -1845,6 +1845,7 @@ impl Interpreter {
                     }
                     let spec = witchy_syntax::compiler_session::function_wire::decode_function(wire.as_bytes())
                         .map_err(|message| RuntimeError { message })?;
+                    if spec.is_async { return err("meta.function expression body cannot be async"); }
                     let params = spec.params.iter().map(|handle| self.compiler_syntax.params().get(handle)
                         .cloned().ok_or_else(|| RuntimeError { message: "meta.function requires current-session parameters".into() }))
                         .collect::<Result<Vec<_>, _>>()?;
@@ -1884,13 +1885,16 @@ impl Interpreter {
                         .ok_or_else(|| RuntimeError { message: "meta.function_block requires a current-session block body".into() })?;
                     if body.region.is_some() { return err("meta.function_block requires an ordinary block"); }
                     let (has_await, has_yield, nested_suspension) = generated_suspension_forms(&body);
-                    if nested_suspension || has_await || has_yield {
-                        return err("meta.function_block cannot put suspension in an ordinary function");
+                    if nested_suspension || has_yield || (has_await && !spec.is_async) {
+                        return err("meta.function_block has invalid suspension for its function mode");
+                    }
+                    if spec.is_async && params.iter().any(|param: &Param| param.convention == Convention::Var) {
+                        return err("meta.function_block cannot give an async function a var parameter");
                     }
                     let item = Item::Function(Function {
                         line: 1, public: spec.public, pure: false, comptime_only: false,
                         attributes: Vec::new(), name: spec.name, type_params: Vec::new(),
-                        params, ret, body, bounds: Vec::new(), is_gen: false, is_async: false,
+                        params, ret, body, bounds: Vec::new(), is_gen: false, is_async: spec.is_async,
                     });
                     let handle = self.next_compiler_syntax_handle("function-block-item")?;
                     self.compiler_syntax.insert_item(handle.clone(), item);

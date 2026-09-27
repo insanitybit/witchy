@@ -1,4 +1,4 @@
-//! Bounded data frames for typed parameter and expression-body function items.
+//! Bounded data frames for typed parameters and expression/block function items.
 //! All syntax operands are current-session handles, resolved by the adapter.
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -11,6 +11,7 @@ pub struct ParamSpec {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FunctionSpec {
     pub public: bool,
+    pub is_async: bool,
     pub name: String,
     pub params: Vec<String>,
     pub ret: Option<String>,
@@ -94,13 +95,14 @@ pub fn decode_function(bytes: &[u8]) -> Result<FunctionSpec, String> {
     if bytes.len() > 65_536 { return Err("compiler function input limit exceeded".into()); }
     let mut reader = Reader(bytes);
     let public = reader.boolean()?;
+    let is_async = reader.boolean()?;
     let name = reader.identifier()?;
     let count = reader.count()?;
     let params = (0..count).map(|_| reader.handle()).collect::<Result<_, _>>()?;
     let ret = reader.boolean()?.then(|| reader.handle()).transpose()?;
     let body = reader.handle()?;
     reader.end()?;
-    Ok(FunctionSpec { public, name, params, ret, body })
+    Ok(FunctionSpec { public, is_async, name, params, ret, body })
 }
 
 pub fn decode_inherent_impl(bytes: &[u8]) -> Result<InherentImplSpec, String> {

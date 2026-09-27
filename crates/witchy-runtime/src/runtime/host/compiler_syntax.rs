@@ -449,6 +449,7 @@ fn function_expr_into(mut caller: Caller<'_, VmState>, pointer: i32, length: i32
     charge_fuel(&mut caller, input.len() as u64 + 1)?;
     let spec = witchy_syntax::compiler_session::function_wire::decode_function(&memory.data(&caller)[input])
         .map_err(Error::msg)?;
+    if spec.is_async { return Err(Error::msg("meta.function expression body cannot be async")); }
     let state = caller.data().compiler_syntax.as_ref().expect("checked session");
     let params = spec.params.iter().map(|handle| {
         if !state.param_costs.contains_key(handle) {
@@ -517,6 +518,9 @@ fn function_block_into(mut caller: Caller<'_, VmState>, pointer: i32, length: i3
         state.syntax.params().get(handle).cloned()
             .ok_or_else(|| Error::msg("compiler function parameter has no typed payload"))
     }).collect::<Result<Vec<_>>>()?;
+    if spec.is_async && params.iter().any(|param| param.convention == witchy_syntax::ast::Convention::Var) {
+        return Err(Error::msg("meta.function_block cannot give an async function a var parameter"));
+    }
     let ret = spec.ret.as_ref().map(|handle| {
         if !state.type_costs.contains_key(handle) {
             return Err(Error::msg("compiler function requires current-session return type syntax"));
@@ -535,7 +539,7 @@ fn function_block_into(mut caller: Caller<'_, VmState>, pointer: i32, length: i3
     let item = Item::Function(Function {
         line: 1, public: spec.public, pure: false, comptime_only: false,
         attributes: Vec::new(), name: spec.name, type_params: Vec::new(),
-        params, ret, body, bounds: Vec::new(), is_gen: false, is_async: false,
+        params, ret, body, bounds: Vec::new(), is_gen: false, is_async: spec.is_async,
     });
     let cost = measure_dynamic(&item).map_err(Error::msg)?;
     let required = state.syntax.syntax_handle_byte_len("item").map_err(Error::msg)?;
