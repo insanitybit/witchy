@@ -64,7 +64,7 @@ pub fn pending(own h: task.Handle) -> task.Task(()):
         let main = format!("import task\nimport fast\n{body}\nfn main():\n    ()\n");
         let error = match witchy_types::pipeline::link_checked_authenticated_from_source_bundle_with_user_modules(
             vec![("main".into(), main.into_bytes()), ("fast".into(), fast.as_bytes().to_vec())],
-            "main", witchy_interp::comptime::expand_compile_time,
+            "main", witchy_interp::comptime::EXPANDER,
             &user_modules, owners.clone(),
         ) {
             Err(error) => error,
