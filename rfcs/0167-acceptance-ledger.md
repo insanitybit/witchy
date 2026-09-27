@@ -540,8 +540,13 @@ callback. A temporary admitted CLI program for the captured-result callback
 previously printed the hand-computed `77`. A temporary admitted unoptimized CLI
 program now passes two opt tasks through parameter-dependent callbacks, one
 named and one projected from a tuple, and also prints the hand-computed `77`.
-These temporary smokes lack a durable Wasm witness and zero-leak audit. No
-A–O row closes.
+The durable `tests/rfc0167_task_provenance_runtime.rs` callback-relay witness
+passes an opt-origin Task through an opt-defined callback formal, then awaits
+it in normal code: hand-computed output `7`, admitted unoptimized Wasm output
+`7`, and a zero-leak heap audit. Its paired source check refuses the same
+relay with a normal-origin Task. This verifies that representative callback
+path, not arbitrary function values, trait dispatch, scheduler adapters, or
+all cancellation dispositions. No A–O row closes.
 
 Async generated-call hygiene (implemented but unverified, 2026-09-26): linked
 async lowering now gives compiler-emitted qualified calls definition-site
