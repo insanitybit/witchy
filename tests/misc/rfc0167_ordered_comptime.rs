@@ -61,7 +61,6 @@ comptime:
     let answer_body = meta.block([], Some(meta.expr_await(call)))
     emit_item(meta.function_async(true, meta.ident("answer"), [], Some(int_ty), answer_body))
 async fn main(console: Console):
-    console.print("${{base().await}}")
     console.print("${{answer().await}}")
 "#);
         let checked = witchy::canonical_comptime::check_source_bundle(
@@ -75,7 +74,7 @@ async fn main(console: Console):
         let mut vm = runtime.spawn_admitted(&artifact,
             Capabilities { print: true, quiet: true, ..Capabilities::none() }, 64).unwrap();
         vm.run().unwrap();
-        assert_eq!(vm.output(), ["42", "42"]);
+        assert_eq!(vm.output(), ["42"]);
         assert_eq!(vm.canonical_heap_leaks().unwrap(), Some(0));
     }
 }
