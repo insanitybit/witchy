@@ -889,7 +889,7 @@ fn coarse_borrow_slots(
         .collect()
 }
 
-fn type_node_count(ty: &Type) -> usize {
+pub(crate) fn type_node_count(ty: &Type) -> usize {
     let children = match ty {
         Type::Qualified(_, inner) => type_node_count(inner),
         Type::Slice(inner) => type_node_count(inner),

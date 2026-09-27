@@ -499,6 +499,17 @@ fn snapshot_eligibility_for(
                 {
                     return walk(&element.source_type(), definitions, use_kind, formals, active, depth + 1, remaining);
                 }
+                // A recursive nominal whose instantiated type grows on a
+                // field edge cannot yield a finite snapshot proof. Detect
+                // that edge before expanding thousands of increasingly deep
+                // stored fields up to the general traversal budget.
+                if active.iter().any(|previous| {
+                    matches!(previous, Type::Named(previous_name, _) if previous_name == name)
+                        && crate::access::type_node_count(ty)
+                            > crate::access::type_node_count(previous)
+                }) {
+                    return Err(SnapshotRefusal::ResourceLimit);
+                }
                 if !active.insert(ty.clone()) {
                     return Err(SnapshotRefusal::UnprovedStorage);
                 }
