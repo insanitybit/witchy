@@ -434,7 +434,7 @@ fn __meta_expr_binary(op: String, lhs: ExprSyntax, rhs: ExprSyntax) -> ExprSynta
 // of a place and `*` reads an admitted view. Move, mutable borrow, and
 // suspension operators remain refused here. The operand must be sealed.
 pub fn expr_unary(op: String, value: ExprSyntax) -> ExprSyntax:
-    __meta_expr_unary(op, value)
+    __meta_expr_compose_wire("U\n" + op + "\n" + expr_wire_handle(value))
 
 fn __meta_expr_unary(op: String, value: ExprSyntax) -> ExprSyntax:
     __meta_expr_unary(op, value)
@@ -442,7 +442,8 @@ fn __meta_expr_unary(op: String, value: ExprSyntax) -> ExprSyntax:
 // Builds a half-open or inclusive integer range from sealed bound expressions.
 // Ordinary checking validates the resulting expression.
 pub fn expr_range(lo: ExprSyntax, hi: ExprSyntax, inclusive: Bool) -> ExprSyntax:
-    __meta_expr_range(lo, hi, inclusive)
+    let marker = if inclusive: "1\n" else: "0\n"
+    __meta_expr_compose_wire("G\n" + marker + expr_wire_handle(lo) + expr_wire_handle(hi))
 
 fn __meta_expr_range(lo: ExprSyntax, hi: ExprSyntax, inclusive: Bool) -> ExprSyntax:
     __meta_expr_range(lo, hi, inclusive)

@@ -9,6 +9,8 @@ pub enum Composition {
     Record { name: String, fields: Vec<(String, String)> },
     TypedRecord { target: String, fields: Vec<(String, String)> },
     Try { value: String },
+    Unary { op: String, value: String },
+    Range { lo: String, hi: String, inclusive: bool },
     Block { body: String },
     If { cond: String, then_body: String, else_body: Option<String> },
     Match { scrutinee: String, arms: Vec<String> },
@@ -93,6 +95,14 @@ pub fn decode(bytes: &[u8]) -> Result<Composition, String> {
             Composition::TypedRecord { target, fields }
         }
         "T" => Composition::Try { value: reader.handle()? },
+        "U" => Composition::Unary { op: reader.line()?.to_owned(), value: reader.handle()? },
+        "G" => {
+            let inclusive = match reader.line()? {
+                "0" => false, "1" => true,
+                _ => return Err("invalid compiler range inclusive marker".into()),
+            };
+            Composition::Range { lo: reader.handle()?, hi: reader.handle()?, inclusive }
+        }
         "B" => Composition::Block { body: reader.handle()? },
         "I" => {
             let cond = reader.handle()?;
@@ -148,6 +158,20 @@ impl Composition {
                 Ok(Expr::Record { name, fields, spread: None })
             }
             Self::Try { value } => Ok(Expr::Try(Box::new(resolve(&value)?))),
+            Self::Unary { op, value } => {
+                let op = match op.as_str() {
+                    "-" => crate::ast::UnOp::Neg,
+                    "!" => crate::ast::UnOp::Not,
+                    "~" => crate::ast::UnOp::BitNot,
+                    "&" => crate::ast::UnOp::Borrow,
+                    "*" => crate::ast::UnOp::Deref,
+                    _ => return Err(format!("unsupported compiler unary operator `{op}`")),
+                };
+                Ok(Expr::Unary { op, expr: Box::new(resolve(&value)?) })
+            }
+            Self::Range { lo, hi, inclusive } => Ok(crate::parser::desugar_range(
+                resolve(&lo)?, resolve(&hi)?, inclusive,
+            )),
             Self::Block { body } => Ok(Expr::Block(resolve_block(&body)?)),
             Self::If { cond, then_body, else_body } => Ok(Expr::If {
                 cond: Box::new(resolve(&cond)?),

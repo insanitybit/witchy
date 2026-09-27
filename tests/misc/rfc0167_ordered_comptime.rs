@@ -20,6 +20,39 @@ fn limits() -> ComptimeLimits {
 }
 
 #[test]
+fn admitted_typed_unary_and_range_generation_in_both_modes() {
+    for mode in ["", "mode opt\n"] {
+        let source = format!(r#"{mode}import meta
+comptime:
+    let int_ty = quote type:
+        Int
+    let ints_ty = quote type:
+        List(Int)
+    let negative = meta.expr_unary("-", meta.expr_int(4))
+    emit_item(meta.function(true, meta.ident("negative"), [], Some(int_ty), negative))
+    let span = meta.expr_range(meta.expr_int(1), meta.expr_int(4), true)
+    emit_item(meta.function(true, meta.ident("range_values"), [], Some(ints_ty), span))
+fn main(console: Console):
+    let values = range_values()
+    console.print("${{negative() + values[0] + values.length()}}")
+"#);
+        let checked = witchy::canonical_comptime::check_source_bundle(
+            vec![("generator".into(), source.into_bytes()),
+                ("meta".into(), witchy_syntax::linker::bundled_source("meta").unwrap().as_bytes().to_vec())],
+            "generator", ["generator".to_owned()].into_iter().collect(), owners(), limits(),
+        ).expect("typed unary and range items enter destination checking");
+        let artifact = witchy_lower::codegen::compile_checked_module_artifact(&checked)
+            .expect_lowered("typed unary and range admit on unoptimized Wasm");
+        let mut runtime = Runtime::batch().unwrap();
+        let mut vm = runtime.spawn_admitted(&artifact,
+            Capabilities { print: true, quiet: true, ..Capabilities::none() }, 64).unwrap();
+        vm.run().unwrap();
+        assert_eq!(vm.output(), ["1"]); // -(4) + 1 + four inclusive range values
+        assert_eq!(vm.canonical_heap_leaks().unwrap(), Some(0));
+    }
+}
+
+#[test]
 fn admitted_original_blocks_feed_checked_successors_in_normal_and_opt() {
     struct ResetOptimization;
     impl Drop for ResetOptimization { fn drop(&mut self) { witchy::opt::set_for_tests(None); } }
