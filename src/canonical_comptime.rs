@@ -2,7 +2,7 @@
 //! insert generated syntax between steps: every prefix comes from an admitted
 //! zero-grant Wasm execution of the exact recipe selected from raw source.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use witchy_lower::codegen::{self, LoweringOutcome};
 use witchy_runtime::runtime::{Runtime, comptime::ComptimeLimits};
 use witchy_types::pipeline::{CheckedModule, ComptimeSourceSession, PriorComptimeBlockOutput};
@@ -232,21 +232,27 @@ fn execute_source_producer_graph(
     if pending.windows(2).any(|pair| pair[0] == pair[1]) {
         return Err("comptime graph has duplicate producers".into());
     }
+    let mut dependency_cache = HashMap::<String, Vec<String>>::new();
+    let mut completed = HashSet::new();
     while !pending.is_empty() {
         let mut ready = None;
         for (index, producer) in pending.iter().enumerate() {
-            let baseline = entry_session.select_module(producer)
-                .map_err(|error| error.to_string())?;
-            let dependencies = baseline.producer_dependency_names(producers);
-            if dependencies.iter().all(|name| outputs.iter().any(|(done, _)| done == name)) {
-                ready = Some((index, dependencies));
+            if !dependency_cache.contains_key(producer) {
+                let baseline = entry_session.select_module(producer)
+                    .map_err(|error| error.to_string())?;
+                let dependencies = baseline.producer_dependency_names(producers);
+                dependency_cache.insert(producer.clone(), dependencies.clone());
+            }
+            if dependency_cache[producer].iter().all(|name| completed.contains(name)) {
+                ready = Some(index);
                 break;
             }
         }
-        let Some((index, dependencies)) = ready else {
+        let Some(index) = ready else {
             return Err("comptime producer import graph is cyclic".into());
         };
         let producer = pending.remove(index);
+        let dependencies = &dependency_cache[&producer];
         let predecessors = outputs.iter().filter(|(name, _)| dependencies.contains(name))
             .cloned().collect::<Vec<_>>();
         let session = entry_session.select_module(&producer)
@@ -255,6 +261,7 @@ fn execute_source_producer_graph(
             .map_err(|error| error.to_string())?;
         let prior = execute_source_blocks(&session, limits)?;
         session.check_completed_prefix(&prior).map_err(|error| error.to_string())?;
+        completed.insert(producer.clone());
         outputs.push((producer, prior));
     }
     Ok((entry_session, outputs))
