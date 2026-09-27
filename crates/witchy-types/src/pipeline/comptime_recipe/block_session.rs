@@ -5,7 +5,7 @@ use super::*;
 use witchy_syntax::ast::{Expr, Function, Stmt};
 use witchy_syntax::compiler_session::ComptimeSyntaxOrigin;
 
-const REWRITE_VERSION: u32 = 5;
+const REWRITE_VERSION: u32 = 6;
 
 fn type_operand(expression: &Expr) -> Result<Type, PipelineError> {
     match expression {
@@ -49,6 +49,28 @@ fn resolve_type_info_calls(
         Ok(())
     })?;
     Ok(used)
+}
+
+fn resolve_stage_type_info(
+    prepared: &mut Module, modules: &[(String, Module)],
+    selected: &str, user_modules: &HashSet<String>,
+) -> Result<(), PipelineError> {
+    let mut uses_type_info = false;
+    for item in &mut prepared.items {
+        if let Item::Function(function) = item {
+            // `main` is the compiler's synthetic block body in a recipe.
+            // Ordinary runtime functions cannot acquire a type lookup merely
+            // because a compile-time block happens to call them.
+            if !function.comptime_only && function.name != "main" { continue; }
+            uses_type_info |= resolve_type_info_calls(
+                &mut function.body, modules, selected, user_modules,
+            )?;
+        }
+    }
+    if uses_type_info && !prepared.imports.iter().any(|name| name == "meta") {
+        prepared.imports.push("meta".into());
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -283,17 +305,7 @@ impl ComptimeSourceSession {
         let type_stage = self.modules.iter().map(|(name, module)| (
             name.clone(), if name == &self.selected { prepared.clone() } else { module.clone() },
         )).collect::<Vec<_>>();
-        let mut uses_type_info = false;
-        for item in &mut prepared.items {
-            if let Item::Function(function) = item {
-                uses_type_info |= resolve_type_info_calls(
-                    &mut function.body, &type_stage, &self.selected, &self.user_modules,
-                )?;
-            }
-        }
-        if uses_type_info && !prepared.imports.iter().any(|name| name == "meta") {
-            prepared.imports.push("meta".into());
-        }
+        resolve_stage_type_info(&mut prepared, &type_stage, &self.selected, &self.user_modules)?;
         install_services(&mut prepared);
         // Relocation selects the existing compiler syntax namespace, while the
         // declaration owner remains the exact loader identity of the source.
@@ -330,6 +342,10 @@ impl ComptimeSourceSession {
             .filter_map(|(item, _)| match item { Item::Function(function) => Some(function.name.clone()), _ => None })
             .collect();
         retain_referenced_functions(&mut prepared, &emitted_functions, false);
+        let type_stage = self.modules.iter().map(|(name, module)| (
+            name.clone(), if name == &self.selected { prepared.clone() } else { module.clone() },
+        )).collect::<Vec<_>>();
+        resolve_stage_type_info(&mut prepared, &type_stage, &self.selected, &self.user_modules)?;
         let dependencies = self.producer_dependencies();
         let modules = self.modules.iter().filter(|(name, _)| dependencies.contains(name)).map(|(name, module)| (
             name.clone(), if name == &self.selected { prepared.clone() } else { module.clone() },

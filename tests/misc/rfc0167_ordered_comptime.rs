@@ -174,6 +174,23 @@ fn admitted_comptime_helper_looks_up_prior_emitted_type() {
 }
 
 #[test]
+fn admitted_generated_comptime_helper_uses_checked_type_lookup() {
+    let folder = TempDir::new("admitted-generated-comptime-helper");
+    let source = folder.join("main.witchy");
+    std::fs::write(&source, "import meta\ntype User:\n    name: String\ncomptime:\n    emit_item(quote item:\n        comptime fn fields_plus(offset: Int) -> Int:\n            let info = type_info(User)\n            list.length(info.fields) + offset\n    )\ncomptime:\n    if fields_plus(41) == 42:\n        emit_item(quote item:\n            fn answer() -> Int:\n                42\n        )\nfn main(console: Console):\n    console.print(\"${answer()}\")\n").unwrap();
+    let run = Command::new(env!("CARGO_BIN_EXE_witchy")).arg(&source).output().unwrap();
+    assert!(run.status.success(), "{}", String::from_utf8_lossy(&run.stderr));
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "42\n");
+
+    std::fs::write(&source, "type User:\n    name: String\ncomptime:\n    emit_item(quote item:\n        fn forbidden() -> Int:\n            let info = type_info(User)\n            list.length(info.fields)\n    )\ncomptime:\n    fail(\"later block ran\")\nfn main() -> Int:\n    0\n").unwrap();
+    let rejected = Command::new(env!("CARGO_BIN_EXE_witchy")).arg(&source).output().unwrap();
+    assert!(!rejected.status.success());
+    let error = String::from_utf8_lossy(&rejected.stderr);
+    assert!(error.contains("unknown function `type_info`"), "{error}");
+    assert!(!error.contains("later block ran"), "{error}");
+}
+
+#[test]
 fn production_source_loader_executes_original_blocks_through_admitted_wasm() {
     let folder = TempDir::new("admitted-comptime-loader");
     let source = folder.join("main.witchy");
