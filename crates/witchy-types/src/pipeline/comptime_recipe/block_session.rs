@@ -1,5 +1,6 @@
-//! Source-selected compiler entry. No caller-supplied AST or prior output can
-//! enter this session. Later blocks need an authenticated output receipt.
+//! Source-selected compiler entry. The first block accepts only raw source;
+//! successor checking accepts typed prior-output data, whose execution
+//! authenticity must be established by the compiler-owned runtime driver.
 use super::*;
 use witchy_syntax::ast::{Expr, Function, Stmt};
 use witchy_syntax::compiler_session::ComptimeSyntaxOrigin;
@@ -15,10 +16,9 @@ pub struct PriorComptimeBlockOutput {
     pub items: Vec<(Item, ComptimeSyntaxOrigin)>,
 }
 
-/// Compiler-owned immutable source session for the first original block.
-/// This is an explicit recipe lane, not the default expansion implementation.
-/// Its private fields contain only parsed raw bytes and loader assignments;
-/// there is deliberately no mutable module accessor or output ingestion API.
+/// Immutable original-source session. This is an explicit recipe lane, not the
+/// default expansion implementation. Its private fields contain parsed raw
+/// bytes and loader assignments; no mutable module accessor is exposed.
 pub struct ComptimeSourceSession {
     original_digest: [u8; 32],
     modules: Vec<(String, Module)>,
