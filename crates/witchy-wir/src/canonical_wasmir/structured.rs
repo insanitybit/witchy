@@ -1,5 +1,8 @@
 use super::*;
 
+#[path = "structured_forward.rs"]
+mod forward;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum StructuredLabel {
     Block,
@@ -1205,7 +1208,14 @@ pub(super) fn encode_function(
         block_slots: std::cell::OnceCell::new(),
         path_facts: RefCell::new(BTreeMap::new()),
     };
-    emitter.emit_path(entry, None)?;
+    match forward_cfg::schedule(entry, &emitter.successors_by_block).map_err(|_| {
+        EncodeError::Lowering(LoweringError::UnsupportedControlFlow {
+            function: source_function.id, operation: "invalid forward CFG",
+        })
+    })? {
+        Some(order) => emitter.emit_forward(&order)?,
+        None => emitter.emit_path(entry, None)?,
+    }
     if emitter.emitted.len() != target_function.blocks.len() {
         return Err(EncodeError::Lowering(LoweringError::UnsupportedControlFlow {
             function: source_function.id,

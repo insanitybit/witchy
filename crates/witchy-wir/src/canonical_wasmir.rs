@@ -55,6 +55,7 @@ pub(crate) use self::correspondence::*;
 mod emit;
 use self::emit::*;
 mod structured;
+mod forward_cfg;
 use self::structured::*;
 mod plan;
 use self::plan::*;
@@ -1279,6 +1280,7 @@ fn admit_canonical_with_bytes_for_test(
 #[path = "canonical_wasmir/tests"]
 pub mod self_checks {
     pub mod unique_pop;
+    pub mod forward_cfg;
     use super::*;
     use crate::canonical_safewir::{
         BasicBlock, BlockId, BlockParameter, CallableContract, CheckedSourceIdentity,

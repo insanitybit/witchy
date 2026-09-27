@@ -1,5 +1,8 @@
 use super::*;
 
+#[path = "plan_forward.rs"]
+mod forward;
+
 pub(super) struct PlanEmitter<'a> {
     source_function: &'a Function,
     /// Blocks by id: the structured walk looks blocks up on every path,
@@ -965,7 +968,12 @@ pub(super) fn expected_function_plan(
         block_slots: std::cell::OnceCell::new(),
         path_facts: RefCell::new(BTreeMap::new()),
     };
-    emitter.emit_path(function.entry, None)?;
+    match forward_cfg::schedule(function.entry, &emitter.successors_by_block)
+        .map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?
+    {
+        Some(order) => emitter.emit_forward(&order)?,
+        None => emitter.emit_path(function.entry, None)?,
+    }
     if emitter.emitted.len() != function.blocks.len() {
         return Err(CanonicalAdmissionError::UnsupportedPlan);
     }

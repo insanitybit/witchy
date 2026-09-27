@@ -147,6 +147,11 @@ mod canonical_safewir {
     }
 }
 mod canonical_wasmir {
+    mod forward_cfg {
+        #[test] fn source_edges_and_forward_schedule_remain_checked() { witchy_wir::self_checks::canonical_wasmir::forward_cfg::source_edges_and_forward_schedule_remain_checked() }
+        #[cfg(feature = "native")]
+        #[test] fn shared_forward_join_executes_and_mutated_edge_refuses() { witchy_wir::self_checks::canonical_wasmir::forward_cfg::shared_forward_join_executes_and_mutated_edge_refuses() }
+    }
     #[cfg(feature = "native")]
     mod closure_owner_kernel {
         mod tests {
