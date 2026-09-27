@@ -3913,7 +3913,7 @@ fn lower_function(
         parameter_names: BTreeMap::new(),
         results: Vec::new(),
         active_region_must_transfers: Vec::new(),
-        completed_region_must_transfers: HashSet::new(),
+        completed_region_must_transfers: HashMap::new(),
         write_back_parameters: Vec::new(),
         write_back_parameter_types: HashMap::new(),
         returned_exclusive_alias_parameters: HashSet::new(),
@@ -4566,7 +4566,7 @@ struct FunctionLowerer<'a> {
     /// Exact must-promotion tails currently being lowered. A constructor may
     /// complete one only while its checked region boundary is active.
     active_region_must_transfers: Vec<usize>,
-    completed_region_must_transfers: HashSet<usize>,
+    completed_region_must_transfers: HashMap<usize, ValueId>,
     blocks: Vec<BlockBuilder>,
     current: BlockId,
     item: u32,
@@ -5781,7 +5781,7 @@ impl FunctionLowerer<'_> {
     ) -> Result<Option<ValueId>, CanonicalLoweringError> {
         let must_transfer = self.require_region_promotion(block)?;
         if let Some(tail) = must_transfer {
-            if self.completed_region_must_transfers.contains(&tail) {
+            if self.completed_region_must_transfers.contains_key(&tail) {
                 return Err(CanonicalLoweringError::UnsupportedExpression(
                     "region must-transfer disposition was consumed more than once",
                 ));
@@ -5796,12 +5796,19 @@ impl FunctionLowerer<'_> {
                     "region must-transfer nesting does not match its checked disposition",
                 ));
             }
-            if lowered.as_ref().ok().and_then(|value| *value).is_none()
-                // Removing this marker consumes only the lowering proof. The
-                // returned SafeWIR reference is still the source `must`
-                // value, whose caller-side `own` disposition remains live.
-                || !self.completed_region_must_transfers.remove(&tail)
-            {
+            // An expression tail yields its value to the enclosing flow. An
+            // explicit `return Constructor(...)` has already terminated the
+            // function. Both must carry the exact constructor SSA value that
+            // discharged this checked region's one transfer obligation.
+            let carried = match lowered.as_ref() {
+                Ok(Some(value)) => Some(*value),
+                Ok(None) => match &self.blocks[self.current.get() as usize].terminator {
+                    Some(Terminator::Return { values }) => values.first().copied(),
+                    _ => None,
+                },
+                Err(_) => None,
+            };
+            if self.completed_region_must_transfers.remove(&tail) != carried || carried.is_none() {
                 return Err(CanonicalLoweringError::UnsupportedExpression(
                     "region must-transfer did not produce its one owned result",
                 ));
@@ -6237,9 +6244,22 @@ impl FunctionLowerer<'_> {
         path: Vec<ProperTailPathStep>,
     ) -> Result<(), CanonicalLoweringError> {
         if self.require_region_promotion(block)?.is_some() {
-            return Err(CanonicalLoweringError::UnsupportedExpression(
-                "must-bearing region promotion must transfer its result exactly once",
-            ));
+            // Tail position uses the same checked fresh-constructor transfer
+            // as an ordinary valued block. That path installs and consumes
+            // the exact tail witness before the result crosses the return.
+            if self.results.is_empty() {
+                return Err(CanonicalLoweringError::UnsupportedExpression(
+                    "must-bearing region promotion requires a result owner",
+                ));
+            }
+            let Some(value) = self.lower_block_flow_value(block)? else {
+                // The checked tail was an explicit return, already finished
+                // by the same exact-value obligation above.
+                return Ok(());
+            };
+            let results = self.results.clone();
+            let terminator = self.return_value(Some(value), &results)?;
+            return self.finish_current(terminator);
         }
         self.with_binding_scope(|lowerer| lowerer.lower_tail_block_scoped(block, path))
     }
@@ -11907,7 +11927,7 @@ impl FunctionLowerer<'_> {
         }
         if !matches!(self.values.get(&value), Some(ValueType::Ref(_) | ValueType::Gc(_)))
             || self.bindings.values().any(|bound| *bound == value)
-            || !self.completed_region_must_transfers.insert(tail)
+            || self.completed_region_must_transfers.insert(tail, value).is_some()
         {
             return Err(CanonicalLoweringError::UnsupportedExpression(
                 "region must-transfer constructor lacks one fresh owned result",

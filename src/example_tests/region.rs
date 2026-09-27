@@ -273,6 +273,11 @@ use crate::{ast, codegen, parser, typeck};
                 "must type Ticket:\n    Ticket(Int)\n\nfn make() -> Ticket:\n    region -> Ticket:\n        Ticket(42)\n\nfn finish(own ticket: Ticket):\n    let _ = 0\n\nfn main():\n    finish(make())\n",
                 Vec::new(),
             ),
+            (
+                "normal must region transfers an explicit constructor return",
+                "must type Ticket:\n    Ticket(Int)\n\nfn make() -> Ticket:\n    region -> Ticket:\n        return Ticket(42)\n\nfn finish(own ticket: Ticket):\n    let _ = 0\n\nfn main():\n    finish(make())\n",
+                Vec::new(),
+            ),
         ] {
             let checked = witchy::resolve_std_only_checked(source)
                 .unwrap_or_else(|error| panic!("{label}: source must check: {error}"));
