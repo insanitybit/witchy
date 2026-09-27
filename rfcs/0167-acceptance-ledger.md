@@ -131,6 +131,14 @@ destination checking and admitted unoptimized Wasm in normal and opt mode,
 printing the independently expected `12` with zero owned heap leaks. This
 does not close row M's remaining syntax and installed-consumer work.
 
+Row M update (2026-09-27): `meta.stmt_let_pattern` now issues a structural
+statement from current-session sealed pattern and expression handles. The
+admitted host retains pattern hole ancestry, and ordinary destination
+checking requires the generated destructuring pattern to be legal. A
+program-defined tuple-pattern let and tuple expression return `20 + 22 = 42`
+on admitted unoptimized Wasm in normal and opt mode, with zero owned heap
+leaks. Row M remains partial for remaining syntax and installed consumers.
+
 Row R update (2026-09-27): admitted `meta.type_expr`, typed parameter and
 expression-body function items, inherent method items, and `meta.expr_try`
 composition are merged. `program_defined_builder_uses_type_info_in_both_modes`
