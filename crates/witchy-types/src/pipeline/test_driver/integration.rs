@@ -1,4 +1,4 @@
-//! Integration recipe v1: real grants are a launch concern, never source proof.
+//! Integration recipe v1 (v2 with admitted expansion): real grants are a launch concern, never source proof.
 //! Select one declaration from retained entry bytes, generate an explicit Unit
 //! entry, and rederive every witness through the ordinary source pipeline.
 use super::*;
@@ -34,19 +34,24 @@ pub fn check_integration_test_driver(
     let declaration_ordinal = u64::try_from(ordinal)
         .map_err(|_| refused("integration declaration ordinal overflow"))?;
     let mut hash = blake3::Hasher::new();
+    let recipe_version: u32 = if suite.admitted_digest.is_some() { 2 } else { 1 };
     hash.update(b"witchy.checked-test-driver.test-mode.integration\0");
-    hash.update(&1u32.to_le_bytes());
+    hash.update(&recipe_version.to_le_bytes());
     hash.update(&suite.original_source_digest);
+    if let Some(digest) = suite.admitted_digest { hash.update(&digest); }
     hash.update(&(suite.entry.len() as u64).to_le_bytes());
     hash.update(suite.entry.as_bytes());
     hash.update(&declaration_ordinal.to_le_bytes());
     hash.update(&(selected.len() as u64).to_le_bytes());
     hash.update(selected.as_bytes());
     let identity = TestDriverIdentity {
-        recipe_version: 1, original_source_digest: suite.original_source_digest,
+        recipe_version, original_source_digest: suite.original_source_digest,
         derived_source_digest: *hash.finalize().as_bytes(),
         selected_declaration: selected.to_owned(), declaration_ordinal,
     };
+    if let Some(admitted) = &suite.admitted_entry {
+        *entry = admitted.clone();
+    }
     let template = if asynchronous {
         "fn main() -> ():\n    task.run(())\n"
     } else {
@@ -82,6 +87,9 @@ pub fn check_integration_test_driver(
     }
     entry.items.extend(generated.items);
     entry.item_lines.push(0);
+    let expand = if suite.admitted_entry.is_some() {
+        super::super::comptime_recipe::expansion_free_expander()
+    } else { expand };
     let (checked, typed) = link_checked_with(
         modules, &suite.entry, expand, LinkMode::Test, Some(&suite.user_modules),
         true, suite.checked.module_owners.clone(),
