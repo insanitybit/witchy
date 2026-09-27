@@ -1507,7 +1507,13 @@ parameter drop after moving an owned managed field; aggregate construction
 now retires that entry cleanup when the field takes its token. These are
 representative recursive transport results, not full row G or lifecycle
 coverage; the live-handle channel refusal remains fail closed. The owned GC
-result ABI is implemented separately;
+owner constructor had the analogous duplicate drop after a `MoveManaged`
+capture. `rfc0167_opaque_environment_field` now passes an owned `Ticket`
+parameter into an owner-backed `Viewed(Ticket)` and consumes it in normal,
+opt, and normal-to-opt calls: hand-computed `738718716`, admitted unoptimized
+Wasm `738718716`, zero canonical heap leaks in each mode. The capture move
+now retires its entry cleanup; this does not authenticate arbitrary owner
+captures. The owned GC result ABI is implemented separately;
 `task.Step(task.Handle)` still needs a lawful one-shot task capture and
 consuming aggregate extraction before it can be admitted end to end.
 

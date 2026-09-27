@@ -15,6 +15,9 @@ type Viewed(a):
 pub fn bump[a](own box: Viewed(a)) -> Viewed(a):
     Viewed(count: box.count + 1, ..box)
 
+pub fn wrap_ticket(own ticket: Ticket, snapshot: &Int) -> Viewed(Ticket):
+    Viewed(ticket, snapshot, 0, "x")
+
 pub fn finish(own box: Viewed(Ticket)) -> Int:
     let label = if box.count > 0: box.label else: box.label
     match bump(box):
@@ -28,7 +31,8 @@ fn main() -> Int:
     let root = 5
     let first = worker.finish(worker.Viewed(worker.Ticket(7), &root, 2, "ab" + "c"))
     let second = worker.finish(worker.Viewed(worker.Ticket(7), &root, 0, "ab" + "c"))
-    first * 1000 + second
+    let third = worker.finish(worker.wrap_ticket(worker.Ticket(7), &root))
+    first * 1000000 + second * 1000 + third
 "#;
 
 struct ResetOptimizationOverride;
@@ -55,8 +59,10 @@ fn opaque_environment_field_read_preserves_affine_siblings_and_retained_children
             Capabilities { print_int: true, quiet: true, ..Capabilities::none() }, 128,
         ).expect("admitted projection Wasm");
         vm.run().expect("projection execution");
-        // Both field-result edges: 700+30+5+3=738; 700+10+5+3=718.
-        assert_eq!(vm.output(), vec!["738718"]);
+        // Field-result edges: 700+30+5+3=738; 700+10+5+3=718.
+        // The owned Ticket parameter moves into Viewed before finish:
+        // 700+10+5+1=716, with no second parameter drop.
+        assert_eq!(vm.output(), vec!["738718716"]);
         assert_eq!(vm.canonical_heap_leaks().expect("ownership audit"), Some(0));
     }
 }

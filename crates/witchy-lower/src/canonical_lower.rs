@@ -10577,6 +10577,14 @@ impl FunctionLowerer<'_> {
                 value
             });
         }
+        for (capture, field) in captures.iter().zip(&constructor.captures) {
+            if matches!(field.transfer, CaptureTransfer::MoveManaged) {
+                // The opaque owner now holds this entry token. Its transfer
+                // must retire the parameter's exit cleanup just like a
+                // managed field store in a transparent aggregate.
+                self.owned_parameters.retain(|owned| owned != capture);
+            }
+        }
         let destination = self.fresh(ValueType::Gc(layout.owner_type))?;
         self.push_operation(Operation::ClosureOwner(OwnerOperation::Construct {
             destination,
