@@ -307,6 +307,7 @@ impl Interpreter {
                     let mut hole_ancestry = Vec::new();
                     let mut type_ancestry = Vec::new();
                     let mut block_ancestry = Vec::new();
+                    let mut arm_ancestry = Vec::new();
                     let expr = composition.build(|handle| {
                         if let Some(origin) = self.compiler_syntax.expression_origins().get(handle) {
                             hole_ancestry.extend(origin.hole_ancestry.iter().cloned());
@@ -325,9 +326,16 @@ impl Interpreter {
                         }
                         self.compiler_syntax.blocks().get(handle).cloned()
                             .ok_or("meta expression composition requires a typed block payload".into())
+                    }, |handle| {
+                        if let Some(origin) = self.compiler_syntax.match_arm_origins().get(handle) {
+                            arm_ancestry.extend(origin.hole_ancestry.iter().cloned());
+                        }
+                        self.compiler_syntax.match_arms().get(handle).cloned()
+                            .ok_or("meta expression composition requires a typed match arm payload".into())
                     }).map_err(|message| RuntimeError { message })?;
                     hole_ancestry.extend(type_ancestry);
                     hole_ancestry.extend(block_ancestry);
+                    hole_ancestry.extend(arm_ancestry);
                     Ok(Some(self.store_compiler_expr_syntax(
                         "expression-compose", expr, hole_ancestry,
                     )?))
@@ -411,6 +419,62 @@ impl Interpreter {
                     )?))
                 }
                 _ => err("meta.expr_tagged expects Ident, List(String), and List(ExprSyntax)"),
+            },
+            name if intrinsics::is_meta_pattern_wire(name) => match one(args)? {
+                Value::Str(wire) => {
+                    use witchy_syntax::compiler_session::pattern_match_wire::PatternSpec;
+                    if self.compiler_syntax.fresh_ident_scope().is_none() {
+                        return err("meta pattern builders are available only during compile-time expansion");
+                    }
+                    let spec = witchy_syntax::compiler_session::pattern_match_wire::decode_pattern(wire.as_bytes())
+                        .map_err(|message| RuntimeError { message })?;
+                    let mut ancestry = Vec::new();
+                    let pattern = match spec {
+                        PatternSpec::Wildcard => Pattern::Wildcard,
+                        PatternSpec::Var(name) => Pattern::Var(name),
+                        PatternSpec::Bool(value) => Pattern::Bool(value),
+                        PatternSpec::Int(value) => Pattern::Int(value),
+                        PatternSpec::Ctor { name, args } => {
+                            let mut patterns = Vec::with_capacity(args.len());
+                            for handle in args {
+                                if let Some(origin) = self.compiler_syntax.pattern_origins().get(&handle) {
+                                    ancestry.extend(origin.hole_ancestry.iter().cloned());
+                                }
+                                patterns.push(self.compiler_syntax.patterns().get(&handle).cloned()
+                                    .ok_or_else(|| RuntimeError { message: "meta pattern requires typed child syntax".into() })?);
+                            }
+                            Pattern::Ctor { name, args: patterns }
+                        }
+                    };
+                    Ok(Some(self.store_compiler_pattern_syntax("pattern-wire", pattern, ancestry)?))
+                }
+                _ => err("meta pattern builder expects framed data"),
+            },
+            name if intrinsics::is_meta_match_arm_wire(name) => match one(args)? {
+                Value::Str(wire) => {
+                    if self.compiler_syntax.fresh_ident_scope().is_none() {
+                        return err("meta match arm builders are available only during compile-time expansion");
+                    }
+                    let spec = witchy_syntax::compiler_session::pattern_match_wire::decode_arm(wire.as_bytes())
+                        .map_err(|message| RuntimeError { message })?;
+                    let pattern = self.compiler_syntax.patterns().get(&spec.pattern).cloned()
+                        .ok_or_else(|| RuntimeError { message: "meta match arm requires typed pattern syntax".into() })?;
+                    let body = self.compiler_syntax.expressions().get(&spec.body).cloned()
+                        .ok_or_else(|| RuntimeError { message: "meta match arm requires typed expression syntax".into() })?;
+                    let mut ancestry = self.compiler_syntax.pattern_origins().get(&spec.pattern)
+                        .map(|origin| origin.hole_ancestry.clone()).unwrap_or_default();
+                    if let Some(origin) = self.compiler_syntax.expression_origins().get(&spec.body) {
+                        ancestry.extend(origin.hole_ancestry.iter().cloned());
+                    }
+                    let arm = MatchArm { line: self.cur_line, pattern, guard: None, body };
+                    let handle = self.next_compiler_syntax_handle("match-arm")?;
+                    self.compiler_syntax.insert_match_arm(handle.clone(), arm);
+                    self.compiler_syntax.insert_match_arm_origin(handle.clone(),
+                        ComptimeSyntaxOrigin { definition_line: self.cur_line, hole_ancestry: ancestry });
+                    Ok(Some(Value::Ctor { name: "meta.CompilerMatchArmSyntax".into(),
+                        fields: Rc::new(vec![Value::str(handle)]) }))
+                }
+                _ => err("meta match arm builder expects framed data"),
             },
             name if intrinsics::is_meta_pattern_leaf(name) => match args {
                 [Value::Str(kind), Value::Str(first), Value::Str(second), Value::Bool(inclusive)] => {

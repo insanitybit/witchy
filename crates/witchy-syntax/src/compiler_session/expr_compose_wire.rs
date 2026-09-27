@@ -11,6 +11,7 @@ pub enum Composition {
     Try { value: String },
     Block { body: String },
     If { cond: String, then_body: String, else_body: Option<String> },
+    Match { scrutinee: String, arms: Vec<String> },
 }
 
 struct Reader<'a>(&'a [u8]);
@@ -103,6 +104,7 @@ pub fn decode(bytes: &[u8]) -> Result<Composition, String> {
             };
             Composition::If { cond, then_body, else_body }
         }
+        "M" => Composition::Match { scrutinee: reader.handle()?, arms: reader.args()? },
         _ => return Err("unknown compiler expression composition".into()),
     };
     if !reader.0.is_empty() { return Err("trailing compiler expression data".into()); }
@@ -112,7 +114,8 @@ pub fn decode(bytes: &[u8]) -> Result<Composition, String> {
 impl Composition {
     pub fn build(self, mut resolve: impl FnMut(&str) -> Result<crate::ast::Expr, String>,
         mut resolve_type: impl FnMut(&str) -> Result<crate::ast::Type, String>,
-        mut resolve_block: impl FnMut(&str) -> Result<crate::ast::Block, String>)
+        mut resolve_block: impl FnMut(&str) -> Result<crate::ast::Block, String>,
+        mut resolve_arm: impl FnMut(&str) -> Result<crate::ast::MatchArm, String>)
         -> Result<crate::ast::Expr, String> {
         use crate::ast::Expr;
         fn arguments(handles: Vec<String>, resolve: &mut impl FnMut(&str) -> Result<Expr, String>)
@@ -151,6 +154,11 @@ impl Composition {
                 then_block: resolve_block(&then_body)?,
                 else_block: else_body.as_deref().map(&mut resolve_block).transpose()?,
             }),
+            Self::Match { scrutinee, arms } => {
+                if arms.is_empty() { return Err("compiler match requires an arm".into()); }
+                Ok(Expr::Match { scrutinee: Box::new(resolve(&scrutinee)?),
+                    arms: arms.iter().map(|handle| resolve_arm(handle)).collect::<Result<Vec<_>, _>>()? })
+            }
         }
     }
 }

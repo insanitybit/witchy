@@ -239,6 +239,52 @@ fn admitted_control_expression_builder_uses_typed_blocks_in_both_modes() {
 }
 
 #[test]
+fn admitted_match_builder_uses_typed_patterns_and_arms_in_both_modes() {
+    struct ResetOptimization;
+    impl Drop for ResetOptimization { fn drop(&mut self) { witchy::opt::set_for_tests(None); } }
+    witchy::opt::set_for_tests(Some(witchy::opt::OptSet::none()));
+    let _reset = ResetOptimization;
+    for mode in ["", "mode opt\n"] {
+        let source = format!("{mode}import meta\ncomptime:\n    let bool_ty = quote type:\n        Bool\n    let int_ty = quote type:\n        Int\n    let flag = meta.param(meta.ident(\"flag\"), bool_ty)\n    let cond = quote expr:\n        flag\n    let yes = meta.match_arm(meta.pattern_bool(true), meta.expr_int(42))\n    let no = meta.match_arm(meta.pattern_wildcard(), meta.expr_int(7))\n    let body = meta.expr_match(cond, [yes, no])\n    emit_item(meta.function(true, meta.ident(\"choose\"), [flag], Some(int_ty), body))\nfn main(console: Console):\n    console.print(\"${{choose(true)}}:${{choose(false)}}\")\n");
+        let checked = witchy::canonical_comptime::check_source_bundle(
+            vec![("generator".into(), source.into_bytes())], "generator",
+            ["generator".to_owned()].into_iter().collect(), owners_for("generator"), limits(),
+        ).expect("typed match enters destination checking");
+        let artifact = witchy_lower::codegen::compile_checked_module_artifact(&checked)
+            .expect_lowered("generated match admits on unoptimized Wasm");
+        let mut runtime = Runtime::batch().unwrap();
+        let mut vm = runtime.spawn_admitted(&artifact,
+            Capabilities { print: true, quiet: true, ..Capabilities::none() }, 64).unwrap();
+        vm.run().unwrap();
+        assert_eq!(vm.output(), ["42:7"]);
+        assert_eq!(vm.canonical_heap_leaks().unwrap(), Some(0));
+    }
+}
+
+#[test]
+fn admitted_match_builder_binds_constructor_payload_in_both_modes() {
+    struct ResetOptimization;
+    impl Drop for ResetOptimization { fn drop(&mut self) { witchy::opt::set_for_tests(None); } }
+    witchy::opt::set_for_tests(Some(witchy::opt::OptSet::none()));
+    let _reset = ResetOptimization;
+    for mode in ["", "mode opt\n"] {
+        let source = format!("{mode}import meta\ncomptime:\n    let option_ty = quote type:\n        Option(Int)\n    let int_ty = quote type:\n        Int\n    let value = meta.param(meta.ident(\"value\"), option_ty)\n    let scrutinee = quote expr:\n        value\n    let n_expr = quote expr:\n        n\n    let some = meta.match_arm(meta.pattern_ctor(meta.ident(\"Some\"), [meta.pattern_var(meta.ident(\"n\"))]), n_expr)\n    let none = meta.match_arm(meta.pattern_ctor(meta.ident(\"None\"), []), meta.expr_int(0))\n    emit_item(meta.function(true, meta.ident(\"read\"), [value], Some(int_ty), meta.expr_match(scrutinee, [some, none])))\nfn main(console: Console):\n    console.print(\"${{read(Some(42))}}:${{read(None)}}\")\n");
+        let checked = witchy::canonical_comptime::check_source_bundle(
+            vec![("generator".into(), source.into_bytes())], "generator",
+            ["generator".to_owned()].into_iter().collect(), owners_for("generator"), limits(),
+        ).expect("typed constructor match enters destination checking");
+        let artifact = witchy_lower::codegen::compile_checked_module_artifact(&checked)
+            .expect_lowered("generated constructor match admits on unoptimized Wasm");
+        let mut runtime = Runtime::batch().unwrap();
+        let mut vm = runtime.spawn_admitted(&artifact,
+            Capabilities { print: true, quiet: true, ..Capabilities::none() }, 64).unwrap();
+        vm.run().unwrap();
+        assert_eq!(vm.output(), ["42:0"]);
+        assert_eq!(vm.canonical_heap_leaks().unwrap(), Some(0));
+    }
+}
+
+#[test]
 fn admitted_typed_inherent_method_dispatches_in_both_modes() {
     struct ResetOptimization;
     impl Drop for ResetOptimization { fn drop(&mut self) { witchy::opt::set_for_tests(None); } }

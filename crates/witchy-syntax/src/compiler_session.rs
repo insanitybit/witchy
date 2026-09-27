@@ -22,6 +22,7 @@ pub mod type_expr_wire;
 pub mod expr_compose_wire;
 pub mod block_wire;
 pub mod function_wire;
+pub mod pattern_match_wire;
 
 /// Data carried by the checked source launch contract and admitted artifact.
 /// Constructing this value alone grants no import or launch authority.
@@ -119,6 +120,7 @@ pub struct CompilerSyntaxSession {
     expr_origins: HashMap<String, ComptimeSyntaxOrigin>,
     type_origins: HashMap<String, ComptimeSyntaxOrigin>,
     pattern_origins: HashMap<String, ComptimeSyntaxOrigin>,
+    match_arm_origins: HashMap<String, ComptimeSyntaxOrigin>,
     stmt_origins: HashMap<String, ComptimeSyntaxOrigin>,
     block_origins: HashMap<String, ComptimeSyntaxOrigin>,
     /// Module qualifiers made available by the tagged-literal invocation.
@@ -168,6 +170,7 @@ impl CompilerSyntaxSession {
             expr_origins: HashMap::new(),
             type_origins: HashMap::new(),
             pattern_origins: HashMap::new(),
+            match_arm_origins: HashMap::new(),
             stmt_origins: HashMap::new(),
             block_origins: HashMap::new(),
             expr_qualifiers: None,
@@ -250,6 +253,7 @@ impl CompilerSyntaxSession {
     syntax_arena!(expression_origins, insert_expression_origin, expr_origins, ComptimeSyntaxOrigin);
     syntax_arena!(type_origins, insert_type_origin, type_origins, ComptimeSyntaxOrigin);
     syntax_arena!(pattern_origins, insert_pattern_origin, pattern_origins, ComptimeSyntaxOrigin);
+    syntax_arena!(match_arm_origins, insert_match_arm_origin, match_arm_origins, ComptimeSyntaxOrigin);
     syntax_arena!(statement_origins, insert_statement_origin, stmt_origins, ComptimeSyntaxOrigin);
     syntax_arena!(block_origins, insert_block_origin, block_origins, ComptimeSyntaxOrigin);
 

@@ -1350,6 +1350,8 @@ if capability_imports.contains("build_out_write_at") {
                     witchy_wir::canonical_safewir::COMPILER_PARAM_IMPORT,
                     witchy_wir::canonical_safewir::COMPILER_FUNCTION_EXPR_IMPORT,
                     witchy_wir::canonical_safewir::COMPILER_STATEMENT_IMPORT,
+                    witchy_wir::canonical_safewir::COMPILER_PATTERN_IMPORT,
+                    witchy_wir::canonical_safewir::COMPILER_MATCH_ARM_IMPORT,
                     witchy_wir::canonical_safewir::COMPILER_BLOCK_IMPORT,
                     witchy_wir::canonical_safewir::COMPILER_FUNCTION_BLOCK_IMPORT,
                     witchy_wir::canonical_safewir::COMPILER_INHERENT_IMPL_IMPORT] {
@@ -1366,6 +1368,8 @@ if capability_imports.contains("build_out_write_at") {
                         | witchy_wir::canonical_safewir::COMPILER_PARAM_IMPORT
                         | witchy_wir::canonical_safewir::COMPILER_FUNCTION_EXPR_IMPORT
                         | witchy_wir::canonical_safewir::COMPILER_STATEMENT_IMPORT
+                        | witchy_wir::canonical_safewir::COMPILER_PATTERN_IMPORT
+                        | witchy_wir::canonical_safewir::COMPILER_MATCH_ARM_IMPORT
                         | witchy_wir::canonical_safewir::COMPILER_BLOCK_IMPORT
                         | witchy_wir::canonical_safewir::COMPILER_FUNCTION_BLOCK_IMPORT
                         | witchy_wir::canonical_safewir::COMPILER_INHERENT_IMPL_IMPORT) {
@@ -13494,6 +13498,8 @@ impl FunctionLowerer<'_> {
             || witchy_syntax::intrinsics::is_meta_param_wire(name)
             || witchy_syntax::intrinsics::is_meta_function_expr_wire(name)
             || witchy_syntax::intrinsics::is_meta_statement_wire(name)
+            || witchy_syntax::intrinsics::is_meta_pattern_wire(name)
+            || witchy_syntax::intrinsics::is_meta_match_arm_wire(name)
             || witchy_syntax::intrinsics::is_meta_block_wire(name)
             || witchy_syntax::intrinsics::is_meta_function_block_wire(name)
             || witchy_syntax::intrinsics::is_meta_inherent_impl_wire(name) {
@@ -13511,6 +13517,10 @@ impl FunctionLowerer<'_> {
                 "meta.CompilerParamSyntax"
             } else if witchy_syntax::intrinsics::is_meta_statement_wire(name) {
                 "meta.CompilerStmtSyntax"
+            } else if witchy_syntax::intrinsics::is_meta_pattern_wire(name) {
+                "meta.CompilerPatternSyntax"
+            } else if witchy_syntax::intrinsics::is_meta_match_arm_wire(name) {
+                "meta.CompilerMatchArmSyntax"
             } else if witchy_syntax::intrinsics::is_meta_block_wire(name) {
                 "meta.CompilerBlockSyntax"
             } else { "meta.ItemSyntax" };
@@ -20512,6 +20522,12 @@ fn compiler_service_import(name: &str) -> Option<(&'static str, usize)> {
     }
     if witchy_syntax::intrinsics::is_meta_statement_wire(name) {
         return Some((witchy_wir::canonical_safewir::COMPILER_STATEMENT_IMPORT, 1));
+    }
+    if witchy_syntax::intrinsics::is_meta_pattern_wire(name) {
+        return Some((witchy_wir::canonical_safewir::COMPILER_PATTERN_IMPORT, 1));
+    }
+    if witchy_syntax::intrinsics::is_meta_match_arm_wire(name) {
+        return Some((witchy_wir::canonical_safewir::COMPILER_MATCH_ARM_IMPORT, 1));
     }
     if witchy_syntax::intrinsics::is_meta_block_wire(name) {
         return Some((witchy_wir::canonical_safewir::COMPILER_BLOCK_IMPORT, 1));

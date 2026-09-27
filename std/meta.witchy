@@ -524,7 +524,11 @@ fn __meta_expr_record(name: Ident, fields: List((Ident, ExprSyntax)), base: Opti
 pub fn expr_match(scrutinee: ExprSyntax, arms: List(MatchArmSyntax)) -> ExprSyntax:
     if list.is_empty(arms):
         fail("meta.expr_match: at least one match arm is required")
-    __meta_expr_match(scrutinee, arms)
+    var wire = "M\n" + expr_wire_handle(scrutinee) + "${arms.length()}\n"
+    for arm in arms:
+        match arm:
+            CompilerMatchArmSyntax(handle) -> wire = wire + "${handle.length()}\n" + handle
+    __meta_expr_compose_wire(wire)
 
 pub fn expr_block(body: BlockSyntax) -> ExprSyntax:
     __meta_expr_compose_wire("B\n" + block_wire_handle(body))
@@ -581,17 +585,20 @@ fn __meta_expr_match(scrutinee: ExprSyntax, arms: List(MatchArmSyntax)) -> ExprS
 // children retain their origin through generated matches.
 pub fn pattern_var(name: Ident) -> PatternSyntax:
     match name:
-        Ident(source) -> __meta_pattern_leaf("var", source, "", false)
-        CallSiteIdent(source) -> __meta_pattern_leaf("call-site-var", source, "", false)
+        Ident(source) -> __meta_pattern_wire("V\n" + source + "\n")
+        CallSiteIdent(_) -> __meta_pattern_wire("X\n")
 
 pub fn pattern_wildcard() -> PatternSyntax:
-    __meta_pattern_leaf("wildcard", "", "", false)
+    __meta_pattern_wire("W\n")
 
 pub fn pattern_int(n: Int) -> PatternSyntax:
-    __meta_pattern_leaf("int", "${n}", "", false)
+    __meta_pattern_wire("I\n${n}\n")
 
 pub fn pattern_bool(b: Bool) -> PatternSyntax:
-    __meta_pattern_leaf("bool", if b: "true" else: "false", "", false)
+    __meta_pattern_wire(if b: "B\n1\n" else: "B\n0\n")
+
+fn __meta_pattern_wire(wire: String) -> PatternSyntax:
+    __meta_pattern_wire(wire)
 
 // A string literal pattern.
 pub fn pattern_str(value: String) -> PatternSyntax:
@@ -612,8 +619,13 @@ fn __meta_pattern_leaf(kind: String, first: String, second: String, inclusive: B
 
 pub fn pattern_ctor(name: Ident, args: List(PatternSyntax)) -> PatternSyntax:
     match name:
-        Ident(source) -> __meta_pattern_ctor(source, args)
-        CallSiteIdent(source) -> __meta_call_site_pattern(source, args)
+        Ident(source) ->
+            var wire = "C\n" + source + "\n${args.length()}\n"
+            for arg in args:
+                match arg:
+                    CompilerPatternSyntax(handle) -> wire = wire + "${handle.length()}\n" + handle
+            __meta_pattern_wire(wire)
+        CallSiteIdent(_) -> __meta_pattern_wire("X\n")
 
 // Compiler-owned definition-site constructor-pattern construction. Arguments
 // retain their own origin and structure.
@@ -677,7 +689,12 @@ pub fn pattern_hole(pattern: PatternSyntax) -> SyntaxHole:
     PatternHole(pattern)
 
 pub fn match_arm(pattern: PatternSyntax, body: ExprSyntax) -> MatchArmSyntax:
-    __meta_match_arm(pattern, body)
+    match pattern:
+        CompilerPatternSyntax(pattern_handle) ->
+            __meta_match_arm_wire("${pattern_handle.length()}\n" + pattern_handle + expr_wire_handle(body))
+
+fn __meta_match_arm_wire(wire: String) -> MatchArmSyntax:
+    __meta_match_arm_wire(wire)
 
 // Compiler-owned match-arm construction. Pattern and body retain their AST
 // identity until the enclosing match is built.

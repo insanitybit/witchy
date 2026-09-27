@@ -3,7 +3,7 @@
 use super::super::{comptime::SessionState, memory_of, VmState};
 use std::sync::Arc;
 use wasmtime::{Caller, Error, Linker, Result};
-use witchy_syntax::{ast::{Block, Convention, Expr, Function, ImplDef, ImplOrigin, Item, Param, Stmt, Type, TypeDef, Variant}, compiler_session::{
+use witchy_syntax::{ast::{Block, Convention, Expr, Function, ImplDef, ImplOrigin, Item, MatchArm, Param, Pattern, Stmt, Type, TypeDef, Variant}, compiler_session::{
     seeds::{measure_dynamic, EmittedExpression, EmittedItem, SyntaxCost, SyntaxSeed}, ComptimeSyntaxOrigin,
 }};
 
@@ -24,7 +24,103 @@ pub(in super::super) fn register(linker: &mut Linker<VmState>) -> Result<()> {
     linker.func_wrap("witchy", "compiler_syntax_statement_into", statement_into)?;
     linker.func_wrap("witchy", "compiler_syntax_block_into", block_into)?;
     linker.func_wrap("witchy", "compiler_syntax_function_block_into", function_block_into)?;
+    linker.func_wrap("witchy", "compiler_syntax_pattern_into", pattern_into)?;
+    linker.func_wrap("witchy", "compiler_syntax_match_arm_into", match_arm_into)?;
     Ok(())
+}
+
+fn pattern_into(mut caller: Caller<'_, VmState>, pointer: i32, length: i32,
+    out: i32, capacity: i32) -> Result<i32> {
+    use witchy_syntax::compiler_session::pattern_match_wire::PatternSpec;
+    let memory = memory_of(&mut caller)?;
+    let input = range(memory.data_size(&caller), pointer, length)?;
+    let output = range(memory.data_size(&caller), out, capacity)?;
+    let state = caller.data().compiler_syntax.as_ref()
+        .ok_or_else(|| Error::msg("compiler syntax session unavailable"))?;
+    if input.len() as u64 > state.input_bytes { return Err(Error::msg("compiler pattern input budget exceeded")); }
+    charge_fuel(&mut caller, input.len() as u64 + 1)?;
+    let spec = witchy_syntax::compiler_session::pattern_match_wire::decode_pattern(&memory.data(&caller)[input])
+        .map_err(Error::msg)?;
+    let state = caller.data().compiler_syntax.as_ref().expect("checked session");
+    let mut ancestry = Vec::new();
+    let pattern = match spec {
+        PatternSpec::Wildcard => Pattern::Wildcard,
+        PatternSpec::Var(name) => Pattern::Var(name),
+        PatternSpec::Bool(value) => Pattern::Bool(value),
+        PatternSpec::Int(value) => Pattern::Int(value),
+        PatternSpec::Ctor { name, args } => {
+            let mut patterns = Vec::with_capacity(args.len());
+            for handle in args {
+                if !state.pattern_costs.contains_key(&handle) { return Err(Error::msg("compiler pattern requires current-session child syntax")); }
+                patterns.push(state.syntax.patterns().get(&handle).cloned()
+                    .ok_or_else(|| Error::msg("compiler pattern child has no payload"))?);
+                ancestry.extend(state.syntax.pattern_origins().get(&handle)
+                    .ok_or_else(|| Error::msg("compiler pattern child has no origin"))?
+                    .hole_ancestry.iter().cloned());
+            }
+            Pattern::Ctor { name, args: patterns }
+        }
+    };
+    let cost = measure_dynamic(&pattern).map_err(Error::msg)?;
+    let required = state.syntax.syntax_handle_byte_len("pattern").map_err(Error::msg)?;
+    if cost.nodes > state.nodes.remaining() || cost.bytes > state.syntax_bytes.remaining()
+        || required as u64 > state.bytes.remaining() { return Err(Error::msg("compiler syntax arena budget exceeded")); }
+    charge_fuel(&mut caller, cost.work().and_then(|work| work.checked_add(required as u64))
+        .ok_or_else(|| Error::msg("compiler syntax fuel overflow"))?)?;
+    if output.len() < required { return Ok(required as i32); }
+    let state = caller.data_mut().compiler_syntax.as_mut().expect("checked session");
+    state.nodes.charge(cost.nodes).map_err(|_| Error::msg("compiler syntax arena budget exceeded"))?;
+    state.syntax_bytes.charge(cost.bytes).map_err(|_| Error::msg("compiler syntax arena budget exceeded"))?;
+    state.bytes.charge(required as u64).map_err(|_| Error::msg("compiler syntax handle budget exceeded"))?;
+    let handle = state.syntax.next_syntax_handle("pattern").map_err(Error::msg)?;
+    state.syntax.insert_pattern(handle.clone(), pattern);
+    state.syntax.insert_pattern_origin(handle.clone(), ComptimeSyntaxOrigin { definition_line: 1, hole_ancestry: ancestry });
+    state.pattern_costs.insert(handle.clone(), cost);
+    memory.data_mut(&mut caller)[output.start..output.start + required].copy_from_slice(handle.as_bytes());
+    Ok(required as i32)
+}
+
+fn match_arm_into(mut caller: Caller<'_, VmState>, pointer: i32, length: i32,
+    out: i32, capacity: i32) -> Result<i32> {
+    let memory = memory_of(&mut caller)?;
+    let input = range(memory.data_size(&caller), pointer, length)?;
+    let output = range(memory.data_size(&caller), out, capacity)?;
+    let state = caller.data().compiler_syntax.as_ref()
+        .ok_or_else(|| Error::msg("compiler syntax session unavailable"))?;
+    if input.len() as u64 > state.input_bytes { return Err(Error::msg("compiler match arm input budget exceeded")); }
+    charge_fuel(&mut caller, input.len() as u64 + 1)?;
+    let spec = witchy_syntax::compiler_session::pattern_match_wire::decode_arm(&memory.data(&caller)[input])
+        .map_err(Error::msg)?;
+    let state = caller.data().compiler_syntax.as_ref().expect("checked session");
+    if !state.pattern_costs.contains_key(&spec.pattern) || !state.costs.contains_key(&spec.body) {
+        return Err(Error::msg("compiler match arm requires current-session syntax"));
+    }
+    let pattern = state.syntax.patterns().get(&spec.pattern).cloned()
+        .ok_or_else(|| Error::msg("compiler match arm pattern has no payload"))?;
+    let body = state.syntax.expressions().get(&spec.body).cloned()
+        .ok_or_else(|| Error::msg("compiler match arm body has no payload"))?;
+    let mut ancestry = state.syntax.pattern_origins().get(&spec.pattern)
+        .ok_or_else(|| Error::msg("compiler match arm pattern has no origin"))?.hole_ancestry.clone();
+    ancestry.extend(state.syntax.expression_origins().get(&spec.body)
+        .ok_or_else(|| Error::msg("compiler match arm body has no origin"))?.hole_ancestry.iter().cloned());
+    let arm = MatchArm { line: 1, pattern, guard: None, body };
+    let cost = measure_dynamic(&arm).map_err(Error::msg)?;
+    let required = state.syntax.syntax_handle_byte_len("match-arm").map_err(Error::msg)?;
+    if cost.nodes > state.nodes.remaining() || cost.bytes > state.syntax_bytes.remaining()
+        || required as u64 > state.bytes.remaining() { return Err(Error::msg("compiler syntax arena budget exceeded")); }
+    charge_fuel(&mut caller, cost.work().and_then(|work| work.checked_add(required as u64))
+        .ok_or_else(|| Error::msg("compiler syntax fuel overflow"))?)?;
+    if output.len() < required { return Ok(required as i32); }
+    let state = caller.data_mut().compiler_syntax.as_mut().expect("checked session");
+    state.nodes.charge(cost.nodes).map_err(|_| Error::msg("compiler syntax arena budget exceeded"))?;
+    state.syntax_bytes.charge(cost.bytes).map_err(|_| Error::msg("compiler syntax arena budget exceeded"))?;
+    state.bytes.charge(required as u64).map_err(|_| Error::msg("compiler syntax handle budget exceeded"))?;
+    let handle = state.syntax.next_syntax_handle("match-arm").map_err(Error::msg)?;
+    state.syntax.insert_match_arm(handle.clone(), arm);
+    state.syntax.insert_match_arm_origin(handle.clone(), ComptimeSyntaxOrigin { definition_line: 1, hole_ancestry: ancestry });
+    state.match_arm_costs.insert(handle.clone(), cost);
+    memory.data_mut(&mut caller)[output.start..output.start + required].copy_from_slice(handle.as_bytes());
+    Ok(required as i32)
 }
 
 fn statement_into(mut caller: Caller<'_, VmState>, pointer: i32, length: i32,
@@ -160,6 +256,7 @@ fn expression_compose_into(mut caller: Caller<'_, VmState>, pointer: i32, length
     let mut origins = Vec::new();
     let mut type_origins = Vec::new();
     let mut block_origins = Vec::new();
+    let mut arm_origins = Vec::new();
     let expression = composition.build(|handle| {
         if !state.costs.contains_key(handle) {
             return Err("compiler expression requires current-session syntax".into());
@@ -184,6 +281,14 @@ fn expression_compose_into(mut caller: Caller<'_, VmState>, pointer: i32, length
             .ok_or("compiler expression block handle has no origin")?.clone());
         state.syntax.blocks().get(handle).cloned()
             .ok_or("compiler expression block handle has no typed payload".into())
+    }, |handle| {
+        if !state.match_arm_costs.contains_key(handle) {
+            return Err("compiler expression requires current-session match arm syntax".into());
+        }
+        arm_origins.push(state.syntax.match_arm_origins().get(handle)
+            .ok_or("compiler expression match arm handle has no origin")?.clone());
+        state.syntax.match_arms().get(handle).cloned()
+            .ok_or("compiler expression match arm handle has no typed payload".into())
     }).map_err(Error::msg)?;
     let cost = measure_dynamic(&expression).map_err(Error::msg)?;
     let required = state.syntax.syntax_handle_byte_len("expression").map_err(Error::msg)?;
@@ -202,7 +307,7 @@ fn expression_compose_into(mut caller: Caller<'_, VmState>, pointer: i32, length
     state.syntax.insert_expression(handle.clone(), expression);
     state.syntax.insert_expression_origin(handle.clone(), ComptimeSyntaxOrigin {
         definition_line: 1,
-        hole_ancestry: origins.into_iter().chain(type_origins).chain(block_origins)
+        hole_ancestry: origins.into_iter().chain(type_origins).chain(block_origins).chain(arm_origins)
             .flat_map(|origin| origin.hole_ancestry).collect(),
     });
     state.costs.insert(handle.clone(), cost);
