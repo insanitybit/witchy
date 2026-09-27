@@ -14,30 +14,23 @@ impl SyntaxCost {
 }
 
 #[derive(Debug)]
-pub struct ExpressionSeed { expression: Expr, cost: SyntaxCost, encoded: Vec<u8>, sites: BTreeSet<u32> }
-impl ExpressionSeed {
-    pub fn expression(&self) -> &Expr { &self.expression }
+pub struct SyntaxSeed<T> { value: T, cost: SyntaxCost, encoded: Vec<u8>, sites: BTreeSet<u32> }
+impl<T> SyntaxSeed<T> {
+    pub fn value(&self) -> &T { &self.value }
     pub fn cost(&self) -> SyntaxCost { self.cost }
     pub fn allows_site(&self, site: u32) -> bool { self.sites.contains(&site) }
 }
 // Exact serialized payload equality preserves float bit patterns, including
 // NaNs. The private AST and these bytes are created together and never mutate.
-impl PartialEq for ExpressionSeed {
+impl<T> PartialEq for SyntaxSeed<T> {
     fn eq(&self, other: &Self) -> bool { self.encoded == other.encoded && self.cost == other.cost && self.sites == other.sites }
 }
-impl Eq for ExpressionSeed {}
+impl<T> Eq for SyntaxSeed<T> {}
 
-#[derive(Debug)]
-pub struct ItemSeed { item: Item, cost: SyntaxCost, encoded: Vec<u8>, sites: BTreeSet<u32> }
-impl ItemSeed {
-    pub fn item(&self) -> &Item { &self.item }
-    pub fn cost(&self) -> SyntaxCost { self.cost }
-    pub fn allows_site(&self, site: u32) -> bool { self.sites.contains(&site) }
-}
-impl PartialEq for ItemSeed {
-    fn eq(&self, other: &Self) -> bool { self.encoded == other.encoded && self.cost == other.cost && self.sites == other.sites }
-}
-impl Eq for ItemSeed {}
+pub type ExpressionSeed = SyntaxSeed<Expr>;
+pub type ItemSeed = SyntaxSeed<Item>;
+impl SyntaxSeed<Expr> { pub fn expression(&self) -> &Expr { self.value() } }
+impl SyntaxSeed<Item> { pub fn item(&self) -> &Item { self.value() } }
 
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct CompilerSyntaxSeeds {
@@ -52,59 +45,64 @@ impl CompilerSyntaxSeeds {
         { let _ = module; Err("canonical compiler syntax seeds require the native compiler".into()) }
         #[cfg(not(target_arch = "wasm32"))]
         {
-        use serde::Serialize;
         use measurement::Meter;
         let mut meter = Meter { cost: SyntaxCost::default(), depth: 0 };
-        let mut item_costs = Vec::new();
-        for seed in &module.compiler_item_syntax {
-            let before = meter.cost;
-            seed.handle.serialize(&mut meter).map_err(|e| e.to_string())?;
-            let payload_start = meter.cost;
-            seed.item.serialize(&mut meter).map_err(|e| e.to_string())?;
-            item_costs.push(SyntaxCost { nodes: meter.cost.nodes - payload_start.nodes,
-                bytes: meter.cost.bytes - payload_start.bytes });
-            debug_assert!(meter.cost.nodes > before.nodes);
-        }
-        let mut costs = Vec::new();
-        for seed in &module.compiler_expr_syntax {
-            let before = meter.cost;
-            seed.handle.serialize(&mut meter).map_err(|e| e.to_string())?;
-            let payload_start = meter.cost;
-            seed.expr.serialize(&mut meter).map_err(|e| e.to_string())?;
-            costs.push(SyntaxCost { nodes: meter.cost.nodes - payload_start.nodes,
-                bytes: meter.cost.bytes - payload_start.bytes });
-            debug_assert!(meter.cost.nodes > before.nodes);
-        }
-        let mut expressions = BTreeMap::<String, ExpressionSeed>::new();
-        for (seed, cost) in module.compiler_expr_syntax.iter().zip(costs) {
-            let encoded = postcard::to_allocvec(&seed.expr).map_err(|error| error.to_string())?;
-            let entry = expressions.entry(seed.handle.clone()).or_insert_with(|| ExpressionSeed {
-                expression: Expr::Int(0), cost, encoded: Vec::new(), sites: BTreeSet::new(),
-            });
-            entry.expression = seed.expr.clone();
-            entry.cost = cost;
-            entry.encoded = encoded;
-            entry.sites.insert(seed.definition_line);
-        }
-        let mut items = BTreeMap::<String, ItemSeed>::new();
-        for (seed, cost) in module.compiler_item_syntax.iter().zip(item_costs) {
-            let encoded = postcard::to_allocvec(&seed.item).map_err(|error| error.to_string())?;
-            let entry = items.entry(seed.handle.clone()).or_insert_with(|| ItemSeed {
-                item: seed.item.clone(), cost, encoded: Vec::new(), sites: BTreeSet::new(),
-            });
-            entry.item = seed.item.clone();
-            entry.cost = cost;
-            entry.encoded = encoded;
-            entry.sites.insert(seed.definition_line);
-        }
+        let item_costs = measure_seeds(module.compiler_item_syntax.iter()
+            .map(|seed| (seed.handle.as_str(), &seed.item)), &mut meter)?;
+        let costs = measure_seeds(module.compiler_expr_syntax.iter()
+            .map(|seed| (seed.handle.as_str(), &seed.expr)), &mut meter)?;
+        let expressions = collect_seeds(module.compiler_expr_syntax.iter()
+            .map(|seed| (seed.handle.as_str(), &seed.expr, seed.definition_line)), costs)?;
+        let items = collect_seeds(module.compiler_item_syntax.iter()
+            .map(|seed| (seed.handle.as_str(), &seed.item, seed.definition_line)), item_costs)?;
         Ok(Self {
-            expressions: expressions.into_iter().map(|(key, value)| (key, Arc::new(value))).collect(),
-            items: items.into_iter().map(|(key, value)| (key, Arc::new(value))).collect(),
+            expressions, items,
         })
         }
     }
     pub fn expression(&self, handle: &str) -> Option<&Arc<ExpressionSeed>> { self.expressions.get(handle) }
     pub fn item(&self, handle: &str) -> Option<&Arc<ItemSeed>> { self.items.get(handle) }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn measure_seeds<'a, T: serde::Serialize + 'a>(
+    seeds: impl Iterator<Item = (&'a str, &'a T)>, meter: &mut measurement::Meter,
+) -> Result<Vec<SyntaxCost>, String> {
+    use serde::Serialize;
+    let mut costs = Vec::new();
+    for (handle, value) in seeds {
+        let before = meter.cost;
+        handle.serialize(&mut *meter).map_err(|e| e.to_string())?;
+        let payload_start = meter.cost;
+        value.serialize(&mut *meter).map_err(|e| e.to_string())?;
+        costs.push(SyntaxCost { nodes: meter.cost.nodes - payload_start.nodes,
+            bytes: meter.cost.bytes - payload_start.bytes });
+        debug_assert!(meter.cost.nodes > before.nodes);
+    }
+    Ok(costs)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn collect_seeds<'a, T: serde::Serialize + Clone + 'a>(
+    seeds: impl Iterator<Item = (&'a str, &'a T, u32)>, costs: Vec<SyntaxCost>,
+) -> Result<BTreeMap<String, Arc<SyntaxSeed<T>>>, String> {
+    let mut entries = BTreeMap::<String, SyntaxSeed<T>>::new();
+    for ((handle, value, site), cost) in seeds.zip(costs) {
+        let encoded = postcard::to_allocvec(value).map_err(|error| error.to_string())?;
+        match entries.get_mut(handle) {
+            Some(entry) => {
+                entry.value = value.clone();
+                entry.cost = cost;
+                entry.encoded = encoded;
+                entry.sites.insert(site);
+            }
+            None => {
+                entries.insert(handle.to_owned(), SyntaxSeed { value: value.clone(), cost,
+                    encoded, sites: BTreeSet::from([site]) });
+            }
+        }
+    }
+    Ok(entries.into_iter().map(|(key, value)| (key, Arc::new(value))).collect())
 }
 
 /// An emitted value keeps its diagnostic provenance beside the typed AST.
