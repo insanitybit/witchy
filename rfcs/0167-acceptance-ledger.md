@@ -674,6 +674,19 @@ structural elements beyond the old predicate's 64-depth limit; their positive
 compiler path and admitted Wasm semantics are not yet proven. No A–O row
 closes here.
 
+Row G retained-root list elements (implemented but not a row closure,
+2026-09-26): the recursive checked carrier now represents a lawful retained
+root view inside managed list storage, preserving the view qualifier in the
+list's source-bound nominal key. Layout construction, lowering, callable ABI
+correspondence, and SafeWIR validate that same carrier; shared child stores
+publish shared prefix ownership, while affine exclusivity still requires a
+unique prefix. `List(&String)` insertion, function passage, and nesting in
+`List(List(&String))` run through admitted Wasm. The focused zero-leak witness
+does not complete row G's full required matrix or any other A–O evidence.
+`List(&List(&String))` still fails closed at canonical layout lookup; a
+retained view whose referent is itself a source-bound nominal list remains a
+separate structural gap.
+
 Row G retained byte-buffer layout class (architecture implemented, semantic
 evidence unchanged, 2026-09-25): the shared source-storage projection now
 classifies exact `Bytes` as a retained raw-byte buffer, and the list-element

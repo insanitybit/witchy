@@ -113,3 +113,19 @@ fn a_region_born_view_cannot_escape_in_a_list() {
         "cannot copy out a region aggregate carrying immutable views",
     );
 }
+
+#[test]
+fn retained_root_views_use_recursive_list_storage() {
+    // Both retained String views read three bytes after crossing a call and
+    // a nested list. The two managed root edges are released on exit.
+    assert_wasm(
+        "fn head(xs: List(&String)) -> Int:\n    (*xs[0]).length()\n\nfn main() -> Int:\n    let text = \"abc\"\n    var xs: List(&String) = [&text]\n    xs.push(&text)\n    let ys: List(List(&String)) = [xs]\n    head(ys[0]) + (*ys[0][1]).length()\n",
+        6,
+    );
+    // Indexed replacement and concat keep the original two-byte view in
+    // slot 3 while slot 0 reads the new three-byte view: 3 * 10 + 2.
+    assert_wasm(
+        "fn main() -> Int:\n    let a = \"aa\"\n    let b = \"bbb\"\n    var xs: List(&String) = [&a, &a]\n    xs[0] = &b\n    let ys = xs.concat(xs)\n    (*ys[0]).length() * 10 + (*ys[3]).length()\n",
+        32,
+    );
+}

@@ -186,7 +186,7 @@ impl RootedViewStorage {
                 CarrierElement::Bytes => {
                     return Some(Self::RetainedRoot(RetainedRootStorage::ByteBuffer(ByteBufferKind::Bytes)));
                 }
-                CarrierElement::List(_) => return None,
+                CarrierElement::List(_) | CarrierElement::RetainedRootView(_) => return None,
                 plan @ (CarrierElement::Tuple(_) | CarrierElement::Dict(_, _)) => {
                     if matches!(payload, Type::Qualified(_, _)) { return None; }
                     return Some(Self::RetainedRoot(RetainedRootStorage::StructuralRecord(plan)));

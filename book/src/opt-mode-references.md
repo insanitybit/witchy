@@ -101,6 +101,11 @@ A generic whole-list view `&List(a)` can also call `.owned()`. The compiler
 checks each concrete specialization before it can copy the retained list;
 unproved or authority-bearing element types are refused.
 
+Lists can hold retained-root views when the checked referent has a lawful
+snapshot and recursive storage proof. For example, `List(&String)` retains
+each String root on insertion; nested lists preserve the view qualifier in
+their checked storage identity. An unproved view payload is refused.
+
 Calling `.owned()` on a copyable owned value also gives the result its own
 ownership token. Linear storage is copied; an opaque immutable owner may be
 retained. In opt mode, the result supplies a fresh `unique` root only when its

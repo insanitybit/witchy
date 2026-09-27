@@ -1109,6 +1109,8 @@ fn intern_v1_layout_checked(
     if affine_storage_shape(&key, definitions).is_some()
         && (scalar_aggregate_shape(&key, definitions).is_some_and(|shape| !shape.packed)
             || matches!(storage, StoragePlan::MoveOnlyList(_)))
+        || matches!(CarrierElement::from_checked_type_with_definitions(&key, definitions),
+            Some(CarrierElement::List(element)) if element.contains_retained_root_view())
     {
         if !active.insert(key.clone()) {
             return Err(CanonicalLayoutError::UnsupportedType(format!(

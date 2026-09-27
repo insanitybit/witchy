@@ -1283,6 +1283,14 @@ leaves an earlier view's contents unchanged. Qualifiers inside `T`, such as
 outer roots cannot escape through the view. Nested forms beyond the previously
 proven exact cases are implemented but await admitted Wasm and leak evidence.
 
+A managed `List(&T)` uses the retained root representation when the checked
+view has a lawful snapshot and the referent has a recursive carrier proof.
+The qualifier remains in the list's source-bound nominal identity even when
+`&T` and `T` use the same physical pointer slot. Storing an element retains
+the shared root; list count publication records shared child ownership.
+Nested lists use the same rule at each layer. Unsupported view payloads still
+fail the shared storage and layout checks.
+
 Slice carriers use one recursive checked-source relation for their element
 type, physical layout, and ownership operations. Each `List` layer requires a
 retained header and an owned child pointer; scalar leaves match their exact

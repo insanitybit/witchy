@@ -2275,7 +2275,7 @@ The element at `index` (0-based). Out of bounds is a runtime error on every back
 
 #### `fn push(var xs: List(a), x: a)`
 
-Append `x` in place.
+Append `x` in place. For an admitted retained-root view element, append retains its snapshot root; later changes to the source binding do not retarget the stored view.
 
 #### `fn push_owned(var xs: List(a), own x: a)`
 
@@ -2319,7 +2319,7 @@ A list of `n` copies of `x` (empty when `n <= 0`).
 
 #### `List.push(x: a)`
 
-Append `x` in place.
+Append `x` in place. For an admitted retained-root view element, append retains its snapshot root; later changes to the source binding do not retarget the stored view.
 
 #### `List.concat(ys: List(a)) -> List(a)`
 

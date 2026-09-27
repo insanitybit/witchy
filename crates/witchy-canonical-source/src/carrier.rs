@@ -58,6 +58,10 @@ pub enum CarrierElement {
     Scalar(CanonicalScalarKind),
     String,
     Bytes,
+    /// An immutable view whose complete root is a retained managed object.
+    /// Its physical slot is the referent's owned pointer, while this variant
+    /// preserves the checked view qualifier in structural identity.
+    RetainedRootView(Box<Self>),
     List(Box<Self>),
     Tuple(Vec<Self>),
     Dict(Box<Self>, Box<Self>),
@@ -208,6 +212,21 @@ impl CarrierElement {
         }
         *budget -= 1;
         match ty {
+            Type::Qualified(TypeQual::View, payload) => {
+                crate::storage::snapshot_eligibility(payload, definitions).ok()?;
+                if !matches!(
+                    crate::rooted_view::RootedViewStorage::classify(payload, definitions, |_| Some(0)),
+                    Some(crate::rooted_view::RootedViewStorage::RetainedRoot(_))
+                ) {
+                    return None;
+                }
+                let referent = Self::from_checked_type_with_definitions_at(
+                    payload, definitions, depth + 1, budget, in_nominal_storage,
+                )?;
+                (referent.ownership() == CarrierOwnership::RetainCloneRelease
+                    && !matches!(referent, Self::RetainedRootView(_)))
+                    .then_some(Self::RetainedRootView(Box::new(referent)))
+            }
             // `frozen` changes write permission, not the child's physical
             // retain/clone/release operations. A retained sequence below it
             // still needs a qualifier-preserving owner relation, so refuse
@@ -280,11 +299,28 @@ impl CarrierElement {
     /// owner in this recursively proved storage representation.
     pub fn contains_retained_sequence(&self) -> bool {
         match self {
+            Self::RetainedRootView(child) => child.contains_retained_sequence(),
             Self::List(_) | Self::Dict(_, _) => true,
             Self::Tuple(fields) | Self::Record { fields, .. } =>
                 fields.iter().any(Self::contains_retained_sequence),
             Self::Sum { variants, .. } => variants.iter().any(|variant|
                 variant.fields.iter().any(Self::contains_retained_sequence)),
+            Self::Scalar(_) | Self::String | Self::Bytes => false,
+        }
+    }
+
+    /// A view qualifier in managed sequence storage changes its checked
+    /// identity even when the view and its referent share a physical layout.
+    pub fn contains_retained_root_view(&self) -> bool {
+        match self {
+            Self::RetainedRootView(_) => true,
+            Self::List(child) => child.contains_retained_root_view(),
+            Self::Tuple(fields) | Self::Record { fields, .. } =>
+                fields.iter().any(Self::contains_retained_root_view),
+            Self::Dict(key, value) => key.contains_retained_root_view()
+                || value.contains_retained_root_view(),
+            Self::Sum { variants, .. } => variants.iter().any(|variant|
+                variant.fields.iter().any(Self::contains_retained_root_view)),
             Self::Scalar(_) | Self::String | Self::Bytes => false,
         }
     }
@@ -440,6 +476,7 @@ impl CarrierElement {
             ),
             Self::String => Type::Named("String".into(), Vec::new()),
             Self::Bytes => Type::Named("Bytes".into(), Vec::new()),
+            Self::RetainedRootView(child) => Type::Qualified(TypeQual::View, Box::new(child.source_type())),
             Self::List(child) => Type::Named("List".into(), vec![child.source_type()]),
             Self::Tuple(fields) => Type::Tuple(fields.iter().map(Self::source_type).collect()),
             Self::Dict(key, value) => Type::Named(
@@ -457,7 +494,7 @@ impl CarrierElement {
     pub fn ownership(&self) -> CarrierOwnership {
         match self {
             Self::Scalar(_) => CarrierOwnership::Copy,
-            Self::String | Self::Bytes | Self::List(_) | Self::Tuple(_) | Self::Dict(_, _) | Self::Record { .. } | Self::Sum { .. } => CarrierOwnership::RetainCloneRelease,
+            Self::String | Self::Bytes | Self::RetainedRootView(_) | Self::List(_) | Self::Tuple(_) | Self::Dict(_, _) | Self::Record { .. } | Self::Sum { .. } => CarrierOwnership::RetainCloneRelease,
         }
     }
 
@@ -484,6 +521,13 @@ impl CarrierElement {
             maximum_depth = maximum_depth.max(depth);
             match element {
                 Self::Scalar(_) | Self::String | Self::Bytes => {}
+                Self::RetainedRootView(child) => {
+                    if child.ownership() != CarrierOwnership::RetainCloneRelease
+                        || matches!(child.as_ref(), Self::RetainedRootView(_)) {
+                        return None;
+                    }
+                    pending.push((child, depth + 1));
+                }
                 Self::List(child) => pending.push((child, depth + 1)),
                 Self::Tuple(fields) => {
                     if fields.is_empty() || fields.len() > 128 {
@@ -539,6 +583,10 @@ impl CarrierElement {
                 Self::String | Self::Bytes => {
                     return current.ownership() == CarrierOwnership::RetainCloneRelease
                         && query.owned_byte_buffer(layout, slot);
+                }
+                Self::RetainedRootView(child) => {
+                    if child.ownership() != CarrierOwnership::RetainCloneRelease { return false; }
+                    current = child;
                 }
                 Self::List(child) => {
                     if current.ownership() != CarrierOwnership::RetainCloneRelease {
@@ -613,6 +661,11 @@ impl CarrierElement {
                 }
                 CarrierElement::String => bytes.push(1),
                 CarrierElement::Bytes => bytes.push(12),
+                CarrierElement::RetainedRootView(child) => {
+                    bytes.push(13);
+                    encode(child, bytes);
+                    bytes.push(14);
+                }
                 CarrierElement::List(child) => {
                     bytes.push(2);
                     encode(child, bytes);

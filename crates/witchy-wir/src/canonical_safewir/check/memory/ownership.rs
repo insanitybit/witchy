@@ -440,7 +440,7 @@ impl<'a> MemoryChecker<'a> {
             if stored.layout != pointee {
                 return self.unsupported("UpdateCount(pointer slot layout)");
             }
-            if stored.ownership != Ownership::Unique {
+            if !matches!(stored.ownership, Ownership::Unique | Ownership::Shared) {
                 return self.unsupported("UpdateCount(pointer slot ownership)");
             }
             if existing.1.allocation_class.is_some()
@@ -453,9 +453,11 @@ impl<'a> MemoryChecker<'a> {
                 RangeIdentity { object, start: existing.0.start, length: count },
                 RangeState {
                     element,
-                    // Appending a unique child cannot make the already
-                    // published children unique if that prefix was shared.
-                    ownership: existing.1.ownership,
+                    // A retained shared edge stays shared in the published
+                    // prefix; appending cannot restore exclusivity.
+                    ownership: if stored.ownership == Ownership::Shared {
+                        Ownership::Shared
+                    } else { existing.1.ownership },
                     allocation_class: stored.allocation_class,
                     initialized: true,
                     zero_width: self.is_zero(count),
@@ -472,6 +474,7 @@ impl<'a> MemoryChecker<'a> {
             return self.unsupported("UpdateCount(pointer prefix gap)");
         }
         let mut allocation_class = None;
+        let mut shared_child = false;
         let mut keys = Vec::new();
         for index in 0..total {
             let key = (object, SlotIdentity::Constant(index));
@@ -484,9 +487,10 @@ impl<'a> MemoryChecker<'a> {
             if stored.layout != pointee {
                 return self.unsupported("UpdateCount(pointer slot layout)");
             }
-            if stored.ownership != Ownership::Unique {
+            if !matches!(stored.ownership, Ownership::Unique | Ownership::Shared) {
                 return self.unsupported("UpdateCount(pointer slot ownership)");
             }
+            shared_child |= stored.ownership == Ownership::Shared;
             if allocation_class.is_some() && allocation_class != stored.allocation_class {
                 return self.unsupported("UpdateCount(pointer allocation class)");
             }
@@ -499,7 +503,14 @@ impl<'a> MemoryChecker<'a> {
         self.state.range_states.remove(&existing.0);
         self.state.range_states.insert(
             RangeIdentity { object, start: existing.0.start, length: count },
-            RangeState { element, ownership: Ownership::Unique, allocation_class, initialized: true, zero_width: self.is_zero(count), zero_start: existing.1.zero_start },
+            RangeState {
+                element,
+                ownership: if shared_child { Ownership::Shared } else { Ownership::Unique },
+                allocation_class,
+                initialized: true,
+                zero_width: self.is_zero(count),
+                zero_start: existing.1.zero_start,
+            },
         );
         Ok(())
     }

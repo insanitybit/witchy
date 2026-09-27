@@ -151,14 +151,14 @@ impl FunctionLowerer<'_> {
         // the completed output list instead crosses the join with all lanes.
         self.current = replace_block;
         let value = if pointer { self.owned_for_storage(replacement, element_source_type)? } else { replacement };
-        self.store_replacement_element(output, cursor, output_capacity, value, next, element_type)?;
+        self.store_replacement_element(output, cursor, output_capacity, value, next, element_type, element_source_type)?;
         self.finish_current(Terminator::Branch { target: selected, arguments: vec![output, next, output_capacity] })?;
 
         self.restore_facts(selection_facts.clone(), copy_block);
         self.current = copy_block;
         let value = self.load_list_element(source, cursor, element_type)?;
         let value = if pointer { self.owned_for_storage(value, element_source_type)? } else { value };
-        self.store_replacement_element(output, cursor, output_capacity, value, next, element_type)?;
+        self.store_replacement_element(output, cursor, output_capacity, value, next, element_type, element_source_type)?;
         self.finish_current(Terminator::Branch { target: selected, arguments: vec![output, next, output_capacity] })?;
 
         self.restore_facts(selection_facts, selected);
@@ -265,7 +265,7 @@ impl FunctionLowerer<'_> {
             } else {
                 value
             };
-            self.store_replacement_element(output, cursor, capacity, value, next, element_type)?;
+            self.store_replacement_element(output, cursor, capacity, value, next, element_type, element_source_type)?;
             self.finish_current(Terminator::Branch { target: selected, arguments: vec![output, next, capacity] })?;
         }
         self.restore_facts(selection_facts, selected);
@@ -288,6 +288,7 @@ impl FunctionLowerer<'_> {
         value: ValueId,
         next: ValueId,
         element_type: ValueType,
+        element_source_type: &Type,
     ) -> Result<(), CanonicalLoweringError> {
         // This arm can be revisited after the output loop's backedge has
         // advanced its owner epoch. Establish the write bound in the arm,
@@ -300,7 +301,10 @@ impl FunctionLowerer<'_> {
                 output, Projection::Element { index }, element_type, AccessMode::Write,
             ),
             value,
-            transfer: if matches!(element_type, ValueType::Ref(_)) { witchy_wir::canonical_safewir::StoreTransfer::MoveUnique }
+            transfer: if matches!(StoragePlan::classify(element_source_type, self.definitions, |_| Some(0)),
+                StoragePlan::RootedView(RootedViewStorage::RetainedRoot(_))) {
+                witchy_wir::canonical_safewir::StoreTransfer::CloneShared
+            } else if matches!(element_type, ValueType::Ref(_)) { witchy_wir::canonical_safewir::StoreTransfer::MoveUnique }
                 else { witchy_wir::canonical_safewir::StoreTransfer::CopyScalar },
         });
         self.push_operation(Operation::UpdateCount { object: output, count: next });

@@ -182,7 +182,8 @@ pub(crate) fn value_type_matches_source(
             }
             _ => false,
         },
-        StoragePlan::MoveOnlyOwned(_) | StoragePlan::InlineAggregate(_) | StoragePlan::RootedView(_)
+        StoragePlan::Owned(witchy_canonical_source::carrier::CarrierElement::RetainedRootView(_))
+            | StoragePlan::MoveOnlyOwned(_) | StoragePlan::InlineAggregate(_) | StoragePlan::RootedView(_)
             | StoragePlan::RetainedOwnerList(_) | StoragePlan::RetainedOpaqueAggregateList(_)
             | StoragePlan::Refused(_) => false,
     }
@@ -382,9 +383,41 @@ pub(super) fn enqueue_layout_children(
                     );
                 }
                 StoragePlan::Owned(carrier) => {
+                    // Source-bound nested carriers retain their nominal key.
+                    // Check that exact key and its body through the ordinary
+                    // correspondence worklist instead of treating it as an
+                    // anonymous physical pointer.
+                    if let LayoutKind::RuntimePointerValueSlot {
+                        pointee, semantics: PointerSlot::Owned,
+                    } = element.kind()
+                        && matches!(layouts.get(*pointee).map(|descriptor| descriptor.kind()),
+                            Some(LayoutKind::OpaqueNominal { .. }))
+                    {
+                        pending.push((*pointee, source_element.clone()));
+                        return true;
+                    }
                     // The same source plan used by layout projection supplies
                     // the recursive ownership proof. A physical mismatch
                     // cannot fall through to the older layout walk.
+                    return super::super::closure_owner_contract::carrier_element_layout_matches(
+                        layouts, element_layout, &carrier,
+                    );
+                }
+                StoragePlan::RootedView(
+                    witchy_canonical_source::rooted_view::RootedViewStorage::RetainedRoot(_)
+                ) => {
+                    if let LayoutKind::RuntimePointerValueSlot {
+                        pointee, semantics: PointerSlot::Owned,
+                    } = element.kind()
+                        && matches!(layouts.get(*pointee).map(|descriptor| descriptor.kind()),
+                            Some(LayoutKind::OpaqueNominal { .. }))
+                    {
+                        pending.push((*pointee, source_element.unqualified().clone()));
+                        return true;
+                    }
+                    let Some(carrier) = witchy_canonical_source::carrier::CarrierElement::from_checked_type_with_definitions(
+                        source_element, records,
+                    ) else { return false; };
                     return super::super::closure_owner_contract::carrier_element_layout_matches(
                         layouts, element_layout, &carrier,
                     );

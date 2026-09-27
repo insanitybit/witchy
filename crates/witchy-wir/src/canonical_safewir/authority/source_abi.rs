@@ -401,8 +401,7 @@ pub(super) fn erase_nested_byte_buffer_views(signature: &witchy_syntax::ast::Typ
             return ty.clone();
         }
         match ty {
-            Type::Named(name, arguments) => Type::Named(name.clone(), arguments.iter().map(erase_byte_buffer_view).collect()),
-            Type::Tuple(items) => Type::Tuple(items.iter().map(erase_byte_buffer_view).collect()),
+            Type::Named(_, _) | Type::Tuple(_) => erase_byte_buffer_view(ty, records),
             other => other.clone(),
         }
     };
@@ -445,8 +444,19 @@ pub(super) fn erase_scalar_value_views(ty: &witchy_syntax::ast::Type) -> witchy_
 }
 
 /// Read a byte-buffer view as its retained buffer token in nested storage.
-pub(super) fn erase_byte_buffer_view(ty: &witchy_syntax::ast::Type) -> witchy_syntax::ast::Type {
+pub(super) fn erase_byte_buffer_view(
+    ty: &witchy_syntax::ast::Type,
+    records: &ScalarRecordFields,
+) -> witchy_syntax::ast::Type {
     use witchy_syntax::ast::Type;
+    // A managed carrier containing a retained-root view preserves the
+    // checked qualifier relation through signature correspondence.
+    if matches!(witchy_canonical_source::storage::StoragePlan::classify(ty, records, |_| Some(0)),
+        witchy_canonical_source::storage::StoragePlan::Owned(carrier)
+            if carrier.contains_retained_root_view())
+    {
+        return ty.clone();
+    }
     match ty {
         Type::Qualified(witchy_syntax::ast::TypeQual::View, inner)
             if matches!(witchy_canonical_source::storage::StoragePlan::classify(
@@ -457,9 +467,10 @@ pub(super) fn erase_byte_buffer_view(ty: &witchy_syntax::ast::Type) -> witchy_sy
         {
             inner.unqualified().clone()
         }
-        Type::Qualified(qualifier, inner) => Type::Qualified(qualifier.clone(), Box::new(erase_byte_buffer_view(inner))),
-        Type::Named(name, arguments) => Type::Named(name.clone(), arguments.iter().map(erase_byte_buffer_view).collect()),
-        Type::Tuple(items) => Type::Tuple(items.iter().map(erase_byte_buffer_view).collect()),
+        Type::Qualified(qualifier, inner) => Type::Qualified(qualifier.clone(), Box::new(erase_byte_buffer_view(inner, records))),
+        Type::Named(name, arguments) => Type::Named(name.clone(), arguments.iter()
+            .map(|argument| erase_byte_buffer_view(argument, records)).collect()),
+        Type::Tuple(items) => Type::Tuple(items.iter().map(|item| erase_byte_buffer_view(item, records)).collect()),
         other => other.clone(),
     }
 }
@@ -470,7 +481,7 @@ pub(super) fn erase_record_byte_buffer_views(records: &ScalarRecordFields) -> Sc
     records.iter().map(|(name, definition)| {
         let mut definition = definition.clone();
         for variant in &mut definition.variants {
-            variant.fields = variant.fields.iter().map(erase_byte_buffer_view).collect();
+            variant.fields = variant.fields.iter().map(|field| erase_byte_buffer_view(field, records)).collect();
         }
         (name.clone(), definition)
     }).collect()

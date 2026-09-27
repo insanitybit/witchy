@@ -44,7 +44,9 @@ fn __push(own xs: List(a), x: a) -> List(a):
 fn __pop_extract(var xs: List(a)) -> Option(a):
     list.__pop_extract(xs)
 
-// Append `x` in place.
+// Append `x` in place. For an admitted retained-root view element, append
+// retains its snapshot root; later changes to the source binding do not
+// retarget the stored view.
 pub fn push(var xs: List(a), x: a):
     xs = list.__push(xs, x)
     return

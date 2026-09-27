@@ -1262,6 +1262,12 @@ pub fn aggregate_layout_identity(
     ty: &Type,
     definitions: &BTreeMap<String, TypeDef>,
 ) -> Option<Type> {
+    if matches!(ty, Type::Named(name, _) if name == "List")
+        && CarrierElement::from_checked_type_with_definitions(ty, definitions)
+            .is_some_and(|carrier| carrier.contains_retained_root_view())
+    {
+        return Some(ty.clone());
+    }
     if let Type::Qualified(TypeQual::Unique, inner) = ty
         && affine_storage_shape(ty, definitions).is_some()
         && affine_storage_shape(inner, definitions).is_some()
@@ -1333,6 +1339,8 @@ impl StoragePlan {
     pub fn list_element_disposition(&self, ty: &Type) -> Option<ListElementDisposition> {
         match self {
             Self::InlineScalar(_) | Self::Owned(_) => Some(ListElementDisposition::Cloneable),
+            Self::RootedView(RootedViewStorage::RetainedRoot(_)) =>
+                Some(ListElementDisposition::Cloneable),
             Self::RetainedCallable(_) if matches!(ty, Type::Fn(_, _, _, qualifiers) if !qualifiers.once) =>
                 Some(ListElementDisposition::Cloneable),
             Self::AuthenticatedPlace(plan) if plan.cloneable() => Some(ListElementDisposition::Cloneable),

@@ -12436,6 +12436,10 @@ impl FunctionLowerer<'_> {
         if matches!(self.values[&value], ValueType::Gc(_)) {
             return self.clone_reference_token(value);
         }
+        if matches!(StoragePlan::classify(ty, self.definitions, |_| Some(0)),
+            StoragePlan::RootedView(RootedViewStorage::RetainedRoot(_))) {
+            return self.clone_reference_token(value);
+        }
         match ty.unqualified() {
             Type::Named(name, arguments) if matches!(name.as_str(), "String" | "Bytes") && arguments.is_empty() => {
                 self.ensure_string_extent(value)?;
@@ -13678,6 +13682,7 @@ impl FunctionLowerer<'_> {
             StoragePlan::classify(&logical_type, self.definitions, |_| Some(0)),
             StoragePlan::MoveOnlyList(_),
         );
+        let retained_view_element = retained_root_list_element(&logical_type, self.definitions);
         let element_source = if move_only {
             let Type::Named(_, arguments) = logical_type.unqualified() else {
                 return Err(CanonicalLoweringError::UnsupportedListElement(logical_type.clone()));
@@ -13696,7 +13701,9 @@ impl FunctionLowerer<'_> {
                 value = self.clone_string_for_storage(value)?;
             }
             if matches!(element_type, ValueType::Ref(_)) && !move_only {
-                if self.string_lengths.contains_key(&value) {
+                if retained_view_element {
+                    value = self.clone_reference_token(value)?;
+                } else if self.string_lengths.contains_key(&value) {
                     value = self.clone_string_for_storage(value)?;
                 } else if matches!(item, Expr::Lambda { .. }) && matches!(element_type, ValueType::Ref(_)) {
                     // A lambda expression is a fresh unique closure. Move it
@@ -13733,7 +13740,9 @@ impl FunctionLowerer<'_> {
                     witchy_wir::canonical_safewir::AccessMode::Write,
                 ),
                 value,
-                transfer: if matches!(element_type, ValueType::Ref(_)) {
+                transfer: if retained_view_element {
+                    witchy_wir::canonical_safewir::StoreTransfer::CloneShared
+                } else if matches!(element_type, ValueType::Ref(_)) {
                     witchy_wir::canonical_safewir::StoreTransfer::MoveUnique
                 } else {
                     witchy_wir::canonical_safewir::StoreTransfer::CopyScalar
@@ -14041,7 +14050,10 @@ impl FunctionLowerer<'_> {
                 "move-only list append requires an explicit element transfer",
             ));
         }
-        if pointer_elements && !move_only && self.string_lengths.contains_key(&value) {
+        let retained_view_element = retained_root_list_element(&list_type, self.definitions);
+        if pointer_elements && !move_only && retained_view_element {
+            value = self.clone_reference_token(value)?;
+        } else if pointer_elements && !move_only && self.string_lengths.contains_key(&value) {
             value = self.clone_string_for_storage(value)?;
         } else if pointer_elements && !move_only && !matches!(value_expression, Expr::List(_)) {
             let Type::Named(_, arguments) = list_type.unqualified() else {
@@ -14092,7 +14104,9 @@ impl FunctionLowerer<'_> {
             return Err(CanonicalLoweringError::UnsupportedListElement(list_type));
         }
         if matches!(element_type, ValueType::Ref(_)) {
-            if self.string_lengths.contains_key(&value) {
+            if retained_root_list_element(&list_type, self.definitions) {
+                value = self.clone_reference_token(value)?;
+            } else if self.string_lengths.contains_key(&value) {
                 value = self.clone_string_for_storage(value)?;
             } else {
                 let Type::Named(_, parameters) = list_type.unqualified() else {
@@ -14440,7 +14454,10 @@ impl FunctionLowerer<'_> {
                 AccessMode::Write,
             ),
             value,
-            transfer: if matches!(element_type, ValueType::Ref(_)) {
+            transfer: if matches!(StoragePlan::classify(element_source_type, self.definitions, |_| Some(0)),
+                StoragePlan::RootedView(RootedViewStorage::RetainedRoot(_))) {
+                witchy_wir::canonical_safewir::StoreTransfer::CloneShared
+            } else if matches!(element_type, ValueType::Ref(_)) {
                 witchy_wir::canonical_safewir::StoreTransfer::MoveUnique
             } else {
                 witchy_wir::canonical_safewir::StoreTransfer::CopyScalar
@@ -14514,7 +14531,9 @@ impl FunctionLowerer<'_> {
                 AccessMode::Write,
             ),
             value,
-            transfer: if matches!(element_type, ValueType::Ref(_)) {
+            transfer: if retained_root_list_element(list_type, self.definitions) {
+                witchy_wir::canonical_safewir::StoreTransfer::CloneShared
+            } else if matches!(element_type, ValueType::Ref(_)) {
                 witchy_wir::canonical_safewir::StoreTransfer::MoveUnique
             } else {
                 witchy_wir::canonical_safewir::StoreTransfer::CopyScalar
@@ -14791,7 +14810,9 @@ impl FunctionLowerer<'_> {
                 witchy_wir::canonical_safewir::AccessMode::Write,
             ),
             value,
-            transfer: if pointer_elements {
+            transfer: if retained_root_list_element(list_type, self.definitions) {
+                witchy_wir::canonical_safewir::StoreTransfer::CloneShared
+            } else if pointer_elements {
                 witchy_wir::canonical_safewir::StoreTransfer::MoveUnique
             } else {
                 witchy_wir::canonical_safewir::StoreTransfer::CopyScalar
@@ -20728,6 +20749,13 @@ fn is_console_print(name: &str) -> bool {
     name == "__capop.print"
 }
 
+fn retained_root_list_element(source: &Type, definitions: &BTreeMap<String, TypeDef>) -> bool {
+    let Type::Named(name, arguments) = source.unqualified() else { return false };
+    let [element] = arguments.as_slice() else { return false };
+    name == "List" && matches!(StoragePlan::classify(element, definitions, |_| Some(0)),
+        StoragePlan::RootedView(RootedViewStorage::RetainedRoot(_)))
+}
+
 fn list_layout(
     source: &Type,
     layout_bundle: &LayoutBundle,
@@ -20772,6 +20800,9 @@ fn list_layout(
             CanonicalScalarKind::Unit => ValueType::Unit,
         },
         StoragePlan::Owned(CarrierElement::String | CarrierElement::Bytes) => byte_buffer_element()?,
+        StoragePlan::RootedView(RootedViewStorage::RetainedRoot(_)) => source_value_type(
+            &arguments[0], layout_bundle, layouts, closure_layouts, definitions,
+        )?,
         StoragePlan::Owned(CarrierElement::List(_)) | StoragePlan::RetainedGraphList(_) => {
             ValueType::Ref(list_layout(&arguments[0], layout_bundle, layouts, closure_layouts, definitions)?.0)
         }
@@ -20796,15 +20827,19 @@ fn list_layout(
     // A move-only sequence has a source-bound nominal allocation identity.
     // Physical equality with a cloneable sequence cannot authorize its
     // affine owner plan, in either direction.
-    let affine_nominal = if matches!(StoragePlan::classify(source.unqualified(), definitions, |_| Some(0)), StoragePlan::MoveOnlyList(_)) {
-        Some(crate::canonical_layouts::recursive_nominal_layout_id_for_shape(source, definitions)
+    let source_bound_nominal = matches!(StoragePlan::classify(source.unqualified(), definitions, |_| Some(0)),
+        StoragePlan::MoveOnlyList(_))
+        || matches!(CarrierElement::from_checked_type_with_definitions(source.unqualified(), definitions),
+            Some(CarrierElement::List(child)) if child.contains_retained_root_view());
+    let source_nominal = if source_bound_nominal {
+        Some(crate::canonical_layouts::recursive_nominal_layout_id_for_shape(source.unqualified(), definitions)
             .map_err(|_| CanonicalLoweringError::UnsupportedType(source.clone()))?)
     } else {
         None
     };
     let mut candidates = Vec::new();
     for root in layout_bundle.roots() {
-        if let Some(expected) = affine_nominal {
+        if let Some(expected) = source_nominal {
             if *root != expected {
                 continue;
             }
