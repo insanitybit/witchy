@@ -130,26 +130,18 @@ use crate::{codegen, interpreter, parser, typeck};
             chars[sig_start] = if chars[sig_start] == 'A' { 'B' } else { 'A' };
             chars.into_iter().collect::<String>()
         };
-        // `now` = 1000, audience "coven". Print `sub` on success, else the error.
-        // Compile one program; each case still runs in a fresh interpreter/VM.
-        let src = "import jwt\nimport json\nimport list\nfn main(console: Console, argv: List(String)):\n    let token = list.at(argv, 0)\n    let key = list.at(argv, 1)\n    match jwt.verify_rs256(token, key, \"coven\", 1000):\n        Ok(claims) -> console.print(json.get_string(claims, \"sub\").unwrap_or(\"?\"))\n        Err(e) -> console.print(jwt.jwt_error_message(e))\n";
-        let run = |token: &str| -> Vec<String> {
-            let args = vec![token.to_owned(), pk_hex.clone()];
-            let interp = link_run_args(src, args.clone());
-            let wasm = run_on_wasm_args(src, args);
-            assert_eq!(interp, wasm, "interp vs wasm must agree");
-            interp
-        };
-        assert_eq!(run(&good), vec!["octocat".to_string()], "valid JWT yields its claims");
-        assert_eq!(run(&expired), vec!["JWT has expired".to_string()]);
-        assert_eq!(
-            run(&wrong_aud),
-            vec!["JWT audience mismatch (wrong relying party / replay)".to_string()]
-        );
-        assert_eq!(
-            run(&tampered),
-            vec!["JWT signature is invalid (untrusted or forged)".to_string()]
-        );
+        // `now` = 1000, audience "coven". Run all token cases in one process per
+        // backend, paying program setup and compilation once.
+        let src = "import jwt\nimport json\nimport list\nfn subject_or_error(token: String, key: String) -> String:\n    match jwt.verify_rs256(token, key, \"coven\", 1000):\n        Ok(claims) -> json.get_string(claims, \"sub\").unwrap_or(\"?\")\n        Err(e) -> jwt.jwt_error_message(e)\n\nfn main(console: Console, argv: List(String)):\n    console.print(subject_or_error(list.at(argv, 0), list.at(argv, 4)))\n    console.print(subject_or_error(list.at(argv, 1), list.at(argv, 4)))\n    console.print(subject_or_error(list.at(argv, 2), list.at(argv, 4)))\n    console.print(subject_or_error(list.at(argv, 3), list.at(argv, 4)))\n";
+        let args = vec![good, expired, wrong_aud, tampered, pk_hex];
+        let expected = [
+            "octocat",
+            "JWT has expired",
+            "JWT audience mismatch (wrong relying party / replay)",
+            "JWT signature is invalid (untrusted or forged)",
+        ];
+        assert_eq!(link_run_args(src, args.clone()), expected, "interpreter results");
+        assert_eq!(run_on_wasm_args(src, args), expected, "compiled Wasm results");
     }
 
     /// `jwt.verify_oidc` is the full relying-party check: a real RS256 GitHub-Actions-
