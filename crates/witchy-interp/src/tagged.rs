@@ -69,21 +69,17 @@ fn hole_marker_index(name: &str) -> Option<usize> {
     name.strip_prefix(HOLE_MARKER_PREFIX)?.parse().ok()
 }
 
-/// Expand every `Expr::TaggedLit` in `module` in place, splicing each tag's
-/// generated expression source over the literal. Runs after `comptime::expand`
-/// (per module), before name resolution / type-checking. `name` is the module's
-/// name, for error messages.
-pub fn expand(
-    name: &str,
-    module: &mut Module,
-    siblings: &[(String, Module)],
-) -> Result<OriginTable, String> {
+/// Whether the tagged pass has work, also used to avoid memoizing no-op input.
+/// This includes synthetic hole-origin wrappers, not just surface literals.
+/// Memo admission never replaces the pass: comptime expansion can generate
+/// new tags after this predicate was queried on the original module.
+pub(crate) fn needs_expansion(module: &Module) -> bool {
     // Most modules contain no tags. In that case the traversal changes nothing,
     // so do not snapshot this module and every sibling just to drop them again.
     // The shared visitor covers the expansion walk's expression positions.
     // Keep the ordinary path for synthetic hole-origin wrappers too: the walk
     // removes those even when their payload contains no further tagged literal.
-    let needs_walk = witchy_syntax::ast::visit::visit_module_exprs(module, &mut |expr| {
+    witchy_syntax::ast::visit::visit_module_exprs(module, &mut |expr| {
         if matches!(expr, Expr::TaggedLit { .. })
             || matches!(expr, Expr::Call { name, .. } if name == HOLE_ORIGIN_MARKER)
         {
@@ -91,8 +87,15 @@ pub fn expand(
         } else {
             Ok(())
         }
-    }).is_err();
-    if !needs_walk {
+    }).is_err()
+}
+
+pub fn expand(
+    name: &str,
+    module: &mut Module,
+    siblings: &[(String, Module)],
+) -> Result<OriginTable, String> {
+    if !needs_expansion(module) {
         return Ok(OriginTable::default());
     }
     // Snapshot the module's own items + std imports once: every tag expansion in

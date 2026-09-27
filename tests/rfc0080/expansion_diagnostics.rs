@@ -38,6 +38,48 @@ fn tag_free_expansion_preserves_ast_but_still_removes_hole_origin_wrappers() {
 }
 
 #[test]
+fn expansion_free_modules_still_finalize_compiler_payloads_on_every_call() {
+    use witchy::ast::{CompilerTypeSyntax, Item, Type};
+
+    let mut input = parser::parse_module(r#"
+comptime fn helper() -> meta.ExprSyntax:
+    quote expr:
+        42
+
+fn answer() -> Int:
+    42
+"#).expect("uninvoked compiler helper parses");
+    assert!(!input.compiler_expr_syntax.is_empty());
+    input.compiler_type_syntax = [false, true].into_iter().map(|runtime_identity| {
+        CompilerTypeSyntax {
+            handle: format!("type-{runtime_identity}"),
+            ty: Type::Named("Int".into(), vec![]),
+            definition_line: 1,
+            runtime_identity,
+        }
+    }).collect();
+
+    for _ in 0..2 {
+        let mut compiler_module = input.clone();
+        let origins = comptime::expand_compile_time("comptime", &mut compiler_module, &[])
+            .expect("compiler context retains its payloads");
+        assert_eq!(compiler_module, input);
+        assert!(origins.nodes().is_empty());
+
+        let mut runtime_module = input.clone();
+        let origins = comptime::expand_compile_time("main", &mut runtime_module, &[])
+            .expect("ordinary finalization still runs without expansion work");
+        assert_eq!(runtime_module.items.len(), 1);
+        assert!(matches!(&runtime_module.items[0], Item::Function(function)
+            if function.name == "answer" && !function.comptime_only));
+        assert_eq!(runtime_module.item_lines, input.item_lines[1..]);
+        assert!(runtime_module.compiler_expr_syntax.is_empty());
+        assert_eq!(runtime_module.compiler_type_syntax, input.compiler_type_syntax[1..]);
+        assert!(origins.nodes().is_empty() && origins.tagged_literals().is_empty());
+    }
+}
+
+#[test]
 fn tag_presence_guard_keeps_all_expansion_positions_on_the_checked_path() {
     for source in [
         "let answer = missing\"value\"\n",

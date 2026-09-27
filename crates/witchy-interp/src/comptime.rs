@@ -744,8 +744,14 @@ pub fn expand_compile_time(
     module: &mut Module,
     siblings: &[(String, Module)],
 ) -> Result<OriginTable, String> {
-    let key = expansion_cache_key(name, module, siblings);
-    if let Ok(cache) = expansion_cache().lock()
+    // Ordinary modules have no expensive expansion to memoize. Keep running
+    // both passes and finalization below, but avoid hashing sibling ASTs and
+    // retaining a cloned result just to cache an expansion-free module.
+    let key = (module.items.iter().any(|item| matches!(item, Item::Comptime(_)))
+        || crate::tagged::needs_expansion(module))
+        .then(|| expansion_cache_key(name, module, siblings));
+    if let Some(key) = key
+        && let Ok(cache) = expansion_cache().lock()
         && let Some(cached) = cache.get(&key)
     {
         *module = cached.module.clone();
@@ -768,7 +774,9 @@ pub fn expand_compile_time(
         module.compiler_stmt_syntax.clear();
         module.compiler_block_syntax.clear();
     }
-    if let Ok(mut cache) = expansion_cache().lock() {
+    if let Some(key) = key
+        && let Ok(mut cache) = expansion_cache().lock()
+    {
         if cache.len() >= 64 {
             cache.clear();
         }
