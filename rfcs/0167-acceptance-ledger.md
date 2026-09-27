@@ -2359,3 +2359,32 @@ default expander or interpreter retirement. Holes, other syntax categories,
 builders, full definition-module hygiene, original block selection and batching
 remain to migrate. Session-local handle strings do not authorize cross-session
 transport. Row Q remains **PARTIAL**; this slice closes no acceptance row.
+
+### 2026-09-27: first original comptime block entry (row Q partial)
+
+An opaque compiler-owned source session now selects the first original
+`comptime:` item from parsed loader-owned bytes. Its private rewrite identity
+binds the original bundle, selected module/item/line, loader assignments,
+rewrite version and genuinely empty prior-output state. Callers cannot supply
+an AST, claim a digest, or insert prior output. Other item selections refuse;
+later blocks require an authenticated ordered-output handoff that is not yet
+implemented. The compiler privately prepares and ordinarily checks the selected
+entry, preserving its mode and parser-owned syntax seeds.
+This lane has no injected expansion callback: a fixed non-mutating pass rejects
+remaining sibling/generated comptime or tagged work instead of silently
+executing it against unrecorded output.
+
+`rfc0167_canonical_comptime::canonical_session_executes_only_its_first_original_block`
+executes that actual block in admitted unoptimized Wasm in normal and opt modes,
+without running the original runtime main or a later deliberately failing
+comptime block. Its emitted `40 + 2` AST passes ordinary destination checking
+and executes with the independent expected **42** and **zero canonical heap
+leaks**. Zero fuel and ordinary runtime launch refuse; raw-byte changes alter
+recipe identity, and missing selected-module ownership refuses.
+Resolved calls and function-value references to the displaced source `main`
+refuse, including helper-mediated calls; a local callable named `main` remains
+valid. The compiler entry does not silently replace a source call target.
+
+The default interpreter-based expander is unchanged. This first-entry lane
+does not implement prior generated-item ingestion, reflection, all syntax
+categories or full definition-module hygiene. Row Q remains **PARTIAL**.

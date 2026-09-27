@@ -4,6 +4,9 @@ use super::*;
 use crate::runtime_type::PackageSource;
 use witchy_syntax::compiler_session::CompilerSessionContract;
 
+mod block_session;
+pub use block_session::ComptimeSourceSession;
+
 #[derive(Debug)]
 pub struct CheckedComptimeRecipe { checked: CheckedModule }
 
@@ -26,17 +29,28 @@ pub fn check_comptime_recipe_from_source_bundle(
         || sources.windows(2).any(|pair| pair[0].0 == pair[1].0)
         || !sources.iter().any(|(name, _)| name == "comptime")
     { return Err(refuse("comptime recipe requires unique source names and its isolated comptime entry")); }
+    authenticate_meta(&owners)?;
+    let digest = checked_source_digest(&sources, "comptime", &PrecompiledDeclarationEnvironment::default());
+    let contract = CompilerSessionContract::for_source(digest, invocation_scope.into())
+        .map_err(|message| PipelineError::Type(TypeError { message }))?;
+    let checked = link_checked_source_bundle_with_compiler_session(
+        sources, "comptime", expand, Some(user_modules), Some(owners), None, Some(&contract),
+    )?;
+    bind_recipe(checked, &contract)
+}
+
+fn authenticate_meta(owners: &AuthenticatedModuleOwners) -> Result<(), PipelineError> {
+    let refuse = |message: &str| PipelineError::Type(TypeError { message: message.into() });
     let meta = owners.owner("meta").ok_or_else(|| refuse("comptime recipe lacks authenticated meta owner"))?;
     if meta.package().source() != &PackageSource::Toolchain
         || meta.package().name() != "witchy/std"
         || meta.module_path() != ["std", "meta"]
     { return Err(refuse("comptime recipe requires toolchain witchy/std meta ownership")); }
-    let digest = checked_source_digest(&sources, "comptime", &PrecompiledDeclarationEnvironment::default());
-    let contract = CompilerSessionContract::for_source(digest, invocation_scope.into())
-        .map_err(|message| PipelineError::Type(TypeError { message }))?;
-    let mut checked = link_checked_source_bundle_with_compiler_session(
-        sources, "comptime", expand, Some(user_modules), Some(owners), None, Some(&contract),
-    )?;
+    Ok(())
+}
+
+fn bind_recipe(mut checked: CheckedModule, contract: &CompilerSessionContract) -> Result<CheckedComptimeRecipe, PipelineError> {
+    let refuse = |message: &str| PipelineError::Type(TypeError { message: message.into() });
     let source = checked.canonical_source.as_mut().ok_or_else(|| refuse("comptime recipe lacks checked source"))?;
     let Some(Type::Fn(parameters, result, _, _)) = source.callable_witness.signatures.get("main").map(Type::unqualified) else {
         return Err(refuse("comptime recipe requires a checked main"));

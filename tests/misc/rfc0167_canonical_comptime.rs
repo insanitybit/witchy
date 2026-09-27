@@ -2,9 +2,13 @@ use witchy_runtime::runtime::{Capabilities, Runtime, comptime::ComptimeLimits};
 use witchy_types::runtime_type::{AuthenticatedModuleOwners, ModuleLoadIdentity, PackageCoordinate, PackageSource};
 
 fn owners() -> AuthenticatedModuleOwners {
+    owners_for("comptime")
+}
+
+fn owners_for(module: &str) -> AuthenticatedModuleOwners {
     let workspace = PackageCoordinate::new(PackageSource::Workspace, "test/comptime", "1").unwrap();
     let toolchain = PackageCoordinate::new(PackageSource::Toolchain, "witchy/std", "1").unwrap();
-    let mut assignments = vec![("comptime".into(), ModuleLoadIdentity::new(workspace, ["comptime"]).unwrap())];
+    let mut assignments = vec![(module.into(), ModuleLoadIdentity::new(workspace, [module]).unwrap())];
     assignments.extend(witchy_syntax::linker::STD_MODULES.iter().map(|name| (
         (*name).to_owned(), ModuleLoadIdentity::new(toolchain.clone(), ["std", *name]).unwrap(),
     )));
@@ -166,4 +170,105 @@ fn canonical_emission_is_not_type_authority_for_its_destination() {
     assert_eq!(output.expressions.len(), 1);
     let error = check_emitted(output.expressions.into_iter().next().unwrap()).expect_err("String is not Int");
     assert!(error.to_string().contains("Int") && error.to_string().contains("String"), "{error}");
+}
+
+#[test]
+fn canonical_session_executes_only_its_first_original_block() {
+    use witchy_types::pipeline::ComptimeSourceSession;
+    struct ResetOptimization;
+    impl Drop for ResetOptimization { fn drop(&mut self) { witchy::opt::set_for_tests(None); } }
+    witchy::opt::set_for_tests(Some(witchy::opt::OptSet::none()));
+    let _reset = ResetOptimization;
+    for mode in ["", "mode opt\n"] {
+        let source = format!("{mode}fn helper() -> Int:\n    40\ncomptime:\n    let expression = quote expr:\n        40 + 2\n    if helper() == 40:\n        emit_expr(expression)\nfn main() -> Int:\n    99\ncomptime:\n    fail(\"later block must not execute\")\n");
+        let session = ComptimeSourceSession::from_source_bundle(
+            vec![("generator".into(), source.as_bytes().to_vec())], "generator",
+            ["generator".to_owned()].into_iter().collect(), owners_for("generator"),
+        ).expect("exact original compiler input");
+        for index in [0, 2, 3, usize::MAX] {
+            let error = session.check_block(index)
+                .expect_err("not an initial block with authenticated empty prior output");
+            assert!(error.to_string().contains("first original block"), "{error}");
+        }
+        let recipe = session.check_block(1)
+            .expect("source-selected first block, no interpreted execution of either block");
+        let replay = session.check_block(1).unwrap();
+        assert_eq!(recipe.canonical_source().source_witness().source_bundle_digest(),
+            replay.canonical_source().source_witness().source_bundle_digest());
+        let artifact = witchy_lower::codegen::compile_checked_comptime_recipe_artifact(&recipe)
+            .expect_lowered("admitted unoptimized original block");
+        let output = Runtime::run_comptime(&artifact, limits()).expect("canonical block execution");
+        assert_eq!(output.result, 0, "compiler entry returns zero, not original runtime main's99");
+        assert_eq!(output.heap_leaks, 0);
+        assert_eq!(output.expressions.len(), 1);
+        assert_eq!(output.expressions[0].origin.definition_line, 4 + u32::from(!mode.is_empty()));
+        let checked = check_emitted(output.expressions.into_iter().next().unwrap()).unwrap();
+        let generated = witchy_lower::codegen::compile_checked_module_artifact(&checked)
+            .expect_lowered("ordinary destination source rechecks the returned expression");
+        let mut runtime = Runtime::batch().unwrap();
+        let mut vm = runtime.spawn_admitted(&generated, Capabilities { print_int: true, quiet: true, ..Capabilities::none() }, 64).unwrap();
+        vm.run().unwrap();
+        assert_eq!(vm.output(), ["42"], "independent expectation: 40 + 2");
+        assert_eq!(vm.canonical_heap_leaks().unwrap(), Some(0));
+        assert!(Runtime::run_comptime(&artifact, ComptimeLimits { fuel: 0, ..limits() }).is_err());
+        assert!(Runtime::batch_quick().unwrap().spawn_admitted(&artifact, Capabilities::none(), 64).is_err());
+    }
+}
+
+#[test]
+fn canonical_block_session_binds_raw_source_and_refuses_missing_owner() {
+    use witchy_types::pipeline::ComptimeSourceSession;
+    let checked = |source: &str| {
+        ComptimeSourceSession::from_source_bundle(vec![("generator".into(), source.as_bytes().to_vec())],
+            "generator", ["generator".to_owned()].into_iter().collect(), owners_for("generator"))
+            .unwrap().check_block(0).unwrap()
+    };
+    let source = "comptime:\n    let _ = 1\nfn main() -> Int:\n    99\n";
+    let first = checked(source);
+    let changed = checked(&source.replace("99", "100"));
+    assert_ne!(first.canonical_source().source_witness().source_bundle_digest(),
+        changed.canonical_source().source_witness().source_bundle_digest(),
+        "identity binds all raw bytes, including runtime-only source");
+    let missing = ComptimeSourceSession::from_source_bundle(vec![("generator".into(), source.as_bytes().to_vec())],
+        "generator", ["generator".to_owned()].into_iter().collect(), owners());
+    assert!(missing.is_err(), "another module's loader identity cannot substitute for the selected source");
+
+    let workspace = PackageCoordinate::new(PackageSource::Workspace, "test/comptime", "1").unwrap();
+    let toolchain = PackageCoordinate::new(PackageSource::Toolchain, "witchy/std", "1").unwrap();
+    let assignments = ["generator", "sibling"].into_iter().map(|name| (
+        name.to_owned(), ModuleLoadIdentity::new(workspace.clone(), [name]).unwrap(),
+    )).chain(witchy_syntax::linker::STD_MODULES.iter().map(|name| (
+        (*name).to_owned(), ModuleLoadIdentity::new(toolchain.clone(), ["std", *name]).unwrap(),
+    )));
+    let sibling = ComptimeSourceSession::from_source_bundle(vec![
+        ("generator".into(), b"import sibling\ncomptime:\n    let _ = sibling.value()\n".to_vec()),
+        ("sibling".into(), b"comptime:\n    fail(\"must never execute a sibling block\")\npub fn value() -> Int:\n    7\n".to_vec()),
+    ], "generator", ["generator".into(), "sibling".into()].into_iter().collect(),
+        AuthenticatedModuleOwners::from_loader_assignments(assignments).unwrap()).unwrap();
+    let error = sibling.check_block(0).expect_err("no injected callback may execute or mutate sibling source");
+    assert!(error.to_string().contains("requires authenticated prior expansion"), "{error}");
+}
+
+#[test]
+fn canonical_block_session_cannot_retarget_the_displaced_entry() {
+    use witchy_types::pipeline::ComptimeSourceSession;
+    let check = |source: &str, item| {
+        ComptimeSourceSession::from_source_bundle(vec![("generator".into(), source.as_bytes().to_vec())],
+            "generator", ["generator".to_owned()].into_iter().collect(), owners_for("generator"))
+            .unwrap().check_block(item)
+    };
+    for mode in ["", "mode opt\n"] {
+        for (source, item) in [
+            ("comptime:\n    let _ = main()\n", 0),
+            ("comptime:\n    let _ = main()\nfn main() -> Int:\n    99\n", 0),
+            ("fn helper() -> Int:\n    main()\ncomptime:\n    let _ = helper()\nfn main() -> Int:\n    99\n", 1),
+            ("comptime:\n    let callback = main\n    let _ = callback()\nfn main() -> Int:\n    99\n", 0),
+        ] {
+            let error = check(&format!("{mode}{source}"), item)
+                .expect_err("source entry identity cannot become the compiler entry");
+            assert!(error.to_string().contains("comptime.main"), "resolved entry reference: {error}");
+        }
+        check(&format!("{mode}comptime:\n    let main = fn() -> Int:\n        7\n    let _ = main()\nfn main() -> Int:\n    99\n"), 0)
+            .expect("a local callable named main does not reference the displaced declaration");
+    }
 }

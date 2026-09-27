@@ -119,7 +119,7 @@ fn is_toolchain_glamour(identity: &ModuleLoadIdentity) -> bool {
         && identity.module_path() == ["src", "glamour"]
 }
 
-fn hash_owner_assignment(
+pub(super) fn hash_owner_assignment(
     hasher: &mut blake3::Hasher,
     module: &str,
     identity: &ModuleLoadIdentity,
