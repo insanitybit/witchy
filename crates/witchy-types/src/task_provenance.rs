@@ -356,6 +356,11 @@ impl Analyzer<'_> {
         for (index, argument) in arguments.into_iter().enumerate() {
             if let Some(root) = Self::place_root(argument) {
                 if environment.contains_key(root) {
+                    // Reclassifying the source type cannot change a proof
+                    // already at the invalidated lattice value.
+                    if environment.get(root) == Some(&Proof::Unknown) {
+                        continue;
+                    }
                     // A checked immutable formal receives an independent
                     // replayable copy; it cannot consume or replace the
                     // caller's executable recipe. Unknown, var, and own
