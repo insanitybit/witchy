@@ -1539,11 +1539,23 @@ pub fn run(root: Task(())):
         else:
             go = false
 
-// Compiler-generated test recipes use this only after the checked async
-// source inventory proves the selected body contains no suspension point.
+// Normal-mode compiler-generated test recipes use this only after the checked
+// async source inventory proves the selected body contains no suspension point.
 // Keep the failure arm: a broken effect proof must fail the test rather than
 // silently dropping a task operation.
 pub fn __compiler_run_ready(root: Task(())):
     match poll(root):
         Done(_) -> unit()
         _ -> fail("compiler-proven ready Task produced a scheduler effect")
+
+// Normal-mode compiler-generated test recipes use this only when the checked
+// async source classifies every await as cooperative yield. Other scheduler
+// effects remain a loud failure so a stale classification cannot drop work.
+pub fn __compiler_run_yield_only(root: Task(())):
+    var current = root
+    var finished = false
+    while !finished:
+        match poll(current):
+            Done(_) -> finished = true
+            Yield(next) -> current = next
+            _ -> fail("compiler-proven yield-only Task produced another scheduler effect")

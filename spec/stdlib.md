@@ -4588,7 +4588,11 @@ Drive `root` (and everything it spawns) to completion on a deterministic round-r
 
 #### `fn __compiler_run_ready(root: Task(()))`
 
-Compiler-generated test recipes use this only after the checked async source inventory proves the selected body contains no suspension point. Keep the failure arm: a broken effect proof must fail the test rather than silently dropping a task operation.
+Normal-mode compiler-generated test recipes use this only after the checked async source inventory proves the selected body contains no suspension point. Keep the failure arm: a broken effect proof must fail the test rather than silently dropping a task operation.
+
+#### `fn __compiler_run_yield_only(root: Task(()))`
+
+Normal-mode compiler-generated test recipes use this only when the checked async source classifies every await as cooperative yield. Other scheduler effects remain a loud failure so a stale classification cannot drop work.
 
 ## `testing`
 

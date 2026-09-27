@@ -183,10 +183,13 @@ fn source_integration_async_recipe_drives_body_and_preserves_its_abort() {
     // Keep the success and abort outcomes in one integration-suite invocation
     // so this checks both compiled test-driver results together.
     let temp = TempDir::new("integration-recipe-async");
-    let suite = temp.write("suite.witchy", r#"import testing
+    let suite = temp.write("suite.witchy", r#"import task
+import testing
 async fn test_pass():
+    task.yield_now().await
     testing.assert_int_eq(2 + 2, 4)
 async fn test_abort():
+    task.yield_now().await
     testing.fail_with("async integration body ran")
 "#);
     let output = run(["test".into(), "--integration".into(), suite.into_os_string()]);
