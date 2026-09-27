@@ -527,10 +527,18 @@ pub fn expr_match(scrutinee: ExprSyntax, arms: List(MatchArmSyntax)) -> ExprSynt
     __meta_expr_match(scrutinee, arms)
 
 pub fn expr_block(body: BlockSyntax) -> ExprSyntax:
-    __meta_expr_block(body)
+    __meta_expr_compose_wire("B\n" + block_wire_handle(body))
 
 pub fn expr_if(cond: ExprSyntax, then_body: BlockSyntax, else_body: Option(BlockSyntax)) -> ExprSyntax:
-    __meta_expr_if(cond, then_body, else_body)
+    var wire = "I\n" + expr_wire_handle(cond) + block_wire_handle(then_body)
+    match else_body:
+        Some(body) -> wire = wire + "1\n" + block_wire_handle(body)
+        None -> wire = wire + "0\n"
+    __meta_expr_compose_wire(wire)
+
+fn block_wire_handle(body: BlockSyntax) -> String:
+    match body:
+        CompilerBlockSyntax(handle) -> "${handle.length()}\n" + handle
 
 fn __meta_expr_if(cond: ExprSyntax, then_body: BlockSyntax, else_body: Option(BlockSyntax)) -> ExprSyntax:
     __meta_expr_if(cond, then_body, else_body)

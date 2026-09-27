@@ -9,6 +9,8 @@ pub enum Composition {
     Record { name: String, fields: Vec<(String, String)> },
     TypedRecord { target: String, fields: Vec<(String, String)> },
     Try { value: String },
+    Block { body: String },
+    If { cond: String, then_body: String, else_body: Option<String> },
 }
 
 struct Reader<'a>(&'a [u8]);
@@ -90,6 +92,17 @@ pub fn decode(bytes: &[u8]) -> Result<Composition, String> {
             Composition::TypedRecord { target, fields }
         }
         "T" => Composition::Try { value: reader.handle()? },
+        "B" => Composition::Block { body: reader.handle()? },
+        "I" => {
+            let cond = reader.handle()?;
+            let then_body = reader.handle()?;
+            let else_body = match reader.line()? {
+                "0" => None,
+                "1" => Some(reader.handle()?),
+                _ => return Err("invalid compiler if else marker".into()),
+            };
+            Composition::If { cond, then_body, else_body }
+        }
         _ => return Err("unknown compiler expression composition".into()),
     };
     if !reader.0.is_empty() { return Err("trailing compiler expression data".into()); }
@@ -98,7 +111,8 @@ pub fn decode(bytes: &[u8]) -> Result<Composition, String> {
 
 impl Composition {
     pub fn build(self, mut resolve: impl FnMut(&str) -> Result<crate::ast::Expr, String>,
-        mut resolve_type: impl FnMut(&str) -> Result<crate::ast::Type, String>)
+        mut resolve_type: impl FnMut(&str) -> Result<crate::ast::Type, String>,
+        mut resolve_block: impl FnMut(&str) -> Result<crate::ast::Block, String>)
         -> Result<crate::ast::Expr, String> {
         use crate::ast::Expr;
         fn arguments(handles: Vec<String>, resolve: &mut impl FnMut(&str) -> Result<Expr, String>)
@@ -131,6 +145,12 @@ impl Composition {
                 Ok(Expr::Record { name, fields, spread: None })
             }
             Self::Try { value } => Ok(Expr::Try(Box::new(resolve(&value)?))),
+            Self::Block { body } => Ok(Expr::Block(resolve_block(&body)?)),
+            Self::If { cond, then_body, else_body } => Ok(Expr::If {
+                cond: Box::new(resolve(&cond)?),
+                then_block: resolve_block(&then_body)?,
+                else_block: else_body.as_deref().map(&mut resolve_block).transpose()?,
+            }),
         }
     }
 }

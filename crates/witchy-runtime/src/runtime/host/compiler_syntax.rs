@@ -159,6 +159,7 @@ fn expression_compose_into(mut caller: Caller<'_, VmState>, pointer: i32, length
     let state = caller.data().compiler_syntax.as_ref().expect("checked session");
     let mut origins = Vec::new();
     let mut type_origins = Vec::new();
+    let mut block_origins = Vec::new();
     let expression = composition.build(|handle| {
         if !state.costs.contains_key(handle) {
             return Err("compiler expression requires current-session syntax".into());
@@ -175,6 +176,14 @@ fn expression_compose_into(mut caller: Caller<'_, VmState>, pointer: i32, length
             .ok_or("compiler record type handle has no origin")?.clone());
         state.syntax.types().get(handle).cloned()
             .ok_or("compiler record type handle has no typed payload".into())
+    }, |handle| {
+        if !state.block_costs.contains_key(handle) {
+            return Err("compiler expression requires current-session block syntax".into());
+        }
+        block_origins.push(state.syntax.block_origins().get(handle)
+            .ok_or("compiler expression block handle has no origin")?.clone());
+        state.syntax.blocks().get(handle).cloned()
+            .ok_or("compiler expression block handle has no typed payload".into())
     }).map_err(Error::msg)?;
     let cost = measure_dynamic(&expression).map_err(Error::msg)?;
     let required = state.syntax.syntax_handle_byte_len("expression").map_err(Error::msg)?;
@@ -193,7 +202,7 @@ fn expression_compose_into(mut caller: Caller<'_, VmState>, pointer: i32, length
     state.syntax.insert_expression(handle.clone(), expression);
     state.syntax.insert_expression_origin(handle.clone(), ComptimeSyntaxOrigin {
         definition_line: 1,
-        hole_ancestry: origins.into_iter().chain(type_origins)
+        hole_ancestry: origins.into_iter().chain(type_origins).chain(block_origins)
             .flat_map(|origin| origin.hole_ancestry).collect(),
     });
     state.costs.insert(handle.clone(), cost);
