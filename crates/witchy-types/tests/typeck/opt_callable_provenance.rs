@@ -333,37 +333,51 @@ async fn main(console: Console):
     let result = super::source::checked_bundle(vec![("worker", worker), ("main", compatible_main)], "main");
     assert!(result.is_ok(), "{result:?}");
 
-    let normal_callback_worker = worker.replace(
-        "let make = fn(): compatible()",
-        "let make = fn(): task.done(7)",
-    );
+    // Each refusal needs only its own provenance route. Rechecking the full
+    // positive worker and its caller for every near miss obscures the failing
+    // obligation and dominates this test's runtime.
+    let opt_execute_worker = r#"mode opt
+import task
+pub async fn execute(own recipe: task.Task(Int)) -> Int:
+    recipe.await
+"#;
+    let minimal_main = "import worker\nfn main():\n    ()\n";
+    let normal_callback_worker = r#"mode opt
+import task
+pub async fn execute_local_callback() -> Int:
+    let make = fn(): task.done(7)
+    let alias = make
+    alias().await
+"#;
     let error = super::source::checked_bundle(
-        vec![("worker", &normal_callback_worker), ("main", compatible_main)], "main",
+        vec![("worker", normal_callback_worker), ("main", minimal_main)], "main",
     ).expect_err("a local callback cannot upgrade a normal task producer");
     assert!(error.contains("opt-compatible task value provenance"), "{error}");
 
-    let normal_argument_worker = worker.replace(
-        "relay(compatible()).await",
-        "relay(task.done(7)).await",
-    );
+    let normal_argument_worker = r#"mode opt
+import task
+pub async fn execute_parameter_callback() -> Int:
+    let relay = fn(own recipe: task.Task(Int)): recipe
+    relay(task.done(7)).await
+"#;
     let error = super::source::checked_bundle(
-        vec![("worker", &normal_argument_worker), ("main", compatible_main)], "main",
+        vec![("worker", normal_argument_worker), ("main", minimal_main)], "main",
     ).expect_err("a callback formal cannot upgrade a normal task argument");
     assert!(error.contains("opt-compatible task value provenance"), "{error}");
 
-    let escaped_lambda_worker = format!("{worker}\n\npub fn escape_lambda() -> fn(own task.Task(Int)) -> task.Task(Int):\n    let relay = fn(own input: task.Task(Int)): execute(input)\n    relay\n");
+    let escaped_lambda_worker = format!("{opt_execute_worker}\npub fn escape_lambda() -> fn(own task.Task(Int)) -> task.Task(Int):\n    let relay = fn(own input: task.Task(Int)): execute(input)\n    relay\n");
     let error = super::source::checked_bundle(
-        vec![("worker", &escaped_lambda_worker), ("main", compatible_main)], "main",
+        vec![("worker", &escaped_lambda_worker), ("main", minimal_main)], "main",
     ).expect_err("a lambda input obligation cannot escape through an unchecked function type");
     assert!(error.contains("local callback with an opt task input obligation"), "{error}");
 
-    let joined_lambda_worker = format!("{worker}\n\npub async fn join_lambda(flag: Bool) -> Int:\n    let relay = if flag: fn(own input: task.Task(Int)): execute(input) else: fn(own input: task.Task(Int)): execute(input)\n    relay(compatible()).await\n");
+    let joined_lambda_worker = format!("{opt_execute_worker}\npub async fn compatible() -> Int:\n    7\npub async fn join_lambda(flag: Bool) -> Int:\n    let relay = if flag: fn(own input: task.Task(Int)): execute(input) else: fn(own input: task.Task(Int)): execute(input)\n    relay(compatible()).await\n");
     let error = super::source::checked_bundle(
-        vec![("worker", &joined_lambda_worker), ("main", compatible_main)], "main",
+        vec![("worker", &joined_lambda_worker), ("main", minimal_main)], "main",
     ).expect_err("joining different local lambda scopes cannot erase their opt input obligation");
     assert!(error.contains("local callback with an opt task input obligation"), "{error}");
 
-    let aggregate_worker = format!("{worker}\n\npub fn factory() -> (fn(own task.Task(Int)) -> task.Task(Int), Int):\n    (execute, 0)\n");
+    let aggregate_worker = format!("{opt_execute_worker}\npub fn factory() -> (fn(own task.Task(Int)) -> task.Task(Int), Int):\n    (execute, 0)\n");
     let aggregate_main = r#"import task
 import worker
 
@@ -392,13 +406,13 @@ async fn main(console: Console):
     console.print("unreachable")
 "#;
     let error = super::source::checked_bundle(
-        vec![("worker", entry_worker), ("main", opaque_callback_main)], "main",
+        vec![("worker", opt_execute_worker), ("main", opaque_callback_main)], "main",
     ).expect_err("an ordinary function-value ABI cannot erase an opt task-input requirement");
     assert!(error.contains("callback with an opt task input obligation"), "{error}");
 
-    let propagated_callback_worker = format!("{worker}\n\npub fn choose(flag: Bool) -> Result(Int, fn(own task.Task(Int)) -> task.Task(Int)):\n    if flag: Ok(1) else: Err(execute)\n\npub fn propagate(flag: Bool) -> Result(Int, fn(own task.Task(Int)) -> task.Task(Int)):\n    let value = choose(flag)?\n    Ok(value)\n");
+    let propagated_callback_worker = format!("{opt_execute_worker}\npub fn choose(flag: Bool) -> Result(Int, fn(own task.Task(Int)) -> task.Task(Int)):\n    if flag: Ok(1) else: Err(execute)\n\npub fn propagate(flag: Bool) -> Result(Int, fn(own task.Task(Int)) -> task.Task(Int)):\n    let value = choose(flag)?\n    Ok(value)\n");
     let error = super::source::checked_bundle(
-        vec![("worker", &propagated_callback_worker), ("main", compatible_main)], "main",
+        vec![("worker", &propagated_callback_worker), ("main", minimal_main)], "main",
     ).expect_err("early error propagation cannot hide a callback task-input obligation");
     assert!(error.contains("propagate through `?`"), "{error}");
 }

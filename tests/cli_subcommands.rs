@@ -706,10 +706,10 @@ fn test_imported_module_tests_are_not_double_counted() {
 
 #[test]
 fn async_and_gen_tests_do_not_silently_pass() {
-    // BUG-184: an async test with `fail` must FAIL (its body actually runs);
-    // a gen test is reported as a failure. Passing async execution is covered
-    // separately; keeping one scheduler-bearing driver makes this refusal
-    // regression practical in focused presubmits.
+    // BUG-184: an async test whose bare `fail` capture lacks a canonical
+    // closure witness must report the lowering refusal, never pass without
+    // running. A generator test is explicitly refused too. The supported
+    // async execution path is exercised by the integration recipe test.
     let dir = workdir("test-async");
     write(
         &dir,
@@ -719,8 +719,11 @@ fn async_and_gen_tests_do_not_silently_pass() {
     let out = run(&["test", dir.to_str().unwrap()]);
     assert!(!out.status.success(), "the failing async test must fail the run");
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("test_async_fails ... FAILED"), "async fail must FAIL: {stdout}");
-    assert!(stdout.contains("test_gen ... FAILED"), "generator test must fail explicitly: {stdout}");
+    assert!(stdout.contains("test_async_fails ... FAILED: unsupported lowering")
+        && stdout.contains("closure capture `fail` is not a resolved lexical binding"),
+        "the async test must name its fail-closed lowering boundary: {stdout}");
+    assert!(stdout.contains("test_gen ... FAILED: a `gen fn` cannot be run as a test"),
+        "generator test must fail explicitly: {stdout}");
 }
 
 // ---- BUG-178 / BUG-179: `witchy caps` ----
