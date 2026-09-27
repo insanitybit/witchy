@@ -19,6 +19,12 @@ pub fn factory() -> task.Task(Int):
 
 pub fn invoke(make: fn() -> task.Task(Int)) -> task.Task(Int):
     make()
+
+fn recursive_scalar() -> Int:
+    recursive_scalar()
+
+pub fn unused_recursive_callback() -> fn() -> Int:
+    fn(): recursive_scalar()
 "#;
 
 const MAIN: &str = r#"import task
@@ -38,6 +44,7 @@ fn invoke_stored_opt_factory() -> task.Task(Int):
     worker.invoke(boxed.value)
 
 async fn main(console: Console):
+    let _ = worker.unused_recursive_callback()
     let _ = task.ready_unit().await
     let _ = task.yield_now().await
     let first = invoke_opt_factory().await
@@ -53,6 +60,10 @@ fn authenticated_step_roles_preserve_passive_results_and_executable_fields() {
     let canonical = checked.canonical_source().expect("canonical checked source");
     let view = canonical.view();
     let role = view.deferred_task_role().expect("authenticated generic toolchain scheduler role");
+    let task = view.type_definitions().get(role.task_name()).expect("retained Task declaration");
+    let projection = role.poll_projection();
+    assert_eq!(task.variants[projection.variant()].fields[projection.field()], *projection.signature(),
+        "logical executable slot is authenticated by checked storage, not a physical field guess");
     let step = view.type_definitions().get(role.step_name()).expect("retained Step declaration");
     let ordinal = |name: &str| step.variants.iter().position(|variant|
         variant.name.rsplit('.').next() == Some(name)).expect("known scheduler semantic case");
@@ -112,6 +123,48 @@ fn authenticated_step_roles_preserve_passive_results_and_executable_fields() {
         let requirements = role.step_requirements(&invocation.result).expect("checked source Step result");
         assert_eq!(!requirements.is_empty(), active, "only yielded work has an execution obligation");
     }
+    let lambda_contract = |name: &str| {
+        let item = view.module().items.iter().position(|item|
+            matches!(item, Item::Function(function) if function.name == name)).expect("final callable item");
+        let mut matches = view.closure_witness().entries().iter().filter(|entry|
+            entry.id().item == item as u32 && entry.id().method.is_none());
+        let entry = matches.next().expect("checked lambda");
+        assert!(matches.next().is_none(), "fixture selects an unambiguous lambda");
+        (entry, entry.execution_contract().unwrap_or_else(|| panic!("missing final lambda behavior in {name}")))
+    };
+    let (thunk_witness, thunk) = lambda_contract("worker.compatible");
+    assert!(view.module().items.iter().any(|item| matches!(item, Item::Function(function)
+        if function.name == "worker.recursive_scalar")),
+        "an unrelated recursive dependency remains present while the simple thunk is proved");
+    assert_eq!(thunk.id(), thunk_witness.id());
+    assert_eq!(thunk.source_mode(), Mode::Opt);
+    assert!(thunk.captures().is_empty());
+    let Proof::Recipe { role: task_role, poll } = thunk.result() else {
+        panic!("generated thunk returns actual done recipe, not a type-derived opt grant: {:?}", thunk.result())
+    };
+    assert_eq!(task_role, role.task_identity());
+    let invocation = poll.invocation_contract(&[]).expect("actual done poll behavior");
+    assert_eq!(invocation.execution_mode, Mode::Normal);
+    assert_eq!(role.step_requirements(&invocation.result), Some(vec![]));
+    let (lazy_witness, lazy_poll) = lambda_contract("task.lazy__Int");
+    assert_eq!(lazy_poll.source_mode(), Mode::Normal);
+    assert_eq!(lazy_poll.captures(), lazy_witness.captures().iter()
+        .map(|capture| capture.binding().clone()).collect::<Vec<_>>());
+    let Proof::Invocation { callable, arguments } = lazy_poll.result() else {
+        panic!("poll must preserve actual captured execution: {:?}", lazy_poll.result())
+    };
+    assert!(arguments.is_empty());
+    let Proof::VariantSlot(recipe, variant, field) = callable.as_ref() else {
+        panic!("poll callable must project the invoked thunk's returned recipe: {callable:?}")
+    };
+    assert_eq!((*variant, *field), (projection.variant(), projection.field()));
+    let Proof::Invocation { callable: captured, arguments } = recipe.as_ref() else {
+        panic!("recipe must be the actual thunk invocation: {recipe:?}")
+    };
+    assert!(arguments.is_empty());
+    assert!(matches!(captured.as_ref(), Proof::Capture(owner, index)
+        if owner == lazy_poll.id() && lazy_poll.captures().get(*index)
+            .is_some_and(|binding| binding.name() == "thunk")));
 }
 
 #[test]

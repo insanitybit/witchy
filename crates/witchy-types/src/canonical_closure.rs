@@ -663,11 +663,15 @@ impl<'a> Builder<'a> {
 }
 
 pub fn derive_closure_witness(typed: &TypedModule) -> Result<ClosureWitnessManifest, ClosureWitnessError> {
+    derive_closure_witness_with_sites(typed).map(|(manifest, _)| manifest)
+}
+
+pub(crate) fn derive_closure_witness_with_sites(typed: &TypedModule) -> Result<(ClosureWitnessManifest, Vec<LambdaSite>), ClosureWitnessError> {
     let builder = walk_module(typed)?;
     let mut entries = builder.entries;
     entries.sort_by(|left, right| left.id().cmp(right.id()));
     for pair in entries.windows(2) { if pair[0].id() == pair[1].id() { return Err(ClosureWitnessError::DuplicateLambda); } }
-    Ok(ClosureWitnessManifest::new(entries))
+    Ok((ClosureWitnessManifest::new(entries), builder.sites))
 }
 
 /// Every lambda of the checked module with its structural identity, in the

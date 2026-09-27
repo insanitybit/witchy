@@ -42,7 +42,7 @@ use witchy_canonical_source::rooted_view::RootedViewStorage;
 use witchy_canonical_source::storage::StoragePlan;
 use witchy_canonical_source::source::{
     CanonicalSourceParts, CanonicalSourceView, CheckedAccessQuery, CheckedSourceDigests,
-    CheckedSourceWitness, DeferredExecutionRole, DeferredTaskRole, PrecompiledExport, TaskAwaitProof, TaskBehaviorContract, TaskBehaviorIdentity,
+    CheckedSourceWitness, DeferredExecutionRole, DeferredPollProjection, DeferredTaskRole, PrecompiledExport, TaskAwaitProof, TaskBehaviorContract, TaskBehaviorIdentity,
 };
 use crate::precompiled_declarations::PrecompiledDeclarationEnvironment;
 use crate::optimization_readiness::OptimizationReadiness;
@@ -881,6 +881,16 @@ fn checked_deferred_task_role(module: &Module, catalog: Option<&RuntimeDeclarati
         || catalog.resolve(result_name, DeclarationKind::Type) != Some(step_identity)
         || result_arguments.as_slice() != [Type::Named(task.params[0].clone(), Vec::new())] { return None; }
     let definitions = witchy_canonical_source::aggregates::type_definitions(module);
+    let generic_task = Type::Named(task.name.clone(), vec![Type::Named(task.params[0].clone(), Vec::new())]);
+    let Some(witchy_canonical_source::storage::StoredChildren::Aggregate(stored)) =
+        witchy_canonical_source::storage::stored_children(&generic_task, &definitions).ok()? else { return None };
+    // The authenticated declaration has one constructor and one stored field.
+    // Derive the logical projection through the shared stored-child judgment;
+    // physical layout/closure environment mapping remains the WIR consumer's job.
+    let mut stored_fields = stored.iter().enumerate();
+    let (stored_index, stored_poll) = stored_fields.next()?;
+    if stored_fields.next().is_some() || stored_poll != poll { return None; }
+    let poll_projection = DeferredPollProjection::from_checked_frontend(0, stored_index, poll.clone());
     let mut remaining = 4096;
     let mut active = HashSet::new();
     let step_variants = step.variants.iter().enumerate().map(|(ordinal, variant)| {
@@ -891,7 +901,7 @@ fn checked_deferred_task_role(module: &Module, catalog: Option<&RuntimeDeclarati
     }).collect::<Option<BTreeMap<_, _>>>()?;
     Some(DeferredTaskRole::from_checked_frontend(
         task.name.clone(), linked_task_behavior_identity(task_identity),
-        step.name.clone(), linked_task_behavior_identity(step_identity), step_variants,
+        step.name.clone(), linked_task_behavior_identity(step_identity), step_variants, poll_projection,
     ))
 }
 
@@ -1239,7 +1249,8 @@ fn attach_canonical_source(
     typed: typeck::TypedModule,
     source_bundle_digest: [u8; 32],
     proper_tail_manifest: ProperTailSiteManifest,
-    closure_witness: ClosureWitnessManifest,
+    mut closure_witness: ClosureWitnessManifest,
+    closure_sites: Vec<crate::canonical_closure::LambdaSite>,
     callable_witness: CanonicalCallableWitness,
     obligations: BTreeSet<CanonicalObligation>,
     dynamic_runtime_plan: Option<RuntimeTypePlan>,
@@ -1247,6 +1258,11 @@ fn attach_canonical_source(
     runtime_catalog: Option<&RuntimeDeclarationCatalog>,
 ) -> Result<CheckedModule, PipelineError> {
     let deferred_task_role = checked_deferred_task_role(typed.module(), runtime_catalog);
+    let closure_contracts = crate::task_provenance::checked_lambda_contracts(
+        &typed, &closure_witness, &closure_sites, deferred_task_role.as_ref());
+    if !closure_witness.bind_checked_execution_contracts(closure_contracts) {
+        return Err(PipelineError::Type(TypeError { message: "checked lambda behavior differs from its exact closure witness".into() }));
+    }
     let (task_awaits, task_await_items, task_operand_items, task_behaviors) =
         bind_task_await_proofs(&checked, &typed, runtime_catalog, &closure_witness, deferred_task_role.as_ref())?;
     let launch_contract_payload = capabilities::launch_contract_payload(checked.module());
@@ -1847,23 +1863,24 @@ fn finish_canonical_source(
     // canonical limit on a checked program, so it is recorded as an obligation
     // and the manifest binds no lambda at all. An internal inconsistency of
     // the witness itself is not a limit and stays a type error.
-    let closure_witness = match typed_source.canonical_closure_witness() {
-        Ok(manifest) => manifest,
+    let (closure_witness, closure_sites) = match crate::canonical_closure::derive_closure_witness_with_sites(&typed_source) {
+        Ok(derived) => derived,
         Err(error) if error.is_canonical_obligation() => {
             obligations.insert(CanonicalObligation::ClosureWitness(error.to_string()));
-            ClosureWitnessManifest::default()
+            (ClosureWitnessManifest::default(), Vec::new())
         }
         Err(error) => {
             return Err(PipelineError::Type(TypeError { message: error.to_string() }));
         }
-    }
-    .bind_source_bundle_digest(source_bundle_digest);
+    };
+    let closure_witness = closure_witness.bind_source_bundle_digest(source_bundle_digest);
     attach_canonical_source(
         checked,
         typed_source,
         source_bundle_digest,
         proper_tail_manifest,
         closure_witness,
+        closure_sites,
         callable_witness,
         obligations,
         dynamic_runtime_plan,

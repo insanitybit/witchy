@@ -37,10 +37,21 @@ impl SourceExecutionMode {
 pub struct TaskCallableScope {
     owner: String,
     ordinal: u32,
+    checked_closure: Option<crate::proper_tail::ProperTailCallableId>,
 }
 
 impl TaskCallableScope {
-    pub fn new(owner: String, ordinal: u32) -> Self { Self { owner, ordinal } }
+    pub fn new(owner: String, ordinal: u32) -> Self { Self { owner, ordinal, checked_closure: None } }
+    pub fn checked_closure(id: crate::proper_tail::ProperTailCallableId) -> Self {
+        Self { owner: String::new(), ordinal: 0, checked_closure: Some(id) }
+    }
+
+    pub(crate) fn encode(&self, bytes: &mut Vec<u8>) {
+        crate::closure::put_bytes(bytes, self.owner.as_bytes());
+        bytes.extend_from_slice(&self.ordinal.to_le_bytes());
+        bytes.push(u8::from(self.checked_closure.is_some()));
+        if let Some(id) = &self.checked_closure { crate::closure::encode_callable(id, bytes); }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -82,6 +93,9 @@ pub enum TaskExecutionProof {
     /// Exact scheduler Step value, retaining its ordinary variant/payload
     /// proofs. Its role describes possible execution, not scheduler ordering.
     Step { role: TaskBehaviorIdentity, value: Box<Self> },
+    /// Actual value in one exact checked closure's capture lane. These are
+    /// neither declaration parameters nor lambda invocation formals.
+    Capture(crate::proper_tail::ProperTailCallableId, usize),
     Parameter(usize),
     /// An opt declaration's callback formal whose checked input type can
     /// receive Task storage. Its invocation has a public symbolic task-input
@@ -132,6 +146,26 @@ pub struct DeferredTaskRole {
     step_name: String,
     step_identity: TaskBehaviorIdentity,
     step_variants: BTreeMap<usize, Vec<DeferredExecutionRole>>,
+    poll_projection: DeferredPollProjection,
+}
+
+/// A checked logical projection, not a physical WIR field offset and not
+/// evidence about the executable value stored at that projection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeferredPollProjection {
+    variant: usize,
+    field: usize,
+    signature: witchy_syntax::ast::Type,
+}
+
+impl DeferredPollProjection {
+    #[doc(hidden)]
+    pub fn from_checked_frontend(variant: usize, field: usize, signature: witchy_syntax::ast::Type) -> Self {
+        Self { variant, field, signature }
+    }
+    pub fn variant(&self) -> usize { self.variant }
+    pub fn field(&self) -> usize { self.field }
+    pub fn signature(&self) -> &witchy_syntax::ast::Type { &self.signature }
 }
 
 /// Conservative possible execution selected from a generic scheduler field.
@@ -167,14 +201,15 @@ impl DeferredTaskRole {
     #[doc(hidden)]
     pub fn from_checked_frontend(task_name: String, task_identity: TaskBehaviorIdentity,
         step_name: String, step_identity: TaskBehaviorIdentity,
-        step_variants: BTreeMap<usize, Vec<DeferredExecutionRole>>) -> Self {
-        Self { task_name, task_identity, step_name, step_identity, step_variants }
+        step_variants: BTreeMap<usize, Vec<DeferredExecutionRole>>, poll_projection: DeferredPollProjection) -> Self {
+        Self { task_name, task_identity, step_name, step_identity, step_variants, poll_projection }
     }
     pub fn task_name(&self) -> &str { &self.task_name }
     pub fn task_identity(&self) -> &TaskBehaviorIdentity { &self.task_identity }
     pub fn step_name(&self) -> &str { &self.step_name }
     pub fn step_identity(&self) -> &TaskBehaviorIdentity { &self.step_identity }
     pub fn step_variants(&self) -> &BTreeMap<usize, Vec<DeferredExecutionRole>> { &self.step_variants }
+    pub fn poll_projection(&self) -> &DeferredPollProjection { &self.poll_projection }
 
     /// Collect possible execution obligations from an actual checked Step.
     /// A missing identity, malformed variant, or unrepresentable value path
@@ -330,6 +365,65 @@ impl TaskAwaitProof {
 }
 
 impl TaskExecutionProof {
+    /// Canonical structural encoding for the checked closure witness digest.
+    /// Container lengths and string bytes are framed; no Debug spelling or
+    /// pointer address participates in an execution contract identity.
+    pub(crate) fn encode(&self, bytes: &mut Vec<u8>) {
+        fn number(bytes: &mut Vec<u8>, value: usize) { bytes.extend_from_slice(&(value as u64).to_le_bytes()); }
+        fn list(bytes: &mut Vec<u8>, values: &[TaskExecutionProof]) {
+            number(bytes, values.len());
+            for value in values { value.encode(bytes); }
+        }
+        fn identity(bytes: &mut Vec<u8>, role: &TaskBehaviorIdentity) {
+            match role {
+                TaskBehaviorIdentity::LinkedDeclaration(digest) => { bytes.push(0); bytes.extend_from_slice(digest); }
+                TaskBehaviorIdentity::AsyncSource { module, item, method } => {
+                    bytes.push(1);
+                    crate::closure::put_bytes(bytes, module.as_bytes());
+                    bytes.extend_from_slice(&item.to_le_bytes());
+                    bytes.push(u8::from(method.is_some()));
+                    if let Some(method) = method { bytes.extend_from_slice(&method.to_le_bytes()); }
+                }
+            }
+        }
+        match self {
+            Self::Unknown => bytes.push(0),
+            Self::InactiveVariant => bytes.push(1),
+            Self::UnprovedCallableObligation => bytes.push(2),
+            Self::Task(mode, result) => { bytes.push(3); bytes.push(u8::from(mode.is_opt())); result.encode(bytes); }
+            Self::Callable { scope, execution_mode, parameters, required_opt_inputs, result } => {
+                bytes.push(4); scope.encode(bytes); bytes.push(u8::from(execution_mode.is_opt()));
+                number(bytes, *parameters); list(bytes, required_opt_inputs); result.encode(bytes);
+            }
+            Self::DeclaredCallable { execution_mode, conventions, required_opt_inputs, result } => {
+                bytes.push(5); bytes.push(u8::from(execution_mode.is_opt())); number(bytes, conventions.len());
+                for convention in conventions { bytes.push(*convention as u8); }
+                list(bytes, required_opt_inputs); result.encode(bytes);
+            }
+            Self::Invocation { callable, arguments } => { bytes.push(6); callable.encode(bytes); list(bytes, arguments); }
+            Self::Recipe { role, poll } => { bytes.push(7); identity(bytes, role); poll.encode(bytes); }
+            Self::Step { role, value } => { bytes.push(8); identity(bytes, role); value.encode(bytes); }
+            Self::Capture(owner, index) => { bytes.push(9); crate::closure::encode_callable(owner, bytes); number(bytes, *index); }
+            Self::Parameter(index) => { bytes.push(10); number(bytes, *index); }
+            Self::OpaqueOptCallableParameter(index) => { bytes.push(11); number(bytes, *index); }
+            Self::CallableParameter(scope, index) => { bytes.push(12); scope.encode(bytes); number(bytes, *index); }
+            Self::Awaited(value) => { bytes.push(13); value.encode(bytes); }
+            Self::Slot(value, index) => { bytes.push(14); value.encode(bytes); number(bytes, *index); }
+            Self::VariantSlot(value, ordinal, index) => { bytes.push(15); value.encode(bytes); number(bytes, *ordinal); number(bytes, *index); }
+            Self::AnyElement(value) => { bytes.push(16); value.encode(bytes); }
+            Self::Elements(values) => { bytes.push(17); list(bytes, values); }
+            Self::Fields(values) => {
+                bytes.push(18); number(bytes, values.len());
+                for (name, value) in values { crate::closure::put_bytes(bytes, name.as_bytes()); value.encode(bytes); }
+            }
+            Self::Variant { ordinal, fields } => { bytes.push(19); number(bytes, *ordinal); list(bytes, fields); }
+            Self::Variants(variants) => {
+                bytes.push(20); number(bytes, variants.len());
+                for (ordinal, fields) in variants { number(bytes, *ordinal); list(bytes, fields); }
+            }
+        }
+    }
+
     pub fn is_opaque_opt_callable_projection(&self) -> bool {
         let mut current = self;
         for _ in 0..=128 {
@@ -360,6 +454,19 @@ impl TaskExecutionProof {
         for _ in 0..=128 {
             match current {
                 Self::CallableParameter(actual, _) => return actual == scope,
+                Self::Slot(base, _) | Self::VariantSlot(base, _, _)
+                | Self::AnyElement(base) | Self::Awaited(base) => current = base,
+                _ => return false,
+            }
+        }
+        false
+    }
+
+    pub fn is_capture_projection(&self, owner: &crate::proper_tail::ProperTailCallableId) -> bool {
+        let mut current = self;
+        for _ in 0..=128 {
+            match current {
+                Self::Capture(actual, _) => return actual == owner,
                 Self::Slot(base, _) | Self::VariantSlot(base, _, _)
                 | Self::AnyElement(base) | Self::Awaited(base) => current = base,
                 _ => return false,
@@ -614,6 +721,7 @@ impl TaskExecutionProof {
                     arguments.get(*index).cloned().unwrap_or(TaskExecutionProof::Unknown),
                 TaskExecutionProof::CallableParameter(scope, index) =>
                     TaskExecutionProof::CallableParameter(scope.clone(), *index),
+                TaskExecutionProof::Capture(..) => proof.clone(),
                 TaskExecutionProof::Awaited(base) => match go(base, arguments, formal_scope, depth + 1) {
                     TaskExecutionProof::Task(_, result) => *result,
                     TaskExecutionProof::InactiveVariant => TaskExecutionProof::InactiveVariant,
@@ -651,6 +759,58 @@ impl TaskExecutionProof {
 
     pub fn instantiate_callback(&self, scope: &TaskCallableScope, arguments: &[Self]) -> Self {
         self.substitute(arguments, Some(scope))
+    }
+
+    /// Substitute only the captures of this exact closure. Nested closure and
+    /// formal scopes remain symbolic; missing actual values never acquire proof.
+    pub fn instantiate_captures(&self, owner: &crate::proper_tail::ProperTailCallableId, captures: &[Self]) -> Self {
+        fn go(mut proof: TaskExecutionProof, owner: &crate::proper_tail::ProperTailCallableId,
+            captures: &[TaskExecutionProof], depth: usize, remaining: &mut usize) -> TaskExecutionProof {
+            if depth > 128 || *remaining == 0 { return proof.invalidated(); }
+            *remaining -= 1;
+            if let TaskExecutionProof::Capture(actual, index) = &proof {
+                return if actual == owner { captures.get(*index).cloned().unwrap_or(TaskExecutionProof::Unknown) }
+                    else { proof };
+            }
+            let mut child = |value: &mut TaskExecutionProof| {
+                *value = go(std::mem::replace(value, TaskExecutionProof::Unknown), owner, captures, depth + 1, remaining);
+            };
+            match &mut proof {
+                TaskExecutionProof::Task(_, value) | TaskExecutionProof::Awaited(value)
+                | TaskExecutionProof::Slot(value, _) | TaskExecutionProof::VariantSlot(value, _, _)
+                | TaskExecutionProof::AnyElement(value) | TaskExecutionProof::Recipe { poll: value, .. }
+                | TaskExecutionProof::Step { value, .. } => child(value),
+                TaskExecutionProof::Callable { required_opt_inputs, result, .. } => {
+                    for input in required_opt_inputs { child(input); }
+                    child(result);
+                }
+                TaskExecutionProof::Invocation { callable, arguments } => {
+                    child(callable);
+                    for argument in arguments { child(argument); }
+                }
+                TaskExecutionProof::Elements(values) | TaskExecutionProof::Variant { fields: values, .. } => {
+                    for value in values { child(value); }
+                }
+                TaskExecutionProof::Fields(values) => { for value in values.values_mut() { child(value); } }
+                TaskExecutionProof::Variants(values) => { for value in values.values_mut().flatten() { child(value); } }
+                // Declared callables have no lexical captures.
+                TaskExecutionProof::DeclaredCallable { .. } | TaskExecutionProof::Unknown
+                | TaskExecutionProof::InactiveVariant | TaskExecutionProof::UnprovedCallableObligation
+                | TaskExecutionProof::Parameter(_) | TaskExecutionProof::OpaqueOptCallableParameter(_)
+                | TaskExecutionProof::CallableParameter(..) | TaskExecutionProof::Capture(..) => {}
+            }
+            match proof {
+                TaskExecutionProof::Slot(base, index) => base.project_slot(index),
+                TaskExecutionProof::VariantSlot(base, ordinal, index) => base.project_variant_slot(ordinal, index),
+                TaskExecutionProof::AnyElement(base) => base.project_any_element(),
+                TaskExecutionProof::Awaited(base) => match *base {
+                    TaskExecutionProof::Task(_, result) => *result,
+                    other => TaskExecutionProof::Awaited(Box::new(other)),
+                },
+                other => other,
+            }
+        }
+        go(self.clone(), owner, captures, 0, &mut 4096).bounded(4096)
     }
 
     /// Expose both execution behavior and result, without conflating an opt

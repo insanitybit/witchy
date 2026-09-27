@@ -5,10 +5,11 @@
 
 use std::collections::BTreeMap;
 
-use witchy_syntax::ast::{Type, TypeDef, TypeQual};
+use witchy_syntax::ast::{Convention, Type, TypeDef, TypeQual};
 
 use crate::proper_tail::{ProperTailCallableId, ProperTailPathStep};
 use crate::storage::StoragePlan;
+use crate::source::{SourceExecutionMode, TaskCallableScope, TaskExecutionProof};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ClosureBindingPathStep {
@@ -127,6 +128,37 @@ pub struct ClosureWitness {
     declared_signature: Type,
     signature_encoding: Vec<u8>,
     captures: Vec<ClosureCaptureWitness>,
+    execution_contract: Option<ClosureExecutionContract>,
+}
+
+/// Symbolic source behavior at an exact final checked lambda. Capture types
+/// and transfers remain in the containing witness's ordered capture records.
+/// This describes a source promise; a candidate body must prove correspondence.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClosureExecutionContract {
+    id: ProperTailCallableId,
+    source_mode: SourceExecutionMode,
+    captures: Vec<ClosureBindingId>,
+    conventions: Vec<Convention>,
+    formal_scope: TaskCallableScope,
+    result: TaskExecutionProof,
+    required_opt_inputs: Vec<TaskExecutionProof>,
+}
+
+impl ClosureExecutionContract {
+    #[doc(hidden)]
+    pub fn from_checked_frontend(id: ProperTailCallableId, source_mode: SourceExecutionMode,
+        captures: Vec<ClosureBindingId>, conventions: Vec<Convention>, formal_scope: TaskCallableScope,
+        result: TaskExecutionProof, required_opt_inputs: Vec<TaskExecutionProof>) -> Self {
+        Self { id, source_mode, captures, conventions, formal_scope, result, required_opt_inputs }
+    }
+    pub fn id(&self) -> &ProperTailCallableId { &self.id }
+    pub fn source_mode(&self) -> SourceExecutionMode { self.source_mode }
+    pub fn captures(&self) -> &[ClosureBindingId] { &self.captures }
+    pub fn conventions(&self) -> &[Convention] { &self.conventions }
+    pub fn formal_scope(&self) -> &TaskCallableScope { &self.formal_scope }
+    pub fn result(&self) -> &TaskExecutionProof { &self.result }
+    pub fn required_opt_inputs(&self) -> &[TaskExecutionProof] { &self.required_opt_inputs }
 }
 
 impl ClosureWitness {
@@ -137,13 +169,24 @@ impl ClosureWitness {
         signature_encoding: Vec<u8>,
         captures: Vec<ClosureCaptureWitness>,
     ) -> Self {
-        Self { id, signature, declared_signature, signature_encoding, captures }
+        Self { id, signature, declared_signature, signature_encoding, captures, execution_contract: None }
     }
 
     pub fn id(&self) -> &ProperTailCallableId { &self.id }
     pub fn signature(&self) -> Option<&Type> { self.signature.as_ref() }
     pub fn declared_signature(&self) -> &Type { &self.declared_signature }
     pub fn captures(&self) -> &[ClosureCaptureWitness] { &self.captures }
+    pub fn execution_contract(&self) -> Option<&ClosureExecutionContract> { self.execution_contract.as_ref() }
+
+    #[doc(hidden)]
+    pub fn bind_checked_execution_contract(&mut self, contract: ClosureExecutionContract) -> bool {
+        if contract.id != self.id || contract.captures.len() != self.captures.len()
+            || !contract.captures.iter().zip(&self.captures).all(|(id, capture)| id == capture.binding()) {
+            return false;
+        }
+        self.execution_contract = Some(contract);
+        true
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -161,8 +204,18 @@ impl ClosureWitnessManifest {
 
     pub fn entries(&self) -> &[ClosureWitness] { &self.entries }
 
+    #[doc(hidden)]
+    pub fn bind_checked_execution_contracts(&mut self, contracts: BTreeMap<ProperTailCallableId, ClosureExecutionContract>) -> bool {
+        if contracts.keys().any(|id| !self.entries.iter().any(|entry| entry.id() == id)) { return false; }
+        for entry in &mut self.entries {
+            if let Some(contract) = contracts.get(entry.id())
+                && !entry.bind_checked_execution_contract(contract.clone()) { return false; }
+        }
+        true
+    }
+
     pub fn digest(&self) -> [u8; 32] {
-        let mut bytes = b"witchy.canonical-closure-witness.v1".to_vec();
+        let mut bytes = b"witchy.canonical-closure-witness.v2".to_vec();
         bytes.extend_from_slice(&self.source_bundle_digest);
         put_u32(&mut bytes, self.entries.len());
         for entry in &self.entries {
@@ -173,6 +226,19 @@ impl ClosureWitnessManifest {
                 encode_binding(&capture.binding, &mut bytes);
                 put_bytes(&mut bytes, &capture.checked_type_encoding);
                 bytes.push(capture.transfer as u8);
+            }
+            bytes.push(u8::from(entry.execution_contract.is_some()));
+            if let Some(contract) = &entry.execution_contract {
+                encode_callable(&contract.id, &mut bytes);
+                bytes.push(u8::from(contract.source_mode.is_opt()));
+                put_u32(&mut bytes, contract.captures.len());
+                for capture in &contract.captures { encode_binding(capture, &mut bytes); }
+                put_u32(&mut bytes, contract.conventions.len());
+                for convention in &contract.conventions { bytes.push(*convention as u8); }
+                contract.formal_scope.encode(&mut bytes);
+                contract.result.encode(&mut bytes);
+                put_u32(&mut bytes, contract.required_opt_inputs.len());
+                for requirement in &contract.required_opt_inputs { requirement.encode(&mut bytes); }
             }
         }
         *blake3::hash(&bytes).as_bytes()
@@ -198,7 +264,7 @@ fn put_str(bytes: &mut Vec<u8>, value: &str) {
     put_bytes(bytes, value.as_bytes());
 }
 
-fn encode_callable(callable: &ProperTailCallableId, bytes: &mut Vec<u8>) {
+pub(crate) fn encode_callable(callable: &ProperTailCallableId, bytes: &mut Vec<u8>) {
     put_u32(bytes, callable.item as usize);
     match callable.method { Some(method) => { bytes.push(1); put_u32(bytes, method as usize); }, None => bytes.push(0) }
     put_path(&callable.lambda_path, bytes);

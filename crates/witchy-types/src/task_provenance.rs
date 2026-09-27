@@ -160,9 +160,10 @@ struct Analyzer<'a> {
     returns: Vec<Proof>,
     required_opt_inputs: Vec<Proof>,
     await_origins: BTreeMap<usize, Proof>,
-    lambda_scopes: BTreeMap<usize, TaskCallableScope>,
+    lambda_scopes: &'a BTreeMap<usize, TaskCallableScope>,
     active_lambda_scopes: Vec<TaskCallableScope>,
     lambda_parameter_scopes: Vec<BTreeSet<String>>,
+    capture_owner: Option<&'a witchy_canonical_source::proper_tail::ProperTailCallableId>,
 }
 
 impl Analyzer<'_> {
@@ -402,7 +403,7 @@ impl Analyzer<'_> {
                     Self::bind(pattern, value, None, environment);
                 }
             }
-            (Pattern::Tuple(patterns), proof @ (Proof::Parameter(_) | Proof::Slot(_, _)
+            (Pattern::Tuple(patterns), proof @ (Proof::Parameter(_) | Proof::Capture(..) | Proof::Slot(_, _)
                 | Proof::VariantSlot(_, _, _) | Proof::AnyElement(_))) => {
                 for (index, pattern) in patterns.iter().enumerate() {
                     Self::bind(
@@ -442,7 +443,7 @@ impl Analyzer<'_> {
                 }
             }
             (Pattern::Ctor { args, .. } | Pattern::AnonCtor { args, .. },
-                proof @ (Proof::Parameter(_) | Proof::Slot(_, _) | Proof::VariantSlot(_, _, _)
+                proof @ (Proof::Parameter(_) | Proof::Capture(..) | Proof::Slot(_, _) | Proof::VariantSlot(_, _, _)
                     | Proof::AnyElement(_)))
                 if ordinal.is_some() => {
                 let ordinal = ordinal.expect("checked above");
@@ -627,6 +628,7 @@ impl Analyzer<'_> {
         match proof {
             Proof::Task(SourceExecutionMode::Opt, result) => Ok(*result),
             proof if proof.is_parameter_projection()
+                || self.capture_owner.is_some_and(|owner| proof.is_capture_projection(owner))
                 || self.active_lambda_scopes.iter().any(|scope|
                     proof.is_callable_parameter_projection(scope)) => {
                 if !self.required_opt_inputs.contains(&proof) {
@@ -1163,9 +1165,10 @@ fn analyze_function(
         returns: Vec::new(),
         required_opt_inputs: Vec::new(),
         await_origins: BTreeMap::new(),
-        lambda_scopes,
+        lambda_scopes: &lambda_scopes,
         active_lambda_scopes: Vec::new(),
         lambda_parameter_scopes: Vec::new(),
+        capture_owner: None,
     };
     let mut environment = function
         .params
@@ -1206,6 +1209,149 @@ pub(crate) fn checked_task_behavior(
     deferred_task_role: Option<&DeferredTaskRole>,
 ) -> Result<CheckedTaskBehavior, TypeError> {
     analyze_task_behavior(module, table, true, deferred_task_role)
+}
+
+/// Derive contracts on the final typed AST, whose lambda coordinates are the
+/// coordinates carried by the closure witness. Failure to summarize a body
+/// leaves its contract absent; it never changes source acceptance or grants
+/// execution from its signature. Existing source verification runs separately.
+pub(crate) fn checked_lambda_contracts(
+    typed: &crate::typeck::TypedModule,
+    witness: &witchy_canonical_source::closure::ClosureWitnessManifest,
+    sites: &[crate::canonical_closure::LambdaSite],
+    deferred_task_role: Option<&DeferredTaskRole>,
+) -> BTreeMap<witchy_canonical_source::proper_tail::ProperTailCallableId,
+    witchy_canonical_source::closure::ClosureExecutionContract> {
+    use witchy_canonical_source::closure::ClosureExecutionContract;
+    let module = typed.module();
+    let table = typed.table();
+    let definitions = type_definitions(module);
+    let functions = module.items.iter().filter_map(|item| match item {
+        Item::Function(function) if !function.is_async => Some((function.name.as_str(), function)),
+        _ => None,
+    }).collect::<BTreeMap<_, _>>();
+    let mut demand = LambdaSummaryDemand {
+        module, table, definitions: &definitions, functions, deferred_task_role,
+        summaries: BTreeMap::new(), unavailable: BTreeSet::new(), active: BTreeSet::new(),
+    };
+    // Index each enclosing body once. Do not rerun the lexical inventory for
+    // every captured lambda in a large function.
+    let mut expressions = BTreeMap::new();
+    let mut scopes_by_function = BTreeMap::new();
+    let checked_scopes = sites.iter().map(|site|
+        (site.expr_address, TaskCallableScope::checked_closure(site.id.clone()))).collect::<BTreeMap<_, _>>();
+    for item in &module.items {
+        let functions: &[Function] = match item {
+            Item::Function(function) => std::slice::from_ref(function),
+            Item::Impl(definition) => &definition.methods,
+            _ => continue,
+        };
+        for function in functions {
+            let mut scopes = BTreeMap::new();
+            let walked = witchy_syntax::ast::visit::visit_block(&function.body, &mut |value| {
+                if matches!(value, Expr::Lambda { .. }) {
+                    let address = value as *const Expr as usize;
+                    scopes.insert(address, checked_scopes.get(&address).cloned().ok_or(())?);
+                    expressions.insert(address, value);
+                }
+                Ok::<(), ()>(())
+            });
+            if walked.is_ok() { scopes_by_function.insert(function as *const Function as usize, scopes); }
+        }
+    }
+    let mut contracts = BTreeMap::new();
+    for entry in witness.entries() {
+        let Some(site) = sites.iter().find(|site| &site.id == entry.id()) else { continue };
+        let function = match (module.items.get(entry.id().item as usize), entry.id().method) {
+            (Some(Item::Function(function)), None) => function,
+            (Some(Item::Impl(definition)), Some(method)) => {
+                let Some(function) = definition.methods.get(method as usize) else { continue };
+                function
+            }
+            _ => continue,
+        };
+        let Some(lambda_scopes) = scopes_by_function.get(&(function as *const Function as usize)) else { continue };
+        let Some(Expr::Lambda { params, body, .. }) = expressions.get(&site.expr_address).copied() else { continue };
+        let Some(scope) = lambda_scopes.get(&site.expr_address).cloned() else { continue };
+        if demand.body(body, &mut 4096, 0).is_err() { continue; }
+        let mut environment = entry.captures().iter().enumerate().map(|(index, capture)|
+            (capture.binding().name().to_owned(), Proof::Capture(entry.id().clone(), index))).collect::<Environment>();
+        for (index, parameter) in params.iter().enumerate() {
+            environment.insert(parameter.name.clone(), Proof::CallableParameter(scope.clone(), index));
+        }
+        let mut analyzer = Analyzer {
+            module, table, definitions: &definitions, summaries: &demand.summaries, function,
+            check_await: false, deferred_task_role, export_execution_terms: true,
+            returns: Vec::new(), required_opt_inputs: Vec::new(), await_origins: BTreeMap::new(),
+            lambda_scopes, active_lambda_scopes: vec![scope.clone()],
+            lambda_parameter_scopes: vec![params.iter().map(|param| param.name.clone()).collect()],
+            capture_owner: Some(entry.id()),
+        };
+        let Ok(tail) = analyzer.block(body, &mut environment) else { continue };
+        if !matches!(body.stmts.last(), Some(Stmt::Return(_))) { analyzer.returns.push(tail); }
+        let result = Analyzer::join_values(analyzer.returns).bounded(4096);
+        contracts.insert(entry.id().clone(), ClosureExecutionContract::from_checked_frontend(
+            entry.id().clone(), source_execution_mode(function, &module.modes),
+            entry.captures().iter().map(|capture| capture.binding().clone()).collect(),
+            params.iter().map(|param| param.convention).collect(), scope, result, analyzer.required_opt_inputs,
+        ));
+    }
+    contracts
+}
+
+/// Only exact checked call targets needed by a particular final lambda are
+/// summarized. A failed or recursive target never enters the available map.
+/// This is deliberately conservative, not a second whole-module fixpoint or
+/// a spelling-based whitelist for standard scheduler helpers.
+struct LambdaSummaryDemand<'a> {
+    module: &'a Module,
+    table: &'a TypeTable,
+    definitions: &'a BTreeMap<String, TypeDef>,
+    functions: BTreeMap<&'a str, &'a Function>,
+    deferred_task_role: Option<&'a DeferredTaskRole>,
+    summaries: BTreeMap<String, Summary>,
+    unavailable: BTreeSet<String>,
+    active: BTreeSet<String>,
+}
+
+impl LambdaSummaryDemand<'_> {
+    fn body(&mut self, body: &Block, remaining: &mut usize, depth: usize) -> Result<(), ()> {
+        if depth > 128 || *remaining == 0 { return Err(()); }
+        *remaining -= 1;
+        let mut targets = BTreeSet::new();
+        witchy_syntax::ast::visit::visit_block(body, &mut |expression| {
+            match expression {
+                Expr::Call { name, .. } if self.table.local_callee_type(expression).is_none() => {
+                    if !self.functions.contains_key(name.as_str()) { return Err(()); }
+                    targets.insert(name.clone());
+                }
+                Expr::Var(name) if self.table.declared_function_value(expression) == Some(name.as_str()) => {
+                    if !self.functions.contains_key(name.as_str()) { return Err(()); }
+                    targets.insert(name.clone());
+                }
+                _ => {}
+            }
+            Ok::<(), ()>(())
+        })?;
+        for target in targets { self.function(&target, remaining, depth + 1)?; }
+        Ok(())
+    }
+
+    fn function(&mut self, name: &str, remaining: &mut usize, depth: usize) -> Result<(), ()> {
+        if self.summaries.contains_key(name) { return Ok(()); }
+        if self.unavailable.contains(name) || !self.active.insert(name.to_owned()) { return Err(()); }
+        let result = (|| {
+            let function = *self.functions.get(name).ok_or(())?;
+            self.body(&function.body, remaining, depth)?;
+            analyze_function(self.module, self.table, self.definitions, &self.summaries,
+                function, false, self.deferred_task_role, true).map(|(summary, _)| summary).map_err(|_| ())
+        })();
+        self.active.remove(name);
+        match result {
+            Ok(summary) => { self.summaries.insert(name.to_owned(), summary); Ok(()) }
+            Err(()) => { self.unavailable.insert(name.to_owned()); Err(()) }
+        }
+    }
 }
 
 fn analyze_task_behavior(
