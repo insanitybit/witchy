@@ -1503,16 +1503,18 @@ admitted unoptimized Wasm `10`, zero canonical heap leaks. A normal caller
 also obtains this opt-defined Packet and passes it to opt code, then does the
 same through an enclosing `Envelope(Packet)`: hand-computed `10` and `9 + 3 =
 12`, admitted output `10`/`12`, zero leaks. The nested case exposed a duplicate
-parameter drop after moving an owned managed field; aggregate construction
-now retires that entry cleanup when the field takes its token. These are
+parameter drop after moving an owned managed field. Operation-level transfer
+tracking now retires entry cleanup for a managed field move. These are
 representative recursive transport results, not full row G or lifecycle
 coverage; the live-handle channel refusal remains fail closed. The owned GC
 owner constructor had the analogous duplicate drop after a `MoveManaged`
 capture. `rfc0167_opaque_environment_field` now passes an owned `Ticket`
 parameter into an owner-backed `Viewed(Ticket)` and consumes it in normal,
 opt, and normal-to-opt calls: hand-computed `738718716`, admitted unoptimized
-Wasm `738718716`, zero canonical heap leaks in each mode. The capture move
-now retires its entry cleanup; this does not authenticate arbitrary owner
+Wasm `738718716`, zero canonical heap leaks in each mode. The same
+operation-level tracking retires entry cleanup for a checked `MoveManaged`
+capture; independent release placement still checks token use. This does not
+authenticate arbitrary owner
 captures. The owned GC result ABI is implemented separately;
 `task.Step(task.Handle)` still needs a lawful one-shot task capture and
 consuming aggregate extraction before it can be admitted end to end.

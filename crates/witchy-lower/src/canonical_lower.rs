@@ -9649,6 +9649,44 @@ impl FunctionLowerer<'_> {
     }
 
     fn push_operation(&mut self, operation: Operation) {
+        // The release placer proves that each managed token is consumed once.
+        // Keep the lowerer's older exit-cleanup list in sync with those same
+        // operation-level transfers, rather than teaching every aggregate or
+        // closure constructor a separate parameter-disposition exception.
+        let mut transferred = Vec::new();
+        match &operation {
+            Operation::Store { value, transfer: witchy_wir::canonical_safewir::StoreTransfer::MoveUnique, .. }
+            | Operation::MoveValue { source: value, .. }
+            | Operation::DropRef { object: value }
+            | Operation::Release { object: value }
+            | Operation::Reclaim { object: value } => transferred.push(*value),
+            Operation::Call { arguments, .. } | Operation::VarCall { arguments, .. } => {
+                transferred.extend(arguments.iter().filter_map(|argument| match argument {
+                    CallArgument::Move(value) => Some(*value),
+                    CallArgument::Value(_) => None,
+                }));
+            }
+            Operation::ClosureOwner(OwnerOperation::Construct { destination, constructor, captures }) => {
+                if let Some(ValueType::Gc(owner_type)) = self.values.get(destination)
+                    && let Some(contract) = self.closures.owners.iter()
+                        .find(|family| family.owner_type == *owner_type)
+                        .and_then(|family| family.constructors.iter().find(|entry| entry.id == *constructor))
+                {
+                    transferred.extend(captures.iter().zip(&contract.captures)
+                        .filter(|(_, field)| matches!(field.transfer, CaptureTransfer::MoveManaged))
+                        .map(|(value, _)| *value));
+                }
+            }
+            Operation::ClosureOwner(OwnerOperation::Drop { owner, .. }
+                | OwnerOperation::Deconstruct { owner, .. }) => transferred.push(*owner),
+            Operation::ClosureOwner(OwnerOperation::DropList { list, .. }) => transferred.push(*list),
+            Operation::ClosureOwner(OwnerOperation::ListPush { list, value, .. }
+                | OwnerOperation::ListSet { list, value, .. }) => transferred.extend([*list, *value]),
+            _ => {}
+        }
+        if !transferred.is_empty() {
+            self.owned_parameters.retain(|parameter| !transferred.contains(parameter));
+        }
         self.graph_version += 1;
         self.blocks[self.current.get() as usize].operations.push(operation);
     }
@@ -10576,14 +10614,6 @@ impl FunctionLowerer<'_> {
                 let _ = field;
                 value
             });
-        }
-        for (capture, field) in captures.iter().zip(&constructor.captures) {
-            if matches!(field.transfer, CaptureTransfer::MoveManaged) {
-                // The opaque owner now holds this entry token. Its transfer
-                // must retire the parameter's exit cleanup just like a
-                // managed field store in a transparent aggregate.
-                self.owned_parameters.retain(|owned| owned != capture);
-            }
         }
         let destination = self.fresh(ValueType::Gc(layout.owner_type))?;
         self.push_operation(Operation::ClosureOwner(OwnerOperation::Construct {
@@ -12686,12 +12716,6 @@ impl FunctionLowerer<'_> {
                             witchy_wir::canonical_safewir::StoreTransfer::CopyScalar
                         })
                     };
-                    if reference && !clone_reference {
-                        // The field now owns the incoming token. Do not also
-                        // schedule the entry parameter's exit-time drop;
-                        // release placement independently checks the move.
-                        self.owned_parameters.retain(|owned| *owned != value);
-                    }
                     self.push_operation(Operation::Store {
                         place,
                         value,
