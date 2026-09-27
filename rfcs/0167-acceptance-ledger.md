@@ -2293,3 +2293,31 @@ placement at the guarded-match dispatch header (`IncompatibleOwnedEdge`);
 the pending witness and both failed lowerings are preserved in
 `state/agents/match-guard-disposition-20260927.md`. No heap audit completed and
 no semantic acceptance row closes.
+
+### 2026-09-27: admitted expression quotation and typed emission (row Q partial)
+
+The explicit compiler recipe now installs its typed emission bridge only after
+loader ownership and original source-digest checks, before ordinary resolution
+and checking. Public ordinary source-bundle paths install no compiler services.
+Production admission retains immutable typed expression seeds from the exact
+validated source; guest strings are never parsed as code. Quote calls select a
+checked seed/site pair and create a fresh session-local instance. Emissions
+retain the AST and lexical origin together. Wasm and host work consume fuel;
+separate structural node/payload-byte limits bound arena and emitted clones.
+Seed preparation is also depth/node/byte bounded through a generic AST field
+traversal, not a list of supported expression shapes.
+
+`rfc0167_canonical_comptime::canonical_quotation_emits_typed_expression_with_lexical_origin`
+executes admitted unoptimized quote/emit in normal and opt modes. Two equal
+payloads retain their distinct quote sites and fresh instance origins. Replay
+preserves ASTs/origins/fuel. A trusted test expansion hook feeds the returned
+typed AST into ordinary source checking; admitted unoptimized execution returns
+the hand-computed **42** for `40 + 2`, with **zero canonical heap leaks**.
+Zero arena/output/fuel budgets and ordinary launch refuse. The companion test
+confirms a quoted String does not become valid in an Int-returning destination.
+
+This remains an explicit expression-only compiler operation surface, not the
+default expander or interpreter retirement. Holes, other syntax categories,
+builders, full definition-module hygiene, original block selection and batching
+remain to migrate. Session-local handle strings do not authorize cross-session
+transport. Row Q remains **PARTIAL**; this slice closes no acceptance row.

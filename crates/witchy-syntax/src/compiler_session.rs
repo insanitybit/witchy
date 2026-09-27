@@ -9,12 +9,15 @@
 //! cannot authenticate or replay syntax from a handle string alone.
 //! The frozen interpreter remains the default execution adapter. An explicit
 //! admitted compiler-session runner currently supports deterministic fresh
-//! names only; typed quotation/builders/emission still require migration.
+//! names and bounded expression quotation/emission; other quotation categories
+//! and builders still require migration.
 
 use std::collections::HashMap;
 
 use crate::ast::{Block, Expr, Item, MatchArm, Module, Param, Pattern, Stmt, Type};
 use crate::origin::SyntaxCategory;
+
+pub mod seeds;
 
 /// Data carried by the checked source launch contract and admitted artifact.
 /// Constructing this value alone grants no import or launch authority.
@@ -218,6 +221,13 @@ impl CompilerSyntaxSession {
         Ok(format!("\0compiler-syntax-instance\0{category}\0{ordinal}"))
     }
 
+    pub fn syntax_handle_byte_len(&self, category: &str) -> Result<usize, String> {
+        self.syntax_instance_counter.checked_add(1)
+            .ok_or_else(|| "compiler syntax instance counter overflowed".to_owned())?;
+        let digits = self.syntax_instance_counter.checked_ilog10().unwrap_or(0) as usize + 1;
+        Ok("\0compiler-syntax-instance\0".len() + category.len() + 1 + digits)
+    }
+
     syntax_arena!(items, insert_item, item_syntax, Item);
     syntax_arena!(item_modules, insert_item_module, item_modules, Module);
     syntax_arena!(expressions, insert_expression, expr_syntax, Expr);
@@ -254,7 +264,8 @@ fn encode_fresh_scope(scope: &str) -> String {
 /// Merely constructing this counter enforces no bound on an evaluator. The
 /// frozen interpreter retains its existing step accounting. The explicit
 /// canonical fresh-name adapter charges names/output bytes through this type
-/// and uses Wasmtime fuel; no syntax-arena budget is implied by those charges.
+/// and uses Wasmtime fuel. Its expression adapter additionally charges separate
+/// structural arena and emitted-output node/byte counters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DeterministicBudget {
     remaining: u64,

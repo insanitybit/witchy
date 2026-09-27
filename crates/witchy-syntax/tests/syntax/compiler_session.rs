@@ -3,6 +3,30 @@ use witchy_syntax::compiler_session::*;
 use witchy_syntax::origin::SyntaxCategory;
 
 #[test]
+fn admitted_seed_data_is_bounded_exact_and_retains_distinct_quote_sites() {
+    use witchy_syntax::compiler_session::seeds::CompilerSyntaxSeeds;
+    let mut module = witchy_syntax::parser::parse_module("fn main() -> Int:\n    0\n").unwrap();
+    module.compiler_expr_syntax = [3, 7].map(|line| CompilerExprSyntax {
+        handle: "same-payload".into(), expr: Expr::Float(f64::from_bits(0x7ff8_0000_0000_0001)), definition_line: line,
+    }).into();
+    let first = CompilerSyntaxSeeds::from_module(&module).unwrap();
+    let same = CompilerSyntaxSeeds::from_module(&module).unwrap();
+    assert_eq!(first, same, "exact payload equality includes NaN bit patterns");
+    let seed = first.expression("same-payload").unwrap();
+    assert!(seed.allows_site(3) && seed.allows_site(7));
+    assert!(!seed.allows_site(4) && !seed.allows_site(0));
+    assert!(seed.cost().nodes > 0 && seed.cost().bytes >= 8);
+    module.compiler_expr_syntax[1].expr = Expr::Float(f64::from_bits(0x7ff8_0000_0000_0002));
+    assert_ne!(first, CompilerSyntaxSeeds::from_module(&module).unwrap(), "last payload wins without ignoring its bits");
+    let mut deep = Expr::Int(0);
+    for _ in 0..129 { deep = Expr::Unary { op: UnOp::Neg, expr: Box::new(deep) }; }
+    module.compiler_expr_syntax[1].expr = deep;
+    assert!(CompilerSyntaxSeeds::from_module(&module).is_err(), "depth bound precedes retention/cloning");
+    assert_eq!(CompilerSyntaxSession::default().syntax_handle_byte_len("expr").unwrap(),
+        CompilerSyntaxSession::default().next_syntax_handle("expr").unwrap().len());
+}
+
+#[test]
 fn session_moves_typed_payloads_without_changing_source_or_crossing_categories() {
     let mut module = witchy_syntax::parser::parse_module("fn main() -> Int:\n    42\n").unwrap();
     let original = module.clone();

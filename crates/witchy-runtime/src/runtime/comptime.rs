@@ -2,6 +2,7 @@
 //! not install its imports. No source evaluator or ambient grants are used.
 use super::*;
 use witchy_syntax::compiler_session::{CompilerSyntaxSession, DeterministicBudget};
+use witchy_syntax::compiler_session::seeds::{CompilerSyntaxSeeds, SyntaxCost, EmittedExpression};
 
 #[derive(Debug, Clone, Copy)]
 pub struct ComptimeLimits {
@@ -9,6 +10,10 @@ pub struct ComptimeLimits {
     pub memory_pages: usize,
     pub fresh_identifiers: u64,
     pub host_output_bytes: u64,
+    pub syntax_nodes: u64,
+    pub syntax_bytes: u64,
+    pub emitted_nodes: u64,
+    pub emitted_bytes: u64,
 }
 
 pub struct ComptimeOutcome {
@@ -16,18 +21,28 @@ pub struct ComptimeOutcome {
     pub fresh_identifiers: Vec<String>,
     pub fuel_consumed: u64,
     pub heap_leaks: usize,
+    pub expressions: Vec<EmittedExpression>,
 }
 
 pub(super) struct SessionState {
     pub syntax: CompilerSyntaxSession,
     pub names: DeterministicBudget,
     pub bytes: DeterministicBudget,
+    pub input_bytes: u64,
     pub issued: Vec<String>,
+    pub seeds: std::sync::Arc<CompilerSyntaxSeeds>,
+    pub costs: std::collections::BTreeMap<String, SyntaxCost>,
+    pub nodes: DeterministicBudget,
+    pub syntax_bytes: DeterministicBudget,
+    pub emitted_nodes: DeterministicBudget,
+    pub emitted_bytes: DeterministicBudget,
+    pub expressions: Vec<EmittedExpression>,
 }
 
 impl Runtime {
     /// Execute the exact admitted zero-grant compiler recipe. This initial
-    /// operation surface supports fresh names, not arbitrary syntax emission.
+    /// operation surface supports fresh names and typed expression quotation
+    /// and emission, not arbitrary syntax builders or source-text evaluation.
     /// Wasm instructions and host byte work consume deterministic budgets.
     pub fn run_comptime(
         artifact: &AdmittedCanonicalArtifact, limits: ComptimeLimits,
@@ -48,6 +63,13 @@ impl Runtime {
         let session = SessionState {
             syntax, names: DeterministicBudget::new(limits.fresh_identifiers),
             bytes: DeterministicBudget::new(limits.host_output_bytes), issued: Vec::new(),
+            input_bytes: limits.host_output_bytes,
+            seeds: artifact.compiler_syntax_seeds().cloned()
+                .ok_or_else(|| Error::msg("comptime artifact lacks checked syntax seeds"))?,
+            costs: Default::default(), nodes: DeterministicBudget::new(limits.syntax_nodes),
+            syntax_bytes: DeterministicBudget::new(limits.syntax_bytes),
+            emitted_nodes: DeterministicBudget::new(limits.emitted_nodes),
+            emitted_bytes: DeterministicBudget::new(limits.emitted_bytes), expressions: Vec::new(),
         };
         let mut vm = runtime.instantiate_module_with_session(
             module, Capabilities::none(), limits.memory_pages, Some(entry.clone()), &[],
@@ -60,6 +82,6 @@ impl Runtime {
         if heap_leaks != 0 { bail!("comptime recipe leaked {heap_leaks} canonical roots"); }
         let fuel_consumed = limits.fuel - vm.store.get_fuel()?;
         let session = vm.store.data_mut().compiler_syntax.take().expect("comptime session installed");
-        Ok(ComptimeOutcome { result, fresh_identifiers: session.issued, fuel_consumed, heap_leaks })
+        Ok(ComptimeOutcome { result, fresh_identifiers: session.issued, fuel_consumed, heap_leaks, expressions: session.expressions })
     }
 }

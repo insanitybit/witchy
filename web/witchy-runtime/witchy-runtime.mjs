@@ -23,7 +23,7 @@
 // The ABI version this shim implements. Bump in lockstep with a breaking change
 // to the `"witchy"` import surface (a renamed/re-signatured non-authority import, or a
 // change to the pending-buffer protocol). RFC-0007 §"ABI stabilization".
-export const WITCHY_ABI_VERSION = 15;
+export const WITCHY_ABI_VERSION = 16;
 
 // Exact deny-by-omission surface implemented below. The Rust ABI catalog test
 // compares this list with `wir_prelude` and `instantiate` compares it with the

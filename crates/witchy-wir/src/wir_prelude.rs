@@ -228,6 +228,8 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
   (import "witchy" "compiler_diff_len" (func $compiler_diff_len_host (param i32 i32) (result i32)))
   (import "witchy" "compiler_footprint_into" (func $compiler_footprint_into_host (param i32 i32 i32 i32) (result i32)))
   (import "witchy" "compiler_syntax_fresh_into" (func $compiler_syntax_fresh_into_host (param i32 i32 i32 i32) (result i32)))
+  (import "witchy" "compiler_syntax_quote_expr_into" (func $compiler_syntax_quote_expr_into_host (param i32 i32 i64 i32 i32) (result i32)))
+  (import "witchy" "compiler_syntax_emit_expr" (func $compiler_syntax_emit_expr_host (param i32 i32)))
   (import "witchy" "compiler_diff_into" (func $compiler_diff_into_host (param i32 i32 i32 i32 i32 i32) (result i32)))
   (import "witchy" "compiler_doc_into" (func $compiler_doc_into_host (param i32 i32 i32 i32 i32 i32) (result i32)))
   (import "witchy" "compiler_doc_result_json_into" (func $compiler_doc_result_json_into_host (param i32 i32 i32 i32 i32 i32) (result i32)))
@@ -400,11 +402,11 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
 
 /// The number of host imports the prelude declares (used to split function
 /// indices: imports `0..IMPORT_COUNT`, helpers after).
-pub const IMPORT_COUNT: usize = 177;
+pub const IMPORT_COUNT: usize = 179;
 
 /// Version of the public `"witchy"` host-import contract.
 /// v15: compiler-session-only bounded fresh-name service.
-pub const WITCHY_ABI_VERSION: u32 = 15;
+pub const WITCHY_ABI_VERSION: u32 = 16;
 
 /// The role an import plays at the host boundary. This classification is part
 /// of the public Wasm ABI: it tells embedders which imports grant authority,
@@ -681,7 +683,7 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
 
         "args_size" | "user_cap_field_len" => C::LaunchInput,
 
-        "compiler_syntax_fresh_into" => C::CompilerSession,
+        "compiler_syntax_fresh_into" | "compiler_syntax_quote_expr_into" | "compiler_syntax_emit_expr" => C::CompilerSession,
 
         "compiler_footprint_len"
         | "compiler_diff_len"

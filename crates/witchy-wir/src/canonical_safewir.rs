@@ -99,7 +99,7 @@ pub use crypto::{CRYPTO_SHA512_IMPORT, CRYPTO_SHA3_256_IMPORT, CRYPTO_HMAC_SHA25
 mod vm_service;
 pub use vm_service::{CandidateVmService, VM_SERVICE_IMPORT_NAMES, VM_SERVICE_KIND, VM_SERVICE_RESPONSE_KIND};
 mod compiler_session;
-pub use compiler_session::COMPILER_FRESH_IMPORT;
+pub use compiler_session::{COMPILER_FRESH_IMPORT, COMPILER_QUOTE_EXPR_IMPORT, COMPILER_EMIT_EXPR_IMPORT};
 
 /// Stable identity supplied by canonical type checking. It identifies the
 /// checked source but grants no validation or encoding authority by itself.

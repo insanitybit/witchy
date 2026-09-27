@@ -20,7 +20,7 @@ breaking ABI change that must bump `WITCHY_ABI_VERSION`.
 
 ## ABI version
 
-The current ABI version is **15**. The JavaScript host pins it as
+The current ABI version is **16**. The JavaScript host pins it as
 `WITCHY_ABI_VERSION` (exported from `web/witchy-runtime/witchy-runtime.mjs`). The
 version covers: the import module name `"witchy"`, the set of import names and
 their `(params) -> results` signatures, the value/memory representation, and the
@@ -53,6 +53,11 @@ Version 15 adds the compiler-session-only `compiler_syntax_fresh_into` import.
 It is not installed by ordinary native or browser launchers, regardless of
 application capabilities. A checked source-bound comptime recipe and dedicated
 bounded compiler-session launcher are required.
+
+Version 16 adds compiler-session-only `compiler_syntax_quote_expr_into` and
+`compiler_syntax_emit_expr`. Quotations select typed seeds retained from the
+exact checked source; guest text is never parsed. Host work, syntax arenas,
+and emitted ASTs have deterministic limits. Ordinary launchers omit them.
 
 Version 14 adds native canonical Net slice adapters. `net_listen_at` receives
 an authenticated Net and an address read slice; it uses the existing admitted
@@ -167,7 +172,7 @@ It does **not** implement unavailable capability sizing imports
 
 ## The imports
 
-ABI version 15 declares **177 imports** (`IMPORT_COUNT` in
+ABI version 16 declares **179 imports** (`IMPORT_COUNT` in
 `crates/witchy-wir/src/wir_prelude.rs`). That file owns the ordered signatures
 and the explicit metadata rendered below. The classes are:
 
@@ -204,6 +209,8 @@ An empty set is an authenticated reject-all contract, never a wildcard.
 | `compiler_diff_len` | `(i32, i32) -> i32` | internal/toolchain service | none | omitted |
 | `compiler_footprint_into` | `(i32, i32, i32, i32) -> i32` | internal/toolchain service | none | omitted |
 | `compiler_syntax_fresh_into` | `(i32, i32, i32, i32) -> i32` | compiler session only | none | omitted |
+| `compiler_syntax_quote_expr_into` | `(i32, i32, i64, i32, i32) -> i32` | compiler session only | none | omitted |
+| `compiler_syntax_emit_expr` | `(i32, i32)` | compiler session only | none | omitted |
 | `compiler_diff_into` | `(i32, i32, i32, i32, i32, i32) -> i32` | internal/toolchain service | none | omitted |
 | `compiler_doc_into` | `(i32, i32, i32, i32, i32, i32) -> i32` | internal/toolchain service | none | omitted |
 | `compiler_doc_result_json_into` | `(i32, i32, i32, i32, i32, i32) -> i32` | internal/toolchain service | none | omitted |

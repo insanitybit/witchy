@@ -424,6 +424,7 @@ impl AdmittedExternalWasmImport {
 #[derive(Clone, PartialEq, Eq)]
 pub struct AdmittedCanonicalArtifact {
     compiler_session: Option<witchy_syntax::compiler_session::CompilerSessionContract>,
+    compiler_syntax_seeds: Option<std::sync::Arc<witchy_syntax::compiler_session::seeds::CompilerSyntaxSeeds>>,
     vm_services: Vec<AdmittedVmService>,
     external_imports: Vec<AdmittedExternalWasmImport>,
     owner_bridges: Vec<AdmittedOwnerBridge>,
@@ -639,6 +640,10 @@ impl CanonicalEntry {
 impl AdmittedCanonicalArtifact {
     pub fn compiler_session(&self) -> Option<&witchy_syntax::compiler_session::CompilerSessionContract> {
         self.compiler_session.as_ref()
+    }
+
+    pub fn compiler_syntax_seeds(&self) -> Option<&std::sync::Arc<witchy_syntax::compiler_session::seeds::CompilerSyntaxSeeds>> {
+        self.compiler_syntax_seeds.as_ref()
     }
     pub fn vm_services(&self) -> &[AdmittedVmService] { &self.vm_services }
     /// Exact separately compiled scalar Wasm imports the launcher must bind.
@@ -1026,6 +1031,7 @@ fn admit_parts(
     let wasm_digest = digest_bytes(b"witchy/canonical-wasmir/wasm/v1", &[&bytes]);
     Ok(AdmittedCanonicalArtifact {
         compiler_session: witchy_syntax::compiler_session::CompilerSessionContract::decode(_source.launch_contract_payload()),
+        compiler_syntax_seeds: None,
         vm_services: _source.vm_services().iter().map(|site| AdmittedVmService {
             id: site.id(), callback_export: format!("f{}", site.callback().get()),
         }).collect(),
@@ -1205,6 +1211,12 @@ pub fn admit_canonical_with_observer<R>(
     })?;
     let bytes = encode_checked_unvalidated(&checked)
         .map_err(|error| CanonicalAdmissionError::Lowering(format!("{error:?}")))?;
+    // This exact source view has just passed external-witness validation.
+    // Guest strings never construct the retained typed payload catalogue.
+    let compiler_syntax_seeds = if witchy_syntax::compiler_session::CompilerSessionContract::decode(source.launch_contract_payload()).is_some() {
+        Some(std::sync::Arc::new(witchy_syntax::compiler_session::seeds::CompilerSyntaxSeeds::from_module(source.module())
+            .map_err(CanonicalAdmissionError::Lowering)?))
+    } else { None };
     let CheckedWasmIr {
         source,
         target,
@@ -1214,7 +1226,8 @@ pub fn admit_canonical_with_observer<R>(
         authority_digest,
     } = checked;
     let target_witness = decode_and_match_plan(&source, &target, &bytes)?;
-    let artifact = admit_parts(source, target, receipt, bytes, checked_source, final_module_digest, authority_digest, target_witness, entry)?;
+    let mut artifact = admit_parts(source, target, receipt, bytes, checked_source, final_module_digest, authority_digest, target_witness, entry)?;
+    artifact.compiler_syntax_seeds = compiler_syntax_seeds;
     let observation = observe(&validated, &artifact);
     Ok((artifact, observation))
 }

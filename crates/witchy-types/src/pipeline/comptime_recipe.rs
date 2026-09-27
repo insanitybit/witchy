@@ -34,8 +34,8 @@ pub fn check_comptime_recipe_from_source_bundle(
     let digest = checked_source_digest(&sources, "comptime", &PrecompiledDeclarationEnvironment::default());
     let contract = CompilerSessionContract::for_source(digest, invocation_scope.into())
         .map_err(|message| PipelineError::Type(TypeError { message }))?;
-    let mut checked = link_checked_source_bundle_with(
-        sources, "comptime", expand, Some(user_modules), Some(owners), None,
+    let mut checked = link_checked_source_bundle_with_compiler_session(
+        sources, "comptime", expand, Some(user_modules), Some(owners), None, Some(&contract),
     )?;
     let source = checked.canonical_source.as_mut().ok_or_else(|| refuse("comptime recipe lacks checked source"))?;
     let Some(Type::Fn(parameters, result, _, _)) = source.callable_witness.signatures.get("main").map(Type::unqualified) else {
@@ -47,4 +47,24 @@ pub fn check_comptime_recipe_from_source_bundle(
     let payload = contract.encode();
     super::build_recipe::bind_checked_recipe_launch_contract(source, payload);
     Ok(CheckedComptimeRecipe { checked })
+}
+
+/// Compiler-owned typed bridge declarations enter before ordinary resolution
+/// and checking. Names select no authority: only the private checked-recipe
+/// route installs these bodies, and final imports still require admission.
+/// Quote expressions already have parser-owned intrinsic calls and payloads.
+pub(super) fn install_services(module: &mut Module) {
+    use witchy_syntax::ast::{Block, Expr, Function, Param, Stmt};
+    if !module.imports.iter().any(|name| name == "meta") { module.imports.push("meta".into()); }
+    module.items.push(Item::Function(Function {
+        line: 0, public: false, pure: false, comptime_only: false,
+        attributes: Vec::new(), name: "emit_expr".into(), type_params: Vec::new(),
+        params: vec![Param { name: "syntax_value".into(), ty: Some(Type::Named("meta.ExprSyntax".into(), Vec::new())),
+            convention: Default::default(), default: None }],
+        ret: Some(Type::Tuple(Vec::new())),
+        body: Block { stmts: vec![Stmt::Expr(Expr::Call {
+            name: witchy_syntax::intrinsics::COMPILER_EMIT_EXPR.into(), args: vec![Expr::Var("syntax_value".into())],
+        })], lines: vec![0], region: None },
+        bounds: Vec::new(), is_gen: false, is_async: false,
+    }));
 }

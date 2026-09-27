@@ -1710,6 +1710,18 @@ pub fn link_checked_source_bundle_with(
     module_owners: Option<AuthenticatedModuleOwners>,
     precompiled_declarations: Option<PrecompiledDeclarationEnvironment>,
 ) -> Result<CheckedModule, PipelineError> {
+    link_checked_source_bundle_with_compiler_session(sources, entry, expand, user_modules,
+        module_owners, precompiled_declarations, None)
+}
+
+// The only Some caller is the checked recipe constructor, after loader owner
+// authentication. Ordinary/public source-bundle paths cannot install services.
+fn link_checked_source_bundle_with_compiler_session(
+    sources: Vec<(String, Vec<u8>)>, entry: &str, expand: ComptimeExpander,
+    user_modules: Option<&HashSet<String>>, module_owners: Option<AuthenticatedModuleOwners>,
+    precompiled_declarations: Option<PrecompiledDeclarationEnvironment>,
+    compiler_session: Option<&witchy_syntax::compiler_session::CompilerSessionContract>,
+) -> Result<CheckedModule, PipelineError> {
     // Only reachable standard library is checked (crate::std_pruning). Any
     // failure after a pruned check -- in type checking or in a canonical stage
     // that synthesizes a std call by name -- reruns this route unpruned, so
@@ -1722,6 +1734,7 @@ pub fn link_checked_source_bundle_with(
             user_modules,
             module_owners.clone(),
             precompiled_declarations.clone(),
+            compiler_session,
         )
     });
     if pruned_result.is_ok() || !pruned {
@@ -1739,6 +1752,7 @@ pub fn link_checked_source_bundle_with(
             user_modules,
             module_owners,
             precompiled_declarations,
+            compiler_session,
         )
     })
     .0
@@ -1751,6 +1765,7 @@ fn link_checked_source_bundle_route(
     user_modules: Option<&HashSet<String>>,
     module_owners: Option<AuthenticatedModuleOwners>,
     precompiled_declarations: Option<PrecompiledDeclarationEnvironment>,
+    compiler_session: Option<&witchy_syntax::compiler_session::CompilerSessionContract>,
 ) -> Result<CheckedModule, PipelineError> {
     sources.sort_by(|left, right| left.0.cmp(&right.0));
     let environment = precompiled_declarations.unwrap_or_default();
@@ -1771,6 +1786,14 @@ fn link_checked_source_bundle_route(
             Ok((name.clone(), module))
         })
         .collect::<Result<Vec<_>, PipelineError>>()?;
+    if let Some(contract) = compiler_session {
+        if contract.source_digest() != source_bundle_digest {
+            return Err(PipelineError::Type(TypeError { message: "compiler service source digest mismatch".into() }));
+        }
+        let module = modules.iter_mut().find(|(name, _)| name == entry)
+            .ok_or_else(|| PipelineError::Type(TypeError { message: "compiler service entry is absent".into() }))?;
+        comptime_recipe::install_services(&mut module.1);
+    }
     modules.extend(environment.modules().map_err(|message| PipelineError::Link(LinkError {
         message,
         location: None,

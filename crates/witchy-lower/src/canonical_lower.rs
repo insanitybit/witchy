@@ -1336,6 +1336,14 @@ if capability_imports.contains("build_out_write_at") {
                     catalog = catalog.with_compiler_session_import(signature, string_layout)
                         .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
                 }
+                for name in [witchy_wir::canonical_safewir::COMPILER_QUOTE_EXPR_IMPORT, witchy_wir::canonical_safewir::COMPILER_EMIT_EXPR_IMPORT] {
+                    if !compiler_imports.contains(name) { continue; }
+                    let signature = if name == witchy_wir::canonical_safewir::COMPILER_QUOTE_EXPR_IMPORT {
+                        push_import_signature(vec![text, ValueType::Int, text], vec![ValueType::Size], Some(2))?
+                    } else { push_import_signature(vec![text], Vec::new(), None)? };
+                    catalog = catalog.with_compiler_expression_import(name, signature, string_layout)
+                        .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
+                }
             }
             if regex_spans {
                 let signature = push_import_signature(vec![text, text, text], vec![ValueType::Size], Some(2))?;
@@ -5507,7 +5515,7 @@ impl FunctionLowerer<'_> {
             Expr::Block(block) => self.lower_block_effect(block),
             Expr::Call { name, args } if is_console_print(name) => self.lower_console_print(expression, args),
             Expr::Call { name, args } if compiler_service_import(name).is_some() => {
-                self.lower_compiler_service(name, args)?;
+                self.lower_compiler_service(expression, name, args)?;
                 Ok(())
             }
             Expr::Call { name, args } if name == witchy_syntax::intrinsics::REGEX_MATCH_SPANS => {
@@ -11353,7 +11361,7 @@ impl FunctionLowerer<'_> {
                 self.ensure_list_extent(value)?;
                 Ok(value)
             }
-            Expr::Call { name, args } if compiler_service_import(name).is_some() => self.lower_compiler_service(name, args),
+            Expr::Call { name, args } if compiler_service_import(name).is_some() => self.lower_compiler_service(expression, name, args),
             Expr::Call { name, args } if name == witchy_syntax::intrinsics::LIST_SET_AT => self.lower_list_set_at(expression, args),
             Expr::Call { name, args } if matches!(name.as_str(),
                 witchy_syntax::intrinsics::GENERATED_LIST_PUSH | witchy_syntax::intrinsics::LIST_PUSH) => {
@@ -13454,7 +13462,7 @@ impl FunctionLowerer<'_> {
         self.lower_bounded_host_result(import, inputs)
     }
 
-    fn lower_compiler_service(&mut self, name: &str, args: &[Expr]) -> Result<ValueId, CanonicalLoweringError> {
+    fn lower_compiler_service(&mut self, expression: &Expr, name: &str, args: &[Expr]) -> Result<ValueId, CanonicalLoweringError> {
         let (import_name, expected) = compiler_service_import(name)
             .ok_or(CanonicalLoweringError::UnsupportedExpression("compiler service"))?;
         if args.len() != expected {
@@ -13465,6 +13473,41 @@ impl FunctionLowerer<'_> {
         let import = *self.host_imports.compiler.get(import_name)
             .ok_or(CanonicalLoweringError::UnsupportedExpression("missing compiler service import"))?;
         let layout = self.string_layout_id()?;
+        if name == witchy_syntax::intrinsics::COMPILER_QUOTE_EXPR {
+            let seed = self.lower_string_argument(&args[0])?;
+            let seed = self.clone_reference_token(seed)?;
+            // Preserve evaluation of the spelling operand, but never parse it
+            // or pass it as syntax authority to the compiler host.
+            self.lower_string_argument(&args[1])?;
+            let site = self.lower_expr(&args[2])?;
+            let inputs = vec![self.string_slice_argument(seed, layout)?, HostCallArgument::Value(site)];
+            let handle = self.lower_bounded_host_result(import, inputs)?;
+            let source = self.expression_storage_type(expression)?;
+            let shape = scalar_aggregate_shape(&source, self.definitions)
+                .ok_or(CanonicalLoweringError::UnsupportedExpression("compiler expression syntax carrier"))?;
+            let (index, variant) = shape.variant("meta.CompilerExprSyntax")
+                .ok_or(CanonicalLoweringError::UnsupportedExpression("compiler expression syntax constructor"))?;
+            if variant.arity != 1 || !Self::is_string_type(&shape.fields[variant.first_field]) {
+                return Err(CanonicalLoweringError::UnsupportedExpression("compiler expression syntax payload"));
+            }
+            return self.lower_aggregate_for_source(&source, &shape, index, vec![handle]);
+        }
+        if name == witchy_syntax::intrinsics::COMPILER_EMIT_EXPR {
+            let source = self.expression_storage_type(&args[0])?;
+            let shape = scalar_aggregate_shape(&source, self.definitions)
+                .ok_or(CanonicalLoweringError::UnsupportedExpression("compiler expression syntax carrier"))?;
+            let (index, variant) = shape.variant("meta.CompilerExprSyntax")
+                .ok_or(CanonicalLoweringError::UnsupportedExpression("compiler expression syntax constructor"))?;
+            if shape.variants.len() != 1 || variant.arity != 1 || !Self::is_string_type(&shape.fields[variant.first_field]) {
+                return Err(CanonicalLoweringError::UnsupportedExpression("compiler expression syntax payload"));
+            }
+            let object = self.lower_expr(&args[0])?;
+            let handle = self.load_source_aggregate_field(object, &source, index, 0, variant.first_field, ValueType::Ref(layout))?;
+            self.ensure_string_extent(handle)?;
+            let argument = self.string_slice_argument(handle, layout)?;
+            self.push_operation(Operation::HostCall { destinations: Vec::new(), import, arguments: vec![argument] });
+            return self.push_const_int(0);
+        }
         let mut inputs = Vec::with_capacity(args.len());
         for argument in args {
             let value = self.lower_string_argument(argument)?;
@@ -20381,6 +20424,8 @@ fn compiler_service_import(name: &str) -> Option<(&'static str, usize)> {
         return Some((witchy_wir::canonical_safewir::COMPILER_FRESH_IMPORT, 1));
     }
     match name {
+        witchy_syntax::intrinsics::COMPILER_QUOTE_EXPR => Some((witchy_wir::canonical_safewir::COMPILER_QUOTE_EXPR_IMPORT, 3)),
+        witchy_syntax::intrinsics::COMPILER_EMIT_EXPR => Some((witchy_wir::canonical_safewir::COMPILER_EMIT_EXPR_IMPORT, 1)),
         witchy_syntax::intrinsics::COMPILER_FOOTPRINT => Some(("compiler_footprint_into", 1)),
         witchy_syntax::intrinsics::COMPILER_DIFF => Some(("compiler_diff_into", 2)),
         witchy_syntax::intrinsics::COMPILER_DOC => Some(("compiler_doc_into", 2)),
