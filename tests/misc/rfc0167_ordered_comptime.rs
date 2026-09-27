@@ -49,19 +49,27 @@ fn main(console: Console):
 }
 
 #[test]
-fn admitted_typed_async_generation_in_both_modes() {
+fn admitted_typed_async_and_value_generation_in_both_modes() {
     for mode in ["", "mode opt\n"] {
         let source = format!(r#"{mode}import meta
 comptime:
     let int_ty = quote type:
         Int
+    let ints_ty = quote type:
+        List(Int)
     let base_body = meta.block([], Some(meta.expr_int(42)))
     emit_item(meta.function_async(true, meta.ident("base"), [], Some(int_ty), base_body))
     let call = meta.expr_named_call(meta.ident("base"), [])
     let answer_body = meta.block([], Some(meta.expr_await(call)))
     emit_item(meta.function_async(true, meta.ident("answer"), [], Some(int_ty), answer_body))
+    let negative = meta.expr_unary("-", meta.expr_int(4))
+    emit_item(meta.function(true, meta.ident("negative"), [], Some(int_ty), negative))
+    let span = meta.expr_range(meta.expr_int(1), meta.expr_int(4), true)
+    emit_item(meta.function(true, meta.ident("range_values"), [], Some(ints_ty), span))
 async fn main(console: Console):
     console.print("${{answer().await}}")
+    let values = range_values()
+    console.print("${{negative() + values[0] + values.length()}}")
 "#);
         let checked = witchy::canonical_comptime::check_source_bundle(
             vec![("generator".into(), source.into_bytes()),
@@ -74,7 +82,9 @@ async fn main(console: Console):
         let mut vm = runtime.spawn_admitted(&artifact,
             Capabilities { print: true, quiet: true, ..Capabilities::none() }, 64).unwrap();
         vm.run().unwrap();
-        assert_eq!(vm.output(), ["42"]);
+        // answer awaits the generated base value 42; the second result is
+        // -4 + the first inclusive range element 1 + the four range values.
+        assert_eq!(vm.output(), ["42", "1"]);
         assert_eq!(vm.canonical_heap_leaks().unwrap(), Some(0));
     }
 }
@@ -83,39 +93,6 @@ fn limits() -> ComptimeLimits {
     ComptimeLimits { fuel: 2_000_000, memory_pages: 64, fresh_identifiers: 4,
         host_output_bytes: 4096, syntax_nodes: 10_000, syntax_bytes: 100_000,
         emitted_nodes: 10_000, emitted_bytes: 100_000 }
-}
-
-#[test]
-fn admitted_typed_unary_and_range_generation_in_both_modes() {
-    for mode in ["", "mode opt\n"] {
-        let source = format!(r#"{mode}import meta
-comptime:
-    let int_ty = quote type:
-        Int
-    let ints_ty = quote type:
-        List(Int)
-    let negative = meta.expr_unary("-", meta.expr_int(4))
-    emit_item(meta.function(true, meta.ident("negative"), [], Some(int_ty), negative))
-    let span = meta.expr_range(meta.expr_int(1), meta.expr_int(4), true)
-    emit_item(meta.function(true, meta.ident("range_values"), [], Some(ints_ty), span))
-fn main(console: Console):
-    let values = range_values()
-    console.print("${{negative() + values[0] + values.length()}}")
-"#);
-        let checked = witchy::canonical_comptime::check_source_bundle(
-            vec![("generator".into(), source.into_bytes()),
-                ("meta".into(), witchy_syntax::linker::bundled_source("meta").unwrap().as_bytes().to_vec())],
-            "generator", ["generator".to_owned()].into_iter().collect(), owners(), limits(),
-        ).expect("typed unary and range items enter destination checking");
-        let artifact = witchy_lower::codegen::compile_checked_module_artifact(&checked)
-            .expect_lowered("typed unary and range admit on unoptimized Wasm");
-        let mut runtime = Runtime::batch().unwrap();
-        let mut vm = runtime.spawn_admitted(&artifact,
-            Capabilities { print: true, quiet: true, ..Capabilities::none() }, 64).unwrap();
-        vm.run().unwrap();
-        assert_eq!(vm.output(), ["1"]); // -(4) + 1 + four inclusive range values
-        assert_eq!(vm.canonical_heap_leaks().unwrap(), Some(0));
-    }
 }
 
 #[test]
