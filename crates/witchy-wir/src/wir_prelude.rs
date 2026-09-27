@@ -233,6 +233,7 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
   (import "witchy" "compiler_syntax_quote_item_into" (func $compiler_syntax_quote_item_into_host (param i32 i32 i64 i32 i32) (result i32)))
   (import "witchy" "compiler_syntax_emit_item" (func $compiler_syntax_emit_item_host (param i32 i32)))
   (import "witchy" "compiler_syntax_quote_type_into" (func $compiler_syntax_quote_type_into_host (param i32 i32 i64 i32 i32) (result i32)))
+  (import "witchy" "compiler_syntax_record_type_into" (func $compiler_syntax_record_type_into_host (param i32 i32 i32 i32) (result i32)))
   (import "witchy" "compiler_diff_into" (func $compiler_diff_into_host (param i32 i32 i32 i32 i32 i32) (result i32)))
   (import "witchy" "compiler_doc_into" (func $compiler_doc_into_host (param i32 i32 i32 i32 i32 i32) (result i32)))
   (import "witchy" "compiler_doc_result_json_into" (func $compiler_doc_result_json_into_host (param i32 i32 i32 i32 i32 i32) (result i32)))
@@ -688,7 +689,7 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
 
         "compiler_syntax_fresh_into" | "compiler_syntax_quote_expr_into" | "compiler_syntax_emit_expr"
         | "compiler_syntax_quote_item_into" | "compiler_syntax_emit_item"
-        | "compiler_syntax_quote_type_into" => C::CompilerSession,
+        | "compiler_syntax_quote_type_into" | "compiler_syntax_record_type_into" => C::CompilerSession,
 
         "compiler_footprint_len"
         | "compiler_diff_len"

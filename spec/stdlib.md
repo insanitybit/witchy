@@ -3046,6 +3046,10 @@ Construct an `own` parameter, consuming the caller's binding.
 
 #### `fn function_generator(public: Bool, name: Ident, params: List(ParamSyntax), ret: Option(TypeSyntax), body: BlockSyntax) -> ItemSyntax`
 
+#### `fn record_type(name: Ident, fields: List((Ident, TypeSyntax))) -> ItemSyntax`
+
+Construct a record declaration from checked type syntax. The private wire carries data and current-session type handles, never generated source.
+
 #### `fn impl_block(trait_ty: TypeSyntax, target_ty: TypeSyntax, items: List(ItemSyntax)) -> ItemSyntax`
 
 Build a trait implementation directly from typed trait/target heads and compiler-owned function items. No impl source is rendered or reparsed.

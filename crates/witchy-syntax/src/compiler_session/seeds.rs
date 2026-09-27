@@ -72,6 +72,15 @@ impl CompilerSyntaxSeeds {
     pub fn ty(&self, handle: &str) -> Option<&Arc<TypeSeed>> { self.types.get(handle) }
 }
 
+/// Meter a structurally built AST with the same limits as checked quotations.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn measure_dynamic<T: serde::Serialize>(value: &T) -> Result<SyntaxCost, String> {
+    use serde::Serialize;
+    let mut meter = measurement::Meter { cost: SyntaxCost::default(), depth: 0 };
+    value.serialize(&mut meter).map_err(|error| error.to_string())?;
+    Ok(meter.cost)
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 fn measure_seeds<'a, T: serde::Serialize + 'a>(
     seeds: impl Iterator<Item = (&'a str, &'a T)>, meter: &mut measurement::Meter,

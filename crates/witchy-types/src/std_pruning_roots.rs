@@ -331,6 +331,7 @@ pub const COMPILER_STD_NAMES: &[&str] = &[
     "meta.pattern_or",
     "meta.pattern_range",
     "meta.pattern_tuple",
+    "meta.record_type",
     "meta.stmt_assign",
     "meta.stmt_break",
     "meta.stmt_continue",

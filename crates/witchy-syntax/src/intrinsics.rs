@@ -75,6 +75,7 @@ pub enum IntrinsicId {
     MetaPatternListRest,
     MetaPatternOr,
     MetaTypeNamed,
+    MetaRecordTypeWire,
     MetaTypeTuple,
     MetaTypeFn,
     MetaTypeQualified,
@@ -667,6 +668,10 @@ pub(crate) const META_PATTERN_LIST: &str = "__meta_pattern_list";
 pub(crate) const META_PATTERN_LIST_REST: &str = "__meta_pattern_list_rest";
 pub(crate) const META_PATTERN_OR: &str = "__meta_pattern_or";
 pub(crate) const META_TYPE_NAMED: &str = "__meta_type_named";
+pub(crate) const META_RECORD_TYPE_WIRE: &str = "__meta_record_type_wire";
+pub fn is_meta_record_type_wire(name: &str) -> bool {
+    lookup(name).is_some_and(|spec| spec.id == IntrinsicId::MetaRecordTypeWire)
+}
 pub(crate) const META_TYPE_TUPLE: &str = "__meta_type_tuple";
 pub(crate) const META_TYPE_FN: &str = "__meta_type_fn";
 pub(crate) const META_TYPE_QUALIFIED: &str = "__meta_type_qualified";
@@ -2393,6 +2398,21 @@ pub const ALL: &[IntrinsicSpec] = &[
         dynamic_wir_helpers: false,
         wir_host_call: None,
         diagnostic_name: "meta.param",
+        private_callers: META_BRIDGE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::MetaRecordTypeWire,
+        name: META_RECORD_TYPE_WIRE,
+        arity: 1,
+        signature: IntrinsicSignature::DeclaredInSource,
+        effect: IntrinsicEffect::Toolchain,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::FrontendGenerated,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: NO_HELPERS,
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: "meta.record_type",
         private_callers: META_BRIDGE_CALLERS,
     },
     IntrinsicSpec {

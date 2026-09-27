@@ -719,6 +719,29 @@ pub fn function_async(public: Bool, name: Ident, params: List(ParamSyntax), ret:
 pub fn function_generator(public: Bool, name: Ident, params: List(ParamSyntax), ret: Option(TypeSyntax), body: BlockSyntax) -> ItemSyntax:
     __meta_function_block(public, false, true, name, params, ret, body)
 
+// Construct a record declaration from checked type syntax. The private wire
+// carries data and current-session type handles, never generated source.
+pub fn record_type(name: Ident, fields: List((Ident, TypeSyntax))) -> ItemSyntax:
+    match name:
+        CallSiteIdent(_) -> fail("meta.record_type requires a definition-site name")
+        _ -> ()
+
+    let record_name = ident_source(name)
+    var wire = record_name + "\n${fields.length()}\n"
+    for field in fields:
+        let (field_name, field_type) = field
+        match field_name:
+            CallSiteIdent(_) -> fail("meta.record_type requires definition-site field names")
+            _ -> ()
+
+        let source = ident_source(field_name)
+        match field_type:
+            CompilerTypeSyntax(handle) -> wire = wire + source + "\n${handle.length()}\n" + handle
+    __meta_record_type_wire(wire)
+
+fn __meta_record_type_wire(wire: String) -> ItemSyntax:
+    __meta_record_type_wire(wire)
+
 // Compiler-owned function construction. Name, parameters, return type, and body
 // transfer as typed nodes.
 fn __meta_function_block(public: Bool, is_async: Bool, is_gen: Bool, name: Ident, params: List(ParamSyntax), ret: Option(TypeSyntax), body: BlockSyntax) -> ItemSyntax:

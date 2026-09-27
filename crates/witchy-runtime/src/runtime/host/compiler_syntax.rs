@@ -3,8 +3,8 @@
 use super::super::{comptime::SessionState, memory_of, VmState};
 use std::sync::Arc;
 use wasmtime::{Caller, Error, Linker, Result};
-use witchy_syntax::{ast::{Expr, Item, Type}, compiler_session::{
-    seeds::{EmittedExpression, EmittedItem, SyntaxCost, SyntaxSeed}, ComptimeSyntaxOrigin,
+use witchy_syntax::{ast::{Expr, Item, Type, TypeDef, Variant}, compiler_session::{
+    seeds::{measure_dynamic, EmittedExpression, EmittedItem, SyntaxCost, SyntaxSeed}, ComptimeSyntaxOrigin,
 }};
 
 pub(in super::super) fn register(linker: &mut Linker<VmState>) -> Result<()> {
@@ -14,7 +14,105 @@ pub(in super::super) fn register(linker: &mut Linker<VmState>) -> Result<()> {
     linker.func_wrap("witchy", "compiler_syntax_quote_item_into", quote_into::<ItemCategory>)?;
     linker.func_wrap("witchy", "compiler_syntax_emit_item", emit::<ItemCategory>)?;
     linker.func_wrap("witchy", "compiler_syntax_quote_type_into", quote_into::<TypeCategory>)?;
+    linker.func_wrap("witchy", "compiler_syntax_record_type_into", record_type_into)?;
     Ok(())
+}
+
+// This is a length-framed data protocol, not Witchy source. Every type operand
+// must be an instance already issued by this exact compiler session.
+fn record_type_into(mut caller: Caller<'_, VmState>, pointer: i32, length: i32,
+    out: i32, capacity: i32) -> Result<i32> {
+    let memory = memory_of(&mut caller)?;
+    let input = range(memory.data_size(&caller), pointer, length)?;
+    let output = range(memory.data_size(&caller), out, capacity)?;
+    let state = caller.data().compiler_syntax.as_ref()
+        .ok_or_else(|| Error::msg("compiler syntax session unavailable"))?;
+    if input.len() as u64 > state.input_bytes {
+        return Err(Error::msg("compiler record input budget exceeded"));
+    }
+    charge_fuel(&mut caller, input.len() as u64 + 1)?;
+    let wire = memory.data(&caller)[input].to_vec();
+    let (name, fields) = decode_record_wire(&wire)?;
+    let state = caller.data().compiler_syntax.as_ref().expect("checked session");
+    let mut seen = std::collections::BTreeSet::new();
+    let mut names = Vec::with_capacity(fields.len());
+    let mut types = Vec::with_capacity(fields.len());
+    let mut origin = None;
+    for (field_name, handle) in fields {
+        if !seen.insert(field_name.to_owned()) { return Err(Error::msg("duplicate compiler record field")); }
+        if !state.type_costs.contains_key(handle) {
+            return Err(Error::msg("compiler record requires current-session type syntax"));
+        }
+        let ty = state.syntax.types().get(handle)
+            .ok_or_else(|| Error::msg("compiler record type handle has no typed payload"))?;
+        origin.get_or_insert_with(|| state.syntax.type_origins().get(handle).expect("type and origin inserted together").clone());
+        names.push(field_name.to_owned());
+        types.push(ty.clone());
+    }
+    let item = Item::Type(TypeDef {
+        name: name.to_owned(), must_consume: false, params: Vec::new(),
+        variants: vec![Variant { name: name.to_owned(), line: 0,
+            field_lines: vec![0; names.len()], field_names: names, fields: types }],
+        derives: Vec::new(), sealed: false, is_capability: false, grantable: false,
+        packed: false, partial_eq_derived: false, public_state_derived: false,
+    });
+    let cost = measure_dynamic(&item).map_err(Error::msg)?;
+    let required = state.syntax.syntax_handle_byte_len("item").map_err(Error::msg)?;
+    if cost.nodes > state.nodes.remaining() || cost.bytes > state.syntax_bytes.remaining()
+        || required as u64 > state.bytes.remaining() {
+        return Err(Error::msg("compiler syntax arena budget exceeded"));
+    }
+    charge_fuel(&mut caller, cost.work().and_then(|work| work.checked_add(required as u64))
+        .ok_or_else(|| Error::msg("compiler syntax fuel overflow"))?)?;
+    if output.len() < required { return Ok(required as i32); }
+    let state = caller.data_mut().compiler_syntax.as_mut().expect("checked session");
+    state.nodes.charge(cost.nodes).map_err(|_| Error::msg("compiler syntax arena budget exceeded"))?;
+    state.syntax_bytes.charge(cost.bytes).map_err(|_| Error::msg("compiler syntax arena budget exceeded"))?;
+    state.bytes.charge(required as u64).map_err(|_| Error::msg("compiler syntax handle budget exceeded"))?;
+    let handle = state.syntax.next_syntax_handle("item").map_err(Error::msg)?;
+    state.syntax.insert_item(handle.clone(), item);
+    state.item_origins.insert(handle.clone(), origin.unwrap_or(ComptimeSyntaxOrigin {
+        definition_line: 1, hole_ancestry: Vec::new(),
+    }));
+    state.item_costs.insert(handle.clone(), cost);
+    memory.data_mut(&mut caller)[output.start..output.start + required].copy_from_slice(handle.as_bytes());
+    Ok(required as i32)
+}
+
+fn decode_record_wire(wire: &[u8]) -> Result<(&str, Vec<(&str, &str)>)> {
+    fn line<'a>(wire: &mut &'a [u8]) -> Result<&'a str> {
+        let end = wire.iter().position(|byte| *byte == b'\n')
+            .ok_or_else(|| Error::msg("malformed compiler record data"))?;
+        let value = std::str::from_utf8(&wire[..end]).map_err(|_| Error::msg("compiler record data is not UTF-8"))?;
+        *wire = &wire[end + 1..];
+        Ok(value)
+    }
+    fn identifier(value: &str) -> bool {
+        let mut bytes = value.bytes();
+        bytes.next().is_some_and(|byte| byte.is_ascii_alphabetic() || byte == b'_')
+            && bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+            && value != "_" && !value.contains("__") && value.len() <= 1024
+    }
+    let mut remaining = wire;
+    let name = line(&mut remaining)?;
+    if !identifier(name) { return Err(Error::msg("invalid compiler record name")); }
+    let count = line(&mut remaining)?.parse::<usize>()
+        .map_err(|_| Error::msg("invalid compiler record field count"))?;
+    if count > 256 { return Err(Error::msg("compiler record field limit exceeded")); }
+    let mut fields = Vec::with_capacity(count);
+    for _ in 0..count {
+        let field = line(&mut remaining)?;
+        if !identifier(field) { return Err(Error::msg("invalid compiler record field name")); }
+        let length = line(&mut remaining)?.parse::<usize>()
+            .map_err(|_| Error::msg("invalid compiler record type handle length"))?;
+        if length > remaining.len() { return Err(Error::msg("truncated compiler record type handle")); }
+        let handle = std::str::from_utf8(&remaining[..length])
+            .map_err(|_| Error::msg("compiler record type handle is not UTF-8"))?;
+        remaining = &remaining[length..];
+        fields.push((field, handle));
+    }
+    if !remaining.is_empty() { return Err(Error::msg("trailing compiler record data")); }
+    Ok((name, fields))
 }
 
 fn charge_fuel(caller: &mut Caller<'_, VmState>, work: u64) -> Result<()> {
