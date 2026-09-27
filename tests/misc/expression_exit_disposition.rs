@@ -106,3 +106,58 @@ fn main() -> Int:
         assert_eq!(vm.canonical_heap_leaks().unwrap(), Some(0));
     }
 }
+
+#[test]
+fn record_update_cleanup_precedes_early_override_exit_when_bound_explicitly() {
+    opt::set_for_tests(Some(OptSet::none()));
+    struct Reset;
+    impl Drop for Reset { fn drop(&mut self) { opt::set_for_tests(None); } }
+    let _reset = Reset;
+    for (root_mode, worker_mode, local) in [
+        ("", "", false), ("mode opt\n", "mode opt\n", false),
+        ("", "mode opt\n", false), ("", "mode opt\n", true),
+    ] {
+        let worker = format!(r#"{worker_mode}must type Ticket:
+    Ticket(Int)
+type Box:
+    count: Int
+pub fn make(var created: Int) -> Ticket:
+    created = created + 1
+    Ticket(7)
+pub fn cleanup(own token: Ticket, var disposed: Int) -> Box:
+    disposed = disposed + 1
+    Box(7)
+"#);
+        let mut source = format!(r#"{root_mode}import worker
+fn maybe(bad: Bool) -> Result(Int, String):
+    if bad: Err("stop") else: Ok(9)
+fn choose(var created: Int, var disposed: Int, bad: Bool) -> Result(worker.Box, String):
+    let token = worker.make(created)
+    let cleaned = worker.cleanup(token, disposed)
+    Ok(worker.Box(count: maybe(bad)?, ..cleaned))
+fn main() -> Int:
+    var created = 0
+    var disposed = 0
+    let _ = choose(created, disposed, true)
+    let _ = choose(created, disposed, false)
+    created * 10 + disposed
+"#);
+        if local {
+            source = source.replace("worker.make(", "make(").replace("worker.cleanup(", "cleanup(");
+            source.push_str("\nfn make(var created: Int) -> worker.Ticket:\n    created = created + 1\n    worker.Ticket(7)\nfn cleanup(own token: worker.Ticket, var disposed: Int) -> worker.Box:\n    disposed = disposed + 1\n    worker.Box(7)\n");
+        }
+        let checked = witchy_types::pipeline::link_checked_from_source_bundle(
+            vec![("main".into(), source.into_bytes()), ("worker".into(), worker.into_bytes())], "main",
+            witchy_interp::comptime::EXPANDER,
+        ).expect("cleanup is attempted before any override exit");
+        let artifact = witchy::codegen::compile_checked_module_artifact(&checked)
+            .expect_lowered("explicit cleanup before override exit");
+        let mut runtime = Runtime::batch().unwrap();
+        let mut vm = runtime.spawn_admitted(&artifact,
+            Capabilities { print_int: true, quiet: true, ..Capabilities::none() }, 128,
+        ).unwrap();
+        vm.run().unwrap();
+        assert_eq!(vm.output(), vec!["22"]);
+        assert_eq!(vm.canonical_heap_leaks().unwrap(), Some(0));
+    }
+}

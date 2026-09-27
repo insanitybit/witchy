@@ -8823,7 +8823,16 @@ impl Checker {
                 Ok(self.subst_vars(fty, &map))
             }
             Expr::RecordUpdate { name, base, fields } => {
+                let must_before_base = self.must_live.clone();
                 let bt = self.infer(base)?;
+                // Base inference supplies the override field types, but the
+                // written overrides execute BEFORE the trailing base. Do not
+                // credit its disposal of existing owners on an override exit.
+                // This is distinct from treating its future-created result as
+                // an already evaluated operand. Other affine facts remain
+                // conservative until inference can follow full execution order.
+                let base_dispositions = &must_before_base - &self.must_live;
+                self.must_live.extend(base_dispositions.iter().cloned());
                 self.reject_implicit_once_copy(base, &bt, "record spread/update")?;
                 // The base is consumed to build the replacement, but that
                 // happens AFTER the field expressions are evaluated. Consuming
@@ -8914,6 +8923,9 @@ impl Checker {
                 // Now the fields are evaluated, the base is consumed. A field
                 // expression that itself consumed the base still fails here,
                 // which is the affine rule in written evaluation order.
+                for binding in base_dispositions {
+                    self.must_live.remove(&binding);
+                }
                 self.transfer_consuming_aggregate_operand(base, &bt, "record spread/update")?;
                 Ok(Ty::Named(tyname.into(), base_args))
             }

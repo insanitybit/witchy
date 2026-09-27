@@ -148,3 +148,35 @@ async fn main():
         assert!(format!("{error:?}").contains("already evaluated must-consume operand"), "{error:?}");
     }
 }
+
+#[test]
+fn trailing_base_cleanup_cannot_discharge_an_earlier_override_exit() {
+    for (root_mode, worker_mode, local) in [
+        ("", "", false), ("mode opt\n", "mode opt\n", false),
+        ("", "mode opt\n", false), ("", "mode opt\n", true),
+    ] {
+        let worker = format!(r#"{worker_mode}must type Ticket:
+    Ticket(Int)
+type Box:
+    count: Int
+pub fn cleanup(own token: Ticket) -> Box:
+    Box(7)
+"#);
+        let mut input = format!(r#"{root_mode}import worker
+fn maybe(bad: Bool) -> Result(Int, String):
+    if bad: Err("stop") else: Ok(9)
+fn choose(bad: Bool) -> Result(worker.Box, String):
+    let token = worker.Ticket(7)
+    Ok(worker.Box(count: maybe(bad)?, ..worker.cleanup(token)))
+fn main() -> Int:
+    0
+"#);
+        if local {
+            input = input.replace("worker.cleanup(", "cleanup(");
+            input.push_str("\nfn cleanup(own token: worker.Ticket) -> worker.Box:\n    worker.Box(7)\n");
+        }
+        let error = source::checked_bundle(vec![("main", &input), ("worker", &worker)], "main")
+            .err().expect("the override returns before the trailing cleanup executes");
+        assert!(format!("{error:?}").contains("must-consume value `token` undisposed"), "{error:?}");
+    }
+}

@@ -338,6 +338,10 @@ resource. Borrowed places do not create another owned obligation, and a `?`
 operand's own error payload may still be transferred to the caller. Deferred
 lambda bodies have their own evaluation context.
 
+Record-update overrides execute before the trailing spread base. Cleanup in
+that base cannot discharge an existing resource on an earlier override's exit.
+Bind the cleanup result before the update when cleanup must precede an exit.
+
 ## 3. Bindings and assignment
 
 ```witchy

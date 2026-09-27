@@ -2290,6 +2290,28 @@ all result forms and batching still need canonical execution coverage. The first
 operation creates no AST arena nodes; name quotas are not arena evidence.
 Row Q remains **PARTIAL** and no semantic acceptance row is closed.
 
+### 2026-09-27: trailing-record-base disposition credit
+
+Record overrides execute before the trailing spread base. Source inference
+currently needs the base type first, but must no longer credit its consuming
+operations during earlier override evaluation. The checker retains the exact
+delta of preexisting must obligations discharged by base inference, restoring
+them while checking overrides and applying that discharge only after overrides
+complete. It does not invent pending ownership for future-created base values,
+and existing consumed/unique facts remain conservative. This is a bounded
+fail-closed repair, not complete source effect-order alignment.
+
+The old source accepted a preexisting Ticket followed by
+`Box(count: maybe()?, ..cleanup(ticket))`. An admitted unoptimized witness
+counted **two creations and one cleanup attempt** across error/success calls,
+printing **21** with heap0. Unlike future creation in a trailing base, this
+really abandoned an existing obligation. Four-context source checks now refuse
+that path. The lawful form binds `cleanup(ticket)` before the update; it counts
+two creations and two cleanup attempts, independently expecting **22**, with
+zero heap leaks in normal, opt, normal-to-opt and normal use of opt-defined
+types. The separate lawful trailing-creation witness still expects **7901**.
+No candidate-body admission guarantee or acceptance-row closure is claimed.
+
 ### 2026-09-27: pending expression-operand disposition
 
 One scoped operand-frame mechanism retains completed owned temporary types
