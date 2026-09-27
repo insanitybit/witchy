@@ -46,6 +46,10 @@ impl TaskCallableScope {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TaskExecutionProof {
     Unknown,
+    /// A task requirement projected from a checked sum arm that the exact
+    /// argument cannot enter. This discharges only that conditional input
+    /// requirement; it is never task execution authority.
+    InactiveVariant,
     /// A control-flow join or invalidation lost the exact callable, but
     /// it may still carry an opt task-input obligation. It cannot escape or
     /// be invoked through an unproved function value.
@@ -358,6 +362,7 @@ impl TaskExecutionProof {
             match proof {
                 TaskExecutionProof::Unknown => TaskExecutionProof::Unknown,
                 TaskExecutionProof::UnprovedCallableObligation => TaskExecutionProof::UnprovedCallableObligation,
+                TaskExecutionProof::InactiveVariant => TaskExecutionProof::InactiveVariant,
                 TaskExecutionProof::Task(mode, result) => TaskExecutionProof::Task(*mode, Box::new(go(result, arguments, formal_scope, depth + 1))),
                 TaskExecutionProof::Callable { scope, parameters, required_opt_inputs, result } => TaskExecutionProof::Callable {
                     scope: scope.clone(), parameters: *parameters,
@@ -381,11 +386,13 @@ impl TaskExecutionProof {
                     TaskExecutionProof::CallableParameter(scope.clone(), *index),
                 TaskExecutionProof::Awaited(base) => match go(base, arguments, formal_scope, depth + 1) {
                     TaskExecutionProof::Task(_, result) => *result,
+                    TaskExecutionProof::InactiveVariant => TaskExecutionProof::InactiveVariant,
                     TaskExecutionProof::Unknown => TaskExecutionProof::Unknown,
                     other => TaskExecutionProof::Awaited(Box::new(other)),
                 },
                 TaskExecutionProof::Slot(base, index) => match go(base, arguments, formal_scope, depth + 1) {
                     TaskExecutionProof::Elements(elements) => elements.get(*index).cloned().unwrap_or(TaskExecutionProof::Unknown),
+                    TaskExecutionProof::InactiveVariant => TaskExecutionProof::InactiveVariant,
                     TaskExecutionProof::Unknown => TaskExecutionProof::Unknown,
                     other => TaskExecutionProof::Slot(Box::new(other), *index),
                 },
@@ -393,13 +400,15 @@ impl TaskExecutionProof {
                     TaskExecutionProof::Variant { ordinal: actual, fields } if actual == *ordinal =>
                         fields.get(*index).cloned().unwrap_or(TaskExecutionProof::Unknown),
                     TaskExecutionProof::Variants(mut variants) => variants.remove(ordinal)
-                        .and_then(|fields| fields.get(*index).cloned()).unwrap_or(TaskExecutionProof::Unknown),
-                    TaskExecutionProof::Variant { .. } => TaskExecutionProof::Unknown,
+                        .map(|fields| fields.get(*index).cloned().unwrap_or(TaskExecutionProof::Unknown))
+                        .unwrap_or(TaskExecutionProof::InactiveVariant),
+                    TaskExecutionProof::Variant { .. } | TaskExecutionProof::InactiveVariant => TaskExecutionProof::InactiveVariant,
                     TaskExecutionProof::Unknown => TaskExecutionProof::Unknown,
                     other => TaskExecutionProof::VariantSlot(Box::new(other), *ordinal, *index),
                 },
                 TaskExecutionProof::AnyElement(base) => match go(base, arguments, formal_scope, depth + 1) {
                     TaskExecutionProof::Elements(elements) => elements.into_iter().reduce(TaskExecutionProof::join).unwrap_or(TaskExecutionProof::Unknown),
+                    TaskExecutionProof::InactiveVariant => TaskExecutionProof::InactiveVariant,
                     TaskExecutionProof::Unknown => TaskExecutionProof::Unknown,
                     other => TaskExecutionProof::AnyElement(Box::new(other)),
                 },

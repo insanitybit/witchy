@@ -80,7 +80,6 @@ fn task_input_paths(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> Resul
                         }
                         for index in 0..variant.fields.len() {
                             for mut path in walk(&fields[offset + index], definitions, active, depth + 1, remaining)? {
-                                if variants.len() != 1 { return Err(()); }
                                 path.insert(0, TaskInputStep::VariantSlot(ordinal, index));
                                 paths.push(path);
                             }
@@ -149,8 +148,13 @@ impl Analyzer<'_> {
                     elements.get(index).cloned().unwrap_or(Proof::Unknown),
                 (Proof::Variant { ordinal: actual, fields }, TaskInputStep::VariantSlot(ordinal, index)) => {
                     if actual == ordinal { fields.get(index).cloned().unwrap_or(Proof::Unknown) }
-                    else { Proof::Unknown }
+                    else { Proof::InactiveVariant }
                 }
+                (Proof::Variants(mut variants), TaskInputStep::VariantSlot(ordinal, index)) =>
+                    variants.remove(&ordinal)
+                        .map(|fields| fields.get(index).cloned().unwrap_or(Proof::Unknown))
+                        .unwrap_or(Proof::InactiveVariant),
+                (Proof::InactiveVariant, _) => Proof::InactiveVariant,
                 (Proof::Elements(elements), TaskInputStep::AnyElement) =>
                     Analyzer::join_values(elements),
                 (other, TaskInputStep::Slot(index)) => Proof::Slot(Box::new(other), index),
@@ -181,7 +185,7 @@ impl Analyzer<'_> {
                 for step in path {
                     projected = project(projected, step);
                 }
-                self.require_opt_task(projected)?;
+                self.satisfy_opt_requirement(projected)?;
             }
         }
         Ok(())
@@ -516,7 +520,7 @@ impl Analyzer<'_> {
             match environment.get(name).cloned() {
                 Some(Proof::Callable { scope, parameters, required_opt_inputs, result }) if parameters == proofs.len() => {
                     for requirement in required_opt_inputs {
-                        self.require_opt_task(requirement.instantiate_callback(&scope, &proofs))?;
+                        self.satisfy_opt_requirement(requirement.instantiate_callback(&scope, &proofs))?;
                     }
                     let result = result.instantiate_callback(&scope, &proofs).bounded(4096);
                     // A closure may change its captures when called. Its
@@ -527,7 +531,7 @@ impl Analyzer<'_> {
                 }
                 Some(Proof::DeclaredCallable { conventions, required_opt_inputs, result }) if conventions.len() == proofs.len() => {
                     for requirement in required_opt_inputs {
-                        self.require_opt_task(requirement.instantiate(&proofs))?;
+                        self.satisfy_opt_requirement(requirement.instantiate(&proofs))?;
                     }
                     let result = result.instantiate(&proofs).bounded(4096);
                     self.invalidate_arguments(args, Some(&conventions), environment);
@@ -558,7 +562,7 @@ impl Analyzer<'_> {
         }
         if let Some(summary) = self.summaries.get(name) {
             for requirement in &summary.required_opt_inputs {
-                self.require_opt_task(requirement.instantiate(&proofs))?;
+                self.satisfy_opt_requirement(requirement.instantiate(&proofs))?;
             }
         }
         let result = if function.is_async {
@@ -577,6 +581,14 @@ impl Analyzer<'_> {
         let conventions = function.params.iter().map(|parameter| parameter.convention).collect::<Vec<_>>();
         self.invalidate_arguments(args, Some(&conventions), environment);
         Ok(result)
+    }
+
+    /// A requirement from one checked sum arm is vacuous only when the exact
+    /// argument proves that arm inactive. An actual await still goes through
+    /// `require_opt_task` and cannot execute an inactive or unknown value.
+    fn satisfy_opt_requirement(&mut self, proof: Proof) -> Result<(), TypeError> {
+        if proof == Proof::InactiveVariant { return Ok(()); }
+        self.require_opt_task(proof).map(|_| ())
     }
 
     fn require_opt_task(&mut self, proof: Proof) -> Result<Proof, TypeError> {
@@ -919,14 +931,14 @@ impl Analyzer<'_> {
                 match callable {
                     Proof::Callable { scope, parameters, required_opt_inputs, result } if parameters == args.len() => {
                         for requirement in required_opt_inputs {
-                            self.require_opt_task(requirement.instantiate_callback(&scope, &proofs))?;
+                            self.satisfy_opt_requirement(requirement.instantiate_callback(&scope, &proofs))?;
                         }
                         environment.values_mut().for_each(|proof| *proof = proof.invalidated());
                         result.instantiate_callback(&scope, &proofs).bounded(4096)
                     }
                     Proof::DeclaredCallable { conventions, required_opt_inputs, result } if conventions.len() == args.len() => {
                         for requirement in required_opt_inputs {
-                            self.require_opt_task(requirement.instantiate(&proofs))?;
+                            self.satisfy_opt_requirement(requirement.instantiate(&proofs))?;
                         }
                         self.invalidate_arguments(args, Some(&conventions), environment);
                         result.instantiate(&proofs).bounded(4096)
