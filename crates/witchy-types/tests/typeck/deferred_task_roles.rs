@@ -146,7 +146,12 @@ fn authenticated_step_roles_preserve_passive_results_and_executable_fields() {
     let invocation = poll.invocation_contract(&[]).expect("actual done poll behavior");
     assert_eq!(invocation.execution_mode, Mode::Normal);
     assert_eq!(role.step_requirements(&invocation.result), Some(vec![]));
-    let (lazy_witness, lazy_poll) = lambda_contract("task.lazy__Int");
+    let Item::Function(factory) = &view.module().items[thunk.id().item as usize] else {
+        panic!("thunk belongs to the checked factory")
+    };
+    let [witchy_syntax::ast::Stmt::Expr(witchy_syntax::ast::Expr::Call { name: wrapper, .. })] =
+        factory.body.stmts.as_slice() else { panic!("checked async factory dispatch") };
+    let (lazy_witness, lazy_poll) = lambda_contract(wrapper);
     assert_eq!(lazy_poll.source_mode(), Mode::Normal);
     assert_eq!(lazy_poll.captures(), lazy_witness.captures().iter()
         .map(|capture| capture.binding().clone()).collect::<Vec<_>>());

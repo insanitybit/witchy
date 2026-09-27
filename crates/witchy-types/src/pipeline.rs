@@ -1259,7 +1259,12 @@ fn attach_canonical_source(
 ) -> Result<CheckedModule, PipelineError> {
     let deferred_task_role = checked_deferred_task_role(typed.module(), runtime_catalog);
     let closure_contracts = crate::task_provenance::checked_lambda_contracts(
-        &typed, &closure_witness, &closure_sites, deferred_task_role.as_ref());
+        &typed, &closure_witness, &closure_sites, deferred_task_role.as_ref()).into_iter().map(|(id, summary)| {
+            let contract = witchy_canonical_source::closure::ClosureExecutionContract::from_checked_frontend(
+                id.clone(), summary.source_mode, summary.captures, summary.conventions,
+                summary.formal_scope, summary.result, summary.required_opt_inputs);
+            (id, contract)
+        }).collect();
     if !closure_witness.bind_checked_execution_contracts(closure_contracts) {
         return Err(PipelineError::Type(TypeError { message: "checked lambda behavior differs from its exact closure witness".into() }));
     }

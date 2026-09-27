@@ -250,6 +250,45 @@ impl ClosureWitnessManifest {
     }
 }
 
+/// Private representation checks; no checked authority escapes this helper.
+#[doc(hidden)]
+pub mod self_checks {
+    use super::*;
+
+    pub fn execution_digest_and_binding_are_exact() {
+        let id = ProperTailCallableId { item: 3, method: None, lambda_path: Vec::new() };
+        let other = ProperTailCallableId { item: 3, method: Some(0), lambda_path: Vec::new() };
+        let scope = TaskCallableScope::checked_closure(id.clone());
+        let signature = Type::Fn(Vec::new(), Box::new(Type::Named("Int".into(), Vec::new())), Vec::new(), Default::default());
+        let witness = ClosureWitness::new(id.clone(), Some(signature.clone()), signature, vec![1], Vec::new());
+        let empty = ClosureWitnessManifest::new(vec![witness.clone()]).digest();
+        let mut digests = Vec::new();
+        for (mode, result) in [
+            (SourceExecutionMode::Normal, TaskExecutionProof::Unknown),
+            (SourceExecutionMode::Opt, TaskExecutionProof::Unknown),
+            (SourceExecutionMode::Opt, TaskExecutionProof::Task(SourceExecutionMode::Opt, Box::new(TaskExecutionProof::Unknown))),
+        ] {
+            let mut witness = witness.clone();
+            let contract = ClosureExecutionContract { id: id.clone(), source_mode: mode,
+                captures: Vec::new(), conventions: Vec::new(), formal_scope: scope.clone(),
+                result, required_opt_inputs: Vec::new() };
+            assert!(witness.bind_checked_execution_contract(contract));
+            let manifest = ClosureWitnessManifest::new(vec![witness]);
+            assert_eq!(manifest.digest(), manifest.clone().digest());
+            let digest = manifest.digest();
+            assert_ne!(digest, empty, "absent behavior cannot share the populated contract key");
+            assert!(!digests.contains(&digest), "execution mode/result changes must invalidate the witness key");
+            digests.push(digest);
+        }
+        let mut wrong = witness;
+        assert!(!wrong.bind_checked_execution_contract(ClosureExecutionContract {
+            id: other, source_mode: SourceExecutionMode::Opt, captures: Vec::new(),
+            conventions: Vec::new(), formal_scope: scope, result: TaskExecutionProof::Unknown,
+            required_opt_inputs: Vec::new(),
+        }));
+    }
+}
+
 fn put_u32(bytes: &mut Vec<u8>, value: usize) {
     bytes.extend_from_slice(&u32::try_from(value).expect("validated closure manifest size").to_le_bytes());
 }

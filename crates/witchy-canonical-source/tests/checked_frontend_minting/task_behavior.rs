@@ -64,9 +64,7 @@ fn recipe_substitution_retains_obligations_and_bounding_is_idempotent() {
 
 #[test]
 fn final_closure_capture_scopes_and_execution_digest_are_exact() {
-    use witchy_canonical_source::closure::{ClosureExecutionContract, ClosureWitness, ClosureWitnessManifest};
     use witchy_canonical_source::proper_tail::ProperTailCallableId;
-    use witchy_syntax::ast::Type;
     let id = ProperTailCallableId { item: 3, method: None, lambda_path: Vec::new() };
     let other = ProperTailCallableId { item: 3, method: Some(0), lambda_path: Vec::new() };
     let scope = TaskCallableScope::checked_closure(id.clone());
@@ -85,23 +83,5 @@ fn final_closure_capture_scopes_and_execution_digest_are_exact() {
     assert_eq!(projection.instantiate_captures(&id, &[Proof::Variant { ordinal: 1, fields: vec![normal.clone()] }]), normal);
     assert_eq!(Proof::Capture(id.clone(), 0).instantiate_captures(&id, &[]), Proof::Unknown);
 
-    let signature = Type::Fn(Vec::new(), Box::new(Type::Named("Int".into(), Vec::new())), Vec::new(), Default::default());
-    let witness = ClosureWitness::new(id.clone(), Some(signature.clone()), signature, vec![1], Vec::new());
-    let empty = ClosureWitnessManifest::new(vec![witness.clone()]).digest();
-    let mut digests = Vec::new();
-    for (mode, result) in [(Mode::Normal, Proof::Unknown), (Mode::Opt, Proof::Unknown), (Mode::Opt, opt)] {
-        let mut witness = witness.clone();
-        let contract = ClosureExecutionContract::from_checked_frontend(id.clone(), mode, Vec::new(), Vec::new(),
-            scope.clone(), result, Vec::new());
-        assert!(witness.bind_checked_execution_contract(contract));
-        let manifest = ClosureWitnessManifest::new(vec![witness]);
-        assert_eq!(manifest.digest(), manifest.clone().digest());
-        let digest = manifest.digest();
-        assert_ne!(digest, empty, "absent behavior cannot share the populated contract key");
-        assert!(!digests.contains(&digest), "execution mode/result changes must invalidate the witness key");
-        digests.push(digest);
-    }
-    let mut wrong = witness;
-    assert!(!wrong.bind_checked_execution_contract(ClosureExecutionContract::from_checked_frontend(
-        other, Mode::Opt, Vec::new(), Vec::new(), scope, Proof::Unknown, Vec::new())));
+    witchy_canonical_source::closure::self_checks::execution_digest_and_binding_are_exact();
 }

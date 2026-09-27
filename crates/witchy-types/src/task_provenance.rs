@@ -148,6 +148,15 @@ pub(crate) struct CheckedTaskBehavior {
     pub declarations: BTreeMap<usize, TaskBehaviorSummary>,
 }
 
+pub(crate) struct LambdaBehaviorSummary {
+    pub source_mode: SourceExecutionMode,
+    pub captures: Vec<witchy_canonical_source::closure::ClosureBindingId>,
+    pub conventions: Vec<Convention>,
+    pub formal_scope: TaskCallableScope,
+    pub result: Proof,
+    pub required_opt_inputs: Vec<Proof>,
+}
+
 struct Analyzer<'a> {
     module: &'a Module,
     table: &'a TypeTable,
@@ -1220,9 +1229,7 @@ pub(crate) fn checked_lambda_contracts(
     witness: &witchy_canonical_source::closure::ClosureWitnessManifest,
     sites: &[crate::canonical_closure::LambdaSite],
     deferred_task_role: Option<&DeferredTaskRole>,
-) -> BTreeMap<witchy_canonical_source::proper_tail::ProperTailCallableId,
-    witchy_canonical_source::closure::ClosureExecutionContract> {
-    use witchy_canonical_source::closure::ClosureExecutionContract;
+) -> BTreeMap<witchy_canonical_source::proper_tail::ProperTailCallableId, LambdaBehaviorSummary> {
     let module = typed.module();
     let table = typed.table();
     let definitions = type_definitions(module);
@@ -1290,11 +1297,12 @@ pub(crate) fn checked_lambda_contracts(
         let Ok(tail) = analyzer.block(body, &mut environment) else { continue };
         if !matches!(body.stmts.last(), Some(Stmt::Return(_))) { analyzer.returns.push(tail); }
         let result = Analyzer::join_values(analyzer.returns).bounded(4096);
-        contracts.insert(entry.id().clone(), ClosureExecutionContract::from_checked_frontend(
-            entry.id().clone(), source_execution_mode(function, &module.modes),
-            entry.captures().iter().map(|capture| capture.binding().clone()).collect(),
-            params.iter().map(|param| param.convention).collect(), scope, result, analyzer.required_opt_inputs,
-        ));
+        contracts.insert(entry.id().clone(), LambdaBehaviorSummary {
+            source_mode: source_execution_mode(function, &module.modes),
+            captures: entry.captures().iter().map(|capture| capture.binding().clone()).collect(),
+            conventions: params.iter().map(|param| param.convention).collect(), formal_scope: scope,
+            result, required_opt_inputs: analyzer.required_opt_inputs,
+        });
     }
     contracts
 }
