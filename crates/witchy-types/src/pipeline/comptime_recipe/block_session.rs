@@ -199,6 +199,30 @@ impl ComptimeSourceSession {
         let contract = CompilerSessionContract::for_source(digest, scope).map_err(refuse)?;
         let mut prepared = materialize_prior(module, prior, false);
         let mut body = body.clone();
+        let mut uses_module_types = false;
+        witchy_syntax::ast::visit::visit_block(&body, &mut |expression| {
+            if matches!(expression, Expr::Var(name) if name == "module_types") {
+                uses_module_types = true;
+            }
+            Ok::<_, ()>(())
+        }).expect("module_types scan cannot fail");
+        if uses_module_types {
+            // Earlier admitted output is present in `prepared`; later output
+            // cannot enter this stage's reflected declaration list.
+            let visible_types = witchy_syntax::reflect::module_type_info_exprs(&prepared)
+                .map_err(refuse)?;
+            let value = if visible_types.is_empty() {
+                if !prepared.imports.iter().any(|name| name == "list") {
+                    prepared.imports.push("list".into());
+                }
+                Expr::Call { name: "list.with_capacity".into(), args: vec![Expr::Int(0)] }
+            } else { Expr::List(visible_types) };
+            body.stmts.insert(0, Stmt::Let {
+                ty: Some(Type::Named("List".into(), vec![Type::Named("meta.TypeInfo".into(), Vec::new())])),
+                name: "module_types".into(), mutable: false, value,
+            });
+            body.lines.insert(0, line);
+        }
         body.stmts.push(Stmt::Expr(Expr::Int(0)));
         body.lines.push(line);
         prepared.items.push(Item::Function(Function {

@@ -61,6 +61,22 @@ fn generated_block_executes_before_next_original_block() {
     let run = Command::new(env!("CARGO_BIN_EXE_witchy")).arg(&source).output().unwrap();
     assert!(run.status.success(), "{}", String::from_utf8_lossy(&run.stderr));
     assert_eq!(String::from_utf8_lossy(&run.stdout), "42\n");
+
+}
+
+#[test]
+fn admitted_blocks_see_types_from_prior_output() {
+    let folder = TempDir::new("admitted-module-types");
+    let source = folder.join("main.witchy");
+    std::fs::write(&source, "type User:\n    name: String\n    age: Int\ncomptime:\n    if module_types.length() == 1 && module_types[0].fields.length() == 2 && module_types[0].fields[0].name == \"name\":\n        emit_item(quote item:\n            type Extra:\n                value: Int\n        )\ncomptime:\n    if module_types.length() == 2 && module_types[1].name == \"Extra\":\n        emit_item(quote item:\n            fn answer() -> Int:\n                42\n        )\nfn main(console: Console):\n    console.print(\"${answer()}\")\n").unwrap();
+    let run = Command::new(env!("CARGO_BIN_EXE_witchy")).arg(&source).output().unwrap();
+    assert!(run.status.success(), "{}", String::from_utf8_lossy(&run.stderr));
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "42\n");
+
+    std::fs::write(&source, "comptime:\n    if module_types.length() == 0:\n        emit_item(quote item:\n            fn answer() -> Int:\n                0\n        )\nfn main(console: Console):\n    console.print(\"${answer()}\")\n").unwrap();
+    let empty = Command::new(env!("CARGO_BIN_EXE_witchy")).arg(&source).output().unwrap();
+    assert!(empty.status.success(), "{}", String::from_utf8_lossy(&empty.stderr));
+    assert_eq!(String::from_utf8_lossy(&empty.stdout), "0\n");
 }
 
 #[test]

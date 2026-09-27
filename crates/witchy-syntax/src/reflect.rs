@@ -43,11 +43,37 @@ pub fn module_type_info_exprs(module: &Module) -> Result<Vec<Expr>, String> {
         .iter()
         .filter_map(|it| match it {
             Item::Type(t) => {
-                Some(normalized_type_for_typeinfo(t, &aliases).map(|ty| type_info_expr(&ty)))
+                Some(normalized_type_for_typeinfo(t, &aliases).and_then(|ty| {
+                    for variant in &ty.variants {
+                        for field in &variant.fields {
+                            check_reflectable_type(field)?;
+                        }
+                    }
+                    Ok(type_info_expr(&ty))
+                }))
             }
             _ => None,
         })
         .collect()
+}
+
+fn check_reflectable_type(ty: &Type) -> Result<(), String> {
+    match ty {
+        Type::Qualified(TypeQual::Borrow(_) | TypeQual::LegacyBorrow(_), _) =>
+            Err("cannot reflect a legacy lifetime-bearing borrow as a rooted view".into()),
+        Type::Qualified(TypeQual::BorrowMut(_), _) =>
+            Err("cannot reflect a migration-only mutable reference as a rooted view".into()),
+        Type::Qualified(_, inner) | Type::Slice(inner) => check_reflectable_type(inner),
+        Type::Named(_, args) | Type::Tuple(args) => {
+            for arg in args { check_reflectable_type(arg)?; }
+            Ok(())
+        }
+        Type::Fn(params, result, _, _) => {
+            for param in params { check_reflectable_type(param)?; }
+            check_reflectable_type(result)
+        }
+        Type::Dyn(..) | Type::RecordCompose { .. } => Ok(()),
+    }
 }
 
 /// Build the `meta.TypeInfo(...)` constructor expression describing `t`.
