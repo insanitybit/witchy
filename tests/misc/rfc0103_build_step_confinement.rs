@@ -97,23 +97,72 @@ fn build_recipe_uses_admitted_original_comptime_output() {
 
 #[test]
 fn build_recipe_uses_admitted_imported_comptime_output() {
-    let dir = TempDir::new("build-imported-admitted-comptime");
-    let source = dir.join("build.witchy");
-    let producer = dir.join("dep.witchy");
-    let out = dir.join("out");
-    std::fs::write(&producer, "comptime:\n    emit_item(quote item:\n        pub fn generated_text() -> String:\n            \"fn value() -> Int:\\n    42\\n\"\n    )\n").unwrap();
-    std::fs::write(&source, "import dep\nfn build(out: BuildOut):\n    out.write_out(\"generated.witchy\", dep.generated_text())\n").unwrap();
-    let run = Command::new(BIN).args([
-        "build-step", source.to_str().unwrap(), "--out", out.to_str().unwrap(),
-    ]).output().unwrap();
-    assert!(run.status.success(), "{}", String::from_utf8_lossy(&run.stderr));
-    assert_eq!(std::fs::read_to_string(out.join("generated.witchy")).unwrap(),
-        "fn value() -> Int:\n    42\n");
+    // These CLI compiles are independent; separate roots let them run in
+    // parallel without sharing generated files.
+    let valid_dir = TempDir::new("build-imported-admitted-comptime");
+    let valid_source = valid_dir.join("build.witchy");
+    let valid_producer = valid_dir.join("dep.witchy");
+    let valid_out = valid_dir.join("out");
+    std::fs::write(
+        &valid_producer,
+        "comptime:\n    emit_item(quote item:\n        pub fn generated_text() -> String:\n            \"fn value() -> Int:\\n    42\\n\"\n    )\n",
+    )
+    .unwrap();
+    std::fs::write(
+        &valid_source,
+        "import dep\nfn build(out: BuildOut):\n    out.write_out(\"generated.witchy\", dep.generated_text())\n",
+    )
+    .unwrap();
 
-    std::fs::write(&producer, "comptime:\n    emit_item(quote item:\n        pub fn generated_text() -> String:\n            42\n    )\n").unwrap();
-    let invalid = Command::new(BIN).args([
-        "build-step", source.to_str().unwrap(), "--out", out.to_str().unwrap(),
-    ]).output().unwrap();
+    let invalid_dir = TempDir::new("build-imported-invalid-comptime");
+    let invalid_source = invalid_dir.join("build.witchy");
+    let invalid_producer = invalid_dir.join("dep.witchy");
+    let invalid_out = invalid_dir.join("out");
+    std::fs::write(
+        &invalid_producer,
+        "comptime:\n    emit_item(quote item:\n        pub fn generated_text() -> String:\n            42\n    )\n",
+    )
+    .unwrap();
+    std::fs::write(
+        &invalid_source,
+        "import dep\nfn build(out: BuildOut):\n    out.write_out(\"generated.witchy\", dep.generated_text())\n",
+    )
+    .unwrap();
+
+    let (valid, invalid) = std::thread::scope(|scope| {
+        let valid = scope.spawn(|| {
+            Command::new(BIN)
+                .args([
+                    "build-step",
+                    valid_source.to_str().unwrap(),
+                    "--out",
+                    valid_out.to_str().unwrap(),
+                ])
+                .output()
+                .unwrap()
+        });
+        let invalid = scope.spawn(|| {
+            Command::new(BIN)
+                .args([
+                    "build-step",
+                    invalid_source.to_str().unwrap(),
+                    "--out",
+                    invalid_out.to_str().unwrap(),
+                ])
+                .output()
+                .unwrap()
+        });
+        (
+            valid.join().expect("valid build recipe process"),
+            invalid.join().expect("invalid build recipe process"),
+        )
+    });
+
+    assert!(valid.status.success(), "{}", String::from_utf8_lossy(&valid.stderr));
+    assert_eq!(
+        std::fs::read_to_string(valid_out.join("generated.witchy")).unwrap(),
+        "fn value() -> Int:\n    42\n"
+    );
     assert!(!invalid.status.success(), "invalid imported output reached build execution");
     let error = String::from_utf8_lossy(&invalid.stderr);
     assert!(error.contains("String") && error.contains("Int"), "{error}");
