@@ -3717,10 +3717,10 @@ pub(super) fn evaluate_static_site(
 }
 
 fn evaluate_static_site_value(
-    checked: &witchy_types::pipeline::CheckedModule,
+    _checked: &witchy_types::pipeline::CheckedModule,
     recipe: Option<&witchy_types::pipeline::CheckedStaticEvaluationRecipe>,
-    entry: &str,
-    arguments: Vec<witchy_interp::interpreter::CompilerValue>,
+    _entry: &str,
+    _arguments: Vec<witchy_interp::interpreter::CompilerValue>,
     runtime_arguments: Vec<String>,
 ) -> Result<witchy_interp::interpreter::CompilerValue, WebCommandError> {
     if let Some(recipe) = recipe {
@@ -3744,18 +3744,19 @@ fn evaluate_static_site_value(
                 }
                 return static_site_value_from_json(&output[0]);
             }
-            // The source evaluator remains a temporary compiler service for
-            // static-site expressions the canonical backend has not lowered.
-            witchy_lower::codegen::LoweringOutcome::Unsupported(_) => {}
+            witchy_lower::codegen::LoweringOutcome::Unsupported(reason) => {
+                return Err(WebCommandError::failure(format!(
+                    "static Site requires admitted Wasm: {reason}"
+                )));
+            }
             witchy_lower::codegen::LoweringOutcome::Rejected(error) => {
                 return Err(WebCommandError::failure(error.to_string()));
             }
         }
     }
-    let evaluation = witchy_lower::codegen::checked_glamour_static_evaluation_module(checked)
-        .map_err(|error| WebCommandError::failure(error.to_string()))?;
-    witchy_interp::interpreter::evaluate_compiler_module(&evaluation, entry, arguments)
-        .map_err(|error| WebCommandError::failure(error.message))
+    Err(WebCommandError::failure(
+        "static Site requires an admitted output recipe; source `main` is unsupported",
+    ))
 }
 
 fn static_entry_name(project: &Project) -> Result<String, WebCommandError> {
