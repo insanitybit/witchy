@@ -130,3 +130,42 @@ fn callback_relay_does_not_authenticate_a_normal_task() {
     assert!(format!("{error:?}").contains("opt task execution requires checked opt-compatible task value provenance"),
         "unexpected rejection: {error:?}");
 }
+
+#[test]
+fn result_shell_preserves_the_actual_task_origin_across_modes() {
+    opt::set_for_tests(Some(OptSet::none()));
+    let _reset = ResetOptimizationOverride;
+    let worker = "mode opt\nimport task\n\npub async fn compatible() -> Int:\n    7\n\npub fn pack(own recipe: task.Task(Int)) -> Result(task.Task(Int), String):\n    Ok(recipe)\n\npub fn unpack(own packet: Result(task.Task(Int), String)) -> task.Task(Int):\n    match packet:\n        Ok(recipe) -> recipe\n        Err(_) -> compatible()\n";
+    let main = "import worker\n\nasync fn main(console: Console):\n    let packet = worker.pack(worker.compatible())\n    let recipe = worker.unpack(packet)\n    console.print(\"${recipe.await}\")\n";
+    let checked = witchy_types::pipeline::link_checked_authenticated_from_source_bundle_with_user_modules(
+        vec![("worker".into(), worker.as_bytes().to_vec()),
+             ("main".into(), main.as_bytes().to_vec())],
+        "main", witchy_syntax::linker::ComptimeExpander::new(
+            |_, _, _| Ok(witchy_syntax::origin::OriginTable::default())),
+        &std::collections::HashSet::from(["main".into(), "worker".into()]), authenticated_owners(),
+    ).expect("checked conditional task sources");
+    let artifact = witchy::codegen::compile_checked_module_artifact(&checked)
+        .expect_lowered("admitted unoptimized Result task Wasm");
+    let mut runtime = Runtime::batch().expect("runtime");
+    let mut vm = runtime.spawn_admitted(&artifact,
+        Capabilities { print: true, quiet: true, ..Capabilities::none() }, 128,
+    ).expect("admitted conditional task launch");
+    vm.run().expect("conditional task execution");
+    assert_eq!(vm.output(), vec!["7"]);
+    assert_eq!(vm.canonical_heap_leaks().expect("ownership audit"), Some(0));
+    let worker_with_execute = format!("{worker}\npub async fn execute(own recipe: task.Task(Int)) -> Int:\n    recipe.await\n");
+    let normal_origin = "import worker\nimport task\n\nfn local_pack(own recipe: task.Task(Int)) -> Result(task.Task(Int), String):\n    Ok(recipe)\n\nasync fn ordinary() -> Int:\n    9\n\nasync fn main(console: Console):\n    let recipe = worker.unpack(local_pack(ordinary()))\n    console.print(\"${worker.execute(recipe).await}\")\n";
+    let checked = witchy_types::pipeline::link_checked_authenticated_from_source_bundle_with_user_modules(
+        vec![("worker".into(), worker_with_execute.into_bytes()),
+             ("main".into(), normal_origin.as_bytes().to_vec())],
+        "main", witchy_syntax::linker::ComptimeExpander::new(
+            |_, _, _| Ok(witchy_syntax::origin::OriginTable::default())),
+        &std::collections::HashSet::from(["main".into(), "worker".into()]), authenticated_owners(),
+    );
+    let error = match checked {
+        Ok(_) => panic!("Result shell must not authenticate normal task for opt execution"),
+        Err(error) => error,
+    };
+    assert!(format!("{error:?}").contains("opt task execution requires checked opt-compatible task value provenance"),
+        "unexpected rejection: {error:?}");
+}

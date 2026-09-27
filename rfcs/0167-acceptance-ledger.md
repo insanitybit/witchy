@@ -548,6 +548,17 @@ relay with a normal-origin Task. This verifies that representative callback
 path, not arbitrary function values, trait dispatch, scheduler adapters, or
 all cancellation dispositions. No A–O row closes.
 
+Conditional Task provenance (bounded runtime evidence, 2026-09-27):
+`rfc0167_task_provenance_runtime::result_shell_preserves_the_actual_task_origin_across_modes`
+passes an opt-origin `Task(Int)` through `Result(Task(Int), String)`, across a
+normal caller using that opt-defined type, and back through opt extraction.
+The hand-computed result `7` matches admitted unoptimized Wasm with zero
+canonical heap leaks. A normal-origin Task in the same Result shell is not
+refused merely for transport; a paired source check instead refuses its use
+at an opt `await` boundary. This proves the checked execution edge, not
+arbitrary conditional callbacks, cancellation, or all Result arms. No A–O
+row closes.
+
 Async generated-call hygiene (implemented but unverified, 2026-09-26): linked
 async lowering now gives compiler-emitted qualified calls definition-site
 identity before the linker applies local shadowing. A local named `task` can
