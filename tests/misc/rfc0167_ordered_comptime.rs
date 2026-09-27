@@ -162,6 +162,18 @@ fn admitted_type_info_uses_imported_definition_identity_across_modes() {
 }
 
 #[test]
+fn admitted_comptime_helper_looks_up_prior_emitted_type() {
+    let folder = TempDir::new("admitted-comptime-helper-type-info");
+    let source = folder.join("main.witchy");
+    for mode in ["", "mode opt\n"] {
+        std::fs::write(&source, format!("{mode}import meta\ncomptime:\n    emit_item(quote item:\n        type Extra:\n            value: Int\n    )\ncomptime fn count_fields(offset: Int) -> Int:\n    let info = type_info(Extra)\n    list.length(info.fields) + offset\ncomptime:\n    if count_fields(41) == 42:\n        emit_item(quote item:\n            fn answer() -> Int:\n                42\n        )\nfn main(console: Console):\n    console.print(\"${{answer()}}\")\n")).unwrap();
+        let run = Command::new(env!("CARGO_BIN_EXE_witchy")).arg(&source).output().unwrap();
+        assert!(run.status.success(), "{}", String::from_utf8_lossy(&run.stderr));
+        assert_eq!(String::from_utf8_lossy(&run.stdout), "42\n");
+    }
+}
+
+#[test]
 fn production_source_loader_executes_original_blocks_through_admitted_wasm() {
     let folder = TempDir::new("admitted-comptime-loader");
     let source = folder.join("main.witchy");

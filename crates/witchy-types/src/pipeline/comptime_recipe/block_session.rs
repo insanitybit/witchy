@@ -241,7 +241,7 @@ impl ComptimeSourceSession {
         let digest = *hash.finalize().as_bytes();
         let scope = format!("comptime:{}:{}:{}", self.selected.len(), self.selected, prior.len() + 1);
         let contract = CompilerSessionContract::for_source(digest, scope).map_err(refuse)?;
-        let mut prepared = materialize_prior(module, prior, false);
+        let mut prepared = materialize_prior(module, prior, false, true);
         let mut body = body.clone();
         let mut uses_module_types = false;
         witchy_syntax::ast::visit::visit_block(&body, &mut |expression| {
@@ -325,7 +325,7 @@ impl ComptimeSourceSession {
         if prior.is_empty() { return Ok(()); }
         let (_, original) = self.modules.iter().find(|(name, _)| name == &self.selected)
             .expect("selected raw module retained");
-        let mut prepared = materialize_prior(original, prior, false);
+        let mut prepared = materialize_prior(original, prior, false, true);
         let emitted_functions = prior.iter().flat_map(|output| &output.items)
             .filter_map(|(item, _)| match item { Item::Function(function) => Some(function.name.clone()), _ => None })
             .collect();
@@ -381,7 +381,7 @@ impl ComptimeSourceSession {
         }
         let (_, original) = self.modules.iter().find(|(name, _)| name == &self.selected)
             .expect("selected raw module retained");
-        let expanded = materialize_prior(original, prior, true);
+        let expanded = materialize_prior(original, prior, true, false);
         let modules = self.modules.iter().map(|(name, module)| (
             name.clone(), if name == &self.selected { expanded.clone() } else { module.clone() },
         )).collect::<Vec<_>>();
@@ -430,7 +430,7 @@ impl ComptimeSourceSession {
             .expect("selected raw entry retained");
         let (_, raw_producer) = self.modules.iter().find(|(name, _)| name == &self.selected)
             .expect("selected raw producer retained");
-        let expanded = materialize_prior(raw_producer, prior, true);
+        let expanded = materialize_prior(raw_producer, prior, true, false);
         let mut modules = self.modules.iter().map(|(name, module)| (
             name.clone(), if name == &self.selected { expanded.clone() } else { module.clone() },
         )).collect();
@@ -465,7 +465,7 @@ impl ComptimeSourceSession {
             .source_bundle_digest();
         let (_, original) = self.modules.iter().find(|(name, _)| name == &self.selected)
             .expect("selected raw producer retained");
-        let expanded = materialize_prior(original, prior, true);
+        let expanded = materialize_prior(original, prior, true, false);
         let admitted_modules = self.modules.iter().map(|(name, module)| (
             name.clone(), if name == &self.selected { expanded.clone() } else { module.clone() },
         )).collect();
@@ -510,10 +510,13 @@ fn retain_referenced_functions(module: &mut Module, prior_functions: &HashSet<St
     module.item_lines.retain(|_| { let retained = keep[index]; index += 1; retained });
 }
 
-fn materialize_prior(module: &Module, prior: &[PriorComptimeBlockOutput], keep_main: bool) -> Module {
+fn materialize_prior(
+    module: &Module, prior: &[PriorComptimeBlockOutput], keep_main: bool,
+    retain_comptime_helpers: bool,
+) -> Module {
     fn append_output(
         prepared: &mut Module, prior: &[PriorComptimeBlockOutput], cursor: &mut usize,
-        site: ComptimeBlockSite,
+        site: ComptimeBlockSite, retain_comptime_helpers: bool,
     ) {
         let Some(output) = prior.get(*cursor).filter(|output| output.site == site) else { return; };
         let parent_output = *cursor;
@@ -521,8 +524,9 @@ fn materialize_prior(module: &Module, prior: &[PriorComptimeBlockOutput], keep_m
         for (emitted_item, (generated, origin)) in output.items.iter().enumerate() {
             if matches!(generated, Item::Comptime(_)) {
                 append_output(prepared, prior, cursor,
-                    ComptimeBlockSite::Generated { parent_output, emitted_item });
-            } else {
+                    ComptimeBlockSite::Generated { parent_output, emitted_item }, retain_comptime_helpers);
+            } else if retain_comptime_helpers
+                || !matches!(generated, Item::Function(function) if function.comptime_only) {
                 prepared.items.push(generated.clone());
                 prepared.item_lines.push(origin.definition_line);
             }
@@ -534,8 +538,10 @@ fn materialize_prior(module: &Module, prior: &[PriorComptimeBlockOutput], keep_m
     let mut cursor = 0;
     for (index, original) in module.items.iter().enumerate() {
         if matches!(original, Item::Comptime(_)) {
-            append_output(&mut prepared, prior, &mut cursor, ComptimeBlockSite::Original(index));
-        } else if keep_main || !matches!(original, Item::Function(function) if function.name == "main") {
+            append_output(&mut prepared, prior, &mut cursor,
+                ComptimeBlockSite::Original(index), retain_comptime_helpers);
+        } else if (keep_main || !matches!(original, Item::Function(function) if function.name == "main"))
+            && (retain_comptime_helpers || !matches!(original, Item::Function(function) if function.comptime_only)) {
             prepared.items.push(original.clone());
             prepared.item_lines.push(module.item_lines.get(index).copied().unwrap_or(0));
         }
