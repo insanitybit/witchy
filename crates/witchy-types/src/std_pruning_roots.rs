@@ -316,6 +316,7 @@ pub const COMPILER_STD_NAMES: &[&str] = &[
     "meta.ident",
     "meta.impl_block",
     "meta.impl_block_where",
+    "meta.inherent_impl",
     "meta.item_with_imports",
     "meta.match_arm",
     "meta.param",
