@@ -889,15 +889,35 @@ impl<'s> CanonicalSourceView<'s> {
         self.signatures.get(name)
     }
 
+    /// Translate a closed-runtime callable ordinal into its exact checked AST
+    /// item coordinate. Runtime callables omit types, imports, generic bodies,
+    /// and unreachable declarations, so their ordinals are not item ordinals.
+    /// Neither a missing declaration nor an ambiguous name grants authority.
+    pub fn closed_callable_item_ordinal(&self, ordinal: u32) -> Option<u32> {
+        let name = self.runtime_functions.get(ordinal as usize)?;
+        if self.runtime_functions.iter().filter(|candidate| *candidate == name).count() != 1 {
+            return None;
+        }
+        let mut matching = self.module.items.iter().enumerate().filter_map(|(item, declaration)| {
+            match declaration {
+                Item::Function(function) if &function.name == name => Some(item),
+                _ => None,
+            }
+        });
+        let item = matching.next()?;
+        if matching.next().is_some() { return None; }
+        u32::try_from(item).ok()
+    }
+
     /// The exact retained source declaration for a closed callable. Unlike the
     /// checked callable signature, this preserves source loan spelling needed
     /// by independent ABI correspondence.
     pub fn closed_callable_declaration(&self, ordinal: u32) -> Option<&'s Function> {
-        let name = self.runtime_functions.get(ordinal as usize)?;
-        self.module.items.iter().find_map(|item| match item {
-            Item::Function(function) if &function.name == name => Some(function),
+        let item = self.closed_callable_item_ordinal(ordinal)?;
+        match self.module.items.get(item as usize)? {
+            Item::Function(function) => Some(function),
             _ => None,
-        })
+        }
     }
 
     /// The finalized access facts of [`Self::module`], if the checker produced
