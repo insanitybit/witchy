@@ -523,12 +523,13 @@ fn poll_returns_passive_step<S: ModuleStage>(
     })
 }
 
-/// Match a deferred thunk's actual terminal recipe to the exact checked
-/// declaration it invokes. Scalar operands cannot contain Task authority;
-/// managed payloads need the full recursive value proof and fail closed here.
+/// Match a deferred thunk's terminal recipe or direct async-factory handoff to
+/// the exact checked declaration it invokes. Scalar operands cannot contain
+/// Task authority; managed payloads need recursive value proof and fail closed.
 fn thunk_returns_checked_recipe<S: ModuleStage>(
     candidate: &CanonicalModule<S>, source: &CanonicalSourceView<'_>,
-    thunk: FunctionId, functions: &BoundFunctions<'_>,
+    thunk: FunctionId, functions: &BoundFunctions<'_>, layouts: &LayoutInterner,
+    visited: &mut BTreeSet<FunctionId>,
 ) -> bool {
     let Some(binding) = candidate.closure_bindings().entries().iter()
         .find(|binding| binding.function() == thunk) else { return false };
@@ -560,6 +561,10 @@ fn thunk_returns_checked_recipe<S: ModuleStage>(
     let Some(item) = source.closed_callable_item_ordinal(runtime_binding.source_declaration_ordinal()) else { return false };
     let Some(callee_contract) = source.final_task_behavior_at(item) else { return false };
     if callee_contract.result().instantiate(&arguments) != *contract.result() { return false; }
+    if source.task_behavior_at(item).is_some_and(|behavior| behavior.async_thunk_callable().is_some()) {
+        return functions.get(callee).is_some_and(|callee_function|
+            prove_async_factory_inner(candidate, source, callee_function, item, layouts, functions, visited));
+    }
     let Some(poll) = wrapper_selects_checked_callback(candidate, source, *callee, functions) else { return false };
     poll_returns_passive_step(candidate, source, poll, functions)
 }
@@ -664,6 +669,19 @@ fn prove_async_factory<S: ModuleStage>(
     layouts: &LayoutInterner,
     functions: &BoundFunctions<'_>,
 ) -> bool {
+    prove_async_factory_inner(candidate, source, function, ordinal, layouts, functions, &mut BTreeSet::new())
+}
+
+fn prove_async_factory_inner<S: ModuleStage>(
+    candidate: &CanonicalModule<S>,
+    source: &CanonicalSourceView<'_>,
+    function: &Function,
+    ordinal: u32,
+    layouts: &LayoutInterner,
+    functions: &BoundFunctions<'_>,
+    visited: &mut BTreeSet<FunctionId>,
+) -> bool {
+    if !visited.insert(function.id) { return false; }
     let Some(thunk) = source.task_behavior_at(ordinal).and_then(|contract| contract.async_thunk_callable()) else { return false };
     let mut thunks = candidate.closure_bindings().entries().iter().filter_map(|binding| {
         source.closure_witness().entries().get(binding.closure() as usize)
@@ -671,7 +689,7 @@ fn prove_async_factory<S: ModuleStage>(
     });
     let Some(thunk_function) = thunks.next() else { return false };
     if thunks.next().is_some() { return false; }
-    if !thunk_returns_checked_recipe(candidate, source, thunk_function, functions)
+    if !thunk_returns_checked_recipe(candidate, source, thunk_function, functions, layouts, visited)
         && !thunk_returns_checked_capture(candidate, source, function, thunk_function, functions) {
         return false;
     }

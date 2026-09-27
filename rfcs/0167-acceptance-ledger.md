@@ -624,6 +624,16 @@ and a typed channel round trip printed `Some(42)`. These are implementation
 smokes, without a zero-leak audit or complete A–O evidence. The broader
 one-shot task capture and cancellation disposition remain open.
 
+Direct opt async factory relay (2026-09-27): the canonical task authority
+checker now follows a thunk that tail-calls another checked opt async factory
+with scalar arguments. It verifies the exact source task result, recursively
+proves the callee's actual WIR factory and thunk, and refuses cycles. A
+hand-written opt `answer()` awaiting opt `base()` prints the independently
+expected `42` on admitted unoptimized Wasm with zero owned heap leaks; a
+mutually recursive pair rejects with `TaskBehaviorMismatch`. This closes that
+direct factory handoff, not aggregate, indirect, generic, scheduler, or
+resource-bearing task provenance. Rows K and N remain partial.
+
 Recursive task-proof summaries (implemented but unverified, 2026-09-26):
 recursive ordinary value producers such as `iter.unfold` can grow a symbolic
 result without bound even though no task authority is established. The checked

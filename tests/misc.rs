@@ -135,6 +135,8 @@ mod rfc0167_var_view_parameters;
 mod rfc0167_view_locals_across_await;
 #[path = "misc/rfc0167_await_in_nested_expressions.rs"]
 mod rfc0167_await_in_nested_expressions;
+#[path = "misc/rfc0167_opt_async_factory_relay.rs"]
+mod rfc0167_opt_async_factory_relay;
 #[path = "misc/rfc0167_owned_materialization.rs"]
 mod rfc0167_owned_materialization;
 #[path = "misc/rfc0167_tuple_root_view.rs"]
