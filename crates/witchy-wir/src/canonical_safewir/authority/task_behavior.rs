@@ -17,7 +17,7 @@ use crate::canonical_safewir::{
     closure_owner_contract::OwnerOperation,
     closure_owner_contract::OwnerFamilySource,
 };
-use crate::layout::{FieldKind, LayoutId, LayoutInterner};
+use crate::layout::{FieldKind, LayoutId, LayoutInterner, LayoutKind};
 
 #[path = "task_behavior/value_graph.rs"]
 mod value_graph;
@@ -138,8 +138,16 @@ impl Flow {
                     let object = self.root(place.object());
                     if let Some(proof) = self.slots.get(&(object, *index)).cloned() {
                         self.set_task(*destination, proof);
-                    } else if Self::single_pointer_field(function, place.object(), layouts) == Some(*index) {
-                        self.set_task(*destination, self.task(place.object()));
+                    } else {
+                        let parent = self.task(place.object());
+                        let projected = match parent {
+                            proof @ (TaskExecutionProof::Variant { .. } | TaskExecutionProof::Variants(_)) =>
+                                proof.project_variant_slot(0, *index as usize),
+                            proof @ TaskExecutionProof::Elements(_) => proof.project_slot(*index as usize),
+                            proof if Self::single_pointer_field(function, place.object(), layouts) == Some(*index) => proof,
+                            _ => TaskExecutionProof::Unknown,
+                        };
+                        self.set_task(*destination, projected);
                     }
                     if let Some(callable) = self.callable_slots.get(&(object, *index)).copied() {
                         self.callables.insert(*destination, callable);
@@ -182,7 +190,13 @@ impl Flow {
                     self.owner_captures.insert((*destination, ordinal), self.task(*capture));
                 }
             }
-            Operation::ClosureOwner(OwnerOperation::ReadOwner { destination, owner, capture, .. }) => {
+            Operation::ClosureOwner(
+                OwnerOperation::ReadOwner { destination, owner, capture, .. }
+                | OwnerOperation::ReadEnvironmentField { destination, owner, capture, .. }
+            ) => {
+                // Both operations project one checked constructor capture.
+                // Keep its entire recursive proof: a copyable environment
+                // field can itself contain a Task inside an aggregate.
                 if let Some(proof) = self.owner_captures.get(&(self.root(*owner), capture.0 as usize)).cloned() {
                     self.set_task(*destination, proof);
                 }
@@ -651,6 +665,50 @@ fn prove_async_factory<S: ModuleStage>(
     actual.len() == 1 && actual.contains(&thunk_function)
 }
 
+/// Match a checked recursive result proof to the actual constructor graph.
+/// A result type or container's defining mode alone cannot authenticate a
+/// stored callback/Task: every symbolic formal must occupy its promised
+/// physical field of the returned object. Unsupported producers fail closed.
+fn constructor_returns_checked_proof(
+    function: &Function,
+    parameter_count: usize,
+    expected: &TaskExecutionProof,
+    layouts: &LayoutInterner,
+) -> bool {
+    let [block] = function.blocks.as_slice() else { return false };
+    if block.parameters.len() != parameter_count { return false; }
+    let Terminator::Return { values } = &block.terminator else { return false };
+    let [returned] = values.as_slice() else { return false };
+    let Some(graph) = ValueGraph::constructor(function) else { return false };
+    fn matches(
+        proof: &TaskExecutionProof, node: Node, graph: &ValueGraph,
+        function: &Function, layouts: &LayoutInterner, depth: usize,
+    ) -> bool {
+        if depth > 32 { return false; }
+        match proof {
+            TaskExecutionProof::Parameter(index) => node == Node::Input(*index),
+            // Unknown does not grant execution authority. It may occupy any
+            // physical field without authenticating its behavior.
+            TaskExecutionProof::Unknown => true,
+            TaskExecutionProof::Variant { ordinal: 0, fields } | TaskExecutionProof::Elements(fields) => {
+                let Node::Object(object) = node else { return false };
+                let Some(ValueType::Ref(layout)) = function.value_types.get(&object) else { return false };
+                let Some(descriptor) = layouts.resolve_nominal(*layout).ok().and_then(|id| layouts.get(id)) else {
+                    return false;
+                };
+                if !matches!(descriptor.kind(), LayoutKind::PackedRecord { .. } | LayoutKind::Tuple { .. })
+                    || descriptor.fields().len() != fields.len() { return false; }
+                let stored = graph.fields(node).collect::<Vec<_>>();
+                stored.len() == fields.len() && stored.iter().enumerate().all(|(index, (slot, child))| {
+                    *slot as usize == index && matches(&fields[index], *child, graph, function, layouts, depth + 1)
+                })
+            }
+            _ => false,
+        }
+    }
+    matches(expected, graph.node(*returned), &graph, function, layouts, 0)
+}
+
 pub(super) fn validate<S: ModuleStage>(
     candidate: &CanonicalModule<S>,
     source: &CanonicalSourceView<'_>,
@@ -679,6 +737,11 @@ pub(super) fn validate<S: ModuleStage>(
             // Normal is not opt authority. Symbolic synchronous relays need
             // body correspondence before their result may grant opt authority.
             TaskExecutionProof::Task(SourceExecutionMode::Normal, _) => true,
+            TaskExecutionProof::Variant { .. } | TaskExecutionProof::Elements(_) =>
+                source.closed_callable_declaration(binding.source_declaration_ordinal())
+                .is_some_and(|declaration| constructor_returns_checked_proof(
+                    function, declaration.params.len(), result, &layouts,
+                )),
             _ => false,
         };
         if !grant && matches!(result, TaskExecutionProof::Task(SourceExecutionMode::Opt, _)) {
