@@ -3,7 +3,7 @@
 //! Serde visits every AST field, including embedded types/defaults. No source
 //! text, Debug output, parser invocation, or type-shape whitelist is involved.
 use std::{collections::{BTreeMap, BTreeSet}, sync::Arc};
-use crate::ast::{Expr, Item, Module};
+use crate::ast::{Expr, Item, Module, Type};
 use super::ComptimeSyntaxOrigin;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -29,13 +29,16 @@ impl<T> Eq for SyntaxSeed<T> {}
 
 pub type ExpressionSeed = SyntaxSeed<Expr>;
 pub type ItemSeed = SyntaxSeed<Item>;
+pub type TypeSeed = SyntaxSeed<Type>;
 impl SyntaxSeed<Expr> { pub fn expression(&self) -> &Expr { self.value() } }
 impl SyntaxSeed<Item> { pub fn item(&self) -> &Item { self.value() } }
+impl SyntaxSeed<Type> { pub fn ty(&self) -> &Type { self.value() } }
 
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct CompilerSyntaxSeeds {
     expressions: BTreeMap<String, Arc<ExpressionSeed>>,
     items: BTreeMap<String, Arc<ItemSeed>>,
+    types: BTreeMap<String, Arc<TypeSeed>>,
 }
 impl CompilerSyntaxSeeds {
     /// One bounded preparation pass before retaining any payload. Duplicate
@@ -51,17 +54,22 @@ impl CompilerSyntaxSeeds {
             .map(|seed| (seed.handle.as_str(), &seed.item)), &mut meter)?;
         let costs = measure_seeds(module.compiler_expr_syntax.iter()
             .map(|seed| (seed.handle.as_str(), &seed.expr)), &mut meter)?;
+        let type_costs = measure_seeds(module.compiler_type_syntax.iter()
+            .map(|seed| (seed.handle.as_str(), &seed.ty)), &mut meter)?;
         let expressions = collect_seeds(module.compiler_expr_syntax.iter()
             .map(|seed| (seed.handle.as_str(), &seed.expr, seed.definition_line)), costs)?;
         let items = collect_seeds(module.compiler_item_syntax.iter()
             .map(|seed| (seed.handle.as_str(), &seed.item, seed.definition_line)), item_costs)?;
+        let types = collect_seeds(module.compiler_type_syntax.iter()
+            .map(|seed| (seed.handle.as_str(), &seed.ty, seed.definition_line)), type_costs)?;
         Ok(Self {
-            expressions, items,
+            expressions, items, types,
         })
         }
     }
     pub fn expression(&self, handle: &str) -> Option<&Arc<ExpressionSeed>> { self.expressions.get(handle) }
     pub fn item(&self, handle: &str) -> Option<&Arc<ItemSeed>> { self.items.get(handle) }
+    pub fn ty(&self, handle: &str) -> Option<&Arc<TypeSeed>> { self.types.get(handle) }
 }
 
 #[cfg(not(target_arch = "wasm32"))]

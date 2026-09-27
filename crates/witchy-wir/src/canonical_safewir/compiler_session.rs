@@ -8,10 +8,11 @@ pub const COMPILER_QUOTE_EXPR_IMPORT: &str = "compiler_syntax_quote_expr_into";
 pub const COMPILER_EMIT_EXPR_IMPORT: &str = "compiler_syntax_emit_expr";
 pub const COMPILER_QUOTE_ITEM_IMPORT: &str = "compiler_syntax_quote_item_into";
 pub const COMPILER_EMIT_ITEM_IMPORT: &str = "compiler_syntax_emit_item";
+pub const COMPILER_QUOTE_TYPE_IMPORT: &str = "compiler_syntax_quote_type_into";
 
 fn metered(name: &str) -> bool {
     matches!(name, COMPILER_FRESH_IMPORT | COMPILER_QUOTE_EXPR_IMPORT | COMPILER_EMIT_EXPR_IMPORT
-        | COMPILER_QUOTE_ITEM_IMPORT | COMPILER_EMIT_ITEM_IMPORT)
+        | COMPILER_QUOTE_ITEM_IMPORT | COMPILER_EMIT_ITEM_IMPORT | COMPILER_QUOTE_TYPE_IMPORT)
 }
 
 impl CanonicalAbiCatalog {
@@ -22,7 +23,7 @@ impl CanonicalAbiCatalog {
         let read = HostParameterRole::Buffer { value_type: ValueType::Ref(string_layout), access: AccessMode::Read, extent: HostBufferExtent::Slice };
         let write = HostParameterRole::Buffer { value_type: ValueType::Ref(string_layout), access: AccessMode::Write, extent: HostBufferExtent::Slice };
         let import = match name {
-            COMPILER_QUOTE_EXPR_IMPORT | COMPILER_QUOTE_ITEM_IMPORT => authenticated_import(name, &[I32, I32, I64, I32, I32], &[I32], signature,
+            COMPILER_QUOTE_EXPR_IMPORT | COMPILER_QUOTE_ITEM_IMPORT | COMPILER_QUOTE_TYPE_IMPORT => authenticated_import(name, &[I32, I32, I64, I32, I32], &[I32], signature,
                 vec![read, HostParameterRole::Value(ValueType::Int), write], vec![HostResultRole::Value(ValueType::Size)],
                 HostMutation::WriteBuffers, ImportAuthentication::CompilerSession)?,
             COMPILER_EMIT_EXPR_IMPORT | COMPILER_EMIT_ITEM_IMPORT => authenticated_import(name, &[I32, I32], &[], signature,

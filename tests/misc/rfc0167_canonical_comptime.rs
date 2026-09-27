@@ -84,6 +84,24 @@ fn limits() -> ComptimeLimits {
 }
 
 #[test]
+fn canonical_type_quotation_uses_checked_type_seed_in_both_modes() {
+    for mode in ["", "mode opt\n"] {
+        let source = format!("{mode}import meta\nfn main() -> Int:\n    let ty = quote type:\n        List(Int)\n    42\n");
+        let recipe = witchy_types::pipeline::check_comptime_recipe_from_source_bundle(
+            vec![("comptime".into(), source.into_bytes())], "typed-quotation",
+            witchy_interp::comptime::EXPANDER,
+            &["comptime".to_owned()].into_iter().collect(), owners(),
+        ).expect("checked type quotation");
+        let artifact = witchy_lower::codegen::compile_checked_comptime_recipe_artifact(&recipe)
+            .expect_lowered("admitted type quotation");
+        let output = Runtime::run_comptime(&artifact, limits()).expect("host-owned type seed");
+        assert_eq!(output.result, 42);
+        assert_eq!(output.heap_leaks, 0);
+        assert!(output.items.is_empty() && output.expressions.is_empty());
+    }
+}
+
+#[test]
 fn canonical_quotation_emits_typed_expression_with_lexical_origin() {
     struct ResetOptimization;
     impl Drop for ResetOptimization { fn drop(&mut self) { witchy::opt::set_for_tests(None); } }

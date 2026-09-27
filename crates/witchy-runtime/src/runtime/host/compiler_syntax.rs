@@ -3,7 +3,7 @@
 use super::super::{comptime::SessionState, memory_of, VmState};
 use std::sync::Arc;
 use wasmtime::{Caller, Error, Linker, Result};
-use witchy_syntax::{ast::{Expr, Item}, compiler_session::{
+use witchy_syntax::{ast::{Expr, Item, Type}, compiler_session::{
     seeds::{EmittedExpression, EmittedItem, SyntaxCost, SyntaxSeed}, ComptimeSyntaxOrigin,
 }};
 
@@ -13,6 +13,7 @@ pub(in super::super) fn register(linker: &mut Linker<VmState>) -> Result<()> {
     linker.func_wrap("witchy", "compiler_syntax_emit_expr", emit::<Expression>)?;
     linker.func_wrap("witchy", "compiler_syntax_quote_item_into", quote_into::<ItemCategory>)?;
     linker.func_wrap("witchy", "compiler_syntax_emit_item", emit::<ItemCategory>)?;
+    linker.func_wrap("witchy", "compiler_syntax_quote_type_into", quote_into::<TypeCategory>)?;
     Ok(())
 }
 
@@ -86,6 +87,23 @@ impl Category for ItemCategory {
         let origin = state.item_origins.get(handle).expect("typed instance and origin inserted together").clone();
         state.items.push(EmittedItem { item, origin });
     }
+}
+
+struct TypeCategory;
+impl Category for TypeCategory {
+    type Value = Type;
+    const NAME: &'static str = "type";
+    fn seed(state: &SessionState, handle: &str) -> Option<Arc<SyntaxSeed<Type>>> {
+        state.seeds.ty(handle).cloned()
+    }
+    fn insert(state: &mut SessionState, handle: String, value: Type,
+        origin: ComptimeSyntaxOrigin, cost: SyntaxCost) {
+        state.syntax.insert_type(handle.clone(), value);
+        state.syntax.insert_type_origin(handle.clone(), origin);
+        state.type_costs.insert(handle, cost);
+    }
+    fn cost(state: &SessionState, handle: &str) -> Option<SyntaxCost> { state.type_costs.get(handle).copied() }
+    fn emit(_: &mut SessionState, _: &str) { unreachable!("types are operands, not emitted items") }
 }
 
 fn quote_into<C: Category>(mut caller: Caller<'_, VmState>, pointer: i32, length: i32,

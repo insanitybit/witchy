@@ -1341,10 +1341,12 @@ if capability_imports.contains("build_out_write_at") {
                 for name in [witchy_wir::canonical_safewir::COMPILER_QUOTE_EXPR_IMPORT,
                     witchy_wir::canonical_safewir::COMPILER_EMIT_EXPR_IMPORT,
                     witchy_wir::canonical_safewir::COMPILER_QUOTE_ITEM_IMPORT,
-                    witchy_wir::canonical_safewir::COMPILER_EMIT_ITEM_IMPORT] {
+                    witchy_wir::canonical_safewir::COMPILER_EMIT_ITEM_IMPORT,
+                    witchy_wir::canonical_safewir::COMPILER_QUOTE_TYPE_IMPORT] {
                     if !compiler_imports.contains(name) { continue; }
                     let signature = if matches!(name, witchy_wir::canonical_safewir::COMPILER_QUOTE_EXPR_IMPORT
-                        | witchy_wir::canonical_safewir::COMPILER_QUOTE_ITEM_IMPORT) {
+                        | witchy_wir::canonical_safewir::COMPILER_QUOTE_ITEM_IMPORT
+                        | witchy_wir::canonical_safewir::COMPILER_QUOTE_TYPE_IMPORT) {
                         push_import_signature(vec![text, ValueType::Int, text], vec![ValueType::Size], Some(2))?
                     } else { push_import_signature(vec![text], Vec::new(), None)? };
                     catalog = catalog.with_compiler_syntax_import(name, signature, string_layout)
@@ -13465,9 +13467,12 @@ impl FunctionLowerer<'_> {
             .ok_or(CanonicalLoweringError::UnsupportedExpression("missing compiler service import"))?;
         let layout = self.string_layout_id()?;
         if matches!(name, witchy_syntax::intrinsics::COMPILER_QUOTE_EXPR
-            | witchy_syntax::intrinsics::COMPILER_QUOTE_ITEM) {
+            | witchy_syntax::intrinsics::COMPILER_QUOTE_ITEM
+            | witchy_syntax::intrinsics::COMPILER_QUOTE_TYPE) {
             let variant_name = if name == witchy_syntax::intrinsics::COMPILER_QUOTE_EXPR {
                 "meta.CompilerExprSyntax"
+            } else if name == witchy_syntax::intrinsics::COMPILER_QUOTE_TYPE {
+                "meta.CompilerTypeSyntax"
             } else { "meta.ItemSyntax" };
             let seed = self.lower_string_argument(&args[0])?;
             let seed = self.clone_reference_token(seed)?;
@@ -20427,6 +20432,7 @@ fn compiler_service_import(name: &str) -> Option<(&'static str, usize)> {
         witchy_syntax::intrinsics::COMPILER_QUOTE_EXPR => Some((witchy_wir::canonical_safewir::COMPILER_QUOTE_EXPR_IMPORT, 3)),
         witchy_syntax::intrinsics::COMPILER_EMIT_EXPR => Some((witchy_wir::canonical_safewir::COMPILER_EMIT_EXPR_IMPORT, 1)),
         witchy_syntax::intrinsics::COMPILER_QUOTE_ITEM => Some((witchy_wir::canonical_safewir::COMPILER_QUOTE_ITEM_IMPORT, 3)),
+        witchy_syntax::intrinsics::COMPILER_QUOTE_TYPE => Some((witchy_wir::canonical_safewir::COMPILER_QUOTE_TYPE_IMPORT, 3)),
         witchy_syntax::intrinsics::COMPILER_EMIT_ITEM => Some((witchy_wir::canonical_safewir::COMPILER_EMIT_ITEM_IMPORT, 1)),
         witchy_syntax::intrinsics::COMPILER_FOOTPRINT => Some(("compiler_footprint_into", 1)),
         witchy_syntax::intrinsics::COMPILER_DIFF => Some(("compiler_diff_into", 2)),
