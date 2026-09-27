@@ -116,6 +116,9 @@
     thread_local! {
         static WASM_RUNTIME: std::cell::RefCell<crate::runtime::Runtime> =
             std::cell::RefCell::new(crate::runtime::Runtime::batch_quick().expect("runtime"));
+
+        static PREPARED_MODULES: std::cell::RefCell<std::collections::HashMap<String, ast::Module>> =
+            std::cell::RefCell::new(std::collections::HashMap::new());
     }
 
     /// One Wasmtime engine per test thread. `Runtime::new()` builds a Cranelift
@@ -130,11 +133,7 @@
     /// Linked+typechecked module cache on this thread. Reuses parsed, linked,
     /// and typechecked AST graphs across repeated invocations and proptest templates.
     fn prepared_module(src: &str) -> ast::Module {
-        thread_local! {
-            static CACHE: std::cell::RefCell<std::collections::HashMap<String, ast::Module>> =
-                std::cell::RefCell::new(std::collections::HashMap::new());
-        }
-        CACHE.with(|slot| {
+        PREPARED_MODULES.with(|slot| {
             let mut slot = slot.borrow_mut();
             if let Some(module) = slot.get(src) {
                 return module.clone();
@@ -147,6 +146,10 @@
             slot.insert(src.to_string(), linked.clone());
             linked
         })
+    }
+
+    fn cached_prepared_module(src: &str) -> Option<ast::Module> {
+        PREPARED_MODULES.with(|slot| slot.borrow().get(src).cloned())
     }
 
     /// Resolve `src`'s `import`s against the bundled std and link the whole set —
@@ -819,12 +822,22 @@
     fn run_linked_on_wasm(sources: &[(&str, &str)], entry: &str) -> Vec<String> {
         witchy_interp::compiler_natives::install();
         use crate::runtime::Capabilities;
-        let mods: Vec<(String, ast::Module)> = sources
-            .iter()
-            .map(|(n, s)| ((*n).to_string(), parser::parse_module(s).expect("parse")))
-            .collect();
-        let linked = crate::pipeline::link(mods, entry).expect("link");
-        assert!(typeck::check(&linked).is_ok(), "{:?}", typeck::check(&linked));
+        let cached = if sources.len() == 1 && sources[0].0 == "main" && entry == "main" {
+            cached_prepared_module(sources[0].1)
+        } else {
+            None
+        };
+        let linked = if let Some(linked) = cached {
+            linked
+        } else {
+            let mods: Vec<(String, ast::Module)> = sources
+                .iter()
+                .map(|(n, s)| ((*n).to_string(), parser::parse_module(s).expect("parse")))
+                .collect();
+            let linked = crate::pipeline::link(mods, entry).expect("link");
+            assert!(typeck::check(&linked).is_ok(), "{:?}", typeck::check(&linked));
+            linked
+        };
         let bytes = codegen::compile_module_binary(&linked)
             .expect_lowered("the binary path lowers this program");
         with_batch_runtime(|rt| {
