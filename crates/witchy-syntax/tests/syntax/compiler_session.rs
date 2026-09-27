@@ -27,6 +27,35 @@ fn admitted_seed_data_is_bounded_exact_and_retains_distinct_quote_sites() {
 }
 
 #[test]
+fn item_seeds_are_typed_site_bound_and_structurally_metered() {
+    use witchy_syntax::compiler_session::seeds::CompilerSyntaxSeeds;
+    let mut module = witchy_syntax::parser::parse_module("fn emitted() -> Int:\n    42\n").unwrap();
+    let first_item = module.items[0].clone();
+    let second_item = Item::Const { name: "answer".into(), value: Expr::Int(7) };
+    module.compiler_item_syntax = vec![
+        CompilerItemSyntax { handle: "shared".into(), item: first_item, definition_line: 3 },
+        CompilerItemSyntax { handle: "shared".into(), item: second_item.clone(), definition_line: 7 },
+    ];
+    module.compiler_expr_syntax.push(CompilerExprSyntax {
+        handle: "shared".into(), expr: Expr::Int(19), definition_line: 9,
+    });
+    let seeds = CompilerSyntaxSeeds::from_module(&module).unwrap();
+    let item = seeds.item("shared").unwrap();
+    assert_eq!(item.item(), &second_item, "the final typed item payload wins");
+    assert!(item.allows_site(3) && item.allows_site(7));
+    assert!(!item.allows_site(9) && !item.allows_site(0));
+    assert!(item.cost().nodes > 0 && item.cost().bytes > 0);
+    assert_eq!(seeds.expression("shared").unwrap().expression(), &Expr::Int(19));
+    assert!(seeds.item("missing").is_none());
+    module.compiler_item_syntax[1].item = Item::Const { name: "answer".into(), value: Expr::Int(8) };
+    assert_ne!(seeds, CompilerSyntaxSeeds::from_module(&module).unwrap());
+    let mut deep = Expr::Int(0);
+    for _ in 0..129 { deep = Expr::Unary { op: UnOp::Neg, expr: Box::new(deep) }; }
+    module.compiler_item_syntax[1].item = Item::Const { name: "answer".into(), value: deep };
+    assert!(CompilerSyntaxSeeds::from_module(&module).is_err(), "item depth is checked before cloning");
+}
+
+#[test]
 fn session_moves_typed_payloads_without_changing_source_or_crossing_categories() {
     let mut module = witchy_syntax::parser::parse_module("fn main() -> Int:\n    42\n").unwrap();
     let original = module.clone();

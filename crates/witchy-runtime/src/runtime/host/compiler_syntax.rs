@@ -7,6 +7,8 @@ pub(in super::super) fn register(linker: &mut Linker<VmState>) -> Result<()> {
     linker.func_wrap("witchy", "compiler_syntax_fresh_into", fresh_into)?;
     linker.func_wrap("witchy", "compiler_syntax_quote_expr_into", quote_expr_into)?;
     linker.func_wrap("witchy", "compiler_syntax_emit_expr", emit_expr)?;
+    linker.func_wrap("witchy", "compiler_syntax_quote_item_into", quote_item_into)?;
+    linker.func_wrap("witchy", "compiler_syntax_emit_item", emit_item)?;
     Ok(())
 }
 
@@ -61,6 +63,39 @@ fn quote_expr_into(mut caller: Caller<'_, VmState>, pointer: i32, length: i32,
     Ok(required as i32)
 }
 
+fn quote_item_into(mut caller: Caller<'_, VmState>, pointer: i32, length: i32,
+    site: i64, out: i32, capacity: i32) -> Result<i32> {
+    use witchy_syntax::compiler_session::ComptimeSyntaxOrigin;
+    let site = u32::try_from(site).ok().filter(|line| *line != 0)
+        .ok_or_else(|| Error::msg("compiler quotation source line is out of range"))?;
+    let handle = read_handle(&mut caller, pointer, length)?;
+    let memory = memory_of(&mut caller)?;
+    let output = range(memory.data_size(&caller), out, capacity)?;
+    let state = caller.data().compiler_syntax.as_ref().expect("checked session");
+    let seed = state.seeds.item(&handle).cloned()
+        .ok_or_else(|| Error::msg("compiler quotation has no checked item seed"))?;
+    if !seed.allows_site(site) { return Err(Error::msg("compiler quotation site is absent from checked source")); }
+    let cost = seed.cost();
+    let required = state.syntax.syntax_handle_byte_len("item").map_err(Error::msg)?;
+    if cost.nodes > state.nodes.remaining() || cost.bytes > state.syntax_bytes.remaining()
+        || required as u64 > state.bytes.remaining() {
+        return Err(Error::msg("compiler syntax arena budget exceeded"));
+    }
+    charge_fuel(&mut caller, cost.work().and_then(|n| n.checked_add(required as u64))
+        .ok_or_else(|| Error::msg("compiler syntax fuel overflow"))?)?;
+    if output.len() < required { return Ok(required as i32); }
+    let state = caller.data_mut().compiler_syntax.as_mut().expect("checked session");
+    state.nodes.charge(cost.nodes).map_err(|_| Error::msg("compiler syntax arena budget exceeded"))?;
+    state.syntax_bytes.charge(cost.bytes).map_err(|_| Error::msg("compiler syntax arena budget exceeded"))?;
+    state.bytes.charge(required as u64).map_err(|_| Error::msg("compiler syntax handle budget exceeded"))?;
+    let instance = state.syntax.next_syntax_handle("item").map_err(Error::msg)?;
+    state.syntax.insert_item(instance.clone(), seed.item().clone());
+    state.item_origins.insert(instance.clone(), ComptimeSyntaxOrigin { definition_line: site, hole_ancestry: Vec::new() });
+    state.item_costs.insert(instance.clone(), cost);
+    memory.data_mut(&mut caller)[output.start..output.start + required].copy_from_slice(instance.as_bytes());
+    Ok(required as i32)
+}
+
 fn emit_expr(mut caller: Caller<'_, VmState>, pointer: i32, length: i32) -> Result<()> {
     use witchy_syntax::compiler_session::seeds::EmittedExpression;
     let handle = read_handle(&mut caller, pointer, length)?;
@@ -76,6 +111,24 @@ fn emit_expr(mut caller: Caller<'_, VmState>, pointer: i32, length: i32) -> Resu
     let expression = state.syntax.expressions().get(&handle).expect("typed instance and cost inserted together").clone();
     let origin = state.syntax.expression_origins().get(&handle).expect("typed instance and origin inserted together").clone();
     state.expressions.push(EmittedExpression { expression, origin });
+    Ok(())
+}
+
+fn emit_item(mut caller: Caller<'_, VmState>, pointer: i32, length: i32) -> Result<()> {
+    use witchy_syntax::compiler_session::seeds::EmittedItem;
+    let handle = read_handle(&mut caller, pointer, length)?;
+    let state = caller.data().compiler_syntax.as_ref().expect("checked session");
+    let cost = *state.item_costs.get(&handle).ok_or_else(|| Error::msg("compiler emission requires a current-session item"))?;
+    if cost.nodes > state.emitted_nodes.remaining() || cost.bytes > state.emitted_bytes.remaining() {
+        return Err(Error::msg("compiler syntax emission budget exceeded"));
+    }
+    charge_fuel(&mut caller, cost.work().ok_or_else(|| Error::msg("compiler syntax fuel overflow"))?)?;
+    let state = caller.data_mut().compiler_syntax.as_mut().expect("checked session");
+    state.emitted_nodes.charge(cost.nodes).map_err(|_| Error::msg("compiler syntax emission budget exceeded"))?;
+    state.emitted_bytes.charge(cost.bytes).map_err(|_| Error::msg("compiler syntax emission budget exceeded"))?;
+    let item = state.syntax.items().get(&handle).expect("typed instance and cost inserted together").clone();
+    let origin = state.item_origins.get(&handle).expect("typed instance and origin inserted together").clone();
+    state.items.push(EmittedItem { item, origin });
     Ok(())
 }
 

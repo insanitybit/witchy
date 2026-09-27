@@ -2,7 +2,7 @@
 //! not install its imports. No source evaluator or ambient grants are used.
 use super::*;
 use witchy_syntax::compiler_session::{CompilerSyntaxSession, DeterministicBudget};
-use witchy_syntax::compiler_session::seeds::{CompilerSyntaxSeeds, SyntaxCost, EmittedExpression};
+use witchy_syntax::compiler_session::{seeds::{CompilerSyntaxSeeds, SyntaxCost, EmittedExpression, EmittedItem}, ComptimeSyntaxOrigin};
 
 #[derive(Debug, Clone, Copy)]
 pub struct ComptimeLimits {
@@ -22,6 +22,7 @@ pub struct ComptimeOutcome {
     pub fuel_consumed: u64,
     pub heap_leaks: usize,
     pub expressions: Vec<EmittedExpression>,
+    pub items: Vec<EmittedItem>,
 }
 
 pub(super) struct SessionState {
@@ -32,11 +33,14 @@ pub(super) struct SessionState {
     pub issued: Vec<String>,
     pub seeds: std::sync::Arc<CompilerSyntaxSeeds>,
     pub costs: std::collections::BTreeMap<String, SyntaxCost>,
+    pub item_costs: std::collections::BTreeMap<String, SyntaxCost>,
+    pub item_origins: std::collections::BTreeMap<String, ComptimeSyntaxOrigin>,
     pub nodes: DeterministicBudget,
     pub syntax_bytes: DeterministicBudget,
     pub emitted_nodes: DeterministicBudget,
     pub emitted_bytes: DeterministicBudget,
     pub expressions: Vec<EmittedExpression>,
+    pub items: Vec<EmittedItem>,
 }
 
 impl Runtime {
@@ -66,10 +70,11 @@ impl Runtime {
             input_bytes: limits.host_output_bytes,
             seeds: artifact.compiler_syntax_seeds().cloned()
                 .ok_or_else(|| Error::msg("comptime artifact lacks checked syntax seeds"))?,
-            costs: Default::default(), nodes: DeterministicBudget::new(limits.syntax_nodes),
+            costs: Default::default(), item_costs: Default::default(), item_origins: Default::default(),
+            nodes: DeterministicBudget::new(limits.syntax_nodes),
             syntax_bytes: DeterministicBudget::new(limits.syntax_bytes),
             emitted_nodes: DeterministicBudget::new(limits.emitted_nodes),
-            emitted_bytes: DeterministicBudget::new(limits.emitted_bytes), expressions: Vec::new(),
+            emitted_bytes: DeterministicBudget::new(limits.emitted_bytes), expressions: Vec::new(), items: Vec::new(),
         };
         let mut vm = runtime.instantiate_module_with_session(
             module, Capabilities::none(), limits.memory_pages, Some(entry.clone()), &[],
@@ -82,6 +87,7 @@ impl Runtime {
         if heap_leaks != 0 { bail!("comptime recipe leaked {heap_leaks} canonical roots"); }
         let fuel_consumed = limits.fuel - vm.store.get_fuel()?;
         let session = vm.store.data_mut().compiler_syntax.take().expect("comptime session installed");
-        Ok(ComptimeOutcome { result, fresh_identifiers: session.issued, fuel_consumed, heap_leaks, expressions: session.expressions })
+        Ok(ComptimeOutcome { result, fresh_identifiers: session.issued, fuel_consumed, heap_leaks,
+            expressions: session.expressions, items: session.items })
     }
 }

@@ -3,7 +3,7 @@
 //! Serde visits every AST field, including embedded types/defaults. No source
 //! text, Debug output, parser invocation, or type-shape whitelist is involved.
 use std::{collections::{BTreeMap, BTreeSet}, sync::Arc};
-use crate::ast::{Expr, Module};
+use crate::ast::{Expr, Item, Module};
 use super::ComptimeSyntaxOrigin;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -27,8 +27,23 @@ impl PartialEq for ExpressionSeed {
 }
 impl Eq for ExpressionSeed {}
 
+#[derive(Debug)]
+pub struct ItemSeed { item: Item, cost: SyntaxCost, encoded: Vec<u8>, sites: BTreeSet<u32> }
+impl ItemSeed {
+    pub fn item(&self) -> &Item { &self.item }
+    pub fn cost(&self) -> SyntaxCost { self.cost }
+    pub fn allows_site(&self, site: u32) -> bool { self.sites.contains(&site) }
+}
+impl PartialEq for ItemSeed {
+    fn eq(&self, other: &Self) -> bool { self.encoded == other.encoded && self.cost == other.cost && self.sites == other.sites }
+}
+impl Eq for ItemSeed {}
+
 #[derive(Debug, Default, PartialEq, Eq)]
-pub struct CompilerSyntaxSeeds { expressions: BTreeMap<String, Arc<ExpressionSeed>> }
+pub struct CompilerSyntaxSeeds {
+    expressions: BTreeMap<String, Arc<ExpressionSeed>>,
+    items: BTreeMap<String, Arc<ItemSeed>>,
+}
 impl CompilerSyntaxSeeds {
     /// One bounded preparation pass before retaining any payload. Duplicate
     /// handles preserve the interpreter's last-payload-wins rule.
@@ -40,6 +55,16 @@ impl CompilerSyntaxSeeds {
         use serde::Serialize;
         use measurement::Meter;
         let mut meter = Meter { cost: SyntaxCost::default(), depth: 0 };
+        let mut item_costs = Vec::new();
+        for seed in &module.compiler_item_syntax {
+            let before = meter.cost;
+            seed.handle.serialize(&mut meter).map_err(|e| e.to_string())?;
+            let payload_start = meter.cost;
+            seed.item.serialize(&mut meter).map_err(|e| e.to_string())?;
+            item_costs.push(SyntaxCost { nodes: meter.cost.nodes - payload_start.nodes,
+                bytes: meter.cost.bytes - payload_start.bytes });
+            debug_assert!(meter.cost.nodes > before.nodes);
+        }
         let mut costs = Vec::new();
         for seed in &module.compiler_expr_syntax {
             let before = meter.cost;
@@ -61,16 +86,34 @@ impl CompilerSyntaxSeeds {
             entry.encoded = encoded;
             entry.sites.insert(seed.definition_line);
         }
-        Ok(Self { expressions: expressions.into_iter().map(|(key, value)| (key, Arc::new(value))).collect() })
+        let mut items = BTreeMap::<String, ItemSeed>::new();
+        for (seed, cost) in module.compiler_item_syntax.iter().zip(item_costs) {
+            let encoded = postcard::to_allocvec(&seed.item).map_err(|error| error.to_string())?;
+            let entry = items.entry(seed.handle.clone()).or_insert_with(|| ItemSeed {
+                item: seed.item.clone(), cost, encoded: Vec::new(), sites: BTreeSet::new(),
+            });
+            entry.item = seed.item.clone();
+            entry.cost = cost;
+            entry.encoded = encoded;
+            entry.sites.insert(seed.definition_line);
+        }
+        Ok(Self {
+            expressions: expressions.into_iter().map(|(key, value)| (key, Arc::new(value))).collect(),
+            items: items.into_iter().map(|(key, value)| (key, Arc::new(value))).collect(),
+        })
         }
     }
     pub fn expression(&self, handle: &str) -> Option<&Arc<ExpressionSeed>> { self.expressions.get(handle) }
+    pub fn item(&self, handle: &str) -> Option<&Arc<ItemSeed>> { self.items.get(handle) }
 }
 
 /// An emitted value keeps its diagnostic provenance beside the typed AST.
 /// Callers must still check this AST in its destination context.
 #[derive(Debug, Clone, PartialEq)]
 pub struct EmittedExpression { pub expression: Expr, pub origin: ComptimeSyntaxOrigin }
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct EmittedItem { pub item: Item, pub origin: ComptimeSyntaxOrigin }
 
 #[cfg(not(target_arch = "wasm32"))]
 mod measurement {
