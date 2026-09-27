@@ -64,26 +64,18 @@ use crate::{interpreter, parser, typeck};
     fn reflection_covers_lists_options_tuples_and_generic_records() {
         let src = "import json\nimport reflect\n\ntype Box(a) derive(Reflect):\n    item: a\n\nfn main(console: Console):\n    console.print(json.stringify([1, 2, 3]))\n    console.print(json.stringify(Some(\"x\")))\n    console.print(json.stringify((\"p\", 5)))\n    console.print(json.stringify([(\"a\", \"b\")]))\n    console.print(json.stringify(Box([1, 2])))\n";
         let want = vec!["[1,2,3]", "\"x\"", "[\"p\",5]", "[[\"a\",\"b\"]]", "{\"item\":[1,2]}"];
-        assert_eq!(link_run(src), want, "interpreter");
-        assert_eq!(wasm_run(src), want, "wasm");
+        let linked = prepared_module(src);
+        let (interp, wasm) = run_interpreter_and_wasm_on_linked(&linked);
+        assert_eq!(interp, want, "interpreter");
+        assert_eq!(wasm, want, "wasm");
     }
 
     #[test]
     fn derive_deserialize_scalar_list_option_error_and_generic_paths_agree() {
         let src = "import json\n\ntype Record derive(Deserialize):\n    n: Int\n    ratio: Float\n    ok: Bool\n    text: String\n    xs: List(Int)\n    maybe: Option(String)\n\ntype Box(a) derive(Deserialize):\n    value: a\n\nfn main(console: Console):\n    match json.decode(\"{\\\"n\\\": 4, \\\"ratio\\\": 2, \\\"ok\\\": true, \\\"text\\\": \\\"hi\\\", \\\"xs\\\": [1, 2], \\\"maybe\\\": null}\"):\n        Ok(doc) ->\n            match Record.from_json(doc):\n                Ok(r) -> console.print(\"${r.n} ${r.ratio} ${r.ok} ${r.text} ${r.xs} ${r.maybe}\")\n                Err(_) -> console.print(\"valid-error\")\n        Err(_) -> console.print(\"parse-error\")\n    match json.decode(\"{\\\"value\\\": [1, null, 3]}\"):\n        Ok(doc) ->\n            let nested: Result(Box(List(Option(Int))), json.DeserializeError) = Box.from_json(doc)\n            match nested:\n                Ok(b) -> console.print(\"${b.value}\")\n                Err(_) -> console.print(\"generic-error\")\n        Err(_) -> console.print(\"parse-error\")\n    match json.decode(\"{\\\"n\\\": 4}\"):\n        Ok(doc) ->\n            match Record.from_json(doc):\n                Ok(_) -> console.print(\"missing-not-rejected\")\n                Err(_) -> console.print(\"missing-error\")\n        Err(_) -> console.print(\"parse-error\")\n";
         let expected = ["4 2.0 true hi [1, 2] None", "[Some(1), None, Some(3)]", "missing-error"];
-        witchy_interp::compiler_natives::install();
         let linked = prepared_module(src);
-        let (interpreted, compiled) = std::thread::scope(|scope| {
-            let interpreter = scope.spawn(|| {
-                interpreter::run_module(linked.clone(), ".", Vec::new())
-                    .expect("interpreter run")
-            });
-            let bytes = codegen::compile_module_binary(&linked)
-                .expect_lowered("the binary path lowers this program");
-            let compiled = run_bytes_print_only(&bytes);
-            (interpreter.join().expect("interpreter worker"), compiled)
-        });
+        let (interpreted, compiled) = run_interpreter_and_wasm_on_linked(&linked);
         assert_eq!(
             interpreted, expected,
             "interp: deserialize scalar/list/option/generic/error paths"

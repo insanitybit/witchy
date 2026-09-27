@@ -114,17 +114,7 @@ fn assert_json_contract_cases(cases: &[(&str, &str, &[&str])]) {
         // resolving and checking the complete std graph a second time.
         let linked = resolve_std_src(src);
         typeck::check(&linked).expect("typecheck");
-        witchy_interp::compiler_natives::install();
-        let (interp, wasm) = std::thread::scope(|scope| {
-            let interpreter = scope.spawn(|| {
-                interpreter::run_module(linked.clone(), ".", Vec::new())
-                    .expect("interpreter run")
-            });
-            let bytes = codegen::compile_module_binary(&linked)
-                .expect_lowered("the binary path lowers this program");
-            let wasm = run_bytes_print_only(&bytes);
-            (interpreter.join().expect("interpreter worker"), wasm)
-        });
+        let (interp, wasm) = run_interpreter_and_wasm_on_linked(&linked);
         assert_eq!(interp, want, "interpreter");
         assert_eq!(wasm, want, "wasm");
     }

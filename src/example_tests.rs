@@ -797,6 +797,23 @@
         })
     }
 
+    /// Run one already checked, console-only program on the interpreter and
+    /// compiled Wasm without serializing their independent work. Keeping the
+    /// linked module outside the worker also avoids repeating source resolution.
+    fn run_interpreter_and_wasm_on_linked(linked: &ast::Module) -> (Vec<String>, Vec<String>) {
+        witchy_interp::compiler_natives::install();
+        std::thread::scope(|scope| {
+            let interpreter = scope.spawn(|| {
+                interpreter::run_module(linked.clone(), ".", Vec::new())
+                    .expect("interpreter run")
+            });
+            let bytes = codegen::compile_module_binary(linked)
+                .expect_lowered("the binary path lowers this program");
+            let wasm = run_bytes_print_only(&bytes);
+            (interpreter.join().expect("interpreter worker"), wasm)
+        })
+    }
+
 
     /// Run a WIR-binary under a print-only grant and read the exported
     /// `__witchy_reowns` counter — the timing-free proof of in-place (O(1)) vs
