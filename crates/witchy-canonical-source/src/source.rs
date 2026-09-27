@@ -92,45 +92,60 @@ pub enum TaskExecutionProof {
     Variants(BTreeMap<usize, Vec<Self>>),
 }
 
-/// Symbolic behavior of one exact checked source declaration. This describes
-/// its call result, not merely the mode of the declaring body: async results
-/// are wrapped once in `Task`, while synchronous relays retain projections of
-/// their actual arguments. Candidate admission must verify the transformed
-/// body and actual value flow before relying on this contract.
+/// Stable checked source identity, independent of final item placement.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum TaskBehaviorIdentity {
+    AsyncSource { module: String, item: u32, method: Option<u32> },
+    /// Length-delimited digest of the loader-authenticated declaration
+    /// catalog identity, not a compiler name or a final item ordinal.
+    LinkedDeclaration([u8; 32]),
+}
+
+/// Symbolic behavior of one exact checked source declaration. Async call
+/// results are wrapped once in `Task`; synchronous relays retain argument
+/// projections. Admission must still verify candidate bodies and value flow.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaskBehaviorContract {
-    source_module: String,
-    source_item: u32,
-    source_method: Option<u32>,
+    identity: TaskBehaviorIdentity,
     source_mode: SourceExecutionMode,
     conventions: Vec<Convention>,
     result: TaskExecutionProof,
     required_opt_inputs: Vec<TaskExecutionProof>,
+    async_thunk: Option<crate::proper_tail::ProperTailCallableId>,
 }
 
 impl TaskBehaviorContract {
     #[doc(hidden)]
     pub fn from_checked_frontend(
-        source_module: String,
-        source_item: u32,
-        source_method: Option<u32>,
+        identity: TaskBehaviorIdentity,
         source_mode: SourceExecutionMode,
         conventions: Vec<Convention>,
         result: TaskExecutionProof,
         required_opt_inputs: Vec<TaskExecutionProof>,
+        async_thunk: Option<crate::proper_tail::ProperTailCallableId>,
     ) -> Self {
-        Self { source_module, source_item, source_method, source_mode,
-            conventions, result, required_opt_inputs }
+        Self { identity, source_mode,
+            conventions, result, required_opt_inputs, async_thunk }
     }
 
-    pub fn source_identity(&self) -> (&str, u32, Option<u32>) {
-        (&self.source_module, self.source_item, self.source_method)
+    pub fn source_identity(&self) -> &TaskBehaviorIdentity { &self.identity }
+
+    pub fn async_source_identity(&self) -> Option<(&str, u32, Option<u32>)> {
+        match &self.identity {
+            TaskBehaviorIdentity::AsyncSource { module, item, method } => Some((module, *item, *method)),
+            TaskBehaviorIdentity::LinkedDeclaration(_) => None,
+        }
     }
 
     pub fn source_mode(&self) -> SourceExecutionMode { self.source_mode }
     pub fn conventions(&self) -> &[Convention] { &self.conventions }
     pub fn result(&self) -> &TaskExecutionProof { &self.result }
     pub fn required_opt_inputs(&self) -> &[TaskExecutionProof] { &self.required_opt_inputs }
+    /// Exact checked async thunk coordinate, not proof that an arbitrary
+    /// factory call or transformed return still carries this callable.
+    pub fn async_thunk_callable(&self) -> Option<&crate::proper_tail::ProperTailCallableId> {
+        self.async_thunk.as_ref()
+    }
 }
 
 /// One checked pre-CPS await and the exact value-flow proof for its operand.
@@ -693,6 +708,7 @@ pub struct CanonicalSourceParts<'s> {
     pub task_awaits: &'s [TaskAwaitProof],
     pub task_await_items: &'s BTreeMap<u32, usize>,
     pub task_operand_items: &'s BTreeMap<u32, Vec<usize>>,
+    pub task_behaviors: &'s BTreeMap<u32, TaskBehaviorContract>,
 }
 
 /// A borrowed, read-only view of one checked canonical source.
@@ -717,6 +733,7 @@ pub struct CanonicalSourceView<'s> {
     task_awaits: &'s [TaskAwaitProof],
     task_await_items: &'s BTreeMap<u32, usize>,
     task_operand_items: &'s BTreeMap<u32, Vec<usize>>,
+    task_behaviors: &'s BTreeMap<u32, TaskBehaviorContract>,
 }
 
 impl<'s> CanonicalSourceView<'s> {
@@ -744,6 +761,7 @@ impl<'s> CanonicalSourceView<'s> {
             task_awaits,
             task_await_items,
             task_operand_items,
+            task_behaviors,
         } = parts;
         Self {
             module,
@@ -765,6 +783,7 @@ impl<'s> CanonicalSourceView<'s> {
             task_awaits,
             task_await_items,
             task_operand_items,
+            task_behaviors,
         }
     }
 
@@ -772,6 +791,12 @@ impl<'s> CanonicalSourceView<'s> {
     pub fn module(&self) -> &'s Module { self.module }
 
     pub fn task_await_proofs(&self) -> &'s [TaskAwaitProof] { self.task_awaits }
+
+    /// Exact checked declaration behavior for a final source item. Missing
+    /// generated or method contracts are unknown, never inferred from mode.
+    pub fn task_behavior_at(&self, item: u32) -> Option<&'s TaskBehaviorContract> {
+        self.task_behaviors.get(&item)
+    }
 
     pub fn task_await_proof_at(&self, item: u32) -> Option<&'s TaskAwaitProof> {
         self.task_awaits.get(*self.task_await_items.get(&item)?)

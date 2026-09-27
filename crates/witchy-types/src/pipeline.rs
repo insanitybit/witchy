@@ -39,7 +39,7 @@ use witchy_canonical_source::rooted_view::RootedViewStorage;
 use witchy_canonical_source::storage::StoragePlan;
 use witchy_canonical_source::source::{
     CanonicalSourceParts, CanonicalSourceView, CheckedAccessQuery, CheckedSourceDigests,
-    CheckedSourceWitness, PrecompiledExport, TaskAwaitProof,
+    CheckedSourceWitness, PrecompiledExport, TaskAwaitProof, TaskBehaviorContract, TaskBehaviorIdentity,
 };
 use crate::precompiled_declarations::PrecompiledDeclarationEnvironment;
 use crate::optimization_readiness::OptimizationReadiness;
@@ -145,6 +145,7 @@ pub struct CanonicalCheckedSource {
     task_awaits: Vec<TaskAwaitProof>,
     task_await_items: BTreeMap<u32, usize>,
     task_operand_items: BTreeMap<u32, Vec<usize>>,
+    task_behaviors: BTreeMap<u32, TaskBehaviorContract>,
 }
 
 impl CanonicalCheckedSource {
@@ -171,6 +172,7 @@ impl CanonicalCheckedSource {
             task_awaits: &self.task_awaits,
             task_await_items: &self.task_await_items,
             task_operand_items: &self.task_operand_items,
+            task_behaviors: &self.task_behaviors,
         })
     }
 
@@ -809,13 +811,129 @@ fn obligations_digest(obligations: &BTreeSet<CanonicalObligation>) -> [u8; 32] {
     *hasher.finalize().as_bytes()
 }
 
+fn linked_task_behavior_identity(identity: &crate::runtime_type::DeclarationIdentity) -> TaskBehaviorIdentity {
+    use crate::runtime_type::PackageSource;
+    let mut hash = blake3::Hasher::new();
+    hash.update(b"witchy.task-behavior-declaration.v1");
+    fn text(hash: &mut blake3::Hasher, value: &str) {
+        hash.update(&(value.len() as u64).to_le_bytes());
+        hash.update(value.as_bytes());
+    }
+    match identity.package().source() {
+        PackageSource::Toolchain => { hash.update(&[0]); }
+        PackageSource::Workspace => { hash.update(&[1]); }
+        PackageSource::Registry(registry) => { hash.update(&[2]); text(&mut hash, registry); }
+    }
+    text(&mut hash, identity.package().name());
+    text(&mut hash, identity.package().version());
+    hash.update(&(identity.module().len() as u64).to_le_bytes());
+    for component in identity.module() { text(&mut hash, component); }
+    hash.update(&[match identity.kind() {
+        DeclarationKind::Type => 0, DeclarationKind::Trait => 1, DeclarationKind::Function => 2,
+    }]);
+    text(&mut hash, identity.name());
+    TaskBehaviorIdentity::LinkedDeclaration(*hash.finalize().as_bytes())
+}
+
+fn async_task_behavior_identity(function: &witchy_syntax::ast::Function) -> Option<TaskBehaviorIdentity> {
+    let (item, method) = witchy_syntax::suspension::async_surface(function)?;
+    Some(TaskBehaviorIdentity::AsyncSource {
+        module: witchy_syntax::suspension::async_surface_module(function)?.to_owned(),
+        item: u32::try_from(item).ok()?,
+        method: method.map(u32::try_from).transpose().ok()?,
+    })
+}
+
+fn bind_task_behaviors(
+    source: &Module,
+    mut declarations: BTreeMap<usize, crate::task_provenance::TaskBehaviorSummary>,
+    final_typed: &typeck::TypedModule,
+    catalog: Option<&RuntimeDeclarationCatalog>,
+    closure_witness: &ClosureWitnessManifest,
+) -> Result<BTreeMap<u32, TaskBehaviorContract>, PipelineError> {
+    use witchy_syntax::ast::{Expr, Function, Stmt};
+    use witchy_canonical_source::proper_tail::{ProperTailCallableId, ProperTailExprKind, ProperTailPathStep};
+    let refuse = |message: &str| PipelineError::Type(TypeError { message: message.into() });
+    let mut by_identity = BTreeMap::new();
+    let functions = source.items.iter().flat_map(|item| match item {
+        Item::Function(function) => std::slice::from_ref(function),
+        Item::Impl(definition) => definition.methods.as_slice(),
+        _ => &[],
+    });
+    for function in functions {
+        let Some(summary) = declarations.remove(&(function as *const Function as usize)) else { continue };
+        let identity = if function.is_async {
+            async_task_behavior_identity(function)
+        } else {
+            catalog.and_then(|catalog| catalog.resolve(&function.name, DeclarationKind::Function))
+                .map(linked_task_behavior_identity)
+        };
+        let Some(identity) = identity else { continue };
+        let contract = TaskBehaviorContract::from_checked_frontend(identity.clone(), summary.source_mode,
+            summary.conventions, summary.result, summary.required_opt_inputs, None);
+        if let Some(previous) = by_identity.insert(identity, contract.clone()) {
+            if previous != contract { return Err(refuse("conflicting checked task behavior declaration identity")); }
+        }
+    }
+    let mut result = BTreeMap::new();
+    for (item, definition) in final_typed.module().items.iter().enumerate() {
+        let Item::Function(function) = definition else { continue };
+        let item = u32::try_from(item).map_err(|_| refuse("task behavior item count exceeds u32"))?;
+        let is_async_factory = function.attributes.iter()
+            .any(|attribute| attribute == witchy_syntax::suspension::FRAME_ENTRY_ATTRIBUTE);
+        // A continuation has a different parameter environment. Its parent
+        // source identity alone does not authorize the factory's call summary.
+        if !is_async_factory && witchy_syntax::suspension::frame_state(function).is_some() { continue; }
+        let identity = if is_async_factory {
+            async_task_behavior_identity(function)
+        } else {
+            catalog.and_then(|catalog| catalog.resolve(&function.name, DeclarationKind::Function))
+                .map(linked_task_behavior_identity)
+        };
+        let Some(contract) = identity.as_ref().and_then(|identity| by_identity.get(identity)) else { continue };
+        if contract.source_mode() != witchy_canonical_source::source::source_execution_mode(
+            function, &final_typed.module().modes,
+        ) { continue; }
+        if contract.conventions().iter().copied().ne(function.params.iter().map(|param| param.convention)) {
+            continue;
+        }
+        let async_thunk = if is_async_factory {
+            // The program entry drives its recipe and returns Unit rather than
+            // the source async factory result. Do not give it a Task promise.
+            let Some(Type::Fn(_, output, _, _)) = final_typed.table().function_type(&function.name) else { continue };
+            if !matches!(output.unqualified(), Type::Named(name, arguments)
+                if matches!(name.as_str(), "Task" | "task.Task") && arguments.len() == 1) { continue; }
+            // Authenticate the exact lambda operand of the generic async
+            // factory desugaring. No factory or adapter spelling grants this
+            // certificate; unfamiliar checked shapes remain unsupported.
+            let [Stmt::Expr(Expr::Call { args, .. })] = function.body.stmts.as_slice() else { continue };
+            let [Expr::Lambda { .. }] = args.as_slice() else { continue };
+            let id = ProperTailCallableId { item, method: None, lambda_path: vec![
+                ProperTailPathStep::Statement(0), ProperTailPathStep::Value,
+                ProperTailPathStep::Node(ProperTailExprKind::Call), ProperTailPathStep::Child(0),
+                ProperTailPathStep::Node(ProperTailExprKind::Lambda),
+            ] };
+            if !closure_witness.entries().iter().any(|entry| entry.id() == &id) { continue; }
+            Some(id)
+        } else { None };
+        result.insert(item, TaskBehaviorContract::from_checked_frontend(
+            contract.source_identity().clone(), contract.source_mode(), contract.conventions().to_vec(),
+            contract.result().clone(), contract.required_opt_inputs().to_vec(), async_thunk,
+        ));
+    }
+    Ok(result)
+}
+
 fn bind_task_await_proofs(
     checked: &CheckedModule,
-    final_module: &Module,
-) -> Result<(Vec<TaskAwaitProof>, BTreeMap<u32, usize>, BTreeMap<u32, Vec<usize>>), PipelineError> {
+    final_typed: &typeck::TypedModule,
+    runtime_catalog: Option<&RuntimeDeclarationCatalog>,
+    closure_witness: &ClosureWitnessManifest,
+) -> Result<(Vec<TaskAwaitProof>, BTreeMap<u32, usize>, BTreeMap<u32, Vec<usize>>, BTreeMap<u32, TaskBehaviorContract>), PipelineError> {
     let Some(source) = checked.typed_async_source() else {
-        return Ok((Vec::new(), BTreeMap::new(), BTreeMap::new()));
+        return Ok((Vec::new(), BTreeMap::new(), BTreeMap::new(), BTreeMap::new()));
     };
+    let final_module = final_typed.module();
     let refuse = |message: String| PipelineError::Type(TypeError { message });
     let inventory = checked.source_async_control_flow().map_err(refuse)?;
     let expected = checked.async_surface().modules.iter().flat_map(|module| {
@@ -830,8 +948,11 @@ fn bind_task_await_proofs(
     if actual != expected {
         return Err(refuse("typed async source inventory differs from checked source surface".into()));
     }
-    let mut origins = crate::task_provenance::checked_await_origins(source.module(), source.table())
+    let behavior = crate::task_provenance::checked_task_behavior(source.module(), source.table())
         .map_err(PipelineError::Type)?;
+    let task_behaviors = bind_task_behaviors(source.module(), behavior.declarations,
+        final_typed, runtime_catalog, closure_witness)?;
+    let mut origins = behavior.await_origins;
     let mut awaits = Vec::new();
     let mut by_source = BTreeMap::new();
     for flow in &inventory.callables {
@@ -980,7 +1101,7 @@ fn bind_task_await_proofs(
     {
         return Err(refuse("checked async await lacks one marked executable task operand".into()));
     }
-    Ok((awaits, final_items, task_operand_items))
+    Ok((awaits, final_items, task_operand_items, task_behaviors))
 }
 
 fn attach_canonical_source(
@@ -993,8 +1114,10 @@ fn attach_canonical_source(
     obligations: BTreeSet<CanonicalObligation>,
     dynamic_runtime_plan: Option<RuntimeTypePlan>,
     precompiled_declarations: PrecompiledDeclarationEnvironment,
+    runtime_catalog: Option<&RuntimeDeclarationCatalog>,
 ) -> Result<CheckedModule, PipelineError> {
-    let (task_awaits, task_await_items, task_operand_items) = bind_task_await_proofs(&checked, typed.module())?;
+    let (task_awaits, task_await_items, task_operand_items, task_behaviors) =
+        bind_task_await_proofs(&checked, &typed, runtime_catalog, &closure_witness)?;
     let launch_contract_payload = capabilities::launch_contract_payload(checked.module());
     let launch_contract_digest = launch_contract_digest(&launch_contract_payload);
     let optimization_readiness = OptimizationReadiness::from_typed(&typed, source_bundle_digest)
@@ -1118,6 +1241,7 @@ fn attach_canonical_source(
         task_awaits,
         task_await_items,
         task_operand_items,
+        task_behaviors,
     });
     Ok(checked)
 }
@@ -1612,6 +1736,7 @@ fn finish_canonical_source(
         obligations,
         dynamic_runtime_plan,
         precompiled_declarations,
+        runtime_catalog.as_ref(),
     )
 }
 
