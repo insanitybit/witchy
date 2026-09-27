@@ -3931,6 +3931,7 @@ fn lower_function(
         token_join_parameters: BTreeSet::new(),
         graph_version: 0,
         token_facts: std::cell::RefCell::new(None),
+        token_operation_facts: std::cell::RefCell::new(TokenOperationFacts::default()),
         shared_facts: std::cell::RefCell::new(None),
         shared_operation_facts: std::cell::RefCell::new(SharedOperationFacts::default()),
         mutable_bindings: HashSet::new(),
@@ -4492,6 +4493,14 @@ struct TokenFacts {
     incoming: BTreeMap<ValueId, Vec<ValueId>>,
 }
 
+/// Operation destinations only append during lowering. Preserve their token
+/// facts across graph versions; block parameters and edges are rescanned.
+#[derive(Default)]
+struct TokenOperationFacts {
+    scanned: Vec<usize>,
+    direct: BTreeSet<ValueId>,
+}
+
 #[derive(Debug, Clone)]
 struct DisjunctiveExclusiveCarrier {
     selector: ValueId,
@@ -4563,6 +4572,7 @@ struct FunctionLowerer<'a> {
     /// `carries_token` can reuse its scan of the graph until it changes.
     graph_version: u64,
     token_facts: std::cell::RefCell<Option<TokenFacts>>,
+    token_operation_facts: std::cell::RefCell<TokenOperationFacts>,
     shared_facts: std::cell::RefCell<Option<SharedFacts>>,
     shared_operation_facts: std::cell::RefCell<SharedOperationFacts>,
     /// Source name of each entry parameter, so an exit drop targets the
@@ -9727,14 +9737,11 @@ impl FunctionLowerer<'_> {
     /// One scan of the graph for `carries_token`: the values that mint or
     /// transfer a token, and each block parameter's incoming arguments.
     fn scan_token_facts(&self) -> TokenFacts {
-        let mut direct = self.token_join_parameters.clone();
-        if let Some(entry) = self.blocks.first() {
-            direct.extend(entry.parameters.iter().filter_map(|parameter| {
-                parameter.ownership.is_some().then_some(parameter.value)
-            }));
-        }
-        for block in &self.blocks {
-            for operation in &block.operations {
+        let mut operation_facts = self.token_operation_facts.borrow_mut();
+        operation_facts.scanned.resize(self.blocks.len(), 0);
+        let TokenOperationFacts { scanned, direct } = &mut *operation_facts;
+        for (block, scanned) in self.blocks.iter().zip(scanned) {
+            for operation in &block.operations[*scanned..] {
                 match operation {
                     Operation::Alloc { destination, class: witchy_wir::canonical_safewir::AllocationClass::ReferenceCounted, .. }
                     | Operation::CloneRef { destination, .. }
@@ -9751,6 +9758,15 @@ impl FunctionLowerer<'_> {
                     _ => {}
                 }
             }
+            *scanned = block.operations.len();
+        }
+        let mut direct = direct.clone();
+        drop(operation_facts);
+        direct.extend(self.token_join_parameters.iter().copied());
+        if let Some(entry) = self.blocks.first() {
+            direct.extend(entry.parameters.iter().filter_map(|parameter| {
+                parameter.ownership.is_some().then_some(parameter.value)
+            }));
         }
         let mut incoming = BTreeMap::<ValueId, Vec<ValueId>>::new();
         let mut record_edge = |target: BlockId, arguments: &[ValueId]| {
