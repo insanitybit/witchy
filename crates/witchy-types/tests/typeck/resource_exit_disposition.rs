@@ -6,7 +6,10 @@ const WORKER: &str = r#"must type Ticket:
 type Box(a):
     Box(a)
 pub fn finish(own value: Box(Ticket)):
-    ()
+    match move value:
+        Box(ticket) ->
+            match move ticket:
+                Ticket(_) -> ()
 "#;
 const CONTEXTS: [(&str, &str, bool); 4] = [
     ("", "", false), ("mode opt\n", "mode opt\n", false),
@@ -17,7 +20,7 @@ fn checked(root: &str, worker: &str, local: bool, body: &str) -> Result<(), Stri
     let mut main = format!("{root}import worker\n{body}");
     if local {
         main = main.replace("worker.finish(token)", "finish(token)");
-        main.push_str("\nfn finish(own value: worker.Box(worker.Ticket)):\n    ()\n");
+        main.push_str("\nfn finish(own value: worker.Box(worker.Ticket)):\n    worker.finish(move value)\n");
     }
     let worker = format!("{worker}{WORKER}");
     source::checked_bundle(vec![("main", &main), ("worker", &worker)], "main").map(drop)
@@ -97,9 +100,23 @@ fn main() -> Int:
 #[test]
 fn own_parameter_transfer_does_not_erase_the_callees_must_obligation() {
     for mode in ["", "mode opt\n"] {
-        let source = format!("{mode}must type Ticket:\n    Ticket(Int)\n\nfn vanish(own ticket: Ticket) -> Int:\n    1\n\nfn main() -> Int:\n    vanish(Ticket(7))\n");
-        let error = source::checked(&source)
-            .expect_err("the callee must dispose of its received Ticket on ordinary return");
-        assert!(error.contains("ticket") && error.contains("must-consume"), "{error}");
+        for (result, body) in [("Int", "1"), ("Result(Int, String)", "Err(\"lost\")")] {
+            let source = format!("{mode}must type Ticket:\n    Ticket(Int)\n\nfn vanish(own ticket: Ticket) -> {result}:\n    {body}\n");
+            let error = source::checked(&source)
+                .expect_err("the callee must dispose of its received Ticket on every return path");
+            assert!(error.contains("ticket") && error.contains("must-consume"), "{error}");
+        }
     }
+
+    let worker = "mode opt\nmust type Ticket:\n    Ticket(Int)\n\npub fn make() -> Ticket:\n    Ticket(7)\n\npub fn vanish(own ticket: Ticket) -> Int:\n    1\n";
+    let normal_caller = "import worker\nfn main() -> Int:\n    worker.vanish(worker.make())\n";
+    let error = source::checked_bundle(vec![("main", normal_caller), ("worker", worker)], "main")
+        .expect_err("normal calling opt cannot authorize the opt callee to lose a must value");
+    assert!(error.contains("ticket") && error.contains("must-consume"), "{error}");
+
+    let worker_type = "mode opt\nmust type Ticket:\n    Ticket(Int)\n\npub fn make() -> Ticket:\n    Ticket(7)\n";
+    let normal_callee = "import worker\nfn vanish(own ticket: worker.Ticket) -> Int:\n    1\nfn main() -> Int:\n    vanish(worker.make())\n";
+    let error = source::checked_bundle(vec![("main", normal_callee), ("worker", worker_type)], "main")
+        .expect_err("an opt-defined type cannot authenticate a normal callee's dropped resource");
+    assert!(error.contains("ticket") && error.contains("must-consume"), "{error}");
 }
