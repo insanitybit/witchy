@@ -92,6 +92,21 @@ fn main() -> Int:
 }
 
 #[test]
+fn outer_owned_materialization_does_not_authenticate_shared_children() {
+    let error = checked(r#"mode opt
+import fast
+
+fn main() -> Int:
+    let child = [1, 2]
+    let rows = [child, child]
+    var independent = rows.owned()
+    fast.set_first(independent[0])
+    independent[1][0]
+"#).expect_err("an independent outer list is not a deep unique-child proof");
+    assert!(error.contains("cannot repair ordinary storage"), "{error}");
+}
+
+#[test]
 fn opt_call_accepts_explicit_independent_child_preparation() {
     assert_execution(r#"mode opt
 import fast

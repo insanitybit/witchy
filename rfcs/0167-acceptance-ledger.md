@@ -135,10 +135,15 @@ corresponding opt call refuses a shared child, despite the fresh outer shell.
 An opt caller explicitly constructing an independent unique child from scalar
 reads produces `119`, also with zero leaks. These are exact representative
 paths, not completion of the broader rows or an allocation-performance claim.
-Ordinary `rows[0].owned()` currently fails to establish the unique proof for
-that opt call. Its non-view lowering shares the handle, so granting source
-uniqueness alone would be unsound; checked materialization and matching storage
-operations remain an implementation gap. Imported behavior provenance and
+Explicit `rows[0].owned()` now copies that selected child into fresh linear
+storage and the opt call produces the independently expected 119 on admitted
+unoptimized Wasm with zero leaks. `view.owned()` has the same result for a
+rooted `&List(Int)` and independently yields 19. Materializing only the outer
+`List(List(Int))` does not authenticate its nested children: the outer copy
+retains their shared storage, so an opt call on `independent[0]` after
+`var independent = rows.owned()` fails source checking. A deep copy of multiple
+children requires explicit
+checked mapping, not a type-shape exception. Imported behavior provenance and
 resource disposition are separate obligations, not established by this test.
 
 Executable task-operand identity (implemented but unverified, 2026-09-26):
