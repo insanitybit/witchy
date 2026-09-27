@@ -147,3 +147,5 @@ mod rfc0167_slice_list_int_root_view;
 mod rfc0167_resource_fallback;
 #[path = "misc/rfc0167_consuming_coalesce.rs"]
 mod rfc0167_consuming_coalesce;
+#[path = "misc/rfc0167_deferred_handle_disposition.rs"]
+mod rfc0167_deferred_handle_disposition;

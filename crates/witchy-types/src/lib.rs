@@ -18,6 +18,9 @@ mod canonical_dictionary;
 mod canonical_equality;
 mod canonical_render;
 mod canonical_messages;
+mod source_bridge_obligations;
+#[doc(hidden)]
+pub use source_bridge_obligations::self_checks as source_bridge_obligation_self_checks;
 pub mod async_program;
 pub mod async_readiness;
 pub mod async_migration;

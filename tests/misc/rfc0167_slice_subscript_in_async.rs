@@ -4,8 +4,8 @@
 //! `list.at` (which stays closed to slices). Reads work before and after a
 //! suspension, in an awaited task, and in an ordinary function of the same
 //! program, and every slice keeps its snapshot while its `var` root is mutated.
-//! A spawned child also retains the same authenticated slice snapshot while
-//! its handle moves through the scheduler's affine Step carrier.
+//! A separate deferred witness retains the spawned-child join expectation:
+//! its private pending-owner transfer needs an admitted disposition contract.
 //!
 //! Independent expectation, admitted unoptimized Wasm, zero-leak audit. One
 //! program, one async compile.
@@ -49,7 +49,7 @@ fn assert_async_output(label: &str, source: &str, expected: &[&str]) {
 /// `s = &[10, 20, 30, 40][1..4]` = `[20, 30, 40]`; after `ns[3] = 7` and a
 /// push the root is `[10, 20, 30, 7, 50]` but `s` still reads 20, 40, length
 /// 3, and the task created before the mutation reads `s[2]` = 40; the
-/// ordinary `first(s)` = 20. A spawned child later reads `s[1]` = 30.
+/// ordinary `first(s)` = 20.
 /// `w = &["ab", "cd", "ef"][1..3]` keeps "cd" + "ef"
 /// although index 1 became "zz"; an awaited task reads `w[1]` + "!" = "ef!".
 #[test]
@@ -71,10 +71,6 @@ async fn word(ws: &[String], i: Int) -> String:
     chan.yield_now().await
     ws[i] + "!"
 
-async fn spawned(console: Console, xs: &[Int]):
-    chan.yield_now().await
-    console.print("spawn ${xs[1]}")
-
 async fn main(console: Console):
     var ns = [10, 20, 30, 40]
     let s = &ns[1..4]
@@ -92,9 +88,26 @@ async fn main(console: Console):
     console.print(w[0] + w[1])
     let x = word(w, 1).await
     console.print(x)
+"#,
+        &["20 40 3 7 5", "40 20", "cdef", "ef!"],
+    );
+}
+
+/// This lawful join remains an implementation gap, not a desired refusal.
+/// The scalar child carrier exists, but raw Handle erasure has no checked
+/// pending-owner disposition. Retain the expected admitted result and audit.
+#[test]
+fn spawned_child_retains_the_slice_until_checked_join() {
+    assert_async_output("spawned slice and checked join", r#"
+import chan
+async fn spawned(console: Console, xs: &[Int]):
+    chan.yield_now().await
+    console.print("spawn ${xs[1]}")
+async fn main(console: Console):
+    var ns = [10, 20, 30, 40]
+    let s = &ns[1..4]
+    ns[2] = 0
     let child = chan.spawn(spawned(console, s)).await
     chan.join(child).await
-"#,
-        &["20 40 3 7 5", "40 20", "cdef", "ef!", "spawn 30"],
-    );
+"#, &["spawn 30"]);
 }

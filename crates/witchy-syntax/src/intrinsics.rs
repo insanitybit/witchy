@@ -4215,6 +4215,6 @@ pub(crate) fn private_intrinsic_callers(bare_name: &str) -> Option<&'static [&'s
 
 /// Ordinary source functions have declaration identity, not a reserved global
 /// intrinsic spelling. Call this only after resolving the target's module.
-pub(crate) fn private_source_bridge_callers(resolved_name: &str) -> Option<&'static [&'static str]> {
+pub fn private_source_bridge_callers(resolved_name: &str) -> Option<&'static [&'static str]> {
     PRIVATE_SCHEDULER_SOURCE_BRIDGES.contains(&resolved_name).then_some(MESSAGE_BRIDGE_CALLERS)
 }

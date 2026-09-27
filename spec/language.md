@@ -1170,10 +1170,13 @@ through a consuming match. SafeWIR requires the source-bound affine family
 proof before deconstruction and rejects cloning that family.
 Conditional owned-GC result relays are admitted when each continuing branch
 supplies an independently owned token of the checked result family.
-Unsupported field representations still fail closed. A spawned task carrying an
-authenticated slice view can move its `task.Handle` through the scheduler's
-`task.Step(task.Handle)` continuation and join it without carrying a live
-handle across an unrelated suspension.
+Unsupported field representations still fail closed. The scheduler's
+`task.Step(task.Handle)` continuation can transport the affine handle, but
+canonical admission rejects a private bridge that erases its stored obligation
+without an authenticated completion or transfer contract. This includes the
+raw-ID transfer used by `join` and `cancel`: constructing a deferred operation
+does not establish that it ran. An immediate `.await` does not supply the
+missing checked disposition contract.
 A live handle cannot cross a suspension without cancellation disposition;
 broader task scheduling with public handles remains incomplete.
 The linked source checker inspects the typed pre-CPS `await` before runtime
@@ -2316,15 +2319,14 @@ async fn producer(tx: Sender(Int)):
 
 async fn main(console: Console):
     let (tx, rx) = chan.channel(4).await
-    let producer_handle = chan.spawn(producer(tx)).await
-    chan.join(producer_handle).await
+    producer(tx).await
     chan.consume(rx, fn(n): chan.done(console.print("got ${n}"))).await
 ```
 
 The capacity holds all three sends, so the producer can finish before the
-consumer starts. Joining it first discharges the child handle before the
-consumer's suspensions; a replayable receive continuation cannot capture a
-live must-consume handle.
+consumer starts. This example drives the producer directly without a spawned
+child. A replayable receive continuation cannot capture a live must-consume
+handle.
 
 `chan.channel(cap)` is a bounded channel - the sender blocks when it's full
 while the executor can make progress; pass `0`, or use `chan.unbounded()`, for no
@@ -2342,6 +2344,9 @@ references through integer slots. A spawned task returns `()`, reporting
 results over a channel.
 Its `Handle` is must-consume: every control-flow path must join, cancel, return,
 or transfer it, so accidentally detached work is rejected before execution.
+Public join/cancel operations require an admitted pending-owner disposition
+path; the raw-ID implementation is refused rather than treating wrapper
+consumption as completion. Ordinary copyable Task recipes remain replayable.
 See the book's *Concurrency* chapter and `std/chan` for the full model.
 
 ## 15. In-language tests

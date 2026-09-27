@@ -1516,22 +1516,23 @@ fn finish_canonical_source(
     }).collect::<HashSet<_>>();
     // Ownership is taken only from this checked link, never from a catalog
     // supplied at the plan's use site or a cache keyed by source shape.
+    let runtime_catalog = checked.module_owners.as_ref()
+        .map(|_| checked.runtime_declaration_catalog()).transpose()?;
     let messages_rewritten;
-    let dynamic_runtime_plan = if checked.module_owners.is_some() {
-        let runtime_catalog = checked.runtime_declaration_catalog()?;
+    let dynamic_runtime_plan = if let Some(runtime_catalog) = runtime_catalog.as_ref() {
         (typed_source, messages_rewritten) =
-            crate::canonical_messages::prepare(typed_source, Some(&runtime_catalog))
+            crate::canonical_messages::prepare(typed_source, Some(runtime_catalog))
                 .map_err(|message| PipelineError::Type(TypeError { message }))?;
         let plan = crate::existential::build_dynamic_runtime_plan(
             &typed_source,
             &witness_catalog,
-            &runtime_catalog,
+            runtime_catalog,
         ).map_err(|message| PipelineError::Type(TypeError { message }))?;
         // The plan never leaves this checked-source construction route before
         // preparation. Generated bodies are rechecked before any final witness
         // is bound; original source bytes and loader ownership stay unchanged.
         typed_source = crate::existential::prepare_closed_dynamic(
-            typed_source, &witness_catalog, &runtime_catalog, &plan,
+            typed_source, &witness_catalog, runtime_catalog, &plan,
         ).map_err(|message| PipelineError::Type(TypeError { message }))?;
         Some(plan)
     } else {
@@ -1570,6 +1571,9 @@ fn finish_canonical_source(
     instances.retain(|name, _| !before_preparation.contains(name) || retained.contains(name));
     let mut callable_witness = bind_canonical_callable_witness(&typed_source, instances)?;
     callable_witness.dictionary_comparators = dictionary_comparators;
+    crate::source_bridge_obligations::validate(
+        typed_source.module(), &callable_witness.runtime_functions, runtime_catalog.as_ref(),
+    ).map_err(|message| PipelineError::Type(TypeError { message }))?;
 
     let proper_tail_manifest = typed_source
         .proper_tail_manifest()

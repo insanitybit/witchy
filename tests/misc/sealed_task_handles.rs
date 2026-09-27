@@ -134,7 +134,19 @@ async fn next(n: Int) -> Int:
 async fn main(console: Console):
     let values = chan.par_map([4], fn(n): next(n)).await
     console.print("${values}")
-"#).expect("the task program remains checked source");
-    witchy::codegen::compile_checked_module_artifact(&checked)
-        .expect_unsupported("List(task.Handle) has no move-only SafeWIR carrier proof");
+"#);
+    match checked {
+        Ok(checked) => {
+            witchy::codegen::compile_checked_module_artifact(&checked)
+                .expect_unsupported("List(task.Handle) has no move-only SafeWIR carrier proof");
+        }
+        Err(error) => {
+            // Source may refuse the missing pending-owner transfer before
+            // lowering reaches the affine carrier. Unrelated errors do not
+            // establish either boundary.
+            let message = error.to_string();
+            assert!(message.contains("private source bridge")
+                && message.contains("erases a stored must-consume obligation"), "{message}");
+        }
+    }
 }

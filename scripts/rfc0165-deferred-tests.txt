@@ -61,6 +61,9 @@ witchy::misc rfc0152_semantic_matrix::rfc0152_phase0_cancelled_string_matrix
 witchy::misc rfc0152_semantic_matrix::rfc0152_phase0_large_record_payload_matrix
 witchy::misc rfc0152_semantic_matrix::rfc0152_phase0_quiescence_and_blocked_wake_matrix
 witchy::misc rfc0152_semantic_matrix::rfc0152_phase0_ready_select4_matrix
+# Private Handle-to-ID erasure lacks an admitted pending-owner disposition contract.
+# Keep the lawful spawned slice/join result and zero-leak expectation, not a refusal oracle.
+witchy::misc rfc0167_slice_subscript_in_async::spawned_child_retains_the_slice_until_checked_join
 witchy::misc sealed_task_handles::task_handles_must_be_joined_cancelled_or_returned_on_every_path
 witchy::rfc0080_0130_conformance dynamic_methods::dynamic_method_dispatch_matches_between_interpreter_and_wasm
 witchy::rfc0080_0130_conformance dynamic_methods::explicit_dynamic_method_capabilities_match_between_interpreter_and_wasm

@@ -1441,6 +1441,31 @@ so no A–O row closes. The owned GC result ABI is now implemented separately;
 `task.Step(task.Handle)` still needs a lawful one-shot task capture and
 consuming aggregate extraction before it can be admitted end to end.
 
+Private scheduler obligation erasure (bounded fail-closed mitigation,
+2026-09-27): the current Task carrier made the earlier deferred Handle loss
+executable. At `fc2049d39`, constructing and discarding cancellation printed
+`cold cancellation discarded` then `child escaped cancellation`; awaiting the
+otherwise matching operation printed only `cancellation awaited`. Both were
+admitted unoptimized Wasm with zero heap leaks: heap accounting did not prove
+disposition of the pending scheduler action. Canonical source construction now
+refuses an executable authenticated private bridge that erases a recursively
+stored must input into an ordinary result without an admitted completion or
+transfer contract. Policy selection uses loader-owned Toolchain/std declaration
+identity and the existing bridge registry, not caller spelling or concrete
+resource shapes. Carried output is only a necessary condition, not proof that
+the same obligation survived. Immediate await is not a substitute for that proof.
+This temporarily refuses the existing raw-ID join/cancel paths as well as cold
+discard. The lawful spawned-slice expectation `spawn 30` and heap audit are
+preserved as an explicitly deferred witness; ordinary slice/await coverage stays
+in the default suite. Existing broader channel disposition tests remain deferred.
+The replayable Task contract is unchanged, no lifecycle API is selected, and no
+A-O row closes. Ordinary synchronous resource disposition followed by a data-only
+recipe replays to 77 in admitted unoptimized Wasm with zero leaks. Focused guard
+checks cover the exposed cold-cancel program, opt join, generic callable
+transport across normal-to-opt calls, and normal use of an opt-defined resource
+wrapper. Lightweight identity and stored-field controls are separate from the
+missing lawful pending-owner transfer implementation.
+
 Generated continuation affine ABI and scheduler handle transfer (implemented
 but not an A–O closure, 2026-09-26): the earlier `task.Step(task.Handle)`
 refusals above are superseded for a spawned child whose handle is promptly
