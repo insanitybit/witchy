@@ -731,7 +731,9 @@ fn __meta_stmt_let(mutable: Bool, name: Ident, ty: Option(TypeSyntax), value: Ex
 // Construct a destructuring let statement from sealed pattern and expression
 // handles. The source checker requires the pattern to be irrefutable.
 pub fn stmt_let_pattern(pattern: PatternSyntax, value: ExprSyntax) -> StmtSyntax:
-    __meta_stmt_let_pattern(pattern, value)
+    match pattern:
+        CompilerPatternSyntax(handle) ->
+            __meta_statement_wire("P\n${handle.length()}\n" + handle + expr_wire_handle(value))
 
 fn __meta_stmt_let_pattern(pattern: PatternSyntax, value: ExprSyntax) -> StmtSyntax:
     __meta_stmt_let_pattern(pattern, value)

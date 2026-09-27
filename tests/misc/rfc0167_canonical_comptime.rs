@@ -308,6 +308,29 @@ fn admitted_pattern_composition_checks_list_and_or_patterns_in_both_modes() {
 }
 
 #[test]
+fn admitted_pattern_binding_statement_destructures_a_typed_tuple_in_both_modes() {
+    struct ResetOptimization;
+    impl Drop for ResetOptimization { fn drop(&mut self) { witchy::opt::set_for_tests(None); } }
+    witchy::opt::set_for_tests(Some(witchy::opt::OptSet::none()));
+    let _reset = ResetOptimization;
+    for mode in ["", "mode opt\n"] {
+        let source = format!("{mode}import meta\ncomptime:\n    let pair_ty = quote type:\n        (Int, Int)\n    let int_ty = quote type:\n        Int\n    let pair = meta.param(meta.ident(\"pair\"), pair_ty)\n    let value = quote expr:\n        pair\n    let result = quote expr:\n        left + right\n    let pattern = meta.pattern_tuple([meta.pattern_var(meta.ident(\"left\")), meta.pattern_var(meta.ident(\"right\"))])\n    let binding = meta.stmt_let_pattern(pattern, value)\n    let body = meta.block([binding], Some(result))\n    emit_item(meta.function_block(true, meta.ident(\"sum_pair\"), [pair], Some(int_ty), body))\nfn main(console: Console):\n    console.print(\"${{sum_pair((19, 23))}}\")\n");
+        let checked = witchy::canonical_comptime::check_source_bundle(
+            vec![("generator".into(), source.into_bytes())], "generator",
+            ["generator".to_owned()].into_iter().collect(), owners_for("generator"), limits(),
+        ).expect("typed destructuring statement enters destination checking");
+        let artifact = witchy_lower::codegen::compile_checked_module_artifact(&checked)
+            .expect_lowered("generated destructuring function admits on unoptimized Wasm");
+        let mut runtime = Runtime::batch().unwrap();
+        let mut vm = runtime.spawn_admitted(&artifact,
+            Capabilities { print: true, quiet: true, ..Capabilities::none() }, 64).unwrap();
+        vm.run().unwrap();
+        assert_eq!(vm.output(), ["42"]);
+        assert_eq!(vm.canonical_heap_leaks().unwrap(), Some(0));
+    }
+}
+
+#[test]
 fn admitted_typed_inherent_method_dispatches_in_both_modes() {
     struct ResetOptimization;
     impl Drop for ResetOptimization { fn drop(&mut self) { witchy::opt::set_for_tests(None); } }

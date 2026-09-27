@@ -148,6 +148,18 @@ fn statement_into(mut caller: Caller<'_, VmState>, pointer: i32, length: i32,
                 let (value, origin) = resolve_expr(&value)?;
                 (Stmt::Assign { place_depth: 0, name, value }, origin)
             }
+            StatementSpec::LetPattern { pattern, value } => {
+                if !state.pattern_costs.contains_key(&pattern) {
+                    return Err(Error::msg("compiler statement requires current-session pattern syntax"));
+                }
+                let pattern_value = state.syntax.patterns().get(&pattern).cloned()
+                    .ok_or_else(|| Error::msg("compiler statement pattern has no payload"))?;
+                let pattern_origin = state.syntax.pattern_origins().get(&pattern)
+                    .ok_or_else(|| Error::msg("compiler statement pattern has no origin"))?;
+                let (value, mut origin) = resolve_expr(&value)?;
+                origin.hole_ancestry.extend(pattern_origin.hole_ancestry.iter().cloned());
+                (Stmt::LetPattern { pattern: pattern_value, value }, origin)
+            }
             StatementSpec::Expr(handle) => {
                 let (expr, origin) = resolve_expr(&handle)?;
                 (Stmt::Expr(expr), origin)

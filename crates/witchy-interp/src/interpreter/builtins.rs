@@ -1611,6 +1611,11 @@ impl Interpreter {
                         StatementSpec::Assign { name, value } => Stmt::Assign {
                             place_depth: 0, name, value: resolve_expr(&value)?,
                         },
+                        StatementSpec::LetPattern { pattern, value } => {
+                            let pattern = self.compiler_syntax.patterns().get(&pattern).cloned()
+                                .ok_or_else(|| RuntimeError { message: "meta statement requires typed pattern syntax".into() })?;
+                            Stmt::LetPattern { pattern, value: resolve_expr(&value)? }
+                        }
                         StatementSpec::Expr(handle) => Stmt::Expr(resolve_expr(&handle)?),
                         StatementSpec::Return(handle) => Stmt::Return(Some(resolve_expr(&handle)?)),
                     };
