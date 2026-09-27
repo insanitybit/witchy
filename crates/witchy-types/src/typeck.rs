@@ -3774,15 +3774,23 @@ impl Checker {
         Ok(())
     }
 
-    fn reject_once_match_guard_consumption(
+    fn reject_affine_match_guard_consumption(
         &self,
         before: &HashSet<(usize, String)>,
+        pattern_scope: usize,
     ) -> Result<(), TypeError> {
         for (scope, name) in self.consumed.difference(before) {
             let Some((ty, _)) = self.scopes.get(*scope).and_then(|frame| frame.get(name)) else {
                 continue;
             };
-            if self.ty_carries_once_callable(ty) {
+            // A pattern-local affine child would be extracted again when a
+            // false guard proceeds to another pattern. Until extraction can
+            // be committed after selection, this must remain fail-closed.
+            let consumes_pattern_owner = *scope >= pattern_scope
+                && (self.ty_carries_must_consume(ty)
+                    || self.unique_value_bindings.get(*scope).is_some_and(|names| names.contains(name))
+                    || self.unique_storage_bindings.get(*scope).is_some_and(|names| names.contains(name)));
+            if self.ty_carries_once_callable(ty) || consumes_pattern_owner {
                 return terr(format!(
                     "match guard cannot consume affine value `{name}` because a false guard falls through to later arms"
                 ));
@@ -9308,10 +9316,15 @@ impl Checker {
         let once_before = self.once_invoked.clone();
         let mut branch_facts = Vec::with_capacity(arms.len());
         let mut result_opt_proof: Option<StoredOptProof> = None;
+        let mut fallthrough = (before.clone(), must_before.clone(), once_before.clone());
+        let mut fallthrough_reachable = true;
         for arm in arms {
-            self.consumed = before.clone();
-            self.must_live = must_before.clone();
-            self.once_invoked = once_before.clone();
+            self.consumed = fallthrough.0.clone();
+            self.must_live = fallthrough.1.clone();
+            self.once_invoked = fallthrough.2.clone();
+            let arm_reachable = fallthrough_reachable;
+            let pattern_can_fail = self.pattern_refutable(&arm.pattern, &st).is_some();
+            let outer_scope_count = self.scopes.len();
             self.push();
             if let Some(dup) = pattern_dup_binding(&arm.pattern) {
                 return terr(format!(
@@ -9337,12 +9350,30 @@ impl Checker {
             {
                 self.authorize_unique_pattern_storage(&arm.pattern, &declared);
             }
+            let mut guard_completes = true;
             if let Some(guard) = &arm.guard {
                 let guard_before = self.consumed.clone();
                 let gt = self.infer(guard)?;
                 self.unify(&Ty::Bool, &gt)
                     .map_err(|e| TypeError { message: format!("match guard: {}", e.message) })?;
-                self.reject_once_match_guard_consumption(&guard_before)?;
+                self.reject_affine_match_guard_consumption(&guard_before, outer_scope_count)?;
+                guard_completes = expr_can_complete(guard);
+                // A failed pattern skips the guard, but a false guard has
+                // already performed its transfers. Join those distinct
+                // successors before checking any later arm. Pattern-local
+                // bindings do not exist on the fallthrough edge.
+                let outer_facts = |facts: &HashSet<(usize, String)>| facts.iter()
+                    .filter(|(scope, _)| *scope < outer_scope_count).cloned().collect();
+                let successors = [
+                    (pattern_can_fail, fallthrough.0.clone(), fallthrough.1.clone(), fallthrough.2.clone()),
+                    (guard_completes, outer_facts(&self.consumed), outer_facts(&self.must_live), outer_facts(&self.once_invoked)),
+                ];
+                fallthrough = join_reachable_binding_facts(
+                    &fallthrough.0, &fallthrough.1, &fallthrough.2, &successors,
+                );
+                fallthrough_reachable &= pattern_can_fail || guard_completes;
+            } else {
+                fallthrough_reachable &= pattern_can_fail;
             }
             let bt = match expected {
                 Some(expected) => self.infer_expected(&arm.body, expected)?,
@@ -9362,7 +9393,8 @@ impl Checker {
                 });
             }
             self.reject_live_must_in_current_scope()?;
-            if expr_can_complete(&arm.body) {
+            let arm_completes = arm_reachable && guard_completes && expr_can_complete(&arm.body);
+            if arm_completes {
                 let proof = self.expression_opt_value_proof(&arm.body);
                 result_opt_proof = Some(match result_opt_proof {
                     Some(current) => current.join(proof),
@@ -9371,7 +9403,7 @@ impl Checker {
             }
             self.pop();
             branch_facts.push((
-                expr_can_complete(&arm.body),
+                arm_completes,
                 self.consumed.clone(),
                 self.must_live.clone(),
                 self.once_invoked.clone(),

@@ -2274,3 +2274,22 @@ quotation/builders/emissions, their arena accounting, original block selection,
 all result forms and batching still need canonical execution coverage. The first
 operation creates no AST arena nodes; name quotas are not arena evidence.
 Row Q remains **PARTIAL** and no semantic acceptance row is closed.
+
+### 2026-09-27: match-guard fallthrough disposition (source refusal repair)
+
+The checker carries completed guard effects to later arms rather than restoring
+pre-match ownership. A potentially failed pattern still contributes its skipped
+guard path through the existing reachable-binding join. Consuming an arm-local
+must/unique payload in a guard refuses, because a false guard could otherwise
+re-extract it in another pattern; borrowed inspection remains permitted.
+
+`typeck::match_guard_disposition` supplies expected source refusals for repeated
+transfer of nested resources in normal, opt, normal-to-opt calls and normal
+consumers of opt-defined types. Controls retain borrowing, unconditional guard
+disposition, refutable patterns, lazy guard skips and unreachable-arm behavior.
+This is a source safety repair, not admitted execution evidence. The lawful
+positive with independent result **131313** remains blocked by ownership
+placement at the guarded-match dispatch header (`IncompatibleOwnedEdge`);
+the pending witness and both failed lowerings are preserved in
+`state/agents/match-guard-disposition-20260927.md`. No heap audit completed and
+no semantic acceptance row closes.

@@ -2204,3 +2204,6 @@ mod consuming_sum_operands;
 
 #[path = "typeck/deferred_task_roles.rs"]
 mod deferred_task_roles;
+
+#[path = "typeck/match_guard_disposition.rs"]
+mod match_guard_disposition;
