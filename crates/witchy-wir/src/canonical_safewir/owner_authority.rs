@@ -3,7 +3,7 @@
 use super::authority::*;
 use super::closure_owner_contract::{CaptureStorage, CaptureTransfer, OwnerConstructor, OwnerFamily, OwnerFamilySource, OwnerOperation, SharedReferenceConstructor, SourceConstructor, rooted_slice_carrier, carrier_element_layout_matches};
 use super::{CanonicalModule, ModuleStage, Operation, ValueId, ValueType};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use witchy_canonical_source::closure::ClosureBindingPathStep;
 use witchy_canonical_source::storage::OpaqueOwnerClass;
 
@@ -532,6 +532,11 @@ fn validate_aggregate_family<S: ModuleStage>(
     let mut owner_field = 2_u32;
     let mut move_bearing = false;
     let mut expected_environment = BTreeMap::new();
+    // A family's variants often repeat the same checked field type and
+    // physical value type. The source, layouts, signatures, and owners stay
+    // fixed throughout this proof, so one successful relation proves every
+    // identical pair. Failed relations still refuse at their first site.
+    let mut proven_fields = HashSet::new();
     for (variant_index, (variant, constructor)) in shape.variants.iter().zip(&family.constructors).enumerate() {
         if constructor.witness.is_some()
             || constructor.environment_tag != i64::try_from(variant_index).map_err(|_| refuse())?
@@ -544,16 +549,20 @@ fn validate_aggregate_family<S: ModuleStage>(
             use witchy_canonical_source::storage::ManagedAggregateFieldTransfer;
             let managed_transfer = source.aggregate_managed_field_transfer(source_field);
             let move_field = managed_transfer == Some(ManagedAggregateFieldTransfer::Move);
-            if !value_type_matches_source(
-                declared.value_type,
-                source_field,
-                layouts,
-                candidate.signatures(),
-                &mut CorrespondenceContext::with_owners(candidate),
-                records,
-                candidate.closure_layouts(),
-            ) {
-                return Err(refuse());
+            let key = (declared.value_type, source_field);
+            if !proven_fields.contains(&key) {
+                if !value_type_matches_source(
+                    declared.value_type,
+                    source_field,
+                    layouts,
+                    candidate.signatures(),
+                    &mut CorrespondenceContext::with_owners(candidate),
+                    records,
+                    candidate.closure_layouts(),
+                ) {
+                    return Err(refuse());
+                }
+                proven_fields.insert(key);
             }
             let (storage, transfer) = match declared.value_type {
                 ValueType::Capability(kind) => {
