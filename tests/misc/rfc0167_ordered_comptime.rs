@@ -350,9 +350,16 @@ fn main(console: Console):
         if mode.is_empty() {
             let stale = program.replace("UserBuilder(None, None, None)", "UserBuilder(None, None)")
                 .replace(".with_age(42).with_email(\"ada@example.com\")", ".with_age(42)");
-            std::fs::write(&source, format!("{mode}{stale}")).unwrap();
-            let stale = Command::new(env!("CARGO_BIN_EXE_witchy")).arg(&source).output().unwrap();
-            assert!(!stale.status.success(), "old two-slot construction must fail with the added field");
+            let stale = witchy::canonical_comptime::check_source_bundle(
+                vec![
+                    ("generator".into(), format!("{mode}{stale}").into_bytes()),
+                    ("meta".into(), witchy_syntax::linker::bundled_source("meta")
+                        .expect("bundled meta").as_bytes().to_vec()),
+                ],
+                "generator", ["generator".to_owned()].into_iter().collect(),
+                owners(), witchy::canonical_comptime::source_limits(),
+            ).expect_err("old two-slot construction must fail with the added field");
+            assert!(!stale.is_empty());
         }
     }
 
@@ -371,18 +378,34 @@ fn main(console: Console):
         None -> console.print("None")
 "#;
     std::fs::write(&source, entry).unwrap();
-    let normal_to_opt = Command::new(env!("CARGO_BIN_EXE_witchy")).arg(&source).output().unwrap();
-    assert!(normal_to_opt.status.success(), "{}", String::from_utf8_lossy(&normal_to_opt.stderr));
-    assert_eq!(String::from_utf8_lossy(&normal_to_opt.stdout), "Ada/42/ada@example.com\nNone\n");
+    let dependency_source = std::fs::read(folder.join("dep.witchy")).unwrap();
+    let meta_source = witchy_syntax::linker::bundled_source("meta")
+        .expect("bundled meta").as_bytes().to_vec();
+    let check_entry = |entry: &str| witchy::canonical_comptime::check_source_bundle_with_imported_blocks(
+        vec![
+            ("main".into(), entry.as_bytes().to_vec()),
+            ("dep".into(), dependency_source.clone()),
+            ("meta".into(), meta_source.clone()),
+        ],
+        "main", "dep", ["main".to_owned(), "dep".to_owned()].into_iter().collect(),
+        owners_for(["main", "dep"]), witchy::canonical_comptime::source_limits(),
+    );
+    let checked = check_entry(entry).expect("normal entry can use the imported opt builder");
+    let artifact = witchy_lower::codegen::compile_checked_module_artifact(&checked)
+        .expect_lowered("normal entry with imported opt builder admits on unoptimized Wasm");
+    let mut runtime = Runtime::batch().unwrap();
+    let mut vm = runtime.spawn_admitted(&artifact,
+        Capabilities { print: true, quiet: true, ..Capabilities::none() }, 64).unwrap();
+    vm.run().unwrap();
+    assert_eq!(vm.output(), ["Ada/42/ada@example.com", "None"]);
+    assert_eq!(vm.canonical_heap_leaks().unwrap(), Some(0));
 
     let reused_name = entry.replace(
         "    let complete = dep.UserBuilder(None, None, None).with_name(\"Ada\")",
         "    let name = \"Ada\"\n    let complete = dep.UserBuilder(None, None, None).with_name(name)",
     ) + "    console.print(name)\n";
-    std::fs::write(&source, reused_name).unwrap();
-    let rejected = Command::new(env!("CARGO_BIN_EXE_witchy")).arg(&source).output().unwrap();
-    assert!(!rejected.status.success(), "normal caller cannot reuse a value consumed by an opt setter");
-    let error = String::from_utf8_lossy(&rejected.stderr);
+    let error = check_entry(&reused_name)
+        .expect_err("normal caller cannot reuse a value consumed by an opt setter");
     assert!(
         ["consumed", "moved", "transferred", "ownership", "unique"].iter()
             .any(|word| error.contains(word)),
