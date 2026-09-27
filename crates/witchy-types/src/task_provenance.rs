@@ -1146,6 +1146,26 @@ impl Analyzer<'_> {
     }
 }
 
+fn lambda_scopes(function: &Function) -> Result<BTreeMap<usize, TaskCallableScope>, TypeError> {
+    // AST preorder is stable across summary iterations. Cache these lexical
+    // identities once per immutable function body; summary analysis revisits
+    // the body as callee contracts converge.
+    let mut scopes = BTreeMap::new();
+    let mut next_lambda = 0_u32;
+    witchy_syntax::ast::visit::visit_block(&function.body, &mut |expression| {
+        if matches!(expression, Expr::Lambda { .. }) {
+            let ordinal = next_lambda;
+            next_lambda = next_lambda.checked_add(1).ok_or_else(|| TypeError {
+                message: format!("in `{}`: checked lambda count exceeds u32", function.name),
+            })?;
+            scopes.insert(expression as *const Expr as usize,
+                TaskCallableScope::new(function.name.clone(), ordinal));
+        }
+        Ok::<(), TypeError>(())
+    })?;
+    Ok(scopes)
+}
+
 fn analyze_function(
     module: &Module,
     table: &TypeTable,
@@ -1156,22 +1176,24 @@ fn analyze_function(
     deferred_task_role: Option<&DeferredTaskRole>,
     export_execution_terms: bool,
 ) -> Result<(Summary, BTreeMap<usize, Proof>), TypeError> {
-    // AST preorder is stable across summary iterations. A lexical scope key
-    // keeps lambda formals distinct from enclosing function parameters and
-    // from formals captured by a nested lambda.
-    let mut lambda_scopes = BTreeMap::new();
-    let mut next_lambda = 0_u32;
-    witchy_syntax::ast::visit::visit_block(&function.body, &mut |expression| {
-        if matches!(expression, Expr::Lambda { .. }) {
-            let ordinal = next_lambda;
-            next_lambda = next_lambda.checked_add(1).ok_or_else(|| TypeError {
-                message: format!("in `{}`: checked lambda count exceeds u32", function.name),
-            })?;
-            lambda_scopes.insert(expression as *const Expr as usize,
-                TaskCallableScope::new(function.name.clone(), ordinal));
-        }
-        Ok::<(), TypeError>(())
-    })?;
+    let scopes = lambda_scopes(function)?;
+    analyze_function_with_scopes(
+        module, table, definitions, summaries, function, &scopes,
+        check_await, deferred_task_role, export_execution_terms,
+    )
+}
+
+fn analyze_function_with_scopes(
+    module: &Module,
+    table: &TypeTable,
+    definitions: &BTreeMap<String, TypeDef>,
+    summaries: &BTreeMap<String, Summary>,
+    function: &Function,
+    lambda_scopes: &BTreeMap<usize, TaskCallableScope>,
+    check_await: bool,
+    deferred_task_role: Option<&DeferredTaskRole>,
+    export_execution_terms: bool,
+) -> Result<(Summary, BTreeMap<usize, Proof>), TypeError> {
     let mut analyzer = Analyzer {
         module,
         table,
@@ -1184,7 +1206,7 @@ fn analyze_function(
         returns: Vec::new(),
         required_opt_inputs: Vec::new(),
         await_origins: BTreeMap::new(),
-        lambda_scopes: &lambda_scopes,
+        lambda_scopes,
         active_lambda_scopes: Vec::new(),
         lambda_parameter_scopes: Vec::new(),
         capture_owner: None,
@@ -1403,6 +1425,9 @@ fn analyze_task_behavior(
             _ => None,
         })
         .collect();
+    let function_lambda_scopes = functions.iter()
+        .map(|function| lambda_scopes(function))
+        .collect::<Result<Vec<_>, _>>()?;
     // Summary lookup reads only names from direct calls and function values.
     // A summary change therefore requires another pass only through bodies
     // that mention that name. Scan nested lambdas too: their bodies can read
@@ -1450,7 +1475,8 @@ fn analyze_task_behavior(
                 if !dirty.contains(&index) {
                     continue;
                 }
-                let mut summary = analyze_function(module, table, &definitions, &summaries, function, false, deferred_task_role, export_declarations)?.0;
+                let mut summary = analyze_function_with_scopes(module, table, &definitions, &summaries,
+                    function, &function_lambda_scopes[index], false, deferred_task_role, export_declarations)?.0;
                 if widened.contains(&function.name) {
                     summary.result = summary.result.invalidated();
                 }
@@ -1478,8 +1504,9 @@ fn analyze_task_behavior(
         }
         if converged { break; }
         let mut growing = BTreeSet::new();
-        for function in &functions {
-            let next = analyze_function(module, table, &definitions, &summaries, function, false, deferred_task_role, export_declarations)?.0;
+        for (index, function) in functions.iter().enumerate() {
+            let next = analyze_function_with_scopes(module, table, &definitions, &summaries,
+                function, &function_lambda_scopes[index], false, deferred_task_role, export_declarations)?.0;
             let prior = summaries.get(&function.name);
             if prior.is_some_and(|prior| prior.required_opt_inputs != next.required_opt_inputs) {
                 return Err(TypeError {
@@ -1497,8 +1524,9 @@ fn analyze_task_behavior(
         return Err(TypeError { message: "task execution provenance summaries did not converge after bounded result widening".into() });
     }
     let mut awaits = BTreeMap::new();
-    for function in &functions {
-        awaits.extend(analyze_function(module, table, &definitions, &summaries, function, true, deferred_task_role, export_declarations)?.1);
+    for (index, function) in functions.iter().enumerate() {
+        awaits.extend(analyze_function_with_scopes(module, table, &definitions, &summaries,
+            function, &function_lambda_scopes[index], true, deferred_task_role, export_declarations)?.1);
     }
     let mut declarations = BTreeMap::new();
     for item in &module.items {
