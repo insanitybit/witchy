@@ -419,22 +419,39 @@ fn main(console: Console):
 fn admitted_type_info_uses_imported_definition_identity_across_modes() {
     let folder = TempDir::new("admitted-imported-type-info");
     let source = folder.join("main.witchy");
-    let dependency = folder.join("dep.witchy");
-    for (dependency_mode, entry_mode) in [("", ""), ("mode opt\n", ""), ("mode opt\n", "mode opt\n")] {
-        std::fs::write(&dependency, format!("{dependency_mode}type Inner:\n    value: Int\ntype Wrapper:\n    child: Inner\ntype Boxed(a):\n    item: a\n")).unwrap();
-        std::fs::write(folder.join("other.witchy"), format!("{entry_mode}type Inner:\n    value: Int\n")).unwrap();
-        std::fs::write(&source, format!("{entry_mode}import dep\nimport other\nfrom dep import Boxed\nimport meta\ncomptime:\n    let wrapped = type_info(dep.Wrapper)\n    let boxed = type_info(Boxed(Int))\n    let qualified = type_info(dep.Boxed(Int))\n    let caller_boxed = type_info(dep.Boxed(other.Inner))\n    match wrapped.fields[0].type_expr:\n        meta.TNamed(name, _) ->\n            match caller_boxed.fields[0].type_expr:\n                meta.TNamed(caller_name, _) ->\n                    if name == \"dep.Inner\" && caller_name == \"other.Inner\" && boxed.fields[0].name == \"item\" && qualified.fields[0].name == \"item\":\n                        emit_item(quote item:\n                            fn answer() -> Int:\n                                44\n                        )\n                    else: fail(\"wrong imported type identity\")\n                _ -> fail(\"wrong caller type argument\")\n        _ -> fail(\"wrong imported field type\")\nfn main(console: Console):\n    console.print(\"${{answer()}}\")\n")).unwrap();
-        let run = Command::new(env!("CARGO_BIN_EXE_witchy")).arg(&source).output().unwrap();
-        assert!(run.status.success(), "{}", String::from_utf8_lossy(&run.stderr));
-        assert_eq!(String::from_utf8_lossy(&run.stdout), "44\n");
-    }
+    // One normal-mode caller can cover both normal and opt dependencies. This
+    // keeps the source-origin comparison while avoiding a second CLI compile.
+    std::fs::write(folder.join("dep.witchy"), "type Inner:\n    value: Int\ntype Wrapper:\n    child: Inner\ntype Boxed(a):\n    item: a\n").unwrap();
+    std::fs::write(folder.join("depopt.witchy"), "mode opt\ntype Inner:\n    value: Int\ntype Wrapper:\n    child: Inner\ntype Boxed(a):\n    item: a\n").unwrap();
+    std::fs::write(folder.join("other.witchy"), "type Inner:\n    value: Int\n").unwrap();
+    std::fs::write(&source, "import dep\nimport depopt\nimport other\nfrom dep import Boxed\nimport meta\ncomptime:\n    let normal_wrapped = type_info(dep.Wrapper)\n    let opt_wrapped = type_info(depopt.Wrapper)\n    let boxed = type_info(Boxed(Int))\n    let normal_qualified = type_info(dep.Boxed(Int))\n    let opt_qualified = type_info(depopt.Boxed(Int))\n    let normal_caller_boxed = type_info(dep.Boxed(other.Inner))\n    let opt_caller_boxed = type_info(depopt.Boxed(other.Inner))\n    match normal_wrapped.fields[0].type_expr:\n        meta.TNamed(normal_name, _) ->\n            match opt_wrapped.fields[0].type_expr:\n                meta.TNamed(opt_name, _) ->\n                    match normal_caller_boxed.fields[0].type_expr:\n                        meta.TNamed(normal_caller_name, _) ->\n                            match opt_caller_boxed.fields[0].type_expr:\n                                meta.TNamed(opt_caller_name, _) ->\n                                    if normal_name == \"dep.Inner\" && opt_name == \"depopt.Inner\" && normal_caller_name == \"other.Inner\" && opt_caller_name == \"other.Inner\" && boxed.fields[0].name == \"item\" && normal_qualified.fields[0].name == \"item\" && opt_qualified.fields[0].name == \"item\":\n                                        emit_item(quote item:\n                                            fn answer() -> Int:\n                                                44\n                                        )\n                                    else: fail(\"wrong imported type identity\")\n                                _ -> fail(\"wrong opt caller type argument\")\n                        _ -> fail(\"wrong normal caller type argument\")\n                _ -> fail(\"wrong opt imported field type\")\n        _ -> fail(\"wrong normal imported field type\")\nfn main(console: Console):\n    console.print(\"${answer()}\")\n").unwrap();
+    let run = Command::new(env!("CARGO_BIN_EXE_witchy")).arg(&source).output().unwrap();
+    assert!(run.status.success(), "{}", String::from_utf8_lossy(&run.stderr));
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "44\n");
+
+    // Keep the opt-caller case separate because caller mode is module-wide.
+    std::fs::write(folder.join("dep.witchy"), "mode opt\ntype Inner:\n    value: Int\ntype Wrapper:\n    child: Inner\ntype Boxed(a):\n    item: a\n").unwrap();
+    std::fs::write(folder.join("other.witchy"), "mode opt\ntype Inner:\n    value: Int\n").unwrap();
+    std::fs::write(&source, "mode opt\nimport dep\nimport other\nfrom dep import Boxed\nimport meta\ncomptime:\n    let wrapped = type_info(dep.Wrapper)\n    let boxed = type_info(Boxed(Int))\n    let qualified = type_info(dep.Boxed(Int))\n    let caller_boxed = type_info(dep.Boxed(other.Inner))\n    match wrapped.fields[0].type_expr:\n        meta.TNamed(name, _) ->\n            match caller_boxed.fields[0].type_expr:\n                meta.TNamed(caller_name, _) ->\n                    if name == \"dep.Inner\" && caller_name == \"other.Inner\" && boxed.fields[0].name == \"item\" && qualified.fields[0].name == \"item\":\n                        emit_item(quote item:\n                            fn answer() -> Int:\n                                44\n                        )\n                    else: fail(\"wrong imported type identity\")\n                _ -> fail(\"wrong caller type argument\")\n        _ -> fail(\"wrong imported field type\")\nfn main(console: Console):\n    console.print(\"${answer()}\")\n").unwrap();
+    let run = Command::new(env!("CARGO_BIN_EXE_witchy")).arg(&source).output().unwrap();
+    assert!(run.status.success(), "{}", String::from_utf8_lossy(&run.stderr));
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "44\n");
 
     std::fs::write(folder.join("other.witchy"), "type Hidden:\n    x: Int\n").unwrap();
-    std::fs::write(&dependency, "import other\ntype Wrapper:\n    child: other.Hidden\n").unwrap();
+    std::fs::write(folder.join("dep.witchy"), "import other\ntype Wrapper:\n    child: other.Hidden\n").unwrap();
     std::fs::write(&source, "import dep\ncomptime:\n    let _ = type_info(other.Hidden)\nfn main() -> Int:\n    0\n").unwrap();
-    let hidden = Command::new(env!("CARGO_BIN_EXE_witchy")).arg(&source).output().unwrap();
-    assert!(!hidden.status.success());
-    assert!(String::from_utf8_lossy(&hidden.stderr).contains("module `other` is not imported"));
+    let error = witchy::canonical_comptime::check_source_bundle(
+        vec![
+            ("generator".into(), std::fs::read(&source).unwrap()),
+            ("dep".into(), std::fs::read(folder.join("dep.witchy")).unwrap()),
+            ("other".into(), std::fs::read(folder.join("other.witchy")).unwrap()),
+        ],
+        "generator",
+        ["generator".to_owned(), "dep".to_owned(), "other".to_owned()].into_iter().collect(),
+        owners_for(["generator", "dep", "other"]),
+        limits(),
+    ).expect_err("transitively available modules must not enter the caller's type namespace");
+    assert!(error.contains("module `other` is not imported"), "{error}");
 }
 
 #[test]
