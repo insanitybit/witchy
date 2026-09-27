@@ -40,6 +40,8 @@ mod list_update;
 
 #[path = "canonical_list_pop.rs"]
 mod list_pop;
+#[path = "canonical_record_reconstruction.rs"]
+mod record_reconstruction;
 
 #[path = "canonical_write_back.rs"]
 mod write_back;
@@ -7550,31 +7552,55 @@ impl FunctionLowerer<'_> {
                 (args, 0, 0, shape.fields.len()),
             _ => return Err(CanonicalLoweringError::UnsupportedExpression("consuming aggregate pattern")),
         };
-        if matches!(self.values[&scrutinee], ValueType::Gc(_)) {
-            return self.lower_consuming_opaque_aggregate_pattern(
-                scrutinee, args, source, variant_index, shape,
-            );
-        }
-        if args.len() != arity || !matches!(self.values[&scrutinee], ValueType::Ref(_)) {
+        if args.len() != arity {
             return Err(CanonicalLoweringError::UnsupportedExpression("consuming aggregate payload"));
         }
-        let mut bindings = Vec::new();
+        let mut selected = Vec::with_capacity(arity);
         for (offset, argument) in args.iter().enumerate() {
-            let slot = first_field + offset;
+            let field = &shape.fields[first_field + offset];
+            let affine = witchy_canonical_source::storage::affine_storage_shape(field, self.definitions).is_some();
+            let keep = match argument {
+                Pattern::Var(name) if name != "_" => true,
+                Pattern::Wildcard | Pattern::Var(_) if !affine => false,
+                _ => return Err(CanonicalLoweringError::UnsupportedExpression("unbound affine payload")),
+            };
+            selected.push(keep);
+        }
+        let values = self.take_consuming_aggregate_fields(scrutinee, source, variant_index, shape, &selected)?;
+        Ok(args.iter().zip(values).filter_map(|(argument, value)| match (argument, value) {
+            (Pattern::Var(name), Some(value)) => Some((name.clone(), value)),
+            _ => None,
+        }).collect())
+    }
+
+    /// Shared positional extraction for patterns and record reconstruction.
+    /// The caller proves that unselected fields may be discarded. Selected
+    /// affine fields move; other selected fields obtain independent read tokens.
+    fn take_consuming_aggregate_fields(
+        &mut self,
+        scrutinee: ValueId,
+        source: &Type,
+        variant_index: usize,
+        shape: &ScalarAggregateShape,
+        selected: &[bool],
+    ) -> Result<Vec<Option<ValueId>>, CanonicalLoweringError> {
+        let variant = shape.variants.get(variant_index)
+            .ok_or(CanonicalLoweringError::UnsupportedExpression("consuming source variant"))?;
+        if selected.len() != variant.arity {
+            return Err(CanonicalLoweringError::UnsupportedExpression("consuming aggregate field selection"));
+        }
+        if matches!(self.values[&scrutinee], ValueType::Gc(_)) {
+            return self.take_consuming_opaque_aggregate_fields(scrutinee, selected, source, variant_index, shape);
+        }
+        if !matches!(self.values[&scrutinee], ValueType::Ref(_)) {
+            return Err(CanonicalLoweringError::UnsupportedExpression("consuming aggregate payload"));
+        }
+        let mut values = Vec::with_capacity(selected.len());
+        for (offset, selected) in selected.iter().enumerate() {
+            if !selected { values.push(None); continue; }
+            let slot = variant.first_field + offset;
             let field = &shape.fields[slot];
             let affine = witchy_canonical_source::storage::affine_storage_shape(field, self.definitions).is_some();
-            let Pattern::Var(name) = argument else {
-                if affine || !matches!(argument, Pattern::Wildcard) {
-                    return Err(CanonicalLoweringError::UnsupportedExpression("unbound affine payload"));
-                }
-                continue;
-            };
-            if name == "_" {
-                if affine {
-                    return Err(CanonicalLoweringError::UnsupportedExpression("discarded affine payload"));
-                }
-                continue;
-            }
             let value_type = self.field_value_type(field)?;
             let value = if affine {
                 let slot = u32::try_from(slot).map_err(|_| CanonicalLoweringError::IdOverflow)?;
@@ -7595,36 +7621,36 @@ impl FunctionLowerer<'_> {
             } else {
                 self.load_source_aggregate_field(scrutinee, source, variant_index, offset, slot, value_type)?
             };
-            bindings.push((name.clone(), value));
+            values.push(Some(value));
         }
         self.push_operation(Operation::DropRef { object: scrutinee });
-        Ok(bindings)
+        Ok(values)
     }
 
-    fn lower_consuming_opaque_aggregate_pattern(
+    fn take_consuming_opaque_aggregate_fields(
         &mut self,
         scrutinee: ValueId,
-        args: &[Pattern],
+        selected: &[bool],
         source: &Type,
         variant_index: usize,
         shape: &ScalarAggregateShape,
-    ) -> Result<Vec<(String, ValueId)>, CanonicalLoweringError> {
+    ) -> Result<Vec<Option<ValueId>>, CanonicalLoweringError> {
         let (layout, owner) = self.opaque_aggregate_family(source)?;
         let variant = layout.variants.get(variant_index)
             .ok_or(CanonicalLoweringError::UnsupportedExpression("opaque consuming variant"))?;
         let constructor = owner.constructors.iter().find(|constructor|
             constructor.environment_tag == variant.environment_tag)
             .ok_or(CanonicalLoweringError::UnsupportedExpression("opaque consuming constructor"))?;
-        if args.len() != variant.fields.len()
-            || variant.storage.len() != args.len()
-            || constructor.captures.len() != args.len()
+        if selected.len() != variant.fields.len()
+            || variant.storage.len() != selected.len()
+            || constructor.captures.len() != selected.len()
             || !matches!(self.values[&scrutinee], ValueType::Gc(id) if id == layout.owner_type)
         {
             return Err(CanonicalLoweringError::UnsupportedExpression("opaque consuming shape"));
         }
         let environment = self.fresh(ValueType::Ref(layout.environment))?;
         let mut owner_fields = Vec::new();
-        let mut owner_outputs = vec![None; args.len()];
+        let mut owner_outputs = vec![None; selected.len()];
         for (offset, storage) in variant.storage.iter().enumerate() {
             if matches!(storage, CaptureStorage::OwnerField(_)) {
                 let value_type = constructor.captures[offset].value_type;
@@ -7646,22 +7672,14 @@ impl FunctionLowerer<'_> {
         }));
         let source_variant = shape.variants.get(variant_index)
             .ok_or(CanonicalLoweringError::UnsupportedExpression("consuming source variant"))?;
-        let mut bindings = Vec::new();
-        for (offset, argument) in args.iter().enumerate() {
+        let mut values = Vec::with_capacity(selected.len());
+        for (offset, selected) in selected.iter().enumerate() {
+            // Deconstruct's unused owner outputs remain owned SSA definitions.
+            // canonical_owned inserts their typed Drop/DropList at last use;
+            // environment-backed fields instead retire with the environment.
+            if !selected { values.push(None); continue; }
             let field = &variant.fields[offset];
             let affine = witchy_canonical_source::storage::affine_storage_shape(field, self.definitions).is_some();
-            let Pattern::Var(name) = argument else {
-                if affine || !matches!(argument, Pattern::Wildcard) {
-                    return Err(CanonicalLoweringError::UnsupportedExpression("unbound affine payload"));
-                }
-                continue;
-            };
-            if name == "_" {
-                if affine {
-                    return Err(CanonicalLoweringError::UnsupportedExpression("discarded affine payload"));
-                }
-                continue;
-            }
             let value_type = constructor.captures[offset].value_type;
             let value = match variant.storage[offset] {
                 CaptureStorage::OwnerField(_) => owner_outputs[offset].ok_or(
@@ -7691,10 +7709,10 @@ impl FunctionLowerer<'_> {
             if shape.fields.get(source_variant.first_field + offset) != Some(field) {
                 return Err(CanonicalLoweringError::UnsupportedExpression("opaque source field drift"));
             }
-            bindings.push((name.clone(), value));
+            values.push(Some(value));
         }
         self.push_operation(Operation::DropRef { object: environment });
-        Ok(bindings)
+        Ok(values)
     }
 
     fn lower_or_pattern_decision(
@@ -11837,11 +11855,15 @@ impl FunctionLowerer<'_> {
                     .collect::<Result<Vec<_>, _>>()?;
                 self.lower_aggregate_for_source(&declared, &shape, index, values)
             }
-            Expr::Record { name, fields, spread: None } =>
-                self.lower_record_literal(expression, name, fields, None, Some(&declared)),
+            Expr::Record { name, fields, spread } =>
+                self.lower_record_literal(expression, name, fields, spread.as_deref(), Some(&declared)),
             Expr::List(items) => self.lower_list_literal(expression, items, Some(&declared)),
-            Expr::Record { spread: Some(_), .. } | Expr::RecordUpdate { .. } =>
-                Err(CanonicalLoweringError::UnsupportedExpression("affine record spread requires consuming field proof")),
+            Expr::RecordUpdate { base, fields, .. } => {
+                let Type::Named(name, _) = declared.unqualified() else {
+                    return Err(CanonicalLoweringError::UnsupportedExpression("affine record update type"));
+                };
+                self.lower_record_literal(expression, name, fields, Some(base), Some(declared))
+            }
             _ => {
                 let value = self.lower_expr(expression)?;
                 if self.values[&value] != self.field_value_type(declared)? {
@@ -12332,15 +12354,10 @@ impl FunctionLowerer<'_> {
         let shape = scalar_aggregate_shape(&source_type, self.definitions)
             .filter(|shape| !shape.tagged)
             .ok_or(CanonicalLoweringError::UnsupportedExpression("non-record literal"))?;
-        if let Some(base) = spread
-            && witchy_canonical_source::storage::affine_storage_shape(
-                &self.expression_storage_type(base)?, self.definitions,
-            ).is_some()
-        {
-            return Err(CanonicalLoweringError::UnsupportedExpression(
-                "affine record spread requires consuming field proof",
-            ));
-        }
+        let consuming_base = spread.map(|base| self.expression_storage_type(base))
+            .transpose()?.filter(|source| witchy_canonical_source::storage::affine_storage_shape(
+                source, self.definitions,
+            ).is_some());
         if shape.packed {
             return Err(CanonicalLoweringError::UnsupportedExpression("packed record literal"));
         }
@@ -12359,9 +12376,9 @@ impl FunctionLowerer<'_> {
         // binding from which an earlier reference-valued field was read.
         let mut overrides = Vec::with_capacity(fields.len());
         for (field, expression) in fields {
-            let value = self.lower_expr(expression)?;
             let index = field_names.iter().position(|name| name == field)
                 .ok_or_else(|| CanonicalLoweringError::MissingBinding(field.clone()))?;
+            let value = self.lower_expr_for_storage(expression, Some(&field_types[index]))?;
             let affine = witchy_canonical_source::storage::affine_storage_shape(
                 &field_types[index], self.definitions,
             ).is_some();
@@ -12372,7 +12389,12 @@ impl FunctionLowerer<'_> {
             } else if matches!(self.values[&value], ValueType::Ref(_) | ValueType::Gc(_)) {
                 self.clone_reference_token(value)?
             } else { value };
-            overrides.push((field, value));
+            overrides.push((index, value));
+        }
+        if let (Some(base), Some(base_type)) = (spread, consuming_base) {
+            return self.lower_consuming_record_reconstruction(
+                base, &base_type, &source_type, &shape, &overrides,
+            );
         }
         let base = match spread {
             Some(base) => Some(self.lower_expr(base)?),
@@ -12380,7 +12402,7 @@ impl FunctionLowerer<'_> {
         };
         let mut values = Vec::with_capacity(field_names.len());
         for (index, field_name) in field_names.iter().enumerate() {
-            if let Some((_, value)) = overrides.iter().find(|(given, _)| *given == field_name) {
+            if let Some((_, value)) = overrides.iter().find(|(given, _)| *given == index) {
                 values.push(*value);
             } else if let Some(base) = base {
                 let index = u32::try_from(index).map_err(|_| CanonicalLoweringError::IdOverflow)?;

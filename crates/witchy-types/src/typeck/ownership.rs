@@ -1,19 +1,27 @@
-//! Ownership transfer at consuming sum operations, before their control-flow split.
+//! Ownership transfer when an operation consumes an aggregate shell.
 
 use super::{terr, Checker, Expr, Ty, TypeError};
 
 impl Checker {
-    /// `?` and `??` move an affine wrapper's payload out and retire the wrapper.
+    /// Sum extraction and record reconstruction move selected fields out and
+    /// retire the old shell after checking every discarded field's disposition.
     /// Reuse stored-type classification and ordinary transfer facts so neither
     /// a later expression nor a lazy fallback can use that owner again.
-    pub(super) fn transfer_consuming_sum_operand(
+    pub(super) fn transfer_consuming_aggregate_operand(
         &mut self,
         expression: &Expr,
         ty: &Ty,
         context: &str,
     ) -> Result<(), TypeError> {
+        let explicitly_moved = matches!(expression, Expr::Unary { op: super::UnOp::Move, .. });
+        if let Some((root, _)) = self.affine_place(expression)
+            && self.is_consumed_binding(&root) && !explicitly_moved
+        {
+            return terr(format!("{context} uses `{root}` after it was already transferred"));
+        }
         self.reject_implicit_once_copy(expression, ty, context)?;
-        self.transfer_unique_value(expression, ty, context)?;
+        // A checked `move` already performed this transition during inference.
+        if !explicitly_moved { self.transfer_unique_value(expression, ty, context)?; }
         if !self.ty_carries_must_consume(ty) {
             return Ok(());
         }

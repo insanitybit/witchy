@@ -2169,6 +2169,8 @@ mod opt_stored_callback_invocation;
 mod nested_opt_callable_contracts;
 #[path = "typeck/opt_callable_erasure.rs"]
 mod opt_callable_erasure;
+#[path = "typeck/consuming_record_reconstruction.rs"]
+mod consuming_record_reconstruction;
 #[path = "typeck/reference_erasure.rs"]
 mod reference_erasure;
 #[path = "typeck/reference_contract_matrix.rs"]

@@ -8764,6 +8764,11 @@ impl Checker {
                         return terr(format!("record `{tyname}` has no field `{fname}`"));
                     };
                     let expected = self.subst_vars(fty, &map);
+                    if self.ty_carries_must_consume(&expected) {
+                        return terr(format!(
+                            "record update cannot discard must-consume field `{fname}`; consume the whole record and reconstruct it after discharging that field"
+                        ));
+                    }
                     if borrowed_shell {
                         let relation_field = self
                             .borrowed_nominal_relation_fields
@@ -8797,7 +8802,7 @@ impl Checker {
                 // Now the fields are evaluated, the base is consumed. A field
                 // expression that itself consumed the base still fails here,
                 // which is the affine rule in written evaluation order.
-                self.transfer_unique_value(base, &bt, "record spread/update")?;
+                self.transfer_consuming_aggregate_operand(base, &bt, "record spread/update")?;
                 Ok(Ty::Named(tyname.into(), base_args))
             }
             Expr::Try(inner) => {
@@ -8844,7 +8849,7 @@ impl Checker {
                         ))
                     }
                 };
-                self.transfer_consuming_sum_operand(inner, &it, "`?` operand")?;
+                self.transfer_consuming_aggregate_operand(inner, &it, "`?` operand")?;
                 // `?` has an implicit error-return edge after its operand has
                 // been evaluated. Check obligations at exactly that point: an
                 // `own` operand call has already discharged its argument, while
@@ -9032,7 +9037,7 @@ impl Checker {
             if (name == "Option".into() && args.len() == 1)
                 || (name == "Result".into() && args.len() == 2))
         {
-            self.transfer_consuming_sum_operand(lhs, &lt, "`??` left operand")?;
+            self.transfer_consuming_aggregate_operand(lhs, &lt, "`??` left operand")?;
         }
         // The left operand always runs. A lazy right operand has an additional
         // skipped edge: consuming a resource there cannot discharge the owner
