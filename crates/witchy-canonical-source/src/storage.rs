@@ -1236,16 +1236,14 @@ pub fn affine_storage_erased_type(
     }
 }
 
-/// Identity for a linear-memory aggregate layout. A proved affine field
-/// changes its pointer slot to owned-nullable, so its checked qualifier is
-/// part of the layout key even though HM type equality erases that qualifier.
+/// Identity for linear-memory storage with affine descendants. A proved
+/// affine child changes its slot or element ownership, so its checked
+/// qualifier is part of the layout key even though HM equality erases it.
 pub fn aggregate_layout_identity(
     ty: &Type,
     definitions: &BTreeMap<String, TypeDef>,
 ) -> Option<Type> {
-    if affine_storage_shape(ty, definitions).is_some()
-        && scalar_aggregate_shape(ty, definitions).is_some_and(|shape| !shape.packed)
-    {
+    if !matches!(ty, Type::Qualified(..)) && affine_storage_shape(ty, definitions).is_some() {
         Some(ty.unqualified().clone())
     } else {
         crate::aggregates::canonical_owner_aggregate_identity(ty, definitions)
@@ -1307,6 +1305,7 @@ impl StoragePlan {
                 Some(ListElementDisposition::Cloneable),
             Self::AuthenticatedPlace(plan) if plan.cloneable() => Some(ListElementDisposition::Cloneable),
             Self::AuthenticatedPlace(plan) if plan.movable() => Some(ListElementDisposition::MoveOnly),
+            Self::RetainedGraphList(plan) if plan.cloneable() => Some(ListElementDisposition::Cloneable),
             Self::MoveOnlyList(_) => Some(ListElementDisposition::MoveOnly),
             _ => None,
         }

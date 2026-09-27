@@ -1891,6 +1891,26 @@ alias transfer and reuse of a consumed `?` operand both refuse. Other unproved
 operand origins remain fail closed.
 These checks do not include a zero-leak audit or the full A-O matrix.
 
+Typed affine list construction (implemented but unverified, 2026-09-26):
+checked result and local storage ascriptions now reach each list literal's
+elements recursively. A list whose element is an affine aggregate retains its
+qualified storage in the physical layout identity; nested cloneable graph
+lists use the same recursive element judgment in layout construction, lowering,
+and SafeWIR correspondence. Move-only list allocations use a source-bound
+nominal identity, and SafeWIR binds sequence owner plans only to that exact
+identity, so an ordinary list with the same packed layout cannot inherit an
+affine owner plan. Ordinary and affine list allocations coexist in one admitted
+program and return the expected combined length 2. `List(Box(unique String))` and a deeper list of
+the same carrier pass focused compiler admission and run with the expected
+length 1. Reusing an ordinary `Box(String)` twice as qualified affine elements
+refuses at the source-to-layout boundary. The recursive admission is structural
+evidence only; hand-computed admitted-Wasm and zero-leak audits are pending,
+and no A-O row closes.
+
+The affine direct-result ABI also preserves the checked `OwnedGc` contract
+for an opaque owner result. The existing owned-GC channel/generator smoke
+case passes again; SafeWIR still requires an owned origin for that family.
+
 ## Optimization-readiness carrier audit
 
 This inventory identifies production carriers already capable of preserving the

@@ -399,7 +399,7 @@ pub(super) fn enqueue_layout_children(
                         pointee, semantics: PointerSlot::Owned,
                     } if { pending.push((*pointee, plan.source().clone())); true });
                 }
-                StoragePlan::MoveOnlyList(_) => {
+                StoragePlan::MoveOnlyList(_) | StoragePlan::RetainedGraphList(_) => {
                     return matches!(element.kind(), LayoutKind::RuntimePointerValueSlot {
                         pointee, semantics: PointerSlot::Owned,
                     } if { pending.push((*pointee, source_element.clone())); true });

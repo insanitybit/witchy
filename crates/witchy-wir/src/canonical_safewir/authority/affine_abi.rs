@@ -199,6 +199,11 @@ fn bind_local_allocations<S: ModuleStage>(
     }
     for (source_type, shape) in affine_types {
         for layout in allocated_layouts.iter().copied() {
+            if matches!(shape, AffineStorageShape::Sequence(_))
+                && !sequence_nominal_matches_source(source_type, layout, layouts, source)
+            {
+                continue;
+            }
             if !layout_matches_source_with_closures(
                 layout, source_type, layouts, records, candidate.closure_layouts(),
                 candidate.signatures(), &mut CorrespondenceContext::with_owners(candidate),
@@ -212,6 +217,21 @@ fn bind_local_allocations<S: ModuleStage>(
         }
     }
     Ok(())
+}
+
+fn sequence_nominal_matches_source(
+    source_type: &Type,
+    layout: crate::layout::LayoutId,
+    layouts: &crate::layout::LayoutInterner,
+    source: &witchy_canonical_source::source::CanonicalSourceView<'_>,
+) -> bool {
+    let Some(identity) = witchy_canonical_source::storage::aggregate_layout_identity(
+        source_type, source.type_definitions(),
+    ) else { return false };
+    let Some(expected) = witchy_canonical_source::structural_identity::recursive_nominal_layout_key(&identity)
+    else { return false };
+    matches!(layouts.get(layout).map(|descriptor| descriptor.kind()),
+        Some(crate::layout::LayoutKind::OpaqueNominal { key }) if *key == expected)
 }
 
 fn bind_owner_environments<S: ModuleStage>(
@@ -322,6 +342,11 @@ fn bind_plan(
             AffinePhysicalPlan::NullableFields { fields: bound, allow_absent: source_shape.tagged }
         }
         AffineStorageShape::Sequence(child) => {
+            // The packed-list body is shared with cloneable lists. Only the
+            // source-derived nominal root may receive a move-only plan.
+            if !sequence_nominal_matches_source(source_type, layout, layouts, source) {
+                return None;
+            }
             let witchy_canonical_source::storage::StoragePlan::MoveOnlyList(sequence) = source.storage_plan(source_type.unqualified()) else { return None };
             let Type::Named(_, arguments) = sequence.source() else { return None };
             let [child_source] = arguments.as_slice() else { return None };

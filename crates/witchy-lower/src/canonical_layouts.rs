@@ -1102,11 +1102,13 @@ fn intern_v1_layout_checked(
         // reserved identity, regardless of whether its body is already bound.
         return intern_recursive_nominal(interner, &key);
     }
-    // An affine physical record may share its field layout with a tagged sum
-    // whose inactive fields may be absent. Keep the source identity on the
-    // layout so allocation and ABI binding select the same presence policy.
-    if scalar_aggregate_shape(&key, definitions).is_some_and(|shape| !shape.packed)
-        && affine_storage_shape(&key, definitions).is_some()
+    // Affine aggregates and sequences must keep their checked source identity
+    // on allocations. A packed list can otherwise share its physical layout
+    // with an ordinary list while requiring different ownership operations.
+    let storage = StoragePlan::classify(&key, definitions, |_| Some(0));
+    if affine_storage_shape(&key, definitions).is_some()
+        && (scalar_aggregate_shape(&key, definitions).is_some_and(|shape| !shape.packed)
+            || matches!(storage, StoragePlan::MoveOnlyList(_)))
     {
         if !active.insert(key.clone()) {
             return Err(CanonicalLayoutError::UnsupportedType(format!(

@@ -2423,6 +2423,10 @@ fn checked_signature(
             *result_contracts.first_mut().ok_or_else(|| {
                 CanonicalLoweringError::InvalidCheckedFunctionType(function.name.clone())
             })? = ResultContract::Unique { layout: *layout };
+        } else if let Some(ValueType::Gc(family)) = checked_signature.results.first() {
+            *result_contracts.first_mut().ok_or_else(|| {
+                CanonicalLoweringError::InvalidCheckedFunctionType(function.name.clone())
+            })? = ResultContract::OwnedGc { family: *family };
         } else if !checked_signature.results.iter().all(|value| is_inline_scalar(*value)) {
             return Err(CanonicalLoweringError::UnsupportedType(
                 function.ret.clone().expect("checked above"),
@@ -11612,7 +11616,7 @@ impl FunctionLowerer<'_> {
                 }
             }
             Expr::Str(value) => self.lower_string_literal(value),
-            Expr::List(items) => self.lower_list_literal(expression, items),
+            Expr::List(items) => self.lower_list_literal(expression, items, None),
             Expr::Tuple(items) => {
                 if items.is_empty() {
                     return self.push_zero(ValueType::Unit);
@@ -11794,6 +11798,7 @@ impl FunctionLowerer<'_> {
             }
             Expr::Record { name, fields, spread: None } =>
                 self.lower_record_literal(expression, name, fields, None, Some(&declared)),
+            Expr::List(items) => self.lower_list_literal(expression, items, Some(&declared)),
             Expr::Record { spread: Some(_), .. } | Expr::RecordUpdate { .. } =>
                 Err(CanonicalLoweringError::UnsupportedExpression("affine record spread requires consuming field proof")),
             _ => {
@@ -12994,7 +12999,9 @@ impl FunctionLowerer<'_> {
         };
         let descriptor = self
             .layouts
-            .get(layout)
+            .resolve_nominal(layout)
+            .ok()
+            .and_then(|physical| self.layouts.get(physical))
             .ok_or(CanonicalLoweringError::MissingLayout(Type::Named("List".into(), Vec::new())))?;
         if !matches!(descriptor.kind(), LayoutKind::PackedList { .. }) {
             return Ok(());
@@ -13567,8 +13574,9 @@ impl FunctionLowerer<'_> {
         &mut self,
         expression: &Expr,
         items: &[Expr],
+        declared_storage: Option<&Type>,
     ) -> Result<ValueId, CanonicalLoweringError> {
-        let logical_type = self.expression_storage_type(expression)?;
+        let logical_type = declared_storage.cloned().unwrap_or(self.expression_storage_type(expression)?);
         if let Some(list_type) = self.closures.layouts.opaque_type(&logical_type, self.definitions) {
             let family = self.closures.owners.iter().find(|family| family.list_type == list_type).cloned()
                 .ok_or(CanonicalLoweringError::UnsupportedExpression("opaque list literal family"))?;
@@ -13625,15 +13633,24 @@ impl FunctionLowerer<'_> {
             u64::try_from(items.len()).map_err(|_| CanonicalLoweringError::IdOverflow)?,
         );
 
+        let move_only = matches!(
+            StoragePlan::classify(&logical_type, self.definitions, |_| Some(0)),
+            StoragePlan::MoveOnlyList(_),
+        );
+        let element_source = if move_only {
+            let Type::Named(_, arguments) = logical_type.unqualified() else {
+                return Err(CanonicalLoweringError::UnsupportedListElement(logical_type.clone()));
+            };
+            let [element] = arguments.as_slice() else {
+                return Err(CanonicalLoweringError::UnsupportedListElement(logical_type.clone()));
+            };
+            Some(element)
+        } else { None };
         for (position, item) in items.iter().enumerate() {
-            let mut value = self.lower_expr(item)?;
+            let mut value = self.lower_expr_for_storage(item, element_source)?;
             if self.values[&value] != element_type {
                 return Err(CanonicalLoweringError::UnsupportedListElement(logical_type.clone()));
             }
-            let move_only = matches!(
-                StoragePlan::classify(&logical_type, self.definitions, |_| Some(0)),
-                StoragePlan::MoveOnlyList(_),
-            );
             if move_only && self.is_static_string(value) {
                 value = self.clone_string_for_storage(value)?;
             }
@@ -20714,7 +20731,7 @@ fn list_layout(
             CanonicalScalarKind::Unit => ValueType::Unit,
         },
         StoragePlan::Owned(CarrierElement::String | CarrierElement::Bytes) => byte_buffer_element()?,
-        StoragePlan::Owned(CarrierElement::List(_)) => {
+        StoragePlan::Owned(CarrierElement::List(_)) | StoragePlan::RetainedGraphList(_) => {
             ValueType::Ref(list_layout(&arguments[0], layout_bundle, layouts, closure_layouts, definitions)?.0)
         }
         StoragePlan::MoveOnlyList(_) => {
@@ -20732,8 +20749,24 @@ fn list_layout(
         _ => unreachable!("checked list-element eligibility above"),
     };
 
+    // A move-only sequence has a source-bound nominal allocation identity.
+    // Physical equality with a cloneable sequence cannot authorize its
+    // affine owner plan, in either direction.
+    let affine_nominal = if matches!(StoragePlan::classify(source, definitions, |_| Some(0)), StoragePlan::MoveOnlyList(_)) {
+        Some(crate::canonical_layouts::recursive_nominal_layout_id_for_shape(source, definitions)
+            .map_err(|_| CanonicalLoweringError::UnsupportedType(source.clone()))?)
+    } else {
+        None
+    };
     let mut candidates = Vec::new();
     for root in layout_bundle.roots() {
+        if let Some(expected) = affine_nominal {
+            if *root != expected {
+                continue;
+            }
+        } else if matches!(layouts.get(*root).map(|descriptor| descriptor.kind()), Some(LayoutKind::OpaqueNominal { .. })) {
+            continue;
+        }
         let Some(descriptor) = physical_layout_descriptor(layouts, *root) else { continue };
         let LayoutKind::PackedList { element, .. } = descriptor.kind() else { continue };
         let Some(element_descriptor) = physical_layout_descriptor(layouts, *element) else { continue };
