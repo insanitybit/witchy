@@ -21,6 +21,7 @@ pub struct PriorComptimeBlockOutput {
 /// bytes and loader assignments; no mutable module accessor is exposed.
 pub struct ComptimeSourceSession {
     original_digest: [u8; 32],
+    raw_sources: Vec<(String, Vec<u8>)>,
     modules: Vec<(String, Module)>,
     selected: String,
     owners: AuthenticatedModuleOwners,
@@ -70,13 +71,13 @@ impl ComptimeSourceSession {
             return Err(refuse("comptime session selected module is not a loader-owned user module"));
         }
         let original_digest = checked_source_digest(&sources, selected, &PrecompiledDeclarationEnvironment::default());
-        let modules = sources.into_iter().map(|(name, bytes)| {
+        let modules = sources.iter().map(|(name, bytes)| {
             let source = std::str::from_utf8(&bytes).map_err(|error| refuse(format!("comptime source `{name}` is not UTF-8: {error}")))?;
             let module = witchy_syntax::parser::parse_module(source)
                 .map_err(|error| refuse(format!("comptime source `{name}` failed to parse: {error}")))?;
-            Ok((name, module))
+            Ok((name.clone(), module))
         }).collect::<Result<_, PipelineError>>()?;
-        Ok(Self { original_digest, modules, selected: selected.into(), owners, user_modules })
+        Ok(Self { original_digest, raw_sources: sources, modules, selected: selected.into(), owners, user_modules })
     }
 
     /// Select an original item with genuinely empty prior output. Replaying
@@ -294,6 +295,20 @@ impl ComptimeSourceSession {
         )?;
         Ok(super::super::build_recipe::seal_admitted_build_recipe(original, checked, identity))
     }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn check_expanded_test_suite(
+        &self, prior: &[PriorComptimeBlockOutput],
+    ) -> Result<super::super::CheckedTestSuite, PipelineError> {
+        let (checked, expanded) = self.check_expanded_for_entry(prior, &self.selected)?;
+        let digest = checked.canonical_source_witness()
+            .ok_or_else(|| refuse("admitted test source lacks canonical authority"))?
+            .source_bundle_digest();
+        super::super::test_driver::seal_admitted_test_suite(
+            self.raw_sources.clone(), &self.selected, &self.user_modules,
+            self.owners.clone(), expanded, digest,
+        )
+    }
 }
 
 /// A compiler recipe executes only its selected block and helpers reachable
@@ -370,7 +385,7 @@ fn hash_prior_items(hash: &mut blake3::Hasher, prior: &[PriorComptimeBlockOutput
 // This fixed callback never mutates any module. A public callback here could
 // replace the selected body or execute sibling comptime against unrecorded
 // prior output. Pending expansion instead stays outside this first-entry lane.
-fn require_expansion_free(
+pub(super) fn require_expansion_free(
     name: &str, module: &mut Module, _: &[(String, Module)],
 ) -> Result<witchy_syntax::origin::OriginTable, String> {
     let refusal = || format!("comptime session module `{name}` requires authenticated prior expansion");

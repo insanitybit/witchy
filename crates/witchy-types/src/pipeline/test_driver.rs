@@ -19,6 +19,8 @@ pub struct CheckedTestSuite {
     user_modules: HashSet<String>,
     checked: CheckedModule,
     original_source_digest: [u8; 32],
+    admitted_entry: Option<Module>,
+    admitted_digest: Option<[u8; 32]>,
 }
 
 impl CheckedTestSuite {
@@ -83,7 +85,26 @@ pub fn link_checked_test_suite_from_source_bundle(
     )?;
     Ok(CheckedTestSuite {
         sources, entry: entry.to_owned(), user_modules: user_modules.clone(),
-        checked, original_source_digest,
+        checked, original_source_digest, admitted_entry: None, admitted_digest: None,
+    })
+}
+
+pub(super) fn seal_admitted_test_suite(
+    sources: Vec<(String, Vec<u8>)>, entry: &str,
+    user_modules: &HashSet<String>, owners: AuthenticatedModuleOwners,
+    admitted_entry: Module, admitted_digest: [u8; 32],
+) -> Result<CheckedTestSuite, PipelineError> {
+    let original_source_digest = checked_source_digest(&sources, entry, &PrecompiledDeclarationEnvironment::default());
+    let mut modules = parse_sources(&sources)?;
+    let (_, module) = modules.iter_mut().find(|(name, _)| name == entry)
+        .ok_or_else(|| refused("test source bundle lacks its entry"))?;
+    *module = admitted_entry.clone();
+    let (checked, _) = link_checked_with(modules, entry,
+        super::comptime_recipe::expansion_free_expander(), LinkMode::Test,
+        Some(user_modules), false, Some(owners))?;
+    Ok(CheckedTestSuite {
+        sources, entry: entry.to_owned(), user_modules: user_modules.clone(), checked,
+        original_source_digest, admitted_entry: Some(admitted_entry), admitted_digest: Some(admitted_digest),
     })
 }
 
@@ -120,20 +141,25 @@ pub fn check_bare_test_driver(
     let declaration_ordinal = u64::try_from(ordinal)
         .map_err(|_| refused("test declaration ordinal overflow"))?;
     let mut hasher = blake3::Hasher::new();
+    let recipe_version = if suite.admitted_digest.is_some() { BARE_RECIPE_VERSION + 1 } else { BARE_RECIPE_VERSION };
     hasher.update(b"witchy.checked-test-driver.test-mode.bare\0");
-    hasher.update(&BARE_RECIPE_VERSION.to_le_bytes());
+    hasher.update(&recipe_version.to_le_bytes());
     hasher.update(&suite.original_source_digest);
+    if let Some(digest) = suite.admitted_digest { hasher.update(&digest); }
     hasher.update(&(suite.entry.len() as u64).to_le_bytes());
     hasher.update(suite.entry.as_bytes());
     hasher.update(&declaration_ordinal.to_le_bytes());
     hasher.update(&(selected.len() as u64).to_le_bytes());
     hasher.update(selected.as_bytes());
     let identity = TestDriverIdentity {
-        recipe_version: BARE_RECIPE_VERSION,
+        recipe_version,
         original_source_digest: suite.original_source_digest,
         derived_source_digest: *hasher.finalize().as_bytes(),
         selected_declaration: selected.to_owned(), declaration_ordinal,
     };
+    if let Some(admitted) = &suite.admitted_entry {
+        *entry = admitted.clone();
+    }
 
     // This fixed compiler template is not user input. Use the local source
     // declaration before linking, never a guessed post-link callable spelling.
@@ -168,6 +194,9 @@ pub fn check_bare_test_driver(
     }
     entry.items.extend(generated.items);
     entry.item_lines.push(0);
+    let expand = if suite.admitted_entry.is_some() {
+        super::comptime_recipe::expansion_free_expander()
+    } else { expand };
     let (checked, typed) = link_checked_with(
         modules, &suite.entry, expand, LinkMode::Test, Some(&suite.user_modules),
         true, suite.checked.module_owners.clone(),

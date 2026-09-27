@@ -138,6 +138,21 @@ pub(crate) fn link_test_file(
     let (sources, entry_stem, user_modules, owners) = load_file_modules_authenticated(
         path, &HashMap::new(), owner, &HashMap::new(),
     ).map_err(TestFileError::Load)?;
+    let selected = sources.iter().find(|(name, _)| name == &entry_stem)
+        .ok_or_else(|| TestFileError::Load(format!("loaded test source lacks entry `{entry_stem}`")))?;
+    let source = std::str::from_utf8(&selected.1)
+        .map_err(|error| TestFileError::Load(format!("{entry_stem}: source is not UTF-8: {error}")))?;
+    let module = parser::parse_module(source)
+        .map_err(|error| TestFileError::Load(format!("{entry_stem}: {error}")))?;
+    if module.items.iter().any(|item| matches!(item, ast::Item::Comptime(_))) {
+        let checked = witchy::canonical_comptime::check_test_suite_source_bundle(
+            sources, &entry_stem, user_modules, owners,
+            witchy::canonical_comptime::source_limits(),
+        ).map_err(|message| TestFileError::Pipeline(pipeline::PipelineError::Type(
+            witchy_types::typeck::TypeError { message },
+        )))?;
+        return Ok((checked, entry_stem));
+    }
     let checked = pipeline::link_checked_test_suite_from_source_bundle(
         sources, &entry_stem, &user_modules, owners,
     ).map_err(TestFileError::Pipeline)?;

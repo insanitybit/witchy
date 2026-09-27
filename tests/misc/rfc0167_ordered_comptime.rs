@@ -88,3 +88,21 @@ fn imported_original_block_feeds_authenticated_entry() {
     let error = String::from_utf8_lossy(&expand.stderr);
     assert!(error.contains("Int") && error.contains("String"), "{error}");
 }
+
+#[test]
+fn bare_test_driver_uses_admitted_original_block_helpers() {
+    let folder = TempDir::new("admitted-comptime-test-driver");
+    let source = folder.join("tests.witchy");
+    std::fs::write(&source, "comptime:\n    emit_item(quote item:\n        fn answer() -> Int:\n            42\n    )\nfn test_answer():\n    if answer() != 42:\n        fail(\"wrong admitted helper\")\n").unwrap();
+    let result = Command::new(env!("CARGO_BIN_EXE_witchy"))
+        .arg("test").arg(&source).output().unwrap();
+    assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+
+    std::fs::write(&source, "comptime:\n    emit_item(quote item:\n        fn test_forged():\n            ()\n    )\n").unwrap();
+    let forged = Command::new(env!("CARGO_BIN_EXE_witchy"))
+        .arg("test").arg(&source).output().unwrap();
+    assert!(!forged.status.success(), "generated syntax cannot select a raw test target");
+    let error = format!("{}{}", String::from_utf8_lossy(&forged.stderr),
+        String::from_utf8_lossy(&forged.stdout));
+    assert!(error.contains("unknown or ambiguous entry test") || error.contains("declared in the entry source"), "{error}");
+}
