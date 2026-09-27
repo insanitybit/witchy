@@ -875,6 +875,17 @@ origin. A record field type, existential result type, or iterated element type
 does not establish that origin by itself; unproved transport through those
 values is refused at the opt call boundary.
 
+Source-linked opt entry and result contracts check stored callback slots
+recursively through tuples, unsealed nominal fields and sum payloads, and list
+elements. The caller supplies the actual callback origin before a formal
+parameter receives that proof. Checked returns preserve it for their callers.
+Record updates preserve unchanged slot proofs and check replacement values;
+assignment and shadowing cannot recover an earlier binding's proof.
+Dictionary storage, recursive or sealed carriers, and opaque external interfaces
+do not supply these nested callback facts. Opt code rejects invocation when the
+required origin remains unproved. Higher-order opt preconditions also cannot be
+erased through an ordinary callable interface.
+
 There is one directed compatibility exception to exact identity: purity may be
 widened away without changing invocation cardinality.
 

@@ -100,6 +100,30 @@ admitted unoptimized Wasm with zero canonical heap leaks. This does not establis
 arbitrary callback-holder formal transport, task producer correspondence, or a
 complete row I/J/K contract.
 
+Recursive stored callback boundaries (bounded source-linked slice, 2026-09-26):
+`61aee9208` replaces direct-`Fn`-only opt parameter/result requirements with
+`OptValueProof` contracts built from instantiated stored children. The caller's
+actual value must satisfy each required callback slot before the opt formal
+receives its proof. Tuples, unsealed nominal records and sums, and sequences
+compose through the same judgment. Variant joins retain per-constructor facts;
+record updates preserve unchanged slots, and mutation/shadowing revoke stale
+facts. Completing results, explicit returns and annotated lambda results use
+the same requirement. Callback-free requirement shapes normalize to no behavior
+obligation, preserving inferred rooted-view closures without callable variance.
+`nested_opt_callable_contracts` covers these paths plus normal-origin near-misses
+using the same holder identity, coalescing, and higher-order erasure after a
+branch. `rfc0167_nested_opt_callable_contracts` independently expects
+`42 + 45 + 42 + 42 + 42 = 213`; admitted unoptimized Wasm produces `213` with
+zero canonical heap leaks. The exact-tip source, SafeWIR, lowering and admitted
+runtime selections passed, followed by the serialized gate.
+
+This does not establish universal behavior transport. Dictionary, recursive and
+sealed carrier requirements remain unproved; opaque external metadata and task
+producer correspondence are unchanged. Existing list/tuple/constructor guards
+still refuse storage of callbacks with higher-order opt preconditions where a
+later accessor could erase those requirements. No I/J/K row closes from this
+slice, and it supplies no new task replay or cancellation evidence.
+
 Rows E/H/I/P nested child preparation (representative evidence, 2026-09-26):
 `rfc0167_nested_mode_preparation` places one ordinary List child into two
 outer slots, retains the old outer snapshot, and mutates only the first child.
