@@ -18,9 +18,9 @@ fn variant(index: usize) -> String { format!("{PAYLOAD}_{index}") }
 /// are consumed before structural mutation; the caller derives final witnesses
 /// from the fallibly rechecked result, retaining source bytes and loader owners.
 ///
-/// The flag reports whether a message bridge was rewritten. A reachable
-/// reserved message type still needs a closed checked carrier when no bridge
-/// exists; the empty-site carrier has no constructible source value.
+/// The flag reports whether a message bridge was rewritten. A reserved
+/// message type in the checked module still needs a closed carrier when no
+/// bridge exists; the empty-site carrier has no constructible source value.
 pub(crate) fn prepare(
     typed: TypedModule,
     catalog: Option<&RuntimeDeclarationCatalog>,

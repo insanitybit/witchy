@@ -2253,6 +2253,13 @@ projections. The requirement propagates through exact calls to the declaration
 and is checked against the caller's actual task values. Ordinary function
 types still cannot carry this requirement through an opaque function value,
 cast, task capture, or external ABI.
+For a checked sum input, each variant's task requirement applies only when
+that variant can be present. An exact constructor or joined set of constructors
+can prove an arm absent; an unknown arm cannot. This conditional discharge
+does not authorize an `await`: executing a task still requires its opt origin.
+The canonical compiler closes the private task-message carrier even when no
+message erase operation occurs, so task and step fields retain checked storage
+and ownership layouts through SafeWIR admission.
 An exact declaration value may retain its task-input requirement through a
 source-linked return or checked aggregate projection. Passing that value into
 an opaque function parameter, method, existential call, task recipe, or closure

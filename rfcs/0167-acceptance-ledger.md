@@ -427,6 +427,20 @@ source proof there rejected valid async source. A local named `task` can also
 shadow the generated `task.and_then` module call during async lowering; that
 separate baseline name-resolution defect remains open.
 
+Task carrier and conditional sum-arm requirements (implemented but unverified,
+2026-09-26): checked message preparation now closes the private `__Msg` type
+into a source-private, checked payload sum even when there are no erase sites.
+The ordinary recursive storage, layout, lowering, and SafeWIR judgments then
+carry `task.Step(T)` without a Step-specific exemption. A zero-site sentinel
+has no source constructor or generated construction site. Opt task-input
+requirements now project through each checked sum arm and discharge only an
+arm proved absent by the exact value; actual awaits still require opt origin.
+Focused CLI checks admitted a direct opt task, an `Option(Task(Int))` input,
+and a channel message; admitted Wasm ran the opt `Some` task and printed 7,
+and a typed channel round trip printed `Some(42)`. These are implementation
+smokes, without a zero-leak audit or complete A–O evidence. The broader
+one-shot task capture and cancellation disposition remain open.
+
 Recursive task-proof summaries (implemented but unverified, 2026-09-26):
 recursive ordinary value producers such as `iter.unfold` can grow a symbolic
 result without bound even though no task authority is established. The checked

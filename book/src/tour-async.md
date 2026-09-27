@@ -35,6 +35,11 @@ passed as a function value.
 Passing a copyable task recipe to a checked immutable parameter leaves the
 caller free to await its original recipe later. A `var` or `own` call may
 replace or consume it, so the compiler no longer trusts the old task origin.
+An opt callback that receives a sum containing a task checks the requirement
+for the sum arm actually supplied. A known `None` has no task to run; a
+`Some(task)` must carry opt-compatible execution origin. The compiler keeps a
+checked carrier for the scheduler's private message fields even when a program
+does not send a channel message.
 
 ```witchy
 async fn double(n: Int) -> Int:
