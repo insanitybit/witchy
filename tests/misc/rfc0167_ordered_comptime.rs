@@ -501,25 +501,66 @@ fn admitted_typed_record_head_preserves_imported_nominal_identity() {
 
 #[test]
 fn admitted_comptime_helper_looks_up_prior_emitted_type() {
-    let folder = TempDir::new("admitted-comptime-helper-type-info");
-    let source = folder.join("main.witchy");
-    for mode in ["", "mode opt\n"] {
-        std::fs::write(&source, format!("{mode}import meta\ncomptime:\n    emit_item(quote item:\n        type Extra:\n            value: Int\n    )\ncomptime fn count_fields(offset: Int) -> Int:\n    let info = type_info(Extra)\n    list.length(info.fields) + offset\ncomptime:\n    if count_fields(41) == 42:\n        emit_item(quote item:\n            fn answer() -> Int:\n                42\n        )\nfn main(console: Console):\n    console.print(\"${{answer()}}\")\n")).unwrap();
-        let run = Command::new(env!("CARGO_BIN_EXE_witchy")).arg(&source).output().unwrap();
-        assert!(run.status.success(), "{}", String::from_utf8_lossy(&run.stderr));
-        assert_eq!(String::from_utf8_lossy(&run.stdout), "42\n");
-    }
+    let generator = r#"import meta
+type User:
+    name: String
+comptime:
+    emit_item(quote item:
+        type Extra:
+            value: Int
+    )
+comptime fn count_fields(offset: Int) -> Int:
+    let info = type_info(Extra)
+    list.length(info.fields) + offset
+comptime:
+    emit_item(quote item:
+        comptime fn fields_plus(offset: Int) -> Int:
+            let info = type_info(User)
+            list.length(info.fields) + offset
+    )
+comptime:
+    if count_fields(41) == 42 && fields_plus(41) == 42:
+        emit_item(quote item:
+            pub fn answer() -> Int:
+                42
+        )
+"#;
+    let opt_generator = format!("mode opt\n{generator}");
+    let main = r#"import normal
+import opt
+fn main(console: Console):
+    console.print("${normal.answer()}")
+    console.print("${opt.answer()}")
+"#;
+    let user_modules = std::collections::HashSet::from([
+        "normal".to_owned(), "opt".to_owned(), "main".to_owned(),
+    ]);
+    let producers = ["normal".to_owned(), "opt".to_owned()];
+    let sources = vec![
+        ("normal".into(), generator.as_bytes().to_vec()),
+        ("opt".into(), opt_generator.into_bytes()),
+        ("main".into(), main.as_bytes().to_vec()),
+        ("meta".into(), witchy_syntax::linker::bundled_source("meta")
+            .expect("bundled meta").as_bytes().to_vec()),
+    ];
+    let (checked, _) = witchy::canonical_comptime::check_and_expand_source_bundle_with_producer_graph(
+        sources, "main", &producers, user_modules,
+        owners_for(["normal", "opt", "main"]), limits(),
+    ).expect("normal and opt producers resolve their prior emitted types");
+    let artifact = witchy_lower::codegen::compile_checked_module_artifact(&checked)
+        .expect_lowered("generated helper outputs admit on unoptimized Wasm");
+    let mut runtime = Runtime::batch().expect("runtime");
+    let mut vm = runtime.spawn_admitted(&artifact,
+        Capabilities { print: true, quiet: true, ..Capabilities::none() }, 64).unwrap();
+    vm.run().unwrap();
+    assert_eq!(vm.output(), ["42", "42"]);
+    assert_eq!(vm.canonical_heap_leaks().unwrap(), Some(0));
 }
 
 #[test]
-fn admitted_generated_comptime_helper_uses_checked_type_lookup() {
+fn generated_comptime_helper_without_meta_cannot_use_type_info() {
     let folder = TempDir::new("admitted-generated-comptime-helper");
     let source = folder.join("main.witchy");
-    std::fs::write(&source, "import meta\ntype User:\n    name: String\ncomptime:\n    emit_item(quote item:\n        comptime fn fields_plus(offset: Int) -> Int:\n            let info = type_info(User)\n            list.length(info.fields) + offset\n    )\ncomptime:\n    if fields_plus(41) == 42:\n        emit_item(quote item:\n            fn answer() -> Int:\n                42\n        )\nfn main(console: Console):\n    console.print(\"${answer()}\")\n").unwrap();
-    let run = Command::new(env!("CARGO_BIN_EXE_witchy")).arg(&source).output().unwrap();
-    assert!(run.status.success(), "{}", String::from_utf8_lossy(&run.stderr));
-    assert_eq!(String::from_utf8_lossy(&run.stdout), "42\n");
-
     std::fs::write(&source, "type User:\n    name: String\ncomptime:\n    emit_item(quote item:\n        fn forbidden() -> Int:\n            let info = type_info(User)\n            list.length(info.fields)\n    )\ncomptime:\n    fail(\"later block ran\")\nfn main() -> Int:\n    0\n").unwrap();
     let rejected = Command::new(env!("CARGO_BIN_EXE_witchy")).arg(&source).output().unwrap();
     assert!(!rejected.status.success());
