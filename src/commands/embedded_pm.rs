@@ -54,6 +54,11 @@ fn main(console: Console, args: List(String), root: Dir, net: Net, env: Env, clo
     cmd_add(console, net, root, env, clock, args)
 "#;
 
+const PROJECT_VERIFY_ENTRY: &str = r#"from grimoire import cmd_verify
+fn main(console: Console, args: List(String), root: Dir, bin: Dir, home: Dir, runner: Exec, net: Net, env: Env, clock: Clock) -> Int:
+    cmd_verify(console, net, root, env, clock, args)
+"#;
+
 const PROJECT_VERIFY_RUNE_ENTRY: &str = r#"from grimoire import cmd_verify_rune
 from gm_core import arg
 fn main(console: Console, args: List(String), root: Dir) -> Int:
@@ -69,6 +74,7 @@ fn embedded_pm_entry(verb: Option<&str>) -> (&'static str, &'static str) {
         Some("deps") => ("__witchy_project_deps", PROJECT_DEPS_ENTRY),
         Some("tree") => ("__witchy_project_tree", PROJECT_TREE_ENTRY),
         Some("add") => ("__witchy_project_add", PROJECT_ADD_ENTRY),
+        Some("verify") => ("__witchy_project_verify", PROJECT_VERIFY_ENTRY),
         Some("verify-rune") => ("__witchy_project_verify_rune", PROJECT_VERIFY_RUNE_ENTRY),
         _ => ("grimoire", include_str!("../../projects/grimoire/src/grimoire.witchy")),
     }

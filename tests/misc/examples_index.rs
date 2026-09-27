@@ -91,28 +91,32 @@ fn committed_project_locks_match_their_path_dependencies() {
     let locks = project_locks(&root.join("examples/projects"));
     assert!(!locks.is_empty(), "no committed example project locks discovered");
 
-    for lock in locks {
+    let mut targets = Vec::new();
+    let mut before = Vec::new();
+    for lock in &locks {
         let rune = lock.parent().expect("lock has a rune directory");
-        let workspace = rune.parent().expect("rune has a workspace directory");
-        let rune_name = rune.file_name().expect("rune directory has a name");
-        let before = fs::read(&lock).expect("read committed project lock");
-        let output = Command::new(env!("CARGO_BIN_EXE_witchy"))
-            .current_dir(workspace)
-            .args(["pm", "verify"])
-            .arg(rune_name)
-            .output()
-            .expect("run witchy pm verify");
-
-        assert!(
-            output.status.success(),
-            "{} is stale:\nstdout: {}\nstderr: {}",
-            lock.strip_prefix(&root).unwrap_or(&lock).display(),
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
+        targets.push(rune.strip_prefix(&root).expect("project is under the repository root").to_path_buf());
+        before.push(fs::read(lock).expect("read committed project lock"));
+    }
+    let output = Command::new(env!("CARGO_BIN_EXE_witchy"))
+        .current_dir(&root)
+        .args(["pm", "verify"])
+        .args(&targets)
+        .output()
+        .expect("run witchy pm verify for all project locks");
+    assert!(output.status.success(), "project locks are stale:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.matches("OK: every locked hash").count(),
+        locks.len(), "every project lock was verified");
+    for target in &targets {
+        assert!(stdout.contains(&format!("{}: OK: every locked hash", target.display())),
+            "missing verification result for {}: {stdout}", target.display());
+    }
+    for (lock, original) in locks.iter().zip(before) {
         assert_eq!(
             fs::read(&lock).expect("re-read committed project lock"),
-            before,
+            original,
             "pm verify modified {}",
             lock.strip_prefix(&root).unwrap_or(&lock).display()
         );
