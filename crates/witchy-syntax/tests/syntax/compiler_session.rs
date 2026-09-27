@@ -3,6 +3,24 @@ use witchy_syntax::compiler_session::*;
 use witchy_syntax::origin::SyntaxCategory;
 
 #[test]
+fn reflected_type_wire_decodes_structure_and_rejects_trailing_or_unbounded_data() {
+    use witchy_syntax::compiler_session::type_expr_wire::decode;
+    let list_int = b"N\n4\nList1\nN\n3\nInt0\n";
+    assert_eq!(decode(list_int).unwrap(), Type::Named("List".into(),
+        vec![Type::Named("Int".into(), vec![])]));
+    assert_eq!(decode(b"V\nN\n3\nInt0\n").unwrap(),
+        Type::Qualified(TypeQual::View, Box::new(Type::Named("Int".into(), vec![]))));
+    let function = b"F\n1\nN\n3\nInt0\nN\n4\nBool0\n1\n3\nown1\n0\n";
+    assert_eq!(decode(function).unwrap(), Type::Fn(
+        vec![Type::Named("Int".into(), vec![])],
+        Box::new(Type::Named("Bool".into(), vec![])),
+        vec![Convention::Own], CallableQualifiers::new(true, false)));
+    assert!(decode(b"N\n3\nInt0\nextra").unwrap_err().contains("trailing"));
+    assert!(decode(b"T\n257\n").unwrap_err().contains("limit"));
+    assert!(decode(b"Q\n6\nsharedN\n3\nInt0\n").unwrap_err().contains("qualifier"));
+}
+
+#[test]
 fn admitted_seed_data_is_bounded_exact_and_retains_distinct_quote_sites() {
     use witchy_syntax::compiler_session::seeds::CompilerSyntaxSeeds;
     let mut module = witchy_syntax::parser::parse_module("fn main() -> Int:\n    0\n").unwrap();

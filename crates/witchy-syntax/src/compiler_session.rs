@@ -18,6 +18,7 @@ use crate::ast::{Block, Expr, Item, MatchArm, Module, Param, Pattern, Stmt, Type
 use crate::origin::SyntaxCategory;
 
 pub mod seeds;
+pub mod type_expr_wire;
 
 /// Data carried by the checked source launch contract and admitted artifact.
 /// Constructing this value alone grants no import or launch authority.

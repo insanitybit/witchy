@@ -276,7 +276,43 @@ fn __meta_type_capability(name: Ident, rights: List(TypeSyntax)) -> TypeSyntax:
     __meta_type_capability(name, rights)
 
 pub fn type_expr(ty: TypeExpr) -> TypeSyntax:
-    __meta_type_expr(ty)
+    __meta_type_expr_wire(encode_type_expr_wire(ty))
+
+fn type_wire_string(value: String) -> String:
+    "${value.length()}\n" + value
+
+fn type_wire_bool(value: Bool) -> String:
+    if value:
+        "1\n"
+    else:
+        "0\n"
+
+fn encode_type_expr_wire(ty: TypeExpr) -> String:
+    match ty:
+        TNamed(name, args) ->
+            var wire = "N\n" + type_wire_string(name) + "${args.length()}\n"
+            for arg in args:
+                wire = wire + encode_type_expr_wire(arg)
+            wire
+        TTuple(items) ->
+            var wire = "T\n${items.length()}\n"
+            for item in items:
+                wire = wire + encode_type_expr_wire(item)
+            wire
+        TFn(params, ret, conventions, pure, once) ->
+            var wire = "F\n${params.length()}\n"
+            for param in params:
+                wire = wire + encode_type_expr_wire(param)
+            wire = wire + encode_type_expr_wire(ret) + "${conventions.length()}\n"
+            for convention in conventions:
+                wire = wire + type_wire_string(convention)
+            wire + type_wire_bool(pure) + type_wire_bool(once)
+        TQualified(qualifier, inner) ->
+            "Q\n" + type_wire_string(qualifier) + encode_type_expr_wire(inner)
+        TView(inner) -> "V\n" + encode_type_expr_wire(inner)
+
+fn __meta_type_expr_wire(wire: String) -> TypeSyntax:
+    __meta_type_expr_wire(wire)
 
 // Compiler-owned conversion from reflection data to type syntax. Rendering is
 // reserved for generators that explicitly need source text.

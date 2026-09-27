@@ -80,6 +80,7 @@ pub enum IntrinsicId {
     MetaTypeFn,
     MetaTypeQualified,
     MetaTypeExpr,
+    MetaTypeExprWire,
     MetaTypeCapability,
     MetaExprCall,
     MetaExprNamedCall,
@@ -676,6 +677,7 @@ pub(crate) const META_TYPE_TUPLE: &str = "__meta_type_tuple";
 pub(crate) const META_TYPE_FN: &str = "__meta_type_fn";
 pub(crate) const META_TYPE_QUALIFIED: &str = "__meta_type_qualified";
 pub(crate) const META_TYPE_EXPR: &str = "__meta_type_expr";
+pub(crate) const META_TYPE_EXPR_WIRE: &str = "__meta_type_expr_wire";
 pub(crate) const META_TYPE_CAPABILITY: &str = "__meta_type_capability";
 pub(crate) const META_EXPR_CALL: &str = "__meta_expr_call";
 pub(crate) const META_EXPR_NAMED_CALL: &str = "__meta_expr_named_call";
@@ -1878,6 +1880,21 @@ pub const ALL: &[IntrinsicSpec] = &[
     IntrinsicSpec {
         id: IntrinsicId::MetaTypeExpr,
         name: META_TYPE_EXPR,
+        arity: 1,
+        signature: IntrinsicSignature::DeclaredInSource,
+        effect: IntrinsicEffect::Toolchain,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::FrontendGenerated,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: NO_HELPERS,
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: "meta.type_expr",
+        private_callers: META_BRIDGE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::MetaTypeExprWire,
+        name: META_TYPE_EXPR_WIRE,
         arity: 1,
         signature: IntrinsicSignature::DeclaredInSource,
         effect: IntrinsicEffect::Toolchain,
@@ -4085,6 +4102,10 @@ pub fn is_meta_type_qualified(name: &str) -> bool {
 
 pub fn is_meta_type_expr(name: &str) -> bool {
     lookup(name).is_some_and(|spec| spec.id == IntrinsicId::MetaTypeExpr)
+}
+
+pub fn is_meta_type_expr_wire(name: &str) -> bool {
+    lookup(name).is_some_and(|spec| spec.id == IntrinsicId::MetaTypeExprWire)
 }
 
 pub fn is_meta_type_capability(name: &str) -> bool {

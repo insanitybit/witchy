@@ -587,6 +587,17 @@ impl Interpreter {
                 }
                 _ => err("meta.type_expr expects TypeExpr"),
             },
+            name if intrinsics::is_meta_type_expr_wire(name) => match args {
+                [Value::Str(wire)] => {
+                    if self.compiler_syntax.fresh_ident_scope().is_none() {
+                        return err("meta.type_expr is available only during compile-time expansion");
+                    }
+                    let ty = witchy_syntax::compiler_session::type_expr_wire::decode(wire.as_bytes())
+                        .map_err(|message| RuntimeError { message })?;
+                    Ok(Some(self.store_compiler_type_syntax("reflected-type", ty, Vec::new())?))
+                }
+                _ => err("meta.type_expr expects TypeExpr data"),
+            },
             name if intrinsics::is_meta_type_capability(name) => match args {
                 [head, Value::List(rights)] => {
                     if self.compiler_syntax.fresh_ident_scope().is_none() {
