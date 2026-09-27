@@ -489,8 +489,13 @@ pub(crate) fn checked_precompiled_source_bundle(
         if !source_block_producers(&sources, &user_modules)?.is_empty() {
             return Err("comptime producers with precompiled dependencies require an admitted declaration recipe".into());
         }
+        let expand = if source_bundle_needs_legacy_expansion(&sources) {
+            comptime::EXPANDER
+        } else {
+            comptime::EXPANSION_FREE_USER_EXPANDER
+        };
         witchy_types::pipeline::link_checked_authenticated_from_source_bundle_with_precompiled_declarations(
-            sources, &entry, comptime::EXPANDER, &user_modules, owners, environment,
+            sources, &entry, expand, &user_modules, owners, environment,
         ).map_err(|error| error.to_string())?
     };
     Ok(PrecompiledCheckedModule { checked, entry, external_libraries })
