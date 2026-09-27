@@ -1198,7 +1198,7 @@ fn check_embedded_coven_sources(
         sources.push((name, source.into_bytes()));
     }
     witchy_types::pipeline::link_checked_from_source_bundle(
-        sources, "coven", witchy_interp::comptime::EXPANDER,
+        sources, "coven", witchy_interp::comptime::EXPANSION_FREE_USER_EXPANDER,
     ).map_err(|e| e.to_string())
 }
 
