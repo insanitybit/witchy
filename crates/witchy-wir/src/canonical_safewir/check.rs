@@ -1,4 +1,5 @@
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::cmp::Reverse;
+use std::collections::{BTreeMap, BTreeSet, BinaryHeap, VecDeque};
 use std::error::Error;
 use std::fmt;
 
@@ -966,6 +967,54 @@ fn check_function(
             _ => {}
         }
     }
+    if function.blocks.len() >= 256 {
+        let ranks = reverse_postorder_ranks(function.entry, &blocks);
+        let before_cfg_sites = observed_tail_sites.clone();
+        if check_memory_cfg(
+            function,
+            signature,
+            signatures,
+            imports,
+            catalog,
+            functions,
+            &blocks,
+            &definition_sites,
+            &dominators,
+            memory,
+            tail_obligations,
+            observed_tail_sites,
+            Some(&ranks),
+        )
+        .is_ok()
+        {
+            return Ok(());
+        }
+        // Priority scheduling is only an accelerator. On refusal or failure
+        // of its final-state certificate, use the original FIFO verdict.
+        *observed_tail_sites = before_cfg_sites;
+        let memory = MemoryChecker::new_with_affine_abi(
+            function,
+            layouts,
+            signature,
+            closure_layouts,
+            affine_abi,
+        )?;
+        return check_memory_cfg(
+            function,
+            signature,
+            signatures,
+            imports,
+            catalog,
+            functions,
+            &blocks,
+            &definition_sites,
+            &dominators,
+            memory,
+            tail_obligations,
+            observed_tail_sites,
+            None,
+        );
+    }
     check_memory_cfg(
         function,
         signature,
@@ -979,6 +1028,7 @@ fn check_function(
         memory,
         tail_obligations,
         observed_tail_sites,
+        None,
     )
 }
 
@@ -996,10 +1046,14 @@ fn check_memory_cfg(
     mut memory: MemoryChecker<'_>,
     tail_obligations: &BTreeMap<TailSiteId, ProperTailLocation>,
     observed_tail_sites: &mut BTreeSet<TailSiteId>,
+    ranks: Option<&BTreeMap<BlockId, usize>>,
 ) -> Result<(), InitialCheckError> {
     let mut incoming = BTreeMap::new();
     incoming.insert(function.entry, memory.snapshot());
     let mut pending = VecDeque::from([function.entry]);
+    let mut ordered = ranks.map(|ranks| {
+        BinaryHeap::from([Reverse((ranks[&function.entry], function.entry))])
+    });
     let mut iterations = 0usize;
     let maximum_iterations = function
         .blocks
@@ -1007,6 +1061,11 @@ fn check_memory_cfg(
         .saturating_mul(function.value_types.len().saturating_add(1))
         .saturating_mul(8)
         .max(64);
+    let maximum_iterations = if ranks.is_some() {
+        maximum_iterations.min(function.blocks.len().saturating_mul(32).max(64))
+    } else {
+        maximum_iterations
+    };
 
     // A block checked against a not-yet-converged incoming state (a loop
     // header seen from its entry edge only) may fail on facts the back edge
@@ -1020,7 +1079,13 @@ fn check_memory_cfg(
     // Dominance depends on the fixed SSA graph, not the incoming memory
     // state. Preserve the first visit's check order, then reuse its success.
     let mut dominance_checked = BTreeSet::new();
-    while let Some(block_id) = pending.pop_front() {
+    loop {
+        let next = if let Some(ordered) = &mut ordered {
+            ordered.pop().map(|Reverse((_, block))| block)
+        } else {
+            pending.pop_front()
+        };
+        let Some(block_id) = next else { break };
         iterations += 1;
         if iterations > maximum_iterations {
             return Err(InitialCheckError::MemoryDataflowNonConvergence {
@@ -1047,12 +1112,52 @@ fn check_memory_cfg(
         for (target, next) in updates {
             if incoming.get(&target) != Some(&next) {
                 incoming.insert(target, next);
-                pending.push_back(target);
+                if let Some(ordered) = &mut ordered {
+                    ordered.push(Reverse((
+                        ranks.expect("ordered worklist has ranks")[&target],
+                        target,
+                    )));
+                } else {
+                    pending.push_back(target);
+                }
             }
         }
     }
     if let Some((_, error)) = failures.into_iter().next() {
         return Err(error);
+    }
+    if ranks.is_some() {
+        // Verify every block and feasible edge at its final incoming state.
+        // A newly reachable target or changed join triggers the FIFO retry.
+        let mut verified_bodies = BTreeMap::new();
+        let mut verified_dominance = BTreeSet::new();
+        for (block_id, state) in &incoming {
+            memory.restore(state.clone());
+            let updates = check_block_flow(
+                function,
+                blocks[block_id],
+                signature,
+                signatures,
+                imports,
+                catalog,
+                functions,
+                blocks,
+                definition_sites,
+                dominators,
+                &mut memory,
+                &incoming,
+                &mut verified_bodies,
+                &mut verified_dominance,
+            )?;
+            if updates
+                .iter()
+                .any(|(target, joined)| incoming.get(target) != Some(joined))
+            {
+                return Err(InitialCheckError::MemoryDataflowNonConvergence {
+                    function: function.id,
+                });
+            }
+        }
     }
     // Only blocks reached by the converged memory dataflow can discharge a
     // checked-source proper-tail obligation. Scanning the raw block list
@@ -1073,6 +1178,33 @@ fn check_memory_cfg(
         }
     }
     Ok(())
+}
+
+fn reverse_postorder_ranks(
+    entry: BlockId,
+    blocks: &BTreeMap<BlockId, &BasicBlock>,
+) -> BTreeMap<BlockId, usize> {
+    let mut visited = BTreeSet::new();
+    let mut postorder = Vec::new();
+    let mut stack = vec![(entry, false)];
+    while let Some((block, expanded)) = stack.pop() {
+        if expanded {
+            postorder.push(block);
+        } else if visited.insert(block) {
+            stack.push((block, true));
+            for successor in successors(&blocks[&block].terminator).into_iter().rev() {
+                if !visited.contains(&successor) {
+                    stack.push((successor, false));
+                }
+            }
+        }
+    }
+    postorder.reverse();
+    postorder
+        .into_iter()
+        .enumerate()
+        .map(|(rank, block)| (block, rank))
+        .collect()
 }
 
 /// Check one block against its incoming state and compute the states its
