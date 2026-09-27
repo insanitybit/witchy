@@ -788,6 +788,13 @@ fn __meta_function_block(public: Bool, is_async: Bool, is_gen: Bool, name: Ident
 pub fn impl_block(trait_ty: TypeSyntax, target_ty: TypeSyntax, items: List(ItemSyntax)) -> ItemSyntax:
     __meta_impl_block(trait_ty, target_ty, items)
 
+// Construct methods owned by a concrete type without inventing a trait.
+pub fn inherent_impl(target_ty: TypeSyntax, items: List(ItemSyntax)) -> ItemSyntax:
+    __meta_inherent_impl(target_ty, items)
+
+fn __meta_inherent_impl(target_ty: TypeSyntax, items: List(ItemSyntax)) -> ItemSyntax:
+    __meta_inherent_impl(target_ty, items)
+
 // Structural impl construction with typed conditional bounds. Each pair is
 // `(type_parameter, trait)`; the compiler turns it directly into ImplDef bounds.
 pub fn impl_block_where(trait_ty: TypeSyntax, target_ty: TypeSyntax, bounds: List((Ident, Ident)), items: List(ItemSyntax)) -> ItemSyntax:

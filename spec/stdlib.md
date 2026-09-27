@@ -3054,6 +3054,10 @@ Construct a record declaration from checked type syntax. The private wire carrie
 
 Build a trait implementation directly from typed trait/target heads and compiler-owned function items. No impl source is rendered or reparsed.
 
+#### `fn inherent_impl(target_ty: TypeSyntax, items: List(ItemSyntax)) -> ItemSyntax`
+
+Construct methods owned by a concrete type without inventing a trait.
+
 #### `fn impl_block_where(trait_ty: TypeSyntax, target_ty: TypeSyntax, bounds: List((Ident, Ident)), items: List(ItemSyntax)) -> ItemSyntax`
 
 Structural impl construction with typed conditional bounds. Each pair is `(type_parameter, trait)`; the compiler turns it directly into ImplDef bounds.

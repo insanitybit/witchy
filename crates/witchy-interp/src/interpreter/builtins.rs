@@ -1770,6 +1770,33 @@ impl Interpreter {
                     "meta.impl_block expects TypeSyntax, TypeSyntax, and List(ItemSyntax)",
                 ),
             },
+            name if intrinsics::is_meta_inherent_impl(name) => match args {
+                [target_ty, items] => {
+                    if self.compiler_syntax.fresh_ident_scope().is_none() {
+                        return err("meta.inherent_impl is available only during compile-time expansion");
+                    }
+                    let target_ty = compiler_type_syntax_value(target_ty, self.compiler_syntax.types())?;
+                    let (type_name, target_args) =
+                        compiler_impl_head(target_ty, "target", "meta.inherent_impl")?;
+                    let methods = compiler_impl_methods(items, self.compiler_syntax.items())?;
+                    let item = Item::Impl(ImplDef {
+                        origin: ImplOrigin::Source,
+                        trait_name: None,
+                        trait_args: Vec::new(),
+                        type_name,
+                        target_args,
+                        bounds: Vec::new(),
+                        methods,
+                    });
+                    let handle = self.next_compiler_syntax_handle("impl-item")?;
+                    self.compiler_syntax.insert_item(handle.clone(), item);
+                    Ok(Some(Value::Ctor {
+                        name: OWNED_ITEM_SYNTAX_CTOR.into(),
+                        fields: Rc::new(vec![Value::str(handle), Value::Int(i64::from(self.cur_line))]),
+                    }))
+                }
+                _ => err("meta.inherent_impl expects TypeSyntax and List(ItemSyntax)"),
+            },
             name if intrinsics::is_meta_impl_block_where(name) => match args {
                 [trait_ty, target_ty, bounds, items] => {
                     if self.compiler_syntax.fresh_ident_scope().is_none() {

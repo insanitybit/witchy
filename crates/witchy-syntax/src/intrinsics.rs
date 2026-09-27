@@ -117,6 +117,7 @@ pub enum IntrinsicId {
     MetaParam,
     MetaFunctionBlock,
     MetaImplBlock,
+    MetaInherentImpl,
     MetaImplBlockWhere,
     CompilerFootprint,
     CompilerDiff,
@@ -714,6 +715,7 @@ pub(crate) const META_STMT_YIELD: &str = "__meta_stmt_yield";
 pub(crate) const META_PARAM: &str = "__meta_param";
 pub(crate) const META_FUNCTION_BLOCK: &str = "__meta_function_block";
 pub(crate) const META_IMPL_BLOCK: &str = "__meta_impl_block";
+pub(crate) const META_INHERENT_IMPL: &str = "__meta_inherent_impl";
 pub(crate) const META_IMPL_BLOCK_WHERE: &str = "__meta_impl_block_where";
 
 pub const COMPILER_FOOTPRINT: &str = "compiler.footprint";
@@ -2460,6 +2462,21 @@ pub const ALL: &[IntrinsicSpec] = &[
         dynamic_wir_helpers: false,
         wir_host_call: None,
         diagnostic_name: "meta.impl_block",
+        private_callers: META_BRIDGE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::MetaInherentImpl,
+        name: META_INHERENT_IMPL,
+        arity: 2,
+        signature: IntrinsicSignature::DeclaredInSource,
+        effect: IntrinsicEffect::Toolchain,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::FrontendGenerated,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: NO_HELPERS,
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: "meta.inherent_impl",
         private_callers: META_BRIDGE_CALLERS,
     },
     IntrinsicSpec {
@@ -4254,6 +4271,10 @@ pub fn is_meta_function_block(name: &str) -> bool {
 
 pub fn is_meta_impl_block(name: &str) -> bool {
     lookup(name).is_some_and(|spec| spec.id == IntrinsicId::MetaImplBlock)
+}
+
+pub fn is_meta_inherent_impl(name: &str) -> bool {
+    lookup(name).is_some_and(|spec| spec.id == IntrinsicId::MetaInherentImpl)
 }
 
 pub fn is_meta_impl_block_where(name: &str) -> bool {
