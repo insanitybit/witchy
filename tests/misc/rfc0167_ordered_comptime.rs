@@ -549,16 +549,28 @@ fn imported_original_block_feeds_authenticated_entry() {
 
 #[test]
 fn imported_blocks_follow_admitted_dependency_graph() {
-    let folder = TempDir::new("admitted-imported-comptime-graph");
-    let entry = folder.join("main.witchy");
-    std::fs::write(folder.join("left.witchy"), "comptime:\n    emit_item(quote item:\n        pub fn value() -> Int:\n            19\n    )\n").unwrap();
-    std::fs::write(folder.join("right.witchy"), "import left\ncomptime:\n    if left.value() == 19:\n        emit_item(quote item:\n            pub fn value() -> Int:\n                23\n        )\n").unwrap();
-    std::fs::write(folder.join("extra.witchy"), "comptime:\n    emit_item(quote item:\n        pub fn value() -> Int:\n            23\n    )\n").unwrap();
+    let positive_sources = vec![
+        ("left".into(), "comptime:\n    emit_item(quote item:\n        pub fn value() -> Int:\n            19\n    )\n".as_bytes().to_vec()),
+        ("right".into(), "import left\ncomptime:\n    if left.value() == 19:\n        emit_item(quote item:\n            pub fn value() -> Int:\n                23\n        )\n".as_bytes().to_vec()),
+        ("extra".into(), "comptime:\n    emit_item(quote item:\n        pub fn value() -> Int:\n            23\n    )\n".as_bytes().to_vec()),
+    ];
     let main_source = "import left\nimport right\nimport extra\ncomptime:\n    if right.value() == 23:\n        emit_item(quote item:\n            fn answer() -> Int:\n                left.value() + extra.value()\n        )\nfn main(console: Console):\n    console.print(\"${answer()}\")\n";
-    std::fs::write(&entry, main_source).unwrap();
-    let run = Command::new(env!("CARGO_BIN_EXE_witchy")).arg(&entry).output().unwrap();
-    assert!(run.status.success(), "{}", String::from_utf8_lossy(&run.stderr));
-    assert_eq!(String::from_utf8_lossy(&run.stdout), "42\n");
+    let producers = ["left", "right", "extra", "main"].map(str::to_owned);
+    let user_modules = std::collections::HashSet::from(["left".into(), "right".into(), "extra".into(), "main".into()]);
+    let mut sources = positive_sources;
+    sources.push(("main".into(), main_source.as_bytes().to_vec()));
+    let (checked, _) = witchy::canonical_comptime::check_and_expand_source_bundle_with_producer_graph(
+        sources, "main", &producers, user_modules.clone(),
+        owners_for(["left", "right", "extra", "main"]), limits(),
+    ).expect("valid producer graph expands in dependency order");
+    let artifact = witchy_lower::codegen::compile_checked_module_artifact(&checked)
+        .expect_lowered("expanded producer graph admits on unoptimized Wasm");
+    let mut runtime = Runtime::batch().expect("runtime");
+    let mut vm = runtime.spawn_admitted(&artifact,
+        Capabilities { print: true, quiet: true, ..Capabilities::none() }, 64).unwrap();
+    vm.run().unwrap();
+    assert_eq!(vm.output(), ["42"], "independent dependency result: left 19 + extra 23");
+    assert_eq!(vm.canonical_heap_leaks().unwrap(), Some(0));
 
     let sources = vec![
         ("left".into(), "comptime:\n    emit_item(quote item:\n        pub fn value() -> Int:\n            \"wrong\"\n    )\n".as_bytes().to_vec()),
@@ -566,8 +578,6 @@ fn imported_blocks_follow_admitted_dependency_graph() {
         ("extra".into(), "comptime:\n    emit_item(quote item:\n        pub fn value() -> Int:\n            23\n    )\n".as_bytes().to_vec()),
         ("main".into(), main_source.as_bytes().to_vec()),
     ];
-    let producers = ["left", "right", "extra", "main"].map(str::to_owned);
-    let user_modules = std::collections::HashSet::from(["left".into(), "right".into(), "extra".into(), "main".into()]);
     let check = witchy::canonical_comptime::check_and_expand_source_bundle_with_producer_graph(
         sources, "main", &producers, user_modules, owners_for(["left", "right", "extra", "main"]), limits(),
     ).expect_err("invalid first producer must stop the dependent graph");
