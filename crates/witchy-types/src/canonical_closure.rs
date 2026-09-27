@@ -569,14 +569,6 @@ impl<'a> Builder<'a> {
                         });
                     }
                     let checked_type = binding.ty.clone().ok_or_else(|| ClosureWitnessError::MissingCaptureType { name: name.clone() })?;
-                    if matches!(checked_type.unqualified(), Type::Named(type_name, _) if self.definitions.contains_key(type_name)) {
-                        let mut remaining = 4_096;
-                        if self.source_may_contain_qualifier(&checked_type, 0, &mut remaining) {
-                            return Err(ClosureWitnessError::UnsupportedType {
-                                context: format!("closure capture `{name}` has an unproved qualified nominal field"),
-                            });
-                        }
-                    }
                     if binding.borrowed || explicit_borrow(&checked_type) { return Err(ClosureWitnessError::BorrowedCapture { name }); }
                     let checked_type_encoding = canonical_abi::canonical_ast_type_bytes(self.typed, &checked_type)
                         .map_err(|error| ClosureWitnessError::UnsupportedType { context: error.to_string() })?;

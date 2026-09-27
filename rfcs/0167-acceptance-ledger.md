@@ -1927,6 +1927,15 @@ reach admitted Wasm and execute with expected lengths 2 and 1; an outer
 still lacks a consuming dictionary update and is not claimed. These smoke
 results do not include a zero-leak audit or close an A-O row.
 
+Qualified nominal whole captures (implemented but unverified, 2026-09-26):
+the closure witness now uses the shared replay-capture and storage-operation
+judgments for an exact checked whole nominal, rather than rejecting every
+nominal with an internal qualifier. A record with `frozen String` captures into
+a reusable closure, reaches admitted Wasm, and returns the expected length 3.
+A record with `unique String` is rejected as an affine capture. Qualified
+fields extracted by an unproved constructor pattern remain refused. The
+manual smoke lacks a zero-leak audit and closes no A-O row.
+
 The affine direct-result ABI also preserves the checked `OwnedGc` contract
 for an opaque owner result. The existing owned-GC channel/generator smoke
 case passes again; SafeWIR still requires an owned origin for that family.

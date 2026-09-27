@@ -180,6 +180,9 @@ pattern projection. Mutable aliases, constructor patterns with qualified
 fields, unproved casts, and other view-producing expressions without a source
 proof refuse capture. Qualifiers around an
 aggregate containing a view remain outside this callable carrier.
+Capturing a whole owned record with a `frozen String` field is permitted when
+the recursive snapshot and layout proofs succeed. A record with a `unique`
+field cannot be copied into a reusable closure.
 
 An eligible non-packed record, sum, `Option`, or `Result` may contain a
 recursive `List(T)` child when its checked carrier proves every owned edge.

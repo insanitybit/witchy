@@ -946,6 +946,11 @@ child also cannot be transferred by consuming deconstruction. A persistent view
 of capability-bearing storage has no lawful retained snapshot. Nullable
 capability fields in closure aggregates remain refused until their physical
 capture layout is proved.
+An owned nominal captured as a whole may contain qualified fields when its
+recursive snapshot, clone, release, and physical layout proofs succeed. A
+`frozen String` field satisfies this copy path; a `unique String` field does
+not. Extracted fields still need a checked pattern projection that preserves
+their qualifier.
 
 An explicitly annotated callable signature may carry a qualified scalar-place
 view such as `&frozen Int` or `&unique Int`. Its checked storage plan selects
