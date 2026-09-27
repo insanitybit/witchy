@@ -3024,7 +3024,7 @@ Attach a typed copy-out annotation to an already compiler-owned block.
 
 #### `fn param(name: Ident, ty: TypeSyntax) -> ParamSyntax`
 
-A function parameter and function item constructors. The single-expression form now delegates to the block form so item generation has one body shape.
+Function parameters and item constructors retain their typed syntax handles. The expression and ordinary block forms share the same checked item contract.
 
 #### `fn param_let(name: Ident, ty: TypeSyntax) -> ParamSyntax`
 

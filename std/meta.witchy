@@ -666,7 +666,14 @@ fn __meta_match_arm(pattern: PatternSyntax, body: ExprSyntax) -> MatchArmSyntax:
 // Compiler-owned statement and block syntax retain AST nodes through
 // block-shaped generators.
 pub fn stmt_let(mutable: Bool, name: Ident, ty: Option(TypeSyntax), value: ExprSyntax) -> StmtSyntax:
-    __meta_stmt_let(mutable, name, ty, value)
+    var wire = if mutable: "L\n1\n" else: "L\n0\n"
+    wire = wire + binding_source(name) + "\n"
+    match ty:
+        Some(type_syntax) -> wire = wire + "1\n" + type_handle_wire(type_syntax)
+        None -> wire = wire + "0\n"
+    match value:
+        CompilerExprSyntax(handle) -> wire = wire + "${handle.length()}\n" + handle
+    __meta_statement_wire(wire)
 
 // Compiler-owned let/var statement construction. Binder, optional type, and
 // value remain typed nodes through block construction.
@@ -690,14 +697,19 @@ fn __meta_stmt_assign(name: Ident, value: ExprSyntax) -> StmtSyntax:
     __meta_stmt_assign(name, value)
 
 pub fn stmt_expr(expr: ExprSyntax) -> StmtSyntax:
-    __meta_stmt_expr(expr)
+    match expr:
+        CompilerExprSyntax(handle) -> __meta_statement_wire("E\n${handle.length()}\n" + handle)
 
 // Compiler-owned expression statement construction.
 fn __meta_stmt_expr(expr: ExprSyntax) -> StmtSyntax:
     __meta_stmt_expr(expr)
 
 pub fn stmt_return(value: ExprSyntax) -> StmtSyntax:
-    __meta_stmt_return(value)
+    match value:
+        CompilerExprSyntax(handle) -> __meta_statement_wire("R\n${handle.length()}\n" + handle)
+
+fn __meta_statement_wire(wire: String) -> StmtSyntax:
+    __meta_statement_wire(wire)
 
 // Compiler-owned return statement construction.
 fn __meta_stmt_return(value: ExprSyntax) -> StmtSyntax:
@@ -730,7 +742,17 @@ fn __meta_stmt_leaf(kind: String) -> StmtSyntax:
 pub fn block(stmts: List(StmtSyntax), tail: Option(ExprSyntax)) -> BlockSyntax:
     if list.is_empty(stmts) && option.is_none(tail):
         fail("meta.block: body must contain at least one statement or tail expression")
-    __meta_block(stmts, tail)
+    var wire = "${stmts.length()}\n"
+    for statement in stmts:
+        match statement:
+            CompilerStmtSyntax(handle) -> wire = wire + "${handle.length()}\n" + handle
+    match tail:
+        Some(CompilerExprSyntax(handle)) -> wire = wire + "1\n${handle.length()}\n" + handle
+        None -> wire = wire + "0\n"
+    __meta_block_wire(wire)
+
+fn __meta_block_wire(wire: String) -> BlockSyntax:
+    __meta_block_wire(wire)
 
 // Compiler-owned block construction. Owned statements and the optional tail
 // expression are transferred directly instead of being projected to source.
@@ -744,8 +766,8 @@ pub fn block_region(body: BlockSyntax, result: Option(TypeSyntax)) -> BlockSynta
 fn __meta_block_region(body: BlockSyntax, result: Option(TypeSyntax)) -> BlockSyntax:
     __meta_block_region(body, result)
 
-// A function parameter and function item constructors. The single-expression
-// form now delegates to the block form so item generation has one body shape.
+// Function parameters and item constructors retain their typed syntax handles.
+// The expression and ordinary block forms share the same checked item contract.
 pub fn param(name: Ident, ty: TypeSyntax) -> ParamSyntax:
     __meta_param_wire("default\n" + binding_source(name) + "\n" + type_handle_wire(ty))
 
@@ -803,7 +825,24 @@ fn __meta_function_expr_wire(wire: String) -> ItemSyntax:
     __meta_function_expr_wire(wire)
 
 pub fn function_block(public: Bool, name: Ident, params: List(ParamSyntax), ret: Option(TypeSyntax), body: BlockSyntax) -> ItemSyntax:
-    __meta_function_block(public, false, false, name, params, ret, body)
+    match name:
+        CallSiteIdent(_) -> fail("meta.function_block requires a definition-site name")
+        _ -> ()
+
+    var wire = if public: "1\n" else: "0\n"
+    wire = wire + ident_source(name) + "\n${params.length()}\n"
+    for param in params:
+        match param:
+            CompilerParamSyntax(handle) -> wire = wire + "${handle.length()}\n" + handle
+    match ret:
+        Some(ty) -> wire = wire + "1\n" + type_handle_wire(ty)
+        None -> wire = wire + "0\n"
+    match body:
+        CompilerBlockSyntax(handle) -> wire = wire + "${handle.length()}\n" + handle
+    __meta_function_block_wire(wire)
+
+fn __meta_function_block_wire(wire: String) -> ItemSyntax:
+    __meta_function_block_wire(wire)
 
 pub fn function_async(public: Bool, name: Ident, params: List(ParamSyntax), ret: Option(TypeSyntax), body: BlockSyntax) -> ItemSyntax:
     __meta_function_block(public, true, false, name, params, ret, body)

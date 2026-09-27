@@ -44,6 +44,8 @@ pub(super) struct SessionState {
     pub item_costs: std::collections::BTreeMap<String, SyntaxCost>,
     pub type_costs: std::collections::BTreeMap<String, SyntaxCost>,
     pub param_costs: std::collections::BTreeMap<String, SyntaxCost>,
+    pub statement_costs: std::collections::BTreeMap<String, SyntaxCost>,
+    pub block_costs: std::collections::BTreeMap<String, SyntaxCost>,
     pub item_origins: std::collections::BTreeMap<String, ComptimeSyntaxOrigin>,
     pub nodes: DeterministicBudget,
     pub syntax_bytes: DeterministicBudget,
@@ -81,7 +83,8 @@ impl Runtime {
             seeds: artifact.compiler_syntax_seeds().cloned()
                 .ok_or_else(|| Error::msg("comptime artifact lacks checked syntax seeds"))?,
             costs: Default::default(), item_costs: Default::default(), type_costs: Default::default(),
-            param_costs: Default::default(), item_origins: Default::default(),
+            param_costs: Default::default(), statement_costs: Default::default(),
+            block_costs: Default::default(), item_origins: Default::default(),
             nodes: DeterministicBudget::new(limits.syntax_nodes),
             syntax_bytes: DeterministicBudget::new(limits.syntax_bytes),
             emitted_nodes: DeterministicBudget::new(limits.emitted_nodes),

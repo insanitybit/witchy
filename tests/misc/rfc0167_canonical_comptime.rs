@@ -193,6 +193,29 @@ fn admitted_typed_parameters_build_a_checked_function_in_both_modes() {
 }
 
 #[test]
+fn admitted_typed_block_builder_links_generated_locals_in_both_modes() {
+    struct ResetOptimization;
+    impl Drop for ResetOptimization { fn drop(&mut self) { witchy::opt::set_for_tests(None); } }
+    witchy::opt::set_for_tests(Some(witchy::opt::OptSet::none()));
+    let _reset = ResetOptimization;
+    for mode in ["", "mode opt\n"] {
+        let source = format!("{mode}import meta\ncomptime:\n    let int_ty = quote type:\n        Int\n    let x = meta.param(meta.ident(\"x\"), int_ty)\n    let step = quote expr:\n        x + 1\n    let result = quote expr:\n        y + 1\n    let bind = meta.stmt_let(false, meta.ident(\"y\"), Some(int_ty), step)\n    let body = meta.block([meta.stmt_expr(meta.expr_int(0)), bind], Some(result))\n    emit_item(meta.function_block(true, meta.ident(\"answer\"), [x], Some(int_ty), body))\n    let early = meta.block([meta.stmt_return(meta.expr_int(43))], None)\n    emit_item(meta.function_block(true, meta.ident(\"early\"), [], Some(int_ty), early))\nfn main(console: Console):\n    console.print(\"${{answer(40)}}:${{early()}}\")\n");
+        let checked = witchy::canonical_comptime::check_source_bundle(
+            vec![("generator".into(), source.into_bytes())], "generator",
+            ["generator".to_owned()].into_iter().collect(), owners_for("generator"), limits(),
+        ).expect("typed generated block enters destination checking");
+        let artifact = witchy_lower::codegen::compile_checked_module_artifact(&checked)
+            .expect_lowered("generated block admits on unoptimized Wasm");
+        let mut runtime = Runtime::batch().unwrap();
+        let mut vm = runtime.spawn_admitted(&artifact,
+            Capabilities { print: true, quiet: true, ..Capabilities::none() }, 64).unwrap();
+        vm.run().unwrap();
+        assert_eq!(vm.output(), ["42:43"]);
+        assert_eq!(vm.canonical_heap_leaks().unwrap(), Some(0));
+    }
+}
+
+#[test]
 fn admitted_typed_inherent_method_dispatches_in_both_modes() {
     struct ResetOptimization;
     impl Drop for ResetOptimization { fn drop(&mut self) { witchy::opt::set_for_tests(None); } }

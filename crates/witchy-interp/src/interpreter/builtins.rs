@@ -1523,6 +1523,29 @@ impl Interpreter {
                 }
                 _ => err("meta.stmt_expr expects ExprSyntax"),
             },
+            name if intrinsics::is_meta_statement_wire(name) => match one(args)? {
+                Value::Str(wire) => {
+                    use witchy_syntax::compiler_session::block_wire::StatementSpec;
+                    if self.compiler_syntax.fresh_ident_scope().is_none() {
+                        return err("meta statement construction is available only during compile-time expansion");
+                    }
+                    let spec = witchy_syntax::compiler_session::block_wire::decode_statement(wire.as_bytes())
+                        .map_err(|message| RuntimeError { message })?;
+                    let resolve_expr = |handle: &str| self.compiler_syntax.expressions().get(handle).cloned()
+                        .ok_or_else(|| RuntimeError { message: "meta statement requires current-session expression syntax".into() });
+                    let statement = match spec {
+                        StatementSpec::Let { mutable, name, ty, value } => {
+                            let ty = ty.map(|handle| self.compiler_syntax.types().get(&handle).cloned()
+                                .ok_or_else(|| RuntimeError { message: "meta statement requires current-session type syntax".into() })).transpose()?;
+                            Stmt::Let { name, ty, mutable, value: resolve_expr(&value)? }
+                        }
+                        StatementSpec::Expr(handle) => Stmt::Expr(resolve_expr(&handle)?),
+                        StatementSpec::Return(handle) => Stmt::Return(Some(resolve_expr(&handle)?)),
+                    };
+                    Ok(Some(self.store_compiler_stmt_syntax("statement-wire", statement)?))
+                }
+                _ => err("meta statement construction expects framed data"),
+            },
             name if intrinsics::is_meta_stmt_return(name) => match args {
                 [expr] => {
                     if self.compiler_syntax.fresh_ident_scope().is_none() {
@@ -1635,6 +1658,29 @@ impl Interpreter {
                 }
                 _ => err("meta.block expects List(StmtSyntax) and Option(ExprSyntax)"),
             },
+            name if intrinsics::is_meta_block_wire(name) => match one(args)? {
+                Value::Str(wire) => {
+                    if self.compiler_syntax.fresh_ident_scope().is_none() {
+                        return err("meta.block is available only during compile-time expansion");
+                    }
+                    let spec = witchy_syntax::compiler_session::block_wire::decode_block(wire.as_bytes())
+                        .map_err(|message| RuntimeError { message })?;
+                    let mut statements = Vec::with_capacity(spec.statements.len() + usize::from(spec.tail.is_some()));
+                    for handle in spec.statements {
+                        statements.push(self.compiler_syntax.statements().get(&handle).cloned()
+                            .ok_or_else(|| RuntimeError { message: "meta.block requires current-session statement syntax".into() })?);
+                    }
+                    if let Some(handle) = spec.tail {
+                        statements.push(Stmt::Expr(self.compiler_syntax.expressions().get(&handle).cloned()
+                            .ok_or_else(|| RuntimeError { message: "meta.block requires a current-session tail expression".into() })?));
+                    }
+                    let block = Block { lines: vec![self.cur_line; statements.len()], stmts: statements, region: None };
+                    let handle = self.next_compiler_syntax_handle("block-wire")?;
+                    self.compiler_syntax.insert_block(handle.clone(), block);
+                    Ok(Some(Value::Ctor { name: "meta.CompilerBlockSyntax".into(), fields: Rc::new(vec![Value::str(handle)]) }))
+                }
+                _ => err("meta.block expects framed data"),
+            },
             name if intrinsics::is_meta_block_region(name) => match args {
                 [body, result] => {
                     if self.compiler_syntax.fresh_ident_scope().is_none() {
@@ -1735,6 +1781,38 @@ impl Interpreter {
                         fields: Rc::new(vec![Value::str(handle), Value::Int(i64::from(self.cur_line))]) }))
                 }
                 _ => err("meta.function expects framed function data"),
+            },
+            name if intrinsics::is_meta_function_block_wire(name) => match one(args)? {
+                Value::Str(wire) => {
+                    if self.compiler_syntax.fresh_ident_scope().is_none() {
+                        return err("meta.function_block is available only during compile-time expansion");
+                    }
+                    let spec = witchy_syntax::compiler_session::function_wire::decode_function(wire.as_bytes())
+                        .map_err(|message| RuntimeError { message })?;
+                    let params = spec.params.iter().map(|handle| self.compiler_syntax.params().get(handle)
+                        .cloned().ok_or_else(|| RuntimeError { message: "meta.function_block requires current-session parameters".into() }))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    let ret = spec.ret.as_ref().map(|handle| self.compiler_syntax.types().get(handle)
+                        .cloned().ok_or_else(|| RuntimeError { message: "meta.function_block requires current-session return type".into() }))
+                        .transpose()?;
+                    let body = self.compiler_syntax.blocks().get(&spec.body).cloned()
+                        .ok_or_else(|| RuntimeError { message: "meta.function_block requires a current-session block body".into() })?;
+                    if body.region.is_some() { return err("meta.function_block requires an ordinary block"); }
+                    let (has_await, has_yield, nested_suspension) = generated_suspension_forms(&body);
+                    if nested_suspension || has_await || has_yield {
+                        return err("meta.function_block cannot put suspension in an ordinary function");
+                    }
+                    let item = Item::Function(Function {
+                        line: 1, public: spec.public, pure: false, comptime_only: false,
+                        attributes: Vec::new(), name: spec.name, type_params: Vec::new(),
+                        params, ret, body, bounds: Vec::new(), is_gen: false, is_async: false,
+                    });
+                    let handle = self.next_compiler_syntax_handle("function-block-item")?;
+                    self.compiler_syntax.insert_item(handle.clone(), item);
+                    Ok(Some(Value::Ctor { name: OWNED_ITEM_SYNTAX_CTOR.into(),
+                        fields: Rc::new(vec![Value::str(handle), Value::Int(i64::from(self.cur_line))]) }))
+                }
+                _ => err("meta.function_block expects framed function data"),
             },
             name if intrinsics::is_meta_function_block(name) => match args {
                 [Value::Bool(public), Value::Bool(is_async), Value::Bool(is_gen), name, params, ret, body] => {

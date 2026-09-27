@@ -21,7 +21,126 @@ pub(in super::super) fn register(linker: &mut Linker<VmState>) -> Result<()> {
     linker.func_wrap("witchy", "compiler_syntax_expr_leaf_into", expression_leaf_into)?;
     linker.func_wrap("witchy", "compiler_syntax_type_expr_into", type_expr_into)?;
     linker.func_wrap("witchy", "compiler_syntax_expr_compose_into", expression_compose_into)?;
+    linker.func_wrap("witchy", "compiler_syntax_statement_into", statement_into)?;
+    linker.func_wrap("witchy", "compiler_syntax_block_into", block_into)?;
+    linker.func_wrap("witchy", "compiler_syntax_function_block_into", function_block_into)?;
     Ok(())
+}
+
+fn statement_into(mut caller: Caller<'_, VmState>, pointer: i32, length: i32,
+    out: i32, capacity: i32) -> Result<i32> {
+    use witchy_syntax::compiler_session::block_wire::StatementSpec;
+    let memory = memory_of(&mut caller)?;
+    let input = range(memory.data_size(&caller), pointer, length)?;
+    let output = range(memory.data_size(&caller), out, capacity)?;
+    let state = caller.data().compiler_syntax.as_ref()
+        .ok_or_else(|| Error::msg("compiler syntax session unavailable"))?;
+    if input.len() as u64 > state.input_bytes { return Err(Error::msg("compiler statement input budget exceeded")); }
+    charge_fuel(&mut caller, input.len() as u64 + 1)?;
+    let spec = witchy_syntax::compiler_session::block_wire::decode_statement(&memory.data(&caller)[input])
+        .map_err(Error::msg)?;
+    let state = caller.data().compiler_syntax.as_ref().expect("checked session");
+    let (statement, origin) = {
+        let resolve_expr = |handle: &str| -> Result<(Expr, ComptimeSyntaxOrigin)> {
+            if !state.costs.contains_key(handle) { return Err(Error::msg("compiler statement requires current-session expression syntax")); }
+            let expr = state.syntax.expressions().get(handle).cloned()
+                .ok_or_else(|| Error::msg("compiler statement expression has no payload"))?;
+            let origin = state.syntax.expression_origins().get(handle).cloned()
+                .ok_or_else(|| Error::msg("compiler statement expression has no origin"))?;
+            Ok((expr, origin))
+        };
+        match spec {
+            StatementSpec::Let { mutable, name, ty, value } => {
+                let (value, origin) = resolve_expr(&value)?;
+                let ty = ty.map(|handle| {
+                    if !state.type_costs.contains_key(&handle) { return Err(Error::msg("compiler statement requires current-session type syntax")); }
+                    state.syntax.types().get(&handle).cloned()
+                        .ok_or_else(|| Error::msg("compiler statement type has no payload"))
+                }).transpose()?;
+                (Stmt::Let { name, ty, mutable, value }, origin)
+            }
+            StatementSpec::Expr(handle) => {
+                let (expr, origin) = resolve_expr(&handle)?;
+                (Stmt::Expr(expr), origin)
+            }
+            StatementSpec::Return(handle) => {
+                let (expr, origin) = resolve_expr(&handle)?;
+                (Stmt::Return(Some(expr)), origin)
+            }
+        }
+    };
+    let cost = measure_dynamic(&statement).map_err(Error::msg)?;
+    let required = state.syntax.syntax_handle_byte_len("statement").map_err(Error::msg)?;
+    if cost.nodes > state.nodes.remaining() || cost.bytes > state.syntax_bytes.remaining()
+        || required as u64 > state.bytes.remaining() { return Err(Error::msg("compiler syntax arena budget exceeded")); }
+    charge_fuel(&mut caller, cost.work().and_then(|work| work.checked_add(required as u64))
+        .ok_or_else(|| Error::msg("compiler syntax fuel overflow"))?)?;
+    if output.len() < required { return Ok(required as i32); }
+    let state = caller.data_mut().compiler_syntax.as_mut().expect("checked session");
+    state.nodes.charge(cost.nodes).map_err(|_| Error::msg("compiler syntax arena budget exceeded"))?;
+    state.syntax_bytes.charge(cost.bytes).map_err(|_| Error::msg("compiler syntax arena budget exceeded"))?;
+    state.bytes.charge(required as u64).map_err(|_| Error::msg("compiler syntax handle budget exceeded"))?;
+    let handle = state.syntax.next_syntax_handle("statement").map_err(Error::msg)?;
+    state.syntax.insert_statement(handle.clone(), statement);
+    state.syntax.insert_statement_origin(handle.clone(), origin);
+    state.statement_costs.insert(handle.clone(), cost);
+    memory.data_mut(&mut caller)[output.start..output.start + required].copy_from_slice(handle.as_bytes());
+    Ok(required as i32)
+}
+
+fn block_into(mut caller: Caller<'_, VmState>, pointer: i32, length: i32,
+    out: i32, capacity: i32) -> Result<i32> {
+    let memory = memory_of(&mut caller)?;
+    let input = range(memory.data_size(&caller), pointer, length)?;
+    let output = range(memory.data_size(&caller), out, capacity)?;
+    let state = caller.data().compiler_syntax.as_ref()
+        .ok_or_else(|| Error::msg("compiler syntax session unavailable"))?;
+    if input.len() as u64 > state.input_bytes { return Err(Error::msg("compiler block input budget exceeded")); }
+    charge_fuel(&mut caller, input.len() as u64 + 1)?;
+    let spec = witchy_syntax::compiler_session::block_wire::decode_block(&memory.data(&caller)[input])
+        .map_err(Error::msg)?;
+    let state = caller.data().compiler_syntax.as_ref().expect("checked session");
+    let mut statements = Vec::with_capacity(spec.statements.len() + usize::from(spec.tail.is_some()));
+    let mut lines = Vec::with_capacity(statements.capacity());
+    let mut ancestors = Vec::new();
+    for handle in spec.statements {
+        if !state.statement_costs.contains_key(&handle) { return Err(Error::msg("compiler block requires current-session statement syntax")); }
+        let stmt = state.syntax.statements().get(&handle).cloned()
+            .ok_or_else(|| Error::msg("compiler block statement has no payload"))?;
+        let origin = state.syntax.statement_origins().get(&handle)
+            .ok_or_else(|| Error::msg("compiler block statement has no origin"))?;
+        ancestors.extend(origin.hole_ancestry.iter().cloned());
+        lines.push(origin.definition_line);
+        statements.push(stmt);
+    }
+    if let Some(handle) = spec.tail {
+        if !state.costs.contains_key(&handle) { return Err(Error::msg("compiler block requires current-session tail expression")); }
+        let expr = state.syntax.expressions().get(&handle).cloned()
+            .ok_or_else(|| Error::msg("compiler block tail has no payload"))?;
+        let origin = state.syntax.expression_origins().get(&handle)
+            .ok_or_else(|| Error::msg("compiler block tail has no origin"))?;
+        ancestors.extend(origin.hole_ancestry.iter().cloned());
+        lines.push(origin.definition_line);
+        statements.push(Stmt::Expr(expr));
+    }
+    let block = Block { stmts: statements, lines, region: None };
+    let cost = measure_dynamic(&block).map_err(Error::msg)?;
+    let required = state.syntax.syntax_handle_byte_len("block").map_err(Error::msg)?;
+    if cost.nodes > state.nodes.remaining() || cost.bytes > state.syntax_bytes.remaining()
+        || required as u64 > state.bytes.remaining() { return Err(Error::msg("compiler syntax arena budget exceeded")); }
+    charge_fuel(&mut caller, cost.work().and_then(|work| work.checked_add(required as u64))
+        .ok_or_else(|| Error::msg("compiler syntax fuel overflow"))?)?;
+    if output.len() < required { return Ok(required as i32); }
+    let state = caller.data_mut().compiler_syntax.as_mut().expect("checked session");
+    state.nodes.charge(cost.nodes).map_err(|_| Error::msg("compiler syntax arena budget exceeded"))?;
+    state.syntax_bytes.charge(cost.bytes).map_err(|_| Error::msg("compiler syntax arena budget exceeded"))?;
+    state.bytes.charge(required as u64).map_err(|_| Error::msg("compiler syntax handle budget exceeded"))?;
+    let handle = state.syntax.next_syntax_handle("block").map_err(Error::msg)?;
+    state.syntax.insert_block(handle.clone(), block);
+    state.syntax.insert_block_origin(handle.clone(), ComptimeSyntaxOrigin { definition_line: 1, hole_ancestry: ancestors });
+    state.block_costs.insert(handle.clone(), cost);
+    memory.data_mut(&mut caller)[output.start..output.start + required].copy_from_slice(handle.as_bytes());
+    Ok(required as i32)
 }
 
 fn expression_compose_into(mut caller: Caller<'_, VmState>, pointer: i32, length: i32,
@@ -226,6 +345,64 @@ fn function_expr_into(mut caller: Caller<'_, VmState>, pointer: i32, length: i32
         || required as u64 > state.bytes.remaining() {
         return Err(Error::msg("compiler syntax arena budget exceeded"));
     }
+    charge_fuel(&mut caller, cost.work().and_then(|work| work.checked_add(required as u64))
+        .ok_or_else(|| Error::msg("compiler syntax fuel overflow"))?)?;
+    if output.len() < required { return Ok(required as i32); }
+    let state = caller.data_mut().compiler_syntax.as_mut().expect("checked session");
+    state.nodes.charge(cost.nodes).map_err(|_| Error::msg("compiler syntax arena budget exceeded"))?;
+    state.syntax_bytes.charge(cost.bytes).map_err(|_| Error::msg("compiler syntax arena budget exceeded"))?;
+    state.bytes.charge(required as u64).map_err(|_| Error::msg("compiler syntax handle budget exceeded"))?;
+    let handle = state.syntax.next_syntax_handle("item").map_err(Error::msg)?;
+    state.syntax.insert_item(handle.clone(), item);
+    state.item_origins.insert(handle.clone(), origin);
+    state.item_costs.insert(handle.clone(), cost);
+    memory.data_mut(&mut caller)[output.start..output.start + required].copy_from_slice(handle.as_bytes());
+    Ok(required as i32)
+}
+
+fn function_block_into(mut caller: Caller<'_, VmState>, pointer: i32, length: i32,
+    out: i32, capacity: i32) -> Result<i32> {
+    let memory = memory_of(&mut caller)?;
+    let input = range(memory.data_size(&caller), pointer, length)?;
+    let output = range(memory.data_size(&caller), out, capacity)?;
+    let state = caller.data().compiler_syntax.as_ref()
+        .ok_or_else(|| Error::msg("compiler syntax session unavailable"))?;
+    if input.len() as u64 > state.input_bytes { return Err(Error::msg("compiler function input budget exceeded")); }
+    charge_fuel(&mut caller, input.len() as u64 + 1)?;
+    let spec = witchy_syntax::compiler_session::function_wire::decode_function(&memory.data(&caller)[input])
+        .map_err(Error::msg)?;
+    let state = caller.data().compiler_syntax.as_ref().expect("checked session");
+    let params = spec.params.iter().map(|handle| {
+        if !state.param_costs.contains_key(handle) {
+            return Err(Error::msg("compiler function requires current-session parameter syntax"));
+        }
+        state.syntax.params().get(handle).cloned()
+            .ok_or_else(|| Error::msg("compiler function parameter has no typed payload"))
+    }).collect::<Result<Vec<_>>>()?;
+    let ret = spec.ret.as_ref().map(|handle| {
+        if !state.type_costs.contains_key(handle) {
+            return Err(Error::msg("compiler function requires current-session return type syntax"));
+        }
+        state.syntax.types().get(handle).cloned()
+            .ok_or_else(|| Error::msg("compiler function return type has no typed payload"))
+    }).transpose()?;
+    if !state.block_costs.contains_key(&spec.body) {
+        return Err(Error::msg("compiler function requires a current-session block body"));
+    }
+    let body = state.syntax.blocks().get(&spec.body).cloned()
+        .ok_or_else(|| Error::msg("compiler function block has no typed payload"))?;
+    if body.region.is_some() { return Err(Error::msg("meta.function_block requires an ordinary block")); }
+    let origin = state.syntax.block_origins().get(&spec.body).cloned()
+        .ok_or_else(|| Error::msg("compiler function block has no origin"))?;
+    let item = Item::Function(Function {
+        line: 1, public: spec.public, pure: false, comptime_only: false,
+        attributes: Vec::new(), name: spec.name, type_params: Vec::new(),
+        params, ret, body, bounds: Vec::new(), is_gen: false, is_async: false,
+    });
+    let cost = measure_dynamic(&item).map_err(Error::msg)?;
+    let required = state.syntax.syntax_handle_byte_len("item").map_err(Error::msg)?;
+    if cost.nodes > state.nodes.remaining() || cost.bytes > state.syntax_bytes.remaining()
+        || required as u64 > state.bytes.remaining() { return Err(Error::msg("compiler syntax arena budget exceeded")); }
     charge_fuel(&mut caller, cost.work().and_then(|work| work.checked_add(required as u64))
         .ok_or_else(|| Error::msg("compiler syntax fuel overflow"))?)?;
     if output.len() < required { return Ok(required as i32); }

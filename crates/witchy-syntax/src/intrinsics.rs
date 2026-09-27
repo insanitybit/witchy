@@ -115,10 +115,13 @@ pub enum IntrinsicId {
     MetaStmtLetPattern,
     MetaStmtAssign,
     MetaStmtYield,
+    MetaStatementWire,
+    MetaBlockWire,
     MetaParam,
     MetaParamWire,
     MetaFunctionBlock,
     MetaFunctionExprWire,
+    MetaFunctionBlockWire,
     MetaImplBlock,
     MetaInherentImpl,
     MetaInherentImplWire,
@@ -717,10 +720,13 @@ pub(crate) const META_STMT_LET: &str = "__meta_stmt_let";
 pub(crate) const META_STMT_LET_PATTERN: &str = "__meta_stmt_let_pattern";
 pub(crate) const META_STMT_ASSIGN: &str = "__meta_stmt_assign";
 pub(crate) const META_STMT_YIELD: &str = "__meta_stmt_yield";
+pub(crate) const META_STATEMENT_WIRE: &str = "__meta_statement_wire";
+pub(crate) const META_BLOCK_WIRE: &str = "__meta_block_wire";
 pub(crate) const META_PARAM: &str = "__meta_param";
 pub(crate) const META_PARAM_WIRE: &str = "__meta_param_wire";
 pub(crate) const META_FUNCTION_BLOCK: &str = "__meta_function_block";
 pub(crate) const META_FUNCTION_EXPR_WIRE: &str = "__meta_function_expr_wire";
+pub(crate) const META_FUNCTION_BLOCK_WIRE: &str = "__meta_function_block_wire";
 pub(crate) const META_IMPL_BLOCK: &str = "__meta_impl_block";
 pub(crate) const META_INHERENT_IMPL: &str = "__meta_inherent_impl";
 pub(crate) const META_INHERENT_IMPL_WIRE: &str = "__meta_inherent_impl_wire";
@@ -2485,6 +2491,51 @@ pub const ALL: &[IntrinsicSpec] = &[
         dynamic_wir_helpers: false,
         wir_host_call: None,
         diagnostic_name: "meta.function",
+        private_callers: META_BRIDGE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::MetaStatementWire,
+        name: META_STATEMENT_WIRE,
+        arity: 1,
+        signature: IntrinsicSignature::DeclaredInSource,
+        effect: IntrinsicEffect::Toolchain,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::FrontendGenerated,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: NO_HELPERS,
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: "meta statement builder",
+        private_callers: META_BRIDGE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::MetaBlockWire,
+        name: META_BLOCK_WIRE,
+        arity: 1,
+        signature: IntrinsicSignature::DeclaredInSource,
+        effect: IntrinsicEffect::Toolchain,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::FrontendGenerated,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: NO_HELPERS,
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: "meta block builder",
+        private_callers: META_BRIDGE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::MetaFunctionBlockWire,
+        name: META_FUNCTION_BLOCK_WIRE,
+        arity: 1,
+        signature: IntrinsicSignature::DeclaredInSource,
+        effect: IntrinsicEffect::Toolchain,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::FrontendGenerated,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: NO_HELPERS,
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: "meta.function_block",
         private_callers: META_BRIDGE_CALLERS,
     },
     IntrinsicSpec {
@@ -4347,6 +4398,15 @@ pub fn is_meta_function_block(name: &str) -> bool {
 
 pub fn is_meta_function_expr_wire(name: &str) -> bool {
     lookup(name).is_some_and(|spec| spec.id == IntrinsicId::MetaFunctionExprWire)
+}
+pub fn is_meta_statement_wire(name: &str) -> bool {
+    lookup(name).is_some_and(|spec| spec.id == IntrinsicId::MetaStatementWire)
+}
+pub fn is_meta_block_wire(name: &str) -> bool {
+    lookup(name).is_some_and(|spec| spec.id == IntrinsicId::MetaBlockWire)
+}
+pub fn is_meta_function_block_wire(name: &str) -> bool {
+    lookup(name).is_some_and(|spec| spec.id == IntrinsicId::MetaFunctionBlockWire)
 }
 
 pub fn is_meta_impl_block(name: &str) -> bool {

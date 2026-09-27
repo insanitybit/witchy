@@ -20,6 +20,7 @@ use crate::origin::SyntaxCategory;
 pub mod seeds;
 pub mod type_expr_wire;
 pub mod expr_compose_wire;
+pub mod block_wire;
 pub mod function_wire;
 
 /// Data carried by the checked source launch contract and admitted artifact.
@@ -118,6 +119,8 @@ pub struct CompilerSyntaxSession {
     expr_origins: HashMap<String, ComptimeSyntaxOrigin>,
     type_origins: HashMap<String, ComptimeSyntaxOrigin>,
     pattern_origins: HashMap<String, ComptimeSyntaxOrigin>,
+    stmt_origins: HashMap<String, ComptimeSyntaxOrigin>,
+    block_origins: HashMap<String, ComptimeSyntaxOrigin>,
     /// Module qualifiers made available by the tagged-literal invocation.
     expr_qualifiers: Option<Vec<String>>,
     /// Exact opaque sentinels issued for the active tagged literal, not an
@@ -165,6 +168,8 @@ impl CompilerSyntaxSession {
             expr_origins: HashMap::new(),
             type_origins: HashMap::new(),
             pattern_origins: HashMap::new(),
+            stmt_origins: HashMap::new(),
+            block_origins: HashMap::new(),
             expr_qualifiers: None,
             tag_hole_markers: None,
             item_output: Vec::new(),
@@ -245,6 +250,8 @@ impl CompilerSyntaxSession {
     syntax_arena!(expression_origins, insert_expression_origin, expr_origins, ComptimeSyntaxOrigin);
     syntax_arena!(type_origins, insert_type_origin, type_origins, ComptimeSyntaxOrigin);
     syntax_arena!(pattern_origins, insert_pattern_origin, pattern_origins, ComptimeSyntaxOrigin);
+    syntax_arena!(statement_origins, insert_statement_origin, stmt_origins, ComptimeSyntaxOrigin);
+    syntax_arena!(block_origins, insert_block_origin, block_origins, ComptimeSyntaxOrigin);
 
     pub fn emit_item(&mut self, item: PositionedComptimeItem) { self.item_output.push(item); }
     pub fn emit_expression(&mut self, expr: ComptimeExprEmission) { self.expr_output.push(expr); }

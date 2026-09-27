@@ -15,6 +15,9 @@ pub const COMPILER_TYPE_EXPR_IMPORT: &str = "compiler_syntax_type_expr_into";
 pub const COMPILER_EXPR_COMPOSE_IMPORT: &str = "compiler_syntax_expr_compose_into";
 pub const COMPILER_PARAM_IMPORT: &str = "compiler_syntax_param_into";
 pub const COMPILER_FUNCTION_EXPR_IMPORT: &str = "compiler_syntax_function_expr_into";
+pub const COMPILER_STATEMENT_IMPORT: &str = "compiler_syntax_statement_into";
+pub const COMPILER_BLOCK_IMPORT: &str = "compiler_syntax_block_into";
+pub const COMPILER_FUNCTION_BLOCK_IMPORT: &str = "compiler_syntax_function_block_into";
 pub const COMPILER_INHERENT_IMPL_IMPORT: &str = "compiler_syntax_inherent_impl_into";
 
 fn metered(name: &str) -> bool {
@@ -22,6 +25,7 @@ fn metered(name: &str) -> bool {
         | COMPILER_QUOTE_ITEM_IMPORT | COMPILER_EMIT_ITEM_IMPORT | COMPILER_QUOTE_TYPE_IMPORT
         | COMPILER_RECORD_TYPE_IMPORT | COMPILER_EXPR_LEAF_IMPORT | COMPILER_TYPE_EXPR_IMPORT
         | COMPILER_EXPR_COMPOSE_IMPORT | COMPILER_PARAM_IMPORT | COMPILER_FUNCTION_EXPR_IMPORT
+        | COMPILER_STATEMENT_IMPORT | COMPILER_BLOCK_IMPORT | COMPILER_FUNCTION_BLOCK_IMPORT
         | COMPILER_INHERENT_IMPL_IMPORT)
 }
 
@@ -43,6 +47,7 @@ impl CanonicalAbiCatalog {
                 vec![read], vec![], HostMutation::ReadOnly, ImportAuthentication::CompilerSession)?,
             COMPILER_RECORD_TYPE_IMPORT | COMPILER_TYPE_EXPR_IMPORT | COMPILER_EXPR_COMPOSE_IMPORT
             | COMPILER_PARAM_IMPORT | COMPILER_FUNCTION_EXPR_IMPORT | COMPILER_INHERENT_IMPL_IMPORT
+            | COMPILER_STATEMENT_IMPORT | COMPILER_BLOCK_IMPORT | COMPILER_FUNCTION_BLOCK_IMPORT
                 => authenticated_import(name, &[I32, I32, I32, I32], &[I32], signature,
                 vec![read, write], vec![HostResultRole::Value(ValueType::Size)],
                 HostMutation::WriteBuffers, ImportAuthentication::CompilerSession)?,
