@@ -889,6 +889,63 @@ generation is additive: it cannot rewrite existing declarations. Raw
 `emit(String)` and source-string syntax builders are retired from the target
 surface; use typed syntax. Compile-time syntax values cannot escape at runtime.
 
+A `comptime:` item is a parameterless compile-time block. It can bind local
+values and call `comptime fn` helpers with arguments; it cannot capture a local
+value from a runtime function. `type_info(T)` is a compiler-known, compile-time-
+only expression whose operand is resolved in the type namespace, never
+constructed or evaluated as a runtime value. For an accessible declared nominal
+`T`, it returns `meta.TypeInfo` with its record fields or sum variants and
+resolved type expressions. The compiler binds that data to the authenticated
+definition identity separately from its forgeable display name. Qualified
+names retain their defining module identity. An alias resolves to its target;
+a generic instance substitutes its concrete arguments in reflected field
+and variant types. The same descriptor rules apply to types declared in normal
+and opt modules. An unresolved, inaccessible, or unsupported type is diagnosed
+before compile-time execution. `quote type: T` is typed syntax naming `T`; it
+is not a structural `TypeInfo` lookup.
+
+Compile-time type lookup observes checked source declarations and earlier
+emitted items, never output from a later block. It cannot inspect runtime
+values, reveal inaccessible fields, forge a nominal identity, or grant authority
+through reflected metadata. A compiler-issued descriptor is data for code generation, not an unchecked source
+of ownership, capability, or opt-mode proofs. Generated declarations enter the
+ordinary destination checker under their actual source mode; using an opt-
+defined type in a normal module does not turn its generated functions into opt
+functions. Normal calls into generated opt behavior still need the usual opt
+contract and ownership proofs. Type lookup, generated item identity, and
+source provenance are bound to the admitted compile-time recipe so a caller
+cannot replace the type or its fields after checking.
+
+Useful generation is part of the contract, not only fixed quoted declarations.
+For example, a program-defined `builder_items(meta.TypeInfo) -> List(meta.ItemSyntax)`
+may receive `type_info(User)` and emit `UserBuilder` plus its inherent methods:
+one optional slot and one setter for each accessible `User` field, and a `build`
+method that constructs `User` only when every slot is present. These methods
+consume the builder's current state when opt mode would otherwise need a hidden
+copy. A must-bearing field cannot be silently discarded by an incomplete build.
+Typed item construction must support the record declaration and inherent
+implementation needed for this example; neither may be assembled from source
+strings. Changing
+`User`'s fields changes the generated builder after rechecking, while a
+missing or incompatible field remains a normal source error. The acceptance
+ledger records the concrete normal, opt, and cross-mode cases. The target
+source shape is:
+
+```witchy
+import meta
+
+type User:
+    name: String
+    age: Int
+
+comptime:
+    for item in builder_items(type_info(User)):
+        emit_item(item)
+```
+
+`builder_items` is a program-defined helper. This example specifies the target;
+the current compiler does not yet implement the whole program.
+
 `Dynamic` is an explicit authenticated descriptor plus owned payload, not an
 implicit fallback for failed static checking. Checked decode, public inspection,
 registered `@dynamic` methods, and authenticated trait queries return structured
