@@ -31,6 +31,7 @@ mod canonical_safewir {
             #[test] fn collect_keeps_order_and_last_pair() { witchy_wir::self_checks::canonical_safewir_check::sorted_map_collect_keeps_order_and_last_pair() }
         }
         mod cache {
+            #[test] fn affine_verdicts_require_exact_capture_proofs() { witchy_wir::self_checks::canonical_safewir_check_cache::affine_verdicts_require_exact_capture_proofs() }
             mod store {
                 mod tests {
                     #[test] fn verdict_files_round_trip_and_reject_damage() { witchy_wir::self_checks::canonical_safewir_check_cache::verdict_files_round_trip_and_reject_damage() }

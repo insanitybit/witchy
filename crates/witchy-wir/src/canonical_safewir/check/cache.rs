@@ -23,6 +23,9 @@
 //!
 //! The in-process memo is bounded. `WITCHY_SAFEWIR_CHECK_CACHE=off` disables
 //! memoization entirely, so every function is checked on every pass.
+//! Functions with affine ABI proofs use a separate in-process verdict table:
+//! the function digest and exact equality of all source-derived affine proof
+//! maps must both match. These verdicts never enter the persistent store.
 //!
 //! # The persistent store
 //!
@@ -59,7 +62,7 @@ use super::super::{
     CanonicalAbiCatalog, Function, FunctionSignature, FunctionSignatureId, ImportContract, ImportId,
     ProperTailLocation, TailSiteId,
 };
-use super::FunctionIndex;
+use super::{AffineAbiProofs, FunctionIndex};
 use crate::layout::{FieldKind, LayoutDescriptor, LayoutId, LayoutInterner, LayoutKind};
 
 const SERIALIZATION_VERSION: u32 = 1;
@@ -82,6 +85,14 @@ pub(super) type Discharged = Arc<BTreeSet<TailSiteId>>;
 
 static VERDICTS: OnceLock<Mutex<HashMap<FunctionCheckKey, Discharged, foldhash::fast::RandomState>>> =
     OnceLock::new();
+// Affine verdicts stay in process: the persistent key intentionally omits
+// checked-source affine proofs. Exact proof equality supplements the ordinary
+// function key here, including fields the function may reach through calls.
+static AFFINE_VERDICTS: OnceLock<Mutex<HashMap<
+    FunctionCheckKey,
+    (Arc<AffineAbiProofs>, Discharged),
+    foldhash::fast::RandomState,
+>>> = OnceLock::new();
 static HITS: AtomicU64 = AtomicU64::new(0);
 static MISSES: AtomicU64 = AtomicU64::new(0);
 static STORE_HITS: AtomicU64 = AtomicU64::new(0);
@@ -315,6 +326,35 @@ pub(super) fn lookup(key: &FunctionCheckKey) -> Option<Discharged> {
     }
     MISSES.fetch_add(1, Ordering::Relaxed);
     None
+}
+
+pub(super) fn lookup_affine(key: &FunctionCheckKey, proofs: &AffineAbiProofs) -> Option<Discharged> {
+    let verdicts = AFFINE_VERDICTS.get_or_init(Default::default);
+    let found = verdicts.lock().ok().and_then(|verdicts| {
+        verdicts.get(key).and_then(|(checked, discharged)| {
+            (checked.as_ref() == proofs).then(|| Arc::clone(discharged))
+        })
+    });
+    if found.is_some() {
+        HITS.fetch_add(1, Ordering::Relaxed);
+    } else {
+        MISSES.fetch_add(1, Ordering::Relaxed);
+    }
+    found
+}
+
+pub(super) fn record_affine(
+    key: FunctionCheckKey,
+    proofs: Arc<AffineAbiProofs>,
+    discharged: Discharged,
+) {
+    let verdicts = AFFINE_VERDICTS.get_or_init(Default::default);
+    if let Ok(mut verdicts) = verdicts.lock() {
+        if verdicts.len() >= MAX_ENTRIES {
+            verdicts.clear();
+        }
+        verdicts.insert(key, (proofs, discharged));
+    }
 }
 
 /// Wall-clock cost of one fresh check; zero where the target has no clock.
@@ -573,10 +613,12 @@ pub(crate) mod store {
     pub mod self_checks {
         use std::collections::BTreeSet;
         use std::fs;
+        use std::sync::Arc;
 
         use super::super::super::super::TailSiteId;
-        use super::super::FunctionCheckKey;
+        use super::super::{AffineAbiProofs, FunctionCheckKey, lookup_affine, record_affine};
         use super::{read, stamp_dir, write};
+        use crate::canonical_safewir::{ValueType, closure_owner_contract::{CaptureTransfer, ConstructorId}};
 
         fn scratch(name: &str) -> std::path::PathBuf {
             let dir = std::env::temp_dir()
@@ -619,6 +661,23 @@ pub(crate) mod store {
             assert!(read(&foreign, &key).is_some());
             assert_ne!(foreign, dir);
             let _ = fs::remove_dir_all(&root);
+        }
+
+        pub fn affine_verdicts_require_exact_capture_proofs() {
+            let key = FunctionCheckKey([9; 32]);
+            let mut checked = AffineAbiProofs::new();
+            checked.owner_captures.insert(
+                ConstructorId(1), vec![(CaptureTransfer::CopyScalar, ValueType::Int)],
+            );
+            assert!(!checked.is_empty(), "capture-only affine proofs cannot use the ordinary verdict cache");
+            let mut different = checked.clone();
+            different.owner_captures.insert(
+                ConstructorId(2), vec![(CaptureTransfer::CopyScalar, ValueType::Int)],
+            );
+            let sites = [TailSiteId::from_digest([3; 32])].into_iter().collect::<BTreeSet<_>>();
+            record_affine(key, Arc::new(checked.clone()), Arc::new(sites.clone()));
+            assert_eq!(lookup_affine(&key, &checked).as_deref(), Some(&sites));
+            assert!(lookup_affine(&key, &different).is_none(), "different source-affine obligations must miss");
         }
 
     }

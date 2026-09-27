@@ -127,26 +127,14 @@ fn task_handles_must_be_joined_cancelled_or_returned_on_every_path() {
 
 #[test]
 fn affine_handle_list_has_no_cloneable_safewir_carrier() {
-    let checked = witchy::resolve_std_only_checked(r#"
-import chan
-async fn next(n: Int) -> Int:
-    n + 1
-async fn main(console: Console):
-    let values = chan.par_map([4], fn(n): next(n)).await
-    console.print("${values}")
-"#);
-    match checked {
-        Ok(checked) => {
-            witchy::codegen::compile_checked_module_artifact(&checked)
-                .expect_unsupported("List(task.Handle) has no move-only SafeWIR carrier proof");
-        }
-        Err(error) => {
-            // Source may refuse the missing pending-owner transfer before
-            // lowering reaches the affine carrier. Unrelated errors do not
-            // establish either boundary.
-            let message = error.to_string();
-            assert!(message.contains("private source bridge")
-                && message.contains("erases a stored must-consume obligation"), "{message}");
-        }
-    }
+    let checked = witchy::resolve_std_only_checked(r#"import task
+
+pub fn make(own handle: task.Handle) -> List(task.Handle):
+    [handle]
+
+fn main():
+    ()
+"#).expect("an affine list can be checked without an async library bridge");
+    witchy::codegen::compile_checked_module_artifact(&checked)
+        .expect_unsupported("List(task.Handle) has no move-only SafeWIR carrier proof");
 }
