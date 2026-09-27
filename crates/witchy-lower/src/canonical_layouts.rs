@@ -1172,6 +1172,16 @@ fn intern_v1_layout_fields(
             interner
                 .intern_scalar(scalar)
                 .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?
+        } else if matches!(element_storage,
+            StoragePlan::RootedView(witchy_canonical_source::rooted_view::RootedViewStorage::RetainedRoot(
+                witchy_canonical_source::rooted_view::RetainedRootStorage::Sequence(_)))) {
+            // A retained sequence view owns a reference to the checked
+            // sequence root. Keep its source-bound nominal identity in the
+            // containing slot even when the physical list body is shared.
+            intern_v1_layout_checked(
+                interner, element_type.unqualified(), definitions, recursive_types, active,
+                closure_layouts,
+            )?
         } else {
             intern_v1_layout_checked(
                 interner, &element_type, definitions, recursive_types, active, closure_layouts,

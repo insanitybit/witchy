@@ -104,7 +104,9 @@ unproved or authority-bearing element types are refused.
 Lists can hold retained-root views when the checked referent has a lawful
 snapshot and recursive storage proof. For example, `List(&String)` retains
 each String root on insertion; nested lists preserve the view qualifier in
-their checked storage identity. An unproved view payload is refused.
+their checked storage identity. `List(&List(&String))` retains the checked
+nominal inner list root through its outer pointer slot. An unproved view
+payload is refused.
 
 Calling `.owned()` on a copyable owned value also gives the result its own
 ownership token. Linear storage is copied; an opaque immutable owner may be

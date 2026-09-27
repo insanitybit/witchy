@@ -128,4 +128,10 @@ fn retained_root_views_use_recursive_list_storage() {
         "fn main() -> Int:\n    let a = \"aa\"\n    let b = \"bbb\"\n    var xs: List(&String) = [&a, &a]\n    xs[0] = &b\n    let ys = xs.concat(xs)\n    (*ys[0]).length() * 10 + (*ys[3]).length()\n",
         32,
     );
+    // The outer slot retains the nominal inner list snapshot and recursively
+    // releases the inner String view after the final read: length 3.
+    assert_wasm(
+        "fn main() -> Int:\n    let text = \"abc\"\n    let inner: List(&String) = [&text]\n    let outer: List(&List(&String)) = [&inner]\n    (*((*outer[0])[0])).length()\n",
+        3,
+    );
 }

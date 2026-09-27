@@ -42,15 +42,19 @@ pub(crate) fn value_type_matches_source(
                     layouts, layout, &plan,
                 );
             }
-            Some(RootedViewStorage::RetainedRoot(RetainedRootStorage::Sequence(carrier))) => {
-                // Every nested element still needs an owned slot and RC list.
+            Some(RootedViewStorage::RetainedRoot(RetainedRootStorage::Sequence(_carrier))) => {
+                // The source view proof establishes the recursive carrier;
+                // validate its exact list root and children through the same
+                // source-bound nominal correspondence as owned lists.
                 let super::super::ValueType::Ref(layout) = actual else { return false };
-                if matches!(layouts.get(layout).map(|descriptor| descriptor.kind()),
-                    Some(crate::layout::LayoutKind::OpaqueNominal { .. })) { return false; }
-                let Ok(physical) = layouts.resolve_nominal(layout) else { return false };
-                let Some(crate::layout::LayoutKind::PackedList { element, rc: crate::layout::RcHeader::Required }) =
-                    layouts.get(physical).map(|descriptor| descriptor.kind()) else { return false };
-                return super::super::closure_owner_contract::carrier_element_layout_matches(layouts, *element, &carrier);
+                if witchy_canonical_source::storage::aggregate_layout_identity(payload.unqualified(), records).is_some()
+                    && !matches!(layouts.get(layout).map(|descriptor| descriptor.kind()),
+                        Some(crate::layout::LayoutKind::OpaqueNominal { .. })) {
+                    return false;
+                }
+                return layout_matches_source_with_closures(
+                    layout, payload, layouts, records, closure_layouts, signatures, context,
+                );
             }
             _ => {}
         }

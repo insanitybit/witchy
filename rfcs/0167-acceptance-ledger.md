@@ -683,9 +683,11 @@ publish shared prefix ownership, while affine exclusivity still requires a
 unique prefix. `List(&String)` insertion, function passage, and nesting in
 `List(List(&String))` run through admitted Wasm. The focused zero-leak witness
 does not complete row G's full required matrix or any other A–O evidence.
-`List(&List(&String))` still fails closed at canonical layout lookup; a
-retained view whose referent is itself a source-bound nominal list remains a
-separate structural gap.
+The recursive nominal slot composition now also admits
+`List(&List(&String))`: the outer owned pointer names the checked inner list
+root, and SafeWIR requires that root's exact nominal key before recursively
+validating its body. One focused admitted-Wasm result and zero-leak audit
+passes; the full row G matrix and A–O evidence remain open.
 
 Row G retained byte-buffer layout class (architecture implemented, semantic
 evidence unchanged, 2026-09-25): the shared source-storage projection now
