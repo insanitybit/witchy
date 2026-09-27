@@ -21,6 +21,14 @@ impl Interpreter {
                 return err(intrinsics::arity_diagnostic(spec, args.len()));
             }
         }
+        let (args, quote_line) = if catalog.is_some_and(|spec| spec.signature.has_quote_site()) {
+            let Some((Value::Int(line), payload)) = args.split_last() else {
+                return err("compiler quotation requires its parser-issued source line");
+            };
+            let line = u32::try_from(*line).ok().filter(|line| *line != 0)
+                .ok_or_else(|| RuntimeError { message: "compiler quotation source line is out of range".into() })?;
+            (payload, Some(line))
+        } else { (args, None) };
         // `secret_store.get(name)` — a named lookup into the granted store. Handled
         // here (not in `native`) because a `SecretStore` is not a `NativeValue`.
         if name == intrinsics::SECRETSTORE_GET {
@@ -1857,7 +1865,7 @@ impl Interpreter {
                         self.compiler_syntax.insert_expression_origin(
                             instance_handle.clone(),
                             ComptimeSyntaxOrigin {
-                                definition_line: self.cur_line,
+                                definition_line: quote_line.expect("quote signature carries its source line"),
                                 hole_ancestry: Vec::new(),
                             },
                         );
@@ -1890,13 +1898,13 @@ impl Interpreter {
                                 message: "compiler-owned expression quotation referenced an invalid syntax handle"
                                     .into(),
                             })?;
-                        let definition_line = self.cur_line;
+                        let definition_line = quote_line.expect("quote signature carries its source line");
                         let hole_ancestry = compiler_item_hole_origins(
                             holes,
                             self.compiler_syntax.expression_origins(),
                             self.compiler_syntax.type_origins(),
                             self.compiler_syntax.pattern_origins(),
-                            self.cur_line,
+                            quote_line.expect("quote signature carries its source line"),
                         );
                         let holes = compiler_item_holes(
                             holes,
@@ -1950,7 +1958,7 @@ impl Interpreter {
                         self.compiler_syntax.insert_type_origin(
                             instance_handle.clone(),
                             ComptimeSyntaxOrigin {
-                                definition_line: self.cur_line,
+                                definition_line: quote_line.expect("quote signature carries its source line"),
                                 hole_ancestry: Vec::new(),
                             },
                         );
@@ -1983,13 +1991,13 @@ impl Interpreter {
                                 message: "compiler-owned type quotation referenced an invalid syntax handle"
                                     .into(),
                             })?;
-                        let definition_line = self.cur_line;
+                        let definition_line = quote_line.expect("quote signature carries its source line");
                         let hole_ancestry = compiler_direct_hole_origins(
                             holes,
                             SyntaxCategory::Type,
                             "CompilerTypeSyntax",
                             self.compiler_syntax.type_origins(),
-                            self.cur_line,
+                            quote_line.expect("quote signature carries its source line"),
                         );
                         let holes = compiler_type_holes(holes, self.compiler_syntax.types())?;
                         let ty = witchy_syntax::syntax_holes::instantiate_type(&template, holes)
@@ -2037,7 +2045,7 @@ impl Interpreter {
                         self.compiler_syntax.insert_pattern_origin(
                             instance_handle.clone(),
                             ComptimeSyntaxOrigin {
-                                definition_line: self.cur_line,
+                                definition_line: quote_line.expect("quote signature carries its source line"),
                                 hole_ancestry: Vec::new(),
                             },
                         );
@@ -2070,13 +2078,13 @@ impl Interpreter {
                                 message: "compiler-owned pattern quotation referenced an invalid syntax handle"
                                     .into(),
                             })?;
-                        let definition_line = self.cur_line;
+                        let definition_line = quote_line.expect("quote signature carries its source line");
                         let hole_ancestry = compiler_direct_hole_origins(
                             holes,
                             SyntaxCategory::Pattern,
                             "CompilerPatternSyntax",
                             self.compiler_syntax.pattern_origins(),
-                            self.cur_line,
+                            quote_line.expect("quote signature carries its source line"),
                         );
                         let holes =
                             compiler_pattern_holes(holes, self.compiler_syntax.patterns())?;
@@ -2269,7 +2277,7 @@ impl Interpreter {
                             name: OWNED_ITEM_SYNTAX_CTOR.into(),
                             fields: Rc::new(vec![
                                 Value::Str(handle.clone()),
-                                Value::Int(i64::from(self.cur_line)),
+                                Value::Int(i64::from(quote_line.expect("quote signature carries its source line"))),
                             ]),
                         }))
                     }
@@ -2296,7 +2304,7 @@ impl Interpreter {
                             fields: Rc::new(vec![
                                 Value::Str(handle.clone()),
                                 Value::List(holes.clone()),
-                                Value::Int(i64::from(self.cur_line)),
+                                Value::Int(i64::from(quote_line.expect("quote signature carries its source line"))),
                             ]),
                         }))
                     }

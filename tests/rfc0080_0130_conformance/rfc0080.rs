@@ -42,3 +42,5 @@ mod owned_expr_syntax;
 mod qualified_identities;
 #[path = "../rfc0080/derive_boundary_witnesses.rs"]
 mod derive_boundary_witnesses;
+#[path = "../rfc0080/quote_site.rs"]
+mod quote_site;

@@ -4591,6 +4591,10 @@ impl Checker {
             // the linked source declaration, not by the builtin signature path.
             S::TryContext | S::DeclaredInSource => None,
         };
+        let signature = signature.map(|(mut parameters, result)| {
+            if spec.signature.has_quote_site() { parameters.push(Ty::Int); }
+            (parameters, result)
+        });
         debug_assert!(
             signature.as_ref().is_none_or(|(params, _)| params.len() == spec.arity),
             "intrinsic catalog arity disagrees with the type recipe for {}",

@@ -2760,7 +2760,7 @@ impl Parser {
         let (handle, _) = self.register_expr_syntax(quoted, source, definition_line);
         Ok(Expr::Call {
             name: crate::intrinsics::COMPILER_QUOTE_EXPR_HOLES.into(),
-            args: vec![Expr::Str(handle), Expr::List(parts), Expr::List(holes)],
+            args: vec![Expr::Str(handle), Expr::List(parts), Expr::List(holes), Expr::Int(i64::from(definition_line))],
         })
     }
 
@@ -2773,7 +2773,7 @@ impl Parser {
         let (handle, source) = self.register_expr_syntax(quoted, source, definition_line);
         Expr::Call {
             name: crate::intrinsics::COMPILER_QUOTE_EXPR.into(),
-            args: vec![Expr::Str(handle), Expr::Str(source)],
+            args: vec![Expr::Str(handle), Expr::Str(source), Expr::Int(i64::from(definition_line))],
         }
     }
 
@@ -2912,7 +2912,7 @@ impl Parser {
             let handle = self.register_type_syntax(quoted, &source, definition_line);
             return Ok(Expr::Call {
                 name: crate::intrinsics::COMPILER_QUOTE_TYPE.into(),
-                args: vec![Expr::Str(handle), Expr::Str(source)],
+                args: vec![Expr::Str(handle), Expr::Str(source), Expr::Int(i64::from(definition_line))],
             });
         }
         let source = crate::format::type_str(&quoted);
@@ -2920,7 +2920,7 @@ impl Parser {
         let handle = self.register_type_syntax(quoted, &source, definition_line);
         Ok(Expr::Call {
             name: crate::intrinsics::COMPILER_QUOTE_TYPE_HOLES.into(),
-            args: vec![Expr::Str(handle), Expr::List(parts), Expr::List(holes)],
+            args: vec![Expr::Str(handle), Expr::List(parts), Expr::List(holes), Expr::Int(i64::from(definition_line))],
         })
     }
 
@@ -2935,7 +2935,7 @@ impl Parser {
             let handle = self.register_pattern_syntax(quoted, &source, definition_line);
             return Ok(Expr::Call {
                 name: crate::intrinsics::COMPILER_QUOTE_PATTERN.into(),
-                args: vec![Expr::Str(handle), Expr::Str(source)],
+                args: vec![Expr::Str(handle), Expr::Str(source), Expr::Int(i64::from(definition_line))],
             });
         }
         let source = crate::format::pattern_str(&quoted);
@@ -2944,7 +2944,7 @@ impl Parser {
         let handle = self.register_pattern_syntax(quoted, &source, definition_line);
         Ok(Expr::Call {
             name: crate::intrinsics::COMPILER_QUOTE_PATTERN_HOLES.into(),
-            args: vec![Expr::Str(handle), Expr::List(parts), Expr::List(holes)],
+            args: vec![Expr::Str(handle), Expr::List(parts), Expr::List(holes), Expr::Int(i64::from(definition_line))],
         })
     }
 
@@ -2961,7 +2961,7 @@ impl Parser {
             let (handle, source) = self.register_stmt_syntax(quoted, definition_line);
             return Ok(Expr::Call {
                 name: crate::intrinsics::COMPILER_QUOTE_STMT.into(),
-                args: vec![Expr::Str(handle), Expr::Str(source)],
+                args: vec![Expr::Str(handle), Expr::Str(source), Expr::Int(i64::from(definition_line))],
             });
         }
         let source = crate::format::stmt_str(&quoted);
@@ -2970,7 +2970,7 @@ impl Parser {
         let (handle, _) = self.register_stmt_syntax(quoted, definition_line);
         Ok(Expr::Call {
             name: crate::intrinsics::COMPILER_QUOTE_STMT_HOLES.into(),
-            args: vec![Expr::Str(handle), Expr::List(parts), Expr::List(holes)],
+            args: vec![Expr::Str(handle), Expr::List(parts), Expr::List(holes), Expr::Int(i64::from(definition_line))],
         })
     }
 
@@ -2987,7 +2987,7 @@ impl Parser {
             let (handle, source) = self.register_block_syntax(quoted, definition_line);
             return Ok(Expr::Call {
                 name: crate::intrinsics::COMPILER_QUOTE_BLOCK.into(),
-                args: vec![Expr::Str(handle), Expr::Str(source)],
+                args: vec![Expr::Str(handle), Expr::Str(source), Expr::Int(i64::from(definition_line))],
             });
         }
         let source = crate::format::block_str(&quoted);
@@ -2996,7 +2996,7 @@ impl Parser {
         let (handle, _) = self.register_block_syntax(quoted, definition_line);
         Ok(Expr::Call {
             name: crate::intrinsics::COMPILER_QUOTE_BLOCK_HOLES.into(),
-            args: vec![Expr::Str(handle), Expr::List(parts), Expr::List(holes)],
+            args: vec![Expr::Str(handle), Expr::List(parts), Expr::List(holes), Expr::Int(i64::from(definition_line))],
         })
     }
 
@@ -3004,7 +3004,7 @@ impl Parser {
         let (handle, source) = self.register_item_syntax(quoted, definition_line);
         Expr::Call {
             name: crate::intrinsics::COMPILER_QUOTE_ITEM.into(),
-            args: vec![Expr::Str(handle), Expr::Str(source)],
+            args: vec![Expr::Str(handle), Expr::Str(source), Expr::Int(i64::from(definition_line))],
         }
     }
 
@@ -3053,7 +3053,7 @@ impl Parser {
         let (handle, _) = self.register_item_syntax(quoted, definition_line);
         Ok(Expr::Call {
             name: crate::intrinsics::COMPILER_QUOTE_ITEM_HOLES.into(),
-            args: vec![Expr::Str(handle), Expr::List(parts), Expr::List(holes)],
+            args: vec![Expr::Str(handle), Expr::List(parts), Expr::List(holes), Expr::Int(i64::from(definition_line))],
         })
     }
 

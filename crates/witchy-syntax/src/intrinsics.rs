@@ -595,6 +595,20 @@ pub const COMPILER_QUOTE_BLOCK: &str = "@quote_block";
 pub const COMPILER_QUOTE_BLOCK_HOLES: &str = "@quote_block_holes";
 pub const COMPILER_EMIT_ITEM: &str = "@emit_item";
 pub const COMPILER_EMIT_EXPR: &str = "@emit_expr";
+
+impl IntrinsicSignature {
+    /// Parser-issued quotes carry an explicit final source-line operand.
+    /// Payload handles may deduplicate identical syntax from different sites;
+    /// evaluator control flow must never select a quotation's definition span.
+    pub fn has_quote_site(self) -> bool {
+        matches!(self, Self::CompilerQuoteItem | Self::CompilerQuoteItemHoles
+            | Self::CompilerQuoteExpr | Self::CompilerQuoteExprHoles
+            | Self::CompilerQuoteType | Self::CompilerQuoteTypeHoles
+            | Self::CompilerQuotePattern | Self::CompilerQuotePatternHoles
+            | Self::CompilerQuoteStmt | Self::CompilerQuoteStmtHoles
+            | Self::CompilerQuoteBlock | Self::CompilerQuoteBlockHoles)
+    }
+}
 pub(crate) const RETIRED_SOURCE_RENDER: &str = "__render";
 pub const TRY_CONTEXT: &str = "__try_ctx";
 
@@ -824,7 +838,7 @@ pub const ALL: &[IntrinsicSpec] = &[
     IntrinsicSpec {
         id: IntrinsicId::CompilerQuoteItem,
         name: COMPILER_QUOTE_ITEM,
-        arity: 2,
+        arity: 3,
         signature: IntrinsicSignature::CompilerQuoteItem,
         effect: IntrinsicEffect::Pure,
         capability_effect: CapabilityEffect::None,
@@ -839,7 +853,7 @@ pub const ALL: &[IntrinsicSpec] = &[
     IntrinsicSpec {
         id: IntrinsicId::CompilerQuoteItemHoles,
         name: COMPILER_QUOTE_ITEM_HOLES,
-        arity: 3,
+        arity: 4,
         signature: IntrinsicSignature::CompilerQuoteItemHoles,
         effect: IntrinsicEffect::Pure,
         capability_effect: CapabilityEffect::None,
@@ -854,7 +868,7 @@ pub const ALL: &[IntrinsicSpec] = &[
     IntrinsicSpec {
         id: IntrinsicId::CompilerQuoteExpr,
         name: COMPILER_QUOTE_EXPR,
-        arity: 2,
+        arity: 3,
         signature: IntrinsicSignature::CompilerQuoteExpr,
         effect: IntrinsicEffect::Pure,
         capability_effect: CapabilityEffect::None,
@@ -869,7 +883,7 @@ pub const ALL: &[IntrinsicSpec] = &[
     IntrinsicSpec {
         id: IntrinsicId::CompilerQuoteExprHoles,
         name: COMPILER_QUOTE_EXPR_HOLES,
-        arity: 3,
+        arity: 4,
         signature: IntrinsicSignature::CompilerQuoteExprHoles,
         effect: IntrinsicEffect::Pure,
         capability_effect: CapabilityEffect::None,
@@ -884,7 +898,7 @@ pub const ALL: &[IntrinsicSpec] = &[
     IntrinsicSpec {
         id: IntrinsicId::CompilerQuoteType,
         name: COMPILER_QUOTE_TYPE,
-        arity: 2,
+        arity: 3,
         signature: IntrinsicSignature::CompilerQuoteType,
         effect: IntrinsicEffect::Pure,
         capability_effect: CapabilityEffect::None,
@@ -899,7 +913,7 @@ pub const ALL: &[IntrinsicSpec] = &[
     IntrinsicSpec {
         id: IntrinsicId::CompilerQuoteTypeHoles,
         name: COMPILER_QUOTE_TYPE_HOLES,
-        arity: 3,
+        arity: 4,
         signature: IntrinsicSignature::CompilerQuoteTypeHoles,
         effect: IntrinsicEffect::Pure,
         capability_effect: CapabilityEffect::None,
@@ -914,7 +928,7 @@ pub const ALL: &[IntrinsicSpec] = &[
     IntrinsicSpec {
         id: IntrinsicId::CompilerQuotePattern,
         name: COMPILER_QUOTE_PATTERN,
-        arity: 2,
+        arity: 3,
         signature: IntrinsicSignature::CompilerQuotePattern,
         effect: IntrinsicEffect::Pure,
         capability_effect: CapabilityEffect::None,
@@ -929,7 +943,7 @@ pub const ALL: &[IntrinsicSpec] = &[
     IntrinsicSpec {
         id: IntrinsicId::CompilerQuotePatternHoles,
         name: COMPILER_QUOTE_PATTERN_HOLES,
-        arity: 3,
+        arity: 4,
         signature: IntrinsicSignature::CompilerQuotePatternHoles,
         effect: IntrinsicEffect::Pure,
         capability_effect: CapabilityEffect::None,
@@ -944,7 +958,7 @@ pub const ALL: &[IntrinsicSpec] = &[
     IntrinsicSpec {
         id: IntrinsicId::CompilerQuoteStmt,
         name: COMPILER_QUOTE_STMT,
-        arity: 2,
+        arity: 3,
         signature: IntrinsicSignature::CompilerQuoteStmt,
         effect: IntrinsicEffect::Pure,
         capability_effect: CapabilityEffect::None,
@@ -959,7 +973,7 @@ pub const ALL: &[IntrinsicSpec] = &[
     IntrinsicSpec {
         id: IntrinsicId::CompilerQuoteStmtHoles,
         name: COMPILER_QUOTE_STMT_HOLES,
-        arity: 3,
+        arity: 4,
         signature: IntrinsicSignature::CompilerQuoteStmtHoles,
         effect: IntrinsicEffect::Pure,
         capability_effect: CapabilityEffect::None,
@@ -974,7 +988,7 @@ pub const ALL: &[IntrinsicSpec] = &[
     IntrinsicSpec {
         id: IntrinsicId::CompilerQuoteBlock,
         name: COMPILER_QUOTE_BLOCK,
-        arity: 2,
+        arity: 3,
         signature: IntrinsicSignature::CompilerQuoteBlock,
         effect: IntrinsicEffect::Pure,
         capability_effect: CapabilityEffect::None,
@@ -989,7 +1003,7 @@ pub const ALL: &[IntrinsicSpec] = &[
     IntrinsicSpec {
         id: IntrinsicId::CompilerQuoteBlockHoles,
         name: COMPILER_QUOTE_BLOCK_HOLES,
-        arity: 3,
+        arity: 4,
         signature: IntrinsicSignature::CompilerQuoteBlockHoles,
         effect: IntrinsicEffect::Pure,
         capability_effect: CapabilityEffect::None,

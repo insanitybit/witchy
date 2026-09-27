@@ -1299,6 +1299,9 @@ fn compiler_quote_source(e: &Expr) -> Option<(&'static str, String)> {
     let Expr::Call { name, args } = e else {
         return None;
     };
+    if !crate::intrinsics::lookup(name)?.signature.has_quote_site() { return None; }
+    let (Expr::Int(line), args) = args.split_last()? else { return None };
+    if u32::try_from(*line).ok().is_none_or(|line| line == 0) { return None; }
     let fixed = |category: &'static str, args: &[Expr]| match args {
         [Expr::Str(_handle), Expr::Str(source)] => Some((category, source.clone())),
         _ => None,
