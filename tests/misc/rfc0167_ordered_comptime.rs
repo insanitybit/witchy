@@ -616,11 +616,16 @@ fn imported_original_block_feeds_bare_test_driver() {
         .arg("test").arg(&entry).output().unwrap();
     assert!(run.status.success(), "{}", String::from_utf8_lossy(&run.stderr));
 
-    std::fs::write(&producer, "comptime:\n    emit_item(quote item:\n        pub fn answer() -> Int:\n            \"wrong\"\n    )\n").unwrap();
-    let invalid = Command::new(env!("CARGO_BIN_EXE_witchy"))
-        .arg("test").arg(&entry).output().unwrap();
-    assert!(!invalid.status.success(), "invalid imported output reached the test driver");
-    let error = String::from_utf8_lossy(&invalid.stderr);
+    let sources = vec![
+        ("dep".into(), "comptime:\n    emit_item(quote item:\n        pub fn answer() -> Int:\n            \"wrong\"\n    )\n".as_bytes().to_vec()),
+        ("relay".into(), "import dep\ncomptime:\n    if dep.answer() == 42:\n        emit_item(quote item:\n            pub fn answer() -> Int:\n                dep.answer()\n        )\n".as_bytes().to_vec()),
+        ("main".into(), "import relay\nfn test_answer():\n    if relay.answer() != 42:\n        fail(\"wrong imported helper\")\n".as_bytes().to_vec()),
+    ];
+    let producers = ["dep", "relay", "main"].map(str::to_owned);
+    let user_modules = std::collections::HashSet::from(["dep".into(), "relay".into(), "main".into()]);
+    let error = witchy::canonical_comptime::check_test_suite_source_bundle_with_producer_graph(
+        sources, "main", &producers, user_modules, owners_for(["dep", "relay", "main"]), limits(),
+    ).expect_err("invalid imported output must be refused before creating the test driver");
     assert!(error.contains("Int") && error.contains("String"), "{error}");
 }
 
