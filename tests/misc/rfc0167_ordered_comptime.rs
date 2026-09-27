@@ -27,10 +27,7 @@ fn admitted_original_blocks_feed_checked_successors_in_normal_and_opt() {
     let _reset = ResetOptimization;
     for mode in ["", "mode opt\n"] {
         let source = format!("{mode}comptime:\n    emit_item(quote item:\n        fn answer() -> Int:\n            40\n    )\ncomptime:\n    if answer() == 40:\n        emit_item(quote item:\n            fn result() -> Int:\n                answer() + 2\n        )\nfn main(console: Console):\n    console.print(\"${{result()}}\")\n");
-        let mut sources = vec![("generator".into(), source.into_bytes())];
-        sources.extend(witchy_syntax::linker::STD_MODULES.iter().map(|name| (
-            (*name).to_owned(), std::fs::read(format!("std/{name}.witchy")).unwrap(),
-        )));
+        let sources = vec![("generator".into(), source.into_bytes())];
         let workspace = PackageCoordinate::new(PackageSource::Workspace, "test/comptime", "1").unwrap();
         let toolchain = PackageCoordinate::new(PackageSource::Toolchain, "witchy/std", "1").unwrap();
         let mut assignments = vec![("generator".into(), ModuleLoadIdentity::new(workspace, ["generator"]).unwrap())];
