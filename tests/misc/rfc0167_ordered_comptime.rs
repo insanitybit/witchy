@@ -80,6 +80,60 @@ fn admitted_blocks_see_types_from_prior_output() {
 }
 
 #[test]
+fn admitted_type_info_resolves_staged_type_names_before_execution() {
+    let folder = TempDir::new("admitted-type-info");
+    let source = folder.join("main.witchy");
+    std::fs::write(&source, "import meta\ntype User:\n    name: String\n    age: Int\ncomptime:\n    let info = type_info(User)\n    if info.name == \"User\" && info.fields.length() == 2 && info.fields[0].name == \"name\":\n        emit_item(quote item:\n            fn answer() -> Int:\n                42\n        )\nfn main(console: Console):\n    console.print(\"${answer()}\")\n").unwrap();
+    let run = Command::new(env!("CARGO_BIN_EXE_witchy"))
+        .arg(&source)
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "42\n");
+
+    std::fs::write(&source, "import meta\ntype Boxed(a):\n    value: a\ntype NumberBox = Boxed(Int)\ncomptime:\n    emit_item(quote item:\n        type Earlier:\n            n: Int\n    )\ncomptime:\n    let box_info = type_info(NumberBox)\n    let earlier = type_info(Earlier)\n    match box_info.fields[0].type_expr:\n        meta.TNamed(name, _) ->\n            if name == \"Int\" && earlier.fields[0].name == \"n\":\n                emit_item(quote item:\n                    fn answer() -> Int:\n                        43\n                )\n        _ -> fail(\"generic type argument was not substituted\")\nfn main(console: Console):\n    console.print(\"${answer()}\")\n").unwrap();
+    let generic = Command::new(env!("CARGO_BIN_EXE_witchy"))
+        .arg(&source)
+        .output()
+        .unwrap();
+    assert!(
+        generic.status.success(),
+        "{}",
+        String::from_utf8_lossy(&generic.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&generic.stdout), "43\n");
+
+    std::fs::write(
+        &source,
+        "import meta\ncomptime:\n    let _ = type_info(Missing)\nfn main() -> Int:\n    0\n",
+    )
+    .unwrap();
+    let missing = Command::new(env!("CARGO_BIN_EXE_witchy"))
+        .arg(&source)
+        .output()
+        .unwrap();
+    assert!(!missing.status.success());
+    assert!(
+        String::from_utf8_lossy(&missing.stderr)
+            .contains("type_info cannot resolve declared type `Missing`")
+    );
+
+    std::fs::write(&source, "import meta\ncomptime:\n    let name = \"User\"\n    let _ = type_info(name)\nfn main() -> Int:\n    0\n").unwrap();
+    let value = Command::new(env!("CARGO_BIN_EXE_witchy"))
+        .arg(&source)
+        .output()
+        .unwrap();
+    assert!(!value.status.success());
+    assert!(
+        String::from_utf8_lossy(&value.stderr).contains("type_info operand must be a type name")
+    );
+}
+
+#[test]
 fn production_source_loader_executes_original_blocks_through_admitted_wasm() {
     let folder = TempDir::new("admitted-comptime-loader");
     let source = folder.join("main.witchy");

@@ -57,6 +57,91 @@ pub fn module_type_info_exprs(module: &Module) -> Result<Vec<Expr>, String> {
         .collect()
 }
 
+/// Resolve a compiler-written type lookup against this stage's declarations.
+/// The returned expression is data for generation; callers retain the source
+/// module and its loader identity in the checked recipe.
+pub fn type_info_expr_for_type(module: &Module, mut requested: Type) -> Result<Expr, String> {
+    let aliases = crate::aliases::resolved_map(module)?;
+    crate::aliases::resolve_type_aliases(&mut requested, &aliases)?;
+    let Type::Named(name, args) = requested else {
+        return Err("type_info requires a declared nominal type".into());
+    };
+    let definition = module
+        .items
+        .iter()
+        .find_map(|item| match item {
+            Item::Type(definition) if definition.name == name => Some(definition),
+            _ => None,
+        })
+        .ok_or_else(|| format!("type_info cannot resolve declared type `{name}`"))?;
+    if definition.is_capability {
+        return Err(format!("type_info cannot inspect capability `{name}`"));
+    }
+    let mut definition = normalized_type_for_typeinfo(definition, &aliases)?;
+    if definition.params.len() != args.len() {
+        return Err(format!(
+            "type_info expects {} type arguments for `{name}`",
+            definition.params.len()
+        ));
+    }
+    if !args.is_empty() {
+        let arguments: HashMap<_, _> = definition.params.iter().cloned().zip(args).collect();
+        for variant in &mut definition.variants {
+            for field in &mut variant.fields {
+                substitute_type_parameters(field, &arguments);
+            }
+        }
+        definition.params.clear();
+    }
+    for variant in &definition.variants {
+        for field in &variant.fields {
+            check_reflectable_type(field)?;
+        }
+    }
+    Ok(type_info_expr(&definition))
+}
+
+fn substitute_type_parameters(ty: &mut Type, arguments: &HashMap<String, Type>) {
+    match ty {
+        Type::Named(name, args) => {
+            if args.is_empty() {
+                if let Some(argument) = arguments.get(name) {
+                    *ty = argument.clone();
+                    return;
+                }
+            }
+            for arg in args {
+                substitute_type_parameters(arg, arguments);
+            }
+        }
+        Type::Qualified(_, inner) | Type::Slice(inner) => {
+            substitute_type_parameters(inner, arguments)
+        }
+        Type::Tuple(items) => {
+            for item in items {
+                substitute_type_parameters(item, arguments);
+            }
+        }
+        Type::Fn(params, result, _, _) => {
+            for param in params {
+                substitute_type_parameters(param, arguments);
+            }
+            substitute_type_parameters(result, arguments);
+        }
+        Type::Dyn(_, args) => {
+            for arg in args {
+                substitute_type_parameters(arg, arguments);
+            }
+        }
+        Type::RecordCompose { base, fields } => {
+            substitute_type_parameters(base, arguments);
+            for (_, field) in fields {
+                substitute_type_parameters(field, arguments);
+            }
+        }
+    }
+}
+
 fn check_reflectable_type(ty: &Type) -> Result<(), String> {
     match ty {
         Type::Qualified(TypeQual::Borrow(_) | TypeQual::LegacyBorrow(_), _) =>

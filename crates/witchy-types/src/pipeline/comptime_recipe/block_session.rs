@@ -5,7 +5,47 @@ use super::*;
 use witchy_syntax::ast::{Expr, Function, Stmt};
 use witchy_syntax::compiler_session::ComptimeSyntaxOrigin;
 
-const REWRITE_VERSION: u32 = 3;
+const REWRITE_VERSION: u32 = 4;
+
+fn type_operand(expression: &Expr) -> Result<Type, PipelineError> {
+    match expression {
+        Expr::Ctor { name, args } => Ok(Type::Named(
+            name.clone(),
+            args.iter().map(type_operand).collect::<Result<_, _>>()?,
+        )),
+        Expr::Field { base, field } if matches!(&**base, Expr::Var(_)) => {
+            let Expr::Var(module) = &**base else {
+                unreachable!()
+            };
+            Ok(Type::Named(format!("{module}.{field}"), Vec::new()))
+        }
+        _ => Err(refuse(
+            "type_info operand must be a type name, not a runtime expression",
+        )),
+    }
+}
+
+fn resolve_type_info_calls(
+    body: &mut witchy_syntax::ast::Block,
+    stage: &Module,
+) -> Result<bool, PipelineError> {
+    let mut used = false;
+    witchy_syntax::ast::visit::visit_block_mut(body, &mut |expression| {
+        if let Expr::Call { name, args } = expression {
+            if name == "type_info" {
+                if args.len() != 1 {
+                    return Err(refuse("type_info expects exactly one type operand"));
+                }
+                let requested = type_operand(&args[0])?;
+                *expression = witchy_syntax::reflect::type_info_expr_for_type(stage, requested)
+                    .map_err(refuse)?;
+                used = true;
+            }
+        }
+        Ok(())
+    })?;
+    Ok(used)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ComptimeBlockSite {
@@ -236,6 +276,16 @@ impl ComptimeSourceSession {
         // belongs in its zero-grant executable recipe; unrelated emitted
         // functions may require runtime capabilities.
         retain_referenced_functions(&mut prepared, &HashSet::new(), true);
+        let type_stage = prepared.clone();
+        let mut uses_type_info = false;
+        for item in &mut prepared.items {
+            if let Item::Function(function) = item {
+                uses_type_info |= resolve_type_info_calls(&mut function.body, &type_stage)?;
+            }
+        }
+        if uses_type_info && !prepared.imports.iter().any(|name| name == "meta") {
+            prepared.imports.push("meta".into());
+        }
         install_services(&mut prepared);
         // Relocation selects the existing compiler syntax namespace, while the
         // declaration owner remains the exact loader identity of the source.
