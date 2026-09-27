@@ -823,8 +823,8 @@ pub(crate) fn expand_file_source(path: &str) -> Result<String, String> {
         )?;
         return Ok(format::module(&expanded, &[]));
     }
-    // The compatibility expander only changes comptime items, tagged
-    // expressions, and compile-time-only helpers. Plain source can be
+    // The compatibility path also schedules derive-generated comptime work.
+    // Plain source can be
     // formatted directly without invoking the source tree walker.
     let needs_legacy_expansion = modules.iter().any(|(_, module)| module_needs_legacy_expansion(module));
     if !needs_legacy_expansion {
@@ -854,7 +854,8 @@ fn module_needs_legacy_expansion(module: &ast::Module) -> bool {
         || !module.compiler_type_syntax.is_empty() || !module.compiler_pattern_syntax.is_empty()
         || !module.compiler_stmt_syntax.is_empty() || !module.compiler_block_syntax.is_empty()
         || module.items.iter().any(|item| matches!(item, ast::Item::Comptime(_))
-        || matches!(item, ast::Item::Function(function) if function.comptime_only))
+        || matches!(item, ast::Item::Function(function) if function.comptime_only)
+        || matches!(item, ast::Item::Type(definition) if !definition.derives.is_empty()))
         || witchy_syntax::ast::visit::visit_module_exprs(module, &mut |expr| {
             if matches!(expr, ast::Expr::TaggedLit { .. }) { Err(()) } else { Ok(()) }
         }).is_err()
@@ -939,6 +940,17 @@ mod tests {
     }
 
     fn external_owner() -> ModuleLoadIdentity { external_owner_named("acme/math") }
+
+    #[test]
+    fn checked_source_schedules_derive_before_expansion_free_dispatch() {
+        let dir = unique_dir("checked_derive_dispatch");
+        std::fs::create_dir_all(&dir).unwrap();
+        let entry = dir.join("main.witchy");
+        std::fs::write(&entry, "import reflect\nsealed type Foo derive(Reflect):\n    Foo(Int)\nfn main(console: Console):\n    console.print(reflect.debug(Foo(3)))\n").unwrap();
+        let result = super::link_file_checked(entry.to_str().unwrap());
+        std::fs::remove_dir_all(dir).unwrap();
+        result.expect("derive expansion remains available in checked source");
+    }
 
     fn load_fixture(fixture: &PrecompiledRegistryFixture) -> Result<super::PrecompiledCheckedModule, String> {
         capture_project_source_with_precompiled(
