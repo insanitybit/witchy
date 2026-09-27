@@ -75,24 +75,41 @@ fn production_build_step_runs_in_a_confined_child() {
 
 #[test]
 fn build_recipe_uses_admitted_original_comptime_output() {
-    let dir = TempDir::new("build-admitted-comptime");
-    let source = dir.join("build.witchy");
-    let out = dir.join("out");
-    std::fs::write(&source, "comptime:\n    emit_item(quote item:\n        fn generated_text() -> String:\n            \"fn value() -> Int:\\n    42\\n\"\n    )\nfn build(out: BuildOut):\n    out.write_out(\"generated.witchy\", generated_text())\n").unwrap();
-    let result = Command::new(BIN).args([
-        "build-step", source.to_str().unwrap(), "--out", out.to_str().unwrap(),
-    ]).output().unwrap();
-    assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
-    assert_eq!(std::fs::read_to_string(out.join("generated.witchy")).unwrap(),
-        "fn value() -> Int:\n    42\n");
+    // These independent CLI compiles use separate roots, so they can overlap
+    // without sharing source or generated output.
+    let valid_dir = TempDir::new("build-admitted-comptime-valid");
+    let valid_source = valid_dir.join("build.witchy");
+    let valid_out = valid_dir.join("out");
+    std::fs::write(&valid_source, "comptime:\n    emit_item(quote item:\n        fn generated_text() -> String:\n            \"fn value() -> Int:\\n    42\\n\"\n    )\nfn build(out: BuildOut):\n    out.write_out(\"generated.witchy\", generated_text())\n").unwrap();
 
-    std::fs::write(&source, "comptime:\n    emit_item(quote item:\n        fn build(out: BuildOut):\n            out.write_out(\"forged.witchy\", \"bad\")\n    )\n").unwrap();
-    let forged = Command::new(BIN).args([
-        "build-step", source.to_str().unwrap(), "--out", out.to_str().unwrap(),
-    ]).output().unwrap();
+    let invalid_dir = TempDir::new("build-admitted-comptime-forged");
+    let invalid_source = invalid_dir.join("build.witchy");
+    let invalid_out = invalid_dir.join("out");
+    std::fs::write(&invalid_source, "comptime:\n    emit_item(quote item:\n        fn build(out: BuildOut):\n            out.write_out(\"forged.witchy\", \"bad\")\n    )\n").unwrap();
+
+    let (valid, forged) = std::thread::scope(|scope| {
+        let valid = scope.spawn(|| {
+            Command::new(BIN).args([
+                "build-step", valid_source.to_str().unwrap(), "--out", valid_out.to_str().unwrap(),
+            ]).output().unwrap()
+        });
+        let forged = scope.spawn(|| {
+            Command::new(BIN).args([
+                "build-step", invalid_source.to_str().unwrap(), "--out", invalid_out.to_str().unwrap(),
+            ]).output().unwrap()
+        });
+        (
+            valid.join().expect("valid build recipe process"),
+            forged.join().expect("forged build recipe process"),
+        )
+    });
+
+    assert!(valid.status.success(), "{}", String::from_utf8_lossy(&valid.stderr));
+    assert_eq!(std::fs::read_to_string(valid_out.join("generated.witchy")).unwrap(),
+        "fn value() -> Int:\n    42\n");
     assert!(!forged.status.success(), "generated syntax cannot select a build declaration");
     assert!(String::from_utf8_lossy(&forged.stderr).contains("exactly one `build` declaration"));
-    assert!(!out.join("forged.witchy").exists());
+    assert!(!invalid_out.join("forged.witchy").exists());
 }
 
 #[test]
