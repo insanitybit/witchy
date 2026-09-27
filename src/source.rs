@@ -91,6 +91,13 @@ pub(crate) fn bundled_module(name: &str) -> Option<&'static str> {
     witchy_syntax::linker::bundled_source(name)
 }
 
+fn source_bundle_needs_legacy_expansion(sources: &[(String, Vec<u8>)]) -> bool {
+    sources.iter().any(|(_, bytes)| {
+        let parsed = std::str::from_utf8(bytes).ok().and_then(|source| parser::parse_module(source).ok());
+        parsed.as_ref().is_none_or(module_needs_legacy_expansion)
+    })
+}
+
 /// Parse and link a source file. Non-std imports resolve from sibling
 /// `<name>.witchy` files; reserved std names resolve from the bundled source.
 /// Returns the linked module and entry stem.
@@ -129,8 +136,13 @@ pub(crate) fn link_build_file(path: &str) -> Result<witchy_types::pipeline::Chec
             witchy::canonical_comptime::source_limits(),
         );
     }
+    let expand = if source_bundle_needs_legacy_expansion(&sources) {
+        comptime::EXPANDER
+    } else {
+        comptime::EXPANSION_FREE_USER_EXPANDER
+    };
     witchy_types::pipeline::check_build_recipe_from_source_bundle(
-        sources, &entry, comptime::EXPANDER, &user_modules, owners,
+        sources, &entry, expand, &user_modules, owners,
     ).map_err(|error| error.to_string())
 }
 
