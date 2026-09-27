@@ -32,6 +32,21 @@ fn refuse(message: impl Into<String>) -> PipelineError {
 }
 
 impl ComptimeSourceSession {
+    fn producer_dependencies(&self) -> HashSet<String> {
+        let mut reachable = HashSet::from([self.selected.clone()]);
+        loop {
+            let mut changed = false;
+            for (name, module) in &self.modules {
+                if reachable.contains(name) {
+                    for import in &module.imports {
+                        changed |= reachable.insert(import.clone());
+                    }
+                }
+            }
+            if !changed { return reachable; }
+        }
+    }
+
     pub fn original_block_items(&self) -> Vec<usize> {
         let (_, module) = self.modules.iter().find(|(name, _)| name == &self.selected)
             .expect("selected raw module retained");
@@ -145,10 +160,12 @@ impl ComptimeSourceSession {
             .map(|(name, owner)| (name.to_owned(), owner.clone()))
             .chain(std::iter::once(("comptime".into(), selected_owner)));
         let owners = AuthenticatedModuleOwners::from_loader_assignments(assignments)?;
-        let mut user_modules = self.user_modules.clone();
+        let dependencies = self.producer_dependencies();
+        let mut user_modules = self.user_modules.iter()
+            .filter(|name| dependencies.contains(*name)).cloned().collect::<HashSet<_>>();
         user_modules.remove(&self.selected);
         user_modules.insert("comptime".into());
-        let modules = self.modules.iter().filter(|(name, _)| name != &self.selected).cloned()
+        let modules = self.modules.iter().filter(|(name, _)| name != &self.selected && dependencies.contains(name)).cloned()
             .chain(std::iter::once(("comptime".into(), prepared))).collect();
         let expand = ComptimeExpander::with_sibling_request(require_expansion_free, |_| false);
         let (checked, typed) = link_checked_with(modules, "comptime", expand, LinkMode::Production,
@@ -171,7 +188,8 @@ impl ComptimeSourceSession {
             .filter_map(|(item, _)| match item { Item::Function(function) => Some(function.name.clone()), _ => None })
             .collect();
         retain_referenced_functions(&mut prepared, &emitted_functions, false);
-        let modules = self.modules.iter().map(|(name, module)| (
+        let dependencies = self.producer_dependencies();
+        let modules = self.modules.iter().filter(|(name, _)| dependencies.contains(name)).map(|(name, module)| (
             name.clone(), if name == &self.selected { prepared.clone() } else { module.clone() },
         )).collect();
         let expand = ComptimeExpander::with_sibling_request(require_expansion_free, |_| false);
@@ -198,6 +216,20 @@ impl ComptimeSourceSession {
     pub fn check_expanded_with_display_module(
         &self, prior: &[PriorComptimeBlockOutput],
     ) -> Result<(CheckedModule, Module), PipelineError> {
+        self.check_expanded_for_entry(prior, &self.selected)
+    }
+
+    /// Check a consumer entry against admitted output from one imported
+    /// module. The raw bundle, selected producer, owners, and output prefix
+    /// stay inside this session; no formatted generated source is reloaded.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn check_expanded_for_entry(
+        &self, prior: &[PriorComptimeBlockOutput], entry: &str,
+    ) -> Result<(CheckedModule, Module), PipelineError> {
+        if !self.user_modules.contains(entry)
+            || !self.modules.iter().any(|(name, _)| name == entry) {
+            return Err(refuse("comptime destination entry is not a loader-owned source module"));
+        }
         let blocks = self.original_block_items();
         if blocks.len() != prior.len() || prior.iter().zip(&blocks)
             .any(|(output, index)| output.original_item != *index) {
@@ -211,24 +243,31 @@ impl ComptimeSourceSession {
         let expanded = materialize_prior(original, prior, true);
         let modules = self.modules.iter().map(|(name, module)| (
             name.clone(), if name == &self.selected { expanded.clone() } else { module.clone() },
-        )).collect();
+        )).collect::<Vec<_>>();
+        let display = modules.iter().find(|(name, _)| name == entry)
+            .expect("destination entry validated").1.clone();
         let mut hash = blake3::Hasher::new();
         hash.update(b"witchy.comptime-expanded-source.v1\0");
         hash.update(&REWRITE_VERSION.to_le_bytes());
         hash.update(&self.original_digest);
         hash.update(&(self.selected.len() as u64).to_le_bytes());
         hash.update(self.selected.as_bytes());
+        if entry != self.selected {
+            hash.update(b"imported-destination\0");
+            hash.update(&(entry.len() as u64).to_le_bytes());
+            hash.update(entry.as_bytes());
+        }
         hash_prior_items(&mut hash, prior)?;
         for (name, owner) in self.owners.assignments() {
             super::super::static_evaluation::hash_owner_assignment(&mut hash, name, owner);
         }
         let digest = *hash.finalize().as_bytes();
         let expand = ComptimeExpander::with_sibling_request(require_expansion_free, |_| false);
-        let (checked, typed) = link_checked_with(modules, &self.selected, expand, LinkMode::Production,
+        let (checked, typed) = link_checked_with(modules, entry, expand, LinkMode::Production,
             Some(&self.user_modules), true, Some(self.owners.clone()))?;
         let typed = typed.ok_or_else(|| refuse("comptime destination did not retain checked source"))?;
         let checked = finish_canonical_source(checked, typed, digest, PrecompiledDeclarationEnvironment::default())?;
-        Ok((checked, expanded))
+        Ok((checked, display))
     }
 }
 

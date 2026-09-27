@@ -225,9 +225,26 @@ pub(crate) fn link_file_checked_authenticated_with_deps(
     Ok((checked, entry_stem))
 }
 
-/// Original blocks in the selected source use the admitted compiler session
-/// by default. Other source graphs retain the existing linker path until the
-/// session can authenticate imported and generated expansion as well.
+fn single_imported_block_producer(
+    sources: &[(String, Vec<u8>)], entry: &str, user_modules: &UserModuleSet,
+) -> Result<Option<String>, String> {
+    let mut producer = None;
+    for (name, bytes) in sources {
+        if name == entry || !user_modules.contains(name) { continue; }
+        let source = std::str::from_utf8(bytes)
+            .map_err(|error| format!("{name}: source is not UTF-8: {error}"))?;
+        let module = parser::parse_module(source).map_err(|error| format!("{name}: {error}"))?;
+        if module.items.iter().any(|item| matches!(item, ast::Item::Comptime(_))) {
+            if producer.replace(name.clone()).is_some() {
+                return Ok(None); // multi-producer graphs need ordered sessions
+            }
+        }
+    }
+    Ok(producer)
+}
+
+/// Original blocks in the entry or its sole imported producer use the
+/// admitted compiler session. Other source graphs retain the existing path.
 fn check_loaded_source_bundle(
     sources: Vec<(String, Vec<u8>)>, entry: &str, diagnostic_path: &str,
     user_modules: UserModuleSet, owners: AuthenticatedModuleOwners,
@@ -240,6 +257,12 @@ fn check_loaded_source_bundle(
     if module.items.iter().any(|item| matches!(item, ast::Item::Comptime(_))) {
         return witchy::canonical_comptime::check_source_bundle(
             sources, entry, user_modules, owners, witchy::canonical_comptime::source_limits(),
+        );
+    }
+    if let Some(producer) = single_imported_block_producer(&sources, entry, &user_modules)? {
+        return witchy::canonical_comptime::check_source_bundle_with_imported_blocks(
+            sources, entry, &producer, user_modules, owners,
+            witchy::canonical_comptime::source_limits(),
         );
     }
     pipeline::link_checked_authenticated_from_source_bundle_with_user_modules(
@@ -273,6 +296,13 @@ pub(crate) fn checked_expanded_entry_source(path: &str) -> Result<(String, ast::
     if module.items.iter().any(|item| matches!(item, ast::Item::Comptime(_))) {
         let (_, expanded) = witchy::canonical_comptime::check_and_expand_source_bundle(
             sources, &entry, user_modules, owners, witchy::canonical_comptime::source_limits(),
+        )?;
+        return Ok((original, expanded));
+    }
+    if let Some(producer) = single_imported_block_producer(&sources, &entry, &user_modules)? {
+        let (_, expanded) = witchy::canonical_comptime::check_and_expand_source_bundle_with_imported_blocks(
+            sources, &entry, &producer, user_modules, owners,
+            witchy::canonical_comptime::source_limits(),
         )?;
         return Ok((original, expanded));
     }
@@ -721,6 +751,13 @@ pub(crate) fn expand_file_source(path: &str) -> Result<String, String> {
         .is_some_and(|(_, module)| module.items.iter().any(|item| matches!(item, ast::Item::Comptime(_)))) {
         let expanded = witchy::canonical_comptime::expand_source_bundle(
             sources, &entry_stem, user_modules, owners, witchy::canonical_comptime::source_limits(),
+        )?;
+        return Ok(format::module(&expanded, &[]));
+    }
+    if let Some(producer) = single_imported_block_producer(&sources, &entry_stem, &user_modules)? {
+        let (_, expanded) = witchy::canonical_comptime::check_and_expand_source_bundle_with_imported_blocks(
+            sources, &entry_stem, &producer, user_modules, owners,
+            witchy::canonical_comptime::source_limits(),
         )?;
         return Ok(format::module(&expanded, &[]));
     }

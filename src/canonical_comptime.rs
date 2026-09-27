@@ -37,6 +37,27 @@ pub fn check_source_bundle(
     run_source_bundle(sources, selected, user_modules, owners, limits).map(|output| output.checked)
 }
 
+/// Execute original blocks in one imported source module, then check the
+/// loader's actual entry against their admitted output. No generated source
+/// bytes or caller-provided AST cross the source-session boundary.
+pub fn check_source_bundle_with_imported_blocks(
+    sources: Vec<(String, Vec<u8>)>, entry: &str, selected: &str,
+    user_modules: HashSet<String>, owners: AuthenticatedModuleOwners,
+    limits: ComptimeLimits,
+) -> Result<CheckedModule, String> {
+    run_source_bundle_for_entry(sources, entry, selected, user_modules, owners, limits)
+        .map(|output| output.checked)
+}
+
+pub fn check_and_expand_source_bundle_with_imported_blocks(
+    sources: Vec<(String, Vec<u8>)>, entry: &str, selected: &str,
+    user_modules: HashSet<String>, owners: AuthenticatedModuleOwners,
+    limits: ComptimeLimits,
+) -> Result<(CheckedModule, Module), String> {
+    run_source_bundle_for_entry(sources, entry, selected, user_modules, owners, limits)
+        .map(|output| (output.checked, output.selected_module))
+}
+
 /// Return only source-shaped expansion produced by admitted execution and
 /// accepted by ordinary destination checking. This is presentation data, not
 /// a checked-source witness that can be submitted to lowering.
@@ -66,6 +87,14 @@ fn run_source_bundle(
     user_modules: HashSet<String>, owners: AuthenticatedModuleOwners,
     limits: ComptimeLimits,
 ) -> Result<CheckedExpansion, String> {
+    run_source_bundle_for_entry(sources, selected, selected, user_modules, owners, limits)
+}
+
+fn run_source_bundle_for_entry(
+    sources: Vec<(String, Vec<u8>)>, entry: &str, selected: &str,
+    user_modules: HashSet<String>, owners: AuthenticatedModuleOwners,
+    limits: ComptimeLimits,
+) -> Result<CheckedExpansion, String> {
     let session = ComptimeSourceSession::from_source_bundle(sources, selected, user_modules, owners)
         .map_err(|error| error.to_string())?;
     let mut prior = Vec::new();
@@ -90,7 +119,7 @@ fn run_source_bundle(
             items: outcome.items.into_iter().map(|emitted| (emitted.item, emitted.origin)).collect(),
         });
     }
-    let (checked, selected_module) = session.check_expanded_with_display_module(&prior)
+    let (checked, selected_module) = session.check_expanded_for_entry(&prior, entry)
         .map_err(|error| error.to_string())?;
     Ok(CheckedExpansion { checked, selected_module })
 }

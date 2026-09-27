@@ -70,3 +70,21 @@ fn production_source_loader_executes_original_blocks_through_admitted_wasm() {
     assert!(diagnostic.contains("Int") && diagnostic.contains("String"), "{diagnostic}");
     assert!(!diagnostic.contains("second block must not execute"), "{diagnostic}");
 }
+
+#[test]
+fn imported_original_block_feeds_authenticated_entry() {
+    let folder = TempDir::new("admitted-imported-comptime");
+    let entry = folder.join("main.witchy");
+    std::fs::write(folder.join("dep.witchy"), "comptime:\n    emit_item(quote item:\n        pub fn answer() -> Int:\n            42\n    )\n").unwrap();
+    std::fs::write(&entry, "import dep\nfn main(console: Console):\n    console.print(\"${dep.answer()}\")\n").unwrap();
+    let run = Command::new(env!("CARGO_BIN_EXE_witchy")).arg(&entry).output().unwrap();
+    assert!(run.status.success(), "{}", String::from_utf8_lossy(&run.stderr));
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "42\n");
+
+    std::fs::write(folder.join("dep.witchy"), "comptime:\n    emit_item(quote item:\n        pub fn answer() -> Int:\n            \"wrong\"\n    )\n").unwrap();
+    let expand = Command::new(env!("CARGO_BIN_EXE_witchy"))
+        .arg("expand").arg(&entry).output().unwrap();
+    assert!(!expand.status.success(), "invalid imported output was displayed as accepted syntax");
+    let error = String::from_utf8_lossy(&expand.stderr);
+    assert!(error.contains("Int") && error.contains("String"), "{error}");
+}
