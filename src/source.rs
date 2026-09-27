@@ -801,6 +801,24 @@ pub(crate) fn expand_file_source(path: &str) -> Result<String, String> {
         )?;
         return Ok(format::module(&expanded, &[]));
     }
+    // The compatibility expander only changes comptime items, tagged
+    // expressions, and compile-time-only helpers. Plain source can be
+    // formatted directly without invoking the source tree walker.
+    let needs_legacy_expansion = modules.iter().any(|(_, module)| {
+        !module.compiler_item_syntax.is_empty() || !module.compiler_expr_syntax.is_empty()
+            || !module.compiler_type_syntax.is_empty() || !module.compiler_pattern_syntax.is_empty()
+            || !module.compiler_stmt_syntax.is_empty() || !module.compiler_block_syntax.is_empty()
+            || module.items.iter().any(|item| matches!(item, ast::Item::Comptime(_))
+            || matches!(item, ast::Item::Function(function) if function.comptime_only))
+            || witchy_syntax::ast::visit::visit_module_exprs(module, &mut |expr| {
+                if matches!(expr, ast::Expr::TaggedLit { .. }) { Err(()) } else { Ok(()) }
+            }).is_err()
+    });
+    if !needs_legacy_expansion {
+        let (_, module) = modules.iter().find(|(name, _)| name == &entry_stem)
+            .ok_or_else(|| format!("internal error: entry module `{entry_stem}` was not loaded"))?;
+        return Ok(format::module(module, &[]));
+    }
     let names: Vec<String> = modules.iter().map(|(name, _)| name.clone()).collect();
     for (i, name) in names.iter().enumerate() {
         let siblings: Vec<(String, ast::Module)> = modules
