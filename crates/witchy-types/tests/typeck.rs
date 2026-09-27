@@ -2165,6 +2165,8 @@ mod optimization_readiness;
 mod opt_callable_provenance;
 #[path = "typeck/opt_stored_callback_invocation.rs"]
 mod opt_stored_callback_invocation;
+#[path = "typeck/nested_opt_callable_contracts.rs"]
+mod nested_opt_callable_contracts;
 #[path = "typeck/reference_erasure.rs"]
 mod reference_erasure;
 #[path = "typeck/reference_contract_matrix.rs"]

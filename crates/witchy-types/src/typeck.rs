@@ -70,6 +70,8 @@ pub use module_checks::*;
 mod checker;
 use checker::Checker;
 mod ownership;
+mod opt_contract;
+use opt_contract::OptCallableContract;
 mod compiler_syntax;
 use compiler_syntax::{
     check_compiler_syntax_declarations, compiler_syntax_allowed_module, compiler_syntax_type_name,
@@ -185,65 +187,7 @@ struct UniqueCallableContract {
 /// requires this source fact at its entry boundary.  Keeping it out of `Ty`
 /// prevents an erased function value or a separate-compilation ABI from
 /// accidentally manufacturing the permission.
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct OptCallableContract {
-    /// Nested callable arguments must retain compatible provenance as well.
-    params: Vec<Option<Box<OptCallableContract>>>,
-    /// A returned callable carries the contract declared by its producer, not
-    /// a body-derived guess at the consuming module.
-    result: Option<Box<OptCallableContract>>,
-}
-
 type StoredOptProof = OptValueProof<OptCallableContract>;
-
-impl OptCallableContract {
-    fn from_function_type(ty: &ast::Type) -> Option<Self> {
-        match ty {
-            ast::Type::Fn(params, result, _, _) => Some(Self {
-                params: params
-                    .iter()
-                    .map(|param| Self::from_function_type(param).map(Box::new))
-                    .collect(),
-                result: Self::from_function_type(result).map(Box::new),
-            }),
-            ast::Type::Qualified(_, inner) => Self::from_function_type(inner),
-            _ => None,
-        }
-    }
-
-    fn from_function(function: &Function) -> Self {
-        Self {
-            params: function
-                .params
-                .iter()
-                .map(|param| param.ty.as_ref().and_then(Self::from_function_type).map(Box::new))
-                .collect(),
-            result: function.ret.as_ref().and_then(Self::from_function_type).map(Box::new),
-        }
-    }
-
-    fn from_lambda(params: &[ast::Param], result: Option<&ast::Type>) -> Self {
-        Self {
-            params: params
-                .iter()
-                .map(|param| param.ty.as_ref().and_then(Self::from_function_type).map(Box::new))
-                .collect(),
-            result: result.and_then(Self::from_function_type).map(Box::new),
-        }
-    }
-
-    /// A leaf callable has no callable precondition or recursively higher-order
-    /// result.  Normal code may receive it through an ordinary ABI: losing its
-    /// origin cannot enable a later opt HOF call because `require_opt...` still
-    /// rejects it at that stricter slot.  Everything else is load-bearing.
-    fn has_higher_order_boundary(&self) -> bool {
-        self.params.iter().any(Option::is_some)
-            || self
-                .result
-                .as_deref()
-                .is_some_and(Self::has_higher_order_boundary)
-    }
-}
 
 /// A callable-producing control-flow path either yields a value contract or
 /// does not reach the join at all.  The latter is neutral: treating it as an
@@ -1752,17 +1696,6 @@ impl Checker {
         StoredOptProof::Unknown
     }
 
-    fn opt_callable_contract_from_ty(&self, ty: &Ty) -> Option<OptCallableContract> {
-        let Ty::Fn(params, result, ..) = self.resolve(ty) else { return None };
-        Some(OptCallableContract {
-            params: params
-                .iter()
-                .map(|parameter| self.opt_callable_contract_from_ty(parameter).map(Box::new))
-                .collect(),
-            result: self.opt_callable_contract_from_ty(&result).map(Box::new),
-        })
-    }
-
     fn checked_constructor_ordinal(&self, name: &str) -> Option<usize> {
         let (_, result) = self.ctor_sigs.get(name)?;
         let Ty::Named(owner, _) = self.resolve(result) else { return None };
@@ -1793,22 +1726,8 @@ impl Checker {
                     fields: args.iter().map(|arg| self.expression_opt_value_proof(arg)).collect(),
                 }).unwrap_or(StoredOptProof::Unknown),
             Expr::AnonCtor { .. } => StoredOptProof::Unknown,
-            Expr::Record { fields, spread, .. } => {
-                let mut proof = match spread.as_deref().map(|base| self.expression_opt_value_proof(base)) {
-                    Some(StoredOptProof::Fields(fields)) => fields,
-                    _ => std::collections::BTreeMap::new(),
-                };
-                for (name, value) in fields { proof.insert(name.clone(), self.expression_opt_value_proof(value)); }
-                StoredOptProof::Fields(proof)
-            }
-            Expr::RecordUpdate { base, fields, .. } => {
-                let mut proof = match self.expression_opt_value_proof(base) {
-                    StoredOptProof::Fields(fields) => fields,
-                    _ => std::collections::BTreeMap::new(),
-                };
-                for (name, value) in fields { proof.insert(name.clone(), self.expression_opt_value_proof(value)); }
-                StoredOptProof::Fields(proof)
-            }
+            Expr::Record { name, fields, spread } => self.record_opt_value_proof(Some(name), spread.as_deref(), fields),
+            Expr::RecordUpdate { name, base, fields } => self.record_opt_value_proof(name.as_deref(), Some(base), fields),
             Expr::Field { base, field } => {
                 let proof = self.expression_opt_value_proof(base);
                 let index = match self.place_ty(base) {
@@ -1824,12 +1743,31 @@ impl Checker {
                 }
             }
             Expr::Index { base, .. } => self.expression_opt_value_proof(base).homogeneous_element(),
+            Expr::Binary { op: ast::BinOp::Coalesce, lhs, rhs } => {
+                let fallback = self.expression_opt_value_proof(rhs);
+                let select = |ordinal: usize, fields: Vec<StoredOptProof>| {
+                    if ordinal == 0 {
+                        if fields.len() == 1 { fields[0].clone() } else { StoredOptProof::Unknown }
+                    } else { fallback.clone() }
+                };
+                match self.expression_opt_value_proof(lhs) {
+                    StoredOptProof::Variant { ordinal, fields } => select(ordinal, fields),
+                    StoredOptProof::Variants(variants) => variants.into_iter()
+                        .map(|(ordinal, fields)| select(ordinal, fields))
+                        .reduce(StoredOptProof::join).unwrap_or(StoredOptProof::Unknown),
+                    _ => StoredOptProof::Unknown,
+                }
+            }
             Expr::As { expr, .. } | Expr::Unary { op: UnOp::Move, expr } => self.expression_opt_value_proof(expr),
             // These forms introduce local bindings. Their result was captured
             // during inference, while each binding was still in scope.
             Expr::If { .. } | Expr::Match { .. } => self.recorded_opt_expression_proof(expression),
             Expr::Block(block) => self.recorded_opt_expression_proof_for_block(block),
-            Expr::Lambda { .. } | Expr::Call { .. } | Expr::Apply { .. } =>
+            Expr::Call { name, .. } => self.callable_opt_contract(name)
+                .map(|contract| *contract.result).unwrap_or(StoredOptProof::Unknown),
+            Expr::Apply { func, .. } => self.expression_opt_callable_contract(func)
+                .map(|contract| *contract.result).unwrap_or(StoredOptProof::Unknown),
+            Expr::Lambda { .. } =>
                 self.expression_opt_callable_contract(expression)
                     .map(StoredOptProof::Callable).unwrap_or(StoredOptProof::Unknown),
             _ => StoredOptProof::Unknown,
@@ -1859,8 +1797,14 @@ impl Checker {
                     }
                     checker.remember_container_opt_provenance(name.clone(), proof);
                 }
-                Pattern::Tuple(patterns) | Pattern::Ctor { args: patterns, .. }
-                    | Pattern::AnonCtor { args: patterns, .. } => {
+                Pattern::Ctor { name, args: patterns } => {
+                    let proof = checker.checked_constructor_ordinal(name)
+                        .map(|ordinal| proof.variant(ordinal)).unwrap_or(StoredOptProof::Unknown);
+                    for (index, pattern) in patterns.iter().enumerate() {
+                        bind(checker, pattern, proof.slot(index));
+                    }
+                }
+                Pattern::Tuple(patterns) | Pattern::AnonCtor { args: patterns, .. } => {
                     for (index, pattern) in patterns.iter().enumerate() {
                         bind(checker, pattern, proof.slot(index));
                     }
@@ -1913,9 +1857,12 @@ impl Checker {
                     // Inferred lambda results still have a checked source
                     // expression.  Preserve that fact instead of dropping it
                     // merely because the author omitted an annotation.
-                    let mut contract = OptCallableContract::from_lambda(params, ret.as_ref());
+                    let mut contract = OptCallableContract::from_lambda(params, ret.as_ref(), &self.canonical_definitions);
                     if ret.is_none() {
-                        contract.result = self.block_opt_callable_contract(body).map(Box::new);
+                        let result = self.recorded_opt_expression_proof_for_block(body);
+                        contract.result = Box::new(if opt_contract::has_callable(&result) {
+                            result
+                        } else { StoredOptProof::Unknown });
                     }
                     contract
                 })
@@ -1925,22 +1872,11 @@ impl Checker {
             Expr::As { expr, .. } => self.expression_opt_callable_contract(expr),
             Expr::Call { name, .. } => self
                 .callable_opt_contract(name)
-                .and_then(|contract| contract.result.map(|result| *result)),
+                .and_then(|contract| contract.result.callable()),
             Expr::Apply { func, .. } => self
                 .expression_opt_callable_contract(func)
-                .and_then(|contract| contract.result.map(|result| *result)),
-            Expr::Binary { op: ast::BinOp::Coalesce, lhs, rhs } => {
-                let fallback = self.expression_opt_callable_contract(rhs)?;
-                match self.expression_opt_value_proof(lhs) {
-                    // The checked coalesce operator selects the first variant's
-                    // payload; every other variant selects its fallback. The
-                    // ordinal comes from the exact constructor declaration.
-                    StoredOptProof::Variant { ordinal: 0, fields }
-                        if fields.len() == 1 && fields[0].callable() == Some(fallback.clone()) => Some(fallback),
-                    StoredOptProof::Variant { ordinal, .. } if ordinal != 0 => Some(fallback),
-                    _ => None,
-                }
-            }
+                .and_then(|contract| contract.result.callable()),
+            Expr::Binary { op: ast::BinOp::Coalesce, .. } => self.expression_opt_value_proof(expression).callable(),
             Expr::Field { .. } | Expr::Index { .. } => self.expression_opt_value_proof(expression).callable(),
             // An existential result's ABI cannot mint source provenance.
             Expr::ExistentialCall { .. } => None,
@@ -1948,10 +1884,6 @@ impl Checker {
             Expr::Block(block) => self.recorded_opt_expression_proof_for_block(block).callable(),
             _ => None,
         }
-    }
-
-    fn block_opt_callable_contract(&self, block: &Block) -> Option<OptCallableContract> {
-        self.recorded_opt_expression_proof_for_block(block).callable()
     }
 
     /// Invocation needs the callee's actual checked origin, even when none of
@@ -1963,37 +1895,15 @@ impl Checker {
         Ok(())
     }
 
-    fn require_opt_callable_provenance(
-        &self,
-        argument: &Expr,
-        callee: &str,
-        index: usize,
-    ) -> Result<(), TypeError> {
-        if self.expression_opt_callable_contract(argument).is_some() {
-            return Ok(());
-        }
-        terr(format!(
-            "argument {} to `{}` requires an opt-compatible callable; normal closures and functions cannot satisfy an opt higher-order contract",
-            index + 1,
-            diagnostic_callable_name(callee),
-        ))
-    }
-
-    /// No ordinary function-value, generic, aggregate, or nominal-field ABI
-    /// carries opt callable provenance today.  Letting an opt function enter
-    /// one would erase the contract and permit a later normal callback to
-    /// re-enter an opt higher-order call.  Reject at that first erasing edge;
-    /// direct normal use of an opt function (with non-callable arguments) is
-    /// unaffected.
+    /// Ordinary call boundaries cannot erase a stored higher-order opt
+    /// precondition. Checked opt entry is the explicit transporting boundary;
+    /// leaf opt callbacks may still be used by ordinary code.
     fn reject_opt_callable_erasure(
         &self,
         argument: &Expr,
         context: &str,
     ) -> Result<(), TypeError> {
-        if self
-            .expression_opt_callable_contract(argument)
-            .is_some_and(|contract| contract.has_higher_order_boundary())
-        {
+        if opt_contract::has_higher_order(&self.expression_opt_value_proof(argument)) {
             return terr(format!(
                 "{context} cannot erase an opt-compatible callable into an ordinary callable contract; pass it directly through an opt-compatible interface"
             ));
@@ -6111,10 +6021,8 @@ impl Checker {
         // ordinary callable into a trusted carrier merely because `Ty::Fn`
         // erases the mode marker.  Structural paths below recover only facts
         // admitted here (or by an already authenticated opt call).
-        if self.current_opt_callable
-            && self.opt_callable_contract_from_ty(expected).is_some()
-        {
-            self.require_opt_callable_provenance(expr, "opt callable storage", 0)?;
+        if self.current_opt_callable {
+            self.require_opt_value_provenance(expr, &self.opt_value_requirement(expected), "opt callable storage", 0)?;
         }
         self.record_existential_pack(expr, expected, &actual)?;
         self.record_existential_upcast(expr, expected, &actual)?;
@@ -6445,17 +6353,14 @@ impl Checker {
                         })?;
                     }
                     for (index, (arg, pty)) in args.iter().zip(param_tys.iter()).enumerate() {
-                        if opt_callable && matches!(self.resolve(pty), Ty::Fn(..)) {
-                            self.require_opt_callable_provenance(arg, &display, index)?;
-                        } else if !opt_callable {
-                            self.reject_opt_callable_erasure(
-                                arg,
-                                &format!("argument {} to function value `{display}`", index + 1),
-                            )?;
-                        }
                         let at = self
                             .infer_expected(arg, pty)
                             .map_err(|e| in_call_context(&display, e))?;
+                        if opt_callable {
+                            self.require_opt_value_provenance(arg, &self.opt_value_requirement(pty), &display, index)?;
+                        } else {
+                            self.reject_opt_callable_erasure(arg, &format!("argument {} to function value `{display}`", index + 1))?;
+                        }
                         self.reject_borrowed_nominal_runtime_ty(
                             &at,
                             &format!("call to function value `{display}`"),
@@ -6698,25 +6603,7 @@ impl Checker {
             .is_some_and(|spec| spec.signature.accepts_rooted_slice_view());
         let call_conventions = self.fn_conventions.get(name).cloned();
         for (index, (arg, param_ty)) in args.iter().zip(&params).enumerate() {
-            let expects_opt_callable = self
-                .fn_opt_provenance
-                .get(name)
-                .and_then(|contract| contract.params.get(index))
-                .is_some_and(Option::is_some);
-            if expects_opt_callable {
-                self.require_opt_callable_provenance(arg, &display, index)?;
-            } else {
-                // An opt declaration can still have an ordinary or generic
-                // parameter at this position.  Such a slot has no carrier for
-                // a higher-order contract, so allowing it to accept one would
-                // erase provenance through `fn id(a)(a) -> a`.  Only an
-                // explicit callable declaration slot receives the opt entry
-                // contract above.
-                self.reject_opt_callable_erasure(
-                    arg,
-                    &format!("argument {} to `{display}`", index + 1),
-                )?;
-            }
+            let opt_callable = self.fn_opt_provenance.contains_key(name);
             let typed_vm_callback = (call_name == "vm.with_dir" && index == 1)
                 || (call_name == "vm.serve" && index == 2);
             let exact_generic = exact_generic_positions.get(index).copied().unwrap_or(false);
@@ -6760,6 +6647,11 @@ impl Checker {
                 self.infer_expected(arg, param_ty)
             };
             let at = inferred.map_err(|e| in_call_context(&display, e))?;
+            if opt_callable {
+                self.require_opt_value_provenance(arg, &self.opt_value_requirement(param_ty), &display, index)?;
+            } else {
+                self.reject_opt_callable_erasure(arg, &format!("argument {} to `{display}`", index + 1))?;
+            }
             let borrowed_list_read = self.is_nested_borrowed_nominal_list(&at)
                 && matches!(
                     witchy_syntax::intrinsics::canonical_operation_name(&call_name),
@@ -8219,20 +8111,16 @@ impl Checker {
                         ty.clone(),
                         p.convention.binds_mutable(),
                     );
-                    if let Some(contract) = eta_contract
+                    let proof = eta_contract
                         .as_ref()
                         .and_then(Option::as_ref)
                         .and_then(|contract| contract.params.get(index))
-                        .and_then(|contract| contract.as_deref())
                         .cloned()
                         .or_else(|| {
                             (eta_contract.is_none() && self.current_opt_callable)
-                                .then(|| p.ty.as_ref().and_then(OptCallableContract::from_function_type))
-                                .flatten()
-                        })
-                    {
-                        self.remember_opt_callable_provenance(p.name.clone(), contract);
-                    }
+                                .then(|| self.opt_value_requirement(ty))
+                        }).unwrap_or(StoredOptProof::Unknown);
+                    self.bind_opt_value_proof(&p.name, proof);
                     if qualifiers.pure && p.convention == Convention::Var {
                         let binding = self
                             .must_binding_key(&p.name)
@@ -8385,15 +8273,12 @@ impl Checker {
                         ));
                     }
                     for (index, (arg, pty)) in args.iter().zip(param_tys.iter()).enumerate() {
-                        if opt_callable && matches!(self.resolve(pty), Ty::Fn(..)) {
-                            self.require_opt_callable_provenance(arg, "function value", index)?;
-                        } else if !opt_callable {
-                            self.reject_opt_callable_erasure(
-                                arg,
-                                &format!("argument {} to function value", index + 1),
-                            )?;
-                        }
                         let at = self.infer_expected(arg, pty)?;
+                        if opt_callable {
+                            self.require_opt_value_provenance(arg, &self.opt_value_requirement(pty), "function value", index)?;
+                        } else {
+                            self.reject_opt_callable_erasure(arg, &format!("argument {} to function value", index + 1))?;
+                        }
                         self.reject_borrowed_nominal_runtime_ty(
                             &at,
                             "function-value application",
@@ -10352,12 +10237,11 @@ impl Checker {
                 ty.clone(),
                 param.convention.binds_mutable(),
             );
-            if self.current_opt_callable
-                && let Some(contract) = param.ty.as_ref().and_then(OptCallableContract::from_function_type)
-            {
+            if self.current_opt_callable {
                 // The declaration is the checked entry boundary: callers must
                 // supply provenance before this local becomes callable.
-                self.remember_opt_callable_provenance(param.name.clone(), contract);
+                let proof = param.ty.as_ref().map(|ty| opt_contract::requirement(ty, &self.canonical_definitions)).unwrap_or(StoredOptProof::Unknown);
+                self.bind_opt_value_proof(&param.name, proof);
             }
             if func.pure && param.convention == Convention::Var {
                 let binding = self
@@ -10445,10 +10329,10 @@ impl Checker {
         // declaration contract.  Its completing tail must therefore carry the
         // checked origin too; a normal imported function cannot be relabelled
         // merely by returning it from an opt body.
-        if self.current_opt_callable
-            && func.ret.as_ref().and_then(OptCallableContract::from_function_type).is_some()
-            && self.block_opt_callable_contract(&func.body).is_none()
-        {
+        if self.current_opt_callable && !opt_contract::satisfies(
+            &self.recorded_opt_expression_proof_for_block(&func.body),
+            &self.opt_value_requirement(&body_ret),
+        ) {
             return terr(format!(
                 "opt function `{}` returns a callable without opt-compatible provenance",
                 diagnostic_callable_name(&source_callable),
@@ -12806,7 +12690,7 @@ fn run_check_selected(
                 }
                 if witchy_canonical_source::source::source_execution_mode(f, &module.modes).is_opt() {
                     c.fn_opt_provenance
-                        .insert(f.name.clone(), OptCallableContract::from_function(f));
+                        .insert(f.name.clone(), OptCallableContract::from_function(f, &c.canonical_definitions));
                 }
                 c.fn_param_names
                     .insert(f.name.clone(), f.params.iter().map(|p| p.name.clone()).collect());

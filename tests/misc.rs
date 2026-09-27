@@ -89,6 +89,8 @@ mod typed_errors;
 mod wasm_abi_catalog;
 #[path = "misc/rfc0167_stored_callback_invocation.rs"]
 mod rfc0167_stored_callback_invocation;
+#[path = "misc/rfc0167_nested_opt_callable_contracts.rs"]
+mod rfc0167_nested_opt_callable_contracts;
 #[path = "misc/rfc0102_console.rs"]
 mod rfc0102_console;
 #[path = "misc/rfc0103_build_step_confinement.rs"]
