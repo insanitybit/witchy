@@ -58,6 +58,7 @@ pub enum TaskExecutionProof {
     /// A checked local callable with a distinct lexical formal scope.
     Callable {
         scope: TaskCallableScope,
+        execution_mode: SourceExecutionMode,
         parameters: usize,
         required_opt_inputs: Vec<Self>,
         result: Box<Self>,
@@ -66,10 +67,18 @@ pub enum TaskExecutionProof {
     /// obligations use the declaration's own symbolic parameters until this
     /// value is invoked with checked arguments.
     DeclaredCallable {
+        execution_mode: SourceExecutionMode,
         conventions: Vec<Convention>,
         required_opt_inputs: Vec<Self>,
         result: Box<Self>,
     },
+    /// Symbolic invocation result. This term is not task execution authority:
+    /// its actual callable's invocation contract must first be discharged.
+    Invocation { callable: Box<Self>, arguments: Vec<Self> },
+    /// A recipe represented by its authenticated polling callable. Polling
+    /// produces a scheduler step, not the task's completed result. This term
+    /// never grants `Task(Opt, _)` merely from its callback's result type.
+    Recipe { role: TaskBehaviorIdentity, poll: Box<Self> },
     Parameter(usize),
     /// An opt declaration's callback formal whose checked input type can
     /// receive Task storage. Its invocation has a public symbolic task-input
@@ -92,6 +101,15 @@ pub enum TaskExecutionProof {
     Variants(BTreeMap<usize, Vec<Self>>),
 }
 
+/// Instantiated checked callback behavior, not an admission receipt. Consumers
+/// must verify actual code correspondence, every input obligation, and scheduler
+/// step transport before using it as a deferred execution guarantee.
+pub struct TaskInvocationContract {
+    pub execution_mode: SourceExecutionMode,
+    pub required_opt_inputs: Vec<TaskExecutionProof>,
+    pub result: TaskExecutionProof,
+}
+
 /// Stable checked source identity, independent of final item placement.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum TaskBehaviorIdentity {
@@ -99,6 +117,29 @@ pub enum TaskBehaviorIdentity {
     /// Length-delimited digest of the loader-authenticated declaration
     /// catalog identity, not a compiler name or a final item ordinal.
     LinkedDeclaration([u8; 32]),
+}
+
+/// Authenticated polymorphic scheduler storage role. This identifies where a
+/// Task stores its polling callable; it does not certify that callable, its
+/// returned Step, or any continuation as opt-compatible.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeferredTaskRole {
+    task_name: String,
+    task_identity: TaskBehaviorIdentity,
+    step_name: String,
+    step_identity: TaskBehaviorIdentity,
+}
+
+impl DeferredTaskRole {
+    #[doc(hidden)]
+    pub fn from_checked_frontend(task_name: String, task_identity: TaskBehaviorIdentity,
+        step_name: String, step_identity: TaskBehaviorIdentity) -> Self {
+        Self { task_name, task_identity, step_name, step_identity }
+    }
+    pub fn task_name(&self) -> &str { &self.task_name }
+    pub fn task_identity(&self) -> &TaskBehaviorIdentity { &self.task_identity }
+    pub fn step_name(&self) -> &str { &self.step_name }
+    pub fn step_identity(&self) -> &TaskBehaviorIdentity { &self.step_identity }
 }
 
 /// Symbolic behavior of one exact checked source declaration. Async call
@@ -241,6 +282,10 @@ impl TaskExecutionProof {
                 | TaskExecutionProof::Slot(result, _)
                 | TaskExecutionProof::VariantSlot(result, _, _)
                 | TaskExecutionProof::AnyElement(result) => contains(result, only_local, depth + 1, remaining),
+                TaskExecutionProof::Recipe { poll, .. } => contains(poll, only_local, depth + 1, remaining),
+                TaskExecutionProof::Invocation { callable, arguments } =>
+                    contains(callable, only_local, depth + 1, remaining)
+                        || arguments.iter().any(|argument| contains(argument, only_local, depth + 1, remaining)),
                 TaskExecutionProof::DeclaredCallable { required_opt_inputs, result, .. } =>
                     (!only_local && !required_opt_inputs.is_empty())
                         || required_opt_inputs.iter().any(|input| contains(input, only_local, depth + 1, remaining))
@@ -309,6 +354,11 @@ impl TaskExecutionProof {
                 | TaskExecutionProof::DeclaredCallable { required_opt_inputs, result, .. } =>
                     children(required_opt_inputs.len().saturating_add(1),
                         required_opt_inputs.iter_mut().chain(std::iter::once(result.as_mut())), remaining, depth),
+                TaskExecutionProof::Recipe { poll, .. } =>
+                    children(1, std::iter::once(poll.as_mut()), remaining, depth),
+                TaskExecutionProof::Invocation { callable, arguments } =>
+                    children(arguments.len().saturating_add(1),
+                        std::iter::once(callable.as_mut()).chain(arguments.iter_mut()), remaining, depth),
                 _ => true,
             };
             if retained { proof } else { proof.invalidated() }
@@ -324,27 +374,36 @@ impl TaskExecutionProof {
             (Self::Task(left_mode, left_result), Self::Task(right_mode, right_result)) if left_mode == right_mode => {
                 Self::Task(left_mode, Box::new((*left_result).join(*right_result)))
             }
-            (Self::Callable { scope: left_scope, parameters: left_arity, required_opt_inputs: left_requirements, result: left },
-                Self::Callable { scope: right_scope, parameters: right_arity, required_opt_inputs: right_requirements, result: right })
-                if left_scope == right_scope && left_arity == right_arity
+            (Self::Callable { scope: left_scope, execution_mode: left_mode, parameters: left_arity, required_opt_inputs: left_requirements, result: left },
+                Self::Callable { scope: right_scope, execution_mode: right_mode, parameters: right_arity, required_opt_inputs: right_requirements, result: right })
+                if left_scope == right_scope && left_mode == right_mode && left_arity == right_arity
                     && left_requirements == right_requirements => {
                 Self::Callable {
                     scope: left_scope,
+                    execution_mode: left_mode,
                     parameters: left_arity,
                     required_opt_inputs: left_requirements,
                     result: Box::new((*left).join(*right)),
                 }
             }
-            (Self::DeclaredCallable { conventions: left_conventions, required_opt_inputs: left_requirements, result: left },
-                Self::DeclaredCallable { conventions: right_conventions, required_opt_inputs: right_requirements, result: right })
-                if left_conventions == right_conventions && left_requirements == right_requirements => {
+            (Self::DeclaredCallable { execution_mode: left_mode, conventions: left_conventions, required_opt_inputs: left_requirements, result: left },
+                Self::DeclaredCallable { execution_mode: right_mode, conventions: right_conventions, required_opt_inputs: right_requirements, result: right })
+                if left_mode == right_mode && left_conventions == right_conventions && left_requirements == right_requirements => {
                 Self::DeclaredCallable {
+                    execution_mode: left_mode,
                     conventions: left_conventions,
                     required_opt_inputs: left_requirements,
                     result: Box::new((*left).join(*right)),
                 }
             }
             (Self::Awaited(left), Self::Awaited(right)) => Self::Awaited(Box::new((*left).join(*right))),
+            (Self::Recipe { role: left_role, poll: left }, Self::Recipe { role: right_role, poll: right })
+                if left_role == right_role =>
+                Self::Recipe { role: left_role, poll: Box::new((*left).join(*right)) },
+            (Self::Invocation { callable: left, arguments: left_args },
+                Self::Invocation { callable: right, arguments: right_args }) if left_args.len() == right_args.len() =>
+                Self::Invocation { callable: Box::new((*left).join(*right)),
+                    arguments: left_args.into_iter().zip(right_args).map(|(a, b)| a.join(b)).collect() },
             (Self::Elements(left), Self::Elements(right)) if left.len() == right.len() => {
                 Self::Elements(left.into_iter().zip(right).map(|(a, b)| a.join(b)).collect())
             }
@@ -420,8 +479,8 @@ impl TaskExecutionProof {
                 TaskExecutionProof::UnprovedCallableObligation => TaskExecutionProof::UnprovedCallableObligation,
                 TaskExecutionProof::InactiveVariant => TaskExecutionProof::InactiveVariant,
                 TaskExecutionProof::Task(mode, result) => TaskExecutionProof::Task(*mode, Box::new(go(result, arguments, formal_scope, depth + 1))),
-                TaskExecutionProof::Callable { scope, parameters, required_opt_inputs, result } => TaskExecutionProof::Callable {
-                    scope: scope.clone(), parameters: *parameters,
+                TaskExecutionProof::Callable { scope, execution_mode, parameters, required_opt_inputs, result } => TaskExecutionProof::Callable {
+                    scope: scope.clone(), execution_mode: *execution_mode, parameters: *parameters,
                     required_opt_inputs: required_opt_inputs.iter()
                         .map(|input| go(input, arguments, formal_scope, depth + 1)).collect(),
                     result: Box::new(go(result, arguments, formal_scope, depth + 1)),
@@ -429,6 +488,13 @@ impl TaskExecutionProof {
                 // A declared callable has no lexical captures. Substituting
                 // the enclosing function must not bind its own formals.
                 TaskExecutionProof::DeclaredCallable { .. } => proof.clone(),
+                TaskExecutionProof::Recipe { role, poll } => TaskExecutionProof::Recipe {
+                    role: role.clone(), poll: Box::new(go(poll, arguments, formal_scope, depth + 1)),
+                },
+                TaskExecutionProof::Invocation { callable, arguments: inputs } => TaskExecutionProof::Invocation {
+                    callable: Box::new(go(callable, arguments, formal_scope, depth + 1)),
+                    arguments: inputs.iter().map(|input| go(input, arguments, formal_scope, depth + 1)).collect(),
+                },
                 TaskExecutionProof::Parameter(index) if formal_scope.is_none() =>
                     arguments.get(*index).cloned().unwrap_or(TaskExecutionProof::Unknown),
                 TaskExecutionProof::Parameter(index) => TaskExecutionProof::Parameter(*index),
@@ -479,6 +545,24 @@ impl TaskExecutionProof {
         self.substitute(arguments, Some(scope))
     }
 
+    /// Expose both execution behavior and result, without conflating an opt
+    /// result with an opt invocation. Unknown, mixed, or wrong-arity callees
+    /// have no contract. Requirements remain explicit, not auto-discharged.
+    pub fn invocation_contract(&self, arguments: &[Self]) -> Option<TaskInvocationContract> {
+        let (execution_mode, required_opt_inputs, result) = match self {
+            Self::Callable { scope, execution_mode, parameters, required_opt_inputs, result }
+                if *parameters == arguments.len() => (*execution_mode,
+                    required_opt_inputs.iter().map(|proof| proof.instantiate_callback(scope, arguments).bounded(4096)).collect(),
+                    result.instantiate_callback(scope, arguments).bounded(4096)),
+            Self::DeclaredCallable { execution_mode, conventions, required_opt_inputs, result }
+                if conventions.len() == arguments.len() => (*execution_mode,
+                    required_opt_inputs.iter().map(|proof| proof.instantiate(arguments).bounded(4096)).collect(),
+                    result.instantiate(arguments).bounded(4096)),
+            _ => return None,
+        };
+        Some(TaskInvocationContract { execution_mode, required_opt_inputs, result })
+    }
+
     /// Compose a checked positional projection with a symbolic task origin.
     /// The caller must have checked the container type; substitution resolves
     /// the path against the exact argument at the invocation boundary.
@@ -494,6 +578,8 @@ impl TaskExecutionProof {
     /// never evidence that a task may execute.
     pub fn project_variant_slot(self, ordinal: usize, index: usize) -> Self {
         match self {
+            Self::Recipe { poll, .. } if ordinal == 0 && index == 0 => *poll,
+            Self::Recipe { .. } => Self::Unknown,
             Self::Variant { ordinal: actual, fields } if actual == ordinal =>
                 fields.get(index).cloned().unwrap_or(Self::Unknown),
             Self::Variant { .. } | Self::InactiveVariant => Self::InactiveVariant,
@@ -709,6 +795,7 @@ pub struct CanonicalSourceParts<'s> {
     pub task_await_items: &'s BTreeMap<u32, usize>,
     pub task_operand_items: &'s BTreeMap<u32, Vec<usize>>,
     pub task_behaviors: &'s BTreeMap<u32, TaskBehaviorContract>,
+    pub deferred_task_role: Option<&'s DeferredTaskRole>,
 }
 
 /// A borrowed, read-only view of one checked canonical source.
@@ -734,6 +821,7 @@ pub struct CanonicalSourceView<'s> {
     task_await_items: &'s BTreeMap<u32, usize>,
     task_operand_items: &'s BTreeMap<u32, Vec<usize>>,
     task_behaviors: &'s BTreeMap<u32, TaskBehaviorContract>,
+    deferred_task_role: Option<&'s DeferredTaskRole>,
 }
 
 impl<'s> CanonicalSourceView<'s> {
@@ -762,6 +850,7 @@ impl<'s> CanonicalSourceView<'s> {
             task_await_items,
             task_operand_items,
             task_behaviors,
+            deferred_task_role,
         } = parts;
         Self {
             module,
@@ -784,6 +873,7 @@ impl<'s> CanonicalSourceView<'s> {
             task_await_items,
             task_operand_items,
             task_behaviors,
+            deferred_task_role,
         }
     }
 
@@ -797,6 +887,8 @@ impl<'s> CanonicalSourceView<'s> {
     pub fn task_behavior_at(&self, item: u32) -> Option<&'s TaskBehaviorContract> {
         self.task_behaviors.get(&item)
     }
+
+    pub fn deferred_task_role(&self) -> Option<&'s DeferredTaskRole> { self.deferred_task_role }
 
     pub fn task_await_proof_at(&self, item: u32) -> Option<&'s TaskAwaitProof> {
         self.task_awaits.get(*self.task_await_items.get(&item)?)

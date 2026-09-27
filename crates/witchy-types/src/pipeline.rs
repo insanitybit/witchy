@@ -39,7 +39,7 @@ use witchy_canonical_source::rooted_view::RootedViewStorage;
 use witchy_canonical_source::storage::StoragePlan;
 use witchy_canonical_source::source::{
     CanonicalSourceParts, CanonicalSourceView, CheckedAccessQuery, CheckedSourceDigests,
-    CheckedSourceWitness, PrecompiledExport, TaskAwaitProof, TaskBehaviorContract, TaskBehaviorIdentity,
+    CheckedSourceWitness, DeferredTaskRole, PrecompiledExport, TaskAwaitProof, TaskBehaviorContract, TaskBehaviorIdentity,
 };
 use crate::precompiled_declarations::PrecompiledDeclarationEnvironment;
 use crate::optimization_readiness::OptimizationReadiness;
@@ -146,6 +146,7 @@ pub struct CanonicalCheckedSource {
     task_await_items: BTreeMap<u32, usize>,
     task_operand_items: BTreeMap<u32, Vec<usize>>,
     task_behaviors: BTreeMap<u32, TaskBehaviorContract>,
+    deferred_task_role: Option<DeferredTaskRole>,
 }
 
 impl CanonicalCheckedSource {
@@ -173,6 +174,7 @@ impl CanonicalCheckedSource {
             task_await_items: &self.task_await_items,
             task_operand_items: &self.task_operand_items,
             task_behaviors: &self.task_behaviors,
+            deferred_task_role: self.deferred_task_role.as_ref(),
         })
     }
 
@@ -844,6 +846,43 @@ fn async_task_behavior_identity(function: &witchy_syntax::ast::Function) -> Opti
     })
 }
 
+/// Resolve the toolchain's one polymorphic scheduler family by authenticated
+/// declaration identity, then verify its source storage contract. Names in the
+/// linked AST are lookup keys only; workspace lookalikes acquire no role.
+fn checked_deferred_task_role(module: &Module, catalog: Option<&RuntimeDeclarationCatalog>) -> Option<DeferredTaskRole> {
+    use crate::runtime_type::PackageSource;
+    let catalog = catalog?;
+    let resolve = |local_name: &str| {
+        let mut matches = module.items.iter().filter_map(|item| {
+            let Item::Type(definition) = item else { return None };
+            let identity = catalog.resolve(&definition.name, DeclarationKind::Type)?;
+            (identity.package().source() == &PackageSource::Toolchain
+                && identity.package().name() == "witchy/std"
+                && identity.module() == ["std", "task"]
+                && identity.name() == local_name).then_some((definition, identity))
+        });
+        let found = matches.next()?;
+        if matches.next().is_some() { return None; }
+        Some(found)
+    };
+    let (task, task_identity) = resolve("Task")?;
+    let (step, step_identity) = resolve("Step")?;
+    if task_identity.package() != step_identity.package()
+        || !task.sealed || task.must_consume || task.params.len() != 1
+        || !step.sealed || step.params.len() != 1 { return None; }
+    let [constructor] = task.variants.as_slice() else { return None };
+    let [poll] = constructor.fields.as_slice() else { return None };
+    let Type::Fn(arguments, result, conventions, qualifiers) = poll else { return None };
+    let Type::Named(result_name, result_arguments) = result.unqualified() else { return None };
+    if !arguments.is_empty() || !conventions.is_empty() || qualifiers.once
+        || catalog.resolve(result_name, DeclarationKind::Type) != Some(step_identity)
+        || result_arguments.as_slice() != [Type::Named(task.params[0].clone(), Vec::new())] { return None; }
+    Some(DeferredTaskRole::from_checked_frontend(
+        task.name.clone(), linked_task_behavior_identity(task_identity),
+        step.name.clone(), linked_task_behavior_identity(step_identity),
+    ))
+}
+
 fn bind_task_behaviors(
     source: &Module,
     mut declarations: BTreeMap<usize, crate::task_provenance::TaskBehaviorSummary>,
@@ -929,6 +968,7 @@ fn bind_task_await_proofs(
     final_typed: &typeck::TypedModule,
     runtime_catalog: Option<&RuntimeDeclarationCatalog>,
     closure_witness: &ClosureWitnessManifest,
+    deferred_task_role: Option<&DeferredTaskRole>,
 ) -> Result<(Vec<TaskAwaitProof>, BTreeMap<u32, usize>, BTreeMap<u32, Vec<usize>>, BTreeMap<u32, TaskBehaviorContract>), PipelineError> {
     let Some(source) = checked.typed_async_source() else {
         return Ok((Vec::new(), BTreeMap::new(), BTreeMap::new(), BTreeMap::new()));
@@ -948,7 +988,7 @@ fn bind_task_await_proofs(
     if actual != expected {
         return Err(refuse("typed async source inventory differs from checked source surface".into()));
     }
-    let behavior = crate::task_provenance::checked_task_behavior(source.module(), source.table())
+    let behavior = crate::task_provenance::checked_task_behavior(source.module(), source.table(), deferred_task_role)
         .map_err(PipelineError::Type)?;
     let task_behaviors = bind_task_behaviors(source.module(), behavior.declarations,
         final_typed, runtime_catalog, closure_witness)?;
@@ -1116,8 +1156,9 @@ fn attach_canonical_source(
     precompiled_declarations: PrecompiledDeclarationEnvironment,
     runtime_catalog: Option<&RuntimeDeclarationCatalog>,
 ) -> Result<CheckedModule, PipelineError> {
+    let deferred_task_role = checked_deferred_task_role(typed.module(), runtime_catalog);
     let (task_awaits, task_await_items, task_operand_items, task_behaviors) =
-        bind_task_await_proofs(&checked, &typed, runtime_catalog, &closure_witness)?;
+        bind_task_await_proofs(&checked, &typed, runtime_catalog, &closure_witness, deferred_task_role.as_ref())?;
     let launch_contract_payload = capabilities::launch_contract_payload(checked.module());
     let launch_contract_digest = launch_contract_digest(&launch_contract_payload);
     let optimization_readiness = OptimizationReadiness::from_typed(&typed, source_bundle_digest)
@@ -1242,6 +1283,7 @@ fn attach_canonical_source(
         task_await_items,
         task_operand_items,
         task_behaviors,
+        deferred_task_role,
     });
     Ok(checked)
 }

@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 use witchy_canonical_source::aggregates::type_definitions;
 use witchy_canonical_source::storage::{StoredChildren, stored_children};
 use witchy_canonical_source::source::{
-    SourceExecutionMode, TaskCallableScope, TaskExecutionProof as Proof, source_execution_mode,
+    DeferredTaskRole, SourceExecutionMode, TaskCallableScope, TaskExecutionProof as Proof, source_execution_mode,
 };
 use witchy_syntax::ast::{Block, Convention, Expr, Function, Item, Module, Pattern, Stmt, Type, TypeDef, UnOp};
 use witchy_syntax::lambda_scan::scan_lambda;
@@ -155,6 +155,8 @@ struct Analyzer<'a> {
     summaries: &'a BTreeMap<String, Summary>,
     function: &'a Function,
     check_await: bool,
+    deferred_task_role: Option<&'a DeferredTaskRole>,
+    export_execution_terms: bool,
     returns: Vec<Proof>,
     required_opt_inputs: Vec<Proof>,
     await_origins: BTreeMap<usize, Proof>,
@@ -414,6 +416,10 @@ impl Analyzer<'_> {
                     Self::bind(pattern, value, None, environment);
                 }
             }
+            (Pattern::Ctor { args, .. } | Pattern::AnonCtor { args, .. }, proof @ Proof::Recipe { .. })
+                if ordinal == Some(0) && args.len() == 1 => {
+                Self::bind(&args[0], proof.project_variant_slot(0, 0), None, environment);
+            }
             (Pattern::Ctor { args, .. } | Pattern::AnonCtor { args, .. }, Proof::Variants(mut variants)) => {
                 let tainted = variants.values().flatten().any(Proof::has_any_callable_input_obligation);
                 if let Some(values) = ordinal.and_then(|ordinal| variants.remove(&ordinal))
@@ -537,7 +543,7 @@ impl Analyzer<'_> {
         // authority, even if its signature happens to match.
         if environment.contains_key(name) || self.table.local_callee_type(expression).is_some() {
             match environment.get(name).cloned() {
-                Some(Proof::Callable { scope, parameters, required_opt_inputs, result }) if parameters == proofs.len() => {
+                Some(Proof::Callable { scope, parameters, required_opt_inputs, result, .. }) if parameters == proofs.len() => {
                     for requirement in required_opt_inputs {
                         self.satisfy_opt_requirement(requirement.instantiate_callback(&scope, &proofs))?;
                     }
@@ -548,7 +554,7 @@ impl Analyzer<'_> {
                     environment.values_mut().for_each(|proof| *proof = proof.invalidated());
                     return Ok(result);
                 }
-                Some(Proof::DeclaredCallable { conventions, required_opt_inputs, result }) if conventions.len() == proofs.len() => {
+                Some(Proof::DeclaredCallable { conventions, required_opt_inputs, result, .. }) if conventions.len() == proofs.len() => {
                     for requirement in required_opt_inputs {
                         self.satisfy_opt_requirement(requirement.instantiate(&proofs))?;
                     }
@@ -568,8 +574,11 @@ impl Analyzer<'_> {
                 }
                 _ => {}
             }
+            let callable = environment.get(name).cloned().unwrap_or(Proof::Unknown);
             self.invalidate_arguments(args, None, environment);
-            return Ok(Proof::Unknown);
+            return Ok(if self.export_execution_terms && callable != Proof::Unknown {
+                Proof::Invocation { callable: Box::new(callable), arguments: proofs }.bounded(4096)
+            } else { Proof::Unknown });
         }
         let Some(function) = direct_target else {
             self.invalidate_arguments(args, None, environment);
@@ -652,6 +661,7 @@ impl Analyzer<'_> {
                                 Proof::Task(source_execution_mode(function, &self.module.modes), Box::new(result))
                             } else { result };
                             Proof::DeclaredCallable {
+                                execution_mode: source_execution_mode(function, &self.module.modes),
                                 conventions: function.params.iter().map(|parameter| parameter.convention).collect(),
                                 required_opt_inputs: summary.required_opt_inputs.clone(),
                                 result: Box::new(result.bounded(4096)),
@@ -698,6 +708,14 @@ impl Analyzer<'_> {
                     .collect::<Result<Vec<_>, _>>()?;
                 for value in &values {
                     self.reject_local_callable_transfer(value, "enter aggregate storage")?;
+                }
+                let recipe_role = self.deferred_task_role.filter(|role|
+                    matches!(self.table.type_of(expression), Some(Ty::Named(actual, parameters))
+                        if actual.as_ref() == role.task_name() && parameters.len() == 1)
+                    && self.checked_variant_ordinal(expression, name) == Some(0));
+                if let (Some(role), [poll]) = (recipe_role, values.as_slice()) {
+                    self.reject_opaque_callable_transfer(poll, "enter a task recipe without a callable contract")?;
+                    return Ok(Proof::Recipe { role: role.task_identity().clone(), poll: Box::new(poll.clone()) });
                 }
                 if self.task_result(expression) {
                     for value in &values {
@@ -923,6 +941,7 @@ impl Analyzer<'_> {
                 }
                 Proof::Callable {
                     scope,
+                    execution_mode: source_execution_mode(self.function, &self.module.modes),
                     parameters: params.len(),
                     required_opt_inputs,
                     result: Box::new(Self::join_values(nested_returns).bounded(4096)),
@@ -936,14 +955,14 @@ impl Analyzer<'_> {
                     self.reject_opaque_callable_transfer(proof, "cross a callback argument")?;
                 }
                 match callable {
-                    Proof::Callable { scope, parameters, required_opt_inputs, result } if parameters == args.len() => {
+                    Proof::Callable { scope, parameters, required_opt_inputs, result, .. } if parameters == args.len() => {
                         for requirement in required_opt_inputs {
                             self.satisfy_opt_requirement(requirement.instantiate_callback(&scope, &proofs))?;
                         }
                         environment.values_mut().for_each(|proof| *proof = proof.invalidated());
                         result.instantiate_callback(&scope, &proofs).bounded(4096)
                     }
-                    Proof::DeclaredCallable { conventions, required_opt_inputs, result } if conventions.len() == args.len() => {
+                    Proof::DeclaredCallable { conventions, required_opt_inputs, result, .. } if conventions.len() == args.len() => {
                         for requirement in required_opt_inputs {
                             self.satisfy_opt_requirement(requirement.instantiate(&proofs))?;
                         }
@@ -960,7 +979,9 @@ impl Analyzer<'_> {
                     other => {
                         self.reject_local_callable_transfer(&other, "invoke after provenance was lost")?;
                         environment.values_mut().for_each(|proof| *proof = proof.invalidated());
-                        Proof::Unknown
+                        if self.export_execution_terms && other != Proof::Unknown {
+                            Proof::Invocation { callable: Box::new(other), arguments: proofs }.bounded(4096)
+                        } else { Proof::Unknown }
                     }
                 }
             }
@@ -1098,6 +1119,8 @@ fn analyze_function(
     summaries: &BTreeMap<String, Summary>,
     function: &Function,
     check_await: bool,
+    deferred_task_role: Option<&DeferredTaskRole>,
+    export_execution_terms: bool,
 ) -> Result<(Summary, BTreeMap<usize, Proof>), TypeError> {
     // AST preorder is stable across summary iterations. A lexical scope key
     // keeps lambda formals distinct from enclosing function parameters and
@@ -1122,6 +1145,8 @@ fn analyze_function(
         summaries,
         function,
         check_await,
+        deferred_task_role,
+        export_execution_terms,
         returns: Vec::new(),
         required_opt_inputs: Vec::new(),
         await_origins: BTreeMap::new(),
@@ -1159,20 +1184,22 @@ pub(crate) fn checked_await_origins(
     module: &Module,
     table: &TypeTable,
 ) -> Result<BTreeMap<usize, Proof>, TypeError> {
-    analyze_task_behavior(module, table, false).map(|behavior| behavior.await_origins)
+    analyze_task_behavior(module, table, false, None).map(|behavior| behavior.await_origins)
 }
 
 pub(crate) fn checked_task_behavior(
     module: &Module,
     table: &TypeTable,
+    deferred_task_role: Option<&DeferredTaskRole>,
 ) -> Result<CheckedTaskBehavior, TypeError> {
-    analyze_task_behavior(module, table, true)
+    analyze_task_behavior(module, table, true, deferred_task_role)
 }
 
 fn analyze_task_behavior(
     module: &Module,
     table: &TypeTable,
     export_declarations: bool,
+    deferred_task_role: Option<&DeferredTaskRole>,
 ) -> Result<CheckedTaskBehavior, TypeError> {
     let definitions = type_definitions(module);
     let functions: Vec<_> = module
@@ -1197,7 +1224,7 @@ fn analyze_task_behavior(
         for _ in 0..=128 {
             let mut next = summaries.clone();
             for function in &functions {
-                let mut summary = analyze_function(module, table, &definitions, &summaries, function, false)?.0;
+                let mut summary = analyze_function(module, table, &definitions, &summaries, function, false, deferred_task_role, export_declarations)?.0;
                 if widened.contains(&function.name) { summary.result = summary.result.invalidated(); }
                 next.insert(function.name.clone(), summary);
             }
@@ -1210,7 +1237,7 @@ fn analyze_task_behavior(
         if converged { break; }
         let mut growing = BTreeSet::new();
         for function in &functions {
-            let next = analyze_function(module, table, &definitions, &summaries, function, false)?.0;
+            let next = analyze_function(module, table, &definitions, &summaries, function, false, deferred_task_role, export_declarations)?.0;
             let prior = summaries.get(&function.name);
             if prior.is_some_and(|prior| prior.required_opt_inputs != next.required_opt_inputs) {
                 return Err(TypeError {
@@ -1229,14 +1256,14 @@ fn analyze_task_behavior(
     }
     let mut awaits = BTreeMap::new();
     for function in &functions {
-        awaits.extend(analyze_function(module, table, &definitions, &summaries, function, true)?.1);
+        awaits.extend(analyze_function(module, table, &definitions, &summaries, function, true, deferred_task_role, export_declarations)?.1);
     }
     let mut declarations = BTreeMap::new();
     for item in &module.items {
         if let Item::Impl(definition) = item {
             for method in &definition.methods {
                 if method.is_async {
-                    let (summary, origins) = analyze_function(module, table, &definitions, &summaries, method, true)?;
+                    let (summary, origins) = analyze_function(module, table, &definitions, &summaries, method, true, deferred_task_role, export_declarations)?;
                     awaits.extend(origins);
                     if export_declarations {
                         declarations.insert(method as *const Function as usize,

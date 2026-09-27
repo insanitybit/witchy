@@ -13,6 +13,9 @@ use std::process::Command;
 use syn::visit::Visit;
 use syn::{Fields, Item, Visibility};
 
+#[path = "checked_frontend_minting/task_behavior.rs"]
+mod task_behavior;
+
 const FRONTEND_ONLY: [(&str, &str); 3] = [
     ("mint_for_checked_frontend", "crates/witchy-types/src/pipeline.rs"),
     ("rebind_launch_contract_for_build_recipe", "crates/witchy-types/src/pipeline/build_recipe.rs"),
