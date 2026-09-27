@@ -115,7 +115,10 @@ and they rebuild incrementally, because the path and its state are unchanged.
 - **Staleness.** A slot detached at an old `master` still hands out a
   correct branch, since the hook branches from the caller's `HEAD`, not the
   slot's commit. The cost is a larger rebuild. Slots older than a day are
-  evicted rather than reused.
+  eligible for independent cache reclamation, but the create hook reuses any
+  verified free slot that remains. Age alone does not invalidate Cargo's
+  incremental dependency checks, and deleting a requested cache forces a cold
+  rebuild instead of allowing partial reuse.
 
 ## Safety
 
@@ -155,7 +158,7 @@ and they rebuild incrementally, because the path and its state are unchanged.
 
 ## Drawbacks
 
-- Pool slots hold disk that deletion used to free. The cap and age eviction
+- Pool slots hold disk that deletion used to free. The cap and age-based cache reclamation
   bound it, but free space on this machine is often under 50 GB.
 - The sweep and the create hook become stateful. A bug there can hand an
   agent a dirty tree, so the hook re-checks `git status` on the slot before
@@ -165,22 +168,23 @@ and they rebuild incrementally, because the path and its state are unchanged.
 
 Landed with this status change:
 
-- `scripts/worktree-pool.sh` holds the slot protocol (claim, release, evict,
+- `scripts/worktree-pool.sh` holds the slot protocol (claim, release,
   reserve). State lives under `state/worktree-pool/{free,claims}`.
 - `scripts/worktree-create.sh` claims a free slot first, then creates new
   worktrees at `pool-<NN>` while under `WITCHY_WORKTREE_POOL_MAX` (default 6;
-  `0` turns the pool off). A slot that is stale (older than
-  `WITCHY_WORKTREE_POOL_MAX_AGE_HOURS`, default 24), has no `target/debug`,
-  or is not a clean detached checkout is evicted, not handed out. The name
-  `pool-<NN>` is reserved.
+  `0` turns the pool off). A free slot must be verified clean and detached;
+  unexpected work or failed inspection withdraws its free marker without
+  deleting the checkout. Old slots, cacheless slots and reclaimed managed-target
+  symlinks remain reusable. The name `pool-<NN>` is reserved.
 - `merge-queue.sh sweep` recycles a merged, clean, unqueued pool worktree in
   place and journals it as `swept` with `recycled: 1`. Anything else is
   removed as before.
 - `reclaim-build-caches.sh` lists a free slot as `POOL:<age>h` and keeps its
   cache until `--pool-min-age-hours` (24). After that, the cache is reclaimable,
-  and the hook evicts the cacheless slot.
+  while the worktree path remains reusable. The create hook does not perform
+  age eviction immediately before handing a requested slot to an agent.
 - Tests: `tools/merge-queue-tests` `worktree::create` (recycle, cap, dirty
-  eviction, concurrent claims) and `merge_queue::coordinator`
+  preservation, aged-cache retention at the requested base, concurrent claims) and `merge_queue::coordinator`
   `sweep_recycles_a_landed_pool_worktree_in_place`.
 
 Follow-ups: the sweep recycles pool slots even while ready work is queued

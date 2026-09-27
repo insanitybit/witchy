@@ -168,7 +168,7 @@ while IFS= read -r wt; do
 
     # A free pool slot (RFC-0171) is detached at a landed master, so branch
     # state alone would call its cache stale. Its age is how long it has sat
-    # free; worktree-create.sh evicts a slot whose cache is gone.
+    # free. The create hook can reuse its path even after cache reclamation.
     pool_age_hours=""
     if [ "$gone" -eq 0 ] && [ "$branch" = HEAD ] \
         && pool_slot="$(worktree_pool_slot_of "$main" "$wt")" \

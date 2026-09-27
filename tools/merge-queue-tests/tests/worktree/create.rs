@@ -392,19 +392,24 @@ fn worktree_create_preserves_unexpected_work_even_with_a_stale_free_marker() {
 }
 
 #[test]
-fn worktree_create_evicts_only_verified_clean_stale_slots() {
+fn worktree_create_reuses_aged_clean_slots_at_the_requested_base() {
     let repo = temp_repo();
     let root = repo.path();
     let first = created_path(&create(root, "first"));
     let state = plant_incremental_state(&first);
     release(root, &first);
     fs::write(root.join("state/worktree-pool/free/00"), "0\n").expect("age free slot");
+    fs::write(root.join("README.md"), "new base\n").expect("update base");
+    git(root, &["add", "README.md"]);
+    git(root, &["commit", "--quiet", "-m", "new base"]);
 
     let output = create(root, "second");
     let second = created_path(&output);
-    assert!(String::from_utf8_lossy(&output.stderr).contains("evicting slot 00"));
-    assert_eq!(second, first, "aged slot should be recreated at the same path");
-    assert!(!state.exists(), "the evicted slot's cache survived");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("recycled pool worktree"));
+    assert_eq!(second, first, "aged slot should be reused at the same path");
+    assert_eq!(fs::read_to_string(state).expect("retained incremental state"), "incremental\n");
+    assert_eq!(git(&second, &["rev-parse", "HEAD"]), git(root, &["rev-parse", "HEAD"]));
+    assert_eq!(fs::read_to_string(second.join("README.md")).unwrap(), "new base\n");
     assert_eq!(git(&second, &["branch", "--show-current"]), "worktree-second");
 }
 

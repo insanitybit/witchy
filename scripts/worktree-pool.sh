@@ -13,7 +13,6 @@
 # never get the same slot.
 
 worktree_pool_max() { printf '%s\n' "${WITCHY_WORKTREE_POOL_MAX:-6}"; }
-worktree_pool_max_age_hours() { printf '%s\n' "${WITCHY_WORKTREE_POOL_MAX_AGE_HOURS:-24}"; }
 
 worktree_pool_state_dir() {
     printf '%s/worktree-pool\n' "$(witchy_state_root "$1")"
@@ -54,48 +53,29 @@ worktree_pool_release() {
     date +%s >"$pool/free/$slot"
 }
 
-# Remove a slot entirely: its worktree (with its target) and any marker.
-worktree_pool_evict() {
-    local root="$1" slot="$2" pool wt
-    pool="$(worktree_pool_state_dir "$root")"
-    wt="$(worktree_pool_slot_path "$root" "$slot")"
-    rm -f "$pool/free/$slot"
-    if [ -d "$wt" ]; then
-        git -C "$root" worktree remove --force "$wt" >/dev/null 2>&1 || true
-    fi
-}
-
 # Claim a free slot and check it out on a new <branch> at <base>. Prints the
-# slot path on success. Only a verified clean detached slot may be age-evicted.
+# slot path on success. Reuse an aged slot too: deleting it immediately before
+# use destroys the incremental state this pool exists to retain. Independent
+# cache reclamation owns age/free-disk policy; Cargo validates retained state.
 # Unexpected work invalidates the free marker, never the checkout. Cargo 1.100
 # + mbx creates managed targets lazily; an absent cache is not grounds to delete the slot's
 # ignored diagnostics or other retained state.
 worktree_pool_claim() {
-    local root="$1" branch="$2" base="$3" pool marker slot wt freed now max_age slot_head slot_status
+    local root="$1" branch="$2" base="$3" pool marker slot wt slot_head slot_status
     pool="$(worktree_pool_state_dir "$root")"
     [ -d "$pool/free" ] || return 1
     mkdir -p "$pool/claims" || return 1
-    now="$(date +%s)"
-    max_age=$(( $(worktree_pool_max_age_hours) * 3600 ))
     for marker in "$pool"/free/*; do
         [ -f "$marker" ] || continue
         slot="${marker##*/}"
         mkdir "$pool/claims/$slot" 2>/dev/null || continue
         wt="$(worktree_pool_slot_path "$root" "$slot")"
-        freed="$(cat "$marker" 2>/dev/null || echo 0)"
-        case "$freed" in '' | *[!0-9]*) freed=0 ;; esac
         if ! slot_head="$(git -C "$wt" rev-parse --abbrev-ref HEAD 2>/dev/null)" \
             || [ "$slot_head" != HEAD ] \
             || ! slot_status="$(git -C "$wt" status --porcelain 2>/dev/null)" \
             || [ -n "$slot_status" ]; then
             echo "worktree-pool: preserving slot $slot (not verified clean and detached); withdrawing free marker" >&2
             rm -f "$marker"
-            rmdir "$pool/claims/$slot" 2>/dev/null || true
-            continue
-        fi
-        if [ $((now - freed)) -gt "$max_age" ]; then
-            echo "worktree-pool: evicting slot $slot (stale)" >&2
-            worktree_pool_evict "$root" "$slot"
             rmdir "$pool/claims/$slot" 2>/dev/null || true
             continue
         fi
