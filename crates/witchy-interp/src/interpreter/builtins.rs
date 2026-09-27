@@ -306,9 +306,9 @@ impl Interpreter {
                         .map_err(|message| RuntimeError { message })?;
                     let mut hole_ancestry = Vec::new();
                     let expr = composition.build(|handle| {
-                        let origin = self.compiler_syntax.expression_origins().get(handle)
-                            .ok_or("meta expression composition requires current-session syntax")?;
-                        hole_ancestry.extend(origin.hole_ancestry.iter().cloned());
+                        if let Some(origin) = self.compiler_syntax.expression_origins().get(handle) {
+                            hole_ancestry.extend(origin.hole_ancestry.iter().cloned());
+                        }
                         self.compiler_syntax.expressions().get(handle).cloned()
                             .ok_or("meta expression composition requires a typed expression payload".into())
                     }).map_err(|message| RuntimeError { message })?;
