@@ -223,7 +223,7 @@ fn admitted_expression_composition_preserves_typed_children_in_both_modes() {
     witchy::opt::set_for_tests(Some(witchy::opt::OptSet::none()));
     let _reset = ResetOptimization;
     for mode in ["", "mode opt\n"] {
-        let source = format!("{mode}import meta\nfn main() -> Int:\n    let base = quote expr:\n        p\n    let field = meta.expr_field(base, meta.ident(\"value\"))\n    let record = meta.expr_record(meta.ident(\"Box\"), [(meta.ident(\"value\"), field)])\n    emit_expr(meta.expr_named_call(meta.ident(\"consume\"), [record]))\n    let factory = quote expr:\n        factory\n    emit_expr(meta.expr_call(factory, [meta.expr_int(7)]))\n    0\n");
+        let source = format!("{mode}import meta\nfn main() -> Int:\n    let base = quote expr:\n        p\n    let field = meta.expr_field(base, meta.ident(\"value\"))\n    let record = meta.expr_record(meta.ident(\"Box\"), [(meta.ident(\"value\"), field)])\n    emit_expr(meta.expr_named_call(meta.ident(\"consume\"), [record]))\n    let factory = quote expr:\n        factory\n    emit_expr(meta.expr_call(factory, [meta.expr_int(7)]))\n    emit_expr(meta.expr_try(meta.expr_field(base, meta.ident(\"optional\"))))\n    0\n");
         let recipe = witchy_types::pipeline::check_comptime_recipe_from_source_bundle(
             vec![("comptime".into(), source.into_bytes())], "expression",
             witchy_interp::comptime::EXPANDER,
@@ -234,7 +234,7 @@ fn admitted_expression_composition_preserves_typed_children_in_both_modes() {
         let output = Runtime::run_comptime(&artifact, limits()).expect("compose typed syntax");
         assert_eq!(output.result, 0);
         assert_eq!(output.heap_leaks, 0);
-        assert_eq!(output.expressions.len(), 2);
+        assert_eq!(output.expressions.len(), 3);
         let Expr::Call { name, args } = &output.expressions[0].expression else { panic!("expected direct call") };
         assert_eq!(name, "consume");
         let [Expr::Record { name, fields, spread: None }] = args.as_slice() else { panic!("expected record") };
@@ -245,6 +245,9 @@ fn admitted_expression_composition_preserves_typed_children_in_both_modes() {
         assert!(matches!(&output.expressions[1].expression, Expr::Apply { func, args }
             if matches!(func.as_ref(), Expr::Var(name) if name == "factory")
             && matches!(args.as_slice(), [Expr::Int(7)])));
+        assert!(matches!(&output.expressions[2].expression, Expr::Try(value)
+            if matches!(value.as_ref(), Expr::Field { base, field }
+                if field == "optional" && matches!(base.as_ref(), Expr::Var(name) if name == "p"))));
     }
 }
 

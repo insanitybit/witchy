@@ -334,7 +334,7 @@ pub fn expr_named_call(name: Ident, args: List(ExprSyntax)) -> ExprSyntax:
     __meta_expr_compose_wire("C\n" + ident_source(name) + "\n" + expr_wire_args(args))
 
 pub fn expr_try(value: ExprSyntax) -> ExprSyntax:
-    __meta_expr_try(value)
+    __meta_expr_compose_wire("T\n" + expr_wire_handle(value))
 
 pub fn expr_lambda(params: List(ParamSyntax), ret: Option(TypeSyntax), body: ExprSyntax) -> ExprSyntax:
     __meta_expr_lambda(params, ret, body)

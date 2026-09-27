@@ -7,6 +7,7 @@ pub enum Composition {
     Call { name: String, args: Vec<String> },
     Field { name: String, base: String },
     Record { name: String, fields: Vec<(String, String)> },
+    Try { value: String },
 }
 
 struct Reader<'a>(&'a [u8]);
@@ -75,6 +76,7 @@ pub fn decode(bytes: &[u8]) -> Result<Composition, String> {
             }
             Composition::Record { name, fields }
         }
+        "T" => Composition::Try { value: reader.handle()? },
         _ => return Err("unknown compiler expression composition".into()),
     };
     if !reader.0.is_empty() { return Err("trailing compiler expression data".into()); }
@@ -105,6 +107,7 @@ impl Composition {
                     Ok((field, resolve(&handle)?))).collect::<Result<_, String>>()?;
                 Ok(Expr::Record { name, fields, spread: None })
             }
+            Self::Try { value } => Ok(Expr::Try(Box::new(resolve(&value)?))),
         }
     }
 }
