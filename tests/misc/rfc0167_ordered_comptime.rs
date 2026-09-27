@@ -14,6 +14,36 @@ fn owners() -> AuthenticatedModuleOwners {
 }
 
 #[test]
+fn admitted_local_tag_after_source_block_in_both_modes() {
+    for mode in ["", "mode opt\n"] {
+        let source = format!(r#"{mode}import meta
+comptime fn literal(parts: List(String), holes: List(meta.TagHole)) -> meta.ExprSyntax:
+    meta.expr_int(42)
+comptime:
+    emit_item(quote item:
+        fn helper() -> Int:
+            1
+    )
+fn main(console: Console):
+    console.print("${{literal"hello" + helper()}}")
+"#);
+        let checked = witchy::canonical_comptime::check_source_bundle_with_local_tag(
+            vec![("generator".into(), source.into_bytes()),
+                ("meta".into(), witchy_syntax::linker::bundled_source("meta").unwrap().as_bytes().to_vec())],
+            "generator", ["generator".to_owned()].into_iter().collect(), owners(), limits(),
+        ).unwrap_or_else(|error| panic!("local tag admitted in {mode:?}: {error}"));
+        let artifact = witchy_lower::codegen::compile_checked_module_artifact(&checked)
+            .expect_lowered("local tag destination admits on Wasm");
+        let mut runtime = Runtime::batch().unwrap();
+        let mut vm = runtime.spawn_admitted(&artifact,
+            Capabilities { print: true, quiet: true, ..Capabilities::none() }, 64).unwrap();
+        vm.run().unwrap();
+        assert_eq!(vm.output(), ["43"]);
+        assert_eq!(vm.canonical_heap_leaks().unwrap(), Some(0));
+    }
+}
+
+#[test]
 fn admitted_typed_async_generation_in_both_modes() {
     for mode in ["", "mode opt\n"] {
         let source = format!(r#"{mode}import meta

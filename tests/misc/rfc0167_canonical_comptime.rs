@@ -106,6 +106,29 @@ fn canonical_dynamic_expression_leaves_are_typed_and_session_bounded() {
 }
 
 #[test]
+fn local_tag_body_runs_from_authenticated_source_on_admitted_wasm() {
+    use witchy_syntax::ast::Expr;
+    let source = r#"import meta
+comptime fn literal(parts: List(String), holes: List(meta.TagHole)) -> meta.ExprSyntax:
+    meta.expr_int(42)
+fn main() -> Int:
+    literal"hello"
+"#;
+    let session = witchy_types::pipeline::ComptimeSourceSession::from_source_bundle(
+        vec![("tagger".into(), source.as_bytes().to_vec())], "tagger",
+        ["tagger".to_owned()].into_iter().collect(), owners_for("tagger"),
+    ).expect("raw tag source and owners are bound");
+    let recipe = session.check_first_local_tag_recipe(&[])
+        .expect("source-selected local tag is checked");
+    let artifact = witchy_lower::codegen::compile_checked_comptime_recipe_artifact(&recipe)
+        .expect_lowered("local tag body admits on unoptimized Wasm");
+    let output = Runtime::run_comptime(&artifact, limits()).expect("admitted tag execution");
+    assert_eq!(output.source_digest(), recipe.session_source_digest());
+    assert_eq!(output.heap_leaks, 0);
+    assert!(matches!(output.expressions.as_slice(), [value] if matches!(value.expression, Expr::Int(42))));
+}
+
+#[test]
 fn admitted_nested_tag_builder_retains_owned_holes_and_static_parts() {
     use witchy_syntax::ast::{Expr, TaggedHole};
     let source = "import meta\nfn main() -> Int:\n    emit_expr(meta.expr_tagged(meta.ident(\"inner\"), [\"a\\nb\", \"é\"], [meta.expr_int(42)]))\n    0\n";

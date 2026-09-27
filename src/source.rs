@@ -413,6 +413,16 @@ fn check_loaded_source_bundle(
         ).map(|(checked, _)| checked);
     }
     if module.items.iter().any(|item| matches!(item, ast::Item::Comptime(_))) {
+        let mut has_tag = false;
+        witchy_syntax::ast::visit::visit_module_exprs(&module, &mut |expression| {
+            has_tag |= matches!(expression, ast::Expr::TaggedLit { .. });
+            Ok::<_, ()>(())
+        }).expect("tag scan cannot fail");
+        if has_tag {
+            return witchy::canonical_comptime::check_source_bundle_with_local_tag(
+                sources, entry, user_modules, owners, witchy::canonical_comptime::source_limits(),
+            );
+        }
         return witchy::canonical_comptime::check_source_bundle(
             sources, entry, user_modules, owners, witchy::canonical_comptime::source_limits(),
         );
