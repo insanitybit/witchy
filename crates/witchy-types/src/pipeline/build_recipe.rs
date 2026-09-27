@@ -44,6 +44,17 @@ fn refused(message: impl Into<String>) -> PipelineError {
     PipelineError::Type(typeck::TypeError { message: message.into() })
 }
 
+/// Keep launch-contract witness rebinding at the checked recipe authority
+/// site. Both recipe routes have already linked exact source and owners before
+/// passing their compiler-produced payload here.
+pub(super) fn bind_checked_recipe_launch_contract(
+    source: &mut CanonicalCheckedSource,
+    payload: Vec<u8>,
+) {
+    source.source_witness.rebind_launch_contract_for_build_recipe(launch_contract_digest(&payload));
+    source.launch_contract_payload = payload;
+}
+
 pub fn check_build_recipe_from_source_bundle(
     mut sources: Vec<(String, Vec<u8>)>, entry: &str, expand: ComptimeExpander,
     user_modules: &HashSet<String>, owners: AuthenticatedModuleOwners,
@@ -191,8 +202,7 @@ pub fn check_build_recipe_from_source_bundle(
     payload.extend_from_slice(&target.function_ordinal.to_le_bytes());
     payload.extend_from_slice(&abi.key.as_bytes());
     payload.extend_from_slice(&parameter_abi);
-    source.source_witness.rebind_launch_contract_for_build_recipe(launch_contract_digest(&payload));
-    source.launch_contract_payload = payload;
+    bind_checked_recipe_launch_contract(source, payload);
     source.build_entry = Some(entry_name);
     Ok(CheckedBuildRecipe { original, checked, identity })
 }

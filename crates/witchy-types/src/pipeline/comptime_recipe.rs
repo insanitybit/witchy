@@ -45,7 +45,6 @@ pub fn check_comptime_recipe_from_source_bundle(
         return Err(refuse("initial comptime recipe requires parameterless Int main"));
     }
     let payload = contract.encode();
-    source.source_witness.rebind_launch_contract_for_build_recipe(launch_contract_digest(&payload));
-    source.launch_contract_payload = payload;
+    super::build_recipe::bind_checked_recipe_launch_contract(source, payload);
     Ok(CheckedComptimeRecipe { checked })
 }
