@@ -17,7 +17,56 @@ pub(in super::super) fn register(linker: &mut Linker<VmState>) -> Result<()> {
     linker.func_wrap("witchy", "compiler_syntax_record_type_into", record_type_into)?;
     linker.func_wrap("witchy", "compiler_syntax_expr_leaf_into", expression_leaf_into)?;
     linker.func_wrap("witchy", "compiler_syntax_type_expr_into", type_expr_into)?;
+    linker.func_wrap("witchy", "compiler_syntax_expr_compose_into", expression_compose_into)?;
     Ok(())
+}
+
+fn expression_compose_into(mut caller: Caller<'_, VmState>, pointer: i32, length: i32,
+    out: i32, capacity: i32) -> Result<i32> {
+    let memory = memory_of(&mut caller)?;
+    let input = range(memory.data_size(&caller), pointer, length)?;
+    let output = range(memory.data_size(&caller), out, capacity)?;
+    let state = caller.data().compiler_syntax.as_ref()
+        .ok_or_else(|| Error::msg("compiler syntax session unavailable"))?;
+    if input.len() as u64 > state.input_bytes {
+        return Err(Error::msg("compiler expression input budget exceeded"));
+    }
+    charge_fuel(&mut caller, input.len() as u64 + 1)?;
+    let composition = witchy_syntax::compiler_session::expr_compose_wire::decode(&memory.data(&caller)[input])
+        .map_err(Error::msg)?;
+    let state = caller.data().compiler_syntax.as_ref().expect("checked session");
+    let mut origins = Vec::new();
+    let expression = composition.build(|handle| {
+        if !state.costs.contains_key(handle) {
+            return Err("compiler expression requires current-session syntax".into());
+        }
+        origins.push(state.syntax.expression_origins().get(handle)
+            .ok_or("compiler expression handle has no origin")?.clone());
+        state.syntax.expressions().get(handle).cloned()
+            .ok_or("compiler expression handle has no typed payload".into())
+    }).map_err(Error::msg)?;
+    let cost = measure_dynamic(&expression).map_err(Error::msg)?;
+    let required = state.syntax.syntax_handle_byte_len("expression").map_err(Error::msg)?;
+    if cost.nodes > state.nodes.remaining() || cost.bytes > state.syntax_bytes.remaining()
+        || required as u64 > state.bytes.remaining() {
+        return Err(Error::msg("compiler syntax arena budget exceeded"));
+    }
+    charge_fuel(&mut caller, cost.work().and_then(|work| work.checked_add(required as u64))
+        .ok_or_else(|| Error::msg("compiler syntax fuel overflow"))?)?;
+    if output.len() < required { return Ok(required as i32); }
+    let state = caller.data_mut().compiler_syntax.as_mut().expect("checked session");
+    state.nodes.charge(cost.nodes).map_err(|_| Error::msg("compiler syntax arena budget exceeded"))?;
+    state.syntax_bytes.charge(cost.bytes).map_err(|_| Error::msg("compiler syntax arena budget exceeded"))?;
+    state.bytes.charge(required as u64).map_err(|_| Error::msg("compiler syntax handle budget exceeded"))?;
+    let handle = state.syntax.next_syntax_handle("expression").map_err(Error::msg)?;
+    state.syntax.insert_expression(handle.clone(), expression);
+    state.syntax.insert_expression_origin(handle.clone(), ComptimeSyntaxOrigin {
+        definition_line: 1,
+        hole_ancestry: origins.into_iter().flat_map(|origin| origin.hole_ancestry).collect(),
+    });
+    state.costs.insert(handle.clone(), cost);
+    memory.data_mut(&mut caller)[output.start..output.start + required].copy_from_slice(handle.as_bytes());
+    Ok(required as i32)
 }
 
 fn type_expr_into(mut caller: Caller<'_, VmState>, pointer: i32, length: i32,

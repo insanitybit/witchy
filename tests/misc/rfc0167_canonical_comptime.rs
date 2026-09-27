@@ -170,6 +170,39 @@ fn admitted_reflected_type_conversion_supplies_checked_record_fields() {
 }
 
 #[test]
+fn admitted_expression_composition_preserves_typed_children_in_both_modes() {
+    use witchy_syntax::ast::Expr;
+    struct ResetOptimization;
+    impl Drop for ResetOptimization { fn drop(&mut self) { witchy::opt::set_for_tests(None); } }
+    witchy::opt::set_for_tests(Some(witchy::opt::OptSet::none()));
+    let _reset = ResetOptimization;
+    for mode in ["", "mode opt\n"] {
+        let source = format!("{mode}import meta\nfn main() -> Int:\n    let base = quote expr:\n        p\n    let field = meta.expr_field(base, meta.ident(\"value\"))\n    let record = meta.expr_record(meta.ident(\"Box\"), [(meta.ident(\"value\"), field)])\n    emit_expr(meta.expr_named_call(meta.ident(\"consume\"), [record]))\n    let factory = quote expr:\n        factory\n    emit_expr(meta.expr_call(factory, [meta.expr_int(7)]))\n    0\n");
+        let recipe = witchy_types::pipeline::check_comptime_recipe_from_source_bundle(
+            vec![("comptime".into(), source.into_bytes())], "expression",
+            witchy_interp::comptime::EXPANDER,
+            &["comptime".to_owned()].into_iter().collect(), owners(),
+        ).expect("composition is checked as compiler-owned syntax");
+        let artifact = witchy_lower::codegen::compile_checked_comptime_recipe_artifact(&recipe)
+            .expect_lowered("composition admits on unoptimized Wasm");
+        let output = Runtime::run_comptime(&artifact, limits()).expect("compose typed syntax");
+        assert_eq!(output.result, 0);
+        assert_eq!(output.heap_leaks, 0);
+        assert_eq!(output.expressions.len(), 2);
+        let Expr::Call { name, args } = &output.expressions[0].expression else { panic!("expected direct call") };
+        assert_eq!(name, "consume");
+        let [Expr::Record { name, fields, spread: None }] = args.as_slice() else { panic!("expected record") };
+        assert_eq!(name, "Box");
+        let [(field, Expr::Field { base, field: member })] = fields.as_slice() else { panic!("expected field") };
+        assert_eq!((field.as_str(), member.as_str()), ("value", "value"));
+        assert!(matches!(base.as_ref(), Expr::Var(name) if name == "p"));
+        assert!(matches!(&output.expressions[1].expression, Expr::Apply { func, args }
+            if matches!(func.as_ref(), Expr::Var(name) if name == "factory")
+            && matches!(args.as_slice(), [Expr::Int(7)])));
+    }
+}
+
+#[test]
 fn canonical_quotation_emits_typed_expression_with_lexical_origin() {
     struct ResetOptimization;
     impl Drop for ResetOptimization { fn drop(&mut self) { witchy::opt::set_for_tests(None); } }

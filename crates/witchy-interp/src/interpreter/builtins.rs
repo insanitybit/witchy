@@ -297,6 +297,27 @@ impl Interpreter {
                 }
                 _ => err("meta expression builder expects a kind and scalar payload"),
             },
+            name if intrinsics::is_meta_expr_compose_wire(name) => match one(args)? {
+                Value::Str(wire) => {
+                    if self.compiler_syntax.fresh_ident_scope().is_none() {
+                        return err("meta expression composition is available only during compile-time expansion");
+                    }
+                    let composition = witchy_syntax::compiler_session::expr_compose_wire::decode(wire.as_bytes())
+                        .map_err(|message| RuntimeError { message })?;
+                    let mut hole_ancestry = Vec::new();
+                    let expr = composition.build(|handle| {
+                        let origin = self.compiler_syntax.expression_origins().get(handle)
+                            .ok_or("meta expression composition requires current-session syntax")?;
+                        hole_ancestry.extend(origin.hole_ancestry.iter().cloned());
+                        self.compiler_syntax.expressions().get(handle).cloned()
+                            .ok_or("meta expression composition requires a typed expression payload".into())
+                    }).map_err(|message| RuntimeError { message })?;
+                    Ok(Some(self.store_compiler_expr_syntax(
+                        "expression-compose", expr, hole_ancestry,
+                    )?))
+                }
+                _ => err("meta expression composition expects framed data"),
+            },
             name if intrinsics::is_meta_expr_tag_hole(name) => match one(args)? {
                 Value::Str(marker) => {
                     let valid_shape = marker

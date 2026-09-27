@@ -62,6 +62,7 @@ pub enum IntrinsicId {
     MetaItemWithImports,
     MetaFreshIdent,
     MetaExprLeaf,
+    MetaExprComposeWire,
     MetaExprTagHole,
     MetaExprTagged,
     MetaPatternLeaf,
@@ -657,6 +658,7 @@ pub const SECRETSTORE_REQUIRE: &str = "secretstore.require";
 pub(crate) const META_ITEM_WITH_IMPORTS: &str = "__meta_item_with_imports";
 pub(crate) const META_FRESH_IDENT: &str = "__meta_fresh_ident";
 pub(crate) const META_EXPR_LEAF: &str = "__meta_expr_leaf";
+pub(crate) const META_EXPR_COMPOSE_WIRE: &str = "__meta_expr_compose_wire";
 pub(crate) const META_EXPR_TAG_HOLE: &str = "__meta_expr_tag_hole";
 pub(crate) const META_EXPR_TAGGED: &str = "__meta_expr_tagged";
 pub(crate) const META_PATTERN_LEAF: &str = "__meta_pattern_leaf";
@@ -1637,6 +1639,21 @@ pub const ALL: &[IntrinsicSpec] = &[
         dynamic_wir_helpers: false,
         wir_host_call: None,
         diagnostic_name: "meta expression builder",
+        private_callers: META_BRIDGE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::MetaExprComposeWire,
+        name: META_EXPR_COMPOSE_WIRE,
+        arity: 1,
+        signature: IntrinsicSignature::DeclaredInSource,
+        effect: IntrinsicEffect::Toolchain,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::FrontendGenerated,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: NO_HELPERS,
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: "meta expression composition",
         private_callers: META_BRIDGE_CALLERS,
     },
     IntrinsicSpec {
@@ -4051,6 +4068,10 @@ pub fn is_meta_fresh_ident(name: &str) -> bool {
 
 pub fn is_meta_expr_leaf(name: &str) -> bool {
     lookup(name).is_some_and(|spec| spec.id == IntrinsicId::MetaExprLeaf)
+}
+
+pub fn is_meta_expr_compose_wire(name: &str) -> bool {
+    lookup(name).is_some_and(|spec| spec.id == IntrinsicId::MetaExprComposeWire)
 }
 
 pub fn is_meta_expr_tag_hole(name: &str) -> bool {

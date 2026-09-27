@@ -19,6 +19,7 @@ use crate::origin::SyntaxCategory;
 
 pub mod seeds;
 pub mod type_expr_wire;
+pub mod expr_compose_wire;
 
 /// Data carried by the checked source launch contract and admitted artifact.
 /// Constructing this value alone grants no import or launch authority.

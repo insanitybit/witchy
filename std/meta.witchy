@@ -325,13 +325,13 @@ pub fn expr_name(name: Ident) -> ExprSyntax:
     expr_ident(name)
 
 pub fn expr_call(callee: ExprSyntax, args: List(ExprSyntax)) -> ExprSyntax:
-    __meta_expr_call(callee, args)
+    __meta_expr_compose_wire("A\n" + expr_wire_handle(callee) + expr_wire_args(args))
 
 // Build a direct call from a compiler-validated identifier. Unlike `expr_call`,
 // this preserves the direct-call AST shape required by declaration-site
 // resolution and generic specialization; it never accepts source text.
 pub fn expr_named_call(name: Ident, args: List(ExprSyntax)) -> ExprSyntax:
-    __meta_expr_named_call(name, args)
+    __meta_expr_compose_wire("C\n" + ident_source(name) + "\n" + expr_wire_args(args))
 
 pub fn expr_try(value: ExprSyntax) -> ExprSyntax:
     __meta_expr_try(value)
@@ -384,7 +384,7 @@ fn __meta_expr_method_call(receiver: ExprSyntax, method: Ident, args: List(ExprS
     __meta_expr_method_call(receiver, method, args)
 
 pub fn expr_field(base: ExprSyntax, field: Ident) -> ExprSyntax:
-    __meta_expr_field(base, field)
+    __meta_expr_compose_wire("F\n" + ident_source(field) + "\n" + expr_wire_handle(base))
 
 // Compiler-owned structural composition for `expr_field`. The base keeps its
 // expression origin; fields are validated identifiers rather than bindings.
@@ -473,7 +473,32 @@ pub fn record_field(name: Ident, value: ExprSyntax) -> (Ident, ExprSyntax):
 // and labels are definition-site identifiers; invocation-site identifiers are
 // references and are rejected rather than having their origin erased.
 pub fn expr_record(name: Ident, fields: List((Ident, ExprSyntax))) -> ExprSyntax:
-    __meta_expr_record(name, fields, None)
+    match name:
+        CallSiteIdent(_) -> fail("meta.expr_record requires a definition-site name")
+        _ -> ()
+
+    var wire = "R\n" + ident_source(name) + "\n${fields.length()}\n"
+    for field in fields:
+        let (field_name, value) = field
+        match field_name:
+            CallSiteIdent(_) -> fail("meta.expr_record requires definition-site field names")
+            _ -> ()
+
+        wire = wire + ident_source(field_name) + "\n" + expr_wire_handle(value)
+    __meta_expr_compose_wire(wire)
+
+fn expr_wire_handle(value: ExprSyntax) -> String:
+    match value:
+        CompilerExprSyntax(handle) -> "${handle.length()}\n" + handle
+
+fn expr_wire_args(args: List(ExprSyntax)) -> String:
+    var wire = "${args.length()}\n"
+    for arg in args:
+        wire = wire + expr_wire_handle(arg)
+    wire
+
+fn __meta_expr_compose_wire(wire: String) -> ExprSyntax:
+    __meta_expr_compose_wire(wire)
 
 pub fn expr_record_update(name: Ident, fields: List((Ident, ExprSyntax)), base: ExprSyntax) -> ExprSyntax:
     __meta_expr_record(name, fields, Some(base))
