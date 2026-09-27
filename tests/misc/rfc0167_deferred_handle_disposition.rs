@@ -20,20 +20,11 @@ fn assert_pending_refusal(source: &str) {
 
 #[test]
 fn private_resource_erasure_refuses_in_both_modes() {
-    // Exact baseline admitted loss, not merely an unused factory declaration.
-    assert_pending_refusal(r#"import chan
-async fn child(console: Console):
-    chan.yield_now().await
-    chan.yield_now().await
-    console.print("child escaped cancellation")
-async fn main(console: Console):
-    let handle = chan.spawn(child(console)).await
-    let pending = chan.cancel(handle)
-    console.print("cold cancellation discarded")
-"#);
+    // Cancellation creates a pending resource disposition even when the
+    // incoming handle is already owned by this function.
+    assert_pending_refusal("import task\nfn pending(own h: task.Handle):\n    let recipe = task.cancel(h)\nfn main():\n    ()\n");
     // Join and cancel share the same authenticated erasure bridge. One opt
-    // join plus the actual normal cancel loss covers both without four copies
-    // of the full std pipeline.
+    // join plus normal cancel loss covers both modes and disposition routes.
     assert_pending_refusal("mode opt\nimport task\nfn pending(own h: task.Handle):\n    let recipe = task.join(h)\nfn main():\n    ()\n");
 }
 

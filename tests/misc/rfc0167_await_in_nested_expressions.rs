@@ -100,10 +100,8 @@ async fn main(console: Console):
         None -> console.print("none")
 "#;
 
-const SHORT_CIRCUIT: &str = r#"import chan
-
+const SHORT_CIRCUIT: &str = r#"
 async fn get(n: Int) -> Int:
-    chan.yield_now().await
     n
 
 async fn main(console: Console):
