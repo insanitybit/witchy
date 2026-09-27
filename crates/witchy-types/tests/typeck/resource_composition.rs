@@ -51,10 +51,8 @@ fn qualifier_erasure_cannot_hide_must_once_or_capability_contracts() {
 #[test]
 fn cancellation_cannot_drop_live_must_or_once_task_captures() {
     for mode in ["", "mode opt\n\n"] {
-        let copyable = format!("{mode}async fn replay(own value: a) -> a:\n    value\n\nasync fn main(console: Console):\n    let answer = replay(7).await\n    console.print(\"${{answer}}\")\n");
-        assert!(checked(&copyable).is_ok(), "a checked concrete replay capture must instantiate: {copyable}");
-        let nested = format!("{mode}async fn replay(own values: List(a)) -> Int:\n    values.length()\n\nasync fn main(console: Console):\n    let answer = replay([1, 2]).await\n    console.print(\"${{answer}}\")\n");
-        assert!(checked(&nested).is_ok(), "a recursively stored generic capture must instantiate: {nested}");
+        let copyable = format!("{mode}async fn replay(own value: a) -> a:\n    value\n\nasync fn replay_list(own values: List(a)) -> Int:\n    values.length()\n\nasync fn main(console: Console):\n    let answer = replay(7).await\n    let length = replay_list([1, 2]).await\n    console.print(\"${{answer}}/${{length}}\")\n");
+        assert!(checked(&copyable).is_ok(), "concrete and recursively stored generic replay captures must instantiate: {copyable}");
         assert_rejected(
             "a generic replay capture cannot instantiate with an affine callable",
             &format!("{mode}async fn replay(own value: a) -> a:\n    value\n\nasync fn main():\n    let callback: once fn() -> Int = once fn(): 7\n    let value = replay(callback).await\n    value()\n"),

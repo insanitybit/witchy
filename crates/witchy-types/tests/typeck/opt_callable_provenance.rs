@@ -212,6 +212,26 @@ pub async fn execute_conditional(choose: Bool) -> Option(Int):
         Some(recipe_value) -> Some(recipe_value.await)
         None -> None
 "#;
+    // Rejection cases need only the producer and relay being rejected. The
+    // complete worker is checked once below for the positive composition.
+    let entry_worker = r#"mode opt
+import task
+
+pub async fn execute(own recipe: task.Task(Int)) -> Int:
+    recipe.await
+
+pub fn relay_callback(callback: fn(own task.Task(Int)) -> task.Task(Int), own recipe: task.Task(Int)) -> task.Task(Int):
+    callback(recipe)
+
+pub async fn execute_option(own recipe: Option(task.Task(Int))) -> Option(Int):
+    match recipe:
+        Some(recipe_value) -> Some(recipe_value.await)
+        None -> None
+
+pub async fn execute_try(own recipe: Option(task.Task(Int))) -> Option(Int):
+    let recipe_value = recipe?
+    Some(recipe_value.await)
+"#;
     let main = r#"import worker
 
 async fn ordinary() -> Int:
@@ -219,14 +239,9 @@ async fn ordinary() -> Int:
 
 async fn main(console: Console):
     let answer = worker.execute(ordinary()).await
-    let _ = worker.execute_indirect(ordinary()).await
-    let _ = worker.execute_local_lambda(ordinary()).await
-    let _ = worker.execute_nested_local_lambda(ordinary()).await
-    let _ = worker.relay_callback(worker.execute, ordinary()).await
-    let _ = worker.execute_nested_pair(((ordinary(), 0), 0)).await
     console.print("${answer}")
 "#;
-    let result = super::source::checked_bundle(vec![("worker", worker), ("main", main)], "main");
+    let result = super::source::checked_bundle(vec![("worker", entry_worker), ("main", main)], "main");
     let error = result.expect_err("a normal recipe cannot acquire opt execution provenance at the call site");
     assert!(error.contains("opt-compatible task value provenance"), "{error}");
 
@@ -240,7 +255,7 @@ async fn main(console: Console):
     console.print("unreachable")
 "#;
     let error = super::source::checked_bundle(
-        vec![("worker", worker), ("main", normal_public_callback_main)], "main",
+        vec![("worker", entry_worker), ("main", normal_public_callback_main)], "main",
     ).expect_err("an opt callback formal cannot receive a normal task through a public relay");
     assert!(error.contains("opt-compatible task value provenance"), "{error}");
 
@@ -255,7 +270,7 @@ async fn main(console: Console):
     console.print("done")
 "#;
     let error = super::source::checked_bundle(
-        vec![("worker", worker), ("main", normal_option_main)], "main",
+        vec![("worker", entry_worker), ("main", normal_option_main)], "main",
     ).expect_err("a sum wrapper cannot erase normal task execution mode");
     assert!(error.contains("opt-compatible task value provenance"), "{error}");
 
@@ -270,6 +285,12 @@ fn projected_callback_recipe() -> task.Task(Int):
 
 fn pair_callback_recipe() -> task.Task(Int):
     worker.relay_pair_callback(worker.pass_pair, (worker.compatible(), 0))
+
+fn identity(own recipe: task.Task(Int)) -> task.Task(Int):
+    recipe
+
+fn choose(flag: Bool, left: fn(own task.Task(Int)) -> task.Task(Int), right: fn(own task.Task(Int)) -> task.Task(Int)) -> fn(own task.Task(Int)) -> task.Task(Int):
+    if flag: left else: right
 
 async fn main(console: Console):
     let answer = worker.execute(worker.compatible()).await
@@ -289,6 +310,8 @@ async fn main(console: Console):
     let opt_conditional_answer = worker.execute_conditional(true).await
     let opt_local_callback_answer = worker.execute_local_callback().await
     let opt_parameter_callback_answer = worker.execute_parameter_callback().await
+    let normal_relay = choose(true, identity, identity)
+    let normal_callback_answer = normal_relay(task.done(7)).await
     console.print("${answer}")
     console.print("${indirect_answer}")
     console.print("${local_lambda_answer}")
@@ -305,6 +328,7 @@ async fn main(console: Console):
     console.print("${opt_conditional_answer}")
     console.print("${opt_local_callback_answer}")
     console.print("${opt_parameter_callback_answer}")
+    console.print("${normal_callback_answer}")
 "#;
     let result = super::source::checked_bundle(vec![("worker", worker), ("main", compatible_main)], "main");
     assert!(result.is_ok(), "{result:?}");
@@ -368,7 +392,7 @@ async fn main(console: Console):
     console.print("unreachable")
 "#;
     let error = super::source::checked_bundle(
-        vec![("worker", worker), ("main", opaque_callback_main)], "main",
+        vec![("worker", entry_worker), ("main", opaque_callback_main)], "main",
     ).expect_err("an ordinary function-value ABI cannot erase an opt task-input requirement");
     assert!(error.contains("callback with an opt task input obligation"), "{error}");
 
@@ -377,20 +401,4 @@ async fn main(console: Console):
         vec![("worker", &propagated_callback_worker), ("main", compatible_main)], "main",
     ).expect_err("early error propagation cannot hide a callback task-input obligation");
     assert!(error.contains("propagate through `?`"), "{error}");
-
-    let ordinary_callback_join = r#"import task
-
-fn identity(own recipe: task.Task(Int)) -> task.Task(Int):
-    recipe
-
-fn choose(flag: Bool, left: fn(own task.Task(Int)) -> task.Task(Int), right: fn(own task.Task(Int)) -> task.Task(Int)) -> fn(own task.Task(Int)) -> task.Task(Int):
-    if flag: left else: right
-
-async fn main(console: Console):
-    let relay = choose(true, identity, identity)
-    let answer = relay(task.done(7)).await
-    console.print("${answer}")
-"#;
-    super::source::checked_bundle(vec![("main", ordinary_callback_join)], "main")
-        .expect("a normal callback join without an opt obligation remains usable");
 }
