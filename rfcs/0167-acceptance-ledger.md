@@ -71,13 +71,16 @@ execution in normal and opt mode. The program-defined helper emits a typed
 `UserBuilder` with a slot and consuming setter for each reflected field, plus
 `build`; the independent output is `Ada/42` and `None` for an omitted setter.
 Adding `email: String` rejects stale two-slot construction; supplying the
-third slot and setter succeeds. The row remains partial for generated-item
-origin audit, qualified imported generation, normal-to-opt generated calls,
-and a direct zero-leak audit of this full builder. `meta.TypeInfo` is now
+third slot and setter succeeds. A normal entry calling the generated methods
+of an opt module gets the same result, while reuse of a `String` consumed by
+an opt setter is refused with an ownership diagnostic. The row remains partial
+for generated-item origin audit, qualified imported generation, and a direct
+zero-leak audit of this full builder. `meta.TypeInfo` is now
 sealed: source construction and record update refuse, while compiler-issued
 `type_info` and derive descriptors cross sealing through an unspellable marker
 restored immediately afterward. The builder witness and explicit forge/update
-negatives pass together. The full gate still needs to establish derive breadth.
+negatives pass together. The full gate passed after sealing, including derive
+coverage.
 
 ## Exact-tip evidence checkpoint
 

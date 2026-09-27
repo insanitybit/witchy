@@ -225,6 +225,39 @@ fn main(console: Console):
         assert!(run.status.success(), "{}", String::from_utf8_lossy(&run.stderr));
         assert_eq!(String::from_utf8_lossy(&run.stdout), "Ada/42\nNone\n");
     }
+
+    let (builder_definition, _) = program.split_once("fn main(console: Console):")
+        .expect("builder source has an entry point");
+    std::fs::write(folder.join("dep.witchy"), format!("mode opt\n{builder_definition}")).unwrap();
+    let entry = r#"import dep
+fn main(console: Console):
+    let complete = dep.UserBuilder(None, None).with_name("Ada").with_age(42).build()
+    let incomplete = dep.UserBuilder(None, None).with_name("Ada").build()
+    match complete:
+        Some(user) -> console.print("${user.name}/${user.age}")
+        None -> console.print("missing")
+    match incomplete:
+        Some(_) -> console.print("unexpected")
+        None -> console.print("None")
+"#;
+    std::fs::write(&source, entry).unwrap();
+    let normal_to_opt = Command::new(env!("CARGO_BIN_EXE_witchy")).arg(&source).output().unwrap();
+    assert!(normal_to_opt.status.success(), "{}", String::from_utf8_lossy(&normal_to_opt.stderr));
+    assert_eq!(String::from_utf8_lossy(&normal_to_opt.stdout), "Ada/42\nNone\n");
+
+    let reused_name = entry.replace(
+        "    let complete = dep.UserBuilder(None, None).with_name(\"Ada\")",
+        "    let name = \"Ada\"\n    let complete = dep.UserBuilder(None, None).with_name(name)",
+    ) + "    console.print(name)\n";
+    std::fs::write(&source, reused_name).unwrap();
+    let rejected = Command::new(env!("CARGO_BIN_EXE_witchy")).arg(&source).output().unwrap();
+    assert!(!rejected.status.success(), "normal caller cannot reuse a value consumed by an opt setter");
+    let error = String::from_utf8_lossy(&rejected.stderr);
+    assert!(
+        ["consumed", "moved", "transferred", "ownership", "unique"].iter()
+            .any(|word| error.contains(word)),
+        "{error}",
+    );
 }
 
 #[test]
