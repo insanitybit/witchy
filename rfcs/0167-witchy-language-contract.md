@@ -4,7 +4,7 @@ title: "Witchy syntax and semantics: one language contract"
 status: accepted
 created: 2026-09-16
 superseded-by:
-tracking: "Accepted language contract; not a compiler-completion claim. Implementation gates are in 0167-acceptance-ledger.md. Optimization expansion is deferred."
+tracking: "Accepted language contract; not a compiler-completion claim. Tooling milestone and later safety verification are tracked in 0167-acceptance-ledger.md. Optimization expansion is deferred."
 ---
 
 # RFC-0167: Witchy syntax and semantics
@@ -100,18 +100,31 @@ execution lowers checked source to canonical SafeWIR, validates it, encodes it
 to admitted Wasm, and runs that Wasm. There is no reference interpreter in the
 active build.
 
-Semantic acceptance uses these witnesses, in this order:
+Acceptance uses checked source compiled through validated canonical SafeWIR to
+unoptimized admitted Wasm and executed by the production runtime. Focused tests
+assert the intended values, diagnostics, and effects for representative normal,
+opt, and cross-mode programs. Ownership and authority changes also need focused
+checks at the boundary that grants or rejects them. An independently implemented
+execution oracle, a canonical SafeWIR interpreter, and a separately derived
+expectation for every supported case are not acceptance gates. Optimized Wasm is
+an optional additional comparison and cannot replace production execution.
 
-1. an independent expected value, diagnostic, effect trace, or structural
-   invariant that is not computed by either execution engine;
-2. the validated canonical SafeWIR program encoded as unoptimized admitted Wasm
-   and executed by the production runtime; and
-3. independent structural checks at the affected checker, authority, lowering,
-   ownership, ABI, or encoder boundary.
+The first closeout milestone is **compiler tooling ready**: the canonical
+`check`, `fmt`, compile, and run workflows work for representative programs;
+production compile-time code uses the canonical checked route; typed syntax
+handles support the public generation forms needed by those programs,
+`type_info(T)`, and the reflected Builder example. Unsupported generation forms
+must give a clear error rather than enter through source strings or unchecked
+syntax. The source tree walker is retired after its remaining compiler services
+move to the canonical route or runtime-neutral code. The whole book, example,
+fixture, and external-consumer corpus is not a closeout gate for this milestone.
 
-The independent expectation is primary because executing one artifact cannot
-detect every shared lowering or checker defect. Optimized Wasm is an optional
-additional comparison and cannot replace the unoptimized witness.
+The selected ownership, view, resource, and normal/opt rules remain the language
+contract. Their wider memory-safety and optimization-readiness matrices are
+verified after compiler tooling is ready. This staging grants no permissive
+fallback: an unproved ownership, disposition, or authority path must refuse
+until implemented and checked. Passing the tooling milestone does not mark the
+full RFC implementation complete.
 
 The source tree-walking interpreter is frozen at this decision. It receives no
 new language semantics, including immutable rooted views, and its output is not
@@ -1111,8 +1124,9 @@ Exercise the applicable cases in normal code, opt code, normal-to-opt calls, and
 normal consumers of opt-defined types. Include source-linked boundaries and
 separately compiled interfaces where admitted; missing or incompatible metadata
 must refuse the affected use. Unsupported carriers remain implementation gaps.
-Use independent values, diagnostics, ordered effects, and ownership/suspension
-invariants with admitted unoptimized Wasm and focused structural checks.
+Use representative values, diagnostics, ordered effects, and
+ownership/suspension invariants with admitted unoptimized Wasm and focused
+boundary checks. No second execution oracle is required.
 Optimized execution may corroborate them; it cannot provide missing semantics.
 
 ## 12. Deferred resource lifecycle decisions
@@ -1144,7 +1158,7 @@ operation or implicit execution.
 | Migration and evidence | Account for changed collection APIs, closure captures, retained-view eligibility, error propagation, and ABI. Universal must Tasks propagate obligations into ordinary aggregates. Compare representative normal and opt programs before claiming the usability goals are met. |
 
 These answers must agree across all four contexts in section 11. Test the selected
-semantics against independent expected results and admitted unoptimized Wasm;
+semantics against asserted results and admitted unoptimized Wasm;
 test ownership and authority at their checked boundaries. Performance claims
 require measurements including normal-side preparation, allocation, and copies.
 Source ownership alone proves neither allocation freedom nor a speedup.
