@@ -408,7 +408,7 @@ pub const IMPORT_COUNT: usize = 179;
 
 /// Version of the public `"witchy"` host-import contract.
 /// v15: compiler-session-only bounded fresh-name service.
-pub const WITCHY_ABI_VERSION: u32 = 16;
+pub const WITCHY_ABI_VERSION: u32 = 17;
 
 /// The role an import plays at the host boundary. This classification is part
 /// of the public Wasm ABI: it tells embedders which imports grant authority,
