@@ -16,7 +16,45 @@ pub(in super::super) fn register(linker: &mut Linker<VmState>) -> Result<()> {
     linker.func_wrap("witchy", "compiler_syntax_quote_type_into", quote_into::<TypeCategory>)?;
     linker.func_wrap("witchy", "compiler_syntax_record_type_into", record_type_into)?;
     linker.func_wrap("witchy", "compiler_syntax_expr_leaf_into", expression_leaf_into)?;
+    linker.func_wrap("witchy", "compiler_syntax_type_expr_into", type_expr_into)?;
     Ok(())
+}
+
+fn type_expr_into(mut caller: Caller<'_, VmState>, pointer: i32, length: i32,
+    out: i32, capacity: i32) -> Result<i32> {
+    let memory = memory_of(&mut caller)?;
+    let input = range(memory.data_size(&caller), pointer, length)?;
+    let output = range(memory.data_size(&caller), out, capacity)?;
+    let state = caller.data().compiler_syntax.as_ref()
+        .ok_or_else(|| Error::msg("compiler syntax session unavailable"))?;
+    if input.len() as u64 > state.input_bytes {
+        return Err(Error::msg("reflected type input budget exceeded"));
+    }
+    charge_fuel(&mut caller, input.len() as u64 + 1)?;
+    let ty = witchy_syntax::compiler_session::type_expr_wire::decode(&memory.data(&caller)[input])
+        .map_err(Error::msg)?;
+    let cost = measure_dynamic(&ty).map_err(Error::msg)?;
+    let state = caller.data().compiler_syntax.as_ref().expect("checked session");
+    let required = state.syntax.syntax_handle_byte_len("type").map_err(Error::msg)?;
+    if cost.nodes > state.nodes.remaining() || cost.bytes > state.syntax_bytes.remaining()
+        || required as u64 > state.bytes.remaining() {
+        return Err(Error::msg("compiler syntax arena budget exceeded"));
+    }
+    charge_fuel(&mut caller, cost.work().and_then(|work| work.checked_add(required as u64))
+        .ok_or_else(|| Error::msg("compiler syntax fuel overflow"))?)?;
+    if output.len() < required { return Ok(required as i32); }
+    let state = caller.data_mut().compiler_syntax.as_mut().expect("checked session");
+    state.nodes.charge(cost.nodes).map_err(|_| Error::msg("compiler syntax arena budget exceeded"))?;
+    state.syntax_bytes.charge(cost.bytes).map_err(|_| Error::msg("compiler syntax arena budget exceeded"))?;
+    state.bytes.charge(required as u64).map_err(|_| Error::msg("compiler syntax handle budget exceeded"))?;
+    let handle = state.syntax.next_syntax_handle("type").map_err(Error::msg)?;
+    state.syntax.insert_type(handle.clone(), ty);
+    state.syntax.insert_type_origin(handle.clone(), ComptimeSyntaxOrigin {
+        definition_line: 1, hole_ancestry: Vec::new(),
+    });
+    state.type_costs.insert(handle.clone(), cost);
+    memory.data_mut(&mut caller)[output.start..output.start + required].copy_from_slice(handle.as_bytes());
+    Ok(required as i32)
 }
 
 // This is a length-framed data protocol, not Witchy source. Every type operand

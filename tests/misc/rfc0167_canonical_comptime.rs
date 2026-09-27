@@ -147,6 +147,29 @@ fn admitted_comptime_builds_a_record_from_checked_type_syntax() {
 }
 
 #[test]
+fn admitted_reflected_type_conversion_supplies_checked_record_fields() {
+    struct ResetOptimization;
+    impl Drop for ResetOptimization { fn drop(&mut self) { witchy::opt::set_for_tests(None); } }
+    witchy::opt::set_for_tests(Some(witchy::opt::OptSet::none()));
+    let _reset = ResetOptimization;
+    for mode in ["", "mode opt\n"] {
+        let source = format!("{mode}import meta\ncomptime:\n    let field_ty = meta.type_expr(meta.TNamed(\"Int\", []))\n    emit_item(meta.record_type(meta.ident(\"Builder\"), [(meta.ident(\"value\"), field_ty)]))\nfn main(console: Console):\n    let value = Builder(42)\n    console.print(\"${{value.value}}\")\n");
+        let checked = witchy::canonical_comptime::check_source_bundle(
+            vec![("generator".into(), source.into_bytes())], "generator",
+            ["generator".to_owned()].into_iter().collect(), owners_for("generator"), limits(),
+        ).expect("reflected type syntax enters destination checking");
+        let artifact = witchy_lower::codegen::compile_checked_module_artifact(&checked)
+            .expect_lowered("generated record admits on unoptimized Wasm");
+        let mut runtime = Runtime::batch().unwrap();
+        let mut vm = runtime.spawn_admitted(&artifact,
+            Capabilities { print: true, quiet: true, ..Capabilities::none() }, 64).unwrap();
+        vm.run().unwrap();
+        assert_eq!(vm.output(), ["42"]);
+        assert_eq!(vm.canonical_heap_leaks().unwrap(), Some(0));
+    }
+}
+
+#[test]
 fn canonical_quotation_emits_typed_expression_with_lexical_origin() {
     struct ResetOptimization;
     impl Drop for ResetOptimization { fn drop(&mut self) { witchy::opt::set_for_tests(None); } }

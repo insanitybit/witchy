@@ -27,9 +27,20 @@ fn admitted_original_blocks_feed_checked_successors_in_normal_and_opt() {
     let _reset = ResetOptimization;
     for mode in ["", "mode opt\n"] {
         let source = format!("{mode}comptime:\n    emit_item(quote item:\n        fn answer() -> Int:\n            40\n    )\ncomptime:\n    if answer() == 40:\n        emit_item(quote item:\n            fn result() -> Int:\n                answer() + 2\n        )\nfn main(console: Console):\n    console.print(\"${{result()}}\")\n");
+        let mut sources = vec![("generator".into(), source.into_bytes())];
+        sources.extend(witchy_syntax::linker::STD_MODULES.iter().map(|name| (
+            (*name).to_owned(), std::fs::read(format!("std/{name}.witchy")).unwrap(),
+        )));
+        let workspace = PackageCoordinate::new(PackageSource::Workspace, "test/comptime", "1").unwrap();
+        let toolchain = PackageCoordinate::new(PackageSource::Toolchain, "witchy/std", "1").unwrap();
+        let mut assignments = vec![("generator".into(), ModuleLoadIdentity::new(workspace, ["generator"]).unwrap())];
+        assignments.extend(witchy_syntax::linker::STD_MODULES.iter().map(|name| (
+            (*name).to_owned(), ModuleLoadIdentity::new(toolchain.clone(), ["std", *name]).unwrap(),
+        )));
         let checked = witchy::canonical_comptime::check_source_bundle(
-            vec![("generator".into(), source.into_bytes())], "generator",
-            ["generator".to_owned()].into_iter().collect(), owners(), limits(),
+            sources, "generator",
+            ["generator".to_owned()].into_iter().collect(),
+            AuthenticatedModuleOwners::from_loader_assignments(assignments).unwrap(), limits(),
         ).expect("both original blocks execute in order through admitted unoptimized Wasm");
         let artifact = witchy_lower::codegen::compile_checked_module_artifact(&checked)
             .expect_lowered("generated destination passes ordinary checking and admission");
@@ -131,6 +142,18 @@ fn admitted_type_info_resolves_staged_type_names_before_execution() {
     assert!(
         String::from_utf8_lossy(&value.stderr).contains("type_info operand must be a type name")
     );
+}
+
+#[test]
+fn admitted_reflected_field_types_build_a_typed_record_in_both_modes() {
+    let folder = TempDir::new("admitted-reflected-record-types");
+    let source = folder.join("main.witchy");
+    for mode in ["", "mode opt\n"] {
+        std::fs::write(&source, format!("{mode}import meta\ntype User:\n    name: String\n    age: Int\ncomptime:\n    let info = type_info(User)\n    let name_ty = meta.type_expr(info.fields[0].type_expr)\n    let age_ty = meta.type_expr(info.fields[1].type_expr)\n    emit_item(meta.record_type(meta.ident(\"Mirror\"), [(meta.ident(\"name\"), name_ty), (meta.ident(\"age\"), age_ty)]))\nfn main(console: Console):\n    let value = Mirror(\"Ada\", 42)\n    console.print(\"${{value.name}}/${{value.age}}\")\n")).unwrap();
+        let run = Command::new(env!("CARGO_BIN_EXE_witchy")).arg(&source).output().unwrap();
+        assert!(run.status.success(), "{}", String::from_utf8_lossy(&run.stderr));
+        assert_eq!(String::from_utf8_lossy(&run.stdout), "Ada/42\n");
+    }
 }
 
 #[test]

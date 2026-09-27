@@ -11,11 +11,12 @@ pub const COMPILER_EMIT_ITEM_IMPORT: &str = "compiler_syntax_emit_item";
 pub const COMPILER_QUOTE_TYPE_IMPORT: &str = "compiler_syntax_quote_type_into";
 pub const COMPILER_RECORD_TYPE_IMPORT: &str = "compiler_syntax_record_type_into";
 pub const COMPILER_EXPR_LEAF_IMPORT: &str = "compiler_syntax_expr_leaf_into";
+pub const COMPILER_TYPE_EXPR_IMPORT: &str = "compiler_syntax_type_expr_into";
 
 fn metered(name: &str) -> bool {
     matches!(name, COMPILER_FRESH_IMPORT | COMPILER_QUOTE_EXPR_IMPORT | COMPILER_EMIT_EXPR_IMPORT
         | COMPILER_QUOTE_ITEM_IMPORT | COMPILER_EMIT_ITEM_IMPORT | COMPILER_QUOTE_TYPE_IMPORT
-        | COMPILER_RECORD_TYPE_IMPORT | COMPILER_EXPR_LEAF_IMPORT)
+        | COMPILER_RECORD_TYPE_IMPORT | COMPILER_EXPR_LEAF_IMPORT | COMPILER_TYPE_EXPR_IMPORT)
 }
 
 impl CanonicalAbiCatalog {
@@ -34,7 +35,7 @@ impl CanonicalAbiCatalog {
                 HostMutation::WriteBuffers, ImportAuthentication::CompilerSession)?,
             COMPILER_EMIT_EXPR_IMPORT | COMPILER_EMIT_ITEM_IMPORT => authenticated_import(name, &[I32, I32], &[], signature,
                 vec![read], vec![], HostMutation::ReadOnly, ImportAuthentication::CompilerSession)?,
-            COMPILER_RECORD_TYPE_IMPORT => authenticated_import(name, &[I32, I32, I32, I32], &[I32], signature,
+            COMPILER_RECORD_TYPE_IMPORT | COMPILER_TYPE_EXPR_IMPORT => authenticated_import(name, &[I32, I32, I32, I32], &[I32], signature,
                 vec![read, write], vec![HostResultRole::Value(ValueType::Size)],
                 HostMutation::WriteBuffers, ImportAuthentication::CompilerSession)?,
             _ => return Err("unknown compiler syntax import".into()),

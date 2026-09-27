@@ -1344,7 +1344,8 @@ if capability_imports.contains("build_out_write_at") {
                     witchy_wir::canonical_safewir::COMPILER_EMIT_ITEM_IMPORT,
                     witchy_wir::canonical_safewir::COMPILER_QUOTE_TYPE_IMPORT,
                     witchy_wir::canonical_safewir::COMPILER_RECORD_TYPE_IMPORT,
-                    witchy_wir::canonical_safewir::COMPILER_EXPR_LEAF_IMPORT] {
+                    witchy_wir::canonical_safewir::COMPILER_EXPR_LEAF_IMPORT,
+                    witchy_wir::canonical_safewir::COMPILER_TYPE_EXPR_IMPORT] {
                     if !compiler_imports.contains(name) { continue; }
                     let signature = if name == witchy_wir::canonical_safewir::COMPILER_EXPR_LEAF_IMPORT {
                         push_import_signature(vec![text, text, text], vec![ValueType::Size], Some(2))?
@@ -1352,7 +1353,8 @@ if capability_imports.contains("build_out_write_at") {
                         | witchy_wir::canonical_safewir::COMPILER_QUOTE_ITEM_IMPORT
                         | witchy_wir::canonical_safewir::COMPILER_QUOTE_TYPE_IMPORT) {
                         push_import_signature(vec![text, ValueType::Int, text], vec![ValueType::Size], Some(2))?
-                    } else if name == witchy_wir::canonical_safewir::COMPILER_RECORD_TYPE_IMPORT {
+                    } else if matches!(name, witchy_wir::canonical_safewir::COMPILER_RECORD_TYPE_IMPORT
+                        | witchy_wir::canonical_safewir::COMPILER_TYPE_EXPR_IMPORT) {
                         push_import_signature(vec![text, text], vec![ValueType::Size], Some(1))?
                     } else { push_import_signature(vec![text], Vec::new(), None)? };
                     catalog = catalog.with_compiler_syntax_import(name, signature, string_layout)
@@ -13472,18 +13474,22 @@ impl FunctionLowerer<'_> {
         let import = *self.host_imports.compiler.get(import_name)
             .ok_or(CanonicalLoweringError::UnsupportedExpression("missing compiler service import"))?;
         let layout = self.string_layout_id()?;
-        if witchy_syntax::intrinsics::is_meta_record_type_wire(name) {
+        if witchy_syntax::intrinsics::is_meta_record_type_wire(name)
+            || witchy_syntax::intrinsics::is_meta_type_expr_wire(name) {
             let wire = self.lower_string_argument(&args[0])?;
             let input = self.string_slice_argument(wire, layout)?;
             let handle = self.lower_bounded_host_result(import, vec![input])?;
             let source = self.expression_storage_type(expression)?;
             let shape = scalar_aggregate_shape(&source, self.definitions)
-                .ok_or(CanonicalLoweringError::UnsupportedExpression("compiler record carrier"))?;
-            let (index, variant) = shape.variant("meta.ItemSyntax")
-                .ok_or(CanonicalLoweringError::UnsupportedExpression("compiler record constructor"))?;
+                .ok_or(CanonicalLoweringError::UnsupportedExpression("compiler syntax carrier"))?;
+            let variant_name = if witchy_syntax::intrinsics::is_meta_type_expr_wire(name) {
+                "meta.CompilerTypeSyntax"
+            } else { "meta.ItemSyntax" };
+            let (index, variant) = shape.variant(variant_name)
+                .ok_or(CanonicalLoweringError::UnsupportedExpression("compiler syntax constructor"))?;
             if shape.variants.len() != 1 || variant.arity != 1
                 || !Self::is_string_type(&shape.fields[variant.first_field]) {
-                return Err(CanonicalLoweringError::UnsupportedExpression("compiler record payload"));
+                return Err(CanonicalLoweringError::UnsupportedExpression("compiler syntax payload"));
             }
             return self.lower_aggregate_for_source(&source, &shape, index, vec![handle]);
         }
@@ -20462,6 +20468,9 @@ fn compiler_service_import(name: &str) -> Option<(&'static str, usize)> {
     }
     if witchy_syntax::intrinsics::is_meta_record_type_wire(name) {
         return Some((witchy_wir::canonical_safewir::COMPILER_RECORD_TYPE_IMPORT, 1));
+    }
+    if witchy_syntax::intrinsics::is_meta_type_expr_wire(name) {
+        return Some((witchy_wir::canonical_safewir::COMPILER_TYPE_EXPR_IMPORT, 1));
     }
     if witchy_syntax::intrinsics::is_meta_expr_leaf(name) {
         return Some((witchy_wir::canonical_safewir::COMPILER_EXPR_LEAF_IMPORT, 2));
