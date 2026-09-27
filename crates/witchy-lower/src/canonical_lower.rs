@@ -5888,13 +5888,21 @@ impl FunctionLowerer<'_> {
     /// a temporary released by placement.
     fn lower_let_pattern(&mut self, pattern: &Pattern, value: &Expr) -> Result<(), CanonicalLoweringError> {
         let value_type = self.expression_storage_type(value)?;
-        if witchy_canonical_source::storage::affine_storage_shape(&value_type, self.definitions).is_some() {
-            return Err(CanonicalLoweringError::UnsupportedExpression(
-                "affine let pattern requires consuming field proof",
-            ));
-        }
         let lowered = self.lower_expr(value)?;
-        for (name, bound) in self.lower_match_pattern(lowered, pattern, &value_type)? {
+        let bindings = if witchy_canonical_source::storage::affine_storage_shape(
+            &value_type, self.definitions,
+        ).is_some() {
+            let shape = witchy_canonical_source::storage::consuming_aggregate_pattern_shape(
+                &value_type, pattern, self.definitions,
+            ).ok_or(CanonicalLoweringError::UnsupportedExpression(
+                "affine let pattern lacks consuming field proof",
+            ))?;
+            self.retire_consumed_aggregate_parameter(value, lowered);
+            self.lower_consuming_aggregate_pattern(lowered, pattern, &value_type, &shape)?
+        } else {
+            self.lower_match_pattern(lowered, pattern, &value_type)?
+        };
+        for (name, bound) in bindings {
             self.bind_lexical(&name, bound, false)?;
         }
         Ok(())

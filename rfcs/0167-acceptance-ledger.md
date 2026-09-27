@@ -1867,6 +1867,18 @@ consuming proof, affine record spread, affine let patterns, and affine `?`
 remain fail closed. These focused checks are structural evidence only: no
 hand-computed admitted-Wasm and zero-leak audit was added, and no A-O row closes.
 
+Affine consuming-pattern composition (implemented but unverified, 2026-09-26):
+one recursive source pattern judgment now drives both match-arm and irrefutable
+let-pattern extraction of affine aggregate fields. Lowering moves each proved
+owned child from a nullable slot and retires the emptied parent; the checker
+retains the exact declared source result through direct calls and transfers
+unique provenance to bound fields. A tuple and a nominal field pattern pass
+focused compiler admission, and the nominal program runs with the expected
+exit value 2. Aliasing the extracted unique field and dropping an affine field
+through a wildcard both refuse. Resource-bearing patterns still require their
+separate must-consume proof. Hand-computed admitted-Wasm and zero-leak evidence
+has not been recorded for these new forms, so no A-O row closes.
+
 ## Optimization-readiness carrier audit
 
 This inventory identifies production carriers already capable of preserving the

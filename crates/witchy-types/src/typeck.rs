@@ -2673,6 +2673,9 @@ impl Checker {
     fn inferred_unique_source_type(&self, expression: &Expr, ty: &Ty) -> Option<ast::Type> {
         match expression {
             Expr::Var(name) => self.unique_binding_type(name),
+            Expr::Call { name, .. }
+                if !self.scopes.iter().any(|scope| scope.contains_key(name)) =>
+                self.fn_source_result_types.get(name).cloned(),
             Expr::Unary { op: UnOp::Move, expr } => self.inferred_unique_source_type(expr, ty),
             Expr::As { ty, .. } => Some(ty.clone()),
             Expr::Tuple(items) => Some(ast::Type::Tuple(
@@ -2739,7 +2742,10 @@ impl Checker {
             // handle contract. Structural extraction instead follows the
             // payload declaration, so ordinary sibling fields stay copyable.
             ast::Type::Qualified(ast::TypeQual::Unique, inner) => match pattern {
-                Pattern::Var(name) => self.authorize_unique_storage_binding(name.clone()),
+                Pattern::Var(name) => {
+                    self.authorize_unique_storage_binding(name.clone());
+                    self.remember_unique_binding_type(name.clone(), declared.clone());
+                }
                 _ => self.authorize_unique_pattern_storage(pattern, inner),
             },
             ast::Type::Qualified(_, inner) | ast::Type::Slice(inner) => {
@@ -2757,6 +2763,7 @@ impl Checker {
                     && self.declared_type_carries_unique_storage(declared)
                 {
                     self.authorize_unique_storage_binding(binding.clone());
+                    self.remember_unique_binding_type(binding.clone(), declared.clone());
                 } else if name.rsplit('.').next() == Some("List")
                     && let (Some(element), Pattern::List { elems, rest }) =
                         (arguments.first(), pattern)
@@ -5847,6 +5854,16 @@ impl Checker {
                     }
                     let value_opt_proof = self.expression_opt_value_proof(value);
                     self.check_pattern(pattern, &vt)?;
+                    if let Some(source) = self.inferred_unique_source_type(value, &vt)
+                        && witchy_canonical_source::storage::affine_aggregate_erased_type(
+                            &source, &self.canonical_definitions,
+                        ) == ty_to_ast(&self.resolve(&vt))
+                        && witchy_canonical_source::storage::consuming_aggregate_pattern_shape(
+                            &source, pattern, &self.canonical_definitions,
+                        ).is_some()
+                    {
+                        self.authorize_unique_pattern_storage(pattern, &source);
+                    }
                     self.remember_pattern_opt_provenance(pattern, value_opt_proof);
                     ty = Ty::Unit;
                 }
@@ -9307,6 +9324,17 @@ impl Checker {
             if let Expr::Var(binding) = scrutinee
                 && let Some(declared) = self.unique_binding_type(binding)
             {
+                // Keep source affine flow strict even for a pattern whose
+                // physical consuming extraction is still unsupported.
+                self.authorize_unique_pattern_storage(&arm.pattern, &declared);
+            } else if let Some(declared) = self.inferred_unique_source_type(scrutinee, &st)
+                && witchy_canonical_source::storage::affine_aggregate_erased_type(
+                    &declared, &self.canonical_definitions,
+                ) == ty_to_ast(&self.resolve(&st))
+                && witchy_canonical_source::storage::consuming_aggregate_pattern_shape(
+                    &declared, &arm.pattern, &self.canonical_definitions,
+                ).is_some()
+            {
                 self.authorize_unique_pattern_storage(&arm.pattern, &declared);
             }
             if let Some(guard) = &arm.guard {
@@ -12438,6 +12466,7 @@ fn run_check_selected(
         fn_exclusive_reference_params: HashMap::new(),
         fn_frozen_value_params: HashMap::new(),
         fn_unique_contracts: HashMap::new(),
+        fn_source_result_types: HashMap::new(),
         fresh_result_fns: HashSet::new(),
         inferred_owner_bindings: vec![HashSet::new()],
         fn_opt_provenance: HashMap::new(),
@@ -12702,6 +12731,13 @@ fn run_check_selected(
                         frozen_result: f.ret.as_ref().is_some_and(is_frozen_value_type),
                     },
                 );
+                if let Some(result) = &f.ret
+                    && witchy_canonical_source::storage::affine_storage_shape(
+                        result, &c.canonical_definitions,
+                    ).is_some()
+                {
+                    c.fn_source_result_types.insert(f.name.clone(), result.clone());
+                }
                 if witchy_canonical_source::source::source_execution_mode(f, &module.modes).is_opt() {
                     c.fn_opt_provenance
                         .insert(f.name.clone(), OptCallableContract::from_function(f));

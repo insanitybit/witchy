@@ -1065,35 +1065,41 @@ pub fn consuming_aggregate_match_shape(
     arms: &[MatchArm],
     definitions: &BTreeMap<String, TypeDef>,
 ) -> Option<ScalarAggregateShape> {
-    if !StoragePlan::classify(ty, definitions, |_| Some(0)).requires_affine_owner_token() {
+    if arms.is_empty() || arms.iter().any(|arm| arm.guard.is_some()
+        || consuming_aggregate_pattern_shape(ty, &arm.pattern, definitions).is_none()) {
         return None;
     }
+    consuming_aggregate_pattern_shape(ty, &arms[0].pattern, definitions)
+}
+
+/// One consuming pattern transfers each affine field to exactly one binding.
+/// Irrefutability remains a separate checker obligation for `let` patterns;
+/// match arms additionally require coverage and an unguarded selected arm.
+pub fn consuming_aggregate_pattern_shape(
+    ty: &Type,
+    pattern: &Pattern,
+    definitions: &BTreeMap<String, TypeDef>,
+) -> Option<ScalarAggregateShape> {
+    affine_storage_shape(ty, definitions)?;
     let shape = scalar_aggregate_shape(ty, definitions)?;
-    if arms.is_empty() || arms.iter().any(|arm| {
-        if arm.guard.is_some() {
-            return true;
+    let (args, first_field, arity) = match pattern {
+        Pattern::Ctor { name, args } | Pattern::AnonCtor { tag: name, args } => {
+            let (_, variant) = shape.variant(name)?;
+            (args, variant.first_field, variant.arity)
         }
-        let (args, first_field, arity) = match &arm.pattern {
-            Pattern::Ctor { name, args } | Pattern::AnonCtor { tag: name, args } => {
-                let Some((_, variant)) = shape.variant(name) else { return true };
-                (args, variant.first_field, variant.arity)
-            }
-            Pattern::Tuple(args) if matches!(ty.unqualified(), Type::Tuple(_))
-                && !shape.tagged && shape.variants.len() == 1
-                && shape.variants[0].name.is_empty() =>
-                (args, 0, shape.fields.len()),
-            _ => return true,
-        };
-        args.len() != arity || args.iter().enumerate().any(|(offset, arg)| {
-            let field = &shape.fields[first_field + offset];
-            match arg {
-                Pattern::Var(name) if name != "_" => false,
-                Pattern::Var(_) | Pattern::Wildcard => StoragePlan::classify(
-                    field, definitions, |_| Some(0),
-                ).requires_affine_owner_token(),
-                _ => true,
-            }
-        })
+        Pattern::Tuple(args) if matches!(ty.unqualified(), Type::Tuple(_))
+            && !shape.tagged && shape.variants.len() == 1
+            && shape.variants[0].name.is_empty() =>
+            (args, 0, shape.fields.len()),
+        _ => return None,
+    };
+    if args.len() != arity || args.iter().enumerate().any(|(offset, arg)| {
+        let field = &shape.fields[first_field + offset];
+        match arg {
+            Pattern::Var(name) if name != "_" => false,
+            Pattern::Var(_) | Pattern::Wildcard => affine_storage_shape(field, definitions).is_some(),
+            _ => true,
+        }
     }) {
         return None;
     }

@@ -204,6 +204,9 @@ pub(super) struct Checker {
     /// Source callable contracts for named functions. Callable identity remains
     /// erased at runtime, so this is checker-only provenance.
     pub(super) fn_unique_contracts: HashMap<String, UniqueCallableContract>,
+    /// Exact checked result storage for named source calls. `Ty` erases
+    /// qualifiers, so consuming patterns recover their field provenance here.
+    pub(super) fn_source_result_types: HashMap<String, ast::Type>,
     /// (RFC-0167) Named functions whose every result is freshly allocated
     /// storage, inferred from their bodies by `infer_fresh_result_fns`. A
     /// `unique` result cannot be declared on the canonical route yet, so
