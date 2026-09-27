@@ -203,51 +203,28 @@ fn channel_handle_refusal_and_owned_gc_result() {
 }
 
 #[test]
-fn mixed_view_and_affine_packet_runs_without_losing_either_child() {
-    use witchy::runtime::{Capabilities, Runtime};
-    witchy::opt::set_for_tests(Some(witchy::opt::OptSet::none()));
-    let _reset = ResetOptimizationOverride;
-
-    let body = r#"
-must type Ticket:
-    Ticket(Int)
-
-must type Packet:
-    Packet(&String, Ticket)
-
-fn consume(own packet: Packet) -> Int:
-    match move packet:
-        Packet(view, ticket) ->
-            match move ticket:
-                Ticket(n) -> n + (*view).length()
-
-async fn main(console: Console):
-    let text = "abc"
-    let packet = Packet(&text, Ticket(7))
-    console.print("${consume(packet)}")
-"#;
-    for mode in ["", "mode opt\n"] {
-        let source = format!("{mode}{body}");
-        let checked = witchy::resolve_std_only_checked(&source)
-            .expect("mixed packet type-checks");
-        let artifact = witchy::codegen::compile_checked_module_artifact(&checked)
-            .expect_lowered("admitted unoptimized mixed packet Wasm");
-        let mut runtime = Runtime::batch().expect("runtime");
-        let mut vm = runtime.spawn_admitted(&artifact,
-            Capabilities { print: true, quiet: true, ..Capabilities::none() }, 128,
-        ).expect("admitted mixed packet launch");
-        vm.run().expect("mixed packet execution");
-        assert_eq!(vm.output(), vec!["10"], "mode {mode:?}");
-        assert_eq!(vm.canonical_heap_leaks().expect("ownership audit"), Some(0), "mode {mode:?}");
-    }
-}
-
-#[test]
-fn normal_caller_transfers_opt_defined_mixed_packet_without_losing_children() {
+fn mixed_view_and_affine_packets_compose_across_modes_and_modules() {
     use witchy::runtime::{Capabilities, Runtime};
     use witchy_types::runtime_type::{AuthenticatedModuleOwners, ModuleLoadIdentity, PackageCoordinate, PackageSource};
     witchy::opt::set_for_tests(Some(witchy::opt::OptSet::none()));
     let _reset = ResetOptimizationOverride;
+
+    let packet_module = r#"
+must type Ticket:
+    Ticket(Int)
+
+must type MixedPacket:
+    MixedPacket(&String, Ticket)
+
+pub fn make(view: &String, n: Int) -> MixedPacket:
+    MixedPacket(view, Ticket(n))
+
+pub fn consume(own packet: MixedPacket) -> Int:
+    match move packet:
+        MixedPacket(view, ticket) ->
+            match move ticket:
+                Ticket(n) -> n + (*view).length()
+"#;
 
     let worker = r#"mode opt
 must type Ticket:
@@ -275,10 +252,14 @@ pub fn consume_wrapped(own envelope: Envelope) -> Int:
     match move envelope:
         Envelope(packet) -> consume(packet)
 "#;
-    let main = r#"import worker
+    let main = r#"import normal_packet
+import opt_packet
+import worker
 
 async fn main(console: Console):
     let text = "abc"
+    console.print("${normal_packet.consume(normal_packet.make(&text, 7))}")
+    console.print("${opt_packet.consume(opt_packet.make(&text, 7))}")
     let packet = worker.make(&text, 7)
     console.print("${worker.consume(packet)}")
     let nested = worker.wrap(worker.make(&text, 9))
@@ -288,7 +269,7 @@ async fn main(console: Console):
         .expect("workspace coordinate");
     let toolchain = PackageCoordinate::new(PackageSource::Toolchain, "witchy/std", "0.1.0")
         .expect("toolchain coordinate");
-    let mut assignments = ["main", "worker"].map(|name| (
+    let mut assignments = ["main", "normal_packet", "opt_packet", "worker"].map(|name| (
         name.to_owned(), ModuleLoadIdentity::new(workspace.clone(), [name]).expect("user owner"),
     )).to_vec();
     assignments.extend(witchy_syntax::linker::STD_MODULES.iter().map(|name| (
@@ -296,12 +277,14 @@ async fn main(console: Console):
     )));
     let owners = AuthenticatedModuleOwners::from_loader_assignments(assignments).expect("owners");
     let checked = witchy_types::pipeline::link_checked_authenticated_from_source_bundle_with_user_modules(
-        vec![("worker".into(), worker.as_bytes().to_vec()),
+        vec![("normal_packet".into(), packet_module.as_bytes().to_vec()),
+             ("opt_packet".into(), format!("mode opt\n{packet_module}").into_bytes()),
+             ("worker".into(), worker.as_bytes().to_vec()),
              ("main".into(), main.as_bytes().to_vec())],
         "main", witchy_syntax::linker::ComptimeExpander::new(
             |_, _, _| Ok(witchy_syntax::origin::OriginTable::default())),
-        &std::collections::HashSet::from(["main".into(), "worker".into()]), owners,
-    ).expect("normal caller and opt-defined packet type-check");
+        &std::collections::HashSet::from(["main".into(), "normal_packet".into(), "opt_packet".into(), "worker".into()]), owners,
+    ).expect("mixed view and affine packet paths type-check across modes and modules");
     let artifact = witchy::codegen::compile_checked_module_artifact(&checked)
         .expect_lowered("admitted unoptimized cross-mode mixed packet Wasm");
     let mut runtime = Runtime::batch().expect("runtime");
@@ -309,6 +292,6 @@ async fn main(console: Console):
         Capabilities { print: true, quiet: true, ..Capabilities::none() }, 128,
     ).expect("admitted mixed packet launch");
     vm.run().expect("cross-mode mixed packet execution");
-    assert_eq!(vm.output(), vec!["10", "12"]);
+    assert_eq!(vm.output(), vec!["10", "10", "10", "12"]);
     assert_eq!(vm.canonical_heap_leaks().expect("ownership audit"), Some(0));
 }
