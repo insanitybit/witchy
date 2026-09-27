@@ -164,6 +164,17 @@ impl ComptimeSourceSession {
     pub fn check_expanded_with_prior_output(
         &self, prior: &[PriorComptimeBlockOutput],
     ) -> Result<CheckedModule, PipelineError> {
+        self.check_expanded_with_display_module(prior).map(|(checked, _)| checked)
+    }
+
+    /// Retain the source-shaped selected module for compiler tooling after
+    /// the same destination check used by ordinary compilation succeeds.
+    /// Prior output remains data until the compiler-owned caller authenticates
+    /// every admitted predecessor before reaching this method.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn check_expanded_with_display_module(
+        &self, prior: &[PriorComptimeBlockOutput],
+    ) -> Result<(CheckedModule, Module), PipelineError> {
         let blocks = self.original_block_items();
         if blocks.len() != prior.len() || prior.iter().zip(&blocks)
             .any(|(output, index)| output.original_item != *index) {
@@ -193,7 +204,8 @@ impl ComptimeSourceSession {
         let (checked, typed) = link_checked_with(modules, &self.selected, expand, LinkMode::Production,
             Some(&self.user_modules), true, Some(self.owners.clone()))?;
         let typed = typed.ok_or_else(|| refuse("comptime destination did not retain checked source"))?;
-        finish_canonical_source(checked, typed, digest, PrecompiledDeclarationEnvironment::default())
+        let checked = finish_canonical_source(checked, typed, digest, PrecompiledDeclarationEnvironment::default())?;
+        Ok((checked, expanded))
     }
 }
 

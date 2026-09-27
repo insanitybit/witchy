@@ -7,6 +7,12 @@ use witchy_lower::codegen::{self, LoweringOutcome};
 use witchy_runtime::runtime::{Runtime, comptime::ComptimeLimits};
 use witchy_types::pipeline::{CheckedModule, ComptimeSourceSession, PriorComptimeBlockOutput};
 use witchy_types::runtime_type::AuthenticatedModuleOwners;
+use witchy_syntax::ast::Module;
+
+struct CheckedExpansion {
+    checked: CheckedModule,
+    selected_module: Module,
+}
 
 /// Fixed compiler-service limits for production source loading. Each original
 /// block receives a fresh zero-grant session with these independent ceilings.
@@ -28,6 +34,26 @@ pub fn check_source_bundle(
     user_modules: HashSet<String>, owners: AuthenticatedModuleOwners,
     limits: ComptimeLimits,
 ) -> Result<CheckedModule, String> {
+    run_source_bundle(sources, selected, user_modules, owners, limits).map(|output| output.checked)
+}
+
+/// Return only source-shaped expansion produced by admitted execution and
+/// accepted by ordinary destination checking. This is presentation data, not
+/// a checked-source witness that can be submitted to lowering.
+pub fn expand_source_bundle(
+    sources: Vec<(String, Vec<u8>)>, selected: &str,
+    user_modules: HashSet<String>, owners: AuthenticatedModuleOwners,
+    limits: ComptimeLimits,
+) -> Result<Module, String> {
+    run_source_bundle(sources, selected, user_modules, owners, limits)
+        .map(|output| output.selected_module)
+}
+
+fn run_source_bundle(
+    sources: Vec<(String, Vec<u8>)>, selected: &str,
+    user_modules: HashSet<String>, owners: AuthenticatedModuleOwners,
+    limits: ComptimeLimits,
+) -> Result<CheckedExpansion, String> {
     let session = ComptimeSourceSession::from_source_bundle(sources, selected, user_modules, owners)
         .map_err(|error| error.to_string())?;
     let mut prior = Vec::new();
@@ -52,5 +78,7 @@ pub fn check_source_bundle(
             items: outcome.items.into_iter().map(|emitted| (emitted.item, emitted.origin)).collect(),
         });
     }
-    session.check_expanded_with_prior_output(&prior).map_err(|error| error.to_string())
+    let (checked, selected_module) = session.check_expanded_with_display_module(&prior)
+        .map_err(|error| error.to_string())?;
+    Ok(CheckedExpansion { checked, selected_module })
 }

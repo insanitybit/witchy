@@ -677,6 +677,18 @@ fn sibling_module_owner(
 pub(crate) fn expand_file_source(path: &str) -> Result<String, String> {
     let (mut modules, entry_stem, _) =
         load_file_modules(path, &std::collections::HashMap::new())?;
+    if modules.iter().find(|(name, _)| name == &entry_stem)
+        .is_some_and(|(_, module)| module.items.iter().any(|item| matches!(item, ast::Item::Comptime(_)))) {
+        let entry_path = std::path::Path::new(path);
+        let owner = workspace_module_owner(entry_path, &entry_stem)?;
+        let (sources, entry, user_modules, owners) = load_file_modules_authenticated(
+            path, &HashMap::new(), owner, &HashMap::new(),
+        )?;
+        let expanded = witchy::canonical_comptime::expand_source_bundle(
+            sources, &entry, user_modules, owners, witchy::canonical_comptime::source_limits(),
+        )?;
+        return Ok(format::module(&expanded, &[]));
+    }
     let names: Vec<String> = modules.iter().map(|(name, _)| name.clone()).collect();
     for (i, name) in names.iter().enumerate() {
         let siblings: Vec<(String, ast::Module)> = modules
@@ -1219,6 +1231,23 @@ mod tests {
         assert!(expanded.contains("pub fn generated() -> Int:\n    42\n"), "{expanded}");
         assert!(expanded.contains("fn main(console: Console):"), "{expanded}");
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn expand_file_checks_ordered_original_blocks_before_display() {
+        let dir = unique_dir("expand_admitted_comptime");
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("app.witchy");
+        std::fs::write(&file, "comptime:\n    emit_item(quote item:\n        fn answer() -> Int:\n            40\n    )\ncomptime:\n    emit_item(quote item:\n        fn result() -> Int:\n            answer() + 2\n    )\nfn main(console: Console):\n    console.print(\"${result()}\")\n").unwrap();
+        let expanded = expand_file_source(file.to_str().unwrap()).expect("admitted expansion");
+        assert!(!expanded.contains("comptime:"), "{expanded}");
+        assert!(expanded.contains("fn answer() -> Int:"), "{expanded}");
+        assert!(expanded.contains("fn result() -> Int:"), "{expanded}");
+
+        std::fs::write(&file, "comptime:\n    emit_item(quote item:\n        fn answer() -> Int:\n            \"wrong\"\n    )\nfn main() -> Int:\n    0\n").unwrap();
+        let error = expand_file_source(file.to_str().unwrap()).expect_err("invalid output must refuse");
+        assert!(error.contains("Int") && error.contains("String"), "{error}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
