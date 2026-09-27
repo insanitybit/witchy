@@ -393,29 +393,28 @@ fn main(console: Console):
     );
 
     let imported = program
-        .replacen("type User:\n    name: String\n    age: Int\n", "from dep import User\n", 1)
+        .replacen("type User:\n    name: String\n    age: Int\n", "from dep_normal import User\n", 1)
         .replacen(
             "    for item in builder_items(type_info(User)):\n        emit_item(item)",
-            "    for item in builder_items(type_info(dep.User)):\n        emit_item(item)\n    for item in builder_items_for(type_info(dep.Account), meta.type_expr(meta.TNamed(\"dep.Account\", [])), meta.type_expr(meta.TNamed(\"Option\", [meta.TNamed(\"dep.Account\", [])]))):\n        emit_item(item)",
+            "    for item in builder_items(type_info(dep_normal.User)):\n        emit_item(item)\n    for item in builder_items_for(type_info(dep_normal.Account), meta.type_expr(meta.TNamed(\"dep_normal.Account\", [])), meta.type_expr(meta.TNamed(\"Option\", [meta.TNamed(\"dep_normal.Account\", [])]))):\n        emit_item(item)\n    for item in builder_items(type_info(dep_opt.OptUser)):\n        emit_item(item)\n    for item in builder_items_for(type_info(dep_opt.OptAccount), meta.type_expr(meta.TNamed(\"dep_opt.OptAccount\", [])), meta.type_expr(meta.TNamed(\"Option\", [meta.TNamed(\"dep_opt.OptAccount\", [])]))):\n        emit_item(item)",
             1,
         );
     let imported = imported.replace(
         "fn main(console: Console):\n    let complete = UserBuilder(None, None).with_name(\"Ada\").with_age(42).build()",
-        "fn main(console: Console):\n    let account = AccountBuilder(None, None).with_name(\"Grace\").with_age(37).build()\n    let complete = UserBuilder(None, None).with_name(\"Ada\").with_age(42).build()",
+        "fn main(console: Console):\n    let account = AccountBuilder(None, None).with_name(\"Grace\").with_age(37).build()\n    let opt_complete = OptUserBuilder(None, None).with_name(\"Beth\").with_age(28).build()\n    let opt_incomplete = OptUserBuilder(None, None).with_name(\"Beth\").build()\n    let opt_account = OptAccountBuilder(None, None).with_name(\"Ivy\").with_age(33).build()\n    let complete = UserBuilder(None, None).with_name(\"Ada\").with_age(42).build()",
     ).replace(
         "        None -> console.print(\"None\")\n",
-        "        None -> console.print(\"None\")\n    match account:\n        Some(value) -> console.print(\"${value.name}/${value.age}\")\n        None -> console.print(\"missing account\")\n",
+        "        None -> console.print(\"None\")\n    match account:\n        Some(value) -> console.print(\"${value.name}/${value.age}\")\n        None -> console.print(\"missing account\")\n    match opt_complete:\n        Some(value) -> console.print(\"${value.name}/${value.age}\")\n        None -> console.print(\"missing opt user\")\n    match opt_incomplete:\n        Some(_) -> console.print(\"unexpected opt user\")\n        None -> console.print(\"None\")\n    match opt_account:\n        Some(value) -> console.print(\"${value.name}/${value.age}\")\n        None -> console.print(\"missing opt account\")\n",
     );
-    let imported = format!("import dep\n{imported}");
-    for dependency_mode in ["", "mode opt\n"] {
-        std::fs::write(folder.join("dep.witchy"), format!(
-            "{dependency_mode}type User:\n    name: String\n    age: Int\ntype Account:\n    name: String\n    age: Int\n",
-        )).unwrap();
-        std::fs::write(&source, &imported).unwrap();
-        let run = Command::new(env!("CARGO_BIN_EXE_witchy")).arg(&source).output().unwrap();
-        assert!(run.status.success(), "{}", String::from_utf8_lossy(&run.stderr));
-        assert_eq!(String::from_utf8_lossy(&run.stdout), "Ada/42\nNone\nGrace/37\n");
-    }
+    let imported = format!("import dep_normal\nimport dep_opt\nfrom dep_opt import OptUser, OptAccount\n{imported}");
+    std::fs::write(folder.join("dep_normal.witchy"),
+        "type User:\n    name: String\n    age: Int\ntype Account:\n    name: String\n    age: Int\n").unwrap();
+    std::fs::write(folder.join("dep_opt.witchy"),
+        "mode opt\ntype OptUser:\n    name: String\n    age: Int\ntype OptAccount:\n    name: String\n    age: Int\n").unwrap();
+    std::fs::write(&source, &imported).unwrap();
+    let run = Command::new(env!("CARGO_BIN_EXE_witchy")).arg(&source).output().unwrap();
+    assert!(run.status.success(), "{}", String::from_utf8_lossy(&run.stderr));
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "Ada/42\nNone\nGrace/37\nBeth/28\nNone\nIvy/33\n");
 }
 
 #[test]
