@@ -2029,8 +2029,9 @@ in normal and opt modes, tuple and nominal unique fields, annotated locals,
 move aliases, and own nominal arguments pass focused compiler admission; the
 normal Option probe also executes. A near miss that tries to wrap an ordinary
 owned list as unique refuses before admitted Wasm. Field projection without
-consuming proof, affine record spread, affine let patterns, and affine `?`
-remain fail closed. These focused checks are structural evidence only: no
+consuming proof remains fail closed. Affine record spread, let patterns, and
+`?` have narrower later checkpoints below; this original carrier probe does
+not establish their general support. These focused checks are structural evidence only: no
 hand-computed admitted-Wasm and zero-leak audit was added, and no A-O row closes.
 
 Affine consuming-pattern composition (implemented but unverified, 2026-09-26):
@@ -2056,6 +2057,19 @@ returning the expected lengths 2 and 4 respectively; a second use after an
 alias transfer and reuse of a consumed `?` operand both refuse. Other unproved
 operand origins remain fail closed.
 These checks do not include a zero-leak audit or the full A-O matrix.
+
+Affine record reconstruction (bounded admitted execution, 2026-09-26): a
+shared positional consuming-field transfer now drives record spread as well
+as aggregate patterns. Checked field storage determines the moved child, and
+overrides are evaluated before the base. A single unoptimized-Wasm witness
+in normal and opt modes combines direct and nested generic must fields,
+replacement of a non-must unique String, a qualified nested override, and
+an overwritten GC owner. Its independently computed result is 739432824;
+both executions produced that result and ended with zero canonical heap
+allocations. Source checks reject overwriting a must-bearing field, reusing
+a moved base or child, and duplicate override labels. Constructor qualifier
+inference and opaque borrowed-field reads remain separate fail-closed gaps.
+This evidence closes neither arbitrary aggregate ownership nor an A-O row.
 
 Typed affine list construction (implemented but unverified, 2026-09-26):
 checked result and local storage ascriptions now reach each list literal's
