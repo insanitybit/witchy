@@ -1615,9 +1615,12 @@ fn lower_expanded_source(
     let mut lowered_modules = Vec::with_capacity(checked_modules.len());
     let mut async_surface = crate::async_surface::LinkedAsyncSurface::default();
     for ((module_name, checked), view_fns) in checked_modules.into_iter().zip(view_fns) {
-        let cache_key = lowered_source_cache_key(&module_name, checked.module(), &view_fns);
-        if async_stage == AsyncLoweringStage::Runtime
-            && let Some(cached) = lowered_source_cache().lock().unwrap().get(&cache_key).cloned()
+        // Typed-source projections never consult or populate the runtime cache.
+        // Avoid formatting their complete AST into an unused cache key.
+        let cache_key = (async_stage == AsyncLoweringStage::Runtime)
+            .then(|| lowered_source_cache_key(&module_name, checked.module(), &view_fns));
+        if let Some(key) = &cache_key
+            && let Some(cached) = lowered_source_cache().lock().unwrap().get(key).cloned()
         {
             origin_tables.insert(module_name.clone(), cached.origin_table);
             lowered_modules.push((module_name, cached.module));
@@ -1688,7 +1691,7 @@ fn lower_expanded_source(
                 ),
                 location: None,
             })?;
-        if async_stage == AsyncLoweringStage::Runtime {
+        if let Some(cache_key) = cache_key {
             let mut cache = lowered_source_cache().lock().unwrap();
             if cache.len() >= 64 {
                 cache.clear();

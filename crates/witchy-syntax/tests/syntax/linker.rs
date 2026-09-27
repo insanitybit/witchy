@@ -3,6 +3,34 @@
     use witchy_syntax::ast::*;
 
     #[test]
+    fn typed_source_projection_stays_distinct_from_warm_runtime_cache() {
+        let input = witchy_syntax::parser::parse_module(
+            "async fn answer() -> Int:\n    7\n\nfn main():\n    ()\n",
+        ).unwrap();
+        let observed = std::cell::Cell::new(false);
+        link_canonical_with_origins_and_source_check(
+            vec![("main".into(), input)], "main", noop_expand,
+            LinkMode::Production, |source| {
+                let runtime = source.runtime_projection().unwrap();
+                assert_eq!(runtime, source.runtime_projection().unwrap());
+                let typed = source.typed_async_projection().unwrap();
+                assert_eq!(typed, source.typed_async_projection().unwrap());
+                assert!(typed.module.items.iter().any(|item| matches!(item,
+                    Item::Function(function) if function.name == "main.answer" && function.is_async
+                )), "typed projection must preserve source async syntax");
+                assert!(!runtime.items.iter().any(|item| matches!(item,
+                    Item::Function(function) if function.is_async
+                )), "runtime projection must lower async syntax");
+                assert_eq!(runtime, source.runtime_projection().unwrap(),
+                    "typed projection must not replace runtime cache entries");
+                observed.set(true);
+                Ok(())
+            },
+        ).unwrap();
+        assert!(observed.get());
+    }
+
+    #[test]
     fn std_registry_matches_bundled_source_files() {
         let std_dir = std::path::PathBuf::from(
             std::env::var_os("CARGO_MANIFEST_DIR").expect("Cargo sets CARGO_MANIFEST_DIR for tests"),
