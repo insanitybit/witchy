@@ -2195,8 +2195,9 @@ case-specific list admission path. The current structural carrier contract
 refuses its `List(task.Handle)` scheduler value: `CloneRange` and `CloneRef`
 can duplicate a must-consume handle without a move-only list proof. The
 former large oracle fixture was removed by the interpreter-build cleanup;
-`sealed_task_handles::affine_handle_list_has_no_cloneable_safewir_carrier`
-now asserts the compiler refusal. The former three-leg result is historical
-evidence for the old route, not acceptance evidence for the current route.
-Restoring this path requires authenticated move-only list operations and
-fresh admitted-Wasm and zero-leak evidence.
+The former `sealed_task_handles` refusal assertion covered that 2026-09-25
+state. RFC-0167's later recursive affine list work admits a checked move-only
+`List(task.Handle)` carrier; the test now checks that admission. The former
+three-leg result remains historical evidence for the old route. The new
+carrier still needs admitted-Wasm execution and zero-leak evidence before it
+can close an acceptance row.

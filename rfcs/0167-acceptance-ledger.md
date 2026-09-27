@@ -1474,9 +1474,9 @@ shared-reference roots. The recursive nominal key is now derived once in
 canonical source and checked before physical resolution; nonaggregate paths
 refuse an opaque nominal key. The existing recursive-layout authority test,
 128 WIR unit cases, and the 33 previously regressed compiler cases passed
-after those checks. `List(task.Handle)`
-remains refused because list clone operations can duplicate a must-consume
-handle; move-only list operations need a separate proof. These compile and
+after those checks. At this checkpoint, `List(task.Handle)` was refused
+because list clone operations could duplicate a must-consume handle; the
+move-only list proof recorded below supersedes that refusal. These compile and
 smoke results are implementation checks, not hand-computed admitted-Wasm and
 zero-leak evidence. No A–O row closes from this checkpoint.
 
