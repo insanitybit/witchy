@@ -158,6 +158,14 @@ expected `42` with zero owned heap leaks. Opt async functions awaiting another
 opt task still fail task-behavior admission in equivalent hand-written source,
 so this does not establish nested opt task provenance or close row M.
 
+Row M update (2026-09-27): `meta.expr_method_call` now composes a sealed
+current-session receiver and argument handles with a validated method name.
+The admitted host constructs a method-call AST; ordinary destination checking
+resolves dispatch. A generated function calls `"abc".length()` and prints the
+independently expected `3` on admitted unoptimized Wasm in normal and opt
+mode, with zero owned heap leaks. Row M remains partial for other syntax
+constructors and installed consumers.
+
 Row R update (2026-09-27): admitted `meta.type_expr`, typed parameter and
 expression-body function items, inherent method items, and `meta.expr_try`
 composition are merged. `program_defined_builder_uses_type_info_in_both_modes`

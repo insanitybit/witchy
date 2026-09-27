@@ -5,6 +5,7 @@
 pub enum Composition {
     Apply { callee: String, args: Vec<String> },
     Call { name: String, args: Vec<String> },
+    MethodCall { receiver: String, method: String, args: Vec<String> },
     Field { name: String, base: String },
     Record { name: String, fields: Vec<(String, String)> },
     TypedRecord { target: String, fields: Vec<(String, String)> },
@@ -77,6 +78,7 @@ pub fn decode(bytes: &[u8]) -> Result<Composition, String> {
     let value = match reader.line()? {
         "A" => Composition::Apply { callee: reader.handle()?, args: reader.args()? },
         "C" => Composition::Call { name: reader.identifier()?, args: reader.args()? },
+        "J" => Composition::MethodCall { receiver: reader.handle()?, method: reader.identifier()?, args: reader.args()? },
         "F" => Composition::Field { name: reader.identifier()?, base: reader.handle()? },
         "R" => {
             let name = reader.identifier()?;
@@ -159,6 +161,9 @@ impl Composition {
                 })
             }
             Self::Call { name, args } => Ok(Expr::Call { name, args: arguments(args, &mut resolve)? }),
+            Self::MethodCall { receiver, method, args } => Ok(Expr::MethodCall {
+                receiver: Box::new(resolve(&receiver)?), method, args: arguments(args, &mut resolve)?,
+            }),
             Self::Field { name, base } => Ok(Expr::Field { base: Box::new(resolve(&base)?), field: name }),
             Self::Record { name, fields } => {
                 let fields = fields.into_iter().map(|(field, handle)|

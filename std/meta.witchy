@@ -340,7 +340,7 @@ pub fn expr_lambda(params: List(ParamSyntax), ret: Option(TypeSyntax), body: Exp
     __meta_expr_lambda(params, ret, body)
 
 pub fn expr_method_call(receiver: ExprSyntax, method: Ident, args: List(ExprSyntax)) -> ExprSyntax:
-    __meta_expr_method_call(receiver, method, args)
+    __meta_expr_compose_wire("J\n" + expr_wire_handle(receiver) + ident_source(method) + "\n" + expr_wire_args(args))
 
 pub fn expr_qualified_call(module: Ident, name: Ident, args: List(ExprSyntax)) -> ExprSyntax:
     __meta_expr_qualified_call(module, name, args)
