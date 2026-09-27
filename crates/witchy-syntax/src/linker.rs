@@ -2629,6 +2629,7 @@ where
     // slip past the name-keyed check (BUG-313, fail-closed). Modules are still
     // unmerged here, so each item knows its home module.
     check_sealing(&modules, &origin_tables, mode, entry)?;
+    restore_compiler_type_info(&mut modules);
 
     let reference_bearing = reference_bearing_type_names(&modules);
     let non_rooted = non_rooted_reference_type_names(&modules);
@@ -3976,6 +3977,38 @@ fn inherent_method_symbol(im: &ImplDef, method: &str) -> String {
 
 /// constructor name (bare or canonical `module.Ctor`) -> (home module, is_capability).
 type SealMap = HashMap<String, (String, bool)>;
+
+// Reflection and derive insert this unspellable marker after parsing source.
+// Restore the ordinary constructor only once user-written constructors have
+// passed the sealing check; subsequent type checking sees the real TypeInfo.
+fn restore_compiler_type_info(modules: &mut [(String, Module)]) {
+    fn restore(body: &mut Block) {
+        crate::ast::visit::visit_block_mut(body, &mut |expression| {
+            if let Expr::Call { name, args } = expression
+                && name == "@compiler:type-info"
+            {
+                *expression = Expr::Ctor {
+                    name: "meta.TypeInfo".into(),
+                    args: std::mem::take(args),
+                };
+            }
+            Ok::<_, ()>(())
+        }).expect("compiler type-info restoration is infallible");
+    }
+    for (_, module) in modules {
+        for item in &mut module.items {
+            match item {
+                Item::Function(function) => restore(&mut function.body),
+                Item::Impl(implementation) => {
+                    for method in &mut implementation.methods {
+                        restore(&mut method.body);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+}
 
 fn check_sealing(
     modules: &[(String, Module)],

@@ -217,7 +217,8 @@ fn check_reflectable_type(ty: &Type) -> Result<(), String> {
     }
 }
 
-/// Build the `meta.TypeInfo(...)` constructor expression describing `t`.
+/// Build compiler-issued type metadata. The unspellable call is restored to a
+/// constructor only after the source sealing check has run.
 pub(crate) fn type_info_expr(t: &TypeDef) -> Expr {
     let s = |v: &str| Expr::Str(v.to_string());
     let str_list = |xs: &[String]| Expr::List(xs.iter().map(|x| Expr::Str(x.clone())).collect());
@@ -256,8 +257,8 @@ pub(crate) fn type_info_expr(t: &TypeDef) -> Expr {
             })
             .collect()
     };
-    Expr::Ctor {
-        name: "meta.TypeInfo".into(),
+    Expr::Call {
+        name: "@compiler:type-info".into(),
         args: vec![
             s(&t.name),
             Expr::Ctor {

@@ -256,6 +256,22 @@ fn admitted_type_info_uses_imported_definition_identity_across_modes() {
 }
 
 #[test]
+fn type_info_descriptor_cannot_be_forged_or_rewritten() {
+    let folder = TempDir::new("sealed-type-info");
+    let source = folder.join("main.witchy");
+    for program in [
+        "import meta\ntype User:\n    name: String\ncomptime:\n    let fake = meta.TypeInfo(\"User\", meta.TypeRecord, [], [], [])\n    emit_item(quote item:\n        fn answer() -> Int:\n            42\n    )\nfn main() -> Int:\n    answer()\n",
+        "import meta\ntype User:\n    name: String\ncomptime:\n    var info = type_info(User)\n    info.name = \"Other\"\n    emit_item(quote item:\n        fn answer() -> Int:\n            42\n    )\nfn main() -> Int:\n    answer()\n",
+    ] {
+        std::fs::write(&source, program).unwrap();
+        let run = Command::new(env!("CARGO_BIN_EXE_witchy")).arg(&source).output().unwrap();
+        assert!(!run.status.success(), "TypeInfo authority must survive source checking");
+        let error = String::from_utf8_lossy(&run.stderr);
+        assert!(error.contains("sealed") && error.contains("TypeInfo"), "{error}");
+    }
+}
+
+#[test]
 fn admitted_comptime_helper_looks_up_prior_emitted_type() {
     let folder = TempDir::new("admitted-comptime-helper-type-info");
     let source = folder.join("main.witchy");

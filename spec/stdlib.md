@@ -2774,7 +2774,7 @@ One constructor of a sum type: its name and positional payload types.
 
 - `VariantInfo { name: String, field_type_exprs: List(TypeExpr) }`
 
-#### `type TypeInfo`
+#### `sealed type TypeInfo`
 
 A type's structure. `fields` is populated for records and `variants` for sums; both are empty for an uninhabited fieldless declaration.
 

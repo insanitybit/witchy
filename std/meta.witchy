@@ -945,7 +945,7 @@ type VariantInfo:
 
 // A type's structure. `fields` is populated for records and `variants` for sums;
 // both are empty for an uninhabited fieldless declaration.
-type TypeInfo:
+sealed type TypeInfo:
     name: String
     kind: TypeKind
     params: List(String)
