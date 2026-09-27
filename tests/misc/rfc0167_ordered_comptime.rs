@@ -222,6 +222,26 @@ fn main(console: Console):
             "generator", ["generator".to_owned()].into_iter().collect(),
             owners(), witchy::canonical_comptime::source_limits(),
         ).expect("reflected builder enters ordinary destination checking");
+        let generated_origins = checked.module().items.iter().enumerate().filter_map(|(index, item)| {
+            let is_builder = match item {
+                witchy_syntax::ast::Item::Type(ty) => ty.name.ends_with("UserBuilder"),
+                witchy_syntax::ast::Item::Impl(implementation) =>
+                    implementation.type_name.ends_with("UserBuilder"),
+                _ => false,
+            };
+            is_builder.then(|| (
+                index,
+                checked.module().item_lines.get(index).copied().unwrap_or(0),
+                checked.origins().origin_for_item(index).map(|entry| (
+                    entry.origin.definition.start.line,
+                    entry.origin.invocation.start.line,
+                )),
+            ))
+        }).collect::<Vec<_>>();
+        assert_eq!(generated_origins.len(), 2, "{generated_origins:?}");
+        assert!(generated_origins.iter().all(|(_, _, origin)| matches!(origin, Some((definition, invocation))
+            if *definition > 1 && *invocation > 1)),
+            "builder items need source origins: {generated_origins:?}");
         let artifact = witchy_lower::codegen::compile_checked_module_artifact(&checked)
             .expect_lowered("generated builder admits on unoptimized Wasm");
         let mut runtime = Runtime::batch().unwrap();

@@ -397,7 +397,7 @@ impl ComptimeSourceSession {
         }
         let (_, original) = self.modules.iter().find(|(name, _)| name == &self.selected)
             .expect("selected raw module retained");
-        let expanded = materialize_prior(original, prior, true, false);
+        let (expanded, emitted_origins) = materialize_prior_with_origins(original, prior, true, false);
         let modules = self.modules.iter().map(|(name, module)| (
             name.clone(), if name == &self.selected { expanded.clone() } else { module.clone() },
         )).collect::<Vec<_>>();
@@ -420,8 +420,9 @@ impl ComptimeSourceSession {
         }
         let digest = *hash.finalize().as_bytes();
         let expand = ComptimeExpander::with_sibling_request(require_expansion_free, |_| false);
-        let (checked, typed) = link_checked_with(modules, entry, expand, LinkMode::Production,
+        let (mut checked, typed) = link_checked_with(modules, entry, expand, LinkMode::Production,
             Some(&self.user_modules), true, Some(self.owners.clone()))?;
+        retain_emitted_origins(&mut checked, &self.selected, &emitted_origins);
         let typed = typed.ok_or_else(|| refuse("comptime destination did not retain checked source"))?;
         let checked = finish_canonical_source(checked, typed, digest, PrecompiledDeclarationEnvironment::default())?;
         Ok((checked, display))
@@ -530,9 +531,52 @@ fn materialize_prior(
     module: &Module, prior: &[PriorComptimeBlockOutput], keep_main: bool,
     retain_comptime_helpers: bool,
 ) -> Module {
+    materialize_prior_with_origins(module, prior, keep_main, retain_comptime_helpers).0
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn retain_emitted_origins(
+    checked: &mut CheckedModule, selected: &str,
+    emitted: &[Option<(ComptimeSyntaxOrigin, u32)>],
+) {
+    use witchy_syntax::origin::{ExpansionOrigin, HoleOrigin, SourceSpan};
+    let Some(mapping) = checked.linked.source_item_maps.get(selected) else { return; };
+    for (source_index, provenance) in emitted.iter().enumerate() {
+        let Some((syntax_origin, site_line)) = provenance else { continue; };
+        // Host item constructors use line 0 or 1 when they have no lexical
+        // source location. Attribute those items to the original block site.
+        let definition_line = if syntax_origin.definition_line > 1 {
+            syntax_origin.definition_line
+        } else { *site_line };
+        let origin = ExpansionOrigin {
+            definition: SourceSpan::line(selected, definition_line),
+            invocation: SourceSpan::line(selected, *site_line),
+            hole_ancestry: syntax_origin.hole_ancestry.iter().map(|hole| HoleOrigin {
+                category: hole.category,
+                definition: SourceSpan::line(selected, hole.definition_line),
+                invocation: SourceSpan::line(selected, hole.invocation_line),
+            }).collect(),
+        };
+        if let Some(targets) = mapping.get(source_index) {
+            for &target in targets {
+                if checked.linked.origins.origin_for_item(target).is_none() {
+                    if let Some(item) = checked.linked.module.items.get(target) {
+                        checked.linked.origins.record_item_tree(selected, target, item, origin.clone());
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn materialize_prior_with_origins(
+    module: &Module, prior: &[PriorComptimeBlockOutput], keep_main: bool,
+    retain_comptime_helpers: bool,
+) -> (Module, Vec<Option<(ComptimeSyntaxOrigin, u32)>>) {
     fn append_output(
         prepared: &mut Module, prior: &[PriorComptimeBlockOutput], cursor: &mut usize,
         site: ComptimeBlockSite, retain_comptime_helpers: bool,
+        site_line: u32, origins: &mut Vec<Option<(ComptimeSyntaxOrigin, u32)>>,
     ) {
         let Some(output) = prior.get(*cursor).filter(|output| output.site == site) else { return; };
         let parent_output = *cursor;
@@ -540,29 +584,34 @@ fn materialize_prior(
         for (emitted_item, (generated, origin)) in output.items.iter().enumerate() {
             if matches!(generated, Item::Comptime(_)) {
                 append_output(prepared, prior, cursor,
-                    ComptimeBlockSite::Generated { parent_output, emitted_item }, retain_comptime_helpers);
+                    ComptimeBlockSite::Generated { parent_output, emitted_item }, retain_comptime_helpers,
+                    origin.definition_line.max(site_line), origins);
             } else if retain_comptime_helpers
                 || !matches!(generated, Item::Function(function) if function.comptime_only) {
                 prepared.items.push(generated.clone());
                 prepared.item_lines.push(origin.definition_line);
+                origins.push(Some((origin.clone(), site_line)));
             }
         }
     }
     let mut prepared = module.clone();
     prepared.items.clear();
     prepared.item_lines.clear();
+    let mut origins = Vec::new();
     let mut cursor = 0;
     for (index, original) in module.items.iter().enumerate() {
         if matches!(original, Item::Comptime(_)) {
             append_output(&mut prepared, prior, &mut cursor,
-                ComptimeBlockSite::Original(index), retain_comptime_helpers);
+                ComptimeBlockSite::Original(index), retain_comptime_helpers,
+                module.item_lines.get(index).copied().unwrap_or(0), &mut origins);
         } else if (keep_main || !matches!(original, Item::Function(function) if function.name == "main"))
             && (retain_comptime_helpers || !matches!(original, Item::Function(function) if function.comptime_only)) {
             prepared.items.push(original.clone());
             prepared.item_lines.push(module.item_lines.get(index).copied().unwrap_or(0));
+            origins.push(None);
         }
     }
-    prepared
+    (prepared, origins)
 }
 
 #[cfg(not(target_arch = "wasm32"))]

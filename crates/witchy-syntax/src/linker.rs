@@ -1096,6 +1096,9 @@ pub use crate::expansion::ComptimeExpander;
 pub struct LinkedModule {
     pub module: Module,
     pub origins: crate::origin::OriginTable,
+    /// Source item positions to final linked item positions, retained for
+    /// compiler-owned post-link provenance such as admitted comptime output.
+    pub source_item_maps: HashMap<String, Vec<Vec<usize>>>,
     pub(crate) async_surface: crate::async_surface::LinkedAsyncSurface,
     /// Complete linker module-key set, including compiler-pulled modules that
     /// contribute functions but no nominal declarations. Authenticated loaders
@@ -3068,6 +3071,7 @@ where
     Ok(LinkedModule {
         module,
         origins,
+        source_item_maps: origin_item_maps,
         async_surface,
         module_names,
         declarations,

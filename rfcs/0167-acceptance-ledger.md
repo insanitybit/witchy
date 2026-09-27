@@ -80,8 +80,12 @@ produce `Ada/42` and `None`. With only `import dep`, the helper accepts typed
 `dep.User` and `Option(dep.User)` heads and uses `meta.expr_record_type` to
 construct the qualified nominal, again passing with normal and opt-defined
 dependencies. The full builder also passes direct admitted unoptimized Wasm
-execution with a zero-owned-leak audit in normal and opt mode. The row remains
-partial for generated-item origin audit. `meta.TypeInfo` is now
+execution with a zero-owned-leak audit in normal and opt mode. The admitted
+builder witness now also audits persistent origins on the generated record and
+inherent impl after linking: each has a source definition and original
+`comptime:` invocation line. Host constructors that supply only a placeholder
+definition line use that original block line; finer grained builder expression
+locations are not claimed by this check. `meta.TypeInfo` is now
 sealed: source construction and record update refuse, while compiler-issued
 `type_info` and derive descriptors cross sealing through an unspellable marker
 restored immediately afterward. The builder witness and explicit forge/update
