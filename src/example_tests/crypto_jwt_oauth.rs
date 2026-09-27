@@ -265,23 +265,25 @@ fn main(console: Console, argv: List(String)):
         let multi_wrong = sign_rs256(&kp, r#"{"iss":"https://accounts.google.com","aud":["myclient","other"],"azp":"other","sub":"u3","nbf":0,"exp":9999}"#);
         // Multi-audience including us, azp ABSENT: rejected.
         let multi_missing = sign_rs256(&kp, r#"{"iss":"https://accounts.google.com","aud":["myclient","other"],"sub":"u4","nbf":0,"exp":9999}"#);
-        // audience = "myclient", now = 1000.
-        let src = "import jwt\nimport json\nimport list\nfn main(console: Console, argv: List(String)):\n    let token = list.at(argv, 0)\n    let key = list.at(argv, 1)\n    let issuer = list.at(argv, 2)\n    match jwt.verify_oidc(token, key, issuer, \"myclient\", 1000):\n        Ok(claims) -> console.print(json.get_string(claims, \"sub\").unwrap_or(\"?\"))\n        Err(e) -> console.print(jwt.jwt_error_message(e))\n";
-        let run = |tok: &str| -> Vec<String> {
-            let args = vec![tok.to_owned(), pk_hex.clone(), iss.to_owned()];
-            let interp = link_run_args(src, args.clone());
-            assert_eq!(interp, run_on_wasm_args(src, args), "backends agree");
-            interp
-        };
-        assert_eq!(run(&single), vec!["u1".to_string()], "single-audience token needs no azp");
-        assert_eq!(run(&multi_ok), vec!["u2".to_string()], "multi-audience with matching azp is admitted");
-        let azp_err = "JWT `azp` mismatch: a multi-audience OIDC token must name this client as the authorized party".to_string();
-        assert_eq!(run(&multi_wrong), vec![azp_err], "azp naming a co-audience is rejected");
-        assert_eq!(
-            run(&multi_missing),
-            vec!["JWT payload is missing `azp`".to_string()],
-            "multi-audience with no azp is rejected as malformed"
-        );
+        // Audience = "myclient", now = 1000. Run all claims through one actor per
+        // backend so this boundary test pays setup and Wasm compilation once.
+        let src = "import jwt\nimport json\nimport list\nfn subject_or_error(token: String, key: String, issuer: String) -> String:\n    match jwt.verify_oidc(token, key, issuer, \"myclient\", 1000):\n        Ok(claims) -> json.get_string(claims, \"sub\").unwrap_or(\"?\")\n        Err(e) -> jwt.jwt_error_message(e)\n\nfn main(console: Console, argv: List(String)):\n    console.print(subject_or_error(list.at(argv, 0), list.at(argv, 4), list.at(argv, 5)))\n    console.print(subject_or_error(list.at(argv, 1), list.at(argv, 4), list.at(argv, 5)))\n    console.print(subject_or_error(list.at(argv, 2), list.at(argv, 4), list.at(argv, 5)))\n    console.print(subject_or_error(list.at(argv, 3), list.at(argv, 4), list.at(argv, 5)))\n";
+        let args = vec![
+            single,
+            multi_ok,
+            multi_wrong,
+            multi_missing,
+            pk_hex,
+            iss.to_owned(),
+        ];
+        let expected = [
+            "u1",
+            "u2",
+            "JWT `azp` mismatch: a multi-audience OIDC token must name this client as the authorized party",
+            "JWT payload is missing `azp`",
+        ];
+        assert_eq!(link_run_args(src, args.clone()), expected, "interpreter results");
+        assert_eq!(run_on_wasm_args(src, args), expected, "compiled Wasm results");
     }
 
     /// `jwt.rsa_key_for_kid` distinguishes malformed issuer metadata from a
