@@ -133,23 +133,18 @@ pub(super) fn validate<S: ModuleStage>(
                     // the `&Int` opaque owner is retained into an owner field,
                     // and a token-carried whole-root view (`&String`, a record,
                     // a scalar List) is retained into a managed environment
-                    // field. The token arm is bound to exactly those whole-root
-                    // payloads, as the plain closure check binds it. The exact
-                    // tuple-root family has no admitted capture fact yet.
+                    // field. The token arm uses the checked retained-root
+                    // representation, as the plain closure check does.
                     // Legacy Borrow/BorrowMut types never reach this arm
                     // because the source witness is required to be View.
                     || rooted_view && !(matches!((capture.value_type, capture.storage, capture.transfer),
                         (ValueType::Gc(_), CaptureStorage::OwnerField(_), CaptureTransfer::CloneManaged))
                         || matches!((capture.value_type, capture.storage, capture.transfer),
                             (ValueType::Ref(_), CaptureStorage::EnvironmentField(_), CaptureTransfer::CloneManaged))
-                            && super::authority::is_direct_rooted_view_whole_root(original.checked_type(), &records)
-                            && !matches!(original.checked_type(),
-                                witchy_syntax::ast::Type::Qualified(witchy_syntax::ast::TypeQual::View, inner)
-                                    if matches!(witchy_canonical_source::carrier::CarrierElement::retained_structural_root(inner, &records),
-                                        Some(witchy_canonical_source::carrier::CarrierElement::Tuple(_))))
-                            && !matches!(original.checked_type(),
-                                witchy_syntax::ast::Type::Qualified(witchy_syntax::ast::TypeQual::View, inner)
-                                    if witchy_canonical_source::aggregates::is_inline_scalar_view_payload(inner))
+                            && matches!(witchy_canonical_source::storage::StoragePlan::classify(
+                                original.checked_type(), &records, |_| Some(0)),
+                                witchy_canonical_source::storage::StoragePlan::RootedView(
+                                    witchy_canonical_source::rooted_view::RootedViewStorage::RetainedRoot(_)))
                         // A `&Float`/`&Bool`/`&Duration` view is its value
                         // (`ScalarValue`), so its capture is a copied scalar
                         // environment field, as in the plain closure check.

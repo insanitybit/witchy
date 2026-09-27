@@ -1101,7 +1101,8 @@ Other structurally proven forms, including `&Dict(String, List(Int))` and
 `&(List(Int), String)`, are implemented but await durable admitted-Wasm and
 zero-leak evidence. Qualified or view-valued children without this ownership
 proof remain refused. Region-born roots cannot escape through these views;
-tuple-view closure capture remains unsupported.
+closure capture of a retained tuple root uses its checked snapshot and layout
+proof and is implemented but unverified for leak evidence.
 
 An owned `List(T)` requires an authenticated clone and release operation for
 copyable `T`. Move-only `List(T)` values instead require a recursive checked
@@ -1302,7 +1303,8 @@ Whole-root tuple views use the same recursive carrier proof for every field.
 The retained tuple root owns its managed children. The original
 `&(Int, String)` case has admitted Wasm and zero-leak evidence; newly admitted
 field combinations remain implemented but unverified. Qualifiers inside a
-field and closure capture of tuple views remain unsupported.
+field remains unsupported. A closure may capture a proved tuple root view by
+value; its checked source identity and retained-root layout must match.
 
 Closure witnesses preserve a qualified scalar-place view captured from a
 checked direct immutable root, through immutable aliases and proved tuple

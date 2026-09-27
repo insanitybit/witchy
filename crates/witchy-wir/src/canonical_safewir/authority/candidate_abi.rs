@@ -329,18 +329,15 @@ fn validate_candidate_abi_bindings_with<S: ModuleStage>(
                 ) || (
                     // A whole-root view (`&String`, a record or sum, a scalar
                     // List) is its retained object token, so its capture is a
-                    // managed reference slot. The exact tuple-root family has no
-                    // separately checked closure-capture witness yet.
+                    // managed reference slot. The checked rooted-storage plan
+                    // selects the candidate class; source/layout correspondence
+                    // below still proves the particular retained root.
                     matches!(actual, super::super::ValueType::Ref(_))
                         && matches!(capture.transfer(), witchy_canonical_source::closure::ClosureCaptureTransfer::RootedViewByValue)
-                        && is_direct_rooted_view_whole_root(capture.checked_type(), &records)
-                        && !matches!(capture.checked_type(),
-                            witchy_syntax::ast::Type::Qualified(witchy_syntax::ast::TypeQual::View, inner)
-                                if matches!(witchy_canonical_source::carrier::CarrierElement::retained_structural_root(inner, &records),
-                                    Some(witchy_canonical_source::carrier::CarrierElement::Tuple(_))))
-                        && !matches!(capture.checked_type(),
-                            witchy_syntax::ast::Type::Qualified(witchy_syntax::ast::TypeQual::View, inner)
-                                if witchy_canonical_source::aggregates::is_inline_scalar_view_payload(inner))
+                        && matches!(witchy_canonical_source::storage::StoragePlan::classify(
+                            capture.checked_type(), &records, |_| Some(0)),
+                            witchy_canonical_source::storage::StoragePlan::RootedView(
+                                witchy_canonical_source::rooted_view::RootedViewStorage::RetainedRoot(_)))
                 ) || (
                     // A `&Float`/`&Bool`/`&Duration` view is its value
                     // (`ScalarValue`), so its capture is a copied scalar slot.

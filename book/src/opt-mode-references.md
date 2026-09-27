@@ -214,8 +214,8 @@ Whole-root tuple views use a recursive checked ownership proof for every
 field. The view retains the tuple root and its managed children. The original
 `&(Int, String)` case has admitted Wasm and zero-leak evidence; newly generic
 field combinations remain implemented but unverified. Qualified or
-view-valued fields without a carrier, and closure capture of tuple views,
-remain refused.
+view-valued fields without a carrier remain refused. A closure can capture a
+proved tuple root view by value; this path still awaits leak evidence.
 
 Non-packed `Option`, `Result`, and declared aggregate roots derive their view
 identity from recursive storage proofs and the exact checked declaration
@@ -325,13 +325,14 @@ pass the recursive owned-list proof and SafeWIR validates their physical
 slots. Existing String-key scalar witnesses retain their snapshots after
 owner updates. Newly generic combinations such as `&Dict(String, List(Int))`
 remain implemented but unverified. Qualified or view-valued children without
-an ownership proof, region-born root escape, and dictionary-view closure
-capture remain refused.
+an ownership proof and region-born root escape remain refused. A closure may
+capture a proved dictionary root view by value; that capture awaits leak
+evidence.
 
 Whole tuple views likewise retain their old root after the owner is replaced.
 The proven `&(Int, String)` case covers direct calls and returns; newly generic
 field combinations await durable semantic and leak evidence. Region-born root
-escape and tuple-view closure capture remain refused.
+escape remains refused. A closure may retain a proved tuple root snapshot.
 
 Normal source may use the same view syntax and call view-bearing exports. When
 a separately compiled boundary lacks authenticated carrier metadata, it fails

@@ -1487,8 +1487,7 @@ classifier. An entry-module template stays in the canonical item inventory
 but cannot mint a concrete closure witness; its checked specialized instance
 supplies that witness. A temporary opt CLI program with an `own` generic
 capture specialized to `Int` printed the independently expected `5` on
-admitted Wasm; the equivalent call-scoped `let` capture refused. Tuple-root
-view closure capture still fails closed at candidate ABI admission. The
+admitted Wasm; the equivalent call-scoped `let` capture refused. The
 checker capture path now uses the shared recursive replay judgment for
 concrete functions in the canonical executable scope. The previous explicit
 view-capture shape whitelist is removed. Capture checks with inference
@@ -1504,6 +1503,17 @@ reachable authority bypass. An argument-transforming recursive capture now
 fails at the finite snapshot-proof limit instead of silently acquiring a
 copyable closure. These smokes have no zero-leak audit, so no A–O
 row closes.
+
+Retained structural-root closure capture (implemented but unverified,
+2026-09-26): the checked capture witness, lowerer owner transfer, and both
+SafeWIR capture admission sites now use the same retained-root representation
+class. The former tuple-specific refusal is removed. Temporary normal and
+opt `&(Int, String)` closure captures pass admitted unoptimized Wasm; a
+normal snapshot survives replacement of its source tuple and returns the
+hand-computed 14. `&Dict(String, Int)` and
+`&Dict(String, Bool)` captures also pass admission. Exact checked type encoding,
+transfer, and physical layout correspondence remain required. No zero-leak
+audit or durable Wasm witness is recorded, so no A-O row closes.
 
 Row G stored-view containment (implemented but unverified, 2026-09-26):
 whole-record-root eligibility and aggregate view-field classification now
