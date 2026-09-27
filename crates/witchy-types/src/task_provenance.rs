@@ -1223,6 +1223,34 @@ fn analyze_task_behavior(
             _ => None,
         })
         .collect();
+    // Summary lookup reads only names from direct calls and function values.
+    // A summary change therefore requires another pass only through bodies
+    // that mention that name. Scan nested lambdas too: their bodies can read
+    // the same summaries when analyzed with the enclosing function. Duplicate
+    // declaration names keep the original full scan because later inserts
+    // overwrite earlier entries in the name-keyed summary map.
+    let mut names = HashSet::new();
+    let selective = functions
+        .iter()
+        .all(|function| names.insert(function.name.as_str()));
+    let mut dependents = BTreeMap::<String, BTreeSet<usize>>::new();
+    if selective {
+        for (index, function) in functions.iter().enumerate() {
+            let mut referenced = BTreeSet::new();
+            witchy_syntax::ast::visit::visit_block(&function.body, &mut |expression| {
+                match expression {
+                    Expr::Call { name, .. } | Expr::Var(name) => {
+                        referenced.insert(name.clone());
+                    }
+                    _ => {}
+                }
+                Ok::<(), TypeError>(())
+            })?;
+            for name in referenced {
+                dependents.entry(name).or_default().insert(index);
+            }
+        }
+    }
     let mut summaries = BTreeMap::new();
     // A recursive value producer can construct an unbounded symbolic result
     // (for example, an iterator whose step contains the next iterator). Its
@@ -1232,20 +1260,41 @@ fn analyze_task_behavior(
     let mut widened = BTreeSet::new();
     let mut converged = false;
     for _round in 0..=functions.len() {
+        let mut dirty = (0..functions.len()).collect::<BTreeSet<_>>();
         // A unary recursive result reaches the depth boundary on round 128;
         // the following round observes the stable truncated child.
         for _ in 0..=128 {
             let mut next = summaries.clone();
-            for function in &functions {
+            let mut changed = BTreeSet::new();
+            for (index, function) in functions.iter().enumerate() {
+                if !dirty.contains(&index) {
+                    continue;
+                }
                 let mut summary = analyze_function(module, table, &definitions, &summaries, function, false, deferred_task_role, export_declarations)?.0;
-                if widened.contains(&function.name) { summary.result = summary.result.invalidated(); }
+                if widened.contains(&function.name) {
+                    summary.result = summary.result.invalidated();
+                }
+                let differs = next.get(&function.name) != Some(&summary);
                 next.insert(function.name.clone(), summary);
+                if differs {
+                    changed.insert(function.name.clone());
+                }
             }
             if next == summaries {
                 converged = true;
                 break;
             }
             summaries = next;
+            if selective {
+                dirty = changed
+                    .into_iter()
+                    .filter_map(|name| dependents.get(&name))
+                    .flat_map(|users| users.iter().copied()).collect();
+                if dirty.is_empty() {
+                    converged = true;
+                    break;
+                }
+            }
         }
         if converged { break; }
         let mut growing = BTreeSet::new();
