@@ -11952,15 +11952,6 @@ impl FunctionLowerer<'_> {
     /// variant `index` with `payload`: the tag (for a sum type), the
     /// variant's slots, and a zero in every other slot so the object is
     /// fully initialized.
-    fn lower_aggregate(
-        &mut self,
-        shape: &ScalarAggregateShape,
-        index: usize,
-        payload: Vec<ValueId>,
-    ) -> Result<ValueId, CanonicalLoweringError> {
-        self.lower_aggregate_with_source(None, shape, index, payload)
-    }
-
     fn lower_aggregate_for_source(
         &mut self,
         source_type: &Type,
@@ -11968,19 +11959,7 @@ impl FunctionLowerer<'_> {
         index: usize,
         payload: Vec<ValueId>,
     ) -> Result<ValueId, CanonicalLoweringError> {
-        self.lower_aggregate_with_source(Some(source_type), shape, index, payload)
-    }
-
-    fn lower_aggregate_with_source(
-        &mut self,
-        source_type: Option<&Type>,
-        shape: &ScalarAggregateShape,
-        index: usize,
-        payload: Vec<ValueId>,
-    ) -> Result<ValueId, CanonicalLoweringError> {
-        if let Some(source_type) = source_type
-            && self.closures.layouts.opaque_type(source_type, self.definitions).is_some()
-        {
+        if self.closures.layouts.opaque_type(source_type, self.definitions).is_some() {
             return self.lower_opaque_aggregate(source_type, index, payload);
         }
         let variant = &shape.variants[index];
@@ -11990,8 +11969,7 @@ impl FunctionLowerer<'_> {
                 Some(self.push_const_int(i64::try_from(index).map_err(|_| CanonicalLoweringError::IdOverflow)?)?)
             } else if slot >= variant.first_field && slot < variant.first_field + variant.arity {
                 let value = payload[slot - variant.first_field];
-                Some(if source_type.is_some()
-                    && witchy_canonical_source::storage::affine_storage_shape(field, self.definitions).is_some()
+                Some(if witchy_canonical_source::storage::affine_storage_shape(field, self.definitions).is_some()
                     && self.is_static_string(value)
                 {
                     self.clone_string_for_storage(value)?
@@ -12003,17 +11981,16 @@ impl FunctionLowerer<'_> {
             };
             values.push(value);
         }
-        let move_only = source_type.is_some_and(|source|
-            witchy_canonical_source::storage::affine_storage_shape(source, self.definitions).is_some());
-        let nullable_fields = source_type.is_some_and(|source|
-            aggregate_uses_nullable_owned_fields(source, self.definitions)) || shape.tagged;
-        self.lower_heap_record_with_slots(source_type, &shape.name, &shape.fields, values, move_only, nullable_fields)
+        let move_only = witchy_canonical_source::storage::affine_storage_shape(source_type, self.definitions).is_some();
+        let nullable_fields = aggregate_uses_nullable_owned_fields(source_type, self.definitions) || shape.tagged;
+        self.lower_heap_record_with_slots(Some(source_type), &shape.name, &shape.fields, values, move_only, nullable_fields)
     }
 
     /// `lower_aggregate` whose reference payloads are fresh owned tokens the
     /// kernel built for this aggregate: they move into their slots.
     fn lower_aggregate_moving(
         &mut self,
+        source_type: &Type,
         shape: &ScalarAggregateShape,
         index: usize,
         payload: Vec<ValueId>,
@@ -12032,7 +12009,7 @@ impl FunctionLowerer<'_> {
             };
             values.push(value);
         }
-        self.lower_heap_record_with_slots(None, &shape.name, &shape.fields, values, true, shape.tagged)
+        self.lower_heap_record_with_slots(Some(source_type), &shape.name, &shape.fields, values, true, shape.tagged)
     }
 
     fn push_zero(&mut self, value_type: ValueType) -> Result<ValueId, CanonicalLoweringError> {
@@ -12435,6 +12412,10 @@ impl FunctionLowerer<'_> {
     fn owned_for_storage(&mut self, value: ValueId, ty: &Type) -> Result<ValueId, CanonicalLoweringError> {
         if matches!(self.values[&value], ValueType::Gc(_)) {
             return self.clone_reference_token(value);
+        }
+        if retained_byte_buffer_view(ty, self.definitions) {
+            self.ensure_string_extent(value)?;
+            return self.clone_string_for_storage(value);
         }
         if matches!(StoragePlan::classify(ty, self.definitions, |_| Some(0)),
             StoragePlan::RootedView(RootedViewStorage::RetainedRoot(_))) {
@@ -13702,7 +13683,10 @@ impl FunctionLowerer<'_> {
             }
             if matches!(element_type, ValueType::Ref(_)) && !move_only {
                 if retained_view_element {
-                    value = self.clone_reference_token(value)?;
+                    let Type::Named(_, arguments) = logical_type.unqualified() else {
+                        return Err(CanonicalLoweringError::UnsupportedListElement(logical_type.clone()));
+                    };
+                    value = self.owned_for_storage(value, &arguments[0])?;
                 } else if self.string_lengths.contains_key(&value) {
                     value = self.clone_string_for_storage(value)?;
                 } else if matches!(item, Expr::Lambda { .. }) && matches!(element_type, ValueType::Ref(_)) {
@@ -13740,7 +13724,7 @@ impl FunctionLowerer<'_> {
                     witchy_wir::canonical_safewir::AccessMode::Write,
                 ),
                 value,
-                transfer: if retained_view_element {
+                transfer: if retained_view_element && !retained_byte_buffer_list_element(&logical_type, self.definitions) {
                     witchy_wir::canonical_safewir::StoreTransfer::CloneShared
                 } else if matches!(element_type, ValueType::Ref(_)) {
                     witchy_wir::canonical_safewir::StoreTransfer::MoveUnique
@@ -14052,7 +14036,10 @@ impl FunctionLowerer<'_> {
         }
         let retained_view_element = retained_root_list_element(&list_type, self.definitions);
         if pointer_elements && !move_only && retained_view_element {
-            value = self.clone_reference_token(value)?;
+            let Type::Named(_, arguments) = list_type.unqualified() else {
+                return Err(CanonicalLoweringError::UnsupportedListElement(list_type.clone()));
+            };
+            value = self.owned_for_storage(value, &arguments[0])?;
         } else if pointer_elements && !move_only && self.string_lengths.contains_key(&value) {
             value = self.clone_string_for_storage(value)?;
         } else if pointer_elements && !move_only && !matches!(value_expression, Expr::List(_)) {
@@ -14105,7 +14092,10 @@ impl FunctionLowerer<'_> {
         }
         if matches!(element_type, ValueType::Ref(_)) {
             if retained_root_list_element(&list_type, self.definitions) {
-                value = self.clone_reference_token(value)?;
+                let Type::Named(_, parameters) = list_type.unqualified() else {
+                    return Err(CanonicalLoweringError::UnsupportedListElement(list_type));
+                };
+                value = self.owned_for_storage(value, &parameters[0])?;
             } else if self.string_lengths.contains_key(&value) {
                 value = self.clone_string_for_storage(value)?;
             } else {
@@ -14531,7 +14521,8 @@ impl FunctionLowerer<'_> {
                 AccessMode::Write,
             ),
             value,
-            transfer: if retained_root_list_element(list_type, self.definitions) {
+            transfer: if retained_root_list_element(list_type, self.definitions)
+                && !retained_byte_buffer_list_element(list_type, self.definitions) {
                 witchy_wir::canonical_safewir::StoreTransfer::CloneShared
             } else if matches!(element_type, ValueType::Ref(_)) {
                 witchy_wir::canonical_safewir::StoreTransfer::MoveUnique
@@ -14810,7 +14801,8 @@ impl FunctionLowerer<'_> {
                 witchy_wir::canonical_safewir::AccessMode::Write,
             ),
             value,
-            transfer: if retained_root_list_element(list_type, self.definitions) {
+            transfer: if retained_root_list_element(list_type, self.definitions)
+                && !retained_byte_buffer_list_element(list_type, self.definitions) {
                 witchy_wir::canonical_safewir::StoreTransfer::CloneShared
             } else if pointer_elements {
                 witchy_wir::canonical_safewir::StoreTransfer::MoveUnique
@@ -16209,7 +16201,7 @@ impl FunctionLowerer<'_> {
                 let (shape, key, value) = self.dictionary_parts(&ty)?;
                 let keys = self.push_empty_value(&Type::Named("List".into(), vec![key]))?;
                 let values = self.push_empty_value(&Type::Named("List".into(), vec![value]))?;
-                self.lower_aggregate_moving(&shape, 0, vec![keys, values])
+                self.lower_aggregate_moving(&ty, &shape, 0, vec![keys, values])
             }
             "dict.length" => {
                 let [operand] = args else {
@@ -16405,6 +16397,7 @@ impl FunctionLowerer<'_> {
     ) -> Result<(ValueId, Option<ValueId>), CanonicalLoweringError> {
         let key_type = key_type.clone();
         let value_type = value_type.clone();
+        let dict_type = Type::Named("Dict".into(), vec![key_type.clone(), value_type.clone()]);
         let key_list = Type::Named("List".into(), vec![key_type.clone()]);
         let value_list = Type::Named("List".into(), vec![value_type.clone()]);
         let (keys, values) = lists;
@@ -16443,7 +16436,7 @@ impl FunctionLowerer<'_> {
         self.push_guard(in_bounds, witchy_wir::canonical_safewir::GuardKind::Bounds);
         let displaced = if let Some(option_shape) = &option_shape {
             let old = self.load_list_element(values, index, element_type)?;
-            Some(self.lower_aggregate(option_shape, 0, vec![old])?)
+            Some(self.lower_aggregate_for_source(&option_type, option_shape, 0, vec![old])?)
         } else {
             None
         };
@@ -16476,7 +16469,7 @@ impl FunctionLowerer<'_> {
             });
             values
         };
-        let rebuilt = self.lower_aggregate_moving(shape, 0, vec![keys, replaced])?;
+        let rebuilt = self.lower_aggregate_moving(&dict_type, shape, 0, vec![keys, replaced])?;
         let mut lanes = vec![rebuilt];
         if let Some(displaced) = displaced {
             lanes.push(displaced);
@@ -16491,10 +16484,10 @@ impl FunctionLowerer<'_> {
         let value = if Self::dict_scalar_value(&value_type) { value }
             else { self.owned_for_storage(value, &value_type)? };
         let grown_values = self.push_owned_element(values, value, &value_list)?;
-        let rebuilt = self.lower_aggregate_moving(shape, 0, vec![grown_keys, grown_values])?;
+        let rebuilt = self.lower_aggregate_moving(&dict_type, shape, 0, vec![grown_keys, grown_values])?;
         let mut lanes = vec![rebuilt];
         if let Some(option_shape) = &option_shape {
-            lanes.push(self.lower_aggregate(option_shape, 1, Vec::new())?);
+            lanes.push(self.lower_aggregate_for_source(&option_type, option_shape, 1, Vec::new())?);
         }
         self.finish_current(Terminator::Branch { target: join, arguments: lanes })?;
         self.restore_facts(facts, join);
@@ -16586,6 +16579,7 @@ impl FunctionLowerer<'_> {
         key: ValueId,
         extract: bool,
     ) -> Result<(ValueId, Option<ValueId>), CanonicalLoweringError> {
+        let dict_type = Type::Named("Dict".into(), vec![key_type.clone(), value_type.clone()]);
         let key_list = Type::Named("List".into(), vec![key_type.clone()]);
         let value_list = Type::Named("List".into(), vec![value_type.clone()]);
         let keys = self.dict_list(dict, shape, 0)?;
@@ -16610,13 +16604,13 @@ impl FunctionLowerer<'_> {
         self.current = hit;
         let displaced = if let Some(option_shape) = &option_shape {
             let old = self.lower_dict_value_at(values, index, value_type)?;
-            Some(self.lower_aggregate(option_shape, 0, vec![old])?)
+            Some(self.lower_aggregate_for_source(&option_type, option_shape, 0, vec![old])?)
         } else {
             None
         };
         let remaining_keys = self.remove_list_value(keys, index, key_list.clone())?;
         let remaining_values = self.remove_list_value(values, index, value_list.clone())?;
-        let rebuilt = self.lower_aggregate_moving(shape, 0, vec![remaining_keys, remaining_values])?;
+        let rebuilt = self.lower_aggregate_moving(&dict_type, shape, 0, vec![remaining_keys, remaining_values])?;
         let mut lanes = vec![rebuilt];
         if let Some(displaced) = displaced {
             lanes.push(displaced);
@@ -16627,10 +16621,10 @@ impl FunctionLowerer<'_> {
         self.restore_snapshot(facts.clone());
         let keys = self.clone_list_value_for_storage(keys, &key_list)?;
         let values = self.clone_list_value_for_storage(values, &value_list)?;
-        let rebuilt = self.lower_aggregate_moving(shape, 0, vec![keys, values])?;
+        let rebuilt = self.lower_aggregate_moving(&dict_type, shape, 0, vec![keys, values])?;
         let mut lanes = vec![rebuilt];
         if let Some(option_shape) = &option_shape {
-            lanes.push(self.lower_aggregate(option_shape, 1, Vec::new())?);
+            lanes.push(self.lower_aggregate_for_source(&option_type, option_shape, 1, Vec::new())?);
         }
         self.finish_current(Terminator::Branch { target: join, arguments: lanes })?;
         self.restore_facts(facts, join);
@@ -16690,7 +16684,7 @@ impl FunctionLowerer<'_> {
         self.push_guard(value_in_bounds, witchy_wir::canonical_safewir::GuardKind::Bounds);
         let value = self.load_list_element(values, cursor, value_element)?;
         let value = self.owned_dict_value(value, value_type)?;
-        let pair = self.lower_aggregate_moving(&pair_shape, 0, vec![key, value])?;
+        let pair = self.lower_aggregate_moving(&pair_type, &pair_shape, 0, vec![key, value])?;
         let grown = self.push_owned_element(body_values[0], pair, &list_type)?;
         let (folded, _) = self.accumulator_lanes(grown)?;
         let mut folded = self.split_folded_lanes(folded)?;
@@ -20754,6 +20748,17 @@ fn retained_root_list_element(source: &Type, definitions: &BTreeMap<String, Type
     let [element] = arguments.as_slice() else { return false };
     name == "List" && matches!(StoragePlan::classify(element, definitions, |_| Some(0)),
         StoragePlan::RootedView(RootedViewStorage::RetainedRoot(_)))
+}
+
+fn retained_byte_buffer_view(source: &Type, definitions: &BTreeMap<String, TypeDef>) -> bool {
+    matches!(StoragePlan::classify(source, definitions, |_| Some(0)),
+        StoragePlan::RootedView(RootedViewStorage::RetainedRoot(RetainedRootStorage::ByteBuffer(_))))
+}
+
+fn retained_byte_buffer_list_element(source: &Type, definitions: &BTreeMap<String, TypeDef>) -> bool {
+    let Type::Named(_, arguments) = source.unqualified() else { return false };
+    let [element] = arguments.as_slice() else { return false };
+    retained_byte_buffer_view(element, definitions)
 }
 
 fn list_layout(

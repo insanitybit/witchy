@@ -34,12 +34,10 @@ pub(crate) fn value_type_matches_source(
             );
         }
         match storage {
-            Some(RootedViewStorage::RetainedRoot(RetainedRootStorage::StructuralRecord(plan))) => {
+            Some(RootedViewStorage::RetainedRoot(RetainedRootStorage::StructuralRecord(_))) => {
                 let super::super::ValueType::Ref(layout) = actual else { return false };
-                if matches!(layouts.get(layout).map(|descriptor| descriptor.kind()),
-                    Some(crate::layout::LayoutKind::OpaqueNominal { .. })) { return false; }
-                return super::super::closure_owner_contract::retained_structural_root_layout_matches(
-                    layouts, layout, &plan,
+                return layout_matches_source_with_closures(
+                    layout, payload, layouts, records, closure_layouts, signatures, context,
                 );
             }
             Some(RootedViewStorage::RetainedRoot(RetainedRootStorage::Sequence(carrier))) => {
@@ -291,9 +289,10 @@ fn nominal_layout_matches_source_identity(
     layouts: &crate::layout::LayoutInterner,
     records: &ScalarRecordFields,
 ) -> bool {
+    let retained = witchy_canonical_source::storage::retained_child_layout_identity(source, records);
     let Some(crate::layout::LayoutKind::OpaqueNominal { key }) =
         layouts.get(layout).map(|descriptor| descriptor.kind())
-    else { return true };
+    else { return retained.is_none() };
     let Some(identity) = witchy_canonical_source::storage::aggregate_layout_identity(
         source, records,
     ) else { return false };

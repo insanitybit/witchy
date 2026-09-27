@@ -380,7 +380,7 @@ fn project_layouts(
             .map_err(|error| error)?;
         }
 
-        for declared in typed.table().affine_declared_types() {
+        for declared in typed.table().checked_storage_declared_types() {
             projection.visit_type(declared)?;
         }
         for source in typed.table().affine_expression_types() {
@@ -523,7 +523,13 @@ impl LayoutProjection {
         // A dictionary is laid out as its canonical tuple of the key list
         // and the value list, before any aggregate rule sees the name.
         if let Some(tuple) = witchy_canonical_source::aggregates::dictionary_as_tuple(ty) {
-            return self.visit_type(&tuple);
+            self.visit_type(&tuple)?;
+            if witchy_canonical_source::storage::retained_child_layout_identity(
+                ty, &self.definitions,
+            ).is_some() {
+                self.roots.push(ty.clone());
+            }
+            return Ok(());
         }
         match ty {
             Type::Qualified(_, inner) => self.visit_type(inner),
@@ -1109,8 +1115,7 @@ fn intern_v1_layout_checked(
     if affine_storage_shape(&key, definitions).is_some()
         && (scalar_aggregate_shape(&key, definitions).is_some_and(|shape| !shape.packed)
             || matches!(storage, StoragePlan::MoveOnlyList(_)))
-        || matches!(CarrierElement::from_checked_type_with_definitions(&key, definitions),
-            Some(CarrierElement::List(element)) if element.contains_retained_root_view())
+        || witchy_canonical_source::storage::retained_child_layout_identity(&key, definitions).is_some()
     {
         if !active.insert(key.clone()) {
             return Err(CanonicalLayoutError::UnsupportedType(format!(
@@ -1199,7 +1204,7 @@ fn intern_v1_layout_fields(
             .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()));
     }
     if let Some(tuple) = witchy_canonical_source::aggregates::dictionary_as_tuple(ty) {
-        return intern_v1_layout_checked(
+        return intern_v1_layout_fields(
             interner, &tuple, definitions, recursive_types, active, closure_layouts,
         );
     }

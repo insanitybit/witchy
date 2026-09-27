@@ -119,7 +119,24 @@ pub fn checked_declaration_signature(typed: &TypedModule, name: &str) -> Result<
         if let Some(source) = declared.ty.as_ref()
             && qualified_rooted_view(source)
         {
-            restore_qualified_rooted_view(parameter, source, &context)?;
+            // A `var unique` receiver carries its uniqueness in the calling
+            // convention. Restore the recursively checked payload before
+            // wrapping it in that convention's affine root below. The
+            // storage judgment must also prove the complete unique owner.
+            if declared.convention == Convention::Var
+                && let Type::Qualified(ast::TypeQual::Unique, payload) = source
+            {
+                if !matches!(witchy_canonical_source::storage::StoragePlan::classify(
+                    source, &context.definitions, |name| context.nominal(name).ok(),
+                ), witchy_canonical_source::storage::StoragePlan::MoveOnlyOwned(_)) {
+                    return Err(CanonicalAbiError::InvalidCallable(
+                        "unique receiver lacks checked storage operations".into(),
+                    ));
+                }
+                restore_qualified_rooted_view(parameter, payload, &context)?;
+            } else {
+                restore_qualified_rooted_view(parameter, source, &context)?;
+            }
         }
         if declared.convention == Convention::Var
             && matches!(&declared.ty, Some(Type::Qualified(ast::TypeQual::Unique, _)))

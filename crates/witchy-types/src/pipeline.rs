@@ -1039,29 +1039,34 @@ fn attach_canonical_source(
         .filter_map(typeck::ty_to_ast)
         .collect::<std::collections::HashSet<_>>();
     // The ordinary type table erases storage qualifiers. Preserve every
-    // recursively proved affine substorage of a checked declaration so local
-    // allocations can be matched to their source ownership plan by SafeWIR.
-    fn collect_affine_substorage(
+    // recursively proved affine or retained substorage of a checked
+    // declaration so local allocations can be matched to their source
+    // ownership plan by SafeWIR.
+    fn collect_checked_substorage(
         ty: &Type,
         definitions: &BTreeMap<String, witchy_syntax::ast::TypeDef>,
         concrete: &mut std::collections::HashSet<Type>,
         depth: usize,
     ) {
         if depth > 128 { return; }
-        if witchy_canonical_source::storage::affine_storage_shape(ty, definitions).is_some() {
+        let retained = matches!(witchy_canonical_source::storage::StoragePlan::classify(
+            ty, definitions, |_| Some(0),
+        ), witchy_canonical_source::storage::StoragePlan::Owned(carrier)
+            if carrier.contains_retained_root_view());
+        if witchy_canonical_source::storage::affine_storage_shape(ty, definitions).is_some() || retained {
             concrete.insert(ty.clone());
         }
         match ty {
             Type::Qualified(_, inner) | Type::Slice(inner) =>
-                collect_affine_substorage(inner, definitions, concrete, depth + 1),
+                collect_checked_substorage(inner, definitions, concrete, depth + 1),
             Type::Named(_, children) | Type::Tuple(children) | Type::Dyn(_, children) => for child in children {
-                collect_affine_substorage(child, definitions, concrete, depth + 1);
+                collect_checked_substorage(child, definitions, concrete, depth + 1);
             },
             Type::Fn(parameters, result, ..) => {
                 for parameter in parameters {
-                    collect_affine_substorage(parameter, definitions, concrete, depth + 1);
+                    collect_checked_substorage(parameter, definitions, concrete, depth + 1);
                 }
-                collect_affine_substorage(result, definitions, concrete, depth + 1);
+                collect_checked_substorage(result, definitions, concrete, depth + 1);
             }
             Type::RecordCompose { .. } => {}
         }
@@ -1070,19 +1075,19 @@ fn attach_canonical_source(
         if let Item::Function(function) = item {
             for parameter in &function.params {
                 if let Some(ty) = &parameter.ty {
-                    collect_affine_substorage(ty, &type_definitions, &mut concrete_types, 0);
+                    collect_checked_substorage(ty, &type_definitions, &mut concrete_types, 0);
                 }
             }
             if let Some(ty) = &function.ret {
-                collect_affine_substorage(ty, &type_definitions, &mut concrete_types, 0);
+                collect_checked_substorage(ty, &type_definitions, &mut concrete_types, 0);
             }
         }
     }
-    for declared in typed.table().affine_declared_types() {
-        collect_affine_substorage(declared, &type_definitions, &mut concrete_types, 0);
+    for declared in typed.table().checked_storage_declared_types() {
+        collect_checked_substorage(declared, &type_definitions, &mut concrete_types, 0);
     }
     for source in typed.table().affine_expression_types() {
-        collect_affine_substorage(source, &type_definitions, &mut concrete_types, 0);
+        collect_checked_substorage(source, &type_definitions, &mut concrete_types, 0);
     }
     let concrete_types = concrete_types.into_iter().collect::<Vec<_>>();
     checked.canonical_source = Some(CanonicalCheckedSource {

@@ -5540,12 +5540,18 @@ impl Checker {
                             "binding `{name}` cannot repair ordinary storage into `unique` in `mode opt`; pass an existing unique owner or construct fresh storage"
                         ));
                     }
-                    if let Some(declared) = decl.as_ref()
-                        && witchy_canonical_source::storage::affine_storage_shape(
+                    if let Some(declared) = decl.as_ref() {
+                        let storage = witchy_canonical_source::storage::StoragePlan::classify(
+                            declared, &self.canonical_definitions, |_| Some(0),
+                        );
+                        if witchy_canonical_source::storage::affine_storage_shape(
                             declared, &self.canonical_definitions,
-                        ).is_some()
-                    {
-                        self.affine_declared_types.insert(declared.clone());
+                        ).is_some() || matches!(storage,
+                            witchy_canonical_source::storage::StoragePlan::Owned(carrier)
+                                if carrier.contains_retained_root_view())
+                        {
+                            self.checked_storage_declared_types.insert(declared.clone());
+                        }
                     }
                     let borrowed_shell_binding = self.is_direct_borrowed_nominal(&vt)
                         && Self::borrowed_shell_binding_source(value);
@@ -10862,7 +10868,7 @@ impl RegionPromotionFact {
 #[derive(Debug, Default, PartialEq)]
 pub struct TypeTable {
     types: HashMap<usize, Ty>,
-    affine_declared_types: HashSet<ast::Type>,
+    checked_storage_declared_types: HashSet<ast::Type>,
     affine_expression_types: HashMap<usize, ast::Type>,
     /// Expression identity produced by the checker branch for the
     /// compiler-known `.owned()` operation. Structural rewrites must rebuild
@@ -11563,8 +11569,8 @@ fn encode_site_key(key: &ProperTailSiteKey, bytes: &mut Vec<u8>) {
 }
 
 impl TypeTable {
-    pub fn affine_declared_types(&self) -> impl Iterator<Item = &ast::Type> {
-        self.affine_declared_types.iter()
+    pub fn checked_storage_declared_types(&self) -> impl Iterator<Item = &ast::Type> {
+        self.checked_storage_declared_types.iter()
     }
 
     pub fn affine_expression_type(&self, e: &Expr) -> Option<&ast::Type> {
@@ -12493,7 +12499,7 @@ fn run_check_selected(
         unique_storage_bindings: vec![HashSet::new()],
         opt_viewed_roots: HashSet::new(),
         unique_binding_types: vec![HashMap::new()],
-        affine_declared_types: HashSet::new(),
+        checked_storage_declared_types: HashSet::new(),
         affine_expression_types: HashMap::new(),
         callable_unique_contracts: vec![HashMap::new()],
         callable_opt_provenance: vec![HashMap::new()],
@@ -13054,7 +13060,7 @@ fn run_check_selected(
         }).collect();
         return Ok(Some(TypeTable {
             types,
-            affine_declared_types: c.affine_declared_types,
+            checked_storage_declared_types: c.checked_storage_declared_types,
             affine_expression_types,
             compiler_owned_materializations: c.compiler_owned_materializations,
             declared_function_values: c.declared_function_values,

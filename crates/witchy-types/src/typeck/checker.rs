@@ -157,7 +157,7 @@ pub(super) struct Checker {
     pub(super) unique_binding_types: Vec<HashMap<String, ast::Type>>,
     /// Checked local ascriptions whose recursive affine storage plan must
     /// remain visible to the canonical layout and SafeWIR authority stages.
-    pub(super) affine_declared_types: HashSet<ast::Type>,
+    pub(super) checked_storage_declared_types: HashSet<ast::Type>,
     /// Expression identities whose source storage qualifiers follow a
     /// checked binding/projection origin rather than an HM type rendering.
     pub(super) affine_expression_types: HashMap<usize, ast::Type>,

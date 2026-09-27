@@ -1103,10 +1103,11 @@ projection, so it may be returned, stored in an aggregate, passed through a
 generic or trait boundary, and captured by a callable without a lifetime
 parameter.
 
-The current checked-source boundary refuses `Dict(String, &String)` because
-dictionary values do not yet have an authenticated retained-view collection carrier.
-The refusal also applies when that dictionary is a field of a record or crosses
-a public record boundary. Ordinary `Dict(String, String)` remains admitted.
+Dictionary values with a recursively proved retained byte-buffer view carrier
+are admitted. A view crossing a callable boundary may refer to static storage,
+so storage into an owned list slot materializes an independent byte-buffer
+snapshot. The checked source type and physical list slot must still match;
+unproved child storage remains refused.
 Whole-root dictionary and tuple views use a recursive checked carrier plan for
 their children. A dictionary key and value must each have valid owned List
 storage; every tuple field must have a valid scalar or owned slot. SafeWIR

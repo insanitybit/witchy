@@ -897,6 +897,27 @@ pub mod self_checks {
     // Cases that compile witchy source moved to `checked_source_cases.rs`;
     // `crates/witchy-lower/tests/safewir_checked_source.rs` runs them.
 
+    pub fn physically_matching_plain_list_cannot_stand_in_for_retained_view_list() {
+        use crate::layout::{PointerSlot, RcHeader, ScalarKind};
+        use witchy_syntax::ast::{Type, TypeQual};
+
+        let source = Type::Named("List".into(), vec![Type::Qualified(
+            TypeQual::View, Box::new(Type::Named("String".into(), Vec::new())),
+        )]);
+        let mut layouts = LayoutInterner::new();
+        let byte = layouts.intern_scalar(ScalarKind::RawByte).unwrap();
+        let string = layouts.intern_runtime_buffer(byte).unwrap();
+        let slot = layouts.intern_runtime_pointer_value_slot(string, PointerSlot::Owned).unwrap();
+        let plain = layouts.intern_packed_list(slot, RcHeader::Required).unwrap();
+        let records = BTreeMap::new();
+
+        assert!(!layout_matches_source(plain, &source, &layouts, &records));
+        let key = witchy_canonical_source::structural_identity::recursive_nominal_layout_key(&source).unwrap();
+        let nominal = layouts.intern_opaque_nominal(key).unwrap();
+        layouts.bind_nominal(nominal, plain).unwrap();
+        assert!(layout_matches_source(nominal, &source, &layouts, &records));
+    }
+
     fn optimizable_candidate() -> CanonicalModule<LoweredCandidate> {
         let mut module = candidate();
         let left = ValueId::new(0);

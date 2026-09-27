@@ -725,6 +725,23 @@ root, and SafeWIR requires that root's exact nominal key before recursively
 validating its body. One focused admitted-Wasm result and zero-leak audit
 passes; the full row G matrix and A–O evidence remain open.
 
+Row G retained-child aggregate identity and dictionary transport (implemented,
+full row evidence pending, 2026-09-26): the shared checked storage judgment
+now preserves retained-child qualifiers in source-bound layout identities for
+lists, dictionaries, tuples, and nominal aggregates. Layout construction mints
+the corresponding nominal root, and SafeWIR requires its exact key before
+walking physical fields; an unqualified aggregate with matching pointer slots
+cannot substitute. Checked local storage annotations enter the layout catalog,
+and a `var unique` callable restores the proved child carrier before applying
+its affine calling convention. Retained byte-buffer views crossing a callable
+boundary become fresh reference-counted byte buffers before insertion into an
+owned list slot; other retained roots keep their token path. The obsolete
+structural-root-only matcher is removed. An adversarial review found no
+remaining authority widening after the required-nominal repair. The focused
+unoptimized admitted-Wasm witness for `Dict(String, &String)` returns the
+hand-computed `1120` and audits zero heap leaks. The broader composition
+matrix remains open; no A–O row closes here.
+
 Row G retained byte-buffer layout class (architecture implemented, semantic
 evidence unchanged, 2026-09-25): the shared source-storage projection now
 classifies exact `Bytes` as a retained raw-byte buffer, and the list-element

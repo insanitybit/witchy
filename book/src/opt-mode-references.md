@@ -334,10 +334,10 @@ unsupported carrier, root or projection obligation, and the operation that
 would lose it. The repair is usually to keep the view in an admitted carrier,
 pass an owned value, or materialize explicitly with `.owned()`.
 
-For example, `Dict(String, &String)` fails at the checked-source carrier
-boundary because its retained-view child has no collection ownership proof,
-including when nested in a record.
-Store an owned `String` value if the dictionary must execute today.
+For example, a dictionary can store a retained byte-buffer view when its
+recursive child carrier is proved. Insertion makes an owned snapshot of that
+buffer when the view crosses a callable boundary with an unknown allocation
+class. A child without a retain, clone, and release proof still fails closed.
 
 Whole `&Dict(K, V)` views have a retained-root carrier when both element types
 pass the recursive owned-list proof and SafeWIR validates their physical

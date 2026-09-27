@@ -1255,18 +1255,40 @@ pub fn affine_storage_erased_type(
     }
 }
 
-/// Identity for linear-memory storage with affine descendants. A proved
-/// affine child changes its slot or element ownership, so its checked
-/// qualifier is part of the layout key even though HM equality erases it.
+/// Source-bound layout identity for a recursively proved retained child.
+/// Its qualifier changes ownership operations even when the physical slot
+/// matches the unqualified referent.
+pub fn retained_child_layout_identity(
+    ty: &Type,
+    definitions: &BTreeMap<String, TypeDef>,
+) -> Option<Type> {
+    if !matches!(ty, Type::Qualified(..))
+        && CarrierElement::from_checked_type_with_definitions(ty, definitions)
+            .is_some_and(|carrier| carrier.contains_retained_root_view())
+    {
+        // Retained children share their referent's physical slot, but their
+        // clone and release obligations differ. Keep that checked relation
+        // through every aggregate identity, including dictionaries and tuples.
+        return Some(ty.clone());
+    }
+    if let Type::Qualified(TypeQual::Unique, inner) = ty
+        && matches!(StoragePlan::classify(ty, definitions, |_| Some(0)), StoragePlan::MoveOnlyOwned(_))
+        && CarrierElement::from_checked_type_with_definitions(inner, definitions)
+            .is_some_and(|carrier| carrier.contains_retained_root_view())
+    {
+        return retained_child_layout_identity(inner, definitions);
+    }
+    None
+}
+
+/// Identity for linear-memory storage with affine or retained descendants.
+/// The physical layout and SafeWIR correspondence both consume this identity.
 pub fn aggregate_layout_identity(
     ty: &Type,
     definitions: &BTreeMap<String, TypeDef>,
 ) -> Option<Type> {
-    if matches!(ty, Type::Named(name, _) if name == "List")
-        && CarrierElement::from_checked_type_with_definitions(ty, definitions)
-            .is_some_and(|carrier| carrier.contains_retained_root_view())
-    {
-        return Some(ty.clone());
+    if let Some(identity) = retained_child_layout_identity(ty, definitions) {
+        return Some(identity);
     }
     if let Type::Qualified(TypeQual::Unique, inner) = ty
         && affine_storage_shape(ty, definitions).is_some()
