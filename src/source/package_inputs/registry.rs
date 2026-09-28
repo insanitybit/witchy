@@ -5,17 +5,25 @@ use super::*;
 use std::collections::BTreeSet;
 use witchy_lower::codegen::{self, LoweringOutcome};
 use witchy_runtime::runtime::{Capabilities, Runtime};
+use witchy_wir::AdmittedCanonicalArtifact;
 
 pub(super) struct Files<'a> {
     raw: &'a dyn SourceFiles,
     members: BTreeMap<PathBuf, (PackageCoordinate, String)>,
     selected: BTreeSet<(PathBuf, String)>,
     verifier: Option<pipeline::CheckedModule>,
+    verifier_artifact: Option<AdmittedCanonicalArtifact>,
 }
 
 impl<'a> Files<'a> {
     pub(super) fn new(raw: &'a dyn SourceFiles) -> Self {
-        Self { raw, members: BTreeMap::new(), selected: BTreeSet::new(), verifier: None }
+        Self {
+            raw,
+            members: BTreeMap::new(),
+            selected: BTreeSet::new(),
+            verifier: None,
+            verifier_artifact: None,
+        }
     }
 
     fn verifier(&mut self) -> Result<&pipeline::CheckedModule, String> {
@@ -57,6 +65,20 @@ impl<'a> Files<'a> {
         Ok(self.verifier.as_ref().expect("registry verifier initialized"))
     }
 
+    fn admitted_verifier_artifact(&mut self) -> Result<&AdmittedCanonicalArtifact, String> {
+        if self.verifier_artifact.is_none() {
+            let artifact = match codegen::compile_checked_module_artifact(self.verifier()?) {
+                LoweringOutcome::Lowered(artifact) => artifact,
+                LoweringOutcome::Unsupported(reason) => {
+                    return Err(format!("registry verifier is not admitted: {reason}"));
+                }
+                LoweringOutcome::Rejected(error) => return Err(error.to_string()),
+            };
+            self.verifier_artifact = Some(artifact);
+        }
+        Ok(self.verifier_artifact.as_ref().expect("registry verifier artifact initialized"))
+    }
+
     fn evaluate_verifier(&mut self, mode: &str, arguments: Vec<String>) -> Result<Vec<String>, String> {
         let valid = match mode {
             "source" => arguments.len() >= 3 && (arguments.len() - 3) % 2 == 0,
@@ -66,12 +88,8 @@ impl<'a> Files<'a> {
         if !valid {
             return Err("registry verifier received an invalid argument frame".into());
         }
-        let artifact = match codegen::compile_checked_module_artifact(self.verifier()?) {
-            LoweringOutcome::Lowered(artifact) => artifact,
-            LoweringOutcome::Unsupported(reason) => return Err(format!("registry verifier is not admitted: {reason}")),
-            LoweringOutcome::Rejected(error) => return Err(error.to_string()),
-        };
-        let mut runtime = Runtime::new().map_err(|error| error.to_string())?;
+        let artifact = self.admitted_verifier_artifact()?;
+        let mut runtime = Runtime::new_cached().map_err(|error| error.to_string())?;
         let mut args = Vec::with_capacity(arguments.len() + 1);
         args.push(mode.to_owned());
         args.extend(arguments);

@@ -2146,6 +2146,13 @@ impl Runtime {
         Self::configured(true, wasmtime::OptLevel::Speed, false)
     }
 
+    /// A preemptible runtime that also uses Wasmtime's validated compilation
+    /// cache. Use this when the same admitted module is launched repeatedly;
+    /// epoch interruption remains enabled for bounded execution.
+    pub fn new_cached() -> Result<Self> {
+        Self::configured(true, wasmtime::OptLevel::Speed, true)
+    }
+
     /// A runtime for run-to-completion execution — the `sandbox`/benchmark path
     /// and differential WASM runs. No epoch interruption, so the generated code
     /// runs without per-backedge preemption checks (a measurable speedup on
@@ -2269,10 +2276,12 @@ impl Runtime {
         // scheduler will actually advance the epoch.
         if preempt {
             config.epoch_interruption(true);
-        } else if executable_cache && let Some(cache) = compilation_cache() {
+        }
+        if executable_cache && let Some(cache) = compilation_cache() {
             // The batch path re-runs the same program across invocations (a CLI
             // re-run, a benchmark loop); caching the compile makes the second
-            // run onward skip Cranelift.
+            // run onward skip Cranelift. Preemptible runtimes can use the same
+            // cache without disabling epoch interruption.
             config.cache(Some(cache));
         }
         // (RFC-0034 L4) Pooling instance allocator: reuse pre-reserved instance
