@@ -5,6 +5,8 @@ import gm_core
 import crypto
 import coven_artifact
 import semver
+import json
+import list
 
 fn verified_source(lock: String, alias: String, record_text: String, paths: List(String), contents: List(String)) -> Result((String, String, String), String):
     let trust = gm_core.pinned_registry_trust(lock).map_err(fn(e: gm_core.LockPinError): e.show())?
@@ -98,5 +100,14 @@ pub fn verify_precompiled(lock: String, alias: String, record_text: String, mani
         Ok(library) -> ["ok", library.0, library.1, library.2, library.3, library.4, library.5, library.6]
         Err(message) -> ["error", message, "", "", "", "", "", ""]
 
-fn main() -> ():
-    ()
+fn main(console: Console, args: List(String)):
+    let result = if args.at(0) == "source":
+        let count = (args.length() - 4) / 2
+        verify_source(args.at(1), args.at(2), args.at(3),
+            list.slice(args, 4, 4 + count), list.slice(args, 4 + count, args.length()))
+    else if args.at(0) == "precompiled":
+        verify_precompiled(args.at(1), args.at(2), args.at(3),
+            args.at(4), args.at(5), args.at(6))
+    else:
+        ["error", "unknown registry verifier mode"]
+    console.print(json.stringify(result))

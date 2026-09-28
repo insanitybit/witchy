@@ -3,7 +3,8 @@
 //! dependency: an unsigned sibling cannot inherit a signed package's identity.
 use super::*;
 use std::collections::BTreeSet;
-use witchy_interp::interpreter::{CompilerValue, evaluate_checked};
+use witchy_lower::codegen::{self, LoweringOutcome};
+use witchy_runtime::runtime::{Capabilities, Runtime};
 
 pub(super) struct Files<'a> {
     raw: &'a dyn SourceFiles,
@@ -51,6 +52,41 @@ impl<'a> Files<'a> {
                 .map_err(|error| error.to_string())?);
         }
         Ok(self.verifier.as_ref().expect("registry verifier initialized"))
+    }
+
+    fn evaluate_verifier(&mut self, mode: &str, arguments: Vec<String>) -> Result<Vec<String>, String> {
+        let valid = match mode {
+            "source" => arguments.len() >= 3 && (arguments.len() - 3) % 2 == 0,
+            "precompiled" => arguments.len() == 6,
+            _ => false,
+        };
+        if !valid {
+            return Err("registry verifier received an invalid argument frame".into());
+        }
+        let artifact = match codegen::compile_checked_module_artifact(self.verifier()?) {
+            LoweringOutcome::Lowered(artifact) => artifact,
+            LoweringOutcome::Unsupported(reason) => return Err(format!("registry verifier is not admitted: {reason}")),
+            LoweringOutcome::Rejected(error) => return Err(error.to_string()),
+        };
+        let mut runtime = Runtime::new().map_err(|error| error.to_string())?;
+        let mut args = Vec::with_capacity(arguments.len() + 1);
+        args.push(mode.to_owned());
+        args.extend(arguments);
+        let mut vm = runtime.spawn_admitted(&artifact, Capabilities {
+            print: true, quiet: true, args,
+            capture_output_limit_bytes: Some(1024 * 1024),
+            ..Capabilities::none()
+        }, 1024).map_err(|error| error.to_string())?;
+        runtime.run_with_budget(&mut vm, std::time::Duration::from_secs(10))
+            .map_err(|error| error.to_string())?;
+        if vm.canonical_heap_leaks().map_err(|error| error.to_string())? != Some(0) {
+            return Err("registry verifier leaked heap objects".into());
+        }
+        let output = vm.output();
+        let [output] = output.as_slice() else {
+            return Err("registry verifier returned an invalid output frame".into());
+        };
+        serde_json::from_str(output).map_err(|error| format!("registry verifier returned invalid JSON: {error}"))
     }
 
     fn selected_path_dependency(&self, path: &Path, alias: &str, entry: &Path) -> Result<bool, String> {
@@ -141,14 +177,12 @@ impl<'a> Files<'a> {
         if !members.iter().any(|(member, _)| member == path) {
             return Err("registry selected module is absent from signed source census".into());
         }
-        let strings = |values: Vec<String>| CompilerValue::List(values.into_iter().map(CompilerValue::String).collect());
-        let result = evaluate_checked(self.verifier()?, "registry_recipe.verify_source", vec![
-            CompilerValue::String(lock), CompilerValue::String(alias.into()), CompilerValue::String(record),
-            strings(sources.iter().map(|(name, _)| name.clone()).collect()),
-            strings(sources.into_iter().map(|(_, source)| source).collect()),
-        ]).map_err(|error| format!("pinned registry `{alias}`: {error}"))?;
-        let CompilerValue::List(values) = result else { return Err("registry verifier returned invalid result kind".into()); };
-        let [CompilerValue::String(status), CompilerValue::String(root), CompilerValue::String(name), CompilerValue::String(version)] = values.as_slice()
+        let mut arguments = vec![lock, alias.into(), record];
+        arguments.extend(sources.iter().map(|(name, _)| name.clone()));
+        arguments.extend(sources.into_iter().map(|(_, source)| source));
+        let values = self.evaluate_verifier("source", arguments)
+            .map_err(|error| format!("pinned registry `{alias}`: {error}"))?;
+        let [status, root, name, version] = values.as_slice()
             else { return Err("registry verifier returned invalid result schema".into()); };
         if status != "ok" { return Err(format!("pinned registry `{alias}`: {root}")); }
         let package = PackageCoordinate::new(PackageSource::Registry(root.clone()), name.clone(), version.clone())
@@ -233,17 +267,10 @@ impl<'a> Files<'a> {
                 .ok_or("registry signed coven.json missing")?;
             let artifact_manifest = self.raw.read(&vendor.join("coven-artifact.json"))?
                 .ok_or("precompiled registry artifact manifest missing")?;
-            let result = evaluate_checked(self.verifier()?, "registry_recipe.verify_precompiled", vec![
-                CompilerValue::String(lock), CompilerValue::String(alias.clone()),
-                CompilerValue::String(record), CompilerValue::String(artifact_manifest),
-                CompilerValue::String(module.clone()), CompilerValue::String(requirement),
+            let values = self.evaluate_verifier("precompiled", vec![
+                lock, alias.clone(), record, artifact_manifest, module.clone(), requirement,
             ]).map_err(|error| format!("pinned precompiled registry `{alias}`: {error}"))?;
-            let CompilerValue::List(values) = result else {
-                return Err("precompiled registry verifier returned invalid result kind".into());
-            };
-            let [CompilerValue::String(status), CompilerValue::String(root), CompilerValue::String(name),
-                CompilerValue::String(version), CompilerValue::String(wasm_sha256), CompilerValue::String(sidecar_sha256),
-                CompilerValue::String(wasm_size), CompilerValue::String(sidecar_size)] = values.as_slice()
+            let [status, root, name, version, wasm_sha256, sidecar_sha256, wasm_size, sidecar_size] = values.as_slice()
             else { return Err("precompiled registry verifier returned invalid result schema".into()); };
             if status != "ok" { return Err(format!("pinned precompiled registry `{alias}`: {root}")); }
             let wasm_size = signed_size(wasm_size, 64 * 1024 * 1024, "Wasm")?;
@@ -398,5 +425,68 @@ impl SourceFiles for Files<'_> {
             break;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod admitted_verifier_tests {
+    use super::*;
+    use ed25519_dalek::{Signer, SigningKey};
+    use sha2::{Digest, Sha256};
+
+    #[test]
+    fn signed_source_registry_verifies_on_admitted_wasm() {
+        let path = "src/main.witchy";
+        let contents = "fn main() -> Int:\n    1\n";
+        let manifest = "[rune]\nname=\"acme/math\"\nversion=\"1.0.0\"\n";
+        let files = [(path, contents), ("witchy.toml", manifest)];
+        let mut bytes = Vec::new();
+        for (name, source) in files {
+            bytes.extend_from_slice(&(name.len() as u64).to_le_bytes());
+            bytes.extend_from_slice(name.as_bytes());
+            bytes.extend_from_slice(&(source.len() as u64).to_le_bytes());
+            bytes.extend_from_slice(source.as_bytes());
+        }
+        let hash = format!("sha256:{}", Sha256::digest(&bytes).iter()
+            .map(|byte| format!("{byte:02x}")).collect::<String>());
+        let key = SigningKey::from_bytes(&[71; 32]);
+        let rootpub = key.verifying_key().as_bytes().iter()
+            .map(|byte| format!("{byte:02x}")).collect::<String>();
+        let payload = format!(
+            "coven-v1\nname=acme/math\nversion=1.0.0\nstate=released\nhash={hash}\nrt=[]\nbuild=\nuploaded_by=\npromoted_by=\nfactor=\nprovenance=\nreleased_at=0"
+        );
+        let record = serde_json::json!({
+            "name": "acme/math", "version": "1.0.0", "state": "released", "hash": hash,
+            "runtime_footprint": [], "released_at": 0, "artifact_digest": "",
+            "sig": key.sign(payload.as_bytes()).to_bytes().iter()
+                .map(|byte| format!("{byte:02x}")).collect::<String>(),
+        }).to_string();
+        let lock = format!(
+            "registry_snapshot_version=1\nregistry_rootpub=\"{rootpub}\"\n[[rune]]\nname=\"acme/math\"\nalias=\"external_math\"\nversion=\"1.0.0\"\nsource=\"coven\"\nhash=\"{hash}\"\nruntime_footprint=[]\n"
+        );
+        let mut verifier = Files::new(&AmbientFiles);
+        let result = verifier.evaluate_verifier("source", vec![
+            lock.clone(), "external_math".into(), record.clone(),
+            "witchy.toml".into(), path.into(), manifest.into(), contents.into(),
+        ]).expect("signed source verifier runs on admitted Wasm");
+        assert_eq!(result, ["ok", &rootpub, "acme/math", "1.0.0"]);
+        let tampered = verifier.evaluate_verifier("source", vec![
+            lock, "external_math".into(), record,
+            "witchy.toml".into(), path.into(), manifest.into(),
+            "fn main() -> Int:\n    2\n".into(),
+        ]).expect("tampered source is rejected by admitted verifier");
+        assert_eq!(tampered.first().map(String::as_str), Some("error"));
+        assert!(tampered[1].contains("source hash differs"), "{tampered:?}");
+    }
+
+    #[test]
+    fn source_registry_verifier_rejects_unpinned_input_on_admitted_wasm() {
+        let mut files = Files::new(&AmbientFiles);
+        let result = files.evaluate_verifier("source", vec![
+            "".into(), "unlisted".into(), "{}".into(),
+            "src/main.witchy".into(), "fn main() -> Int:\n    1\n".into(),
+        ]).expect("compiler-owned verifier executes on admitted Wasm");
+        assert_eq!(result.first().map(String::as_str), Some("error"));
+        assert_eq!(result.len(), 4);
     }
 }
