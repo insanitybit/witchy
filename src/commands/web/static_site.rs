@@ -26,8 +26,8 @@ const MAX_STATIC_SITE_WIRE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_STATIC_SITE_WIRE_NODES: usize = 100_000;
 const MAX_STATIC_EVALUATION_PAGES: usize = 4096;
 
-fn static_site_value_from_json(text: &str) -> Result<witchy_interp::interpreter::CompilerValue, WebCommandError> {
-    use witchy_interp::interpreter::CompilerValue;
+fn static_site_value_from_json(text: &str) -> Result<witchy_types::compiler_value::CompilerValue, WebCommandError> {
+    use witchy_types::compiler_value::CompilerValue;
 
     if text.len() > MAX_STATIC_SITE_WIRE_BYTES {
         return Err(WebCommandError::failure("static Site output exceeds its byte limit"));
@@ -565,7 +565,7 @@ fn evaluate_fresh_island(
     fallback: &StaticIsland,
     metadata: &witchy_lower::codegen::GlamourIslandMetadata,
 ) -> Result<StaticIsland, WebCommandError> {
-    use witchy_interp::interpreter::CompilerValue;
+    use witchy_types::compiler_value::CompilerValue;
 
     let page = pages
         .iter()
@@ -3720,9 +3720,9 @@ fn evaluate_static_site_value(
     _checked: &witchy_types::pipeline::CheckedModule,
     recipe: Option<&witchy_types::pipeline::CheckedStaticEvaluationRecipe>,
     _entry: &str,
-    _arguments: Vec<witchy_interp::interpreter::CompilerValue>,
+    _arguments: Vec<witchy_types::compiler_value::CompilerValue>,
     runtime_arguments: Vec<String>,
-) -> Result<witchy_interp::interpreter::CompilerValue, WebCommandError> {
+) -> Result<witchy_types::compiler_value::CompilerValue, WebCommandError> {
     if let Some(recipe) = recipe {
         match witchy_lower::codegen::compile_checked_module_artifact(recipe.checked()) {
             witchy_lower::codegen::LoweringOutcome::Lowered(artifact) => {
@@ -3848,8 +3848,8 @@ fn is_toolchain_glamour_type(
 
 fn static_content_arguments(
     project: &Project,
-) -> Result<(Vec<witchy_interp::interpreter::CompilerValue>, Vec<ArtifactRecord>, Vec<String>), WebCommandError> {
-    use witchy_interp::interpreter::CompilerValue;
+) -> Result<(Vec<witchy_types::compiler_value::CompilerValue>, Vec<ArtifactRecord>, Vec<String>), WebCommandError> {
+    use witchy_types::compiler_value::CompilerValue;
 
     let Some(root) = &project.content else {
         return Ok((Vec::new(), Vec::new(), Vec::new()));
@@ -3982,9 +3982,9 @@ fn collect_static_content(
 }
 
 pub(super) fn static_site_from_value(
-    value: witchy_interp::interpreter::CompilerValue,
+    value: witchy_types::compiler_value::CompilerValue,
 ) -> Result<EvaluatedStaticSite, WebCommandError> {
-    use witchy_interp::interpreter::CompilerValue;
+    use witchy_types::compiler_value::CompilerValue;
 
     let CompilerValue::Constructor { name, fields } = value else {
         return Err(WebCommandError::failure(
@@ -4117,10 +4117,10 @@ pub(super) fn static_site_from_value(
 }
 
 fn static_islands_from_values(
-    values: Vec<witchy_interp::interpreter::CompilerValue>,
+    values: Vec<witchy_types::compiler_value::CompilerValue>,
     pages: &[StaticPage],
 ) -> Result<Vec<StaticIsland>, WebCommandError> {
-    use witchy_interp::interpreter::CompilerValue;
+    use witchy_types::compiler_value::CompilerValue;
 
     let mut islands = Vec::with_capacity(values.len());
     let mut keys = BTreeSet::new();
@@ -5075,9 +5075,9 @@ fn valid_resume_identity(value: &str) -> bool {
 
 fn static_island_activation(
     key: &str,
-    value: witchy_interp::interpreter::CompilerValue,
+    value: witchy_types::compiler_value::CompilerValue,
 ) -> Result<(String, Option<String>), WebCommandError> {
-    use witchy_interp::interpreter::CompilerValue;
+    use witchy_types::compiler_value::CompilerValue;
 
     let CompilerValue::Constructor { name, fields } = value else {
         return Err(WebCommandError::failure(format!(
@@ -5101,9 +5101,9 @@ fn static_island_activation(
 
 fn static_island_prefetch(
     key: &str,
-    value: witchy_interp::interpreter::CompilerValue,
+    value: witchy_types::compiler_value::CompilerValue,
 ) -> Result<(String, Option<String>), WebCommandError> {
-    use witchy_interp::interpreter::CompilerValue;
+    use witchy_types::compiler_value::CompilerValue;
 
     let CompilerValue::Constructor { name, fields } = value else {
         return Err(WebCommandError::failure(format!(
@@ -5128,9 +5128,9 @@ fn static_island_prefetch(
 fn static_media_query_value(
     key: &str,
     policy: &str,
-    value: &witchy_interp::interpreter::CompilerValue,
+    value: &witchy_types::compiler_value::CompilerValue,
 ) -> Result<String, WebCommandError> {
-    use witchy_interp::interpreter::CompilerValue;
+    use witchy_types::compiler_value::CompilerValue;
 
     let CompilerValue::Constructor { name, fields } = value else {
         return Err(WebCommandError::failure(format!(
@@ -5152,9 +5152,9 @@ fn static_media_query_value(
 
 fn static_island_diagnostic_name(
     key: &str,
-    value: witchy_interp::interpreter::CompilerValue,
+    value: witchy_types::compiler_value::CompilerValue,
 ) -> Result<Option<String>, WebCommandError> {
-    use witchy_interp::interpreter::CompilerValue;
+    use witchy_types::compiler_value::CompilerValue;
 
     let CompilerValue::Constructor { name, fields } = value else {
         return Err(WebCommandError::failure(format!(
@@ -5226,9 +5226,9 @@ fn validate_static_fragment(key: &str, html: &str) -> Result<(), WebCommandError
 }
 
 fn static_actions_from_values(
-    values: Vec<witchy_interp::interpreter::CompilerValue>,
+    values: Vec<witchy_types::compiler_value::CompilerValue>,
 ) -> Result<Vec<StaticAction>, WebCommandError> {
-    use witchy_interp::interpreter::CompilerValue;
+    use witchy_types::compiler_value::CompilerValue;
 
     let mut actions = Vec::with_capacity(values.len());
     let mut action_ids = BTreeSet::new();

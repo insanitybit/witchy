@@ -12,6 +12,7 @@
 pub mod access;
 pub mod canonical_abi;
 pub mod canonical_closure;
+pub mod compiler_value;
 mod call_scoped;
 mod task_provenance;
 mod canonical_dictionary;

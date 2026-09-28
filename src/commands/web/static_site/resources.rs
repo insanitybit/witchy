@@ -3,10 +3,10 @@
 use super::*;
 
 pub(super) fn static_styles_from_values(
-    values: Vec<witchy_interp::interpreter::CompilerValue>,
+    values: Vec<witchy_types::compiler_value::CompilerValue>,
     pages: &[StaticPage],
 ) -> Result<Vec<StaticStyle>, WebCommandError> {
-    use witchy_interp::interpreter::CompilerValue;
+    use witchy_types::compiler_value::CompilerValue;
 
     let known_routes = pages
         .iter()
@@ -82,10 +82,10 @@ pub(super) fn static_styles_from_values(
 }
 
 pub(super) fn static_preloads_from_values(
-    values: Vec<witchy_interp::interpreter::CompilerValue>,
+    values: Vec<witchy_types::compiler_value::CompilerValue>,
     pages: &[StaticPage],
 ) -> Result<Vec<StaticPreload>, WebCommandError> {
-    use witchy_interp::interpreter::CompilerValue;
+    use witchy_types::compiler_value::CompilerValue;
 
     let known_routes = pages
         .iter()
@@ -135,9 +135,9 @@ pub(super) fn static_preloads_from_values(
 }
 
 pub(super) fn static_assets_from_values(
-    values: Vec<witchy_interp::interpreter::CompilerValue>,
+    values: Vec<witchy_types::compiler_value::CompilerValue>,
 ) -> Result<Vec<StaticAsset>, WebCommandError> {
-    use witchy_interp::interpreter::CompilerValue;
+    use witchy_types::compiler_value::CompilerValue;
 
     let mut assets = Vec::with_capacity(values.len());
     let mut unique = BTreeSet::new();
@@ -318,10 +318,10 @@ pub(super) fn validate_emitted_preload(
 }
 
 fn compiler_string(
-    value: Option<witchy_interp::interpreter::CompilerValue>,
+    value: Option<witchy_types::compiler_value::CompilerValue>,
     label: &str,
 ) -> Result<String, WebCommandError> {
-    use witchy_interp::interpreter::CompilerValue;
+    use witchy_types::compiler_value::CompilerValue;
 
     match value {
         Some(CompilerValue::String(value)) => Ok(value),
@@ -330,10 +330,10 @@ fn compiler_string(
 }
 
 fn compiler_string_list(
-    value: Option<witchy_interp::interpreter::CompilerValue>,
+    value: Option<witchy_types::compiler_value::CompilerValue>,
     label: &str,
 ) -> Result<Vec<String>, WebCommandError> {
-    use witchy_interp::interpreter::CompilerValue;
+    use witchy_types::compiler_value::CompilerValue;
 
     let Some(CompilerValue::List(values)) = value else {
         return Err(fail(format!("{label} is not a closed list")));
