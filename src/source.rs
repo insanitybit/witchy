@@ -644,13 +644,9 @@ pub(crate) fn checked_precompiled_source_bundle(
         if !source_block_producers(&sources, &user_modules)?.is_empty() {
             return Err("comptime producers with precompiled dependencies require an admitted declaration recipe".into());
         }
-        let expand = if source_bundle_needs_legacy_expansion(&sources) {
-            comptime::EXPANDER
-        } else {
-            witchy_syntax::linker::ComptimeExpander::with_sibling_request(
-                witchy_types::pipeline::require_expansion_free, |_| false,
-            )
-        };
+        let expand = witchy_syntax::linker::ComptimeExpander::with_sibling_request(
+            witchy_types::pipeline::require_expansion_free, |_| false,
+        );
         witchy_types::pipeline::link_checked_authenticated_from_source_bundle_with_precompiled_declarations(
             sources, &entry, expand, &user_modules, owners, environment,
         ).map_err(|error| error.to_string())?
