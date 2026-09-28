@@ -453,8 +453,12 @@ impl ComptimeSourceSession {
         let original_digest = checked_source_digest(&sources, selected, &PrecompiledDeclarationEnvironment::default());
         let modules = sources.iter().map(|(name, bytes)| {
             let source = std::str::from_utf8(&bytes).map_err(|error| refuse(format!("comptime source `{name}` is not UTF-8: {error}")))?;
-            let module = witchy_syntax::parser::parse_module(source)
+            let mut module = witchy_syntax::parser::parse_module(source)
                 .map_err(|error| refuse(format!("comptime source `{name}` failed to parse: {error}")))?;
+            if name == selected && witchy_syntax::derive::has_only_record_equality_derives(&module) {
+                witchy_syntax::derive::expand(&mut module)
+                    .map_err(|error| refuse(format!("comptime source `{name}` failed to prepare derives: {error}")))?;
+            }
             Ok((name.clone(), module))
         }).collect::<Result<_, PipelineError>>()?;
         Ok(Self { original_digest, raw_sources: Arc::new(sources), modules: Arc::new(modules), selected: selected.into(), owners, user_modules })

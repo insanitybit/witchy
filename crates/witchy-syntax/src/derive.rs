@@ -1,14 +1,69 @@
 //! `derive(...)` — desugar each derive to a comptime call of its witchy generator.
 //!
-//! The per-trait code generation is NOT here anymore: a `derive(X)` becomes a
-//! `comptime:` block `emit_item(meta.derive_<x>(typeInfo_of_T))`
-//! (built-ins live in `std/meta`; a user derive routes to a bare `derive_<x>`
-//! they define or import). Generators return `meta.ItemSyntax` or
-//! `List(meta.ItemSyntax)`; source text is not an emission channel.
+//! Record equality is a deterministic compiler-owned AST transform. Other
+//! `derive(X)` forms become `comptime:` calls to `meta.derive_<x>` or a user
+//! `derive_<x>` generator. Generators return typed `meta.ItemSyntax` values;
+//! source text is not an emission channel.
 
 use crate::ast::*;
 // foldhash: compiler-internal keys only — see witchy-types/src/typeck.rs.
 use foldhash::{HashMap, HashSet};
+
+/// These derives need no user compile-time execution. Their checked AST can be
+/// built directly from the authenticated declaration in a source session.
+pub fn has_only_record_equality_derives(module: &Module) -> bool {
+    let mut found = false;
+    for item in &module.items {
+        let Item::Type(definition) = item else { continue };
+        if definition.derives.is_empty() { continue; }
+        found = true;
+        if definition.variants.len() != 1 || definition.variants[0].field_names.is_empty()
+            || definition.derives.iter().any(|name| name != "Eq" && name != "PartialEq") {
+            return false;
+        }
+    }
+    found
+}
+
+fn record_equality_impl(t: &TypeDef, trait_name: &str, line: u32) -> Item {
+    let params = t.params.iter().filter(|name| !name.starts_with('\''))
+        .cloned().collect::<Vec<_>>();
+    let target_args = params.iter().map(|name| Type::Named(name.clone(), Vec::new()))
+        .collect::<Vec<_>>();
+    let bounds = params.iter().map(|name|
+        (name.clone(), trait_name.to_string(), Vec::new())).collect::<Vec<_>>();
+    let methods = if trait_name == "Eq" { Vec::new() } else {
+        let target = Type::Named(t.name.clone(), target_args.clone());
+        let comparisons = t.variants[0].field_names.iter().map(|name| Expr::Binary {
+            op: BinOp::Eq,
+            lhs: Box::new(Expr::Field {
+                base: Box::new(Expr::Var("self".into())), field: name.clone(),
+            }),
+            rhs: Box::new(Expr::Field {
+                base: Box::new(Expr::Var("other".into())), field: name.clone(),
+            }),
+        });
+        let body = comparisons.reduce(|lhs, rhs| Expr::Binary {
+            op: BinOp::And, lhs: Box::new(lhs), rhs: Box::new(rhs),
+        }).unwrap_or(Expr::Bool(true));
+        vec![Function {
+            line, public: false, pure: false, comptime_only: false,
+            attributes: Vec::new(), name: "eq".into(), type_params: Vec::new(),
+            params: ["self", "other"].into_iter().map(|name| Param {
+                name: name.into(), ty: Some(target.clone()),
+                convention: Convention::Let, default: None,
+            }).collect(),
+            ret: Some(Type::Named("Bool".into(), Vec::new())),
+            body: Block { stmts: vec![Stmt::Expr(body)], lines: vec![line], region: None },
+            bounds: bounds.clone(), is_gen: false, is_async: false,
+        }]
+    };
+    Item::Impl(ImplDef {
+        origin: ImplOrigin::CompilerGenerated, trait_name: Some(trait_name.into()),
+        trait_args: Vec::new(), type_name: t.name.clone(), target_args,
+        bounds, methods,
+    })
+}
 
 #[derive(Clone, Copy)]
 enum UserDeriveOutput {
@@ -148,9 +203,9 @@ fn user_derive_outputs(module: &Module) -> HashMap<String, UserDeriveOutput> {
     outputs
 }
 
-/// Expand every `type T derive(...)` into a comptime call of the matching witchy
-/// generator. Unsupported shapes for the built-ins are loud errors; an unknown
-/// derive routes to a user-provided `derive_<name>` (a comptime error if absent).
+/// Expand `type T derive(...)` from its parsed declaration. Record equality is
+/// direct AST; other forms call the matching Witchy generator. Unsupported
+/// built-in shapes reject, and unknown derives require `derive_<name>`.
 pub fn expand(module: &mut Module) -> Result<(), String> {
     let mut generated: Vec<Item> = Vec::new();
     let mut generated_lines = Vec::new();
@@ -184,6 +239,8 @@ pub fn expand(module: &mut Module) -> Result<(), String> {
             }
         }
         let derive_type = crate::reflect::normalized_type_for_typeinfo(t, &aliases)?;
+        let record_equality = derive_type.variants.len() == 1
+            && !derive_type.variants[0].field_names.is_empty();
         let has_explicit_partial_eq = explicit_partial_eq_targets.contains(&t.name);
         // (RFC-0047) Record that this type's PartialEq is the STRUCTURAL derive,
         // so whole-program container equality can keep its structural fast path.
@@ -210,10 +267,11 @@ pub fn expand(module: &mut Module) -> Result<(), String> {
                 }
                 "PartialEq" => {
                     if !emitted_partial_eq {
-                        generated.push(derive_item_via_comptime(
-                            "meta.derive_partial_eq",
-                            &derive_type,
-                        ));
+                        generated.push(if record_equality {
+                            record_equality_impl(&derive_type, "PartialEq", source_lines.get(item_index).copied().unwrap_or(0))
+                        } else {
+                            derive_item_via_comptime("meta.derive_partial_eq", &derive_type)
+                        });
                         emitted_partial_eq = true;
                     }
                 }
@@ -225,13 +283,18 @@ pub fn expand(module: &mut Module) -> Result<(), String> {
                         ));
                     }
                     if !has_explicit_partial_eq && !emitted_partial_eq {
-                        generated.push(derive_item_via_comptime(
-                            "meta.derive_partial_eq",
-                            &derive_type,
-                        ));
+                        generated.push(if record_equality {
+                            record_equality_impl(&derive_type, "PartialEq", source_lines.get(item_index).copied().unwrap_or(0))
+                        } else {
+                            derive_item_via_comptime("meta.derive_partial_eq", &derive_type)
+                        });
                         emitted_partial_eq = true;
                     }
-                    generated.push(derive_item_via_comptime("meta.derive_eq", &derive_type));
+                    generated.push(if record_equality {
+                        record_equality_impl(&derive_type, "Eq", source_lines.get(item_index).copied().unwrap_or(0))
+                    } else {
+                        derive_item_via_comptime("meta.derive_eq", &derive_type)
+                    });
                 }
                 "PartialOrd" => {
                     let is_record = derive_type.variants.len() == 1

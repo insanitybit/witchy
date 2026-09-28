@@ -443,6 +443,20 @@ fn check_loaded_source_bundle(
             sources, entry, user_modules, owners, witchy::canonical_comptime::source_limits(),
         );
     }
+    let mut without_derives = module.clone();
+    for item in &mut without_derives.items {
+        if let ast::Item::Type(definition) = item { definition.derives.clear(); }
+    }
+    let other_legacy_expansion = sources.iter().filter(|(name, _)| name != entry && user_modules.contains(name))
+        .any(|(_, bytes)| std::str::from_utf8(bytes).ok()
+            .and_then(|source| parser::parse_module(source).ok())
+            .as_ref().is_none_or(module_needs_legacy_expansion));
+    if witchy_syntax::derive::has_only_record_equality_derives(&module)
+        && !module_needs_legacy_expansion(&without_derives) && !other_legacy_expansion {
+        return witchy::canonical_comptime::check_source_bundle(
+            sources, entry, user_modules, owners, witchy::canonical_comptime::source_limits(),
+        );
+    }
     if let Some(producer) = single_imported_block_producer(&sources, entry, &user_modules)? {
         return witchy::canonical_comptime::check_source_bundle_with_imported_blocks(
             sources, entry, &producer, user_modules, owners,
@@ -1152,6 +1166,29 @@ mod tests {
         let result = super::link_file_checked(entry.to_str().unwrap());
         std::fs::remove_dir_all(dir).unwrap();
         result.expect("derive expansion remains available in checked source");
+    }
+
+    #[test]
+    fn record_equality_derives_run_on_admitted_wasm_in_both_modes() {
+        for mode in ["", "mode opt\n\n"] {
+            let dir = unique_dir("admitted_record_equality");
+            std::fs::create_dir_all(&dir).unwrap();
+            let entry = dir.join("main.witchy");
+            let source = format!("{mode}type Foo derive(Eq):\n    value: Int\n\nfn main(console: Console):\n    if Foo(value: 1) == Foo(value: 1):\n        console.print(\"same\")\n    if Foo(value: 1) == Foo(value: 2):\n        console.print(\"wrong\")\n");
+            std::fs::write(&entry, source).unwrap();
+            let (checked, _) = super::link_file_checked(entry.to_str().unwrap())
+                .expect("source-derived equality checks");
+            let artifact = witchy_lower::codegen::compile_checked_module_artifact(&checked)
+                .expect_lowered("source-derived equality admits");
+            let mut runtime = witchy_runtime::runtime::Runtime::batch().unwrap();
+            let mut vm = runtime.spawn_admitted(&artifact, witchy_runtime::runtime::Capabilities {
+                print: true, quiet: true, ..Default::default()
+            }, 256).unwrap();
+            vm.run().unwrap();
+            assert_eq!(vm.output(), ["same"]);
+            assert_eq!(vm.canonical_heap_leaks().unwrap(), Some(0));
+            std::fs::remove_dir_all(dir).unwrap();
+        }
     }
 
     fn load_fixture(fixture: &PrecompiledRegistryFixture) -> Result<super::PrecompiledCheckedModule, String> {
