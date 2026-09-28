@@ -7,6 +7,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
+use foldhash::HashMap;
 use witchy_canonical_source::aggregates::type_definitions;
 use witchy_canonical_source::storage::{StoredChildren, stored_children};
 use witchy_canonical_source::source::{
@@ -18,6 +19,23 @@ use witchy_syntax::lambda_scan::scan_lambda;
 use crate::typeck::{Ty, TypeError, TypeTable, ty_to_ast};
 
 type Environment = BTreeMap<String, Proof>;
+
+#[derive(Clone, Default)]
+struct ModuleFunctionIndex {
+    by_name: HashMap<String, usize>,
+}
+
+fn index_functions(module: &Module) -> ModuleFunctionIndex {
+    let mut index = ModuleFunctionIndex { by_name: HashMap::default() };
+    for (item_index, function) in module.items.iter().enumerate().filter_map(|(index, item)| match item {
+        Item::Function(function) => Some((index, function)),
+        _ => None,
+    }) {
+        // Preserve the first declaration, matching the old source-order scan.
+        index.by_name.entry(function.name.clone()).or_insert(item_index);
+    }
+    index
+}
 
 #[derive(Clone, Copy)]
 enum TaskInputStep { Slot(usize), VariantSlot(usize, usize), AnyElement }
@@ -162,8 +180,9 @@ pub(crate) struct CheckedFinalBehavior {
     pub declarations: BTreeMap<usize, TaskBehaviorSummary>,
 }
 
-struct Analyzer<'a> {
+struct Analyzer<'a, 'index> {
     module: &'a Module,
+    function_index: &'index ModuleFunctionIndex,
     table: &'a TypeTable,
     definitions: &'a BTreeMap<String, TypeDef>,
     summaries: &'a BTreeMap<String, Summary>,
@@ -180,7 +199,7 @@ struct Analyzer<'a> {
     capture_owner: Option<&'a witchy_canonical_source::proper_tail::ProperTailCallableId>,
 }
 
-impl Analyzer<'_> {
+impl<'a> Analyzer<'a, '_> {
     fn opt_callable_task_formal(&self, source: Option<&Type>) -> bool {
         let Some(Type::Fn(inputs, _, _, _)) = source.map(Type::unqualified) else { return false };
         inputs.iter().any(|input| task_input_paths(input, self.definitions)
@@ -546,9 +565,11 @@ impl Analyzer<'_> {
             .collect::<Result<Vec<_>, _>>()?;
         let direct_target = if environment.contains_key(name)
             || self.table.local_callee_type(expression).is_some() { None } else {
-            self.module.items.iter().find_map(|item| match item {
-                Item::Function(function) if function.name == name => Some(function),
-                _ => None,
+            self.function_index.by_name.get(name).and_then(|item_index| {
+                match self.module.items.get(*item_index) {
+                    Some(Item::Function(function)) => Some(function),
+                    _ => None,
+                }
             })
         };
         for (index, proof) in proofs.iter().enumerate() {
@@ -675,9 +696,11 @@ impl Analyzer<'_> {
                 if let Some(local) = environment.get(name) {
                     local.clone()
                 } else if self.table.declared_function_value(expression) == Some(name.as_str()) {
-                    let declaration = self.module.items.iter().find_map(|item| match item {
-                        Item::Function(function) if function.name == *name => Some(function),
-                        _ => None,
+                    let declaration = self.function_index.by_name.get(name).and_then(|item_index| {
+                        match self.module.items.get(*item_index) {
+                            Some(Item::Function(function)) => Some(function),
+                            _ => None,
+                        }
                     });
                     match (declaration, self.summaries.get(name)) {
                         (Some(function), Some(summary)) => {
@@ -1168,6 +1191,7 @@ fn lambda_scopes(function: &Function) -> Result<BTreeMap<usize, TaskCallableScop
 
 fn analyze_function(
     module: &Module,
+    function_index: &ModuleFunctionIndex,
     table: &TypeTable,
     definitions: &BTreeMap<String, TypeDef>,
     summaries: &BTreeMap<String, Summary>,
@@ -1178,13 +1202,14 @@ fn analyze_function(
 ) -> Result<(Summary, BTreeMap<usize, Proof>), TypeError> {
     let scopes = lambda_scopes(function)?;
     analyze_function_with_scopes(
-        module, table, definitions, summaries, function, &scopes,
+        module, function_index, table, definitions, summaries, function, &scopes,
         check_await, deferred_task_role, export_execution_terms,
     )
 }
 
 fn analyze_function_with_scopes(
     module: &Module,
+    function_index: &ModuleFunctionIndex,
     table: &TypeTable,
     definitions: &BTreeMap<String, TypeDef>,
     summaries: &BTreeMap<String, Summary>,
@@ -1196,6 +1221,7 @@ fn analyze_function_with_scopes(
 ) -> Result<(Summary, BTreeMap<usize, Proof>), TypeError> {
     let mut analyzer = Analyzer {
         module,
+        function_index,
         table,
         definitions,
         summaries,
@@ -1266,12 +1292,13 @@ pub(crate) fn checked_final_execution_contracts(
     let module = typed.module();
     let table = typed.table();
     let definitions = type_definitions(module);
+    let function_index = index_functions(module);
     let functions = module.items.iter().filter_map(|item| match item {
         Item::Function(function) if !function.is_async => Some((function.name.as_str(), function)),
         _ => None,
     }).collect::<BTreeMap<_, _>>();
     let mut demand = LambdaSummaryDemand {
-        module, table, definitions: &definitions, functions, deferred_task_role,
+        module, function_index: function_index.clone(), table, definitions: &definitions, functions, deferred_task_role,
         summaries: BTreeMap::new(), unavailable: BTreeSet::new(), active: BTreeSet::new(),
     };
     // Index each enclosing body once. Do not rerun the lexical inventory for
@@ -1320,7 +1347,8 @@ pub(crate) fn checked_final_execution_contracts(
             environment.insert(parameter.name.clone(), Proof::CallableParameter(scope.clone(), index));
         }
         let mut analyzer = Analyzer {
-            module, table, definitions: &definitions, summaries: &demand.summaries, function,
+            module, function_index: &function_index, table, definitions: &definitions,
+            summaries: &demand.summaries, function,
             check_await: false, deferred_task_role, export_execution_terms: true,
             returns: Vec::new(), required_opt_inputs: Vec::new(), await_origins: BTreeMap::new(),
             lambda_scopes, active_lambda_scopes: vec![scope.clone()],
@@ -1361,6 +1389,7 @@ pub(crate) fn checked_final_execution_contracts(
 /// a spelling-based whitelist for standard scheduler helpers.
 struct LambdaSummaryDemand<'a> {
     module: &'a Module,
+    function_index: ModuleFunctionIndex,
     table: &'a TypeTable,
     definitions: &'a BTreeMap<String, TypeDef>,
     functions: BTreeMap<&'a str, &'a Function>,
@@ -1399,7 +1428,7 @@ impl LambdaSummaryDemand<'_> {
         let result = (|| {
             let function = *self.functions.get(name).ok_or(())?;
             self.body(&function.body, remaining, depth)?;
-            analyze_function(self.module, self.table, self.definitions, &self.summaries,
+            analyze_function(self.module, &self.function_index, self.table, self.definitions, &self.summaries,
                 function, false, self.deferred_task_role, true).map(|(summary, _)| summary).map_err(|_| ())
         })();
         self.active.remove(name);
@@ -1417,6 +1446,7 @@ fn analyze_task_behavior(
     deferred_task_role: Option<&DeferredTaskRole>,
 ) -> Result<CheckedTaskBehavior, TypeError> {
     let definitions = type_definitions(module);
+    let function_index = index_functions(module);
     let functions: Vec<_> = module
         .items
         .iter()
@@ -1475,7 +1505,7 @@ fn analyze_task_behavior(
                 if !dirty.contains(&index) {
                     continue;
                 }
-                let mut summary = analyze_function_with_scopes(module, table, &definitions, &summaries,
+                let mut summary = analyze_function_with_scopes(module, &function_index, table, &definitions, &summaries,
                     function, &function_lambda_scopes[index], false, deferred_task_role, export_declarations)?.0;
                 if widened.contains(&function.name) {
                     summary.result = summary.result.invalidated();
@@ -1505,7 +1535,7 @@ fn analyze_task_behavior(
         if converged { break; }
         let mut growing = BTreeSet::new();
         for (index, function) in functions.iter().enumerate() {
-            let next = analyze_function_with_scopes(module, table, &definitions, &summaries,
+            let next = analyze_function_with_scopes(module, &function_index, table, &definitions, &summaries,
                 function, &function_lambda_scopes[index], false, deferred_task_role, export_declarations)?.0;
             let prior = summaries.get(&function.name);
             if prior.is_some_and(|prior| prior.required_opt_inputs != next.required_opt_inputs) {
@@ -1525,7 +1555,7 @@ fn analyze_task_behavior(
     }
     let mut awaits = BTreeMap::new();
     for (index, function) in functions.iter().enumerate() {
-        awaits.extend(analyze_function_with_scopes(module, table, &definitions, &summaries,
+        awaits.extend(analyze_function_with_scopes(module, &function_index, table, &definitions, &summaries,
             function, &function_lambda_scopes[index], true, deferred_task_role, export_declarations)?.1);
     }
     let mut declarations = BTreeMap::new();
@@ -1533,7 +1563,7 @@ fn analyze_task_behavior(
         if let Item::Impl(definition) = item {
             for method in &definition.methods {
                 if method.is_async {
-                    let (summary, origins) = analyze_function(module, table, &definitions, &summaries, method, true, deferred_task_role, export_declarations)?;
+                    let (summary, origins) = analyze_function(module, &function_index, table, &definitions, &summaries, method, true, deferred_task_role, export_declarations)?;
                     awaits.extend(origins);
                     if export_declarations {
                         declarations.insert(method as *const Function as usize,
