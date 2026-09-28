@@ -32,7 +32,7 @@ use witchy_syntax::ast::{Item, Module};
 
 /// Modules whose presence disables pruning: they reflect over, or compile,
 /// arbitrary program items at run time.
-const WHOLE_PROGRAM_MODULES: &[&str] = &["dynamic", "reflect", "vm", "meta", "compiler"];
+const WHOLE_PROGRAM_MODULES: &[&str] = &["dynamic", "reflect", "vm", "compiler"];
 
 /// Names the compiler introduces AFTER type checking (canonical preparation
 /// and trait lowering), which no source item names. Missing one only costs
@@ -183,7 +183,12 @@ pub fn prune(module: &Module, std_impls: &HashSet<(String, Vec<String>)>) -> Opt
                 Some(owner) if WHOLE_PROGRAM_MODULES.contains(&owner) => return None,
                 // `show`, and internal `mod.__*` helpers the compiler may name
                 // through a constructed string, are always retained.
-                Some("show") | None => roots.push(index),
+                // `meta` reflects over source declarations and constructs
+                // generated syntax, but it does not dynamically dispatch
+                // standard-library functions. Keep and scan its fixed
+                // implementation; generated calls are checked again in the
+                // ordinary destination after expansion.
+                Some("meta" | "show") | None => roots.push(index),
                 Some(_) if function.name.split_once('.').is_some_and(|(_, rest)| rest.starts_with("__")) => {
                     roots.push(index)
                 }
@@ -269,7 +274,7 @@ pub fn prune(module: &Module, std_impls: &HashSet<(String, Vec<String>)>) -> Opt
         let before = items.len();
         match item {
             Item::Function(function)
-                if std_module_of(&function.name).is_some_and(|owner| owner != "show")
+                if std_module_of(&function.name).is_some_and(|owner| owner != "show" && owner != "meta")
                     && !function.name.split_once('.').is_some_and(|(_, rest)| rest.starts_with("__")) =>
             {
                 if kept.contains(&(index, None)) {

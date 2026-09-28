@@ -171,12 +171,36 @@ fn run_source_bundle_for_entry(
     user_modules: HashSet<String>, owners: AuthenticatedModuleOwners,
     limits: ComptimeLimits,
 ) -> Result<CheckedExpansion, String> {
+    with_std_pruning_fallback(|| run_source_bundle_for_entry_attempt(
+        sources.clone(), entry, selected, user_modules.clone(), owners.clone(), limits,
+    ))
+}
+
+fn run_source_bundle_for_entry_attempt(
+    sources: Vec<(String, Vec<u8>)>, entry: &str, selected: &str,
+    user_modules: HashSet<String>, owners: AuthenticatedModuleOwners,
+    limits: ComptimeLimits,
+) -> Result<CheckedExpansion, String> {
     let session = ComptimeSourceSession::from_source_bundle(sources, selected, user_modules, owners)
         .map_err(|error| error.to_string())?;
     let prior = execute_source_blocks(&session, limits)?;
     let (checked, selected_module) = session.check_expanded_for_entry(&prior, entry)
         .map_err(|error| error.to_string())?;
     Ok(CheckedExpansion { checked, selected_module })
+}
+
+fn with_std_pruning_fallback<T>(mut run: impl FnMut() -> Result<T, String>) -> Result<T, String> {
+    let (pruned_result, pruned) = witchy_types::std_pruning::with_pruning(true, || run());
+    if pruned_result.is_ok() || !pruned {
+        witchy_types::std_pruning::log(if pruned { "pruned-ok" } else { "not-pruned" }.into());
+        return pruned_result;
+    }
+    if let Err(error) = &pruned_result {
+        witchy_types::std_pruning::log(format!(
+            "fallback: {}", error.lines().next().unwrap_or(""),
+        ));
+    }
+    witchy_types::std_pruning::with_pruning(false, || run()).0
 }
 
 /// Execute imported producers in dependency order from the authenticated raw
