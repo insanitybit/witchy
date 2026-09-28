@@ -2,11 +2,19 @@
 //! prior-output chain, whose execution authenticity is established by the
 //! compiler-owned runtime driver.
 use super::*;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use witchy_syntax::ast::{Expr, Function, Stmt};
 use witchy_syntax::compiler_session::ComptimeSyntaxOrigin;
 
 const REWRITE_VERSION: u32 = 6;
+const MAX_CACHED_PREFIX_VALIDATIONS: usize = 256;
+
+#[derive(Hash, PartialEq, Eq)]
+struct PrefixValidationKey {
+    source_context: [u8; 32],
+    selected: String,
+    prior_output: [u8; 32],
+}
 
 fn type_operand(expression: &Expr) -> Result<Type, PipelineError> {
     match expression {
@@ -145,11 +153,13 @@ pub struct PriorComptimeBlockOutput {
 /// bytes and loader assignments; no mutable module accessor is exposed.
 pub struct ComptimeSourceSession {
     original_digest: [u8; 32],
+    module_context_digest: [u8; 32],
     raw_sources: Arc<Vec<(String, Vec<u8>)>>,
     modules: Arc<Vec<(String, Module)>>,
     selected: String,
     owners: AuthenticatedModuleOwners,
     user_modules: HashSet<String>,
+    validated_prefixes: Arc<Mutex<std::collections::HashSet<PrefixValidationKey>>>,
 }
 
 fn refuse(message: impl Into<String>) -> PipelineError {
@@ -181,11 +191,13 @@ impl ComptimeSourceSession {
             original_digest: checked_source_digest(
                 &self.raw_sources, selected, &PrecompiledDeclarationEnvironment::default(),
             ),
+            module_context_digest: self.module_context_digest,
             raw_sources: Arc::clone(&self.raw_sources),
             modules: Arc::clone(&self.modules),
             selected: selected.into(),
             owners: self.owners.clone(),
             user_modules: self.user_modules.clone(),
+            validated_prefixes: Arc::clone(&self.validated_prefixes),
         })
     }
 
@@ -222,6 +234,9 @@ impl ComptimeSourceSession {
         hash.update(b"witchy.comptime-predecessor-stage.v1\0");
         hash.update(&REWRITE_VERSION.to_le_bytes());
         hash.update(&session.original_digest);
+        let mut context_hash = blake3::Hasher::new();
+        context_hash.update(b"witchy.comptime-source-context.v1\0");
+        context_hash.update(&session.module_context_digest);
         for (predecessor, prior) in predecessors {
             if !seen.insert(predecessor.clone()) || predecessor == &selected {
                 return Err(refuse("comptime predecessor outputs must be unique and acyclic"));
@@ -244,6 +259,10 @@ impl ComptimeSourceSession {
             hash.update(&(predecessor.len() as u64).to_le_bytes());
             hash.update(predecessor.as_bytes());
             hash_prior_items(&mut hash, prior)?;
+            context_hash.update(&(predecessor.len() as u64).to_le_bytes());
+            context_hash.update(predecessor.as_bytes());
+            hash_prior_items(&mut context_hash, prior)?;
+            session.module_context_digest = *context_hash.clone().finalize().as_bytes();
         }
         session.original_digest = *hash.finalize().as_bytes();
         Ok(session)
@@ -451,6 +470,7 @@ impl ComptimeSourceSession {
             return Err(refuse("comptime session selected module is not a loader-owned user module"));
         }
         let original_digest = checked_source_digest(&sources, selected, &PrecompiledDeclarationEnvironment::default());
+        let module_context_digest = source_bundle_context_digest(&sources);
         let modules = sources.iter().map(|(name, bytes)| {
             let source = std::str::from_utf8(&bytes).map_err(|error| refuse(format!("comptime source `{name}` is not UTF-8: {error}")))?;
             let mut module = witchy_syntax::parser::parse_module(source)
@@ -462,7 +482,16 @@ impl ComptimeSourceSession {
             }
             Ok((name.clone(), module))
         }).collect::<Result<_, PipelineError>>()?;
-        Ok(Self { original_digest, raw_sources: Arc::new(sources), modules: Arc::new(modules), selected: selected.into(), owners, user_modules })
+        Ok(Self {
+            original_digest,
+            module_context_digest,
+            raw_sources: Arc::new(sources),
+            modules: Arc::new(modules),
+            selected: selected.into(),
+            owners,
+            user_modules,
+            validated_prefixes: Arc::new(Mutex::new(std::collections::HashSet::new())),
+        })
     }
 
     /// Select an original item with genuinely empty prior output. Replaying
@@ -611,6 +640,10 @@ impl ComptimeSourceSession {
     /// still checks the complete module after all blocks execute.
     fn check_prior_items(&self, prior: &[PriorComptimeBlockOutput]) -> Result<(), PipelineError> {
         if prior.is_empty() { return Ok(()); }
+        let key = prefix_validation_key(self.module_context_digest, &self.selected, prior)?;
+        if self.validated_prefixes.lock().ok().is_some_and(|cache| cache.contains(&key)) {
+            return Ok(());
+        }
         let (_, original) = self.modules.iter().find(|(name, _)| name == &self.selected)
             .expect("selected raw module retained");
         let mut prepared = materialize_prior(original, prior, false, true);
@@ -629,6 +662,11 @@ impl ComptimeSourceSession {
         let expand = ComptimeExpander::with_sibling_request(require_expansion_free, |_| false);
         let _ = link_checked_with(modules, &self.selected, expand, LinkMode::Production,
             Some(&self.user_modules), true, Some(self.owners.clone()))?;
+        if let Ok(mut cache) = self.validated_prefixes.lock() {
+            if cache.len() < MAX_CACHED_PREFIX_VALIDATIONS {
+                cache.insert(key);
+            }
+        }
         Ok(())
     }
 
@@ -1048,6 +1086,34 @@ fn materialize_prior_with_origins(
         }
     }
     (prepared, origins)
+}
+
+fn source_bundle_context_digest(sources: &[(String, Vec<u8>)]) -> [u8; 32] {
+    let mut hash = blake3::Hasher::new();
+    hash.update(b"witchy.comptime-source-bundle-context.v1\0");
+    for (name, source) in sources {
+        hash.update(&(name.len() as u64).to_le_bytes());
+        hash.update(name.as_bytes());
+        hash.update(&(source.len() as u64).to_le_bytes());
+        hash.update(source);
+    }
+    *hash.finalize().as_bytes()
+}
+
+fn prefix_validation_key(
+    source_context: [u8; 32], selected: &str, prior: &[PriorComptimeBlockOutput],
+) -> Result<PrefixValidationKey, PipelineError> {
+    let mut hash = blake3::Hasher::new();
+    hash.update(b"witchy.comptime-prefix-validation.v1\0");
+    hash.update(&source_context);
+    hash.update(&(selected.len() as u64).to_le_bytes());
+    hash.update(selected.as_bytes());
+    hash_prior_items(&mut hash, prior)?;
+    Ok(PrefixValidationKey {
+        source_context,
+        selected: selected.into(),
+        prior_output: *hash.finalize().as_bytes(),
+    })
 }
 
 #[cfg(not(target_arch = "wasm32"))]
