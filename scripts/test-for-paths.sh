@@ -644,15 +644,6 @@ for p in "${paths[@]}"; do
             add_early "cargo nextest run -p witchy-runtime --features native --test runtime -E 'test(/^runtime::host::build_env::tests::/) or test(=runtime::host::closure_owner::tests::build_env_captures_reauthenticate_root_and_optional_response_and_cleanup)'"
             add_early "cargo nextest run -p witchy --test misc -E 'test(=wasm_abi_catalog::native_host_links_every_catalog_import_with_the_declared_signature)'"
             path_has_early=1 ;;
-        tests/misc/rfc0103_build_step_confinement.rs)
-            add_early "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test misc -E 'test(/.*rfc0103_build_step_confinement::/)'"
-            path_has_early=1 ;;
-        tests/misc/rfc0165_build_read_project.rs)
-            add_early "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test misc -E 'test(/.*rfc0165_build_read_project::/)'"
-            path_has_early=1 ;;
-        tests/misc/rfc0165_build_env_project.rs)
-            add_early "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test misc -E 'test(/.*rfc0165_build_env_project::/)'"
-            path_has_early=1 ;;
         crates/witchy-types/src/pipeline/test_driver/integration.rs)
             add_early "cargo nextest run -p witchy --features witchy-wir/native --test misc -E 'test(=wasm_abi_catalog::native_host_links_every_catalog_import_with_the_declared_signature) or test(=rfc0077_integration_grants::source_integration_recipe_runs_selected_console_capture_and_reports_abort)'"
             path_has_early=1 ;;
