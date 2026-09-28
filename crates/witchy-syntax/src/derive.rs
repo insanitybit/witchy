@@ -18,11 +18,81 @@ pub fn has_only_direct_record_derives(module: &Module) -> bool {
         if definition.derives.is_empty() { continue; }
         found = true;
         if definition.variants.len() != 1 || definition.variants[0].field_names.is_empty()
-            || definition.derives.iter().any(|name| name != "Eq" && name != "PartialEq" && name != "Show") {
+            || definition.derives.iter().any(|name| !matches!(name.as_str(),
+                "Eq" | "PartialEq" | "Show" | "PartialOrd" | "Ord")) {
             return false;
         }
     }
     found
+}
+
+fn ordering_arm(pattern: Pattern, body: Expr, line: u32) -> MatchArm {
+    MatchArm { line, pattern, guard: None, body }
+}
+
+fn ordering_ctor(name: &str) -> Pattern {
+    Pattern::Ctor { name: name.into(), args: Vec::new() }
+}
+
+fn ordering_value(name: &str, partial: bool) -> Expr {
+    let value = Expr::Ctor { name: name.into(), args: Vec::new() };
+    if partial { Expr::Ctor { name: "Some".into(), args: vec![value] } } else { value }
+}
+
+fn record_ordering_body(fields: &[String], index: usize, partial: bool, line: u32) -> Expr {
+    let Some(field) = fields.get(index) else { return ordering_value("Equal", partial) };
+    let field_of = |owner: &str| Expr::Field {
+        base: Box::new(Expr::Var(owner.into())), field: field.clone(),
+    };
+    let compared = Expr::MethodCall {
+        receiver: Box::new(field_of("self")),
+        method: if partial { "partial_compare" } else { "compare" }.into(),
+        args: vec![field_of("other")],
+    };
+    let pattern = |name: &str| if partial {
+        Pattern::Ctor { name: "Some".into(), args: vec![ordering_ctor(name)] }
+    } else { ordering_ctor(name) };
+    let mut arms = Vec::new();
+    if partial {
+        arms.push(ordering_arm(ordering_ctor("None"),
+            Expr::Ctor { name: "None".into(), args: Vec::new() }, line));
+    }
+    for name in ["Less", "Greater"] {
+        arms.push(ordering_arm(pattern(name), ordering_value(name, partial), line));
+    }
+    arms.push(ordering_arm(pattern("Equal"),
+        record_ordering_body(fields, index + 1, partial, line), line));
+    Expr::Match { scrutinee: Box::new(compared), arms }
+}
+
+fn record_ordering_impl(t: &TypeDef, partial: bool, line: u32) -> Item {
+    let trait_name = if partial { "PartialOrd" } else { "Ord" };
+    let method_name = if partial { "partial_compare" } else { "compare" };
+    let params = t.params.iter().filter(|name| !name.starts_with('\''))
+        .cloned().collect::<Vec<_>>();
+    let target_args = params.iter().map(|name| Type::Named(name.clone(), Vec::new()))
+        .collect::<Vec<_>>();
+    let bounds = params.iter().map(|name|
+        (name.clone(), trait_name.to_string(), Vec::new())).collect::<Vec<_>>();
+    let target = Type::Named(t.name.clone(), target_args.clone());
+    let ordering = Type::Named("Ordering".into(), Vec::new());
+    Item::Impl(ImplDef {
+        origin: ImplOrigin::CompilerGenerated, trait_name: Some(trait_name.into()),
+        trait_args: Vec::new(), type_name: t.name.clone(), target_args,
+        bounds: bounds.clone(), methods: vec![Function {
+            line, public: false, pure: false, comptime_only: false,
+            attributes: Vec::new(), name: method_name.into(), type_params: Vec::new(),
+            params: ["self", "other"].into_iter().map(|name| Param {
+                name: name.into(), ty: Some(target.clone()),
+                convention: Convention::Let, default: None,
+            }).collect(),
+            ret: Some(if partial { Type::Named("Option".into(), vec![ordering]) } else { ordering }),
+            body: Block { stmts: vec![Stmt::Expr(record_ordering_body(
+                &t.variants[0].field_names, 0, partial, line,
+            ))], lines: vec![line], region: None },
+            bounds, is_gen: false, is_async: false,
+        }],
+    })
 }
 
 fn record_show_impl(t: &TypeDef, line: u32) -> Item {
@@ -267,6 +337,16 @@ fn user_derive_outputs(module: &Module) -> HashMap<String, UserDeriveOutput> {
 /// direct AST; other forms call the matching Witchy generator. Unsupported
 /// built-in shapes reject, and unknown derives require `derive_<name>`.
 pub fn expand(module: &mut Module) -> Result<(), String> {
+    expand_with_record_ordering(module, false)
+}
+
+/// The authenticated source session supplies the linked `cmp` declaration
+/// needed to check compiler-owned ordering impls immediately.
+pub fn expand_admitted(module: &mut Module) -> Result<(), String> {
+    expand_with_record_ordering(module, true)
+}
+
+fn expand_with_record_ordering(module: &mut Module, direct_ordering: bool) -> Result<(), String> {
     let mut generated: Vec<Item> = Vec::new();
     let mut generated_lines = Vec::new();
     let mut needs_deserialize = false;
@@ -369,10 +449,12 @@ pub fn expand(module: &mut Module) -> Result<(), String> {
                             t.name
                         ));
                     }
-                    generated.push(derive_item_via_comptime(
-                        "meta.derive_partial_ord",
-                        &derive_type,
-                    ));
+                    generated.push(if direct_ordering {
+                        record_ordering_impl(&derive_type, true,
+                            source_lines.get(item_index).copied().unwrap_or(0))
+                    } else {
+                        derive_item_via_comptime("meta.derive_partial_ord", &derive_type)
+                    });
                 }
                 "Ord" => {
                     let is_record = derive_type.variants.len() == 1
@@ -389,7 +471,12 @@ pub fn expand(module: &mut Module) -> Result<(), String> {
                             t.name
                         ));
                     }
-                    generated.push(derive_item_via_comptime("meta.derive_ord", &derive_type));
+                    generated.push(if direct_ordering {
+                        record_ordering_impl(&derive_type, false,
+                            source_lines.get(item_index).copied().unwrap_or(0))
+                    } else {
+                        derive_item_via_comptime("meta.derive_ord", &derive_type)
+                    });
                 }
                 "Reflect" => {
                     generated.push(derive_item_via_comptime(

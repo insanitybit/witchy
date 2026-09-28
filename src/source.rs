@@ -1310,6 +1310,29 @@ mod tests {
     }
 
     #[test]
+    fn record_ordering_derives_run_on_admitted_wasm_in_both_modes() {
+        for mode in ["", "mode opt\n\n"] {
+            let dir = unique_dir("admitted_record_ordering");
+            std::fs::create_dir_all(&dir).unwrap();
+            let entry = dir.join("main.witchy");
+            let source = format!("{mode}type Version derive(Eq, PartialOrd, Ord):\n    major: Int\n    minor: Int\n\nfn describe(value: Option(Ordering)) -> String:\n    match value:\n        Some(Less) -> \"less\"\n        Some(Equal) -> \"equal\"\n        Some(Greater) -> \"greater\"\n        None -> \"none\"\n\nfn main(console: Console):\n    console.print(describe(Version(1, 9).partial_compare(Version(2, 0))))\n    console.print(\"${{Version(2, 0) > Version(1, 9)}}\")\n");
+            std::fs::write(&entry, source).unwrap();
+            let (checked, _) = super::link_file_checked(entry.to_str().unwrap())
+                .expect("record ordering checks");
+            let artifact = witchy_lower::codegen::compile_checked_module_artifact(&checked)
+                .expect_lowered("record ordering admits");
+            let mut runtime = witchy_runtime::runtime::Runtime::batch().unwrap();
+            let mut vm = runtime.spawn_admitted(&artifact, witchy_runtime::runtime::Capabilities {
+                print: true, quiet: true, ..Default::default()
+            }, 256).unwrap();
+            vm.run().unwrap();
+            assert_eq!(vm.output(), ["less", "true"]);
+            assert_eq!(vm.canonical_heap_leaks().unwrap(), Some(0));
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
+    #[test]
     fn local_hole_free_tag_runs_on_admitted_wasm_in_both_modes() {
         for mode in ["", "mode opt\n\n"] {
             let dir = unique_dir("admitted_local_tag");
