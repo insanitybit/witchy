@@ -258,37 +258,110 @@ fn execute_source_producer_graph(
     }
     let mut dependency_cache = HashMap::<String, Vec<String>>::new();
     let mut completed = HashSet::new();
+    let max_parallel = std::thread::available_parallelism()
+        .map_or(1, |parallelism| parallelism.get().min(2));
     while !pending.is_empty() {
-        let mut ready = None;
-        for (index, producer) in pending.iter().enumerate() {
+        let mut ready_now = HashSet::new();
+        let mut scan_error = None;
+        for producer in &pending {
             if !dependency_cache.contains_key(producer) {
-                let baseline = entry_session.select_module(producer)
-                    .map_err(|error| error.to_string())?;
+                let baseline = match entry_session.select_module(producer) {
+                    Ok(baseline) => baseline,
+                    Err(error) => {
+                        scan_error = Some(error.to_string());
+                        break;
+                    }
+                };
                 let dependencies = baseline.producer_dependency_names(producers);
                 dependency_cache.insert(producer.clone(), dependencies.clone());
             }
             if dependency_cache[producer].iter().all(|name| completed.contains(name)) {
-                ready = Some(index);
-                break;
+                ready_now.insert(producer.clone());
             }
         }
-        let Some(index) = ready else {
-            return Err("comptime producer import graph is cyclic".into());
+        if ready_now.is_empty() {
+            return Err(scan_error.unwrap_or_else(|| "comptime producer import graph is cyclic".into()));
+        }
+
+        // Preserve the old deterministic topological order. Only batch the
+        // initial ready prefix; stop as soon as completing a producer would
+        // make an earlier dependent producer runnable ahead of the next item.
+        let mut simulated_completed = completed.clone();
+        let mut batch_names = Vec::new();
+        loop {
+            let mut next = None;
+            for producer in &pending {
+                if simulated_completed.contains(producer) { continue; }
+                let Some(dependencies) = dependency_cache.get(producer) else { break; };
+                if dependencies.iter().all(|name| simulated_completed.contains(name)) {
+                    next = Some(producer);
+                    break;
+                }
+            }
+            let Some(producer) = next else { break; };
+            if !ready_now.contains(producer) || batch_names.len() >= max_parallel {
+                break;
+            }
+            batch_names.push(producer.clone());
+            simulated_completed.insert(producer.clone());
+        }
+        if batch_names.is_empty() {
+            return Err(scan_error.unwrap_or_else(|| "comptime producer import graph is cyclic".into()));
+        }
+
+        let batch = batch_names.into_iter().map(|producer| {
+            let dependencies = &dependency_cache[&producer];
+            let predecessors = outputs.iter().filter(|(name, _)| dependencies.contains(name))
+                .cloned().collect::<Vec<_>>();
+            (producer, predecessors)
+        }).collect::<Vec<_>>();
+        let results = if batch.len() == 1 || max_parallel == 1 {
+            let mut results = Vec::with_capacity(batch.len());
+            for (producer, predecessors) in &batch {
+                let prior = execute_source_producer(
+                    &entry_session, producer, predecessors, limits,
+                )?;
+                results.push((producer.clone(), Ok(prior)));
+            }
+            results
+        } else {
+            std::thread::scope(|scope| {
+                let handles = batch.iter().map(|(producer, predecessors)| {
+                    let producer = producer.clone();
+                    let output_name = producer.clone();
+                    let entry_session = &entry_session;
+                    let handle = scope.spawn(move || execute_source_producer(
+                        entry_session, &producer, predecessors, limits,
+                    ));
+                    (output_name, handle)
+                }).collect::<Vec<_>>();
+                handles.into_iter().map(|(producer, handle)| (
+                    producer,
+                    handle.join().expect("comptime producer worker panicked"),
+                )).collect::<Vec<_>>()
+            })
         };
-        let producer = pending.remove(index);
-        let dependencies = &dependency_cache[&producer];
-        let predecessors = outputs.iter().filter(|(name, _)| dependencies.contains(name))
-            .cloned().collect::<Vec<_>>();
-        let session = entry_session.select_module(&producer)
-            .map_err(|error| error.to_string())?
-            .with_predecessors(&predecessors)
-            .map_err(|error| error.to_string())?;
-        let prior = execute_source_blocks(&session, limits)?;
-        session.check_completed_prefix(&prior).map_err(|error| error.to_string())?;
-        completed.insert(producer.clone());
-        outputs.push((producer, prior));
+        for (producer, result) in results {
+            let prior = result?;
+            completed.insert(producer.clone());
+            outputs.push((producer.clone(), prior));
+            pending.retain(|name| name != &producer);
+        }
     }
     Ok((entry_session, outputs))
+}
+
+fn execute_source_producer(
+    entry_session: &ComptimeSourceSession, producer: &str,
+    predecessors: &[(String, Vec<PriorComptimeBlockOutput>)], limits: ComptimeLimits,
+) -> Result<Vec<PriorComptimeBlockOutput>, String> {
+    let session = entry_session.select_module(producer)
+        .map_err(|error| error.to_string())?
+        .with_predecessors(predecessors)
+        .map_err(|error| error.to_string())?;
+    let prior = execute_source_blocks(&session, limits)?;
+    session.check_completed_prefix(&prior).map_err(|error| error.to_string())?;
+    Ok(prior)
 }
 
 fn execute_source_blocks(

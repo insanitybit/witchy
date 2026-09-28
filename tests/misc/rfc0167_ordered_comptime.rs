@@ -637,30 +637,40 @@ fn imported_blocks_follow_admitted_dependency_graph() {
     let user_modules = std::collections::HashSet::from(["left".into(), "right".into(), "extra".into(), "main".into()]);
     let mut sources = positive_sources;
     sources.push(("main".into(), main_source.as_bytes().to_vec()));
-    let (checked, _) = witchy::canonical_comptime::check_and_expand_source_bundle_with_producer_graph(
-        sources, "main", &producers, user_modules.clone(),
-        owners_for(["left", "right", "extra", "main"]), limits(),
-    ).expect("valid producer graph expands in dependency order");
-    let artifact = witchy_lower::codegen::compile_checked_module_artifact(&checked)
-        .expect_lowered("expanded producer graph admits on unoptimized Wasm");
-    let mut runtime = Runtime::batch().expect("runtime");
-    let mut vm = runtime.spawn_admitted(&artifact,
-        Capabilities { print: true, quiet: true, ..Capabilities::none() }, 64).unwrap();
-    vm.run().unwrap();
-    assert_eq!(vm.output(), ["42"], "independent dependency result: left 19 + extra 23");
-    assert_eq!(vm.canonical_heap_leaks().unwrap(), Some(0));
-
-    let sources = vec![
+    let rejected_sources = vec![
         ("left".into(), "comptime:\n    emit_item(quote item:\n        pub fn value() -> Int:\n            \"wrong\"\n    )\n".as_bytes().to_vec()),
         ("right".into(), "import left\ncomptime:\n    fail(\"later producer ran\")\n".as_bytes().to_vec()),
         ("extra".into(), "comptime:\n    emit_item(quote item:\n        pub fn value() -> Int:\n            23\n    )\n".as_bytes().to_vec()),
         ("main".into(), main_source.as_bytes().to_vec()),
     ];
-    let check = witchy::canonical_comptime::check_and_expand_source_bundle_with_producer_graph(
-        sources, "main", &producers, user_modules, owners_for(["left", "right", "extra", "main"]), limits(),
-    ).expect_err("invalid first producer must stop the dependent graph");
-    assert!(check.contains("Int") && check.contains("String"), "{check}");
-    assert!(!check.contains("later producer ran"), "{check}");
+    std::thread::scope(|scope| {
+        let producer_names = &producers;
+        let modules = &user_modules;
+        scope.spawn(move || {
+            let (checked, _) = witchy::canonical_comptime::check_and_expand_source_bundle_with_producer_graph(
+                sources, "main", producer_names, modules.clone(),
+                owners_for(["left", "right", "extra", "main"]), limits(),
+            ).expect("valid producer graph expands in dependency order");
+            let artifact = witchy_lower::codegen::compile_checked_module_artifact(&checked)
+                .expect_lowered("expanded producer graph admits on unoptimized Wasm");
+            let mut runtime = Runtime::batch().expect("runtime");
+            let mut vm = runtime.spawn_admitted(&artifact,
+                Capabilities { print: true, quiet: true, ..Capabilities::none() }, 64).unwrap();
+            vm.run().unwrap();
+            assert_eq!(vm.output(), ["42"], "independent dependency result: left 19 + extra 23");
+            assert_eq!(vm.canonical_heap_leaks().unwrap(), Some(0));
+        });
+        let producer_names = &producers;
+        let modules = &user_modules;
+        scope.spawn(move || {
+            let check = witchy::canonical_comptime::check_and_expand_source_bundle_with_producer_graph(
+                rejected_sources, "main", producer_names, modules.clone(),
+                owners_for(["left", "right", "extra", "main"]), limits(),
+            ).expect_err("invalid first producer must stop the dependent graph");
+            assert!(check.contains("Int") && check.contains("String"), "{check}");
+            assert!(!check.contains("later producer ran"), "{check}");
+        });
+    });
 }
 
 #[test]
