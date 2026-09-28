@@ -18,9 +18,18 @@ fn owners_for<'a>(user_modules: impl IntoIterator<Item = &'a str>) -> Authentica
     AuthenticatedModuleOwners::from_loader_assignments(assignments).unwrap()
 }
 
+fn in_both_modes(run: impl Fn(&'static str) + Sync) {
+    std::thread::scope(|scope| {
+        for mode in ["", "mode opt\n"] {
+            let run = &run;
+            scope.spawn(move || run(mode));
+        }
+    });
+}
+
 #[test]
 fn admitted_local_tag_after_source_block_in_both_modes() {
-    for mode in ["", "mode opt\n"] {
+    in_both_modes(|mode| {
         let source = format!(r#"{mode}import meta
 comptime fn literal(parts: List(String), holes: List(meta.TagHole)) -> meta.ExprSyntax:
     meta.expr_int(42)
@@ -45,7 +54,7 @@ fn main(console: Console):
         vm.run().unwrap();
         assert_eq!(vm.output(), ["43"]);
         assert_eq!(vm.canonical_heap_leaks().unwrap(), Some(0));
-    }
+    });
 }
 
 #[test]
@@ -227,13 +236,13 @@ fn admitted_type_info_resolves_staged_type_names_before_execution() {
 #[test]
 fn admitted_reflected_field_types_build_a_typed_record_in_both_modes() {
     let folder = TempDir::new("admitted-reflected-record-types");
-    let source = folder.join("main.witchy");
-    for mode in ["", "mode opt\n"] {
+    in_both_modes(|mode| {
+        let source = folder.join(if mode.is_empty() { "main-normal.witchy" } else { "main-opt.witchy" });
         std::fs::write(&source, format!("{mode}import meta\ntype User:\n    name: String\n    age: Int\ncomptime:\n    let info = type_info(User)\n    let name_ty = meta.type_expr(info.fields[0].type_expr)\n    let age_ty = meta.type_expr(info.fields[1].type_expr)\n    emit_item(meta.record_type(meta.ident(\"Mirror\"), [(meta.ident(\"name\"), name_ty), (meta.ident(\"age\"), age_ty)]))\nfn main(console: Console):\n    let value = Mirror(\"Ada\", 42)\n    console.print(\"${{value.name}}/${{value.age}}\")\n")).unwrap();
         let run = Command::new(env!("CARGO_BIN_EXE_witchy")).arg(&source).output().unwrap();
         assert!(run.status.success(), "{}", String::from_utf8_lossy(&run.stderr));
         assert_eq!(String::from_utf8_lossy(&run.stdout), "Ada/42\n");
-    }
+    });
 }
 
 #[test]
@@ -700,10 +709,6 @@ fn imported_original_block_feeds_bare_test_driver() {
     std::fs::write(&producer, "comptime:\n    emit_item(quote item:\n        pub fn answer() -> Int:\n            42\n    )\n").unwrap();
     std::fs::write(&relay, "import dep\ncomptime:\n    if dep.answer() == 42:\n        emit_item(quote item:\n            pub fn answer() -> Int:\n                dep.answer()\n        )\n").unwrap();
     std::fs::write(&entry, "import relay\nfn test_answer():\n    if relay.answer() != 42:\n        fail(\"wrong imported helper\")\n").unwrap();
-    let run = Command::new(env!("CARGO_BIN_EXE_witchy"))
-        .arg("test").arg(&entry).output().unwrap();
-    assert!(run.status.success(), "{}", String::from_utf8_lossy(&run.stderr));
-
     let sources = vec![
         ("dep".into(), "comptime:\n    emit_item(quote item:\n        pub fn answer() -> Int:\n            \"wrong\"\n    )\n".as_bytes().to_vec()),
         ("relay".into(), "import dep\ncomptime:\n    if dep.answer() == 42:\n        emit_item(quote item:\n            pub fn answer() -> Int:\n                dep.answer()\n        )\n".as_bytes().to_vec()),
@@ -711,15 +716,25 @@ fn imported_original_block_feeds_bare_test_driver() {
     ];
     let producers = ["dep", "relay", "main"].map(str::to_owned);
     let user_modules = std::collections::HashSet::from(["dep".into(), "relay".into(), "main".into()]);
-    let error = witchy::canonical_comptime::check_test_suite_source_bundle_with_producer_graph(
-        sources, "main", &producers, user_modules, owners_for(["dep", "relay", "main"]), limits(),
-    ).expect_err("invalid imported output must be refused before creating the test driver");
-    assert!(error.contains("Int") && error.contains("String"), "{error}");
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            let run = Command::new(env!("CARGO_BIN_EXE_witchy"))
+                .arg("test").arg(&entry).output().unwrap();
+            assert!(run.status.success(), "{}", String::from_utf8_lossy(&run.stderr));
+        });
+        scope.spawn(move || {
+            let error = witchy::canonical_comptime::check_test_suite_source_bundle_with_producer_graph(
+                sources, "main", &producers, user_modules,
+                owners_for(["dep", "relay", "main"]), limits(),
+            ).expect_err("invalid imported output must be refused before creating the test driver");
+            assert!(error.contains("Int") && error.contains("String"), "{error}");
+        });
+    });
 }
 
 #[test]
 fn admitted_typed_binary_and_index_generation_in_both_modes() {
-    for mode in ["", "mode opt\n"] {
+    in_both_modes(|mode| {
         let source = format!(r#"{mode}import meta
 comptime:
     let int_ty = quote type:
@@ -746,11 +761,11 @@ fn main(console: Console):
         vm.run().unwrap();
         assert_eq!(vm.output(), ["51"]); // (39 + 3) + [8, 9][1]
         assert_eq!(vm.canonical_heap_leaks().unwrap(), Some(0));
-    }
+    });
 }
 #[test]
 fn admitted_typed_list_and_tuple_generation_in_both_modes() {
-    for mode in ["", "mode opt\n"] {
+    in_both_modes(|mode| {
         let source = format!(r#"{mode}import meta
 comptime:
     let list_ty = quote type:
@@ -779,11 +794,11 @@ fn main(console: Console):
         vm.run().unwrap();
         assert_eq!(vm.output(), ["26"]); // 5 + 6 + 7 + 8
         assert_eq!(vm.canonical_heap_leaks().unwrap(), Some(0));
-    }
+    });
 }
 #[test]
 fn admitted_typed_for_while_and_assignment_generation_in_both_modes() {
-    for mode in ["", "mode opt\n"] {
+    in_both_modes(|mode| {
         let source = format!(r#"{mode}import meta
 comptime:
     let int_ty = quote type:
@@ -821,11 +836,11 @@ fn main(console: Console):
         vm.run().unwrap();
         assert_eq!(vm.output(), ["12"]); // 1 + 2 + 3 + 4, then two increments
         assert_eq!(vm.canonical_heap_leaks().unwrap(), Some(0));
-    }
+    });
 }
 #[test]
 fn admitted_typed_pattern_and_while_let_generation_in_both_modes() {
-    for mode in ["", "mode opt\n"] {
+    in_both_modes(|mode| {
         let source = format!(r#"{mode}import meta
 comptime:
     let pattern_int_ty = quote type:
@@ -878,12 +893,12 @@ fn main(console: Console):
         vm.run().unwrap();
         assert_eq!(vm.output(), ["1", "42"]); // one Some item; 20 + 22
         assert_eq!(vm.canonical_heap_leaks().unwrap(), Some(0));
-    }
+    });
 }
 
 #[test]
 fn admitted_typed_method_call_generation_in_both_modes() {
-    for mode in ["", "mode opt\n"] {
+    in_both_modes(|mode| {
         let source = format!(r#"{mode}import meta
 comptime:
     let int_ty = quote type:
@@ -907,5 +922,5 @@ fn main(console: Console):
         vm.run().unwrap();
         assert_eq!(vm.output(), ["3"]);
         assert_eq!(vm.canonical_heap_leaks().unwrap(), Some(0));
-    }
+    });
 }
