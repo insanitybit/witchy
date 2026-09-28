@@ -57,7 +57,7 @@ impl StaticSourceSnapshot {
         if !source_block_producers(&self.sources, &self.user_modules)?.is_empty() {
             return Err("fresh-island comptime requires an admitted static recipe".into());
         }
-        let expand = if source_bundle_needs_legacy_expansion(&self.sources) {
+        let expand = if static_bundle_needs_legacy_expansion(&self.sources) {
             comptime::EXPANDER
         } else {
             witchy_syntax::linker::ComptimeExpander::with_sibling_request(
@@ -121,11 +121,18 @@ pub(crate) fn bundled_module(name: &str) -> Option<&'static str> {
     witchy_syntax::linker::bundled_source(name)
 }
 
+fn static_bundle_needs_legacy_expansion(sources: &[(String, Vec<u8>)]) -> bool {
+    source_bundle_needs_legacy_expansion(&sources.iter().filter(|(name, bytes)|
+        name != "glamour" || bundled_module(name)
+            .is_none_or(|bundled| bundled.as_bytes() != bytes.as_slice()))
+        .cloned().collect::<Vec<_>>())
+}
+
 fn source_bundle_needs_legacy_expansion(sources: &[(String, Vec<u8>)]) -> bool {
     sources.iter().any(|(name, bytes)| {
         let parsed = std::str::from_utf8(bytes).ok().and_then(|source| parser::parse_module(source).ok());
-        // Bundled `meta` carries inert quote metadata. Bundled `glamour` also
-        // has real comptime blocks, which must keep their selected route.
+        // Bundled `meta` carries inert quote metadata. Glamour derives are
+        // handled by the authenticated static recipe when that route is chosen.
         if bundled_module(name).is_some_and(|source| source.as_bytes() == bytes.as_slice()) {
             return parsed.as_ref().is_none_or(|module| {
                 module.items.iter().any(|item| match item {
@@ -377,7 +384,7 @@ pub(crate) fn link_static_site_checked_with_output_snapshot(
     let output = if has_main {
         None
     } else {
-        let expand = if source_bundle_needs_legacy_expansion(&sources) {
+        let expand = if static_bundle_needs_legacy_expansion(&sources) {
             comptime::EXPANDER
         } else {
             witchy_syntax::linker::ComptimeExpander::with_sibling_request(

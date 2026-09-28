@@ -10,7 +10,7 @@ use crate::runtime_type::{DeclarationIdentity, ModuleLoadIdentity, PackageSource
 use sha2::{Digest, Sha256};
 use witchy_syntax::ast::{Expr, Item, Module};
 
-const RECIPE_VERSION: u32 = 3;
+const RECIPE_VERSION: u32 = 4;
 
 #[derive(Debug)]
 pub struct CheckedStaticEvaluationRecipe {
@@ -116,6 +116,16 @@ fn link_static_evaluation_recipe(
             "static evaluation recipe lacks authenticated owner for source module `{name}`"
         )))?;
         rewrite_module(module, owner)?;
+        if name == "glamour" {
+            let raw = sources.iter().find(|(source_name, _)| source_name == name)
+                .expect("parsed glamour retained");
+            if witchy_syntax::linker::bundled_source("glamour")
+                .is_none_or(|bundled| bundled.as_bytes() != raw.1.as_slice()) {
+                return Err(refused("static evaluation requires exact bundled toolchain Glamour source"));
+            }
+            witchy_syntax::derive::expand_toolchain_reflect(module)
+                .map_err(|message| refused(format!("toolchain Glamour derive: {message}")))?;
+        }
     }
     if let Some(has_content) = output_content {
         let (_, selected) = modules.iter_mut().find(|(name, _)| name == entry)

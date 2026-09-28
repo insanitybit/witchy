@@ -26,6 +26,96 @@ pub fn has_only_direct_record_derives(module: &Module) -> bool {
     found
 }
 
+/// Expand the authenticated toolchain Glamour declarations before static-site
+/// linking. The caller binds this rewrite to the raw source and toolchain owner.
+pub fn expand_toolchain_reflect(module: &mut Module) -> Result<(), String> {
+    expand_with_record_ordering(module, true, true)
+}
+
+fn reflect_call(ty: &Type, value: Expr) -> Expr {
+    let helper = match ty {
+        Type::Named(name, _) if name == "List" => "reflect_list",
+        Type::Named(name, _) if name == "Option" => "reflect_option",
+        _ => "reflect_one",
+    };
+    Expr::Call { name: format!("reflect.{helper}"), args: vec![value] }
+}
+
+fn record_dynamic_field(fields: &[(String, Type)], index: usize, line: u32) -> Expr {
+    let Some((name, _)) = fields.get(index) else {
+        return Expr::Ctor { name: "None".into(), args: Vec::new() };
+    };
+    let owner = Expr::Var("self".into());
+    let field = Expr::Field { base: Box::new(owner.clone()), field: name.clone() };
+    let descriptor = |value: Expr| Expr::Call {
+        name: "__dynamic_descriptor_id".into(), args: vec![value],
+    };
+    let value = Expr::Call { name: "reflect.DynamicFieldValue".into(),
+        args: vec![descriptor(owner), descriptor(field.clone()), field] };
+    Expr::Match { scrutinee: Box::new(Expr::Binary { op: BinOp::Eq,
+        lhs: Box::new(Expr::Var("__name".into())), rhs: Box::new(Expr::Str(name.clone())) }),
+        arms: vec![ordering_arm(Pattern::Bool(true), Expr::Ctor {
+            name: "Some".into(), args: vec![value],
+        }, line), ordering_arm(Pattern::Wildcard,
+            record_dynamic_field(fields, index + 1, line), line)] }
+}
+
+fn reflect_impl(t: &TypeDef, line: u32) -> Item {
+    let params = t.params.iter().filter(|name| !name.starts_with('\''))
+        .cloned().collect::<Vec<_>>();
+    let target_args = params.iter().map(|name| Type::Named(name.clone(), Vec::new()))
+        .collect::<Vec<_>>();
+    let bounds = params.iter().map(|name|
+        (name.clone(), "Reflect".to_string(), Vec::new())).collect::<Vec<_>>();
+    let target = Type::Named(t.name.clone(), target_args.clone());
+    let record = t.variants.len() == 1 && !t.variants[0].field_names.is_empty();
+    let body = if record {
+        let variant = &t.variants[0];
+        let pairs = variant.field_names.iter().zip(&variant.fields).map(|(name, ty)| {
+            Expr::Tuple(vec![Expr::Str(name.clone()), reflect_call(ty, Expr::Field {
+                base: Box::new(Expr::Var("self".into())), field: name.clone(),
+            })])
+        }).collect();
+        Expr::Call { name: "reflect.MRecord".into(),
+            args: vec![Expr::Str(t.name.clone()), Expr::List(pairs)] }
+    } else {
+        let arms = t.variants.iter().map(|variant| {
+            let vars = (0..variant.fields.len()).map(|i| format!("__reflect_p{i}"))
+                .collect::<Vec<_>>();
+            let values = variant.fields.iter().zip(&vars).map(|(ty, name)|
+                reflect_call(ty, Expr::Var(name.clone()))).collect();
+            ordering_arm(Pattern::Ctor { name: variant.name.clone(),
+                args: vars.into_iter().map(Pattern::Var).collect() },
+                Expr::Call { name: "reflect.MVariant".into(), args: vec![
+                    Expr::Str(t.name.clone()), Expr::Str(variant.name.clone()), Expr::List(values),
+                ] }, line)
+        }).collect();
+        Expr::Match { scrutinee: Box::new(Expr::Var("self".into())), arms }
+    };
+    let method = |name: &str, params: Vec<Param>, ret: Type, body: Expr| Function {
+        line, public: false, pure: false, comptime_only: false, attributes: Vec::new(),
+        name: name.into(), type_params: Vec::new(), params, ret: Some(ret),
+        body: Block { stmts: vec![Stmt::Expr(body)], lines: vec![line], region: None },
+        bounds: bounds.clone(), is_gen: false, is_async: false,
+    };
+    let self_param = || Param { name: "self".into(), ty: Some(target.clone()),
+        convention: Convention::Let, default: None };
+    let mut methods = vec![method("reflect", vec![self_param()],
+        Type::Named("reflect.Mirror".into(), Vec::new()), body)];
+    if record {
+        let fields = t.variants[0].field_names.iter().cloned()
+            .zip(t.variants[0].fields.iter().cloned()).collect::<Vec<_>>();
+        methods.push(method("__dynamic_field", vec![self_param(), Param {
+            name: "__name".into(), ty: Some(Type::Named("String".into(), Vec::new())),
+            convention: Convention::Let, default: None,
+        }], Type::Named("Option".into(), vec![Type::Named("reflect.DynamicFieldValue".into(), Vec::new())]),
+            record_dynamic_field(&fields, 0, line)));
+    }
+    Item::Impl(ImplDef { origin: ImplOrigin::CompilerGenerated,
+        trait_name: Some("Reflect".into()), trait_args: Vec::new(),
+        type_name: t.name.clone(), target_args, bounds, methods })
+}
+
 fn ordering_arm(pattern: Pattern, body: Expr, line: u32) -> MatchArm {
     MatchArm { line, pattern, guard: None, body }
 }
@@ -337,16 +427,16 @@ fn user_derive_outputs(module: &Module) -> HashMap<String, UserDeriveOutput> {
 /// direct AST; other forms call the matching Witchy generator. Unsupported
 /// built-in shapes reject, and unknown derives require `derive_<name>`.
 pub fn expand(module: &mut Module) -> Result<(), String> {
-    expand_with_record_ordering(module, false)
+    expand_with_record_ordering(module, false, false)
 }
 
 /// The authenticated source session supplies the linked `cmp` declaration
 /// needed to check compiler-owned ordering impls immediately.
 pub fn expand_admitted(module: &mut Module) -> Result<(), String> {
-    expand_with_record_ordering(module, true)
+    expand_with_record_ordering(module, true, false)
 }
 
-fn expand_with_record_ordering(module: &mut Module, direct_ordering: bool) -> Result<(), String> {
+fn expand_with_record_ordering(module: &mut Module, direct_ordering: bool, direct_reflect: bool) -> Result<(), String> {
     let mut generated: Vec<Item> = Vec::new();
     let mut generated_lines = Vec::new();
     let mut needs_deserialize = false;
@@ -479,10 +569,11 @@ fn expand_with_record_ordering(module: &mut Module, direct_ordering: bool) -> Re
                     });
                 }
                 "Reflect" => {
-                    generated.push(derive_item_via_comptime(
-                        "meta.derive_reflect",
-                        &derive_type,
-                    ));
+                    generated.push(if direct_reflect {
+                        reflect_impl(&derive_type, source_lines.get(item_index).copied().unwrap_or(0))
+                    } else {
+                        derive_item_via_comptime("meta.derive_reflect", &derive_type)
+                    });
                     needs_reflect = true;
                 }
                 // Decode only: reflection (json.value_of / stringify / Into(Json))
