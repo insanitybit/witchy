@@ -151,14 +151,6 @@ fn parse_source_only_module(src: &str, op: &str) -> Result<Module, String> {
 fn checked_source_only_module(src: &str, op: &str) -> Result<Module, String> {
     use std::collections::{HashSet, VecDeque};
 
-    fn expand_source(
-        name: &str,
-        module: &mut Module,
-        siblings: &[(String, Module)],
-    ) -> Result<witchy_syntax::origin::OriginTable, String> {
-        crate::comptime::expand_compile_time(name, module, siblings)
-    }
-
     let entry = parse_source_only_module(src, op)?;
     let mut modules: Vec<(String, Module)> = vec![("main".to_string(), entry.clone())];
     let mut loaded: HashSet<String> = HashSet::from(["main".to_string()]);
@@ -188,7 +180,9 @@ fn checked_source_only_module(src: &str, op: &str) -> Result<Module, String> {
     }
 
     witchy_types::pipeline::link_checked(modules, "main",
-        witchy_syntax::linker::ComptimeExpander::new(expand_source))
+        witchy_syntax::linker::ComptimeExpander::with_sibling_request(
+            witchy_types::pipeline::require_expansion_free, |_| false,
+        ))
         .map_err(|e| e.to_string())?;
     // The public source-string footprint is the submitted module's footprint,
     // not the linked program's transitive std footprint. Linking/type-checking
