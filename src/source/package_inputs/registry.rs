@@ -20,8 +20,8 @@ impl<'a> Files<'a> {
 
     fn verifier(&mut self) -> Result<&pipeline::CheckedModule, String> {
         if self.verifier.is_none() {
-            // Only compiler-bundled verifier sources enter comptime. In
-            // particular, a vendored manifest cannot choose a verifier body.
+            // Only compiler-bundled verifier sources enter checking. No source
+            // expansion is admitted, and a vendored manifest cannot choose a body.
             let compiler = PackageCoordinate::new(
                 PackageSource::Toolchain, "witchy/compiler", env!("CARGO_PKG_VERSION"),
             ).map_err(|error| error.to_string())?;
@@ -48,7 +48,9 @@ impl<'a> Files<'a> {
                 ("registry_recipe".into(), include_bytes!("registry_verify.witchy").to_vec()),
                 ("gm_core".into(), include_bytes!("../../../projects/grimoire/src/gm_core.witchy").to_vec()),
                 ("coven_artifact".into(), include_bytes!("../../../projects/coven/src/coven_artifact.witchy").to_vec()),
-            ], "registry_recipe", comptime::EXPANSION_FREE_USER_EXPANDER,
+            ], "registry_recipe", witchy_syntax::linker::ComptimeExpander::with_sibling_request(
+                witchy_types::pipeline::require_expansion_free, |_| false,
+            ),
                 &user_modules, owners)
                 .map_err(|error| error.to_string())?);
         }
