@@ -57,8 +57,15 @@ impl StaticSourceSnapshot {
         if !source_block_producers(&self.sources, &self.user_modules)?.is_empty() {
             return Err("fresh-island comptime requires an admitted static recipe".into());
         }
+        let expand = if source_bundle_needs_legacy_expansion(&self.sources) {
+            comptime::EXPANDER
+        } else {
+            witchy_syntax::linker::ComptimeExpander::with_sibling_request(
+                witchy_types::pipeline::require_expansion_free, |_| false,
+            )
+        };
         witchy_types::pipeline::link_checked_static_island_output_from_source_bundle(
-            self.sources.clone(), &self.entry, comptime::EXPANDER,
+            self.sources.clone(), &self.entry, expand,
             &self.user_modules, self.owners.clone(), initial, view,
         ).map_err(|error| error.to_string())
     }
@@ -310,8 +317,15 @@ pub(crate) fn link_static_site_checked_with_output_snapshot(
     let output = if has_main {
         None
     } else {
+        let expand = if source_bundle_needs_legacy_expansion(&sources) {
+            comptime::EXPANDER
+        } else {
+            witchy_syntax::linker::ComptimeExpander::with_sibling_request(
+                witchy_types::pipeline::require_expansion_free, |_| false,
+            )
+        };
         Some(witchy_types::pipeline::link_checked_static_site_output_from_source_bundle(
-            sources, &entry, comptime::EXPANDER, &user_modules, owners, has_content,
+            sources, &entry, expand, &user_modules, owners, has_content,
         ).map_err(|error| error.to_string())?)
     };
     Ok((checked, output, entry, snapshot))
