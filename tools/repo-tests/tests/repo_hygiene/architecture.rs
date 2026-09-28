@@ -80,9 +80,8 @@ fn stage_crates_follow_the_declared_dependency_dag() {
     }
 }
 
-/// Compiler-only tools use `witchy-interp` without the native runtime feature.
-/// Keep the two C-heavy providers behind that boundary so snapshot preparation
-/// and other frontend-only builds cannot compile Wasmtime or AWS-LC.
+/// Snapshot tooling stays on syntax and type facts; native runtime providers
+/// remain optional so frontend-only builds do not compile Wasmtime or AWS-LC.
 #[test]
 fn runtime_native_providers_are_optional() {
     let metadata = metadata();
@@ -150,7 +149,7 @@ fn runtime_native_providers_are_optional() {
         .collect();
     assert_eq!(
         snapshot_dependencies,
-        BTreeSet::from(["toml", "witchy-interp", "witchy-syntax", "witchy-types"]),
+        BTreeSet::from(["toml", "witchy-syntax", "witchy-types"]),
         "snapshot tools must stay on the smallest frontend graph"
     );
 }
