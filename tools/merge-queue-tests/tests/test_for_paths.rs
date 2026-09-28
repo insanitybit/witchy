@@ -247,7 +247,7 @@ fn gate_nextest_misc_module_runs_only_that_module() {
         "mixed compiler and misc-module edit lost its exact targets: {output}",
     );
     assert!(
-        output.contains(&format!("test(/^{}::/)", module)),
+        output.contains(&format!("test(/.*{}::/)", module)),
         "misc-module edit lost its module filter: {output}",
     );
     assert!(
@@ -991,7 +991,7 @@ fn build_read_integration_edits_run_only_their_own_modules() {
         assert!(
             commands[0].starts_with("./scripts/nextest-admitted.sh witchy -- ")
                 && commands[0].contains("cargo nextest run --test misc")
-                && commands[0].contains(&format!("test(/^{}::/)", module)),
+                && commands[0].contains(&format!("test(/.*{}::/)", module)),
             "{path}: {commands:?}",
         );
         assert_ne!(
@@ -1008,7 +1008,7 @@ fn url_component_edits_run_only_the_url_component_module() {
     assert_eq!(commands.len(), 1, "{commands:?}");
     assert!(
         commands[0].contains("cargo nextest run --test misc")
-            && commands[0].contains("test(/^url_components::/)")
+            && commands[0].contains("test(/.*url_components::/)")
             && commands[0].starts_with("./scripts/nextest-admitted.sh witchy -- "),
         "{commands:?}"
     );
@@ -1110,7 +1110,7 @@ fn network_misc_edits_run_only_their_modules() {
         let commands = selected(&["--edit-loop", path]);
         assert_eq!(commands.len(), 1, "{path}: {commands:?}");
         assert!(
-            commands[0].contains(&format!("test(/^{}::/)", module)),
+            commands[0].contains(&format!("test(/.*{}::/)", module)),
             "{path}: {commands:?}"
         );
         assert_ne!(
@@ -1122,7 +1122,7 @@ fn network_misc_edits_run_only_their_modules() {
         let gate = gate_nextest(&[path]);
         assert!(
             gate.lines().next().is_some_and(|line| line.contains("--test misc"))
-                && gate.contains(&format!("test(/^{}::/)", module))
+                && gate.contains(&format!("test(/.*{}::/)", module))
                 && !gate.contains("WORKSPACE"),
             "{path} expanded its landing gate beyond the touched module: {gate}",
         );
@@ -1134,7 +1134,7 @@ fn migration_census_edits_run_only_the_census_module() {
     let commands = selected(&["--edit-loop", "tests/misc/rfc0087_migration_census.rs"]);
     assert_eq!(commands.len(), 1, "{commands:?}");
     assert!(
-        commands[0].contains("test(/^rfc0087_migration_census::/)")
+        commands[0].contains("test(/.*rfc0087_migration_census::/)")
             && commands[0].contains("cargo nextest run --test misc"),
         "{commands:?}"
     );
@@ -1247,7 +1247,7 @@ fn async_region_edits_run_complete_rfc0152_modules() {
         let commands = selected(&["--edit-loop", path]);
         assert_eq!(commands.len(), 1, "{path}: {commands:?}");
         assert!(
-            commands[0].contains(&format!("test(/^{}::/)", module))
+            commands[0].contains(&format!("test(/.*{}::/)", module))
                 && commands[0].contains("cargo nextest run --test misc")
                 && commands[0].contains("nextest-admitted.sh")
                 && !commands[0].contains("--ignore-default-filter"),
@@ -1262,7 +1262,7 @@ fn async_region_edits_run_complete_rfc0152_modules() {
         let gate = gate_nextest(&[path]);
         assert!(
             gate.lines().next().is_some_and(|line| line.contains("--test misc"))
-                && gate.contains(&format!("test(/^{}::/)", module))
+                && gate.contains(&format!("test(/.*{}::/)", module))
                 && !gate.contains("WORKSPACE"),
             "{path} expanded its landing gate beyond the touched module: {gate}",
         );
@@ -1275,7 +1275,7 @@ fn direct_rfc0165_fixture_edits_run_complete_modules() {
         let commands = selected(&["--edit-loop", path]);
         assert_eq!(commands.len(), 1, "{path}: {commands:?}");
         assert!(
-            commands[0].contains(&format!("test(/^{}::/)", module))
+            commands[0].contains(&format!("test(/.*{}::/)", module))
                 && commands[0].contains("cargo nextest run --test misc"),
             "{path}: {commands:?}"
         );
@@ -1399,9 +1399,9 @@ fn integration_grants_edit_runs_only_its_misc_module() {
     assert_eq!(commands.len(), 1, "{commands:?}");
     assert!(
         commands[0].starts_with("./scripts/nextest-admitted.sh witchy -- ")
-            && commands[0].contains("test(/^rfc0077_integration_grants::/)")
+            && commands[0].contains("test(/.*rfc0077_integration_grants::/)")
             && commands[0].contains(
-                "not test(/^rfc0077_integration_grants::source_integration_async_recipe_/)",
+                "not test(/.*rfc0077_integration_grants::source_integration_async_recipe_/)",
             ),
         "{commands:?}",
     );

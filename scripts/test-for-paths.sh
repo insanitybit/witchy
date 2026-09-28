@@ -662,7 +662,7 @@ for p in "${paths[@]}"; do
             # The async source-integration cases each take about 166s and run
             # in the complete landing selection. Keep the edit loop on the
             # remaining grant, isolation, and synchronous recipe assertions.
-            add_early "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test misc -E 'test(/^rfc0077_integration_grants::/) and not test(/^rfc0077_integration_grants::source_integration_async_recipe_/)'"
+            add_early "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test misc -E 'test(/.*rfc0077_integration_grants::/) and not test(/.*rfc0077_integration_grants::source_integration_async_recipe_/)'"
             path_has_early=1 ;;
         tests/misc/semantic_conformance.rs)
             add_early "cargo nextest run --test misc -E 'test(=semantic_conformance::independent_expectation_rejects_a_shared_semantic_mutation)'"
@@ -946,7 +946,7 @@ for p in "${paths[@]}"; do
             add "cargo nextest run -p merge-queue-tests --test worktree" ;;
         tests/misc/rfc0087_migration_census.rs)
             any_rust=1
-            add_early "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test misc -E 'test(/^rfc0087_migration_census::/)'"
+            add_early "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test misc -E 'test(/.*rfc0087_migration_census::/)'"
             path_has_early=1 ;;
         tests/misc/architecture.rs | \
         tests/misc/example_source_paths.rs | \
@@ -1234,7 +1234,7 @@ fi
 if [ "$edit_loop" -eq 1 ] && [ "${#paths[@]}" -eq 1 ]; then
     case "${paths[0]}" in
         tests/misc/rfc0165_project_run.rs)
-            cmds=("./scripts/nextest-admitted.sh witchy -- cargo nextest run --test misc -E 'test(/^rfc0165_project_run::/)'" ) ;;
+            cmds=("./scripts/nextest-admitted.sh witchy -- cargo nextest run --test misc -E 'test(/.*rfc0165_project_run::/)'" ) ;;
         tests/misc/rfc0165_owner_adapters.rs)
             cmds=("cargo nextest run -p witchy --features witchy-wir/native --test misc --ignore-default-filter -E 'test(=rfc0165_owner_adapters::server_workers_reject_raw_wasm_even_with_genuine_entry_metadata)'") ;;
         *) ;;
@@ -1297,7 +1297,7 @@ elif [ "$edit_loop" -eq 1 ] && [ "$canonical_rewrite" -eq 1 ] \
     if [ "$canonical_build_recipe" -eq 1 ]; then
         canonical_build_recipe_wir_expr=" or test(canonical_safewir::build_read::tests::build_env_catalog_authenticates_root_and_keeps_presence_internal)"
         canonical_build_recipe_lower_expr=" or test(=tests::grantful_build_primitives_compile_to_build_imports_only)"
-        canonical_build_recipe_app_expr=" or test(/^rfc0103_build_step_confinement::/) or test(/^rfc0165_build_read_project::/) or test(/^rfc0165_build_env_project::/)"
+        canonical_build_recipe_app_expr=" or test(/.*rfc0103_build_step_confinement::/) or test(/.*rfc0165_build_read_project::/) or test(/.*rfc0165_build_env_project::/)"
     fi
     canonical_wasmir_tail_expr=""
     if [ "$canonical_wasmir_tail" -eq 1 ]; then
