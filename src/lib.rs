@@ -141,10 +141,10 @@ pub fn resolve_std_only_checked(
         AuthenticatedModuleOwners, ModuleLoadIdentity, PackageCoordinate, PackageSource,
     };
 
-    witchy_syntax::parser::parse_module(src).map_err(|error| ResolveStdError::Parse {
+    let entry = witchy_syntax::parser::parse_module(src).map_err(|error| ResolveStdError::Parse {
         module: "main".into(), error,
     })?;
-    let sources = resolve_std_sources(src)?;
+    let sources = resolve_std_sources_from_entry(src, entry)?;
     let application = PackageCoordinate::new(
         PackageSource::Workspace,
         "witchy/source",
@@ -193,6 +193,7 @@ pub fn resolve_std_only_checked(
     ).map_err(Into::into)
 }
 
+#[cfg(test)]
 fn resolve_std_modules(
     src: &str,
 ) -> Result<Vec<(String, witchy_syntax::ast::Module)>, ResolveStdError> {
@@ -211,13 +212,21 @@ fn resolve_std_modules(
         .collect()
 }
 
+#[cfg(test)]
 fn resolve_std_sources(src: &str) -> Result<Vec<(String, Vec<u8>)>, ResolveStdError> {
-    use std::collections::{HashSet, VecDeque};
     let entry =
         witchy_syntax::parser::parse_module(src).map_err(|error| ResolveStdError::Parse {
             module: "main".to_string(),
             error,
         })?;
+    resolve_std_sources_from_entry(src, entry)
+}
+
+fn resolve_std_sources_from_entry(
+    src: &str,
+    entry: witchy_syntax::ast::Module,
+) -> Result<Vec<(String, Vec<u8>)>, ResolveStdError> {
+    use std::collections::{HashSet, VecDeque};
     let mut sources = vec![("main".to_string(), src.as_bytes().to_vec())];
     let mut loaded: HashSet<String> = HashSet::from(["main".to_string()]);
     let mut queue: VecDeque<witchy_syntax::ast::Module> = VecDeque::from([entry]);
