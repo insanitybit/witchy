@@ -213,13 +213,9 @@ pub(crate) fn link_build_file(path: &str) -> Result<witchy_types::pipeline::Chec
             sources, &entry, user_modules, owners, witchy::canonical_comptime::source_limits(),
         );
     }
-    let expand = if source_bundle_needs_legacy_expansion(&sources) {
-        comptime::EXPANDER
-    } else {
-        witchy_syntax::linker::ComptimeExpander::with_sibling_request(
-            witchy_types::pipeline::require_expansion_free, |_| false,
-        )
-    };
+    let expand = witchy_syntax::linker::ComptimeExpander::with_sibling_request(
+        witchy_types::pipeline::require_expansion_free, |_| false,
+    );
     witchy_types::pipeline::check_build_recipe_from_source_bundle(
         sources, &entry, expand, &user_modules, owners,
     ).map_err(|error| error.to_string())
@@ -291,13 +287,9 @@ pub(crate) fn link_test_file(
         )))?;
         return Ok((checked, entry_stem));
     }
-    let expand = if source_bundle_needs_legacy_expansion(&sources) {
-        comptime::EXPANDER
-    } else {
-        witchy_syntax::linker::ComptimeExpander::with_sibling_request(
-            witchy_types::pipeline::require_expansion_free, |_| false,
-        )
-    };
+    let expand = witchy_syntax::linker::ComptimeExpander::with_sibling_request(
+        witchy_types::pipeline::require_expansion_free, |_| false,
+    );
     let checked = witchy_types::pipeline::link_checked_test_suite_from_source_bundle(
         sources, &entry_stem, expand, &user_modules, owners,
     ).map_err(TestFileError::Pipeline)?;
