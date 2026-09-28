@@ -430,6 +430,13 @@ pub fn expand(module: &mut Module) -> Result<(), String> {
     expand_with_record_ordering(module, false, false)
 }
 
+/// Linking has the reflected declaration's module context and can build
+/// `Reflect` implementations directly. Standalone type checks keep the
+/// compatibility expansion until their imports are linked.
+pub fn expand_linked(module: &mut Module) -> Result<(), String> {
+    expand_with_record_ordering(module, false, true)
+}
+
 /// The authenticated source session supplies the linked `cmp` declaration
 /// needed to check compiler-owned ordering impls immediately.
 pub fn expand_admitted(module: &mut Module) -> Result<(), String> {

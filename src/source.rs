@@ -548,14 +548,11 @@ fn check_loaded_source_bundle(
             witchy::canonical_comptime::source_limits(),
         );
     }
-    let needs_legacy_expansion = source_bundle_needs_legacy_expansion(&sources);
-    let expand = if needs_legacy_expansion {
-        comptime::EXPANDER
-    } else {
-        witchy_syntax::linker::ComptimeExpander::with_sibling_request(
-            witchy_types::pipeline::require_expansion_free, |_| false,
-        )
-    };
+    // All admitted producers above have a checked source session. Remaining
+    // compile-time forms must refuse until a source-session route exists.
+    let expand = witchy_syntax::linker::ComptimeExpander::with_sibling_request(
+        witchy_types::pipeline::require_expansion_free, |_| false,
+    );
     witchy_types::pipeline::link_checked_authenticated_from_source_bundle_with_user_modules(
         sources, entry, expand, &user_modules, owners,
     ).map_err(|error| match error {

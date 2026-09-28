@@ -1572,7 +1572,7 @@ fn prepare_source_for_expansion(
     module_name: &str,
     mut module: Module,
 ) -> Result<Module, LinkError> {
-    crate::derive::expand(&mut module)
+    crate::derive::expand_linked(&mut module)
         .map_err(|message| LinkError { message, location: None })?;
     let checked = crate::source_check::check(module.clone()).map_err(|error| {
         let error = error.with_module(module_name);
