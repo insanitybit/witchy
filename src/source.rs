@@ -73,6 +73,11 @@ pub(crate) enum TestFileError {
     Pipeline(pipeline::PipelineError),
 }
 
+pub(crate) struct TestFunctionShapes {
+    pub(crate) async_tests: std::collections::HashSet<String>,
+    pub(crate) gen_tests: std::collections::HashSet<String>,
+}
+
 impl TestFileError {
     pub(crate) fn is_discovery_failure(&self) -> bool {
         matches!(
@@ -188,7 +193,7 @@ pub(crate) fn link_build_file(path: &str) -> Result<witchy_types::pipeline::Chec
 
 pub(crate) fn link_test_file(
     path: &str,
-) -> Result<(witchy_types::pipeline::CheckedTestSuite, String), TestFileError> {
+) -> Result<(witchy_types::pipeline::CheckedTestSuite, String, TestFunctionShapes), TestFileError> {
     let entry_path = std::path::Path::new(path);
     let stem = entry_path.file_stem().and_then(|stem| stem.to_str())
         .ok_or_else(|| TestFileError::Load(format!("invalid file name: {path}")))?;
@@ -202,6 +207,19 @@ pub(crate) fn link_test_file(
         .map_err(|error| TestFileError::Load(format!("{entry_stem}: source is not UTF-8: {error}")))?;
     let module = parser::parse_module(source)
         .map_err(|error| TestFileError::Load(format!("{entry_stem}: {error}")))?;
+    let mut shapes = TestFunctionShapes {
+        async_tests: Default::default(),
+        gen_tests: Default::default(),
+    };
+    for item in &module.items {
+        let ast::Item::Function(function) = item else { continue };
+        if !function.name.starts_with("test_") { continue }
+        if function.is_async {
+            shapes.async_tests.insert(function.name.clone());
+        } else if function.is_gen {
+            shapes.gen_tests.insert(function.name.clone());
+        }
+    }
     let producers = source_block_producers(&sources, &user_modules)
         .map_err(TestFileError::Load)?;
     if producers.len() > 1 {
@@ -211,7 +229,7 @@ pub(crate) fn link_test_file(
         ).map_err(|message| TestFileError::Pipeline(pipeline::PipelineError::Type(
             witchy_types::typeck::TypeError { message },
         )))?;
-        return Ok((checked, entry_stem));
+        return Ok((checked, entry_stem, shapes));
     }
     if module.items.iter().any(|item| matches!(item, ast::Item::Comptime(_))) {
         let checked = witchy::canonical_comptime::check_test_suite_source_bundle(
@@ -220,7 +238,7 @@ pub(crate) fn link_test_file(
         ).map_err(|message| TestFileError::Pipeline(pipeline::PipelineError::Type(
             witchy_types::typeck::TypeError { message },
         )))?;
-        return Ok((checked, entry_stem));
+        return Ok((checked, entry_stem, shapes));
     }
     if let Some(producer) = single_imported_block_producer(&sources, &entry_stem, &user_modules)
         .map_err(TestFileError::Load)? {
@@ -230,7 +248,7 @@ pub(crate) fn link_test_file(
         ).map_err(|message| TestFileError::Pipeline(pipeline::PipelineError::Type(
             witchy_types::typeck::TypeError { message },
         )))?;
-        return Ok((checked, entry_stem));
+        return Ok((checked, entry_stem, shapes));
     }
     let mut without_derives = module.clone();
     for item in &mut without_derives.items {
@@ -250,7 +268,7 @@ pub(crate) fn link_test_file(
         ).map_err(|message| TestFileError::Pipeline(pipeline::PipelineError::Type(
             witchy_types::typeck::TypeError { message },
         )))?;
-        return Ok((checked, entry_stem));
+        return Ok((checked, entry_stem, shapes));
     }
     let expand = witchy_syntax::linker::ComptimeExpander::with_sibling_request(
         witchy_types::pipeline::require_expansion_free, |_| false,
@@ -258,7 +276,7 @@ pub(crate) fn link_test_file(
     let checked = witchy_types::pipeline::link_checked_test_suite_from_source_bundle(
         sources, &entry_stem, expand, &user_modules, owners,
     ).map_err(TestFileError::Pipeline)?;
-    Ok((checked, entry_stem))
+    Ok((checked, entry_stem, shapes))
 }
 
 /// Like `link_file`, but resolves named imports from an explicit dependency map

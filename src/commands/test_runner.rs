@@ -5,7 +5,7 @@
 use crate::commands::execution::run_checked_test_driver_compiled;
 use crate::{
     ast, codegen, enforce_performance_modes, is_entry_function,
-    link_test_file, parser, run_admitted_test_artifact, runtime, typeck,
+    link_test_file, run_admitted_test_artifact, runtime, typeck,
 };
 use witchy_testkit::{FixturePlan, TestTranscript};
 
@@ -256,33 +256,6 @@ fn patch_test_target(expr: &mut ast::Expr, name: &str, args: &[ast::Expr]) {
         ast::Expr::Unary { expr, .. } => patch_test_target(expr, name, args),
         _ => {}
     }
-}
-
-/// The bare names of every `test_*` function in the UNLOWERED source,
-/// split into `(async, gen)` sets. Async lowering (`generators` too) runs during
-/// `link`, erasing `is_async`/`is_gen` and rewriting the bodies, so the linked module
-/// can no longer tell an async or generator test from a plain one — this recovers
-/// that shape from the raw parse. A parse/read failure yields empty sets (the linked
-/// module still fails to compile and is reported separately).
-fn raw_test_shapes(path: &str) -> (std::collections::HashSet<String>, std::collections::HashSet<String>) {
-    let mut async_tests = std::collections::HashSet::new();
-    let mut gen_tests = std::collections::HashSet::new();
-    if let Ok(src) = std::fs::read_to_string(path) {
-        if let Ok(module) = parser::parse_module(&src) {
-            for it in &module.items {
-                if let ast::Item::Function(f) = it {
-                    if f.name.starts_with("test_") {
-                        if f.is_async {
-                            async_tests.insert(f.name.clone());
-                        } else if f.is_gen {
-                            gen_tests.insert(f.name.clone());
-                        }
-                    }
-                }
-            }
-        }
-    }
-    (async_tests, gen_tests)
 }
 
 fn validate_integration_test_params(
@@ -632,7 +605,7 @@ struct TestModuleResult {
 /// parameters and receive no real authority; integration tests forward only their
 /// declared capability parameters under the caller's explicit grant policy.
 /// `async_tests`/`gen_tests` are the bare names of the entry file's async/gen tests
-/// (from `raw_test_shapes`, since lowering erased the AST flags). Returns
+/// carried from the original entry parse, since lowering erases the AST flags. Returns
 /// `(passed, failures)` where each failure is `(name, message)`.
 fn run_tests_in_module(
     suite: &witchy_types::pipeline::CheckedTestSuite,
@@ -843,14 +816,13 @@ fn run_tests_in_module(
 /// dispatch to `run_tests_in_module`).
 #[cfg(test)]
 pub(crate) fn run_tests_in_file(path: &str) -> Result<(Vec<String>, Vec<TestFailure>), String> {
-    let (linked, stem) = link_test_file(path).map_err(|error| error.to_string())?;
-    let (async_tests, gen_tests) = raw_test_shapes(path);
+    let (linked, stem, shapes) = link_test_file(path).map_err(|error| error.to_string())?;
     let grants = TestGrants::default();
     let result = run_tests_in_module(
         &linked,
         &stem,
-        &async_tests,
-        &gen_tests,
+        &shapes.async_tests,
+        &shapes.gen_tests,
         TestRunPolicy {
             integration: false,
             real_grants: false,
@@ -868,7 +840,7 @@ pub(crate) fn run_tests_in_file(path: &str) -> Result<(Vec<String>, Vec<TestFail
 #[cfg(test)]
 mod test_mode_link_tests {
     use super::{
-        raw_test_shapes, run_tests_in_file, run_tests_in_module, TestBackend, TestGrants,
+        run_tests_in_file, run_tests_in_module, TestBackend, TestGrants,
         TestOptions, TestRunPolicy,
     };
     use crate::link_file;
@@ -1007,8 +979,7 @@ mod test_mode_link_tests {
         )
         .unwrap();
         let path = suite.to_str().unwrap();
-        let (linked, stem) = crate::link_test_file(path).expect("test link");
-        let (async_tests, gen_tests) = raw_test_shapes(path);
+        let (linked, stem, shapes) = crate::link_test_file(path).expect("test link");
         let grants = TestGrants::default();
         let plan = FixturePlan {
             console: Some(ConsoleFixture::default()),
@@ -1017,8 +988,8 @@ mod test_mode_link_tests {
         let result = run_tests_in_module(
             &linked,
             &stem,
-            &async_tests,
-            &gen_tests,
+            &shapes.async_tests,
+            &shapes.gen_tests,
             TestRunPolicy {
                 integration: false,
                 real_grants: false,
@@ -1057,8 +1028,7 @@ mod test_mode_link_tests {
         )
         .unwrap();
         let path = suite.to_str().unwrap();
-        let (linked, stem) = crate::link_test_file(path).expect("test link");
-        let (async_tests, gen_tests) = raw_test_shapes(path);
+        let (linked, stem, shapes) = crate::link_test_file(path).expect("test link");
         let grants = TestGrants::default();
         let plan = FixturePlan {
             console: Some(ConsoleFixture::default()),
@@ -1068,8 +1038,8 @@ mod test_mode_link_tests {
         let result = run_tests_in_module(
             &linked,
             &stem,
-            &async_tests,
-            &gen_tests,
+            &shapes.async_tests,
+            &shapes.gen_tests,
             TestRunPolicy {
                 integration: false,
                 real_grants: false,
@@ -1091,8 +1061,8 @@ mod test_mode_link_tests {
         let denied = run_tests_in_module(
             &linked,
             &stem,
-            &async_tests,
-            &gen_tests,
+            &shapes.async_tests,
+            &shapes.gen_tests,
             TestRunPolicy {
                 integration: false,
                 real_grants: false,
@@ -1349,7 +1319,7 @@ pub(crate) fn run_tests(options: &TestOptions) -> Result<bool, String> {
         // that links yet fails to TYPE-CHECK (or violates `mode opt`) is a genuinely
         // BROKEN test file: it must FAIL the run, never be silently skipped as
         // "ok. 0 passed". An explicit single file surfaces even a link error.
-        let (linked, stem) = match link_test_file(file) {
+        let (linked, stem, shapes) = match link_test_file(file) {
             Ok(v) => v,
             Err(e) if meta.is_dir() && e.is_discovery_failure() => {
                 if options.format == TestOutputFormat::Json {
@@ -1368,7 +1338,6 @@ pub(crate) fn run_tests(options: &TestOptions) -> Result<bool, String> {
             }
             Err(e) => return Err(e.to_string()),
         };
-        let (async_tests, gen_tests) = raw_test_shapes(file);
         let owns_test = ownership.owns(file)?;
         let no_real_grants = TestGrants::default();
         let grants = if owns_test { &options.grants } else { &no_real_grants };
@@ -1385,8 +1354,8 @@ pub(crate) fn run_tests(options: &TestOptions) -> Result<bool, String> {
         let result = match run_tests_in_module(
             &linked,
             &stem,
-            &async_tests,
-            &gen_tests,
+            &shapes.async_tests,
+            &shapes.gen_tests,
             policy,
         ) {
             Ok(r) => r,
