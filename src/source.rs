@@ -1013,7 +1013,6 @@ fn module_needs_legacy_expansion(module: &ast::Module) -> bool {
         || !module.compiler_type_syntax.is_empty() || !module.compiler_pattern_syntax.is_empty()
         || !module.compiler_stmt_syntax.is_empty() || !module.compiler_block_syntax.is_empty()
         || module.items.iter().any(|item| matches!(item, ast::Item::Comptime(_))
-        || matches!(item, ast::Item::Function(function) if function.comptime_only)
         || matches!(item, ast::Item::Type(definition) if !definition.derives.is_empty()))
         || witchy_syntax::ast::visit::visit_module_exprs(module, &mut |expr| {
             if matches!(expr, ast::Expr::TaggedLit { .. }) { Err(()) } else { Ok(()) }
