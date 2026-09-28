@@ -139,6 +139,21 @@ pub fn resolve_std_only_checked(
         AuthenticatedModuleOwners, ModuleLoadIdentity, PackageCoordinate, PackageSource,
     };
 
+    let entry = witchy_syntax::parser::parse_module(src).map_err(|error| ResolveStdError::Parse {
+        module: "main".into(), error,
+    })?;
+    let needs_expansion = entry.items.iter().any(|item|
+        matches!(item, witchy_syntax::ast::Item::Comptime(_))
+        || matches!(item, witchy_syntax::ast::Item::Type(definition) if !definition.derives.is_empty()))
+        || !entry.compiler_item_syntax.is_empty()
+        || !entry.compiler_expr_syntax.is_empty()
+        || !entry.compiler_type_syntax.is_empty()
+        || !entry.compiler_pattern_syntax.is_empty()
+        || !entry.compiler_stmt_syntax.is_empty()
+        || !entry.compiler_block_syntax.is_empty()
+        || witchy_syntax::ast::visit::visit_module_exprs(&entry, &mut |expression| {
+            if matches!(expression, witchy_syntax::ast::Expr::TaggedLit { .. }) { Err(()) } else { Ok(()) }
+        }).is_err();
     let sources = resolve_std_sources(src)?;
     let application = PackageCoordinate::new(
         PackageSource::Workspace,
@@ -179,13 +194,19 @@ pub fn resolve_std_only_checked(
     );
     let owners = AuthenticatedModuleOwners::from_loader_assignments(assignments)?;
     let user_modules = std::collections::HashSet::from(["main".to_string()]);
-    witchy_interp::pipeline::link_checked_authenticated_from_source_bundle_with_user_modules(
-        sources,
-        "main",
-        &user_modules,
-        owners,
-    )
-    .map_err(Into::into)
+    if needs_expansion {
+        witchy_interp::pipeline::link_checked_authenticated_from_source_bundle_with_user_modules(
+            sources, "main", &user_modules, owners,
+        )
+    } else {
+        witchy_types::pipeline::link_checked_authenticated_from_source_bundle_with_user_modules(
+            sources, "main",
+            witchy_syntax::linker::ComptimeExpander::with_sibling_request(
+                witchy_types::pipeline::require_expansion_free, |_| false,
+            ),
+            &user_modules, owners,
+        )
+    }.map_err(Into::into)
 }
 
 fn resolve_std_modules(
