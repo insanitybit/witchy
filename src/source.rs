@@ -549,7 +549,9 @@ pub(crate) fn checked_precompiled_source_bundle(
         let expand = if source_bundle_needs_legacy_expansion(&sources) {
             comptime::EXPANDER
         } else {
-            comptime::EXPANSION_FREE_USER_EXPANDER
+            witchy_syntax::linker::ComptimeExpander::with_sibling_request(
+                witchy_types::pipeline::require_expansion_free, |_| false,
+            )
         };
         witchy_types::pipeline::link_checked_authenticated_from_source_bundle_with_precompiled_declarations(
             sources, &entry, expand, &user_modules, owners, environment,
