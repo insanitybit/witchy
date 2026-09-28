@@ -26,6 +26,7 @@ BIN="$target_dir/debug/witchy"
 home="$(mktemp -d -t witchy-warm)"
 cleanup() {
     [ -n "${pm_pid:-}" ] && kill "$pm_pid" 2>/dev/null && wait "$pm_pid" 2>/dev/null
+    [ -n "${build_pid:-}" ] && kill "$build_pid" 2>/dev/null && wait "$build_pid" 2>/dev/null
     [ -n "${srv_pid:-}" ] && kill "$srv_pid" 2>/dev/null && wait "$srv_pid" 2>/dev/null
     rm -rf "$home"
 }
@@ -37,7 +38,17 @@ trap cleanup EXIT
 WITCHY_HOME="$home/pm" "$BIN" pm list >/dev/null 2>&1 &
 pm_pid=$!
 
-# 2. The coven registry server (projects/coven + siblings): compiles on
+# 2. The project-build entry (projects/grimoire): `witchy build` has its own
+#    checked entry module, distinct from `pm list`. Project build tests launch
+#    that route in fresh subprocesses, so warm its exact Wasmtime module too.
+#    The invalid target exits before driving the compiler but after the embedded
+#    front-end has been checked, admitted, JIT-compiled, and run.
+build_cwd="$home/project-build-cwd"
+mkdir -p "$build_cwd"
+( cd "$build_cwd" && WITCHY_HOME="$home/project-build" "$BIN" build --target __cache_warm_only__ ) >/dev/null 2>&1 &
+build_pid=$!
+
+# 3. The coven registry server (projects/coven + siblings): compiles on
 #    startup, then binds. Spawn it on a free port, wait for the listener
 #    (listening == compile finished == caches written), then kill it.
 port="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')" || { wait "$pm_pid" 2>/dev/null; echo "warm-witchy-caches: no python3; pm warmed, skipping coven" >&2; exit 0; }
@@ -60,6 +71,7 @@ done
 
 # Wait for pm warm to finish (usually done by now since coven is slower).
 wait "$pm_pid" 2>/dev/null || true
+wait "$build_pid" 2>/dev/null || true
 
-echo "warm-witchy-caches: embedded pm+coven caches warmed for $BIN" >&2
+echo "warm-witchy-caches: embedded pm+project-build+coven caches warmed for $BIN" >&2
 exit 0
