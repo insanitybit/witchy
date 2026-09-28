@@ -241,10 +241,15 @@ fn gate_nextest_misc_module_runs_only_that_module() {
     let output = gate_nextest(&[
         "crates/witchy-types/src/typeck.rs",
         "tests/misc/rfc0167_dict_root_view.rs",
+        "tools/merge-queue-tests/tests/test_for_paths.rs",
     ]);
     assert!(
         output.contains("-p witchy --test typeck --test misc"),
         "mixed compiler and misc-module edit lost its exact targets: {output}",
+    );
+    assert!(
+        output.contains("-p merge-queue-tests --test test_for_paths"),
+        "mixed misc and route-test edit dropped the route-test package: {output}",
     );
     assert!(
         output.contains(&format!("test(/.*{}::/)", module)),
