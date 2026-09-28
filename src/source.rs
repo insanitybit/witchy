@@ -451,7 +451,8 @@ fn check_loaded_source_bundle(
         .any(|(_, bytes)| std::str::from_utf8(bytes).ok()
             .and_then(|source| parser::parse_module(source).ok())
             .as_ref().is_none_or(module_needs_legacy_expansion));
-    if witchy_syntax::derive::has_only_record_equality_derives(&module)
+    if (witchy_syntax::derive::has_only_record_equality_derives(&module)
+        || witchy_syntax::derive::has_only_typed_user_derives(&module))
         && !module_needs_legacy_expansion(&without_derives) && !other_legacy_expansion {
         return witchy::canonical_comptime::check_source_bundle(
             sources, entry, user_modules, owners, witchy::canonical_comptime::source_limits(),
@@ -1001,7 +1002,8 @@ pub(crate) fn expand_file_source(path: &str) -> Result<String, String> {
     // formatted directly without invoking the source tree walker.
     let needs_legacy_expansion = modules.iter().any(|(_, module)| module_needs_legacy_expansion(module));
     if !needs_legacy_expansion {
-        if modules.iter().any(|(_, module)| witchy_syntax::derive::has_only_record_equality_derives(module)) {
+        if modules.iter().any(|(_, module)| witchy_syntax::derive::has_only_record_equality_derives(module)
+            || witchy_syntax::derive::has_only_typed_user_derives(module)) {
             let _ = check_loaded_source_bundle(
                 sources, &entry_stem, path, user_modules, owners,
             )?;
@@ -1034,7 +1036,8 @@ fn module_needs_legacy_expansion(module: &ast::Module) -> bool {
         || module.items.iter().any(|item| matches!(item, ast::Item::Comptime(_)))
         || (module.items.iter().any(|item|
             matches!(item, ast::Item::Type(definition) if !definition.derives.is_empty()))
-            && !witchy_syntax::derive::has_only_record_equality_derives(module))
+            && !witchy_syntax::derive::has_only_record_equality_derives(module)
+            && !witchy_syntax::derive::has_only_typed_user_derives(module))
         || witchy_syntax::ast::visit::visit_module_exprs(module, &mut |expr| {
             if matches!(expr, ast::Expr::TaggedLit { .. }) { Err(()) } else { Ok(()) }
         }).is_err()
@@ -1193,6 +1196,29 @@ mod tests {
             }, 256).unwrap();
             vm.run().unwrap();
             assert_eq!(vm.output(), ["same"]);
+            assert_eq!(vm.canonical_heap_leaks().unwrap(), Some(0));
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
+    #[test]
+    fn local_typed_derive_runs_on_admitted_wasm_in_both_modes() {
+        for mode in ["", "mode opt\n\n"] {
+            let dir = unique_dir("admitted_user_derive");
+            std::fs::create_dir_all(&dir).unwrap();
+            let entry = dir.join("main.witchy");
+            let source = format!("{mode}import meta\n\ncomptime fn derive_answer(info: meta.TypeInfo) -> meta.ItemSyntax:\n    quote item:\n        fn answer() -> Int:\n            42\n\ntype Foo derive(Answer):\n    value: Int\n\nfn main(console: Console):\n    console.print(\"${{answer()}}\")\n");
+            std::fs::write(&entry, source).unwrap();
+            let (checked, _) = super::link_file_checked(entry.to_str().unwrap())
+                .expect("local typed derive checks");
+            let artifact = witchy_lower::codegen::compile_checked_module_artifact(&checked)
+                .expect_lowered("local typed derive admits");
+            let mut runtime = witchy_runtime::runtime::Runtime::batch().unwrap();
+            let mut vm = runtime.spawn_admitted(&artifact, witchy_runtime::runtime::Capabilities {
+                print: true, quiet: true, ..Default::default()
+            }, 256).unwrap();
+            vm.run().unwrap();
+            assert_eq!(vm.output(), ["42"]);
             assert_eq!(vm.canonical_heap_leaks().unwrap(), Some(0));
             std::fs::remove_dir_all(dir).unwrap();
         }

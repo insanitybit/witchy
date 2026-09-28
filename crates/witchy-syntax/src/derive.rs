@@ -25,6 +25,30 @@ pub fn has_only_record_equality_derives(module: &Module) -> bool {
     found
 }
 
+/// A local user generator already has a typed result contract. Imported or
+/// unknown generators remain on the compatibility path until their source and
+/// ownership can be selected by an admitted session.
+pub fn has_only_typed_user_derives(module: &Module) -> bool {
+    let outputs = user_derive_outputs(module);
+    let mut found = false;
+    for item in &module.items {
+        let Item::Type(definition) = item else { continue };
+        for name in &definition.derives {
+            found = true;
+            if matches!(name.as_str(), "Show" | "PartialEq" | "Eq" | "PartialOrd"
+                | "Ord" | "Reflect" | "Deserialize" | "PublicState") {
+                return false;
+            }
+            let generator = format!("derive_{}", name.to_lowercase());
+            if !matches!(outputs.get(&generator),
+                Some(UserDeriveOutput::ItemSyntax | UserDeriveOutput::ItemSyntaxList)) {
+                return false;
+            }
+        }
+    }
+    found
+}
+
 fn record_equality_impl(t: &TypeDef, trait_name: &str, line: u32) -> Item {
     let params = t.params.iter().filter(|name| !name.starts_with('\''))
         .cloned().collect::<Vec<_>>();
