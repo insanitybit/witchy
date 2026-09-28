@@ -65,8 +65,7 @@ pub(crate) use runners::{
     run_comptime_module_outputs_budgeted_in_scope_with_qualifiers,
 };
 pub use runners::{
-    evaluate_checked, evaluate_checked_noargs, evaluate_compiler_module, run,
-    run_checked_module, run_checked_module_with_fetch_grant, run_in, run_with, CompilerValue,
+    run, run_checked_module, run_checked_module_with_fetch_grant, run_in, run_with,
 };
 #[cfg(feature = "test-fixtures")]
 pub use runners::{
