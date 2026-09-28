@@ -451,9 +451,10 @@ fn check_loaded_source_bundle(
         .any(|(_, bytes)| std::str::from_utf8(bytes).ok()
             .and_then(|source| parser::parse_module(source).ok())
             .as_ref().is_none_or(module_needs_legacy_expansion));
-    if (witchy_syntax::derive::has_only_record_equality_derives(&module)
-        || witchy_syntax::derive::has_only_typed_user_derives(&module))
-        && !module_needs_legacy_expansion(&without_derives) && !other_legacy_expansion {
+    let admitted_derives = (witchy_syntax::derive::has_only_record_equality_derives(&module)
+        && !module_needs_legacy_expansion(&without_derives))
+        || witchy_syntax::derive::has_only_typed_user_derives(&module);
+    if admitted_derives && !other_legacy_expansion {
         return witchy::canonical_comptime::check_source_bundle(
             sources, entry, user_modules, owners, witchy::canonical_comptime::source_limits(),
         );
@@ -997,17 +998,29 @@ pub(crate) fn expand_file_source(path: &str) -> Result<String, String> {
         )?;
         return Ok(format::module(&expanded, &[]));
     }
-    // The compatibility path also schedules derive-generated comptime work.
-    // Plain source can be
-    // formatted directly without invoking the source tree walker.
+    // Keep the inspection output tied to the same authenticated expansion
+    // that checks selected derives; printing the original annotations would
+    // hide the generated items from `witchy expand`.
+    let selected_derives = modules.iter().find(|(name, _)| name == &entry_stem).is_some_and(|(_, module)| {
+        let mut without_derives = module.clone();
+        for item in &mut without_derives.items {
+            if let ast::Item::Type(definition) = item { definition.derives.clear(); }
+        }
+        (witchy_syntax::derive::has_only_record_equality_derives(module)
+            && !module_needs_legacy_expansion(&without_derives))
+            || witchy_syntax::derive::has_only_typed_user_derives(module)
+    });
+    let other_legacy_expansion = modules.iter().filter(|(name, _)| name != &entry_stem && user_modules.contains(name))
+        .any(|(_, module)| module_needs_legacy_expansion(module));
+    if selected_derives && !other_legacy_expansion {
+        let (_, expanded) = witchy::canonical_comptime::check_and_expand_source_bundle(
+            sources, &entry_stem, user_modules, owners,
+            witchy::canonical_comptime::source_limits(),
+        )?;
+        return Ok(format::module(&expanded, &[]));
+    }
     let needs_legacy_expansion = modules.iter().any(|(_, module)| module_needs_legacy_expansion(module));
     if !needs_legacy_expansion {
-        if modules.iter().any(|(_, module)| witchy_syntax::derive::has_only_record_equality_derives(module)
-            || witchy_syntax::derive::has_only_typed_user_derives(module)) {
-            let _ = check_loaded_source_bundle(
-                sources, &entry_stem, path, user_modules, owners,
-            )?;
-        }
         let (_, module) = modules.iter().find(|(name, _)| name == &entry_stem)
             .ok_or_else(|| format!("internal error: entry module `{entry_stem}` was not loaded"))?;
         return Ok(format::module(module, &[]));
@@ -1693,6 +1706,18 @@ mod tests {
         assert!(expanded.contains("fn main(console: Console):"), "{expanded}");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn expand_file_prints_admitted_local_derive_items() {
+        let dir = unique_dir("expand_typed_derive");
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("app.witchy");
+        std::fs::write(&file, "import meta\n\ncomptime fn derive_answer(info: meta.TypeInfo) -> meta.ItemSyntax:\n    quote item:\n        fn answer() -> Int:\n            42\n\ntype Foo derive(Answer):\n    value: Int\n\nfn main(console: Console):\n    console.print(\"${answer()}\")\n").unwrap();
+        let expanded = expand_file_source(file.to_str().unwrap()).expect("admitted derive expansion");
+        assert!(!expanded.contains("derive(Answer)"), "{expanded}");
+        assert!(expanded.contains("fn answer() -> Int:"), "{expanded}");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
