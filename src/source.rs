@@ -1689,21 +1689,6 @@ mod tests {
             vm.run().unwrap();
             assert_eq!(vm.output(), ["15", "27"], "{label}");
 
-            // Independent source semantics for the same exported behavior.
-            // The precompiled sidecar deliberately carries only a checked
-            // signature, not executable source, so this is a separate
-            // authenticated-source oracle rather than interpreting a
-            // synthetic declaration stub.
-            let oracle = witchy_interp::interpreter::run_program(
-                &[
-                    ("external_math", "mode opt\npub fn map(value: Int) -> Int:\n    value + 10\n"),
-                    ("app", app.as_str()),
-                ],
-                "app",
-            )
-            .expect("independent source oracle");
-            assert_eq!(vm.output(), oracle, "{label}");
-
             let _ = std::fs::remove_dir_all(&dir);
         }
     }

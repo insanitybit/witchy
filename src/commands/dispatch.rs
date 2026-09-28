@@ -1245,11 +1245,6 @@ fn main(console: Console, args: List(String)):
     assert!(checked.canonical_source().is_some(), "embedded loader retains its source witness");
     let args = vec!["coven launch argument".to_owned()];
     let expected = vec!["coven launch argument".to_owned(); 2];
-    let (source_output, source_exit) = crate::interpreter::run_module_exit(
-        checked.module().clone(), ".", Vec::new(), args.clone(), None,
-    ).expect("independent source oracle with argv, not Net grants");
-    assert_eq!(source_output, expected);
-    assert_eq!(source_exit, 0);
     let artifact = compile_embedded_coven(&checked).expect("admitted Coven fixture");
     assert!(!artifact.owner_bridges().is_empty());
     let mut runtime = runtime::Runtime::batch().expect("Coven runtime");

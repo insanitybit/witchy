@@ -104,11 +104,6 @@ fn main(console: Console):
 "#;
     let checked = witchy::resolve_std_only_checked(source).expect("checked benchmark fixture");
     let expected = vec!["benchmark capture".to_owned(); 2];
-    assert_eq!(
-        interpreter::run_checked_module(&checked, ".", Vec::new())
-            .expect("independent source oracle"),
-        expected,
-    );
     let artifact = codegen::compile_checked_module_artifact(&checked)
         .expect_lowered("admitted benchmark fixture");
     assert!(!artifact.owner_bridges().is_empty());

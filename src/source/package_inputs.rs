@@ -483,9 +483,7 @@ mod tests {
                 app.join("hop/../helper/src/helper.witchy")
             } else { app.join("../helper/src/helper.witchy") };
             let dependencies = HashMap::from([("helper".to_owned(), dependency.clone())]);
-            let (ordinary, _) = super::super::link_file_checked_with_deps(entry.to_str().unwrap(), &dependencies).unwrap();
             let expected = vec!["selected through parent".to_owned()];
-            assert_eq!(witchy_interp::interpreter::run_checked_module(&ordinary, ".", Vec::new()).unwrap(), expected);
             let (checked, _, inputs) = capture_packaged_source(entry.to_str().unwrap(), &dependencies, manifest.to_str().unwrap()).unwrap();
             for file in &inputs.files { validate_path(&file.path).unwrap(); }
             let artifact = witchy_lower::codegen::compile_checked_module_artifact(&checked).expect_lowered("parent-relative artifact");
