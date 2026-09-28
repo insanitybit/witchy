@@ -1,0 +1,16 @@
+[package]
+name = "witchy-compiler-services"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "MIT OR Apache-2.0"
+description = "Witchy compiler natives above the runtime kernel"
+
+[lib]
+test = false
+
+[dependencies]
+witchy-caps = { path = "../witchy-caps" }
+witchy-runtime = { path = "../witchy-runtime" }
+witchy-syntax = { path = "../witchy-syntax" }
+witchy-types = { path = "../witchy-types" }

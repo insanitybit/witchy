@@ -23,6 +23,7 @@ raw-module-test-api = []
 [dependencies]
 foldhash = "0.2.0"
 witchy-caps = { path = "../witchy-caps" }
+witchy-compiler-services = { path = "../witchy-compiler-services" }
 witchy-runtime = { path = "../witchy-runtime" }
 witchy-syntax = { path = "../witchy-syntax" }
 witchy-test-host = { path = "../witchy-test-host", optional = true }

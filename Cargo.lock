@@ -2820,6 +2820,7 @@ dependencies = [
  "wasmtime",
  "witchy-canonical-source",
  "witchy-caps",
+ "witchy-compiler-services",
  "witchy-confinement",
  "witchy-interp",
  "witchy-lower",
@@ -2862,6 +2863,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "witchy-compiler-services"
+version = "0.1.0"
+dependencies = [
+ "witchy-caps",
+ "witchy-runtime",
+ "witchy-syntax",
+ "witchy-types",
+]
+
+[[package]]
 name = "witchy-compiler-worker"
 version = "0.1.0"
 dependencies = [
@@ -2887,6 +2898,7 @@ version = "0.1.0"
 dependencies = [
  "foldhash 0.2.0",
  "witchy-caps",
+ "witchy-compiler-services",
  "witchy-runtime",
  "witchy-syntax",
  "witchy-test-host",

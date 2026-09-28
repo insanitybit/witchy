@@ -171,10 +171,10 @@ fn run_compiled(
     confinement: witchy_confinement::EnforcementMode,
 ) -> Result<(Vec<String>, Option<i32>), String> {
     // Install the compiler-service natives (compiler.footprint/diff/doc),
-    // which live above the runtime kernel in witchy-interp. This is THE compiled
+    // which live above the runtime kernel in witchy-compiler-services. This is THE compiled
     // chokepoint (execute_file / run / sandbox all route here), so no compiled
     // caller can resolve compiler.* without the vtable present.
-    witchy_interp::compiler_natives::install();
+    witchy_compiler_services::install();
     use witchy_runtime::runtime::Capabilities;
     // The grant is what `main` RECEIVES — authority originates only there (witchy
     // has no ambient caps), so a linked library's public fns (a dependency's `pub fn

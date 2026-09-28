@@ -45,7 +45,7 @@ pkg-fmt = "tgz"
 # crates/. The root `witchy` package is itself a workspace member (the binary +
 # the not-yet-extracted stages); extracted crates are listed here.
 [workspace]
-members = ["crates/witchy-canonical-source", "crates/witchy-cap-model", "crates/witchy-caps", "crates/witchy-compiler-worker", "crates/witchy-confinement", "crates/witchy-interp", "crates/witchy-lower", "crates/witchy-runtime", "crates/witchy-syntax", "crates/witchy-test-host", "crates/witchy-testkit", "crates/witchy-types", "crates/witchy-wir", "crates/witchy-worker-protocol", "tools/merge-queue-tests", "tools/repo-tests", "tools/witchy-snapshot-tools"]
+members = ["crates/witchy-canonical-source", "crates/witchy-cap-model", "crates/witchy-caps", "crates/witchy-compiler-worker", "crates/witchy-compiler-services", "crates/witchy-confinement", "crates/witchy-interp", "crates/witchy-lower", "crates/witchy-runtime", "crates/witchy-syntax", "crates/witchy-test-host", "crates/witchy-testkit", "crates/witchy-types", "crates/witchy-wir", "crates/witchy-worker-protocol", "tools/merge-queue-tests", "tools/repo-tests", "tools/witchy-snapshot-tools"]
 
 [lib]
 name = "witchy"
@@ -78,6 +78,7 @@ browser-fixtures = ["dep:serde_json", "dep:witchy-test-host", "dep:witchy-testki
 witchy-canonical-source = { path = "crates/witchy-canonical-source" }
 witchy-caps = { path = "crates/witchy-caps" }
 witchy-confinement = { path = "crates/witchy-confinement" }
+witchy-compiler-services = { path = "crates/witchy-compiler-services" }
 witchy-interp = { path = "crates/witchy-interp" }
 witchy-lower = { path = "crates/witchy-lower" }
 witchy-runtime = { path = "crates/witchy-runtime" }
