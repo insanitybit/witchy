@@ -718,8 +718,11 @@ fn run_tests_in_module(
         }
         // Reparse retained sources and derive fresh entry/callable/tail witnesses.
         // A post-link AST rewrite is not canonical source authority.
+        let expand = witchy_syntax::linker::ComptimeExpander::with_sibling_request(
+            witchy_types::pipeline::require_expansion_free, |_| false,
+        );
         let checked = if policy.fixture_plan.is_none() && !policy.integration {
-            match witchy_interp::pipeline::check_bare_test_driver(suite, &test) {
+            match witchy_types::pipeline::check_bare_test_driver(suite, &test, expand) {
                 Ok(driver) => driver,
                 Err(error) => {
                     result.failed.push((test, error.to_string()));
@@ -727,7 +730,7 @@ fn run_tests_in_module(
                 }
             }
         } else if policy.fixture_plan.is_some() {
-            match witchy_interp::pipeline::check_console_fixture_test_driver(suite, &test) {
+            match witchy_types::pipeline::check_console_fixture_test_driver(suite, &test, expand) {
                 Ok(driver) => driver,
                 Err(error) => {
                     result.failed.push((test, error.to_string()));
@@ -735,7 +738,7 @@ fn run_tests_in_module(
                 }
             }
         } else {
-            match witchy_interp::pipeline::check_integration_test_driver(suite, &test) {
+            match witchy_types::pipeline::check_integration_test_driver(suite, &test, expand) {
                 Ok(driver) => driver,
                 Err(error) => {
                     result.failed.push((test, error.to_string()));
