@@ -12,7 +12,7 @@ use package_inputs::{AmbientFiles, SourceFiles};
 use witchy_syntax::{ast, format, parser};
 #[cfg(test)]
 use witchy_syntax::linker;
-use witchy_interp::{comptime, pipeline};
+use witchy_interp::pipeline;
 use witchy_types::runtime_type::{
     AuthenticatedModuleOwners, ModuleLoadIdentity, PackageCoordinate, PackageSource,
 };
@@ -57,13 +57,9 @@ impl StaticSourceSnapshot {
         if !source_block_producers(&self.sources, &self.user_modules)?.is_empty() {
             return Err("fresh-island comptime requires an admitted static recipe".into());
         }
-        let expand = if static_bundle_needs_legacy_expansion(&self.sources) {
-            comptime::EXPANDER
-        } else {
-            witchy_syntax::linker::ComptimeExpander::with_sibling_request(
-                witchy_types::pipeline::require_expansion_free, |_| false,
-            )
-        };
+        let expand = witchy_syntax::linker::ComptimeExpander::with_sibling_request(
+            witchy_types::pipeline::require_expansion_free, |_| false,
+        );
         witchy_types::pipeline::link_checked_static_island_output_from_source_bundle(
             self.sources.clone(), &self.entry, expand,
             &self.user_modules, self.owners.clone(), initial, view,
@@ -119,37 +115,6 @@ pub(crate) fn project_entry_file() -> Option<String> {
 /// `import list` works without a local file. Bundled module names are reserved.
 pub(crate) fn bundled_module(name: &str) -> Option<&'static str> {
     witchy_syntax::linker::bundled_source(name)
-}
-
-fn static_bundle_needs_legacy_expansion(sources: &[(String, Vec<u8>)]) -> bool {
-    source_bundle_needs_legacy_expansion(&sources.iter().filter(|(name, bytes)|
-        name != "glamour" || bundled_module(name)
-            .is_none_or(|bundled| bundled.as_bytes() != bytes.as_slice()))
-        .cloned().collect::<Vec<_>>())
-}
-
-fn source_bundle_needs_legacy_expansion(sources: &[(String, Vec<u8>)]) -> bool {
-    sources.iter().any(|(name, bytes)| {
-        let parsed = std::str::from_utf8(bytes).ok().and_then(|source| parser::parse_module(source).ok());
-        // Bundled `meta` carries inert quote metadata. Glamour derives are
-        // handled by the authenticated static recipe when that route is chosen.
-        if bundled_module(name).is_some_and(|source| source.as_bytes() == bytes.as_slice()) {
-            return parsed.as_ref().is_none_or(|module| {
-                module.items.iter().any(|item| match item {
-                    ast::Item::Comptime(_) => true,
-                    ast::Item::Type(definition) => !definition.derives.is_empty(),
-                    _ => false,
-                })
-                    || witchy_syntax::ast::visit::visit_module_exprs(module, &mut |expr| {
-                        if matches!(expr, ast::Expr::TaggedLit { .. })
-                            || matches!(expr, ast::Expr::Call { name, .. } if name == "@hole_origin") {
-                            Err(())
-                        } else { Ok(()) }
-                    }).is_err()
-            });
-        }
-        parsed.as_ref().is_none_or(module_needs_legacy_expansion)
-    })
 }
 
 /// Parse and link a source file. Non-std imports resolve from sibling
@@ -376,13 +341,9 @@ pub(crate) fn link_static_site_checked_with_output_snapshot(
     let output = if has_main {
         None
     } else {
-        let expand = if static_bundle_needs_legacy_expansion(&sources) {
-            comptime::EXPANDER
-        } else {
-            witchy_syntax::linker::ComptimeExpander::with_sibling_request(
-                witchy_types::pipeline::require_expansion_free, |_| false,
-            )
-        };
+        let expand = witchy_syntax::linker::ComptimeExpander::with_sibling_request(
+            witchy_types::pipeline::require_expansion_free, |_| false,
+        );
         Some(witchy_types::pipeline::link_checked_static_site_output_from_source_bundle(
             sources, &entry, expand, &user_modules, owners, has_content,
         ).map_err(|error| error.to_string())?)
