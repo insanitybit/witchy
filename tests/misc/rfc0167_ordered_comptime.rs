@@ -320,11 +320,69 @@ fn main(console: Console):
         "type User:\n    name: String\n    age: Int\n    email: String\ntype Account:\n    name: String\n    age: Int\n").unwrap();
     std::fs::write(folder.join("dep_opt.witchy"),
         "mode opt\ntype OptUser:\n    name: String\n    age: Int\ntype OptAccount:\n    name: String\n    age: Int\n").unwrap();
-    std::fs::write(&source, &imported).unwrap();
-    let imported_cli_source = source.clone();
-    let imported_cli = std::thread::spawn(move || {
-        Command::new(env!("CARGO_BIN_EXE_witchy")).arg(&imported_cli_source).output().unwrap()
+    let imported_cli_source = folder.join("cli.witchy");
+    std::fs::write(&imported_cli_source, &imported).unwrap();
+    let imported_cli = std::thread::spawn({
+        let imported_cli_source = imported_cli_source.clone();
+        move || Command::new(env!("CARGO_BIN_EXE_witchy")).arg(&imported_cli_source).output().unwrap()
     });
+    let (builder_definition, _) = program.split_once("fn main(console: Console):")
+        .expect("builder source has an entry point");
+    std::fs::write(folder.join("dep.witchy"), format!("mode opt\n{builder_definition}")).unwrap();
+    let entry = r#"import dep
+fn main(console: Console):
+    let complete = dep.UserBuilder(None, None, None).with_name("Ada").with_age(42).with_email("ada@example.com").build()
+    let incomplete = dep.UserBuilder(None, None, None).with_name("Ada").build()
+    match complete:
+        Some(user) -> console.print("${user.name}/${user.age}/${user.email}")
+        None -> console.print("missing")
+    match incomplete:
+        Some(_) -> console.print("unexpected")
+        None -> console.print("None")
+"#;
+    std::fs::write(&source, entry).unwrap();
+    let dependency_source = std::fs::read(folder.join("dep.witchy")).unwrap();
+    let meta_source = witchy_syntax::linker::bundled_source("meta")
+        .expect("bundled meta").as_bytes().to_vec();
+    let check_entry = move |entry: &str| witchy::canonical_comptime::check_source_bundle_with_imported_blocks(
+        vec![
+            ("main".into(), entry.as_bytes().to_vec()),
+            ("dep".into(), dependency_source.clone()),
+            ("meta".into(), meta_source.clone()),
+        ],
+        "main", "dep", ["main".to_owned(), "dep".to_owned()].into_iter().collect(),
+        owners_for(["main", "dep"]), witchy::canonical_comptime::source_limits(),
+    );
+    // Local and imported checks use independent source bundles; overlap their compiler work.
+    let imported_modes = std::thread::spawn(move || {
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                let checked = check_entry(entry).expect("normal entry can use the imported opt builder");
+                let artifact = witchy_lower::codegen::compile_checked_module_artifact(&checked)
+                    .expect_lowered("normal entry with imported opt builder admits on unoptimized Wasm");
+                let mut runtime = Runtime::batch().unwrap();
+                let mut vm = runtime.spawn_admitted(&artifact,
+                    Capabilities { print: true, quiet: true, ..Capabilities::none() }, 64).unwrap();
+                vm.run().unwrap();
+                assert_eq!(vm.output(), ["Ada/42/ada@example.com", "None"]);
+                assert_eq!(vm.canonical_heap_leaks().unwrap(), Some(0));
+            });
+            scope.spawn(|| {
+                let reused_name = entry.replace(
+                    "    let complete = dep.UserBuilder(None, None, None).with_name(\"Ada\")",
+                    "    let name = \"Ada\"\n    let complete = dep.UserBuilder(None, None, None).with_name(name)",
+                ) + "    console.print(name)\n";
+                let error = check_entry(&reused_name)
+                    .expect_err("normal caller cannot reuse a value consumed by an opt setter");
+                assert!(
+                    ["consumed", "moved", "transferred", "ownership", "unique"].iter()
+                        .any(|word| error.contains(word)),
+                    "{error}",
+                );
+            });
+        });
+    });
+
     std::thread::scope(|scope| {
         for mode in ["", "mode opt\n"] {
             let mode = mode;
@@ -385,60 +443,7 @@ fn main(console: Console):
         }
     });
 
-    let (builder_definition, _) = program.split_once("fn main(console: Console):")
-        .expect("builder source has an entry point");
-    std::fs::write(folder.join("dep.witchy"), format!("mode opt\n{builder_definition}")).unwrap();
-    let entry = r#"import dep
-fn main(console: Console):
-    let complete = dep.UserBuilder(None, None, None).with_name("Ada").with_age(42).with_email("ada@example.com").build()
-    let incomplete = dep.UserBuilder(None, None, None).with_name("Ada").build()
-    match complete:
-        Some(user) -> console.print("${user.name}/${user.age}/${user.email}")
-        None -> console.print("missing")
-    match incomplete:
-        Some(_) -> console.print("unexpected")
-        None -> console.print("None")
-"#;
-    std::fs::write(&source, entry).unwrap();
-    let dependency_source = std::fs::read(folder.join("dep.witchy")).unwrap();
-    let meta_source = witchy_syntax::linker::bundled_source("meta")
-        .expect("bundled meta").as_bytes().to_vec();
-    let check_entry = |entry: &str| witchy::canonical_comptime::check_source_bundle_with_imported_blocks(
-        vec![
-            ("main".into(), entry.as_bytes().to_vec()),
-            ("dep".into(), dependency_source.clone()),
-            ("meta".into(), meta_source.clone()),
-        ],
-        "main", "dep", ["main".to_owned(), "dep".to_owned()].into_iter().collect(),
-        owners_for(["main", "dep"]), witchy::canonical_comptime::source_limits(),
-    );
-    std::thread::scope(|scope| {
-        scope.spawn(|| {
-            let checked = check_entry(entry).expect("normal entry can use the imported opt builder");
-            let artifact = witchy_lower::codegen::compile_checked_module_artifact(&checked)
-                .expect_lowered("normal entry with imported opt builder admits on unoptimized Wasm");
-            let mut runtime = Runtime::batch().unwrap();
-            let mut vm = runtime.spawn_admitted(&artifact,
-                Capabilities { print: true, quiet: true, ..Capabilities::none() }, 64).unwrap();
-            vm.run().unwrap();
-            assert_eq!(vm.output(), ["Ada/42/ada@example.com", "None"]);
-            assert_eq!(vm.canonical_heap_leaks().unwrap(), Some(0));
-        });
-        scope.spawn(|| {
-            let reused_name = entry.replace(
-                "    let complete = dep.UserBuilder(None, None, None).with_name(\"Ada\")",
-                "    let name = \"Ada\"\n    let complete = dep.UserBuilder(None, None, None).with_name(name)",
-            ) + "    console.print(name)\n";
-            let error = check_entry(&reused_name)
-                .expect_err("normal caller cannot reuse a value consumed by an opt setter");
-            assert!(
-                ["consumed", "moved", "transferred", "ownership", "unique"].iter()
-                    .any(|word| error.contains(word)),
-                "{error}",
-            );
-        });
-    });
-
+    imported_modes.join().expect("imported builder checks");
     let run = imported_cli.join().expect("imported builder CLI");
     assert!(run.status.success(), "{}", String::from_utf8_lossy(&run.stderr));
     assert_eq!(String::from_utf8_lossy(&run.stdout), "Ada/42/ada@example.com\nNone\nGrace/37\nBeth/28\nNone\nIvy/33\n");
