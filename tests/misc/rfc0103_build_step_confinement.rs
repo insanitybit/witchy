@@ -113,6 +113,21 @@ fn build_recipe_uses_admitted_original_comptime_output() {
 }
 
 #[test]
+fn build_recipe_uses_admitted_record_show_derive() {
+    let dir = TempDir::new("build-admitted-record-show");
+    let source = dir.join("build.witchy");
+    let out = dir.join("out");
+    std::fs::write(&source,
+        "type Foo derive(Show):\n    value: Int\n\nfn build(out: BuildOut):\n    out.write_out(\"generated.witchy\", show(Foo(value: 7)))\n",
+    ).unwrap();
+    let result = Command::new(BIN).args([
+        "build-step", source.to_str().unwrap(), "--out", out.to_str().unwrap(),
+    ]).output().unwrap();
+    assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+    assert_eq!(std::fs::read_to_string(out.join("generated.witchy")).unwrap(), "Foo(7)");
+}
+
+#[test]
 fn build_recipe_uses_admitted_imported_comptime_output() {
     // These CLI compiles are independent; separate roots let them run in
     // parallel without sharing generated files.

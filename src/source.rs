@@ -173,6 +173,22 @@ pub(crate) fn link_build_file(path: &str) -> Result<witchy_types::pipeline::Chec
             witchy::canonical_comptime::source_limits(),
         );
     }
+    let mut without_derives = module.clone();
+    for item in &mut without_derives.items {
+        if let ast::Item::Type(definition) = item { definition.derives.clear(); }
+    }
+    let selected_derives = (witchy_syntax::derive::has_only_direct_record_derives(&module)
+        && !module_needs_legacy_expansion(&without_derives))
+        || witchy_syntax::derive::has_only_typed_user_derives(&module);
+    let other_legacy_expansion = sources.iter().filter(|(name, _)| name != &entry && user_modules.contains(name))
+        .any(|(_, bytes)| std::str::from_utf8(bytes).ok()
+            .and_then(|source| parser::parse_module(source).ok())
+            .as_ref().is_none_or(module_needs_legacy_expansion));
+    if selected_derives && !other_legacy_expansion {
+        return witchy::canonical_comptime::check_build_recipe_source_bundle(
+            sources, &entry, user_modules, owners, witchy::canonical_comptime::source_limits(),
+        );
+    }
     let expand = if source_bundle_needs_legacy_expansion(&sources) {
         comptime::EXPANDER
     } else {
