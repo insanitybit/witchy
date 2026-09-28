@@ -245,10 +245,6 @@ async fn main(console: Console):
     let answer = worker.execute(ordinary()).await
     console.print("${answer}")
 "#;
-    let result = super::source::checked_bundle(vec![("worker", execute_worker), ("main", main)], "main");
-    let error = result.expect_err("a normal recipe cannot acquire opt execution provenance at the call site");
-    assert!(error.contains("opt-compatible task value provenance"), "{error}");
-
     let normal_public_callback_main = r#"import worker
 
 async fn ordinary() -> Int:
@@ -258,11 +254,6 @@ async fn main(console: Console):
     let _ = worker.relay_callback(worker.execute, ordinary()).await
     console.print("unreachable")
 "#;
-    let error = super::source::checked_bundle(
-        vec![("worker", &callback_worker), ("main", normal_public_callback_main)], "main",
-    ).expect_err("an opt callback formal cannot receive a normal task through a public relay");
-    assert!(error.contains("opt-compatible task value provenance"), "{error}");
-
     let normal_option_main = r#"import worker
 
 async fn ordinary() -> Int:
@@ -273,11 +264,6 @@ async fn main(console: Console):
     let _ = worker.execute_option(Some(ordinary())).await
     console.print("done")
 "#;
-    let error = super::source::checked_bundle(
-        vec![("worker", &option_worker), ("main", normal_option_main)], "main",
-    ).expect_err("a sum wrapper cannot erase normal task execution mode");
-    assert!(error.contains("opt-compatible task value provenance"), "{error}");
-
     let compatible_main = r#"import task
 import worker
 
@@ -334,8 +320,39 @@ async fn main(console: Console):
     console.print("${opt_parameter_callback_answer}")
     console.print("${normal_callback_answer}")
 "#;
-    let result = super::source::checked_bundle(vec![("worker", worker), ("main", compatible_main)], "main");
-    assert!(result.is_ok(), "{result:?}");
+
+    // These rejected bundles are independent. Keep their assertions in the
+    // same existing test while checking them with the positive bundle
+    // concurrently so the compiler runs do not serialize its wall time.
+    std::thread::scope(|scope| {
+        let direct = scope.spawn(|| {
+            let error = super::source::checked_bundle(vec![("worker", execute_worker), ("main", main)], "main")
+                .expect_err("a normal recipe cannot acquire opt execution provenance at the call site");
+            assert!(error.contains("opt-compatible task value provenance"), "{error}");
+        });
+        let callback = scope.spawn(|| {
+            let error = super::source::checked_bundle(
+                vec![("worker", &callback_worker), ("main", normal_public_callback_main)], "main",
+            ).expect_err("an opt callback formal cannot receive a normal task through a public relay");
+            assert!(error.contains("opt-compatible task value provenance"), "{error}");
+        });
+        let option = scope.spawn(|| {
+            let error = super::source::checked_bundle(
+                vec![("worker", &option_worker), ("main", normal_option_main)], "main",
+            ).expect_err("a sum wrapper cannot erase normal task execution mode");
+            assert!(error.contains("opt-compatible task value provenance"), "{error}");
+        });
+        let positive = scope.spawn(|| {
+            let result = super::source::checked_bundle(
+                vec![("worker", worker), ("main", compatible_main)], "main",
+            );
+            assert!(result.is_ok(), "{result:?}");
+        });
+        direct.join().expect("direct task-origin rejection");
+        callback.join().expect("callback task-origin rejection");
+        option.join().expect("wrapped task-origin rejection");
+        positive.join().expect("positive callback provenance composition");
+    });
 
     // Each refusal needs only its own provenance route. Rechecking the full
     // positive worker and its caller for every near miss obscures the failing
@@ -353,34 +370,14 @@ pub async fn execute_local_callback() -> Int:
     let alias = make
     alias().await
 "#;
-    let error = super::source::checked_bundle(
-        vec![("worker", normal_callback_worker), ("main", minimal_main)], "main",
-    ).expect_err("a local callback cannot upgrade a normal task producer");
-    assert!(error.contains("opt-compatible task value provenance"), "{error}");
-
     let normal_argument_worker = r#"mode opt
 import task
 pub async fn execute_parameter_callback() -> Int:
     let relay = fn(own recipe: task.Task(Int)): recipe
     relay(task.done(7)).await
 "#;
-    let error = super::source::checked_bundle(
-        vec![("worker", normal_argument_worker), ("main", minimal_main)], "main",
-    ).expect_err("a callback formal cannot upgrade a normal task argument");
-    assert!(error.contains("opt-compatible task value provenance"), "{error}");
-
     let escaped_lambda_worker = format!("{opt_execute_worker}\npub fn escape_lambda() -> fn(own task.Task(Int)) -> task.Task(Int):\n    let relay = fn(own input: task.Task(Int)): execute(input)\n    relay\n");
-    let error = super::source::checked_bundle(
-        vec![("worker", &escaped_lambda_worker), ("main", minimal_main)], "main",
-    ).expect_err("a lambda input obligation cannot escape through an unchecked function type");
-    assert!(error.contains("local callback with an opt task input obligation"), "{error}");
-
     let joined_lambda_worker = format!("{opt_execute_worker}\npub async fn compatible() -> Int:\n    7\npub async fn join_lambda(flag: Bool) -> Int:\n    let relay = if flag: fn(own input: task.Task(Int)): execute(input) else: fn(own input: task.Task(Int)): execute(input)\n    relay(compatible()).await\n");
-    let error = super::source::checked_bundle(
-        vec![("worker", &joined_lambda_worker), ("main", minimal_main)], "main",
-    ).expect_err("joining different local lambda scopes cannot erase their opt input obligation");
-    assert!(error.contains("local callback with an opt task input obligation"), "{error}");
-
     let aggregate_worker = format!("{opt_execute_worker}\npub fn factory() -> (fn(own task.Task(Int)) -> task.Task(Int), Int):\n    (execute, 0)\n");
     let aggregate_main = r#"import task
 import worker
@@ -393,11 +390,6 @@ async fn main(console: Console):
     let _ = relay(task.done(7)).await
     console.print("unreachable")
 "#;
-    let error = super::source::checked_bundle(
-        vec![("worker", &aggregate_worker), ("main", aggregate_main)], "main",
-    ).expect_err("invalidation cannot erase an opt task input obligation inside a tuple");
-    assert!(error.contains("local callback with an opt task input obligation"), "{error}");
-
     let opaque_callback_main = r#"import task
 import worker
 
@@ -409,14 +401,57 @@ async fn main(console: Console):
     let _ = relay(pair.0, task.done(7)).await
     console.print("unreachable")
 "#;
-    let error = super::source::checked_bundle(
-        vec![("worker", opt_execute_worker), ("main", opaque_callback_main)], "main",
-    ).expect_err("an ordinary function-value ABI cannot erase an opt task-input requirement");
-    assert!(error.contains("callback with an opt task input obligation"), "{error}");
-
     let propagated_callback_worker = format!("{opt_execute_worker}\npub fn choose(flag: Bool) -> Result(Int, fn(own task.Task(Int)) -> task.Task(Int)):\n    if flag: Ok(1) else: Err(execute)\n\npub fn propagate(flag: Bool) -> Result(Int, fn(own task.Task(Int)) -> task.Task(Int)):\n    let value = choose(flag)?\n    Ok(value)\n");
-    let error = super::source::checked_bundle(
-        vec![("worker", &propagated_callback_worker), ("main", minimal_main)], "main",
-    ).expect_err("early error propagation cannot hide a callback task-input obligation");
-    assert!(error.contains("propagate through `?`"), "{error}");
+
+    std::thread::scope(|scope| {
+        let local = scope.spawn(|| {
+            let error = super::source::checked_bundle(
+                vec![("worker", normal_callback_worker), ("main", minimal_main)], "main",
+            ).expect_err("a local callback cannot upgrade a normal task producer");
+            assert!(error.contains("opt-compatible task value provenance"), "{error}");
+        });
+        let argument = scope.spawn(|| {
+            let error = super::source::checked_bundle(
+                vec![("worker", normal_argument_worker), ("main", minimal_main)], "main",
+            ).expect_err("a callback formal cannot upgrade a normal task argument");
+            assert!(error.contains("opt-compatible task value provenance"), "{error}");
+        });
+        let escaped = scope.spawn(|| {
+            let error = super::source::checked_bundle(
+                vec![("worker", &escaped_lambda_worker), ("main", minimal_main)], "main",
+            ).expect_err("a lambda input obligation cannot escape through an unchecked function type");
+            assert!(error.contains("local callback with an opt task input obligation"), "{error}");
+        });
+        let joined = scope.spawn(|| {
+            let error = super::source::checked_bundle(
+                vec![("worker", &joined_lambda_worker), ("main", minimal_main)], "main",
+            ).expect_err("joining different local lambda scopes cannot erase their opt input obligation");
+            assert!(error.contains("local callback with an opt task input obligation"), "{error}");
+        });
+        let aggregate = scope.spawn(|| {
+            let error = super::source::checked_bundle(
+                vec![("worker", &aggregate_worker), ("main", aggregate_main)], "main",
+            ).expect_err("invalidation cannot erase an opt task input obligation inside a tuple");
+            assert!(error.contains("local callback with an opt task input obligation"), "{error}");
+        });
+        let opaque = scope.spawn(|| {
+            let error = super::source::checked_bundle(
+                vec![("worker", opt_execute_worker), ("main", opaque_callback_main)], "main",
+            ).expect_err("an ordinary function-value ABI cannot erase an opt task-input requirement");
+            assert!(error.contains("callback with an opt task input obligation"), "{error}");
+        });
+        let propagated = scope.spawn(|| {
+            let error = super::source::checked_bundle(
+                vec![("worker", &propagated_callback_worker), ("main", minimal_main)], "main",
+            ).expect_err("early error propagation cannot hide a callback task-input obligation");
+            assert!(error.contains("propagate through `?`"), "{error}");
+        });
+        local.join().expect("normal local callback rejection");
+        argument.join().expect("normal callback-argument rejection");
+        escaped.join().expect("escaped lambda rejection");
+        joined.join().expect("joined lambda rejection");
+        aggregate.join().expect("aggregate callback rejection");
+        opaque.join().expect("opaque callback rejection");
+        propagated.join().expect("propagated callback rejection");
+    });
 }
