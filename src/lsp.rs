@@ -293,45 +293,27 @@ fn link_document_with_origins(
         );
         modules.push((name, module));
     }
-    let linked = if modules.iter().any(|(_, module)| module_needs_tooling_expansion(module)) {
-        ToolingLink::Legacy(witchy_interp::pipeline::link_with_origins(modules, &entry).ok()?)
-    } else {
-        ToolingLink::Plain(witchy_syntax::linker::link_with_origins(
-            modules, &entry,
-            witchy_syntax::linker::ComptimeExpander::with_sibling_request(
-                witchy_types::pipeline::require_expansion_free, |_| false,
-            ),
-        ).ok()?)
-    };
+    let linked = ToolingLink::Plain(witchy_syntax::linker::link_with_origins(
+        modules, &entry,
+        witchy_syntax::linker::ComptimeExpander::with_sibling_request(
+            witchy_types::pipeline::require_expansion_free, |_| false,
+        ),
+    ).ok()?);
     Some((entry, parsed, linked))
 }
 
 enum ToolingLink {
     Plain(witchy_syntax::linker::LinkedModule),
-    Legacy(witchy_interp::pipeline::ToolingLinkedModule),
 }
 
 impl ToolingLink {
     fn module(&self) -> &ast::Module {
-        match self { Self::Plain(linked) => &linked.module, Self::Legacy(linked) => linked.module() }
+        match self { Self::Plain(linked) => &linked.module }
     }
 
     fn origins(&self) -> &witchy_syntax::origin::OriginTable {
-        match self { Self::Plain(linked) => &linked.origins, Self::Legacy(linked) => linked.origins() }
+        match self { Self::Plain(linked) => &linked.origins }
     }
-}
-
-fn module_needs_tooling_expansion(module: &ast::Module) -> bool {
-    if !module.compiler_item_syntax.is_empty() || !module.compiler_expr_syntax.is_empty()
-        || !module.compiler_type_syntax.is_empty() || !module.compiler_pattern_syntax.is_empty()
-        || !module.compiler_stmt_syntax.is_empty() || !module.compiler_block_syntax.is_empty()
-        || module.items.iter().any(|item| matches!(item, ast::Item::Comptime(_))
-            || matches!(item, ast::Item::Type(definition) if !definition.derives.is_empty())) {
-        return true;
-    }
-    witchy_syntax::ast::visit::visit_module_exprs(module, &mut |expression| {
-        if matches!(expression, ast::Expr::TaggedLit { .. }) { Err(()) } else { Ok(()) }
-    }).is_err()
 }
 
 // --- completion -------------------------------------------------------------
@@ -1890,16 +1872,12 @@ fn compute_diagnostics(uri: &str, text: &str, docs: &HashMap<String, String>) ->
         return import_diags;
     }
 
-    let checked = match if modules.iter().any(|(_, module)| module_needs_tooling_expansion(module)) {
-        witchy_interp::pipeline::link_checked(modules, &entry)
-    } else {
-        witchy_types::pipeline::link_checked(
-            modules, &entry,
-            witchy_syntax::linker::ComptimeExpander::with_sibling_request(
-                witchy_types::pipeline::require_expansion_free, |_| false,
-            ),
-        )
-    } {
+    let checked = match witchy_types::pipeline::link_checked(
+        modules, &entry,
+        witchy_syntax::linker::ComptimeExpander::with_sibling_request(
+            witchy_types::pipeline::require_expansion_free, |_| false,
+        ),
+    ) {
         Ok(checked) => checked,
         Err(witchy_interp::pipeline::PipelineError::Link(error)) => {
             // BUG-162: map the link error onto the line it names (or the import it

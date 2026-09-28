@@ -65,7 +65,7 @@ fn main(console: Console):
     }
 
     #[test]
-    fn generated_definition_returns_invocation_and_macro_definition() {
+    fn generated_definition_requires_an_admitted_tooling_session() {
         let uri = "file:///tmp/main.witchy";
         let docs = docs(uri, GENERATED_ITEM_SOURCE);
         let response = definition_response(
@@ -75,13 +75,12 @@ fn main(console: Console):
                 "position": { "line": 7, "character": 0 },
             }),
         );
-        let locations = response.as_array().expect("generated definition locations");
-        let lines = locations
-            .iter()
-            .map(|location| location["range"]["start"]["line"].as_u64().unwrap())
-            .collect::<HashSet<_>>();
-        assert_eq!(lines, HashSet::from([3, 7]));
-        assert!(locations.iter().all(|location| location["uri"] == json!(uri)));
+        assert!(response.is_null(), "{response}");
+        let diagnostics = diags(GENERATED_ITEM_SOURCE);
+        assert!(diagnostics.iter().any(|diagnostic|
+            diagnostic["message"].as_str().is_some_and(|message|
+                message.contains("requires authenticated prior expansion"))),
+            "{diagnostics:?}");
     }
 
     #[test]
