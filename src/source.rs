@@ -267,8 +267,15 @@ pub(crate) fn link_test_file(
         )))?;
         return Ok((checked, entry_stem));
     }
-    let checked = pipeline::link_checked_test_suite_from_source_bundle(
-        sources, &entry_stem, &user_modules, owners,
+    let expand = if source_bundle_needs_legacy_expansion(&sources) {
+        comptime::EXPANDER
+    } else {
+        witchy_syntax::linker::ComptimeExpander::with_sibling_request(
+            witchy_types::pipeline::require_expansion_free, |_| false,
+        )
+    };
+    let checked = witchy_types::pipeline::link_checked_test_suite_from_source_bundle(
+        sources, &entry_stem, expand, &user_modules, owners,
     ).map_err(TestFileError::Pipeline)?;
     Ok((checked, entry_stem))
 }
