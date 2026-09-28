@@ -74,7 +74,10 @@ impl Runtime {
         if limits.memory_pages.checked_mul(65536).is_none() {
             bail!("comptime memory limit overflow");
         }
-        let mut runtime = Runtime::configured_with_fuel(false, wasmtime::OptLevel::None, false, true)?;
+        // Reuse Wasmtime's content-addressed compilation cache across checked
+        // compiler sessions. `Module::new` still validates admitted bytes.
+        let mut runtime =
+            Runtime::configured_with_fuel(false, wasmtime::OptLevel::None, true, true)?;
         let module = WorkerModule::from_admitted(&runtime.engine, artifact)?;
         let mut syntax = CompilerSyntaxSession::default();
         syntax.set_invocation(Some(contract.scope().into()), None, None);
