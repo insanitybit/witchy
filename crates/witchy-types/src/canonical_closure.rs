@@ -6,7 +6,7 @@
 //! the type table supplies checked expression types, and lexical declaration
 //! paths supply stable binding identities.
 
-use std::{collections::{BTreeMap, HashSet}, fmt};
+use std::{cell::RefCell, collections::{BTreeMap, HashMap, HashSet}, fmt};
 
 use witchy_syntax::ast::{self, Block, Expr, Item, Pattern, Stmt, Type};
 
@@ -195,6 +195,7 @@ struct Builder<'a> {
     entries: Vec<ClosureWitness>,
     scopes: Vec<Vec<Binding>>,
     sites: Vec<LambdaSite>,
+    qualifier_cache: RefCell<HashMap<Type, (bool, usize)>>,
 }
 
 impl<'a> Builder<'a> {
@@ -324,6 +325,8 @@ impl<'a> Builder<'a> {
     /// without a proved projection keep their bindings unproved instead of
     /// minting an unqualified closure capture.
     fn source_may_contain_qualifier(&self, ty: &Type, depth: usize, remaining: &mut usize) -> bool {
+        const NODE_BUDGET: usize = 4_096;
+
         fn walk(
             ty: &Type,
             definitions: &BTreeMap<String, ast::TypeDef>,
@@ -358,7 +361,21 @@ impl<'a> Builder<'a> {
             active.remove(ty);
             contains
         }
-        walk(ty, &self.definitions, depth, remaining, &mut HashSet::new())
+        let cacheable = depth == 0 && *remaining == NODE_BUDGET;
+        if cacheable
+            && let Some((contains, nodes)) = self.qualifier_cache.borrow().get(ty).copied()
+        {
+            *remaining -= nodes;
+            return contains;
+        }
+        let initial_budget = *remaining;
+        let contains = walk(ty, &self.definitions, depth, remaining, &mut HashSet::new());
+        if cacheable {
+            self.qualifier_cache
+                .borrow_mut()
+                .insert(ty.clone(), (contains, initial_budget - *remaining));
+        }
+        contains
     }
 
     fn pattern_binding_types(&self, pattern: &Pattern, source: Option<&Type>, unproved: bool) -> Vec<(String, Option<Type>, bool)> {
@@ -685,6 +702,7 @@ fn walk_module(typed: &TypedModule) -> Result<Builder<'_>, ClosureWitnessError> 
         typed, module: typed.module(),
         definitions: witchy_canonical_source::aggregates::type_definitions(typed.module()),
         entries: Vec::new(), scopes: Vec::new(), sites: Vec::new(),
+        qualifier_cache: RefCell::new(HashMap::new()),
     };
     let scope = witchy_canonical_source::scope::canonical_scope(typed.module());
     for (item_index, item_def) in typed.module().items.iter().enumerate() {
