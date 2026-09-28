@@ -292,60 +292,89 @@ fn main(console: Console):
         Some(_) -> console.print("unexpected")
         None -> console.print("None")
 "#;
-    for mode in ["", "mode opt\n"] {
-        let checked = witchy::canonical_comptime::check_source_bundle(
-            vec![
-                ("generator".into(), format!("{mode}{program}").into_bytes()),
-                ("meta".into(), witchy_syntax::linker::bundled_source("meta")
-                    .expect("bundled meta").as_bytes().to_vec()),
-            ],
-            "generator", ["generator".to_owned()].into_iter().collect(),
-            owners(), witchy::canonical_comptime::source_limits(),
-        ).expect("reflected builder enters ordinary destination checking");
-        let generated_origins = checked.module().items.iter().enumerate().filter_map(|(index, item)| {
-            let is_builder = match item {
-                witchy_syntax::ast::Item::Type(ty) => ty.name.ends_with("UserBuilder"),
-                witchy_syntax::ast::Item::Impl(implementation) =>
-                    implementation.type_name.ends_with("UserBuilder"),
-                _ => false,
-            };
-            is_builder.then(|| (
-                index,
-                checked.module().item_lines.get(index).copied().unwrap_or(0),
-                checked.origins().origin_for_item(index).map(|entry| (
-                    entry.origin.definition.start.line,
-                    entry.origin.invocation.start.line,
-                )),
-            ))
-        }).collect::<Vec<_>>();
-        assert_eq!(generated_origins.len(), 2, "{generated_origins:?}");
-        assert!(generated_origins.iter().all(|(_, _, origin)| matches!(origin, Some((definition, invocation))
-            if *definition > 1 && *invocation > 1)),
-            "builder items need source origins: {generated_origins:?}");
-        let artifact = witchy_lower::codegen::compile_checked_module_artifact(&checked)
-            .expect_lowered("generated builder admits on unoptimized Wasm");
-        let mut runtime = Runtime::batch().unwrap();
-        let mut vm = runtime.spawn_admitted(&artifact,
-            Capabilities { print: true, quiet: true, ..Capabilities::none() }, 64).unwrap();
-        vm.run().unwrap();
-        assert_eq!(vm.output(), ["Ada/42/ada@example.com", "None"]);
-        assert_eq!(vm.canonical_heap_leaks().unwrap(), Some(0));
+    let imported = program
+        .replacen("type User:\n    name: String\n    age: Int\n    email: String\n", "from dep_normal import User\n", 1)
+        .replacen(
+            "    for item in builder_items(type_info(User)):\n        emit_item(item)",
+            "    for item in builder_items(type_info(dep_normal.User)):\n        emit_item(item)\n    for item in builder_items_for(type_info(dep_normal.Account), meta.type_expr(meta.TNamed(\"dep_normal.Account\", [])), meta.type_expr(meta.TNamed(\"Option\", [meta.TNamed(\"dep_normal.Account\", [])]))):\n        emit_item(item)\n    for item in builder_items(type_info(dep_opt.OptUser)):\n        emit_item(item)\n    for item in builder_items_for(type_info(dep_opt.OptAccount), meta.type_expr(meta.TNamed(\"dep_opt.OptAccount\", [])), meta.type_expr(meta.TNamed(\"Option\", [meta.TNamed(\"dep_opt.OptAccount\", [])]))):\n        emit_item(item)",
+            1,
+        );
+    let imported = imported.replace(
+        "fn main(console: Console):\n    let complete = UserBuilder(None, None, None).with_name(\"Ada\").with_age(42).with_email(\"ada@example.com\").build()",
+        "fn main(console: Console):\n    let account = AccountBuilder(None, None).with_name(\"Grace\").with_age(37).build()\n    let opt_complete = OptUserBuilder(None, None).with_name(\"Beth\").with_age(28).build()\n    let opt_incomplete = OptUserBuilder(None, None).with_name(\"Beth\").build()\n    let opt_account = OptAccountBuilder(None, None).with_name(\"Ivy\").with_age(33).build()\n    let complete = UserBuilder(None, None, None).with_name(\"Ada\").with_age(42).with_email(\"ada@example.com\").build()",
+    ).replace(
+        "        None -> console.print(\"None\")\n",
+        "        None -> console.print(\"None\")\n    match account:\n        Some(value) -> console.print(\"${value.name}/${value.age}\")\n        None -> console.print(\"missing account\")\n    match opt_complete:\n        Some(value) -> console.print(\"${value.name}/${value.age}\")\n        None -> console.print(\"missing opt user\")\n    match opt_incomplete:\n        Some(_) -> console.print(\"unexpected opt user\")\n        None -> console.print(\"None\")\n    match opt_account:\n        Some(value) -> console.print(\"${value.name}/${value.age}\")\n        None -> console.print(\"missing opt account\")\n",
+    );
+    let imported = format!("import dep_normal\nimport dep_opt\nfrom dep_opt import OptUser, OptAccount\n{imported}");
+    std::fs::write(folder.join("dep_normal.witchy"),
+        "type User:\n    name: String\n    age: Int\n    email: String\ntype Account:\n    name: String\n    age: Int\n").unwrap();
+    std::fs::write(folder.join("dep_opt.witchy"),
+        "mode opt\ntype OptUser:\n    name: String\n    age: Int\ntype OptAccount:\n    name: String\n    age: Int\n").unwrap();
+    std::fs::write(&source, &imported).unwrap();
+    let imported_cli_source = source.clone();
+    let imported_cli = std::thread::spawn(move || {
+        Command::new(env!("CARGO_BIN_EXE_witchy")).arg(&imported_cli_source).output().unwrap()
+    });
+    std::thread::scope(|scope| {
+        for mode in ["", "mode opt\n"] {
+            let mode = mode;
+            scope.spawn(move || {
+                let checked = witchy::canonical_comptime::check_source_bundle(
+                    vec![
+                        ("generator".into(), format!("{mode}{program}").into_bytes()),
+                        ("meta".into(), witchy_syntax::linker::bundled_source("meta")
+                            .expect("bundled meta").as_bytes().to_vec()),
+                    ],
+                    "generator", ["generator".to_owned()].into_iter().collect(),
+                    owners(), witchy::canonical_comptime::source_limits(),
+                ).expect("reflected builder enters ordinary destination checking");
+                let generated_origins = checked.module().items.iter().enumerate().filter_map(|(index, item)| {
+                    let is_builder = match item {
+                        witchy_syntax::ast::Item::Type(ty) => ty.name.ends_with("UserBuilder"),
+                        witchy_syntax::ast::Item::Impl(implementation) =>
+                            implementation.type_name.ends_with("UserBuilder"),
+                        _ => false,
+                    };
+                    is_builder.then(|| (
+                        index,
+                        checked.module().item_lines.get(index).copied().unwrap_or(0),
+                        checked.origins().origin_for_item(index).map(|entry| (
+                            entry.origin.definition.start.line,
+                            entry.origin.invocation.start.line,
+                        )),
+                    ))
+                }).collect::<Vec<_>>();
+                assert_eq!(generated_origins.len(), 2, "{generated_origins:?}");
+                assert!(generated_origins.iter().all(|(_, _, origin)| matches!(origin, Some((definition, invocation))
+                    if *definition > 1 && *invocation > 1)),
+                    "builder items need source origins: {generated_origins:?}");
+                let artifact = witchy_lower::codegen::compile_checked_module_artifact(&checked)
+                    .expect_lowered("generated builder admits on unoptimized Wasm");
+                let mut runtime = Runtime::batch().unwrap();
+                let mut vm = runtime.spawn_admitted(&artifact,
+                    Capabilities { print: true, quiet: true, ..Capabilities::none() }, 64).unwrap();
+                vm.run().unwrap();
+                assert_eq!(vm.output(), ["Ada/42/ada@example.com", "None"]);
+                assert_eq!(vm.canonical_heap_leaks().unwrap(), Some(0));
 
-        if mode.is_empty() {
-            let stale = program.replace("UserBuilder(None, None, None)", "UserBuilder(None, None)")
-                .replace(".with_age(42).with_email(\"ada@example.com\")", ".with_age(42)");
-            let stale = witchy::canonical_comptime::check_source_bundle(
-                vec![
-                    ("generator".into(), format!("{mode}{stale}").into_bytes()),
-                    ("meta".into(), witchy_syntax::linker::bundled_source("meta")
-                        .expect("bundled meta").as_bytes().to_vec()),
-                ],
-                "generator", ["generator".to_owned()].into_iter().collect(),
-                owners(), witchy::canonical_comptime::source_limits(),
-            ).expect_err("old two-slot construction must fail with the added field");
-            assert!(!stale.is_empty());
+                if mode.is_empty() {
+                    let stale = program.replace("UserBuilder(None, None, None)", "UserBuilder(None, None)")
+                        .replace(".with_age(42).with_email(\"ada@example.com\")", ".with_age(42)");
+                    let stale = witchy::canonical_comptime::check_source_bundle(
+                        vec![
+                            ("generator".into(), format!("{mode}{stale}").into_bytes()),
+                            ("meta".into(), witchy_syntax::linker::bundled_source("meta")
+                                .expect("bundled meta").as_bytes().to_vec()),
+                        ],
+                        "generator", ["generator".to_owned()].into_iter().collect(),
+                        owners(), witchy::canonical_comptime::source_limits(),
+                    ).expect_err("old two-slot construction must fail with the added field");
+                    assert!(!stale.is_empty());
+                }
+            });
         }
-    }
+    });
 
     let (builder_definition, _) = program.split_once("fn main(console: Console):")
         .expect("builder source has an entry point");
@@ -374,49 +403,34 @@ fn main(console: Console):
         "main", "dep", ["main".to_owned(), "dep".to_owned()].into_iter().collect(),
         owners_for(["main", "dep"]), witchy::canonical_comptime::source_limits(),
     );
-    let checked = check_entry(entry).expect("normal entry can use the imported opt builder");
-    let artifact = witchy_lower::codegen::compile_checked_module_artifact(&checked)
-        .expect_lowered("normal entry with imported opt builder admits on unoptimized Wasm");
-    let mut runtime = Runtime::batch().unwrap();
-    let mut vm = runtime.spawn_admitted(&artifact,
-        Capabilities { print: true, quiet: true, ..Capabilities::none() }, 64).unwrap();
-    vm.run().unwrap();
-    assert_eq!(vm.output(), ["Ada/42/ada@example.com", "None"]);
-    assert_eq!(vm.canonical_heap_leaks().unwrap(), Some(0));
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            let checked = check_entry(entry).expect("normal entry can use the imported opt builder");
+            let artifact = witchy_lower::codegen::compile_checked_module_artifact(&checked)
+                .expect_lowered("normal entry with imported opt builder admits on unoptimized Wasm");
+            let mut runtime = Runtime::batch().unwrap();
+            let mut vm = runtime.spawn_admitted(&artifact,
+                Capabilities { print: true, quiet: true, ..Capabilities::none() }, 64).unwrap();
+            vm.run().unwrap();
+            assert_eq!(vm.output(), ["Ada/42/ada@example.com", "None"]);
+            assert_eq!(vm.canonical_heap_leaks().unwrap(), Some(0));
+        });
+        scope.spawn(|| {
+            let reused_name = entry.replace(
+                "    let complete = dep.UserBuilder(None, None, None).with_name(\"Ada\")",
+                "    let name = \"Ada\"\n    let complete = dep.UserBuilder(None, None, None).with_name(name)",
+            ) + "    console.print(name)\n";
+            let error = check_entry(&reused_name)
+                .expect_err("normal caller cannot reuse a value consumed by an opt setter");
+            assert!(
+                ["consumed", "moved", "transferred", "ownership", "unique"].iter()
+                    .any(|word| error.contains(word)),
+                "{error}",
+            );
+        });
+    });
 
-    let reused_name = entry.replace(
-        "    let complete = dep.UserBuilder(None, None, None).with_name(\"Ada\")",
-        "    let name = \"Ada\"\n    let complete = dep.UserBuilder(None, None, None).with_name(name)",
-    ) + "    console.print(name)\n";
-    let error = check_entry(&reused_name)
-        .expect_err("normal caller cannot reuse a value consumed by an opt setter");
-    assert!(
-        ["consumed", "moved", "transferred", "ownership", "unique"].iter()
-            .any(|word| error.contains(word)),
-        "{error}",
-    );
-
-    let imported = program
-        .replacen("type User:\n    name: String\n    age: Int\n    email: String\n", "from dep_normal import User\n", 1)
-        .replacen(
-            "    for item in builder_items(type_info(User)):\n        emit_item(item)",
-            "    for item in builder_items(type_info(dep_normal.User)):\n        emit_item(item)\n    for item in builder_items_for(type_info(dep_normal.Account), meta.type_expr(meta.TNamed(\"dep_normal.Account\", [])), meta.type_expr(meta.TNamed(\"Option\", [meta.TNamed(\"dep_normal.Account\", [])]))):\n        emit_item(item)\n    for item in builder_items(type_info(dep_opt.OptUser)):\n        emit_item(item)\n    for item in builder_items_for(type_info(dep_opt.OptAccount), meta.type_expr(meta.TNamed(\"dep_opt.OptAccount\", [])), meta.type_expr(meta.TNamed(\"Option\", [meta.TNamed(\"dep_opt.OptAccount\", [])]))):\n        emit_item(item)",
-            1,
-        );
-    let imported = imported.replace(
-        "fn main(console: Console):\n    let complete = UserBuilder(None, None, None).with_name(\"Ada\").with_age(42).with_email(\"ada@example.com\").build()",
-        "fn main(console: Console):\n    let account = AccountBuilder(None, None).with_name(\"Grace\").with_age(37).build()\n    let opt_complete = OptUserBuilder(None, None).with_name(\"Beth\").with_age(28).build()\n    let opt_incomplete = OptUserBuilder(None, None).with_name(\"Beth\").build()\n    let opt_account = OptAccountBuilder(None, None).with_name(\"Ivy\").with_age(33).build()\n    let complete = UserBuilder(None, None, None).with_name(\"Ada\").with_age(42).with_email(\"ada@example.com\").build()",
-    ).replace(
-        "        None -> console.print(\"None\")\n",
-        "        None -> console.print(\"None\")\n    match account:\n        Some(value) -> console.print(\"${value.name}/${value.age}\")\n        None -> console.print(\"missing account\")\n    match opt_complete:\n        Some(value) -> console.print(\"${value.name}/${value.age}\")\n        None -> console.print(\"missing opt user\")\n    match opt_incomplete:\n        Some(_) -> console.print(\"unexpected opt user\")\n        None -> console.print(\"None\")\n    match opt_account:\n        Some(value) -> console.print(\"${value.name}/${value.age}\")\n        None -> console.print(\"missing opt account\")\n",
-    );
-    let imported = format!("import dep_normal\nimport dep_opt\nfrom dep_opt import OptUser, OptAccount\n{imported}");
-    std::fs::write(folder.join("dep_normal.witchy"),
-        "type User:\n    name: String\n    age: Int\n    email: String\ntype Account:\n    name: String\n    age: Int\n").unwrap();
-    std::fs::write(folder.join("dep_opt.witchy"),
-        "mode opt\ntype OptUser:\n    name: String\n    age: Int\ntype OptAccount:\n    name: String\n    age: Int\n").unwrap();
-    std::fs::write(&source, &imported).unwrap();
-    let run = Command::new(env!("CARGO_BIN_EXE_witchy")).arg(&source).output().unwrap();
+    let run = imported_cli.join().expect("imported builder CLI");
     assert!(run.status.success(), "{}", String::from_utf8_lossy(&run.stderr));
     assert_eq!(String::from_utf8_lossy(&run.stdout), "Ada/42/ada@example.com\nNone\nGrace/37\nBeth/28\nNone\nIvy/33\n");
 }
