@@ -147,6 +147,13 @@ loaded_coordinator_hash=""
 gate_timeout="${MERGE_QUEUE_GATE_TIMEOUT:-0}"
 stall_timeout="${MERGE_QUEUE_STALL_TIMEOUT:-600}"
 workspace_test_budget="${MERGE_QUEUE_WORKSPACE_TEST_BUDGET:-1800}"
+
+# macOS mach_absolute_time excludes lid sleep, unlike epoch time. A suspended
+# laptop cannot make test execution progress, so charge only awake seconds to
+# the workspace-test budget. Python's macOS monotonic clock uses that source.
+awake_seconds() {
+    python3 -c 'import time; print(time.monotonic_ns() // 1000000000)'
+}
 monitor_interval="${MERGE_QUEUE_MONITOR_INTERVAL:-10}"
 retry_interval="${MERGE_QUEUE_RETRY_INTERVAL:-5}"
 poll_interval="${MERGE_QUEUE_POLL_INTERVAL:-15}"
@@ -1589,9 +1596,9 @@ run_gate() { # run_gate <log> [fuzz-mode] [gate-scope] [queue-infra] [queue-infr
                     test_stage_done=1
                 elif [ -z "$test_execution_start" ] \
                     && grep -aqF 'Nextest run ID ' "$log" 2>/dev/null; then
-                    test_execution_start="$t"
+                    test_execution_start="$(awake_seconds)"
                 elif [ -n "$test_execution_start" ] && [ "$workspace_test_budget" -gt 0 ]; then
-                    local test_elapsed=$((t - test_execution_start))
+                    local test_elapsed=$(( $(awake_seconds) - test_execution_start ))
                     if [ "$test_elapsed" -gt "$workspace_test_budget" ]; then
                         why="workspace test execution exceeded ${workspace_test_budget}s (MERGE_QUEUE_WORKSPACE_TEST_BUDGET)"
                         local starved; starved="$(cargo_lock_starvation_note "$log")"
