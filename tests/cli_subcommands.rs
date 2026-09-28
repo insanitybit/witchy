@@ -691,6 +691,16 @@ fn test_dir_fails_on_a_broken_test_file() {
 }
 
 #[test]
+fn test_file_runs_admitted_record_derive() {
+    let dir = workdir("test-admitted-record-derive");
+    let file = write(&dir, "app.witchy", "import testing\n\ntype Foo derive(Show):\n    value: Int\n\nfn test_show():\n    testing.assert(show(Foo(value: 7)) == \"Foo(7)\", \"derived show\")\n");
+    let out = run(&["test", &file]);
+    assert!(out.status.success(), "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("1 passed"));
+}
+
+#[test]
 fn test_imported_module_tests_are_not_double_counted() {
     // BUG-185: `test_lib` in `lib` runs once (when lib.witchy is swept), not again
     // via `suite` which imports lib.

@@ -247,6 +247,26 @@ pub(crate) fn link_test_file(
         )))?;
         return Ok((checked, entry_stem));
     }
+    let mut without_derives = module.clone();
+    for item in &mut without_derives.items {
+        if let ast::Item::Type(definition) = item { definition.derives.clear(); }
+    }
+    let selected_derives = (witchy_syntax::derive::has_only_direct_record_derives(&module)
+        && !module_needs_legacy_expansion(&without_derives))
+        || witchy_syntax::derive::has_only_typed_user_derives(&module);
+    let other_legacy_expansion = sources.iter().filter(|(name, _)| name != &entry_stem && user_modules.contains(name))
+        .any(|(_, bytes)| std::str::from_utf8(bytes).ok()
+            .and_then(|source| parser::parse_module(source).ok())
+            .as_ref().is_none_or(module_needs_legacy_expansion));
+    if selected_derives && !other_legacy_expansion {
+        let checked = witchy::canonical_comptime::check_test_suite_source_bundle(
+            sources, &entry_stem, user_modules, owners,
+            witchy::canonical_comptime::source_limits(),
+        ).map_err(|message| TestFileError::Pipeline(pipeline::PipelineError::Type(
+            witchy_types::typeck::TypeError { message },
+        )))?;
+        return Ok((checked, entry_stem));
+    }
     let checked = pipeline::link_checked_test_suite_from_source_bundle(
         sources, &entry_stem, &user_modules, owners,
     ).map_err(TestFileError::Pipeline)?;
