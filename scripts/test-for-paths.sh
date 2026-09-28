@@ -981,7 +981,7 @@ for p in "${paths[@]}"; do
                 _misc="${p##*/}"
                 _misc="${_misc%.rs}"
                 add_misc_module "$_misc"
-                add "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test misc -E 'test(/^${_misc}::/)'"
+                add "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test misc -E 'test(/.*${_misc}::/)'"
             fi ;;
         tests/*.rs)
             any_rust=1
