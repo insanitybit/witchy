@@ -169,7 +169,9 @@ pub(crate) fn link_build_file(path: &str) -> Result<witchy_types::pipeline::Chec
     let expand = if source_bundle_needs_legacy_expansion(&sources) {
         comptime::EXPANDER
     } else {
-        comptime::EXPANSION_FREE_USER_EXPANDER
+        witchy_syntax::linker::ComptimeExpander::with_sibling_request(
+            witchy_types::pipeline::require_expansion_free, |_| false,
+        )
     };
     witchy_types::pipeline::check_build_recipe_from_source_bundle(
         sources, &entry, expand, &user_modules, owners,
