@@ -451,7 +451,7 @@ fn check_loaded_source_bundle(
         .any(|(_, bytes)| std::str::from_utf8(bytes).ok()
             .and_then(|source| parser::parse_module(source).ok())
             .as_ref().is_none_or(module_needs_legacy_expansion));
-    let admitted_derives = (witchy_syntax::derive::has_only_record_equality_derives(&module)
+    let admitted_derives = (witchy_syntax::derive::has_only_direct_record_derives(&module)
         && !module_needs_legacy_expansion(&without_derives))
         || witchy_syntax::derive::has_only_typed_user_derives(&module);
     if admitted_derives && !other_legacy_expansion {
@@ -1006,7 +1006,7 @@ pub(crate) fn expand_file_source(path: &str) -> Result<String, String> {
         for item in &mut without_derives.items {
             if let ast::Item::Type(definition) = item { definition.derives.clear(); }
         }
-        (witchy_syntax::derive::has_only_record_equality_derives(module)
+        (witchy_syntax::derive::has_only_direct_record_derives(module)
             && !module_needs_legacy_expansion(&without_derives))
             || witchy_syntax::derive::has_only_typed_user_derives(module)
     });
@@ -1049,7 +1049,7 @@ fn module_needs_legacy_expansion(module: &ast::Module) -> bool {
         || module.items.iter().any(|item| matches!(item, ast::Item::Comptime(_)))
         || (module.items.iter().any(|item|
             matches!(item, ast::Item::Type(definition) if !definition.derives.is_empty()))
-            && !witchy_syntax::derive::has_only_record_equality_derives(module)
+            && !witchy_syntax::derive::has_only_direct_record_derives(module)
             && !witchy_syntax::derive::has_only_typed_user_derives(module))
         || witchy_syntax::ast::visit::visit_module_exprs(module, &mut |expr| {
             if matches!(expr, ast::Expr::TaggedLit { .. }) { Err(()) } else { Ok(()) }
@@ -1209,6 +1209,29 @@ mod tests {
             }, 256).unwrap();
             vm.run().unwrap();
             assert_eq!(vm.output(), ["same"]);
+            assert_eq!(vm.canonical_heap_leaks().unwrap(), Some(0));
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
+    #[test]
+    fn record_show_derives_run_on_admitted_wasm_in_both_modes() {
+        for mode in ["", "mode opt\n\n"] {
+            let dir = unique_dir("admitted_record_show");
+            std::fs::create_dir_all(&dir).unwrap();
+            let entry = dir.join("main.witchy");
+            let source = format!("{mode}type Foo derive(Show, Eq):\n    value: Int\n    label: String\n\nfn main(console: Console):\n    console.print(show(Foo(value: 3, label: \"ok\")))\n");
+            std::fs::write(&entry, source).unwrap();
+            let (checked, _) = super::link_file_checked(entry.to_str().unwrap())
+                .expect("record Show checks");
+            let artifact = witchy_lower::codegen::compile_checked_module_artifact(&checked)
+                .expect_lowered("record Show admits");
+            let mut runtime = witchy_runtime::runtime::Runtime::batch().unwrap();
+            let mut vm = runtime.spawn_admitted(&artifact, witchy_runtime::runtime::Capabilities {
+                print: true, quiet: true, ..Default::default()
+            }, 256).unwrap();
+            vm.run().unwrap();
+            assert_eq!(vm.output(), ["Foo(3, ok)"]);
             assert_eq!(vm.canonical_heap_leaks().unwrap(), Some(0));
             std::fs::remove_dir_all(dir).unwrap();
         }

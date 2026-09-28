@@ -9,20 +9,56 @@ use crate::ast::*;
 // foldhash: compiler-internal keys only — see witchy-types/src/typeck.rs.
 use foldhash::{HashMap, HashSet};
 
-/// These derives need no user compile-time execution. Their checked AST can be
-/// built directly from the authenticated declaration in a source session.
-pub fn has_only_record_equality_derives(module: &Module) -> bool {
+/// These record derives need no user compile-time execution. Their checked AST
+/// can be built directly from the authenticated declaration in a source session.
+pub fn has_only_direct_record_derives(module: &Module) -> bool {
     let mut found = false;
     for item in &module.items {
         let Item::Type(definition) = item else { continue };
         if definition.derives.is_empty() { continue; }
         found = true;
         if definition.variants.len() != 1 || definition.variants[0].field_names.is_empty()
-            || definition.derives.iter().any(|name| name != "Eq" && name != "PartialEq") {
+            || definition.derives.iter().any(|name| name != "Eq" && name != "PartialEq" && name != "Show") {
             return false;
         }
     }
     found
+}
+
+fn record_show_impl(t: &TypeDef, line: u32) -> Item {
+    let params = t.params.iter().filter(|name| !name.starts_with('\''))
+        .cloned().collect::<Vec<_>>();
+    let target_args = params.iter().map(|name| Type::Named(name.clone(), Vec::new()))
+        .collect::<Vec<_>>();
+    let bounds = params.iter().map(|name|
+        (name.clone(), "Show".to_string(), Vec::new())).collect::<Vec<_>>();
+    let target = Type::Named(t.name.clone(), target_args.clone());
+    let mut body = Expr::Str(format!("{}(", t.name));
+    for (index, name) in t.variants[0].field_names.iter().enumerate() {
+        if index > 0 {
+            body = Expr::Binary { op: BinOp::Add, lhs: Box::new(body),
+                rhs: Box::new(Expr::Str(", ".into())) };
+        }
+        body = Expr::Binary { op: BinOp::Add, lhs: Box::new(body),
+            rhs: Box::new(Expr::Call { name: "show".into(), args: vec![Expr::Field {
+                base: Box::new(Expr::Var("self".into())), field: name.clone(),
+            }] }) };
+    }
+    body = Expr::Binary { op: BinOp::Add, lhs: Box::new(body),
+        rhs: Box::new(Expr::Str(")".into())) };
+    Item::Impl(ImplDef {
+        origin: ImplOrigin::CompilerGenerated, trait_name: Some("Show".into()),
+        trait_args: Vec::new(), type_name: t.name.clone(), target_args,
+        bounds: bounds.clone(), methods: vec![Function {
+            line, public: false, pure: false, comptime_only: false,
+            attributes: Vec::new(), name: "show".into(), type_params: Vec::new(),
+            params: vec![Param { name: "self".into(), ty: Some(target),
+                convention: Convention::Let, default: None }],
+            ret: Some(Type::Named("String".into(), Vec::new())),
+            body: Block { stmts: vec![Stmt::Expr(body)], lines: vec![line], region: None },
+            bounds, is_gen: false, is_async: false,
+        }],
+    })
 }
 
 /// A local user generator already has a typed result contract. Imported or
@@ -286,7 +322,11 @@ pub fn expand(module: &mut Module) -> Result<(), String> {
         for d in &derives {
             match d.as_str() {
                 "Show" => {
-                    generated.push(derive_item_via_comptime("meta.derive_show", &derive_type));
+                    generated.push(if record_equality {
+                        record_show_impl(&derive_type, source_lines.get(item_index).copied().unwrap_or(0))
+                    } else {
+                        derive_item_via_comptime("meta.derive_show", &derive_type)
+                    });
                     needs_show = true;
                 }
                 "PartialEq" => {
