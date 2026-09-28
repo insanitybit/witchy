@@ -541,11 +541,7 @@ fn check_loaded_source_bundle(
             witchy::canonical_comptime::source_limits(),
         );
     }
-    let needs_legacy_expansion = sources.iter().any(|(name, bytes)| {
-        if name == entry { return module_needs_legacy_expansion(&module); }
-        let parsed = std::str::from_utf8(bytes).ok().and_then(|source| parser::parse_module(source).ok());
-        parsed.as_ref().is_none_or(module_needs_legacy_expansion)
-    });
+    let needs_legacy_expansion = source_bundle_needs_legacy_expansion(&sources);
     let expand = if needs_legacy_expansion {
         comptime::EXPANDER
     } else {
@@ -1334,6 +1330,28 @@ mod tests {
             assert_eq!(vm.canonical_heap_leaks().unwrap(), Some(0));
             std::fs::remove_dir_all(dir).unwrap();
         }
+    }
+
+    #[test]
+    fn plain_meta_import_links_without_compile_time_expansion() {
+        let dir = unique_dir("plain_meta_import");
+        std::fs::create_dir_all(&dir).unwrap();
+        let entry = dir.join("main.witchy");
+        std::fs::write(&entry,
+            "import meta\n\nfn main(console: Console):\n    console.print(\"plain-meta\")\n",
+        ).unwrap();
+        let (checked, _) = super::link_file_checked(entry.to_str().unwrap())
+            .expect("plain meta import checks");
+        let artifact = witchy_lower::codegen::compile_checked_module_artifact(&checked)
+            .expect_lowered("plain meta import admits");
+        let mut runtime = witchy_runtime::runtime::Runtime::batch().unwrap();
+        let mut vm = runtime.spawn_admitted(&artifact, witchy_runtime::runtime::Capabilities {
+            print: true, quiet: true, ..Default::default()
+        }, 256).unwrap();
+        vm.run().unwrap();
+        assert_eq!(vm.output(), ["plain-meta"]);
+        assert_eq!(vm.canonical_heap_leaks().unwrap(), Some(0));
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
