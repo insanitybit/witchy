@@ -20,7 +20,7 @@ fn malformed_quote_site_is_refused_before_using_payload() {
             }
         }
         assert_eq!(changed, 1);
-        let error = witchy::comptime::expand_compile_time("main", &mut module, &[])
+        let error = witchy_interp::comptime::expand_compile_time("main", &mut module, &[])
             .expect_err("invalid quote-site metadata cannot borrow evaluator line state");
         assert!(error.contains("compiler quotation source line is out of range"), "{error}");
     }
@@ -51,7 +51,7 @@ fn main() -> Int:
         let quote_line = if mode.is_empty() { 7 } else { 8 };
         let mut module = witchy::parser::parse_module(&source).expect("parse origin witness");
         assert_eq!(module.compiler_expr_syntax[0].definition_line, quote_line);
-        let origins = witchy::comptime::expand_compile_time("main", &mut module, &[])
+        let origins = witchy_interp::comptime::expand_compile_time("main", &mut module, &[])
             .expect("expand source-backed quotation");
         let holes = origins.nodes().iter().flat_map(|node| &node.origin.hole_ancestry).collect::<Vec<_>>();
         assert!(!holes.is_empty(), "actual emitted syntax retains hole provenance");
@@ -76,7 +76,7 @@ fn identical_quote_payloads_keep_distinct_site_origins() {
         assert_eq!(module.compiler_expr_syntax.len(), 2);
         assert_eq!(module.compiler_expr_syntax[0].handle, module.compiler_expr_syntax[1].handle,
             "identical payloads retain deduplication independent of site identity");
-        let origins = witchy::comptime::expand_compile_time("main", &mut module, &[]).expect("expand typed quotes");
+        let origins = witchy_interp::comptime::expand_compile_time("main", &mut module, &[]).expect("expand typed quotes");
         let lines = origins.nodes().iter().flat_map(|node| &node.origin.hole_ancestry)
             .map(|hole| hole.definition.start.line).collect::<std::collections::BTreeSet<_>>();
         let offset = u32::from(!mode.is_empty());

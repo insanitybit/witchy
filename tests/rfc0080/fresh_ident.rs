@@ -1,7 +1,8 @@
 //! RFC-0080 hygiene seam: compiler-owned fresh identifiers are deterministic,
 //! source-unspellable, and distinct across calls and expansion evaluators.
 
-use witchy::{ast, interpreter, parser, pipeline, typeck};
+use witchy::{ast, parser, typeck};
+use witchy_interp::{interpreter, pipeline};
 
 const SOURCE: &str = r#"
 import meta

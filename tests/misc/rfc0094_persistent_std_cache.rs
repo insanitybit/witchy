@@ -75,7 +75,7 @@ fn main(console: Console):
     // runs, which pins the cached expansion more tightly than type-checking or
     // running the program would.
     let parsed = witchy::parser::parse_module(source).expect("parse semver consumer");
-    let linked = witchy::pipeline::link(vec![("main".into(), parsed)], "main")
+    let linked = witchy_interp::pipeline::link(vec![("main".into(), parsed)], "main")
         .expect("link semver consumer");
     let dump = std::env::var_os(DUMP_ENV).expect("child linked-AST dump path");
     std::fs::write(dump, format!("{linked:#?}"))

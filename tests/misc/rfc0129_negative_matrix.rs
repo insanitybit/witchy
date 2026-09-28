@@ -1,6 +1,6 @@
 //! RFC-0129 row 5: invalid concurrency programs fail while source structure remains intact.
 
-use witchy::pipeline::PipelineStage;
+use witchy_interp::pipeline::PipelineStage;
 
 #[derive(Clone, Copy)]
 enum ExpectedRejection {

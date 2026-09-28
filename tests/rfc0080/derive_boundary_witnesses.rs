@@ -1,4 +1,5 @@
-use witchy::{interpreter, parser, pipeline, typeck};
+use witchy::{parser, typeck};
+use witchy_interp::{interpreter, pipeline};
 
 #[test]
 fn public_state_record_sum_and_generic_witnesses_typecheck_and_run() {

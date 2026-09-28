@@ -4,7 +4,8 @@
 //! than re-testing one producer/consumer shape many times.
 
 use witchy::runtime::{Capabilities, Runtime};
-use witchy::{codegen, interpreter};
+use witchy::{codegen};
+use witchy_interp::{interpreter};
 
 struct ChannelCase {
     label: &'static str,

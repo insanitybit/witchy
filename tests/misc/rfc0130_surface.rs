@@ -5,9 +5,10 @@
 
 use witchy::ast::{Expr, Item, Stmt};
 use witchy::runtime::{Capabilities, Runtime};
-use witchy::{codegen, format, interpreter, parser};
+use witchy::{codegen, format, parser};
+use witchy_interp::{interpreter};
 
-fn compiled_output(module: &witchy::pipeline::CheckedModule) -> Vec<String> {
+fn compiled_output(module: &witchy_interp::pipeline::CheckedModule) -> Vec<String> {
     let wasm = codegen::compile_checked_module_binary(module)
         .expect_lowered("compile reflected generator syntax");
     let mut runtime = Runtime::batch().expect("create RFC-0130 surface runtime");

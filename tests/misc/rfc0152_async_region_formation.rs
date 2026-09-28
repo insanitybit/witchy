@@ -4,7 +4,8 @@
 //! unsupported task implementation.
 
 use witchy::runtime::{Capabilities, Runtime};
-use witchy::{codegen, interpreter};
+use witchy::{codegen};
+use witchy_interp::{interpreter};
 
 const REGION_BOUNDARY_CONTRACT: &str = r#"
 async fn main(console: Console):

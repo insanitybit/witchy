@@ -1,7 +1,8 @@
 //! RFC-0129 row 1: async lowering retains source semantics and diagnostics.
 
 use witchy::runtime::{Capabilities, Runtime};
-use witchy::{codegen, interpreter, typeck};
+use witchy::{codegen, typeck};
+use witchy_interp::{interpreter};
 use witchy_types::suspension_carrier::{CarrierLane, SuspensionCarrierCatalog};
 
 const STATE_MACHINE_SOURCE: &str = r#"
@@ -32,12 +33,12 @@ async fn main(console: Console):
     let _ = explode().await
 "#;
 
-fn checked(source: &str) -> witchy::pipeline::CheckedModule {
+fn checked(source: &str) -> witchy_interp::pipeline::CheckedModule {
     witchy::resolve_std_only_checked(source).expect("RFC-0129 row-1 source must check")
 }
 
 fn compiled_result(
-    module: &witchy::pipeline::CheckedModule,
+    module: &witchy_interp::pipeline::CheckedModule,
 ) -> Result<Vec<String>, String> {
     let wasm = codegen::compile_checked_module_binary(module)
         .expect_lowered("compile RFC-0129 row-1 corpus");

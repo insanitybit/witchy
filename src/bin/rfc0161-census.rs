@@ -5,9 +5,20 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use witchy::{ast, parser, pipeline};
+use witchy::{ast, parser};
 use witchy_syntax::linker;
 use witchy_types::async_migration::{Category, Census};
+
+fn async_migration_census(
+    modules: Vec<(String, ast::Module)>, entry: &str, user_modules: &HashSet<String>,
+) -> Result<Census, String> {
+    let expand = linker::ComptimeExpander::with_sibling_request(
+        witchy_types::pipeline::require_expansion_free, |_| false,
+    );
+    let linked = linker::link_with_user_modules(modules, entry, expand, user_modules)
+        .map_err(|error| error.to_string())?;
+    Ok(witchy_types::async_migration::census_linked(&linked, entry))
+}
 
 fn main() {
     if let Err(error) = run() {
@@ -48,7 +59,7 @@ fn run() -> Result<(), String> {
         for (index, snippet) in extract_witchy_blocks(&source).into_iter().enumerate() {
             let label = format!("{}#block-{}", display_from(root, &path), index + 1);
             let module = parser::parse_module(&snippet).map_err(|error| format!("{label}: {error}"))?;
-            let report = pipeline::async_migration_census(
+            let report = async_migration_census(
                 vec![("main".to_string(), module)],
                 "main",
                 &HashSet::new(),
@@ -209,7 +220,7 @@ fn link_file(path: &Path, source_index: &BTreeMap<String, Vec<PathBuf>>) -> Resu
         }
         modules.push((name, module));
     }
-    pipeline::async_migration_census(modules, &stem, &user_modules)
+    async_migration_census(modules, &stem, &user_modules)
         .map_err(|error| format!("{}: {error}", path.display()))
 }
 

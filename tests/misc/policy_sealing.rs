@@ -41,7 +41,7 @@ fn local_policy_module_cannot_impersonate_bundled_policy_owner() {
     )
     .expect("main parses");
     let user_modules = std::collections::HashSet::from(["policy".to_string(), "main".to_string()]);
-    let error = witchy::pipeline::link_with_user_modules(
+    let error = witchy_interp::pipeline::link_with_user_modules(
         vec![("policy".to_string(), policy), ("main".to_string(), main)],
         "main",
         &user_modules,

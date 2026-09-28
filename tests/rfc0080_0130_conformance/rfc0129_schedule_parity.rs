@@ -2,7 +2,8 @@
 //! complete deterministic task/channel schedule with identical exact output.
 
 use witchy::runtime::{Capabilities, Runtime};
-use witchy::{codegen, interpreter};
+use witchy::{codegen};
+use witchy_interp::{interpreter};
 
 const SCHEDULE: &str = include_str!("../fixtures/rfc0129_deterministic_schedule.witchy");
 

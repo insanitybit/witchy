@@ -4,7 +4,8 @@
 
 use std::collections::HashSet;
 
-use witchy::{comptime, format, parser, pipeline, typeck};
+use witchy::{format, parser, typeck};
+use witchy_interp::{comptime, pipeline};
 
 #[test]
 fn tag_free_expansion_preserves_ast_but_still_removes_hole_origin_wrappers() {
@@ -312,7 +313,7 @@ fn nested_structural_tags_keep_definition_site_and_hole_ancestry() {
     let linked = nested_hole;
     typeck::check(&linked).expect("typecheck owned nested tag hole");
     assert_eq!(
-        witchy::interpreter::run_module(linked, ".", Vec::new())
+        witchy_interp::interpreter::run_module(linked, ".", Vec::new())
             .expect("interpret owned nested tag hole"),
         Vec::<String>::new(),
     );

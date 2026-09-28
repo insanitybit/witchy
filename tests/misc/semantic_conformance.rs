@@ -8,7 +8,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use witchy::runtime::{Capabilities, Runtime};
-use witchy::{capabilities, codegen, interpreter, typeck};
+use witchy::{capabilities, codegen, typeck};
+use witchy_interp::{interpreter};
 
 struct ValueCase {
     name: &'static str,
@@ -62,11 +63,11 @@ fn main(console: Console):
     },
 ];
 
-fn checked(source: &str) -> witchy::pipeline::CheckedModule {
+fn checked(source: &str) -> witchy_interp::pipeline::CheckedModule {
     witchy::resolve_std_only_checked(source).expect("check conformance program")
 }
 
-fn compiled_output(module: &witchy::pipeline::CheckedModule) -> Vec<String> {
+fn compiled_output(module: &witchy_interp::pipeline::CheckedModule) -> Vec<String> {
     let artifact = codegen::compile_checked_module_artifact(module)
         .expect_lowered("compile conformance program");
     let mut runtime = Runtime::batch().expect("create conformance runtime");

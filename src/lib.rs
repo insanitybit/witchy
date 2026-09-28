@@ -61,9 +61,11 @@ pub mod trusted_publisher;
 pub use witchy_runtime::runtime;
 #[cfg(feature = "native")]
 pub mod canonical_comptime;
-// RFC-0018: the frozen source evaluator used temporarily for compile-time
-// evaluation lives in the `witchy-interp` crate.
+// Historical source evaluation is available only to this package's tests.
+#[cfg(test)]
 pub use witchy_interp::{comptime, interpreter, pipeline};
+#[cfg(not(test))]
+pub use witchy_types::pipeline;
 // RFC-0018: type checking + trait resolution live in the `witchy-types` crate.
 pub use witchy_types::typeck;
 // RFC-0018: the WIR group lives in the `witchy-wir` crate; re-export it so the

@@ -29,7 +29,7 @@ fn link_modules(modules: Vec<(&str, &str)>) -> Result<witchy::ast::Module, Strin
             (name.to_string(), module)
         })
         .collect();
-    witchy::pipeline::link_with_user_modules(parsed, "main", &user_modules)
+    witchy_interp::pipeline::link_with_user_modules(parsed, "main", &user_modules)
         .map_err(|error| error.message)
 }
 

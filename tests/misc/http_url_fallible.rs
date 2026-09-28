@@ -1,7 +1,8 @@
 //! Regression coverage for fallible full-URL HTTP helpers.
 
 use witchy::runtime::{Capabilities, Runtime};
-use witchy::{codegen, parser, pipeline};
+use witchy::{codegen, parser};
+use witchy_interp::{pipeline};
 
 #[test]
 fn get_url_returns_connect_error_instead_of_trapping() {

@@ -1,5 +1,6 @@
 use witchy::runtime::{Capabilities, Runtime};
-use witchy::{codegen, interpreter};
+use witchy::{codegen};
+use witchy_interp::{interpreter};
 
 const TWO_SUSPENDING_BRANCHES: &str = r#"
 import iter
@@ -29,7 +30,7 @@ fn main(console: Console):
     drain(alternating(console), console)
 "#;
 
-fn compiled_output(checked: &witchy::pipeline::CheckedModule) -> Vec<String> {
+fn compiled_output(checked: &witchy_interp::pipeline::CheckedModule) -> Vec<String> {
     witchy_interp::compiler_natives::install();
     let bytes = codegen::compile_checked_module_binary(checked)
         .expect_lowered("compile nested generator CFG fixture");

@@ -64,7 +64,7 @@ required-features = ["native"]
 # The full native toolchain (wasmtime sandbox, package manager, LSP). On by
 # default; the wasm playground builds the library alone with it OFF.
 default = ["native"]
-native = ["dep:toml", "dep:aws-lc-rs", "dep:wasmtime", "dep:wasmprinter", "dep:lsp-server", "dep:serde_json", "dep:serde", "dep:tiny_http", "dep:getrandom", "dep:blake3", "dep:witchy-testkit", "dep:mimalloc", "witchy-wir/native", "witchy-caps/native", "witchy-interp/test-fixtures", "witchy-runtime/test-fixtures"]
+native = ["dep:toml", "dep:aws-lc-rs", "dep:wasmtime", "dep:wasmprinter", "dep:lsp-server", "dep:serde_json", "dep:serde", "dep:tiny_http", "dep:getrandom", "dep:blake3", "dep:witchy-testkit", "dep:mimalloc", "witchy-wir/native", "witchy-caps/native", "witchy-runtime/test-fixtures"]
 # The web/static-site commands (glamour, the docs site). Optional since
 # 2026-09-21: they are ~28% of the root crate and every build paid for them.
 web = []
@@ -79,7 +79,6 @@ witchy-canonical-source = { path = "crates/witchy-canonical-source" }
 witchy-caps = { path = "crates/witchy-caps" }
 witchy-confinement = { path = "crates/witchy-confinement" }
 witchy-compiler-services = { path = "crates/witchy-compiler-services" }
-witchy-interp = { path = "crates/witchy-interp" }
 witchy-lower = { path = "crates/witchy-lower" }
 witchy-runtime = { path = "crates/witchy-runtime" }
 witchy-syntax = { path = "crates/witchy-syntax" }
@@ -87,7 +86,7 @@ witchy-test-host = { path = "crates/witchy-test-host", optional = true }
 witchy-testkit = { path = "crates/witchy-testkit", optional = true }
 witchy-types = { path = "crates/witchy-types" }
 witchy-wir = { path = "crates/witchy-wir" }
-# Pure-Rust deps the interpreter library needs on every target (incl. wasm).
+# JavaScript entropy support for the browser library build.
 sha2 = "0.11.0"
 ed25519-dalek = "2.2.0"
 regex = "1.11"

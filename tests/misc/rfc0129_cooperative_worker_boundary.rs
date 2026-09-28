@@ -4,7 +4,8 @@
 use std::collections::BTreeSet;
 
 use witchy::runtime::{Capabilities, Runtime};
-use witchy::{codegen, interpreter};
+use witchy::{codegen};
+use witchy_interp::{interpreter};
 
 const COOPERATIVE_MAP: &str = r#"
 import chan

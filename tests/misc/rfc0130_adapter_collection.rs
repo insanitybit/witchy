@@ -1,9 +1,10 @@
 //! RFC-0130 acceptance row 5: lazy adapter and `FromIterator` parity.
 
 use witchy::runtime::{Capabilities, Runtime};
-use witchy::{codegen, interpreter};
+use witchy::{codegen};
+use witchy_interp::{interpreter};
 
-fn compiled_output(module: &witchy::pipeline::CheckedModule) -> Vec<String> {
+fn compiled_output(module: &witchy_interp::pipeline::CheckedModule) -> Vec<String> {
     let wasm = codegen::compile_checked_module_binary(module)
         .expect_lowered("compile RFC-0130 adapter and collection fixture");
     let mut runtime = Runtime::batch().expect("create RFC-0130 adapter runtime");

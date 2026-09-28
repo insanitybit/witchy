@@ -1,7 +1,8 @@
 //! RFC-0082 dynamic method parity through the authenticated production pipeline.
 
 use witchy::runtime::{Capabilities, Runtime};
-use witchy::{codegen, interpreter};
+use witchy::{codegen};
+use witchy_interp::{interpreter};
 use witchy::opt::{self, OptSet};
 
 use super::authenticated::checked_source_result;

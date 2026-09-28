@@ -2,7 +2,8 @@
 //! concurrency contract on the interpreter and compiled Wasm.
 
 use witchy::runtime::{Capabilities, Runtime};
-use witchy::{codegen, interpreter};
+use witchy::{codegen};
+use witchy_interp::{interpreter};
 
 const CHANNEL_CONTRACT: &str = r#"
 from chan import Receiver, Selected, Selected3, Selected4, Sender

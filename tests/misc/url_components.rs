@@ -5,7 +5,8 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use witchy::runtime::{Capabilities, Runtime};
-use witchy::{codegen, interpreter, parser, pipeline};
+use witchy::{codegen, parser};
+use witchy_interp::{interpreter, pipeline};
 
 #[test]
 fn url_components_round_trip_and_http_omits_fragments() {

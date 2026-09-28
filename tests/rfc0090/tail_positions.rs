@@ -17,7 +17,8 @@
 //! by the witchy-interp unit tests (deep_self_tail_recursion_*).
 
 use witchy::runtime::{Capabilities, Runtime};
-use witchy::{codegen, interpreter, parser, pipeline, typeck};
+use witchy::{codegen, parser, typeck};
+use witchy_interp::{interpreter, pipeline};
 
 fn linked(source: &str) -> witchy::ast::Module {
     let parsed = parser::parse_module(source).expect("parse tail-position program");

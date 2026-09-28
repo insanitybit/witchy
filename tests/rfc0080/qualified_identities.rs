@@ -1,6 +1,7 @@
 //! RFC-0080 compiler-owned identities for module-qualified type and pattern builders.
 
-use witchy::{interpreter, parser, pipeline, typeck};
+use witchy::{parser, typeck};
+use witchy_interp::{interpreter, pipeline};
 
 const DEFINITION_SUPPORT: &str = r#"
 type Wrapped(a):

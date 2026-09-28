@@ -1,6 +1,7 @@
 //! RFC-0080 compiler-owned expression payloads with compatibility projection.
 
-use witchy::{comptime, format, interpreter, parser, pipeline, typeck};
+use witchy::{format, parser, typeck};
+use witchy_interp::{comptime, interpreter, pipeline};
 
 const SOURCE: &str = r#"
 import meta
