@@ -6,9 +6,19 @@ use std::{
     sync::{Arc, Mutex, OnceLock},
 };
 
-use witchy_interp::{comptime, pipeline};
 use witchy_syntax::{ast, doc, linker, parser};
 use witchy_types::migration::{Category, Census};
+
+fn migration_census(
+    modules: Vec<(String, ast::Module)>, entry: &str, user_modules: &HashSet<String>,
+) -> Result<Census, String> {
+    let expand = linker::ComptimeExpander::with_sibling_request(
+        witchy_types::pipeline::require_expansion_free, |_| false,
+    );
+    let linked = linker::link_with_user_modules(modules, entry, expand, user_modules)
+        .map_err(|error| error.to_string())?;
+    Ok(witchy_types::migration::census_linked(&linked, entry))
+}
 
 fn main() {
     let result = if std::env::args().nth(1).as_deref() == Some("--stdlib-docs") {
@@ -37,7 +47,10 @@ fn render_stdlib_docs(files: impl Iterator<Item = String>) -> Result<(), String>
             .map_err(|error| format!("cannot read `{file}`: {error}"))?;
         let mut module =
             parser::parse_module(&source).map_err(|error| format!("{file}: {error}"))?;
-        comptime::expand(stem, &mut module).map_err(|error| format!("{file}: {error}"))?;
+        // Standard-library documentation describes checked-in declarations;
+        // source evaluation cannot add authority to this presentation route.
+        witchy_types::pipeline::require_expansion_free(stem, &mut module, &[])
+            .map_err(|error| format!("{file}: {error}"))?;
         output.push_str(
             &doc::render_module(stem, &source, &module)
                 .map_err(|error| format!("{file}: {error}"))?,
@@ -130,7 +143,7 @@ fn run() -> Result<(), String> {
                             parser::parse_module(snippet)
                                 .map_err(|e| format!("{label}: {e}"))
                                 .and_then(|module| {
-                                    pipeline::migration_census(
+                                    migration_census(
                                         vec![("main".to_string(), module)],
                                         "main",
                                         &HashSet::new(),
@@ -429,7 +442,7 @@ fn link_file(
         modules.push((name, module));
     }
 
-    let report = pipeline::migration_census(modules, &stem, &user_modules)
+    let report = migration_census(modules, &stem, &user_modules)
         .map_err(|e| format!("{}: {e}", path.display()))?;
     Ok(report)
 }
