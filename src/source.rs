@@ -1104,21 +1104,7 @@ pub(crate) fn expand_file_source(path: &str) -> Result<String, String> {
             .ok_or_else(|| format!("internal error: entry module `{entry_stem}` was not loaded"))?;
         return Ok(format::module(module, &[]));
     }
-    let names: Vec<String> = modules.iter().map(|(name, _)| name.clone()).collect();
-    for (i, name) in names.iter().enumerate() {
-        let siblings: Vec<(String, ast::Module)> = modules
-            .iter()
-            .enumerate()
-            .filter(|(j, _)| *j != i)
-            .map(|(_, module)| module.clone())
-            .collect();
-        comptime::expand_compile_time(name, &mut modules[i].1, &siblings)
-            .map_err(|e| format!("{path}: {e}"))?;
-    }
-    let Some((_, module)) = modules.into_iter().find(|(name, _)| name == &entry_stem) else {
-        return Err(format!("internal error: entry module `{entry_stem}` was not loaded"));
-    };
-    Ok(format::module(&module, &[]))
+    Err(format!("{path}: witchy expand does not support this compile-time form through the admitted source session"))
 }
 
 fn module_needs_legacy_expansion(module: &ast::Module) -> bool {
@@ -2010,9 +1996,8 @@ mod tests {
         )
         .unwrap();
 
-        let expanded = expand_file_source(file.to_str().unwrap()).expect("expand source");
-        assert!(!expanded.contains("bump\""), "{expanded}");
-        assert!(expanded.contains("41 + 1"), "{expanded}");
+        let error = expand_file_source(file.to_str().unwrap()).expect_err("imported tag must refuse");
+        assert!(error.contains("does not support this compile-time form"), "{error}");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
