@@ -122,8 +122,25 @@ pub(crate) fn bundled_module(name: &str) -> Option<&'static str> {
 }
 
 fn source_bundle_needs_legacy_expansion(sources: &[(String, Vec<u8>)]) -> bool {
-    sources.iter().any(|(_, bytes)| {
+    sources.iter().any(|(name, bytes)| {
         let parsed = std::str::from_utf8(bytes).ok().and_then(|source| parser::parse_module(source).ok());
+        // Bundled `meta` carries inert quote metadata. Bundled `glamour` also
+        // has real comptime blocks, which must keep their selected route.
+        if bundled_module(name).is_some_and(|source| source.as_bytes() == bytes.as_slice()) {
+            return parsed.as_ref().is_none_or(|module| {
+                module.items.iter().any(|item| match item {
+                    ast::Item::Comptime(_) => true,
+                    ast::Item::Type(definition) => !definition.derives.is_empty(),
+                    _ => false,
+                })
+                    || witchy_syntax::ast::visit::visit_module_exprs(module, &mut |expr| {
+                        if matches!(expr, ast::Expr::TaggedLit { .. })
+                            || matches!(expr, ast::Expr::Call { name, .. } if name == "@hole_origin") {
+                            Err(())
+                        } else { Ok(()) }
+                    }).is_err()
+            });
+        }
         parsed.as_ref().is_none_or(module_needs_legacy_expansion)
     })
 }
