@@ -248,8 +248,9 @@ fn gate_nextest_misc_module_runs_only_that_module() {
         "mixed compiler and misc-module edit lost its exact targets: {output}",
     );
     assert!(
-        output.contains("-p merge-queue-tests --test test_for_paths"),
-        "mixed misc and route-test edit dropped the route-test package: {output}",
+        output.contains("binary(test_for_paths)")
+            && !output.contains("-p merge-queue-tests"),
+        "queue route tests must be forwarded to the isolated queue shard: {output}",
     );
     assert!(
         output.contains(&format!("test(/.*{}::/)", module)),
@@ -995,13 +996,20 @@ fn build_read_integration_edits_run_only_their_own_modules() {
         assert_eq!(commands.len(), 1, "{path}: {commands:?}");
         let direct_deferred_probe = module != "rfc0103_build_step_confinement";
         assert!(
-            (direct_deferred_probe && commands[0].starts_with("cargo nextest run"))
+            ((direct_deferred_probe && commands[0].starts_with("cargo nextest run"))
                 || (!direct_deferred_probe
-                    && commands[0].starts_with("./scripts/nextest-admitted.sh witchy -- "))
+                    && commands[0].starts_with("./scripts/nextest-admitted.sh witchy -- ")))
                 && commands[0].contains("cargo nextest run --test misc")
                 && commands[0].contains(&format!("test(/.*{}::/)", module)),
             "{path}: {commands:?}",
         );
+        if direct_deferred_probe {
+            let gate = gate_nextest(&[path]);
+            assert!(
+                !gate.contains(&format!("test(/.*{}::/)", module)),
+                "nightly-deferred {module} tests leaked into the landing selector: {gate}",
+            );
+        }
         assert_ne!(
             commands[0],
             "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test misc",

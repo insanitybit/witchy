@@ -494,14 +494,6 @@ emit_gate_nextest() {
             args="$args$explicit_targets$root_targets"
         fi
     fi
-    if [ "${#gate_misc_modules[@]}" -gt 0 ]; then
-        for t in ${gate_tests[0]+"${gate_tests[@]}"}; do
-            if [ "$t" = test_for_paths ]; then
-                case " $args " in *" -p merge-queue-tests "*) ;; *) args="$args -p merge-queue-tests" ;; esac
-                case " $args " in *" --test test_for_paths "*) ;; *) args="$args --test test_for_paths" ;; esac
-            fi
-        done
-    fi
     [ -n "$args" ] || { printf 'WORKSPACE\n'; return 0; }
     printf '%s\n' "$args"
     [ -n "$expr" ] && printf '%s\n' "$expr"
@@ -988,7 +980,10 @@ for p in "${paths[@]}"; do
             else
                 _misc="${p##*/}"
                 _misc="${_misc%.rs}"
-                add_misc_module "$_misc"
+                case "$_misc" in
+                    rfc0165_build_read_project | rfc0165_build_env_project) ;;
+                    *) add_misc_module "$_misc" ;;
+                esac
                 if [ "$path_has_early" -eq 0 ]; then
                     add "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test misc -E 'test(/.*${_misc}::/)'"
                 fi
