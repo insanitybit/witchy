@@ -49,17 +49,31 @@ fn main(console: Console):
     let _ = result
     console.print("rfc0167-core")
 EOF
-run_witchy check "$work/core.witchy" >/dev/null
-run_witchy fmt --check "$work/core.witchy" >/dev/null
-run_witchy compile "$work/core.witchy" --out "$work/core.wasm" >/dev/null
-[ -s "$work/core.wasm" ] || {
-    echo "installed-language-contract-smoke: standalone compile produced no artifact" >&2
-    exit 1
-}
-[ "$(run_witchy "$work/core.witchy")" = "rfc0167-core" ] || {
-    echo "installed-language-contract-smoke: canonical core program output mismatch" >&2
-    exit 1
-}
+cat > "$work/core_opt.witchy" <<'EOF'
+mode opt
+
+fn consume(own value: String) -> String:
+    value
+
+fn main(console: Console):
+    let _ = consume("owned")
+    console.print("rfc0167-opt")
+EOF
+for mode in core core_opt; do
+    run_witchy check "$work/$mode.witchy" >/dev/null
+    run_witchy fmt --check "$work/$mode.witchy" >/dev/null
+    run_witchy compile "$work/$mode.witchy" --out "$work/$mode.wasm" >/dev/null
+    [ -s "$work/$mode.wasm" ] || {
+        echo "installed-language-contract-smoke: $mode standalone compile produced no artifact" >&2
+        exit 1
+    }
+    expected="rfc0167-core"
+    [ "$mode" = "core_opt" ] && expected="rfc0167-opt"
+    [ "$(run_witchy "$work/$mode.witchy")" = "$expected" ] || {
+        echo "installed-language-contract-smoke: $mode program output mismatch" >&2
+        exit 1
+    }
+done
 check_rejected() {
     local name="$1"; shift
     local expected="$1"; shift
