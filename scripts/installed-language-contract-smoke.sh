@@ -4,10 +4,12 @@
 set -euo pipefail
 
 binary=""
+std_dir=""
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --witchy) [ "$#" -ge 2 ] || exit 2; binary="$2"; shift 2 ;;
-        -h|--help) echo "usage: installed-language-contract-smoke.sh --witchy <binary>"; exit 0 ;;
+        --std-dir) [ "$#" -ge 2 ] || exit 2; std_dir="$2"; shift 2 ;;
+        -h|--help) echo "usage: installed-language-contract-smoke.sh --witchy <binary> [--std-dir <directory>]"; exit 0 ;;
         *) echo "installed-language-contract-smoke: unknown argument '$1'" >&2; exit 2 ;;
     esac
 done
@@ -23,10 +25,23 @@ install="$scratch/install"
 work="$scratch/work"
 mkdir -p "$install/bin" "$work"
 cp "$binary" "$install/bin/witchy"
+if [ -n "$std_dir" ]; then
+    [ -d "$std_dir" ] || { echo "installed-language-contract-smoke: missing std directory: $std_dir" >&2; exit 1; }
+    cp -R "$std_dir" "$install/std"
+    glamour_dir="$(dirname "$std_dir")/projects/glamour/src"
+    [ -d "$glamour_dir" ] || { echo "installed-language-contract-smoke: missing Glamour source beside std: $glamour_dir" >&2; exit 1; }
+    mkdir -p "$install/projects/glamour"
+    cp -R "$glamour_dir" "$install/projects/glamour/src"
+fi
 
 run_witchy() {
-    env -i HOME="$scratch/home" TMPDIR="$scratch/tmp" XDG_CACHE_HOME="$scratch/cache" \
-        PATH="$install/bin" "$install/bin/witchy" "$@"
+    if [ -n "$std_dir" ]; then
+        env -i HOME="$scratch/home" TMPDIR="$scratch/tmp" XDG_CACHE_HOME="$scratch/cache" \
+            WITCHY_STD_DIR="$install/std" PATH="$install/bin" "$install/bin/witchy" "$@"
+    else
+        env -i HOME="$scratch/home" TMPDIR="$scratch/tmp" XDG_CACHE_HOME="$scratch/cache" \
+            PATH="$install/bin" "$install/bin/witchy" "$@"
+    fi
 }
 mkdir -p "$scratch/home" "$scratch/tmp" "$scratch/cache"
 
