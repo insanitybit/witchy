@@ -4,11 +4,17 @@ use std::process::{Command, Output};
 use super::temp_dir::TempDir;
 
 const BIN: &str = env!("CARGO_BIN_EXE_witchy");
-const ALLOWED: &str = "WITCHY_BUILD_ENV_PROJECT_LABEL";
+const PRESENT: &str = "WITCHY_BUILD_ENV_PROJECT_PRESENT";
+const EMPTY: &str = "WITCHY_BUILD_ENV_PROJECT_EMPTY";
+const UNSET: &str = "WITCHY_BUILD_ENV_PROJECT_UNSET";
 const DENIED: &str = "WITCHY_BUILD_ENV_PROJECT_DENIED";
 
-fn project(tag: &str, requested_key: &str) -> TempDir {
+fn project(tag: &str, allowed_keys: &[&str], build_script: &str) -> TempDir {
     let dir = TempDir::new(tag);
+    let env_grant = allowed_keys.iter()
+        .map(|key| format!("\"{key}\""))
+        .collect::<Vec<_>>()
+        .join(", ");
     dir.write("app/witchy.toml", format!(r#"[rune]
 name = "env-app"
 version = "0.1.0"
@@ -20,29 +26,29 @@ runtime = ["Console"]
 generator = {{ path = "../generator" }}
 
 [build.grants."generator"]
-env = ["{ALLOWED}"]
+env = [{env_grant}]
 "#));
     // Path dependencies must use their manifest's package identity.
     dir.write("generator/witchy.toml",
         "[rune]\nname = \"generator\"\nversion = \"0.1.0\"\n[dependencies]\n");
     dir.write("generator/src/generator.witchy",
         "pub fn placeholder() -> String:\n    \"shipped\"\n");
-    dir.write("generator/src/build.witchy", format!(
-        "fn build(env: BuildEnv, out: BuildOut):\n    let get = fn(): env.get_build_env(\"{requested_key}\")\n    let text = get() ?? \"unset\"\n    out.write_out(\"genmod.witchy\", \"pub fn value() -> String:\\n    \\\"\" + text + \"\\\"\\n\")\n"
-    ));
+    dir.write("generator/src/build.witchy", build_script);
     dir.write("app/src/app.witchy",
-        "import genmod\nfn main(console: Console):\n    console.print(genmod.value())\n");
+        "import genmod\nfn main(console: Console):\n    console.print(genmod.present())\n    console.print(genmod.empty())\n    console.print(genmod.unset())\n");
     dir
 }
 
-fn build(dir: &TempDir, value: Option<&str>) -> Output {
+fn build(dir: &TempDir, values: &[(&str, Option<&str>)]) -> Output {
     let mut command = Command::new(BIN);
     command.current_dir(dir).env("WITCHY_HOME", dir.join("home"))
         .env(DENIED, "ungranted-environment-secret")
         .args(["build", "app"]);
-    match value {
-        Some(value) => { command.env(ALLOWED, value); }
-        None => { command.env_remove(ALLOWED); }
+    for (key, value) in values {
+        match value {
+            Some(value) => { command.env(key, value); }
+            None => { command.env_remove(key); }
+        }
     }
     command.output().expect("spawn ordinary project build")
 }
@@ -54,28 +60,37 @@ fn diagnostic(output: &Output) -> String {
 
 #[test]
 fn ordinary_project_build_env_preserves_present_empty_and_unset() {
-    for (tag, value, expected) in [
-        ("project-build-env-present", Some("caf\u{e9} build environment"), "caf\u{e9} build environment"),
-        ("project-build-env-empty", Some(""), ""),
-        ("project-build-env-unset", None, "unset"),
-    ] {
-        // Fresh output per case: this does not claim that the existing build
-        // cache tracks environment value changes across otherwise identical runs.
-        let dir = project(tag, ALLOWED);
-        let output = build(&dir, value);
-        assert_eq!(output.status.code(), Some(0), "{}", diagnostic(&output));
-        let generated = std::fs::read_to_string(dir.join("app/build-out/generator/genmod.witchy"))
-            .expect("generated source from captured environment");
-        assert_eq!(generated, format!("pub fn value() -> String:\n    \"{expected}\"\n"));
-        assert!(dir.join("app/witchy.lock").is_file());
-        assert!(dir.join("app/build-out/generator/.witchy-build-cache").is_file());
-    }
+    // Read all three states in one build invocation. The values remain
+    // independently sourced from the real process environment.
+    let build_script = format!(r#"fn build(env: BuildEnv, out: BuildOut):
+    let present = env.get_build_env("{PRESENT}") ?? "unset"
+    let empty = env.get_build_env("{EMPTY}") ?? "unset"
+    let unset = env.get_build_env("{UNSET}") ?? "unset"
+    let generated = "pub fn present() -> String:\n    \"" + present + "\"\n\npub fn empty() -> String:\n    \"" + empty + "\"\n\npub fn unset() -> String:\n    \"" + unset + "\"\n"
+    out.write_out("genmod.witchy", generated)
+"#);
+    let dir = project("project-build-env-three-states", &[PRESENT, EMPTY, UNSET], &build_script);
+    let output = build(&dir, &[
+        (PRESENT, Some("caf\u{e9} build environment")),
+        (EMPTY, Some("")),
+        (UNSET, None),
+    ]);
+    assert_eq!(output.status.code(), Some(0), "{}", diagnostic(&output));
+    let generated = std::fs::read_to_string(dir.join("app/build-out/generator/genmod.witchy"))
+        .expect("generated source from captured environment");
+    assert_eq!(generated,
+        "pub fn present() -> String:\n    \"caf\u{e9} build environment\"\n\n\
+         pub fn empty() -> String:\n    \"\"\n\n\
+         pub fn unset() -> String:\n    \"unset\"\n");
+    assert!(dir.join("app/witchy.lock").is_file());
+    assert!(dir.join("app/build-out/generator/.witchy-build-cache").is_file());
 }
 
 #[test]
 fn ordinary_project_build_env_denies_unlisted_key_instead_of_returning_none() {
-    let dir = project("project-build-env-denied", DENIED);
-    let output = build(&dir, Some("allowed"));
+    let build_script = format!("fn build(env: BuildEnv, out: BuildOut):\n    let text = env.get_build_env(\"{DENIED}\") ?? \"unset\"\n    out.write_out(\"genmod.witchy\", text)\n");
+    let dir = project("project-build-env-denied", &[PRESENT], &build_script);
+    let output = build(&dir, &[(PRESENT, Some("allowed"))]);
     let trace = diagnostic(&output);
     assert_eq!(output.status.code(), Some(1), "{trace}");
     assert!(trace.contains(&format!(
