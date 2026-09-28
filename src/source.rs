@@ -495,6 +495,22 @@ fn check_loaded_source_bundle(
             sources, entry, user_modules, owners, witchy::canonical_comptime::source_limits(),
         );
     }
+    let mut local_tag = None;
+    let mut tag_count = 0;
+    witchy_syntax::ast::visit::visit_module_exprs(&module, &mut |expression| {
+        if let ast::Expr::TaggedLit { tag, holes, .. } = expression {
+            tag_count += 1;
+            if holes.is_empty() { local_tag = Some(tag.clone()); }
+        }
+        Ok::<_, ()>(())
+    }).expect("tag scan cannot fail");
+    if tag_count == 1 && !other_legacy_expansion && local_tag.as_ref().is_some_and(|tag|
+        module.items.iter().any(|item| matches!(item,
+            ast::Item::Function(function) if function.name == *tag && function.comptime_only))) {
+        return witchy::canonical_comptime::check_source_bundle_with_local_tag(
+            sources, entry, user_modules, owners, witchy::canonical_comptime::source_limits(),
+        );
+    }
     if let Some(producer) = single_imported_block_producer(&sources, entry, &user_modules)? {
         return witchy::canonical_comptime::check_source_bundle_with_imported_blocks(
             sources, entry, &producer, user_modules, owners,
@@ -1268,6 +1284,29 @@ mod tests {
             }, 256).unwrap();
             vm.run().unwrap();
             assert_eq!(vm.output(), ["Foo(3, ok)"]);
+            assert_eq!(vm.canonical_heap_leaks().unwrap(), Some(0));
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
+    #[test]
+    fn local_hole_free_tag_runs_on_admitted_wasm_in_both_modes() {
+        for mode in ["", "mode opt\n\n"] {
+            let dir = unique_dir("admitted_local_tag");
+            std::fs::create_dir_all(&dir).unwrap();
+            let entry = dir.join("main.witchy");
+            let source = format!("{mode}import meta\n\ncomptime fn literal(parts: List(String), holes: List(meta.TagHole)) -> meta.ExprSyntax:\n    meta.expr_int(42)\n\nfn answer() -> Int:\n    literal\"hello\"\n\nfn main(console: Console):\n    console.print(\"${{answer()}}\")\n");
+            std::fs::write(&entry, source).unwrap();
+            let (checked, _) = super::link_file_checked(entry.to_str().unwrap())
+                .expect("local tag checks through admitted session");
+            let artifact = witchy_lower::codegen::compile_checked_module_artifact(&checked)
+                .expect_lowered("local tag destination admits");
+            let mut runtime = witchy_runtime::runtime::Runtime::batch().unwrap();
+            let mut vm = runtime.spawn_admitted(&artifact, witchy_runtime::runtime::Capabilities {
+                print: true, quiet: true, ..Default::default()
+            }, 256).unwrap();
+            vm.run().unwrap();
+            assert_eq!(vm.output(), ["42"]);
             assert_eq!(vm.canonical_heap_leaks().unwrap(), Some(0));
             std::fs::remove_dir_all(dir).unwrap();
         }
