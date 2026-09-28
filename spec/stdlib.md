@@ -3754,9 +3754,9 @@ semver - semantic versions and constraints, for dependency resolution.
 
 Intentionally minimal (matching the package manager's needs): `major.minor.patch` versions and the `^`, `~`, exact, `>=`, and `*` constraints - enough for deterministic resolution without a full SemVer grammar. A missing component parses as 0 (`1.2` is `1.2.0`); a non-numeric component is an error.
 
-#### `sealed type Version derive(PartialEq, Eq, PartialOrd, Ord)`
+#### `sealed type Version`
 
-A version orders by major, then minor, then patch - exactly the lexicographic order `derive(Ord)` gives the fields in declaration order, so `<`, `>`, and `==` compare versions directly. `Version` is sealed (RFC-0065): external code cannot forge one with the raw data constructor, so a `Version` can only be built through this module - `parse`, which rejects negative components, or `version`. This closes the arbitrary-raw-construction vector of BUG-191 (`semver.Version(-1, 2, 3)` from another module is now a compile error).
+A version orders by major, then minor, then patch, so `<`, `>`, and `==` compare versions directly. `Version` is sealed (RFC-0065): external code cannot forge one with the raw data constructor, so a `Version` can only be built through this module - `parse`, which rejects negative components, or `version`. This closes the arbitrary-raw-construction vector of BUG-191 (`semver.Version(-1, 2, 3)` from another module is now a compile error).
 
 - `Version { major: Int, minor: Int, patch: Int }`
 
@@ -3797,7 +3797,7 @@ Parse with String errors for application-style boundaries.
 
 #### `fn compare(a: Version, b: Version) -> Int`
 
--1 if a < b, 0 if equal, 1 if a > b. `Version` derives `Ord`, so callers that only need a Bool can compare with `<` / `>` / `==` directly.
+-1 if a < b, 0 if equal, 1 if a > b. `Version` implements `Ord`, so callers that only need a Bool can compare with `<` / `>` / `==` directly.
 
 #### `fn less(a: Version, b: Version) -> Bool`
 
@@ -3824,6 +3824,20 @@ The highest version in `versions` that satisfies `req`, or None if none do. Keep
 #### `impl From(SemverError) for String`
 
 - `fn from(value: SemverError) -> Self`
+
+#### `impl PartialEq for Version`
+
+- `fn eq(self, other: Self) -> Bool`
+
+#### `impl Eq for Version`
+
+#### `impl PartialOrd for Version`
+
+- `fn partial_compare(self, other: Self) -> Option(Ordering)`
+
+#### `impl Ord for Version`
+
+- `fn compare(self, other: Self) -> cmp.Ordering`
 
 #### `impl Show for Version`
 

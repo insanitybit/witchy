@@ -12,14 +12,13 @@ import show
 import error
 import convert
 
-// A version orders by major, then minor, then patch - exactly the lexicographic
-// order `derive(Ord)` gives the fields in declaration order, so `<`, `>`, and
-// `==` compare versions directly. `Version` is sealed (RFC-0065): external code
+// A version orders by major, then minor, then patch, so `<`, `>`, and `==`
+// compare versions directly. `Version` is sealed (RFC-0065): external code
 // cannot forge one with the raw data constructor, so a `Version` can only be
 // built through this module - `parse`, which rejects negative components, or
 // `version`. This closes the arbitrary-raw-construction vector of BUG-191
 // (`semver.Version(-1, 2, 3)` from another module is now a compile error).
-sealed type Version derive(PartialEq, Eq, PartialOrd, Ord):
+sealed type Version:
     major: Int
     minor: Int
     patch: Int
@@ -58,6 +57,33 @@ impl Error for SemverError
 impl From(SemverError) for String:
     fn from(value: SemverError) -> Self:
         semver_error_message(value)
+
+impl PartialEq for Version:
+    fn eq(self, other: Self) -> Bool:
+        self.major == other.major && self.minor == other.minor && self.patch == other.patch
+
+impl Eq for Version
+
+impl PartialOrd for Version:
+    fn partial_compare(self, other: Self) -> Option(Ordering):
+        Some(self.compare(other))
+
+impl Ord for Version:
+    fn compare(self, other: Self) -> cmp.Ordering:
+        if self.major < other.major:
+            Less
+        else if self.major > other.major:
+            Greater
+        else if self.minor < other.minor:
+            Less
+        else if self.minor > other.minor:
+            Greater
+        else if self.patch < other.patch:
+            Less
+        else if self.patch > other.patch:
+            Greater
+        else:
+            Equal
 
 // --- constructors ------------------------------------------------------------
 // A convenience constructor for known-good components (e.g. a computed bump).
@@ -118,8 +144,8 @@ impl Show for Version:
 
 // --- ordering ----------------------------------------------------------------
 
-// -1 if a < b, 0 if equal, 1 if a > b. `Version` derives `Ord`, so callers that
-// only need a Bool can compare with `<` / `>` / `==` directly.
+// -1 if a < b, 0 if equal, 1 if a > b. `Version` implements `Ord`, so callers
+// that only need a Bool can compare with `<` / `>` / `==` directly.
 pub fn compare(a: Version, b: Version) -> Int:
     if a < b:
         -1
