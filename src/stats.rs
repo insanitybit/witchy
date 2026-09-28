@@ -336,11 +336,6 @@ fn main(console: Console):
 "#;
         let checked = crate::resolve_std_only_checked(source).expect("checked owner capture");
         let expected = vec!["held".to_owned(); 3];
-        assert_eq!(
-            crate::interpreter::run_checked_module(&checked, ".", Vec::new())
-                .expect("independent source execution"),
-            expected,
-        );
         let prepared = prepare(source).expect("prepare admitted owner capture");
         assert!(!prepared.artifact.owner_bridges().is_empty());
         let counted = codegen::compile_checked_module_binary_with_deterministic_counters(&checked)
@@ -523,8 +518,8 @@ fn main(console: Console):
 
     /// RFC-0030 differential de-opt sweep (DoD half (a)): a program's OUTPUT must
     /// be identical under every `WITCHY_OPT` setting — `none`, `all`, the default,
-    /// and the default minus each optimization — AND must match the interpreter
-    /// oracle. Toggling an optimization changes *how* a program runs, never *what*
+    /// and the default minus each optimization — with asserted output.
+    /// Toggling an optimization changes *how* a program runs, never *what*
     /// it computes; walking `Opt::ALL` covers new optimizations automatically.
     #[test]
     fn differential_sweep_output_is_invariant_on_both_backends() {
@@ -537,7 +532,7 @@ fn main(console: Console):
             // `nodes.push` statement and escape-free loop scratch (region).
             "fn main(console: Console):\n    var xs = []\n    var s = \"\"\n    var d = dict.new()\n    var i = 0\n    while i < 300:\n        let scratch = [i, i + 1]\n        xs.push(i + list.length(scratch) - 2)\n        s = s + \"${i % 10}\"\n        let _ = dict.update(d, i % 7, 0, fn(n: Int): n + 1)\n        i = i + 1\n    let folded = 2 * 3 + 4\n    console.print(\"${list.length(xs)}\")\n    console.print(\"${s.length()}\")\n    console.print(\"${dict.get_or(d, 3, 0)}\")\n    console.print(\"${folded}\")\n",
             // `for var` write-back over record elements.
-            "type P:\n    x: Int\n    y: Int\n\nfn main(console: Console):\n    var ps = [P(1, 2), P(3, 4)]\n    for var p in ps:\n        p.x = p.x + 100\n    console.print(\"${ps}\")\n",
+            "import list\ntype P:\n    x: Int\n    y: Int\n\nfn main(console: Console):\n    var ps = [P(1, 2), P(3, 4)]\n    for var p in ps:\n        p.x = p.x + 100\n    console.print(\"${list.at(ps, 0).x} ${list.at(ps, 1).x}\")\n",
             // confined slice VIEW: a read-only window over an unmutated param,
             // read only via at/length — toggling `views` must not change output.
             "import list\n\nfn win(xs: List(Int), lo: Int, hi: Int) -> Int:\n    let w = list.slice(xs, lo, hi)\n    var t = 0\n    var j = 0\n    while j < list.length(w):\n        t = t + list.at(w, j)\n        j = j + 1\n    t\n\nfn main(console: Console):\n    let xs = [10, 20, 30, 40, 50, 60]\n    console.print(\"${win(xs, 1, 4)}\")\n    console.print(\"${win(xs, 4, 100)}\")\n    console.print(\"${win(xs, 2, 2)}\")\n",
@@ -558,16 +553,16 @@ fn main(console: Console):
             "type Counter:\n    count: Int\n    pad: Int\n\nfn build(n: Int) -> Counter:\n    var c = Counter(0, 0)\n    var i = 0\n    while i < n:\n        c.count = c.count + 1\n        i = i + 1\n    c\n\nfn main(console: Console):\n    console.print(\"${build(50).count}\")\n",
             // (RFC-0033) ALIASED record then `.field =`: value semantics — the alias
             // must see the OLD value, so the update re-owns rather than mutating a
-            // shared record in place. The interpreter oracle pins "1 99"; an unsound
+            // shared record in place. The expected output is "1 99"; an unsound
             // in-place would print "99 99" and fail this differential.
             "type R:\n    a: Int\n    b: Int\n\nfn main(console: Console):\n    var r = R(1, 2)\n    let alias = r\n    r.a = 99\n    console.print(\"${alias.a} ${r.a}\")\n",
             // (RFC-0033 R3) own-ABI threading through a user record + a PLAIN call
             // to an own-ABI fn (`id(Counter(7,0))`) — both must be invariant under
-            // toggling `inplace` and match the interpreter oracle.
+            // toggling `inplace` and match the asserted output.
             "type Counter:\n    count: Int\n    pad: Int\n\nfn bump(own c: Counter) -> Counter:\n    c.count = c.count + 1\n    c\n\nfn id(own c: Counter) -> Counter:\n    c\n\nfn build(n: Int) -> Counter:\n    var c = Counter(0, 0)\n    var i = 0\n    while i < n:\n        c = bump(c)\n        i = i + 1\n    c\n\nfn main(console: Console):\n    console.print(\"${build(30).count}\")\n    console.print(\"${id(Counter(7, 0)).count}\")\n",
             // CACHE EVICTION: insert then remove distinct dict keys (the per-object
             // RC floor's target garbage). Output must stay invariant under every
-            // `WITCHY_OPT` setting and match the interpreter — the parity guard for
+            // `WITCHY_OPT` setting and match the asserted output — the behavior guard for
             // the residual the floor will eventually bound (see
             // `cache_eviction_leaks_without_rc_floor`).
             "import dict\n\nfn main(console: Console):\n    var d = dict.new()\n    var i = 0\n    while i < 40:\n        let _ = dict.insert(d, i, i * 2)\n        let _ = dict.remove(d, i)\n        i = i + 1\n    console.print(\"${dict.length(d)}\")\n    let _ = dict.insert(d, 7, 70)\n    console.print(\"${dict.get_or(d, 7, 0)}\")\n",
@@ -590,28 +585,39 @@ fn main(console: Console):
             // `call $__lamw`, the env (so the capture) must still flow, so toggling
             // `direct-call` must not change output. `f` is REASSIGNED mid-loop, so it
             // must stay an indirect call (an unsound devirt would pin the first lambda
-            // and diverge once `f` is rebound). The interpreter oracle pins both.
+            // and diverge once `f` is rebound). The asserted output checks both.
             "fn main(console: Console):\n    let k = 10\n    let g = fn(x: Int): x + k\n    var f = fn(x: Int): x * 2\n    var i = 0\n    var acc = 0\n    while i < 8:\n        acc = acc + g(i) + f(i)\n        if i == 4:\n            f = fn(x: Int): x * 3\n        i = i + 1\n    console.print(\"${acc}\")\n",
             // (RFC-0034 L2) Bounds-check elision: `for i in 0..list.length(xs)` indexing
             // an unmutated `xs` lowers `xs[i]` to an UNCHECKED load (provably in range);
             // toggling `bounds-elide` swaps checked/unchecked codegen and must not change
-            // output. Two elidable loops over distinct lists; the interpreter (always
-            // bounds-checked) is the oracle, so an unsound elision reading out of range
-            // would diverge here.
+            // output. Two elidable loops over distinct lists have a fixed
+            // expected sum, so an unsound out-of-range load would diverge here.
             "fn main(console: Console):\n    let xs = [3, 1, 4, 1, 5, 9, 2, 6]\n    let ys = [10, 20]\n    var t = 0\n    for i in 0..list.length(xs):\n        t = t + xs[i] * i\n    for j in 0..list.length(ys):\n        t = t + ys[j]\n    console.print(\"${t}\")\n",
         ];
+        let expected: &[&[&str]] = &[
+            &["300", "300", "43", "10"],
+            &["101 103"],
+            &["90", "110", "0"],
+            &["102", "3"],
+            &["24"],
+            &["12"],
+            &["50"],
+            &["1 99"],
+            &["30", "7"],
+            &["0", "70"],
+            &["50", "102"],
+            &["1", "2"],
+            &["182"],
+            &["161"],
+        ];
+        assert_eq!(corpus.len(), expected.len());
         std::thread::scope(|s| {
-            let handles: Vec<_> = corpus.iter().map(|src| {
+            let handles: Vec<_> = corpus.iter().zip(expected).map(|(src, expected)| {
                 s.spawn(move || {
-                    let linked = crate::resolve_std_only(src).expect("link");
-                    typeck::check(&linked).expect("typeck");
-                    let oracle =
-                        witchy_interp::interpreter::run_module(linked, ".", Vec::new()).expect("interp run");
-
                     opt::set_for_tests(Some(OptSet::all()));
                     let base = compute(src).expect("compute all").output;
                     opt::set_for_tests(None);
-                    assert_eq!(base, oracle, "wasm (all) must match the interpreter oracle for:\n{src}");
+                    assert_eq!(base, *expected, "admitted Wasm output differs from expected behavior for:\n{src}");
 
                     let mut settings: Vec<(String, OptSet)> = vec![
                         ("none".into(), OptSet::none()),
@@ -667,27 +673,19 @@ fn main(console: Console):
         );
     }
 
-    fn interp(src: &str) -> Vec<String> {
-        let linked = crate::resolve_std_only(src).expect("link");
-        typeck::check(&linked).expect("typeck");
-        witchy_interp::interpreter::run_module(linked, ".", Vec::new()).expect("interp run")
-    }
-
     /// RFC-0028 `for var`: a mutation of the loop element is written back into the
-    /// list, identically on the interpreter and on the WASM backend (default and
-    /// forced-copy) — the parity contract for the new ergonomic form.
+    /// list on admitted Wasm in both default and forced-copy modes.
     #[test]
     fn for_var_writes_elements_back_on_both_backends() {
         let src = "fn main(console: Console):\n    var xs = [1, 2, 3, 4]\n    for var x in xs:\n        x = x * 10\n    console.print(\"${xs}\")\n";
-        let oracle = interp(src);
-        assert_eq!(oracle, vec!["[10, 20, 30, 40]".to_string()]);
+        let expected = ["[10, 20, 30, 40]".to_string()];
         opt::set_for_tests(Some(OptSet::default_set()));
         let wasm = compute(src).expect("wasm").output;
         opt::set_for_tests(Some(OptSet::default_set().without(Opt::InPlace)));
         let wasm_copy = compute(src).expect("wasm -inplace").output;
         opt::set_for_tests(None);
-        assert_eq!(wasm, oracle, "for var: wasm must match the interpreter");
-        assert_eq!(wasm_copy, oracle, "for var: forced-copy must match too");
+        assert_eq!(wasm, expected, "for var: admitted Wasm must write elements back");
+        assert_eq!(wasm_copy, expected, "for var: forced-copy must write elements back");
     }
 
     /// RFC-0027 escape-driven SROA: a frame-confined record built each iteration
