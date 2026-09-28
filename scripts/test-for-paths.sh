@@ -658,6 +658,15 @@ for p in "${paths[@]}"; do
             # the landing selection below.
             add_early "cargo nextest run -p witchy --features witchy-wir/native --test misc --ignore-default-filter -E 'test(=rfc0165_owner_adapters::server_workers_reject_raw_wasm_even_with_genuine_entry_metadata)'"
             path_has_early=1 ;;
+        tests/misc/rfc0165_build_read_project.rs | \
+        tests/misc/rfc0165_build_env_project.rs)
+            # These are nightly-deferred, so the admitted-test wrapper filters
+            # them out. Run the focused edit probe directly; the landing gate
+            # retains its deferred selection policy.
+            _misc="${p##*/}"
+            _misc="${_misc%.rs}"
+            add_early "cargo nextest run --test misc -E 'test(/.*${_misc}::/)'"
+            path_has_early=1 ;;
         tests/misc/rfc0077_integration_grants.rs)
             # The async source-integration cases each take about 166s and run
             # in the complete landing selection. Keep the edit loop on the

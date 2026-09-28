@@ -988,8 +988,11 @@ fn build_read_integration_edits_run_only_their_own_modules() {
     ] {
         let commands = selected(&["--edit-loop", path]);
         assert_eq!(commands.len(), 1, "{path}: {commands:?}");
+        let direct_deferred_probe = module != "rfc0103_build_step_confinement";
         assert!(
-            commands[0].starts_with("./scripts/nextest-admitted.sh witchy -- ")
+            (direct_deferred_probe && commands[0].starts_with("cargo nextest run"))
+                || (!direct_deferred_probe
+                    && commands[0].starts_with("./scripts/nextest-admitted.sh witchy -- "))
                 && commands[0].contains("cargo nextest run --test misc")
                 && commands[0].contains(&format!("test(/.*{}::/)", module)),
             "{path}: {commands:?}",
