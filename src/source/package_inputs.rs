@@ -404,7 +404,9 @@ fn capture_source_inputs_with_precompiled(
 
 pub(crate) fn recheck_packaged_source(inputs: &SourceInputs) -> Result<(pipeline::CheckedModule, String), String> {
     let (sources, entry, users, owners) = replay_loaded_inputs(inputs)?;
-    let checked = pipeline::link_checked_authenticated_from_source_bundle_with_user_modules(sources, &entry, &users, owners)
+    let checked = witchy_interp::pipeline::link_checked_authenticated_from_source_bundle_with_user_modules(
+        sources, &entry, &users, owners,
+    )
         .map_err(|error| error.to_string())?;
     Ok((checked, entry))
 }

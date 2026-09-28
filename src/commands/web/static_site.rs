@@ -3769,7 +3769,7 @@ fn static_entry_name(project: &Project) -> Result<String, WebCommandError> {
 }
 
 fn authenticate_static_entry(
-    checked: &witchy_interp::pipeline::CheckedModule,
+    checked: &witchy_types::pipeline::CheckedModule,
     entry: &str,
     has_content: bool,
 ) -> Result<(), WebCommandError> {

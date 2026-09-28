@@ -1319,7 +1319,7 @@ fn compile_project_with_origins(
 }
 
 fn package_records(
-    checked: &witchy_interp::pipeline::CheckedModule,
+    checked: &witchy_types::pipeline::CheckedModule,
 ) -> Result<Vec<PackageRecord>, WebCommandError> {
     Ok(checked
         .runtime_declaration_catalog()
@@ -1346,7 +1346,7 @@ fn package_records(
 }
 
 fn authenticated_tagged_origins(
-    checked: &witchy_interp::pipeline::CheckedModule,
+    checked: &witchy_types::pipeline::CheckedModule,
 ) -> Result<Value, WebCommandError> {
     use witchy_types::runtime_type::{DeclarationKind, PackageSource};
 

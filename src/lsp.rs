@@ -1879,7 +1879,7 @@ fn compute_diagnostics(uri: &str, text: &str, docs: &HashMap<String, String>) ->
         ),
     ) {
         Ok(checked) => checked,
-        Err(witchy_interp::pipeline::PipelineError::Link(error)) => {
+        Err(witchy_types::pipeline::PipelineError::Link(error)) => {
             // BUG-162: map the link error onto the line it names (or the import it
             // blames) instead of always pinning it to line 0.
             let message = error.to_string();
@@ -1889,7 +1889,7 @@ fn compute_diagnostics(uri: &str, text: &str, docs: &HashMap<String, String>) ->
                 &message,
             )];
         }
-        Err(witchy_interp::pipeline::PipelineError::Type(error)) => {
+        Err(witchy_types::pipeline::PipelineError::Type(error)) => {
             let line0 = extract_line(&error.message).map_or(0, |n| n.saturating_sub(1));
             return vec![line_diag(
                 line0,
@@ -1897,7 +1897,7 @@ fn compute_diagnostics(uri: &str, text: &str, docs: &HashMap<String, String>) ->
                 &format!("type error: {}", error.message),
             )];
         }
-        Err(witchy_interp::pipeline::PipelineError::Source(error)) => {
+        Err(witchy_types::pipeline::PipelineError::Source(error)) => {
             // Complete body checking now runs at the source-proof boundary, so
             // semantic diagnostics that historically arrived as `Type` arrive
             // here before destructive lowering. Preserve the LSP's stable

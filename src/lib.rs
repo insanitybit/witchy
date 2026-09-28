@@ -80,7 +80,7 @@ pub enum ResolveStdError {
         name: String,
         suggestion: Option<String>,
     },
-    Pipeline(witchy_interp::pipeline::PipelineError),
+    Pipeline(witchy_types::pipeline::PipelineError),
 }
 
 impl std::fmt::Display for ResolveStdError {
@@ -109,8 +109,8 @@ impl std::error::Error for ResolveStdError {
     }
 }
 
-impl From<witchy_interp::pipeline::PipelineError> for ResolveStdError {
-    fn from(error: witchy_interp::pipeline::PipelineError) -> Self {
+impl From<witchy_types::pipeline::PipelineError> for ResolveStdError {
+    fn from(error: witchy_types::pipeline::PipelineError) -> Self {
         Self::Pipeline(error)
     }
 }
@@ -134,7 +134,7 @@ pub(crate) fn resolve_std_only(src: &str) -> Result<witchy_syntax::ast::Module, 
 /// program passed the canonical type checker.
 pub fn resolve_std_only_checked(
     src: &str,
-) -> Result<witchy_interp::pipeline::CheckedModule, ResolveStdError> {
+) -> Result<witchy_types::pipeline::CheckedModule, ResolveStdError> {
     use witchy_types::runtime_type::{
         AuthenticatedModuleOwners, ModuleLoadIdentity, PackageCoordinate, PackageSource,
     };

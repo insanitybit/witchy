@@ -12,7 +12,7 @@ use package_inputs::{AmbientFiles, SourceFiles};
 use witchy_syntax::{ast, format, parser};
 #[cfg(test)]
 use witchy_syntax::linker;
-use witchy_interp::pipeline;
+use witchy_types::pipeline;
 use witchy_types::runtime_type::{
     AuthenticatedModuleOwners, ModuleLoadIdentity, PackageCoordinate, PackageSource,
 };
@@ -299,7 +299,11 @@ pub(crate) fn link_static_evaluation_file(
         &HashMap::new(),
     )?;
     let recipe = pipeline::link_checked_static_evaluation_from_source_bundle(
-        sources, &entry, &user_modules, owners,
+        sources, &entry,
+        witchy_syntax::linker::ComptimeExpander::with_sibling_request(
+            pipeline::require_expansion_free, |_| false,
+        ),
+        &user_modules, owners,
     )
     .map_err(|error| error.to_string())?;
     Ok((recipe, entry))
@@ -622,7 +626,7 @@ fn link_file_with_deps_mode(
     mode: linker::LinkMode,
 ) -> Result<(ast::Module, String), String> {
     let (modules, entry_stem, user_modules) = load_file_modules(path, deps)?;
-    let linked = pipeline::link_with_user_modules_with_mode(modules, &entry_stem, &user_modules, mode)
+    let linked = witchy_interp::pipeline::link_with_user_modules_with_mode(modules, &entry_stem, &user_modules, mode)
         .map_err(|e| e.to_string())?;
     Ok((linked, entry_stem))
 }

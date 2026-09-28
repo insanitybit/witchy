@@ -3,7 +3,7 @@
 use witchy::{enforce_performance_modes, trusted_publisher};
 use witchy_syntax::opt;
 use witchy_lower::codegen;
-use witchy_interp::pipeline;
+use witchy_types::pipeline;
 use crate::{link_file_checked, link_file_checked_with_deps};
 use witchy_types::runtime_type::{ModuleLoadIdentity, PackageCoordinate, PackageSource};
 use std::collections::HashMap;
