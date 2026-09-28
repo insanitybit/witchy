@@ -104,10 +104,10 @@ const SHORT_CIRCUIT: &str = r#"
 async fn get(n: Int) -> Int:
     n
 
-async fn main(console: Console):
+async fn main():
     let flag = false
     if flag && get(1).await > 0:
-        console.print("pos")
+        ()
 "#;
 
 #[test]
@@ -131,9 +131,11 @@ fn await_nested_in_expressions_suspends_in_evaluation_order() {
         ],
     );
 
-    let error = match witchy::resolve_std_only_checked(SHORT_CIRCUIT) {
-        Ok(_) => panic!("an `await` in the right operand of `&&` must be refused"),
-        Err(error) => error.to_string(),
+    // No standard-library symbols occur here, so check the refusal directly
+    // without resolving and preparing the bundled standard library.
+    let error = match witchy::typeck::check_str(SHORT_CIRCUIT) {
+        Ok(()) => panic!("an `await` in the right operand of `&&` must be refused"),
+        Err(error) => error,
     };
     assert!(error.contains("right operand of `&&`/`||`"), "{error}");
 }
