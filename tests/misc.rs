@@ -143,6 +143,8 @@ mod rfc0167_owned_materialization;
 mod rfc0167_tuple_root_view;
 #[path = "misc/rfc0167_nested_list_root_view.rs"]
 mod rfc0167_nested_list_root_view;
+#[path = "misc/rfc0167_option_list_view_boundary.rs"]
+mod rfc0167_option_list_view_boundary;
 #[path = "misc/rfc0167_dict_root_view.rs"]
 mod rfc0167_dict_root_view;
 #[path = "misc/rfc0167_indirect_list_view.rs"]
