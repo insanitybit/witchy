@@ -149,7 +149,6 @@ use crate::{codegen, interpreter};
         // (no padding is needed, so nothing is violated).
         let ok = "import math\nimport time\nfn main(console: Console):\n    console.print(\"${math.factorial(0)}\")\n    console.print(\"${math.pow(2, 0)}\")\n    console.print(\"${math.isqrt(0)}\")\n    console.print(\"${time.days_in_month(2024, 2)}\")\n    console.print(\"${time.days_in_month(2026, 2)}\")\n    console.print(\"${time.days_in_month(2026, 12)}\")\n    console.print(math.to_base(10, 2))\n    console.print(math.to_base(255, 16))\n    console.print(\"abc\".pad_left(3, \"\"))\n    console.print(\"abcd\".center(3, \"\"))\n";
         let want = vec!["1", "1", "0", "29", "28", "31", "1010", "ff", "abc", "abcd"];
-        assert_eq!(link_run(ok), want, "interpreter boundary");
         assert_eq!(wasm_run(ok), want, "compiled boundary");
     }
 

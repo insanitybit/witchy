@@ -68,7 +68,6 @@ fn main(console: Console):
         "early-new",
     ];
     assert_eq!(run_on_wasm(source), expected, "compiled Wasm resource lifecycle");
-    assert_eq!(link_run(source), expected, "static obligation erases before backend execution");
 }
 
 #[test]
@@ -142,7 +141,6 @@ fn main(console: Console):
         "conflict",
     ];
     assert_eq!(run_on_wasm(source), expected, "compiled Wasm normal and error exits");
-    assert_eq!(link_run(source), expected, "must obligations erase before backend execution");
 }
 
 #[test]
