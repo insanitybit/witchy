@@ -95,6 +95,11 @@ leaks. Their duplicate source-interpreter executions are retired; the
 expansion, formatting, and hygiene assertions remain. This is a row Q test
 support reduction, not complete walker retirement.
 
+The nested structural-tag ancestry test now also checks its typed expansion
+through admitted Wasm: the generated `main` returns the independently expected
+`41` with zero owned-heap leaks. Its definition-site and hole-ancestry
+diagnostics remain in place; its source-interpreter execution is retired.
+
 At merged `6c7488acf`, the guarded-match generator case also runs through
 checked source, canonical admission, and unoptimized Wasm. Its exact
 `guard 7/before 7/yield 7/after 7/done` trace and zero-leak audit demonstrate

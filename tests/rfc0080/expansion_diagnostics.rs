@@ -266,6 +266,7 @@ fn tag_evaluator_reentry_and_tagged_constants_remain_rejected() {
 
 #[test]
 fn nested_structural_tags_keep_definition_site_and_hole_ancestry() {
+    const NESTED_HOLE_SOURCE: &str = "import meta\n\ncomptime fn inner(parts: List(String), holes: List(meta.TagHole)) -> meta.ExprSyntax:\n    meta.expr_tag_hole_typed(holes.at(0))\n\npub comptime fn outer(parts: List(String), holes: List(meta.TagHole)) -> meta.ExprSyntax:\n    meta.expr_tagged(meta.ident(\"inner\"), [\"\", \"\"], [meta.expr_tag_hole_typed(holes.at(0))])\n\nfn main() -> Int:\n    outer\"${41}\"\n";
     // These cases link separate source graphs and share no outputs. Run their
     // independent frontend work together so this conformance test does not
     // serialize four full compiler walks.
@@ -288,9 +289,7 @@ fn nested_structural_tags_keep_definition_site_and_hole_ancestry() {
                 ])
             });
             let nested_hole = scope.spawn(|| {
-                let module = parser::parse_module(
-                    "import meta\n\ncomptime fn inner(parts: List(String), holes: List(meta.TagHole)) -> meta.ExprSyntax:\n    meta.expr_tag_hole_typed(holes.at(0))\n\npub comptime fn outer(parts: List(String), holes: List(meta.TagHole)) -> meta.ExprSyntax:\n    meta.expr_tagged(meta.ident(\"inner\"), [\"\", \"\"], [meta.expr_tag_hole_typed(holes.at(0))])\n\nfn main() -> Int:\n    outer\"${41}\"\n",
-                )
+                let module = parser::parse_module(NESTED_HOLE_SOURCE)
                 .expect("parse structural nested-hole fixture");
                 pipeline::link(vec![("main".into(), module)], "main")
                 .expect("owned nested tag hole remains structural")
@@ -312,11 +311,22 @@ fn nested_structural_tags_keep_definition_site_and_hole_ancestry() {
 
     let linked = nested_hole;
     typeck::check(&linked).expect("typecheck owned nested tag hole");
-    assert_eq!(
-        witchy_interp::interpreter::run_module(linked, ".", Vec::new())
-            .expect("interpret owned nested tag hole"),
-        Vec::<String>::new(),
-    );
+    let checked = witchy_types::pipeline::link_checked_from_source_bundle(
+        vec![("main".into(), NESTED_HOLE_SOURCE.as_bytes().to_vec())],
+        "main",
+        witchy_interp::comptime::EXPANDER,
+    ).expect("authenticate nested tag expansion");
+    let artifact = witchy::codegen::compile_checked_module_artifact(&checked)
+        .expect_lowered("admit nested tag expansion");
+    let mut runtime = witchy::runtime::Runtime::batch().expect("runtime");
+    let mut actor = runtime.spawn_admitted(
+        &artifact,
+        witchy::runtime::Capabilities::none(),
+        64,
+    ).expect("spawn nested tag expansion");
+    actor.run().expect("run nested tag expansion");
+    assert_eq!(actor.output(), ["41"], "the nested hole returns its literal operand");
+    assert_eq!(actor.canonical_heap_leaks().expect("heap audit"), Some(0));
 }
 
 #[test]
