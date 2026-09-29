@@ -88,6 +88,13 @@ representative safety-boundary closeout and row Q still requires retirement of
 the remaining source walker workspace/test support. These narrower M/O findings
 do not close the full RFC or its normal-mode safety rows.
 
+The RFC-0080 owned-expression and fresh-identifier tests now authenticate
+their comptime expansion through the checked source bundle and assert their
+independent outputs on admitted unoptimized Wasm, including zero owned-heap
+leaks. Their duplicate source-interpreter executions are retired; the
+expansion, formatting, and hygiene assertions remain. This is a row Q test
+support reduction, not complete walker retirement.
+
 At merged `6c7488acf`, the guarded-match generator case also runs through
 checked source, canonical admission, and unoptimized Wasm. Its exact
 `guard 7/before 7/yield 7/after 7/done` trace and zero-leak audit demonstrate

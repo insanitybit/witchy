@@ -1,7 +1,7 @@
 //! RFC-0080 compiler-owned expression payloads with compatibility projection.
 
 use witchy::{format, parser, typeck};
-use witchy_interp::{comptime, interpreter, pipeline};
+use witchy_interp::{comptime, pipeline};
 
 const SOURCE: &str = r#"
 import meta
@@ -48,10 +48,5 @@ fn owned_expressions_survive_direct_flow_and_project_for_builders() {
     assert!(linked.compiler_item_syntax.is_empty());
 
     let expected = vec!["42".to_string()];
-    assert_eq!(
-        interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interpret"),
-        expected
-    );
-
-    super::assert_compiled_output(&linked, &expected, "compile expanded program", 64);
+    super::assert_admitted_source_output(SOURCE, &expected, "compile expanded program", 64);
 }

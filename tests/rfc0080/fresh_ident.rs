@@ -2,7 +2,7 @@
 //! source-unspellable, and distinct across calls and expansion evaluators.
 
 use witchy::{ast, parser, typeck};
-use witchy_interp::{interpreter, pipeline};
+use witchy_interp::pipeline;
 
 const SOURCE: &str = r#"
 import meta
@@ -72,12 +72,7 @@ fn fresh_identifiers_are_deterministic_distinct_and_backend_neutral() {
     );
 
     let expected = vec!["12".to_string(), "9".to_string(), "14".to_string()];
-    assert_eq!(
-        interpreter::run_module(first.clone(), ".", Vec::new()).expect("interpret expanded program"),
-        expected
-    );
-
-    super::assert_compiled_output(&first, &expected, "compile expanded program", 128);
+    super::assert_admitted_source_output(SOURCE, &expected, "compile expanded program", 128);
 }
 
 #[test]

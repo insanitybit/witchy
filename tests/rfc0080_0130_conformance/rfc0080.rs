@@ -32,6 +32,35 @@ fn assert_compiled_output(
     assert_eq!(actor.output(), expected, "{label}");
 }
 
+fn assert_admitted_source_output(source: &str, expected: &[String], label: &str, stack_size: usize) {
+    struct ResetOptimization;
+    impl Drop for ResetOptimization {
+        fn drop(&mut self) { witchy::opt::set_for_tests(None); }
+    }
+    witchy::opt::set_for_tests(Some(witchy::opt::OptSet::none()));
+    let _reset = ResetOptimization;
+    let checked = witchy_types::pipeline::link_checked_from_source_bundle(
+        vec![("main".into(), source.as_bytes().to_vec())],
+        "main",
+        witchy_interp::comptime::EXPANDER,
+    ).expect("authenticate and check generated source");
+    let artifact = witchy::codegen::compile_checked_module_artifact(&checked)
+        .expect_lowered(label);
+    let mut runtime = witchy::runtime::Runtime::batch().expect("runtime");
+    let mut actor = runtime.spawn_admitted(
+        &artifact,
+        witchy::runtime::Capabilities {
+            print: true,
+            quiet: true,
+            ..witchy::runtime::Capabilities::none()
+        },
+        stack_size,
+    ).expect("spawn admitted generated program");
+    actor.run().expect(label);
+    assert_eq!(actor.output(), expected, "{label}");
+    assert_eq!(actor.canonical_heap_leaks().expect("heap audit"), Some(0));
+}
+
 #[path = "../rfc0080/fresh_ident.rs"]
 mod fresh_ident;
 #[path = "../rfc0080/expansion_diagnostics.rs"]
