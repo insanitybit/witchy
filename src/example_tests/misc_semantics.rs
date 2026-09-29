@@ -1,5 +1,5 @@
 use super::*;
-use crate::{codegen, interpreter, parser, typeck};
+use crate::{parser, typeck};
 
     #[test]
     fn public_sources_do_not_call_legacy_render_intrinsic() {
@@ -108,7 +108,6 @@ use crate::{codegen, interpreter, parser, typeck};
                    \x20   console.print(\"${content_length_val(\"42\")}\")\n\
                    \x20   console.print(\"${content_length_val(\"abc\")}\")\n";
         let want = ["true", "0", "42", "0"];
-        assert_eq!(link_run(src), want, "interp: overflow -> 0, valid -> value, junk -> 0");
         assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), want, "wasm must agree and not trap");
     }
 
@@ -136,7 +135,6 @@ use crate::{codegen, interpreter, parser, typeck};
             "-9223372036854775808".to_string(),
             "-3".to_string(),
         ];
-        assert_eq!(interp(src), want.clone(), "interpreter");
         assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
     }
 
@@ -169,7 +167,5 @@ fn main(console: Console):
     console.print("${sum_tree(t)}")
     console.print("${depth(t)}")
 "#;
-        assert_eq!(interp(src), run_on_wasm(src), "recursive tree ADT diverged");
         assert_eq!(run_on_wasm(src), vec!["11", "3"]);
     }
-

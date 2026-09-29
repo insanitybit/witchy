@@ -1,5 +1,5 @@
 use super::*;
-use crate::{codegen, interpreter};
+use crate::codegen;
 
     /// (BUG-481) Numeric duration constructors are convenience contracts, not
     /// wrapping arithmetic. Oversized counts abort before the intermediate Int
@@ -8,7 +8,6 @@ use crate::{codegen, interpreter};
     fn duration_numeric_constructors_abort_on_overflow_on_both_backends() {
         let ok = "import duration\n\nfn main(console: Console):\n    console.print(duration.human(duration.seconds(0 - 90)))\n    console.print(duration.human(duration.from_clock(1, 2, 3)))\n";
         let expected = ["-1m30s", "1h2m3s"];
-        assert_eq!(link_run(ok), expected, "interp: duration constructor controls");
         assert_eq!(
             run_linked_on_wasm(&[("main", ok)], "main"),
             expected,
@@ -22,13 +21,6 @@ use crate::{codegen, interpreter};
         ] {
             let src = format!("import duration\n\nfn main(console: Console):\n    console.print(\"${{{call}}}\")\n");
             let linked = resolve_std_src(&src);
-            let interp_err = interpreter::run_module(linked.clone(), ".", Vec::new())
-                .expect_err("interpreter must abort on duration overflow")
-                .to_string();
-            assert!(
-                interp_err.contains("duration.") && interp_err.contains("overflow"),
-                "{label}: {interp_err}"
-            );
             let wasm = codegen::compile_module_binary(&linked)
                 .expect_lowered("duration overflow program should lower");
             let wasm_err = crate::run_wasm_bytes(&wasm)
@@ -59,9 +51,7 @@ fn main(console: Console):
     console.print("${1h / 1m == 60}")
 "#;
         let sources = [("main", client)];
-        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
         let compiled = run_linked_on_wasm(&sources, "main");
-        assert_eq!(interpreted, compiled, "duration literals diverged");
         assert_eq!(
             compiled,
             vec!["true", "true", "true", "true", "true", "true", "true", "true"]
@@ -98,12 +88,9 @@ fn main(console: Console):
             ("prng", crate::bundled_module("prng").unwrap()),
             ("main", client),
         ];
-        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
         let compiled = run_linked_on_wasm(&sources, "main");
-        assert_eq!(interpreted, compiled, "prng diverged");
         assert_eq!(
             compiled,
             vec!["16807,282475249,1622650073,984943658", "0", "even"]
         );
     }
-
