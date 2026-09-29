@@ -6,68 +6,81 @@
 //! (references, var envelopes, indirect cycles, async/loans); this file pins the
 //! SOURCE-FORM catalog itself: every claimed tail position runs at a depth far
 //! beyond the compiled backend's non-tail frame budget, and every claimed
-//! NON-tail form fails gracefully on both backends instead of being
+//! NON-tail form fails gracefully on admitted Wasm instead of being
 //! misclassified as a loop (acceptance criteria 3 and 4).
 //!
-//! These are RESOURCE + PARITY tests. The positive transition count (300,000)
+//! These are resource and semantic tests. The positive transition count (300,000)
 //! is ~40x the measured depth at which a non-tail cycle exhausts the compiled
 //! backend's call stack (traps between 6,000 and 8,000 frames), so a green
-//! compiled run is itself the constant-stack proof. The interpreter leg proves
-//! result parity at the same depth; its own constant-stack behavior is pinned
-//! by the witchy-interp unit tests (deep_self_tail_recursion_*).
+//! compiled run is itself the constant-stack proof.
 
 use witchy::runtime::{Capabilities, Runtime};
 use witchy::{codegen, parser, typeck};
-use witchy_interp::{interpreter, pipeline};
+use witchy_interp::pipeline;
 
-fn linked(source: &str) -> witchy::ast::Module {
-    let parsed = parser::parse_module(source).expect("parse tail-position program");
-    let linked = pipeline::link(vec![("main".into(), parsed)], "main")
-        .expect("link tail-position program");
-    typeck::check(&linked).expect("typecheck tail-position program");
-    linked
+fn checked(source: &str) -> witchy::pipeline::CheckedModule {
+    witchy::resolve_std_only_checked(source).expect("check tail-position program")
 }
 
-/// Run `source` on BOTH backends and assert identical output. A program that
+/// Run `source` on admitted Wasm and assert its independent expected output. A program that
 /// grows the control stack instead of tail-looping traps on the compiled
 /// backend thousands of transitions before the counts used here.
-fn assert_both_backends(source: &str, expected: &[&str], pages: usize) {
-    let linked = linked(source);
+fn assert_constant_stack_output(source: &str, expected: &[&str], pages: usize) {
+    let checked = checked(source);
     let want: Vec<String> = expected.iter().map(|line| (*line).to_string()).collect();
-    assert_eq!(
-        interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interpret"),
-        want,
-        "interpreter output"
-    );
 
-    let wasm = codegen::compile_module_binary(&linked)
+    let artifact = codegen::compile_checked_module_artifact(&checked)
         .expect_lowered("tail-position program lowers");
     let mut runtime = Runtime::batch().expect("runtime");
     let caps = Capabilities { print: true, quiet: true, ..Default::default() };
-    let mut actor = runtime.spawn(&wasm, caps, pages).expect("spawn");
+    let mut actor = runtime.spawn_admitted(&artifact, caps, pages).expect("spawn");
     actor.run().expect("compiled execution");
     assert_eq!(actor.output(), want, "compiled output (constant-stack loop)");
 }
 
-/// Run a NON-tail recursive `source` on both backends and assert each fails
-/// gracefully in its documented way: the interpreter's depth guard, the
-/// compiled backend's stack-exhaustion trap. A hang or a success here would
+/// Preserve the independent resource witness while canonical lowering still
+/// refuses this valid source form. The refusal is pinned so it cannot silently
+/// become an unadmitted execution path.
+fn assert_raw_output_pending_canonical(
+    source: &str,
+    expected: &[&str],
+    pages: usize,
+    missing: &str,
+) {
+    let checked = checked(source);
+    let refusal = match codegen::compile_checked_module_artifact(&checked) {
+        codegen::LoweringOutcome::Unsupported(reason) => reason.to_string(),
+        codegen::LoweringOutcome::Rejected(error) => error.to_string(),
+        codegen::LoweringOutcome::Lowered(_) => {
+            panic!("canonical admission unexpectedly succeeded; move this case to the admitted helper")
+        }
+    };
+    assert!(refusal.contains(missing), "{refusal}");
+
+    let parsed = parser::parse_module(source).expect("parse pending tail form");
+    let linked = pipeline::link(vec![("main".into(), parsed)], "main")
+        .expect("link pending tail form");
+    typeck::check(&linked).expect("typecheck pending tail form");
+    let wasm = codegen::compile_module_binary(&linked)
+        .expect_lowered("pending tail form lowers through the raw test path");
+    let mut runtime = Runtime::batch().expect("runtime");
+    let caps = Capabilities { print: true, quiet: true, ..Default::default() };
+    let mut actor = runtime.spawn(&wasm, caps, pages).expect("spawn raw test fixture");
+    actor.run().expect("constant-stack raw test fixture");
+    let want: Vec<String> = expected.iter().map(|line| (*line).to_string()).collect();
+    assert_eq!(actor.output(), want, "raw test fixture output");
+}
+
+/// Run a NON-tail recursive `source` on admitted Wasm and assert it traps
+/// on stack exhaustion. A hang or a success here would
 /// mean a non-tail form was misclassified as a proper tail call.
 fn assert_graceful_depth_failure(source: &str) {
-    let linked = linked(source);
-    let interp_err = interpreter::run_module(linked.clone(), ".", Vec::new())
-        .expect_err("non-tail recursion must hit the interpreter depth guard")
-        .to_string();
-    assert!(
-        interp_err.contains("call stack too deep"),
-        "interpreter must report its depth guard, got: {interp_err}"
-    );
-
-    let wasm = codegen::compile_module_binary(&linked)
+    let checked = checked(source);
+    let artifact = codegen::compile_checked_module_artifact(&checked)
         .expect_lowered("non-tail program still lowers");
     let mut runtime = Runtime::batch().expect("runtime");
     let caps = Capabilities { print: true, quiet: true, ..Default::default() };
-    let mut actor = runtime.spawn(&wasm, caps, 256).expect("spawn");
+    let mut actor = runtime.spawn_admitted(&artifact, caps, 256).expect("spawn");
     let wasm_err = format!(
         "{:?}",
         actor
@@ -97,7 +110,9 @@ fn go(n: Int) -> Int:
 fn main(console: Console):
     console.print("${go(300000)}")
 "#;
-    assert_both_backends(source, &["42"], 256);
+    assert_raw_output_pending_canonical(
+        source, &["42"], 256, "MissingProperTailSite",
+    );
 }
 
 // Every selected arm body of a tail-position `match` is a tail position, and
@@ -123,7 +138,7 @@ fn go(n: Int) -> Int:
 fn main(console: Console):
     console.print("${go(300000)}")
 "#;
-    assert_both_backends(source, &["7"], 16384);
+    assert_constant_stack_output(source, &["7"], 16384);
 }
 
 // Monomorphized generic self recursion participates as a direct edge after
@@ -141,7 +156,9 @@ fn main(console: Console):
     console.print("${drain(0, 300000, 5)}")
     console.print(drain("x", 300000, "y"))
 "#;
-    assert_both_backends(source, &["5", "y"], 256);
+    assert_raw_output_pending_canonical(
+        source, &["5", "y"], 256, "OwnedReleasePlacement",
+    );
 }
 
 // A trait-bounded generic function's self-tail edge is a direct edge after
@@ -158,7 +175,7 @@ fn spin(x: a, n: Int) -> String where a: Show:
 fn main(console: Console):
     console.print(spin(11, 300000))
 "#;
-    assert_both_backends(source, &["11"], 256);
+    assert_constant_stack_output(source, &["11"], 256);
 }
 
 // A closure value threaded through the recursion (applied per step, forwarded
@@ -177,7 +194,7 @@ fn main(console: Console):
     let inc = fn(x: Int): x + 1
     console.print("${go(inc, 300000, 0)}")
 "#;
-    assert_both_backends(source, &["300000"], 256);
+    assert_constant_stack_output(source, &["300000"], 256);
 }
 
 // An `own` heap aggregate forwards through the loop in its parameter slot,
@@ -196,7 +213,7 @@ fn go(own xs: List(Int), n: Int) -> List(Int):
 fn main(console: Console):
     console.print("${go([], 300000)}")
 "#;
-    assert_both_backends(source, &["[3, 2, 1]"], 16384);
+    assert_constant_stack_output(source, &["[3, 2, 1]"], 16384);
 }
 
 // A sum-typed (Result) return forwards through the self loop, and a `?` on a
@@ -221,7 +238,7 @@ fn main(console: Console):
         Ok(v) -> console.print("${v}")
         Err(e) -> console.print(e)
 "#;
-    assert_both_backends(source, &["3"], 256);
+    assert_constant_stack_output(source, &["3"], 256);
 }
 
 // NEGATIVE (criterion 4): an operator around the recursive call leaves real
