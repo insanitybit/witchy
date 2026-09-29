@@ -81,17 +81,27 @@ fn main() -> Int:
     .expect("exact whole-root carrier survives a closure capture");
     // The closure keeps the old children 1 and 3 while the current first
     // child becomes 9: (1 + 3)*10 + 9 = 49.
-    let (artifact, ()) = codegen::compile_checked_module_artifact_with_observer(&checked, |_, _| ())
-        .expect_lowered("closure capture has an authenticated nested-list root");
+    let (artifact, ()) =
+        codegen::compile_checked_module_artifact_with_observer(&checked, |_, _| ())
+            .expect_lowered("closure capture has an authenticated nested-list root");
     let mut runtime = Runtime::batch().expect("runtime");
-    let mut vm = runtime.spawn_admitted(
-        &artifact,
-        Capabilities { print_int: true, quiet: true, ..Capabilities::none() },
-        128,
-    ).expect("admitted unoptimized Wasm instance");
+    let mut vm = runtime
+        .spawn_admitted(
+            &artifact,
+            Capabilities {
+                print_int: true,
+                quiet: true,
+                ..Capabilities::none()
+            },
+            128,
+        )
+        .expect("admitted unoptimized Wasm instance");
     vm.run().expect("admitted Wasm execution");
     assert_eq!(vm.output(), vec!["49".to_string()]);
-    assert_eq!(vm.canonical_heap_leaks().expect("canonical heap audit"), Some(0));
+    assert_eq!(
+        vm.canonical_heap_leaks().expect("canonical heap audit"),
+        Some(0)
+    );
 }
 
 #[test]
@@ -121,17 +131,27 @@ fn main() -> Int:
     .expect("generic choice keeps either authenticated nested-list root");
     // The true and false branches retain the original 1 and 3. The current
     // roots read 9 and 8: 1,000 + 300 + 90 + 8 = 1,398.
-    let (artifact, ()) = codegen::compile_checked_module_artifact_with_observer(&checked, |_, _| ())
-        .expect_lowered("both generic root choices have authenticated carriers");
+    let (artifact, ()) =
+        codegen::compile_checked_module_artifact_with_observer(&checked, |_, _| ())
+            .expect_lowered("both generic root choices have authenticated carriers");
     let mut runtime = Runtime::batch().expect("runtime");
-    let mut vm = runtime.spawn_admitted(
-        &artifact,
-        Capabilities { print_int: true, quiet: true, ..Capabilities::none() },
-        128,
-    ).expect("admitted unoptimized Wasm instance");
+    let mut vm = runtime
+        .spawn_admitted(
+            &artifact,
+            Capabilities {
+                print_int: true,
+                quiet: true,
+                ..Capabilities::none()
+            },
+            128,
+        )
+        .expect("admitted unoptimized Wasm instance");
     vm.run().expect("admitted Wasm execution");
     assert_eq!(vm.output(), vec!["1398".to_string()]);
-    assert_eq!(vm.canonical_heap_leaks().expect("canonical heap audit"), Some(0));
+    assert_eq!(
+        vm.canonical_heap_leaks().expect("canonical heap audit"),
+        Some(0)
+    );
 }
 
 #[test]
@@ -165,5 +185,100 @@ fn main() -> Int:
 "#,
     )
     .expect_err("qualified inner list has no admitted root carrier");
-    assert!(error.to_string().contains("rooted view payload has no admitted authenticated carrier"), "{error}");
+    assert!(
+        error
+            .to_string()
+            .contains("rooted view payload has no admitted authenticated carrier"),
+        "{error}"
+    );
+}
+
+#[test]
+fn an_option_root_retains_nested_list_children_in_normal_mode() {
+    opt::set_for_tests(Some(OptSet::none()));
+    let _reset = ResetOptimizationOverride;
+    let checked = witchy::resolve_std_only_checked(
+        r#"
+fn read(view: &Option(List(List(Int)))) -> Int:
+    match *view:
+        Some(rows) -> rows[0][0] * 10 + rows[1][0]
+        None -> 0
+
+fn main() -> Int:
+    var box: Option(List(List(Int))) = Some([[2], [3]])
+    let old = &box
+    box = Some([[9], [8]])
+    read(old) * 10 + (match box:
+        Some(rows) -> rows[0][0]
+        None -> 0)
+"#,
+    )
+    .expect("nested List child has a checked Option root");
+    // Old rows contribute 23, while the new Option begins with 9: 239.
+    let (artifact, ()) =
+        codegen::compile_checked_module_artifact_with_observer(&checked, |_, _| ())
+            .expect_lowered("Option root admits nested List children");
+    let mut runtime = Runtime::batch().expect("runtime");
+    let mut vm = runtime
+        .spawn_admitted(
+            &artifact,
+            Capabilities {
+                print_int: true,
+                quiet: true,
+                ..Capabilities::none()
+            },
+            128,
+        )
+        .expect("admitted unoptimized Wasm instance");
+    vm.run().expect("admitted Wasm execution");
+    assert_eq!(vm.output(), vec!["239".to_string()]);
+    assert_eq!(
+        vm.canonical_heap_leaks().expect("canonical heap audit"),
+        Some(0)
+    );
+}
+
+#[test]
+fn a_record_root_retains_nested_list_children_in_normal_mode() {
+    opt::set_for_tests(Some(OptSet::none()));
+    let _reset = ResetOptimizationOverride;
+    let checked = witchy::resolve_std_only_checked(
+        r#"
+type Box:
+    rows: List(List(Int))
+    tag: Int
+
+fn read(view: &Box) -> Int:
+    (*view).rows[0][0] * 10 + (*view).rows[1][0] + (*view).tag
+
+fn main() -> Int:
+    var box = Box(rows: [[2], [3]], tag: 4)
+    let old = &box
+    box = Box(rows: [[9], [8]], tag: 5)
+    read(old) * 10 + box.rows[0][0]
+"#,
+    )
+    .expect("nested List field has a checked record root");
+    // Old fields contribute 2*10 + 3 + 4 = 27; current first child is 9.
+    let (artifact, ()) =
+        codegen::compile_checked_module_artifact_with_observer(&checked, |_, _| ())
+            .expect_lowered("record root admits nested List children");
+    let mut runtime = Runtime::batch().expect("runtime");
+    let mut vm = runtime
+        .spawn_admitted(
+            &artifact,
+            Capabilities {
+                print_int: true,
+                quiet: true,
+                ..Capabilities::none()
+            },
+            128,
+        )
+        .expect("admitted unoptimized Wasm instance");
+    vm.run().expect("admitted Wasm execution");
+    assert_eq!(vm.output(), vec!["279".to_string()]);
+    assert_eq!(
+        vm.canonical_heap_leaks().expect("canonical heap audit"),
+        Some(0)
+    );
 }
