@@ -81,6 +81,15 @@ representative safety-boundary closeout and row Q still requires retirement of
 the remaining source walker workspace/test support. These narrower M/O findings
 do not close the full RFC or its normal-mode safety rows.
 
+The exact `4deba6d03` normal-mode safety slice ran 12 selected `misc` tests with
+12 passes. Ten of those exercise normal-mode behavior: lazy resource effects,
+phantom resource fallback, `var` view write-back, retained nested-list snapshots
+through mutation, closure and generic selection, normal view-bearing records,
+and refusals for region-born roots and unauthenticated qualified children. The
+two normal-caller/opt-defined-type cases in the same run are deferred evidence,
+not normal-mode completion credit. This establishes a bounded row N slice;
+broader aggregate views and task-resource disposition remain open.
+
 This milestone does not close the full RFC. Rows E, G, H, K, L, and P retain
 their normal-mode safety obligations; wider proofs and opt-dependent parts are
 deferred. Rows I and J retain their existing evidence but their opt and
