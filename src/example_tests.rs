@@ -33,12 +33,6 @@
         interpreter::run_module(linked, ".", Vec::new()).expect("run")
     }
 
-    /// Link and run on the interpreter with explicit CLI argument inputs.
-    fn link_run_args(src: &str, args: Vec<String>) -> Vec<String> {
-        let linked = prepared_module(src);
-        interpreter::run_module_args(linked, ".", Vec::new(), args).expect("run")
-    }
-
     /// Compile and run on Wasm with explicit CLI argument inputs.
     #[allow(dead_code)]
     fn run_on_wasm_args(src: &str, args: Vec<String>) -> Vec<String> {

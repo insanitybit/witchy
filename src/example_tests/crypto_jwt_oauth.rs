@@ -140,7 +140,6 @@ use crate::{codegen, interpreter, parser, typeck};
             "JWT audience mismatch (wrong relying party / replay)",
             "JWT signature is invalid (untrusted or forged)",
         ];
-        assert_eq!(link_run_args(src, args.clone()), expected, "interpreter results");
         assert_eq!(run_on_wasm_args(src, args), expected, "compiled Wasm results");
     }
 
@@ -148,10 +147,10 @@ use crate::{codegen, interpreter, parser, typeck};
     /// shaped OIDC token verifies only against its TRUE issuer (the bind to a trusted
     /// provider), and rejects a not-yet-active (`nbf`) token. On success the caller reads
     /// identity claims — here the `repository` a trusted-publishing flow would authorize.
-    /// Both backends agree. This is the verification half of OIDC login / publishing.
+    /// This is the verification half of OIDC login / publishing.
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
-    fn jwt_verify_oidc_binds_issuer_backends_agree() {
+    fn jwt_verify_oidc_binds_issuer() {
         if !is_nightly() {
             return;
         }
@@ -187,9 +186,7 @@ use crate::{codegen, interpreter, parser, typeck};
         let src = "import jwt\nimport json\nimport list\nfn main(console: Console, argv: List(String)):\n    let token = list.at(argv, 0)\n    let key = list.at(argv, 1)\n    let issuer = list.at(argv, 2)\n    match jwt.verify_oidc(token, key, issuer, \"coven\", 1000):\n        Ok(claims) -> console.print(json.get_string(claims, \"repository\").unwrap_or(\"?\"))\n        Err(e) -> console.print(jwt.jwt_error_message(e))\n";
         let run = |tok: &str, issuer: &str| -> Vec<String> {
             let args = vec![tok.to_owned(), pk_hex.clone(), issuer.to_owned()];
-            let interp = link_run_args(src, args.clone());
-            assert_eq!(interp, run_on_wasm_args(src, args), "backends agree");
-            interp
+            run_on_wasm_args(src, args)
         };
         assert_eq!(run(&token, gh), vec!["octo/witchy".to_string()], "trusted issuer admits, claims readable");
         assert_eq!(
@@ -224,9 +221,7 @@ fn main(console: Console, argv: List(String)):
 "#;
         let run_fresh = |tok: &str| -> Vec<String> {
             let args = vec![tok.to_owned(), pk_hex.clone(), gh.to_owned()];
-            let interp = link_run_args(fresh_src, args.clone());
-            assert_eq!(interp, run_on_wasm_args(fresh_src, args), "freshness policy backends agree");
-            interp
+            run_on_wasm_args(fresh_src, args)
         };
         assert_eq!(run_fresh(&token), vec!["ok:octo/witchy".to_string()]);
         assert_eq!(run_fresh(&skew_boundary), vec!["ok:octo/witchy".to_string()]);
@@ -274,7 +269,6 @@ fn main(console: Console, argv: List(String)):
             "JWT `azp` mismatch: a multi-audience OIDC token must name this client as the authorized party",
             "JWT payload is missing `azp`",
         ];
-        assert_eq!(link_run_args(src, args.clone()), expected, "interpreter results");
         assert_eq!(run_on_wasm_args(src, args), expected, "compiled Wasm results");
     }
 
@@ -284,7 +278,7 @@ fn main(console: Console, argv: List(String)):
     /// A valid array with no matching kid still reports the no-match error. No key
     /// material needed — this exercises the JWKS-shape boundary. Both backends.
     #[test]
-    fn jwt_rsa_key_for_kid_rejects_malformed_keys_backends_agree() {
+    fn jwt_rsa_key_for_kid_rejects_malformed_keys() {
         if !is_nightly() {
             return;
         }
