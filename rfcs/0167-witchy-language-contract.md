@@ -4,7 +4,7 @@ title: "Witchy syntax and semantics: one language contract"
 status: accepted
 created: 2026-09-16
 superseded-by:
-tracking: "Accepted language contract; not a compiler-completion claim. Tooling milestone and later safety verification are tracked in 0167-acceptance-ledger.md. Optimization expansion is deferred."
+tracking: "Normal-mode language contract is the current delivery target; opt mode and its dependent features are deferred. Milestones and evidence are tracked in 0167-acceptance-ledger.md."
 ---
 
 # RFC-0167: Witchy syntax and semantics
@@ -12,8 +12,9 @@ tracking: "Accepted language contract; not a compiler-completion claim. Tooling 
 ## Decision and authority
 
 This is the single target language contract. It selects the surviving syntax,
-including the ownership rules and normal/opt boundary. There are no alternative
-spellings or unspecified choices to resolve by consulting retired proposals.
+including the ownership rules and the deferred normal/opt boundary. There are
+no alternative spellings or unspecified choices to resolve by consulting retired
+proposals.
 `accepted` fixes these source choices as the target for implementation. It does
 not mean the compiler implements them; the acceptance ledger remains the sole
 closeout record.
@@ -32,6 +33,31 @@ or SafeWIR verification.
 
 Examples below specify the target contract. They are fragments, not claims that
 today's compiler accepts or executes the entire feature matrix.
+
+### Delivery decision, 2026-09-29: defer opt mode
+
+The current delivery target is the normal-mode language, canonical compiler,
+runtime, and tooling. `mode opt` is a deferred source contract, not a required
+route to fast code. Both modes use the same optimization backend; normal-mode
+code may use checked ownership facts, in-place updates, representation changes,
+and other legal optimizations. A performance improvement cannot depend on a
+file being rewritten into opt mode unless a separately measured workload shows
+that the opt contract itself is necessary.
+
+Defer new opt-only proof rules, no-hidden-copy diagnostics, opt callback and task
+provenance, opt-specific generation and standard-library coverage, and the
+normal-to-opt and opt-defined-type acceptance matrices. The selected rules in
+this document remain the design for a later opt-mode milestone, not completion
+criteria for the current normal-mode release. Existing implemented opt paths
+may remain available, but are not evidence that the deferred contract is
+complete; unsupported paths must refuse rather than silently weaken ownership
+or authority. Do not remove checks that protect normal-mode value semantics,
+resource disposition, capability boundaries, or admitted Wasm safety.
+
+`unique`, `own`, `var`, immutable views, copy-on-write, regions, `frozen`, and
+resource obligations remain in scope where normal-mode programs use them.
+Their value and safety rules are independent of opt mode. The acceptance ledger
+separates the current milestone from deferred opt and wider proof work.
 
 ### Adoption review record
 
@@ -63,10 +89,9 @@ contracts. The new accepted/rejected examples specify the target; they are not
 claims of current compiler support or new acceptance evidence. Rows G, I, J, K,
 and P must account for these cases before their full contracts are closed.
 
-The usability target is Go-like ease for ordinary normal-mode data programming
-and at most Rust-like ownership friction for explicitly selected opt code.
-These are usability goals, not adoption of either language's semantics. Normal
-mode manages retention, copying, and write-back for copyable data automatically.
+The usability target is straightforward normal-mode data programming and bounded
+ownership friction for explicitly selected opt code. Normal mode manages
+retention, copying, and write-back for copyable data automatically.
 Opt mode requires proofs or explicit operations where the declared contract
 forbids implicit ownership repair. Both modes preserve the same values, effects,
 evaluation order, and resource obligations whenever both accept a program.
@@ -101,9 +126,10 @@ to admitted Wasm, and runs that Wasm. There is no reference interpreter in the
 active build.
 
 Acceptance uses checked source compiled through validated canonical SafeWIR to
-unoptimized admitted Wasm and executed by the production runtime. Focused tests
-assert the intended values, diagnostics, and effects for representative normal,
-opt, and cross-mode programs. Ownership and authority changes also need focused
+unoptimized admitted Wasm and executed by the production runtime. Current
+milestone tests assert the intended values, diagnostics, and effects for
+representative normal-mode programs. Opt and cross-mode programs belong to the
+deferred opt milestone. Ownership and authority changes also need focused
 checks at the boundary that grants or rejects them. An independently implemented
 execution oracle, a canonical SafeWIR interpreter, and a separately derived
 expectation for every supported case are not acceptance gates. Optimized Wasm is
@@ -119,9 +145,10 @@ syntax. The source tree walker is retired after its remaining compiler services
 move to the canonical route or runtime-neutral code. The whole book, example,
 fixture, and external-consumer corpus is not a closeout gate for this milestone.
 
-The selected ownership, view, resource, and normal/opt rules remain the language
-contract. Their wider memory-safety and optimization-readiness matrices are
-verified after compiler tooling is ready. This staging grants no permissive
+The selected ownership, view, and resource rules remain the normal-mode language
+contract. The normal/opt boundary and its dependent proof matrix are deferred.
+Wider memory-safety and optimization-readiness matrices are verified after
+compiler tooling is ready. This staging grants no permissive
 fallback: an unproved ownership, disposition, or authority path must refuse
 until implemented and checked. Passing the tooling milestone does not mark the
 full RFC implementation complete.
@@ -552,6 +579,9 @@ immutable views from mutation/write-back and rewrite the latter to `var`; no
 historical mutable-reference spelling may silently become a view.
 
 ## 6. Normal and opt interoperation
+
+This section specifies the deferred opt-mode design. Its cross-mode examples
+are not acceptance gates for the current normal-mode compiler milestone.
 
 `mode opt` is a module source contract, not an optimizer switch. Immutable view
 syntax has the same meaning in both modes. Opt mode additionally rejects missing

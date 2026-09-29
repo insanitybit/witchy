@@ -1,8 +1,9 @@
 # RFC-0167 implementation and adoption ledger
 
 Baseline: `418a69b9ca75ae70fae5e96f797057e161f93aeb` (2026-09-16).
-The RFC is the accepted target design, not an implementation closeout.
-All rows below are open until their exact current production paths are tested.
+The RFC records the normal-mode delivery target and the deferred opt-mode design,
+not an implementation closeout. Rows below retain their evidence and historical
+status; a deferred row is not a current milestone gate or a completed contract.
 Existing tests and historical reports remain useful evidence inputs, not blanket
 proof of this new contract. Optimization expansion is outside this cut;
 preserving the facts and representation freedom it requires is inside it.
@@ -17,17 +18,34 @@ every case is not required.
 
 ## Compiler-tooling milestone
 
-The first closeout milestone is a usable canonical compiler and its tooling.
+The first closeout milestone is a usable canonical normal-mode compiler and its
+tooling. The 2026-09-29 delivery decision defers `mode opt` and its dependent
+features. Do not add opt-only work to this milestone to fill a matrix cell.
+Existing opt implementations and evidence remain recorded, but they neither
+block this milestone nor count as complete opt-mode support.
+
+Deferred work includes opt no-hidden-copy proofs and diagnostics, opt callback
+and task provenance, opt-specific generated code and standard-library coverage,
+normal-to-opt calls, normal use of opt-defined types, and cross-mode ABI and
+acceptance matrices. Safety checks already required by normal-mode ownership,
+resource, capability, and Wasm admission rules remain in force. Unsupported
+opt paths must refuse instead of silently falling back to weaker semantics.
+Normal-mode ownership facts, `unique`, `own`, `var`, views, copy-on-write,
+regions, `frozen`, and resource disposition remain in scope where normal code
+uses them. Optimization and performance evidence must be gathered on matched
+normal-mode workloads; opt mode is not an optimizer switch.
+
 For this milestone, row M requires typed, authenticated syntax construction for
 the public generation forms exercised by `type_info(T)`, the reflected Builder,
 production derives, and representative programs. Unimplemented constructors
 may refuse explicitly; source strings and forged syntax may not bypass the
 typed boundary. Migrating every external consumer or syntax form is later work.
 
-Row N requires representative normal, opt, normal-to-opt, and normal use of
-opt-defined types to compile and run on admitted unoptimized Wasm with asserted
-behavior and focused safety-boundary refusals. It does not require an
-independent oracle, universal cross-engine parity, or a separate evidence
+Row N requires representative normal-mode programs to compile and run on
+admitted unoptimized Wasm with asserted behavior and focused safety-boundary
+refusals. Opt, normal-to-opt, and normal use of opt-defined types are deferred.
+This milestone does not require an independent oracle, universal cross-engine
+parity, or a separate evidence
 matrix for every supported construct. Wider memory-safety verification remains
 open after this milestone.
 
@@ -39,7 +57,10 @@ build, linker, and tooling services off the source tree walker and retire it.
 Do not add new dependencies on that walker while removing it.
 
 This milestone does not close the full RFC. Rows E, G, H, K, L, and P retain
-their selected semantic and proof obligations for subsequent verification.
+their normal-mode safety obligations; wider proofs and opt-dependent parts are
+deferred. Rows I and J retain their existing evidence but their opt and
+cross-mode matrices are outside the current milestone.
+
 Until a path has a valid implementation and proof, its compiler behavior must
 refuse rather than silently weaken ownership, resource disposition, or
 authority rules. Historical evidence below records what was tested; it does
@@ -52,7 +73,7 @@ review/adopt contract
   -> syntax + migration + tooling
   -> ownership/view/callable type contracts
        -> fact-preserving summaries/IR; broad optimization evidence later
-       -> normal/opt entry ABI -> canonical lowering + runtime
+       -> normal entry ABI -> canonical lowering + runtime
        -> validated canonical SafeWIR
             -> admitted unoptimized Wasm production runtime
             -> focused safety-boundary checks
@@ -61,10 +82,12 @@ review/adopt contract
        -> preserve comptime/build temporarily
        -> extract linker/tooling support
        -> explicit type lookup + typed record/impl emission
-            -> generated builder witness across modes
+            -> generated builder witness in normal mode
        -> migrate playground to compiled Wasm
   -> installed check/fmt/compile/run + needed std -> tooling milestone
-  -> wider safety and corpus verification -> full implementation closeout
+  -> wider normal-mode safety and corpus verification
+  -> deferred opt-mode and cross-mode contract verification
+  -> full implementation closeout
 ```
 
 Syntax/tooling, test specification, and frontend contract work can proceed in
