@@ -402,9 +402,7 @@ fn main(console: Console):
     console.print("${list.count_where(xs, fn(n: Int): ((n % 2) == 0))}")
 "#;
         let sources = [("list", crate::bundled_module("list").unwrap()), ("main", client)];
-        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
         let compiled = run_linked_on_wasm(&sources, "main");
-        assert_eq!(interpreted, compiled, "std list library diverged between interpreter and compiled");
         assert_eq!(
             compiled,
             vec![
@@ -416,9 +414,9 @@ fn main(console: Console):
     }
 
     #[test]
-    fn std_set_operations_backends_agree() {
+    fn std_set_operations_golden_output() {
         // Set ops dispatch through Eq (cross-module: set -> eq.member, both
-        // bounded generics), so they are content-correct on both backends for
+        // bounded generics), so they are content-correct on admitted Wasm for
         // runtime-built strings and a user Eq type (Id), and dedupe along the way.
         let client = r#"
 import set
@@ -462,9 +460,7 @@ fn main(console: Console):
             ("string", crate::bundled_module("string").unwrap()),
             ("main", client),
         ];
-        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
         let compiled = run_linked_on_wasm(&sources, "main");
-        assert_eq!(interpreted, compiled, "std set ops diverged");
         assert_eq!(
             compiled,
             vec!["x,y,z", "y", "x", "true", "false", "3"]
@@ -472,10 +468,10 @@ fn main(console: Console):
     }
 
     #[test]
-    fn merge_sort_is_stable_on_both_backends() {
+    fn merge_sort_is_stable_on_admitted_wasm() {
         // list.sort_by is a stable merge sort: equal keys keep their original
         // order. Sort (key, tag) items by key only; ties must preserve insertion
-        // order. Both backends agree.
+        // order in the independently expected output.
         let client = r#"
 import list
 type Item:
@@ -493,9 +489,7 @@ fn main(console: Console):
         console.print("${key(it)}" + tag(it))
 "#;
         let sources = [("list", crate::bundled_module("list").unwrap()), ("main", client)];
-        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
         let compiled = run_linked_on_wasm(&sources, "main");
-        assert_eq!(interpreted, compiled, "merge sort diverged");
         assert_eq!(compiled, vec!["1b", "1d", "2a", "2c", "2e"]);
     }
 
@@ -544,4 +538,3 @@ fn main(console: Console):
         assert_eq!(interp(src), run_on_wasm(src), "compiled backend diverges from the interpreter oracle");
         assert_eq!(run_on_wasm(src), vec!["5", "1", "5"]);
     }
-

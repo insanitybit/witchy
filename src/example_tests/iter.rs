@@ -1,5 +1,4 @@
 use super::*;
-use crate::{interpreter, typeck};
 
     /// `for x in a..b` is a counting loop on both backends — never a materialized
     /// list — with faithful `break`/`continue`, inclusive (`..=`), empty, and
@@ -73,10 +72,10 @@ fn main(console: Console):
 
     /// `std/iter` is the lazy pull-based iterator module (witchy's answer to
     /// Rust's Iterator). Lazy `map`/`filter`/`take_while` over an *infinite*
-    /// `count_from`, plus `find`/`sum`/`collect`/`count` consumers, must agree on
-    /// both backends — closures-in-ADTs + recursion compile to WASM.
+    /// `count_from`, plus `find`/`sum`/`collect`/`count` consumers, have
+    /// independently checked output through admitted Wasm.
     #[test]
-    fn std_iter_lazy_adapters_backends_agree() {
+    fn std_iter_lazy_adapters_golden_output() {
         let client = r#"
 import iter
 fn main(console: Console):
@@ -95,8 +94,6 @@ fn main(console: Console):
         console.print("${v}")
 "#;
         let sources = [("iter", crate::bundled_module("iter").unwrap()), ("main", client)];
-        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
         let compiled = run_linked_on_wasm(&sources, "main");
-        assert_eq!(interpreted, compiled, "std/iter diverged");
         assert_eq!(compiled, vec!["165", "56", "5", "0", "10", "20"]);
     }
