@@ -159,6 +159,14 @@ would weaken the resource rule. The spawned-handle positive witness is outside
 this milestone under the RFC's deferred lifecycle decision. Its refusal remains
 a required normal-mode safety check, and row K remains partial.
 
+`rfc0129_channel_contract` now checks that the older spawned-channel example
+refuses at a live must-consume `producer` handle crossing `await` without a
+proved cancellation disposition. A separate typed channel send/receive runs
+on admitted Wasm and prints the independently expected `channel Some(7)`.
+These two checks preserve the normal-mode safety boundary and a data-only
+positive case without relying on source-interpreter parity. They do not prove
+the deferred spawned-handle lifecycle.
+
 This milestone does not close the full RFC. Rows E, G, H, K, L, and P retain
 their normal-mode safety obligations; wider proofs and opt-dependent parts are
 deferred. Rows I and J retain their existing evidence but their opt and

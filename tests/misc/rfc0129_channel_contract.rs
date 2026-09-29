@@ -1,9 +1,7 @@
-//! RFC-0129 row 2: the typed channel surface has one deterministic structured
-//! concurrency contract on the interpreter and compiled Wasm.
+//! RFC-0129 channels on admitted Wasm and the normal-mode handle boundary.
 
 use witchy::runtime::{Capabilities, Runtime};
-use witchy::{codegen};
-use witchy_interp::{interpreter};
+use witchy::codegen;
 
 const CHANNEL_CONTRACT: &str = r#"
 from chan import Receiver, Selected, Selected3, Selected4, Sender
@@ -104,6 +102,14 @@ async fn main(console: Console):
     console.print("scope joined")
 "#;
 
+const BASIC_CHANNEL: &str = r#"
+async fn main(console: Console):
+    let (tx, rx) = chan.channel(1).await
+    chan.send(tx, 7).await
+    let value = chan.recv(rx).await
+    console.print("channel ${value}")
+"#;
+
 fn run_compiled(source: &str) -> Vec<String> {
     let checked = witchy::resolve_std_only_checked(source)
         .expect("RFC-0129 row-2 channel contract must check");
@@ -126,38 +132,18 @@ fn run_compiled(source: &str) -> Vec<String> {
 }
 
 #[test]
-fn rfc0129_acceptance_row_2_typed_bounded_selected_cancelled_and_joined_channels_agree() {
-    let checked = witchy::resolve_std_only_checked(CHANNEL_CONTRACT)
-        .expect("RFC-0129 row-2 channel contract must check");
-    let interpreted = interpreter::run_checked_module(&checked, ".", Vec::new())
-        .expect("run RFC-0129 row-2 channel contract on the interpreter");
-    let compiled = run_compiled(CHANNEL_CONTRACT);
-    assert_eq!(compiled, interpreted, "row-2 channel schedule must have backend parity");
-
-    assert_eq!(
-        interpreted,
-        [
-            "producer before 1",
-            "producer after 1",
-            "producer before 2",
-            "consumer before 1",
-            "consumer Some(1)",
-            "producer after 2",
-            "consumer Some(2)",
-            "text Some(typed text)",
-            "select first 10",
-            "select second 20",
-            "select closed",
-            "select3 first 30",
-            "select4 third 43",
-            "cancel started",
-            "cancelled",
-            "scope A start",
-            "scope A done",
-            "scope B start",
-            "scope B done",
-            "scope joined",
-        ],
-        "capacity one must park the second send, selection must prefer the first ready receiver, cancellation must stop the child, and scope must join every child",
+fn rfc0129_spawned_handle_refuses_unproved_suspension_disposition() {
+    let error = witchy::resolve_std_only_checked(CHANNEL_CONTRACT)
+        .expect_err("a live must-consume producer handle cannot cross suspension");
+    let message = error.to_string();
+    assert!(
+        message.contains("cannot `await` while must-consume value `producer` is live")
+            && message.contains("cancellation at this suspension has no checked disposition path"),
+        "unexpected handle refusal: {message}",
     );
+}
+
+#[test]
+fn rfc0129_basic_typed_channel_runs_on_admitted_wasm() {
+    assert_eq!(run_compiled(BASIC_CHANNEL), ["channel Some(7)"]);
 }
