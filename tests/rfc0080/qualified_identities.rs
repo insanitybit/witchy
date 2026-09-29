@@ -1,7 +1,7 @@
 //! RFC-0080 compiler-owned identities for module-qualified type and pattern builders.
 
 use witchy::{parser, typeck};
-use witchy_interp::{interpreter, pipeline};
+use witchy_interp::pipeline;
 
 const DEFINITION_SUPPORT: &str = r#"
 type Wrapped(a):
@@ -101,10 +101,42 @@ fn qualified_builder_origins_resolve_on_both_backends() {
         "42".to_string(),
         "${not_in_scope}".to_string(),
     ];
-    assert_eq!(
-        interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interpret"),
-        expected,
-    );
+    let checked = witchy_types::pipeline::link_checked_from_source_bundle(
+        [
+            ("definition_support".into(), DEFINITION_SUPPORT.as_bytes().to_vec()),
+            ("consumer_support".into(), CONSUMER_SUPPORT.as_bytes().to_vec()),
+            ("tag_library".into(), TAG_LIBRARY.as_bytes().to_vec()),
+            ("main".into(), CONSUMER.as_bytes().to_vec()),
+        ].into(),
+        "main",
+        witchy_interp::comptime::EXPANDER,
+    ).expect("authenticate and check qualified builder program");
+    let artifact = witchy::codegen::compile_checked_module_artifact(&checked)
+        .expect_lowered("admit qualified builder program");
+    let mut runtime = witchy::runtime::Runtime::batch().expect("runtime");
+    let mut actor = runtime.spawn_admitted(
+        &artifact,
+        witchy::runtime::Capabilities {
+            print: true,
+            quiet: true,
+            ..witchy::runtime::Capabilities::none()
+        },
+        64,
+    ).expect("spawn admitted qualified builder program");
+    actor.run().expect("run admitted qualified builder program");
+    assert_eq!(actor.output(), expected);
+    assert_eq!(actor.canonical_heap_leaks().expect("heap audit"), Some(0));
+}
 
-    super::assert_compiled_output(&linked, &expected, "compile qualified identity program", 64);
+#[test]
+fn ordinary_qualified_type_still_requires_import() {
+    let error = witchy_types::pipeline::link_checked_from_source_bundle(
+        vec![
+            ("definition_support".into(), DEFINITION_SUPPORT.as_bytes().to_vec()),
+            ("main".into(), b"fn main(value: definition_support.Wrapped(Int)) -> Int:\n    0\n".to_vec()),
+        ],
+        "main",
+        witchy_interp::comptime::EXPANDER,
+    ).expect_err("an ordinary qualified type has no definition-site authority");
+    assert!(error.to_string().contains("module `definition_support` is not imported"), "{error}");
 }

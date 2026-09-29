@@ -102,6 +102,7 @@ pub struct ResolvedSource {
     modules: Vec<(String, Module)>,
     declarations: crate::type_resolve::ResolvedDeclarations,
     method_owners: crate::type_resolve::MethodOwnerCandidates,
+    definition_site_type_imports: std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
     entry: String,
     mode: crate::linker::LinkMode,
     allow_ast_fold: bool,
@@ -118,6 +119,22 @@ pub(crate) struct SemanticallyCheckedSource {
 }
 
 impl ResolvedSource {
+    // Only compiler-owned type markers validated by the source namespace pass
+    // contribute these imports. Projection imports are internal: the original
+    // source still has to pass its ordinary explicit-import checks first.
+    fn add_definition_site_type_imports(&self, modules: &mut [(String, Module)]) {
+        for (name, module) in modules {
+            if let Some(authorized) = self.definition_site_type_imports.get(name) {
+                for imported in authorized {
+                    if !module.imports.contains(imported) {
+                        module.imports.push(imported.clone());
+                        module.import_lines.push(0);
+                    }
+                }
+            }
+        }
+    }
+
     pub fn modules(&self) -> &[(String, Module)] {
         &self.modules
     }
@@ -182,6 +199,7 @@ impl ResolvedSource {
         }
 
         let mut modules = self.modules.clone();
+        self.add_definition_site_type_imports(&mut modules);
         for (name, module) in &mut modules {
             let prefix = format!("{name}.");
             for item in &mut module.items {
@@ -293,6 +311,7 @@ impl ResolvedSource {
         }
 
         let mut modules = self.modules.clone();
+        self.add_definition_site_type_imports(&mut modules);
         // The parser represents `for await value in receiver` with this
         // compiler-private marker until async lowering consumes it. The typed
         // projection intentionally stops before that lowering, so give its
@@ -384,9 +403,18 @@ impl SemanticallyCheckedSource {
         Vec<(String, SourceCheckedModule)>,
         crate::type_resolve::ResolvedDeclarations,
     ) {
-        let modules = self
-            .resolved
-            .modules
+        let mut resolved_modules = self.resolved.modules;
+        for (name, module) in &mut resolved_modules {
+            if let Some(authorized) = self.resolved.definition_site_type_imports.get(name) {
+                for imported in authorized {
+                    if !module.imports.contains(imported) {
+                        module.imports.push(imported.clone());
+                        module.import_lines.push(0);
+                    }
+                }
+            }
+        }
+        let modules = resolved_modules
             .into_iter()
             .map(|(name, module)| (name, SourceCheckedModule { module }))
             .collect();
@@ -518,6 +546,7 @@ pub(crate) fn resolve_linked_source(
         modules,
         declarations: namespace.declarations,
         method_owners: namespace.method_owners,
+        definition_site_type_imports: namespace.definition_site_type_imports,
         entry: entry.to_string(),
         mode,
         allow_ast_fold,

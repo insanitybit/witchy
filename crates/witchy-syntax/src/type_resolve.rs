@@ -306,6 +306,7 @@ pub struct ResolvedDeclarations {
 pub(crate) struct ResolvedSourceNamespace {
     pub declarations: ResolvedDeclarations,
     pub method_owners: MethodOwnerCandidates,
+    pub definition_site_type_imports: std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -609,6 +610,7 @@ struct Scope<'a> {
     imports: &'a [String],
     world: &'a World,
     definition_site: bool,
+    definition_site_type_imports: std::cell::RefCell<std::collections::BTreeSet<String>>,
     /// bare type name -> canonical (`home.T` or `srcmod.T`).
     type_map: HashMap<String, String>,
     /// bare constructor name -> canonical (`home.C` or `srcmod.C`).
@@ -674,6 +676,7 @@ pub(crate) fn resolve_source_namespace(
     validate_link_set_imports(modules)?;
     let declarations = ResolvedDeclarations::from_modules(modules);
     let world = World::build(modules);
+    let mut definition_site_type_imports = std::collections::BTreeMap::new();
     // Split the borrow: build each scope from `world`, then rewrite that module.
     #[allow(clippy::needless_range_loop)] // index needed: read modules[idx] then mutate modules[idx].1
     for idx in 0..modules.len() {
@@ -689,9 +692,13 @@ pub(crate) fn resolve_source_namespace(
             &world,
         )?;
         scope.rewrite_module(&mut modules[idx].1)?;
+        let authorized = scope.definition_site_type_imports.into_inner();
+        if !authorized.is_empty() {
+            definition_site_type_imports.insert(home, authorized);
+        }
     }
     let method_owners = MethodOwnerCandidates::from_modules(modules);
-    Ok(ResolvedSourceNamespace { declarations, method_owners })
+    Ok(ResolvedSourceNamespace { declarations, method_owners, definition_site_type_imports })
 }
 
 fn validate_link_set_imports(modules: &[(String, Module)]) -> Result<(), LinkError> {
@@ -907,6 +914,7 @@ impl<'a> Scope<'a> {
             imports,
             world,
             definition_site: false,
+            definition_site_type_imports: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             type_map,
             ctor_map,
             trait_map,
@@ -938,6 +946,7 @@ impl<'a> Scope<'a> {
                     "compiler-owned definition-site type targets unknown type `{target}`"
                 ));
             }
+            self.definition_site_type_imports.borrow_mut().insert(module.to_string());
             return Ok(target.to_string());
         }
         let resolved = self.resolve_type_name_unmarked(name)?;
