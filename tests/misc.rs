@@ -133,6 +133,8 @@ mod rfc0167_try_int_view_payload;
 mod rfc0167_var_view_parameters;
 #[path = "misc/rfc0167_view_locals_across_await.rs"]
 mod rfc0167_view_locals_across_await;
+#[path = "misc/rfc0167_write_only_var_after_await.rs"]
+mod rfc0167_write_only_var_after_await;
 #[path = "misc/rfc0167_await_in_nested_expressions.rs"]
 mod rfc0167_await_in_nested_expressions;
 #[path = "misc/rfc0167_opt_async_factory_relay.rs"]
