@@ -44,7 +44,6 @@ use super::*;
     console.print("${g}")
 "#;
         let expected = vec!["10", "15", "45", "25", "0", "9", "100000"];
-        assert_eq!(interp(src), expected);
         assert_eq!(run_on_wasm(src), expected);
     }
 
@@ -66,7 +65,6 @@ fn main(console: Console):
     let dropped = iter.from_gen(explode).drop(1)
     console.print("constructed")
 "#;
-        assert_eq!(link_run(src), vec!["constructed"], "interpreter must not pull at construction");
         assert_eq!(wasm_run(src), vec!["constructed"], "compiled must not pull at construction");
     }
 

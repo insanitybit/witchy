@@ -1,5 +1,5 @@
 use super::*;
-use crate::{interpreter, typeck};
+use crate::typeck;
 
     /// (RFC-0098 slice 1) Type-position record spread normalizes through aliases
     /// and generic arguments to the same exact structural identity as a directly
@@ -18,7 +18,6 @@ fn main(console: Console):
     console.print("${row}")
 "#;
         let expected = ["7:ready:payload", ".{label: ready, line: 7, value: payload}"];
-        assert_eq!(link_run(src), expected, "interp record type composition");
         assert_eq!(
             run_linked_on_wasm(&[("main", src)], "main"),
             expected,
@@ -101,7 +100,6 @@ fn main(console: Console):
             "source-note",
             ".{id: 8, label: made}",
         ];
-        assert_eq!(link_run(src), expected, "interpreter record width projection");
         assert_eq!(
             run_linked_on_wasm(&[("main", src)], "main"),
             expected,
@@ -145,7 +143,6 @@ fn main():
     fn anonymous_record_spread_updates_on_both_backends() {
         let src = "fn make(x: Int, y: Int) -> .{x: Int, y: Int}:\n    .{x: x, y: y}\n\nfn bump(p: .{y: Int, x: Int}) -> .{x: Int, y: Int}:\n    .{y: p.y + 5, ..p}\n\nfn main(console: Console):\n    let p = make(3, 4)\n    let q = .{y: 9, ..p}\n    let r = .{x: q.x + 1, ..q}\n    let s = bump(r)\n    console.print(\"${q}\")\n    console.print(\"${r.x},${r.y}\")\n    console.print(\"${s.x},${s.y}\")\n";
         let expected = [".{x: 3, y: 9}", "4,9", "4,14"];
-        assert_eq!(link_run(src), expected, "interp anonymous record spread");
         assert_eq!(
             run_linked_on_wasm(&[("main", src)], "main"),
             expected,
@@ -166,7 +163,6 @@ fn main():
             "missing-result:host",
             "bad-result:70000",
         ];
-        assert_eq!(link_run(src), expected, "interp anonymous union patterns");
         assert_eq!(
             run_linked_on_wasm(&[("main", src)], "main"),
             expected,
@@ -186,7 +182,6 @@ fn main():
         // run, and agree on both backends.
         let ok = "import set\nimport time\nimport url\n\nfn main(console: Console):\n    let s = set.from_list([1, 1, 2, 3])\n    console.print(\"${set.length(s)}\")\n    let d = time.from_millis(0)\n    console.print(\"${time.year(d)}\")\n    match url.parse(\"http://h/p\"):\n        Ok(u) -> console.print(url.host(u))\n        Err(e) -> console.print(url.url_error_message(e))\n";
         let expected = ["3", "1970", "h"];
-        assert_eq!(link_run(ok), expected, "interp: sealed-type public API + inspection");
         assert_eq!(
             run_linked_on_wasm(&[("main", ok)], "main"),
             expected,

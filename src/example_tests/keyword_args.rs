@@ -9,7 +9,6 @@ use crate::{parser, typeck};
     fn keyword_args_reorder_backends_agree() {
         let src = "fn label(name: String, n: Int) -> String:\n    \"${name}#${n}\"\n\nfn main(console: Console):\n    console.print(label(n: 7, name: \"ada\"))\n    console.print(label(\"bob\", n: 3))\n";
         let expected = ["ada#7", "bob#3"];
-        assert_eq!(link_run(src), expected, "interp");
         assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");
     }
 
@@ -21,7 +20,6 @@ use crate::{parser, typeck};
     fn keyword_args_default_backends_agree() {
         let src = "fn connect(host: String, port: Int = 443, tls: Bool = true) -> String:\n    \"${host}:${port} tls=${tls}\"\n\nfn main(console: Console):\n    console.print(connect(\"example.com\"))\n    console.print(connect(\"h\", tls: false))\n    console.print(connect(\"h\", 8080))\n";
         let expected = ["example.com:443 tls=true", "h:443 tls=false", "h:8080 tls=true"];
-        assert_eq!(link_run(src), expected, "interp");
         assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");
     }
 

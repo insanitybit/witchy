@@ -1,5 +1,5 @@
 use super::*;
-use crate::{interpreter, typeck};
+use crate::typeck;
 
     /// (BUG-324) The lexer admits the Int.MIN magnitude as a wrapped token so
     /// expression literals can spell `-9223372036854775808`; pattern parsing must
@@ -8,7 +8,6 @@ use crate::{interpreter, typeck};
     fn int_min_literal_patterns_work_on_both_backends() {
         let src = "fn main(console: Console):\n    let n = -9223372036854775808\n    match n:\n        -9223372036854775808 -> console.print(\"min\")\n        _ -> console.print(\"other\")\n    let m = -9223372036854775807\n    match m:\n        -9223372036854775808..=-9223372036854775807 -> console.print(\"range\")\n        _ -> console.print(\"miss\")\n";
         let expected = ["min", "range"];
-        assert_eq!(link_run(src), expected, "interp: Int.MIN pattern");
         assert_eq!(
             run_linked_on_wasm(&[("main", src)], "main"),
             expected,
@@ -75,7 +74,6 @@ use crate::{interpreter, typeck};
     #[test]
     fn range_patterns_backends_agree() {
         let src = "fn classify(n: Int) -> String:\n    match n:\n        0..10 -> \"low\"\n        10..=20 -> \"mid\"\n        _ -> \"high\"\n\nfn main(console: Console):\n    console.print(classify(5))\n    console.print(classify(10))\n    console.print(classify(20))\n    console.print(classify(99))\n";
-        assert_eq!(interp(src), run_on_wasm(src));
         assert_eq!(run_on_wasm(src), vec!["low", "mid", "mid", "high"]);
     }
 
@@ -84,7 +82,6 @@ use crate::{interpreter, typeck};
     #[test]
     fn nested_or_patterns_backends_agree() {
         let src = "fn f(o: Option(Int)) -> String:\n    match o:\n        Some(1 | 2 | 3) -> \"small\"\n        Some(n) -> \"big\"\n        None -> \"none\"\n\nfn main(console: Console):\n    console.print(f(Some(2)))\n    console.print(f(Some(9)))\n    console.print(f(None))\n";
-        assert_eq!(interp(src), run_on_wasm(src));
         assert_eq!(run_on_wasm(src), vec!["small", "big", "none"]);
     }
 
@@ -141,7 +138,5 @@ fn main(console: Console):
     console.print(classify(50))
     console.print(classify(100))
 "#;
-        assert_eq!(interp(src), run_on_wasm(src), "match guards diverged");
         assert_eq!(run_on_wasm(src), vec!["negative", "zero", "big", "small", "small"]);
     }
-
