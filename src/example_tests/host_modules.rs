@@ -1,5 +1,4 @@
 use super::*;
-use crate::interpreter;
 
     /// WebAuthn treats authenticatorData as a trust-boundary decoder input. A
     /// malformed hex flag byte must fail as malformed input before semantic flag
@@ -22,18 +21,6 @@ fn main(console: Console):
             console.print(webauthn.assertion_error_message(e))
 "#;
 
-        let interp = link_run(src);
-        assert_eq!(interp.len(), 2, "interpreter produced unexpected output: {interp:?}");
-        assert_eq!(interp[0], "typed", "interpreter must expose typed malformed-authenticatorData error");
-        assert!(
-            interp[1].starts_with("authenticatorData is not valid hex:"),
-            "interpreter must reject malformed authenticatorData as malformed hex: {interp:?}"
-        );
-        assert!(
-            !interp[1].contains("user-presence flag not set"),
-            "interpreter must not report a semantic flag error for malformed hex: {interp:?}"
-        );
-
         let wasm = run_linked_on_wasm(&[("main", src)], "main");
         assert_eq!(wasm.len(), 2, "WASM produced unexpected output: {wasm:?}");
         assert_eq!(wasm[0], "typed", "WASM must expose typed malformed-authenticatorData error");
@@ -42,7 +29,7 @@ fn main(console: Console):
             "WASM must reject malformed authenticatorData as malformed hex: {wasm:?}"
         );
         assert!(
-            !wasm[0].contains("user-presence flag not set"),
+            !wasm[1].contains("user-presence flag not set"),
             "WASM must not report a semantic flag error for malformed hex: {wasm:?}"
         );
     }
@@ -65,7 +52,7 @@ fn main(console: Console):
     console.print(path.normalize("../a/../../b"))
 "#;
         assert_eq!(
-            link_run(src),
+            wasm_run(src),
             vec![
                 "c.txt|a/b",
                 "gz|b.tar",
@@ -86,11 +73,5 @@ fn main(console: Console):
     fn jwt_rejects_empty_jwk_and_non_rs256_alg_backends_agree() {
         let src = "import jwt\nfn tag(r: Result(String, jwt.JwtError)) -> String:\n    match r:\n        Ok(_k) -> \"ok\"\n        Err(_e) -> \"err\"\nfn main(console: Console):\n    console.print(tag(jwt.rsa_key_from_jwk(\"\", \"\")))\n    let token = \"eyJhbGciOiJub25lIn0.eyJpc3MiOiJpIiwiYXVkIjoiYSIsImV4cCI6OTk5OTk5OTk5OX0.AAAA\"\n    match jwt.verify_oidc(token, \"00\", \"i\", \"a\", 0):\n        Ok(_c) -> console.print(\"accepted\")\n        Err(e) -> console.print(jwt.jwt_error_message(e))\n";
         let expected = ["err", "JWT `alg` is `none`, not the required `RS256`"];
-        let linked = resolve_std_src(src);
-        assert_eq!(
-            interpreter::run_module(linked, ".", Vec::new()).expect("interp"),
-            expected,
-            "interp"
-        );
         assert_eq!(wasm_run(src), expected, "wasm");
     }

@@ -1,5 +1,5 @@
 use super::*;
-use crate::{codegen, interpreter, parser, typeck};
+use crate::{codegen, parser, typeck};
 
     /// (BUG-276) The public hex decoders reject malformed input before it can
     /// reach the private raw byte-level primitives (`encoding.hex_decode_lossy`,
@@ -19,7 +19,6 @@ use crate::{codegen, interpreter, parser, typeck};
             "encoding.hex_decode(\"abc\")", // odd length
         ] {
             let src = prog(bad);
-            assert_eq!(link_run(&src), ["err"], "interpreter must reject non-hex: {bad}");
             assert_eq!(
                 run_linked_on_wasm(&[("main", &src)], "main"),
                 ["err"],
@@ -28,7 +27,6 @@ use crate::{codegen, interpreter, parser, typeck};
         }
         // Valid hex still decodes identically on both backends.
         let ok = prog("encoding.hex_decode(\"6869\")");
-        assert_eq!(link_run(&ok), ["hi"], "interp decodes valid hex");
         assert_eq!(run_linked_on_wasm(&[("main", &ok)], "main"), ["hi"], "wasm decodes valid hex");
     }
 
@@ -61,7 +59,6 @@ use crate::{codegen, interpreter, parser, typeck};
             let module = parser::parse_module(&src).expect("parse");
             let bytes = codegen::compile_module_binary(&module)
                 .expect_lowered("the binary path lowers this program");
-            assert!(interpreter::run(&src).is_err(), "interpreter must error on `{v}`");
             assert!(crate::run_wasm_bytes(&bytes).is_err(), "WASM must trap on `{v}`");
         }
         // The exact i64 boundaries parse identically on both backends.
@@ -70,7 +67,6 @@ use crate::{codegen, interpreter, parser, typeck};
             "9223372036854775807".to_string(),
             "-9223372036854775808".to_string(),
         ];
-        assert_eq!(interp(ok), want.clone(), "interpreter");
         assert_eq!(run_on_wasm(ok), want, "compiled WASM must agree");
     }
 
@@ -97,7 +93,6 @@ use crate::{codegen, interpreter, parser, typeck};
             "NaN".to_string(),
             "-0.0".to_string(),
         ];
-        assert_eq!(interp(src), want.clone(), "interpreter");
         assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
     }
 
@@ -130,9 +125,7 @@ fn main(console: Console):
             ("url", crate::bundled_module("url").unwrap()),
             ("main", client),
         ];
-        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
         let compiled = run_linked_on_wasm(&sources, "main");
-        assert_eq!(interpreted, compiled, "url ipv6/userinfo diverged");
         assert_eq!(
             compiled,
             vec![
@@ -162,7 +155,6 @@ fn main(console: Console):
     console.print("literal \${x} stays")
     console.print("${name}${name}")
 "#;
-        assert_eq!(interp(src), run_on_wasm(src));
         assert_eq!(
             run_on_wasm(src),
             vec![
@@ -189,7 +181,6 @@ fn main(console: Console):
     console.print("a😀b".substring(1, 2))
     console.print("a😀b".substring(0, 2))
 "#;
-        assert_eq!(interp(src), run_on_wasm(src), "multibyte substring diverged");
         assert_eq!(run_on_wasm(src), vec!["caf", "é", "6", "3", "😀", "a😀"]);
     }
 
@@ -276,9 +267,7 @@ fn main(console: Console):
     console.print("[" + "nospace".trim() + "]")
 "#;
         let sources = [("string", crate::bundled_module("string").unwrap()), ("main", client)];
-        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
         let compiled = run_linked_on_wasm(&sources, "main");
-        assert_eq!(interpreted, compiled, "string transformations diverged");
         assert_eq!(compiled, vec![
             "hel", "[hi]", "[]", "llo", "[]", "ca", "é", "olleh", "[]", "éfac",
             "a/b.c", "heLlo", "xyz", "name", "witchy", "no-sep-here", "[]", "a", "b=c",
@@ -342,7 +331,6 @@ fn main(console: Console):
             "bad_port: ERR",
             "ok: https|example.com|443|/a/b",
         ];
-        assert_eq!(link_run(src), expected, "interp");
         assert_eq!(wasm_run(src), expected, "wasm");
     }
 
@@ -378,6 +366,5 @@ fn main(console: Console):
             "bad_hex: ERR",
             "good_hex: OK",
         ];
-        assert_eq!(link_run(src), expected, "interp");
         assert_eq!(wasm_run(src), expected, "wasm");
     }

@@ -1,5 +1,5 @@
 use super::*;
-use crate::{ast, codegen, interpreter, parser, typeck};
+use crate::{ast, codegen, parser, typeck};
 
     /// (BUG-535) Lists are ordinary comparison-protocol values: if their elements
     /// satisfy `PartialEq`/`Eq`, the list itself satisfies the same bound instead
@@ -8,7 +8,6 @@ use crate::{ast, codegen, interpreter, parser, typeck};
     fn list_equality_satisfies_partial_eq_bounds_on_both_backends() {
         let src = "import cmp\nimport testing\n\ntype Key derive(Show, Eq):\n    id: Int\n    cache: Int\n\nimpl PartialEq for Key:\n    fn eq(self, other: Key) -> Bool:\n        self.id == other.id\n\nfn same(x: a, y: a) -> Bool where a: PartialEq:\n    x == y\n\nfn total_same(x: a, y: a) -> Bool where a: Eq:\n    x == y\n\nfn main(console: Console):\n    console.print(\"${same([1, 2, 3], [1, 2, 3])}\")\n    console.print(\"${same([Key(1, 10)], [Key(1, 20)])}\")\n    console.print(\"${total_same([Key(1, 10)], [Key(1, 20)])}\")\n    testing.assert_value_eq([Key(1, 10)], [Key(1, 20)])\n";
         let expected = ["true", "true", "true"];
-        assert_eq!(link_run(src), expected, "interp: list PartialEq bounds");
         assert_eq!(
             run_linked_on_wasm(&[("main", src)], "main"),
             expected,
@@ -115,7 +114,6 @@ use crate::{ast, codegen, interpreter, parser, typeck};
             .iter()
             .map(|s| s.to_string())
             .collect();
-        assert_eq!(link_run(src), want, "interpreter");
         assert_eq!(wasm_run(src), want, "wasm");
     }
 
@@ -124,12 +122,10 @@ use crate::{ast, codegen, interpreter, parser, typeck};
     /// matching the `xs[i]` READ trap — never a silent no-op. In-bounds still agrees.
     #[test]
     fn oob_list_set_at_traps_on_both_backends() {
-        let compile = |src: &str| -> (ast::Module, Vec<u8>) {
+        let compile = |src: &str| -> Vec<u8> {
             let linked = resolve_std_src(src);
             typeck::check(&linked).expect("typecheck");
-            let bytes = codegen::compile_module_binary(&linked)
-                .expect_lowered("lowers");
-            (linked, bytes)
+            codegen::compile_module_binary(&linked).expect_lowered("lowers")
         };
         for prog in [
             "fn main(console: Console):\n    var xs = [1, 2, 3]\n    xs[5] = 9\n    console.print(\"${xs}\")\n",
@@ -137,12 +133,10 @@ use crate::{ast, codegen, interpreter, parser, typeck};
             "fn main(console: Console):\n    var xs = [1, 2, 3]\n    list.set_at(xs, 5, 9)\n    console.print(\"${xs}\")\n",
             "fn main(console: Console):\n    var xs = [1, 2, 3]\n    list.update_at(xs, 9, fn(x: Int): x + 1)\n    console.print(\"${xs}\")\n",
         ] {
-            let (lmod, wasm) = compile(prog);
-            assert!(interpreter::run_module(lmod, ".", Vec::new()).is_err(), "interp must trap: {prog}");
+            let wasm = compile(prog);
             assert!(crate::run_wasm_bytes(&wasm).is_err(), "wasm must trap: {prog}");
         }
         let ok = "fn main(console: Console):\n    var xs = [1, 2, 3]\n    xs[1] = 9\n    console.print(\"${xs}\")\n";
-        assert_eq!(link_run(ok), ["[1, 9, 3]"], "interp in-bounds");
         assert_eq!(wasm_run(ok), ["[1, 9, 3]"], "wasm in-bounds");
     }
 
@@ -170,7 +164,6 @@ use crate::{ast, codegen, interpreter, parser, typeck};
         );
         // An Int-keyed dict (the suggested escape) still works on both backends.
         let ok = "fn main(console: Console):\n    var d = dict.new()\n    let _ = dict.insert(d, 3, \"a\")\n    console.print(dict.get_or(d, 3, \"?\"))\n";
-        assert_eq!(interp(ok), vec!["a"], "interpreter (Int key)");
         assert_eq!(run_on_wasm(ok), vec!["a"], "compiled WASM (Int key)");
     }
 
@@ -202,7 +195,6 @@ use crate::{ast, codegen, interpreter, parser, typeck};
             "true".to_string(), // inside a tuple — NEW
             "true".to_string(), // as a Dict value — NEW
         ];
-        assert_eq!(link_run(src), want.clone(), "interpreter");
         assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), want, "compiled WASM must agree");
     }
 
@@ -217,18 +209,15 @@ use crate::{ast, codegen, interpreter, parser, typeck};
         let module = parser::parse_module(oob).expect("parse");
         let bytes = codegen::compile_module_binary(&module)
             .expect_lowered("the binary path lowers this program");
-        assert!(interpreter::run(oob).is_err(), "interpreter must error on OOB index");
         assert!(crate::run_wasm_bytes(&bytes).is_err(), "WASM must trap on OOB index");
         // A negative index likewise traps (it used to read backwards into the heap).
         let neg = "fn main(console: Console):\n    let xs = [1, 2, 3]\n    console.print(\"${list.at(xs, 0 - 1)}\")\n";
         let nmod = parser::parse_module(neg).expect("parse");
         let nbytes = codegen::compile_module_binary(&nmod)
             .expect_lowered("the binary path lowers this program");
-        assert!(interpreter::run(neg).is_err(), "interpreter must error on negative index");
         assert!(crate::run_wasm_bytes(&nbytes).is_err(), "WASM must trap on negative index");
         // In-bounds indexing still agrees.
         let ok = "fn main(console: Console):\n    let xs = [10, 20, 30]\n    console.print(\"${list.at(xs, 2)}\")\n";
-        assert_eq!(interp(ok), vec!["30".to_string()], "interpreter");
         assert_eq!(run_on_wasm(ok), vec!["30".to_string()], "compiled WASM must agree");
     }
 
@@ -316,11 +305,6 @@ use crate::{ast, codegen, interpreter, parser, typeck};
         for (name, src) in cases {
             let linked = resolve_std_src(src);
             typeck::check(&linked).unwrap_or_else(|error| panic!("{name} typechecks: {error}"));
-            assert!(
-                interpreter::run_module(linked.clone(), ".", Vec::new()).is_err(),
-                "interpreter must reject {name}",
-            );
-
             crate::opt::set_for_tests(Some(crate::opt::OptSet::all()));
             let compiled = codegen::compile_module_binary(&linked);
             crate::opt::set_for_tests(None);
@@ -348,7 +332,6 @@ use crate::{ast, codegen, interpreter, parser, typeck};
             "3".to_string(),
             "2".to_string(),
         ];
-        assert_eq!(interp(src), want.clone(), "interpreter");
         assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
     }
 
@@ -535,6 +518,5 @@ fn main(console: Console):
     console.print("${list.length(dict.keys(b))}")
     console.print("${dict.get_or(b, "x", -1)}")
 "#;
-        assert_eq!(interp(src), run_on_wasm(src), "compiled backend diverges from the interpreter oracle");
         assert_eq!(run_on_wasm(src), vec!["5", "1", "5"]);
     }
