@@ -1,4 +1,18 @@
-use super::link_run;
+use witchy::runtime::{Capabilities, Runtime};
+
+fn admitted_output(source: &str) -> Vec<String> {
+    let checked = witchy::resolve_std_only_checked(source).expect("stdlib source checks");
+    let artifact = witchy::codegen::compile_checked_module_artifact(&checked)
+        .expect_lowered("stdlib source admits to canonical Wasm");
+    let mut runtime = Runtime::batch().expect("runtime");
+    let mut vm = runtime.spawn_admitted(&artifact,
+        Capabilities { print: true, print_int: true, quiet: true, ..Capabilities::none() }, 128,
+    ).expect("admitted stdlib spawn");
+    vm.run().expect("admitted stdlib execution");
+    let output = vm.output();
+    assert_eq!(vm.canonical_heap_leaks().expect("ownership audit"), Some(0));
+    output
+}
 
 /// Property tests over the standard library: invariants that must hold for
 /// *any* input — encode/decode round-trips, calendar inverses, semver
@@ -6,7 +20,7 @@ use super::link_run;
 /// stdlib, and comparing to a Rust reference. These catch edge cases (empty
 /// strings, embedded quotes/newlines, negative timestamps) unit tests miss.
 mod stdlib_properties {
-    use super::super::{link_run_args, proptest_cases};
+    use super::super::{run_on_wasm_args, proptest_cases};
     use proptest::prelude::*;
 
     const HEX_ENCODE_PROG: &str = "import encoding\nimport list\nfn main(console: Console, argv: List(String)):\n    let s = list.at(argv, 0)\n    console.print(encoding.hex_encode(s))\n";
@@ -20,20 +34,20 @@ mod stdlib_properties {
         #[test]
         fn hex_encode_matches_reference(s in "[ -#%-z|~]{0,40}") {
             let reference: String = s.bytes().map(|b| format!("{b:02x}")).collect();
-            prop_assert_eq!(link_run_args(HEX_ENCODE_PROG, vec![s]), vec![reference]);
+            prop_assert_eq!(run_on_wasm_args(HEX_ENCODE_PROG, vec![s]), vec![reference]);
         }
 
         /// base64 decode is the inverse of encode, for any printable ASCII.
         #[test]
         fn base64_roundtrips(s in "[ -#%-z|~]{0,48}") {
-            prop_assert_eq!(link_run_args(BASE64_PROG, vec![s]), vec!["y".to_string()]);
+            prop_assert_eq!(run_on_wasm_args(BASE64_PROG, vec![s]), vec!["y".to_string()]);
         }
 
         /// `semver.format` after `parse` reproduces the canonical version.
         #[test]
         fn semver_roundtrips(a in 0i64..2000, b in 0i64..2000, c in 0i64..2000) {
             let v = format!("{a}.{b}.{c}");
-            prop_assert_eq!(link_run_args(SEMVER_PROG, vec![v.clone()]), vec![v]);
+            prop_assert_eq!(run_on_wasm_args(SEMVER_PROG, vec![v.clone()]), vec![v]);
         }
 
     }
@@ -56,13 +70,13 @@ fn crypto_ed25519_verify_checks_signatures() {
             "import crypto\nfn main(console: Console):\n    match crypto.ed25519_verify(\"{pubk}\", \"{m}\", \"{s}\"):\n        Ok(true) -> console.print(\"ok\")\n        Ok(false) -> console.print(\"bad\")\n        Err(_e) -> console.print(\"err\")\n"
         )
     };
-    assert_eq!(link_run(&prog(&pk, msg, &sig)), vec!["ok"], "valid signature must verify");
+    assert_eq!(admitted_output(&prog(&pk, msg, &sig)), vec!["ok"], "valid signature must verify");
     assert_eq!(
-        link_run(&prog(&pk, "release: acme/widget@1.0.1", &sig)),
+        admitted_output(&prog(&pk, "release: acme/widget@1.0.1", &sig)),
         vec!["bad"],
         "tampered message must fail"
     );
-    assert_eq!(link_run(&prog(&pk, msg, "00")), vec!["err"], "malformed sig must be an error");
+    assert_eq!(admitted_output(&prog(&pk, msg, "00")), vec!["err"], "malformed sig must be an error");
 }
 
 /// `crypto.ecdsa_p256_verify` (WebAuthn "ES256") verifies a real P-256/SHA-256
@@ -78,9 +92,9 @@ fn crypto_ecdsa_p256_verify_checks_signatures() {
             "import crypto\nfn main(console: Console):\n    match crypto.ecdsa_p256_verify(\"{pubk}\", \"{m}\", \"{s}\"):\n        Ok(true) -> console.print(\"ok\")\n        Ok(false) -> console.print(\"bad\")\n        Err(_e) -> console.print(\"err\")\n"
         )
     };
-    assert_eq!(link_run(&prog(pk, msg, sig)), vec!["ok"], "valid ES256 signature must verify");
-    assert_eq!(link_run(&prog(pk, "wrong-message", sig)), vec!["bad"], "tampered message must fail");
-    assert_eq!(link_run(&prog(pk, msg, "00")), vec!["err"], "malformed sig must be an error");
+    assert_eq!(admitted_output(&prog(pk, msg, sig)), vec!["ok"], "valid ES256 signature must verify");
+    assert_eq!(admitted_output(&prog(pk, "wrong-message", sig)), vec!["bad"], "tampered message must fail");
+    assert_eq!(admitted_output(&prog(pk, msg, "00")), vec!["err"], "malformed sig must be an error");
 }
 
 /// `crypto.sha512` and `crypto.hmac_sha256` against standard known-answer vectors
@@ -89,14 +103,14 @@ fn crypto_ecdsa_p256_verify_checks_signatures() {
 fn crypto_sha512_and_hmac_match_known_vectors() {
     let p1 = "import crypto\nfn main(console: Console):\n    console.print(crypto.sha512(\"abc\"))\n";
     assert_eq!(
-        link_run(p1),
+        admitted_output(p1),
         vec!["ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f"]
     );
     let key = "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b";
     let p2 = format!(
         "import crypto\nfn main(console: Console):\n    console.print(crypto.hmac_sha256(\"{key}\", \"Hi There\"))\n"
     );
-    assert_eq!(link_run(&p2), vec!["b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7"]);
+    assert_eq!(admitted_output(&p2), vec!["b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7"]);
 }
 
 /// `std/webauthn.verify_assertion` accepts a real ES256 WebAuthn assertion and
@@ -122,13 +136,13 @@ fn main(console: Console):
 "
         )
     };
-    assert_eq!(link_run(&prog(ad_uv, sig_uv, "true")), vec!["ok"], "valid assertion must verify");
+    assert_eq!(admitted_output(&prog(ad_uv, sig_uv, "true")), vec!["ok"], "valid assertion must verify");
     assert!(
-        link_run(&prog(ad_uv, &format!("00{sig_uv}"), "true")).join("").contains("signature"),
+        admitted_output(&prog(ad_uv, &format!("00{sig_uv}"), "true")).join("").contains("signature"),
         "tampered signature must be rejected"
     );
     assert!(
-        link_run(&prog(ad_up, sig_up, "true")).join("").contains("verification"),
+        admitted_output(&prog(ad_up, sig_up, "true")).join("").contains("verification"),
         "missing user-verification flag must be rejected when required"
     );
 }
@@ -164,12 +178,12 @@ fn main(console: Console):
     };
     let expected = format!("04{}{}", "ab".repeat(32), "cd".repeat(32));
     assert_eq!(
-        link_run(&prog("c")),
+        admitted_output(&prog("c")),
         vec![expected],
         "a valid create ceremony yields the attested ES256 public key"
     );
     assert!(
-        link_run(&prog("WRONG")).join("").contains("challenge"),
+        admitted_output(&prog("WRONG")).join("").contains("challenge"),
         "a create ceremony whose clientData challenge != the server's must be rejected"
     );
 }
