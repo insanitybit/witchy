@@ -2,12 +2,11 @@ use super::*;
 
     /// (BUG-317/BUG-336) Dict subscripts are real read places, not a list-only
     /// parser desugar. That makes direct reads, compound assignment, and nested
-    /// place assignment through a Dict agree on both backends.
+    /// place assignment through a Dict retain their value semantics.
     #[test]
-    fn dict_subscript_read_and_nested_place_assignment_work_on_both_backends() {
+    fn dict_subscript_read_and_nested_place_assignment_work() {
         let src = "import dict\n\nfn main(console: Console):\n    var counts: Dict(String, Int) = dict.new()\n    counts[\"a\"] = 1\n    counts[\"a\"] += 2\n    console.print(\"${counts[\"a\"]}\")\n\n    var nested: Dict(String, Dict(String, Int)) = dict.new()\n    var inner: Dict(String, Int) = dict.new()\n    let _ = dict.insert(inner, \"inner\", 1)\n    nested[\"outer\"] = inner\n    nested[\"outer\"][\"inner\"] = 7\n    console.print(\"${nested[\"outer\"][\"inner\"]}\")\n\n    var rows: Dict(String, List(Int)) = dict.new()\n    rows[\"r\"] = [1, 2, 3]\n    rows[\"r\"][1] = 9\n    console.print(\"${rows[\"r\"]}\")\n";
         let expected = ["3", "7", "[1, 9, 3]"];
-        assert_eq!(link_run(src), expected, "interp: dict subscript read");
         assert_eq!(
             run_linked_on_wasm(&[("main", src)], "main"),
             expected,
@@ -19,10 +18,9 @@ use super::*;
     /// real inherent methods, so statement form writes back consistently instead
     /// of depending on the older free-function UFCS path.
     #[test]
-    fn list_mutator_methods_write_back_on_both_backends() {
+    fn list_mutator_methods_write_back() {
         let src = "import list\n\nfn main(console: Console):\n    var xs = [3, 1, 2]\n    xs.sort()\n    console.print(\"${xs}\")\n    xs.reverse()\n    console.print(\"${xs}\")\n    xs.set_at(1, 9)\n    console.print(\"${xs}\")\n    xs.update_at(2, fn(n: Int): n + 10)\n    console.print(\"${xs}\")\n    let _ = xs.remove(9)\n    console.print(\"${xs}\")\n    var ys = [3, 1, 2]\n    ys.sort_by(fn(x: Int, y: Int): x > y)\n    console.print(\"${ys}\")\n";
         let expected = ["[1, 2, 3]", "[3, 2, 1]", "[3, 9, 1]", "[3, 9, 11]", "[3, 11]", "[3, 2, 1]"];
-        assert_eq!(link_run(src), expected, "interp: list mutator methods");
         assert_eq!(
             run_linked_on_wasm(&[("main", src)], "main"),
             expected,
@@ -31,10 +29,10 @@ use super::*;
     }
 
     #[test]
-    fn place_assignment_sugar_backends_agree() {
+    fn place_assignment_sugar_preserves_values() {
         // RFC-0022: `xs[i] = v`, `d[k] = v`, and `u.field = v` (plus their compound
         // forms) desugar to value-reassignment — list/dict `set_at` and a record
-        // update — and run identically on both backends.
+        // update.
         let src = r#"
 type P:
     x: Int
@@ -54,11 +52,6 @@ fn main(console: Console):
     p.y += 5
     console.print("${p.x} ${p.y}")
 "#;
-        assert_eq!(
-            link_run(src),
-            run_linked_on_wasm(&[("main", src)], "main"),
-            "place-assignment must agree across backends"
-        );
         assert_eq!(
             run_linked_on_wasm(&[("main", src)], "main"),
             vec!["[9, 20, 35]", "1 2", "10 7"]
