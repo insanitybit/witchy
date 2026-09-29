@@ -1,5 +1,36 @@
 use witchy::{parser, typeck};
 use witchy_interp::{interpreter, pipeline};
+use witchy_types::runtime_type::{AuthenticatedModuleOwners, ModuleLoadIdentity, PackageCoordinate, PackageSource};
+
+fn assert_derived_output(source: &str, expected: &[&str]) {
+    struct ResetOptimization;
+    impl Drop for ResetOptimization {
+        fn drop(&mut self) { witchy::opt::set_for_tests(None); }
+    }
+    witchy::opt::set_for_tests(Some(witchy::opt::OptSet::none()));
+    let _reset = ResetOptimization;
+    let workspace = PackageCoordinate::new(PackageSource::Workspace, "test/derive", "1").unwrap();
+    let toolchain = PackageCoordinate::new(PackageSource::Toolchain, "witchy/std", "1").unwrap();
+    let mut assignments = vec![("main".to_owned(), ModuleLoadIdentity::new(workspace, ["main"]).unwrap())];
+    assignments.extend(witchy_syntax::linker::STD_MODULES.iter().map(|name| (
+        (*name).to_owned(), ModuleLoadIdentity::new(toolchain.clone(), ["std", *name]).unwrap(),
+    )));
+    let owners = AuthenticatedModuleOwners::from_loader_assignments(assignments).unwrap();
+    let checked = witchy::canonical_comptime::check_source_bundle(
+        vec![("main".into(), source.as_bytes().to_vec())], "main",
+        ["main".to_owned()].into_iter().collect(), owners,
+        witchy::canonical_comptime::source_limits(),
+    ).expect("authenticated derived source");
+    let artifact = witchy::codegen::compile_checked_module_artifact(&checked)
+        .expect_lowered("admitted derived witness");
+    let mut runtime = witchy::runtime::Runtime::batch().expect("runtime");
+    let mut actor = runtime.spawn_admitted(&artifact, witchy::runtime::Capabilities {
+        print: true, quiet: true, ..witchy::runtime::Capabilities::none()
+    }, 64).expect("spawn admitted derived witness");
+    actor.run().expect("run admitted derived witness");
+    assert_eq!(actor.output(), expected);
+    assert_eq!(actor.canonical_heap_leaks().expect("heap audit"), Some(0));
+}
 
 #[test]
 fn public_state_record_sum_and_generic_witnesses_typecheck_and_run() {
@@ -70,14 +101,7 @@ fn main(console: Console):
     console.print(describe(Measured(nan, 1).partial_compare(Measured(0.0, 2))))
     console.print(describe(Measured(1.0, 1).partial_compare(Measured(1.0, 2))))
 "#;
-    let parsed = parser::parse_module(source).expect("parse ordering witness");
-    let linked = pipeline::link(vec![("main".into(), parsed)], "main")
-        .expect("link ordering witness");
-    typeck::check(&linked).expect("typecheck ordering witness");
-    assert_eq!(
-        interpreter::run_module(linked, ".", Vec::new()).expect("interpret ordering witness"),
-        ["less", "greater", "equal", "none", "less"]
-    );
+    assert_derived_output(source, &["less", "greater", "equal", "none", "less"]);
 }
 
 #[test]
