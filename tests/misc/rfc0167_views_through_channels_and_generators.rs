@@ -6,6 +6,70 @@ impl Drop for ResetOptimizationOverride {
     fn drop(&mut self) { witchy::opt::set_for_tests(None); }
 }
 
+#[test]
+fn generator_retains_a_view_snapshot_after_root_replacement() {
+    use witchy::runtime::{Capabilities, Runtime};
+    witchy::opt::set_for_tests(Some(witchy::opt::OptSet::none()));
+    let _reset = ResetOptimizationOverride;
+    let source = r#"import iter
+
+gen fn values(v: &Int) -> Iter(&Int):
+    yield v
+
+fn main(console: Console):
+    var n = 21
+    let sequence = values(&n)
+    n = 5
+    match iter.next(sequence):
+        Item(value, _) -> console.print("${*value} ${n}")
+        Empty -> console.print("unexpected empty")
+"#;
+    let checked = witchy::resolve_std_only_checked(source).expect("generator view source checks");
+    let artifact = witchy::codegen::compile_checked_module_artifact(&checked)
+        .expect_lowered("generator view lowers to admitted Wasm");
+    let mut runtime = Runtime::batch().expect("runtime");
+    let mut vm = runtime.spawn_admitted(&artifact,
+        Capabilities { print: true, print_int: true, quiet: true, ..Capabilities::none() }, 128,
+    ).expect("admitted generator spawn");
+    vm.run().expect("admitted generator execution");
+    assert_eq!(vm.output(), ["21 5"]);
+    assert_eq!(vm.canonical_heap_leaks().expect("ownership audit"), Some(0));
+}
+
+#[test]
+fn region_born_view_cannot_escape_in_generator_or_task_recipe() {
+    let generator = r#"import iter
+
+gen fn values(v: &List(Int)) -> Iter(&List(Int)):
+    yield v
+
+fn main(console: Console):
+    let sequence = region -> Iter(&List(Int)):
+        let local = [1, 2]
+        values(&local)
+    let _ = iter.next(sequence)
+"#;
+    let error = witchy::resolve_std_only_checked(generator).expect_err("region view must not escape");
+    assert!(error.to_string().contains("region-born root"), "{error}");
+
+    let recipe = r#"from chan import Sender
+from task import Task
+
+async fn producer(tx: Sender(&List(Int)), v: &List(Int)):
+    chan.send(tx, v).await
+
+async fn main(console: Console):
+    let (tx, _rx) = chan.channel(1).await
+    let recipe = region -> Task(()):
+        let local = [1, 2]
+        producer(tx, &local)
+    let child = chan.spawn(recipe).await
+    chan.join(child).await
+"#;
+    let error = witchy::resolve_std_only_checked(recipe).expect_err("region task view must not escape");
+    assert!(error.to_string().contains("region-born root"), "{error}");
+}
+
 const CHANNELS: &str = r#"
 from chan import Sender
 
