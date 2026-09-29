@@ -90,6 +90,16 @@ two normal-caller/opt-defined-type cases in the same run are deferred evidence,
 not normal-mode completion credit. This establishes a bounded row N slice;
 broader aggregate views and task-resource disposition remain open.
 
+The runtime diagnostic golden migration at `826b02777` checks list bounds,
+user `fail`, and a missing named secret through checked source and admitted
+Wasm, retaining their source-level messages. Five other diagnostic goldens
+remain on the historical test-only interpreter/raw-Wasm path: admitted
+canonical lowering currently reports generic Wasm traps for division by zero,
+division overflow, invalid integer parsing, NaN-to-Int conversion, and a
+nested division trap, losing the source location. Those five are not canonical
+row N evidence; their existing source-level goldens must not be weakened to
+generic traps to make the migration appear complete.
+
 At `2dcc268d4`, two further normal-mode row G witnesses pass on admitted
 unoptimized Wasm with zero owned-heap leaks. A view of
 `Option(List(List(Int)))` retains nested children after its whole root is
