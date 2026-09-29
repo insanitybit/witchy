@@ -1,15 +1,13 @@
 //! Independent language conformance floor.
 //!
-//! Backend parity is necessary but cannot detect a shared semantic mistake.
-//! These cases name exact expected values, rejections, and authority directly;
-//! the interpreter is used only in the positive-control fault injection that
-//! demonstrates this distinction.
+//! These cases name exact expected values, rejections, and authority directly.
+//! The positive-control fault injection proves that an independent expectation
+//! rejects a source mutation even when the compiler executes it successfully.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use witchy::runtime::{Capabilities, Runtime};
 use witchy::{capabilities, codegen, typeck};
-use witchy_interp::{interpreter};
 
 struct ValueCase {
     name: &'static str,
@@ -63,11 +61,11 @@ fn main(console: Console):
     },
 ];
 
-fn checked(source: &str) -> witchy_interp::pipeline::CheckedModule {
+fn checked(source: &str) -> witchy::pipeline::CheckedModule {
     witchy::resolve_std_only_checked(source).expect("check conformance program")
 }
 
-fn compiled_output(module: &witchy_interp::pipeline::CheckedModule) -> Vec<String> {
+fn compiled_output(module: &witchy::pipeline::CheckedModule) -> Vec<String> {
     let artifact = codegen::compile_checked_module_artifact(module)
         .expect_lowered("compile conformance program");
     let mut runtime = Runtime::batch().expect("create conformance runtime");
@@ -142,19 +140,12 @@ fn independent_expectation_rejects_a_shared_semantic_mutation() {
     let mutated = case.source.replacen("1 + 2 * 3", "1 - 2 * 3", 1);
     let module = checked(&mutated);
     let compiled = compiled_output(&module);
-    let interpreted = interpreter::run_checked_module(&module, ".", Vec::new())
-        .expect("run mutated oracle program");
-
-    assert_eq!(
-        compiled, interpreted,
-        "the seeded shared-stage mutation must preserve backend parity",
-    );
     assert_eq!(
         compare_expected(case.name, case.expected, &compiled),
         Err(
             "arithmetic precedence: expected [\"7\"], got [\"-5\"]"
                 .to_string(),
         ),
-        "the independent expectation must reject a mutation parity cannot see",
+        "the independent expectation must reject the seeded mutation",
     );
 }
