@@ -60,8 +60,9 @@ pub(super) struct Checker {
     /// payload with fresh substitutions per probe was ~7% of an async compile.
     pub(super) once_callable_types: std::cell::RefCell<HashMap<Ty, bool>>,
     /// Root unique-storage queries, evaluated with an empty recursion guard.
-    /// Declaration tables are fixed before body checking; both substitution
-    /// mutations clear this memo because the judgment resolves their fields.
+    /// Declaration tables are fixed before body checking, so variable-free
+    /// keys survive substitution mutations; keys containing unresolved vars
+    /// are evicted because their resolved fields can change.
     pub(super) unique_storage_types: std::cell::RefCell<HashMap<Ty, bool>>,
     /// When annotating (see `annotate`): expression identity -> inferred type,
     /// finalized against the ending substitution. Key = `&Expr as *const _`.

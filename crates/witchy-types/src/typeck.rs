@@ -746,13 +746,13 @@ impl Checker {
     fn bind_subst_var(&mut self, v: u32, ty: Ty) {
         self.subst.insert(v, ty);
         self.resolve_cache.borrow_mut().clear();
-        self.unique_storage_types.borrow_mut().clear();
+        self.unique_storage_types.borrow_mut().retain(|ty, _| !ty_has_var(ty));
     }
 
     fn restore_subst(&mut self, saved: HashMap<u32, Ty>) {
         self.subst = saved;
         self.resolve_cache.borrow_mut().clear();
-        self.unique_storage_types.borrow_mut().clear();
+        self.unique_storage_types.borrow_mut().retain(|ty, _| !ty_has_var(ty));
     }
 
     fn same_resolved_type(&self, a: &Ty, b: &Ty) -> bool {
@@ -2023,8 +2023,11 @@ impl Checker {
         // A free variable contributes no *known* unique field. Keep its
         // position in the source shape so fixed fields of a partially known
         // nominal are still inspected by the shared stored-child judgment.
-        // The memo is keyed by the resolved type and is invalidated as
-        // inference binds variables. Failed stored-child proofs remain affine.
+        // Variable-bearing entries depend on inference and are evicted when
+        // substitutions change. Variable-free entries are stable because the
+        // declaration tables and canonical definitions are fixed for this
+        // checker, so they survive those mutations. Failed stored-child proofs
+        // remain affine.
         let answer = ty_to_ast_with_unresolved(&resolved, UnresolvedAst::NeutralStorage).map_or(true, |source| {
             witchy_canonical_source::storage::contains_unique_storage(
                 &source, &self.canonical_definitions,
