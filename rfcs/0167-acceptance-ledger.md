@@ -115,6 +115,15 @@ does the same (result 279). `rfc0167_nested_list_root_view` now pins both exact
 shapes. Deeper and generic aggregate families still need proof, so row G stays
 partial.
 
+At merged `09b28a66e`, `rfc0167_option_list_view_boundary` adds a normal-mode
+recursive-carrier boundary. A view of `Option(List(Int))` keeps the old snapshot
+after root replacement, produces the independent result 29 on admitted
+unoptimized Wasm, and releases its root with zero leaks. A view of
+`Option(List(&Int))` refuses at `typeck::admit_view_payload` because the nested
+view-bearing child has no authenticated storage carrier. This checked refusal
+does not establish nested view ownership. Admitting that shape needs a
+recursive root-carrier and retain/release plan.
+
 The live spawned-slice row K witness currently stops at `std/task.witchy`'s
 `and_then_step`. At merged `6f5d47223`, the compiler-private `__Msg` envelope
 has an explicit copyable graph-storage proof. That lets `task.Step(task.Handle)`
