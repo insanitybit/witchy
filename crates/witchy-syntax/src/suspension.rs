@@ -193,32 +193,41 @@ pub(crate) fn free_bindings_with_bound(
     expression: &Expr,
     bound: &HashSet<String>,
 ) -> Vec<String> {
-    let mut seen = HashSet::new();
+    let mut seen = HashSet::<&str>::new();
     let mut order = Vec::new();
     visit_expr(expression, bound, &mut seen, &mut order);
-    order
+    order.into_iter().map(str::to_owned).collect()
+}
+
+/// Free lexical bindings as borrowed names. Consumers that only need
+/// membership can avoid allocating a `String` for every distinct identifier.
+pub(crate) fn free_binding_set(expression: &Expr) -> HashSet<&str> {
+    let mut seen = HashSet::<&str>::new();
+    let mut order = Vec::new();
+    visit_expr(expression, &HashSet::new(), &mut seen, &mut order);
+    seen
 }
 
 pub(crate) fn free_bindings_in_block(
     block: &Block,
     bound: &HashSet<String>,
 ) -> Vec<String> {
-    let mut seen = HashSet::new();
+    let mut seen = HashSet::<&str>::new();
     let mut order = Vec::new();
     visit_block(block, bound, &mut seen, &mut order);
-    order
+    order.into_iter().map(str::to_owned).collect()
 }
 
-fn visit_expr(
-    expression: &Expr,
+fn visit_expr<'a>(
+    expression: &'a Expr,
     bound: &HashSet<String>,
-    seen: &mut HashSet<String>,
-    output: &mut Vec<String>,
+    seen: &mut HashSet<&'a str>,
+    output: &mut Vec<&'a str>,
 ) {
     match expression {
         Expr::Var(name) => {
-            if !bound.contains(name) && seen.insert(name.clone()) {
-                output.push(name.clone());
+            if !bound.contains(name) && seen.insert(name.as_str()) {
+                output.push(name);
             }
         }
         Expr::Int(_)
@@ -251,8 +260,8 @@ fn visit_expr(
             // represented as a named `Call`. Report a bare callee as a possible
             // lexical binding; the lowering's scope intersection discards real
             // top-level function names.
-            if !name.contains('.') && !bound.contains(name) && seen.insert(name.clone()) {
-                output.push(name.clone());
+            if !name.contains('.') && !bound.contains(name) && seen.insert(name.as_str()) {
+                output.push(name);
             }
             visit_all(args, bound, seen, output);
         }
@@ -260,8 +269,8 @@ fn visit_expr(
             visit_all(args, bound, seen, output);
         }
         Expr::LabeledCall { name, args } => {
-            if !name.contains('.') && !bound.contains(name) && seen.insert(name.clone()) {
-                output.push(name.clone());
+            if !name.contains('.') && !bound.contains(name) && seen.insert(name.as_str()) {
+                output.push(name);
             }
             for (_, argument) in args {
                 visit_expr(argument, bound, seen, output);
@@ -342,22 +351,22 @@ fn visit_expr(
     }
 }
 
-fn visit_all(
-    expressions: &[Expr],
+fn visit_all<'a>(
+    expressions: &'a [Expr],
     bound: &HashSet<String>,
-    seen: &mut HashSet<String>,
-    output: &mut Vec<String>,
+    seen: &mut HashSet<&'a str>,
+    output: &mut Vec<&'a str>,
 ) {
     for expression in expressions {
         visit_expr(expression, bound, seen, output);
     }
 }
 
-fn visit_block(
-    block: &Block,
+fn visit_block<'a>(
+    block: &'a Block,
     bound: &HashSet<String>,
-    seen: &mut HashSet<String>,
-    output: &mut Vec<String>,
+    seen: &mut HashSet<&'a str>,
+    output: &mut Vec<&'a str>,
 ) {
     let mut bound = bound.clone();
     for statement in &block.stmts {
@@ -376,8 +385,8 @@ fn visit_block(
                 // A write still requires the existing binding, even when its
                 // previous value is never read. Continuations must carry that
                 // binding across suspension before performing the assignment.
-                if !bound.contains(name) && seen.insert(name.clone()) {
-                    output.push(name.clone());
+                if !bound.contains(name) && seen.insert(name.as_str()) {
+                    output.push(name);
                 }
                 visit_expr(value, &bound, seen, output);
             }

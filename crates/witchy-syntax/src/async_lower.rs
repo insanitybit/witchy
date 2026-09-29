@@ -2194,14 +2194,12 @@ fn rebind_accs(accs: &[Local], acc_bind: &str) -> Vec<Stmt> {
 /// The live locals referenced by `expr` that are present in `scope`, in scope
 /// order (deterministic), excluding `skip` (the resume bind, passed separately).
 fn live_locals(expr: &Expr, scope: &[Local], skip: Option<&str>) -> Vec<Local> {
-    let free = crate::suspension::free_bindings(expr)
-        .into_iter()
-        .collect::<HashSet<_>>();
+    let free = crate::suspension::free_binding_set(expr);
     let mut shadowed = HashSet::new();
     let mut live = scope
         .iter()
         .rev()
-        .filter(|l| Some(l.name.as_str()) != skip && free.contains(&l.name))
+        .filter(|l| Some(l.name.as_str()) != skip && free.contains(l.name.as_str()))
         .filter(|l| shadowed.insert(l.name.clone()))
         .cloned()
         .collect::<Vec<_>>();
