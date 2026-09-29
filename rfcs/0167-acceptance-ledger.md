@@ -90,6 +90,23 @@ two normal-caller/opt-defined-type cases in the same run are deferred evidence,
 not normal-mode completion credit. This establishes a bounded row N slice;
 broader aggregate views and task-resource disposition remain open.
 
+At `2dcc268d4`, two further normal-mode row G witnesses pass on admitted
+unoptimized Wasm with zero owned-heap leaks. A view of
+`Option(List(List(Int)))` retains nested children after its whole root is
+replaced (independent result 239); a view of a record with a nested List field
+does the same (result 279). `rfc0167_nested_list_root_view` now pins both exact
+shapes. Deeper and generic aggregate families still need proof, so row G stays
+partial.
+
+The live spawned-slice row K witness currently stops at `std/task.witchy`'s
+`and_then_step`: matching `task.Step(task.Handle)` would copy a must-consume
+value, while `match move` is also refused because no authenticated consuming
+aggregate proof exists. The checked type has a scalar aggregate shape but no
+proved affine storage plan. The required fix must establish movable storage,
+consuming extraction, and scheduler disposition together; syntax-only changes
+must not bypass the refusal. This is a confirmed normal-mode blocker, not
+evidence that the resource contract is complete.
+
 This milestone does not close the full RFC. Rows E, G, H, K, L, and P retain
 their normal-mode safety obligations; wider proofs and opt-dependent parts are
 deferred. Rows I and J retain their existing evidence but their opt and
