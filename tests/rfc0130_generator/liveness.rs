@@ -1,6 +1,5 @@
 use witchy::runtime::{Capabilities, Runtime};
-use witchy::{codegen};
-use witchy_interp::{interpreter};
+use witchy::codegen;
 
 const LOOP_LOCAL_AFTER_YIELD: &str = r#"
 import iter
@@ -25,14 +24,13 @@ fn main(console: Console):
     drain(staged(console), console)
 "#;
 
-fn compiled_output(checked: &witchy_interp::pipeline::CheckedModule) -> Vec<String> {
-    witchy_interp::compiler_natives::install();
-    let bytes = codegen::compile_checked_module_binary(checked)
+fn compiled_output(checked: &witchy::pipeline::CheckedModule) -> Vec<String> {
+    let artifact = codegen::compile_checked_module_artifact(checked)
         .expect_lowered("compile generator loop-local liveness fixture");
     let mut runtime = Runtime::batch_quick().expect("create runtime");
     let mut actor = runtime
-        .spawn(
-            &bytes,
+        .spawn_admitted(
+            &artifact,
             Capabilities {
                 print: true,
                 print_int: true,
@@ -47,7 +45,7 @@ fn compiled_output(checked: &witchy_interp::pipeline::CheckedModule) -> Vec<Stri
 }
 
 #[test]
-fn loop_local_live_after_yield_is_carried_without_replay_on_both_backends() {
+fn loop_local_live_after_yield_is_carried_without_replay_on_admitted_wasm() {
     let checked = witchy::resolve_std_only_checked(LOOP_LOCAL_AFTER_YIELD)
         .expect("check generator loop-local liveness fixture");
     let expected = [
@@ -63,9 +61,6 @@ fn loop_local_live_after_yield_is_carried_without_replay_on_both_backends() {
         "done",
     ];
 
-    let interpreted = interpreter::run_checked_module(&checked, ".", Vec::new())
-        .expect("interpret generator loop-local liveness fixture");
-    assert_eq!(interpreted, expected, "interpreter must resume after each yield");
     assert_eq!(
         compiled_output(&checked),
         expected,

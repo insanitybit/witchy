@@ -1,6 +1,5 @@
 use witchy::runtime::{Capabilities, Runtime};
-use witchy::{codegen};
-use witchy_interp::{interpreter};
+use witchy::codegen;
 
 const SUSPENDING_WHILE_LET: &str = r#"
 import iter
@@ -24,14 +23,13 @@ fn main(console: Console):
     drain(staged(console), console)
 "#;
 
-fn compiled_output(checked: &witchy_interp::pipeline::CheckedModule) -> Vec<String> {
-    witchy_interp::compiler_natives::install();
-    let bytes = codegen::compile_checked_module_binary(checked)
+fn compiled_output(checked: &witchy::pipeline::CheckedModule) -> Vec<String> {
+    let artifact = codegen::compile_checked_module_artifact(checked)
         .expect_lowered("compile generator while-let CFG fixture");
     let mut runtime = Runtime::batch_quick().expect("create runtime");
     let mut actor = runtime
-        .spawn(
-            &bytes,
+        .spawn_admitted(
+            &artifact,
             Capabilities {
                 print: true,
                 print_int: true,
@@ -46,7 +44,7 @@ fn compiled_output(checked: &witchy_interp::pipeline::CheckedModule) -> Vec<Stri
 }
 
 #[test]
-fn while_let_bindings_and_effects_resume_once_on_both_backends() {
+fn while_let_bindings_and_effects_resume_once_on_admitted_wasm() {
     let checked = witchy::resolve_std_only_checked(SUSPENDING_WHILE_LET)
         .expect("check generator while-let CFG fixture");
     let expected = [
@@ -62,9 +60,6 @@ fn while_let_bindings_and_effects_resume_once_on_both_backends() {
         "done",
     ];
 
-    let interpreted = interpreter::run_checked_module(&checked, ".", Vec::new())
-        .expect("interpret generator while-let CFG fixture");
-    assert_eq!(interpreted, expected, "interpreter preserves while-let suspension state");
     assert_eq!(
         compiled_output(&checked),
         expected,
