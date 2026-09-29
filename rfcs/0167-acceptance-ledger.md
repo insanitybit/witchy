@@ -66,6 +66,21 @@ must emit nonempty Wasm; formatting must reach a fixed point. This is the
 current normal-mode tooling milestone witness, while the broader historical
 row O entry below retains its separate deferred and wider coverage.
 
+### Normal-mode tooling checkpoint (2026-09-29)
+
+At the merged `9824c76a4` tip, the normal-mode portions of rows M and O have
+focused executable evidence:
+
+| Milestone part | Current evidence | Limit |
+|---|---|---|
+| M: typed generation | `program_defined_builder_uses_type_info_in_both_modes` passes its normal leg with checked Builder items, `type_info(User)`, admitted Wasm output, and zero leaks. Four source-loader tests pass built-in Eq, Show, Ordering, and a local typed derive on admitted Wasm. `type_info_descriptor_cannot_be_forged_or_rewritten` and `canonical_dynamic_expression_leaves_are_typed_and_session_bounded` pass their handle-boundary refusals. | Other syntax constructors may still refuse explicitly; opt-only generation and broad external-consumer migration are deferred. The historical row M remains partial for that wider scope. |
+| O: installed workflow | `installed_normal_check_fmt_compile_and_run` passes `check`, compile to nonempty Wasm, run with the expected `views/unit/34/6/1/14/103` transcript, `fmt`, and `fmt --check`. | The whole book, examples, and external consumers are outside this milestone. The historical row O remains partial for wider adoption. |
+
+The normal-mode compiler-tooling milestone is still open: row N needs its
+representative safety-boundary closeout and row Q still requires retirement of
+the remaining source walker workspace/test support. These narrower M/O findings
+do not close the full RFC or its normal-mode safety rows.
+
 This milestone does not close the full RFC. Rows E, G, H, K, L, and P retain
 their normal-mode safety obligations; wider proofs and opt-dependent parts are
 deferred. Rows I and J retain their existing evidence but their opt and
