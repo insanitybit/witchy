@@ -363,6 +363,13 @@ pub fn lower_typed_module(
     let (registry_imports, requires_secret) = registry_hosts::collect_imports(typed.module());
     let mut string_payloads = collect_string_payloads(typed.module(), typed.table(), &definitions);
     string_payloads.extend(abort_sites.values().map(|site| site.function.as_bytes().to_vec()));
+    if !abort_sites.is_empty() {
+        string_payloads.extend([
+            witchy_syntax::diag::DiagTemplate::DivisionByZero,
+            witchy_syntax::diag::DiagTemplate::DivisionOverflow,
+            witchy_syntax::diag::DiagTemplate::ModuloByZero,
+        ].map(|template| template.render(0, 0, "").into_bytes()));
+    }
     if requires_secret {
         string_payloads.extend(registry_hosts::REQUIRED_SECRET_MESSAGE_PARTS.map(|part| part.as_bytes().to_vec()));
     }
@@ -11762,7 +11769,7 @@ impl FunctionLowerer<'_> {
                 self.lower_aggregate_for_source(&source_type, &shape, index, values)
             }
             Expr::Unary { op, expr } => self.lower_unary(expression, *op, expr),
-            Expr::Binary { op, lhs, rhs } => self.lower_binary(*op, lhs, rhs),
+            Expr::Binary { op, lhs, rhs } => self.lower_binary(expression, *op, lhs, rhs),
             Expr::Field { base, field } => self.lower_record_field(base, field),
             Expr::Lambda { .. } => {
                 // A lambda is a closure record: the code slot holds its
@@ -15769,6 +15776,7 @@ impl FunctionLowerer<'_> {
 
     fn lower_binary(
         &mut self,
+        expression: &Expr,
         operator: BinOp,
         left: &Expr,
         right: &Expr,
@@ -15890,6 +15898,26 @@ impl FunctionLowerer<'_> {
         }
         if left_type != ValueType::Int {
             return Err(CanonicalLoweringError::UnsupportedExpression("non-integer arithmetic"));
+        }
+        if matches!(operator, BinOp::Div | BinOp::Mod) {
+            let site = self.diagnostic_site(expression)?;
+            let zero = self.push_const_int(0)?;
+            let divisor_is_zero = self.push_compare(ComparisonOperator::Equal, right, zero)?;
+            let template = if operator == BinOp::Div {
+                witchy_syntax::diag::DiagTemplate::DivisionByZero
+            } else {
+                witchy_syntax::diag::DiagTemplate::ModuloByZero
+            };
+            self.abort_on_condition(divisor_is_zero, &site, template)?;
+            if operator == BinOp::Div {
+                let minimum = self.push_const_int(i64::MIN)?;
+                let left_is_minimum = self.push_compare(ComparisonOperator::Equal, left, minimum)?;
+                let overflows = self.short_circuit_and(left_is_minimum, |this| {
+                    let negative_one = this.push_const_int(-1)?;
+                    this.push_compare(ComparisonOperator::Equal, right, negative_one).map(Some)
+                })?;
+                self.abort_on_condition(overflows, &site, witchy_syntax::diag::DiagTemplate::DivisionOverflow)?;
+            }
         }
         let (operator, overflow) = match operator {
             BinOp::Add => (ArithmeticOperator::Add, OverflowBehavior::Wrap),

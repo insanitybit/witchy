@@ -45,7 +45,9 @@ pub(super) fn sites(module: &witchy_syntax::ast::Module, console: bool) -> Resul
                     }
                     _ => {}
                 }
-                if is_list_access(expression) || matches!(expression, Expr::Call { name, .. } if name == "fail" || registry_hosts::is_require(name) || (console && is_console_print(name))) {
+                if is_list_access(expression)
+                    || matches!(expression, Expr::Binary { op: BinOp::Div | BinOp::Mod, .. })
+                    || matches!(expression, Expr::Call { name, .. } if name == "fail" || registry_hosts::is_require(name) || (console && is_console_print(name))) {
                     let key = expression as *const Expr as usize;
                     if !sites.contains_key(&key) {
                         let line = body.lines.get(index).copied().ok_or(
@@ -104,7 +106,27 @@ pub(super) fn catalog(
 impl FunctionLowerer<'_> {
     pub(super) fn diagnostic_site(&self, expression: &Expr) -> Result<Site, CanonicalLoweringError> {
         self.host_imports.abort_sites.get(&(expression as *const Expr as usize)).cloned()
-            .ok_or(CanonicalLoweringError::UnsupportedExpression("bounds source witness"))
+            .ok_or(CanonicalLoweringError::UnsupportedExpression("diagnostic source witness"))
+    }
+
+    /// Publish a source-bound arithmetic diagnostic only on the failing path.
+    /// The successful continuation retains its pre-branch ownership facts.
+    pub(super) fn abort_on_condition(
+        &mut self, condition: ValueId, site: &Site, template: witchy_syntax::diag::DiagTemplate,
+    ) -> Result<(), CanonicalLoweringError> {
+        let fail = self.new_block(&[])?;
+        let proceed = self.new_block(&[])?;
+        let facts = self.snapshot_facts();
+        self.finish_current(Terminator::BranchIf {
+            condition, then_target: fail, then_arguments: Vec::new(),
+            else_target: proceed, else_arguments: Vec::new(),
+        })?;
+        self.current = fail;
+        let message = self.lower_string_literal(&template.render(0, 0, ""))?;
+        self.abort_value_at(site, message)?;
+        self.current = proceed;
+        self.restore_snapshot(facts);
+        Ok(())
     }
 
     /// Diagnostic only: the ordinary narrowing and dominating Bounds guard
