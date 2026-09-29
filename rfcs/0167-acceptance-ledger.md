@@ -56,6 +56,16 @@ milestone gate. Row Q remains on the critical path: move remaining compile-time,
 build, linker, and tooling services off the source tree walker and retire it.
 Do not add new dependencies on that walker while removing it.
 
+The normal-mode row O CLI witness is
+`rfc0167_installed_workflow::installed_normal_check_fmt_compile_and_run`.
+It drives the built `witchy` binary through all four installed commands on one
+canonical program with retained record, String, Float, and List views, `var`
+write-back, explicit unit results, and a closure capture. The run must print
+the independently calculated transcript `views/unit/34/6/1/14/103`; compile
+must emit nonempty Wasm; formatting must reach a fixed point. This is the
+current normal-mode tooling milestone witness, while the broader historical
+row O entry below retains its separate deferred and wider coverage.
+
 This milestone does not close the full RFC. Rows E, G, H, K, L, and P retain
 their normal-mode safety obligations; wider proofs and opt-dependent parts are
 deferred. Rows I and J retain their existing evidence but their opt and
