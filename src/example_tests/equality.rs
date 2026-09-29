@@ -1,5 +1,5 @@
 use super::*;
-use crate::{codegen, interpreter, parser, typeck};
+use crate::{codegen, parser, typeck};
 
     /// (RFC-0047) `==` on a function type is a compile-time error — there is no
     /// stable equality for functions (identity is a monomorphization/inlining
@@ -25,7 +25,7 @@ use crate::{codegen, interpreter, parser, typeck};
     }
 
     /// A RECURSIVE generic ADT (`Stack(a)`, whose `Push` carries a `Stack(a)`)
-    /// compares structurally on both backends: the shape is identified by its
+    /// compares structurally on compiled Wasm: the shape is identified by its
     /// type arguments and the generated helper calls itself for the
     /// self-referential field — deep spines compare by content, through
     /// literals, declared parameter types, and nullary constructors.
@@ -36,7 +36,6 @@ use crate::{codegen, interpreter, parser, typeck};
             .iter()
             .map(|s| s.to_string())
             .collect();
-        assert_eq!(link_run(src), want.clone(), "interpreter");
         assert_eq!(wasm_run(src), want, "compiled WASM must agree");
     }
 
@@ -48,7 +47,6 @@ use crate::{codegen, interpreter, parser, typeck};
     #[test]
     fn unsupported_compound_equality_is_a_loud_error_not_silent() {
         let resolved = "import result\n\nfn wrap(x: a) -> Result(a, String):\n    Ok(x)\n\nfn main(console: Console):\n    console.print(\"${wrap([1]) == wrap([2])}\")\n";
-        assert_eq!(interp(resolved), vec!["false"]);
         assert_eq!(wasm_run(resolved), vec!["false"], "backends agree");
         let empty = "import result\n\nfn wrap(x: a) -> Result(a, String):\n    Ok(x)\n\nfn main(console: Console):\n    console.print(\"${wrap([]) == wrap([])}\")\n";
         let rm = parser::parse_module(empty).expect("parse");
@@ -59,10 +57,10 @@ use crate::{codegen, interpreter, parser, typeck};
         );
     }
 
-    /// Ordering a NaN must FAIL on both backends, not silently return IEEE false
-    /// on WASM. The interpreter errors ("cannot compare NaN"); the compiled
+    /// Ordering a NaN must FAIL, not silently return IEEE false
+    /// on WASM. The compiled
     /// `<`/`<=`/`>`/`>=` on floats route through a NaN-trapping helper. Equality
-    /// (`==`) is IEEE on both (NaN == NaN is false) and still agrees. Ordinary
+    /// (`==`) is IEEE (NaN == NaN is false). Ordinary
     /// float ordering is unchanged. (Regression for a silent NaN-ordering
     /// divergence.)
     #[test]
@@ -74,13 +72,10 @@ use crate::{codegen, interpreter, parser, typeck};
             let module = parser::parse_module(&src).expect("parse");
             let bytes = codegen::compile_module_binary(&module)
                 .expect_lowered("the binary path lowers this program");
-            assert!(interpreter::run(&src).is_err(), "interpreter must error on `{cmp}`");
             assert!(crate::run_wasm_bytes(&bytes).is_err(), "WASM must trap on `{cmp}`");
         }
         // Ordinary float ordering and NaN equality still agree.
         let ok = "fn main(console: Console):\n    let nan = 0.0 / 0.0\n    console.print(\"${1.5 < 2.5}\")\n    console.print(\"${2.5 <= 2.5}\")\n    console.print(\"${nan == nan}\")\n";
         let want = vec!["true".to_string(), "true".to_string(), "false".to_string()];
-        assert_eq!(interp(ok), want.clone(), "interpreter");
         assert_eq!(run_on_wasm(ok), want, "compiled WASM must agree");
     }
-

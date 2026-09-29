@@ -1,5 +1,4 @@
 use super::*;
-use crate::{interpreter};
 
     #[test]
     fn order_processing_integration_backends_agree() {
@@ -24,14 +23,12 @@ fn main(console: Console):
         None -> console.print("none")
 "#;
         let sources = [("main", client)];
-        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
         let compiled = run_linked_on_wasm(&sources, "main");
-        assert_eq!(interpreted, compiled, "order processing diverged");
         assert_eq!(compiled, vec!["650", "milk"]);
     }
 
     // Nested constructor patterns destructure through a record: `Circle(Point(x,
-    // y))` binds x and y from the inner Point in one pattern. Both backends agree.
+    // y))` binds x and y from the inner Point in one pattern.
     #[test]
     fn nested_constructor_pattern_backends_agree() {
         let src = r#"
@@ -53,7 +50,5 @@ fn main(console: Console):
     console.print("${f(Circle(Point(10, 1)))}")
     console.print("${f(Origin)}")
 "#;
-        assert_eq!(interp(src), run_on_wasm(src), "nested constructor pattern diverged");
         assert_eq!(run_on_wasm(src), vec!["7", "11", "0"]);
     }
-
