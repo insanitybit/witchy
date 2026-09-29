@@ -139,6 +139,14 @@ calculated `1 2` and reports zero owned-heap leaks. Source checking refuses
 field mutation through that frozen root. This covers whole replacement of one
 record shape; broader frozen/unique/view compositions remain open.
 
+`rfc0167_unique_root_view_cow` adds a normal-mode row E/L witness: a retained
+view of a `var unique List(Int)` reads the old two-element snapshot after
+`values.push(3)` writes back the three-element root. Checked source runs on
+admitted unoptimized Wasm, prints the independently expected `2 3 1`, and
+reports zero owned-heap leaks. The later by-value `values.length()` read
+consumes the unique handle under the ordinary affine rule; this witness does
+not establish reusable uniqueness after that call or broader nested proofs.
+
 The live spawned-slice row K witness currently stops at `std/task.witchy`'s
 `and_then_step`. At merged `6f5d47223`, the compiler-private `__Msg` envelope
 has an explicit copyable graph-storage proof. That lets `task.Step(task.Handle)`
