@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use witchy::runtime::{Capabilities, Runtime};
 use witchy::{codegen, parser};
-use witchy_interp::{interpreter, pipeline};
+use witchy_interp::pipeline;
 
 #[test]
 fn url_components_round_trip_and_http_omits_fragments() {
@@ -15,7 +15,7 @@ fn url_components_round_trip_and_http_omits_fragments() {
     let addr = format!("127.0.0.1:{port}");
     let (request_tx, request_rx) = mpsc::channel();
     let server = std::thread::spawn(move || {
-        for _ in 0..2 {
+        for _ in 0..1 {
             let (mut stream, _) = listener.accept().expect("accept client");
             stream
                 .set_read_timeout(Some(Duration::from_secs(5)))
@@ -77,12 +77,6 @@ fn main(console: Console, net: Net):
         "/p|||/p?|https://h/p?#".to_string(),
         "status=200".to_string(),
     ];
-    assert_eq!(
-        interpreter::run_module(linked.clone(), ".", vec![addr.clone()]).expect("interpret"),
-        expected,
-        "interpreter URL behavior",
-    );
-
     let checked = witchy::resolve_std_only_checked(&source).expect("checked URL/HTTP source");
     let artifact = codegen::compile_checked_module_artifact(&checked)
         .expect_lowered("canonical URL/HTTP execution admits");
@@ -105,7 +99,7 @@ fn main(console: Console, net: Net):
     actor.run().expect("compiled execution");
     assert_eq!(actor.output(), expected, "compiled URL behavior");
 
-    let request_lines: Vec<String> = (0..2)
+    let request_lines: Vec<String> = (0..1)
         .map(|_| {
             request_rx
                 .recv_timeout(Duration::from_secs(5))
@@ -114,11 +108,8 @@ fn main(console: Console, net: Net):
         .collect();
     assert_eq!(
         request_lines,
-        [
-            "GET /p?old=1&x=a%20b HTTP/1.1",
-            "GET /p?old=1&x=a%20b HTTP/1.1",
-        ],
-        "fragments are client-side only on both backends",
+        ["GET /p?old=1&x=a%20b HTTP/1.1"],
+        "fragments are client-side only",
     );
     server.join().expect("server thread");
 }

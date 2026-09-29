@@ -4,17 +4,17 @@
 //! resumable-frame, one-time-effect, or complexity rows.
 
 use witchy::ast::{Expr, Item, Stmt};
-use witchy::runtime::{Capabilities, Runtime};
+use witchy::runtime::{Capabilities, Runtime, comptime::ComptimeLimits};
 use witchy::{codegen, format, parser};
-use witchy_interp::{interpreter};
+use witchy_types::runtime_type::{AuthenticatedModuleOwners, ModuleLoadIdentity, PackageCoordinate, PackageSource};
 
-fn compiled_output(module: &witchy_interp::pipeline::CheckedModule) -> Vec<String> {
-    let wasm = codegen::compile_checked_module_binary(module)
-        .expect_lowered("compile reflected generator syntax");
+fn compiled_output(module: &witchy_types::pipeline::CheckedModule) -> Vec<String> {
+    let artifact = codegen::compile_checked_module_artifact(module)
+        .expect_lowered("admit reflected generator syntax");
     let mut runtime = Runtime::batch().expect("create RFC-0130 surface runtime");
     let mut actor = runtime
-        .spawn(
-            &wasm,
+        .spawn_admitted(
+            &artifact,
             Capabilities {
                 print: true,
                 quiet: true,
@@ -79,7 +79,7 @@ fn rfc0130_row_6_formatter_reflection_docs_and_editor_surfaces_preserve_generato
 import iter
 import meta
 
-comptime fn generator_item() -> ItemSyntax:
+comptime fn generator_item() -> meta.ItemSyntax:
     quote item:
         gen fn generated_values() -> Iter(Int):
             yield 20
@@ -92,13 +92,29 @@ fn main(console: Console):
     let values: List(Int) = iter.collect(generated_values())
     console.print("${values}")
 "#;
-    let checked = witchy::resolve_std_only_checked(reflected_source)
-        .expect("quoted generator item must survive compile-time reflection");
+    let app = PackageCoordinate::new(PackageSource::Workspace, "test/rfc0130-surface", "1")
+        .expect("application identity");
+    let std = PackageCoordinate::new(PackageSource::Toolchain, "witchy/std", "1")
+        .expect("standard-library identity");
+    let assignments = std::iter::once((
+        "main".to_owned(), ModuleLoadIdentity::new(app, ["main"]).expect("main identity"),
+    )).chain(witchy_syntax::linker::STD_MODULES.iter().map(|name| (
+        (*name).to_owned(), ModuleLoadIdentity::new(std.clone(), ["std", *name]).expect("std identity"),
+    )));
+    let owners = AuthenticatedModuleOwners::from_loader_assignments(assignments)
+        .expect("authenticated source owners");
+    let sources = std::iter::once(("main".to_owned(), reflected_source.as_bytes().to_vec()))
+        .chain(["iter", "meta"].into_iter().map(|name| (
+            name.to_owned(), witchy_syntax::linker::bundled_source(name)
+                .expect("bundled standard source").as_bytes().to_vec(),
+        )))
+        .collect();
+    let checked = witchy::canonical_comptime::check_source_bundle(
+        sources, "main", ["main".to_owned()].into_iter().collect(), owners,
+        ComptimeLimits { fuel: 2_000_000, memory_pages: 64, fresh_identifiers: 4,
+            host_output_bytes: 4096, syntax_nodes: 10_000, syntax_bytes: 100_000,
+            emitted_nodes: 10_000, emitted_bytes: 100_000 },
+    ).expect("quoted generator item must survive admitted compile-time reflection");
     let expected = vec!["[20, 22]".to_string()];
-    assert_eq!(
-        interpreter::run_checked_module(&checked, ".", Vec::new())
-            .expect("interpret reflected generator syntax"),
-        expected,
-    );
     assert_eq!(compiled_output(&checked), expected);
 }

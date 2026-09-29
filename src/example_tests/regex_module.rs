@@ -1,5 +1,5 @@
 use super::*;
-use crate::{codegen, interpreter, typeck};
+use crate::{codegen, typeck};
 
     /// The `std/regex` toolkit — greedy quantifiers, escapes (`\d`/`\w`/`\s` and
     /// literal metacharacters), character classes with ranges and negation, and
@@ -27,7 +27,6 @@ use crate::{codegen, interpreter, typeck};
         .iter()
         .map(|s| s.to_string())
         .collect();
-        assert_eq!(link_run(src), want.clone(), "interpreter");
         assert_eq!(wasm_run(src), want, "compiled WASM must agree");
     }
 
@@ -39,11 +38,6 @@ use crate::{codegen, interpreter, typeck};
         let src = "import regex\n\nfn main(console: Console):\n    console.print(\"${regex.matches(\"[\", \"x\")}\")\n";
         let linked = resolve_std_src(src);
         typeck::check(&linked).expect("typecheck");
-        let interp_err = interpreter::run_module(linked.clone(), ".", Vec::new())
-            .expect_err("interpreter must reject invalid regex syntax")
-            .to_string();
-        assert!(interp_err.contains("invalid regex pattern `[`"), "{interp_err}");
-
         let bytes = codegen::compile_module_binary(&linked)
 
             .expect_lowered("the binary path lowers regex");
@@ -52,4 +46,3 @@ use crate::{codegen, interpreter, typeck};
             .to_string();
         assert!(wasm_err.contains("invalid regex pattern `[`"), "{wasm_err}");
     }
-

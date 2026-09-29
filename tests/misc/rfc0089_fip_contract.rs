@@ -16,7 +16,7 @@
 use witchy_lower::analysis;
 use witchy::runtime::{Capabilities, Runtime};
 use witchy::{codegen, parser, typeck};
-use witchy_interp::{interpreter, pipeline};
+use witchy_interp::pipeline;
 
 fn linked(source: &str) -> witchy::ast::Module {
     let parsed = parser::parse_module(source).expect("parse FIP program");
@@ -81,15 +81,14 @@ fn main(console: Console):
     assert_no_fip_miss(source);
 
     let linked = linked(source);
-    let want = interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interpret");
-    assert_eq!(want, vec!["50000 42788".to_string()]);
+    let want = vec!["50000 42788".to_string()];
 
     let wasm = codegen::compile_module_binary(&linked).expect_lowered("kernel lowers");
     let mut runtime = Runtime::batch().expect("runtime");
     let caps = Capabilities { print: true, quiet: true, ..Default::default() };
     let mut actor = runtime.spawn(&wasm, caps, 256).expect("spawn");
     actor.run().expect("compiled kernel execution");
-    assert_eq!(actor.output(), want, "compiled kernel parity at contract depth");
+    assert_eq!(actor.output(), want, "compiled kernel at contract depth");
 }
 
 // Non-tail recursion: the recursive result is bound and reworked, so the owner
@@ -161,4 +160,3 @@ fn main(console: Console):
     // analysis, so this pins the refusal where it now happens.
     assert_type_error(source, "use of unique value `cursor` after it was transferred");
 }
-

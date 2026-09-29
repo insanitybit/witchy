@@ -23,11 +23,6 @@ use crate::{codegen, parser};
         // Pin canonical origin rather than legacy WIR function-name formatting.
         assert_eq!(wat, canonical_wat);
         let expected = vec!["55".to_owned()];
-        assert_eq!(
-            crate::interpreter::run_checked_module(&checked, ".", Vec::new())
-                .expect("source fib execution"),
-            expected,
-        );
         // Execute the admitted artifact itself. Reassembling diagnostic WAT
         // would not carry admission authority or promise byte-identical output.
         assert_eq!(crate::run_admitted_artifact(&artifact).expect("admitted fib execution"), expected);
@@ -441,4 +436,3 @@ use crate::{codegen, parser};
             for h in handles { h.join().unwrap(); }
         });
     }
-

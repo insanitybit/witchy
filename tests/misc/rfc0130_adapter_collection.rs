@@ -2,15 +2,14 @@
 
 use witchy::runtime::{Capabilities, Runtime};
 use witchy::{codegen};
-use witchy_interp::{interpreter};
 
-fn compiled_output(module: &witchy_interp::pipeline::CheckedModule) -> Vec<String> {
-    let wasm = codegen::compile_checked_module_binary(module)
-        .expect_lowered("compile RFC-0130 adapter and collection fixture");
+fn compiled_output(module: &witchy_types::pipeline::CheckedModule) -> Vec<String> {
+    let artifact = codegen::compile_checked_module_artifact(module)
+        .expect_lowered("admit RFC-0130 adapter and collection fixture");
     let mut runtime = Runtime::batch().expect("create RFC-0130 adapter runtime");
     let mut actor = runtime
-        .spawn(
-            &wasm,
+        .spawn_admitted(
+            &artifact,
             Capabilities {
                 print: true,
                 quiet: true,
@@ -73,12 +72,6 @@ fn main(console: Console):
         "Some(8)".to_string(),
     ];
 
-    assert_eq!(
-        interpreter::run_checked_module(&module, ".", Vec::new())
-            .expect("interpret RFC-0130 adapter fixture"),
-        expected,
-        "interpreter adapter and collection output",
-    );
     assert_eq!(
         compiled_output(&module),
         expected,
