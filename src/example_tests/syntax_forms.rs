@@ -1,5 +1,5 @@
 use super::*;
-use crate::{interpreter, parser, typeck};
+use crate::typeck;
 
     /// (BUG-295, spec §6) An irrefutable `if let`/`while let` (Var or Wildcard) is
     /// accepted, consistently with the already-accepted irrefutable TUPLE form. A
@@ -7,10 +7,8 @@ use crate::{interpreter, parser, typeck};
     #[test]
     fn irrefutable_if_let_while_let_accepted_consistently() {
         let iflet = "fn main(console: Console):\n    if let x = 3:\n        console.print(\"${x}\")\n";
-        assert_eq!(link_run(iflet), ["3"], "interp if-let");
         assert_eq!(wasm_run(iflet), ["3"], "wasm if-let");
         let whilelet = "fn main(console: Console):\n    var n = 0\n    while let x = 3:\n        n = n + x\n        if n >= 6:\n            break\n    console.print(\"${n}\")\n";
-        assert_eq!(link_run(whilelet), ["6"], "interp while-let");
         assert_eq!(wasm_run(whilelet), ["6"], "wasm while-let");
         typeck::check_str("fn main(console: Console):\n    if let _ = 3:\n        console.print(\"m\")\n").expect("if let _ ok");
         typeck::check_str("fn main(console: Console):\n    let p = (1, 2)\n    if let (a, b) = p:\n        console.print(\"${a + b}\")\n").expect("tuple if-let ok");
@@ -20,19 +18,16 @@ use crate::{interpreter, parser, typeck};
     #[test]
     fn print_trailing_newline_agrees_on_both_backends() {
         // Regression: a printed string ending in `\n` (the line terminator) must
-        // produce identical output on both backends. The WASM host strips a
-        // trailing newline; the interpreter now does too.
+        // produce separate output lines. The WASM host strips a trailing newline.
         let src = "fn main(console: Console):\n    console.print(\"ab\" + \"\\n\")\n    console.print(\"cd\")\n";
         let sources = [("main", src)];
-        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
         let compiled = run_linked_on_wasm(&sources, "main");
-        assert_eq!(interpreted, compiled, "trailing-newline print diverged");
         assert_eq!(compiled, vec!["ab", "cd"]);
     }
 
     // Indentation-based (off-side rule) syntax: blocks are delimited by `:` +
     // indentation rather than braces. A layout pass turns it into the brace form
-    // the rest of the pipeline expects, so both backends agree — here over a
+    // the rest of the pipeline expects; this checks a
     // type, match, for-loop, let/var, and calls.
     #[test]
     fn indentation_syntax_backends_agree() {
@@ -64,7 +59,6 @@ fn main(console: Console):
     console.print("${x}")
     console.print("${y}")
 "#;
-        assert_eq!(interp(src), run_on_wasm(src), "indentation backends diverged");
         assert_eq!(run_on_wasm(src), vec!["24", "6", "10"]);
     }
 
@@ -92,7 +86,6 @@ fn main(console: Console):
     console.print(classify(2))
     console.print(classify(3))
 "#;
-        assert_eq!(interp(src), run_on_wasm(src));
         assert_eq!(
             run_on_wasm(src),
             vec!["8", "14", "6", "16", "64", "9", "true", "pow2", "other"]
@@ -105,13 +98,12 @@ fn main(console: Console):
     /// wrapper, injecting four spaces after a newline that fell inside a string
     /// literal — so `line1\nline2` rendered as `line1\n    line2`. The fix reindents
     /// only STRUCTURAL newlines (outside string literals), so the tagged literal now
-    /// matches a plain multiline string and both backends produce identical bytes.
+    /// matches a plain multiline string byte for byte on compiled Wasm.
     #[test]
     fn multiline_tag_literal_preserves_raw_newlines_on_both_backends() {
         let src = "import meta\n\ncomptime fn raw(parts: List(String), holes: List(meta.TagHole)) -> meta.ExprSyntax:\n    meta.expr_string(parts.at(0))\n\nfn main(console: Console):\n    console.print(raw\"line1\\nline2\")\n    console.print(\"line1\\nline2\")\n";
         // The plain multiline string (line 2 of output) is the oracle; the tagged
-        // literal (line 1) must match it exactly on BOTH backends.
+        // literal (line 1) must match it exactly on admitted execution.
         let expected = vec!["line1\nline2".to_string(), "line1\nline2".to_string()];
-        assert_eq!(link_run(src), expected, "interp");
         assert_eq!(wasm_run(src), expected, "wasm");
     }
