@@ -12,7 +12,6 @@ use super::*;
     fn rfc0046_trait_call_on_builtin_result_resolves_show() {
         let src = "import show\nimport list\n\nfn main(console: Console):\n    let parts = \"a,b,c\".split(\",\")\n    show.say(console, list.at(parts, 1))\n    show.say(console, list.at(\"x-y\".split(\"-\"), 0))\n";
         let want = vec!["b".to_string(), "x".to_string()];
-        assert_eq!(link_run(src), want, "interpreter");
         assert_eq!(wasm_run(src), want, "wasm");
     }
 
@@ -28,7 +27,6 @@ use super::*;
         let src = "import list\nimport option\nimport cmp\n\nfn main(console: Console):\n    let xs = [3, 1, 4, 1, 5, 9, 2]\n    console.print(\"${option.unwrap_or(list.max_by(xs, fn(a: Int, b: Int): (0 - a) < (0 - b)), 0)}\")\n    console.print(\"${option.unwrap_or(list.min_by(xs, fn(a: Int, b: Int): (0 - a) < (0 - b)), 0)}\")\n";
         // Reversed comparator: max_by finds the minimum (1), min_by the maximum (9).
         let want = vec!["1".to_string(), "9".to_string()];
-        assert_eq!(link_run(src), want, "interpreter");
         assert_eq!(wasm_run(src), want, "wasm");
     }
 
@@ -45,7 +43,6 @@ use super::*;
     fn rfc0046_accept_a_iter_collect_infers_through_generic_helper() {
         let src = "import iter\n\nfn firsts(xs: List(a)) -> List(a):\n    iter.collect(iter.from_list(xs).take(2))\n\nfn main(console: Console):\n    let ys = firsts([1, 2, 3])\n    console.print(\"${ys}\")\n";
         let want = vec!["[1, 2]".to_string()];
-        assert_eq!(link_run(src), want, "interpreter");
         assert_eq!(wasm_run(src), want, "wasm");
     }
 

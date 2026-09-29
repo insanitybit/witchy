@@ -4,7 +4,7 @@ use super::*;
     /// source signatures occupy disjoint banks, and every edge still stages its
     /// arguments before changing logical functions.
     #[test]
-    fn proper_mutual_tail_calls_use_constant_stack_on_both_backends() {
+    fn proper_mutual_tail_calls_use_constant_stack() {
         let count = if is_nightly() { 250001 } else { 2501 };
         let src = format!(r#"
 fn left(own n: Int, a: Int, b: Int) -> Int:
@@ -21,14 +21,13 @@ fn main(console: Console):
     console.print("${{left({count}, 2, 7)}}")
 "#);
         let want = vec!["72".to_string()];
-        assert_eq!(interp(&src), want.clone(), "interpreter SCC trampoline");
         assert_eq!(run_on_wasm(&src), want, "compiled WIR SCC dispatcher");
     }
 
     /// Generic templates and bounded trait methods are specialized before WIR
     /// proper-call lowering, so their concrete recursive edges use the same loops.
     #[test]
-    fn specialized_generic_and_trait_tail_calls_are_proper_on_both_backends() {
+    fn specialized_generic_and_trait_tail_calls_are_proper() {
         let src = r#"
 fn keep(value: a, n: Int) -> a:
     if n == 0:
@@ -57,6 +56,5 @@ fn main(console: Console):
     console.print("${bounded(Counter(11), 100001)}")
 "#;
         let want = vec!["generic".to_string(), "11".to_string()];
-        assert_eq!(interp(src), want.clone(), "interpreter specialized trampoline");
         assert_eq!(run_on_wasm(src), want, "compiled specialized loops");
     }

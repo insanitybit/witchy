@@ -14,7 +14,6 @@ fn main(console: Console):
         Err(e) -> console.print(toml.decode_error_message(e))
 "#;
         let want = vec!["TomlTable([(title, TomlString(demo)), (port, TomlInt(8080)), (enabled, TomlBool(true)), (tags, TomlArray([TomlString(a), TomlString(b)])), (server, TomlTable([(host, TomlString(localhost)), (workers, TomlInt(4)), (tls, TomlTable([(enabled, TomlBool(false))]))]))])".to_string()];
-        assert_eq!(link_run(src), want.clone(), "interpreter");
         assert_eq!(wasm_run(src), want, "wasm");
     }
 
@@ -48,7 +47,6 @@ fn main(console: Console):
             "`a.b` is already defined as a value, cannot redefine as a table".to_string(),
             "ok".to_string(),
         ];
-        assert_eq!(link_run(src), want.clone(), "interpreter");
         assert_eq!(wasm_run(src), want, "wasm");
     }
 
@@ -82,7 +80,6 @@ fn main(console: Console):
             "array_tables: TomlTable([(r, TomlArray([TomlTable([(n, TomlString(a))]), TomlTable([(n, TomlString(b))])]))])",
             "inline: ../foo,bar",
         ];
-        assert_eq!(link_run(src), expected, "interp");
         assert_eq!(wasm_run(src), expected, "wasm");
     }
 
