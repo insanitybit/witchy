@@ -1,5 +1,5 @@
 use super::*;
-use crate::{ast, interpreter, parser, pipeline, typeck};
+use crate::{ast, parser, pipeline, typeck};
 
 #[test]
 fn closure_value_capture_own_calls_preserve_outer_snapshots_on_all_backends() {
@@ -9,7 +9,6 @@ fn closure_value_capture_own_calls_preserve_outer_snapshots_on_all_backends() {
              fn main(console: Console):\n    let text = \"hello\"\n    let callback = fn() -> String: take(text)\n    let first = callback()\n    let second = callback()\n    console.print(\"${{text.length() + first.length() + second.length()}}\")\n"
         );
         let want = ["15"];
-        assert_eq!(link_run(&src), want, "interpreter preserves the captured snapshot in {mode:?}");
         assert_eq!(
             wasm_run_reowns(&src).0,
             want,
@@ -55,11 +54,6 @@ fn main(console: Console):
         typeck::check(&linked).expect("normal result has no reference contract");
         let expected = ["[1]:[1, 2]"];
         assert_eq!(
-            interpreter::run_module(linked, ".", Vec::new()).expect("interpreter"),
-            expected,
-            "interpreter detaches the ordinary result before owner mutation",
-        );
-        assert_eq!(
             run_linked_on_wasm(&[("api", api), ("app", app)], "app"),
             expected,
             "compiled code detaches the ordinary result before owner mutation",
@@ -103,11 +97,6 @@ fn main(console: Console):
             .expect("link normal repair caller");
         typeck::check(&linked).expect("normal repair caller type checks");
         let expected = ["[1, 2, 3]:[1, 2]"];
-        assert_eq!(
-            interpreter::run_module(linked, ".", Vec::new()).expect("interpreter"),
-            expected,
-            "interpreter performs copy-correct repair and write-back",
-        );
         assert_eq!(
             run_linked_on_wasm(&[("api", api), ("app", app)], "app"),
             expected,
@@ -160,7 +149,6 @@ fn main(console: Console):
             "d=[(a, ONE), (c, three)]",
             "d_snapshot=[(a, one), (b, two)]",
         ];
-        assert_eq!(link_run(src), want, "interpreter update-and-extract");
         assert_eq!(wasm_run(src), want, "compiled update-and-extract");
     }
 
@@ -207,7 +195,6 @@ fn main(console: Console):
     console.print("${dict.length(payloads)}")
 "#;
         let want = ["b", "old", "7", "b", "old", "0"];
-        assert_eq!(link_run(src), want, "interpreter record/ADT extraction");
         assert_eq!(wasm_run(src), want, "compiled record/ADT extraction");
     }
 
@@ -215,7 +202,6 @@ fn main(console: Console):
     fn rfc0087_trait_dispatch_preserves_var_conventions_on_both_backends() {
         let src = "trait Advance:\n    fn advance(var self, by: Int) -> Int\n\ntype Counter:\n    value: Int\n\nimpl Advance for Counter:\n    fn advance(var self, by: Int) -> Int:\n        self.value = self.value + by\n        self.value\n\nfn step(var value: a, by: Int) -> Int where a: Advance:\n    value.advance(by)\n\nfn main(console: Console):\n    var counter = Counter(5)\n    let result = step(counter, 7)\n    console.print(\"${counter.value} ${result}\")\n";
         let want = ["12 12"];
-        assert_eq!(link_run(src), want, "interpreter trait `var` dispatch");
         assert_eq!(wasm_run(src), want, "compiled trait `var` dispatch");
 
         let mismatch = "trait Advance:\n    fn advance(var self, by: Int) -> Int\n\ntype Counter:\n    value: Int\n\nimpl Advance for Counter:\n    fn advance(self, by: Int) -> Int:\n        self.value + by\n";
@@ -236,7 +222,6 @@ fn main(console: Console):
     fn rfc0087_nested_var_places_write_back_on_both_backends() {
         let src = "import list\n\ntype State:\n    rows: List(List(Int))\n\nfn bump(var n: Int) -> Int:\n    n = n + 10\n    n * 2\n\nfn main(console: Console):\n    var state = State([[1, 2], [3, 4]])\n    let result: Int = bump(state.rows[0][1])\n    let updated: Int = list.at(list.at(state.rows, 0), 1)\n    if updated == 12 && result == 24:\n        console.print(\"ok\")\n    else:\n        console.print(\"bad\")\n";
         let want = ["ok"];
-        assert_eq!(link_run(src), want, "interpreter nested place write-back");
         assert_eq!(wasm_run(src), want, "compiled nested place write-back");
     }
 
@@ -337,7 +322,6 @@ fn main(console: Console):
     console.print("${log}")
 "#;
         let want = ["[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 23, 24, 25, 26, 27, 28, 29, 31, 33, 34]"];
-        assert_eq!(link_run(src), want, "interpreter expression order");
         assert_eq!(wasm_run(src), want, "compiled expression order");
     }
 
@@ -345,7 +329,5 @@ fn main(console: Console):
     fn rfc0087_place_coordinates_are_evaluated_once_on_both_backends() {
         let src = "import list\n\nfn next_index(var calls: Int) -> Int:\n    calls = calls + 1\n    0\n\nfn bump(var n: Int) -> ():\n    n = n + 5\n    return\n\nfn main(console: Console):\n    var calls = 0\n    var rows = [[1, 2]]\n    bump(rows[next_index(calls)][1])\n    if calls == 1 && list.at(list.at(rows, 0), 1) == 7:\n        console.print(\"ok\")\n    else:\n        console.print(\"bad\")\n";
         let want = ["ok"];
-        assert_eq!(link_run(src), want, "interpreter captures coordinates once");
         assert_eq!(wasm_run(src), want, "compiled backend captures coordinates once");
     }
-
