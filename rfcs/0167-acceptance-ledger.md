@@ -88,6 +88,14 @@ representative safety-boundary closeout and row Q still requires retirement of
 the remaining source walker workspace/test support. These narrower M/O findings
 do not close the full RFC or its normal-mode safety rows.
 
+At merged `6c7488acf`, the guarded-match generator case also runs through
+checked source, canonical admission, and unoptimized Wasm. Its exact
+`guard 7/before 7/yield 7/after 7/done` trace and zero-leak audit demonstrate
+that a shared continuation after a nested loop is emitted once per branch
+path without replaying the guard. The encoder and admission planner share a
+bounded acyclic-clone rule (64 blocks maximum); unsupported regions still
+refuse. The historical source-walker comparison was retired from this case.
+
 The exact `4deba6d03` normal-mode safety slice ran 12 selected `misc` tests with
 12 passes. Ten of those exercise normal-mode behavior: lazy resource effects,
 phantom resource fallback, `var` view write-back, retained nested-list snapshots
@@ -2502,7 +2510,7 @@ mutation, control-flow, effect-count, frame-shape, and scaling evidence.
 
 | row | status | executable evidence |
 | --- | --- | --- |
-| 1 mutation and control flow | **PROVEN** | `rfc0130_generator_owned_frame::rfc0130_rows_1_to_3_generators_resume_owned_frames_once_with_linear_work_on_wasm` exercises mutable top-level and inherent generators with loop and branch control on compiled Wasm. `rfc0130_generator_liveness`, `rfc0130_generator_nested_cfg`, `rfc0130_generator_match_cfg`, `rfc0130_generator_match_binding`, and `rfc0130_generator_while_let_cfg` preserve live locals and branch, match, and `while let` control flow across suspension on both backends. |
+| 1 mutation and control flow | **PROVEN** | `rfc0130_generator_owned_frame::rfc0130_rows_1_to_3_generators_resume_owned_frames_once_with_linear_work_on_wasm` exercises mutable top-level and inherent generators with loop and branch control on compiled Wasm. `rfc0130_generator_liveness`, `rfc0130_generator_nested_cfg`, `rfc0130_generator_match_cfg`, `rfc0130_generator_match_binding`, and `rfc0130_generator_while_let_cfg` preserve live locals and branch, match, and `while let` control flow across suspension on admitted Wasm. The match-binding case pins its exact output and zero-leak audit after a bounded shared continuation is cloned. |
 | 2 one-time body segments and effects | **PROVEN** | The rows 1-3 fixture checks exact pre-yield capability output for every yielded item, including exhaustion. `generator_owned_frame_delays_post_yield_effect_until_resume`, `generator_direct_multi_yield_loop_resumes_each_segment_once`, and the paired CFG fixtures prove that post-yield, multi-phase, conditional, match, and loop effects resume once without replay. |
 | 3 linear pulls and bounded frame storage | **PROVEN** | `rfc0130_generator_scaling::rfc0130_acceptance_row_3_owned_frame_pulls_are_linear_and_storage_is_bounded_on_wasm` compares 8 and 64 compiled-Wasm pulls and pins a fixed direct five-lane lazy-entry carrier. The rows 1-3 fixture independently checks fixed carrier dimensions and live cells, deterministic counters, exactly linear effect count, and no pull-dependent RC, bump-allocation, or reown calls. |
 | 4 source diagnostics | **PROVEN** | `rfc0130_surface::rfc0130_row_4_generator_failures_name_source_syntax` covers returned values, yielded-value mismatch, borrowed frame/element types, region escape, unsupported trait syntax, and rejection of generated helper names. `generators::target_availability_tests::residual_suspension_cfg_fails_closed_instead_of_replaying` pins the source-located residual-CFG boundary and proves replay is not offered as a fallback. |
