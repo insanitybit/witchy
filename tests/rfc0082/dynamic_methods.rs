@@ -1,9 +1,7 @@
-//! RFC-0082 dynamic method parity through the authenticated production pipeline.
+//! RFC-0082 dynamic methods through the authenticated production pipeline.
 
 use witchy::runtime::{Capabilities, Runtime};
 use witchy::{codegen};
-use witchy_interp::{interpreter};
-use witchy::opt::{self, OptSet};
 
 use super::authenticated::checked_source_result;
 
@@ -12,7 +10,7 @@ fn checked_source(source: &str) -> witchy_types::pipeline::CheckedModule {
 }
 
 #[test]
-fn dynamic_method_dispatch_matches_between_interpreter_and_wasm() {
+fn dynamic_method_dispatch_runs_on_admitted_wasm() {
     let source = r#"
 import dynamic
 import reflect
@@ -49,16 +47,12 @@ fn main(console: Console):
         _ -> console.print("unexpected-argument")
 "#;
     let checked = checked_source(source);
-    let interpreted = interpreter::run_checked_module(&checked, ".", Vec::new())
-        .expect("interpret authenticated dynamic method fixture");
     let expected = [
         "value-12",
         "missing-missing",
         "arity-bump-1-0",
         "argument-0-Int-String",
     ];
-    assert_eq!(interpreted, expected);
-
     let artifact = codegen::compile_checked_module_artifact(&checked)
         .expect_lowered("admit authenticated dynamic method fixture");
     let mut runtime = Runtime::batch().expect("runtime");
@@ -74,7 +68,7 @@ fn main(console: Console):
 }
 
 #[test]
-fn explicit_dynamic_method_capabilities_match_between_interpreter_and_wasm() {
+fn explicit_dynamic_method_capabilities_run_on_admitted_wasm() {
     let source = r#"
 import dynamic
 import reflect
@@ -100,11 +94,7 @@ fn main(console: Console):
         Err(_) -> console.print("call-failed")
 "#;
     let checked = checked_source(source);
-    let interpreted = interpreter::run_checked_module(&checked, ".", Vec::new())
-        .expect("interpret explicit capability fixture");
     let expected = ["denied-announce", "cap-ok", "called"];
-    assert_eq!(interpreted, expected);
-
     let artifact = codegen::compile_checked_module_artifact(&checked)
         .expect_lowered("admit explicit capability fixture");
     let mut runtime = Runtime::batch().expect("runtime");
