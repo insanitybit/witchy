@@ -15,8 +15,7 @@
 //! compiled run is itself the constant-stack proof.
 
 use witchy::runtime::{Capabilities, Runtime};
-use witchy::{codegen, parser, typeck};
-use witchy_interp::pipeline;
+use witchy::codegen;
 
 fn checked(source: &str) -> witchy::pipeline::CheckedModule {
     witchy::resolve_std_only_checked(source).expect("check tail-position program")
@@ -36,39 +35,11 @@ fn assert_constant_stack_output(source: &str, expected: &[&str], pages: usize) {
     let mut actor = runtime.spawn_admitted(&artifact, caps, pages).expect("spawn");
     actor.run().expect("compiled execution");
     assert_eq!(actor.output(), want, "compiled output (constant-stack loop)");
-}
-
-/// Preserve the independent resource witness while canonical lowering still
-/// refuses this valid source form. The refusal is pinned so it cannot silently
-/// become an unadmitted execution path.
-fn assert_raw_output_pending_canonical(
-    source: &str,
-    expected: &[&str],
-    pages: usize,
-    missing: &str,
-) {
-    let checked = checked(source);
-    let refusal = match codegen::compile_checked_module_artifact(&checked) {
-        codegen::LoweringOutcome::Unsupported(reason) => reason.to_string(),
-        codegen::LoweringOutcome::Rejected(error) => error.to_string(),
-        codegen::LoweringOutcome::Lowered(_) => {
-            panic!("canonical admission unexpectedly succeeded; move this case to the admitted helper")
-        }
-    };
-    assert!(refusal.contains(missing), "{refusal}");
-
-    let parsed = parser::parse_module(source).expect("parse pending tail form");
-    let linked = pipeline::link(vec![("main".into(), parsed)], "main")
-        .expect("link pending tail form");
-    typeck::check(&linked).expect("typecheck pending tail form");
-    let wasm = codegen::compile_module_binary(&linked)
-        .expect_lowered("pending tail form lowers through the raw test path");
-    let mut runtime = Runtime::batch().expect("runtime");
-    let caps = Capabilities { print: true, quiet: true, ..Default::default() };
-    let mut actor = runtime.spawn(&wasm, caps, pages).expect("spawn raw test fixture");
-    actor.run().expect("constant-stack raw test fixture");
-    let want: Vec<String> = expected.iter().map(|line| (*line).to_string()).collect();
-    assert_eq!(actor.output(), want, "raw test fixture output");
+    assert_eq!(
+        actor.canonical_heap_leaks().expect("audit canonical heap"),
+        Some(0),
+        "tail loop must release every owned canonical root",
+    );
 }
 
 /// Run a NON-tail recursive `source` on admitted Wasm and assert it traps
@@ -110,9 +81,7 @@ fn go(n: Int) -> Int:
 fn main(console: Console):
     console.print("${go(300000)}")
 "#;
-    assert_raw_output_pending_canonical(
-        source, &["42"], 256, "MissingProperTailSite",
-    );
+    assert_constant_stack_output(source, &["42"], 256);
 }
 
 // Every selected arm body of a tail-position `match` is a tail position, and
@@ -156,9 +125,7 @@ fn main(console: Console):
     console.print("${drain(0, 300000, 5)}")
     console.print(drain("x", 300000, "y"))
 "#;
-    assert_raw_output_pending_canonical(
-        source, &["5", "y"], 256, "OwnedReleasePlacement",
-    );
+    assert_constant_stack_output(source, &["5", "y"], 256);
 }
 
 // A trait-bounded generic function's self-tail edge is a direct edge after
