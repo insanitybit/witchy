@@ -44,6 +44,13 @@ typed boundary. Migrating every external consumer or syntax form is later work.
 Row N requires representative normal-mode programs to compile and run on
 admitted unoptimized Wasm with asserted behavior and focused safety-boundary
 refusals. Opt, normal-to-opt, and normal use of opt-defined types are deferred.
+For the current replayable `Task` contract, a refused resource-bearing task
+recipe or suspension counts as a safety-boundary refusal. This milestone does
+not require making every resource-bearing spawned-child program executable:
+section 7 and section 12 defer the one-shot or lifecycle API needed to prove
+disposition after consuming a handle into a lazy task. Data-only tasks and
+admitted suspension carriers still need positive execution evidence; the
+compiler may not erase an obligation to make a resource case pass.
 This milestone does not require an independent oracle, universal cross-engine
 parity, or a separate evidence
 matrix for every supported construct. Wider memory-safety verification remains
@@ -116,7 +123,9 @@ replay capture stays refused. A temporary `match move` then reaches the next
 refusal: the `task.__handle_into_raw` bridge lacks an authenticated completion
 or transfer disposition for the consumed handle. The scheduler disposition
 must be proved before the live witness can run; a blanket bridge exemption
-would weaken the resource rule. This remains a normal-mode blocker.
+would weaken the resource rule. The spawned-handle positive witness is outside
+this milestone under the RFC's deferred lifecycle decision. Its refusal remains
+a required normal-mode safety check, and row K remains partial.
 
 This milestone does not close the full RFC. Rows E, G, H, K, L, and P retain
 their normal-mode safety obligations; wider proofs and opt-dependent parts are
