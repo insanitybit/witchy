@@ -777,6 +777,15 @@ fn graph_storage_operations(
             })
         }
         Type::Named(_, _) | Type::Tuple(_) => {
+            // The compiler-private erased message lane is a retained GC
+            // envelope. Existing scheduler reads clone that envelope, while
+            // the private source bridge and typed endpoint separately check
+            // the payload's authority. Admit the envelope's existing clone
+            // operation inside an aggregate; an affine sibling still makes
+            // the aggregate move-only.
+            if crate::is_erased_message_type(ty) {
+                return Some(GraphOperations::COPY);
+            }
             if let Some(children @ (StoredChildren::Sequence(_) | StoredChildren::Mapping(_, _))) =
                 stored_children(ty, definitions).ok().flatten()
             {
@@ -1653,6 +1662,11 @@ fn erased_scheduler_lane_validates_task_signature_without_copy_authority() {
     assert!(replay_capture_eligibility(&ty, &definitions).is_ok());
     let step = Type::Named("Step".into(), vec![Type::Named("Int".into(), vec![])]);
     assert!(replay_capture_eligibility(&step, &definitions).is_err());
+    let affine_step = Type::Named("Step".into(), vec![Type::Named("Handle".into(), vec![])]);
+    assert!(matches!(StoragePlan::classify(&affine_step, &definitions, |_| Some(0)),
+        StoragePlan::AuthenticatedPlace(graph) if graph.movable() && !graph.cloneable()));
+    assert!(matches!(affine_storage_shape(&affine_step, &definitions),
+        Some(AffineStorageShape::NullableFields(_))));
     assert!(!crate::is_erased_message_type(&Type::Named("__Msg".into(), vec![
         Type::Named("Int".into(), vec![]),
     ])));
