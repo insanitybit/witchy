@@ -132,6 +132,13 @@ view-bearing child has no authenticated storage carrier. This checked refusal
 does not establish nested view ownership. Admitting that shape needs a
 recursive root-carrier and retain/release plan.
 
+`rfc0167_frozen_view_replacement` adds a normal-mode row L composition
+witness: a rooted `&frozen Box` keeps the old field value when a `var frozen
+Box` root is replaced, so admitted unoptimized Wasm prints the independently
+calculated `1 2` and reports zero owned-heap leaks. Source checking refuses
+field mutation through that frozen root. This covers whole replacement of one
+record shape; broader frozen/unique/view compositions remain open.
+
 The live spawned-slice row K witness currently stops at `std/task.witchy`'s
 `and_then_step`. At merged `6f5d47223`, the compiler-private `__Msg` envelope
 has an explicit copyable graph-storage proof. That lets `task.Step(task.Handle)`
