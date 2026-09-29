@@ -42,6 +42,55 @@ pub(super) fn depth(current: usize, target: usize, conditional: bool) -> Option<
     u32::try_from(depth.checked_add(usize::from(conditional))?).ok()
 }
 
+/// A proposed join cannot be emitted after the branches if a bypass reaches
+/// its continuation first. This occurs inside loops when one arm reaches a
+/// later common block and then branches to the loop header: treating the
+/// header as an escape alone would select an earlier, optional join and emit
+/// that common continuation twice.
+pub(super) fn bypasses_join_continuation(
+    then_target: BlockId,
+    else_target: BlockId,
+    join: BlockId,
+    edges: &BTreeMap<BlockId, Vec<BlockId>>,
+    boundaries: &[BlockId],
+) -> Result<bool, ()> {
+    let walk = |start: BlockId, avoid: Option<BlockId>| -> Result<BTreeSet<BlockId>, ()> {
+        let mut seen = BTreeSet::new();
+        let mut pending = vec![start];
+        while let Some(block) = pending.pop() {
+            if avoid == Some(block) || boundaries.contains(&block) || !seen.insert(block) {
+                continue;
+            }
+            pending.extend(edges.get(&block).ok_or(())?);
+        }
+        Ok(seen)
+    };
+    let mut continuation = walk(join, None)?;
+    continuation.remove(&join);
+    if continuation.is_empty() { return Ok(false); }
+    Ok(walk(then_target, Some(join))?.iter().any(|block| continuation.contains(block))
+        || walk(else_target, Some(join))?.iter().any(|block| continuation.contains(block)))
+}
+
+/// Permit a bounded clone of an already emitted acyclic path when two nested
+/// branch regions share only part of a continuation. Both planner and encoder
+/// must use this same judgment. The path stops before the enclosing join or
+/// active loop labels, and every copied block must already have been emitted.
+pub(super) fn repeatable_region(
+    entry: BlockId,
+    stop: BlockId,
+    edges: &BTreeMap<BlockId, Vec<BlockId>>,
+    boundaries: &[BlockId],
+    emitted: &BTreeSet<BlockId>,
+    remaining: usize,
+) -> Result<Option<usize>, ()> {
+    let mut boundaries = boundaries.to_vec();
+    boundaries.push(stop);
+    let Some(order) = region(entry, edges, &boundaries)? else { return Ok(None) };
+    (order.len() <= remaining && order.iter().all(|block| emitted.contains(block)))
+        .then_some(order.len()).ok_or(()).map(Some)
+}
+
 /// An acyclic portion of an existing structured loop. Boundaries are only
 /// the caller's active loop header/exit labels, not guessed forward joins.
 pub(super) fn region(

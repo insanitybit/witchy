@@ -1,6 +1,5 @@
 use witchy::runtime::{Capabilities, Runtime};
-use witchy::{codegen};
-use witchy_interp::{interpreter};
+use witchy::codegen;
 
 const LIVE_MATCH_BINDING: &str = r#"
 import iter
@@ -33,14 +32,13 @@ fn main(console: Console):
     drain(guarded(console), console)
 "#;
 
-fn compiled_output(checked: &witchy_interp::pipeline::CheckedModule) -> Vec<String> {
-    witchy_interp::compiler_natives::install();
-    let bytes = codegen::compile_checked_module_binary(checked)
+fn compiled_output(checked: &witchy::pipeline::CheckedModule) -> (Vec<String>, Option<usize>) {
+    let artifact = codegen::compile_checked_module_artifact(checked)
         .expect_lowered("compile live match-binding generator fixture");
     let mut runtime = Runtime::batch_quick().expect("create runtime");
     let mut actor = runtime
-        .spawn(
-            &bytes,
+        .spawn_admitted(
+            &artifact,
             Capabilities {
                 print: true,
                 print_int: true,
@@ -51,21 +49,18 @@ fn compiled_output(checked: &witchy_interp::pipeline::CheckedModule) -> Vec<Stri
         )
         .expect("spawn live match-binding generator fixture");
     actor.run().expect("run live match-binding generator fixture");
-    actor.output()
+    (actor.output(), actor.canonical_heap_leaks().expect("canonical heap audit"))
 }
 
 #[test]
-fn match_bindings_survive_yield_without_replaying_guards_on_both_backends() {
+fn match_bindings_survive_yield_without_replaying_guards_on_admitted_wasm() {
     let checked = witchy::resolve_std_only_checked(LIVE_MATCH_BINDING)
         .expect("check live match-binding generator fixture");
     let expected = ["guard 7", "before 7", "yield 7", "after 7", "done"];
 
-    let interpreted = interpreter::run_checked_module(&checked, ".", Vec::new())
-        .expect("interpret live match-binding generator fixture");
-    assert_eq!(interpreted, expected, "interpreter resumes with the selected binding");
     assert_eq!(
         compiled_output(&checked),
-        expected,
+        (expected.iter().map(|line| (*line).to_string()).collect(), Some(0)),
         "compiled Wasm restores the binding without replaying the guard",
     );
 }

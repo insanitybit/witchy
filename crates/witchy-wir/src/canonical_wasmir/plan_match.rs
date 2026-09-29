@@ -20,6 +20,7 @@ pub(super) struct PlanEmitter<'a> {
     predecessors_by_block: BTreeMap<crate::canonical_safewir::BlockId, Vec<crate::canonical_safewir::BlockId>>,
     plan: Vec<PlanToken>,
     emitted: BTreeSet<crate::canonical_safewir::BlockId>,
+    cloned_blocks: usize,
     labels: Vec<StructuredLabel>,
     loops: Vec<(crate::canonical_safewir::BlockId, usize)>,
     /// Inline aggregates are SSA markers over field locals, so a field read
@@ -572,6 +573,8 @@ impl<'a> PlanEmitter<'a> {
             merges.push(candidate);
             if self.all_paths_reach_or_terminate(then_target, &merges, &mut BTreeSet::new())?
                 && self.all_paths_reach_or_terminate(else_target, &merges, &mut BTreeSet::new())?
+                && !forward_cfg::bypasses_join_continuation(then_target, else_target, candidate,
+                    &self.successors_by_block, &stops).map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?
             {
                 best = Some(score);
                 break;
@@ -650,7 +653,12 @@ impl<'a> PlanEmitter<'a> {
             if let Some(order) = order { return self.emit_forward(&order); }
         }
         if !self.emitted.insert(start) {
-            return Err(CanonicalAdmissionError::UnsupportedPlan);
+            // Match the encoder's bounded shared-continuation clone exactly.
+            let cloneable = stop.and_then(|stop| forward_cfg::repeatable_region(start, stop,
+                &self.successors_by_block, &self.escape_targets(), &self.emitted,
+                64usize.saturating_sub(self.cloned_blocks)).ok().flatten()).is_some();
+            if !cloneable { return Err(CanonicalAdmissionError::UnsupportedPlan); }
+            self.cloned_blocks += 1;
         }
         let block = self.block(start)?;
         self.plan.extend(expected_block_operations_plan(
@@ -960,6 +968,7 @@ pub(super) fn expected_function_plan(
         predecessors_by_block,
         plan: Vec::new(),
         emitted: BTreeSet::new(),
+        cloned_blocks: 0,
         labels: Vec::new(),
         loops: Vec::new(),
         loop_exits: Vec::new(),

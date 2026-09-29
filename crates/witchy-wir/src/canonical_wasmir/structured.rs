@@ -158,6 +158,7 @@ pub(super) struct StructuredEmitter<'a> {
     successors_by_block: BTreeMap<crate::canonical_safewir::BlockId, Vec<crate::canonical_safewir::BlockId>>,
     predecessors_by_block: BTreeMap<crate::canonical_safewir::BlockId, Vec<crate::canonical_safewir::BlockId>>,
     emitted: BTreeSet<crate::canonical_safewir::BlockId>,
+    cloned_blocks: usize,
     labels: Vec<StructuredLabel>,
     loops: Vec<(crate::canonical_safewir::BlockId, usize)>,
     /// Enclosing loops' exit blocks with their `block` labels: a branch to one
@@ -813,6 +814,10 @@ impl StructuredEmitter<'_> {
             merges.push(candidate);
             if self.all_paths_reach_or_terminate(then_target, &merges, &mut BTreeSet::new())?
                 && self.all_paths_reach_or_terminate(else_target, &merges, &mut BTreeSet::new())?
+                && !forward_cfg::bypasses_join_continuation(then_target, else_target, candidate,
+                    &self.successors_by_block, &stops).map_err(|_| EncodeError::Lowering(
+                    LoweringError::UnsupportedControlFlow { function: self.source_function.id,
+                        operation: "invalid join continuation" }))?
             {
                 best = Some(score);
                 break;
@@ -894,13 +899,19 @@ impl StructuredEmitter<'_> {
             if let Some(order) = order { return self.emit_forward(&order); }
         }
         if !self.emitted.insert(start) {
-            if std::env::var_os("WITCHY_CANONICAL_PLAN_DEBUG").is_some() {
-                eprintln!("block emitted twice: {start:?} stop={stop:?} loops={:?} exits={:?}", self.loops, self.loop_exits);
+            // A shared continuation may be entered from two nested branch
+            // paths. Copy only its already emitted acyclic portion, stopping
+            // at the enclosing join; never turn a loop into duplicated code.
+            let cloneable = stop.and_then(|stop| forward_cfg::repeatable_region(start, stop,
+                &self.successors_by_block, &self.escape_targets(), &self.emitted,
+                64usize.saturating_sub(self.cloned_blocks)).ok().flatten()).is_some();
+            if !cloneable {
+                return Err(EncodeError::Lowering(LoweringError::UnsupportedControlFlow {
+                    function: self.source_function.id,
+                    operation: "block emitted twice",
+                }));
             }
-            return Err(EncodeError::Lowering(LoweringError::UnsupportedControlFlow {
-                function: self.source_function.id,
-                operation: "block emitted twice",
-            }));
+            self.cloned_blocks += 1;
         }
         let block = self.block(start)?.clone();
         for instruction in &block.instructions {
@@ -1203,6 +1214,7 @@ pub(super) fn encode_function(
         successors_by_block,
         predecessors_by_block,
         emitted: BTreeSet::new(),
+        cloned_blocks: 0,
         labels: Vec::new(),
         loops: Vec::new(),
         loop_exits: Vec::new(),
