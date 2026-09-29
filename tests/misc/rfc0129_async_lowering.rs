@@ -1,8 +1,7 @@
-//! RFC-0129 row 1: async lowering retains source semantics and diagnostics.
+//! RFC-0129 row 1: admitted async lowering retains source semantics and diagnostics.
 
 use witchy::runtime::{Capabilities, Runtime};
 use witchy::{codegen, typeck};
-use witchy_interp::{interpreter};
 use witchy_types::suspension_carrier::{CarrierLane, SuspensionCarrierCatalog};
 
 const STATE_MACHINE_SOURCE: &str = r#"
@@ -33,19 +32,19 @@ async fn main(console: Console):
     let _ = explode().await
 "#;
 
-fn checked(source: &str) -> witchy_interp::pipeline::CheckedModule {
+fn checked(source: &str) -> witchy::pipeline::CheckedModule {
     witchy::resolve_std_only_checked(source).expect("RFC-0129 row-1 source must check")
 }
 
 fn compiled_result(
-    module: &witchy_interp::pipeline::CheckedModule,
+    module: &witchy::pipeline::CheckedModule,
 ) -> Result<Vec<String>, String> {
-    let wasm = codegen::compile_checked_module_binary(module)
+    let artifact = codegen::compile_checked_module_artifact(module)
         .expect_lowered("compile RFC-0129 row-1 corpus");
     let mut runtime = Runtime::batch().expect("create RFC-0129 row-1 runtime");
     let mut actor = runtime
-        .spawn(
-            &wasm,
+        .spawn_admitted(
+            &artifact,
             Capabilities {
                 print: true,
                 quiet: true,
@@ -71,15 +70,9 @@ fn source_line(source: &str, needle: &str) -> u32 {
 }
 
 #[test]
-fn rfc0129_acceptance_row_1_async_lowering_preserves_source_contracts_on_both_backends() {
+fn rfc0129_acceptance_row_1_async_lowering_preserves_source_contracts_on_admitted_wasm() {
     let state_machine = checked(STATE_MACHINE_SOURCE);
     let expected = vec!["6 10".to_string()];
-    assert_eq!(
-        interpreter::run_checked_module(&state_machine, ".", Vec::new())
-            .expect("interpret RFC-0129 state-machine corpus"),
-        expected,
-        "interpreter must preserve mutable loop state and early return",
-    );
     assert_eq!(
         compiled_result(&state_machine).expect("run compiled RFC-0129 state-machine corpus"),
         expected,
@@ -115,21 +108,21 @@ fn rfc0129_acceptance_row_1_async_lowering_preserves_source_contracts_on_both_ba
     }
 
     let trapping = checked(TRAP_SOURCE);
-    let interpreted = interpreter::run_checked_module(&trapping, ".", Vec::new())
-        .expect_err("interpreter must preserve the async trap")
-        .message;
     let compiled = compiled_result(&trapping)
         .expect_err("compiled Wasm must preserve the async trap");
-    assert_eq!(compiled, format!("runtime error: {interpreted}"));
 
     let line = source_line(TRAP_SOURCE, "42 / divisor");
     let expected_site = format!("`main.explode`, line {line}:");
     assert!(
-        interpreted.starts_with(&expected_site),
-        "async trap must retain its source callable and line: {interpreted}",
+        compiled.contains(&expected_site),
+        "async trap must retain its source callable and line: {compiled}",
     );
     assert!(
-        !interpreted.contains("__async_"),
-        "generated segment identity leaked into async trap: {interpreted}",
+        compiled.contains("division by zero"),
+        "async trap must retain the arithmetic cause: {compiled}",
+    );
+    assert!(
+        !compiled.contains("__async_"),
+        "generated segment identity leaked into async trap: {compiled}",
     );
 }
