@@ -24,8 +24,6 @@ mod rfc0080;
 mod rfc0081_existential_frontend;
 #[path = "rfc0080_0130_conformance/rfc0090.rs"]
 mod rfc0090;
-#[path = "rfc0080_0130_conformance/rfc0129_schedule_parity.rs"]
-mod rfc0129_schedule_parity;
 #[path = "rfc0130_generator/scaling.rs"]
 mod scaling;
 #[path = "rfc0130_generator/while_let_cfg.rs"]
