@@ -90,7 +90,7 @@ two normal-caller/opt-defined-type cases in the same run are deferred evidence,
 not normal-mode completion credit. This establishes a bounded row N slice;
 broader aggregate views and task-resource disposition remain open.
 
-The runtime diagnostic golden migration at `826b02777` checks list bounds,
+The runtime diagnostic golden migration at merged `0ca522869` checks list bounds,
 user `fail`, and a missing named secret through checked source and admitted
 Wasm, retaining their source-level messages. Five other diagnostic goldens
 remain on the historical test-only interpreter/raw-Wasm path: admitted
@@ -109,13 +109,14 @@ shapes. Deeper and generic aggregate families still need proof, so row G stays
 partial.
 
 The live spawned-slice row K witness currently stops at `std/task.witchy`'s
-`and_then_step`: matching `task.Step(task.Handle)` would copy a must-consume
-value, while `match move` is also refused because no authenticated consuming
-aggregate proof exists. The checked type has a scalar aggregate shape but no
-proved affine storage plan. The required fix must establish movable storage,
-consuming extraction, and scheduler disposition together; syntax-only changes
-must not bypass the refusal. This is a confirmed normal-mode blocker, not
-evidence that the resource contract is complete.
+`and_then_step`. At merged `6f5d47223`, the compiler-private `__Msg` envelope
+has an explicit copyable graph-storage proof. That lets `task.Step(task.Handle)`
+be moved as a whole without making the must-consume `Handle` cloneable, and
+replay capture stays refused. A temporary `match move` then reaches the next
+refusal: the `task.__handle_into_raw` bridge lacks an authenticated completion
+or transfer disposition for the consumed handle. The scheduler disposition
+must be proved before the live witness can run; a blanket bridge exemption
+would weaken the resource rule. This remains a normal-mode blocker.
 
 This milestone does not close the full RFC. Rows E, G, H, K, L, and P retain
 their normal-mode safety obligations; wider proofs and opt-dependent parts are
