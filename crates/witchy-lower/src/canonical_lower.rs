@@ -5493,7 +5493,8 @@ impl FunctionLowerer<'_> {
                     // A final `if`/`match`/block whose arms hold manifest
                     // tail sites is lowered in tail context: each arm exits
                     // the function, with proper tail calls at the sites.
-                    if matches!(value, Expr::If { .. } | Expr::Match { .. } | Expr::Block(_))
+                    if matches!(value, Expr::If { .. } | Expr::Match { .. } | Expr::Block(_)
+                        | Expr::Binary { op: BinOp::Coalesce, .. })
                         && (self.has_nested_tail_sites(&self.tail_path(index, ProperTailPathStep::Value)?)
                             || self.result_type.as_ref().is_some_and(|ty|
                                 witchy_canonical_source::storage::affine_storage_shape(ty, self.definitions).is_some()))
@@ -6241,6 +6242,11 @@ impl FunctionLowerer<'_> {
                 let mut block_path = path;
                 block_path.push(ProperTailPathStep::Node(ProperTailExprKind::Block));
                 self.lower_tail_block(block, block_path)
+            }
+            Expr::Binary { op: BinOp::Coalesce, lhs, rhs }
+                if self.has_nested_tail_sites(&path) =>
+            {
+                self.lower_tail_coalesce(lhs, rhs, path)
             }
             Expr::Call { name, args }
                 if !self.bindings.contains_key(name)
@@ -11031,7 +11037,7 @@ impl FunctionLowerer<'_> {
         // This vector belongs to this invocation. Nested calls while capturing
         // an index cannot replace the outer call's prepared coordinates.
         let mut write_backs = Vec::new();
-        let lowered = arguments
+        let mut lowered = arguments
             .iter()
             .zip(parameters)
             .enumerate()
@@ -11304,6 +11310,31 @@ impl FunctionLowerer<'_> {
                 }
             })
             .collect::<Result<Vec<_>, _>>()?;
+        if tail {
+            // A proper tail edge transfers every managed argument token. A
+            // repeated immutable source binding still denotes two ordinary
+            // value snapshots, so normal mode must mint a separate shared
+            // token for its second lane before the caller frame disappears.
+            // Affine or opt lanes have no implicit-copy proof here.
+            let mut seen = HashMap::new();
+            for (index, argument) in lowered.iter_mut().enumerate() {
+                let CallArgument::Move(value) = argument else { continue };
+                if !matches!(self.values.get(value), Some(ValueType::Ref(_) | ValueType::Gc(_))) {
+                    continue;
+                }
+                if let Some(previous) = seen.insert(*value, index) {
+                    if self.opt_mode
+                        || parameters[previous].ownership != ParameterOwnership::Shared
+                        || parameters[index].ownership != ParameterOwnership::Shared
+                    {
+                        return Err(CanonicalLoweringError::UnsupportedExpression(
+                            "tail call repeats a managed argument without a copy proof",
+                        ));
+                    }
+                    *value = self.clone_reference_token(*value)?;
+                }
+            }
+        }
         Ok((lowered, write_backs))
     }
 
@@ -12066,6 +12097,90 @@ impl FunctionLowerer<'_> {
             _ => return Err(CanonicalLoweringError::UnsupportedExpression("aggregate slot type")),
         }
         Ok(destination)
+    }
+
+    /// The selected fallback of a tail-position coalesce is itself a proper
+    /// tail position. Keep the source Binary/Child(1) path from the checked
+    /// manifest instead of lowering the fallback as an ordinary expression.
+    fn lower_tail_coalesce(
+        &mut self,
+        left: &Expr,
+        right: &Expr,
+        mut path: Vec<ProperTailPathStep>,
+    ) -> Result<(), CanonicalLoweringError> {
+        let left_type = self.expression_storage_type(left)?;
+        let shape = scalar_aggregate_shape(&left_type, self.definitions)
+            .filter(|shape| matches!(shape.name.as_str(), "Option" | "Result"))
+            .ok_or(CanonicalLoweringError::UnsupportedExpression("coalesce operand"))?;
+        let success_name = if shape.name == "Option" { "Some" } else { "Ok" };
+        let (success_index, success) = shape.variant(success_name)
+            .ok_or(CanonicalLoweringError::UnsupportedExpression("coalesce success variant"))?;
+        if success.arity != 1 {
+            return Err(CanonicalLoweringError::UnsupportedExpression("coalesce success payload"));
+        }
+        let success_field = success.first_field;
+        let payload_type = self.field_value_type(&shape.fields[success_field])?;
+        let affine_result = witchy_canonical_source::storage::affine_storage_shape(
+            &shape.fields[success_field], self.definitions,
+        ).is_some();
+        let object = self.lower_expr(left)?;
+        if affine_result {
+            self.retire_consumed_aggregate_parameter(left, object);
+        }
+        let tag = if matches!(self.values[&object], ValueType::Gc(_)) {
+            self.opaque_aggregate_tag(object, &left_type)?
+        } else {
+            self.load_record_field(object, 0, ValueType::Int)?
+        };
+        let some_tag = self.push_const_int(i64::try_from(success_index).map_err(|_| CanonicalLoweringError::IdOverflow)?)?;
+        let is_some = self.push_compare(ComparisonOperator::Equal, tag, some_tag)?;
+        let success_block = self.new_block(&[])?;
+        let fallback_block = self.new_block(&[])?;
+        self.finish_current(Terminator::BranchIf {
+            condition: is_some,
+            then_target: success_block,
+            then_arguments: Vec::new(),
+            else_target: fallback_block,
+            else_arguments: Vec::new(),
+        })?;
+        let outer = self.bindings.clone();
+        let facts = self.snapshot_facts();
+        self.current = success_block;
+        let payload = if affine_result {
+            let pattern = Pattern::Ctor {
+                name: success_name.to_string(),
+                args: vec![Pattern::Var("__coalesce_payload".to_string())],
+            };
+            let mut fields = self.lower_consuming_aggregate_pattern(object, &pattern, &left_type, &shape)?;
+            if fields.len() != 1 {
+                return Err(CanonicalLoweringError::UnsupportedExpression("coalesce consuming payload"));
+            }
+            fields.pop().expect("one consuming payload").1
+        } else {
+            self.load_source_aggregate_field(
+                object, &left_type, success_index, 0, success_field, payload_type,
+            )?
+        };
+        let payload = self.detach_bound_result(payload, affine_result)?;
+        let results = self.results.clone();
+        let terminator = self.return_value(Some(payload), &results)?;
+        self.finish_current(terminator)?;
+
+        self.restore_snapshot(facts);
+        self.bindings = outer;
+        self.current = fallback_block;
+        if affine_result {
+            let failure_name = if shape.name == "Option" { "None" } else { "Err" };
+            let (_, failure) = shape.variant(failure_name)
+                .ok_or(CanonicalLoweringError::UnsupportedExpression("coalesce failure variant"))?;
+            let pattern = Pattern::Ctor {
+                name: failure_name.to_string(),
+                args: vec![Pattern::Wildcard; failure.arity],
+            };
+            self.lower_consuming_aggregate_pattern(object, &pattern, &left_type, &shape)?;
+        }
+        path.extend([ProperTailPathStep::Node(ProperTailExprKind::Binary), ProperTailPathStep::Child(1)]);
+        self.lower_tail_expr(right, path)
     }
 
     /// `value ?? default`: the payload of `Some`/`Ok`, otherwise the
