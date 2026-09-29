@@ -13,11 +13,10 @@
 //! (imperfect) behavior so its eventual fix shows up as a deliberate golden
 //! update — Phase 2 (message polish) is out of scope here.
 //!
-//! Parity note: every runtime-trap golden captures BOTH the interpreter and the
-//! compiled-WASM output in one snapshot, so a diverging pair is a parity failure
-//! caught at the message level. Routed runtime traps must carry the same source
-//! position and message on both backends (RFC-0045 strict); a bare Wasm trap is
-//! a regression.
+//! Runtime-trap goldens use the production checked-source to admitted-Wasm
+//! route where it preserves the routed source diagnostic. Remaining goldens
+//! retain historical raw-Wasm/interpreter parity until canonical lowering
+//! routes their source locations; a bare Wasm trap is not a replacement.
 
 use witchy_lower::codegen;
 use witchy_interp::{interpreter, pipeline};
@@ -26,8 +25,8 @@ use witchy_types::typeck;
 
 // ---------------------------------------------------------------------------
 // Pipeline plumbing — reuses the same stages the CLI and `example_tests.rs`
-// drive (`parse_module` -> `pipeline::link` -> `typeck::check` ->
-// `compile_module_binary` / `interpreter::run_module` / `run_wasm_bytes`).
+// drive. Runtime goldens use checked source and admitted Wasm; historical
+// frontend diagnostics below still use their raw test-only pipeline.
 // Each helper returns the diagnostic STRING for the first stage that rejects.
 // Snapshots must be deterministic: sources carry no absolute paths, and no
 // helper surfaces a timestamp, address, or filesystem path.
@@ -124,40 +123,43 @@ fn lower_diag(src: &str) -> String {
     }
 }
 
-/// Run a program to a runtime trap on the interpreter, returning the trap
-/// string. Panics on any earlier-stage failure (the source must be valid up to
-/// the trap — these are runtime goldens).
-fn interp_trap(src: &str) -> String {
-    let module = parser::parse_module(src).expect("parse");
-    let linked = pipeline::link(vec![("main".into(), module)], "main").expect("link");
-    typeck::check(&linked).expect("typecheck");
-    match interpreter::run_module(linked, ".", Vec::new()) {
-        Ok(out) => format!("<ran without trapping -> {out:?}>"),
-        Err(e) => e.to_string(),
+/// Run checked source on admitted Wasm and return its routed runtime trap.
+fn admitted_trap(src: &str, caps: crate::runtime::Capabilities) -> String {
+    let checked = witchy::resolve_std_only_checked(src).expect("check source");
+    let artifact = codegen::compile_checked_module_artifact(&checked)
+        .expect_lowered("admit runtime diagnostic source");
+    let mut runtime = crate::runtime::Runtime::batch().expect("runtime");
+    let mut vm = runtime.spawn_admitted(&artifact, caps, 256).expect("spawn admitted source");
+    match vm.run() {
+        Ok(()) => format!("<ran without trapping -> {:?}>", vm.output()),
+        Err(error) => error.root_cause().to_string(),
     }
 }
 
-/// Run the same program to a runtime trap on the compiled-WASM backend.
-fn wasm_trap(src: &str) -> String {
+fn trap_snapshot(src: &str) -> String {
+    admitted_trap(src, crate::runtime::Capabilities {
+        print: true, quiet: true, ..Default::default()
+    })
+}
+
+/// Keep the older parity oracle for traps whose canonical lowering currently
+/// loses source routing. These snapshots must stay stronger than raw Wasm traps.
+fn legacy_trap_pair(src: &str) -> String {
     let module = parser::parse_module(src).expect("parse");
     let linked = pipeline::link(vec![("main".into(), module)], "main").expect("link");
     typeck::check(&linked).expect("typecheck");
+    let interpreted = match interpreter::run_module(linked.clone(), ".", Vec::new()) {
+        Ok(output) => format!("<ran without trapping -> {output:?}>"),
+        Err(error) => error.to_string(),
+    };
     let bytes = codegen::compile_module_binary(&linked)
-        .expect_lowered("the binary path lowers this program");
-    match crate::run_wasm_bytes(&bytes) {
-        Ok(out) => format!("<ran without trapping -> {out:?}>"),
-        Err(e) => e,
-    }
-}
-
-/// Snapshot the interpreter+compiled trap PAIR for one program (RFC-0072's
-/// parity rule): both backends' trap text in one golden, so a divergence is a
-/// message-level parity failure.
-fn trap_pair(src: &str) -> String {
-    let interp = interp_trap(src);
-    let wasm = wasm_trap(src);
-    assert_eq!(wasm, interp, "runtime diagnostic parity");
-    format!("interp: {interp}\nwasm:   {wasm}")
+        .expect_lowered("the raw binary path lowers this program");
+    let wasm = match crate::run_wasm_bytes(&bytes) {
+        Ok(output) => format!("<ran without trapping -> {output:?}>"),
+        Err(error) => error,
+    };
+    assert_eq!(wasm, interpreted, "historical runtime diagnostic parity");
+    format!("interp: {interpreted}\nwasm:   {wasm}")
 }
 
 // ===========================================================================
@@ -558,74 +560,62 @@ mod runtime {
 
     #[test]
     fn list_index_out_of_bounds() {
-        insta::assert_snapshot!(trap_pair(
+        insta::assert_snapshot!(trap_snapshot(
             "import list\n\nfn main(console: Console):\n    let xs = [1, 2]\n    console.print(\"${list.at(xs, 9)}\")\n"
         ));
     }
 
     #[test]
     fn parse_int_of_junk() {
-        insta::assert_snapshot!(trap_pair(
+        insta::assert_snapshot!(legacy_trap_pair(
             "\nfn main(console: Console):\n    console.print(\"${\"notanumber\".to_int()}\")\n"
         ));
     }
 
     #[test]
     fn user_fail() {
-        insta::assert_snapshot!(trap_pair(
+        insta::assert_snapshot!(trap_snapshot(
             "fn main(console: Console):\n    fail(\"something broke\")\n"
         ));
     }
 
     #[test]
     fn integer_division_by_zero() {
-        insta::assert_snapshot!(trap_pair(
+        insta::assert_snapshot!(legacy_trap_pair(
             "fn main(console: Console):\n    let z = 0\n    console.print(\"${10 / z}\")\n"
         ));
     }
 
     #[test]
     fn nested_function_uses_innermost_source_site() {
-        insta::assert_snapshot!(trap_pair(
+        insta::assert_snapshot!(legacy_trap_pair(
             "fn explode() -> Int:\n    let z = 0\n    10 / z\n\nfn main(console: Console):\n    console.print(\"${explode()}\")\n"
         ));
     }
 
     #[test]
     fn integer_division_overflow() {
-        insta::assert_snapshot!(trap_pair(
+        insta::assert_snapshot!(legacy_trap_pair(
             "fn main(console: Console):\n    let min = (0 - 9223372036854775807) - 1\n    console.print(\"${min / (0 - 1)}\")\n"
         ));
     }
 
     #[test]
     fn nan_to_int() {
-        insta::assert_snapshot!(trap_pair(
+        insta::assert_snapshot!(legacy_trap_pair(
             "import math\n\nfn main(console: Console):\n    console.print(\"${math.to_int(0.0 / 0.0)}\")\n"
         ));
     }
 
     #[test]
     fn required_secret_not_granted() {
-        // A `SecretStore` is granted, but the named secret `signing` is not — the
-        // eager require-site trap (BUG-394). Interpreter-only capture: the trap is
-        // driven through `run_module_exit_secrets` (the compiled twin needs a
-        // `SecretGrant` wiring the differential harness covers elsewhere).
+        // Grant a store with a different name so the require-site trap, rather
+        // than the entry capability gate, supplies the diagnostic.
         let src = "import secretstore\n\nfn main(console: Console, secrets: SecretStore):\n    let s = secretstore.require(secrets, \"signing\")\n    console.print(\"got it\")\n";
-        let module = parser::parse_module(src).expect("parse");
-        let linked = pipeline::link(vec![("main".into(), module)], "main").expect("link");
-        typeck::check(&linked).expect("typecheck");
-        let diag = match interpreter::run_module_exit_secrets(
-            linked,
-            ".",
-            Vec::new(),
-            Vec::new(),
-            None,
-            Vec::new(),
-        ) {
-            Ok(out) => format!("<ran without trapping -> {out:?}>"),
-            Err(e) => e.to_string(),
-        };
-        insta::assert_snapshot!(diag);
+        insta::assert_snapshot!(admitted_trap(src, crate::runtime::Capabilities {
+            print: true, quiet: true,
+            secrets: vec![crate::runtime::SecretGrant::new("other", vec![1])],
+            ..Default::default()
+        }));
     }
 }
