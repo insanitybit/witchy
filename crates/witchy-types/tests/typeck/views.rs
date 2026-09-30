@@ -33,3 +33,11 @@ fn views_cannot_launder_must_or_once_payload_obligations() {
     let module = witchy_syntax::parser::parse_module(phantom).expect("phantom source parses");
     check(&module).expect("a phantom resource argument does not enter retained storage");
 }
+
+#[test]
+fn a_generic_stored_resource_cannot_become_a_retained_view() {
+    let source = "must type Ticket:\n    Ticket(Int)\n\ntype Wrapper(a):\n    payload: a\n\nfn main():\n    let wrapped = Wrapper(payload: Ticket(7))\n    let view = &wrapped\n";
+    let module = witchy_syntax::parser::parse_module(source).expect("source parses");
+    let error = check(&module).expect_err("a stored generic field cannot hide a must obligation");
+    assert!(error.message.contains("must-consume storage cannot be copied into a persistent view"), "{error:?}");
+}
