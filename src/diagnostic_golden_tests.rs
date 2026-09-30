@@ -17,18 +17,28 @@
 //! retaining the routed source diagnostic rather than a bare Wasm trap.
 
 use witchy_lower::codegen;
-use witchy_interp::pipeline;
 use witchy_syntax::parser;
 use witchy_types::typeck;
 
 // ---------------------------------------------------------------------------
 // Pipeline plumbing — reuses the same stages the CLI and `example_tests.rs`
 // drive. Runtime goldens use checked source and admitted Wasm; historical
-// frontend diagnostics below still use their test-only pipeline.
+// frontend diagnostics below use the runtime-neutral linker pipeline.
 // Each helper returns the diagnostic STRING for the first stage that rejects.
 // Snapshots must be deterministic: sources carry no absolute paths, and no
 // helper surfaces a timestamp, address, or filesystem path.
 // ---------------------------------------------------------------------------
+
+fn link_without_expansion(
+    modules: Vec<(String, witchy_syntax::ast::Module)>,
+    entry: &str,
+) -> Result<witchy_syntax::ast::Module, witchy_syntax::linker::LinkError> {
+    let expand = witchy_syntax::linker::ComptimeExpander::with_sibling_request(
+        witchy_types::pipeline::require_expansion_free,
+        |_| false,
+    );
+    witchy_syntax::linker::link(modules, entry, expand)
+}
 
 /// A parse error (or `<unexpectedly parsed>` if the source was accepted).
 fn parse_diag(src: &str) -> String {
@@ -45,7 +55,7 @@ fn link_diag(src: &str) -> String {
         Ok(m) => m,
         Err(e) => return format!("<parse error>: {e}"),
     };
-    match pipeline::link(vec![("main".into(), module)], "main") {
+    match link_without_expansion(vec![("main".into(), module)], "main") {
         Ok(_) => "<unexpectedly linked>".to_string(),
         Err(e) => e.to_string(),
     }
@@ -60,7 +70,7 @@ fn multi_link_diag(sources: &[(&str, &str)], entry: &str) -> String {
             Err(e) => return format!("<parse error in {n}>: {e}"),
         }
     }
-    match pipeline::link(mods, entry) {
+    match link_without_expansion(mods, entry) {
         Ok(_) => "<unexpectedly linked>".to_string(),
         Err(e) => e.to_string(),
     }
@@ -72,7 +82,7 @@ fn type_diag(src: &str) -> String {
         Ok(m) => m,
         Err(e) => return format!("<parse error>: {e}"),
     };
-    let linked = match pipeline::link(vec![("main".into(), module)], "main") {
+    let linked = match link_without_expansion(vec![("main".into(), module)], "main") {
         Ok(m) => m,
         Err(e) => return format!("<link error>: {e}"),
     };
@@ -89,7 +99,7 @@ fn mode_diag(src: &str) -> String {
         Ok(m) => m,
         Err(e) => return format!("<parse error>: {e}"),
     };
-    let linked = match pipeline::link(vec![("main".into(), module)], "main") {
+    let linked = match link_without_expansion(vec![("main".into(), module)], "main") {
         Ok(m) => m,
         Err(e) => return format!("<link error>: {e}"),
     };
@@ -107,7 +117,7 @@ fn lower_diag(src: &str) -> String {
         Ok(m) => m,
         Err(e) => return format!("<parse error>: {e}"),
     };
-    let linked = match pipeline::link(vec![("main".into(), module)], "main") {
+    let linked = match link_without_expansion(vec![("main".into(), module)], "main") {
         Ok(m) => m,
         Err(e) => return format!("<link error>: {e}"),
     };
@@ -524,9 +534,27 @@ mod comptime {
     // a phantom line past EOF. This golden locks quote-item provenance so a
     // regression to a past-EOF location is caught.
     fn type_error_in_emitted_code() {
-        insta::assert_snapshot!(type_diag(
-            "comptime:\n    emit_item(quote item:\n        fn broken() -> Int:\n            \"nope\"\n    )\n\nfn main(console: Console):\n    console.print(\"${broken()}\")\n"
-        ));
+        use witchy_types::runtime_type::{
+            AuthenticatedModuleOwners, ModuleLoadIdentity, PackageCoordinate, PackageSource,
+        };
+        let workspace = PackageCoordinate::new(PackageSource::Workspace, "test/diagnostic-golden", "1").unwrap();
+        let toolchain = PackageCoordinate::new(PackageSource::Toolchain, "witchy/std", "1").unwrap();
+        let assignments = std::iter::once((
+            "main".to_owned(), ModuleLoadIdentity::new(workspace, ["main"]).unwrap(),
+        )).chain(witchy_syntax::linker::STD_MODULES.iter().map(|name| (
+            (*name).to_owned(), ModuleLoadIdentity::new(toolchain.clone(), ["std", *name]).unwrap(),
+        )));
+        let owners = AuthenticatedModuleOwners::from_loader_assignments(assignments).unwrap();
+        let source = "comptime:\n    emit_item(quote item:\n        fn broken() -> Int:\n            \"nope\"\n    )\n\nfn main(console: Console):\n    console.print(\"${broken()}\")\n";
+        let limits = witchy_runtime::runtime::comptime::ComptimeLimits {
+            fuel: 2_000_000, memory_pages: 64, fresh_identifiers: 4,
+            host_output_bytes: 4096, syntax_nodes: 10_000, syntax_bytes: 100_000,
+            emitted_nodes: 10_000, emitted_bytes: 100_000,
+        };
+        insta::assert_snapshot!(witchy::canonical_comptime::check_source_bundle(
+            vec![("main".to_owned(), source.as_bytes().to_vec())], "main",
+            ["main".to_owned()].into_iter().collect(), owners, limits,
+        ).err().expect("generated function must fail type checking"));
     }
 }
 

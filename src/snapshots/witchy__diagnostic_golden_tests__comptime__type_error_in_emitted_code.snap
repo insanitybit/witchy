@@ -1,5 +1,5 @@
 ---
 source: src/diagnostic_golden_tests.rs
-expression: "type_diag(\"comptime:\\n    emit(\\\"fn broken() -> Int:\\\")\\n    emit(\\\"    \\\\\\\"nope\\\\\\\"\\\")\\n\\nfn main(console: Console):\\n    print(console, __render(broken()))\\n\")"
+expression: "witchy::canonical_comptime::check_source_bundle(vec![(\"main\".to_owned(),\nsource.as_bytes().to_vec())], \"main\",\n[\"main\".to_owned()].into_iter().collect(), owners,\nlimits,).err().expect(\"generated function must fail type checking\")"
 ---
-type error: `main.broken`, line 1: function `main.broken` body: expected `Int`, found `String`
+`main.broken`, line 4: function `main.broken` body: expected `Int`, found `String`
