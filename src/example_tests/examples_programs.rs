@@ -1,4 +1,4 @@
-use crate::{interpreter, parser, typeck};
+use crate::parser;
 
 /// Independent expected-value oracle for shipped data-oriented examples. Backend parity
 /// belongs to `example_sweeps`, which runs every example under each optimization
@@ -429,13 +429,29 @@ fn pure_examples_require_only_console() {
 /// `main` may receive argv because input data is not authority.
 #[test]
 fn main_receives_command_line_args() {
+    struct Scratch(std::path::PathBuf);
+    impl Drop for Scratch {
+        fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); }
+    }
+    let scratch = Scratch(std::env::temp_dir().join(format!(
+        "witchy_normal_argv_{}", std::process::id()
+    )));
+    std::fs::create_dir_all(&scratch.0).expect("create argv fixture directory");
+    let path = scratch.0.join("main.witchy");
+    std::fs::write(&path,
+        "fn main(console: Console, args: List(String)):\n    console.print(list.join(args, \",\"))\n"
+    ).expect("write argv fixture");
     let run = |args: Vec<String>| -> Vec<String> {
-        let src = "fn main(console: Console, args: List(String)):\n    console.print(list.join(args, \",\"))\n";
-        let module = parser::parse_module(src).expect("parse");
-        let linked =
-            crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
-        typeck::check(&linked).expect("typecheck");
-        interpreter::run_module_args(linked, ".", Vec::new(), args).expect("run")
+        let (output, code) = crate::execute_file_exit(
+            path.to_str().expect("UTF-8 fixture path"),
+            Vec::new(),
+            Vec::new(),
+            args,
+            None,
+            Vec::new(),
+        ).expect("run admitted argv fixture");
+        assert_eq!(code, 0);
+        output
     };
     assert_eq!(run(vec!["a".into(), "b".into(), "c".into()]), vec!["a,b,c"]);
     assert_eq!(run(Vec::new()), vec![""]);
@@ -444,21 +460,14 @@ fn main_receives_command_line_args() {
 /// (SEC-037) The real historical trigger: each `contents.lines()` element is
 /// retained in `hits`, then read after the source container's lifetime. Wrong
 /// RC handling at the element read/copy corrupted or prematurely reclaimed
-/// storage still observed through `hits`. Both backends must match the
-/// independent expected lines; agreement alone would not detect matching
-/// corruption.
+/// storage still observed through `hits`. The checked production run must
+/// match the independent expected lines.
 #[test]
 fn minigrep_lines_survive_source_container_sec_037() {
     use crate::opt::{self, OptSet};
     let path = "examples/minigrep/src/minigrep.witchy";
     let args = vec!["nobody".to_string(), "examples/data/poem.txt".to_string()];
     let expected = vec!["I'm nobody! Who are you?", "Are you nobody, too?"];
-    let (linked, _) = crate::link_file(path).expect("link the SEC-037 minigrep source");
-    typeck::check(&linked).expect("typecheck the SEC-037 minigrep source");
-    let interpreted = interpreter::run_module_args(linked, ".", Vec::new(), args.clone())
-        .expect("interpret the SEC-037 minigrep source");
-    assert_eq!(interpreted, expected, "SEC-037 interpreter oracle changed");
-
     opt::set_for_tests(Some(OptSet::all()));
     let (out, code) = crate::execute_file_exit(
         path,

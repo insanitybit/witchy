@@ -89,6 +89,12 @@ without output, and a unit-returning `main` prints `hi` with code 0. Its
 source-interpreter execution is retired. This extends row O's exact CLI
 boundary evidence without claiming the broader tooling row complete.
 
+The command-line argument fixture now runs checked `main(console, args)`
+through `execute_file_exit`, asserting `a,b,c` and the empty-argument output.
+The SEC-037 minigrep retained-line case keeps its independent two-line
+expectation on that same production path; both historical interpreter calls
+are retired. Its optimized normal-mode run does not count as opt-mode evidence.
+
 The normal-mode compiler-tooling milestone is still open: row N needs its
 representative safety-boundary closeout and row Q still requires retirement of
 the remaining source walker workspace/test support. These narrower M/O findings
