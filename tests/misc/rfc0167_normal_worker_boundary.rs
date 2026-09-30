@@ -14,7 +14,7 @@ impl Drop for ResetOptimization {
 }
 
 #[test]
-fn normal_pure_worker_map_stays_in_admitted_vm() {
+fn normal_pure_worker_map_uses_admitted_zero_grant_workers() {
     opt::set_for_tests(Some(OptSet::none()));
     let _reset = ResetOptimization;
     let source = r#"
@@ -39,10 +39,10 @@ fn main(console: Console):
             }
         }
     }
-    assert!(
-        worker_imports.is_empty(),
-        "canonical normal-mode map stays in the admitted VM"
-    );
+    assert_eq!(worker_imports, BTreeSet::from([
+        "vm_par_map_admitted_run".to_owned(),
+        "vm_par_map_admitted_write".to_owned(),
+    ]), "canonical normal-mode map has exactly the authenticated worker boundary");
     let mut runtime = Runtime::batch().expect("runtime");
     let mut vm = runtime
         .spawn_admitted(
@@ -56,6 +56,7 @@ fn main(console: Console):
         )
         .expect("admitted worker spawn");
     vm.run().expect("admitted worker run");
+    assert!(vm.admitted_zero_grant_worker_launches() > 0, "worker map launches a fresh zero-grant VM");
     assert_eq!(vm.output(), ["[25, 9, 64, 1]"]);
     assert_eq!(vm.canonical_heap_leaks().expect("heap audit"), Some(0));
 }
