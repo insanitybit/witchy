@@ -26,6 +26,21 @@ pub fn has_only_direct_record_derives(module: &Module) -> bool {
     found
 }
 
+/// A sealed PublicState derive emits a fixed toolchain generator call. Prepare
+/// its block from the authenticated declaration before the source session
+/// counts original blocks, so admitted execution supplies its proof item.
+pub fn has_only_public_state_derives(module: &Module) -> bool {
+    let mut found = false;
+    for item in &module.items {
+        let Item::Type(definition) = item else { continue };
+        for derive in &definition.derives {
+            found = true;
+            if derive != "PublicState" { return false; }
+        }
+    }
+    found
+}
+
 /// Expand the authenticated toolchain Glamour declarations before static-site
 /// linking. The caller binds this rewrite to the raw source and toolchain owner.
 pub fn expand_toolchain_reflect(module: &mut Module) -> Result<(), String> {

@@ -1,5 +1,5 @@
 use witchy::{parser, typeck};
-use witchy_interp::{interpreter, pipeline};
+use witchy_interp::pipeline;
 use witchy_types::runtime_type::{AuthenticatedModuleOwners, ModuleLoadIdentity, PackageCoordinate, PackageSource};
 
 fn assert_derived_output(source: &str, expected: &[&str]) {
@@ -53,10 +53,7 @@ fn main(console: Console):
     public_state.check(empty)
     console.print("ok")
 "#;
-    let parsed = parser::parse_module(source).expect("parse PublicState witness");
-    let linked = pipeline::link(vec![("main".into(), parsed)], "main").expect("link PublicState witness");
-    typeck::check(&linked).expect("typecheck PublicState witness");
-    assert_eq!(interpreter::run_module(linked, ".", Vec::new()).expect("interpret"), ["ok"]);
+    assert_derived_output(source, &["ok"]);
 }
 
 #[test]

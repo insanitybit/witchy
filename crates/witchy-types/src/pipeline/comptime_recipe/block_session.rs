@@ -476,6 +476,7 @@ impl ComptimeSourceSession {
             let mut module = witchy_syntax::parser::parse_module(source)
                 .map_err(|error| refuse(format!("comptime source `{name}` failed to parse: {error}")))?;
             if name == selected && (witchy_syntax::derive::has_only_direct_record_derives(&module)
+                || witchy_syntax::derive::has_only_public_state_derives(&module)
                 || witchy_syntax::derive::has_only_typed_user_derives(&module)) {
                 witchy_syntax::derive::expand_admitted(&mut module)
                     .map_err(|error| refuse(format!("comptime source `{name}` failed to prepare derives: {error}")))?;
