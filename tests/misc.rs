@@ -181,6 +181,8 @@ mod rfc0167_canonical_comptime;
 mod rfc0167_ordered_comptime;
 #[path = "misc/rfc0167_match_guard_disposition.rs"]
 mod rfc0167_match_guard_disposition;
+#[path = "misc/rfc0167_result_list_closure_view.rs"]
+mod rfc0167_result_list_closure_view;
 #[path = "misc/rfc0167_normal_worker_boundary.rs"]
 mod rfc0167_normal_worker_boundary;
 
