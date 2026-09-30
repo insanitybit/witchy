@@ -20,7 +20,7 @@ breaking ABI change that must bump `WITCHY_ABI_VERSION`.
 
 ## ABI version
 
-The current ABI version is **18**. The JavaScript host pins it as
+The current ABI version is **19**. The JavaScript host pins it as
 `WITCHY_ABI_VERSION` (exported from `web/witchy-runtime/witchy-runtime.mjs`). The
 version covers: the import module name `"witchy"`, the set of import names and
 their `(params) -> results` signatures, the value/memory representation, and the
@@ -67,6 +67,12 @@ Version 18 adds compiler-session-only expression and item quotation with
 typed holes. The host substitutes current-session syntax handles into checked
 quotation seeds and refuses forged handles or source sites. Ordinary launchers
 omit these imports.
+
+Version 19 adds source-bound scalar `vm.par_map` run/write imports. Native
+launchers copy checked `List(Int)` slices into fresh zero-grant worker VMs and
+write results only to the matching source site and checked destination. The
+browser host links these imports but refuses execution until it can authenticate
+the same admitted worker descriptor.
 
 Version 14 adds native canonical Net slice adapters. `net_listen_at` receives
 an authenticated Net and an address read slice; it uses the existing admitted
@@ -181,7 +187,7 @@ It does **not** implement unavailable capability sizing imports
 
 ## The imports
 
-ABI version 18 declares **181 imports** (`IMPORT_COUNT` in
+ABI version 19 declares **183 imports** (`IMPORT_COUNT` in
 `crates/witchy-wir/src/wir_prelude.rs`). That file owns the ordered signatures
 and the explicit metadata rendered below. The classes are:
 
@@ -265,6 +271,8 @@ An empty set is an authenticated reject-all contract, never a wildcard.
 | `write_pending_list` | `(i32)` | non-authority infrastructure | none | provided |
 | `vm_par_map_run` | `(i32, i32) -> i32` | internal/toolchain service | none | omitted |
 | `vm_par_map_write` | `(i32)` | internal/toolchain service | none | omitted |
+| `vm_par_map_admitted_run` | `(i64, i32, i32) -> i32` | internal/toolchain service | none | omitted |
+| `vm_par_map_admitted_write` | `(i64, i32, i32) -> i32` | internal/toolchain service | none | omitted |
 | `vm_par_map_bytes_run` | `(i32, i32) -> i32` | internal/toolchain service | none | omitted |
 | `vm_par_map_bytes_write` | `(i32)` | internal/toolchain service | none | omitted |
 | `vm_with_dir_run` | `(externref, i32, i32) -> i32` | internal/toolchain service | none | omitted |

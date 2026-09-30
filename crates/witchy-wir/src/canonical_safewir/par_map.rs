@@ -62,29 +62,30 @@ pub(super) fn validate<S: ModuleStage>(candidate: &CanonicalModule<S>, source: &
         .filter(|import| import.module == "witchy" && import.name == PAR_MAP_IMPORT_NAMES[1])
         .map(|import| import.id).collect();
     let mut used = BTreeSet::new();
-    let mut write_count = 0usize;
+    let mut written = BTreeSet::new();
     for function in candidate.functions() {
         for block in &function.blocks {
             for (position, operation) in block.operations.iter().enumerate() {
                 let Operation::HostCall { import, arguments, .. } = operation else { continue };
-                if writes.contains(import) { write_count += 1; }
-                if !starts.contains(import) { continue }
+                let is_write = writes.contains(import);
+                if !is_write && !starts.contains(import) { continue }
                 let Some(HostCallArgument::Value(value)) = arguments.first() else {
-                    return Err("parallel-map run requires a literal source site".into())
+                    return Err("parallel-map import requires a literal source site".into())
                 };
                 let id = block.operations[..position].iter().find_map(|operation| match operation {
                     Operation::ConstInt { destination, value: literal } if destination == value => u32::try_from(*literal).ok(),
                     _ => None,
-                }).ok_or("parallel-map run site is not a source literal")?;
+                }).ok_or("parallel-map import site is not a source literal")?;
                 let descriptor = candidate.par_maps().get(id as usize).filter(|descriptor| descriptor.id() == id)
                     .ok_or("unknown parallel-map site")?;
-                if descriptor.caller() != function.id || !used.insert(id) {
-                    return Err("wrong caller or duplicate parallel-map run site".into());
+                let recorded = if is_write { &mut written } else { &mut used };
+                if descriptor.caller() != function.id || !recorded.insert(id) {
+                    return Err("wrong caller or duplicate parallel-map import site".into());
                 }
             }
         }
     }
-    if used.len() != sites.len() || write_count != sites.len() {
+    if used.len() != sites.len() || written != used {
         return Err("parallel-map site lacks one run/write pair".into());
     }
     Ok(())

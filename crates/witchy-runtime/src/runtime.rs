@@ -1352,6 +1352,8 @@ pub struct VmState {
     /// One admitted scalar worker result, sealed to its source site and
     /// consumed exactly once by the matching checked write call.
     pub(in crate::runtime) pending_admitted_par_map: Option<host::vm_worker::PendingAdmittedParMap>,
+    /// Successful fresh admitted worker launches with an empty grant set.
+    pub(in crate::runtime) admitted_zero_grant_worker_launches: usize,
     /// (RFC-0032) Staged raw-byte results of a `Bytes` `vm.par_map` — kept as raw
     /// `Vec<u8>` (NOT `String`) so arbitrary binary survives the round-trip.
     pub(crate) pending_bytes: Option<Vec<Vec<u8>>>,
@@ -1460,6 +1462,10 @@ pub struct VmServiceMetrics {
 struct ConsoleCapability;
 
 impl Vm {
+    /// Actual admitted worker VM launches through the zero-grant scalar map path.
+    pub fn admitted_zero_grant_worker_launches(&self) -> usize {
+        self.store.data().admitted_zero_grant_worker_launches
+    }
     /// Read-only evidence from actual host service invocations, not source
     /// output or a guest-selected counter.
     pub fn vm_service_metrics(&self) -> VmServiceMetrics {
@@ -2924,6 +2930,7 @@ fn vmstate_from_caps(
         pending_list: None,
         pending_ints: None,
         pending_admitted_par_map: None,
+        admitted_zero_grant_worker_launches: 0,
         pending_bytes: None,
         nets,
         fetch_grants: caps.fetch_grants.clone(),

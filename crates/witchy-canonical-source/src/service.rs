@@ -58,7 +58,7 @@ pub fn par_map_sites<'s>(source: &CanonicalSourceView<'s>) -> Result<Vec<ParMapS
         let mut occurrence = 0u32;
         witchy_syntax::ast::visit::visit_block(&function.body, &mut |expression| {
             let Expr::Call { name, args } = expression else { return Ok::<_, String>(()) };
-            if name != "vm.par_map" { return Ok(()) }
+            if name != "vm.par_map__Int__Int" { return Ok(()) }
             let [_, Expr::Var(callback)] = args.as_slice() else { return Ok(()) };
             let Some(Type::Fn(parameters, result, conventions, _)) =
                 source.callable_signature(callback).map(Type::unqualified) else { return Ok(()) };

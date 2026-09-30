@@ -12,18 +12,14 @@ pub(super) fn link(linker: &mut Linker<VmState>) -> Result<()> {
 }
 
 fn read_inputs(caller: &mut Caller<'_, VmState>, pointer: i32, length: i32) -> Result<Vec<i64>> {
+    let count = usize::try_from(length).map_err(|_| Error::msg("negative parallel-map input count"))?;
+    let byte_count = count.checked_mul(8).ok_or_else(|| Error::msg("parallel-map input length overflow"))?;
+    let byte_count = i32::try_from(byte_count).map_err(|_| Error::msg("parallel-map input length overflow"))?;
     let memory = crate::runtime::memory_of(caller)?;
-    let bytes = crate::runtime::slice(memory.data(&*caller), pointer, length)?;
-    if bytes.len() < 4 { return Err(Error::msg("parallel-map input lacks count")) }
-    let count = u32::from_le_bytes(bytes[..4].try_into().expect("checked count width")) as usize;
-    let expected = count.checked_mul(8).and_then(|bytes| bytes.checked_add(4))
-        .ok_or_else(|| Error::msg("parallel-map input length overflow"))?;
-    if bytes.len() != expected {
-        return Err(Error::msg("parallel-map input count does not match checked slice"));
-    }
+    let bytes = crate::runtime::slice(memory.data(&*caller), pointer, byte_count)?;
     let mut result = Vec::new();
     result.try_reserve_exact(count).map_err(|error| Error::msg(format!("parallel-map input allocation: {error}")))?;
-    for value in bytes[4..].chunks_exact(8) {
+    for value in bytes.chunks_exact(8) {
         result.push(i64::from_le_bytes(value.try_into().expect("checked element width")));
     }
     Ok(result)
@@ -78,12 +74,11 @@ fn run(mut caller: Caller<'_, VmState>, raw_site: i64, pointer: i32, length: i32
             }
             Ok(())
         })?;
+        caller.data_mut().admitted_zero_grant_worker_launches += workers;
     }
-    let byte_count = results.len().checked_mul(8).and_then(|bytes| bytes.checked_add(4))
-        .and_then(|bytes| i32::try_from(bytes).ok())
-        .ok_or_else(|| Error::msg("parallel-map result length overflow"))?;
+    let count = i32::try_from(results.len()).map_err(|_| Error::msg("parallel-map result count overflow"))?;
     caller.data_mut().pending_admitted_par_map = Some(PendingAdmittedParMap { site, values: results });
-    Ok(byte_count)
+    Ok(count)
 }
 
 fn write(mut caller: Caller<'_, VmState>, raw_site: i64, pointer: i32, length: i32) -> Result<i32> {
@@ -91,16 +86,13 @@ fn write(mut caller: Caller<'_, VmState>, raw_site: i64, pointer: i32, length: i
     let pending = caller.data_mut().pending_admitted_par_map.take()
         .ok_or_else(|| Error::msg("parallel-map write has no pending run"))?;
     if pending.site != site { return Err(Error::msg("parallel-map write site differs from pending run")) }
-    let expected = pending.values.len().checked_mul(8).and_then(|bytes| bytes.checked_add(4))
-        .ok_or_else(|| Error::msg("parallel-map result length overflow"))?;
-    if usize::try_from(length).ok() != Some(expected) {
+    if usize::try_from(length).ok() != Some(pending.values.len()) {
         return Err(Error::msg("parallel-map destination has wrong checked extent"));
     }
-    let count = u32::try_from(pending.values.len()).map_err(|_| Error::msg("parallel-map result count overflow"))?;
+    let expected = pending.values.len().checked_mul(8).ok_or_else(|| Error::msg("parallel-map result length overflow"))?;
     let mut bytes = Vec::with_capacity(expected);
-    bytes.extend_from_slice(&count.to_le_bytes());
     for value in pending.values { bytes.extend_from_slice(&value.to_le_bytes()); }
     let memory = crate::runtime::memory_of(&mut caller)?;
     memory.write(&mut caller, pointer as u32 as usize, &bytes)?;
-    i32::try_from(expected).map_err(|_| Error::msg("parallel-map result length overflow"))
+    Ok(length)
 }

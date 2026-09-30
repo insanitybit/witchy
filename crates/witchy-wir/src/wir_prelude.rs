@@ -276,6 +276,8 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
   (import "witchy" "write_pending_list" (func $write_pending_list_host (param i32)))
   (import "witchy" "vm_par_map_run" (func $vm_par_map_run_host (param i32 i32) (result i32)))
   (import "witchy" "vm_par_map_write" (func $vm_par_map_write_host (param i32)))
+  (import "witchy" "vm_par_map_admitted_run" (func $vm_par_map_admitted_run_host (param i64 i32 i32) (result i32)))
+  (import "witchy" "vm_par_map_admitted_write" (func $vm_par_map_admitted_write_host (param i64 i32 i32) (result i32)))
   (import "witchy" "vm_par_map_bytes_run" (func $vm_par_map_bytes_run_host (param i32 i32) (result i32)))
   (import "witchy" "vm_par_map_bytes_write" (func $vm_par_map_bytes_write_host (param i32)))
   (import "witchy" "vm_with_dir_run" (func $vm_with_dir_run_host (param externref i32 i32) (result i32)))
@@ -423,11 +425,11 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
 
 /// The number of host imports the prelude declares (used to split function
 /// indices: imports `0..IMPORT_COUNT`, helpers after).
-pub const IMPORT_COUNT: usize = 181;
+pub const IMPORT_COUNT: usize = 183;
 
 /// Version of the public `"witchy"` host-import contract.
 /// v15: compiler-session-only bounded fresh-name service.
-pub const WITCHY_ABI_VERSION: u32 = 18;
+pub const WITCHY_ABI_VERSION: u32 = 19;
 
 /// The role an import plays at the host boundary. This classification is part
 /// of the public Wasm ABI: it tells embedders which imports grant authority,
@@ -727,6 +729,8 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         | "field_strlist_size"
         | "vm_par_map_run"
         | "vm_par_map_write"
+        | "vm_par_map_admitted_run"
+        | "vm_par_map_admitted_write"
         | "vm_par_map_bytes_run"
         | "vm_par_map_bytes_write"
         | "vm_with_dir_run"

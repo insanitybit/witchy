@@ -519,10 +519,40 @@ pub(super) fn push_host_slice_plan(
     let Projection::Slice { length, .. } = place.projection() else {
         return Err(CanonicalAdmissionError::UnsupportedPlan);
     };
-    push_raw_byte_slice_address_plan(plan, function, layout, layouts, place, access, *length)?;
+    push_host_scalar_slice_address_plan(plan, function, layout, layouts, place, access, *length)?;
     if with_length {
         push_get(plan, layout, *length)?;
     }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn push_host_scalar_slice_address_plan(
+    plan: &mut Vec<PlanToken>,
+    function: &Function,
+    layout: &LocalLayout,
+    layouts: &LayoutInterner,
+    place: &Place,
+    access: AccessMode,
+    length: ValueId,
+) -> Result<(), CanonicalAdmissionError> {
+    let (object, start, length, stride, data_offset) = host_scalar_slice_place(
+        function.id, &function.value_types, layouts, place, access, length,
+    ).map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
+    push_get(plan, layout, object)?;
+    plan.extend([PlanToken::I64ExtendI32U, PlanToken::I64Const(i64::from(data_offset)), PlanToken::I64Add]);
+    push_get(plan, layout, start)?;
+    plan.extend([PlanToken::I64ExtendI32U, PlanToken::I64Const(i64::from(stride)), PlanToken::I64Mul, PlanToken::I64Add]);
+    push_get(plan, layout, length)?;
+    plan.extend([
+        PlanToken::I64ExtendI32U, PlanToken::I64Const(i64::from(stride)), PlanToken::I64Mul,
+        PlanToken::I64Add, PlanToken::I64Const(i64::from(u32::MAX)), PlanToken::I64GtU,
+        PlanToken::If("Empty".to_owned()), PlanToken::Unreachable, PlanToken::End,
+    ]);
+    push_get(plan, layout, object)?;
+    plan.extend([PlanToken::I32Const(data_offset as i32), PlanToken::I32Add]);
+    push_get(plan, layout, start)?;
+    plan.extend([PlanToken::I32Const(stride as i32), PlanToken::I32Mul, PlanToken::I32Add]);
     Ok(())
 }
 

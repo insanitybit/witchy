@@ -23,7 +23,7 @@
 // The ABI version this shim implements. Bump in lockstep with a breaking change
 // to the `"witchy"` import surface (a renamed/re-signatured non-authority import, or a
 // change to the pending-buffer protocol). RFC-0007 §"ABI stabilization".
-export const WITCHY_ABI_VERSION = 18;
+export const WITCHY_ABI_VERSION = 19;
 
 // Exact deny-by-omission surface implemented below. The Rust ABI catalog test
 // compares this list with `wir_prelude` and `instantiate` compares it with the
@@ -522,6 +522,8 @@ export const WITCHY_SECRET_STORE_IMPORTS = Object.freeze([
 export const WITCHY_VM_IMPORTS = Object.freeze([
   "vm_par_map_run",
   "vm_par_map_write",
+  "vm_par_map_admitted_run",
+  "vm_par_map_admitted_write",
   "vm_par_map_bytes_run",
   "vm_par_map_bytes_write",
   "vm_with_dir_run",
@@ -1288,6 +1290,12 @@ function makeVmImports(
       view.setInt32(0, values.length, true);
       values.forEach((value, index) => view.setBigInt64(4 + 8 * index, value, true));
       writeAt(out, basePtr);
+    },
+    vm_par_map_admitted_run(_site, _ptr, _count) {
+      throw new Error("witchy-runtime: admitted scalar workers require a source-bound native host");
+    },
+    vm_par_map_admitted_write(_site, _ptr, _count) {
+      throw new Error("witchy-runtime: no admitted scalar worker result is staged");
     },
     async vm_par_map_bytes_run(xsPtr, codeIdx) {
       const worker = await spawnWorker();

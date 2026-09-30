@@ -23,6 +23,8 @@ mod flow_storage;
 mod match_flow;
 #[path = "canonical_vm_service.rs"]
 mod vm_service;
+#[path = "canonical_par_map.rs"]
+mod par_map;
 #[path = "canonical_quote_holes.rs"]
 mod quote_holes;
 
@@ -224,6 +226,8 @@ pub fn lower_typed_module(
     layouts: LayoutBundle,
 ) -> Result<CanonicalModule<LoweredCandidate>, CanonicalLoweringError> {
     let service_sites = witchy_canonical_source::service::service_sites(&source.view())
+        .map_err(CanonicalLoweringError::UnsupportedCanonicalObligation)?;
+    let par_map_sites = witchy_canonical_source::service::par_map_sites(&source.view())
         .map_err(CanonicalLoweringError::UnsupportedCanonicalObligation)?;
     let typed = source.typed_module();
     // Canonical rooted views use their own exact checked product.  Do not
@@ -1134,7 +1138,7 @@ pub fn lower_typed_module(
     let net_imports = net::collect_imports(typed.module());
     let exec_needed = exec::is_needed(typed.module());
     let crypto_needed = crypto::is_needed(typed.module());
-    if crypto_needed || exec_needed || prints || floats || !abort_sites.is_empty() || !capability_imports.is_empty() || !compiler_imports.is_empty() || regex_spans || !net_imports.is_empty() || !service_sites.is_empty() {
+    if crypto_needed || exec_needed || prints || floats || !abort_sites.is_empty() || !capability_imports.is_empty() || !compiler_imports.is_empty() || regex_spans || !net_imports.is_empty() || !service_sites.is_empty() || !par_map_sites.is_empty() {
         let string_layout = string_layout(
             &Type::Named("String".into(), Vec::new()),
             &layouts,
@@ -1426,6 +1430,11 @@ if capability_imports.contains("build_out_write_at") {
         if crypto_needed { catalog = crypto::catalog(catalog, &mut signatures, string_layout)?; }
         if !net_imports.is_empty() { catalog = net::catalog(catalog, &mut signatures, string_layout)?; }
         if !service_sites.is_empty() { catalog = vm_service::catalog(catalog, &mut signatures, string_layout)?; }
+        if !par_map_sites.is_empty() {
+            let list_type = Type::Named("List".into(), vec![Type::Named("Int".into(), Vec::new())]);
+            let (list, _, _, _) = list_layout(&list_type, &layouts, &layout_catalog, &closure_context.layouts, &definitions)?;
+            catalog = par_map::catalog(catalog, &mut signatures, list)?;
+        }
         let bytes_bounds_needed = abort_sites.values().any(|site| site.bytes_access);
         let parse_int_needed = abort_sites.values().any(|site| site.parse_int_access);
         if !abort_sites.is_empty() { catalog = abort::catalog(catalog, &mut signatures, string_layout, bytes_bounds_needed, parse_int_needed)?; }
@@ -1447,6 +1456,7 @@ if capability_imports.contains("build_out_write_at") {
                     || (crypto_needed && crypto::is_host_import(&import.name))
                     || net_imports.contains(import.name.as_str()) // Net track
                     || (!service_sites.is_empty() && witchy_wir::canonical_safewir::VM_SERVICE_IMPORT_NAMES.contains(&import.name.as_str()))
+                    || (!par_map_sites.is_empty() && witchy_wir::canonical_safewir::PAR_MAP_IMPORT_NAMES.contains(&import.name.as_str()))
             })
             .collect::<Vec<_>>();
         host_imports = HostImports {
@@ -1457,6 +1467,8 @@ if capability_imports.contains("build_out_write_at") {
             abort_sites,
             vm_sites: service_sites.iter().map(|site| (site.expression() as *const Expr as usize, site.id())).collect(),
             vm_service: witchy_wir::canonical_safewir::VM_SERVICE_IMPORT_NAMES.iter().filter_map(|name| projected.iter().find(|i| i.name == *name).map(|i| (*name, i.id))).collect(),
+            par_map_sites: par_map_sites.iter().map(|site| (site.expression() as *const Expr as usize, site.id())).collect(),
+            par_map: witchy_wir::canonical_safewir::PAR_MAP_IMPORT_NAMES.iter().filter_map(|name| projected.iter().find(|i| i.name == *name).map(|i| (*name, i.id))).collect(),
             // RFC-0165 Net import registration (Net track).
             exec: witchy_wir::canonical_safewir::EXEC_IMPORT_NAMES.iter().filter_map(|name| projected.iter().find(|i| i.name == *name).map(|i| (*name, i.id))).collect(),
             ed25519_verify: projected.iter().find(|import| import.name == witchy_wir::canonical_safewir::CRYPTO_ED25519_VERIFY_IMPORT).map(|import| import.id),
@@ -1732,6 +1744,11 @@ if capability_imports.contains("build_out_write_at") {
             .map(|binding| binding.function()).ok_or(CanonicalLoweringError::UnsupportedExpression("missing service declaration binding"));
         Ok(witchy_wir::canonical_safewir::CandidateVmService::new(site.id(), binding(site.caller_ordinal())?, binding(site.callback_ordinal())?))
     }).collect::<Result<Vec<_>, CanonicalLoweringError>>()?;
+    let par_maps = par_map_sites.iter().map(|site| {
+        let binding = |ordinal| abi_bindings.iter().find(|binding| binding.source_declaration_ordinal() == ordinal)
+            .map(|binding| binding.function()).ok_or(CanonicalLoweringError::UnsupportedExpression("missing parallel-map declaration binding"));
+        Ok(witchy_wir::canonical_safewir::CandidateParMap::new(site.id(), binding(site.caller_ordinal())?, binding(site.callback_ordinal())?))
+    }).collect::<Result<Vec<_>, CanonicalLoweringError>>()?;
     let referenced_static_data = functions
         .iter()
         .flat_map(|function| function.blocks.iter())
@@ -1764,6 +1781,7 @@ if capability_imports.contains("build_out_write_at") {
     }, static_data_segments)
         .with_proper_tail_locations(proper_tail_locations.into_values().collect())
         .with_vm_services(vm_services)
+        .with_par_maps(par_maps)
         .with_source_abi_bindings(CandidateAbiBindings::new(abi_bindings))
         .with_closure_bindings(CandidateClosureBindings::new(closure_bindings))
         .with_adapter_bindings(CandidateAdapterBindings::new(adapter_bindings))
@@ -5580,6 +5598,7 @@ impl FunctionLowerer<'_> {
             Expr::Call { name, args } if registry_hosts::is_intrinsic(name) => self.lower_registry_intrinsic(expression, name, args).map(|_| ()),
             Expr::Call { name, args } if crypto::is_intrinsic(name) => self.lower_crypto(name, args).map(|_| ()),
             Expr::Call { name, args } if name == "vm.serve" => self.lower_vm_service(expression, args).map(|_| ()),
+            Expr::Call { name, args } if name == "vm.par_map__Int__Int" && self.host_imports.par_map_sites.contains_key(&(expression as *const Expr as usize)) => self.lower_par_map(expression, args).map(|_| ()),
             // RFC-0165 Net dispatch (Net track).
             Expr::Call { name, args } if name == "__capop.exec" => self.lower_exec(args).map(|_| ()),
             Expr::Call { name, args } if net::is_operation(name) => self.lower_net(name, args).map(|_| ()),
@@ -11390,6 +11409,7 @@ impl FunctionLowerer<'_> {
             Expr::Call { name, args } if registry_hosts::is_intrinsic(name) => self.lower_registry_intrinsic(expression, name, args),
             Expr::Call { name, args } if crypto::is_intrinsic(name) => self.lower_crypto(name, args),
             Expr::Call { name, args } if name == "vm.serve" => self.lower_vm_service(expression, args),
+            Expr::Call { name, args } if name == "vm.par_map__Int__Int" && self.host_imports.par_map_sites.contains_key(&(expression as *const Expr as usize)) => self.lower_par_map(expression, args),
             // RFC-0165 Net dispatch (Net track).
             Expr::Call { name, args } if name == "__capop.exec" => self.lower_exec(args),
             Expr::Call { name, args } if net::is_operation(name) => self.lower_net(name, args)?
@@ -20663,6 +20683,8 @@ struct HostImports {
     abort_sites: HashMap<usize, abort::Site>,
     vm_service: BTreeMap<&'static str, witchy_wir::canonical_safewir::ImportId>,
     vm_sites: HashMap<usize, u32>,
+    par_map: BTreeMap<&'static str, witchy_wir::canonical_safewir::ImportId>,
+    par_map_sites: HashMap<usize, u32>,
     // RFC-0165 Net import registration (Net track).
     net: BTreeMap<&'static str, witchy_wir::canonical_safewir::ImportId>,
     exec: BTreeMap<&'static str, witchy_wir::canonical_safewir::ImportId>,

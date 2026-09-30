@@ -36,8 +36,44 @@ pub(super) fn runtime_byte_slice(
     let Projection::Slice { start, length } = place.projection() else {
         return Err(LoweringError::UnsupportedOperation { function, operation: "HostCall buffer projection" });
     };
-    raw_byte_slice_place(function, value_types, layouts, place, AccessMode::Read, *length)?;
+    host_scalar_slice_place(function, value_types, layouts, place, AccessMode::Read, *length)?;
     Ok((place.object(), *start, *length))
+}
+
+/// Physical host slices are restricted to copied raw bytes or `Int` lanes.
+/// The checked projection length remains in elements; the encoder multiplies
+/// by this authenticated layout stride before forming a host memory range.
+pub(super) fn host_scalar_slice_place(
+    function: FunctionId,
+    value_types: &BTreeMap<ValueId, ValueType>,
+    layouts: &LayoutInterner,
+    place: &Place,
+    access: AccessMode,
+    operation_length: ValueId,
+) -> Result<(ValueId, ValueId, ValueId, u32, u32), LoweringError> {
+    if place.access() != access {
+        return Err(LoweringError::UnsupportedOperation { function, operation: "HostCall slice access" });
+    }
+    let Projection::Slice { start, length } = place.projection() else {
+        return Err(LoweringError::UnsupportedOperation { function, operation: "HostCall slice projection" });
+    };
+    if *length != operation_length || value_types.get(start) != Some(&ValueType::Size)
+        || value_types.get(length) != Some(&ValueType::Size) {
+        return Err(LoweringError::UnsupportedOperation { function, operation: "HostCall slice bounds" });
+    }
+    let ValueType::Ref(layout) = value_types.get(&place.object()).copied().ok_or(
+        LoweringError::UnsupportedOperation { function, operation: "HostCall slice object" })? else {
+        return Err(LoweringError::UnsupportedOperation { function, operation: "HostCall slice object" });
+    };
+    if place.value_type() != ValueType::Ref(layout) {
+        return Err(LoweringError::UnsupportedOperation { function, operation: "HostCall slice type" });
+    }
+    let collection = collection_layout(function, layouts, layout)?;
+    if !matches!((collection.scalar, collection.stride),
+        (ScalarKind::RawByte, 1) | (ScalarKind::Int, 8)) {
+        return Err(LoweringError::UnsupportedOperation { function, operation: "HostCall scalar slice layout" });
+    }
+    Ok((place.object(), *start, *length, collection.stride, collection.data_offset))
 }
 
 pub(super) fn raw_byte_slice_place(
@@ -133,7 +169,7 @@ pub(super) fn validate_host_call_lowering(
                 let Projection::Slice { length, .. } = place.projection() else {
                     return Err(LoweringError::UnsupportedOperation { function, operation: "HostCall buffer projection" });
                 };
-                let _ = raw_byte_slice_place(function, value_types, layouts, place, AccessMode::Write, *length)?;
+                let _ = host_scalar_slice_place(function, value_types, layouts, place, AccessMode::Write, *length)?;
             }
             // A write buffer of a declared minimum size: the host receives
             // the checked slice's address only; the checker bounded the
@@ -148,7 +184,7 @@ pub(super) fn validate_host_call_lowering(
                 let Projection::Slice { length, .. } = place.projection() else {
                     return Err(LoweringError::UnsupportedOperation { function, operation: "HostCall buffer projection" });
                 };
-                let _ = raw_byte_slice_place(function, value_types, layouts, place, AccessMode::Write, *length)?;
+                let _ = host_scalar_slice_place(function, value_types, layouts, place, AccessMode::Write, *length)?;
             }
             _ => return Err(LoweringError::UnsupportedOperation { function, operation: "HostCall argument" }),
         }

@@ -904,10 +904,53 @@ pub(super) fn emit_host_slice(
     let Projection::Slice { length, .. } = place.projection() else {
         return Err(EncodeError::Lowering(LoweringError::UnsupportedOperation { function, operation: "HostCall buffer projection" }));
     };
-    emit_raw_byte_slice_address(body, layout, function, value_types, layouts, place, access, *length)?;
+    emit_host_scalar_slice_address(body, layout, function, value_types, layouts, place, access, *length)?;
     if with_length {
         emit_get(body, layout, function, *length)?;
     }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn emit_host_scalar_slice_address(
+    body: &mut wasm_encoder::Function,
+    layout: &LocalLayout,
+    function: FunctionId,
+    value_types: &BTreeMap<ValueId, ValueType>,
+    layouts: &LayoutInterner,
+    place: &Place,
+    access: AccessMode,
+    length: ValueId,
+) -> Result<(), EncodeError> {
+    let (object, start, length, stride, data_offset) =
+        host_scalar_slice_place(function, value_types, layouts, place, access, length)
+            .map_err(EncodeError::Lowering)?;
+    emit_get(body, layout, function, object)?;
+    body.instruction(&wasm_encoder::Instruction::I64ExtendI32U);
+    body.instruction(&wasm_encoder::Instruction::I64Const(i64::from(data_offset)));
+    body.instruction(&wasm_encoder::Instruction::I64Add);
+    emit_get(body, layout, function, start)?;
+    body.instruction(&wasm_encoder::Instruction::I64ExtendI32U);
+    body.instruction(&wasm_encoder::Instruction::I64Const(i64::from(stride)));
+    body.instruction(&wasm_encoder::Instruction::I64Mul);
+    body.instruction(&wasm_encoder::Instruction::I64Add);
+    emit_get(body, layout, function, length)?;
+    body.instruction(&wasm_encoder::Instruction::I64ExtendI32U);
+    body.instruction(&wasm_encoder::Instruction::I64Const(i64::from(stride)));
+    body.instruction(&wasm_encoder::Instruction::I64Mul);
+    body.instruction(&wasm_encoder::Instruction::I64Add);
+    body.instruction(&wasm_encoder::Instruction::I64Const(i64::from(u32::MAX)));
+    body.instruction(&wasm_encoder::Instruction::I64GtU);
+    body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
+    body.instruction(&wasm_encoder::Instruction::Unreachable);
+    body.instruction(&wasm_encoder::Instruction::End);
+    emit_get(body, layout, function, object)?;
+    body.instruction(&wasm_encoder::Instruction::I32Const(data_offset as i32));
+    body.instruction(&wasm_encoder::Instruction::I32Add);
+    emit_get(body, layout, function, start)?;
+    body.instruction(&wasm_encoder::Instruction::I32Const(stride as i32));
+    body.instruction(&wasm_encoder::Instruction::I32Mul);
+    body.instruction(&wasm_encoder::Instruction::I32Add);
     Ok(())
 }
 

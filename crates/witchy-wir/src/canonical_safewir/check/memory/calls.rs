@@ -1111,7 +1111,8 @@ impl<'a> MemoryChecker<'a> {
                 object: place.object(),
             });
         };
-        if stride_bytes != 1 || !self.is_raw_byte_buffer(object.layout)? {
+        if !((stride_bytes == 1 && self.is_raw_byte_buffer(object.layout)?)
+            || (stride_bytes == 8 && self.is_int_buffer(object.layout)?)) {
             return Err(InitialCheckError::UnsupportedHostBuffer {
                 function: self.function.id,
                 import,
@@ -1208,7 +1209,7 @@ impl<'a> MemoryChecker<'a> {
         let Extent::Counted { .. } = object.extent else {
             return self.unsupported("HostCall(write prefix extent)");
         };
-        if !self.is_raw_byte_buffer(object.layout)? {
+        if !self.is_raw_byte_buffer(object.layout)? && !self.is_int_buffer(object.layout)? {
             return self.unsupported("HostCall(write prefix contract)");
         }
         let element = self.descriptor(object.layout)?.kind().packed_element_layout()

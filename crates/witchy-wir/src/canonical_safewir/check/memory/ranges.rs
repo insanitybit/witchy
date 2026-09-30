@@ -1270,4 +1270,14 @@ impl<'a> MemoryChecker<'a> {
             LayoutKind::Scalar(ScalarKind::RawByte)
         ))
     }
+
+    pub(super) fn is_int_buffer(
+        &self,
+        layout: crate::layout::LayoutId,
+    ) -> Result<bool, InitialCheckError> {
+        let LayoutKind::PackedList { element, .. } = self.descriptor(layout)?.kind() else {
+            return Ok(false);
+        };
+        Ok(matches!(self.descriptor(*element)?.kind(), LayoutKind::Scalar(ScalarKind::Int)))
+    }
 }
