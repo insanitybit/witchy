@@ -403,6 +403,12 @@ impl AdmittedVmService {
     pub fn id(&self) -> u32 { self.id }
     pub fn callback_export(&self) -> &str { &self.callback_export }
 }
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdmittedParMap { id: u32, callback_export: String }
+impl AdmittedParMap {
+    pub fn id(&self) -> u32 { self.id }
+    pub fn callback_export(&self) -> &str { &self.callback_export }
+}
 
 /// One externally linked Wasm function required by an admitted caller.  This
 /// record is derived from final SafeWIR, not from the raw Wasm import section;
@@ -426,6 +432,7 @@ pub struct AdmittedCanonicalArtifact {
     compiler_session: Option<witchy_syntax::compiler_session::CompilerSessionContract>,
     compiler_syntax_seeds: Option<std::sync::Arc<witchy_syntax::compiler_session::seeds::CompilerSyntaxSeeds>>,
     vm_services: Vec<AdmittedVmService>,
+    par_maps: Vec<AdmittedParMap>,
     external_imports: Vec<AdmittedExternalWasmImport>,
     owner_bridges: Vec<AdmittedOwnerBridge>,
     bytes: Vec<u8>,
@@ -646,6 +653,7 @@ impl AdmittedCanonicalArtifact {
         self.compiler_syntax_seeds.as_ref()
     }
     pub fn vm_services(&self) -> &[AdmittedVmService] { &self.vm_services }
+    pub fn par_maps(&self) -> &[AdmittedParMap] { &self.par_maps }
     /// Exact separately compiled scalar Wasm imports the launcher must bind.
     /// An empty list is not permission to supply arbitrary external modules.
     pub fn external_imports(&self) -> &[AdmittedExternalWasmImport] {
@@ -1033,6 +1041,9 @@ fn admit_parts(
         compiler_session: witchy_syntax::compiler_session::CompilerSessionContract::decode(_source.launch_contract_payload()),
         compiler_syntax_seeds: None,
         vm_services: _source.vm_services().iter().map(|site| AdmittedVmService {
+            id: site.id(), callback_export: format!("f{}", site.callback().get()),
+        }).collect(),
+        par_maps: _source.par_maps().iter().map(|site| AdmittedParMap {
             id: site.id(), callback_export: format!("f{}", site.callback().get()),
         }).collect(),
         external_imports: _source.imports().iter().filter_map(|import| {

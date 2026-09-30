@@ -1349,6 +1349,9 @@ pub struct VmState {
     /// them — in parallel on worker VMs — then `vm_par_map_write` lays out the
     /// `List(Int)` `[count][i64..]` into the guest's reserved block).
     pub(crate) pending_ints: Option<Vec<i64>>,
+    /// One admitted scalar worker result, sealed to its source site and
+    /// consumed exactly once by the matching checked write call.
+    pub(in crate::runtime) pending_admitted_par_map: Option<host::vm_worker::PendingAdmittedParMap>,
     /// (RFC-0032) Staged raw-byte results of a `Bytes` `vm.par_map` — kept as raw
     /// `Vec<u8>` (NOT `String`) so arbitrary binary survives the round-trip.
     pub(crate) pending_bytes: Option<Vec<Vec<u8>>>,
@@ -2920,6 +2923,7 @@ fn vmstate_from_caps(
         user_cap_fields: caps.user_cap_fields.clone(),
         pending_list: None,
         pending_ints: None,
+        pending_admitted_par_map: None,
         pending_bytes: None,
         nets,
         fetch_grants: caps.fetch_grants.clone(),

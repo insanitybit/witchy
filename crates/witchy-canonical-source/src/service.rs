@@ -12,6 +12,25 @@ pub struct ServiceSite<'a> {
     callback: u32,
     expression: &'a Expr,
 }
+/// A scalar worker site selected from checked source. The callback ordinal is
+/// sealed by the source witness; a guest-provided table index has no authority.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ParMapSite<'a> {
+    id: u32,
+    source: [u8; 32],
+    caller: u32,
+    occurrence: u32,
+    callback: u32,
+    expression: &'a Expr,
+}
+impl<'a> ParMapSite<'a> {
+    pub fn id(&self) -> u32 { self.id }
+    pub fn source_digest(&self) -> [u8; 32] { self.source }
+    pub fn caller_ordinal(&self) -> u32 { self.caller }
+    pub fn occurrence(&self) -> u32 { self.occurrence }
+    pub fn callback_ordinal(&self) -> u32 { self.callback }
+    pub fn expression(&self) -> &'a Expr { self.expression }
+}
 impl<'a> ServiceSite<'a> {
     pub fn id(&self) -> u32 { self.id }
     pub fn source_digest(&self) -> [u8; 32] { self.source }
@@ -25,6 +44,42 @@ fn closed_ordinal(source: &CanonicalSourceView<'_>, name: &str) -> Result<u32, S
         Some(CanonicalTargetPolicy::ClosedLocal(target)) => Ok(target.function_ordinal),
         _ => Err("service requires an exact checked declaration binding".into()),
     }
+}
+/// Select only the scalar, capture-free form that can cross a copied worker
+/// boundary. Lambda and function-value forms remain in std/vm's ordered parent
+/// implementation. This manifest is an exact source identity, not an ABI hint.
+pub fn par_map_sites<'s>(source: &CanonicalSourceView<'s>) -> Result<Vec<ParMapSite<'s>>, String> {
+    let module = source.module();
+    let scope = crate::scope::canonical_scope(module);
+    let mut sites = Vec::new();
+    for item in &module.items {
+        let Item::Function(function) = item else { continue };
+        if !scope.contains(&function.name) { continue; }
+        let mut occurrence = 0u32;
+        witchy_syntax::ast::visit::visit_block(&function.body, &mut |expression| {
+            let Expr::Call { name, args } = expression else { return Ok::<_, String>(()) };
+            if name != "vm.par_map" { return Ok(()) }
+            let [_, Expr::Var(callback)] = args.as_slice() else { return Ok(()) };
+            let Some(Type::Fn(parameters, result, conventions, _)) =
+                source.callable_signature(callback).map(Type::unqualified) else { return Ok(()) };
+            let is_int = |ty: &Type| matches!(ty.unqualified(), Type::Named(name, args)
+                if name == "Int" && args.is_empty());
+            if parameters.len() != 1 || !is_int(&parameters[0]) || !is_int(result)
+                || !matches!(conventions.as_slice(), [Convention::Let]) { return Ok(()) }
+            let Ok(callback_ordinal) = closed_ordinal(source, callback) else { return Ok(()) };
+            sites.push(ParMapSite {
+                id: u32::try_from(sites.len()).map_err(|_| "parallel map site overflow")?,
+                source: source.source_witness().source_bundle_digest(),
+                caller: closed_ordinal(source, &function.name)?,
+                occurrence,
+                callback: callback_ordinal,
+                expression,
+            });
+            occurrence = occurrence.checked_add(1).ok_or("parallel map occurrence overflow")?;
+            Ok(())
+        })?;
+    }
+    Ok(sites)
 }
 pub fn service_sites<'s>(source: &CanonicalSourceView<'s>) -> Result<Vec<ServiceSite<'s>>, String> {
     let module = source.module();

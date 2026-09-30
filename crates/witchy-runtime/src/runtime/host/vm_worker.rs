@@ -2,6 +2,13 @@ use std::sync::Arc;
 
 #[path = "vm_service.rs"]
 pub(in crate::runtime) mod vm_service;
+#[path = "vm_par_map_admitted.rs"]
+mod admitted_par_map;
+
+pub(in crate::runtime) struct PendingAdmittedParMap {
+    pub site: u32,
+    pub values: Vec<i64>,
+}
 
 use wasmtime::{
     Caller, Engine, Error, ExternRef, Instance, Linker, Module, Result, Rooted, Store,
@@ -24,6 +31,7 @@ use super::super::{
 /// explicitly passes: a re-grant, not new authority.
 pub(in crate::runtime) fn link_vm(linker: &mut Linker<VmState>) -> Result<()> {
     vm_service::link(linker)?;
+    admitted_par_map::link(linker)?;
     linker.func_wrap("witchy", "vm_par_map_run", host_vm_par_map_run)?;
     linker.func_wrap("witchy", "vm_par_map_write", host_vm_par_map_write)?;
     linker.func_wrap("witchy", "vm_par_map_bytes_run", host_vm_par_map_bytes_run)?;

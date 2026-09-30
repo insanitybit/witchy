@@ -48,6 +48,7 @@ fn validate_candidate_abi_bindings_with<S: ModuleStage>(
     use witchy_canonical_source::abi::CanonicalTargetPolicy;
     super::super::compiler_session::validate(candidate, source).map_err(CandidateAbiBindingError::CompilerSession)?;
     super::super::vm_service::validate(candidate, source).map_err(CandidateAbiBindingError::VmService)?;
+    super::super::par_map::validate(candidate, source).map_err(CandidateAbiBindingError::VmService)?;
 
     let source_entries = source.callable_abi_manifest().entries().iter().filter_map(|entry| {
         let CanonicalTargetPolicy::ClosedLocal(target) = entry.target_policy else { return None };

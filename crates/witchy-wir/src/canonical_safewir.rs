@@ -98,6 +98,8 @@ pub use crypto::{CRYPTO_SHA512_IMPORT, CRYPTO_SHA3_256_IMPORT, CRYPTO_HMAC_SHA25
     CRYPTO_ECDSA_P256_VERIFY_HEX_IMPORT, CRYPTO_EXTENSION_IMPORT_NAMES};
 mod vm_service;
 pub use vm_service::{CandidateVmService, VM_SERVICE_IMPORT_NAMES, VM_SERVICE_KIND, VM_SERVICE_RESPONSE_KIND};
+mod par_map;
+pub use par_map::{CandidateParMap, PAR_MAP_IMPORT_NAMES};
 mod compiler_session;
 pub use compiler_session::{COMPILER_FRESH_IMPORT, COMPILER_QUOTE_EXPR_IMPORT, COMPILER_QUOTE_EXPR_HOLES_IMPORT, COMPILER_EMIT_EXPR_IMPORT,
     COMPILER_QUOTE_ITEM_IMPORT, COMPILER_QUOTE_ITEM_HOLES_IMPORT, COMPILER_EMIT_ITEM_IMPORT, COMPILER_QUOTE_TYPE_IMPORT,
@@ -1616,6 +1618,7 @@ pub struct CanonicalModule<S: ModuleStage> {
     closure_layouts: BTreeMap<LayoutId, FunctionSignatureId>,
     owner_families: Vec<closure_owner_contract::OwnerFamily>,
     vm_services: Vec<CandidateVmService>,
+    par_maps: Vec<CandidateParMap>,
     stage: PhantomData<fn() -> S>,
 }
 
@@ -1661,12 +1664,18 @@ impl CanonicalModule<LoweredCandidate> {
             closure_layouts: BTreeMap::new(),
             owner_families: Vec::new(),
             vm_services: Vec::new(),
+            par_maps: Vec::new(),
             stage: PhantomData,
         }
     }
 
     pub fn with_vm_services(mut self, services: Vec<CandidateVmService>) -> Self {
         self.vm_services = services;
+        self
+    }
+
+    pub fn with_par_maps(mut self, sites: Vec<CandidateParMap>) -> Self {
+        self.par_maps = sites;
         self
     }
 
@@ -1780,6 +1789,7 @@ impl<S: ModuleStage> CanonicalModule<S> {
             closure_layouts: self.closure_layouts,
             owner_families: self.owner_families,
             vm_services: self.vm_services,
+            par_maps: self.par_maps,
             stage: PhantomData,
         }
     }
@@ -1845,6 +1855,7 @@ impl<S: ModuleStage> CanonicalModule<S> {
     }
 
     pub fn vm_services(&self) -> &[CandidateVmService] { &self.vm_services }
+    pub fn par_maps(&self) -> &[CandidateParMap] { &self.par_maps }
 
     pub fn owner_families(&self) -> &[closure_owner_contract::OwnerFamily] {
         &self.owner_families

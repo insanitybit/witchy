@@ -45,6 +45,12 @@ pub(crate) fn module_digest<S: ModuleStage>(module: &CanonicalModule<S>) -> Modu
         writer.u32(service.caller().get());
         writer.u32(service.callback().get());
     }
+    writer.u64(module.par_maps().len() as u64);
+    for site in module.par_maps() {
+        writer.u32(site.id());
+        writer.u32(site.caller().get());
+        writer.u32(site.callback().get());
+    }
     writer.tail_sites(module.proper_tail_sites());
     writer.tail_locations(module.proper_tail_locations());
     digest_bytes(MODULE_DIGEST_DOMAIN, &writer.finish())
