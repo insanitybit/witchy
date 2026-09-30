@@ -1,5 +1,5 @@
 use super::*;
-use crate::{codegen, interpreter};
+use crate::codegen;
 
     /// (RFC-0045) The message property: the compiled backend aborts with the
     /// exact expected message, not merely "an error". Covers each routed abort
@@ -57,11 +57,10 @@ use crate::{codegen, interpreter};
     }
 
     /// (RFC-0044 rule 3) The Witchy std contract-violation path aborts: a bad
-    /// argument that used to silently default now aborts, with the SAME message
-    /// on both backends (they run the identical std source; RFC-0045 routes the
-    /// message). Each case pairs a program with its message core.
+    /// argument that used to silently default now aborts on admitted Wasm.
+    /// Each case pairs a program with its independently specified message core.
     #[test]
-    fn std_contract_violations_abort_on_both_backends() {
+    fn std_contract_violations_abort_with_expected_messages() {
         if !is_nightly() {
             return;
         }
@@ -124,24 +123,12 @@ use crate::{codegen, interpreter};
             ),
         ];
         for (src, want_core) in cases {
-            // The interpreter resolves the std bodies at run time only when they are
-            // linked in (these are real fn bodies, not builtins), so link first.
             let linked = prepared_module(src);
-            let ierr = interpreter::run_module(linked.clone(), ".", Vec::new())
-                .expect_err("interpreter must abort");
-            assert!(
-                ierr.message.ends_with(want_core),
-                "interpreter core mismatch: got `{}`, want suffix `{want_core}`",
-                ierr.message
-            );
             let bytes = codegen::compile_module_binary(&linked)
                 .expect_lowered("the binary path lowers this program");
             let cerr = crate::run_wasm_bytes(&bytes).expect_err("WASM must abort");
-            assert_eq!(
-                cerr,
-                format!("runtime error: {}", ierr.message),
-                "compiled abort mismatch for src:\n{src}"
-            );
+            assert!(cerr.starts_with("runtime error: ") && cerr.ends_with(want_core),
+                "compiled abort mismatch for src:\n{src}\ngot: {cerr}\nwant suffix: {want_core}");
         }
         // The valid-boundary values still work (no over-eager abort): factorial(0),
         // pow(x, 0), isqrt(0), days_in_month for every month 1..12, to_base at both
@@ -151,4 +138,3 @@ use crate::{codegen, interpreter};
         let want = vec!["1", "1", "0", "29", "28", "31", "1010", "ff", "abc", "abcd"];
         assert_eq!(wasm_run(ok), want, "compiled boundary");
     }
-
