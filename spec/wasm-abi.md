@@ -221,6 +221,7 @@ An empty set is an authenticated reject-all contract, never a wildcard.
 | `compiler_syntax_record_type_into` | `(i32, i32, i32, i32) -> i32` | compiler session only | none | omitted |
 | `compiler_syntax_expr_leaf_into` | `(i32, i32, i32, i32, i32, i32) -> i32` | compiler session only | none | omitted |
 | `compiler_syntax_type_expr_into` | `(i32, i32, i32, i32) -> i32` | compiler session only | none | omitted |
+| `compiler_syntax_type_named_into` | `(i32, i32, i32, i32) -> i32` | compiler session only | none | omitted |
 | `compiler_syntax_expr_compose_into` | `(i32, i32, i32, i32) -> i32` | compiler session only | none | omitted |
 | `compiler_syntax_param_into` | `(i32, i32, i32, i32) -> i32` | compiler session only | none | omitted |
 | `compiler_syntax_function_expr_into` | `(i32, i32, i32, i32) -> i32` | compiler session only | none | omitted |
