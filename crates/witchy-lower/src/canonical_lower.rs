@@ -23,6 +23,8 @@ mod flow_storage;
 mod match_flow;
 #[path = "canonical_vm_service.rs"]
 mod vm_service;
+#[path = "canonical_quote_holes.rs"]
+mod quote_holes;
 
 #[path = "canonical_abort.rs"]
 mod abort;
@@ -1347,8 +1349,10 @@ if capability_imports.contains("build_out_write_at") {
                         .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
                 }
                 for name in [witchy_wir::canonical_safewir::COMPILER_QUOTE_EXPR_IMPORT,
+                    witchy_wir::canonical_safewir::COMPILER_QUOTE_EXPR_HOLES_IMPORT,
                     witchy_wir::canonical_safewir::COMPILER_EMIT_EXPR_IMPORT,
                     witchy_wir::canonical_safewir::COMPILER_QUOTE_ITEM_IMPORT,
+                    witchy_wir::canonical_safewir::COMPILER_QUOTE_ITEM_HOLES_IMPORT,
                     witchy_wir::canonical_safewir::COMPILER_EMIT_ITEM_IMPORT,
                     witchy_wir::canonical_safewir::COMPILER_QUOTE_TYPE_IMPORT,
                     witchy_wir::canonical_safewir::COMPILER_RECORD_TYPE_IMPORT,
@@ -1372,6 +1376,9 @@ if capability_imports.contains("build_out_write_at") {
                         | witchy_wir::canonical_safewir::COMPILER_QUOTE_ITEM_IMPORT
                         | witchy_wir::canonical_safewir::COMPILER_QUOTE_TYPE_IMPORT) {
                         push_import_signature(vec![text, ValueType::Int, text], vec![ValueType::Size], Some(2))?
+                    } else if matches!(name, witchy_wir::canonical_safewir::COMPILER_QUOTE_EXPR_HOLES_IMPORT
+                        | witchy_wir::canonical_safewir::COMPILER_QUOTE_ITEM_HOLES_IMPORT) {
+                        push_import_signature(vec![text, text], vec![ValueType::Size], Some(1))?
                     } else if matches!(name, witchy_wir::canonical_safewir::COMPILER_RECORD_TYPE_IMPORT
                         | witchy_wir::canonical_safewir::COMPILER_TYPE_EXPR_IMPORT
                         | witchy_wir::canonical_safewir::COMPILER_TYPE_NAMED_IMPORT
@@ -13625,6 +13632,10 @@ impl FunctionLowerer<'_> {
         let import = *self.host_imports.compiler.get(import_name)
             .ok_or(CanonicalLoweringError::UnsupportedExpression("missing compiler service import"))?;
         let layout = self.string_layout_id()?;
+        if matches!(name, witchy_syntax::intrinsics::COMPILER_QUOTE_EXPR_HOLES
+            | witchy_syntax::intrinsics::COMPILER_QUOTE_ITEM_HOLES) {
+            return self.lower_quote_holes(expression, name, args, import);
+        }
         if witchy_syntax::intrinsics::is_meta_record_type_wire(name)
             || witchy_syntax::intrinsics::is_meta_type_expr_wire(name)
             || witchy_syntax::intrinsics::is_meta_type_named_wire(name)
@@ -20727,8 +20738,10 @@ fn compiler_service_import(name: &str) -> Option<(&'static str, usize)> {
     }
     match name {
         witchy_syntax::intrinsics::COMPILER_QUOTE_EXPR => Some((witchy_wir::canonical_safewir::COMPILER_QUOTE_EXPR_IMPORT, 3)),
+        witchy_syntax::intrinsics::COMPILER_QUOTE_EXPR_HOLES => Some((witchy_wir::canonical_safewir::COMPILER_QUOTE_EXPR_HOLES_IMPORT, 4)),
         witchy_syntax::intrinsics::COMPILER_EMIT_EXPR => Some((witchy_wir::canonical_safewir::COMPILER_EMIT_EXPR_IMPORT, 1)),
         witchy_syntax::intrinsics::COMPILER_QUOTE_ITEM => Some((witchy_wir::canonical_safewir::COMPILER_QUOTE_ITEM_IMPORT, 3)),
+        witchy_syntax::intrinsics::COMPILER_QUOTE_ITEM_HOLES => Some((witchy_wir::canonical_safewir::COMPILER_QUOTE_ITEM_HOLES_IMPORT, 4)),
         witchy_syntax::intrinsics::COMPILER_QUOTE_TYPE => Some((witchy_wir::canonical_safewir::COMPILER_QUOTE_TYPE_IMPORT, 3)),
         witchy_syntax::intrinsics::COMPILER_EMIT_ITEM => Some((witchy_wir::canonical_safewir::COMPILER_EMIT_ITEM_IMPORT, 1)),
         witchy_syntax::intrinsics::COMPILER_FOOTPRINT => Some(("compiler_footprint_into", 1)),

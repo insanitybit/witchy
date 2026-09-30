@@ -229,8 +229,10 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
   (import "witchy" "compiler_footprint_into" (func $compiler_footprint_into_host (param i32 i32 i32 i32) (result i32)))
   (import "witchy" "compiler_syntax_fresh_into" (func $compiler_syntax_fresh_into_host (param i32 i32 i32 i32) (result i32)))
   (import "witchy" "compiler_syntax_quote_expr_into" (func $compiler_syntax_quote_expr_into_host (param i32 i32 i64 i32 i32) (result i32)))
+  (import "witchy" "compiler_syntax_quote_expr_holes_into" (func $compiler_syntax_quote_expr_holes_into_host (param i32 i32 i32 i32) (result i32)))
   (import "witchy" "compiler_syntax_emit_expr" (func $compiler_syntax_emit_expr_host (param i32 i32)))
   (import "witchy" "compiler_syntax_quote_item_into" (func $compiler_syntax_quote_item_into_host (param i32 i32 i64 i32 i32) (result i32)))
+  (import "witchy" "compiler_syntax_quote_item_holes_into" (func $compiler_syntax_quote_item_holes_into_host (param i32 i32 i32 i32) (result i32)))
   (import "witchy" "compiler_syntax_emit_item" (func $compiler_syntax_emit_item_host (param i32 i32)))
   (import "witchy" "compiler_syntax_quote_type_into" (func $compiler_syntax_quote_type_into_host (param i32 i32 i64 i32 i32) (result i32)))
   (import "witchy" "compiler_syntax_record_type_into" (func $compiler_syntax_record_type_into_host (param i32 i32 i32 i32) (result i32)))
@@ -702,8 +704,8 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
 
         "args_size" | "user_cap_field_len" => C::LaunchInput,
 
-        "compiler_syntax_fresh_into" | "compiler_syntax_quote_expr_into" | "compiler_syntax_emit_expr"
-        | "compiler_syntax_quote_item_into" | "compiler_syntax_emit_item"
+        "compiler_syntax_fresh_into" | "compiler_syntax_quote_expr_into" | "compiler_syntax_quote_expr_holes_into" | "compiler_syntax_emit_expr"
+        | "compiler_syntax_quote_item_into" | "compiler_syntax_quote_item_holes_into" | "compiler_syntax_emit_item"
         | "compiler_syntax_quote_type_into" | "compiler_syntax_record_type_into"
         | "compiler_syntax_expr_leaf_into" | "compiler_syntax_type_expr_into" | "compiler_syntax_type_named_into"
         | "compiler_syntax_expr_compose_into" | "compiler_syntax_param_into"
