@@ -32,22 +32,23 @@ fn raw_policy_values_cannot_be_forged_outside_std_policy() {
 
 #[test]
 fn local_policy_module_cannot_impersonate_bundled_policy_owner() {
-    let policy = witchy::parser::parse_module(
-        "sealed type NetPolicy:\n    pattern: String\n\npub fn raw(value: String) -> NetPolicy:\n    NetPolicy(value)\n",
-    )
-    .expect("local policy parses");
-    let main = witchy::parser::parse_module(
-        "import policy\n\nfn main(console: Console):\n    let _ = policy.raw(\"*:*\")\n    console.print(\"forged\")\n",
-    )
-    .expect("main parses");
+    fn no_expand(
+        _: &str, _: &mut witchy::ast::Module, _: &[(String, witchy::ast::Module)],
+    ) -> Result<witchy_syntax::origin::OriginTable, String> {
+        Ok(witchy_syntax::origin::OriginTable::default())
+    }
     let user_modules = std::collections::HashSet::from(["policy".to_string(), "main".to_string()]);
-    let error = witchy_interp::pipeline::link_with_user_modules(
-        vec![("policy".to_string(), policy), ("main".to_string(), main)],
+    let error = witchy_types::pipeline::link_checked_source_bundle_with(
+        vec![
+            ("policy".to_string(), b"sealed type NetPolicy:\n    pattern: String\n\npub fn raw(value: String) -> NetPolicy:\n    NetPolicy(value)\n".to_vec()),
+            ("main".to_string(), b"import policy\n\nfn main(console: Console):\n    let _ = policy.raw(\"*:*\")\n    console.print(\"forged\")\n".to_vec()),
+        ],
         "main",
-        &user_modules,
+        witchy_syntax::linker::ComptimeExpander::new(no_expand),
+        Some(&user_modules), None, None,
     )
     .expect_err("a local module cannot own a reserved std name")
-    .message;
+    .to_string();
     assert!(
         error.contains("module `policy` uses a reserved standard-library name")
             && error.contains("one canonical owner"),
