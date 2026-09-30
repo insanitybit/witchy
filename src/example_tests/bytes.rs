@@ -26,31 +26,6 @@ fn run_admitted_bytes(source: &str) -> Result<Vec<String>, String> {
     Ok(vm.output())
 }
 
-fn run_admitted_bytes(source: &str) -> Result<Vec<String>, String> {
-    struct ResetOptimization;
-    impl Drop for ResetOptimization {
-        fn drop(&mut self) { crate::opt::set_for_tests(None); }
-    }
-    crate::opt::set_for_tests(Some(crate::opt::OptSet::none()));
-    let _reset = ResetOptimization;
-    let checked = witchy::resolve_std_only_checked(source).expect("check normal Bytes source");
-    let artifact = codegen::compile_checked_module_artifact(&checked)
-        .expect_lowered("admit normal Bytes source");
-    let mut runtime = crate::runtime::Runtime::batch().expect("runtime");
-    let mut vm = runtime.spawn_admitted(
-        &artifact,
-        crate::runtime::Capabilities {
-            print: true,
-            quiet: true,
-            ..crate::runtime::Capabilities::none()
-        },
-        128,
-    ).expect("spawn admitted Bytes source");
-    vm.run().map_err(|error| error.root_cause().to_string())?;
-    assert_eq!(vm.canonical_heap_leaks().expect("heap audit"), Some(0));
-    Ok(vm.output())
-}
-
     /// (RFC-0050) Bytes has a real inherent-method surface like the other
     /// standard value types; module functions remain callable for explicit
     /// module use and as first-class values.

@@ -1418,7 +1418,8 @@ if capability_imports.contains("build_out_write_at") {
         if crypto_needed { catalog = crypto::catalog(catalog, &mut signatures, string_layout)?; }
         if !net_imports.is_empty() { catalog = net::catalog(catalog, &mut signatures, string_layout)?; }
         if !service_sites.is_empty() { catalog = vm_service::catalog(catalog, &mut signatures, string_layout)?; }
-        if !abort_sites.is_empty() { catalog = abort::catalog(catalog, &mut signatures, string_layout)?; }
+        let bytes_bounds_needed = abort_sites.values().any(|site| site.bytes_access);
+        if !abort_sites.is_empty() { catalog = abort::catalog(catalog, &mut signatures, string_layout, bytes_bounds_needed)?; }
         // The module declares only the imports its functions reach; the
         // catalog still authenticates each one it declares.
         let projected = catalog
@@ -1427,6 +1428,7 @@ if capability_imports.contains("build_out_write_at") {
             .filter(|import| {
                 (import.name == print_name && prints)
                     || (matches!(import.name.as_str(), abort::IMPORT | abort::BOUNDS_IMPORT) && !abort_sites.is_empty())
+                    || (import.name == abort::BYTES_BOUNDS_IMPORT && bytes_bounds_needed)
                     || (import.name == "float_to_str" && floats)
                     || capability_imports.contains(import.name.as_str())
                     || compiler_imports.contains(import.name.as_str())
@@ -1440,6 +1442,7 @@ if capability_imports.contains("build_out_write_at") {
         host_imports = HostImports {
             abort: projected.iter().find(|import| import.name == abort::IMPORT).map(|import| import.id),
             bounds: projected.iter().find(|import| import.name == abort::BOUNDS_IMPORT).map(|import| import.id),
+            bytes_bounds: projected.iter().find(|import| import.name == abort::BYTES_BOUNDS_IMPORT).map(|import| import.id),
             abort_sites,
             vm_sites: service_sites.iter().map(|site| (site.expression() as *const Expr as usize, site.id())).collect(),
             vm_service: witchy_wir::canonical_safewir::VM_SERVICE_IMPORT_NAMES.iter().filter_map(|name| projected.iter().find(|i| i.name == *name).map(|i| (*name, i.id))).collect(),
@@ -11443,7 +11446,7 @@ impl FunctionLowerer<'_> {
             Expr::Call { name, args }
                 if (name.starts_with("__bytes_") || name == "bytes.at") && !self.functions.contains_key(name.as_str()) =>
             {
-                self.lower_bytes_call(name, args)
+                self.lower_bytes_call(expression, name, args)
             }
             // The encoding intrinsics are guest-side byte kernels on the same
             // raw-byte layout as String and Bytes. The std wrappers validate
@@ -16936,7 +16939,7 @@ impl FunctionLowerer<'_> {
     /// intrinsics are byte kernels over that buffer with the interpreter's
     /// rules: an index or a byte value out of range aborts, `slice` clamps,
     /// `to_string` decodes UTF-8 lossily.
-    fn lower_bytes_call(&mut self, name: &str, args: &[Expr]) -> Result<ValueId, CanonicalLoweringError> {
+    fn lower_bytes_call(&mut self, expression: &Expr, name: &str, args: &[Expr]) -> Result<ValueId, CanonicalLoweringError> {
         let layout = self.string_layout_id()?;
         let size_limit = u64::from(u32::MAX - 4);
         match (name, args) {
@@ -16963,6 +16966,8 @@ impl FunctionLowerer<'_> {
             ("__bytes_at" | "bytes.at", [source, index]) => {
                 let value = self.lower_expr(source)?;
                 let index = self.lower_expr(index)?;
+                let site = self.diagnostic_site(expression)?;
+                self.diagnose_bytes_index(value, index, &site)?;
                 let index = self.bytes_index_checked(value, index)?;
                 let byte = self.push_string_byte_load(value, index, layout)?;
                 let widened = self.fresh(ValueType::Int)?;
@@ -20637,6 +20642,7 @@ struct HostImports {
     print_at: bool,
     abort: Option<witchy_wir::canonical_safewir::ImportId>,
     bounds: Option<witchy_wir::canonical_safewir::ImportId>,
+    bytes_bounds: Option<witchy_wir::canonical_safewir::ImportId>,
     abort_sites: HashMap<usize, abort::Site>,
     vm_service: BTreeMap<&'static str, witchy_wir::canonical_safewir::ImportId>,
     vm_sites: HashMap<usize, u32>,

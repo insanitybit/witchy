@@ -174,11 +174,13 @@ generic traps to make the migration appear complete.
 Normal Bytes methods and mutators now match their independent exact output
 transcripts on admitted unoptimized Wasm with zero owned-heap leaks. Fifteen
 negative constructor and mutator cases also reject at runtime on that path
-(the nightly fixture remains opt-in). SEC-038 `bytes.at` still uses its
-historical error oracle: admitted Wasm traps on an out-of-bounds index but
-reports generic `wasm unreachable`, losing the required index/length message.
-The exact diagnostic assertion remains intact, and a failing admitted witness
-is preserved on `rfc0167/admit-bytes-boundaries` for the compiler fix.
+(the nightly fixture remains opt-in). SEC-038 `bytes.at` now carries the
+original signed index, buffer length, and checked source site through an
+authenticated diagnostic import. Both positive and negative out-of-bounds
+indices produce the exact index/length message on admitted normal-mode Wasm;
+in-bounds access still returns the expected byte. The focused Bytes group
+passes 4/4. This is a bounded row N safety witness, not a universal claim
+about every runtime diagnostic.
 
 At `2dcc268d4`, two further normal-mode row G witnesses pass on admitted
 unoptimized Wasm with zero owned-heap leaks. A view of

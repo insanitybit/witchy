@@ -3,6 +3,7 @@ use super::*;
 
 pub(super) const IMPORT: &str = "__witchy_abort_at";
 pub(super) const BOUNDS_IMPORT: &str = "__witchy_list_bounds_at";
+pub(super) const BYTES_BOUNDS_IMPORT: &str = "__witchy_bytes_bounds_at";
 
 pub(super) fn is_list_access(expression: &Expr) -> bool {
     // A range subscript is projection syntax consumed by authenticated
@@ -17,6 +18,7 @@ pub(super) fn is_list_access(expression: &Expr) -> bool {
 pub(super) struct Site {
     pub function: String,
     pub line: u32,
+    pub bytes_access: bool,
 }
 
 pub(super) fn sites(module: &witchy_syntax::ast::Module, console: bool) -> Result<HashMap<usize, Site>, CanonicalLoweringError> {
@@ -47,13 +49,14 @@ pub(super) fn sites(module: &witchy_syntax::ast::Module, console: bool) -> Resul
                 }
                 if is_list_access(expression)
                     || matches!(expression, Expr::Binary { op: BinOp::Div | BinOp::Mod, .. })
-                    || matches!(expression, Expr::Call { name, .. } if name == "fail" || registry_hosts::is_require(name) || (console && is_console_print(name))) {
+                    || matches!(expression, Expr::Call { name, .. } if name == "fail" || name == "__bytes_at" || name == "bytes.at" || registry_hosts::is_require(name) || (console && is_console_print(name))) {
                     let key = expression as *const Expr as usize;
                     if !sites.contains_key(&key) {
                         let line = body.lines.get(index).copied().ok_or(
                             CanonicalLoweringError::UnsupportedExpression("diagnostic source location"),
                         )?;
-                        sites.insert(key, Site { function: function.to_owned(), line });
+                        let bytes_access = matches!(expression, Expr::Call { name, .. } if name == "__bytes_at" || name == "bytes.at");
+                        sites.insert(key, Site { function: function.to_owned(), line, bytes_access });
                     }
                 }
                 Ok::<_, CanonicalLoweringError>(())
@@ -75,6 +78,7 @@ pub(super) fn sites(module: &witchy_syntax::ast::Module, console: bool) -> Resul
 
 pub(super) fn catalog(
     catalog: CanonicalAbiCatalog, signatures: &mut Vec<FunctionSignature>, layout: witchy_wir::layout::LayoutId,
+    bytes_needed: bool,
 ) -> Result<CanonicalAbiCatalog, CanonicalLoweringError> {
     let id = FunctionSignatureId::new(u32::try_from(signatures.len()).map_err(|_| CanonicalLoweringError::IdOverflow)?);
     let parameters = vec![ValueType::Ref(layout), ValueType::Ref(layout), ValueType::Size];
@@ -101,7 +105,18 @@ pub(super) fn catalog(
             parameter_effects: BTreeMap::from([(2, vec![MemoryEffect::Read])]),
         },
     });
-    catalog.with_list_bounds_import(id, layout).map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)
+    let catalog = catalog.with_list_bounds_import(id, layout).map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
+    if !bytes_needed { return Ok(catalog); }
+    let id = FunctionSignatureId::new(u32::try_from(signatures.len()).map_err(|_| CanonicalLoweringError::IdOverflow)?);
+    let parameters = vec![ValueType::Int, ValueType::Size, ValueType::Ref(layout), ValueType::Size];
+    signatures.push(FunctionSignature {
+        id, parameters: parameters.clone(), results: Vec::new(),
+        contract: CallableContract {
+            parameters: parameters.into_iter().map(|value_type| ParameterContract { value_type, ownership: ParameterOwnership::Value }).collect(),
+            results: Vec::new(), parameter_effects: BTreeMap::from([(2, vec![MemoryEffect::Read])]),
+        },
+    });
+    catalog.with_bytes_bounds_import(id, layout).map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)
 }
 
 impl FunctionLowerer<'_> {
@@ -139,6 +154,17 @@ impl FunctionLowerer<'_> {
             self.ensure_list_extent(object)?;
             self.tracked_lanes(object).ok_or(CanonicalLoweringError::UnsupportedExpression("bounds list extent"))?.0
         };
+        let import = self.host_imports.bounds.ok_or_else(|| CanonicalLoweringError::InvalidAuthenticatedAbiCatalog("bounds import missing".into()))?;
+        self.diagnose_index(index, length, site, import)
+    }
+
+    pub(super) fn diagnose_bytes_index(&mut self, object: ValueId, index: ValueId, site: &Site) -> Result<(), CanonicalLoweringError> {
+        let length = self.string_length_of(object)?;
+        let import = self.host_imports.bytes_bounds.ok_or_else(|| CanonicalLoweringError::InvalidAuthenticatedAbiCatalog("bytes bounds import missing".into()))?;
+        self.diagnose_index(index, length, site, import)
+    }
+
+    fn diagnose_index(&mut self, index: ValueId, length: ValueId, site: &Site, import: witchy_wir::canonical_safewir::ImportId) -> Result<(), CanonicalLoweringError> {
         let wide_length = self.widen_size_to_int(length)?;
         // Full-width unsigned comparison rejects negatives and >u32::MAX
         // without truncating the original signed diagnostic value.
@@ -155,7 +181,6 @@ impl FunctionLowerer<'_> {
         let start = self.push_const_size(0)?;
         let function_length = self.string_lengths[&function];
         let line = self.push_const_size(u64::from(site.line))?;
-        let import = self.host_imports.bounds.ok_or_else(|| CanonicalLoweringError::InvalidAuthenticatedAbiCatalog("bounds import missing".into()))?;
         self.push_operation(Operation::HostCall {
             destinations: Vec::new(), import, arguments: vec![
                 HostCallArgument::Value(index), HostCallArgument::Value(length),

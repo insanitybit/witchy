@@ -788,6 +788,20 @@ impl CanonicalAbiCatalog {
         self.imports.insert(import.id, import);
         Ok(self)
     }
+    pub fn with_bytes_bounds_import(mut self, signature: FunctionSignatureId, string_layout: LayoutId) -> Result<Self, String> {
+        use crate::wir_prelude::WasmTy;
+        let import = authenticated_import(
+            "__witchy_bytes_bounds_at", &[WasmTy::I64, WasmTy::I32, WasmTy::I32, WasmTy::I32, WasmTy::I32],
+            &[], signature, vec![
+                HostParameterRole::Value(ValueType::Int), HostParameterRole::Value(ValueType::Size),
+                HostParameterRole::Buffer { value_type: ValueType::Ref(string_layout),
+                    access: AccessMode::Read, extent: HostBufferExtent::Slice },
+                HostParameterRole::Value(ValueType::Size),
+            ], Vec::new(), HostMutation::ReadOnly, ImportAuthentication::RuntimeDiagnostic,
+        )?;
+        self.imports.insert(import.id, import);
+        Ok(self)
+    }
 
     /// Terminal source diagnostics borrow two bounded UTF-8 slices. They carry
     /// no capability, no write authority, no result, and cannot reenter Wasm.
