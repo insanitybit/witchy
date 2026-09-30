@@ -1,5 +1,15 @@
 use super::*;
-use crate::{codegen, interpreter, parser};
+use crate::{codegen, parser};
+
+struct ResetOptimization;
+impl Drop for ResetOptimization {
+    fn drop(&mut self) { crate::opt::set_for_tests(None); }
+}
+
+fn unoptimized() -> ResetOptimization {
+    crate::opt::set_for_tests(Some(crate::opt::OptSet::none()));
+    ResetOptimization
+}
 
     /// (RFC-0032) `vm.par_map(xs, f)` maps a capture-free function over a list. On the
     /// interpreter it is the sequential oracle; on the compiled backend it runs across
@@ -27,10 +37,10 @@ use crate::{codegen, interpreter, parser};
     }
 
     /// (RFC-0032/RFC-0005) `vm.with_dir(dir, f, input)` transports the exact Dir
-    /// externref through a dedicated typed worker trampoline. The interpreter is
-    /// the sequential oracle and the compiled backend uses a fresh isolated VM.
+    /// externref through a dedicated typed worker trampoline in an isolated VM.
     #[test]
     fn vm_with_dir_typed_callback_backends_agree() {
+        let _reset = unoptimized();
         let src = "import vm\nimport bytes\n\nfn reader(d: Dir, name: Bytes) -> Bytes:\n    bytes.from_string(d.read(bytes.to_string(name)))\n\nfn main(console: Console, dir: Dir):\n    let out = vm.with_dir(dir, reader, bytes.from_string(\"ok.txt\"))\n    console.print(bytes.to_string(out))\n";
         let root = std::env::temp_dir().join(format!(
             "witchy_vm_with_dir_{}",
@@ -39,14 +49,10 @@ use crate::{codegen, interpreter, parser};
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).expect("create vm.with_dir root");
         std::fs::write(root.join("ok.txt"), "typed-worker").expect("seed vm.with_dir root");
-        let root_str = root.to_str().expect("utf8 root");
-        let linked = resolve_std_src(src);
-        assert_eq!(
-            interpreter::run_module(linked.clone(), root_str, Vec::new()).expect("interp"),
-            ["typed-worker"],
-        );
-        let bin = codegen::compile_module_binary(&linked)
-            .expect_lowered("vm.with_dir lowers through its typed trampoline");
+        let checked = witchy::resolve_std_only_checked(src)
+            .expect("check vm.with_dir typed callback");
+        let artifact = codegen::compile_checked_module_artifact(&checked)
+            .expect_lowered("admit vm.with_dir typed callback");
         let mut rt = crate::runtime::Runtime::batch().expect("runtime");
         let caps = crate::runtime::Capabilities {
             print: true,
@@ -55,9 +61,10 @@ use crate::{codegen, interpreter, parser};
             dir_read: true,
             ..Default::default()
         };
-        let mut actor = rt.spawn(&bin, caps, 64).expect("spawn");
+        let mut actor = rt.spawn_admitted(&artifact, caps, 64).expect("spawn admitted callback");
         actor.run().expect("run vm.with_dir");
         assert_eq!(actor.output(), ["typed-worker"]);
+        assert_eq!(actor.canonical_heap_leaks().expect("heap audit"), Some(0));
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -66,22 +73,18 @@ use crate::{codegen, interpreter, parser};
     /// heap slot. This preserves the sealed smart-constructor idiom for root caps.
     #[test]
     fn branded_dir_option_runs_on_both_backends() {
+        let _reset = unoptimized();
         use crate::runtime::{Capabilities, Runtime};
         let root = std::env::temp_dir().join(format!("witchy_brandeddir_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("data")).expect("mkdir");
         std::fs::write(root.join("data").join("greeting.txt"), "hello-branded").expect("seed");
-        let root_str = root.to_str().expect("utf8 root").to_string();
         let src = "capability ConfigDir from Dir[Read]\n\nfn config_dir(root: Dir[Read]) -> Option(ConfigDir):\n    if root.exists(\"data\"):\n        Some(ConfigDir(root.subtree(\"data\")))\n    else:\n        None\n\nfn load(c: ConfigDir, name: String) -> String:\n    match c:\n        ConfigDir(dir) -> dir.read(name)\n\nfn main(console: Console, root: Dir[Read]):\n    match config_dir(root):\n        Some(cfg) -> console.print(load(cfg, \"greeting.txt\"))\n        None -> console.print(\"missing\")\n";
         let want = vec!["hello-branded".to_string()];
-        let linked = resolve_std_src(src);
-        assert_eq!(
-            interpreter::run_module(linked.clone(), &root_str, Vec::new()).expect("interp"),
-            want,
-            "interpreter",
-        );
-        let bin = codegen::compile_module_binary(&linked)
-            .expect_lowered("the binary path lowers branded Dir options");
+        let checked = witchy::resolve_std_only_checked(src)
+            .expect("check branded Dir option");
+        let artifact = codegen::compile_checked_module_artifact(&checked)
+            .expect_lowered("admit branded Dir option");
         let mut rt = Runtime::batch().expect("runtime");
         let caps = Capabilities {
             print: true,
@@ -90,9 +93,10 @@ use crate::{codegen, interpreter, parser};
             dir_read: true,
             ..Default::default()
         };
-        let mut actor = rt.spawn(&bin, caps, 64).expect("spawn");
+        let mut actor = rt.spawn_admitted(&artifact, caps, 64).expect("spawn admitted Dir option");
         actor.run().expect("run");
-        assert_eq!(actor.output(), want, "compiled WASM must agree");
+        assert_eq!(actor.output(), want);
+        assert_eq!(actor.canonical_heap_leaks().expect("heap audit"), Some(0));
         let _ = std::fs::remove_dir_all(&root);
     }
 

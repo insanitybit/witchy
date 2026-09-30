@@ -112,6 +112,14 @@ through admitted Wasm: the generated `main` returns the independently expected
 `41` with zero owned-heap leaks. Its definition-site and hole-ancestry
 diagnostics remain in place; its source-interpreter execution is retired.
 
+Two normal-mode Dir capability cases now run through checked source,
+canonical admission, and unoptimized Wasm. `vm.with_dir` transports the
+granted Dir through its typed callback and prints `typed-worker`; a branded
+`Option(ConfigDir)` reads its confined file and prints `hello-branded`.
+Both exact outputs pass with zero owned-heap leaks, and their historical
+source-interpreter/raw-Wasm executions are retired. This is bounded capability
+and row N evidence, not a proof of every worker or capability path.
+
 At merged `6c7488acf`, the guarded-match generator case also runs through
 checked source, canonical admission, and unoptimized Wasm. Its exact
 `guard 7/before 7/yield 7/after 7/done` trace and zero-leak audit demonstrate
