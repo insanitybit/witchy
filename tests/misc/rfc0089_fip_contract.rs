@@ -6,7 +6,7 @@
 //! each rejection class in the RFC's "Checked kernel body" list produces a
 //! source-located miss with its documented reason, structurally similar
 //! functions that are NOT candidates produce no miss, and the canonical
-//! accepted kernel is value-correct at contract depth on both backends.
+//! accepted kernel is value-correct at contract depth on admitted Wasm.
 //!
 //! `analysis::module_fip_misses` is the single analysis every consumer (CLI,
 //! browser compile, stats, LSP) shares, so asserting on it here pins all of
@@ -15,21 +15,17 @@
 
 use witchy_lower::analysis;
 use witchy::runtime::{Capabilities, Runtime};
-use witchy::{codegen, parser, typeck};
-use witchy_interp::pipeline;
+use witchy::codegen;
 
-fn linked(source: &str) -> witchy::ast::Module {
-    let parsed = parser::parse_module(source).expect("parse FIP program");
-    let linked =
-        pipeline::link(vec![("main".into(), parsed)], "main").expect("link FIP program");
-    typeck::check(&linked).expect("typecheck FIP program");
-    linked
+fn checked(source: &str) -> witchy_types::pipeline::CheckedModule {
+    witchy::resolve_std_only_checked(source).expect("check FIP source")
 }
 
 /// Assert the module misses the FIP contract in function `function` with a
 /// reason containing `reason_fragment`.
 fn assert_fip_miss(source: &str, function: &str, reason_fragment: &str) {
-    let misses = analysis::module_fip_misses(&linked(source));
+    let program = checked(source);
+    let misses = analysis::module_fip_misses(program.module());
     assert!(
         misses
             .iter()
@@ -43,23 +39,23 @@ fn assert_fip_miss(source: &str, function: &str, reason_fragment: &str) {
 /// Used where RFC-0167's affine rule refuses a shape the FIP analysis used to
 /// classify: a stronger, earlier refusal than a contract miss.
 fn assert_type_error(source: &str, reason_fragment: &str) {
-    let parsed = parser::parse_module(source).expect("parse FIP program");
-    let linked = pipeline::link(vec![("main".into(), parsed)], "main").expect("link FIP program");
-    let error = typeck::check(&linked).expect_err("the checker must refuse this shape");
+    let error = witchy::resolve_std_only_checked(source)
+        .expect_err("the checker must refuse this shape");
     assert!(
-        error.message.contains(reason_fragment),
+        error.to_string().contains(reason_fragment),
         "expected a refusal mentioning {reason_fragment:?}, got: {}",
-        error.message
+        error
     );
 }
 
 fn assert_no_fip_miss(source: &str) {
-    let misses = analysis::module_fip_misses(&linked(source));
+    let program = checked(source);
+    let misses = analysis::module_fip_misses(program.module());
     assert!(misses.is_empty(), "expected no FIP misses, got: {misses:?}");
 }
 
 // The canonical scalar state kernel is accepted and value-correct at the
-// contract's checked depth (50,000 transitions) on both backends.
+// contract's checked depth (50,000 transitions) on admitted Wasm.
 #[test]
 fn canonical_kernel_is_accepted_and_correct_at_depth() {
     let source = r#"
@@ -80,15 +76,17 @@ fn main(console: Console):
 "#;
     assert_no_fip_miss(source);
 
-    let linked = linked(source);
+    let checked = checked(source);
     let want = vec!["50000 42788".to_string()];
 
-    let wasm = codegen::compile_module_binary(&linked).expect_lowered("kernel lowers");
+    let artifact = codegen::compile_checked_module_artifact(&checked)
+        .expect_lowered("admitted FIP kernel lowers");
     let mut runtime = Runtime::batch().expect("runtime");
     let caps = Capabilities { print: true, quiet: true, ..Default::default() };
-    let mut actor = runtime.spawn(&wasm, caps, 256).expect("spawn");
+    let mut actor = runtime.spawn_admitted(&artifact, caps, 256).expect("spawn admitted kernel");
     actor.run().expect("compiled kernel execution");
     assert_eq!(actor.output(), want, "compiled kernel at contract depth");
+    assert_eq!(actor.canonical_heap_leaks().expect("heap audit"), Some(0));
 }
 
 // Non-tail recursion: the recursive result is bound and reworked, so the owner
