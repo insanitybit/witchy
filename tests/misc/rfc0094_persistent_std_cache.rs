@@ -74,11 +74,18 @@ fn main(console: Console):
     // compares the linked AST byte for byte across cold, warm, and repaired
     // runs, which pins the cached expansion more tightly than type-checking or
     // running the program would.
-    let parsed = witchy::parser::parse_module(source).expect("parse semver consumer");
-    let linked = witchy_interp::pipeline::link(vec![("main".into(), parsed)], "main")
-        .expect("link semver consumer");
+    fn no_expand(
+        _: &str, _: &mut witchy::ast::Module, _: &[(String, witchy::ast::Module)],
+    ) -> Result<witchy_syntax::origin::OriginTable, String> {
+        Ok(witchy_syntax::origin::OriginTable::default())
+    }
+    let checked = witchy_types::pipeline::link_checked_source_bundle_with(
+        vec![("main".into(), source.as_bytes().to_vec())], "main",
+        witchy_syntax::linker::ComptimeExpander::new(no_expand),
+        None, None, None,
+    ).expect("check semver consumer and its cached std expansion");
     let dump = std::env::var_os(DUMP_ENV).expect("child linked-AST dump path");
-    std::fs::write(dump, format!("{linked:#?}"))
+    std::fs::write(dump, format!("{:#?}", checked.module()))
         .expect("write linked AST for parent comparison");
 }
 
