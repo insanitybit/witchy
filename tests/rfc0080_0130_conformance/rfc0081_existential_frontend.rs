@@ -5,32 +5,24 @@
 
 use std::collections::HashSet;
 
-use witchy::runtime::{Capabilities, Runtime};
-
-fn check(source: &str) -> Result<(), String> {
-    witchy::resolve_std_only_checked(source)
-        .map(|_| ())
-        .map_err(|error| error.to_string())
-}
-
 fn link_and_check(modules: Vec<(&str, &str)>) -> Result<(), String> {
-    let linked = link_modules(modules)?;
-    witchy::typeck::check(&linked).map_err(|error| error.to_string())
-}
-
-fn link_modules(modules: Vec<(&str, &str)>) -> Result<witchy::ast::Module, String> {
-    let user_modules: HashSet<String> =
-        modules.iter().map(|(name, _)| name.to_string()).collect();
-    let parsed = modules
+    let user_modules: HashSet<String> = modules.iter().map(|(name, _)| name.to_string()).collect();
+    let sources = modules
         .into_iter()
-        .map(|(name, source)| {
-            let module = witchy::parser::parse_module(source)
-                .unwrap_or_else(|e| panic!("module `{name}` parses: {e}"));
-            (name.to_string(), module)
-        })
+        .map(|(name, source)| (name.to_string(), source.as_bytes().to_vec()))
         .collect();
-    witchy_interp::pipeline::link_with_user_modules(parsed, "main", &user_modules)
-        .map_err(|error| error.message)
+    witchy_types::pipeline::link_checked_source_bundle_with(
+        sources,
+        "main",
+        witchy_syntax::linker::ComptimeExpander::new(
+            witchy_types::pipeline::require_expansion_free,
+        ),
+        Some(&user_modules),
+        None,
+        None,
+    )
+    .map(|_| ())
+    .map_err(|error| error.to_string())
 }
 
 /// (c) A specific existential-safety violation in a linked multi-module
@@ -38,10 +30,7 @@ fn link_modules(modules: Vec<(&str, &str)>) -> Result<witchy::ast::Module, Strin
 #[test]
 fn rfc0081_safety_violation_in_linked_module_is_rejected() {
     let err = link_and_check(vec![
-        (
-            "shapes",
-            "trait Maker:\n    fn make() -> Int\n",
-        ),
+        ("shapes", "trait Maker:\n    fn make() -> Int\n"),
         (
             "main",
             "import shapes\n\n\
