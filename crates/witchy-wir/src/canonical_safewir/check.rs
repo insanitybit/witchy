@@ -4119,6 +4119,34 @@ pub mod self_checks {
         assert!(!prove(&function), "a disconnected decoy cannot discharge a tail");
     }
 
+    pub fn arbitrary_dead_tail_sites_remain_obligations() {
+        for taken in [Terminator::Return { values: Vec::new() }, Terminator::Trap] {
+            let zero = ValueId::new(98);
+            let condition = ValueId::new(99);
+            let mut module = lowered(
+                [(zero, ValueType::Int), (condition, ValueType::Bool)].into_iter().collect(),
+                vec![
+                    Operation::ConstInt { destination: zero, value: 0 },
+                    Operation::Compare { destination: condition, operator: ComparisonOperator::Equal, left: zero, right: zero },
+                ],
+                Terminator::BranchIf {
+                    condition, then_target: BlockId::new(1), then_arguments: Vec::new(),
+                    else_target: BlockId::new(2), else_arguments: Vec::new(),
+                },
+                Vec::new(),
+                vec![ProperTailSite { id: TAIL_SITE, function: FUNCTION, discharged_by: None }],
+            ).with_proper_tail_locations(vec![ProperTailLocation::new(TAIL_SITE, FUNCTION, BlockId::new(2))]);
+            module.functions[0].blocks.extend([
+                BasicBlock { id: BlockId::new(1), parameters: Vec::new(), operations: Vec::new(), terminator: taken },
+                BasicBlock {
+                    id: BlockId::new(2), parameters: Vec::new(), operations: Vec::new(),
+                    terminator: Terminator::TailCall { site: TAIL_SITE, callee: FUNCTION, arguments: Vec::new() },
+                },
+            ]);
+            assert_eq!(check_initial(module).unwrap_err(), InitialCheckError::MissingTailObligation(TAIL_SITE));
+        }
+    }
+
 
     pub fn reclaim_without_unique_object_authority_fails_closed() {
         let module = lowered(
