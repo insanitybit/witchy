@@ -95,3 +95,68 @@ async fn main(console: Console):
     assert_eq!(vm.output(), vec!["77"]);
     assert_eq!(vm.canonical_heap_leaks().unwrap(), Some(0));
 }
+
+#[test]
+fn normal_resource_is_disposed_on_each_side_of_suspension() {
+    opt::set_for_tests(Some(OptSet::none()));
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            opt::set_for_tests(None);
+        }
+    }
+    let _reset = Reset;
+    let source = r#"import task
+must type Ticket:
+    Ticket(Int)
+fn finish(own ticket: Ticket) -> Int:
+    match move ticket:
+        Ticket(value) -> value
+async fn main(console: Console):
+    let before = Ticket(7)
+    let first = finish(before)
+    let pause = task.done(1)
+    let _ = pause.await
+    let after = Ticket(9)
+    let second = finish(after)
+    console.print("${first * 10 + second}")
+"#;
+    let checked = witchy::resolve_std_only_checked(source)
+        .expect("both resources are disposed without crossing suspension");
+    let artifact = witchy::codegen::compile_checked_module_artifact(&checked)
+        .expect_lowered("normal resource suspension source admits");
+    let mut runtime = Runtime::batch().expect("runtime");
+    let mut vm = runtime
+        .spawn_admitted(
+            &artifact,
+            Capabilities {
+                print: true,
+                quiet: true,
+                ..Capabilities::none()
+            },
+            128,
+        )
+        .expect("admitted resource spawn");
+    vm.run().expect("admitted resource execution");
+    assert_eq!(vm.output(), ["79"]);
+    assert_eq!(vm.canonical_heap_leaks().expect("ownership audit"), Some(0));
+}
+
+#[test]
+fn live_normal_resource_cannot_cross_suspension_without_cancellation_disposition() {
+    let source = r#"import task
+must type Ticket:
+    Ticket(Int)
+fn finish(own ticket: Ticket) -> Int:
+    match move ticket:
+        Ticket(value) -> value
+async fn main(console: Console):
+    let ticket = Ticket(7)
+    let pause = task.done(1)
+    let _ = pause.await
+    console.print("${finish(ticket)}")
+"#;
+    let error = witchy::resolve_std_only_checked(source)
+        .expect_err("live must obligation lacks a cancellation disposition");
+    assert!(error.to_string().contains("cancellation"), "{error}");
+}
