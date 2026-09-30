@@ -121,6 +121,8 @@ mod rfc0165_owner_adapters;
 mod rfc0167_views_through_channels_and_generators;
 #[path = "misc/rfc0167_installed_workflow.rs"]
 mod rfc0167_installed_workflow;
+#[path = "misc/rfc0167_call_scoped_copy.rs"]
+mod rfc0167_call_scoped_copy;
 #[path = "misc/rfc0167_normal_view_bearing_types.rs"]
 mod rfc0167_normal_view_bearing_types;
 #[path = "misc/rfc0167_nested_mode_preparation.rs"]
