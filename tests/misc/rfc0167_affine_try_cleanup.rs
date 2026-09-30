@@ -2,6 +2,12 @@
 use witchy::opt::{self, OptSet};
 use witchy::runtime::{Capabilities, Runtime};
 
+fn expansion_free() -> witchy_syntax::linker::ComptimeExpander {
+    witchy_syntax::linker::ComptimeExpander::with_sibling_request(
+        witchy_types::pipeline::require_expansion_free, |_| false,
+    )
+}
+
 const WORKER: &str = r#"mode opt
 must type Ticket:
     Ticket(Int)
@@ -75,7 +81,7 @@ fn main() -> Int:
 "#);
         let checked = witchy_types::pipeline::link_checked_from_source_bundle(
             vec![("main".into(), source.into_bytes()), ("worker".into(), WORKER.as_bytes().to_vec())],
-            "main", witchy_interp::comptime::EXPANDER,
+            "main", expansion_free(),
         ).unwrap_or_else(|error| panic!("{route} source refused: {error}"));
         let artifact = witchy::codegen::compile_checked_module_artifact(&checked)
             .expect_lowered("nested affine try admits unoptimized SafeWIR");
@@ -120,7 +126,7 @@ fn early(bad: Bool) -> Result(Int, String):
         };
         let outcome = witchy_types::pipeline::link_checked_from_source_bundle(
             vec![("main".into(), main.into_bytes()), ("worker".into(), worker.into_bytes())],
-            "main", witchy_interp::comptime::EXPANDER,
+            "main", expansion_free(),
         );
         let message = match outcome {
             Ok(_) => panic!("source accepted a live Ticket across the `?` failure exit"),
