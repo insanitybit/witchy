@@ -383,6 +383,7 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
   (import "witchy" "__witchy_abort_at" (func $__witchy_abort_at (param i32 i32 i32 i32 i32)))
   (import "witchy" "__witchy_list_bounds_at" (func $__witchy_list_bounds_at (param i64 i32 i32 i32 i32)))
   (import "witchy" "__witchy_bytes_bounds_at" (func $__witchy_bytes_bounds_at (param i64 i32 i32 i32 i32)))
+  (import "witchy" "__witchy_parse_int_at" (func $__witchy_parse_int_at (param i32 i32 i32 i32 i32)))
   (import "witchy" "console_print_at" (func $console_print_at_host (param externref i32 i32 i32 i32 i32)))
   (import "witchy" "build_out_write_at" (func $build_out_write_at_host (param externref i32 i32 i32 i32)))
   (import "witchy" "crypto_ed25519_verify_slices" (func $crypto_ed25519_verify_slices_host (param i32 i32 i32 i32 i32 i32) (result i64)))
@@ -736,7 +737,7 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         | "vm_service_response_into" | "vm_service_close"
         => C::InternalService,
 
-        "heap_register" | "heap_unregister" | "heap_frontier" | "__witchy_abort" | "__witchy_abort_at" | "__witchy_list_bounds_at" | "__witchy_bytes_bounds_at" => {
+        "heap_register" | "heap_unregister" | "heap_frontier" | "__witchy_abort" | "__witchy_abort_at" | "__witchy_list_bounds_at" | "__witchy_bytes_bounds_at" | "__witchy_parse_int_at" => {
             C::RuntimeDiagnostic
         }
         _ => return None,

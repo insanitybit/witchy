@@ -4,6 +4,7 @@ use super::*;
 pub(super) const IMPORT: &str = "__witchy_abort_at";
 pub(super) const BOUNDS_IMPORT: &str = "__witchy_list_bounds_at";
 pub(super) const BYTES_BOUNDS_IMPORT: &str = "__witchy_bytes_bounds_at";
+pub(super) const PARSE_INT_IMPORT: &str = "__witchy_parse_int_at";
 
 pub(super) fn is_list_access(expression: &Expr) -> bool {
     // A range subscript is projection syntax consumed by authenticated
@@ -19,6 +20,7 @@ pub(super) struct Site {
     pub function: String,
     pub line: u32,
     pub bytes_access: bool,
+    pub parse_int_access: bool,
 }
 
 pub(super) fn sites(module: &witchy_syntax::ast::Module, console: bool) -> Result<HashMap<usize, Site>, CanonicalLoweringError> {
@@ -49,14 +51,15 @@ pub(super) fn sites(module: &witchy_syntax::ast::Module, console: bool) -> Resul
                 }
                 if is_list_access(expression)
                     || matches!(expression, Expr::Binary { op: BinOp::Div | BinOp::Mod, .. })
-                    || matches!(expression, Expr::Call { name, .. } if name == "fail" || name == "__bytes_at" || name == "bytes.at" || registry_hosts::is_require(name) || (console && is_console_print(name))) {
+                    || matches!(expression, Expr::Call { name, .. } if name == "fail" || name == "__bytes_at" || name == "bytes.at" || name == "string.to_int" || name == "string.__to_int" || registry_hosts::is_require(name) || (console && is_console_print(name))) {
                     let key = expression as *const Expr as usize;
                     if !sites.contains_key(&key) {
                         let line = body.lines.get(index).copied().ok_or(
                             CanonicalLoweringError::UnsupportedExpression("diagnostic source location"),
                         )?;
                         let bytes_access = matches!(expression, Expr::Call { name, .. } if name == "__bytes_at" || name == "bytes.at");
-                        sites.insert(key, Site { function: function.to_owned(), line, bytes_access });
+                        let parse_int_access = matches!(expression, Expr::Call { name, .. } if name == "string.to_int" || name == "string.__to_int");
+                        sites.insert(key, Site { function: function.to_owned(), line, bytes_access, parse_int_access });
                     }
                 }
                 Ok::<_, CanonicalLoweringError>(())
@@ -78,7 +81,7 @@ pub(super) fn sites(module: &witchy_syntax::ast::Module, console: bool) -> Resul
 
 pub(super) fn catalog(
     catalog: CanonicalAbiCatalog, signatures: &mut Vec<FunctionSignature>, layout: witchy_wir::layout::LayoutId,
-    bytes_needed: bool,
+    bytes_needed: bool, parse_int_needed: bool,
 ) -> Result<CanonicalAbiCatalog, CanonicalLoweringError> {
     let id = FunctionSignatureId::new(u32::try_from(signatures.len()).map_err(|_| CanonicalLoweringError::IdOverflow)?);
     let parameters = vec![ValueType::Ref(layout), ValueType::Ref(layout), ValueType::Size];
@@ -106,17 +109,32 @@ pub(super) fn catalog(
         },
     });
     let catalog = catalog.with_list_bounds_import(id, layout).map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
-    if !bytes_needed { return Ok(catalog); }
-    let id = FunctionSignatureId::new(u32::try_from(signatures.len()).map_err(|_| CanonicalLoweringError::IdOverflow)?);
-    let parameters = vec![ValueType::Int, ValueType::Size, ValueType::Ref(layout), ValueType::Size];
-    signatures.push(FunctionSignature {
-        id, parameters: parameters.clone(), results: Vec::new(),
-        contract: CallableContract {
-            parameters: parameters.into_iter().map(|value_type| ParameterContract { value_type, ownership: ParameterOwnership::Value }).collect(),
-            results: Vec::new(), parameter_effects: BTreeMap::from([(2, vec![MemoryEffect::Read])]),
-        },
-    });
-    catalog.with_bytes_bounds_import(id, layout).map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)
+    let mut catalog = catalog;
+    if bytes_needed {
+        let id = FunctionSignatureId::new(u32::try_from(signatures.len()).map_err(|_| CanonicalLoweringError::IdOverflow)?);
+        let parameters = vec![ValueType::Int, ValueType::Size, ValueType::Ref(layout), ValueType::Size];
+        signatures.push(FunctionSignature {
+            id, parameters: parameters.clone(), results: Vec::new(),
+            contract: CallableContract {
+                parameters: parameters.into_iter().map(|value_type| ParameterContract { value_type, ownership: ParameterOwnership::Value }).collect(),
+                results: Vec::new(), parameter_effects: BTreeMap::from([(2, vec![MemoryEffect::Read])]),
+            },
+        });
+        catalog = catalog.with_bytes_bounds_import(id, layout).map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
+    }
+    if parse_int_needed {
+        let id = FunctionSignatureId::new(u32::try_from(signatures.len()).map_err(|_| CanonicalLoweringError::IdOverflow)?);
+        let parameters = vec![ValueType::Ref(layout), ValueType::Ref(layout), ValueType::Size];
+        signatures.push(FunctionSignature {
+            id, parameters: parameters.clone(), results: Vec::new(),
+            contract: CallableContract {
+                parameters: parameters.into_iter().map(|value_type| ParameterContract { value_type, ownership: ParameterOwnership::Value }).collect(),
+                results: Vec::new(), parameter_effects: BTreeMap::from([(0, vec![MemoryEffect::Read]), (1, vec![MemoryEffect::Read])]),
+            },
+        });
+        catalog = catalog.with_parse_int_import(id, layout).map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
+    }
+    Ok(catalog)
 }
 
 impl FunctionLowerer<'_> {
@@ -194,6 +212,45 @@ impl FunctionLowerer<'_> {
         self.finish_current(Terminator::Trap)?;
         self.current = proceed;
         self.restore_snapshot(facts);
+        Ok(())
+    }
+
+    pub(super) fn parse_int_failure_block(&mut self, source: ValueId, site: &Site) -> Result<BlockId, CanonicalLoweringError> {
+        let continuation = self.current;
+        let facts = self.snapshot_facts();
+        let fail = self.new_block(&[])?;
+        self.current = fail;
+        let function = self.lower_string_literal(&site.function)?;
+        let start = self.push_const_size(0)?;
+        let source_length = self.string_length_of(source)?;
+        let function_length = self.string_lengths[&function];
+        let line = self.push_const_size(u64::from(site.line))?;
+        let import = self.host_imports.parse_int.ok_or_else(|| CanonicalLoweringError::InvalidAuthenticatedAbiCatalog("parse Int import missing".into()))?;
+        let buffer = |object, length| HostCallArgument::Buffer {
+            place: witchy_wir::canonical_safewir::Place::projected(object,
+                Projection::Slice { start, length }, self.values[&object], AccessMode::Read),
+            extent: HostBufferExtent::Slice,
+        };
+        self.push_operation(Operation::HostCall {
+            destinations: Vec::new(), import,
+            arguments: vec![buffer(source, source_length), buffer(function, function_length), HostCallArgument::Value(line)],
+        });
+        self.finish_current(Terminator::Trap)?;
+        self.current = continuation;
+        self.restore_snapshot(facts);
+        Ok(fail)
+    }
+
+    pub(super) fn parse_int_unless(&mut self, condition: ValueId, source: ValueId, site: &Site) -> Result<(), CanonicalLoweringError> {
+        // Each trap arm has a distinct block: structured Wasm lowering emits
+        // terminal arms inline and cannot emit one shared terminal twice.
+        let fail = self.parse_int_failure_block(source, site)?;
+        let proceed = self.new_block(&[])?;
+        self.finish_current(Terminator::BranchIf {
+            condition, then_target: proceed, then_arguments: Vec::new(),
+            else_target: fail, else_arguments: Vec::new(),
+        })?;
+        self.current = proceed;
         Ok(())
     }
 

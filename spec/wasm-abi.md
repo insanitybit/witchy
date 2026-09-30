@@ -368,6 +368,7 @@ An empty set is an authenticated reject-all contract, never a wildcard.
 | `__witchy_abort_at` | `(i32, i32, i32, i32, i32)` | runtime diagnostic | none | omitted |
 | `__witchy_list_bounds_at` | `(i64, i32, i32, i32, i32)` | runtime diagnostic | none | omitted |
 | `__witchy_bytes_bounds_at` | `(i64, i32, i32, i32, i32)` | runtime diagnostic | none | omitted |
+| `__witchy_parse_int_at` | `(i32, i32, i32, i32, i32)` | runtime diagnostic | none | omitted |
 | `console_print_at` | `(externref, i32, i32, i32, i32, i32)` | non-authority infrastructure | none | omitted |
 | `build_out_write_at` | `(externref, i32, i32, i32, i32)` | capability authority | Build.Out | omitted |
 | `crypto_ed25519_verify_slices` | `(i32, i32, i32, i32, i32, i32) -> i64` | non-authority infrastructure | none | omitted |

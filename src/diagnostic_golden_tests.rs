@@ -14,7 +14,7 @@
 //! update — Phase 2 (message polish) is out of scope here.
 //!
 //! Runtime-trap goldens use the production checked-source to admitted-Wasm
-//! route where it preserves the routed source diagnostic. Three remaining
+//! route where it preserves the routed source diagnostic. Two remaining
 //! goldens retain historical raw-Wasm/interpreter parity until canonical
 //! lowering routes their source locations; a bare Wasm trap is not a replacement.
 
@@ -567,9 +567,22 @@ mod runtime {
 
     #[test]
     fn parse_int_of_junk() {
-        insta::assert_snapshot!(legacy_trap_pair(
+        insta::assert_snapshot!(trap_snapshot(
             "\nfn main(console: Console):\n    console.print(\"${\"notanumber\".to_int()}\")\n"
         ));
+    }
+
+    #[test]
+    fn parse_int_failure_paths_preserve_input_and_caller_site() {
+        for value in ["", "+", "12x", "9223372036854775808", "-9223372036854775809"] {
+            let source = format!(
+                "fn main(console: Console):\n    console.print(\"${{\"{value}\".to_int()}}\")\n"
+            );
+            assert_eq!(
+                trap_snapshot(&source),
+                format!("runtime error: `main`, line 2: cannot parse `{value}` as an Int"),
+            );
+        }
     }
 
     #[test]

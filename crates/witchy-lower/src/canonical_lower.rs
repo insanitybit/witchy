@@ -1419,7 +1419,8 @@ if capability_imports.contains("build_out_write_at") {
         if !net_imports.is_empty() { catalog = net::catalog(catalog, &mut signatures, string_layout)?; }
         if !service_sites.is_empty() { catalog = vm_service::catalog(catalog, &mut signatures, string_layout)?; }
         let bytes_bounds_needed = abort_sites.values().any(|site| site.bytes_access);
-        if !abort_sites.is_empty() { catalog = abort::catalog(catalog, &mut signatures, string_layout, bytes_bounds_needed)?; }
+        let parse_int_needed = abort_sites.values().any(|site| site.parse_int_access);
+        if !abort_sites.is_empty() { catalog = abort::catalog(catalog, &mut signatures, string_layout, bytes_bounds_needed, parse_int_needed)?; }
         // The module declares only the imports its functions reach; the
         // catalog still authenticates each one it declares.
         let projected = catalog
@@ -1429,6 +1430,7 @@ if capability_imports.contains("build_out_write_at") {
                 (import.name == print_name && prints)
                     || (matches!(import.name.as_str(), abort::IMPORT | abort::BOUNDS_IMPORT) && !abort_sites.is_empty())
                     || (import.name == abort::BYTES_BOUNDS_IMPORT && bytes_bounds_needed)
+                    || (import.name == abort::PARSE_INT_IMPORT && parse_int_needed)
                     || (import.name == "float_to_str" && floats)
                     || capability_imports.contains(import.name.as_str())
                     || compiler_imports.contains(import.name.as_str())
@@ -1443,6 +1445,7 @@ if capability_imports.contains("build_out_write_at") {
             abort: projected.iter().find(|import| import.name == abort::IMPORT).map(|import| import.id),
             bounds: projected.iter().find(|import| import.name == abort::BOUNDS_IMPORT).map(|import| import.id),
             bytes_bounds: projected.iter().find(|import| import.name == abort::BYTES_BOUNDS_IMPORT).map(|import| import.id),
+            parse_int: projected.iter().find(|import| import.name == abort::PARSE_INT_IMPORT).map(|import| import.id),
             abort_sites,
             vm_sites: service_sites.iter().map(|site| (site.expression() as *const Expr as usize, site.id())).collect(),
             vm_service: witchy_wir::canonical_safewir::VM_SERVICE_IMPORT_NAMES.iter().filter_map(|name| projected.iter().find(|i| i.name == *name).map(|i| (*name, i.id))).collect(),
@@ -11635,7 +11638,7 @@ impl FunctionLowerer<'_> {
                     return Err(CanonicalLoweringError::UnsupportedExpression("string.to_int arity"));
                 };
                 let object = self.lower_expr(receiver)?;
-                self.lower_string_to_int(object)
+                self.lower_string_to_int(expression, object)
             }
             Expr::Call { name, args } if matches!(name.as_str(), "string.trim" | "string.__trim") => {
                 let [receiver] = args.as_slice() else {
@@ -19508,7 +19511,8 @@ impl FunctionLowerer<'_> {
     /// whitespace, with an optional sign; anything else aborts, as does an
     /// overflow. Digits accumulate negatively so the most negative value
     /// parses, and the positive result negates at the end.
-    fn lower_string_to_int(&mut self, object: ValueId) -> Result<ValueId, CanonicalLoweringError> {
+    fn lower_string_to_int(&mut self, expression: &Expr, object: ValueId) -> Result<ValueId, CanonicalLoweringError> {
+        let site = self.diagnostic_site(expression)?;
         let layout = self.string_layout_id()?;
         let length = self.string_length_of(object)?;
         let zero = self.push_const_size(0)?;
@@ -19516,7 +19520,7 @@ impl FunctionLowerer<'_> {
         let start = self.lower_whitespace_scan(object, layout, length, zero, length, true)?;
         let end = self.lower_whitespace_scan(object, layout, length, start, length, false)?;
         let non_empty = self.push_compare(ComparisonOperator::LessUnsigned, start, end)?;
-        self.push_trap_unless(non_empty)?;
+        self.parse_int_unless(non_empty, object, &site)?;
         let in_bounds = self.push_compare(ComparisonOperator::LessUnsigned, start, length)?;
         self.push_guard(in_bounds, witchy_wir::canonical_safewir::GuardKind::Bounds);
         let first = self.push_string_byte_load(object, start, layout)?;
@@ -19558,7 +19562,7 @@ impl FunctionLowerer<'_> {
         self.current = digits;
         let (digit_start, sign) = (digit_values[0], digit_values[1]);
         let has_digits = self.push_compare(ComparisonOperator::LessUnsigned, digit_start, end)?;
-        self.push_trap_unless(has_digits)?;
+        self.parse_int_unless(has_digits, object, &site)?;
         let zero_int = self.push_const_int(0)?;
         let ten = self.push_const_int(10)?;
         let ascii_zero = self.push_const_size(48)?;
@@ -19586,7 +19590,7 @@ impl FunctionLowerer<'_> {
         let byte = self.push_string_byte_load(object, cursor, layout)?;
         let digit = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Subtract, byte, ascii_zero, OverflowBehavior::Wrap)?;
         let is_digit = self.push_compare(ComparisonOperator::LessEqualUnsigned, digit, nine)?;
-        self.push_trap_unless(is_digit)?;
+        self.parse_int_unless(is_digit, object, &site)?;
         let digit_int = self.fresh(ValueType::Int)?;
         self.push_operation(Operation::WidenSize { destination: digit_int, value: digit });
         // `acc * 10 - digit` stays in range iff `acc >= (MIN + digit) / 10`
@@ -19596,7 +19600,7 @@ impl FunctionLowerer<'_> {
         let bound_numerator = self.push_arithmetic(ValueType::Int, ArithmeticOperator::Add, minimum, digit_int, OverflowBehavior::Wrap)?;
         let bound = self.push_arithmetic(ValueType::Int, ArithmeticOperator::DivideSigned, bound_numerator, ten, OverflowBehavior::Trap)?;
         let in_range = self.push_compare(ComparisonOperator::GreaterEqualSigned, accumulator, bound)?;
-        self.push_trap_unless(in_range)?;
+        self.parse_int_unless(in_range, object, &site)?;
         let scaled = self.push_arithmetic(ValueType::Int, ArithmeticOperator::Multiply, accumulator, ten, OverflowBehavior::Wrap)?;
         let next_accumulator = self.push_arithmetic(ValueType::Int, ArithmeticOperator::Subtract, scaled, digit_int, OverflowBehavior::Wrap)?;
         let next_cursor = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, cursor, one, OverflowBehavior::Wrap)?;
@@ -19616,7 +19620,7 @@ impl FunctionLowerer<'_> {
         let representable = self.push_arithmetic(ValueType::Int, ArithmeticOperator::Add, not_minimum, sign, OverflowBehavior::Wrap)?;
         let one_int = self.push_const_int(1)?;
         let fits = self.push_compare(ComparisonOperator::GreaterEqualSigned, representable, one_int)?;
-        self.push_trap_unless(fits)?;
+        self.parse_int_unless(fits, object, &site)?;
         let two = self.push_const_int(2)?;
         let doubled = self.push_arithmetic(ValueType::Int, ArithmeticOperator::Multiply, sign, two, OverflowBehavior::Wrap)?;
         let factor = self.push_arithmetic(ValueType::Int, ArithmeticOperator::Subtract, doubled, one_int, OverflowBehavior::Wrap)?;
@@ -20643,6 +20647,7 @@ struct HostImports {
     abort: Option<witchy_wir::canonical_safewir::ImportId>,
     bounds: Option<witchy_wir::canonical_safewir::ImportId>,
     bytes_bounds: Option<witchy_wir::canonical_safewir::ImportId>,
+    parse_int: Option<witchy_wir::canonical_safewir::ImportId>,
     abort_sites: HashMap<usize, abort::Site>,
     vm_service: BTreeMap<&'static str, witchy_wir::canonical_safewir::ImportId>,
     vm_sites: HashMap<usize, u32>,

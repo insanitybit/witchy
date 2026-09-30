@@ -36,6 +36,7 @@ pub(in crate::runtime) fn link_abort(linker: &mut Linker<VmState>) -> Result<()>
     linker.func_wrap("witchy", "__witchy_abort_at", host_witchy_abort_at)?;
     linker.func_wrap("witchy", "__witchy_list_bounds_at", host_witchy_list_bounds_at)?;
     linker.func_wrap("witchy", "__witchy_bytes_bounds_at", host_witchy_bytes_bounds_at)?;
+    linker.func_wrap("witchy", "__witchy_parse_int_at", host_witchy_parse_int_at)?;
     Ok(())
 }
 
@@ -252,6 +253,22 @@ fn host_witchy_bytes_bounds_at(
     let memory = memory_of(&mut caller)?;
     let function = diagnostic_text(memory.data(&caller), function_ptr, function_len)?;
     let core = format!("bytes index {index} out of bounds (length {})", length as u32);
+    #[cfg(feature = "test-fixtures")]
+    if caller.data().fixture_console.is_some() {
+        return Err(super::super::console_fixtures::diagnostic(function, line as u32, core));
+    }
+    bail!("{}", witchy_syntax::diag::runtime_error(function, line as u32, &core));
+}
+
+fn host_witchy_parse_int_at(
+    mut caller: Caller<'_, VmState>, source_ptr: i32, source_len: i32,
+    function_ptr: i32, function_len: i32, line: i32,
+) -> Result<()> {
+    let memory = memory_of(&mut caller)?;
+    let data = memory.data(&caller);
+    let source = diagnostic_text(data, source_ptr, source_len)?;
+    let function = diagnostic_text(data, function_ptr, function_len)?;
+    let core = witchy_syntax::diag::DiagTemplate::ParseInt.render(0, 0, source);
     #[cfg(feature = "test-fixtures")]
     if caller.data().fixture_console.is_some() {
         return Err(super::super::console_fixtures::diagnostic(function, line as u32, core));

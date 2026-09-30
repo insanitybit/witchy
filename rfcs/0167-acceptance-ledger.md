@@ -166,9 +166,12 @@ user `fail`, and a missing named secret through checked source and admitted
 Wasm, retaining their source-level messages. The direct and nested
 division-by-zero goldens now also use checked source and admitted normal-mode
 Wasm; they preserve the exact `main` or `main.explode` function and line 3
-diagnostic. Three goldens remain on the historical test-only
-interpreter/raw-Wasm path: division overflow, invalid integer parsing, and
-NaN-to-Int conversion still need canonical source-routed diagnostics. Their
+diagnostic. Invalid integer parsing now uses the same admitted path: the
+`notanumber` golden retains the exact input and caller line, and five further
+empty, sign-only, malformed, and overflow inputs retain their exact source
+diagnostics. Two goldens remain on the historical test-only
+interpreter/raw-Wasm path: division overflow and NaN-to-Int conversion still
+need canonical source-routed diagnostics. Their
 source-level expectations must not be weakened to generic traps.
 
 Normal Bytes methods and mutators now match their independent exact output
