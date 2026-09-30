@@ -185,6 +185,8 @@ mod rfc0167_match_guard_disposition;
 mod rfc0167_result_list_closure_view;
 #[path = "misc/rfc0167_tuple_result_string_root_view.rs"]
 mod rfc0167_tuple_result_string_root_view;
+#[path = "misc/rfc0167_task_snapshot_replay.rs"]
+mod rfc0167_task_snapshot_replay;
 #[path = "misc/rfc0167_normal_worker_boundary.rs"]
 mod rfc0167_normal_worker_boundary;
 
