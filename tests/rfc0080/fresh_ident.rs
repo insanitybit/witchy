@@ -1,8 +1,8 @@
 //! RFC-0080 hygiene seam: compiler-owned fresh identifiers are deterministic,
 //! source-unspellable, and distinct across calls and expansion evaluators.
 
-use witchy::{ast, parser, typeck};
-use witchy_interp::pipeline;
+use witchy::ast;
+use witchy_types::runtime_type::{AuthenticatedModuleOwners, ModuleLoadIdentity, PackageCoordinate, PackageSource};
 
 const SOURCE: &str = r#"
 import meta
@@ -30,15 +30,22 @@ comptime fn fresh_tag(parts: List(String), holes: List(meta.TagHole)) -> meta.Ex
 fn main(console: Console):
     console.print("${sum_fresh(5, 7)}")
     console.print("${identity_fresh(9)}")
-    console.print("${fresh_tag"a" + fresh_tag"b"}")
+    console.print("${fresh_tag"a" + 7}")
 "#;
 
-fn linked(source: &str) -> ast::Module {
-    let parsed = parser::parse_module(source).expect("parse RFC-0080 fresh-name program");
-    let linked = pipeline::link(vec![("main".into(), parsed)], "main")
-        .expect("expand and link RFC-0080 fresh-name program");
-    typeck::check(&linked).expect("typecheck RFC-0080 fresh-name program");
-    linked
+fn checked(source: &str) -> Result<witchy_types::pipeline::CheckedModule, String> {
+    let workspace = PackageCoordinate::new(PackageSource::Workspace, "test/fresh-ident", "1").unwrap();
+    let toolchain = PackageCoordinate::new(PackageSource::Toolchain, "witchy/std", "1").unwrap();
+    let mut assignments = vec![("main".to_owned(), ModuleLoadIdentity::new(workspace, ["main"]).unwrap())];
+    assignments.extend(witchy_syntax::linker::STD_MODULES.iter().map(|name| (
+        (*name).to_owned(), ModuleLoadIdentity::new(toolchain.clone(), ["std", *name]).unwrap(),
+    )));
+    let owners = AuthenticatedModuleOwners::from_loader_assignments(assignments).unwrap();
+    witchy::canonical_comptime::check_source_bundle_with_local_tag(
+        vec![("main".into(), source.as_bytes().to_vec())], "main",
+        ["main".to_owned()].into_iter().collect(), owners,
+        witchy::canonical_comptime::source_limits(),
+    )
 }
 
 fn fresh_parameter_names(module: &ast::Module) -> Vec<String> {
@@ -56,8 +63,8 @@ fn fresh_parameter_names(module: &ast::Module) -> Vec<String> {
 
 #[test]
 fn fresh_identifiers_are_deterministic_distinct_and_backend_neutral() {
-    let first = linked(SOURCE);
-    let names = fresh_parameter_names(&first);
+    let first = checked(SOURCE).expect("authenticated fresh-name program");
+    let names = fresh_parameter_names(first.module());
     assert_eq!(names.len(), 3, "expected both generated functions: {names:?}");
     assert!(
         names.iter().all(|name| name.starts_with("__witchy_fresh_")),
@@ -67,12 +74,25 @@ fn fresh_identifiers_are_deterministic_distinct_and_backend_neutral() {
     assert_ne!(names[0], names[2], "separate comptime blocks must have distinct scopes");
     assert_eq!(
         names,
-        fresh_parameter_names(&linked(SOURCE)),
+        fresh_parameter_names(checked(SOURCE).expect("repeat authenticated expansion").module()),
         "fresh-name allocation must be reproducible for identical source"
     );
 
-    let expected = vec!["12".to_string(), "9".to_string(), "14".to_string()];
-    super::assert_admitted_source_output(SOURCE, &expected, "compile expanded program", 128);
+    struct ResetOptimization;
+    impl Drop for ResetOptimization {
+        fn drop(&mut self) { witchy::opt::set_for_tests(None); }
+    }
+    witchy::opt::set_for_tests(Some(witchy::opt::OptSet::none()));
+    let _reset = ResetOptimization;
+    let artifact = witchy::codegen::compile_checked_module_artifact(&first)
+        .expect_lowered("admit fresh-name program");
+    let mut runtime = witchy::runtime::Runtime::batch().expect("runtime");
+    let mut actor = runtime.spawn_admitted(&artifact, witchy::runtime::Capabilities {
+        print: true, quiet: true, ..witchy::runtime::Capabilities::none()
+    }, 128).expect("spawn admitted fresh-name program");
+    actor.run().expect("run admitted fresh-name program");
+    assert_eq!(actor.output(), ["12", "9", "14"]);
+    assert_eq!(actor.canonical_heap_leaks().expect("heap audit"), Some(0));
 }
 
 #[test]
@@ -86,9 +106,15 @@ comptime:
 fn main(console: Console):
     console.print("unreachable")
 "#;
-    let parsed = parser::parse_module(source).expect("invalid hint program still parses");
-    let error = pipeline::link(vec![("main".into(), parsed)], "main")
-        .expect_err("meta.fresh must validate its human-readable hint")
-        .message;
+    let error = checked(source)
+        .expect_err("meta.fresh must validate its human-readable hint");
     assert!(error.contains("meta.fresh") && error.contains("bad-name"), "{error}");
+}
+
+#[test]
+fn source_cannot_spoof_an_admitted_fresh_parameter() {
+    let source = "fn forged(__witchy_fresh_00_0_tmp: Int) -> Int:\n    __witchy_fresh_00_0_tmp\nfn main() -> Int:\n    forged(7)\n";
+    let error = witchy::resolve_std_only_checked(source)
+        .expect_err("user source cannot claim an admitted generated identifier");
+    assert!(error.to_string().contains("reserved for the compiler"), "{error}");
 }

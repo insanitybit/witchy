@@ -7,7 +7,7 @@ use witchy_lower::codegen::{self, LoweringOutcome};
 use witchy_runtime::runtime::{Runtime, comptime::ComptimeLimits};
 use witchy_types::pipeline::{CheckedModule, ComptimeSourceSession, PriorComptimeBlockOutput};
 use witchy_types::runtime_type::AuthenticatedModuleOwners;
-use witchy_syntax::ast::Module;
+use witchy_syntax::ast::{Item, Module};
 
 struct CheckedExpansion {
     checked: CheckedModule,
@@ -389,7 +389,15 @@ fn execute_source_blocks(
         }
         prior.push(PriorComptimeBlockOutput {
             site,
-            items: outcome.items.into_iter().map(|emitted| (emitted.item, emitted.origin)).collect(),
+            items: outcome.items.into_iter().map(|emitted| {
+                let mut item = emitted.item;
+                if let Item::Function(function) = &mut item {
+                    // Only the exact admitted compiler-session outcome may
+                    // introduce fresh private names into a generated function.
+                    function.attributes.push(witchy_syntax::source_check::GENERATED_ITEM_ATTRIBUTE.into());
+                }
+                (item, emitted.origin)
+            }).collect(),
         });
     }
     Ok(prior)
