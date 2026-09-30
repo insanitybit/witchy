@@ -140,6 +140,15 @@ leaks. Their duplicate source-interpreter executions are retired; the
 expansion, formatting, and hygiene assertions remain. This is a row Q test
 support reduction, not complete walker retirement.
 
+The fresh-identifier fixture now exercises one source-defined local tagged
+literal after its admitted comptime blocks. The canonical
+`check_source_bundle_with_local_tag` route selects and rechecks only the first
+local tagged literal; it does not execute a second tag in the same source
+bundle. The fixture's independent result, fresh-name distinctness, and
+source-authored reserved-name refusal remain covered. Multiple local tag
+expansions in one program still require an authenticated ordered-output
+handoff and remain open in row Q.
+
 The nested structural-tag ancestry test now also checks its typed expansion
 through admitted Wasm: the generated `main` returns the independently expected
 `41` with zero owned-heap leaks. Its definition-site and hole-ancestry
