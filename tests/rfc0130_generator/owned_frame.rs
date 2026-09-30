@@ -130,21 +130,25 @@ fn carrier_dimensions(wasm: &[u8]) -> CarrierDimensions {
     }
 }
 
-fn compile(pulls: usize) -> (Vec<u8>, CarrierDimensions) {
+fn compile(pulls: usize) -> (witchy_wir::AdmittedCanonicalArtifact, CarrierDimensions) {
     let checked = witchy::resolve_std_only_checked(&source(pulls))
         .expect("check RFC-0130 owned-frame fixture");
-    let wasm = codegen::compile_checked_module_binary(&checked)
+    // The carrier catalog describes the legacy generator ABI. The checked
+    // binary API returns canonical bytes, so compile a separate raw artifact
+    // only to inspect its catalog; execution uses the admitted artifact below.
+    let carrier_wasm = codegen::compile_module_binary(checked.module())
+        .expect_lowered("compile RFC-0130 carrier catalog");
+    let dimensions = carrier_dimensions(&carrier_wasm);
+    let artifact = codegen::compile_checked_module_artifact(&checked)
         .expect_lowered("compile RFC-0130 owned-frame fixture");
-    let dimensions = carrier_dimensions(&wasm);
-    (wasm, dimensions)
+    (artifact, dimensions)
 }
 
-fn run(wasm: &[u8]) -> CompiledRun {
-    witchy_interp::compiler_natives::install();
+fn run(artifact: &witchy_wir::AdmittedCanonicalArtifact) -> CompiledRun {
     let mut runtime = Runtime::batch_quick().expect("create generator acceptance runtime");
     let mut actor = runtime
-        .spawn(
-            wasm,
+        .spawn_admitted(
+            artifact,
             Capabilities {
                 print: true,
                 quiet: true,
@@ -153,7 +157,10 @@ fn run(wasm: &[u8]) -> CompiledRun {
             256,
         )
         .expect("spawn compiled generator acceptance fixture");
-    actor.run().expect("run compiled generator acceptance fixture");
+    actor
+        .run()
+        .expect("run compiled generator acceptance fixture");
+    assert_eq!(actor.canonical_heap_leaks().expect("heap audit"), Some(0));
     CompiledRun {
         output: actor.output(),
         heap_bytes: actor.heap_bytes().unwrap_or(0),
@@ -189,8 +196,8 @@ fn rfc0130_rows_1_to_3_generators_resume_owned_frames_once_with_linear_work_on_w
     const SMALL_PULLS: usize = 8;
     const LARGE_PULLS: usize = 64;
 
-    let (small_wasm, small_carrier) = compile(SMALL_PULLS);
-    let (large_wasm, large_carrier) = compile(LARGE_PULLS);
+    let (small_artifact, small_carrier) = compile(SMALL_PULLS);
+    let (large_artifact, large_carrier) = compile(LARGE_PULLS);
     assert_eq!(
         large_carrier, small_carrier,
         "frame dimensions stay fixed as pulls grow",
@@ -226,8 +233,8 @@ fn rfc0130_rows_1_to_3_generators_resume_owned_frames_once_with_linear_work_on_w
         "the owned generator frames stay in fixed direct Wasm lanes",
     );
 
-    let small = (0..3).map(|_| run(&small_wasm)).collect::<Vec<_>>();
-    let large = (0..3).map(|_| run(&large_wasm)).collect::<Vec<_>>();
+    let small = (0..3).map(|_| run(&small_artifact)).collect::<Vec<_>>();
+    let large = (0..3).map(|_| run(&large_artifact)).collect::<Vec<_>>();
     assert!(
         small.windows(2).all(|pair| pair[0] == pair[1]),
         "small counters are deterministic",

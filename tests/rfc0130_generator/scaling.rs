@@ -1,5 +1,5 @@
-use witchy::runtime::{Capabilities, Runtime};
 use witchy::codegen;
+use witchy::runtime::{Capabilities, Runtime};
 
 #[derive(Debug, PartialEq, Eq)]
 struct CarrierDimensions {
@@ -53,7 +53,11 @@ fn carrier_dimensions(wasm: &[u8]) -> CarrierDimensions {
             _ => None,
         })
         .collect::<Vec<_>>();
-    assert_eq!(sections.len(), 1, "compiled generator has one carrier catalog");
+    assert_eq!(
+        sections.len(),
+        1,
+        "compiled generator has one carrier catalog"
+    );
 
     let bytes = &sections[0];
     assert_eq!(bytes[0], 2, "carrier ABI version");
@@ -81,20 +85,28 @@ fn carrier_dimensions(wasm: &[u8]) -> CarrierDimensions {
         }
     }
     assert_eq!(cursor, bytes.len(), "carrier catalog is decoded completely");
-    CarrierDimensions { states, max_lane_width, max_slots, wholly_direct }
+    CarrierDimensions {
+        states,
+        max_lane_width,
+        max_slots,
+        wholly_direct,
+    }
 }
 
 fn compiled_sample(pulls: usize) -> (Vec<String>, CarrierDimensions) {
     let checked = witchy::resolve_std_only_checked(&source(pulls))
         .expect("check RFC-0130 row-3 generator fixture");
-    let wasm = codegen::compile_checked_module_binary(&checked)
+    // The checked binary API returns canonical bytes without the legacy
+    // carrier catalog. Inspect raw bytes only for that ABI assertion.
+    let carrier_wasm = codegen::compile_module_binary(checked.module())
+        .expect_lowered("compile RFC-0130 carrier catalog");
+    let dimensions = carrier_dimensions(&carrier_wasm);
+    let artifact = codegen::compile_checked_module_artifact(&checked)
         .expect_lowered("compile RFC-0130 row-3 generator fixture");
-    let dimensions = carrier_dimensions(&wasm);
-    witchy_interp::compiler_natives::install();
     let mut runtime = Runtime::batch_quick().expect("create generator scaling runtime");
     let mut actor = runtime
-        .spawn(
-            &wasm,
+        .spawn_admitted(
+            &artifact,
             Capabilities {
                 print: true,
                 quiet: true,
@@ -104,6 +116,7 @@ fn compiled_sample(pulls: usize) -> (Vec<String>, CarrierDimensions) {
         )
         .expect("spawn compiled generator scaling fixture");
     actor.run().expect("run compiled generator scaling fixture");
+    assert_eq!(actor.canonical_heap_leaks().expect("heap audit"), Some(0));
     (actor.output(), dimensions)
 }
 
@@ -112,7 +125,11 @@ fn rfc0130_acceptance_row_3_owned_frame_pulls_are_linear_and_storage_is_bounded_
     let (small_output, small_carrier) = compiled_sample(8);
     let (large_output, large_carrier) = compiled_sample(64);
 
-    assert_eq!(small_output.len(), 9, "eight pulls execute eight body segments");
+    assert_eq!(
+        small_output.len(),
+        9,
+        "eight pulls execute eight body segments"
+    );
     assert!(small_output[..8].iter().all(|line| line == "tick"));
     assert_eq!(small_output[8], "sum 28");
     assert_eq!(large_output.len(), 65, "64 pulls execute 64 body segments");
@@ -124,9 +141,15 @@ fn rfc0130_acceptance_row_3_owned_frame_pulls_are_linear_and_storage_is_bounded_
         "body executions scale exactly with pulls, not with replay-to-kth work",
     );
 
-    assert!(small_carrier.wholly_direct, "owned generator frame stays in direct Wasm lanes");
+    assert!(
+        small_carrier.wholly_direct,
+        "owned generator frame stays in direct Wasm lanes"
+    );
     assert_eq!(small_carrier.states, 2, "one entry and one resume state");
-    assert_eq!(small_carrier.max_slots, 2, "the entry/resume ABI needs at most two slots");
+    assert_eq!(
+        small_carrier.max_slots, 2,
+        "the entry/resume ABI needs at most two slots"
+    );
     assert_eq!(
         small_carrier.max_lane_width, 5,
         "the lazy owned frame needs five direct lanes",
