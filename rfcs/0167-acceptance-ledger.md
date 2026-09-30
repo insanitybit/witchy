@@ -83,6 +83,12 @@ focused executable evidence:
 | M: typed generation | `program_defined_builder_uses_type_info_in_both_modes` passes its normal leg with checked Builder items, `type_info(User)`, admitted Wasm output, and zero leaks. Four source-loader tests pass built-in Eq, Show, Ordering, and a local typed derive on admitted Wasm. `type_info_descriptor_cannot_be_forged_or_rewritten` and `canonical_dynamic_expression_leaves_are_typed_and_session_bounded` pass their handle-boundary refusals. | Other syntax constructors may still refuse explicitly; opt-only generation and broad external-consumer migration are deferred. The historical row M remains partial for that wider scope. |
 | O: installed workflow | `installed_normal_check_fmt_compile_and_run` passes `check`, compile to nonempty Wasm, run with the expected `views/unit/34/6/1/14/103` transcript, `fmt`, and `fmt --check`. | The whole book, examples, and external consumers are outside this milestone. The historical row O remains partial for wider adoption. |
 
+The CLI exit-code test now runs two checked normal-mode files through the
+production `execute_file_exit` path: `main() -> Int` returns process code 7
+without output, and a unit-returning `main` prints `hi` with code 0. Its
+source-interpreter execution is retired. This extends row O's exact CLI
+boundary evidence without claiming the broader tooling row complete.
+
 The normal-mode compiler-tooling milestone is still open: row N needs its
 representative safety-boundary closeout and row Q still requires retirement of
 the remaining source walker workspace/test support. These narrower M/O findings
