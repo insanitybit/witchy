@@ -20,7 +20,7 @@ breaking ABI change that must bump `WITCHY_ABI_VERSION`.
 
 ## ABI version
 
-The current ABI version is **17**. The JavaScript host pins it as
+The current ABI version is **18**. The JavaScript host pins it as
 `WITCHY_ABI_VERSION` (exported from `web/witchy-runtime/witchy-runtime.mjs`). The
 version covers: the import module name `"witchy"`, the set of import names and
 their `(params) -> results` signatures, the value/memory representation, and the
@@ -62,6 +62,11 @@ and emitted ASTs have deterministic limits. Ordinary launchers omit them.
 Version 17 adds the corresponding compiler-session-only item quotation and
 emission imports. They retain typed item syntax from the exact checked source;
 ordinary launchers continue to omit these imports.
+
+Version 18 adds compiler-session-only expression and item quotation with
+typed holes. The host substitutes current-session syntax handles into checked
+quotation seeds and refuses forged handles or source sites. Ordinary launchers
+omit these imports.
 
 Version 14 adds native canonical Net slice adapters. `net_listen_at` receives
 an authenticated Net and an address read slice; it uses the existing admitted
@@ -176,7 +181,7 @@ It does **not** implement unavailable capability sizing imports
 
 ## The imports
 
-ABI version 16 declares **179 imports** (`IMPORT_COUNT` in
+ABI version 18 declares **181 imports** (`IMPORT_COUNT` in
 `crates/witchy-wir/src/wir_prelude.rs`). That file owns the ordered signatures
 and the explicit metadata rendered below. The classes are:
 
@@ -201,7 +206,6 @@ row: for ABI version 8 every row declares layout schema 1 with `accepted = []`.
 An empty set is an authenticated reject-all contract, never a wildcard.
 
 <!-- BEGIN GENERATED WASM ABI IMPORTS -->
-
 | import | signature | class | authority | browser |
 | --- | --- | --- | --- | --- |
 | `print` | `(i32, i32)` | non-authority infrastructure | none | provided |
@@ -214,8 +218,10 @@ An empty set is an authenticated reject-all contract, never a wildcard.
 | `compiler_footprint_into` | `(i32, i32, i32, i32) -> i32` | internal/toolchain service | none | omitted |
 | `compiler_syntax_fresh_into` | `(i32, i32, i32, i32) -> i32` | compiler session only | none | omitted |
 | `compiler_syntax_quote_expr_into` | `(i32, i32, i64, i32, i32) -> i32` | compiler session only | none | omitted |
+| `compiler_syntax_quote_expr_holes_into` | `(i32, i32, i32, i32) -> i32` | compiler session only | none | omitted |
 | `compiler_syntax_emit_expr` | `(i32, i32)` | compiler session only | none | omitted |
 | `compiler_syntax_quote_item_into` | `(i32, i32, i64, i32, i32) -> i32` | compiler session only | none | omitted |
+| `compiler_syntax_quote_item_holes_into` | `(i32, i32, i32, i32) -> i32` | compiler session only | none | omitted |
 | `compiler_syntax_emit_item` | `(i32, i32)` | compiler session only | none | omitted |
 | `compiler_syntax_quote_type_into` | `(i32, i32, i64, i32, i32) -> i32` | compiler session only | none | omitted |
 | `compiler_syntax_record_type_into` | `(i32, i32, i32, i32) -> i32` | compiler session only | none | omitted |
@@ -402,7 +408,6 @@ An empty set is an authenticated reject-all contract, never a wildcard.
 | `crypto_shake256_slices` | `(i32, i32, i64, i32, i32) -> i32` | non-authority infrastructure | none | omitted |
 | `crypto_ecdsa_p256_verify_slices` | `(i32, i32, i32, i32, i32, i32) -> i64` | non-authority infrastructure | none | omitted |
 | `crypto_ecdsa_p256_verify_hex_slices` | `(i32, i32, i32, i32, i32, i32) -> i64` | non-authority infrastructure | none | omitted |
-
 <!-- END GENERATED WASM ABI IMPORTS -->
 
 ### Encoding sub-ABI

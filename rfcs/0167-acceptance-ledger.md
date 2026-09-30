@@ -388,6 +388,16 @@ independently expected `3` on admitted unoptimized Wasm in normal and opt
 mode, with zero owned heap leaks. Row M remains partial for other syntax
 constructors and installed consumers.
 
+Row M update (2026-09-30): parser-issued static `quote expr:` and `quote item:`
+holes now lower through a bounded typed transport rather than source text.
+The admitted compiler host checks the quotation seed and source site, resolves
+each expression, type, or pattern child handle in the current session, then
+substitutes AST nodes with origin ancestry and deterministic budget accounting.
+`tests/rfc0167_quote_holes.rs` generates a normal-mode function from two
+expression holes nested in an item hole; admitted unoptimized Wasm prints the
+independent result `12` with zero heap leaks. Dynamic or nonliteral hole plans
+remain unsupported; this evidence does not close every generation form in row M.
+
 Row R update (2026-09-27): admitted `meta.type_expr`, typed parameter and
 expression-body function items, inherent method items, and `meta.expr_try`
 composition are merged. `program_defined_builder_uses_type_info_in_both_modes`
