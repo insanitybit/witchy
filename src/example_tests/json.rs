@@ -1,15 +1,39 @@
 use super::*;
 use crate::{ast, codegen, interpreter, typeck};
 
-fn assert_json_backends(src: &str, expected: &[&str], label: &str) {
+fn run_admitted_json(source: &str) -> Vec<String> {
+    struct ResetOptimization;
+    impl Drop for ResetOptimization {
+        fn drop(&mut self) { crate::opt::set_for_tests(None); }
+    }
+    crate::opt::set_for_tests(Some(crate::opt::OptSet::none()));
+    let _reset = ResetOptimization;
+    let checked = witchy::resolve_std_only_checked(source).expect("check JSON source");
+    let artifact = codegen::compile_checked_module_artifact(&checked)
+        .expect_lowered("admit JSON source");
+    let mut runtime = crate::runtime::Runtime::batch().expect("runtime");
+    let mut vm = runtime.spawn_admitted(
+        &artifact,
+        crate::runtime::Capabilities {
+            print: true,
+            quiet: true,
+            ..crate::runtime::Capabilities::none()
+        },
+        128,
+    ).expect("spawn admitted JSON source");
+    vm.run().expect("run admitted JSON source");
+    assert_eq!(vm.canonical_heap_leaks().expect("heap audit"), Some(0));
+    vm.output()
+}
+
+fn assert_admitted_json(src: &str, expected: &[&str], label: &str) {
     let expected: Vec<String> = expected.iter().map(|s| (*s).to_string()).collect();
-    assert_eq!(link_run(src), expected, "{label}: interpreter");
-    assert_eq!(wasm_run(src), expected, "{label}: compiled WASM");
+    assert_eq!(run_admitted_json(src), expected, "{label}: admitted normal Wasm");
 }
 
 fn assert_json_contract_cases(cases: &[(&str, &str, &[&str])]) {
     for (label, src, expected) in cases {
-        assert_json_backends(src, expected, label);
+        assert_admitted_json(src, expected, label);
     }
 }
 
@@ -123,7 +147,7 @@ fn assert_json_contract_cases(cases: &[(&str, &str, &[&str])]) {
     /// source fixture and expected output independent. Every row exercises both
     /// backends, including the typed field-accessor fixture.
     #[test]
-    fn json_api_contracts_backends_agree() {
+    fn json_api_contracts_run_on_admitted_wasm() {
         if !is_nightly() {
             return;
         }
@@ -249,7 +273,7 @@ fn main(console: Console):
     }
 
     #[test]
-    fn json_decode_rejects_trailing_content_backends_agree() {
+    fn json_decode_rejects_trailing_content_on_admitted_wasm() {
         // decode must consume the whole input: trailing whitespace is fine, but
         // any trailing non-whitespace is an error (not a silently-ignored tail).
         let client = r#"
@@ -269,20 +293,19 @@ fn main(console: Console):
     console.print(classify("{}extra"))
     console.print(classify("  7"))
 "#;
-        let sources = [("json", crate::bundled_module("json").unwrap()), ("main", client)];
-        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
-        let compiled = run_linked_on_wasm(&sources, "main");
-        assert_eq!(interpreted, compiled, "decode trailing-content diverged");
-        assert_eq!(compiled, vec!["ok", "int:42", "err", "err", "err", "int:7"]);
+        assert_eq!(
+            run_admitted_json(client),
+            ["ok", "int:42", "err", "err", "err", "int:7"],
+        );
     }
 
     /// std/json: `decode` rejects an overflowing exponent (BUG-241), an invalid
     /// string escape (BUG-243), a leading-zero number and a raw control character
     /// (BUG-244), and a duplicate object key (BUG-262); `float_of` accepts an
     /// integer JSON number as a Float (BUG-356), and finite JsonFloat values still
-    /// encode as JSON numbers. Both backends agree.
+    /// encode as JSON numbers on admitted normal-mode Wasm.
     #[test]
-    fn json_rejects_malformed_and_handles_floats_on_both_backends() {
+    fn json_rejects_malformed_and_handles_floats_on_admitted_wasm() {
         let src = "import json\n\
                    from json import Json\n\
                    fn dec(label: String, text: String, console: Console):\n\
@@ -324,8 +347,7 @@ fn main(console: Console):
             "float_of_int: 1.0",
             "encode_finite: 1.5",
         ];
-        assert_eq!(link_run(src), expected, "interp");
-        assert_eq!(wasm_run(src), expected, "wasm");
+        assert_eq!(run_admitted_json(src), expected);
     }
 
     /// (BUG-374) JSON has no NaN/Infinity tokens, and Witchy already uses

@@ -120,6 +120,14 @@ Both exact outputs pass with zero owned-heap leaks, and their historical
 source-interpreter/raw-Wasm executions are retired. This is bounded capability
 and row N evidence, not a proof of every worker or capability path.
 
+The normal JSON contract fixtures now check reflection, API behavior,
+trailing-content rejection, malformed numbers and escapes, finite Float
+encoding, and nested round trips against independent expected transcripts on
+admitted unoptimized Wasm. The admitted runs report zero owned-heap leaks.
+This removes the shared interpreter/raw-Wasm helper from those positive cases;
+the separate duplicate-key and non-finite encoding abort diagnostics remain
+on their historical test path until their exact messages are admitted.
+
 At merged `6c7488acf`, the guarded-match generator case also runs through
 checked source, canonical admission, and unoptimized Wasm. Its exact
 `guard 7/before 7/yield 7/after 7/done` trace and zero-leak audit demonstrate
