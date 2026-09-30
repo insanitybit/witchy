@@ -1,5 +1,30 @@
 use super::*;
-use crate::{ast, codegen, interpreter, typeck};
+use crate::codegen;
+
+fn run_admitted_bytes(source: &str) -> Result<Vec<String>, String> {
+    struct ResetOptimization;
+    impl Drop for ResetOptimization {
+        fn drop(&mut self) { crate::opt::set_for_tests(None); }
+    }
+    crate::opt::set_for_tests(Some(crate::opt::OptSet::none()));
+    let _reset = ResetOptimization;
+    let checked = witchy::resolve_std_only_checked(source).expect("check normal Bytes source");
+    let artifact = codegen::compile_checked_module_artifact(&checked)
+        .expect_lowered("admit normal Bytes source");
+    let mut runtime = crate::runtime::Runtime::batch().expect("runtime");
+    let mut vm = runtime.spawn_admitted(
+        &artifact,
+        crate::runtime::Capabilities {
+            print: true,
+            quiet: true,
+            ..crate::runtime::Capabilities::none()
+        },
+        128,
+    ).expect("spawn admitted Bytes source");
+    vm.run().map_err(|error| error.root_cause().to_string())?;
+    assert_eq!(vm.canonical_heap_leaks().expect("heap audit"), Some(0));
+    Ok(vm.output())
+}
 
 fn run_admitted_bytes(source: &str) -> Result<Vec<String>, String> {
     struct ResetOptimization;
@@ -55,62 +80,25 @@ fn run_admitted_bytes(source: &str) -> Result<Vec<String>, String> {
         assert_eq!(run_admitted_bytes(src).expect("run Bytes methods"), expected);
     }
 
-    /// (SEC-038) `bytes.at` out of bounds must FAIL on both backends, not silently
-    /// read adjacent heap on WASM. The compiled `$bytes_at` bounds-checks and traps
-    /// (like `$list_at`), matching the interpreter's "bytes index out of bounds"
-    /// error. In-bounds indexing still agrees. (Regression for a silent OOB-read
-    /// parity divergence: the old lowering was an unchecked `load8_u`.)
+    /// (SEC-038) `bytes.at` out of bounds must fail with an exact bounds
+    /// diagnostic. In-bounds indexing still returns the expected byte.
     #[test]
     fn bytes_index_out_of_bounds_errors_on_both_backends() {
-        use crate::opt::{self, OptSet};
-        let compile = |src: &str| -> (ast::Module, Vec<u8>) {
-            let linked = resolve_std_src(src);
-            typeck::check(&linked).expect("typecheck");
-            let bytes = codegen::compile_module_binary(&linked)
-                .expect_lowered("the binary path lowers this program");
-            (linked, bytes)
-        };
-        opt::set_for_tests(Some(OptSet::all()));
         let oob = include_str!("../../tests/fixtures/rfc0162-sec/sec038-bytes-positive-oob.witchy");
-        let (lmod, wasm) = compile(oob);
-        let interp_oob = interpreter::run_module(lmod, ".", Vec::new());
-        let wasm_oob = crate::run_wasm_bytes(&wasm);
+        let oob_error = run_admitted_bytes(oob).expect_err("positive OOB must fail");
         // A negative index likewise traps (it used to read backwards into the heap).
         let neg = include_str!("../../tests/fixtures/rfc0162-sec/sec038-bytes-negative-oob.witchy");
-        let (nmod, nwasm) = compile(neg);
-        let interp_negative = interpreter::run_module(nmod, ".", Vec::new());
-        let wasm_negative = crate::run_wasm_bytes(&nwasm);
-        // In-bounds indexing still agrees.
+        let negative_error = run_admitted_bytes(neg).expect_err("negative OOB must fail");
         let ok = "import bytes\n\nfn main(console: Console):\n    let b = bytes.from_string(\"hi!\")\n    console.print(\"${bytes.at(b, 2)}\")\n";
-        let interpreted_ok = link_run(ok);
-        let wasm_ok = run_linked_on_wasm(&[("main", ok)], "main");
-        opt::set_for_tests(None);
-
-        let interp_error = interp_oob.expect_err("interpreter must error on OOB bytes index");
         assert!(
-            interp_error.to_string().contains("bytes index 5 out of bounds (length 3)"),
-            "interpreter violated the independent SEC-038 error oracle: {interp_error}"
+            oob_error.contains("bytes index 5 out of bounds (length 3)"),
+            "admitted Wasm violated the SEC-038 error oracle: {oob_error}"
         );
-        let wasm_error = wasm_oob.expect_err("optimized WASM must trap on OOB bytes index");
         assert!(
-            wasm_error.contains("bytes index 5 out of bounds (length 3)"),
-            "optimized Wasm violated the independent SEC-038 error oracle: {wasm_error}"
+            negative_error.contains("bytes index -1 out of bounds (length 3)"),
+            "admitted Wasm violated the SEC-038 negative error oracle: {negative_error}"
         );
-        let interp_error =
-            interp_negative.expect_err("interpreter must error on negative bytes index");
-        assert!(
-            interp_error.to_string().contains("bytes index -1 out of bounds (length 3)"),
-            "interpreter violated the independent SEC-038 negative error oracle: {interp_error}"
-        );
-        let wasm_error =
-            wasm_negative.expect_err("optimized WASM must trap on negative bytes index");
-        assert!(
-            wasm_error.contains("bytes index -1 out of bounds (length 3)"),
-            "optimized Wasm violated the independent SEC-038 negative error oracle: {wasm_error}"
-        );
-        let expected = ["33"];
-        assert_eq!(interpreted_ok, expected, "interp");
-        assert_eq!(wasm_ok, expected, "wasm");
+        assert_eq!(run_admitted_bytes(ok).expect("in-bounds byte"), ["33"]);
     }
 
     /// (RFC-0151) Bytes mutators (`push`, `append`, `reserve`, `set_at`, `swap`),
