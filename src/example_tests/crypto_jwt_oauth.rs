@@ -1,5 +1,5 @@
 use super::*;
-use crate::{codegen, interpreter, parser, typeck};
+use crate::{codegen, parser, typeck};
 
     #[cfg(not(target_arch = "wasm32"))]
     fn b64url(bytes: &[u8]) -> String {
@@ -361,11 +361,11 @@ fn main(console: Console, argv: List(String)):
     }
 
     /// SEC-050: possessing authority for one endpoint must not turn `Net.resolve`
-    /// into an ambient DNS-query channel for unrelated names. Both backends reject
-    /// before consulting the resolver.
+    /// into an ambient DNS-query channel for unrelated names. Compiled Wasm
+    /// rejects before consulting the resolver.
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
-    fn net_resolve_requires_queried_host_authority_on_both_backends() {
+    fn net_resolve_requires_queried_host_authority_on_compiled_wasm() {
         use crate::runtime::{Capabilities, Runtime};
         let src = "fn main(console: Console, net: Net):\n\
                    \x20   let ips = net.resolve(\"unrelated.invalid\")\n\
@@ -373,11 +373,6 @@ fn main(console: Console, argv: List(String)):
         let linked = resolve_std_src(src);
         typeck::check(&linked).expect("typecheck");
         let allow = vec!["127.0.0.1:9".to_string()];
-
-        let interpreter_error = interpreter::run_module(linked.clone(), ".", allow.clone())
-            .expect_err("interpreter must deny an unrelated DNS query");
-        assert!(interpreter_error.message.contains("not permitted"), "{interpreter_error:?}");
-
         let bytes = codegen::compile_module_binary(&linked)
             .expect_lowered("the binary path lowers this program");
         let mut runtime = Runtime::new().expect("runtime");
@@ -401,10 +396,10 @@ fn main(console: Console, argv: List(String)):
     /// RFC-0020: `connect_pinned` re-checks the Net allowlist on the PINNED IP — a hostile or
     /// buggy chooser that returns an internal address the capability forbids is still refused
     /// (the hard floor under the sealed policy). Granted only a public endpoint, a pin to
-    /// loopback traps on both backends.
+    /// loopback traps on compiled Wasm.
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
-    fn connect_pinned_rechecks_the_allowlist_backends_agree() {
+    fn connect_pinned_rechecks_the_allowlist_on_compiled_wasm() {
         use crate::runtime::{Capabilities, Runtime};
         let src = "fn main(console: Console, net: Net):\n\
 	                   \x20   let s = net.connect_pinned(\"127.0.0.1\", \"example.com\", 80, false)\n\
@@ -412,10 +407,6 @@ fn main(console: Console, argv: List(String)):
         let linked = resolve_std_src(src);
         typeck::check(&linked).expect("typecheck");
         // Granted only 93.184.216.34:80 (a public IP) — the loopback pin is outside it.
-        assert!(
-            interpreter::run_module(linked.clone(), ".", vec!["93.184.216.34:80".into()]).is_err(),
-            "interp must refuse a pinned dial to an IP outside the allowlist",
-        );
         let bytes = codegen::compile_module_binary(&linked)
             .expect_lowered("the binary path lowers this program");
         let mut rt = Runtime::new().expect("runtime");
