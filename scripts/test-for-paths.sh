@@ -816,7 +816,7 @@ for p in "${paths[@]}"; do
             gate_native_wir=1
             gate_need_conformance=1
             add_pkg witchy-runtime
-            add "cargo nextest run -p witchy-runtime"
+            add "cargo nextest run -p witchy-runtime --features self-checks --test runtime"
             add "./scripts/nextest-admitted.sh witchy -- cargo nextest run -E 'test(/^example_tests::/)'"
             ;;
         crates/witchy-syntax/*)
