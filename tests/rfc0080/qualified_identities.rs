@@ -1,8 +1,5 @@
 //! RFC-0080 compiler-owned identities for module-qualified type and pattern builders.
 
-use witchy::{parser, typeck};
-use witchy_interp::pipeline;
-
 const DEFINITION_SUPPORT: &str = r#"
 type Wrapped(a):
     Wrapped(a)
@@ -71,30 +68,6 @@ fn main(console: Console):
 
 #[test]
 fn qualified_builder_origins_resolve_on_both_backends() {
-    let modules = [
-        ("definition_support", DEFINITION_SUPPORT),
-        ("consumer_support", CONSUMER_SUPPORT),
-        ("tag_library", TAG_LIBRARY),
-        ("main", CONSUMER),
-    ]
-    .into_iter()
-    .map(|(name, source)| {
-        (
-            name.to_string(),
-            parser::parse_module(source)
-                .unwrap_or_else(|error| panic!("parse {name}: {error}")),
-        )
-    })
-    .collect();
-
-    let linked = pipeline::link(modules, "main").expect("link qualified identity program");
-    typeck::check(&linked).expect("typecheck qualified identity program");
-    let rendered = format!("{linked:?}");
-    assert!(!rendered.contains("@call_site"), "{rendered}");
-    assert!(!rendered.contains("@definition_site"), "{rendered}");
-    assert!(rendered.contains("definition_support.Wrapped"), "{rendered}");
-    assert!(rendered.contains("consumer_support.Wrapped"), "{rendered}");
-
     let expected = vec![
         "42".to_string(),
         "42".to_string(),
@@ -111,6 +84,11 @@ fn qualified_builder_origins_resolve_on_both_backends() {
         "main",
         witchy_interp::comptime::EXPANDER,
     ).expect("authenticate and check qualified builder program");
+    let rendered = format!("{:?}", checked.module());
+    assert!(!rendered.contains("@call_site"), "{rendered}");
+    assert!(!rendered.contains("@definition_site"), "{rendered}");
+    assert!(rendered.contains("definition_support.Wrapped"), "{rendered}");
+    assert!(rendered.contains("consumer_support.Wrapped"), "{rendered}");
     let artifact = witchy::codegen::compile_checked_module_artifact(&checked)
         .expect_lowered("admit qualified builder program");
     let mut runtime = witchy::runtime::Runtime::batch().expect("runtime");
