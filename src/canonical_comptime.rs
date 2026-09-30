@@ -5,7 +5,7 @@
 use std::collections::{HashMap, HashSet};
 use witchy_lower::codegen::{self, LoweringOutcome};
 use witchy_runtime::runtime::{Runtime, comptime::ComptimeLimits};
-use witchy_types::pipeline::{CheckedModule, ComptimeSourceSession, PriorComptimeBlockOutput};
+use witchy_types::pipeline::{CheckedModule, ComptimeSourceSession, PriorComptimeBlockOutput, PriorLocalTagOutput};
 use witchy_types::runtime_type::AuthenticatedModuleOwners;
 use witchy_syntax::ast::{Item, Module};
 
@@ -37,8 +37,8 @@ pub fn check_source_bundle(
     run_source_bundle(sources, selected, user_modules, owners, limits).map(|output| output.checked)
 }
 
-/// Execute a source-defined, hole-free tagged literal after admitted blocks,
-/// then recheck the actual emitted expression in its original destination.
+/// Execute source-defined, hole-free tagged literals in source order after
+/// admitted blocks, then check their combined destination.
 pub fn check_source_bundle_with_local_tag(
     sources: Vec<(String, Vec<u8>)>, selected: &str,
     user_modules: HashSet<String>, owners: AuthenticatedModuleOwners,
@@ -47,23 +47,27 @@ pub fn check_source_bundle_with_local_tag(
     let session = ComptimeSourceSession::from_source_bundle(sources, selected, user_modules, owners)
         .map_err(|error| error.to_string())?;
     let prior = execute_source_blocks(&session, limits)?;
-    let recipe = session.check_first_local_tag_recipe(&prior)
-        .map_err(|error| error.to_string())?;
-    let digest = recipe.session_source_digest();
-    let artifact = match codegen::compile_checked_comptime_recipe_artifact(&recipe) {
-        LoweringOutcome::Lowered(artifact) => artifact,
-        LoweringOutcome::Unsupported(reason) => return Err(reason.to_string()),
-        LoweringOutcome::Rejected(error) => return Err(error.to_string()),
-    };
-    let mut outcome = Runtime::run_comptime(&artifact, limits).map_err(|error| error.to_string())?;
-    if outcome.source_digest() != digest {
-        return Err("tag session returned output for a different admitted source recipe".into());
+    let mut prior_tags = Vec::new();
+    while let Some(recipe) = session.check_next_local_tag_recipe(&prior, &prior_tags)
+        .map_err(|error| error.to_string())? {
+        let digest = recipe.session_source_digest();
+        let artifact = match codegen::compile_checked_comptime_recipe_artifact(&recipe) {
+            LoweringOutcome::Lowered(artifact) => artifact,
+            LoweringOutcome::Unsupported(reason) => return Err(reason.to_string()),
+            LoweringOutcome::Rejected(error) => return Err(error.to_string()),
+        };
+        let mut outcome = Runtime::run_comptime(&artifact, limits).map_err(|error| error.to_string())?;
+        if outcome.source_digest() != digest {
+            return Err("tag session returned output for a different admitted source recipe".into());
+        }
+        if !outcome.items.is_empty() || outcome.expressions.len() != 1 {
+            return Err("local tag must emit exactly one expression and no items".into());
+        }
+        let emitted = outcome.expressions.remove(0);
+        prior_tags.push(PriorLocalTagOutput { recipe_digest: digest,
+            expression: emitted.expression, origin: emitted.origin });
     }
-    if !outcome.items.is_empty() || outcome.expressions.len() != 1 {
-        return Err("local tag must emit exactly one expression and no items".into());
-    }
-    let emitted = outcome.expressions.remove(0);
-    session.check_expanded_first_local_tag_output(&prior, &recipe, emitted.expression, emitted.origin)
+    session.check_expanded_local_tag_outputs(&prior, &prior_tags)
         .map_err(|error| error.to_string())
 }
 

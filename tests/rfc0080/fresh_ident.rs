@@ -27,10 +27,15 @@ comptime fn fresh_tag(parts: List(String), holes: List(meta.TagHole)) -> meta.Ex
     quote expr:
         7
 
+comptime fn second_tag(parts: List(String), holes: List(meta.TagHole)) -> meta.ExprSyntax:
+    let _unused = meta.fresh("tag_local")
+    quote expr:
+        9
+
 fn main(console: Console):
     console.print("${sum_fresh(5, 7)}")
     console.print("${identity_fresh(9)}")
-    console.print("${fresh_tag"a" + 7}")
+    console.print("${fresh_tag"a" * 10 + second_tag"b"}")
 "#;
 
 fn checked(source: &str) -> Result<witchy_types::pipeline::CheckedModule, String> {
@@ -91,7 +96,7 @@ fn fresh_identifiers_are_deterministic_distinct_and_backend_neutral() {
         print: true, quiet: true, ..witchy::runtime::Capabilities::none()
     }, 128).expect("spawn admitted fresh-name program");
     actor.run().expect("run admitted fresh-name program");
-    assert_eq!(actor.output(), ["12", "9", "14"]);
+    assert_eq!(actor.output(), ["12", "9", "79"]);
     assert_eq!(actor.canonical_heap_leaks().expect("heap audit"), Some(0));
 }
 
@@ -117,4 +122,11 @@ fn source_cannot_spoof_an_admitted_fresh_parameter() {
     let error = witchy::resolve_std_only_checked(source)
         .expect_err("user source cannot claim an admitted generated identifier");
     assert!(error.to_string().contains("reserved for the compiler"), "{error}");
+}
+
+#[test]
+fn second_tag_with_holes_refuses_after_the_first_admitted_tag() {
+    let source = SOURCE.replace("second_tag\"b\"", "second_tag\"b${1}\"");
+    let error = checked(&source).expect_err("a later tag with holes cannot enter the static route");
+    assert!(error.contains("one static part and no holes"), "{error}");
 }

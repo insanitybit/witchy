@@ -501,16 +501,16 @@ fn check_loaded_source_bundle(
             sources, entry, user_modules, owners, witchy::canonical_comptime::source_limits(),
         );
     }
-    let mut local_tag = None;
+    let mut local_tags = Vec::new();
     let mut tag_count = 0;
     witchy_syntax::ast::visit::visit_module_exprs(&module, &mut |expression| {
         if let ast::Expr::TaggedLit { tag, holes, .. } = expression {
             tag_count += 1;
-            if holes.is_empty() { local_tag = Some(tag.clone()); }
+            if holes.is_empty() { local_tags.push(tag.clone()); }
         }
         Ok::<_, ()>(())
     }).expect("tag scan cannot fail");
-    if tag_count == 1 && !other_legacy_expansion && local_tag.as_ref().is_some_and(|tag|
+    if tag_count > 0 && tag_count == local_tags.len() && !other_legacy_expansion && local_tags.iter().all(|tag|
         module.items.iter().any(|item| matches!(item,
             ast::Item::Function(function) if function.name == *tag && function.comptime_only))) {
         return witchy::canonical_comptime::check_source_bundle_with_local_tag(

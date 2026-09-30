@@ -9,7 +9,7 @@ mod build_recipe;
 pub use build_recipe::{BuildRecipeIdentity, CheckedBuildRecipe, check_build_recipe_from_source_bundle};
 
 mod comptime_recipe;
-pub use comptime_recipe::{CheckedComptimeRecipe, ComptimeBlockSite, ComptimeSourceSession, PriorComptimeBlockOutput, check_comptime_recipe_from_source_bundle};
+pub use comptime_recipe::{CheckedComptimeRecipe, ComptimeBlockSite, ComptimeSourceSession, PriorComptimeBlockOutput, PriorLocalTagOutput, check_comptime_recipe_from_source_bundle};
 pub use comptime_recipe::require_expansion_free;
 
 mod test_driver;

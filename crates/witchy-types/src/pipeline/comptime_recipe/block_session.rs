@@ -85,6 +85,7 @@ fn resolve_stage_type_info(
 fn local_tag_recipe_digest(
     session: &ComptimeSourceSession,
     prior: &[PriorComptimeBlockOutput],
+    prior_tags: &[PriorLocalTagOutput],
     tag: &str,
     part: &str,
     line: u32,
@@ -102,35 +103,56 @@ fn local_tag_recipe_digest(
     hash.update(part.as_bytes());
     #[cfg(not(target_arch = "wasm32"))]
     hash_prior_items(&mut hash, prior)?;
+    #[cfg(not(target_arch = "wasm32"))]
+    for output in prior_tags {
+        hash.update(&output.recipe_digest);
+        let encoded = postcard::to_allocvec(&(&output.expression, &output.origin))
+            .map_err(|error| refuse(format!("cannot bind prior tag output: {error}")))?;
+        hash.update(&(encoded.len() as u64).to_le_bytes());
+        hash.update(&encoded);
+    }
     for (name, owner) in session.owners.assignments() {
         super::super::static_evaluation::hash_owner_assignment(&mut hash, name, owner);
     }
     Ok(*hash.finalize().as_bytes())
 }
 
-fn first_local_tag_identity(
+fn next_local_tag_identity(
     session: &ComptimeSourceSession,
     prior: &[PriorComptimeBlockOutput],
-) -> Result<(String, String, u32, [u8; 32]), PipelineError> {
+    prior_tags: &[PriorLocalTagOutput],
+) -> Result<Option<(String, String, u32, [u8; 32])>, PipelineError> {
     let (_, original) = session.modules.iter().find(|(name, _)| name == &session.selected)
         .expect("selected raw module retained");
     let display = materialize_prior(original, prior, true, false);
     let mut selected = None;
+    let mut seen = 0;
     witchy_syntax::ast::visit::visit_module_exprs(&display, &mut |expression| {
-        if selected.is_none() {
-            if let Expr::TaggedLit { tag, parts, holes, line, .. } = expression {
+        if let Expr::TaggedLit { tag, parts, holes, line, .. } = expression {
+            if seen == prior_tags.len() {
                 selected = Some((tag.clone(), parts.clone(), holes.len(), *line));
             }
+            seen += 1;
         }
         Ok::<_, ()>(())
     }).expect("tag selection cannot fail");
-    let (tag, parts, holes, line) = selected
-        .ok_or_else(|| refuse("source session has no tagged literal"))?;
+    if seen < prior_tags.len() {
+        return Err(refuse("prior tag output exceeds source invocations"));
+    }
+    let Some((tag, parts, holes, line)) = selected else { return Ok(None); };
     if holes != 0 || parts.len() != 1 {
         return Err(refuse("admitted local tag recipe requires one static part and no holes"));
     }
-    let digest = local_tag_recipe_digest(session, prior, &tag, &parts[0], line)?;
-    Ok((tag, parts[0].clone(), line, digest))
+    let digest = local_tag_recipe_digest(session, prior, prior_tags, &tag, &parts[0], line)?;
+    Ok(Some((tag, parts[0].clone(), line, digest)))
+}
+
+/// One expression returned by a compiler-authenticated local tag recipe.
+#[derive(Clone)]
+pub struct PriorLocalTagOutput {
+    pub recipe_digest: [u8; 32],
+    pub expression: Expr,
+    pub origin: ComptimeSyntaxOrigin,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -282,10 +304,16 @@ impl ComptimeSourceSession {
     pub fn check_first_local_tag_recipe(
         &self, prior: &[PriorComptimeBlockOutput],
     ) -> Result<CheckedComptimeRecipe, PipelineError> {
+        self.check_next_local_tag_recipe(prior, &[])?.ok_or_else(|| refuse("source session has no tagged literal"))
+    }
+
+    pub fn check_next_local_tag_recipe(
+        &self, prior: &[PriorComptimeBlockOutput], prior_tags: &[PriorLocalTagOutput],
+    ) -> Result<Option<CheckedComptimeRecipe>, PipelineError> {
         self.check_completed_prefix(prior)?;
         let (_, original) = self.modules.iter().find(|(name, _)| name == &self.selected)
             .expect("selected raw module retained");
-        let (tag, part, line, digest) = first_local_tag_identity(self, prior)?;
+        let Some((tag, part, line, digest)) = next_local_tag_identity(self, prior, prior_tags)? else { return Ok(None); };
         let mut prepared = materialize_prior(original, prior, true, true);
         let function = prepared.items.iter().find_map(|item| match item {
             Item::Function(function) if function.name == tag => Some(function),
@@ -339,7 +367,7 @@ impl ComptimeSourceSession {
             Some(&user_modules), true, Some(owners))?;
         let typed = typed.ok_or_else(|| refuse("admitted tag recipe did not retain checked source"))?;
         let checked = finish_canonical_source(checked, typed, digest, PrecompiledDeclarationEnvironment::default())?;
-        bind_recipe(checked, &contract)
+        bind_recipe(checked, &contract).map(Some)
     }
 
     /// Recheck one actual admitted tag result in the ordinary destination.
@@ -351,21 +379,52 @@ impl ComptimeSourceSession {
         &self, prior: &[PriorComptimeBlockOutput], recipe: &CheckedComptimeRecipe,
         expression: Expr, origin: ComptimeSyntaxOrigin,
     ) -> Result<CheckedModule, PipelineError> {
-        let (_, _, _, expected_digest) = first_local_tag_identity(self, prior)?;
-        if recipe.session_source_digest() != expected_digest {
-            return Err(refuse("admitted tag result belongs to a different source recipe"));
+        self.check_expanded_local_tag_outputs(prior, &[PriorLocalTagOutput {
+            recipe_digest: recipe.session_source_digest(), expression, origin,
+        }])
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn check_expanded_local_tag_outputs(
+        &self, prior: &[PriorComptimeBlockOutput], prior_tags: &[PriorLocalTagOutput],
+    ) -> Result<CheckedModule, PipelineError> {
+        if prior_tags.is_empty() {
+            return Err(refuse("admitted tag destination has no outputs"));
         }
-        let recipe_digest = recipe.session_source_digest();
+        for output in prior_tags {
+            witchy_syntax::ast::visit::visit_expr(&output.expression, &mut |expression| {
+                if matches!(expression, Expr::TaggedLit { .. }) {
+                    return Err(refuse("admitted local tag output cannot introduce another tag"));
+                }
+                Ok(())
+            })?;
+        }
+        for index in 0..prior_tags.len() {
+            let Some((_, _, _, expected_digest)) = next_local_tag_identity(self, prior, &prior_tags[..index])? else {
+                return Err(refuse("admitted tag destination has too many outputs"));
+            };
+            if prior_tags[index].recipe_digest != expected_digest {
+                return Err(refuse("admitted tag result belongs to a different source recipe"));
+            }
+        }
+        if next_local_tag_identity(self, prior, prior_tags)?.is_some() {
+            return Err(refuse("admitted tag destination has unexpanded invocations"));
+        }
+        let recipe_digest = prior_tags.last().expect("nonempty").recipe_digest;
         let (_, original) = self.modules.iter().find(|(name, _)| name == &self.selected)
             .expect("selected raw module retained");
         let (mut expanded, emitted_origins) = materialize_prior_with_origins(original, prior, true, false);
-        let (tag, invocation_line) = replace_first_tagged_literal(&mut expanded, expression)
-            .ok_or_else(|| refuse("admitted tag destination has no selected invocation"))?;
+        let mut invocations = Vec::new();
+        for output in prior_tags {
+            let (tag, invocation_line) = replace_first_tagged_literal(&mut expanded, output.expression.clone())
+                .ok_or_else(|| refuse("admitted tag destination has no selected invocation"))?;
+            invocations.push((tag, invocation_line));
+        }
         let modules = self.modules.iter().map(|(name, module)| (
             name.clone(), if name == &self.selected { expanded.clone() } else { module.clone() },
         )).collect::<Vec<_>>();
         let mut hash = blake3::Hasher::new();
-        hash.update(b"witchy.comptime-local-tag-destination.v1\0");
+        hash.update(b"witchy.comptime-local-tag-destination.v2\0");
         hash.update(&REWRITE_VERSION.to_le_bytes());
         hash.update(&recipe_digest);
         hash_prior_items(&mut hash, prior)?;
@@ -373,7 +432,12 @@ impl ComptimeSourceSession {
             .map_err(|error| refuse(format!("cannot bind admitted tag syntax: {error}")))?;
         hash.update(&(encoded.len() as u64).to_le_bytes());
         hash.update(&encoded);
-        hash.update(&origin.definition_line.to_le_bytes());
+        for output in prior_tags {
+            let encoded = postcard::to_allocvec(&output.origin)
+                .map_err(|error| refuse(format!("cannot bind admitted tag origin: {error}")))?;
+            hash.update(&(encoded.len() as u64).to_le_bytes());
+            hash.update(&encoded);
+        }
         for (name, owner) in self.owners.assignments() {
             super::super::static_evaluation::hash_owner_assignment(&mut hash, name, owner);
         }
@@ -382,15 +446,17 @@ impl ComptimeSourceSession {
         let (mut checked, typed) = link_checked_with(modules, &self.selected, expand,
             LinkMode::Production, Some(&self.user_modules), true, Some(self.owners.clone()))?;
         retain_emitted_origins(&mut checked, &self.selected, &emitted_origins);
-        let definition_line = original.items.iter().enumerate().find_map(|(index, item)|
-            matches!(item, Item::Function(function) if function.name == tag)
-                .then(|| original.item_lines.get(index).copied().unwrap_or(0)))
-            .unwrap_or(0);
-        checked.linked.origins.record_tagged_literal(
-            &self.selected, format!("{}.{}", self.selected, tag), tag,
-            witchy_syntax::origin::SourceSpan::line(&self.selected, definition_line),
-            witchy_syntax::origin::SourceSpan::line(&self.selected, invocation_line), Vec::new(),
-        );
+        for (tag, invocation_line) in &invocations {
+            let definition_line = original.items.iter().enumerate().find_map(|(index, item)|
+                matches!(item, Item::Function(function) if function.name == *tag)
+                    .then(|| original.item_lines.get(index).copied().unwrap_or(0)))
+                .unwrap_or(0);
+            checked.linked.origins.record_tagged_literal(
+                &self.selected, format!("{}.{}", self.selected, tag), tag.clone(),
+                witchy_syntax::origin::SourceSpan::line(&self.selected, definition_line),
+                witchy_syntax::origin::SourceSpan::line(&self.selected, *invocation_line), Vec::new(),
+            );
+        }
         let typed = typed.ok_or_else(|| refuse("admitted tag destination did not retain checked source"))?;
         finish_canonical_source(checked, typed, digest, PrecompiledDeclarationEnvironment::default())
     }
