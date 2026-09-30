@@ -1,11 +1,36 @@
 use super::*;
 use crate::{ast, codegen, interpreter, typeck};
 
+fn run_admitted_bytes(source: &str) -> Result<Vec<String>, String> {
+    struct ResetOptimization;
+    impl Drop for ResetOptimization {
+        fn drop(&mut self) { crate::opt::set_for_tests(None); }
+    }
+    crate::opt::set_for_tests(Some(crate::opt::OptSet::none()));
+    let _reset = ResetOptimization;
+    let checked = witchy::resolve_std_only_checked(source).expect("check normal Bytes source");
+    let artifact = codegen::compile_checked_module_artifact(&checked)
+        .expect_lowered("admit normal Bytes source");
+    let mut runtime = crate::runtime::Runtime::batch().expect("runtime");
+    let mut vm = runtime.spawn_admitted(
+        &artifact,
+        crate::runtime::Capabilities {
+            print: true,
+            quiet: true,
+            ..crate::runtime::Capabilities::none()
+        },
+        128,
+    ).expect("spawn admitted Bytes source");
+    vm.run().map_err(|error| error.root_cause().to_string())?;
+    assert_eq!(vm.canonical_heap_leaks().expect("heap audit"), Some(0));
+    Ok(vm.output())
+}
+
     /// (RFC-0050) Bytes has a real inherent-method surface like the other
     /// standard value types; module functions remain callable for explicit
     /// module use and as first-class values.
     #[test]
-    fn bytes_methods_cover_primary_surface_on_both_backends() {
+    fn bytes_methods_cover_primary_surface_on_admitted_wasm() {
         let src = "import bytes\nimport result\n\nfn main(console: Console):\n    let b = bytes.from_string(\"hi!\")\n    console.print(\"${b.length()}\")\n    console.print(\"${b.at(0)}\")\n    console.print(\"${b.get(1).unwrap_or(0)}\")\n    console.print(\"${b.get(99).unwrap_or(0 - 1)}\")\n    console.print(b.to_string())\n    let c = b.concat(bytes.from_string(\"?\"))\n    console.print(c.to_string_lossy())\n    console.print(c.slice(1, 3).to_string())\n    console.print(\"${b.to_list()}\")\n    let raw = result.unwrap_or(bytes.from_list([0, 255, 65]), bytes.from_string(\"\"))\n    console.print(\"${raw.to_list()}\")\n    match raw.decode_utf8():\n        Ok(_) -> console.print(\"bad\")\n        Err(e) -> console.print(bytes.bytes_error_message(e))\n    match raw.decode_utf8_string():\n        Ok(_) -> console.print(\"bad\")\n        Err(e) -> console.print(e)\n    console.print(\"${b.is_empty()}\")\n    console.print(\"${c.index_of(bytes.from_string(\"i!\"))}\")\n    console.print(\"${c.index_of(bytes.from_string(\"zz\"))}\")\n    console.print(\"${c.contains(bytes.from_string(\"!?\"))}\")\n    console.print(\"${c.starts_with(b)}\")\n    console.print(\"${c.ends_with(bytes.from_string(\"!?\"))}\")\n    console.print(\"${bytes.length(b)}\")\n";
         let expected = [
             "3",
@@ -27,12 +52,7 @@ use crate::{ast, codegen, interpreter, typeck};
             "true",
             "3",
         ];
-        assert_eq!(link_run(src), expected, "interp: bytes methods");
-        assert_eq!(
-            run_linked_on_wasm(&[("main", src)], "main"),
-            expected,
-            "compiled: bytes methods",
-        );
+        assert_eq!(run_admitted_bytes(src).expect("run Bytes methods"), expected);
     }
 
     /// (SEC-038) `bytes.at` out of bounds must FAIL on both backends, not silently
@@ -94,9 +114,9 @@ use crate::{ast, codegen, interpreter, typeck};
     }
 
     /// (RFC-0151) Bytes mutators (`push`, `append`, `reserve`, `set_at`, `swap`),
-    /// constructors (`with_capacity`, `repeat`), aliasing, and self-append parity.
+    /// constructors (`with_capacity`, `repeat`), aliasing, and self-append.
     #[test]
-    fn bytes_mutators_and_constructors_parity_on_both_backends() {
+    fn bytes_mutators_and_constructors_run_on_admitted_wasm() {
         let src = "import bytes\n\
                    fn main(console: Console):\n\
                    \x20   var b = bytes.with_capacity(32)\n\
@@ -141,29 +161,16 @@ use crate::{ast, codegen, interpreter, typeck};
             "*****",
             "391",
         ];
-        assert_eq!(link_run(src), expected, "interpreter: Bytes mutators");
-        assert_eq!(
-            run_linked_on_wasm(&[("main", src)], "main"),
-            expected,
-            "WASM: Bytes mutators",
-        );
+        assert_eq!(run_admitted_bytes(src).expect("run Bytes mutators"), expected);
     }
 
     /// (RFC-0151) Negative capacity, invalid byte values, negative count/additional,
-    /// and out-of-bounds indices abort on both backends.
+    /// and out-of-bounds indices abort on admitted Wasm.
     #[test]
-    fn bytes_validation_and_bounds_abort_on_both_backends() {
+    fn bytes_validation_and_bounds_abort_on_admitted_wasm() {
         if !is_nightly() {
             return;
         }
-        let compile = |src: &str| -> (ast::Module, Vec<u8>) {
-            let linked = resolve_std_src(src);
-            typeck::check(&linked).expect("typecheck");
-            let bytes = codegen::compile_module_binary(&linked)
-                .expect_lowered("the binary path lowers this program");
-            (linked, bytes)
-        };
-
         let bad_programs = [
             // negative capacity in with_capacity
             "import bytes\nfn main(console: Console):\n    let b = bytes.with_capacity(0 - 1)\n",
@@ -198,15 +205,7 @@ use crate::{ast, codegen, interpreter, typeck};
         ];
 
         for (idx, prog) in bad_programs.iter().enumerate() {
-            let (lmod, wasm) = compile(prog);
-            assert!(
-                interpreter::run_module(lmod, ".", Vec::new()).is_err(),
-                "program {idx} must error on interpreter",
-            );
-            assert!(
-                crate::run_wasm_bytes(&wasm).is_err(),
-                "program {idx} must trap on WASM",
-            );
+            let error = run_admitted_bytes(prog).expect_err("invalid Bytes operation must trap");
+            assert!(!error.is_empty(), "program {idx} must report its failure");
         }
     }
-

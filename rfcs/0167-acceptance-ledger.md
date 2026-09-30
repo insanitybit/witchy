@@ -147,6 +147,15 @@ nested division trap, losing the source location. Those five are not canonical
 row N evidence; their existing source-level goldens must not be weakened to
 generic traps to make the migration appear complete.
 
+Normal Bytes methods and mutators now match their independent exact output
+transcripts on admitted unoptimized Wasm with zero owned-heap leaks. Fifteen
+negative constructor and mutator cases also reject at runtime on that path
+(the nightly fixture remains opt-in). SEC-038 `bytes.at` still uses its
+historical error oracle: admitted Wasm traps on an out-of-bounds index but
+reports generic `wasm unreachable`, losing the required index/length message.
+The exact diagnostic assertion remains intact, and a failing admitted witness
+is preserved on `rfc0167/admit-bytes-boundaries` for the compiler fix.
+
 At `2dcc268d4`, two further normal-mode row G witnesses pass on admitted
 unoptimized Wasm with zero owned-heap leaks. A view of
 `Option(List(List(Int)))` retains nested children after its whole root is
