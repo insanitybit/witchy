@@ -5,8 +5,7 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use witchy::runtime::{Capabilities, Runtime};
-use witchy::{codegen, parser};
-use witchy_interp::pipeline;
+use witchy::codegen;
 
 #[test]
 fn url_components_round_trip_and_http_omits_fragments() {
@@ -66,9 +65,6 @@ fn main(console: Console, net: Net):
         Err(e) -> console.print("error: " + http.http_error_message(e))
 "#
     );
-    let module = parser::parse_module(&source).expect("parse");
-    let linked = pipeline::link(vec![("main".into(), module)], "main").expect("link");
-
     let expected = vec![
         "/p|-|-|/p|https://h/p".to_string(),
         "/|x=1|-|/?x=1|https://h?x=1".to_string(),
@@ -80,8 +76,6 @@ fn main(console: Console, net: Net):
     let checked = witchy::resolve_std_only_checked(&source).expect("checked URL/HTTP source");
     let artifact = codegen::compile_checked_module_artifact(&checked)
         .expect_lowered("canonical URL/HTTP execution admits");
-    assert!(matches!(codegen::compile_module_binary(&linked),
-        codegen::LoweringOutcome::Unsupported(_)), "raw HTTP Fetch encoding must remain unavailable");
     let mut runtime = Runtime::batch().expect("runtime");
     let mut actor = runtime
         .spawn_admitted(

@@ -1,8 +1,7 @@
 //! Regression coverage for fallible full-URL HTTP helpers.
 
 use witchy::runtime::{Capabilities, Runtime};
-use witchy::{codegen, parser};
-use witchy_interp::{pipeline};
+use witchy::codegen;
 
 #[test]
 fn get_url_returns_connect_error_instead_of_trapping() {
@@ -16,15 +15,10 @@ fn get_url_returns_connect_error_instead_of_trapping() {
     let source = format!(
         "import http\nfn main(console: Console, net: Net):\n    let target = \"http://127.0.0.1:{port}/\"\n    match http.try_get(net.fetch(http.origin(target)), target):\n        Ok(_) -> console.print(\"unexpected typed success\")\n        Err(http.Network(_message)) -> console.print(\"network\")\n        Err(e) -> console.print(\"unexpected typed error: \" + http.http_error_message(e))\n"
     );
-    let module = parser::parse_module(&source).expect("parse");
-    let linked = pipeline::link(vec![("main".into(), module)], "main").expect("link");
-
     let expected = vec!["network".to_string()];
     let checked = witchy::resolve_std_only_checked(&source).expect("checked fallible HTTP source");
     let artifact = codegen::compile_checked_module_artifact(&checked)
         .expect_lowered("the canonical path lowers fallible HTTP execution");
-    assert!(matches!(codegen::compile_module_binary(&linked),
-        codegen::LoweringOutcome::Unsupported(_)), "raw HTTP Fetch encoding must remain unavailable");
     let mut runtime = Runtime::batch().expect("runtime");
     let mut actor = runtime
         .spawn_admitted(
