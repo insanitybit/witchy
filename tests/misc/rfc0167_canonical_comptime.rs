@@ -1,6 +1,14 @@
 use witchy_runtime::runtime::{Capabilities, Runtime, comptime::ComptimeLimits};
 use witchy_types::runtime_type::{AuthenticatedModuleOwners, ModuleLoadIdentity, PackageCoordinate, PackageSource};
 
+// These recipes have no source expansion site; refuse one rather than running
+// the historical tree evaluator during compiler-service tests.
+fn expansion_free() -> witchy_syntax::linker::ComptimeExpander {
+    witchy_syntax::linker::ComptimeExpander::with_sibling_request(
+        witchy_types::pipeline::require_expansion_free, |_| false,
+    )
+}
+
 fn owners() -> AuthenticatedModuleOwners {
     owners_for("comptime")
 }
@@ -23,7 +31,7 @@ fn canonical_comptime_requires_loader_authenticated_meta_identity() {
         ("meta".to_owned(), ModuleLoadIdentity::new(forged, ["std", "meta"]).unwrap()),
     ]).unwrap();
     let error = witchy_types::pipeline::check_comptime_recipe_from_source_bundle(
-        vec![("comptime".into(), b"fn main() -> Int:\n    42\n".to_vec())], "scope", witchy_interp::comptime::EXPANDER,
+        vec![("comptime".into(), b"fn main() -> Int:\n    42\n".to_vec())], "scope", expansion_free(),
         &["comptime".to_owned()].into_iter().collect(), owners,
     ).expect_err("a same-spelled workspace module is not toolchain authority");
     assert!(error.to_string().contains("requires toolchain witchy/std meta ownership"), "{error}");
@@ -33,7 +41,7 @@ fn canonical_comptime_requires_loader_authenticated_meta_identity() {
 fn canonical_comptime_refuses_unmetered_host_services() {
     let source = "fn main() -> Int:\n    let text = \"${1.25}\"\n    if text == \"1.25\":\n        42\n    else:\n        0\n";
     let recipe = witchy_types::pipeline::check_comptime_recipe_from_source_bundle(
-        vec![("comptime".into(), source.as_bytes().to_vec())], "bounded-service", witchy_interp::comptime::EXPANDER,
+        vec![("comptime".into(), source.as_bytes().to_vec())], "bounded-service", expansion_free(),
         &["comptime".to_owned()].into_iter().collect(), owners(),
     ).expect("valid compiler-service source");
     let rejection = witchy_lower::codegen::compile_checked_comptime_recipe_artifact(&recipe)
@@ -45,7 +53,7 @@ fn canonical_comptime_refuses_unmetered_host_services() {
 fn canonical_fresh_names_execute_with_session_and_budget_boundaries() {
     let source = "import meta\nfn main() -> Int:\n    let a = meta.fresh(\"x\")\n    let b = meta.fresh(\"x\")\n    if a == b:\n        0\n    else:\n        42\n";
     let recipe = witchy_types::pipeline::check_comptime_recipe_from_source_bundle(
-        vec![("comptime".into(), source.as_bytes().to_vec())], "a/b", witchy_interp::comptime::EXPANDER,
+        vec![("comptime".into(), source.as_bytes().to_vec())], "a/b", expansion_free(),
         &["comptime".to_owned()].into_iter().collect(), owners(),
     ).expect("source-backed compiler recipe");
     let artifact = witchy_lower::codegen::compile_checked_comptime_recipe_artifact(&recipe)
@@ -70,7 +78,7 @@ fn canonical_fresh_names_execute_with_session_and_budget_boundaries() {
     // The same valid typed body, without recipe authority, cannot introduce a
     // compiler-only host call by claiming its ABI alone.
     let ordinary = witchy_types::pipeline::link_checked_authenticated_from_source_bundle_with_user_modules(
-        vec![("comptime".into(), source.as_bytes().to_vec())], "comptime", witchy_interp::comptime::EXPANDER,
+        vec![("comptime".into(), source.as_bytes().to_vec())], "comptime", expansion_free(),
         &["comptime".to_owned()].into_iter().collect(), owners(),
     ).expect("ordinary checked source");
     let rejection = witchy_lower::codegen::compile_checked_module_artifact(&ordinary)
@@ -88,7 +96,7 @@ fn canonical_dynamic_expression_leaves_are_typed_and_session_bounded() {
     use witchy_syntax::ast::Expr;
     let source = "import meta\nfn main() -> Int:\n    emit_expr(meta.expr_int(42))\n    emit_expr(meta.expr_bool(true))\n    emit_expr(meta.expr_string(\"hello\"))\n    0\n";
     let recipe = witchy_types::pipeline::check_comptime_recipe_from_source_bundle(
-        vec![("comptime".into(), source.as_bytes().to_vec())], "dynamic-leaves", witchy_interp::comptime::EXPANDER,
+        vec![("comptime".into(), source.as_bytes().to_vec())], "dynamic-leaves", expansion_free(),
         &["comptime".to_owned()].into_iter().collect(), owners(),
     ).expect("checked expression constructors");
     let artifact = witchy_lower::codegen::compile_checked_comptime_recipe_artifact(&recipe)
@@ -134,7 +142,7 @@ fn admitted_nested_tag_builder_retains_owned_holes_and_static_parts() {
     let source = "import meta\nfn main() -> Int:\n    emit_expr(meta.expr_tagged(meta.ident(\"inner\"), [\"a\\nb\", \"é\"], [meta.expr_int(42)]))\n    0\n";
     let recipe = witchy_types::pipeline::check_comptime_recipe_from_source_bundle(
         vec![("comptime".into(), source.as_bytes().to_vec())], "nested-tag",
-        witchy_interp::comptime::EXPANDER,
+        expansion_free(),
         &["comptime".to_owned()].into_iter().collect(), owners(),
     ).expect("nested tag recipe is checked");
     let artifact = witchy_lower::codegen::compile_checked_comptime_recipe_artifact(&recipe)
@@ -547,7 +555,7 @@ fn check_emitted(emitted: witchy_syntax::compiler_session::seeds::EmittedExpress
 fn canonical_emission_is_not_type_authority_for_its_destination() {
     let source = "import meta\nfn main() -> Int:\n    let expression = quote expr:\n        \"not an Int\"\n    emit_expr(expression)\n    0\n";
     let recipe = witchy_types::pipeline::check_comptime_recipe_from_source_bundle(
-        vec![("comptime".into(), source.as_bytes().to_vec())], "wrong-type", witchy_interp::comptime::EXPANDER,
+        vec![("comptime".into(), source.as_bytes().to_vec())], "wrong-type", expansion_free(),
         &["comptime".to_owned()].into_iter().collect(), owners()).expect("quotation is data before insertion");
     let artifact = witchy_lower::codegen::compile_checked_comptime_recipe_artifact(&recipe).expect_lowered("admitted quotation");
     let output = Runtime::run_comptime(&artifact, limits()).expect("typed syntax emission");
