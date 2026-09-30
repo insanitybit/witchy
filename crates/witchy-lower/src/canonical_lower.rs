@@ -368,6 +368,7 @@ pub fn lower_typed_module(
             witchy_syntax::diag::DiagTemplate::DivisionByZero,
             witchy_syntax::diag::DiagTemplate::DivisionOverflow,
             witchy_syntax::diag::DiagTemplate::ModuloByZero,
+            witchy_syntax::diag::DiagTemplate::NanToInt,
         ].map(|template| template.render(0, 0, "").into_bytes()));
     }
     if requires_secret {
@@ -11543,11 +11544,11 @@ impl FunctionLowerer<'_> {
                 if self.values[&value] != ValueType::Float {
                     return Err(CanonicalLoweringError::UnsupportedExpression("math.to_int operand type"));
                 }
-                // NaN is a runtime error on every backend: a NaN is the one
-                // float unequal to itself, so the conversion traps on it before
-                // the saturating truncation would map it to zero.
-                let is_number = self.push_compare(ComparisonOperator::Equal, value, value)?;
-                self.push_trap_unless(is_number)?;
+                // NaN is the one float unequal to itself. Report the checked
+                // call site before saturating truncation could map it to zero.
+                let is_nan = self.push_compare(ComparisonOperator::NotEqual, value, value)?;
+                let site = self.diagnostic_site(expression)?;
+                self.abort_on_condition(is_nan, &site, witchy_syntax::diag::DiagTemplate::NanToInt)?;
                 let destination = self.fresh(ValueType::Int)?;
                 self.push_operation(Operation::FloatUnary {
                     destination,

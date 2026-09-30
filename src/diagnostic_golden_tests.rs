@@ -13,20 +13,18 @@
 //! (imperfect) behavior so its eventual fix shows up as a deliberate golden
 //! update — Phase 2 (message polish) is out of scope here.
 //!
-//! Runtime-trap goldens use the production checked-source to admitted-Wasm
-//! route where it preserves the routed source diagnostic. Two remaining
-//! goldens retain historical raw-Wasm/interpreter parity until canonical
-//! lowering routes their source locations; a bare Wasm trap is not a replacement.
+//! Runtime-trap goldens use production checked source and admitted Wasm,
+//! retaining the routed source diagnostic rather than a bare Wasm trap.
 
 use witchy_lower::codegen;
-use witchy_interp::{interpreter, pipeline};
+use witchy_interp::pipeline;
 use witchy_syntax::parser;
 use witchy_types::typeck;
 
 // ---------------------------------------------------------------------------
 // Pipeline plumbing — reuses the same stages the CLI and `example_tests.rs`
 // drive. Runtime goldens use checked source and admitted Wasm; historical
-// frontend diagnostics below still use their raw test-only pipeline.
+// frontend diagnostics below still use their test-only pipeline.
 // Each helper returns the diagnostic STRING for the first stage that rejects.
 // Snapshots must be deterministic: sources carry no absolute paths, and no
 // helper surfaces a timestamp, address, or filesystem path.
@@ -140,26 +138,6 @@ fn trap_snapshot(src: &str) -> String {
     admitted_trap(src, crate::runtime::Capabilities {
         print: true, quiet: true, ..Default::default()
     })
-}
-
-/// Keep the older parity oracle for traps whose canonical lowering currently
-/// loses source routing. These snapshots must stay stronger than raw Wasm traps.
-fn legacy_trap_pair(src: &str) -> String {
-    let module = parser::parse_module(src).expect("parse");
-    let linked = pipeline::link(vec![("main".into(), module)], "main").expect("link");
-    typeck::check(&linked).expect("typecheck");
-    let interpreted = match interpreter::run_module(linked.clone(), ".", Vec::new()) {
-        Ok(output) => format!("<ran without trapping -> {output:?}>"),
-        Err(error) => error.to_string(),
-    };
-    let bytes = codegen::compile_module_binary(&linked)
-        .expect_lowered("the raw binary path lowers this program");
-    let wasm = match crate::run_wasm_bytes(&bytes) {
-        Ok(output) => format!("<ran without trapping -> {output:?}>"),
-        Err(error) => error,
-    };
-    assert_eq!(wasm, interpreted, "historical runtime diagnostic parity");
-    format!("interp: {interpreted}\nwasm:   {wasm}")
 }
 
 // ===========================================================================
@@ -608,14 +586,14 @@ mod runtime {
 
     #[test]
     fn integer_division_overflow() {
-        insta::assert_snapshot!(legacy_trap_pair(
+        insta::assert_snapshot!(trap_snapshot(
             "fn main(console: Console):\n    let min = (0 - 9223372036854775807) - 1\n    console.print(\"${min / (0 - 1)}\")\n"
         ));
     }
 
     #[test]
     fn nan_to_int() {
-        insta::assert_snapshot!(legacy_trap_pair(
+        insta::assert_snapshot!(trap_snapshot(
             "import math\n\nfn main(console: Console):\n    console.print(\"${math.to_int(0.0 / 0.0)}\")\n"
         ));
     }

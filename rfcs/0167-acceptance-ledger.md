@@ -169,10 +169,11 @@ Wasm; they preserve the exact `main` or `main.explode` function and line 3
 diagnostic. Invalid integer parsing now uses the same admitted path: the
 `notanumber` golden retains the exact input and caller line, and five further
 empty, sign-only, malformed, and overflow inputs retain their exact source
-diagnostics. Two goldens remain on the historical test-only
-interpreter/raw-Wasm path: division overflow and NaN-to-Int conversion still
-need canonical source-routed diagnostics. Their
-source-level expectations must not be weakened to generic traps.
+diagnostics. Division overflow and NaN-to-Int conversion now also preserve
+their exact source-site messages on admitted normal-mode Wasm. All runtime
+diagnostic goldens in this module use the checked-source/admitted-Wasm path;
+its former interpreter/raw-Wasm parity helper is retired. This closes that
+bounded diagnostic migration, not every possible runtime failure surface.
 
 Normal Bytes methods and mutators now match their independent exact output
 transcripts on admitted unoptimized Wasm with zero owned-heap leaks. Fifteen

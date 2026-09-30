@@ -51,7 +51,7 @@ pub(super) fn sites(module: &witchy_syntax::ast::Module, console: bool) -> Resul
                 }
                 if is_list_access(expression)
                     || matches!(expression, Expr::Binary { op: BinOp::Div | BinOp::Mod, .. })
-                    || matches!(expression, Expr::Call { name, .. } if name == "fail" || name == "__bytes_at" || name == "bytes.at" || name == "string.to_int" || name == "string.__to_int" || registry_hosts::is_require(name) || (console && is_console_print(name))) {
+                    || matches!(expression, Expr::Call { name, .. } if name == "fail" || name == "__bytes_at" || name == "bytes.at" || name == "string.to_int" || name == "string.__to_int" || name == "math.to_int" || name == "math.__to_int" || registry_hosts::is_require(name) || (console && is_console_print(name))) {
                     let key = expression as *const Expr as usize;
                     if !sites.contains_key(&key) {
                         let line = body.lines.get(index).copied().ok_or(
