@@ -213,6 +213,27 @@ fn admitted_reflected_type_conversion_supplies_checked_record_fields() {
 }
 
 #[test]
+fn admitted_named_type_builder_retains_current_session_type_children() {
+    struct ResetOptimization;
+    impl Drop for ResetOptimization { fn drop(&mut self) { witchy::opt::set_for_tests(None); } }
+    witchy::opt::set_for_tests(Some(witchy::opt::OptSet::none()));
+    let _reset = ResetOptimization;
+    let source = "import meta\ncomptime:\n    let int_ty = meta.type_named(meta.ident(\"Int\"), [])\n    let field_ty = meta.type_named(meta.ident(\"Option\"), [int_ty])\n    emit_item(meta.record_type(meta.ident(\"Builder\"), [(meta.ident(\"value\"), field_ty)]))\nfn main(console: Console):\n    let built = Builder(Some(42))\n    match built.value:\n        Some(value) -> console.print(\"${value}\")\n        None -> console.print(\"missing\")\n";
+    let checked = witchy::canonical_comptime::check_source_bundle(
+        vec![("generator".into(), source.as_bytes().to_vec())], "generator",
+        ["generator".to_owned()].into_iter().collect(), owners_for("generator"), limits(),
+    ).expect("named type syntax enters destination checker");
+    let artifact = witchy_lower::codegen::compile_checked_module_artifact(&checked)
+        .expect_lowered("named type record admits on unoptimized Wasm");
+    let mut runtime = Runtime::batch().unwrap();
+    let mut vm = runtime.spawn_admitted(&artifact,
+        Capabilities { print: true, quiet: true, ..Capabilities::none() }, 64).unwrap();
+    vm.run().unwrap();
+    assert_eq!(vm.output(), ["42"]);
+    assert_eq!(vm.canonical_heap_leaks().unwrap(), Some(0));
+}
+
+#[test]
 fn admitted_typed_parameters_build_a_checked_function_in_both_modes() {
     struct ResetOptimization;
     impl Drop for ResetOptimization { fn drop(&mut self) { witchy::opt::set_for_tests(None); } }

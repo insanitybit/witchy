@@ -217,7 +217,13 @@ pub fn type_named(name: Ident, args: List(TypeSyntax)) -> TypeSyntax:
 // Compiler-owned definition-site named type construction. Type arguments retain
 // their own origin and structure.
 fn __meta_type_named(name: String, args: List(TypeSyntax)) -> TypeSyntax:
-    __meta_type_named(name, args)
+    var wire = "${name.length()}\n" + name + "${args.length()}\n"
+    for arg in args:
+        wire = wire + type_handle_wire(arg)
+    __meta_type_named_wire(wire)
+
+fn __meta_type_named_wire(wire: String) -> TypeSyntax:
+    __meta_type_named_wire(wire)
 
 // Interpreter-owned compile-time hook. It retains an invocation-site type
 // identity plus structurally decoded type arguments.

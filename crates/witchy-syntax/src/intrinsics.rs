@@ -76,6 +76,7 @@ pub enum IntrinsicId {
     MetaPatternListRest,
     MetaPatternOr,
     MetaTypeNamed,
+    MetaTypeNamedWire,
     MetaRecordTypeWire,
     MetaTypeTuple,
     MetaTypeFn,
@@ -680,6 +681,7 @@ pub(crate) const META_PATTERN_LIST: &str = "__meta_pattern_list";
 pub(crate) const META_PATTERN_LIST_REST: &str = "__meta_pattern_list_rest";
 pub(crate) const META_PATTERN_OR: &str = "__meta_pattern_or";
 pub(crate) const META_TYPE_NAMED: &str = "__meta_type_named";
+pub(crate) const META_TYPE_NAMED_WIRE: &str = "__meta_type_named_wire";
 pub(crate) const META_RECORD_TYPE_WIRE: &str = "__meta_record_type_wire";
 pub fn is_meta_record_type_wire(name: &str) -> bool {
     lookup(name).is_some_and(|spec| spec.id == IntrinsicId::MetaRecordTypeWire)
@@ -1856,6 +1858,21 @@ pub const ALL: &[IntrinsicSpec] = &[
         id: IntrinsicId::MetaTypeNamed,
         name: META_TYPE_NAMED,
         arity: 2,
+        signature: IntrinsicSignature::DeclaredInSource,
+        effect: IntrinsicEffect::Toolchain,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::SourceFunction,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: NO_HELPERS,
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: "meta.type_named",
+        private_callers: META_BRIDGE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::MetaTypeNamedWire,
+        name: META_TYPE_NAMED_WIRE,
+        arity: 1,
         signature: IntrinsicSignature::DeclaredInSource,
         effect: IntrinsicEffect::Toolchain,
         capability_effect: CapabilityEffect::None,
@@ -4260,6 +4277,10 @@ pub fn is_meta_pattern_or(name: &str) -> bool {
 
 pub fn is_meta_type_named(name: &str) -> bool {
     lookup(name).is_some_and(|spec| spec.id == IntrinsicId::MetaTypeNamed)
+}
+
+pub fn is_meta_type_named_wire(name: &str) -> bool {
+    lookup(name).is_some_and(|spec| spec.id == IntrinsicId::MetaTypeNamedWire)
 }
 
 pub fn is_meta_type_tuple(name: &str) -> bool {

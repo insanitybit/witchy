@@ -272,6 +272,7 @@ pub const COMPILER_STD_NAMES: &[&str] = &[
     "meta.__meta_type_expr",
     "meta.__meta_type_fn",
     "meta.__meta_type_named",
+    "meta.__meta_type_named_wire",
     "meta.__meta_type_qualified",
     "meta.__meta_type_tuple",
     "meta.block",

@@ -20,6 +20,7 @@ pub(in super::super) fn register(linker: &mut Linker<VmState>) -> Result<()> {
     linker.func_wrap("witchy", "compiler_syntax_inherent_impl_into", inherent_impl_into)?;
     linker.func_wrap("witchy", "compiler_syntax_expr_leaf_into", expression_leaf_into)?;
     linker.func_wrap("witchy", "compiler_syntax_type_expr_into", type_expr_into)?;
+    linker.func_wrap("witchy", "compiler_syntax_type_named_into", type_named_into)?;
     linker.func_wrap("witchy", "compiler_syntax_expr_compose_into", expression_compose_into)?;
     linker.func_wrap("witchy", "compiler_syntax_statement_into", statement_into)?;
     linker.func_wrap("witchy", "compiler_syntax_block_into", block_into)?;
@@ -595,6 +596,90 @@ fn type_expr_into(mut caller: Caller<'_, VmState>, pointer: i32, length: i32,
     state.type_costs.insert(handle.clone(), cost);
     memory.data_mut(&mut caller)[output.start..output.start + required].copy_from_slice(handle.as_bytes());
     Ok(required as i32)
+}
+
+fn type_named_into(mut caller: Caller<'_, VmState>, pointer: i32, length: i32,
+    out: i32, capacity: i32) -> Result<i32> {
+    let memory = memory_of(&mut caller)?;
+    let input = range(memory.data_size(&caller), pointer, length)?;
+    let output = range(memory.data_size(&caller), out, capacity)?;
+    let state = caller.data().compiler_syntax.as_ref()
+        .ok_or_else(|| Error::msg("compiler syntax session unavailable"))?;
+    if input.len() as u64 > state.input_bytes {
+        return Err(Error::msg("compiler named type input budget exceeded"));
+    }
+    charge_fuel(&mut caller, input.len() as u64 + 1)?;
+    let wire = memory.data(&caller)[input].to_vec();
+    let (name, handles) = decode_named_type_wire(&wire)?;
+    let state = caller.data().compiler_syntax.as_ref().expect("checked session");
+    let mut args = Vec::with_capacity(handles.len());
+    let mut ancestry = Vec::new();
+    for handle in handles {
+        if !state.type_costs.contains_key(handle) {
+            return Err(Error::msg("compiler named type requires current-session child syntax"));
+        }
+        args.push(state.syntax.types().get(handle).cloned()
+            .ok_or_else(|| Error::msg("compiler named type child has no typed payload"))?);
+        ancestry.extend(state.syntax.type_origins().get(handle)
+            .ok_or_else(|| Error::msg("compiler named type child has no origin"))?
+            .hole_ancestry.iter().cloned());
+    }
+    let ty = Type::Named(name.to_owned(), args);
+    let cost = measure_dynamic(&ty).map_err(Error::msg)?;
+    let required = state.syntax.syntax_handle_byte_len("type").map_err(Error::msg)?;
+    if cost.nodes > state.nodes.remaining() || cost.bytes > state.syntax_bytes.remaining()
+        || required as u64 > state.bytes.remaining() {
+        return Err(Error::msg("compiler syntax arena budget exceeded"));
+    }
+    charge_fuel(&mut caller, cost.work().and_then(|work| work.checked_add(required as u64))
+        .ok_or_else(|| Error::msg("compiler syntax fuel overflow"))?)?;
+    if output.len() < required { return Ok(required as i32); }
+    let state = caller.data_mut().compiler_syntax.as_mut().expect("checked session");
+    state.nodes.charge(cost.nodes).map_err(|_| Error::msg("compiler syntax arena budget exceeded"))?;
+    state.syntax_bytes.charge(cost.bytes).map_err(|_| Error::msg("compiler syntax arena budget exceeded"))?;
+    state.bytes.charge(required as u64).map_err(|_| Error::msg("compiler syntax handle budget exceeded"))?;
+    let handle = state.syntax.next_syntax_handle("type").map_err(Error::msg)?;
+    state.syntax.insert_type(handle.clone(), ty);
+    state.syntax.insert_type_origin(handle.clone(), ComptimeSyntaxOrigin {
+        definition_line: 1, hole_ancestry: ancestry,
+    });
+    state.type_costs.insert(handle.clone(), cost);
+    memory.data_mut(&mut caller)[output.start..output.start + required].copy_from_slice(handle.as_bytes());
+    Ok(required as i32)
+}
+
+fn decode_named_type_wire(wire: &[u8]) -> Result<(&str, Vec<&str>)> {
+    fn line<'a>(wire: &mut &'a [u8]) -> Result<&'a str> {
+        let end = wire.iter().position(|byte| *byte == b'\n')
+            .ok_or_else(|| Error::msg("malformed compiler named type data"))?;
+        let value = std::str::from_utf8(&wire[..end])
+            .map_err(|_| Error::msg("compiler named type data is not UTF-8"))?;
+        *wire = &wire[end + 1..];
+        Ok(value)
+    }
+    fn framed<'a>(wire: &mut &'a [u8]) -> Result<&'a str> {
+        let length = line(wire)?.parse::<usize>()
+            .map_err(|_| Error::msg("invalid compiler named type field length"))?;
+        if length > wire.len() { return Err(Error::msg("truncated compiler named type field")); }
+        let value = std::str::from_utf8(&wire[..length])
+            .map_err(|_| Error::msg("compiler named type field is not UTF-8"))?;
+        *wire = &wire[length..];
+        Ok(value)
+    }
+    let mut remaining = wire;
+    let name = framed(&mut remaining)?;
+    if name.is_empty() || name.len() > 1024 || !name.split('.').all(|part| {
+        let mut bytes = part.bytes();
+        bytes.next().is_some_and(|byte| byte.is_ascii_alphabetic() || byte == b'_')
+            && bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+    }) { return Err(Error::msg("invalid compiler named type name")); }
+    let count = line(&mut remaining)?.parse::<usize>()
+        .map_err(|_| Error::msg("invalid compiler named type argument count"))?;
+    if count > 256 { return Err(Error::msg("compiler named type argument limit exceeded")); }
+    let mut handles = Vec::with_capacity(count);
+    for _ in 0..count { handles.push(framed(&mut remaining)?); }
+    if !remaining.is_empty() { return Err(Error::msg("trailing compiler named type data")); }
+    Ok((name, handles))
 }
 
 // This is a length-framed data protocol, not Witchy source. Every type operand

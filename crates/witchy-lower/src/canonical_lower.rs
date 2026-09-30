@@ -1346,6 +1346,7 @@ if capability_imports.contains("build_out_write_at") {
                     witchy_wir::canonical_safewir::COMPILER_RECORD_TYPE_IMPORT,
                     witchy_wir::canonical_safewir::COMPILER_EXPR_LEAF_IMPORT,
                     witchy_wir::canonical_safewir::COMPILER_TYPE_EXPR_IMPORT,
+                    witchy_wir::canonical_safewir::COMPILER_TYPE_NAMED_IMPORT,
                     witchy_wir::canonical_safewir::COMPILER_EXPR_COMPOSE_IMPORT,
                     witchy_wir::canonical_safewir::COMPILER_PARAM_IMPORT,
                     witchy_wir::canonical_safewir::COMPILER_FUNCTION_EXPR_IMPORT,
@@ -1364,6 +1365,7 @@ if capability_imports.contains("build_out_write_at") {
                         push_import_signature(vec![text, ValueType::Int, text], vec![ValueType::Size], Some(2))?
                     } else if matches!(name, witchy_wir::canonical_safewir::COMPILER_RECORD_TYPE_IMPORT
                         | witchy_wir::canonical_safewir::COMPILER_TYPE_EXPR_IMPORT
+                        | witchy_wir::canonical_safewir::COMPILER_TYPE_NAMED_IMPORT
                         | witchy_wir::canonical_safewir::COMPILER_EXPR_COMPOSE_IMPORT
                         | witchy_wir::canonical_safewir::COMPILER_PARAM_IMPORT
                         | witchy_wir::canonical_safewir::COMPILER_FUNCTION_EXPR_IMPORT
@@ -13609,6 +13611,7 @@ impl FunctionLowerer<'_> {
         let layout = self.string_layout_id()?;
         if witchy_syntax::intrinsics::is_meta_record_type_wire(name)
             || witchy_syntax::intrinsics::is_meta_type_expr_wire(name)
+            || witchy_syntax::intrinsics::is_meta_type_named_wire(name)
             || witchy_syntax::intrinsics::is_meta_expr_compose_wire(name)
             || witchy_syntax::intrinsics::is_meta_param_wire(name)
             || witchy_syntax::intrinsics::is_meta_function_expr_wire(name)
@@ -13624,7 +13627,8 @@ impl FunctionLowerer<'_> {
             let source = self.expression_storage_type(expression)?;
             let shape = scalar_aggregate_shape(&source, self.definitions)
                 .ok_or(CanonicalLoweringError::UnsupportedExpression("compiler syntax carrier"))?;
-            let variant_name = if witchy_syntax::intrinsics::is_meta_type_expr_wire(name) {
+            let variant_name = if witchy_syntax::intrinsics::is_meta_type_expr_wire(name)
+                || witchy_syntax::intrinsics::is_meta_type_named_wire(name) {
                 "meta.CompilerTypeSyntax"
             } else if witchy_syntax::intrinsics::is_meta_expr_compose_wire(name) {
                 "meta.CompilerExprSyntax"
@@ -20636,6 +20640,9 @@ fn compiler_service_import(name: &str) -> Option<(&'static str, usize)> {
     }
     if witchy_syntax::intrinsics::is_meta_type_expr_wire(name) {
         return Some((witchy_wir::canonical_safewir::COMPILER_TYPE_EXPR_IMPORT, 1));
+    }
+    if witchy_syntax::intrinsics::is_meta_type_named_wire(name) {
+        return Some((witchy_wir::canonical_safewir::COMPILER_TYPE_NAMED_IMPORT, 1));
     }
     if witchy_syntax::intrinsics::is_meta_expr_compose_wire(name) {
         return Some((witchy_wir::canonical_safewir::COMPILER_EXPR_COMPOSE_IMPORT, 1));
