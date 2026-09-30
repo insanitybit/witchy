@@ -1,7 +1,7 @@
 //! RFC-0080 compiler-owned expression payloads with compatibility projection.
 
-use witchy::{format, parser, typeck};
-use witchy_interp::{comptime, pipeline};
+use witchy::{format, parser};
+use witchy_types::runtime_type::{AuthenticatedModuleOwners, ModuleLoadIdentity, PackageCoordinate, PackageSource};
 
 const SOURCE: &str = r#"
 import meta
@@ -32,20 +32,22 @@ fn owned_expressions_survive_direct_flow_and_project_for_builders() {
     assert_eq!(parsed.compiler_expr_syntax.len(), 2);
     assert_eq!(parsed.compiler_item_syntax.len(), 1);
 
-    let mut expanded_for_tooling = parsed.clone();
-    comptime::expand_compile_time("main", &mut expanded_for_tooling, &[])
-        .expect("expand compiler-owned expressions through tooling callback");
+    let workspace = PackageCoordinate::new(PackageSource::Workspace, "test/owned-expr", "1").unwrap();
+    let toolchain = PackageCoordinate::new(PackageSource::Toolchain, "witchy/std", "1").unwrap();
+    let mut assignments = vec![("main".to_owned(), ModuleLoadIdentity::new(workspace, ["main"]).unwrap())];
+    assignments.extend(witchy_syntax::linker::STD_MODULES.iter().map(|name| (
+        (*name).to_owned(), ModuleLoadIdentity::new(toolchain.clone(), ["std", *name]).unwrap(),
+    )));
+    let owners = AuthenticatedModuleOwners::from_loader_assignments(assignments).unwrap();
+    let (_checked, expanded_for_tooling) = witchy::canonical_comptime::check_and_expand_source_bundle_with_imported_blocks(
+        vec![("main".into(), SOURCE.as_bytes().to_vec())], "main", "main",
+        ["main".to_owned()].into_iter().collect(), owners,
+        witchy::canonical_comptime::source_limits(),
+    ).expect("expand compiler-owned expressions through authenticated source");
     let expanded_source = format::module(&expanded_for_tooling, &[]);
     assert!(expanded_source.contains("pub fn generated() -> Int:"), "{expanded_source}");
     assert!(expanded_source.contains("identity(42)"), "{expanded_source}");
     assert!(!expanded_source.contains("@quote_expr"), "{expanded_source}");
-
-    let linked = pipeline::link(vec![("main".into(), parsed)], "main")
-        .expect("expand and link compiler-owned expressions");
-    typeck::check(&linked).expect("typecheck expanded expression program");
-    assert!(linked.compiler_expr_syntax.is_empty());
-    assert!(linked.compiler_type_syntax.is_empty());
-    assert!(linked.compiler_item_syntax.is_empty());
 
     let expected = vec!["42".to_string()];
     super::assert_admitted_source_output(SOURCE, &expected, "compile expanded program", 64);
