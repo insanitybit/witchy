@@ -105,6 +105,7 @@ mod canonical_safewir {
             #[test] fn declared_callable_result_must_match_checked_signature() { witchy_wir::self_checks::canonical_safewir_check::declared_callable_result_must_match_checked_signature() }
             #[test] fn definition_on_one_branch_does_not_dominate_join() { witchy_wir::self_checks::canonical_safewir_check::definition_on_one_branch_does_not_dominate_join() }
             #[test] fn duplicate_tail_terminators_cannot_discharge_one_obligation() { witchy_wir::self_checks::canonical_safewir_check::duplicate_tail_terminators_cannot_discharge_one_obligation() }
+            #[test] fn dead_tail_requires_dominating_zero_division_and_its_result() { witchy_wir::self_checks::canonical_safewir_check::dead_tail_requires_dominating_zero_division_and_its_result() }
             #[test] fn dynamic_element_load_without_guard_is_refused() { witchy_wir::self_checks::canonical_safewir_check::dynamic_element_load_without_guard_is_refused() }
             #[test] fn external_call_accepts_unit_parameter_and_result_contracts() { witchy_wir::self_checks::canonical_safewir_check::external_call_accepts_unit_parameter_and_result_contracts() }
             #[test] fn external_call_rejects_reference_gc_capability_and_callable_abi() { witchy_wir::self_checks::canonical_safewir_check::external_call_rejects_reference_gc_capability_and_callable_abi() }

@@ -1215,7 +1215,58 @@ fn check_memory_cfg(
             _ => {}
         }
     }
+    // A source tail call in the continuation of a statically trapping integer
+    // operation cannot execute. Lowering still binds that source site to its
+    // structural tail terminator. Admit only the exact dead result forwarding
+    // shape, after proving the zero divisor is an SSA constant that dominates
+    // the site; an arbitrary unreachable tail terminator remains insufficient.
+    for (site, location) in tail_obligations {
+        if location.function() != function.id || observed_tail_sites.contains(site)
+            || incoming.contains_key(&location.block()) {
+            continue;
+        }
+        if let Some(block) = blocks.get(&location.block()).copied()
+            && dead_tail_after_zero_division(function, block, definition_sites, dominators)
+        {
+            observe_tail_site(function, block.id, *site, true, tail_obligations, observed_tail_sites)?;
+        }
+    }
     Ok(())
+}
+
+fn dead_tail_after_zero_division(
+    function: &Function,
+    block: &BasicBlock,
+    definitions: &BTreeMap<ValueId, DefinitionSite>,
+    dominators: &Dominators,
+) -> bool {
+    if !dominators.dominates(function.entry, block.id) { return false; }
+    let Terminator::TailCall { arguments, .. } = &block.terminator else { return false };
+    block.operations.iter().enumerate().any(|(index, operation)| {
+        let Operation::Arithmetic { destination, operator, right, overflow, left } = operation else {
+            return false;
+        };
+        if !matches!(operator, super::ArithmeticOperator::DivideSigned
+            | super::ArithmeticOperator::DivideUnsigned
+            | super::ArithmeticOperator::RemainderSigned
+            | super::ArithmeticOperator::RemainderUnsigned)
+            || *overflow != super::OverflowBehavior::Trap
+            || !matches!(arguments.as_slice(), [super::CallArgument::Value(value)] if value == destination)
+            || check_uses_dominate(function, block.id, index, vec![*left, *right], definitions, dominators).is_err() {
+            return false;
+        }
+        let Some(definition) = definitions.get(right) else { return false };
+        let Some(defining_block) = function.blocks.iter().find(|candidate| candidate.id == definition.block) else {
+            return false;
+        };
+        let Some(defining_index) = definition.operation_index else { return false };
+        let Some(defining_operation) = defining_block.operations.get(defining_index) else { return false };
+        matches!(
+            (defining_operation, function.value_types.get(left), function.value_types.get(right), function.value_types.get(destination)),
+            (Operation::ConstInt { value: 0, .. }, Some(ValueType::Int), Some(ValueType::Int), Some(ValueType::Int))
+                | (Operation::ConstSize { value: 0, .. }, Some(ValueType::Size), Some(ValueType::Size), Some(ValueType::Size))
+        )
+    })
 }
 
 fn reverse_postorder_ranks(
@@ -4004,6 +4055,68 @@ pub mod self_checks {
             check_initial(module).unwrap_err(),
             InitialCheckError::DuplicateTailObligation(TAIL_SITE)
         );
+    }
+
+    pub fn dead_tail_requires_dominating_zero_division_and_its_result() {
+        let dead = BlockId::new(2);
+        let zero = ValueId::new(1);
+        let numerator = ValueId::new(2);
+        let condition = ValueId::new(3);
+        let result = ValueId::new(4);
+        let mut function = Function {
+            id: FUNCTION, signature: SIGNATURE, entry: ENTRY,
+            value_types: [
+                (zero, ValueType::Int), (numerator, ValueType::Int),
+                (condition, ValueType::Bool), (result, ValueType::Int),
+            ].into_iter().collect(),
+            blocks: vec![
+                BasicBlock {
+                    id: ENTRY, parameters: Vec::new(),
+                    operations: vec![
+                        Operation::ConstInt { destination: zero, value: 0 },
+                        Operation::ConstInt { destination: numerator, value: 42 },
+                        Operation::ConstBool { destination: condition, value: true },
+                    ],
+                    terminator: Terminator::BranchIf {
+                        condition, then_target: BlockId::new(1), then_arguments: Vec::new(),
+                        else_target: dead, else_arguments: Vec::new(),
+                    },
+                },
+                BasicBlock { id: BlockId::new(1), parameters: Vec::new(),
+                    operations: Vec::new(), terminator: Terminator::Trap },
+                BasicBlock {
+                    id: dead, parameters: Vec::new(),
+                    operations: vec![Operation::Arithmetic {
+                        destination: result, operator: ArithmeticOperator::DivideSigned,
+                        left: numerator, right: zero, overflow: OverflowBehavior::Trap,
+                    }],
+                    terminator: Terminator::TailCall {
+                        site: TAIL_SITE, callee: FUNCTION,
+                        arguments: vec![CallArgument::Value(result)],
+                    },
+                },
+            ],
+        };
+        let prove = |function: &Function| {
+            let blocks = super::index_blocks(function).unwrap();
+            let predecessors = super::predecessor_map(function, &blocks).unwrap();
+            let dominators = super::dominators(function, &blocks, &predecessors).unwrap();
+            let definitions = super::definition_sites(function);
+            super::dead_tail_after_zero_division(function, blocks[&dead], &definitions, &dominators)
+        };
+        assert!(prove(&function));
+        function.blocks[0].operations[0] = Operation::ConstInt { destination: zero, value: 1 };
+        assert!(!prove(&function), "a nonzero divisor cannot discharge a dead tail");
+        function.blocks[0].operations[0] = Operation::ConstInt { destination: zero, value: 0 };
+        function.blocks[2].terminator = Terminator::TailCall {
+            site: TAIL_SITE, callee: FUNCTION, arguments: Vec::new(),
+        };
+        assert!(!prove(&function), "an unrelated tail cannot use the trap proof");
+        function.blocks[2].terminator = Terminator::TailCall {
+            site: TAIL_SITE, callee: FUNCTION, arguments: vec![CallArgument::Value(result)],
+        };
+        function.blocks[0].terminator = Terminator::Trap;
+        assert!(!prove(&function), "a disconnected decoy cannot discharge a tail");
     }
 
 

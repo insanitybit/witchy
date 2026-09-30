@@ -56,6 +56,7 @@ fn compiled_result(
     actor
         .run()
         .map_err(|error| error.root_cause().to_string())?;
+    assert_eq!(actor.canonical_heap_leaks().expect("heap audit"), Some(0));
     Ok(actor.output())
 }
 
@@ -71,6 +72,12 @@ fn source_line(source: &str, needle: &str) -> u32 {
 
 #[test]
 fn rfc0129_acceptance_row_1_async_lowering_preserves_source_contracts_on_admitted_wasm() {
+    struct ResetOptimization;
+    impl Drop for ResetOptimization {
+        fn drop(&mut self) { witchy::opt::set_for_tests(None); }
+    }
+    witchy::opt::set_for_tests(Some(witchy::opt::OptSet::none()));
+    let _reset = ResetOptimization;
     let state_machine = checked(STATE_MACHINE_SOURCE);
     let expected = vec!["6 10".to_string()];
     assert_eq!(
@@ -112,15 +119,7 @@ fn rfc0129_acceptance_row_1_async_lowering_preserves_source_contracts_on_admitte
         .expect_err("compiled Wasm must preserve the async trap");
 
     let line = source_line(TRAP_SOURCE, "42 / divisor");
-    let expected_site = format!("`main.explode`, line {line}:");
-    assert!(
-        compiled.contains(&expected_site),
-        "async trap must retain its source callable and line: {compiled}",
-    );
-    assert!(
-        compiled.contains("division by zero"),
-        "async trap must retain the arithmetic cause: {compiled}",
-    );
+    assert_eq!(compiled, format!("runtime error: `main.explode`, line {line}: division by zero"));
     assert!(
         !compiled.contains("__async_"),
         "generated segment identity leaked into async trap: {compiled}",

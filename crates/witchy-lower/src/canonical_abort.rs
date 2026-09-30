@@ -66,7 +66,8 @@ pub(super) fn sites(module: &witchy_syntax::ast::Module, console: bool) -> Resul
     let mut visited = HashSet::new();
     for item in &module.items {
         if let Item::Function(function) = item && scope.contains(&function.name) {
-            block(&function.body, &function.name, console, &mut sites, &mut visited)?;
+            let source_callable = witchy_syntax::suspension::source_callable_name(function);
+            block(&function.body, &source_callable, console, &mut sites, &mut visited)?;
         }
     }
     Ok(sites)
