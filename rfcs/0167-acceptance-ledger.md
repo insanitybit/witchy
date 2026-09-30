@@ -89,6 +89,14 @@ without output, and a unit-returning `main` prints `hi` with code 0. Its
 source-interpreter execution is retired. This extends row O's exact CLI
 boundary evidence without claiming the broader tooling row complete.
 
+The canonical normal-mode `meta.type_named` builder now composes
+compiler-issued child `TypeSyntax` handles through a length-framed wire. Its
+definition-site and call-site names stay distinct until destination checking.
+`admitted_named_type_builder_retains_current_session_type_children` checks a
+nested `Option(Int)` field and a call-site `Local` field against independent
+`42` and `17` outputs on admitted unoptimized Wasm, with zero heap leaks.
+This is bounded row M evidence; other type constructors remain separate.
+
 The command-line argument fixture now runs checked `main(console, args)`
 through `execute_file_exit`, asserting `a,b,c` and the empty-argument output.
 The SEC-037 minigrep retained-line case keeps its independent two-line

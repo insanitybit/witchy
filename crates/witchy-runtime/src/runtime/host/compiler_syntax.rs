@@ -610,7 +610,7 @@ fn type_named_into(mut caller: Caller<'_, VmState>, pointer: i32, length: i32,
     }
     charge_fuel(&mut caller, input.len() as u64 + 1)?;
     let wire = memory.data(&caller)[input].to_vec();
-    let (name, handles) = decode_named_type_wire(&wire)?;
+    let (call_site, name, handles) = decode_named_type_wire(&wire)?;
     let state = caller.data().compiler_syntax.as_ref().expect("checked session");
     let mut args = Vec::with_capacity(handles.len());
     let mut ancestry = Vec::new();
@@ -624,7 +624,11 @@ fn type_named_into(mut caller: Caller<'_, VmState>, pointer: i32, length: i32,
             .ok_or_else(|| Error::msg("compiler named type child has no origin"))?
             .hole_ancestry.iter().cloned());
     }
-    let ty = Type::Named(name.to_owned(), args);
+    let ty = if call_site {
+        witchy_syntax::linker::call_site_type(name, args)
+    } else {
+        Type::Named(name.to_owned(), args)
+    };
     let cost = measure_dynamic(&ty).map_err(Error::msg)?;
     let required = state.syntax.syntax_handle_byte_len("type").map_err(Error::msg)?;
     if cost.nodes > state.nodes.remaining() || cost.bytes > state.syntax_bytes.remaining()
@@ -648,7 +652,7 @@ fn type_named_into(mut caller: Caller<'_, VmState>, pointer: i32, length: i32,
     Ok(required as i32)
 }
 
-fn decode_named_type_wire(wire: &[u8]) -> Result<(&str, Vec<&str>)> {
+fn decode_named_type_wire(wire: &[u8]) -> Result<(bool, &str, Vec<&str>)> {
     fn line<'a>(wire: &mut &'a [u8]) -> Result<&'a str> {
         let end = wire.iter().position(|byte| *byte == b'\n')
             .ok_or_else(|| Error::msg("malformed compiler named type data"))?;
@@ -667,6 +671,11 @@ fn decode_named_type_wire(wire: &[u8]) -> Result<(&str, Vec<&str>)> {
         Ok(value)
     }
     let mut remaining = wire;
+    let call_site = match line(&mut remaining)? {
+        "D" => false,
+        "C" => true,
+        _ => return Err(Error::msg("invalid compiler named type origin")),
+    };
     let name = framed(&mut remaining)?;
     if name.is_empty() || name.len() > 1024 || !name.split('.').all(|part| {
         let mut bytes = part.bytes();
@@ -679,7 +688,7 @@ fn decode_named_type_wire(wire: &[u8]) -> Result<(&str, Vec<&str>)> {
     let mut handles = Vec::with_capacity(count);
     for _ in 0..count { handles.push(framed(&mut remaining)?); }
     if !remaining.is_empty() { return Err(Error::msg("trailing compiler named type data")); }
-    Ok((name, handles))
+    Ok((call_site, name, handles))
 }
 
 // This is a length-framed data protocol, not Witchy source. Every type operand

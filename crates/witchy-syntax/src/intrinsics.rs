@@ -69,6 +69,7 @@ pub enum IntrinsicId {
     MetaStmtLeaf,
     MetaCallSiteExpr,
     MetaCallSiteType,
+    MetaCallSiteTypeWire,
     MetaCallSitePattern,
     MetaPatternCtor,
     MetaPatternTuple,
@@ -674,6 +675,7 @@ pub(crate) const META_PATTERN_LEAF: &str = "__meta_pattern_leaf";
 pub(crate) const META_STMT_LEAF: &str = "__meta_stmt_leaf";
 pub(crate) const META_CALL_SITE_EXPR: &str = "__meta_call_site_expr";
 pub(crate) const META_CALL_SITE_TYPE: &str = "__meta_call_site_type";
+pub(crate) const META_CALL_SITE_TYPE_WIRE: &str = "__meta_call_site_type_wire";
 pub(crate) const META_CALL_SITE_PATTERN: &str = "__meta_call_site_pattern";
 pub(crate) const META_PATTERN_CTOR: &str = "__meta_pattern_ctor";
 pub(crate) const META_PATTERN_TUPLE: &str = "__meta_pattern_tuple";
@@ -1753,6 +1755,21 @@ pub const ALL: &[IntrinsicSpec] = &[
         id: IntrinsicId::MetaCallSiteType,
         name: META_CALL_SITE_TYPE,
         arity: 2,
+        signature: IntrinsicSignature::DeclaredInSource,
+        effect: IntrinsicEffect::Toolchain,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::SourceFunction,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: NO_HELPERS,
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: "meta.call_site",
+        private_callers: META_BRIDGE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::MetaCallSiteTypeWire,
+        name: META_CALL_SITE_TYPE_WIRE,
+        arity: 1,
         signature: IntrinsicSignature::DeclaredInSource,
         effect: IntrinsicEffect::Toolchain,
         capability_effect: CapabilityEffect::None,
@@ -4249,6 +4266,10 @@ pub fn is_meta_call_site_expr(name: &str) -> bool {
 
 pub fn is_meta_call_site_type(name: &str) -> bool {
     lookup(name).is_some_and(|spec| spec.id == IntrinsicId::MetaCallSiteType)
+}
+
+pub fn is_meta_call_site_type_wire(name: &str) -> bool {
+    lookup(name).is_some_and(|spec| spec.id == IntrinsicId::MetaCallSiteTypeWire)
 }
 
 pub fn is_meta_call_site_pattern(name: &str) -> bool {

@@ -232,6 +232,7 @@ pub const COMPILER_STD_NAMES: &[&str] = &[
     "meta.__meta_call_site_expr",
     "meta.__meta_call_site_pattern",
     "meta.__meta_call_site_type",
+    "meta.__meta_call_site_type_wire",
     "meta.__meta_expr_binary",
     "meta.__meta_expr_call",
     "meta.__meta_expr_field",

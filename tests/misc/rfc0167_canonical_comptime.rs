@@ -231,6 +231,20 @@ fn admitted_named_type_builder_retains_current_session_type_children() {
     vm.run().unwrap();
     assert_eq!(vm.output(), ["42"]);
     assert_eq!(vm.canonical_heap_leaks().unwrap(), Some(0));
+
+    let call_site_source = "import meta\ntype Local:\n    value: Int\ncomptime:\n    let local_ty = meta.type_named(meta.call_site(\"Local\"), [])\n    emit_item(meta.record_type(meta.ident(\"Wrapper\"), [(meta.ident(\"item\"), local_ty)]))\nfn main(console: Console):\n    let wrapped = Wrapper(Local(17))\n    console.print(\"${wrapped.item.value}\")\n";
+    let checked = witchy::canonical_comptime::check_source_bundle(
+        vec![("generator".into(), call_site_source.as_bytes().to_vec())], "generator",
+        ["generator".to_owned()].into_iter().collect(), owners_for("generator"), limits(),
+    ).expect("call-site type name resolves in destination checker");
+    let artifact = witchy_lower::codegen::compile_checked_module_artifact(&checked)
+        .expect_lowered("call-site named type admits on unoptimized Wasm");
+    let mut runtime = Runtime::batch().unwrap();
+    let mut vm = runtime.spawn_admitted(&artifact,
+        Capabilities { print: true, quiet: true, ..Capabilities::none() }, 64).unwrap();
+    vm.run().unwrap();
+    assert_eq!(vm.output(), ["17"]);
+    assert_eq!(vm.canonical_heap_leaks().unwrap(), Some(0));
 }
 
 #[test]
