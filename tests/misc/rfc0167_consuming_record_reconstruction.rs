@@ -82,10 +82,8 @@ fn consuming_record_reconstruction_runs_in_both_modes_without_leaks() {
     let _reset = ResetOptimizationOverride;
     for mode in ["", "mode opt\n"] {
         let source = format!("{mode}{PROGRAM}");
-        let checked = witchy_types::pipeline::link_checked_from_source_bundle(
-            vec![("main".into(), source.into_bytes())], "main",
-            witchy_interp::comptime::EXPANDER,
-        ).expect("checked consuming record reconstruction");
+        let checked = witchy::resolve_std_only_checked(&source)
+            .expect("checked consuming record reconstruction");
         let artifact = witchy::codegen::compile_checked_module_artifact(&checked)
             .expect_lowered("unoptimized canonical admission");
         let mut runtime = Runtime::batch().expect("runtime");
