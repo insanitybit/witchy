@@ -10,8 +10,10 @@ use witchy_syntax::{ast::{Block, Convention, Expr, Function, ImplDef, ImplOrigin
 pub(in super::super) fn register(linker: &mut Linker<VmState>) -> Result<()> {
     linker.func_wrap("witchy", "compiler_syntax_fresh_into", fresh_into)?;
     linker.func_wrap("witchy", "compiler_syntax_quote_expr_into", quote_into::<Expression>)?;
+    linker.func_wrap("witchy", "compiler_syntax_quote_expr_holes_into", quote_holes_into::<Expression>)?;
     linker.func_wrap("witchy", "compiler_syntax_emit_expr", emit::<Expression>)?;
     linker.func_wrap("witchy", "compiler_syntax_quote_item_into", quote_into::<ItemCategory>)?;
+    linker.func_wrap("witchy", "compiler_syntax_quote_item_holes_into", quote_holes_into::<ItemCategory>)?;
     linker.func_wrap("witchy", "compiler_syntax_emit_item", emit::<ItemCategory>)?;
     linker.func_wrap("witchy", "compiler_syntax_quote_type_into", quote_into::<TypeCategory>)?;
     linker.func_wrap("witchy", "compiler_syntax_record_type_into", record_type_into)?;
@@ -958,12 +960,21 @@ trait Category {
         origin: ComptimeSyntaxOrigin, cost: SyntaxCost);
     fn cost(state: &SessionState, handle: &str) -> Option<SyntaxCost>;
     fn emit(state: &mut SessionState, handle: &str);
+    fn instantiate(template: &Self::Value, holes: Vec<witchy_syntax::syntax_holes::ItemSyntaxHole>) -> Result<Self::Value, String>;
+    fn measure(value: &Self::Value) -> Result<SyntaxCost, String>;
+    const QUOTE_CATEGORY: witchy_syntax::compiler_session::quote_hole_wire::Category;
 }
 
 struct Expression;
 impl Category for Expression {
     type Value = Expr;
     const NAME: &'static str = "expression";
+    const QUOTE_CATEGORY: witchy_syntax::compiler_session::quote_hole_wire::Category =
+        witchy_syntax::compiler_session::quote_hole_wire::Category::Expr;
+    fn instantiate(template: &Expr, holes: Vec<witchy_syntax::syntax_holes::ItemSyntaxHole>) -> Result<Expr, String> {
+        witchy_syntax::syntax_holes::instantiate_expr_mixed(template, holes)
+    }
+    fn measure(value: &Expr) -> Result<SyntaxCost, String> { measure_dynamic(value) }
     fn seed(state: &SessionState, handle: &str) -> Option<Arc<SyntaxSeed<Expr>>> {
         state.seeds.expression(handle).cloned()
     }
@@ -985,6 +996,12 @@ struct ItemCategory;
 impl Category for ItemCategory {
     type Value = Item;
     const NAME: &'static str = "item";
+    const QUOTE_CATEGORY: witchy_syntax::compiler_session::quote_hole_wire::Category =
+        witchy_syntax::compiler_session::quote_hole_wire::Category::Item;
+    fn instantiate(template: &Item, holes: Vec<witchy_syntax::syntax_holes::ItemSyntaxHole>) -> Result<Item, String> {
+        witchy_syntax::syntax_holes::instantiate_item(template, holes)
+    }
+    fn measure(value: &Item) -> Result<SyntaxCost, String> { measure_dynamic(value) }
     fn seed(state: &SessionState, handle: &str) -> Option<Arc<SyntaxSeed<Item>>> {
         state.seeds.item(handle).cloned()
     }
@@ -1006,6 +1023,12 @@ struct TypeCategory;
 impl Category for TypeCategory {
     type Value = Type;
     const NAME: &'static str = "type";
+    const QUOTE_CATEGORY: witchy_syntax::compiler_session::quote_hole_wire::Category =
+        witchy_syntax::compiler_session::quote_hole_wire::Category::Type;
+    fn instantiate(_: &Type, _: Vec<witchy_syntax::syntax_holes::ItemSyntaxHole>) -> Result<Type, String> {
+        Err("typed type quotation holes are not admitted".into())
+    }
+    fn measure(value: &Type) -> Result<SyntaxCost, String> { measure_dynamic(value) }
     fn seed(state: &SessionState, handle: &str) -> Option<Arc<SyntaxSeed<Type>>> {
         state.seeds.ty(handle).cloned()
     }
@@ -1017,6 +1040,92 @@ impl Category for TypeCategory {
     }
     fn cost(state: &SessionState, handle: &str) -> Option<SyntaxCost> { state.type_costs.get(handle).copied() }
     fn emit(_: &mut SessionState, _: &str) { unreachable!("types are operands, not emitted items") }
+}
+
+fn quote_holes_into<C: Category>(mut caller: Caller<'_, VmState>, pointer: i32, length: i32,
+    out: i32, capacity: i32) -> Result<i32> {
+    use witchy_syntax::{compiler_session::{ComptimeHoleOrigin, quote_hole_wire::{self, HoleCategory}},
+        origin::SyntaxCategory, syntax_holes::ItemSyntaxHole};
+    let memory = memory_of(&mut caller)?;
+    let input = range(memory.data_size(&caller), pointer, length)?;
+    let output = range(memory.data_size(&caller), out, capacity)?;
+    let state = caller.data().compiler_syntax.as_ref()
+        .ok_or_else(|| Error::msg("compiler syntax session unavailable"))?;
+    if input.len() as u64 > state.input_bytes {
+        return Err(Error::msg("compiler quotation hole input budget exceeded"));
+    }
+    charge_fuel(&mut caller, input.len() as u64 + 1)?;
+    let plan = quote_hole_wire::decode(&memory.data(&caller)[input]).map_err(Error::msg)?;
+    if plan.category != C::QUOTE_CATEGORY {
+        return Err(Error::msg("compiler quotation category does not match import"));
+    }
+    let state = caller.data().compiler_syntax.as_ref().expect("checked session");
+    let seed = C::seed(state, &plan.template)
+        .ok_or_else(|| Error::msg("compiler quotation has no checked seed"))?;
+    if !seed.allows_site(plan.source_line) {
+        return Err(Error::msg("compiler quotation site is absent from checked source"));
+    }
+    let mut holes = Vec::with_capacity(plan.holes.len());
+    let mut ancestry = Vec::new();
+    let mut prerequisite_work = seed.cost().work().ok_or_else(|| Error::msg("compiler syntax fuel overflow"))?;
+    for hole in &plan.holes {
+        let (value, origin, cost, category) = match hole.category {
+            HoleCategory::Expr => {
+                let cost = state.costs.get(&hole.handle).copied()
+                    .ok_or_else(|| Error::msg("compiler quotation requires current-session expression hole"))?;
+                let value = state.syntax.expressions().get(&hole.handle).cloned()
+                    .ok_or_else(|| Error::msg("compiler expression hole has no payload"))?;
+                let origin = state.syntax.expression_origins().get(&hole.handle).cloned()
+                    .ok_or_else(|| Error::msg("compiler expression hole has no origin"))?;
+                (ItemSyntaxHole::Expr(value), origin, cost, SyntaxCategory::Expr)
+            }
+            HoleCategory::Type => {
+                let cost = state.type_costs.get(&hole.handle).copied()
+                    .ok_or_else(|| Error::msg("compiler quotation requires current-session type hole"))?;
+                let value = state.syntax.types().get(&hole.handle).cloned()
+                    .ok_or_else(|| Error::msg("compiler type hole has no payload"))?;
+                let origin = state.syntax.type_origins().get(&hole.handle).cloned()
+                    .ok_or_else(|| Error::msg("compiler type hole has no origin"))?;
+                (ItemSyntaxHole::Type(value), origin, cost, SyntaxCategory::Type)
+            }
+            HoleCategory::Pattern => {
+                let cost = state.pattern_costs.get(&hole.handle).copied()
+                    .ok_or_else(|| Error::msg("compiler quotation requires current-session pattern hole"))?;
+                let value = state.syntax.patterns().get(&hole.handle).cloned()
+                    .ok_or_else(|| Error::msg("compiler pattern hole has no payload"))?;
+                let origin = state.syntax.pattern_origins().get(&hole.handle).cloned()
+                    .ok_or_else(|| Error::msg("compiler pattern hole has no origin"))?;
+                (ItemSyntaxHole::Pattern(value), origin, cost, SyntaxCategory::Pattern)
+            }
+        };
+        prerequisite_work = prerequisite_work.checked_add(cost.work().ok_or_else(|| Error::msg("compiler syntax fuel overflow"))?)
+            .ok_or_else(|| Error::msg("compiler syntax fuel overflow"))?;
+        ancestry.extend(origin.hole_ancestry);
+        ancestry.push(ComptimeHoleOrigin { category, definition_line: origin.definition_line,
+            invocation_line: plan.source_line });
+        holes.push(value);
+    }
+    charge_fuel(&mut caller, prerequisite_work)?;
+    let value = C::instantiate(seed.value(), holes).map_err(Error::msg)?;
+    let cost = C::measure(&value).map_err(Error::msg)?;
+    let state = caller.data().compiler_syntax.as_ref().expect("checked session");
+    let required = state.syntax.syntax_handle_byte_len(C::NAME).map_err(Error::msg)?;
+    if cost.nodes > state.nodes.remaining() || cost.bytes > state.syntax_bytes.remaining()
+        || required as u64 > state.bytes.remaining() {
+        return Err(Error::msg("compiler syntax arena budget exceeded"));
+    }
+    charge_fuel(&mut caller, cost.work().and_then(|work| work.checked_add(required as u64))
+        .ok_or_else(|| Error::msg("compiler syntax fuel overflow"))?)?;
+    if output.len() < required { return Ok(required as i32); }
+    let state = caller.data_mut().compiler_syntax.as_mut().expect("checked session");
+    state.nodes.charge(cost.nodes).map_err(|_| Error::msg("compiler syntax arena budget exceeded"))?;
+    state.syntax_bytes.charge(cost.bytes).map_err(|_| Error::msg("compiler syntax arena budget exceeded"))?;
+    state.bytes.charge(required as u64).map_err(|_| Error::msg("compiler syntax handle budget exceeded"))?;
+    let handle = state.syntax.next_syntax_handle(C::NAME).map_err(Error::msg)?;
+    C::insert(state, handle.clone(), value,
+        ComptimeSyntaxOrigin { definition_line: plan.source_line, hole_ancestry: ancestry }, cost);
+    memory.data_mut(&mut caller)[output.start..output.start + required].copy_from_slice(handle.as_bytes());
+    Ok(required as i32)
 }
 
 fn quote_into<C: Category>(mut caller: Caller<'_, VmState>, pointer: i32, length: i32,
