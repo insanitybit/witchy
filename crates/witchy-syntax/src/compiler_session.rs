@@ -23,6 +23,7 @@ pub mod expr_compose_wire;
 pub mod block_wire;
 pub mod function_wire;
 pub mod pattern_match_wire;
+pub mod quote_hole_wire;
 
 /// Data carried by the checked source launch contract and admitted artifact.
 /// Constructing this value alone grants no import or launch authority.
