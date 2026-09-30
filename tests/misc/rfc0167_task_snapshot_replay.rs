@@ -55,3 +55,19 @@ fn main() -> Int:
     assert!(error.contains("replayable Task recipe has no copyable snapshot: affine unique storage"),
         "checked refusal must name the capture invariant: {error}");
 }
+
+#[test]
+fn call_scoped_access_cannot_enter_a_replayable_task_recipe() {
+    let error = witchy::resolve_std_only_checked(r#"
+async fn borrowed_capture(let items: List(Int)) -> Int:
+    items.length()
+
+async fn main():
+    let answer = borrowed_capture([1, 2]).await
+"#).err().map(|error| error.to_string())
+        .expect("call-scoped access cannot be retained by a lazy Task");
+    assert!(error.contains("call-scoped `let` parameter"),
+        "checked refusal must identify the escaped access: {error}");
+    assert!(error.contains("lazy Task recipe"),
+        "checked refusal must identify the retaining recipe: {error}");
+}
