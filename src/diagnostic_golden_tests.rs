@@ -14,9 +14,9 @@
 //! update — Phase 2 (message polish) is out of scope here.
 //!
 //! Runtime-trap goldens use the production checked-source to admitted-Wasm
-//! route where it preserves the routed source diagnostic. Remaining goldens
-//! retain historical raw-Wasm/interpreter parity until canonical lowering
-//! routes their source locations; a bare Wasm trap is not a replacement.
+//! route where it preserves the routed source diagnostic. Three remaining
+//! goldens retain historical raw-Wasm/interpreter parity until canonical
+//! lowering routes their source locations; a bare Wasm trap is not a replacement.
 
 use witchy_lower::codegen;
 use witchy_interp::{interpreter, pipeline};
@@ -553,7 +553,7 @@ mod comptime {
 }
 
 // ===========================================================================
-// Runtime traps — interpreter + compiled-WASM PAIR (parity locked)
+// Runtime traps — admitted Wasm where source routing is preserved
 // ===========================================================================
 mod runtime {
     use super::*;
@@ -581,14 +581,14 @@ mod runtime {
 
     #[test]
     fn integer_division_by_zero() {
-        insta::assert_snapshot!(legacy_trap_pair(
+        insta::assert_snapshot!(trap_snapshot(
             "fn main(console: Console):\n    let z = 0\n    console.print(\"${10 / z}\")\n"
         ));
     }
 
     #[test]
     fn nested_function_uses_innermost_source_site() {
-        insta::assert_snapshot!(legacy_trap_pair(
+        insta::assert_snapshot!(trap_snapshot(
             "fn explode() -> Int:\n    let z = 0\n    10 / z\n\nfn main(console: Console):\n    console.print(\"${explode()}\")\n"
         ));
     }

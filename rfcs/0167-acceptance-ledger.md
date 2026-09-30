@@ -163,13 +163,13 @@ broader aggregate views and task-resource disposition remain open.
 
 The runtime diagnostic golden migration at merged `0ca522869` checks list bounds,
 user `fail`, and a missing named secret through checked source and admitted
-Wasm, retaining their source-level messages. Five other diagnostic goldens
-remain on the historical test-only interpreter/raw-Wasm path: admitted
-canonical lowering currently reports generic Wasm traps for division by zero,
-division overflow, invalid integer parsing, NaN-to-Int conversion, and a
-nested division trap, losing the source location. Those five are not canonical
-row N evidence; their existing source-level goldens must not be weakened to
-generic traps to make the migration appear complete.
+Wasm, retaining their source-level messages. The direct and nested
+division-by-zero goldens now also use checked source and admitted normal-mode
+Wasm; they preserve the exact `main` or `main.explode` function and line 3
+diagnostic. Three goldens remain on the historical test-only
+interpreter/raw-Wasm path: division overflow, invalid integer parsing, and
+NaN-to-Int conversion still need canonical source-routed diagnostics. Their
+source-level expectations must not be weakened to generic traps.
 
 Normal Bytes methods and mutators now match their independent exact output
 transcripts on admitted unoptimized Wasm with zero owned-heap leaks. Fifteen
