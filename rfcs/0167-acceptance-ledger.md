@@ -111,10 +111,27 @@ The SEC-037 minigrep retained-line case keeps its independent two-line
 expectation on that same production path; both historical interpreter calls
 are retired. Its optimized normal-mode run does not count as opt-mode evidence.
 
-The normal-mode compiler-tooling milestone is still open: row N needs its
-representative safety-boundary closeout and row Q still requires retirement of
-the remaining source walker workspace/test support. These narrower M/O findings
-do not close the full RFC or its normal-mode safety rows.
+The normal-mode compiler-tooling milestone is still open. Rows M and O have
+the bounded witnesses above; row N now has additional view, task, resource,
+capability, and diagnostic evidence below, but its representative acceptance
+audit has not closed. Production compiler services no longer have a normal
+Cargo dependency on the source walker; row Q remains partial while the walker
+is still a workspace member and a test/support dependency. Typed quotation
+with expression and item holes is the remaining integrated generation boundary
+on the current critical path. These findings do not close the full RFC.
+
+Merged normal-mode row N witnesses retain old `Result(List(Int), String)` and
+`&(List(String), Result(Int, String))` roots through owner replacement, including
+a closure-captured view. Their independently calculated admitted-Wasm results
+are 43 and 2713, with zero owned-heap leaks. Region-born roots and a nested
+`List(&Int)` child without an authenticated carrier refuse at checking. A lazy
+`Task` captures a two-element list view before the owner grows and yields 22
+across two awaits, with zero leaks; capture of a unique owner into a replayable
+recipe refuses. `must Ticket` disposition before and after `await` executes 79
+with zero leaks, while a live obligation without a cancellation disposition
+refuses. The admitted same-VM `vm.par_map` fallback yields `[25,9,64,1]` with
+zero leaks and no worker imports; this does not establish the separate RFC-0129
+worker-host boundary.
 
 The RFC-0080 owned-expression and fresh-identifier tests now authenticate
 their comptime expansion through the checked source bundle and assert their
