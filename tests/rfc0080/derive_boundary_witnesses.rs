@@ -1,6 +1,19 @@
-use witchy::{parser, typeck};
-use witchy_interp::pipeline;
 use witchy_types::runtime_type::{AuthenticatedModuleOwners, ModuleLoadIdentity, PackageCoordinate, PackageSource};
+
+fn checked_derived_source(source: &str) -> Result<witchy_types::pipeline::CheckedModule, String> {
+    let workspace = PackageCoordinate::new(PackageSource::Workspace, "test/derive", "1").unwrap();
+    let toolchain = PackageCoordinate::new(PackageSource::Toolchain, "witchy/std", "1").unwrap();
+    let mut assignments = vec![("main".to_owned(), ModuleLoadIdentity::new(workspace, ["main"]).unwrap())];
+    assignments.extend(witchy_syntax::linker::STD_MODULES.iter().map(|name| (
+        (*name).to_owned(), ModuleLoadIdentity::new(toolchain.clone(), ["std", *name]).unwrap(),
+    )));
+    let owners = AuthenticatedModuleOwners::from_loader_assignments(assignments).unwrap();
+    witchy::canonical_comptime::check_source_bundle(
+        vec![("main".into(), source.as_bytes().to_vec())], "main",
+        ["main".to_owned()].into_iter().collect(), owners,
+        witchy::canonical_comptime::source_limits(),
+    )
+}
 
 fn assert_derived_output(source: &str, expected: &[&str]) {
     struct ResetOptimization;
@@ -9,18 +22,7 @@ fn assert_derived_output(source: &str, expected: &[&str]) {
     }
     witchy::opt::set_for_tests(Some(witchy::opt::OptSet::none()));
     let _reset = ResetOptimization;
-    let workspace = PackageCoordinate::new(PackageSource::Workspace, "test/derive", "1").unwrap();
-    let toolchain = PackageCoordinate::new(PackageSource::Toolchain, "witchy/std", "1").unwrap();
-    let mut assignments = vec![("main".to_owned(), ModuleLoadIdentity::new(workspace, ["main"]).unwrap())];
-    assignments.extend(witchy_syntax::linker::STD_MODULES.iter().map(|name| (
-        (*name).to_owned(), ModuleLoadIdentity::new(toolchain.clone(), ["std", *name]).unwrap(),
-    )));
-    let owners = AuthenticatedModuleOwners::from_loader_assignments(assignments).unwrap();
-    let checked = witchy::canonical_comptime::check_source_bundle(
-        vec![("main".into(), source.as_bytes().to_vec())], "main",
-        ["main".to_owned()].into_iter().collect(), owners,
-        witchy::canonical_comptime::source_limits(),
-    ).expect("authenticated derived source");
+    let checked = checked_derived_source(source).expect("authenticated derived source");
     let artifact = witchy::codegen::compile_checked_module_artifact(&checked)
         .expect_lowered("admitted derived witness");
     let mut runtime = witchy::runtime::Runtime::batch().expect("runtime");
@@ -64,10 +66,8 @@ import public_state
 type Bad derive(PublicState):
     callback: fn(Int) -> Int
 "#;
-    let parsed = parser::parse_module(source).expect("parse negative PublicState witness");
-    let linked = pipeline::link(vec![("main".into(), parsed)], "main").expect("link negative witness");
-    let error = typeck::check(&linked).expect_err("function fields must not derive PublicState");
-    assert!(error.to_string().contains("PublicState"), "{error}");
+    let error = checked_derived_source(source).expect_err("function fields must not derive PublicState");
+    assert!(error.contains("PublicState"), "{error}");
 }
 
 #[test]
@@ -112,10 +112,7 @@ type Boxed(a) derive(PartialEq, Eq, PartialOrd, Ord):
 fn main(console: Console):
     console.print("${Boxed(1).compare(Boxed(2))}")
 "#;
-    let parsed = parser::parse_module(accepted).expect("parse generic Ord witness");
-    let linked = pipeline::link(vec![("main".into(), parsed)], "main")
-        .expect("link generic Ord witness");
-    typeck::check(&linked).expect("Int satisfies derived Ord bound");
+    assert_derived_output(accepted, &["Less"]);
 
     let rejected = r#"
 import cmp
@@ -126,9 +123,6 @@ type Boxed(a) derive(PartialEq, Eq, PartialOrd, Ord):
 fn main(console: Console):
     let _ = Boxed(1.0).compare(Boxed(2.0))
 "#;
-    let parsed = parser::parse_module(rejected).expect("parse rejected generic Ord witness");
-    let linked = pipeline::link(vec![("main".into(), parsed)], "main")
-        .expect("link rejected generic Ord witness");
-    let error = typeck::check(&linked).expect_err("Float must not satisfy derived Ord bound");
-    assert!(error.to_string().contains("Ord"), "{error}");
+    let error = checked_derived_source(rejected).expect_err("Float must not satisfy derived Ord bound");
+    assert!(error.contains("Ord"), "{error}");
 }
