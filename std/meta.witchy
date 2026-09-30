@@ -378,7 +378,7 @@ fn __meta_expr_named_call(name: Ident, args: List(ExprSyntax)) -> ExprSyntax:
     __meta_expr_named_call(name, args)
 
 fn __meta_expr_qualified_call(module: Ident, name: Ident, args: List(ExprSyntax)) -> ExprSyntax:
-    __meta_expr_compose_wire("H\n" + ident_source(module) + "\n" + ident_source(name) + "\n" + expr_wire_args(args))
+    __meta_expr_compose_wire("D\n" + ident_source(module) + "\n" + ident_source(name) + "\n" + expr_wire_args(args))
 
 fn __meta_expr_qualified_call_path(path: List(Ident), member: Ident, args: List(ExprSyntax)) -> ExprSyntax:
     __meta_expr_qualified_call_path(path, member, args)

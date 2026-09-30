@@ -90,7 +90,7 @@ pub fn decode(bytes: &[u8]) -> Result<Composition, String> {
     let value = match reader.line()? {
         "A" => Composition::Apply { callee: reader.handle()?, args: reader.args()? },
         "C" => Composition::Call { name: reader.identifier()?, args: reader.args()? },
-        "H" => Composition::QualifiedCall {
+        "D" => Composition::QualifiedCall {
             module: reader.identifier()?, member: reader.identifier()?, args: reader.args()?,
         },
         "J" => Composition::MethodCall { receiver: reader.handle()?, method: reader.identifier()?, args: reader.args()? },
