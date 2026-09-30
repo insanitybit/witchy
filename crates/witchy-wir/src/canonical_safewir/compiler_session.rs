@@ -22,6 +22,7 @@ pub const COMPILER_MATCH_ARM_IMPORT: &str = "compiler_syntax_match_arm_into";
 pub const COMPILER_BLOCK_IMPORT: &str = "compiler_syntax_block_into";
 pub const COMPILER_FUNCTION_BLOCK_IMPORT: &str = "compiler_syntax_function_block_into";
 pub const COMPILER_INHERENT_IMPL_IMPORT: &str = "compiler_syntax_inherent_impl_into";
+pub const COMPILER_TRAIT_IMPL_IMPORT: &str = "compiler_syntax_trait_impl_into";
 
 fn metered(name: &str) -> bool {
     matches!(name, COMPILER_FRESH_IMPORT | COMPILER_QUOTE_EXPR_IMPORT | COMPILER_EMIT_EXPR_IMPORT
@@ -31,7 +32,7 @@ fn metered(name: &str) -> bool {
         | COMPILER_EXPR_COMPOSE_IMPORT | COMPILER_PARAM_IMPORT | COMPILER_FUNCTION_EXPR_IMPORT
         | COMPILER_STATEMENT_IMPORT | COMPILER_PATTERN_IMPORT | COMPILER_MATCH_ARM_IMPORT
         | COMPILER_BLOCK_IMPORT | COMPILER_FUNCTION_BLOCK_IMPORT
-        | COMPILER_INHERENT_IMPL_IMPORT)
+        | COMPILER_INHERENT_IMPL_IMPORT | COMPILER_TRAIT_IMPL_IMPORT)
 }
 
 impl CanonicalAbiCatalog {
@@ -51,7 +52,7 @@ impl CanonicalAbiCatalog {
             COMPILER_EMIT_EXPR_IMPORT | COMPILER_EMIT_ITEM_IMPORT => authenticated_import(name, &[I32, I32], &[], signature,
                 vec![read], vec![], HostMutation::ReadOnly, ImportAuthentication::CompilerSession)?,
             COMPILER_RECORD_TYPE_IMPORT | COMPILER_TYPE_EXPR_IMPORT | COMPILER_TYPE_NAMED_IMPORT | COMPILER_EXPR_COMPOSE_IMPORT
-            | COMPILER_PARAM_IMPORT | COMPILER_FUNCTION_EXPR_IMPORT | COMPILER_INHERENT_IMPL_IMPORT
+            | COMPILER_PARAM_IMPORT | COMPILER_FUNCTION_EXPR_IMPORT | COMPILER_INHERENT_IMPL_IMPORT | COMPILER_TRAIT_IMPL_IMPORT
             | COMPILER_STATEMENT_IMPORT | COMPILER_PATTERN_IMPORT | COMPILER_MATCH_ARM_IMPORT
             | COMPILER_BLOCK_IMPORT | COMPILER_FUNCTION_BLOCK_IMPORT
                 => authenticated_import(name, &[I32, I32, I32, I32], &[I32], signature,

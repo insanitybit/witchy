@@ -255,6 +255,8 @@ pub const COMPILER_STD_NAMES: &[&str] = &[
     "meta.__meta_fresh_ident",
     "meta.__meta_function_block",
     "meta.__meta_impl_block",
+    "meta.__meta_impl_block_where",
+    "meta.__meta_impl_block_where_wire",
     "meta.__meta_item_with_imports",
     "meta.__meta_match_arm",
     "meta.__meta_param",

@@ -24,6 +24,14 @@ pub struct InherentImplSpec {
     pub methods: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TraitImplSpec {
+    pub trait_type: String,
+    pub target: String,
+    pub bounds: Vec<(String, String)>,
+    pub methods: Vec<String>,
+}
+
 struct Reader<'a>(&'a [u8]);
 
 impl Reader<'_> {
@@ -113,4 +121,18 @@ pub fn decode_inherent_impl(bytes: &[u8]) -> Result<InherentImplSpec, String> {
     let methods = (0..count).map(|_| reader.handle()).collect::<Result<_, _>>()?;
     reader.end()?;
     Ok(InherentImplSpec { target, methods })
+}
+
+pub fn decode_trait_impl(bytes: &[u8]) -> Result<TraitImplSpec, String> {
+    if bytes.len() > 65_536 { return Err("compiler trait impl input limit exceeded".into()); }
+    let mut reader = Reader(bytes);
+    let trait_type = reader.handle()?;
+    let target = reader.handle()?;
+    let count = reader.count()?;
+    let bounds = (0..count).map(|_| Ok((reader.identifier()?, reader.identifier()?)))
+        .collect::<Result<Vec<_>, String>>()?;
+    let count = reader.count()?;
+    let methods = (0..count).map(|_| reader.handle()).collect::<Result<Vec<_>, _>>()?;
+    reader.end()?;
+    Ok(TraitImplSpec { trait_type, target, bounds, methods })
 }

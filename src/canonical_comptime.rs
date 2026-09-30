@@ -380,7 +380,7 @@ fn execute_source_blocks(
             LoweringOutcome::Unsupported(reason) => return Err(reason.to_string()),
             LoweringOutcome::Rejected(error) => return Err(error.to_string()),
         };
-        let outcome = Runtime::run_comptime(&artifact, limits).map_err(|error| error.to_string())?;
+        let outcome = Runtime::run_comptime(&artifact, limits).map_err(|error| format!("{error:#}"))?;
         if outcome.source_digest() != expected_digest {
             return Err("compiler session returned output for a different admitted source recipe".into());
         }

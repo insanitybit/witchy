@@ -378,7 +378,7 @@ fn __meta_expr_named_call(name: Ident, args: List(ExprSyntax)) -> ExprSyntax:
     __meta_expr_named_call(name, args)
 
 fn __meta_expr_qualified_call(module: Ident, name: Ident, args: List(ExprSyntax)) -> ExprSyntax:
-    __meta_expr_qualified_call(module, name, args)
+    __meta_expr_compose_wire("H\n" + ident_source(module) + "\n" + ident_source(name) + "\n" + expr_wire_args(args))
 
 fn __meta_expr_qualified_call_path(path: List(Ident), member: Ident, args: List(ExprSyntax)) -> ExprSyntax:
     __meta_expr_qualified_call_path(path, member, args)
@@ -974,7 +974,18 @@ pub fn impl_block_where(trait_ty: TypeSyntax, target_ty: TypeSyntax, bounds: Lis
     __meta_impl_block_where(trait_ty, target_ty, bounds, items)
 
 fn __meta_impl_block_where(trait_ty: TypeSyntax, target_ty: TypeSyntax, bounds: List((Ident, Ident)), items: List(ItemSyntax)) -> ItemSyntax:
-    __meta_impl_block_where(trait_ty, target_ty, bounds, items)
+    var wire = type_handle_wire(trait_ty) + type_handle_wire(target_ty) + "${bounds.length()}\n"
+    for bound in bounds:
+        let (parameter, trait_name) = bound
+        wire = wire + ident_source(parameter) + "\n" + ident_source(trait_name) + "\n"
+    wire = wire + "${items.length()}\n"
+    for item in items:
+        match item:
+            ItemSyntax(handle) -> wire = wire + "${handle.length()}\n" + handle
+    __meta_impl_block_where_wire(wire)
+
+fn __meta_impl_block_where_wire(wire: String) -> ItemSyntax:
+    __meta_impl_block_where_wire(wire)
 
 fn __meta_impl_block(trait_ty: TypeSyntax, target_ty: TypeSyntax, items: List(ItemSyntax)) -> ItemSyntax:
     __meta_impl_block(trait_ty, target_ty, items)

@@ -97,6 +97,14 @@ nested `Option(Int)` field and a call-site `Local` field against independent
 `42` and `17` outputs on admitted unoptimized Wasm, with zero heap leaks.
 This is bounded row M evidence; other type constructors remain separate.
 
+The `PublicState` derive witness now enters the authenticated source session
+and emits its record, sum, and generic trait impls through admitted compiler
+Wasm. `public_state_record_sum_and_generic_witnesses_typecheck_and_run`
+checks destination linking, the independently expected `ok` output, and zero
+heap leaks. Its qualified calls and bounded trait impl use compiler-issued
+expression, type, and item handles. This closes that production derive path,
+while row M retains its broader syntax-constructor scope.
+
 The command-line argument fixture now runs checked `main(console, args)`
 through `execute_file_exit`, asserting `a,b,c` and the empty-argument output.
 The SEC-037 minigrep retained-line case keeps its independent two-line

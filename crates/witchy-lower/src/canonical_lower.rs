@@ -1355,7 +1355,8 @@ if capability_imports.contains("build_out_write_at") {
                     witchy_wir::canonical_safewir::COMPILER_MATCH_ARM_IMPORT,
                     witchy_wir::canonical_safewir::COMPILER_BLOCK_IMPORT,
                     witchy_wir::canonical_safewir::COMPILER_FUNCTION_BLOCK_IMPORT,
-                    witchy_wir::canonical_safewir::COMPILER_INHERENT_IMPL_IMPORT] {
+                    witchy_wir::canonical_safewir::COMPILER_INHERENT_IMPL_IMPORT,
+                    witchy_wir::canonical_safewir::COMPILER_TRAIT_IMPL_IMPORT] {
                     if !compiler_imports.contains(name) { continue; }
                     let signature = if name == witchy_wir::canonical_safewir::COMPILER_EXPR_LEAF_IMPORT {
                         push_import_signature(vec![text, text, text], vec![ValueType::Size], Some(2))?
@@ -1374,7 +1375,8 @@ if capability_imports.contains("build_out_write_at") {
                         | witchy_wir::canonical_safewir::COMPILER_MATCH_ARM_IMPORT
                         | witchy_wir::canonical_safewir::COMPILER_BLOCK_IMPORT
                         | witchy_wir::canonical_safewir::COMPILER_FUNCTION_BLOCK_IMPORT
-                        | witchy_wir::canonical_safewir::COMPILER_INHERENT_IMPL_IMPORT) {
+                        | witchy_wir::canonical_safewir::COMPILER_INHERENT_IMPL_IMPORT
+                        | witchy_wir::canonical_safewir::COMPILER_TRAIT_IMPL_IMPORT) {
                         push_import_signature(vec![text, text], vec![ValueType::Size], Some(1))?
                     } else { push_import_signature(vec![text], Vec::new(), None)? };
                     catalog = catalog.with_compiler_syntax_import(name, signature, string_layout)
@@ -13621,7 +13623,8 @@ impl FunctionLowerer<'_> {
             || witchy_syntax::intrinsics::is_meta_match_arm_wire(name)
             || witchy_syntax::intrinsics::is_meta_block_wire(name)
             || witchy_syntax::intrinsics::is_meta_function_block_wire(name)
-            || witchy_syntax::intrinsics::is_meta_inherent_impl_wire(name) {
+            || witchy_syntax::intrinsics::is_meta_inherent_impl_wire(name)
+            || witchy_syntax::intrinsics::is_meta_impl_block_where_wire(name) {
             let wire = self.lower_string_argument(&args[0])?;
             let input = self.string_slice_argument(wire, layout)?;
             let handle = self.lower_bounded_host_result(import, vec![input])?;
@@ -20675,6 +20678,9 @@ fn compiler_service_import(name: &str) -> Option<(&'static str, usize)> {
     }
     if witchy_syntax::intrinsics::is_meta_inherent_impl_wire(name) {
         return Some((witchy_wir::canonical_safewir::COMPILER_INHERENT_IMPL_IMPORT, 1));
+    }
+    if witchy_syntax::intrinsics::is_meta_impl_block_where_wire(name) {
+        return Some((witchy_wir::canonical_safewir::COMPILER_TRAIT_IMPL_IMPORT, 1));
     }
     if witchy_syntax::intrinsics::is_meta_expr_leaf(name) {
         return Some((witchy_wir::canonical_safewir::COMPILER_EXPR_LEAF_IMPORT, 2));

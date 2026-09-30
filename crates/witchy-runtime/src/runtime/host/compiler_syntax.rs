@@ -18,6 +18,7 @@ pub(in super::super) fn register(linker: &mut Linker<VmState>) -> Result<()> {
     linker.func_wrap("witchy", "compiler_syntax_param_into", param_into)?;
     linker.func_wrap("witchy", "compiler_syntax_function_expr_into", function_expr_into)?;
     linker.func_wrap("witchy", "compiler_syntax_inherent_impl_into", inherent_impl_into)?;
+    linker.func_wrap("witchy", "compiler_syntax_trait_impl_into", trait_impl_into)?;
     linker.func_wrap("witchy", "compiler_syntax_expr_leaf_into", expression_leaf_into)?;
     linker.func_wrap("witchy", "compiler_syntax_type_expr_into", type_expr_into)?;
     linker.func_wrap("witchy", "compiler_syntax_type_named_into", type_named_into)?;
@@ -368,6 +369,77 @@ fn inherent_impl_into(mut caller: Caller<'_, VmState>, pointer: i32, length: i32
         origin: ImplOrigin::Source, trait_name: None, trait_args: Vec::new(),
         type_name: type_name.clone(), target_args: target_args.clone(),
         bounds: Vec::new(), methods,
+    });
+    let cost = measure_dynamic(&item).map_err(Error::msg)?;
+    let required = state.syntax.syntax_handle_byte_len("item").map_err(Error::msg)?;
+    if cost.nodes > state.nodes.remaining() || cost.bytes > state.syntax_bytes.remaining()
+        || required as u64 > state.bytes.remaining() {
+        return Err(Error::msg("compiler syntax arena budget exceeded"));
+    }
+    charge_fuel(&mut caller, cost.work().and_then(|work| work.checked_add(required as u64))
+        .ok_or_else(|| Error::msg("compiler syntax fuel overflow"))?)?;
+    if output.len() < required { return Ok(required as i32); }
+    let state = caller.data_mut().compiler_syntax.as_mut().expect("checked session");
+    state.nodes.charge(cost.nodes).map_err(|_| Error::msg("compiler syntax arena budget exceeded"))?;
+    state.syntax_bytes.charge(cost.bytes).map_err(|_| Error::msg("compiler syntax arena budget exceeded"))?;
+    state.bytes.charge(required as u64).map_err(|_| Error::msg("compiler syntax handle budget exceeded"))?;
+    let handle = state.syntax.next_syntax_handle("item").map_err(Error::msg)?;
+    state.syntax.insert_item(handle.clone(), item);
+    state.item_origins.insert(handle.clone(), origin.unwrap_or(ComptimeSyntaxOrigin {
+        definition_line: 1, hole_ancestry: Vec::new(),
+    }));
+    state.item_costs.insert(handle.clone(), cost);
+    memory.data_mut(&mut caller)[output.start..output.start + required].copy_from_slice(handle.as_bytes());
+    Ok(required as i32)
+}
+
+fn trait_impl_into(mut caller: Caller<'_, VmState>, pointer: i32, length: i32,
+    out: i32, capacity: i32) -> Result<i32> {
+    let memory = memory_of(&mut caller)?;
+    let input = range(memory.data_size(&caller), pointer, length)?;
+    let output = range(memory.data_size(&caller), out, capacity)?;
+    let state = caller.data().compiler_syntax.as_ref()
+        .ok_or_else(|| Error::msg("compiler syntax session unavailable"))?;
+    if input.len() as u64 > state.input_bytes {
+        return Err(Error::msg("compiler trait impl input budget exceeded"));
+    }
+    charge_fuel(&mut caller, input.len() as u64 + 1)?;
+    let spec = witchy_syntax::compiler_session::function_wire::decode_trait_impl(&memory.data(&caller)[input])
+        .map_err(Error::msg)?;
+    let state = caller.data().compiler_syntax.as_ref().expect("checked session");
+    for handle in [&spec.trait_type, &spec.target] {
+        if !state.type_costs.contains_key(handle) {
+            return Err(Error::msg("compiler trait impl requires current-session type syntax"));
+        }
+    }
+    let Some(Type::Named(trait_name, trait_args)) = state.syntax.types().get(&spec.trait_type) else {
+        return Err(Error::msg("compiler trait impl trait must name a type"));
+    };
+    let Some(Type::Named(type_name, target_args)) = state.syntax.types().get(&spec.target) else {
+        return Err(Error::msg("compiler trait impl target must name a type"));
+    };
+    let mut origin = state.syntax.type_origins().get(&spec.target).cloned();
+    let methods = spec.methods.iter().map(|handle| {
+        if !state.item_costs.contains_key(handle) {
+            return Err(Error::msg("compiler trait impl requires current-session function items"));
+        }
+        if origin.is_none() { origin = state.item_origins.get(handle).cloned(); }
+        match state.syntax.items().get(handle) {
+            Some(Item::Function(function)) if !function.is_async && !function.is_gen => Ok(function.clone()),
+            Some(Item::Function(_)) => Err(Error::msg("compiler trait impl cannot attach async or generator methods")),
+            _ => Err(Error::msg("compiler trait impl method is not a function item")),
+        }
+    }).collect::<Result<Vec<_>>>()?;
+    let mut seen = std::collections::BTreeSet::new();
+    let bounds = spec.bounds.into_iter().map(|(parameter, trait_name)| {
+        if !seen.insert((parameter.clone(), trait_name.clone())) {
+            return Err(Error::msg("duplicate compiler trait impl bound"));
+        }
+        Ok((parameter, trait_name, Vec::new()))
+    }).collect::<Result<Vec<_>>>()?;
+    let item = Item::Impl(ImplDef {
+        origin: ImplOrigin::CompilerGenerated, trait_name: Some(trait_name.clone()), trait_args: trait_args.clone(),
+        type_name: type_name.clone(), target_args: target_args.clone(), bounds, methods,
     });
     let cost = measure_dynamic(&item).map_err(Error::msg)?;
     let required = state.syntax.syntax_handle_byte_len("item").map_err(Error::msg)?;
@@ -830,7 +902,9 @@ fn expression_leaf_into(mut caller: Caller<'_, VmState>, kind_ptr: i32, kind_len
             let mut chars = payload.chars();
             if !chars.next().is_some_and(|ch| ch.is_ascii_alphabetic() || ch == '_')
                 || !chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
-                || payload == "_" || payload.contains("__") {
+                || payload == "_"
+                || (payload.contains("__") && !caller.data().compiler_syntax.as_ref()
+                    .expect("checked session").issued.iter().any(|issued| issued == payload)) {
                 return Err(Error::msg("meta expression name is not a valid identifier"));
             }
             if kind == "call-site-name" {

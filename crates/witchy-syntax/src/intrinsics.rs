@@ -130,6 +130,7 @@ pub enum IntrinsicId {
     MetaInherentImpl,
     MetaInherentImplWire,
     MetaImplBlockWhere,
+    MetaImplBlockWhereWire,
     CompilerFootprint,
     CompilerDiff,
     CompilerDoc,
@@ -739,6 +740,7 @@ pub(crate) const META_IMPL_BLOCK: &str = "__meta_impl_block";
 pub(crate) const META_INHERENT_IMPL: &str = "__meta_inherent_impl";
 pub(crate) const META_INHERENT_IMPL_WIRE: &str = "__meta_inherent_impl_wire";
 pub(crate) const META_IMPL_BLOCK_WHERE: &str = "__meta_impl_block_where";
+pub(crate) const META_IMPL_BLOCK_WHERE_WIRE: &str = "__meta_impl_block_where_wire";
 
 pub const COMPILER_FOOTPRINT: &str = "compiler.footprint";
 pub const COMPILER_DIFF: &str = "compiler.diff";
@@ -2073,7 +2075,7 @@ pub const ALL: &[IntrinsicSpec] = &[
         signature: IntrinsicSignature::DeclaredInSource,
         effect: IntrinsicEffect::Toolchain,
         capability_effect: CapabilityEffect::None,
-        lowering: IntrinsicLowering::FrontendGenerated,
+        lowering: IntrinsicLowering::SourceFunction,
         runtime: IntrinsicRuntime::InterpreterBuiltin,
         wir_helpers: NO_HELPERS,
         dynamic_wir_helpers: false,
@@ -2670,6 +2672,21 @@ pub const ALL: &[IntrinsicSpec] = &[
         id: IntrinsicId::MetaImplBlockWhere,
         name: META_IMPL_BLOCK_WHERE,
         arity: 4,
+        signature: IntrinsicSignature::DeclaredInSource,
+        effect: IntrinsicEffect::Toolchain,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::SourceFunction,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: NO_HELPERS,
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: "meta.impl_block_where",
+        private_callers: META_BRIDGE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::MetaImplBlockWhereWire,
+        name: META_IMPL_BLOCK_WHERE_WIRE,
+        arity: 1,
         signature: IntrinsicSignature::DeclaredInSource,
         effect: IntrinsicEffect::Toolchain,
         capability_effect: CapabilityEffect::None,
@@ -4505,6 +4522,10 @@ pub fn is_meta_inherent_impl_wire(name: &str) -> bool {
 
 pub fn is_meta_impl_block_where(name: &str) -> bool {
     lookup(name).is_some_and(|spec| spec.id == IntrinsicId::MetaImplBlockWhere)
+}
+
+pub fn is_meta_impl_block_where_wire(name: &str) -> bool {
+    lookup(name).is_some_and(|spec| spec.id == IntrinsicId::MetaImplBlockWhereWire)
 }
 
 pub(crate) fn private_intrinsic_callers(bare_name: &str) -> Option<&'static [&'static str]> {
