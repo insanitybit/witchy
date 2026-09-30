@@ -447,6 +447,7 @@ pub const COMPILER_STD_NAMES: &[&str] = &[
     "task.yield_now",
     "vm.par_map",
     "vm.par_map__",
+    "vm.par_map__Int__Int",
     "vm.serve",
     "vm.with_dir",
 ];
