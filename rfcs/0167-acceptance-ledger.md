@@ -59,9 +59,11 @@ open after this milestone.
 Row O requires installed `check`, `fmt`, compile, and run on representative
 canonical programs plus the standard-library pieces those workflows use. A
 complete book, example, fixture, and external-consumer migration is not a
-milestone gate. Row Q remains on the critical path: move remaining compile-time,
-build, linker, and tooling services off the source tree walker and retire it.
-Do not add new dependencies on that walker while removing it.
+milestone gate. The normal-mode part of row Q requires production compile-time,
+build, linker, and tooling services to have no source-tree-walker dependency.
+Full deletion of the frozen walker from historical test/support code remains
+the wider row Q end state after this milestone; those tests do not define new
+normal-mode semantics. Do not add new dependencies on that walker.
 
 The normal-mode row O CLI witness is
 `rfc0167_installed_workflow::installed_normal_check_fmt_compile_and_run`.
@@ -111,14 +113,18 @@ The SEC-037 minigrep retained-line case keeps its independent two-line
 expectation on that same production path; both historical interpreter calls
 are retired. Its optimized normal-mode run does not count as opt-mode evidence.
 
-The normal-mode compiler-tooling milestone is still open. Rows M and O have
-the bounded witnesses above; row N now has additional view, task, resource,
-capability, and diagnostic evidence below, but its representative acceptance
-audit has not closed. Production compiler services no longer have a normal
-Cargo dependency on the source walker; row Q remains partial while the walker
-is still a workspace member and a test/support dependency. Typed quotation
-with expression and item holes is the remaining integrated generation boundary
-on the current critical path. These findings do not close the full RFC.
+At merged `f702556d3`, the scoped canonical normal-mode compiler-tooling
+milestone has evidence for each of its four gates:
+
+| Gate | Normal-mode evidence | Remaining boundary |
+|---|---|---|
+| M | Checked `type_info(User)` Builder and production derives emit typed items; compiler-issued expression and item quote holes generate the independently expected `12` on admitted Wasm with zero leaks. Two local tags execute in source order and produce `79` with zero leaks; forged syntax and malformed later tags refuse. | Dynamic quote-hole plans, imported and generated tag invocations, other unimplemented constructors, and opt generation remain outside this bounded route. |
+| N | Retained aggregate views, `var` replacement, data-only Task replay (`22`), `must Ticket` disposal around `await` (`79`), Dir capability cases, runtime diagnostics, and direct scalar worker execution have admitted-Wasm behavior and zero-leak witnesses. Region escape, unauthenticated carriers, replayable unique capture, call-scoped Task capture, and a live `must` obligation without cancellation disposition refuse at checked boundaries. | This is representative acceptance, not a universal carrier or memory-safety proof; resource-bearing spawned-child tasks await a lifecycle API. |
+| O | Installed `check`, `fmt`, compile, and run pass the exact normal CLI witness above. | Wider book, example, and external-consumer migration is later work. |
+| Q, production | `cargo tree -p witchy -e normal` has no `witchy-interp` edge; remaining `src/` walker imports are test-gated. Production comptime, build, linker, and tooling services use checked source and admitted Wasm or runtime-neutral code. | The frozen walker is still a workspace member and dev dependency for historical tests. Full test/support deletion remains the wider row Q end state. |
+
+These bounded gates close the normal-mode compiler-tooling milestone, not the
+full RFC or its deferred opt and cross-mode contract.
 
 Merged normal-mode row N witnesses retain old `Result(List(Int), String)` and
 `&(List(String), Result(Int, String))` roots through owner replacement, including
@@ -129,9 +135,13 @@ are 43 and 2713, with zero owned-heap leaks. Region-born roots and a nested
 across two awaits, with zero leaks; capture of a unique owner into a replayable
 recipe refuses. `must Ticket` disposition before and after `await` executes 79
 with zero leaks, while a live obligation without a cancellation disposition
-refuses. The admitted same-VM `vm.par_map` fallback yields `[25,9,64,1]` with
-zero leaks and no worker imports; this does not establish the separate RFC-0129
-worker-host boundary.
+refuses. A bare scalar `vm.par_map` now imports exactly the authenticated
+`vm_par_map_admitted_run/write` pair, launches fresh zero-grant worker VMs,
+returns `[25, 9, 64, 1]`, and reports zero leaks. A capability-capturing
+callback remains in the parent VM with zero worker imports and launches;
+its ordered output and zero-leak audit pass. The browser host exposes the
+import pair but refuses execution until it can authenticate admitted worker
+descriptors there.
 
 The RFC-0080 owned-expression and fresh-identifier tests now authenticate
 their comptime expansion through the checked source bundle and assert their
