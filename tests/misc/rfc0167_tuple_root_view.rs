@@ -59,3 +59,20 @@ fn main() -> Int:
         .expect("region-born tuple root cannot escape");
     assert!(error.contains("region-born"), "region refusal names its root: {error}");
 }
+
+#[test]
+fn a_reassigned_region_alias_cannot_certify_a_parent_root() {
+    let source = r#"
+fn main() -> Int:
+    let parent = (1, "parent")
+    let escaped = region -> &(Int, String):
+        let local = (2, "local")
+        var alias = &parent
+        alias = &local
+        alias
+    (*escaped).0
+"#;
+    let error = witchy::resolve_std_only_checked(source)
+        .expect_err("a mutable alias cannot certify the root of a region result");
+    assert!(error.to_string().contains("region-born view rooted in `alias`"), "{error}");
+}

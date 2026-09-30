@@ -1310,12 +1310,27 @@ pub(super) fn region_reference_root(block: &Block) -> Option<String> {
     let mut aliases = HashMap::new();
     let (tail, leading) = block.stmts.split_last()?;
     for statement in leading {
-        if let Stmt::Let { name, value, .. } = statement
-            && let Some(owner_root) = root(value, &aliases)
-            && matches!(value, Expr::Unary { op: UnOp::Borrow | UnOp::BorrowMut, .. }
-                | Expr::Var(_) | Expr::As { .. })
-        {
-            aliases.insert(name.clone(), owner_root);
+        match statement {
+            // Only immutable bindings preserve their initial root until the
+            // region exits. A mutable alias may be rebound to a region-born
+            // owner after this statement.
+            Stmt::Let { name, mutable: false, value, .. } => {
+                let owner_root = root(value, &aliases).filter(|_| {
+                    matches!(value, Expr::Unary { op: UnOp::Borrow | UnOp::BorrowMut, .. }
+                        | Expr::Var(_) | Expr::As { .. })
+                });
+                aliases.remove(name);
+                if let Some(owner_root) = owner_root {
+                    aliases.insert(name.clone(), owner_root);
+                }
+            }
+            Stmt::Let { name, .. } | Stmt::Assign { name, .. } => {
+                aliases.remove(name);
+            }
+            // A pattern may shadow an alias; without a binding census its
+            // provenance cannot be carried through the rest of the block.
+            Stmt::LetPattern { .. } => aliases.clear(),
+            _ => {}
         }
     }
     match tail {
