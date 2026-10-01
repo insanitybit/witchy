@@ -70,7 +70,7 @@ impl FunctionLowerer<'_> {
         Ok(destination)
     }
 
-    fn lower_dict_clone_exact(&mut self, source: ValueId) -> Result<ValueId, CanonicalLoweringError> {
+    pub(super) fn lower_dict_clone_exact(&mut self, source: ValueId) -> Result<ValueId, CanonicalLoweringError> {
         let capacity = self.fresh(ValueType::Size)?;
         self.push_operation(Operation::Dictionary(DictionaryOperation::ReadHeader {
             destination: capacity,

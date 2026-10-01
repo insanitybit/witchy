@@ -6615,6 +6615,26 @@ impl FunctionLowerer<'_> {
         }
     }
 
+    fn mark_dictionary_loop_lanes(
+        &mut self,
+        block: BlockId,
+        names: &[String],
+        outer: &HashMap<String, ValueId>,
+    ) {
+        for (index, name) in names.iter().enumerate() {
+            let object = outer[name];
+            let ValueType::Ref(layout) = self.values[&object] else { continue };
+            if !self.physical_descriptor(layout).is_some_and(|descriptor| {
+                matches!(descriptor.kind(), LayoutKind::CanonicalDictionary { .. })
+            }) {
+                continue;
+            }
+            self.blocks[block.get() as usize].parameters[index].ownership = Some(
+                if self.known_shared_value(object) { Ownership::Shared } else { Ownership::Unique },
+            );
+        }
+    }
+
     fn drop_bindings_except(&mut self, names: &[String]) {
         self.bindings.retain(|name, _| names.iter().any(|outer| outer == name));
     }
@@ -8948,6 +8968,7 @@ impl FunctionLowerer<'_> {
         self.mark_tracked_phi_parameters(header, &names, &list_names, &outer, false, &rebound);
         for block in [header, body_id, exit] {
             self.mark_affine_gc_loop_lanes(block, &names, &outer);
+            self.mark_dictionary_loop_lanes(block, &names, &outer);
         }
         if block_breaks_loop(body) {
             self.give_exit_header_ownership(header, exit);
@@ -11351,7 +11372,15 @@ impl FunctionLowerer<'_> {
                         // after it); the caller's binding is rebound to the
                         // write-back result.
                         let ty = self.expression_type(argument)?;
-                        let value = if !matches!(argument, Expr::Var(_))
+                        let value = if contract.ownership == ParameterOwnership::UniqueWriteBack
+                            && matches!(ty.unqualified(), Type::Named(name, args) if name == "Dict" && args.len() == 2)
+                            && self.is_table_dictionary(&ty)?
+                            && (!matches!(argument, Expr::Var(_))
+                                || self.known_shared_value(value)
+                                || self.aliased_binding(name, value))
+                        {
+                            self.lower_dict_clone_exact(value)?
+                        } else if !matches!(argument, Expr::Var(_))
                             || self.known_shared_value(value) || self.aliased_binding(name, value)
                         {
                             self.owned_for_storage(value, &ty)?
