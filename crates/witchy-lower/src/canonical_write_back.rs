@@ -1628,7 +1628,7 @@ impl FunctionLowerer<'_> {
                     let [key_type, value_type] = arguments.as_slice() else {
                         return Err(CanonicalLoweringError::UnsupportedExpression("dict table type"));
                     };
-                    let (found, bucket, _) = self.lower_dict_find_table(value, *key, key_type)?;
+                    let (found, bucket, _, _) = self.lower_dict_find_table(value, *key, key_type)?;
                     self.push_trap_unless(found)?;
                     return self.lower_dict_table_value_at(value, bucket, value_type);
                 }

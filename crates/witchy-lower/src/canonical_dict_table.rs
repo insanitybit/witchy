@@ -391,13 +391,13 @@ impl FunctionLowerer<'_> {
             ("dict.contains_key", [operand, key]) => {
                 let (dict, key_type, _) = self.lower_dict_table_operand(operand)?;
                 let key = self.lower_expr(key)?;
-                let (found, _, _) = self.lower_dict_find_table(dict, key, &key_type)?;
+                let (found, _, _, _) = self.lower_dict_find_table(dict, key, &key_type)?;
                 Ok(found)
             }
             ("dict.at", [operand, key]) => {
                 let (dict, key_type, value_type) = self.lower_dict_table_operand(operand)?;
                 let key = self.lower_expr(key)?;
-                let (found, bucket, _) = self.lower_dict_find_table(dict, key, &key_type)?;
+                let (found, bucket, _, _) = self.lower_dict_find_table(dict, key, &key_type)?;
                 self.push_trap_unless(found)?;
                 self.lower_dict_table_value_at(dict, bucket, &value_type)
             }
@@ -405,7 +405,7 @@ impl FunctionLowerer<'_> {
                 let (dict, key_type, value_type) = self.lower_dict_table_operand(operand)?;
                 let key = self.lower_expr(key)?;
                 let default = self.lower_expr(default)?;
-                let (found, bucket, _) = self.lower_dict_find_table(dict, key, &key_type)?;
+                let (found, bucket, _, _) = self.lower_dict_find_table(dict, key, &key_type)?;
                 let facts = self.snapshot_facts();
                 let bindings = self.bindings.clone();
                 let hit = self.new_block(&[])?;
@@ -504,7 +504,7 @@ impl FunctionLowerer<'_> {
         }
     }
 
-    /// Return `(found, bucket, first_tombstone)` for a dictionary query.
+    /// Return `(found, bucket, first_tombstone, hash)` for a dictionary query.
     /// A miss's `bucket` is the first empty slot or `capacity` if none exists.
     /// `first_tombstone` is `capacity` when none precedes the miss. Insertion
     /// reuses a tombstone only after the full probe has ruled out an equal key.
@@ -513,7 +513,7 @@ impl FunctionLowerer<'_> {
         dict: ValueId,
         key: ValueId,
         key_type: &Type,
-    ) -> Result<(ValueId, ValueId, ValueId), CanonicalLoweringError> {
+    ) -> Result<(ValueId, ValueId, ValueId, ValueId), CanonicalLoweringError> {
         let capacity = self.fresh(ValueType::Size)?;
         self.push_operation(Operation::Dictionary(DictionaryOperation::ReadHeader {
             destination: capacity,
@@ -706,7 +706,7 @@ impl FunctionLowerer<'_> {
 
         self.current = exit;
         let result = self.block_parameter_values(exit);
-        Ok((result[0], result[1], result[2]))
+        Ok((result[0], result[1], result[2], hash))
     }
 
     /// After a successful miss and a rehash, find storage for the new key
@@ -715,8 +715,7 @@ impl FunctionLowerer<'_> {
     fn lower_dict_vacant_bucket(
         &mut self,
         dict: ValueId,
-        key: ValueId,
-        key_type: &Type,
+        hash: ValueId,
     ) -> Result<ValueId, CanonicalLoweringError> {
         let capacity = self.fresh(ValueType::Size)?;
         self.push_operation(Operation::Dictionary(DictionaryOperation::ReadHeader {
@@ -724,7 +723,6 @@ impl FunctionLowerer<'_> {
             dict,
             field: DictionaryHeaderField::Capacity,
         }));
-        let hash = self.lower_dict_key_hash(key, key_type)?;
         let mask = self.push_const_int(0xffff_ffff)?;
         let low = self.push_arithmetic(
             ValueType::Int,
@@ -851,9 +849,9 @@ impl FunctionLowerer<'_> {
         key: ValueId,
         value: ValueId,
         extract: bool,
-        lookup: (ValueId, ValueId, ValueId),
+        lookup: (ValueId, ValueId, ValueId, ValueId),
     ) -> Result<(ValueId, Option<ValueId>), CanonicalLoweringError> {
-        let (found, empty, tombstone) = lookup;
+        let (found, empty, tombstone, hash) = lookup;
         let option_type = Type::Named("Option".into(), vec![value_type.clone()]);
         let option_shape = extract.then(|| scalar_aggregate_shape(&option_type, self.definitions)).flatten();
         let mut join_shapes = vec![(self.values[&dict], Some(Ownership::Unique))];
@@ -953,7 +951,7 @@ impl FunctionLowerer<'_> {
             capacity: selected_capacity,
             transfer: DictionaryRehashTransfer::MoveUnique,
         }));
-        let bucket = self.lower_dict_vacant_bucket(grown, key, key_type)?;
+        let bucket = self.lower_dict_vacant_bucket(grown, hash)?;
         self.finish_current(Terminator::Branch { target: ready, arguments: vec![grown, bucket] })?;
         self.current = room;
         self.restore_snapshot(miss_facts.clone());
@@ -962,7 +960,6 @@ impl FunctionLowerer<'_> {
         self.restore_facts(miss_facts, ready);
         self.current = ready;
         let ready_values = self.block_parameter_values(ready);
-        let hash = self.lower_dict_key_hash(key, key_type)?;
         let (stored_key, key_transfer) = self.lower_dict_store_operand(key, key_type)?;
         let (stored_value, value_transfer) = self.lower_dict_store_operand(value, value_type)?;
         self.push_operation(Operation::Dictionary(DictionaryOperation::InsertSlot {
@@ -999,7 +996,7 @@ impl FunctionLowerer<'_> {
         } else {
             dict
         };
-        let (found, bucket, _) = self.lower_dict_find_table(dict, key, key_type)?;
+        let (found, bucket, _, _) = self.lower_dict_find_table(dict, key, key_type)?;
         let option_type = Type::Named("Option".into(), vec![value_type.clone()]);
         let option_shape = extract.then(|| scalar_aggregate_shape(&option_type, self.definitions)).flatten();
         let mut join_shapes = vec![(self.values[&dict], Some(Ownership::Unique))];
