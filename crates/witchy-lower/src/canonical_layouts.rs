@@ -1215,7 +1215,9 @@ fn intern_v1_layout_fields(
                     Some(interner.intern_scalar(scalar)
                         .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?)
                 } else { None }
-            } else if is_byte_buffer_type(child) || matches!(storage, StoragePlan::Owned(_)) {
+            } else if is_byte_buffer_type(child) || matches!(storage,
+                StoragePlan::Owned(_)
+                | StoragePlan::RootedView(witchy_canonical_source::rooted_view::RootedViewStorage::RetainedRoot(_))) {
                 let pointee = intern_v1_layout_checked(interner, child, definitions, recursive_types, active, closure_layouts)?;
                 Some(interner.intern_runtime_pointer_value_slot(pointee, PointerSlot::Owned)
                     .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?)

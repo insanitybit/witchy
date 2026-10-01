@@ -18,8 +18,10 @@ impl FunctionLowerer<'_> {
         let ValueType::Ref(layout) = self.field_value_type(source)? else {
             return Ok(false);
         };
+        let physical = self.layouts.resolve_nominal(layout)
+            .map_err(|_| CanonicalLoweringError::MissingLayout(source.clone()))?;
         Ok(matches!(
-            self.layouts.get(layout).map(|descriptor| descriptor.kind()),
+            self.layouts.get(physical).map(|descriptor| descriptor.kind()),
             Some(LayoutKind::CanonicalDictionary { .. })
         ))
     }

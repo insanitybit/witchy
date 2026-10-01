@@ -8732,6 +8732,8 @@ impl FunctionLowerer<'_> {
         self.mark_tracked_phi_parameters(header, &names, &list_names, &outer, false, &rebound);
         self.mark_affine_gc_loop_lanes(header, &names, &outer);
         self.mark_affine_gc_loop_lanes(exit, &names, &outer);
+        self.mark_dictionary_loop_lanes(header, &names, &outer);
+        self.mark_dictionary_loop_lanes(exit, &names, &outer);
         if block_breaks_loop(body) {
             self.give_exit_header_ownership(header, exit);
         }
@@ -8770,6 +8772,7 @@ impl FunctionLowerer<'_> {
         }
         let body_id = self.new_block(&body_types)?;
         self.mark_affine_gc_loop_lanes(body_id, &names, &outer);
+        self.mark_dictionary_loop_lanes(body_id, &names, &outer);
         if lane_position.is_none()
             && StoragePlan::classify(&scrutinee_type, self.definitions, |_| Some(0))
                 .requires_affine_owner_token()
@@ -9212,6 +9215,7 @@ impl FunctionLowerer<'_> {
         self.mark_tracked_phi_parameters(header, &names, &list_names, &outer, false, &rebound);
         for block in [header, body_id, exit] {
             self.mark_affine_gc_loop_lanes(block, &names, &outer);
+            self.mark_dictionary_loop_lanes(block, &names, &outer);
         }
         if block_breaks_loop(body) {
             self.give_exit_header_ownership(header, exit);
@@ -9478,6 +9482,7 @@ impl FunctionLowerer<'_> {
         self.mark_tracked_phi_parameters(header, &names, &list_names, &outer, true, &rebound);
         for block in [header, body_id, exit] {
             self.mark_affine_gc_loop_lanes(block, &names, &outer);
+            self.mark_dictionary_loop_lanes(block, &names, &outer);
         }
         if block_breaks_loop(body) {
             self.give_exit_header_ownership(header, exit);
@@ -20016,7 +20021,8 @@ fn source_value_type(
         && name == "Dict" && arguments.len() == 2
     {
         for root in layout_bundle.roots() {
-            let Some(descriptor) = layouts.get(*root) else { continue };
+            let Ok(physical) = layouts.resolve_nominal(*root) else { continue };
+            let Some(descriptor) = layouts.get(physical) else { continue };
             let LayoutKind::CanonicalDictionary { key, value, .. } = descriptor.kind() else { continue };
             if dictionary_table_slot_matches(&arguments[0], *key, layout_bundle, layouts, closure_layouts, definitions)
                 && dictionary_table_slot_matches(&arguments[1], *value, layout_bundle, layouts, closure_layouts, definitions)
