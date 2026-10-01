@@ -22,74 +22,29 @@ impl FunctionLowerer<'_> {
             return self.push_const_int(0);
         }
         match name.as_str() {
-            "Int" => self.hash_int(key),
+            "Int" | "Duration" => self.hash_int(key),
             "String" => self.hash_string(key),
             _ => self.push_const_int(0),
         }
     }
 
     fn hash_int(&mut self, key: ValueId) -> Result<ValueId, CanonicalLoweringError> {
-        // A reversible avalanche: equal inputs always have equal hashes, and
-        // nearby integer keys do not cluster in adjacent initial buckets.
-        let shift_30 = self.push_const_int(30)?;
-        let shift_27 = self.push_const_int(27)?;
-        let shift_31 = self.push_const_int(31)?;
-        let first = self.push_arithmetic(
-            ValueType::Int,
-            ArithmeticOperator::ShiftRightUnsigned,
-            key,
-            shift_30,
-            OverflowBehavior::Wrap,
-        )?;
-        let first = self.push_arithmetic(
-            ValueType::Int,
-            ArithmeticOperator::BitXor,
-            key,
-            first,
-            OverflowBehavior::Wrap,
-        )?;
-        let factor_1 = self.push_const_int(-4658895280553007687)?;
-        let first = self.push_arithmetic(
+        // Multiplicative high-bit mixing distributes adjacent and strided
+        // integers across power-of-two bucket counts with one multiply.
+        let factor = self.push_const_int(-7046029254386353131)?;
+        let mixed = self.push_arithmetic(
             ValueType::Int,
             ArithmeticOperator::Multiply,
-            first,
-            factor_1,
+            key,
+            factor,
             OverflowBehavior::Wrap,
         )?;
-        let second = self.push_arithmetic(
-            ValueType::Int,
-            ArithmeticOperator::ShiftRightUnsigned,
-            first,
-            shift_27,
-            OverflowBehavior::Wrap,
-        )?;
-        let second = self.push_arithmetic(
-            ValueType::Int,
-            ArithmeticOperator::BitXor,
-            first,
-            second,
-            OverflowBehavior::Wrap,
-        )?;
-        let factor_2 = self.push_const_int(-7723592293110705685)?;
-        let second = self.push_arithmetic(
-            ValueType::Int,
-            ArithmeticOperator::Multiply,
-            second,
-            factor_2,
-            OverflowBehavior::Wrap,
-        )?;
-        let third = self.push_arithmetic(
-            ValueType::Int,
-            ArithmeticOperator::ShiftRightUnsigned,
-            second,
-            shift_31,
-            OverflowBehavior::Wrap,
-        )?;
+        let shift = self.push_const_int(32)?;
         self.push_arithmetic(
             ValueType::Int,
-            ArithmeticOperator::BitXor,
-            second,
-            third,
+            ArithmeticOperator::ShiftRightUnsigned,
+            mixed,
+            shift,
             OverflowBehavior::Wrap,
         )
     }
