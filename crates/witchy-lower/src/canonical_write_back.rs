@@ -1563,7 +1563,8 @@ impl FunctionLowerer<'_> {
     fn prepare_index_projection(&mut self, base: &Expr, index: &Expr, expression: &Expr) -> Result<PreparedProjection, CanonicalLoweringError> {
         let source = self.expression_type(base)?;
         if matches!(source.unqualified(), Type::Named(name, arguments) if name == "Dict" && arguments.len() == 2) {
-            let (_, key_type, _) = self.dictionary_parts(&source)?;
+            let Type::Named(_, arguments) = source.unqualified() else { unreachable!() };
+            let key_type = arguments[0].clone();
             let key = self.lower_expr(index)?;
             if self.values[&key] != self.field_value_type(&key_type)? {
                 return Err(CanonicalLoweringError::UnsupportedExpression("dictionary place key type"));
@@ -1620,6 +1621,17 @@ impl FunctionLowerer<'_> {
     fn read_write_back_projection(&mut self, value: ValueId, projection: &PreparedProjection) -> Result<ValueId, CanonicalLoweringError> {
         match projection {
             PreparedProjection::Dictionary { source, key } => {
+                if self.is_table_dictionary(source)? {
+                    let Type::Named(_, arguments) = source.unqualified() else {
+                        return Err(CanonicalLoweringError::UnsupportedExpression("dict table type"));
+                    };
+                    let [key_type, value_type] = arguments.as_slice() else {
+                        return Err(CanonicalLoweringError::UnsupportedExpression("dict table type"));
+                    };
+                    let (found, bucket, _) = self.lower_dict_find_table(value, *key, key_type)?;
+                    self.push_trap_unless(found)?;
+                    return self.lower_dict_table_value_at(value, bucket, value_type);
+                }
                 let (shape, key_type, value_type) = self.dictionary_parts(source)?;
                 let keys = self.dict_list(value, &shape, 0)?;
                 let (found, index) = self.lower_dict_find(keys, *key, &key_type)?;
@@ -1750,6 +1762,18 @@ impl FunctionLowerer<'_> {
         };
         match projection {
             PreparedProjection::Dictionary { source, key } => {
+                if self.is_table_dictionary(source)? {
+                    let Type::Named(_, arguments) = source.unqualified() else {
+                        return Err(CanonicalLoweringError::UnsupportedExpression("dict table type"));
+                    };
+                    let [key_type, value_type] = arguments.as_slice() else {
+                        return Err(CanonicalLoweringError::UnsupportedExpression("dict table type"));
+                    };
+                    let (rebuilt, _) = self.lower_dict_insert_table(
+                        current, key_type, value_type, *key, replacement, false,
+                    )?;
+                    return Ok(rebuilt);
+                }
                 let (shape, key_type, value_type) = self.dictionary_parts(source)?;
                 let (rebuilt, _) = self.lower_dict_insert(current, &shape, &key_type, &value_type, *key, replacement, false)?;
                 Ok(rebuilt)

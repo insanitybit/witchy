@@ -1,0 +1,29 @@
+// Distinct dictionary workloads for the generic guest table. Each checksum
+// checks observable behavior as well as timing the operation family.
+fn main(let console: Console):
+    var hits: Dict(Int, Int) = dict.with_capacity(1024)
+    var i = 0
+    while i < 100000:
+        let key = i % 1000
+        let _ = dict.insert(hits, key, dict.get_or(hits, key, 0) + 1)
+        i = i + 1
+    console.print("hit=${hits.length()}:${dict.get_or(hits, 0, 0)}")
+
+    var growth: Dict(Int, Int) = dict.new()
+    i = 0
+    while i < 5000:
+        let _ = dict.insert(growth, i, i + 1)
+        i = i + 1
+    console.print("growth=${growth.length()}:${dict.get_or(growth, 4999, 0)}")
+
+    var strings: Dict(String, Int) = dict.new()
+    i = 0
+    while i < 10000:
+        let key = "key-${i % 100}"
+        let _ = dict.insert(strings, key, dict.get_or(strings, key, 0) + 1)
+        i = i + 1
+    console.print("string=${strings.length()}:${dict.get_or(strings, "key-0", 0)}")
+
+    let snapshot = strings
+    let _ = dict.insert(strings, "key-0", 999)
+    console.print("snapshot=${dict.get_or(snapshot, "key-0", 0)}:${dict.get_or(strings, "key-0", 0)}")

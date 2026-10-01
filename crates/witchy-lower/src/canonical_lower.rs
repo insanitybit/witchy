@@ -49,6 +49,10 @@ mod net;
 
 #[path = "canonical_list_update.rs"]
 mod list_update;
+#[path = "canonical_dict_hash.rs"]
+mod dict_hash;
+#[path = "canonical_dict_table.rs"]
+mod dict_table;
 
 #[path = "canonical_list_pop.rs"]
 mod list_pop;
@@ -16537,6 +16541,15 @@ impl FunctionLowerer<'_> {
     /// source comparator. Scalar writes replace slots directly; reference
     /// writes rebuild the owned prefix without overwriting a live owned slot.
     fn lower_dict_call(&mut self, expression: &Expr, name: &str, args: &[Expr]) -> Result<ValueId, CanonicalLoweringError> {
+        let dict_type = if matches!(name, "dict.new" | "dict.with_capacity") {
+            self.expression_type(expression)?
+        } else {
+            let operand = args.first().ok_or(CanonicalLoweringError::UnsupportedExpression("dict operand"))?;
+            self.expression_type(operand)?
+        };
+        if self.is_table_dictionary(&dict_type)? {
+            return self.lower_dict_table_call(expression, name, args);
+        }
         match name {
             "dict.new" | "dict.with_capacity" => {
                 match (name, args) {

@@ -1,0 +1,1037 @@
+//! Generic dictionary probing over the authenticated guest table.
+//!
+//! Bucket metadata and typed key loads go through checked dictionary
+//! operations. Equality remains authoritative: hashes select a probe path,
+//! but a full row matches only after the key comparator succeeds.
+
+use super::*;
+use witchy_wir::canonical_safewir::dictionary::{
+    DictionaryHeaderField, DictionaryOperation, DictionaryRehashTransfer, DictionarySlotField,
+};
+use witchy_wir::layout::LayoutKind;
+
+impl FunctionLowerer<'_> {
+    pub(super) fn is_table_dictionary(
+        &mut self,
+        source: &Type,
+    ) -> Result<bool, CanonicalLoweringError> {
+        let ValueType::Ref(layout) = self.field_value_type(source)? else {
+            return Ok(false);
+        };
+        Ok(matches!(
+            self.layouts.get(layout).map(|descriptor| descriptor.kind()),
+            Some(LayoutKind::CanonicalDictionary { .. })
+        ))
+    }
+
+    fn lower_dict_table_operand(
+        &mut self,
+        operand: &Expr,
+    ) -> Result<(ValueId, Type, Type), CanonicalLoweringError> {
+        let ty = self.expression_type(operand)?;
+        let Type::Named(name, arguments) = ty.unqualified() else {
+            return Err(CanonicalLoweringError::UnsupportedExpression("dict type"));
+        };
+        if name != "Dict" || arguments.len() != 2 || !self.is_table_dictionary(&ty)? {
+            return Err(CanonicalLoweringError::UnsupportedExpression(
+                "dict table type",
+            ));
+        }
+        let key_type = arguments[0].clone();
+        let value_type = arguments[1].clone();
+        let dict = self.lower_expr(operand)?;
+        Ok((dict, key_type, value_type))
+    }
+
+    /// Construct a private table. `Initialize` authenticates the specialized
+    /// layout and initializes every bucket state before publishing the root.
+    pub(super) fn lower_dict_table_new(
+        &mut self,
+        dict_type: &Type,
+        capacity: ValueId,
+    ) -> Result<ValueId, CanonicalLoweringError> {
+        let value_type = self.field_value_type(dict_type)?;
+        let ValueType::Ref(layout) = value_type else {
+            return Err(CanonicalLoweringError::UnsupportedExpression(
+                "dictionary table constructor layout",
+            ));
+        };
+        if self.values[&capacity] != ValueType::Size {
+            return Err(CanonicalLoweringError::UnsupportedExpression(
+                "dictionary table constructor capacity",
+            ));
+        }
+        let destination = self.fresh(value_type)?;
+        self.push_operation(Operation::Dictionary(DictionaryOperation::Initialize {
+            destination,
+            layout,
+            capacity,
+        }));
+        Ok(destination)
+    }
+
+    fn lower_dict_clone_exact(&mut self, source: ValueId) -> Result<ValueId, CanonicalLoweringError> {
+        let capacity = self.fresh(ValueType::Size)?;
+        self.push_operation(Operation::Dictionary(DictionaryOperation::ReadHeader {
+            destination: capacity,
+            dict: source,
+            field: DictionaryHeaderField::Capacity,
+        }));
+        let destination = self.fresh(self.values[&source])?;
+        self.push_operation(Operation::Dictionary(DictionaryOperation::CloneExact {
+            destination,
+            source,
+            capacity,
+        }));
+        Ok(destination)
+    }
+
+    fn round_dict_table_capacity(
+        &mut self,
+        requested: ValueId,
+    ) -> Result<ValueId, CanonicalLoweringError> {
+        let minimum = self.push_const_size(8)?;
+        let two = self.push_const_size(2)?;
+        let header = self.new_block(&[ValueType::Size])?;
+        let grow = self.new_block(&[ValueType::Size])?;
+        let exit = self.new_block(&[ValueType::Size])?;
+        self.finish_current(Terminator::Branch {
+            target: header,
+            arguments: vec![minimum],
+        })?;
+        self.current = header;
+        let current = self.block_parameter_values(header)[0];
+        let too_small = self.push_compare(ComparisonOperator::LessUnsigned, current, requested)?;
+        self.finish_current(Terminator::BranchIf {
+            condition: too_small,
+            then_target: grow,
+            then_arguments: vec![current],
+            else_target: exit,
+            else_arguments: vec![current],
+        })?;
+        self.current = grow;
+        let current = self.block_parameter_values(grow)[0];
+        let doubled = self.push_arithmetic(
+            ValueType::Size,
+            ArithmeticOperator::Multiply,
+            current,
+            two,
+            OverflowBehavior::Trap,
+        )?;
+        self.finish_current(Terminator::Branch {
+            target: header,
+            arguments: vec![doubled],
+        })?;
+        self.current = exit;
+        Ok(self.block_parameter_values(exit)[0])
+    }
+
+    pub(super) fn lower_dict_table_value_at(
+        &mut self,
+        dict: ValueId,
+        bucket: ValueId,
+        value_type: &Type,
+    ) -> Result<ValueId, CanonicalLoweringError> {
+        let ty = self.field_value_type(value_type)?;
+        let destination = self.fresh(ty)?;
+        self.push_operation(Operation::Dictionary(DictionaryOperation::ReadSlot {
+            destination,
+            dict,
+            bucket,
+            field: DictionarySlotField::Value,
+            transfer: if matches!(ty, ValueType::Ref(_)) {
+                witchy_wir::canonical_safewir::LoadTransfer::CloneShared
+            } else {
+                witchy_wir::canonical_safewir::LoadTransfer::CopyScalar
+            },
+        }));
+        Ok(destination)
+    }
+
+    fn lower_dict_table_list(
+        &mut self,
+        dict: ValueId,
+        element_source_type: &Type,
+        field: DictionarySlotField,
+    ) -> Result<ValueId, CanonicalLoweringError> {
+        let list_type = Type::Named("List".into(), vec![element_source_type.clone()]);
+        let element_type = self.field_value_type(element_source_type)?;
+        let out = self.push_empty_value(&list_type)?;
+        let first = self.fresh(ValueType::Size)?;
+        self.push_operation(Operation::Dictionary(DictionaryOperation::ReadHeader {
+            destination: first,
+            dict,
+            field: DictionaryHeaderField::Head,
+        }));
+        let zero = self.push_const_size(0)?;
+        let one = self.push_const_size(1)?;
+        let (lanes, mut shapes) = self.accumulator_lanes(out)?;
+        let exit = self.new_block_owned(&shapes)?;
+        shapes.push((ValueType::Size, None));
+        let header = self.new_block_owned(&shapes)?;
+        let body = self.new_block_owned(&shapes)?;
+        let mut entry = lanes.clone();
+        entry.push(first);
+        self.finish_current(Terminator::Branch { target: header, arguments: entry })?;
+        self.current = header;
+        let current = self.block_parameter_values(header);
+        self.track_accumulator_lanes(&current);
+        let more = self.push_compare(ComparisonOperator::NotEqual, current[3], zero)?;
+        self.finish_current(Terminator::BranchIf {
+            condition: more,
+            then_target: body,
+            then_arguments: current.clone(),
+            else_target: exit,
+            else_arguments: current[..3].to_vec(),
+        })?;
+        self.current = body;
+        let current = self.block_parameter_values(body);
+        self.track_accumulator_lanes(&current);
+        let bucket = self.push_arithmetic(
+            ValueType::Size,
+            ArithmeticOperator::Subtract,
+            current[3],
+            one,
+            OverflowBehavior::Trap,
+        )?;
+        let element = self.fresh(element_type)?;
+        self.push_operation(Operation::Dictionary(DictionaryOperation::ReadSlot {
+            destination: element,
+            dict,
+            bucket,
+            field,
+            transfer: if matches!(element_type, ValueType::Ref(_)) {
+                witchy_wir::canonical_safewir::LoadTransfer::CloneShared
+            } else {
+                witchy_wir::canonical_safewir::LoadTransfer::CopyScalar
+            },
+        }));
+        let grown = self.push_owned_or_reuse_scalar_element(current[0], element, &list_type)?;
+        let next = self.fresh(ValueType::Size)?;
+        self.push_operation(Operation::Dictionary(DictionaryOperation::ReadSlot {
+            destination: next,
+            dict,
+            bucket,
+            field: DictionarySlotField::Next,
+            transfer: witchy_wir::canonical_safewir::LoadTransfer::CopyScalar,
+        }));
+        let (folded, _) = self.accumulator_lanes(grown)?;
+        let mut folded = self.split_folded_lanes(folded)?;
+        folded.push(next);
+        self.finish_current(Terminator::Branch { target: header, arguments: folded })?;
+        self.current = exit;
+        let result = self.block_parameter_values(exit);
+        self.track_accumulator_lanes(&result);
+        Ok(result[0])
+    }
+
+    pub(super) fn lower_dict_table_call(
+        &mut self,
+        expression: &Expr,
+        name: &str,
+        args: &[Expr],
+    ) -> Result<ValueId, CanonicalLoweringError> {
+        match (name, args) {
+            ("dict.new", []) => {
+                let ty = self.expression_type(expression)?;
+                let capacity = self.push_const_size(8)?;
+                self.lower_dict_table_new(&ty, capacity)
+            }
+            ("dict.with_capacity", [hint]) => {
+                let ty = self.expression_type(expression)?;
+                // Reservation is a hint. The checked constructor owns the
+                // power-of-two rounding and capacity overflow policy.
+                let hint = self.lower_expr(hint)?;
+                let zero_int = self.push_const_int(0)?;
+                let negative = self.push_compare(ComparisonOperator::LessSigned, hint, zero_int)?;
+                let zero = self.push_const_size(0)?;
+                let nonnegative = self.new_block(&[])?;
+                let clamp = self.new_block(&[])?;
+                let join = self.new_block(&[ValueType::Size])?;
+                self.finish_current(Terminator::BranchIf {
+                    condition: negative,
+                    then_target: clamp,
+                    then_arguments: Vec::new(),
+                    else_target: nonnegative,
+                    else_arguments: Vec::new(),
+                })?;
+                self.current = clamp;
+                self.finish_current(Terminator::Branch {
+                    target: join,
+                    arguments: vec![zero],
+                })?;
+                self.current = nonnegative;
+                let limit = self.push_const_int(1 << 30)?;
+                let within_limit =
+                    self.push_compare(ComparisonOperator::LessEqualSigned, hint, limit)?;
+                self.push_guard(
+                    within_limit,
+                    witchy_wir::canonical_safewir::GuardKind::Arithmetic,
+                );
+                let capacity = self.fresh(ValueType::Size)?;
+                self.push_operation(Operation::NarrowSize {
+                    destination: capacity,
+                    value: hint,
+                });
+                self.finish_current(Terminator::Branch {
+                    target: join,
+                    arguments: vec![capacity],
+                })?;
+                self.current = join;
+                let capacity = self.block_parameter_values(join)[0];
+                let capacity = self.round_dict_table_capacity(capacity)?;
+                self.lower_dict_table_new(&ty, capacity)
+            }
+            ("dict.length", [operand]) => {
+                let (dict, _, _) = self.lower_dict_table_operand(operand)?;
+                let count = self.fresh(ValueType::Size)?;
+                self.push_operation(Operation::Dictionary(DictionaryOperation::ReadHeader {
+                    destination: count,
+                    dict,
+                    field: DictionaryHeaderField::Count,
+                }));
+                let length = self.fresh(ValueType::Int)?;
+                self.push_operation(Operation::WidenSize {
+                    destination: length,
+                    value: count,
+                });
+                Ok(length)
+            }
+            ("dict.contains_key", [operand, key]) => {
+                let (dict, key_type, _) = self.lower_dict_table_operand(operand)?;
+                let key = self.lower_expr(key)?;
+                let (found, _, _) = self.lower_dict_find_table(dict, key, &key_type)?;
+                Ok(found)
+            }
+            ("dict.at", [operand, key]) => {
+                let (dict, key_type, value_type) = self.lower_dict_table_operand(operand)?;
+                let key = self.lower_expr(key)?;
+                let (found, bucket, _) = self.lower_dict_find_table(dict, key, &key_type)?;
+                self.push_trap_unless(found)?;
+                self.lower_dict_table_value_at(dict, bucket, &value_type)
+            }
+            ("dict.get_or", [operand, key, default]) => {
+                let (dict, key_type, value_type) = self.lower_dict_table_operand(operand)?;
+                let key = self.lower_expr(key)?;
+                let default = self.lower_expr(default)?;
+                let (found, bucket, _) = self.lower_dict_find_table(dict, key, &key_type)?;
+                let facts = self.snapshot_facts();
+                let bindings = self.bindings.clone();
+                let hit = self.new_block(&[])?;
+                let miss = self.new_block(&[])?;
+                let join = self.dict_value_join(&value_type)?;
+                self.finish_current(Terminator::BranchIf {
+                    condition: found,
+                    then_target: hit,
+                    then_arguments: Vec::new(),
+                    else_target: miss,
+                    else_arguments: Vec::new(),
+                })?;
+                self.current = hit;
+                let present = self.lower_dict_table_value_at(dict, bucket, &value_type)?;
+                let lanes = self.dict_value_lanes(present, &value_type)?;
+                self.finish_current(Terminator::Branch {
+                    target: join,
+                    arguments: lanes,
+                })?;
+                self.current = miss;
+                self.restore_snapshot(facts.clone());
+                let absent = self.owned_dict_value(default, &value_type)?;
+                let lanes = self.dict_value_lanes(absent, &value_type)?;
+                self.finish_current(Terminator::Branch {
+                    target: join,
+                    arguments: lanes,
+                })?;
+                self.restore_facts(facts, join);
+                self.current = join;
+                self.bindings = bindings;
+                let values = self.block_parameter_values(join);
+                self.track_accumulator_lanes(&values);
+                Ok(values[0])
+            }
+            ("dict.__insert_extract", [Expr::Var(target), key, value]) => {
+                let (dict, key_type, value_type) = self.lower_dict_table_operand(&args[0])?;
+                let key = self.lower_expr(key)?;
+                let value = self.lower_expr(value)?;
+                let (rebuilt, extracted) = self.lower_dict_insert_table(
+                    dict, &key_type, &value_type, key, value, true,
+                )?;
+                self.bindings.insert(target.clone(), rebuilt);
+                extracted.ok_or(CanonicalLoweringError::UnsupportedExpression("dict insert result"))
+            }
+            ("dict.__insert", [operand, key, value]) => {
+                let (dict, key_type, value_type) = self.lower_dict_table_operand(operand)?;
+                let key = self.lower_expr(key)?;
+                let value = self.lower_expr(value)?;
+                let (rebuilt, _) = self.lower_dict_insert_table(
+                    dict, &key_type, &value_type, key, value, false,
+                )?;
+                Ok(rebuilt)
+            }
+            ("dict.__remove_extract", [Expr::Var(target), key]) => {
+                let (dict, key_type, value_type) = self.lower_dict_table_operand(&args[0])?;
+                let key = self.lower_expr(key)?;
+                let (rebuilt, extracted) = self.lower_dict_remove_table(
+                    dict, &key_type, &value_type, key, true,
+                )?;
+                self.bindings.insert(target.clone(), rebuilt);
+                extracted.ok_or(CanonicalLoweringError::UnsupportedExpression("dict remove result"))
+            }
+            ("dict.__remove", [operand, key]) => {
+                let (dict, key_type, value_type) = self.lower_dict_table_operand(operand)?;
+                let key = self.lower_expr(key)?;
+                let (rebuilt, _) = self.lower_dict_remove_table(
+                    dict, &key_type, &value_type, key, false,
+                )?;
+                Ok(rebuilt)
+            }
+            ("dict.keys" | "dict.values", [operand]) => {
+                let (dict, key_type, value_type) = self.lower_dict_table_operand(operand)?;
+                if name == "dict.keys" {
+                    self.lower_dict_table_list(dict, &key_type, DictionarySlotField::Key)
+                } else {
+                    self.lower_dict_table_list(dict, &value_type, DictionarySlotField::Value)
+                }
+            }
+            ("dict.pairs", [operand]) => {
+                let (dict, key_type, value_type) = self.lower_dict_table_operand(operand)?;
+                let keys = self.lower_dict_table_list(dict, &key_type, DictionarySlotField::Key)?;
+                let values = self.lower_dict_table_list(dict, &value_type, DictionarySlotField::Value)?;
+                self.lower_dict_pairs(keys, values, &key_type, &value_type)
+            }
+            ("dict.__update", [operand, key, default, callback]) => {
+                let (dict, key_type, value_type) = self.lower_dict_table_operand(operand)?;
+                let key = self.lower_expr(key)?;
+                let default = self.lower_expr(default)?;
+                let callback = self.lower_expr(callback)?;
+                self.lower_dict_update_table(
+                    dict, &key_type, &value_type, key, default, callback,
+                )
+            }
+            _ => Err(CanonicalLoweringError::UnsupportedExpression(
+                "dict table operation",
+            )),
+        }
+    }
+
+    /// Return `(found, bucket, first_tombstone)` for a dictionary query.
+    /// A miss's `bucket` is the first empty slot or `capacity` if none exists.
+    /// `first_tombstone` is `capacity` when none precedes the miss. Insertion
+    /// reuses a tombstone only after the full probe has ruled out an equal key.
+    pub(super) fn lower_dict_find_table(
+        &mut self,
+        dict: ValueId,
+        key: ValueId,
+        key_type: &Type,
+    ) -> Result<(ValueId, ValueId, ValueId), CanonicalLoweringError> {
+        let capacity = self.fresh(ValueType::Size)?;
+        self.push_operation(Operation::Dictionary(DictionaryOperation::ReadHeader {
+            destination: capacity,
+            dict,
+            field: DictionaryHeaderField::Capacity,
+        }));
+        let hash = self.lower_dict_key_hash(key, key_type)?;
+        // Narrow only a nonnegative low-bit prefix. This is a bucket selector,
+        // never a key identity; the full comparator resolves collisions.
+        let low_mask = self.push_const_int(0xffff_ffff)?;
+        let low = self.push_arithmetic(
+            ValueType::Int,
+            ArithmeticOperator::BitAnd,
+            hash,
+            low_mask,
+            OverflowBehavior::Wrap,
+        )?;
+        let low_size = self.fresh(ValueType::Size)?;
+        self.push_operation(Operation::NarrowSize {
+            destination: low_size,
+            value: low,
+        });
+        let zero = self.push_const_size(0)?;
+        let one = self.push_const_size(1)?;
+        let missing = self.fresh(ValueType::Bool)?;
+        self.push_operation(Operation::ConstBool {
+            destination: missing,
+            value: false,
+        });
+        let present = self.fresh(ValueType::Bool)?;
+        self.push_operation(Operation::ConstBool {
+            destination: present,
+            value: true,
+        });
+        let has_capacity =
+            self.push_compare(ComparisonOperator::GreaterUnsigned, capacity, zero)?;
+        self.push_guard(
+            has_capacity,
+            witchy_wir::canonical_safewir::GuardKind::Bounds,
+        );
+        let first = self.push_arithmetic(
+            ValueType::Size,
+            ArithmeticOperator::RemainderUnsigned,
+            low_size,
+            capacity,
+            OverflowBehavior::Wrap,
+        )?;
+        let header = self.new_block(&[ValueType::Size, ValueType::Size, ValueType::Size])?;
+        let probe = self.new_block(&[ValueType::Size, ValueType::Size, ValueType::Size])?;
+        let occupied = self.new_block(&[ValueType::Size, ValueType::Size, ValueType::Size])?;
+        let compare_key = self.new_block(&[ValueType::Size, ValueType::Size, ValueType::Size])?;
+        let advance = self.new_block(&[ValueType::Size, ValueType::Size, ValueType::Size])?;
+        let exit = self.new_block(&[ValueType::Bool, ValueType::Size, ValueType::Size])?;
+        self.finish_current(Terminator::Branch {
+            target: header,
+            arguments: vec![first, zero, capacity],
+        })?;
+
+        self.current = header;
+        let cursor = self.block_parameter_values(header);
+        let more = self.push_compare(ComparisonOperator::LessUnsigned, cursor[1], capacity)?;
+        self.finish_current(Terminator::BranchIf {
+            condition: more,
+            then_target: probe,
+            then_arguments: cursor.clone(),
+            else_target: exit,
+            else_arguments: vec![missing, capacity, cursor[2]],
+        })?;
+
+        self.current = probe;
+        let cursor = self.block_parameter_values(probe);
+        let state = self.fresh(ValueType::Size)?;
+        self.push_operation(Operation::Dictionary(DictionaryOperation::ReadSlot {
+            destination: state,
+            dict,
+            bucket: cursor[0],
+            field: DictionarySlotField::State,
+            transfer: witchy_wir::canonical_safewir::LoadTransfer::CopyScalar,
+        }));
+        let is_empty = self.push_compare(ComparisonOperator::Equal, state, zero)?;
+        let not_empty = self.new_block(&[
+            ValueType::Size,
+            ValueType::Size,
+            ValueType::Size,
+            ValueType::Size,
+        ])?;
+        self.finish_current(Terminator::BranchIf {
+            condition: is_empty,
+            then_target: exit,
+            then_arguments: vec![missing, cursor[0], cursor[2]],
+            else_target: not_empty,
+            else_arguments: vec![cursor[0], cursor[1], cursor[2], state],
+        })?;
+
+        self.current = not_empty;
+        let cursor = self.block_parameter_values(not_empty);
+        let is_full = self.push_compare(ComparisonOperator::Equal, cursor[3], one)?;
+        let tombstone = self.new_block(&[ValueType::Size, ValueType::Size, ValueType::Size])?;
+        self.finish_current(Terminator::BranchIf {
+            condition: is_full,
+            then_target: occupied,
+            then_arguments: cursor[..3].to_vec(),
+            else_target: tombstone,
+            else_arguments: cursor[..3].to_vec(),
+        })?;
+
+        self.current = tombstone;
+        let cursor = self.block_parameter_values(tombstone);
+        let first_tombstone = self.push_compare(ComparisonOperator::Equal, cursor[2], capacity)?;
+        let record_tombstone = self.new_block(&[])?;
+        self.finish_current(Terminator::BranchIf {
+            condition: first_tombstone,
+            then_target: record_tombstone,
+            then_arguments: Vec::new(),
+            else_target: advance,
+            else_arguments: cursor.clone(),
+        })?;
+        self.current = record_tombstone;
+        self.finish_current(Terminator::Branch {
+            target: advance,
+            arguments: vec![cursor[0], cursor[1], cursor[0]],
+        })?;
+
+        self.current = occupied;
+        let cursor = self.block_parameter_values(occupied);
+        let stored_hash = self.fresh(ValueType::Int)?;
+        self.push_operation(Operation::Dictionary(DictionaryOperation::ReadSlot {
+            destination: stored_hash,
+            dict,
+            bucket: cursor[0],
+            field: DictionarySlotField::Hash,
+            transfer: witchy_wir::canonical_safewir::LoadTransfer::CopyScalar,
+        }));
+        let same_hash = self.push_compare(ComparisonOperator::Equal, stored_hash, low)?;
+        self.finish_current(Terminator::BranchIf {
+            condition: same_hash,
+            then_target: compare_key,
+            then_arguments: cursor.clone(),
+            else_target: advance,
+            else_arguments: cursor,
+        })?;
+
+        self.current = compare_key;
+        let cursor = self.block_parameter_values(compare_key);
+        let key_value_type = self.field_value_type(key_type)?;
+        let element = self.fresh(key_value_type)?;
+        self.push_operation(Operation::Dictionary(DictionaryOperation::ReadSlot {
+            destination: element,
+            dict,
+            bucket: cursor[0],
+            field: DictionarySlotField::Key,
+            transfer: if matches!(key_value_type, ValueType::Ref(_)) {
+                witchy_wir::canonical_safewir::LoadTransfer::CloneShared
+            } else {
+                witchy_wir::canonical_safewir::LoadTransfer::CopyScalar
+            },
+        }));
+        let comparator = self
+            .dictionary_comparators
+            .iter()
+            .find(|(ty, _)| ty.unqualified() == key_type.unqualified())
+            .map(|(_, name)| name.clone());
+        let matched = if let Some(comparator) = comparator {
+            self.lower_dict_key_comparison(&comparator, element, key)?
+        } else if Self::is_string_type(key_type) {
+            self.lower_string_equality(element, key, false)?
+        } else {
+            self.push_compare(ComparisonOperator::Equal, element, key)?
+        };
+        if matches!(key_value_type, ValueType::Ref(_)) {
+            self.push_operation(Operation::DropRef { object: element });
+        }
+        self.finish_current(Terminator::BranchIf {
+            condition: matched,
+            then_target: exit,
+            then_arguments: vec![present, cursor[0], cursor[2]],
+            else_target: advance,
+            else_arguments: cursor,
+        })?;
+
+        self.current = advance;
+        let cursor = self.block_parameter_values(advance);
+        let incremented = self.push_arithmetic(
+            ValueType::Size,
+            ArithmeticOperator::Add,
+            cursor[0],
+            one,
+            OverflowBehavior::Wrap,
+        )?;
+        let next = self.push_arithmetic(
+            ValueType::Size,
+            ArithmeticOperator::RemainderUnsigned,
+            incremented,
+            capacity,
+            OverflowBehavior::Wrap,
+        )?;
+        let attempts = self.push_arithmetic(
+            ValueType::Size,
+            ArithmeticOperator::Add,
+            cursor[1],
+            one,
+            OverflowBehavior::Wrap,
+        )?;
+        self.finish_current(Terminator::Branch {
+            target: header,
+            arguments: vec![next, attempts, cursor[2]],
+        })?;
+
+        self.current = exit;
+        let result = self.block_parameter_values(exit);
+        Ok((result[0], result[1], result[2]))
+    }
+
+    /// After a successful miss and a rehash, find storage for the new key
+    /// without invoking `Eq` again. The first lookup already established that
+    /// no equal key exists; a second comparator call could have effects.
+    fn lower_dict_vacant_bucket(
+        &mut self,
+        dict: ValueId,
+        key: ValueId,
+        key_type: &Type,
+    ) -> Result<ValueId, CanonicalLoweringError> {
+        let capacity = self.fresh(ValueType::Size)?;
+        self.push_operation(Operation::Dictionary(DictionaryOperation::ReadHeader {
+            destination: capacity,
+            dict,
+            field: DictionaryHeaderField::Capacity,
+        }));
+        let hash = self.lower_dict_key_hash(key, key_type)?;
+        let mask = self.push_const_int(0xffff_ffff)?;
+        let low = self.push_arithmetic(
+            ValueType::Int,
+            ArithmeticOperator::BitAnd,
+            hash,
+            mask,
+            OverflowBehavior::Wrap,
+        )?;
+        let low_size = self.fresh(ValueType::Size)?;
+        self.push_operation(Operation::NarrowSize { destination: low_size, value: low });
+        let first = self.push_arithmetic(
+            ValueType::Size,
+            ArithmeticOperator::RemainderUnsigned,
+            low_size,
+            capacity,
+            OverflowBehavior::Wrap,
+        )?;
+        let zero = self.push_const_size(0)?;
+        let one = self.push_const_size(1)?;
+        let header = self.new_block(&[ValueType::Size, ValueType::Size])?;
+        let body = self.new_block(&[ValueType::Size, ValueType::Size])?;
+        let advance = self.new_block(&[ValueType::Size, ValueType::Size])?;
+        let exit = self.new_block(&[ValueType::Size])?;
+        self.finish_current(Terminator::Branch { target: header, arguments: vec![first, zero] })?;
+        self.current = header;
+        let cursor = self.block_parameter_values(header);
+        let more = self.push_compare(ComparisonOperator::LessUnsigned, cursor[1], capacity)?;
+        self.push_guard(more, witchy_wir::canonical_safewir::GuardKind::Bounds);
+        self.finish_current(Terminator::Branch { target: body, arguments: cursor })?;
+        self.current = body;
+        let cursor = self.block_parameter_values(body);
+        let state = self.fresh(ValueType::Size)?;
+        self.push_operation(Operation::Dictionary(DictionaryOperation::ReadSlot {
+            destination: state,
+            dict,
+            bucket: cursor[0],
+            field: DictionarySlotField::State,
+            transfer: witchy_wir::canonical_safewir::LoadTransfer::CopyScalar,
+        }));
+        let full = self.push_compare(ComparisonOperator::Equal, state, one)?;
+        self.finish_current(Terminator::BranchIf {
+            condition: full,
+            then_target: advance,
+            then_arguments: cursor.clone(),
+            else_target: exit,
+            else_arguments: vec![cursor[0]],
+        })?;
+        self.current = advance;
+        let cursor = self.block_parameter_values(advance);
+        let incremented = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, cursor[0], one, OverflowBehavior::Wrap)?;
+        let next = self.push_arithmetic(ValueType::Size, ArithmeticOperator::RemainderUnsigned, incremented, capacity, OverflowBehavior::Wrap)?;
+        let attempts = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, cursor[1], one, OverflowBehavior::Wrap)?;
+        self.finish_current(Terminator::Branch { target: header, arguments: vec![next, attempts] })?;
+        self.current = exit;
+        Ok(self.block_parameter_values(exit)[0])
+    }
+
+    fn lower_dict_reusable_bucket(
+        &mut self,
+        empty: ValueId,
+        tombstone: ValueId,
+        capacity: ValueId,
+    ) -> Result<ValueId, CanonicalLoweringError> {
+        let use_tombstone = self.push_compare(ComparisonOperator::LessUnsigned, tombstone, capacity)?;
+        let tomb = self.new_block(&[])?;
+        let vacant = self.new_block(&[])?;
+        let join = self.new_block(&[ValueType::Size])?;
+        self.finish_current(Terminator::BranchIf {
+            condition: use_tombstone,
+            then_target: tomb,
+            then_arguments: Vec::new(),
+            else_target: vacant,
+            else_arguments: Vec::new(),
+        })?;
+        self.current = tomb;
+        self.finish_current(Terminator::Branch { target: join, arguments: vec![tombstone] })?;
+        self.current = vacant;
+        let has_empty = self.push_compare(ComparisonOperator::LessUnsigned, empty, capacity)?;
+        self.push_guard(has_empty, witchy_wir::canonical_safewir::GuardKind::Bounds);
+        self.finish_current(Terminator::Branch { target: join, arguments: vec![empty] })?;
+        self.current = join;
+        Ok(self.block_parameter_values(join)[0])
+    }
+
+    fn lower_dict_store_operand(
+        &mut self,
+        value: ValueId,
+        source_type: &Type,
+    ) -> Result<(ValueId, witchy_wir::canonical_safewir::StoreTransfer), CanonicalLoweringError> {
+        let expected = self.field_value_type(source_type)?;
+        if self.values[&value] != expected {
+            return Err(CanonicalLoweringError::UnsupportedExpression("dict table slot type"));
+        }
+        match expected {
+            ValueType::Ref(_) => Ok((
+                self.owned_for_storage(value, source_type)?,
+                witchy_wir::canonical_safewir::StoreTransfer::MoveUnique,
+            )),
+            ValueType::Gc(_) => Err(CanonicalLoweringError::UnsupportedExpression("dict table GC slot")),
+            _ => Ok((value, witchy_wir::canonical_safewir::StoreTransfer::CopyScalar)),
+        }
+    }
+
+    /// Upsert on an owned guest table. A shared normal-mode snapshot is
+    /// copied once before probing; unique roots mutate in place. Growth
+    /// rehashes only after the single semantic `Eq` search has missed.
+    pub(super) fn lower_dict_insert_table(
+        &mut self,
+        dict: ValueId,
+        key_type: &Type,
+        value_type: &Type,
+        key: ValueId,
+        value: ValueId,
+        extract: bool,
+    ) -> Result<(ValueId, Option<ValueId>), CanonicalLoweringError> {
+        let dict = if self.known_shared_value(dict) {
+            self.lower_dict_clone_exact(dict)?
+        } else {
+            dict
+        };
+        let lookup = self.lower_dict_find_table(dict, key, key_type)?;
+        self.lower_dict_insert_table_found(dict, key_type, value_type, key, value, extract, lookup)
+    }
+
+    fn lower_dict_insert_table_found(
+        &mut self,
+        dict: ValueId,
+        key_type: &Type,
+        value_type: &Type,
+        key: ValueId,
+        value: ValueId,
+        extract: bool,
+        lookup: (ValueId, ValueId, ValueId),
+    ) -> Result<(ValueId, Option<ValueId>), CanonicalLoweringError> {
+        let (found, empty, tombstone) = lookup;
+        let option_type = Type::Named("Option".into(), vec![value_type.clone()]);
+        let option_shape = extract.then(|| scalar_aggregate_shape(&option_type, self.definitions)).flatten();
+        let mut join_shapes = vec![(self.values[&dict], Some(Ownership::Unique))];
+        if extract {
+            join_shapes.push((self.field_value_type(&option_type)?, Some(Ownership::Unique)));
+        }
+        let facts = self.snapshot_facts();
+        let bindings = self.bindings.clone();
+        let hit = self.new_block(&[])?;
+        let miss = self.new_block(&[])?;
+        let join = self.new_block_owned(&join_shapes)?;
+        self.finish_current(Terminator::BranchIf {
+            condition: found,
+            then_target: hit,
+            then_arguments: Vec::new(),
+            else_target: miss,
+            else_arguments: Vec::new(),
+        })?;
+
+        self.current = hit;
+        let (stored_value, transfer) = self.lower_dict_store_operand(value, value_type)?;
+        let displaced_type = self.field_value_type(value_type)?;
+        let displaced = self.fresh(displaced_type)?;
+        self.push_operation(Operation::Dictionary(DictionaryOperation::ReplaceValue {
+            displaced,
+            dict,
+            bucket: empty,
+            value: stored_value,
+            transfer,
+        }));
+        let mut result = vec![dict];
+        if let Some(option_shape) = &option_shape {
+            result.push(self.lower_aggregate_for_source(&option_type, option_shape, 0, vec![displaced])?);
+        } else if matches!(self.values[&displaced], ValueType::Ref(_)) {
+            self.push_operation(Operation::DropRef { object: displaced });
+        }
+        self.finish_current(Terminator::Branch { target: join, arguments: result })?;
+
+        self.current = miss;
+        self.restore_snapshot(facts.clone());
+        let count = self.fresh(ValueType::Size)?;
+        self.push_operation(Operation::Dictionary(DictionaryOperation::ReadHeader {
+            destination: count,
+            dict,
+            field: DictionaryHeaderField::Count,
+        }));
+        let capacity = self.fresh(ValueType::Size)?;
+        self.push_operation(Operation::Dictionary(DictionaryOperation::ReadHeader {
+            destination: capacity,
+            dict,
+            field: DictionaryHeaderField::Capacity,
+        }));
+        let tombstones = self.fresh(ValueType::Size)?;
+        self.push_operation(Operation::Dictionary(DictionaryOperation::ReadHeader {
+            destination: tombstones,
+            dict,
+            field: DictionaryHeaderField::Tombstones,
+        }));
+        let occupied = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, count, tombstones, OverflowBehavior::Trap)?;
+        let two = self.push_const_size(2)?;
+        let twice_occupied = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Multiply, occupied, two, OverflowBehavior::Trap)?;
+        let needs_growth = self.push_compare(ComparisonOperator::GreaterEqualUnsigned, twice_occupied, capacity)?;
+        let grow = self.new_block(&[])?;
+        let room = self.new_block(&[])?;
+        let ready = self.new_block_owned(&[(self.values[&dict], Some(Ownership::Unique)), (ValueType::Size, None)])?;
+        let miss_facts = self.snapshot_facts();
+        self.finish_current(Terminator::BranchIf {
+            condition: needs_growth,
+            then_target: grow,
+            then_arguments: Vec::new(),
+            else_target: room,
+            else_arguments: Vec::new(),
+        })?;
+        self.current = grow;
+        let doubled = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Multiply, capacity, two, OverflowBehavior::Trap)?;
+        let grown = self.fresh(self.values[&dict])?;
+        self.push_operation(Operation::Dictionary(DictionaryOperation::Rehash {
+            destination: grown,
+            source: dict,
+            capacity: doubled,
+            transfer: DictionaryRehashTransfer::MoveUnique,
+        }));
+        let bucket = self.lower_dict_vacant_bucket(grown, key, key_type)?;
+        self.finish_current(Terminator::Branch { target: ready, arguments: vec![grown, bucket] })?;
+        self.current = room;
+        self.restore_snapshot(miss_facts.clone());
+        let bucket = self.lower_dict_reusable_bucket(empty, tombstone, capacity)?;
+        self.finish_current(Terminator::Branch { target: ready, arguments: vec![dict, bucket] })?;
+        self.restore_facts(miss_facts, ready);
+        self.current = ready;
+        let ready_values = self.block_parameter_values(ready);
+        let hash = self.lower_dict_key_hash(key, key_type)?;
+        let (stored_key, key_transfer) = self.lower_dict_store_operand(key, key_type)?;
+        let (stored_value, value_transfer) = self.lower_dict_store_operand(value, value_type)?;
+        self.push_operation(Operation::Dictionary(DictionaryOperation::InsertSlot {
+            dict: ready_values[0],
+            bucket: ready_values[1],
+            key: stored_key,
+            value: stored_value,
+            hash,
+            key_transfer,
+            value_transfer,
+        }));
+        let mut result = vec![ready_values[0]];
+        if let Some(option_shape) = &option_shape {
+            result.push(self.lower_aggregate_for_source(&option_type, option_shape, 1, Vec::new())?);
+        }
+        self.finish_current(Terminator::Branch { target: join, arguments: result })?;
+        self.restore_facts(facts, join);
+        self.current = join;
+        self.bindings = bindings;
+        let joined = self.block_parameter_values(join);
+        Ok((joined[0], joined.get(1).copied()))
+    }
+
+    pub(super) fn lower_dict_remove_table(
+        &mut self,
+        dict: ValueId,
+        key_type: &Type,
+        value_type: &Type,
+        key: ValueId,
+        extract: bool,
+    ) -> Result<(ValueId, Option<ValueId>), CanonicalLoweringError> {
+        let dict = if self.known_shared_value(dict) {
+            self.lower_dict_clone_exact(dict)?
+        } else {
+            dict
+        };
+        let (found, bucket, _) = self.lower_dict_find_table(dict, key, key_type)?;
+        let option_type = Type::Named("Option".into(), vec![value_type.clone()]);
+        let option_shape = extract.then(|| scalar_aggregate_shape(&option_type, self.definitions)).flatten();
+        let mut join_shapes = vec![(self.values[&dict], Some(Ownership::Unique))];
+        if extract {
+            join_shapes.push((self.field_value_type(&option_type)?, Some(Ownership::Unique)));
+        }
+        let facts = self.snapshot_facts();
+        let bindings = self.bindings.clone();
+        let hit = self.new_block(&[])?;
+        let miss = self.new_block(&[])?;
+        let join = self.new_block_owned(&join_shapes)?;
+        self.finish_current(Terminator::BranchIf {
+            condition: found,
+            then_target: hit,
+            then_arguments: Vec::new(),
+            else_target: miss,
+            else_arguments: Vec::new(),
+        })?;
+
+        self.current = hit;
+        let removed_type = self.field_value_type(value_type)?;
+        let removed_value = self.fresh(removed_type)?;
+        self.push_operation(Operation::Dictionary(DictionaryOperation::RemoveSlot {
+            removed_value,
+            dict,
+            bucket,
+        }));
+        let mut result = vec![dict];
+        if let Some(option_shape) = &option_shape {
+            result.push(self.lower_aggregate_for_source(&option_type, option_shape, 0, vec![removed_value])?);
+        } else if matches!(removed_type, ValueType::Ref(_)) {
+            self.push_operation(Operation::DropRef { object: removed_value });
+        }
+        self.finish_current(Terminator::Branch { target: join, arguments: result })?;
+
+        self.current = miss;
+        self.restore_snapshot(facts.clone());
+        let mut result = vec![dict];
+        if let Some(option_shape) = &option_shape {
+            result.push(self.lower_aggregate_for_source(&option_type, option_shape, 1, Vec::new())?);
+        }
+        self.finish_current(Terminator::Branch { target: join, arguments: result })?;
+        self.restore_facts(facts, join);
+        self.current = join;
+        self.bindings = bindings;
+        let joined = self.block_parameter_values(join);
+        Ok((joined[0], joined.get(1).copied()))
+    }
+
+    fn lower_dict_update_table(
+        &mut self,
+        dict: ValueId,
+        key_type: &Type,
+        value_type: &Type,
+        key: ValueId,
+        default: ValueId,
+        callback: ValueId,
+    ) -> Result<ValueId, CanonicalLoweringError> {
+        let layout = self.closure_layout_for_value(callback)?;
+        let signature_id = *self.closures.signature_by_layout.get(&layout)
+            .ok_or(CanonicalLoweringError::UnsupportedExpression("closure signature"))?;
+        let declaration_id = *self.closures.declaration_by_layout.get(&layout)
+            .ok_or(CanonicalLoweringError::UnsupportedExpression("closure signature"))?;
+        let expected = self.field_value_type(value_type)?;
+        let declaration = self.signatures.get(declaration_id.get() as usize)
+            .ok_or(CanonicalLoweringError::UnsupportedExpression("closure signature"))?;
+        if declaration.parameters != [expected] || declaration.results != [expected]
+            || write_back_count(declaration) != 0
+        {
+            return Err(CanonicalLoweringError::UnsupportedExpression("dict.update callback signature"));
+        }
+        let dict = if self.known_shared_value(dict) {
+            self.lower_dict_clone_exact(dict)?
+        } else {
+            dict
+        };
+        let lookup = self.lower_dict_find_table(dict, key, key_type)?;
+        let facts = self.snapshot_facts();
+        let bindings = self.bindings.clone();
+        let hit = self.new_block(&[])?;
+        let miss = self.new_block(&[])?;
+        let join = self.dict_value_join(value_type)?;
+        self.finish_current(Terminator::BranchIf {
+            condition: lookup.0,
+            then_target: hit,
+            then_arguments: Vec::new(),
+            else_target: miss,
+            else_arguments: Vec::new(),
+        })?;
+        self.current = hit;
+        let present = self.lower_dict_table_value_at(dict, lookup.1, value_type)?;
+        let lanes = self.dict_value_lanes(present, value_type)?;
+        self.finish_current(Terminator::Branch { target: join, arguments: lanes })?;
+        self.current = miss;
+        self.restore_snapshot(facts.clone());
+        let absent = self.owned_dict_value(default, value_type)?;
+        let lanes = self.dict_value_lanes(absent, value_type)?;
+        self.finish_current(Terminator::Branch { target: join, arguments: lanes })?;
+        self.restore_facts(facts, join);
+        self.current = join;
+        self.bindings = bindings;
+        let selected = self.block_parameter_values(join);
+        self.track_accumulator_lanes(&selected);
+        let argument = if matches!(expected, ValueType::Ref(_) | ValueType::Gc(_)) {
+            CallArgument::Move(self.clone_reference_token(selected[0])?)
+        } else {
+            CallArgument::Value(selected[0])
+        };
+        let results = self.emit_closure_call(callback, signature_id, vec![argument])?;
+        let [updated] = results.as_slice() else {
+            return Err(CanonicalLoweringError::UnsupportedExpression("dict.update callback result"));
+        };
+        let (rebuilt, _) = self.lower_dict_insert_table_found(
+            dict, key_type, value_type, key, *updated, false, lookup,
+        )?;
+        Ok(rebuilt)
+    }
+}
