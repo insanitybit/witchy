@@ -831,7 +831,13 @@ pub(super) fn emit(
             body.instruction(&wasm_encoder::Instruction::I32Const(2));
             emit_set_index(body, local.scratch[10]);
             emit_i32_store(body, local.scratch[4], 0, local.scratch[10]);
-            for offset in [16, 24] { emit_i32_store(body, local.scratch[4], offset, local.scratch[9]); }
+            for offset in [16, 24] {
+                emit_get_index(body, local.scratch[4]);
+                body.instruction(&wasm_encoder::Instruction::I32Const(offset));
+                body.instruction(&wasm_encoder::Instruction::I32Add);
+                body.instruction(&wasm_encoder::Instruction::I64Const(0));
+                body.instruction(&wasm_encoder::Instruction::I64Store(memarg(8)));
+            }
             if let Some(drop) = key_drop {
                 emit_get_index(body, local.scratch[11]);
                 body.instruction(&wasm_encoder::Instruction::Call(drop));
@@ -1020,7 +1026,11 @@ pub(super) fn plan(
             }
             plan.extend([PlanToken::I32Const(2), PlanToken::LocalSet(local.scratch[10])]);
             plan_i32_store(plan, local.scratch[4], 0, local.scratch[10]);
-            for offset in [16, 24] { plan_i32_store(plan, local.scratch[4], offset, local.scratch[9]); }
+            for offset in [16, 24] {
+                plan.extend([PlanToken::LocalGet(local.scratch[4]), PlanToken::I32Const(offset),
+                    PlanToken::I32Add, PlanToken::I64Const(0),
+                    PlanToken::I64Store { offset: 0, align: 3, memory: 0 }]);
+            }
             if let Some(drop) = key_drop { plan.extend([PlanToken::LocalGet(local.scratch[11]), PlanToken::Call(drop)]); }
             Ok(())
         }
