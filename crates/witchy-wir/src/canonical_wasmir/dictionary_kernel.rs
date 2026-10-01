@@ -557,9 +557,9 @@ fn plan_rehash(plan: &mut Vec<PlanToken>, function: &Function, local: &LocalLayo
     push_get(plan, local, destination)?;
     plan.extend([P::I32Const(20), P::I32Add, P::I32Const(0)]);
     push_get(plan, local, capacity)?;
-    plan.extend([P::I32Const(32), P::I32Mul, P::MemoryFill(0),
-        P::I32Const(0), P::LocalSet(local.scratch[11])]);
+    plan.extend([P::I32Const(32), P::I32Mul, P::MemoryFill(0)]);
     plan_fill_controls(plan, local, destination, capacity)?;
+    plan.extend([P::I32Const(0), P::LocalSet(local.scratch[11])]);
     push_get(plan, local, destination)?;
     plan.push(P::LocalSet(local.scratch[7]));
     for offset in [0, 8, 12, 16] { plan_i32_store(plan, local.scratch[7], offset, local.scratch[11]); }

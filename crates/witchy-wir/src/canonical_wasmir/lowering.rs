@@ -334,15 +334,15 @@ pub(super) fn collection_layout(
         .get(physical_layout)
         .ok_or(LoweringError::UnsupportedLayout { function, operation: "layout" })?;
     if let LayoutKind::CanonicalDictionary { .. } = descriptor.kind() {
-        if descriptor.size() != (LayoutSize::Dynamic { base: 20, stride: 32 }) {
+        if descriptor.size() != (LayoutSize::Dynamic { base: 36, stride: 33 }) {
             return Err(LoweringError::UnsupportedLayout { function, operation: "dictionary layout" });
         }
         return Ok(CollectionLayout {
             layout,
             length_offset: 0,
             capacity_offset: Some(4),
-            data_offset: 20,
-            stride: 32,
+            data_offset: 36,
+            stride: 33,
             scalar: ScalarKind::Unit,
             pointer_layout: None,
             pointer_slot: None,
