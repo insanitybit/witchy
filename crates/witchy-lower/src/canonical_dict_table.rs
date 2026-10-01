@@ -704,16 +704,16 @@ impl FunctionLowerer<'_> {
             .iter()
             .find(|(ty, _, _)| ty.unqualified() == key_type.unqualified())
             .map(|(_, name, _)| name.clone());
-        let matched = if let Some(comparator) = query_comparator {
-            self.lower_dict_key_comparison(comparator, key, element)?
+        let (matched, transferred) = if let Some(comparator) = query_comparator {
+            self.lower_dict_key_comparison(comparator, key, element, element)?
         } else if let Some(comparator) = comparator {
-            self.lower_dict_key_comparison(&comparator, element, key)?
+            self.lower_dict_key_comparison(&comparator, element, key, element)?
         } else if Self::is_string_type(key_type) {
-            self.lower_string_equality(element, key, false)?
+            (self.lower_string_equality(element, key, false)?, false)
         } else {
-            self.push_compare(ComparisonOperator::Equal, element, key)?
+            (self.push_compare(ComparisonOperator::Equal, element, key)?, false)
         };
-        if matches!(key_value_type, ValueType::Ref(_)) {
+        if matches!(key_value_type, ValueType::Ref(_)) && !transferred {
             self.push_operation(Operation::DropRef { object: element });
         }
         self.finish_current(Terminator::BranchIf {

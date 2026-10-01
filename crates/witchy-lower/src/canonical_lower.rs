@@ -16464,7 +16464,7 @@ impl FunctionLowerer<'_> {
         matches!(ty.unqualified(), Type::Named(name, arguments) if name == "String" && arguments.is_empty())
     }
 
-    fn lower_dict_key_comparison(&mut self, name: &str, left: ValueId, right: ValueId) -> Result<ValueId, CanonicalLoweringError> {
+    fn lower_dict_key_comparison(&mut self, name: &str, left: ValueId, right: ValueId, consumed: ValueId) -> Result<(ValueId, bool), CanonicalLoweringError> {
         let (callee, signature_id) = self.functions.get(name).copied()
             .ok_or_else(|| CanonicalLoweringError::MissingBinding(name.into()))?;
         let signature = self.signatures.get(signature_id.get() as usize).cloned()
@@ -16478,16 +16478,21 @@ impl FunctionLowerer<'_> {
             return Err(CanonicalLoweringError::UnsupportedExpression("dict comparator signature"));
         }
         let mut arguments = Vec::new();
+        let mut transferred = false;
         for (value, contract) in [left, right].into_iter().zip(&signature.contract.parameters) {
             arguments.push(match contract.ownership {
                 ParameterOwnership::Value => CallArgument::Value(value),
+                ParameterOwnership::Shared if value == consumed => {
+                    transferred = true;
+                    CallArgument::Move(value)
+                }
                 ParameterOwnership::Shared => CallArgument::Move(self.clone_reference_token(value)?),
                 _ => return Err(CanonicalLoweringError::UnsupportedExpression("dict comparator ownership")),
             });
         }
         let destination = self.fresh(ValueType::Bool)?;
         self.push_operation(Operation::Call { destinations: vec![destination], callee, arguments });
-        Ok(destination)
+        Ok((destination, transferred))
     }
 
     /// The value at `index` as an independent owned value. Reference-bearing
