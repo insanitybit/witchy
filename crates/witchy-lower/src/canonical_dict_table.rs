@@ -125,6 +125,13 @@ impl FunctionLowerer<'_> {
         Ok(self.block_parameter_values(exit)[0])
     }
 
+    fn dict_bucket(&mut self, hash_or_next: ValueId, capacity: ValueId) -> Result<ValueId, CanonicalLoweringError> {
+        // Constructors round to a power of two; CloneExact and Rehash keep it.
+        let one = self.push_const_size(1)?;
+        let mask = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Subtract, capacity, one, OverflowBehavior::Wrap)?;
+        self.push_arithmetic(ValueType::Size, ArithmeticOperator::BitAnd, hash_or_next, mask, OverflowBehavior::Wrap)
+    }
+
     pub(super) fn lower_dict_table_value_at(
         &mut self,
         dict: ValueId,
@@ -205,7 +212,93 @@ impl FunctionLowerer<'_> {
                 witchy_wir::canonical_safewir::LoadTransfer::CopyScalar
             },
         }));
+        let element = self.owned_dict_value(element, element_source_type)?;
         let grown = self.push_owned_or_reuse_scalar_element(current[0], element, &list_type)?;
+        let next = self.fresh(ValueType::Size)?;
+        self.push_operation(Operation::Dictionary(DictionaryOperation::ReadSlot {
+            destination: next,
+            dict,
+            bucket,
+            field: DictionarySlotField::Next,
+            transfer: witchy_wir::canonical_safewir::LoadTransfer::CopyScalar,
+        }));
+        let (folded, _) = self.accumulator_lanes(grown)?;
+        let mut folded = self.split_folded_lanes(folded)?;
+        folded.push(next);
+        self.finish_current(Terminator::Branch { target: header, arguments: folded })?;
+        self.current = exit;
+        let result = self.block_parameter_values(exit);
+        self.track_accumulator_lanes(&result);
+        Ok(result[0])
+    }
+
+    fn lower_dict_table_pairs(
+        &mut self,
+        dict: ValueId,
+        key_type: &Type,
+        value_type: &Type,
+    ) -> Result<ValueId, CanonicalLoweringError> {
+        let pair_type = Type::Tuple(vec![key_type.clone(), value_type.clone()]);
+        let pair_shape = scalar_aggregate_shape(&pair_type, self.definitions)
+            .ok_or(CanonicalLoweringError::UnsupportedExpression("dict pair type"))?;
+        let list_type = Type::Named("List".into(), vec![pair_type.clone()]);
+        let out = self.push_empty_value(&list_type)?;
+        let first = self.fresh(ValueType::Size)?;
+        self.push_operation(Operation::Dictionary(DictionaryOperation::ReadHeader {
+            destination: first,
+            dict,
+            field: DictionaryHeaderField::Head,
+        }));
+        let zero = self.push_const_size(0)?;
+        let one = self.push_const_size(1)?;
+        let (lanes, mut shapes) = self.accumulator_lanes(out)?;
+        let exit = self.new_block_owned(&shapes)?;
+        shapes.push((ValueType::Size, None));
+        let header = self.new_block_owned(&shapes)?;
+        let body = self.new_block_owned(&shapes)?;
+        let mut entry = lanes.clone();
+        entry.push(first);
+        self.finish_current(Terminator::Branch { target: header, arguments: entry })?;
+        self.current = header;
+        let current = self.block_parameter_values(header);
+        self.track_accumulator_lanes(&current);
+        let more = self.push_compare(ComparisonOperator::NotEqual, current[3], zero)?;
+        self.finish_current(Terminator::BranchIf {
+            condition: more,
+            then_target: body,
+            then_arguments: current.clone(),
+            else_target: exit,
+            else_arguments: current[..3].to_vec(),
+        })?;
+        self.current = body;
+        let current = self.block_parameter_values(body);
+        self.track_accumulator_lanes(&current);
+        let bucket = self.push_arithmetic(
+            ValueType::Size,
+            ArithmeticOperator::Subtract,
+            current[3],
+            one,
+            OverflowBehavior::Wrap,
+        )?;
+        let mut elements = Vec::with_capacity(2);
+        for (source_type, field) in [(key_type, DictionarySlotField::Key), (value_type, DictionarySlotField::Value)] {
+            let element_type = self.field_value_type(source_type)?;
+            let element = self.fresh(element_type)?;
+            self.push_operation(Operation::Dictionary(DictionaryOperation::ReadSlot {
+                destination: element,
+                dict,
+                bucket,
+                field,
+                transfer: if matches!(element_type, ValueType::Ref(_)) {
+                    witchy_wir::canonical_safewir::LoadTransfer::CloneShared
+                } else {
+                    witchy_wir::canonical_safewir::LoadTransfer::CopyScalar
+                },
+            }));
+            elements.push(self.owned_dict_value(element, source_type)?);
+        }
+        let pair = self.lower_aggregate_moving(&pair_type, &pair_shape, 0, elements)?;
+        let grown = self.push_owned_or_reuse_scalar_element(current[0], pair, &list_type)?;
         let next = self.fresh(ValueType::Size)?;
         self.push_operation(Operation::Dictionary(DictionaryOperation::ReadSlot {
             destination: next,
@@ -392,9 +485,7 @@ impl FunctionLowerer<'_> {
             }
             ("dict.pairs", [operand]) => {
                 let (dict, key_type, value_type) = self.lower_dict_table_operand(operand)?;
-                let keys = self.lower_dict_table_list(dict, &key_type, DictionarySlotField::Key)?;
-                let values = self.lower_dict_table_list(dict, &value_type, DictionarySlotField::Value)?;
-                self.lower_dict_pairs(keys, values, &key_type, &value_type)
+                self.lower_dict_table_pairs(dict, &key_type, &value_type)
             }
             ("dict.__update", [operand, key, default, callback]) => {
                 let (dict, key_type, value_type) = self.lower_dict_table_operand(operand)?;
@@ -455,15 +546,7 @@ impl FunctionLowerer<'_> {
             destination: present,
             value: true,
         });
-        // Initialize and Rehash authenticate capacity >= 8, so the unsigned
-        // remainder below has a nonzero divisor on every admitted table.
-        let first = self.push_arithmetic(
-            ValueType::Size,
-            ArithmeticOperator::RemainderUnsigned,
-            low_size,
-            capacity,
-            OverflowBehavior::Trap,
-        )?;
+        let first = self.dict_bucket(low_size, capacity)?;
         let header = self.new_block(&[ValueType::Size, ValueType::Size, ValueType::Size])?;
         let probe = self.new_block(&[ValueType::Size, ValueType::Size, ValueType::Size])?;
         let occupied = self.new_block(&[ValueType::Size, ValueType::Size, ValueType::Size])?;
@@ -606,13 +689,7 @@ impl FunctionLowerer<'_> {
             one,
             OverflowBehavior::Wrap,
         )?;
-        let next = self.push_arithmetic(
-            ValueType::Size,
-            ArithmeticOperator::RemainderUnsigned,
-            incremented,
-            capacity,
-            OverflowBehavior::Trap,
-        )?;
+        let next = self.dict_bucket(incremented, capacity)?;
         let attempts = self.push_arithmetic(
             ValueType::Size,
             ArithmeticOperator::Add,
@@ -656,13 +733,7 @@ impl FunctionLowerer<'_> {
         )?;
         let low_size = self.fresh(ValueType::Size)?;
         self.push_operation(Operation::NarrowSize { destination: low_size, value: low });
-        let first = self.push_arithmetic(
-            ValueType::Size,
-            ArithmeticOperator::RemainderUnsigned,
-            low_size,
-            capacity,
-            OverflowBehavior::Trap,
-        )?;
+        let first = self.dict_bucket(low_size, capacity)?;
         let zero = self.push_const_size(0)?;
         let one = self.push_const_size(1)?;
         let header = self.new_block(&[ValueType::Size, ValueType::Size])?;
@@ -696,7 +767,7 @@ impl FunctionLowerer<'_> {
         self.current = advance;
         let cursor = self.block_parameter_values(advance);
         let incremented = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, cursor[0], one, OverflowBehavior::Wrap)?;
-        let next = self.push_arithmetic(ValueType::Size, ArithmeticOperator::RemainderUnsigned, incremented, capacity, OverflowBehavior::Trap)?;
+        let next = self.dict_bucket(incremented, capacity)?;
         let attempts = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, cursor[1], one, OverflowBehavior::Wrap)?;
         self.finish_current(Terminator::Branch { target: header, arguments: vec![next, attempts] })?;
         self.current = exit;

@@ -16464,67 +16464,6 @@ impl FunctionLowerer<'_> {
         self.lower_dict_table_call(expression, name, args)
     }
 
-    fn lower_dict_pairs(&mut self, keys: ValueId, values: ValueId, key_type: &Type, value_type: &Type) -> Result<ValueId, CanonicalLoweringError> {
-        let pair_type = Type::Tuple(vec![key_type.clone(), value_type.clone()]);
-        let pair_shape = scalar_aggregate_shape(&pair_type, self.definitions)
-            .ok_or(CanonicalLoweringError::UnsupportedExpression("dict pair type"))?;
-        let list_type = Type::Named("List".into(), vec![pair_type.clone()]);
-        let key_list = Type::Named("List".into(), vec![key_type.clone()]);
-        let value_list = Type::Named("List".into(), vec![value_type.clone()]);
-        let (_, key_element, _, _) = list_layout(&key_list, self.layout_bundle, self.layouts, &self.closures.layouts, self.definitions)?;
-        let (_, value_element, _, _) = list_layout(&value_list, self.layout_bundle, self.layouts, &self.closures.layouts, self.definitions)?;
-        self.ensure_list_extent(keys)?;
-        self.ensure_list_extent(values)?;
-        let count = *self.list_counts.get(&keys).ok_or(CanonicalLoweringError::UnsupportedExpression("dict keys extent"))?;
-        let value_count = *self.list_counts.get(&values).ok_or(CanonicalLoweringError::UnsupportedExpression("dict values extent"))?;
-        let out = self.push_empty_value(&list_type)?;
-        let zero = self.push_const_size(0)?;
-        let one = self.push_const_size(1)?;
-        let (lanes, mut shapes) = self.accumulator_lanes(out)?;
-        let exit = self.new_block_owned(&shapes)?;
-        shapes.push((ValueType::Size, None));
-        let header = self.new_block_owned(&shapes)?;
-        let body = self.new_block_owned(&shapes)?;
-        let mut entry = lanes.clone();
-        entry.push(zero);
-        self.finish_current(Terminator::Branch { target: header, arguments: entry })?;
-        let header_values = self.block_parameter_values(header);
-        self.track_accumulator_lanes(&header_values);
-        self.current = header;
-        let cursor = header_values[3];
-        let more = self.push_compare(ComparisonOperator::LessUnsigned, cursor, count)?;
-        self.finish_current(Terminator::BranchIf {
-            condition: more,
-            then_target: body,
-            then_arguments: header_values.clone(),
-            else_target: exit,
-            else_arguments: header_values[..3].to_vec(),
-        })?;
-        let body_values = self.block_parameter_values(body);
-        self.track_accumulator_lanes(&body_values);
-        self.current = body;
-        let cursor = body_values[3];
-        let key_in_bounds = self.push_compare(ComparisonOperator::LessUnsigned, cursor, count)?;
-        self.push_guard(key_in_bounds, witchy_wir::canonical_safewir::GuardKind::Bounds);
-        let key = self.load_list_element(keys, cursor, key_element)?;
-        let key = self.owned_dict_value(key, key_type)?;
-        let value_in_bounds = self.push_compare(ComparisonOperator::LessUnsigned, cursor, value_count)?;
-        self.push_guard(value_in_bounds, witchy_wir::canonical_safewir::GuardKind::Bounds);
-        let value = self.load_list_element(values, cursor, value_element)?;
-        let value = self.owned_dict_value(value, value_type)?;
-        let pair = self.lower_aggregate_moving(&pair_type, &pair_shape, 0, vec![key, value])?;
-        let grown = self.push_owned_or_reuse_scalar_element(body_values[0], pair, &list_type)?;
-        let (folded, _) = self.accumulator_lanes(grown)?;
-        let mut folded = self.split_folded_lanes(folded)?;
-        let next = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, cursor, one, OverflowBehavior::Wrap)?;
-        folded.push(next);
-        self.finish_current(Terminator::Branch { target: header, arguments: folded })?;
-        self.current = exit;
-        let exit_values = self.block_parameter_values(exit);
-        self.track_accumulator_lanes(&exit_values);
-        Ok(exit_values[0])
-    }
-
     /// `Bytes` is the raw-byte buffer layout under its own source type; its
     /// intrinsics are byte kernels over that buffer with the interpreter's
     /// rules: an index or a byte value out of range aborts, `slice` clamps,
