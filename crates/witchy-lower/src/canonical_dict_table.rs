@@ -605,20 +605,23 @@ impl FunctionLowerer<'_> {
             value: true,
         });
         let first = self.dict_bucket(low_size, capacity)?;
-        // The last four lanes carry the three SIMD control masks and the
-        // number of buckets remaining in the current group.
-        let lanes = [ValueType::Size; 7];
-        let header = self.new_block(&lanes)?;
-        let load_group = self.new_block(&lanes)?;
-        let probe = self.new_block(&lanes)?;
-        let nonempty = self.new_block(&lanes)?;
-        let occupied = self.new_block(&lanes)?;
-        let compare_key = self.new_block(&lanes)?;
-        let advance = self.new_block(&lanes)?;
+        let header = self.new_block(&[ValueType::Size, ValueType::Size, ValueType::Size])?;
+        let scan = self.new_block(&[ValueType::Size, ValueType::Size, ValueType::Size])?;
+        let event = self.new_block(&[
+            ValueType::Size, ValueType::Size, ValueType::Size,
+            ValueType::Size, ValueType::Size, ValueType::Size,
+        ])?;
+        let not_empty = self.new_block(&[
+            ValueType::Size, ValueType::Size, ValueType::Size, ValueType::Bool,
+        ])?;
+        let tombstone = self.new_block(&[ValueType::Size, ValueType::Size, ValueType::Size])?;
+        let occupied = self.new_block(&[ValueType::Size, ValueType::Size, ValueType::Size])?;
+        let compare_key = self.new_block(&[ValueType::Size, ValueType::Size, ValueType::Size])?;
+        let advance = self.new_block(&[ValueType::Size, ValueType::Size, ValueType::Size])?;
         let exit = self.new_block(&[ValueType::Bool, ValueType::Size, ValueType::Size])?;
         self.finish_current(Terminator::Branch {
             target: header,
-            arguments: vec![first, zero, capacity, zero, zero, zero, zero],
+            arguments: vec![first, zero, capacity],
         })?;
 
         self.current = header;
@@ -626,75 +629,87 @@ impl FunctionLowerer<'_> {
         let more = self.push_compare(ComparisonOperator::LessUnsigned, cursor[1], capacity)?;
         self.finish_current(Terminator::BranchIf {
             condition: more,
-            then_target: load_group,
+            then_target: scan,
             then_arguments: cursor.clone(),
             else_target: exit,
             else_arguments: vec![missing, capacity, cursor[2]],
         })?;
 
-        self.current = load_group;
-        let cursor = self.block_parameter_values(load_group);
-        let group_exhausted = self.push_compare(ComparisonOperator::Equal, cursor[6], zero)?;
-        let scan_group = self.new_block(&lanes)?;
-        self.finish_current(Terminator::BranchIf {
-            condition: group_exhausted,
-            then_target: scan_group,
-            then_arguments: cursor.clone(),
-            else_target: probe,
-            else_arguments: cursor,
-        })?;
-        self.current = scan_group;
-        let cursor = self.block_parameter_values(scan_group);
+        self.current = scan;
+        let cursor = self.block_parameter_values(scan);
         let matching = self.fresh(ValueType::Size)?;
         let empty = self.fresh(ValueType::Size)?;
         let deleted = self.fresh(ValueType::Size)?;
+        let first_event = self.fresh(ValueType::Size)?;
         self.push_operation(Operation::Dictionary(DictionaryOperation::ProbeGroup {
-            matching, empty, deleted, dict, bucket: cursor[0], fingerprint,
+            matching, empty, deleted, first_event, dict, bucket: cursor[0], fingerprint,
         }));
-        let events = self.push_arithmetic(ValueType::Size, ArithmeticOperator::BitOr, matching, empty, OverflowBehavior::Wrap)?;
-        let events = self.push_arithmetic(ValueType::Size, ArithmeticOperator::BitOr, events, deleted, OverflowBehavior::Wrap)?;
-        let has_event = self.push_compare(ComparisonOperator::NotEqual, events, zero)?;
-        let skip_group = self.new_block(&[ValueType::Size, ValueType::Size, ValueType::Size])?;
+        // The first set control bit is the next event in the original linear
+        // probe order. Sixteen means there was no event in this group.
+        let offset_bucket = self.push_arithmetic(
+            ValueType::Size, ArithmeticOperator::Add, cursor[0], first_event, OverflowBehavior::Wrap,
+        )?;
+        let bucket = self.dict_bucket(offset_bucket, capacity)?;
+        let attempts = self.push_arithmetic(
+            ValueType::Size, ArithmeticOperator::Add, cursor[1], first_event, OverflowBehavior::Wrap,
+        )?;
+        // A mirrored group may include buckets beyond the remaining probe
+        // budget. Never compare a key after one complete circuit of the table.
+        let within_table = self.push_compare(ComparisonOperator::LessUnsigned, attempts, capacity)?;
+        let valid_event = self.new_block(&[
+            ValueType::Size, ValueType::Size, ValueType::Size,
+            ValueType::Size, ValueType::Size, ValueType::Size,
+        ])?;
+        self.finish_current(Terminator::BranchIf {
+            condition: within_table,
+            then_target: valid_event,
+            then_arguments: vec![bucket, attempts, cursor[2], empty, deleted, first_event],
+            else_target: exit,
+            else_arguments: vec![missing, capacity, cursor[2]],
+        })?;
+        self.current = valid_event;
+        let cursor = self.block_parameter_values(valid_event);
+        let has_event = self.push_compare(ComparisonOperator::LessUnsigned, cursor[5], sixteen)?;
         self.finish_current(Terminator::BranchIf {
             condition: has_event,
-            then_target: probe,
-            then_arguments: vec![cursor[0], cursor[1], cursor[2], matching, empty, deleted, sixteen],
-            else_target: skip_group,
+            then_target: event,
+            then_arguments: cursor.clone(),
+            else_target: header,
             else_arguments: cursor[..3].to_vec(),
         })?;
-        self.current = skip_group;
-        let cursor = self.block_parameter_values(skip_group);
-        let incremented = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, cursor[0], sixteen, OverflowBehavior::Wrap)?;
-        let next = self.dict_bucket(incremented, capacity)?;
-        let attempts = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, cursor[1], sixteen, OverflowBehavior::Wrap)?;
-        self.finish_current(Terminator::Branch {
-            target: header,
-            arguments: vec![next, attempts, cursor[2], zero, zero, zero, zero],
-        })?;
 
-        self.current = probe;
-        let cursor = self.block_parameter_values(probe);
-        let empty_bit = self.push_arithmetic(ValueType::Size, ArithmeticOperator::BitAnd, cursor[4], one, OverflowBehavior::Wrap)?;
+        self.current = event;
+        let cursor = self.block_parameter_values(event);
+        let empty_bit = self.push_arithmetic(
+            ValueType::Size, ArithmeticOperator::ShiftRightUnsigned, cursor[3], cursor[5], OverflowBehavior::Wrap,
+        )?;
+        let empty_bit = self.push_arithmetic(
+            ValueType::Size, ArithmeticOperator::BitAnd, empty_bit, one, OverflowBehavior::Wrap,
+        )?;
         let is_empty = self.push_compare(ComparisonOperator::NotEqual, empty_bit, zero)?;
+        let deleted_bit = self.push_arithmetic(
+            ValueType::Size, ArithmeticOperator::ShiftRightUnsigned, cursor[4], cursor[5], OverflowBehavior::Wrap,
+        )?;
+        let deleted_bit = self.push_arithmetic(
+            ValueType::Size, ArithmeticOperator::BitAnd, deleted_bit, one, OverflowBehavior::Wrap,
+        )?;
+        let is_deleted = self.push_compare(ComparisonOperator::NotEqual, deleted_bit, zero)?;
         self.finish_current(Terminator::BranchIf {
             condition: is_empty,
             then_target: exit,
             then_arguments: vec![missing, cursor[0], cursor[2]],
-            else_target: nonempty,
-            else_arguments: cursor,
+            else_target: not_empty,
+            else_arguments: vec![cursor[0], cursor[1], cursor[2], is_deleted],
         })?;
 
-        self.current = nonempty;
-        let cursor = self.block_parameter_values(nonempty);
-        let deleted_bit = self.push_arithmetic(ValueType::Size, ArithmeticOperator::BitAnd, cursor[5], one, OverflowBehavior::Wrap)?;
-        let is_deleted = self.push_compare(ComparisonOperator::NotEqual, deleted_bit, zero)?;
-        let tombstone = self.new_block(&lanes)?;
+        self.current = not_empty;
+        let cursor = self.block_parameter_values(not_empty);
         self.finish_current(Terminator::BranchIf {
-            condition: is_deleted,
+            condition: cursor[3],
             then_target: tombstone,
-            then_arguments: cursor.clone(),
+            then_arguments: cursor[..3].to_vec(),
             else_target: occupied,
-            else_arguments: cursor,
+            else_arguments: cursor[..3].to_vec(),
         })?;
 
         self.current = tombstone;
@@ -711,23 +726,13 @@ impl FunctionLowerer<'_> {
         self.current = record_tombstone;
         self.finish_current(Terminator::Branch {
             target: advance,
-            arguments: vec![cursor[0], cursor[1], cursor[0], cursor[3], cursor[4], cursor[5], cursor[6]],
+            arguments: vec![cursor[0], cursor[1], cursor[0]],
         })?;
 
         self.current = occupied;
         let cursor = self.block_parameter_values(occupied);
-        let match_bit = self.push_arithmetic(ValueType::Size, ArithmeticOperator::BitAnd, cursor[3], one, OverflowBehavior::Wrap)?;
-        let candidate = self.push_compare(ComparisonOperator::NotEqual, match_bit, zero)?;
-        let check_hash = self.new_block(&lanes)?;
-        self.finish_current(Terminator::BranchIf {
-            condition: candidate,
-            then_target: check_hash,
-            then_arguments: cursor.clone(),
-            else_target: advance,
-            else_arguments: cursor,
-        })?;
-        self.current = check_hash;
-        let cursor = self.block_parameter_values(check_hash);
+        // Preserve the old full-hash gate, including the number and order of
+        // effectful user comparators on fingerprint collisions.
         let stored_hash = self.fresh(ValueType::Int)?;
         self.push_operation(Operation::Dictionary(DictionaryOperation::ReadSlot {
             destination: stored_hash,
@@ -788,27 +793,15 @@ impl FunctionLowerer<'_> {
         self.current = advance;
         let cursor = self.block_parameter_values(advance);
         let incremented = self.push_arithmetic(
-            ValueType::Size,
-            ArithmeticOperator::Add,
-            cursor[0],
-            one,
-            OverflowBehavior::Wrap,
+            ValueType::Size, ArithmeticOperator::Add, cursor[0], one, OverflowBehavior::Wrap,
         )?;
         let next = self.dict_bucket(incremented, capacity)?;
         let attempts = self.push_arithmetic(
-            ValueType::Size,
-            ArithmeticOperator::Add,
-            cursor[1],
-            one,
-            OverflowBehavior::Wrap,
+            ValueType::Size, ArithmeticOperator::Add, cursor[1], one, OverflowBehavior::Wrap,
         )?;
-        let matching = self.push_arithmetic(ValueType::Size, ArithmeticOperator::ShiftRightUnsigned, cursor[3], one, OverflowBehavior::Wrap)?;
-        let empty = self.push_arithmetic(ValueType::Size, ArithmeticOperator::ShiftRightUnsigned, cursor[4], one, OverflowBehavior::Wrap)?;
-        let deleted = self.push_arithmetic(ValueType::Size, ArithmeticOperator::ShiftRightUnsigned, cursor[5], one, OverflowBehavior::Wrap)?;
-        let remaining = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Subtract, cursor[6], one, OverflowBehavior::Wrap)?;
         self.finish_current(Terminator::Branch {
             target: header,
-            arguments: vec![next, attempts, cursor[2], matching, empty, deleted, remaining],
+            arguments: vec![next, attempts, cursor[2]],
         })?;
 
         self.current = exit;

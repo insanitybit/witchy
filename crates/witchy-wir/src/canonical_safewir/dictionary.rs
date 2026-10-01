@@ -54,6 +54,9 @@ pub enum DictionaryOperation {
         matching: ValueId,
         empty: ValueId,
         deleted: ValueId,
+        /// Offset of the earliest candidate, empty, or deleted control byte;
+        /// 16 means the whole group can be skipped.
+        first_event: ValueId,
         dict: ValueId,
         bucket: ValueId,
         fingerprint: ValueId,
@@ -94,8 +97,8 @@ impl DictionaryOperation {
             | Self::ReadSlot { destination, .. }
             | Self::CloneExact { destination, .. }
             | Self::Rehash { destination, .. } => vec![*destination],
-            Self::ProbeGroup { matching, empty, deleted, .. } =>
-                vec![*matching, *empty, *deleted],
+            Self::ProbeGroup { matching, empty, deleted, first_event, .. } =>
+                vec![*matching, *empty, *deleted, *first_event],
             Self::ReplaceValue { displaced, .. } => vec![*displaced],
             Self::RemoveSlot { removed_value, .. } => vec![*removed_value],
             Self::InsertSlot { .. } => Vec::new(),
