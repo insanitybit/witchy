@@ -3,7 +3,7 @@ fn main(console: Console, clock: Clock):
     let bench_t0 = clock.now_monotonic()
     var xs = []
     for i in 0..300000:
-        xs = list.push(xs, i * 3)
+        list.push(xs, i * 3)
     var total = 0
     for x in xs:
         total = total + x % 7
