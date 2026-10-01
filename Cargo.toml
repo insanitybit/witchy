@@ -134,6 +134,7 @@ getrandom = { version = "0.2", features = ["js"] }
 aws-lc-rs = { version = "1", optional = true }
 
 [dev-dependencies]
+hashbrown = "0.16"
 proptest = "1.11.0"
 # Raw AST lowering is deliberate compiler-test machinery, not a production API.
 witchy-lower = { path = "crates/witchy-lower", features = ["raw-module-test-api"] }
