@@ -709,20 +709,33 @@ pub(super) fn emit(
             emit_set(body, local, function.id, *destination)
         }
         DictionaryOperation::ProbeGroup { dict, bucket, fingerprint, matching, empty, deleted, first_event } => {
-            emit_get(body, local, function.id, *bucket)?;
             emit_get(body, local, function.id, *dict)?;
             body.instruction(&wasm_encoder::Instruction::I32Load(wasm_encoder::MemArg { offset: 4, align: 2, memory_index: 0 }));
+            emit_set_index(body, local.scratch[5]);
+            emit_get(body, local, function.id, *bucket)?;
+            emit_get_index(body, local.scratch[5]);
             body.instruction(&wasm_encoder::Instruction::I32GeU);
             body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
             body.instruction(&wasm_encoder::Instruction::Unreachable);
             body.instruction(&wasm_encoder::Instruction::End);
-            emit_control_base(body, function, local, *dict)?;
+            emit_get(body, local, function.id, *dict)?;
+            emit_get_index(body, local.scratch[5]);
+            body.instruction(&wasm_encoder::Instruction::I32Const(32));
+            body.instruction(&wasm_encoder::Instruction::I32Mul);
+            body.instruction(&wasm_encoder::Instruction::I32Add);
+            body.instruction(&wasm_encoder::Instruction::I32Const(20));
+            body.instruction(&wasm_encoder::Instruction::I32Add);
             emit_get(body, local, function.id, *bucket)?;
             body.instruction(&wasm_encoder::Instruction::I32Add);
             emit_set_index(body, local.scratch[4]);
+            let control_vector = *local.scratch.get(12).ok_or(EncodeError::UnsupportedLayout {
+                function: function.id, operation: "Dictionary SIMD scratch",
+            })?;
+            emit_get_index(body, local.scratch[4]);
+            body.instruction(&wasm_encoder::Instruction::V128Load(memarg(1)));
+            emit_set_index(body, control_vector);
             for (destination, marker) in [(*matching, None), (*empty, Some(0x80)), (*deleted, Some(0xFE))] {
-                emit_get_index(body, local.scratch[4]);
-                body.instruction(&wasm_encoder::Instruction::V128Load(memarg(1)));
+                emit_get_index(body, control_vector);
                 if let Some(marker) = marker {
                     body.instruction(&wasm_encoder::Instruction::I32Const(marker));
                 } else {
@@ -1041,16 +1054,23 @@ pub(super) fn plan(
             push_set(plan, local, *destination)
         }
         DictionaryOperation::ProbeGroup { dict, bucket, fingerprint, matching, empty, deleted, first_event } => {
-            push_get(plan, local, *bucket)?;
             push_get(plan, local, *dict)?;
             plan.extend([PlanToken::I32Load { offset: 4, align: 2, memory: 0 },
+                PlanToken::LocalSet(local.scratch[5])]);
+            push_get(plan, local, *bucket)?;
+            plan.extend([PlanToken::LocalGet(local.scratch[5]),
                 PlanToken::I32GeU, PlanToken::If("Empty".into()), PlanToken::Unreachable, PlanToken::End]);
-            plan_control_base(plan, local, *dict)?;
+            push_get(plan, local, *dict)?;
+            plan.extend([PlanToken::LocalGet(local.scratch[5]), PlanToken::I32Const(32),
+                PlanToken::I32Mul, PlanToken::I32Add, PlanToken::I32Const(20), PlanToken::I32Add]);
             push_get(plan, local, *bucket)?;
             plan.extend([PlanToken::I32Add, PlanToken::LocalSet(local.scratch[4])]);
+            let control_vector = *local.scratch.get(12).ok_or(CanonicalAdmissionError::UnsupportedPlan)?;
+            plan.extend([PlanToken::LocalGet(local.scratch[4]),
+                PlanToken::V128Load { offset: 0, align: 0, memory: 0 },
+                PlanToken::LocalSet(control_vector)]);
             for (destination, marker) in [(*matching, None), (*empty, Some(0x80)), (*deleted, Some(0xFE))] {
-                plan.extend([PlanToken::LocalGet(local.scratch[4]),
-                    PlanToken::V128Load { offset: 0, align: 0, memory: 0 }]);
+                plan.push(PlanToken::LocalGet(control_vector));
                 if let Some(marker) = marker {
                     plan.push(PlanToken::I32Const(marker));
                 } else {

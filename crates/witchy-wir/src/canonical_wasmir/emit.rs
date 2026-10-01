@@ -117,6 +117,14 @@ let mut scratch = vec![0; drop_worklist::SCRATCH];
             // explicit indices below are still independent of value IDs.
         }
     }
+    if function.blocks.iter().any(|block| block.operations.iter().any(|operation|
+        matches!(operation, Operation::Dictionary(
+            crate::canonical_safewir::dictionary::DictionaryOperation::ProbeGroup { .. }
+        ))
+    )) {
+        scratch.push(entry.parameters.len() as u32 + extra_types.len() as u32);
+        extra_types.push(ValType::V128);
+    }
     Ok(LocalLayout {
         memory_helpers: None,
         owner_scratch, owner_bridges: Vec::new(),
