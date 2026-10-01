@@ -114,6 +114,168 @@ fn plan_i32_store(plan: &mut Vec<PlanToken>, address: u32, offset: i32, value: u
     plan.extend([PlanToken::LocalGet(value), PlanToken::I32Store { offset: 0, align: 2, memory: 0 }]);
 }
 
+fn pointer_offsets(function: &Function, layouts: &LayoutInterner, source: ValueId) -> Result<Vec<i32>, EncodeError> {
+    let Some(ValueType::Ref(layout)) = function.value_types.get(&source).copied() else {
+        return Err(EncodeError::UnsupportedLayout { function: function.id, operation: "Dictionary source" });
+    };
+    let physical = resolve_backend_layout(function.id, layouts, layout, "Dictionary source")
+        .map_err(EncodeError::Lowering)?;
+    let Some(descriptor) = layouts.get(physical) else {
+        return Err(EncodeError::UnsupportedLayout { function: function.id, operation: "Dictionary layout" });
+    };
+    let LayoutKind::CanonicalDictionary { key, value, .. } = descriptor.kind() else {
+        return Err(EncodeError::UnsupportedLayout { function: function.id, operation: "Dictionary layout" });
+    };
+    let mut offsets = Vec::new();
+    for (offset, slot) in [(16, *key), (24, *value)] {
+        let physical = resolve_backend_layout(function.id, layouts, slot, "Dictionary slot")
+            .map_err(EncodeError::Lowering)?;
+        match layouts.get(physical).map(|descriptor| descriptor.kind()) {
+            Some(LayoutKind::RuntimePointerValueSlot { semantics: PointerSlot::Owned, .. }) => offsets.push(offset),
+            Some(LayoutKind::Scalar(_)) => {}
+            _ => return Err(EncodeError::UnsupportedLayout { function: function.id, operation: "Dictionary slot" }),
+        }
+    }
+    Ok(offsets)
+}
+
+fn key_pointee(function: &Function, layouts: &LayoutInterner, source: ValueId) -> Result<Option<crate::layout::LayoutId>, EncodeError> {
+    let Some(ValueType::Ref(layout)) = function.value_types.get(&source).copied() else {
+        return Err(EncodeError::UnsupportedLayout { function: function.id, operation: "Dictionary source" });
+    };
+    let physical = resolve_backend_layout(function.id, layouts, layout, "Dictionary key")
+        .map_err(EncodeError::Lowering)?;
+    let Some(descriptor) = layouts.get(physical) else {
+        return Err(EncodeError::UnsupportedLayout { function: function.id, operation: "Dictionary layout" });
+    };
+    let LayoutKind::CanonicalDictionary { key, .. } = descriptor.kind() else {
+        return Err(EncodeError::UnsupportedLayout { function: function.id, operation: "Dictionary layout" });
+    };
+    let physical = resolve_backend_layout(function.id, layouts, *key, "Dictionary key")
+        .map_err(EncodeError::Lowering)?;
+    match layouts.get(physical).map(|descriptor| descriptor.kind()) {
+        Some(LayoutKind::RuntimePointerValueSlot { pointee, semantics: PointerSlot::Owned }) => Ok(Some(*pointee)),
+        Some(LayoutKind::Scalar(_)) => Ok(None),
+        _ => Err(EncodeError::UnsupportedLayout { function: function.id, operation: "Dictionary key" }),
+    }
+}
+
+fn emit_clone_exact(body: &mut WasmFunctionEncoder, function: &Function, local: &LocalLayout,
+    layouts: &LayoutInterner, destination: ValueId, source: ValueId, capacity: ValueId,
+) -> Result<(), EncodeError> {
+    let offsets = pointer_offsets(function, layouts, source)?;
+    let retain = local.memory_helpers.as_ref().map(|helpers| helpers.retain);
+    if !offsets.is_empty() && retain.is_none() {
+        return Err(EncodeError::UnsupportedLayout { function: function.id, operation: "Dictionary retain helper" });
+    }
+    emit_capacity_guard(body, function, local, capacity)?;
+    emit_get(body, local, function.id, source)?;
+    body.instruction(&wasm_encoder::Instruction::I32Const(4));
+    body.instruction(&wasm_encoder::Instruction::I32Add);
+    body.instruction(&wasm_encoder::Instruction::I32Load(memarg(4)));
+    emit_get(body, local, function.id, capacity)?;
+    body.instruction(&wasm_encoder::Instruction::I32Ne);
+    body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
+    body.instruction(&wasm_encoder::Instruction::Unreachable);
+    body.instruction(&wasm_encoder::Instruction::End);
+    let Some(ValueType::Ref(layout_id)) = function.value_types.get(&destination).copied() else {
+        return Err(EncodeError::UnsupportedLayout { function: function.id, operation: "Dictionary clone destination" });
+    };
+    emit_alloc(body, function, local, layouts, destination, layout_id, &counted_extent(capacity))?;
+    emit_get(body, local, function.id, destination)?;
+    emit_get(body, local, function.id, source)?;
+    emit_get(body, local, function.id, capacity)?;
+    body.instruction(&wasm_encoder::Instruction::I32Const(32));
+    body.instruction(&wasm_encoder::Instruction::I32Mul);
+    body.instruction(&wasm_encoder::Instruction::I32Const(20));
+    body.instruction(&wasm_encoder::Instruction::I32Add);
+    body.instruction(&wasm_encoder::Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
+    if let Some(retain) = retain {
+        body.instruction(&wasm_encoder::Instruction::I32Const(0));
+        emit_set_index(body, local.scratch[4]);
+        body.instruction(&wasm_encoder::Instruction::Block(BlockType::Empty));
+        body.instruction(&wasm_encoder::Instruction::Loop(BlockType::Empty));
+        emit_get_index(body, local.scratch[4]);
+        emit_get(body, local, function.id, capacity)?;
+        body.instruction(&wasm_encoder::Instruction::I32GeU);
+        body.instruction(&wasm_encoder::Instruction::BrIf(1));
+        emit_get(body, local, function.id, destination)?;
+        body.instruction(&wasm_encoder::Instruction::I32Const(20));
+        body.instruction(&wasm_encoder::Instruction::I32Add);
+        emit_get_index(body, local.scratch[4]);
+        body.instruction(&wasm_encoder::Instruction::I32Const(32));
+        body.instruction(&wasm_encoder::Instruction::I32Mul);
+        body.instruction(&wasm_encoder::Instruction::I32Add);
+        emit_set_index(body, local.scratch[5]);
+        emit_get_index(body, local.scratch[5]);
+        body.instruction(&wasm_encoder::Instruction::I32Load(memarg(4)));
+        body.instruction(&wasm_encoder::Instruction::I32Const(1));
+        body.instruction(&wasm_encoder::Instruction::I32Eq);
+        body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
+        for offset in offsets {
+            emit_get_index(body, local.scratch[5]);
+            body.instruction(&wasm_encoder::Instruction::I32Const(offset));
+            body.instruction(&wasm_encoder::Instruction::I32Add);
+            body.instruction(&wasm_encoder::Instruction::I32Load(memarg(4)));
+            body.instruction(&wasm_encoder::Instruction::Call(retain));
+            body.instruction(&wasm_encoder::Instruction::Drop);
+        }
+        body.instruction(&wasm_encoder::Instruction::End);
+        emit_get_index(body, local.scratch[4]);
+        body.instruction(&wasm_encoder::Instruction::I32Const(1));
+        body.instruction(&wasm_encoder::Instruction::I32Add);
+        emit_set_index(body, local.scratch[4]);
+        body.instruction(&wasm_encoder::Instruction::Br(0));
+        body.instruction(&wasm_encoder::Instruction::End);
+        body.instruction(&wasm_encoder::Instruction::End);
+    }
+    Ok(())
+}
+
+fn plan_clone_exact(plan: &mut Vec<PlanToken>, function: &Function, local: &LocalLayout,
+    layouts: &LayoutInterner, destination: ValueId, source: ValueId, capacity: ValueId,
+) -> Result<(), CanonicalAdmissionError> {
+    let offsets = pointer_offsets(function, layouts, source).map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
+    let retain = local.memory_helpers.as_ref().map(|helpers| helpers.retain);
+    if !offsets.is_empty() && retain.is_none() { return Err(CanonicalAdmissionError::UnsupportedPlan); }
+    plan_capacity_guard(plan, local, capacity)?;
+    push_get(plan, local, source)?;
+    plan.extend([PlanToken::I32Const(4), PlanToken::I32Add,
+        PlanToken::I32Load { offset: 0, align: 2, memory: 0 }]);
+    push_get(plan, local, capacity)?;
+    plan.extend([PlanToken::I32Ne, PlanToken::If("Empty".into()), PlanToken::Unreachable, PlanToken::End]);
+    let Some(ValueType::Ref(layout_id)) = function.value_types.get(&destination).copied() else {
+        return Err(CanonicalAdmissionError::UnsupportedPlan);
+    };
+    let collection = collection_layout(function.id, layouts, layout_id).map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
+    expected_alloc_plan(plan, function, local, Some(collection), destination, &counted_extent(capacity))?;
+    push_get(plan, local, destination)?;
+    push_get(plan, local, source)?;
+    push_get(plan, local, capacity)?;
+    plan.extend([PlanToken::I32Const(32), PlanToken::I32Mul, PlanToken::I32Const(20), PlanToken::I32Add,
+        PlanToken::MemoryCopy { source: 0, destination: 0 }]);
+    if let Some(retain) = retain {
+        plan.extend([PlanToken::I32Const(0), PlanToken::LocalSet(local.scratch[4]),
+            PlanToken::Block("Empty".into()), PlanToken::Loop("Empty".into()),
+            PlanToken::LocalGet(local.scratch[4])]);
+        push_get(plan, local, capacity)?;
+        plan.extend([PlanToken::I32GeU, PlanToken::BrIf(1)]);
+        push_get(plan, local, destination)?;
+        plan.extend([PlanToken::I32Const(20), PlanToken::I32Add,
+            PlanToken::LocalGet(local.scratch[4]), PlanToken::I32Const(32), PlanToken::I32Mul,
+            PlanToken::I32Add, PlanToken::LocalSet(local.scratch[5]),
+            PlanToken::LocalGet(local.scratch[5]), PlanToken::I32Load { offset: 0, align: 2, memory: 0 },
+            PlanToken::I32Const(1), PlanToken::I32Eq, PlanToken::If("Empty".into())]);
+        for offset in offsets {
+            plan.extend([PlanToken::LocalGet(local.scratch[5]), PlanToken::I32Const(offset), PlanToken::I32Add,
+                PlanToken::I32Load { offset: 0, align: 2, memory: 0 }, PlanToken::Call(retain), PlanToken::Drop]);
+        }
+        plan.extend([PlanToken::End, PlanToken::LocalGet(local.scratch[4]), PlanToken::I32Const(1),
+            PlanToken::I32Add, PlanToken::LocalSet(local.scratch[4]), PlanToken::Br(0), PlanToken::End, PlanToken::End]);
+    }
+    Ok(())
+}
+
 fn emit_capacity_guard(body: &mut WasmFunctionEncoder, function: &Function, local: &LocalLayout, capacity: ValueId) -> Result<(), EncodeError> {
     emit_get(body, local, function.id, capacity)?;
     body.instruction(&wasm_encoder::Instruction::I32Const(8));
@@ -149,6 +311,8 @@ pub(super) fn emit(
     operation: &DictionaryOperation,
 ) -> Result<(), EncodeError> {
     match operation {
+        DictionaryOperation::CloneExact { destination, source, capacity } =>
+            emit_clone_exact(body, function, local, layouts, *destination, *source, *capacity),
         DictionaryOperation::Initialize { destination, layout, capacity } => {
             emit_capacity_guard(body, function, local, *capacity)?;
             emit_alloc(body, function, local, layouts, *destination, *layout, &counted_extent(*capacity))?;
@@ -338,6 +502,97 @@ pub(super) fn emit(
             emit_i32_store(body, local.scratch[4], 0, local.scratch[9]);
             Ok(())
         }
+        DictionaryOperation::RemoveSlot { removed_value, dict, bucket } => {
+            use crate::canonical_safewir::dictionary::DictionarySlotField;
+            let key_drop = key_pointee(function, layouts, *dict)?
+                .map(|pointee| local.memory_helpers.as_ref().and_then(|helpers| helpers.drops.get(&pointee).copied())
+                    .ok_or(EncodeError::UnsupportedLayout { function: function.id, operation: "Dictionary key drop" }))
+                .transpose()?;
+            emit_slot_address(body, function, local, *dict, *bucket, DictionarySlotField::Value)?;
+            emit_get_index(body, local.scratch[4]);
+            body.instruction(&wasm_encoder::Instruction::I32Const(24));
+            body.instruction(&wasm_encoder::Instruction::I32Add);
+            body.instruction(&match function.value_types.get(removed_value) {
+                Some(ValueType::Int) => wasm_encoder::Instruction::I64Load(memarg(8)),
+                Some(ValueType::Float) => wasm_encoder::Instruction::F64Load(memarg(8)),
+                Some(ValueType::Size | ValueType::Bool | ValueType::Unit | ValueType::Ref(_)) => wasm_encoder::Instruction::I32Load(memarg(4)),
+                _ => return Err(EncodeError::UnsupportedLayout { function: function.id, operation: "Dictionary remove value" }),
+            });
+            emit_set(body, local, function.id, *removed_value)?;
+            if key_drop.is_some() {
+                emit_get_index(body, local.scratch[4]);
+                body.instruction(&wasm_encoder::Instruction::I32Const(16));
+                body.instruction(&wasm_encoder::Instruction::I32Add);
+                body.instruction(&wasm_encoder::Instruction::I32Load(memarg(4)));
+                emit_set_index(body, local.scratch[11]);
+            }
+            for (offset, scratch) in [(8, 5), (12, 6)] {
+                emit_get_index(body, local.scratch[4]);
+                body.instruction(&wasm_encoder::Instruction::I32Const(offset));
+                body.instruction(&wasm_encoder::Instruction::I32Add);
+                body.instruction(&wasm_encoder::Instruction::I32Load(memarg(4)));
+                emit_set_index(body, local.scratch[scratch]);
+            }
+            emit_get(body, local, function.id, *dict)?;
+            emit_set_index(body, local.scratch[8]);
+            body.instruction(&wasm_encoder::Instruction::I32Const(0));
+            emit_set_index(body, local.scratch[9]);
+            // Previous row's next, or header head.
+            emit_get_index(body, local.scratch[6]);
+            body.instruction(&wasm_encoder::Instruction::I32Eqz);
+            body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
+            emit_i32_store(body, local.scratch[8], 8, local.scratch[5]);
+            body.instruction(&wasm_encoder::Instruction::Else);
+            emit_get_index(body, local.scratch[8]);
+            emit_get_index(body, local.scratch[6]);
+            body.instruction(&wasm_encoder::Instruction::I32Const(1));
+            body.instruction(&wasm_encoder::Instruction::I32Sub);
+            body.instruction(&wasm_encoder::Instruction::I32Const(32));
+            body.instruction(&wasm_encoder::Instruction::I32Mul);
+            body.instruction(&wasm_encoder::Instruction::I32Add);
+            body.instruction(&wasm_encoder::Instruction::I32Const(28));
+            body.instruction(&wasm_encoder::Instruction::I32Add);
+            emit_set_index(body, local.scratch[7]);
+            emit_i32_store(body, local.scratch[7], 0, local.scratch[5]);
+            body.instruction(&wasm_encoder::Instruction::End);
+            // Next row's prev, or header tail.
+            emit_get_index(body, local.scratch[5]);
+            body.instruction(&wasm_encoder::Instruction::I32Eqz);
+            body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
+            emit_i32_store(body, local.scratch[8], 12, local.scratch[6]);
+            body.instruction(&wasm_encoder::Instruction::Else);
+            emit_get_index(body, local.scratch[8]);
+            emit_get_index(body, local.scratch[5]);
+            body.instruction(&wasm_encoder::Instruction::I32Const(1));
+            body.instruction(&wasm_encoder::Instruction::I32Sub);
+            body.instruction(&wasm_encoder::Instruction::I32Const(32));
+            body.instruction(&wasm_encoder::Instruction::I32Mul);
+            body.instruction(&wasm_encoder::Instruction::I32Add);
+            body.instruction(&wasm_encoder::Instruction::I32Const(32));
+            body.instruction(&wasm_encoder::Instruction::I32Add);
+            emit_set_index(body, local.scratch[7]);
+            emit_i32_store(body, local.scratch[7], 0, local.scratch[6]);
+            body.instruction(&wasm_encoder::Instruction::End);
+            for (offset, delta) in [(0, -1), (16, 1)] {
+                emit_get_index(body, local.scratch[8]);
+                body.instruction(&wasm_encoder::Instruction::I32Const(offset));
+                body.instruction(&wasm_encoder::Instruction::I32Add);
+                body.instruction(&wasm_encoder::Instruction::I32Load(memarg(4)));
+                body.instruction(&wasm_encoder::Instruction::I32Const(delta));
+                body.instruction(&wasm_encoder::Instruction::I32Add);
+                emit_set_index(body, local.scratch[10]);
+                emit_i32_store(body, local.scratch[8], offset, local.scratch[10]);
+            }
+            body.instruction(&wasm_encoder::Instruction::I32Const(2));
+            emit_set_index(body, local.scratch[10]);
+            emit_i32_store(body, local.scratch[4], 0, local.scratch[10]);
+            for offset in [16, 24] { emit_i32_store(body, local.scratch[4], offset, local.scratch[9]); }
+            if let Some(drop) = key_drop {
+                emit_get_index(body, local.scratch[11]);
+                body.instruction(&wasm_encoder::Instruction::Call(drop));
+            }
+            Ok(())
+        }
         _ => Err(EncodeError::UnsupportedLayout { function: function.id, operation: "Dictionary" }),
     }
 }
@@ -350,6 +605,8 @@ pub(super) fn plan(
     operation: &DictionaryOperation,
 ) -> Result<(), CanonicalAdmissionError> {
     match operation {
+        DictionaryOperation::CloneExact { destination, source, capacity } =>
+            plan_clone_exact(plan, function, local, layouts, *destination, *source, *capacity),
         DictionaryOperation::Initialize { destination, layout, capacity } => {
             plan_capacity_guard(plan, local, *capacity)?;
             let collection = collection_layout(function.id, layouts, *layout).map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
@@ -463,6 +720,61 @@ pub(super) fn plan(
             plan_i32_store(plan, local.scratch[8], 16, local.scratch[11]);
             plan.extend([PlanToken::End, PlanToken::I32Const(1), PlanToken::LocalSet(local.scratch[9])]);
             plan_i32_store(plan, local.scratch[4], 0, local.scratch[9]);
+            Ok(())
+        }
+        DictionaryOperation::RemoveSlot { removed_value, dict, bucket } => {
+            use crate::canonical_safewir::dictionary::DictionarySlotField;
+            let key_drop = key_pointee(function, layouts, *dict).map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?
+                .map(|pointee| local.memory_helpers.as_ref().and_then(|helpers| helpers.drops.get(&pointee).copied())
+                    .ok_or(CanonicalAdmissionError::UnsupportedPlan)).transpose()?;
+            plan_slot_address(plan, local, *dict, *bucket, DictionarySlotField::Value)?;
+            plan.extend([PlanToken::LocalGet(local.scratch[4]), PlanToken::I32Const(24), PlanToken::I32Add]);
+            plan.push(match function.value_types.get(removed_value) {
+                Some(ValueType::Int) => PlanToken::I64Load { offset: 0, align: 3, memory: 0 },
+                Some(ValueType::Float) => PlanToken::F64Load { offset: 0, align: 3, memory: 0 },
+                Some(ValueType::Size | ValueType::Bool | ValueType::Unit | ValueType::Ref(_)) =>
+                    PlanToken::I32Load { offset: 0, align: 2, memory: 0 },
+                _ => return Err(CanonicalAdmissionError::UnsupportedPlan),
+            });
+            push_set(plan, local, *removed_value)?;
+            if key_drop.is_some() {
+                plan.extend([PlanToken::LocalGet(local.scratch[4]), PlanToken::I32Const(16), PlanToken::I32Add,
+                    PlanToken::I32Load { offset: 0, align: 2, memory: 0 }, PlanToken::LocalSet(local.scratch[11])]);
+            }
+            for (offset, scratch) in [(8, 5), (12, 6)] {
+                plan.extend([PlanToken::LocalGet(local.scratch[4]), PlanToken::I32Const(offset), PlanToken::I32Add,
+                    PlanToken::I32Load { offset: 0, align: 2, memory: 0 }, PlanToken::LocalSet(local.scratch[scratch])]);
+            }
+            push_get(plan, local, *dict)?;
+            plan.extend([PlanToken::LocalSet(local.scratch[8]), PlanToken::I32Const(0), PlanToken::LocalSet(local.scratch[9]),
+                PlanToken::LocalGet(local.scratch[6]), PlanToken::I32Eqz, PlanToken::If("Empty".into())]);
+            plan_i32_store(plan, local.scratch[8], 8, local.scratch[5]);
+            plan.push(PlanToken::Else);
+            plan.extend([PlanToken::LocalGet(local.scratch[8]), PlanToken::LocalGet(local.scratch[6]),
+                PlanToken::I32Const(1), PlanToken::I32Sub, PlanToken::I32Const(32), PlanToken::I32Mul,
+                PlanToken::I32Add, PlanToken::I32Const(28), PlanToken::I32Add,
+                PlanToken::LocalSet(local.scratch[7])]);
+            plan_i32_store(plan, local.scratch[7], 0, local.scratch[5]);
+            plan.extend([PlanToken::End, PlanToken::LocalGet(local.scratch[5]), PlanToken::I32Eqz,
+                PlanToken::If("Empty".into())]);
+            plan_i32_store(plan, local.scratch[8], 12, local.scratch[6]);
+            plan.push(PlanToken::Else);
+            plan.extend([PlanToken::LocalGet(local.scratch[8]), PlanToken::LocalGet(local.scratch[5]),
+                PlanToken::I32Const(1), PlanToken::I32Sub, PlanToken::I32Const(32), PlanToken::I32Mul,
+                PlanToken::I32Add, PlanToken::I32Const(32), PlanToken::I32Add,
+                PlanToken::LocalSet(local.scratch[7])]);
+            plan_i32_store(plan, local.scratch[7], 0, local.scratch[6]);
+            plan.push(PlanToken::End);
+            for (offset, delta) in [(0, -1), (16, 1)] {
+                plan.extend([PlanToken::LocalGet(local.scratch[8]), PlanToken::I32Const(offset), PlanToken::I32Add,
+                    PlanToken::I32Load { offset: 0, align: 2, memory: 0 }, PlanToken::I32Const(delta),
+                    PlanToken::I32Add, PlanToken::LocalSet(local.scratch[10])]);
+                plan_i32_store(plan, local.scratch[8], offset, local.scratch[10]);
+            }
+            plan.extend([PlanToken::I32Const(2), PlanToken::LocalSet(local.scratch[10])]);
+            plan_i32_store(plan, local.scratch[4], 0, local.scratch[10]);
+            for offset in [16, 24] { plan_i32_store(plan, local.scratch[4], offset, local.scratch[9]); }
+            if let Some(drop) = key_drop { plan.extend([PlanToken::LocalGet(local.scratch[11]), PlanToken::Call(drop)]); }
             Ok(())
         }
         _ => Err(CanonicalAdmissionError::UnsupportedPlan),
