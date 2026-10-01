@@ -504,7 +504,7 @@ A total order: `compare` never reports "incomparable". Sorting and the `min`/ `m
 
 A query's hash must equal the stored key's Hash result whenever equivalent is true. The query is borrowed so a lookup can inspect a view without owning a key.
 
-- `fn equivalent(self: &Self, key: k) -> Bool`
+- `fn equivalent(self: &Self, key: &k) -> Bool`
 - `fn equivalent_hash(self: &Self) -> Int`
 
 #### `fn reverse(o: Ordering) -> Ordering`
@@ -748,7 +748,7 @@ Tuples compare slot-by-slot through each slot's equality protocol. The tuple pro
 
 #### `impl Equivalent(String) for str`
 
-- `fn equivalent(self: &str, key: String) -> Bool`
+- `fn equivalent(self: &str, key: &String) -> Bool`
 - `fn equivalent_hash(self: &str) -> Int`
 
 ## `compiler`
@@ -4316,6 +4316,12 @@ The witchy standard string library. Importing it grants no root authority; this 
 #### `fn to_string(s: &str) -> String`
 
 #### `fn len(s: &str) -> Int`
+
+#### `fn hash_view(s: &str) -> Int`
+
+Content operations on retained string views. These inspect UTF-8 bytes without materializing an owned String.
+
+#### `fn equal_views(left: &str, right: &str) -> Bool`
 
 #### `fn to_upper(s: String) -> String`
 

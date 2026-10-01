@@ -4504,6 +4504,11 @@ impl Checker {
                 let str_ty = Ty::Named("str".into(), Vec::new().into());
                 Some((vec![Ty::View(Box::new(str_ty).into())], Ty::Int))
             }
+            S::StrStrToBool => {
+                let str_ty = Ty::Named("str".into(), Vec::new().into());
+                let view = Ty::View(Box::new(str_ty).into());
+                Some((vec![view.clone(), view], Ty::Bool))
+            }
             S::ListStringListStringToString => Some((
                 vec![
                     Ty::List(Box::new(Ty::String).into()),

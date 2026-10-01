@@ -799,6 +799,8 @@ pub(super) fn normal_mode_item_mentions_reference_surface(item: &Item) -> bool {
                     | "string.slice"
                     | "string.to_string"
                     | "string.len"
+                    | "string.hash_view"
+                    | "string.equal_views"
                     | "String__as_str"
                     | "str__slice"
                     | "str__length"

@@ -60,12 +60,14 @@ The full 17-benchmark suite measured against equivalent native Go 1.22 on both t
 ## Track 1: Heterogeneous `Equivalent(k)` Dictionary Lookups
 
 Current normal-mode implementation starts with `dict.contains_by(d, query: &q)`.
-`Equivalent(k)` supplies both `equivalent(self: &Self, key: k)` and
+`Equivalent(k)` supplies both `equivalent(self: &Self, key: &k)` and
 `equivalent_hash(self: &Self)`. A true equivalence result requires the query
 hash to equal the stored key's `Hash` result. The compiler checks the selected
 implementation and uses the same hash-table probe loop as owned-key lookup.
-The `str` to `String` implementation currently materializes a copy; the
-zero-allocation slice and composite examples below remain design targets.
+The `str` to `String` implementation now hashes and compares retained views
+without materializing a String. Query dispatch still has measurable call and
+reference-management overhead; the composite examples below remain design
+targets.
 
 ### 1.1 The Composite Key Borrowing Trap
 

@@ -76,7 +76,7 @@ impl FunctionLowerer<'_> {
         )
     }
 
-    fn hash_string(&mut self, key: ValueId) -> Result<ValueId, CanonicalLoweringError> {
+    pub(super) fn hash_string(&mut self, key: ValueId) -> Result<ValueId, CanonicalLoweringError> {
         self.ensure_string_extent(key)?;
         let ValueType::Ref(layout) = self.values[&key] else {
             return Err(CanonicalLoweringError::UnsupportedExpression(

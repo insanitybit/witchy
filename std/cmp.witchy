@@ -8,6 +8,7 @@
 
 import bytes
 import option
+import string
 
 // The result of a comparison: `a` is `Less` than, `Equal` to, or `Greater` than
 // `b`. The return of `Ord.compare`, and (wrapped in `Some`) `PartialOrd`.
@@ -77,7 +78,7 @@ trait Ord: Eq + PartialOrd:
 // A query's hash must equal the stored key's Hash result whenever equivalent is true.
 // The query is borrowed so a lookup can inspect a view without owning a key.
 trait Equivalent(k):
-    fn equivalent(self: &Self, key: k) -> Bool
+    fn equivalent(self: &Self, key: &k) -> Bool
     fn equivalent_hash(self: &Self) -> Int
 
 // Flip an ordering - `Less` <-> `Greater`, `Equal` unchanged - for reverse sorts.
@@ -545,8 +546,8 @@ pub fn minimum(xs: List(a), default: a) -> a where a: Ord:
 
 // --- Equivalent implementations (RFC-0139) -----------------------------------
 impl Equivalent(String) for str:
-    fn equivalent(self: &str, key: String) -> Bool:
-        self.to_string() == key
+    fn equivalent(self: &str, key: &String) -> Bool:
+        string.equal_views(self, string.as_str(key))
 
     fn equivalent_hash(self: &str) -> Int:
-        self.to_string().hash()
+        string.hash_view(self)

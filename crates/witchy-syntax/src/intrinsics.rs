@@ -182,6 +182,8 @@ pub enum IntrinsicId {
     StringSlice,
     StringToString,
     StringLen,
+    StringHashView,
+    StringEqualViews,
     StringToUpper,
     StringToLower,
     StringTrim,
@@ -273,6 +275,7 @@ pub enum IntrinsicSignature {
     StrIntIntToStr,
     StrToString,
     StrToInt,
+    StrStrToBool,
     ListStringListStringToString,
     /// (RFC-0121) A by-handle secret op: asks only for `Seal`, so a `Secret[Seal]`
     /// satisfies it and a bare `Secret` narrows into it (`crypto.sign`).
@@ -803,6 +806,8 @@ pub const STRING_AS_STR: &str = "string.as_str";
 pub const STRING_SLICE: &str = "string.slice";
 pub const STRING_TO_STRING: &str = "string.to_string";
 pub const STRING_LEN: &str = "string.len";
+pub const STRING_HASH_VIEW: &str = "string.hash_view";
+pub const STRING_EQUAL_VIEWS: &str = "string.equal_views";
 pub const STRING_TO_UPPER: &str = "string.to_upper";
 pub const STRING_TO_LOWER: &str = "string.to_lower";
 pub const STRING_TRIM: &str = "string.trim";
@@ -3469,6 +3474,36 @@ pub const ALL: &[IntrinsicSpec] = &[
         private_callers: NO_PRIVATE_CALLERS,
     },
     IntrinsicSpec {
+        id: IntrinsicId::StringHashView,
+        name: STRING_HASH_VIEW,
+        arity: 1,
+        signature: IntrinsicSignature::StrToInt,
+        effect: IntrinsicEffect::Pure,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::Builtin,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: NO_HELPERS,
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: STRING_HASH_VIEW,
+        private_callers: NO_PRIVATE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::StringEqualViews,
+        name: STRING_EQUAL_VIEWS,
+        arity: 2,
+        signature: IntrinsicSignature::StrStrToBool,
+        effect: IntrinsicEffect::Pure,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::Builtin,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: NO_HELPERS,
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: STRING_EQUAL_VIEWS,
+        private_callers: NO_PRIVATE_CALLERS,
+    },
+    IntrinsicSpec {
         id: IntrinsicId::StringToUpper,
         name: STRING_TO_UPPER,
         arity: 1,
@@ -3990,6 +4025,8 @@ pub const STRING_OPERATIONS: &[&str] = &[
     STRING_SLICE,
     STRING_TO_STRING,
     STRING_LEN,
+    STRING_HASH_VIEW,
+    STRING_EQUAL_VIEWS,
     STRING_TO_UPPER,
     STRING_TO_LOWER,
     STRING_TRIM,
@@ -4167,6 +4204,8 @@ pub fn is_string_operation(name: &str) -> bool {
                 | IntrinsicId::StringSlice
                 | IntrinsicId::StringToString
                 | IntrinsicId::StringLen
+                | IntrinsicId::StringHashView
+                | IntrinsicId::StringEqualViews
                 | IntrinsicId::StringToUpper
                 | IntrinsicId::StringToLower
                 | IntrinsicId::StringTrim

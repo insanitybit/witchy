@@ -11606,6 +11606,21 @@ impl FunctionLowerer<'_> {
                 self.push_operation(Operation::WidenSize { destination: result, value: length });
                 Ok(result)
             }
+            Expr::Call { name, args } if name == "string.hash_view" => {
+                let [source] = args.as_slice() else {
+                    return Err(CanonicalLoweringError::UnsupportedExpression("string.hash_view arity"));
+                };
+                let source = self.lower_expr(source)?;
+                self.hash_string(source)
+            }
+            Expr::Call { name, args } if name == "string.equal_views" => {
+                let [left, right] = args.as_slice() else {
+                    return Err(CanonicalLoweringError::UnsupportedExpression("string.equal_views arity"));
+                };
+                let left = self.lower_expr(left)?;
+                let right = self.lower_expr(right)?;
+                self.lower_string_equality(left, right, false)
+            }
             Expr::Call { name, args } if name == "string.slice" => {
                 let [source, start, end] = args.as_slice() else {
                     return Err(CanonicalLoweringError::UnsupportedExpression("string.slice arity"));

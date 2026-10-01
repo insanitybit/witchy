@@ -52,6 +52,14 @@ pub fn to_string(s: &str) -> String:
 pub fn len(s: &str) -> Int:
     string.len(s)
 
+// Content operations on retained string views. These inspect UTF-8 bytes
+// without materializing an owned String.
+pub fn hash_view(s: &str) -> Int:
+    string.hash_view(s)
+
+pub fn equal_views(left: &str, right: &str) -> Bool:
+    string.equal_views(left, right)
+
 pub fn to_upper(s: String) -> String:
     string.to_upper(s)
 

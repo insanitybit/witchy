@@ -192,10 +192,10 @@ impl<'catalog> Preparation<'catalog> {
                 attributes: Vec::new(), name: eq_name.clone(), type_params: Vec::new(),
                 params: vec![
                     Param { name: "query".into(), ty: Some(query_type.clone()), convention: Convention::Let, default: None },
-                    Param { name: "key".into(), ty: Some(key.clone()), convention: Convention::Let, default: None },
+                    Param { name: "key".into(), ty: Some(Type::Qualified(TypeQual::View, Box::new(key.clone()))), convention: Convention::Let, default: None },
                 ],
                 ret: Some(Type::Named("Bool".into(), Vec::new())),
-                body: Block { stmts: vec![Stmt::Expr(Expr::Call { name: target,
+                body: Block { stmts: vec![Stmt::Expr(Expr::Call { name: target.clone(),
                     args: vec![Expr::Var("query".into()), Expr::Var("key".into())] })],
                     lines: vec![0], region: None },
                 bounds: Vec::new(), is_gen: false, is_async: false,
@@ -206,11 +206,14 @@ impl<'catalog> Preparation<'catalog> {
                 attributes: Vec::new(), name: hash_name.clone(), type_params: Vec::new(),
                 params: vec![Param { name: "query".into(), ty: Some(query_type), convention: Convention::Let, default: None }],
                 ret: Some(Type::Named("Int".into(), Vec::new())),
-                body: Block { stmts: vec![Stmt::Expr(Expr::Call { name: hash_target,
+                body: Block { stmts: vec![Stmt::Expr(Expr::Call { name: hash_target.clone(),
                     args: vec![Expr::Var("query".into())] })], lines: vec![0], region: None },
                 bounds: Vec::new(), is_gen: false, is_async: false,
             }));
-            self.equivalent_methods.push((key, query, eq_name, hash_name));
+            // The entry-rooted wrappers retain the checked implementations in
+            // canonical scope. The table probe calls those implementations
+            // directly, avoiding a forwarding call on every lookup.
+            self.equivalent_methods.push((key, query, target, hash_target));
         }
         // Comparator bodies can themselves use dictionaries. Close over newly
         // reachable bodies, visiting each concrete key once. No pass invents
