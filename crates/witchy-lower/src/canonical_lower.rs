@@ -14251,9 +14251,9 @@ impl FunctionLowerer<'_> {
     }
 
     /// Lower resolved `list.push(xs, value)` in normal mode. The operation
-    /// retains source-level mutation syntax while using copy-correct value
-    /// semantics: grow into a fresh allocation, initialize it, then reclaim
-    /// the old unique allocation and rebind the source name.
+    /// retains source-level mutation syntax while preserving value snapshots.
+    /// A unique scalar list can reuse spare capacity; shared lists and other
+    /// element types use the fresh allocation template.
     ///
     fn lower_list_push(&mut self, arguments: &[Expr]) -> Result<(), CanonicalLoweringError> {
         let [Expr::Var(name), value] = arguments else {
@@ -14315,9 +14315,62 @@ impl FunctionLowerer<'_> {
             value = self.owned_for_storage(value, &arguments[0])?;
         }
 
-        let new_object = self.push_owned_element(old_object, value, &list_type)?;
+        // CloneRef and shared phis demote the original token. The checker
+        // independently validates the in-place store on the selected path.
+        let new_object = if element_type == ValueType::Int && !self.known_shared_value(old_object) {
+            self.push_unique_list_element(old_object, value, &list_type)?
+        } else {
+            self.push_owned_element(old_object, value, &list_type)?
+        };
         self.bindings.insert(name.clone(), new_object);
         Ok(())
+    }
+
+    /// Reuse a proven unique scalar list while it has spare capacity.
+    /// The full branch still uses the copy-correct geometric growth template.
+    fn push_unique_list_element(
+        &mut self,
+        old_object: ValueId,
+        value: ValueId,
+        list_type: &Type,
+    ) -> Result<ValueId, CanonicalLoweringError> {
+        self.ensure_list_extent(old_object)?;
+        let (count, capacity) = self.tracked_lanes(old_object).ok_or(
+            CanonicalLoweringError::UnsupportedExpression("unique list append extent"),
+        )?;
+        let ValueType::Ref(layout) = self.values[&old_object] else {
+            return Err(CanonicalLoweringError::UnsupportedExpression("unique list append receiver"));
+        };
+        let has_room = self.push_compare(ComparisonOperator::LessUnsigned, count, capacity)?;
+        let facts = self.snapshot_facts();
+        let inplace = self.new_block(&[])?;
+        let grow = self.new_block(&[])?;
+        let join = self.new_block_owned(&[
+            (ValueType::Ref(layout), Some(Ownership::Unique)),
+            (ValueType::Size, None),
+            (ValueType::Size, None),
+        ])?;
+        self.finish_current(Terminator::BranchIf {
+            condition: has_room,
+            then_target: inplace,
+            then_arguments: Vec::new(),
+            else_target: grow,
+            else_arguments: Vec::new(),
+        })?;
+        self.current = inplace;
+        let in_place = self.append_preallocated_owned_element(old_object, value, list_type)?;
+        let (lanes, _) = self.accumulator_lanes(in_place)?;
+        self.finish_current(Terminator::Branch { target: join, arguments: lanes })?;
+        self.current = grow;
+        self.restore_snapshot(facts.clone());
+        let grown = self.push_owned_element(old_object, value, list_type)?;
+        let (lanes, _) = self.accumulator_lanes(grown)?;
+        self.finish_current(Terminator::Branch { target: join, arguments: lanes })?;
+        self.restore_facts(facts, join);
+        self.current = join;
+        let lanes = self.block_parameter_values(join);
+        self.track_accumulator_lanes(&lanes);
+        Ok(lanes[0])
     }
 
     /// The frontend's append intrinsic returns a new list. Unlike the source
