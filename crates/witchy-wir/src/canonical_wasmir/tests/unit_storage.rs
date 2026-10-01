@@ -6,15 +6,16 @@ pub fn canonical_dictionary_scalar_insert_lookup_executes() {
     let mut layouts = LayoutInterner::new();
     let int = layouts.intern_scalar(ScalarKind::Int).unwrap();
     let dict = layouts.intern_canonical_dictionary(int, int).unwrap();
-    let [capacity, bucket, hash, key, value, table, loaded, grown_capacity, grown, removed] =
-        [1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(ValueId::new);
+    let [capacity, bucket, hash, key, value, table, loaded, grown_capacity, grown, removed,
+        collision_bucket, grown_bucket, collision_hash, collision_key, collision_value, first_loaded] =
+        [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16].map(ValueId::new);
     let module = CanonicalModule::from_lowering(LoweredModuleParts {
         revision: Revision::new(0),
         checked_source: CheckedSourceIdentity::from_digest([167; 32]),
         layouts: LayoutBundle::from_interner(&layouts, [dict]).unwrap(),
         signatures: vec![FunctionSignature {
-            id: FunctionSignatureId::new(167), parameters: vec![], results: vec![ValueType::Int, ValueType::Int],
-            contract: CallableContract { parameters: vec![], results: vec![ResultContract::Value(ValueType::Int), ResultContract::Value(ValueType::Int)], parameter_effects: BTreeMap::new() },
+            id: FunctionSignatureId::new(167), parameters: vec![], results: vec![ValueType::Int, ValueType::Int, ValueType::Int],
+            contract: CallableContract { parameters: vec![], results: vec![ResultContract::Value(ValueType::Int), ResultContract::Value(ValueType::Int), ResultContract::Value(ValueType::Int)], parameter_effects: BTreeMap::new() },
         }],
         imports: vec![], proper_tail_sites: vec![],
         functions: vec![Function {
@@ -24,6 +25,9 @@ pub fn canonical_dictionary_scalar_insert_lookup_executes() {
                 (key, ValueType::Int), (value, ValueType::Int), (table, ValueType::Ref(dict)),
                 (loaded, ValueType::Int), (grown_capacity, ValueType::Size),
                 (grown, ValueType::Ref(dict)), (removed, ValueType::Int),
+                (collision_bucket, ValueType::Size), (grown_bucket, ValueType::Size),
+                (collision_hash, ValueType::Int), (collision_key, ValueType::Int),
+                (collision_value, ValueType::Int), (first_loaded, ValueType::Int),
             ]),
             blocks: vec![BasicBlock { id: BlockId::new(0), parameters: vec![], operations: vec![
                 Operation::ConstSize { destination: capacity, value: 8 },
@@ -34,14 +38,24 @@ pub fn canonical_dictionary_scalar_insert_lookup_executes() {
                 Operation::Dictionary(DictionaryOperation::Initialize { destination: table, layout: dict, capacity }),
                 Operation::Dictionary(DictionaryOperation::InsertSlot { dict: table, bucket, key, value, hash,
                     key_transfer: StoreTransfer::CopyScalar, value_transfer: StoreTransfer::CopyScalar }),
+                Operation::ConstSize { destination: collision_bucket, value: 1 },
+                Operation::ConstSize { destination: grown_bucket, value: 8 },
+                Operation::ConstInt { destination: collision_hash, value: 8 },
+                Operation::ConstInt { destination: collision_key, value: 33 },
+                Operation::ConstInt { destination: collision_value, value: 44 },
+                Operation::Dictionary(DictionaryOperation::InsertSlot { dict: table, bucket: collision_bucket,
+                    key: collision_key, value: collision_value, hash: collision_hash,
+                    key_transfer: StoreTransfer::CopyScalar, value_transfer: StoreTransfer::CopyScalar }),
                 Operation::ConstSize { destination: grown_capacity, value: 16 },
                 Operation::Dictionary(DictionaryOperation::Rehash { destination: grown, source: table, capacity: grown_capacity,
                     transfer: DictionaryRehashTransfer::MoveUnique }),
-                Operation::Dictionary(DictionaryOperation::ReadSlot { destination: loaded, dict: grown, bucket,
+                Operation::Dictionary(DictionaryOperation::ReadSlot { destination: loaded, dict: grown, bucket: grown_bucket,
                     field: DictionarySlotField::Value, transfer: LoadTransfer::CopyScalar }),
-                Operation::Dictionary(DictionaryOperation::RemoveSlot { removed_value: removed, dict: grown, bucket }),
+                Operation::Dictionary(DictionaryOperation::RemoveSlot { removed_value: removed, dict: grown, bucket: grown_bucket }),
+                Operation::Dictionary(DictionaryOperation::ReadSlot { destination: first_loaded, dict: grown, bucket,
+                    field: DictionarySlotField::Value, transfer: LoadTransfer::CopyScalar }),
                 Operation::DropRef { object: grown },
-            ], terminator: Terminator::Return { values: vec![loaded, removed] } }],
+            ], terminator: Terminator::Return { values: vec![first_loaded, loaded, removed] } }],
         }],
     });
     let checked = validate_final_for_test(check_initial_with_test_witness(module).expect("dictionary initial validation"))
@@ -51,8 +65,8 @@ pub fn canonical_dictionary_scalar_insert_lookup_executes() {
     let module = wasmtime::Module::new(&engine, artifact.wasm()).unwrap();
     let mut store = wasmtime::Store::new(&engine, ());
     let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
-    let actual = instance.get_typed_func::<(), (i64, i64)>(&mut store, "f167").unwrap().call(&mut store, ()).unwrap();
-    assert_eq!(actual, (22, 22));
+    let actual = instance.get_typed_func::<(), (i64, i64, i64)>(&mut store, "f167").unwrap().call(&mut store, ()).unwrap();
+    assert_eq!(actual, (22, 44, 44));
 }
 
 const SENTINEL: i64 = 0x123456789abcdef;
