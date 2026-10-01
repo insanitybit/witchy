@@ -820,6 +820,25 @@ impl FunctionLowerer<'_> {
         }
     }
 
+    /// Leave one quarter of the table vacant. This bounds linear-probe length
+    /// while avoiding the extra allocation caused by a half-full threshold.
+    fn dict_growth_limit_reached(
+        &mut self,
+        used: ValueId,
+        capacity: ValueId,
+    ) -> Result<ValueId, CanonicalLoweringError> {
+        let two = self.push_const_size(2)?;
+        let quarter = self.push_arithmetic(
+            ValueType::Size, ArithmeticOperator::ShiftRightUnsigned,
+            capacity, two, OverflowBehavior::Wrap,
+        )?;
+        let limit = self.push_arithmetic(
+            ValueType::Size, ArithmeticOperator::Subtract,
+            capacity, quarter, OverflowBehavior::Wrap,
+        )?;
+        self.push_compare(ComparisonOperator::GreaterEqualUnsigned, used, limit)
+    }
+
     /// Upsert on an owned guest table. A shared normal-mode snapshot is
     /// copied once before probing; unique roots mutate in place. Growth
     /// rehashes only after the single semantic `Eq` search has missed.
@@ -911,8 +930,7 @@ impl FunctionLowerer<'_> {
             field: DictionaryHeaderField::Tombstones,
         }));
         let occupied = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, count, tombstones, OverflowBehavior::Trap)?;
-        let twice_occupied = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, occupied, occupied, OverflowBehavior::Trap)?;
-        let needs_growth = self.push_compare(ComparisonOperator::GreaterEqualUnsigned, twice_occupied, capacity)?;
+        let needs_growth = self.dict_growth_limit_reached(occupied, capacity)?;
         let grow = self.new_block(&[])?;
         let room = self.new_block(&[])?;
         let ready = self.new_block_owned(&[(self.values[&dict], Some(Ownership::Unique)), (ValueType::Size, None)])?;
@@ -925,8 +943,7 @@ impl FunctionLowerer<'_> {
             else_arguments: Vec::new(),
         })?;
         self.current = grow;
-        let twice_count = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, count, count, OverflowBehavior::Trap)?;
-        let live_needs_growth = self.push_compare(ComparisonOperator::GreaterEqualUnsigned, twice_count, capacity)?;
+        let live_needs_growth = self.dict_growth_limit_reached(count, capacity)?;
         let double = self.new_block(&[])?;
         let compact = self.new_block(&[])?;
         let target_capacity = self.new_block(&[ValueType::Size])?;
@@ -939,6 +956,21 @@ impl FunctionLowerer<'_> {
         })?;
         self.current = double;
         let doubled = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, capacity, capacity, OverflowBehavior::Trap)?;
+        let small_limit = self.push_const_size(4096)?;
+        let small = self.push_compare(ComparisonOperator::LessUnsigned, capacity, small_limit)?;
+        let quadruple = self.new_block(&[])?;
+        let use_double = self.new_block(&[])?;
+        self.finish_current(Terminator::BranchIf {
+            condition: small,
+            then_target: quadruple,
+            then_arguments: Vec::new(),
+            else_target: use_double,
+            else_arguments: Vec::new(),
+        })?;
+        self.current = quadruple;
+        let quadrupled = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, doubled, doubled, OverflowBehavior::Trap)?;
+        self.finish_current(Terminator::Branch { target: target_capacity, arguments: vec![quadrupled] })?;
+        self.current = use_double;
         self.finish_current(Terminator::Branch { target: target_capacity, arguments: vec![doubled] })?;
         self.current = compact;
         self.finish_current(Terminator::Branch { target: target_capacity, arguments: vec![capacity] })?;
