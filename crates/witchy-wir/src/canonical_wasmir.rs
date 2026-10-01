@@ -48,6 +48,7 @@ mod scalar_locals;
 pub(crate) mod closure_owner_kernel;
 mod owner_bridges;
 mod owner_operation_kernel;
+mod dictionary_kernel;
 mod lowering;
 use self::lowering::*;
 mod correspondence;
@@ -82,6 +83,7 @@ enum TargetItemId {
 enum ScalarInstruction {
     ProofNoop,
     ClosureOwner(crate::canonical_safewir::closure_owner_contract::OwnerOperation),
+    Dictionary(crate::canonical_safewir::dictionary::DictionaryOperation),
     IntConst { destination: ValueId, value: i64 },
     FloatConst { destination: ValueId, bits: u64 },
     UnitConst { destination: ValueId },
@@ -279,6 +281,7 @@ pub(crate) enum CorrespondenceRule {
     HostCall,
     Control,
     ClosureOwner,
+    Dictionary,
 }
 
 /// The backend disposition of a canonical rule.  Most rules produce one

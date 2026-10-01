@@ -121,6 +121,7 @@ pub(super) fn slots(function: &Function) -> BTreeMap<ValueId, (u8, usize)> {
 fn definitions(operation: &Operation) -> Vec<ValueId> {
     match operation {
         Operation::ClosureOwner(owner) => owner.destinations(),
+        Operation::Dictionary(operation) => operation.destinations(),
         Operation::ConstInt { destination, .. } | Operation::ConstFloat { destination, .. }
         | Operation::ConstBool { destination, .. } | Operation::ConstUnit { destination }
         | Operation::ConstSize { destination, .. } | Operation::CapabilityNone { destination, .. }

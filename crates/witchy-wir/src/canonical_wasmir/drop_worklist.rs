@@ -27,6 +27,16 @@ const FRAME_BYTES: i32 = 12;
 enum Children {
     Fields(Vec<(u32, LayoutId, bool)>),
     Elements(CollectionLayout, LayoutId),
+    Dictionary(Vec<(u32, LayoutId)>),
+}
+
+fn dictionary_pointer(function: FunctionId, layouts: &LayoutInterner, slot: LayoutId) -> Result<Option<LayoutId>, EncodeError> {
+    let concrete = layouts.resolve_nominal(slot).map_err(|_| EncodeError::UnsupportedLayout { function, operation: "DropRef dictionary slot" })?;
+    match layouts.get(concrete).map(|descriptor| descriptor.kind()) {
+        Some(LayoutKind::RuntimePointerValueSlot { pointee, semantics: PointerSlot::Owned }) => Ok(Some(*pointee)),
+        Some(LayoutKind::Scalar(_)) => Ok(None),
+        _ => Err(EncodeError::UnsupportedLayout { function, operation: "DropRef dictionary slot" }),
+    }
 }
 
 fn rows(function: FunctionId, layouts: &LayoutInterner, root: LayoutId) -> Result<BTreeMap<LayoutId, Children>, EncodeError> {
@@ -52,6 +62,13 @@ fn rows(function: FunctionId, layouts: &LayoutInterner, root: LayoutId) -> Resul
                 let fields = fixed_pointer_fields(function, layouts, id).map_err(EncodeError::Lowering)?;
                 pending.extend(fields.iter().map(|(_, child, _)| *child));
                 Children::Fields(fields)
+            }
+            LayoutKind::CanonicalDictionary { key, value, .. } => {
+                let mut fields = Vec::new();
+                if let Some(child) = dictionary_pointer(function, layouts, *key)? { fields.push((16, child)); }
+                if let Some(child) = dictionary_pointer(function, layouts, *value)? { fields.push((24, child)); }
+                pending.extend(fields.iter().map(|(_, child)| *child));
+                if fields.is_empty() { Children::Fields(Vec::new()) } else { Children::Dictionary(fields) }
             }
             LayoutKind::Scalar(_) => Children::Fields(Vec::new()),
             _ => return Err(EncodeError::UnsupportedLayout { function, operation: "DropRef unsupported owned layout" }),
@@ -189,6 +206,28 @@ pub(super) fn emit(body: &mut WasmFunctionEncoder, local: &LocalLayout, function
                         I::LocalGet(s[INDEX]), I::I32Const(collection.stride as i32), I::I32Mul, I::I32Add,
                         I::LocalSet(s[ADDRESS]), I::I32Const(ids[child]), I::LocalSet(s[CHILD_TAG]),
                         I::I32Const(i32::from(collection.pointer_slot == Some(PointerSlot::OwnedNullable))), I::LocalSet(s[PAGES])]);
+                }
+                Children::Dictionary(fields) => {
+                    code(body, [I::LocalGet(s[OBJECT]), I::I32Const(4), I::I32Add, load(), I::LocalSet(s[COUNT]),
+                        I::LocalGet(s[INDEX]), I::LocalGet(s[COUNT]), I::I32Const(fields.len() as i32), I::I32Mul,
+                        I::I32GeU, I::If(BlockType::Empty)]);
+                    reclaim(body, s); pop(body, s);
+                    code(body, [I::Br(2), I::End,
+                        I::LocalGet(s[INDEX]), I::I32Const(fields.len() as i32), I::I32DivU,
+                        I::I32Const(32), I::I32Mul, I::LocalGet(s[OBJECT]), I::I32Add,
+                        I::I32Const(20), I::I32Add, I::LocalSet(s[ADDRESS]),
+                        I::LocalGet(s[ADDRESS]), load(), I::I32Const(1), I::I32Ne,
+                        I::If(BlockType::Empty),
+                        I::LocalGet(s[FRAME]), I::I32Const(8), I::I32Add,
+                        I::LocalGet(s[INDEX]), I::I32Const(1), I::I32Add, store(),
+                        I::Br(2), I::End]);
+                    for (index, (offset, child)) in fields.iter().enumerate() {
+                        code(body, [I::LocalGet(s[INDEX]), I::I32Const(fields.len() as i32), I::I32RemU,
+                            I::I32Const(index as i32), I::I32Eq, I::If(BlockType::Empty),
+                            I::LocalGet(s[ADDRESS]), I::I32Const(*offset as i32), I::I32Add,
+                            I::LocalSet(s[ADDRESS]), I::I32Const(ids[child]), I::LocalSet(s[CHILD_TAG]), I::End]);
+                    }
+                    code(body, [I::I32Const(0), I::LocalSet(s[PAGES])]);
                 }
             }
             // Transfer exactly one child to a new frame. The parent resumes
@@ -337,6 +376,28 @@ pub(super) fn plan(p: &mut Vec<PlanToken>, function: FunctionId, layouts: &Layou
                         P::LocalGet(s[INDEX]), P::I32Const(collection.stride as i32), P::I32Mul, P::I32Add,
                         P::LocalSet(s[ADDRESS]), P::I32Const(ids[child]), P::LocalSet(s[CHILD_TAG]),
                         P::I32Const(i32::from(collection.pointer_slot == Some(PointerSlot::OwnedNullable))), P::LocalSet(s[PAGES])]);
+                }
+                Children::Dictionary(fields) => {
+                    p.extend([P::LocalGet(s[OBJECT]), P::I32Const(4), P::I32Add, pload(), P::LocalSet(s[COUNT]),
+                        P::LocalGet(s[INDEX]), P::LocalGet(s[COUNT]), P::I32Const(fields.len() as i32), P::I32Mul,
+                        P::I32GeU, P::If("Empty".into())]);
+                    plan_reclaim(p, s); plan_pop(p, s);
+                    p.extend([P::Br(2), P::End,
+                        P::LocalGet(s[INDEX]), P::I32Const(fields.len() as i32), P::I32DivU,
+                        P::I32Const(32), P::I32Mul, P::LocalGet(s[OBJECT]), P::I32Add,
+                        P::I32Const(20), P::I32Add, P::LocalSet(s[ADDRESS]),
+                        P::LocalGet(s[ADDRESS]), pload(), P::I32Const(1), P::I32Ne,
+                        P::If("Empty".into()),
+                        P::LocalGet(s[FRAME]), P::I32Const(8), P::I32Add,
+                        P::LocalGet(s[INDEX]), P::I32Const(1), P::I32Add, pstore(),
+                        P::Br(2), P::End]);
+                    for (index, (offset, child)) in fields.iter().enumerate() {
+                        p.extend([P::LocalGet(s[INDEX]), P::I32Const(fields.len() as i32), P::I32RemU,
+                            P::I32Const(index as i32), P::I32Eq, P::If("Empty".into()),
+                            P::LocalGet(s[ADDRESS]), P::I32Const(*offset as i32), P::I32Add,
+                            P::LocalSet(s[ADDRESS]), P::I32Const(ids[child]), P::LocalSet(s[CHILD_TAG]), P::End]);
+                    }
+                    p.extend([P::I32Const(0), P::LocalSet(s[PAGES])]);
                 }
             }
             p.extend([P::LocalGet(s[ADDRESS]), pload(), P::LocalSet(s[OBJECT]),

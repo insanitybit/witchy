@@ -54,6 +54,7 @@ pub(crate) fn rule_backend(rule: crate::canonical_safewir::CanonicalRuleId) -> R
         // v1 has no standalone retain: a second owner comes from `CloneRef`.
         Rule::Retain => RuleBackend::Refused,
         Rule::ClosureOwner => RuleBackend::Receipt(CorrespondenceRule::ClosureOwner),
+        Rule::Dictionary => RuleBackend::Receipt(CorrespondenceRule::Dictionary),
         Rule::Branch | Rule::BranchIf | Rule::Return | Rule::TailCall | Rule::VarTailCall | Rule::Trap | Rule::Unreachable => {
             RuleBackend::Receipt(CorrespondenceRule::Control)
         }
@@ -71,6 +72,7 @@ pub(super) fn matches_operation(operation: &Operation, target: &ScalarInstructio
     match (operation, target) {
         (Operation::ReauthenticateRawHeaderExtent { .. }, ScalarInstruction::ProofNoop) => true,
         (Operation::ClosureOwner(source), ScalarInstruction::ClosureOwner(target)) => source == target,
+        (Operation::Dictionary(source), ScalarInstruction::Dictionary(target)) => source == target,
         (Operation::ConstUnit { destination }, ScalarInstruction::UnitConst { destination: actual }) => destination == actual,
         (Operation::ConstInt { destination, value }, ScalarInstruction::IntConst { destination: actual, value: actual_value }) => destination == actual && value == actual_value,
         (Operation::ConstFloat { destination, bits }, ScalarInstruction::FloatConst { destination: actual, bits: actual_bits }) => destination == actual && bits == actual_bits,

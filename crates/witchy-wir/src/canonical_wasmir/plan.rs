@@ -1158,6 +1158,7 @@ pub(super) fn expected_block_operations_plan(
             // emits no instruction.
             Operation::ReauthenticateRawHeaderExtent { .. } => {}
             Operation::ClosureOwner(operation) => { owner_operation_kernel::plan(&mut plan, function, layouts, &layout, operation, import_indices, owner_cleanup_function)?; }
+            Operation::Dictionary(operation) => { dictionary_kernel::plan(&mut plan, function, layouts, &layout, operation)?; }
             Operation::ConstInt { destination, value } => {
                 plan.push(PlanToken::I64Const(*value));
                 push_set(&mut plan, &layout, *destination)?;

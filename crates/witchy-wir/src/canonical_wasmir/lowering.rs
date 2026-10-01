@@ -333,6 +333,21 @@ pub(super) fn collection_layout(
     let descriptor = layouts
         .get(physical_layout)
         .ok_or(LoweringError::UnsupportedLayout { function, operation: "layout" })?;
+    if let LayoutKind::CanonicalDictionary { .. } = descriptor.kind() {
+        if descriptor.size() != (LayoutSize::Dynamic { base: 20, stride: 32 }) {
+            return Err(LoweringError::UnsupportedLayout { function, operation: "dictionary layout" });
+        }
+        return Ok(CollectionLayout {
+            layout,
+            length_offset: 0,
+            capacity_offset: Some(4),
+            data_offset: 20,
+            stride: 32,
+            scalar: ScalarKind::Unit,
+            pointer_layout: None,
+            pointer_slot: None,
+        });
+    }
     let (element, raw_runtime_buffer) = match descriptor.kind() {
         LayoutKind::PackedList { element, .. } => (*element, false),
         LayoutKind::RuntimeBuffer { element } => (*element, true),
@@ -760,6 +775,7 @@ pub(super) fn lower_operation(
     let operation = match operation {
         Operation::ReauthenticateRawHeaderExtent { .. } => ScalarInstruction::ProofNoop,
         Operation::ClosureOwner(operation) => ScalarInstruction::ClosureOwner(operation.clone()),
+        Operation::Dictionary(operation) => ScalarInstruction::Dictionary(operation.clone()),
         Operation::ConstUnit { destination } => ScalarInstruction::UnitConst { destination: *destination },
         Operation::ConstInt { destination, value } => ScalarInstruction::IntConst { destination: *destination, value: *value },
         Operation::ConstFloat { destination, bits } => ScalarInstruction::FloatConst { destination: *destination, bits: *bits },
@@ -1022,6 +1038,7 @@ pub(super) fn lower_operation(
 pub(super) fn operation_name(operation: &Operation) -> &'static str {
     match operation {
         Operation::ClosureOwner(_) => "ClosureOwner",
+        Operation::Dictionary(_) => "Dictionary",
         Operation::ConstUnit { .. } => "ConstUnit",
         Operation::ConstInt { .. } => "ConstInt",
         Operation::ConstFloat { .. } => "ConstFloat",
