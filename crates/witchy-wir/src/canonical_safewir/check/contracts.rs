@@ -885,7 +885,7 @@ fn propagate_operation_origins(
                         layout: *layout, class: AllocationClass::ReferenceCounted,
                         extent: ReturnedExtent::Counted { header_bytes: 20, stride_bytes: 32 },
                     },
-                    D::Rehash { source, .. } => match function.value_types.get(source) {
+                    D::Rehash { source, .. } | D::CloneExact { source, .. } => match function.value_types.get(source) {
                         Some(ValueType::Ref(layout)) => Origin::Fresh {
                             layout: *layout, class: AllocationClass::ReferenceCounted,
                             extent: ReturnedExtent::Counted { header_bytes: 20, stride_bytes: 32 },
@@ -1071,7 +1071,7 @@ fn derive_operation(
                 D::ReadHeader { dict, .. } | D::ReadSlot { dict, .. } => Some((*dict, MemoryEffect::Read)),
                 D::InsertSlot { dict, .. } | D::ReplaceValue { dict, .. }
                 | D::RemoveSlot { dict, .. } => Some((*dict, MemoryEffect::Write)),
-                D::Rehash { source, .. } => Some((*source, MemoryEffect::Read)),
+                D::Rehash { source, .. } | D::CloneExact { source, .. } => Some((*source, MemoryEffect::Read)),
             };
             if let Some((object, effect)) = effect { add_effect(summary, origin_of(origins, object), effect); }
             for destination in dictionary.destinations() {
@@ -1080,7 +1080,7 @@ fn derive_operation(
                         layout: *layout, class: AllocationClass::ReferenceCounted,
                         extent: ReturnedExtent::Counted { header_bytes: 20, stride_bytes: 32 },
                     },
-                    D::Rehash { source, .. } => match function.value_types.get(source) {
+                    D::Rehash { source, .. } | D::CloneExact { source, .. } => match function.value_types.get(source) {
                         Some(ValueType::Ref(layout)) => Origin::Fresh {
                             layout: *layout, class: AllocationClass::ReferenceCounted,
                             extent: ReturnedExtent::Counted { header_bytes: 20, stride_bytes: 32 },

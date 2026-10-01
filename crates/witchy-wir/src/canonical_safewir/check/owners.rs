@@ -534,6 +534,7 @@ pub(super) fn check(function: &Function, registry: &Registry<'_>) -> Result<(), 
         for operation in &block.operations {
             for value in operation_uses(operation).into_iter().filter(|v| is_gc(function, *v)) { live(function, &state, value)?; }
             match operation {
+                Operation::Dictionary(_) => {},
                 Operation::ClosureOwner(owner) => {
                     match owner {
                         OwnerOperation::Deconstruct { owner, .. } => consume(function, &mut state, *owner)?,

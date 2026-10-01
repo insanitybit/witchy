@@ -879,7 +879,7 @@ pub fn all_rules() -> Vec<CanonicalRuleId> {
         R::FloatUnary, R::Guard, R::ReauthenticateRawHeaderExtent, R::Alloc, R::StaticData, R::Load, R::InitNullableOwned, R::Store, R::ClosureSlot, R::CopyBytes, R::MoveRange,
         R::CloneRange, R::UpdateCount, R::MoveValue, R::MakeInlineAggregate, R::ExtractInlineField, R::CloneRef, R::Retain, R::Release,
         R::DropRef, R::Reclaim, R::FunctionValue, R::Call, R::VarCall, R::ExternalCall, R::HostCall, R::Branch, R::BranchIf, R::Return,
-        R::TailCall, R::VarTailCall, R::Trap, R::Unreachable, R::ClosureOwner,
+        R::TailCall, R::VarTailCall, R::Trap, R::Unreachable, R::ClosureOwner, R::Dictionary,
     ];
     for rule in ordered {
         // Exhaustive by construction: adding a variant fails here.
@@ -889,7 +889,7 @@ pub fn all_rules() -> Vec<CanonicalRuleId> {
             | R::ClosureSlot | R::MoveRange | R::CloneRange | R::UpdateCount | R::ReauthenticateRawHeaderExtent | R::MoveValue | R::MakeInlineAggregate
             | R::ExtractInlineField | R::CloneRef | R::Retain | R::Release | R::DropRef | R::Reclaim | R::FunctionValue
             | R::Call | R::VarCall | R::ExternalCall | R::HostCall | R::Branch | R::BranchIf | R::Return | R::TailCall | R::VarTailCall
-            | R::Trap | R::Unreachable | R::ClosureOwner => {}
+            | R::Trap | R::Unreachable | R::ClosureOwner | R::Dictionary => {}
         }
     }
     ordered.to_vec()

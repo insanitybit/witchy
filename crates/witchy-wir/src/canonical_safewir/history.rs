@@ -610,6 +610,42 @@ impl CanonicalWriter {
 
     fn operation(&mut self, operation: &Operation) {
         match operation {
+            Operation::Dictionary(operation) => {
+                use crate::canonical_safewir::{DictionaryHeaderField as H, DictionaryOperation as D, DictionaryRehashTransfer as R, DictionarySlotField as F};
+                self.u8(43);
+                match operation {
+                    D::Initialize { destination, layout, capacity } => {
+                        self.u8(0); self.value_id(*destination); self.layout_id(*layout); self.value_id(*capacity);
+                    }
+                    D::ReadHeader { destination, dict, field } => {
+                        self.u8(1); self.value_id(*destination); self.value_id(*dict);
+                        self.u8(match field { H::Count => 0, H::Capacity => 1, H::Head => 2, H::Tail => 3, H::Tombstones => 4 });
+                    }
+                    D::ReadSlot { destination, dict, bucket, field, transfer } => {
+                        self.u8(2); self.value_id(*destination); self.value_id(*dict); self.value_id(*bucket);
+                        self.u8(match field { F::State => 0, F::Hash => 1, F::Next => 2, F::Prev => 3, F::Key => 4, F::Value => 5 });
+                        self.load_transfer(*transfer);
+                    }
+                    D::InsertSlot { dict, bucket, key, value, hash, key_transfer, value_transfer } => {
+                        self.u8(3); self.value_id(*dict); self.value_id(*bucket); self.value_id(*key);
+                        self.value_id(*value); self.value_id(*hash); self.store_transfer(*key_transfer); self.store_transfer(*value_transfer);
+                    }
+                    D::ReplaceValue { displaced, dict, bucket, value, transfer } => {
+                        self.u8(4); self.value_id(*displaced); self.value_id(*dict); self.value_id(*bucket);
+                        self.value_id(*value); self.store_transfer(*transfer);
+                    }
+                    D::RemoveSlot { removed_value, dict, bucket } => {
+                        self.u8(5); self.value_id(*removed_value); self.value_id(*dict); self.value_id(*bucket);
+                    }
+                    D::CloneExact { destination, source } => {
+                        self.u8(6); self.value_id(*destination); self.value_id(*source);
+                    }
+                    D::Rehash { destination, source, capacity, transfer } => {
+                        self.u8(7); self.value_id(*destination); self.value_id(*source); self.value_id(*capacity);
+                        self.u8(match transfer { R::CloneShared => 0, R::MoveUnique => 1 });
+                    }
+                }
+            }
             Operation::ClosureOwner(operation) => {
                 self.u8(40);
                 self.owner_operation(operation);

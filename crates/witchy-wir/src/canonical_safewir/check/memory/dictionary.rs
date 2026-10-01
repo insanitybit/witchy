@@ -144,6 +144,17 @@ impl MemoryChecker<'_> {
                 self.require_type(*bucket, ValueType::Size)?;
                 self.dictionary_take_result(*removed_value, value_slot)?;
             }
+            DictionaryOperation::CloneExact { destination, source } => {
+                let (layout, _, _) = self.dictionary_layout(*source)?;
+                self.require_ref_type(*destination, layout)?;
+                self.state.objects.insert(*destination, ObjectState {
+                    identity: *destination, owner_generation: 0, layout,
+                    extent: Extent::HeaderPrefix { minimum_bytes: 20 },
+                    ownership: Ownership::Unique,
+                    allocation_class: Some(AllocationClass::ReferenceCounted),
+                    shared_immutable: false, initialized_owned_slots: true,
+                });
+            }
             DictionaryOperation::Rehash { destination, source, capacity, transfer } => {
                 let (layout, _, _) = self.dictionary_layout(*source)?;
                 self.require_type(*capacity, ValueType::Size)?;

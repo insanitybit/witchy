@@ -64,6 +64,9 @@ pub enum DictionaryOperation {
         transfer: StoreTransfer,
     },
     RemoveSlot { removed_value: ValueId, dict: ValueId, bucket: ValueId },
+    /// Copy the exact bucket layout and order, retaining each full-row child.
+    /// A lookup result from the source remains valid in the destination.
+    CloneExact { destination: ValueId, source: ValueId },
     Rehash {
         destination: ValueId,
         source: ValueId,
@@ -78,6 +81,7 @@ impl DictionaryOperation {
             Self::Initialize { destination, .. }
             | Self::ReadHeader { destination, .. }
             | Self::ReadSlot { destination, .. }
+            | Self::CloneExact { destination, .. }
             | Self::Rehash { destination, .. } => vec![*destination],
             Self::ReplaceValue { displaced, .. } => vec![*displaced],
             Self::RemoveSlot { removed_value, .. } => vec![*removed_value],
@@ -94,6 +98,7 @@ impl DictionaryOperation {
             Self::InsertSlot { dict, bucket, key, value, hash, .. } =>
                 vec![*dict, *bucket, *key, *value, *hash],
             Self::ReplaceValue { dict, bucket, value, .. } => vec![*dict, *bucket, *value],
+            Self::CloneExact { source, .. } => vec![*source],
             Self::Rehash { source, capacity, .. } => vec![*source, *capacity],
         }
     }
