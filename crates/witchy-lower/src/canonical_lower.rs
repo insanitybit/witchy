@@ -20607,6 +20607,24 @@ fn source_value_type(
         });
     }
     let storage = StoragePlan::classify(source.unqualified(), definitions, |_| Some(0));
+    // The source-level Dict shape remains a pair of ordered lists for legacy
+    // carriers, but an admitted table root is a distinct physical layout.
+    // Resolve that root from the checked catalog's exact K/V slot identities
+    // before the generic aggregate path selects the legacy tuple.
+    if let Type::Named(name, arguments) = source.unqualified()
+        && name == "Dict" && arguments.len() == 2
+    {
+        for root in layout_bundle.roots() {
+            let Some(descriptor) = layouts.get(*root) else { continue };
+            let LayoutKind::CanonicalDictionary { key, value, .. } = descriptor.kind() else { continue };
+            if dictionary_table_slot_matches(&arguments[0], *key, layout_bundle, layouts, closure_layouts, definitions)
+                && dictionary_table_slot_matches(&arguments[1], *value, layout_bundle, layouts, closure_layouts, definitions)
+            {
+                return Ok(ValueType::Ref(*root));
+            }
+        }
+        return Err(CanonicalLoweringError::MissingLayout(source.clone()));
+    }
     if let Some(shape) = scalar_aggregate_shape(source, definitions)
         && !shape.packed
         && matches!(storage,
@@ -20645,6 +20663,32 @@ fn source_value_type(
         StoragePlan::InlineScalar(_) | StoragePlan::Owned(CarrierElement::Scalar(_)) => scalar_type(source),
         _ => Err(CanonicalLoweringError::UnsupportedType(source.clone())),
     }
+}
+
+fn dictionary_table_slot_matches(
+    source: &Type,
+    slot: witchy_wir::layout::LayoutId,
+    layout_bundle: &LayoutBundle,
+    layouts: &LayoutInterner,
+    closure_layouts: &ClosureValueLayouts,
+    definitions: &BTreeMap<String, TypeDef>,
+) -> bool {
+    let Some(descriptor) = layouts.get(slot) else { return false };
+    if let Some(scalar) = source_scalar_layout_kind(source, definitions) {
+        let scalar = if scalar == ScalarKind::Bool { ScalarKind::BoolValueSlot } else { scalar };
+        return descriptor.kind() == &LayoutKind::Scalar(scalar);
+    }
+    let LayoutKind::RuntimePointerValueSlot { pointee, semantics: PointerSlot::Owned } = descriptor.kind() else {
+        return false;
+    };
+    let Ok(ValueType::Ref(expected)) = source_value_type(source, layout_bundle, layouts, closure_layouts, definitions) else {
+        return false;
+    };
+    *pointee == expected
+        || matches!(
+            (layouts.resolve_nominal(*pointee), layouts.resolve_nominal(expected)),
+            (Ok(actual), Ok(expected)) if actual == expected
+        )
 }
 
 fn scalar_reference_layout(

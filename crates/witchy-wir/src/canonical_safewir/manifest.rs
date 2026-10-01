@@ -557,7 +557,7 @@ pub const RULES: &[RuleEntry] = &[
         predicate: "an authenticated canonical dictionary layout and typed scalar or owned-reference slots; writes require a unique RC root, while bucket bounds and occupied state are enforced at runtime",
         semantics: "a guest-resident open-addressed table mutates occupied rows atomically, clones or moves their owned children, and releases only occupied children on final drop",
         backend: RuleBackend::Receipt(CorrespondenceRule::Dictionary),
-        admits: &[t(UnitBackend, "canonical_dictionary_scalar_insert_lookup_executes")],
+        admits: &[t(EvidenceFile::UnitBackend, "canonical_dictionary_scalar_insert_lookup_executes")],
         refuses: &[],
     },
 ];

@@ -15,6 +15,7 @@ use witchy_wir::canonical_safewir::{
 
 type Values = BTreeSet<ValueId>;
 use witchy_wir::canonical_safewir::closure_owner_contract::{CaptureTransfer, OwnerFamily, OwnerOperation};
+use witchy_wir::canonical_safewir::dictionary::{DictionaryOperation, DictionaryRehashTransfer};
 
 #[derive(Debug)]
 pub(super) enum ReleasePlacementError {
@@ -40,6 +41,7 @@ fn argument_value(argument: &CallArgument) -> ValueId {
 fn definitions(operation: &Operation) -> Vec<ValueId> {
     match operation {
         Operation::ClosureOwner(owner) => owner.destinations(),
+        Operation::Dictionary(dictionary) => dictionary.destinations(),
         Operation::ConstUnit { destination } | Operation::ConstInt { destination, .. } | Operation::ConstFloat { destination, .. }
         | Operation::ConstBool { destination, .. } | Operation::ConstSize { destination, .. }
         | Operation::CapabilityNone { destination, .. } | Operation::CapabilitySome { destination, .. }
@@ -65,6 +67,7 @@ fn definitions(operation: &Operation) -> Vec<ValueId> {
 fn uses(operation: &Operation) -> Vec<ValueId> {
     match operation {
         Operation::ClosureOwner(owner) => owner.operands(),
+        Operation::Dictionary(dictionary) => dictionary.operands(),
         Operation::Arithmetic { left, right, .. } | Operation::Compare { left, right, .. } => vec![*left, *right],
         Operation::NarrowSize { value, .. } | Operation::WidenSize { value, .. } | Operation::FloatUnary { value, .. } => vec![*value],
         Operation::Guard { condition, .. } => vec![*condition],
@@ -398,6 +401,35 @@ fn operation_flow(
                 | OwnerOperation::CloneList { .. } => {}
             }
             for value in owner.destinations() {
+                if is_reference(function, value) { owned.insert(value); }
+            }
+        }
+        Operation::Dictionary(dictionary) => {
+            for value in dictionary.operands() {
+                if is_reference(function, value) && !owned.contains(&value) && !immortal.contains(&value) {
+                    return Err(ReleasePlacementError::MissingToken(value));
+                }
+            }
+            match dictionary {
+                DictionaryOperation::InsertSlot { key, value, key_transfer, value_transfer, .. } => {
+                    if *key_transfer == StoreTransfer::MoveUnique && is_reference(function, *key) {
+                        consume(owned, *key)?;
+                    }
+                    if *value_transfer == StoreTransfer::MoveUnique && is_reference(function, *value) {
+                        consume(owned, *value)?;
+                    }
+                }
+                DictionaryOperation::ReplaceValue { value, transfer, .. } => {
+                    if *transfer == StoreTransfer::MoveUnique && is_reference(function, *value) {
+                        consume(owned, *value)?;
+                    }
+                }
+                DictionaryOperation::Rehash { source, transfer: DictionaryRehashTransfer::MoveUnique, .. } => {
+                    consume(owned, *source)?;
+                }
+                _ => {}
+            }
+            for value in dictionary.destinations() {
                 if is_reference(function, value) { owned.insert(value); }
             }
         }

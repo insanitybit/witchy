@@ -862,12 +862,30 @@ impl FunctionLowerer<'_> {
             else_arguments: Vec::new(),
         })?;
         self.current = grow;
+        let twice_count = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Multiply, count, two, OverflowBehavior::Trap)?;
+        let live_needs_growth = self.push_compare(ComparisonOperator::GreaterEqualUnsigned, twice_count, capacity)?;
+        let double = self.new_block(&[])?;
+        let compact = self.new_block(&[])?;
+        let target_capacity = self.new_block(&[ValueType::Size])?;
+        self.finish_current(Terminator::BranchIf {
+            condition: live_needs_growth,
+            then_target: double,
+            then_arguments: Vec::new(),
+            else_target: compact,
+            else_arguments: Vec::new(),
+        })?;
+        self.current = double;
         let doubled = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Multiply, capacity, two, OverflowBehavior::Trap)?;
+        self.finish_current(Terminator::Branch { target: target_capacity, arguments: vec![doubled] })?;
+        self.current = compact;
+        self.finish_current(Terminator::Branch { target: target_capacity, arguments: vec![capacity] })?;
+        self.current = target_capacity;
+        let selected_capacity = self.block_parameter_values(target_capacity)[0];
         let grown = self.fresh(self.values[&dict])?;
         self.push_operation(Operation::Dictionary(DictionaryOperation::Rehash {
             destination: grown,
             source: dict,
-            capacity: doubled,
+            capacity: selected_capacity,
             transfer: DictionaryRehashTransfer::MoveUnique,
         }));
         let bucket = self.lower_dict_vacant_bucket(grown, key, key_type)?;
