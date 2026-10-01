@@ -708,7 +708,7 @@ pub(super) fn emit(
             body.instruction(&wasm_encoder::Instruction::I32Load(memarg(4)));
             emit_set(body, local, function.id, *destination)
         }
-        DictionaryOperation::ProbeGroup { dict, bucket, fingerprint, matching, empty, deleted } => {
+        DictionaryOperation::ProbeGroup { dict, bucket, fingerprint, matching, empty, deleted, first_event } => {
             emit_get(body, local, function.id, *bucket)?;
             emit_get(body, local, function.id, *dict)?;
             body.instruction(&wasm_encoder::Instruction::I32Load(wasm_encoder::MemArg { offset: 4, align: 2, memory_index: 0 }));
@@ -733,6 +733,15 @@ pub(super) fn emit(
                 body.instruction(&wasm_encoder::Instruction::I8x16Bitmask);
                 emit_set(body, local, function.id, destination)?;
             }
+            emit_get(body, local, function.id, *matching)?;
+            emit_get(body, local, function.id, *empty)?;
+            body.instruction(&wasm_encoder::Instruction::I32Or);
+            emit_get(body, local, function.id, *deleted)?;
+            body.instruction(&wasm_encoder::Instruction::I32Or);
+            body.instruction(&wasm_encoder::Instruction::I32Const(0x10000));
+            body.instruction(&wasm_encoder::Instruction::I32Or);
+            body.instruction(&wasm_encoder::Instruction::I32Ctz);
+            emit_set(body, local, function.id, *first_event)?;
             Ok(())
         }
         DictionaryOperation::ReadSlot { destination, dict, bucket, field, transfer } => {
@@ -1031,7 +1040,7 @@ pub(super) fn plan(
                 PlanToken::I32Load { offset: 0, align: 2, memory: 0 }]);
             push_set(plan, local, *destination)
         }
-        DictionaryOperation::ProbeGroup { dict, bucket, fingerprint, matching, empty, deleted } => {
+        DictionaryOperation::ProbeGroup { dict, bucket, fingerprint, matching, empty, deleted, first_event } => {
             push_get(plan, local, *bucket)?;
             push_get(plan, local, *dict)?;
             plan.extend([PlanToken::I32Load { offset: 4, align: 2, memory: 0 },
@@ -1051,6 +1060,13 @@ pub(super) fn plan(
                     PlanToken::I8x16Bitmask]);
                 push_set(plan, local, destination)?;
             }
+            push_get(plan, local, *matching)?;
+            push_get(plan, local, *empty)?;
+            plan.push(PlanToken::I32Or);
+            push_get(plan, local, *deleted)?;
+            plan.extend([PlanToken::I32Or, PlanToken::I32Const(0x10000),
+                PlanToken::I32Or, PlanToken::I32Ctz]);
+            push_set(plan, local, *first_event)?;
             Ok(())
         }
         DictionaryOperation::ReadSlot { destination, dict, bucket, field, transfer } => {
