@@ -3100,7 +3100,8 @@ fn type_variable_name(ty: &Type) -> Option<&str> {
     let Type::Named(name, args) = ty.unqualified() else { return None };
     (args.is_empty()
         && name.chars().next().is_some_and(char::is_lowercase)
-        && !name.contains('.'))
+        && !name.contains('.')
+        && name != "str")
     .then_some(name)
 }
 
@@ -3780,7 +3781,8 @@ fn bind_ast_type_vars_inner(
         (Type::Named(name, args), Type::Qualified(TypeQual::View, concrete_payload))
             if !(args.is_empty()
                 && name.chars().next().is_some_and(char::is_lowercase)
-                && !name.contains('.')) =>
+                && !name.contains('.')
+                && name != "str") =>
         {
             return bind_ast_type_vars_inner(pattern, concrete_payload, out);
         }
@@ -3790,7 +3792,8 @@ fn bind_ast_type_vars_inner(
         (Type::Named(var, args), concrete)
             if args.is_empty()
                 && var.chars().next().is_some_and(char::is_lowercase)
-                && !var.contains('.') =>
+                && !var.contains('.')
+                && var != "str" =>
         {
             // An unresolved actual variable is absence of evidence, not a
             // concrete binding. `set.new()` yields `Set(a)`; a later
@@ -3799,7 +3802,8 @@ fn bind_ast_type_vars_inner(
             if matches!(concrete, Type::Named(name, args)
                 if args.is_empty()
                     && name.chars().next().is_some_and(char::is_lowercase)
-                    && !name.contains('.'))
+                    && !name.contains('.')
+                    && name != "str")
             {
                 return true;
             }

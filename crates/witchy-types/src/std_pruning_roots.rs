@@ -71,6 +71,7 @@ pub const COMPILER_STD_NAMES: &[&str] = &[
     "crypto.sha3_256",
     "crypto.sha512",
     "crypto.sign",
+    "dict.__contains_by",
     "dict.__insert",
     "dict.__insert_extract",
     "dict.__insert_extract__String__Int",

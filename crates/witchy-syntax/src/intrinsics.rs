@@ -204,6 +204,7 @@ pub enum IntrinsicId {
     DictAt,
     DictUpdate,
     DictContainsKey,
+    DictContainsBy,
     DictRemove,
     DictRemoveExtract,
     DictKeys,
@@ -299,6 +300,7 @@ pub enum IntrinsicSignature {
     GenericDictIndex,
     GenericDictUpdate,
     GenericDictContainsKey,
+    GenericDictContainsBy,
     GenericDictRemove,
     GenericDictRemoveExtract,
     GenericDictKeys,
@@ -353,7 +355,7 @@ impl IntrinsicSignature {
     }
 
     pub fn returns_bool(self) -> bool {
-        matches!(self, Self::StringStringToBool | Self::GenericDictContainsKey)
+        matches!(self, Self::StringStringToBool | Self::GenericDictContainsKey | Self::GenericDictContainsBy)
     }
 
     pub fn returns_bytes(self) -> bool {
@@ -830,6 +832,7 @@ pub const DICT_GET_OR: &str = "dict.get_or";
 pub const DICT_AT: &str = "dict.at";
 pub const DICT_UPDATE: &str = "dict.__update";
 pub const DICT_CONTAINS_KEY: &str = "dict.contains_key";
+pub const DICT_CONTAINS_BY: &str = "dict.__contains_by";
 pub const DICT_REMOVE: &str = "dict.__remove";
 pub const DICT_REMOVE_EXTRACT: &str = "dict.__remove_extract";
 pub const DICT_KEYS: &str = "dict.keys";
@@ -3796,6 +3799,21 @@ pub const ALL: &[IntrinsicSpec] = &[
         private_callers: NO_PRIVATE_CALLERS,
     },
     IntrinsicSpec {
+        id: IntrinsicId::DictContainsBy,
+        name: DICT_CONTAINS_BY,
+        arity: 2,
+        signature: IntrinsicSignature::GenericDictContainsBy,
+        effect: IntrinsicEffect::Pure,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::Builtin,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: NO_HELPERS,
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: DICT_CONTAINS_BY,
+        private_callers: &["dict"],
+    },
+    IntrinsicSpec {
         id: IntrinsicId::DictRemove,
         name: DICT_REMOVE,
         arity: 2,
@@ -3999,6 +4017,7 @@ pub const DICT_OPERATIONS: &[&str] = &[
     DICT_AT,
     DICT_UPDATE,
     DICT_CONTAINS_KEY,
+    DICT_CONTAINS_BY,
     DICT_REMOVE,
     DICT_REMOVE_EXTRACT,
     DICT_KEYS,
@@ -4225,6 +4244,7 @@ pub fn is_dict_operation(name: &str) -> bool {
                 | IntrinsicId::DictAt
                 | IntrinsicId::DictUpdate
                 | IntrinsicId::DictContainsKey
+                | IntrinsicId::DictContainsBy
                 | IntrinsicId::DictRemove
                 | IntrinsicId::DictRemoveExtract
                 | IntrinsicId::DictKeys

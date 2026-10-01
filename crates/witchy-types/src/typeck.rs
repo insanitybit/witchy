@@ -4614,6 +4614,13 @@ impl Checker {
                 let dict = Ty::Named("Dict".into(), vec![key.clone(), value].into());
                 Some((vec![dict, key], Ty::Bool))
             }
+            S::GenericDictContainsBy => {
+                let key = self.fresh();
+                let value = self.fresh();
+                let query = self.fresh();
+                let dict = Ty::Named("Dict".into(), vec![key, value].into());
+                Some((vec![dict, Ty::View(Box::new(query).into())], Ty::Bool))
+            }
             S::GenericDictRemove => {
                 let key = self.fresh();
                 let value = self.fresh();

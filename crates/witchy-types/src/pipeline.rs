@@ -57,6 +57,7 @@ use crate::typeck::{self, ProperTailSiteManifest, TypeError};
 struct CanonicalCallableWitness {
     signatures: BTreeMap<String, witchy_syntax::ast::Type>,
     dictionary_comparators: Vec<(witchy_syntax::ast::Type, String, String)>,
+    dictionary_equivalents: Vec<(witchy_syntax::ast::Type, witchy_syntax::ast::Type, String, String)>,
     generic_instances: BTreeMap<String, witchy_canonical_source::specialization::LogicalSpecializationIdentity>,
     abi_manifest: CanonicalCallableAbiManifest,
     closed_abis: BTreeMap<String, CanonicalCallableAbi>,
@@ -261,6 +262,11 @@ impl CanonicalCheckedSource {
     #[doc(hidden)]
     pub fn dictionary_key_comparators(&self) -> &[(witchy_syntax::ast::Type, String, String)] {
         &self.callable_witness.dictionary_comparators
+    }
+
+    #[doc(hidden)]
+    pub fn dictionary_equivalent_queries(&self) -> &[(witchy_syntax::ast::Type, witchy_syntax::ast::Type, String, String)] {
+        &self.callable_witness.dictionary_equivalents
     }
 
     /// Return the typechecker-owned specialization identity for a generated
@@ -1641,6 +1647,7 @@ fn bind_canonical_callable_witness(
             return Ok(CanonicalCallableWitness {
                 signatures,
                 dictionary_comparators: Vec::new(),
+                dictionary_equivalents: Vec::new(),
                 generic_instances,
                 abi_manifest: CanonicalCallableAbiManifest::empty(),
                 closed_abis: BTreeMap::new(),
@@ -1665,6 +1672,7 @@ fn bind_canonical_callable_witness(
     Ok(CanonicalCallableWitness {
         signatures,
         dictionary_comparators: Vec::new(),
+        dictionary_equivalents: Vec::new(),
         generic_instances,
         abi_manifest,
         closed_abis,
@@ -1887,7 +1895,7 @@ fn finish_canonical_source(
     // deriving any final witness; never restart prefix-collision reservations.
     typed_source = preparation.extend(prepared_traits)
         .map_err(|message| PipelineError::Type(TypeError { message }))?;
-    let (mut instances, dictionary_comparators) = preparation.into_metadata();
+    let (mut instances, dictionary_comparators, dictionary_equivalents) = preparation.into_metadata();
     let retained = typed_source.module().items.iter().filter_map(|item| match item {
         witchy_syntax::ast::Item::Function(function) => Some(function.name.clone()),
         _ => None,
@@ -1895,6 +1903,7 @@ fn finish_canonical_source(
     instances.retain(|name, _| !before_preparation.contains(name) || retained.contains(name));
     let mut callable_witness = bind_canonical_callable_witness(&typed_source, instances)?;
     callable_witness.dictionary_comparators = dictionary_comparators;
+    callable_witness.dictionary_equivalents = dictionary_equivalents;
     crate::source_bridge_obligations::validate(
         typed_source.module(), &callable_witness.runtime_functions, runtime_catalog.as_ref(),
     ).map_err(|message| PipelineError::Type(TypeError { message }))?;

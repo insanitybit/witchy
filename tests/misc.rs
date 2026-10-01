@@ -159,6 +159,8 @@ mod rfc0167_option_list_view_boundary;
 mod rfc0167_dict_root_view;
 #[path = "misc/rfc0167_dict_hash_contract.rs"]
 mod rfc0167_dict_hash_contract;
+#[path = "misc/rfc0167_dict_equivalent_query.rs"]
+mod rfc0167_dict_equivalent_query;
 #[path = "misc/rfc0167_indirect_list_view.rs"]
 mod rfc0167_indirect_list_view;
 #[path = "misc/rfc0167_list_of_int_views.rs"]

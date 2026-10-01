@@ -502,9 +502,10 @@ A total order: `compare` never reports "incomparable". Sorting and the `min`/ `m
 
 #### `trait Equivalent(k)`
 
-Trait for a query value `q` that can be compared for equivalence against a stored key `k` (RFC-0139). Decouples heterogeneous key lookups from reference subtyping to allow zero-allocation queries for slices, tuples, and records.
+A query's hash must equal the stored key's Hash result whenever equivalent is true. The query is borrowed so a lookup can inspect a view without owning a key.
 
-- `fn equivalent(self, key: k) -> Bool`
+- `fn equivalent(self: &Self, key: k) -> Bool`
+- `fn equivalent_hash(self: &Self) -> Int`
 
 #### `fn reverse(o: Ordering) -> Ordering`
 
@@ -745,21 +746,10 @@ Tuples compare slot-by-slot through each slot's equality protocol. The tuple pro
 
 - `fn hash(let self) -> Int`
 
-#### `impl Equivalent(a) for a where a: Eq`
+#### `impl Equivalent(String) for str`
 
-- `fn equivalent(self, key: a) -> Bool`
-
-#### `impl Equivalent(List(t)) for List(t) where t: Eq`
-
-- `fn equivalent(self, key: List(t)) -> Bool`
-
-#### `impl Equivalent((k1, k2)) for (q1, q2) where q1: Equivalent(k1), q2: Equivalent(k2)`
-
-- `fn equivalent(self, key: (k1, k2)) -> Bool`
-
-#### `impl Equivalent((k1, k2, k3)) for (q1, q2, q3) where q1: Equivalent(k1), q2: Equivalent(k2), q3: Equivalent(k3)`
-
-- `fn equivalent(self, key: (k1, k2, k3)) -> Bool`
+- `fn equivalent(self: &str, key: String) -> Bool`
+- `fn equivalent_hash(self: &str) -> Int`
 
 ## `compiler`
 
@@ -969,6 +959,8 @@ The value for `key`, or a runtime error when absent. This is the read half of th
 #### `fn contains_key(let d: Dict(k, v), key: k) -> Bool where k: Hash`
 
 Whether `key` is present. The `_key` suffix is deliberate: a Dict contains key/value pairs, so bare `contains` would be ambiguous between keys and values.
+
+#### `fn contains_by(let d: Dict(k, v), query: &q) -> Bool where k: Hash, q: Equivalent(k)`
 
 #### `fn remove(var d: unique Dict(k, v), key: k) -> Option(v) where k: Hash`
 

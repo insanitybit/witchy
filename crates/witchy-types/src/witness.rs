@@ -185,6 +185,36 @@ impl WitnessCatalog {
         )
     }
 
+    /// Resolve a query method against the checked Equivalent(K) implementation.
+    pub(crate) fn dictionary_equivalent_method(
+        &self,
+        query: &Type,
+        key: &Type,
+        method_name: &str,
+    ) -> Result<String, String> {
+        let mut declarations = self.traits.iter().filter(|definition| {
+            crate::traits::is_standard_trait_identity(&definition.name, "cmp", "Equivalent")
+        });
+        let declaration = declarations.next().ok_or("dictionary Equivalent trait is absent")?;
+        if declarations.next().is_some() {
+            return Err("dictionary Equivalent trait identity is ambiguous".into());
+        }
+        let method = declaration.methods.iter().find(|method| method.name == method_name)
+            .ok_or_else(|| format!("dictionary Equivalent method `{method_name}` is absent"))?;
+        let impls = self.impls.iter().collect::<Vec<_>>();
+        let (implementation, bindings) = resolve_impl(
+            &impls,
+            &declaration.name,
+            &[key.clone()],
+            query,
+        )?;
+        let trait_params = declaration.typarams.iter().cloned()
+            .zip(std::iter::once(key.clone())).collect();
+        monomorphic_impl_method_name(
+            &declaration.name, implementation, method, &trait_params, &bindings,
+        )
+    }
+
     pub fn from_module(module: &Module) -> Self {
         let mut catalog = Self::default();
         let trait_methods = module

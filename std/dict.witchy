@@ -85,6 +85,13 @@ pub fn update(var d: Dict(k, v), key: k, default: v, f: fn(v) -> v) where k: Has
 pub fn contains_key(let d: Dict(k, v), key: k) -> Bool where k: Hash:
     dict.contains_key(d, key)
 
+// Query by a borrowed value with a checked hash/equivalence contract.
+fn __contains_by(let d: Dict(k, v), query: &q) -> Bool where k: Hash, q: Equivalent(k):
+    dict.__contains_by(d, query)
+
+pub fn contains_by(let d: Dict(k, v), query: &q) -> Bool where k: Hash, q: Equivalent(k):
+    dict.__contains_by(d, query)
+
 // A new dict with `key` (and its value) removed; unchanged when absent.
 fn __remove(d: unique Dict(k, v), key: k) -> Dict(k, v) where k: Hash:
     dict.__remove(d, key)

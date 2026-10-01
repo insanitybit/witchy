@@ -394,6 +394,18 @@ impl FunctionLowerer<'_> {
                 let (found, _, _, _) = self.lower_dict_find_table(dict, key, &key_type)?;
                 Ok(found)
             }
+            ("dict.__contains_by", [operand, query]) => {
+                let (dict, key_type, _) = self.lower_dict_table_operand(operand)?;
+                let query_type = self.expression_type(query)?;
+                let Type::Qualified(TypeQual::View, payload) = query_type else {
+                    return Err(CanonicalLoweringError::UnsupportedExpression("dict query view"));
+                };
+                let query = self.lower_expr(query)?;
+                let (found, _, _, _) = self.lower_dict_find_query_table(
+                    dict, query, &key_type, payload.unqualified(),
+                )?;
+                Ok(found)
+            }
             ("dict.at", [operand, key]) => {
                 let (dict, key_type, value_type) = self.lower_dict_table_operand(operand)?;
                 let key = self.lower_expr(key)?;
@@ -514,13 +526,41 @@ impl FunctionLowerer<'_> {
         key: ValueId,
         key_type: &Type,
     ) -> Result<(ValueId, ValueId, ValueId, ValueId), CanonicalLoweringError> {
+        let hash = self.lower_dict_key_hash(key, key_type)?;
+        self.lower_dict_find_table_hashed(dict, key, key_type, hash, None)
+    }
+
+    fn lower_dict_find_query_table(
+        &mut self,
+        dict: ValueId,
+        query: ValueId,
+        key_type: &Type,
+        query_type: &Type,
+    ) -> Result<(ValueId, ValueId, ValueId, ValueId), CanonicalLoweringError> {
+        let (_, _, comparator, hasher) = self.dictionary_equivalents.iter()
+            .find(|(key, candidate, _, _)| key.unqualified() == key_type.unqualified()
+                && candidate.unqualified() == query_type.unqualified())
+            .ok_or(CanonicalLoweringError::UnsupportedExpression("dict Equivalent witness"))?;
+        let comparator = comparator.clone();
+        let hasher = hasher.clone();
+        let hash = self.lower_dict_hash_call(&hasher, query)?;
+        self.lower_dict_find_table_hashed(dict, query, key_type, hash, Some(&comparator))
+    }
+
+    fn lower_dict_find_table_hashed(
+        &mut self,
+        dict: ValueId,
+        key: ValueId,
+        key_type: &Type,
+        hash: ValueId,
+        query_comparator: Option<&str>,
+    ) -> Result<(ValueId, ValueId, ValueId, ValueId), CanonicalLoweringError> {
         let capacity = self.fresh(ValueType::Size)?;
         self.push_operation(Operation::Dictionary(DictionaryOperation::ReadHeader {
             destination: capacity,
             dict,
             field: DictionaryHeaderField::Capacity,
         }));
-        let hash = self.lower_dict_key_hash(key, key_type)?;
         // Narrow only a nonnegative low-bit prefix. This is a bucket selector,
         // never a key identity; the full comparator resolves collisions.
         let low_mask = self.push_const_int(0xffff_ffff)?;
@@ -664,7 +704,9 @@ impl FunctionLowerer<'_> {
             .iter()
             .find(|(ty, _, _)| ty.unqualified() == key_type.unqualified())
             .map(|(_, name, _)| name.clone());
-        let matched = if let Some(comparator) = comparator {
+        let matched = if let Some(comparator) = query_comparator {
+            self.lower_dict_key_comparison(comparator, key, element)?
+        } else if let Some(comparator) = comparator {
             self.lower_dict_key_comparison(&comparator, element, key)?
         } else if Self::is_string_type(key_type) {
             self.lower_string_equality(element, key, false)?

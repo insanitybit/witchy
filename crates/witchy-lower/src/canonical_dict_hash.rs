@@ -32,7 +32,7 @@ impl FunctionLowerer<'_> {
         }
     }
 
-    fn lower_dict_hash_call(&mut self, name: &str, key: ValueId) -> Result<ValueId, CanonicalLoweringError> {
+    pub(super) fn lower_dict_hash_call(&mut self, name: &str, key: ValueId) -> Result<ValueId, CanonicalLoweringError> {
         let (callee, signature_id) = self.functions.get(name).copied()
             .ok_or_else(|| CanonicalLoweringError::MissingBinding(name.into()))?;
         let signature = self.signatures.get(signature_id.get() as usize).cloned()
