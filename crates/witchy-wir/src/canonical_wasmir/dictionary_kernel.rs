@@ -4,7 +4,7 @@ use super::*;
 use crate::canonical_safewir::dictionary::DictionaryOperation;
 
 fn counted_extent(capacity: ValueId) -> Extent {
-    Extent::Counted { header_bytes: 20, count: capacity, capacity, stride_bytes: 32 }
+    Extent::Counted { header_bytes: 36, count: capacity, capacity, stride_bytes: 33 }
 }
 
 fn header_offset(field: crate::canonical_safewir::dictionary::DictionaryHeaderField) -> i32 {
@@ -114,6 +114,101 @@ fn plan_i32_store(plan: &mut Vec<PlanToken>, address: u32, offset: i32, value: u
     plan.extend([PlanToken::LocalGet(value), PlanToken::I32Store { offset: 0, align: 2, memory: 0 }]);
 }
 
+// The row region remains at +20. Controls follow all rows, and the first
+// sixteen controls are mirrored after the array for a wrapped SIMD load.
+fn emit_control_base(body: &mut WasmFunctionEncoder, function: &Function, local: &LocalLayout,
+    dict: ValueId,
+) -> Result<(), EncodeError> {
+    emit_get(body, local, function.id, dict)?;
+    emit_get(body, local, function.id, dict)?;
+    body.instruction(&wasm_encoder::Instruction::I32Const(4));
+    body.instruction(&wasm_encoder::Instruction::I32Add);
+    body.instruction(&wasm_encoder::Instruction::I32Load(memarg(4)));
+    body.instruction(&wasm_encoder::Instruction::I32Const(32));
+    body.instruction(&wasm_encoder::Instruction::I32Mul);
+    body.instruction(&wasm_encoder::Instruction::I32Add);
+    body.instruction(&wasm_encoder::Instruction::I32Const(20));
+    body.instruction(&wasm_encoder::Instruction::I32Add);
+    Ok(())
+}
+
+fn plan_control_base(plan: &mut Vec<PlanToken>, local: &LocalLayout, dict: ValueId)
+    -> Result<(), CanonicalAdmissionError> {
+    push_get(plan, local, dict)?;
+    push_get(plan, local, dict)?;
+    plan.extend([PlanToken::I32Const(4), PlanToken::I32Add,
+        PlanToken::I32Load { offset: 0, align: 2, memory: 0 },
+        PlanToken::I32Const(32), PlanToken::I32Mul, PlanToken::I32Add,
+        PlanToken::I32Const(20), PlanToken::I32Add]);
+    Ok(())
+}
+
+fn emit_fill_controls(body: &mut WasmFunctionEncoder, function: &Function, local: &LocalLayout,
+    dict: ValueId, capacity: ValueId,
+) -> Result<(), EncodeError> {
+    emit_control_base(body, function, local, dict)?;
+    body.instruction(&wasm_encoder::Instruction::I32Const(0x80));
+    emit_get(body, local, function.id, capacity)?;
+    body.instruction(&wasm_encoder::Instruction::I32Const(16));
+    body.instruction(&wasm_encoder::Instruction::I32Add);
+    body.instruction(&wasm_encoder::Instruction::MemoryFill(0));
+    Ok(())
+}
+
+fn plan_fill_controls(plan: &mut Vec<PlanToken>, local: &LocalLayout, dict: ValueId,
+    capacity: ValueId,
+) -> Result<(), CanonicalAdmissionError> {
+    plan_control_base(plan, local, dict)?;
+    plan.push(PlanToken::I32Const(0x80));
+    push_get(plan, local, capacity)?;
+    plan.extend([PlanToken::I32Const(16), PlanToken::I32Add, PlanToken::MemoryFill(0)]);
+    Ok(())
+}
+
+// `bucket` and `control` are scalar scratch locals. Mutations mirror the
+// first group so ProbeGroup can load sixteen bytes across capacity wrap.
+fn emit_write_control(body: &mut WasmFunctionEncoder, function: &Function, local: &LocalLayout,
+    dict: ValueId, bucket: u32, control: u32,
+) -> Result<(), EncodeError> {
+    emit_control_base(body, function, local, dict)?;
+    emit_get_index(body, bucket);
+    body.instruction(&wasm_encoder::Instruction::I32Add);
+    emit_get_index(body, control);
+    body.instruction(&wasm_encoder::Instruction::I32Store8(memarg(1)));
+    emit_get_index(body, bucket);
+    body.instruction(&wasm_encoder::Instruction::I32Const(16));
+    body.instruction(&wasm_encoder::Instruction::I32LtU);
+    body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
+    emit_control_base(body, function, local, dict)?;
+    emit_get(body, local, function.id, dict)?;
+    body.instruction(&wasm_encoder::Instruction::I32Const(4));
+    body.instruction(&wasm_encoder::Instruction::I32Add);
+    body.instruction(&wasm_encoder::Instruction::I32Load(memarg(4)));
+    body.instruction(&wasm_encoder::Instruction::I32Add);
+    emit_get_index(body, bucket);
+    body.instruction(&wasm_encoder::Instruction::I32Add);
+    emit_get_index(body, control);
+    body.instruction(&wasm_encoder::Instruction::I32Store8(memarg(1)));
+    body.instruction(&wasm_encoder::Instruction::End);
+    Ok(())
+}
+
+fn plan_write_control(plan: &mut Vec<PlanToken>, local: &LocalLayout, dict: ValueId,
+    bucket: u32, control: u32,
+) -> Result<(), CanonicalAdmissionError> {
+    plan_control_base(plan, local, dict)?;
+    plan.extend([PlanToken::LocalGet(bucket), PlanToken::I32Add, PlanToken::LocalGet(control),
+        PlanToken::I32Store8 { offset: 0, align: 0, memory: 0 }, PlanToken::LocalGet(bucket),
+        PlanToken::I32Const(16), PlanToken::I32LtU, PlanToken::If("Empty".into())]);
+    plan_control_base(plan, local, dict)?;
+    push_get(plan, local, dict)?;
+    plan.extend([PlanToken::I32Const(4), PlanToken::I32Add,
+        PlanToken::I32Load { offset: 0, align: 2, memory: 0 }, PlanToken::I32Add,
+        PlanToken::LocalGet(bucket), PlanToken::I32Add, PlanToken::LocalGet(control),
+        PlanToken::I32Store8 { offset: 0, align: 0, memory: 0 }, PlanToken::End]);
+    Ok(())
+}
+
 fn pointer_offsets(function: &Function, layouts: &LayoutInterner, source: ValueId) -> Result<Vec<i32>, EncodeError> {
     let Some(ValueType::Ref(layout)) = function.value_types.get(&source).copied() else {
         return Err(EncodeError::UnsupportedLayout { function: function.id, operation: "Dictionary source" });
@@ -185,9 +280,9 @@ fn emit_clone_exact(body: &mut WasmFunctionEncoder, function: &Function, local: 
     emit_get(body, local, function.id, destination)?;
     emit_get(body, local, function.id, source)?;
     emit_get(body, local, function.id, capacity)?;
-    body.instruction(&wasm_encoder::Instruction::I32Const(32));
+    body.instruction(&wasm_encoder::Instruction::I32Const(33));
     body.instruction(&wasm_encoder::Instruction::I32Mul);
-    body.instruction(&wasm_encoder::Instruction::I32Const(20));
+    body.instruction(&wasm_encoder::Instruction::I32Const(36));
     body.instruction(&wasm_encoder::Instruction::I32Add);
     body.instruction(&wasm_encoder::Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
     if !offsets.is_empty() {
@@ -253,7 +348,7 @@ fn plan_clone_exact(plan: &mut Vec<PlanToken>, function: &Function, local: &Loca
     push_get(plan, local, destination)?;
     push_get(plan, local, source)?;
     push_get(plan, local, capacity)?;
-    plan.extend([PlanToken::I32Const(32), PlanToken::I32Mul, PlanToken::I32Const(20), PlanToken::I32Add,
+    plan.extend([PlanToken::I32Const(33), PlanToken::I32Mul, PlanToken::I32Const(36), PlanToken::I32Add,
         PlanToken::MemoryCopy { source: 0, destination: 0 }]);
     if !offsets.is_empty() {
         let retain = retain.expect("owned dictionary slots require a retain helper");
@@ -309,6 +404,7 @@ fn emit_rehash(body: &mut WasmFunctionEncoder, function: &Function, local: &Loca
     body.instruction(&wasm_encoder::Instruction::I32Const(32));
     body.instruction(&wasm_encoder::Instruction::I32Mul);
     body.instruction(&wasm_encoder::Instruction::MemoryFill(0));
+    emit_fill_controls(body, function, local, destination, capacity)?;
     body.instruction(&wasm_encoder::Instruction::I32Const(0));
     emit_set_index(body, local.scratch[11]);
     emit_get(body, local, function.id, destination)?;
@@ -372,6 +468,12 @@ fn emit_rehash(body: &mut WasmFunctionEncoder, function: &Function, local: &Loca
     emit_get_index(body, local.scratch[5]);
     body.instruction(&wasm_encoder::Instruction::I32Const(32));
     body.instruction(&wasm_encoder::Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
+    emit_get_index(body, local.scratch[5]);
+    body.instruction(&wasm_encoder::Instruction::I32Load(wasm_encoder::MemArg { offset: 4, align: 2, memory_index: 0 }));
+    body.instruction(&wasm_encoder::Instruction::I32Const(25));
+    body.instruction(&wasm_encoder::Instruction::I32ShrU);
+    emit_set_index(body, local.scratch[11]);
+    emit_write_control(body, function, local, destination, local.scratch[6], local.scratch[11])?;
     if transfer == T::CloneShared {
         if let Some(retain) = retain {
             for offset in offsets {
@@ -457,6 +559,7 @@ fn plan_rehash(plan: &mut Vec<PlanToken>, function: &Function, local: &LocalLayo
     push_get(plan, local, capacity)?;
     plan.extend([P::I32Const(32), P::I32Mul, P::MemoryFill(0),
         P::I32Const(0), P::LocalSet(local.scratch[11])]);
+    plan_fill_controls(plan, local, destination, capacity)?;
     push_get(plan, local, destination)?;
     plan.push(P::LocalSet(local.scratch[7]));
     for offset in [0, 8, 12, 16] { plan_i32_store(plan, local.scratch[7], offset, local.scratch[11]); }
@@ -481,6 +584,9 @@ fn plan_rehash(plan: &mut Vec<PlanToken>, function: &Function, local: &LocalLayo
         P::Br(0), P::End, P::End,
         P::LocalGet(local.scratch[7]), P::LocalGet(local.scratch[5]), P::I32Const(32),
         P::MemoryCopy { source: 0, destination: 0 }]);
+    plan.extend([P::LocalGet(local.scratch[5]), P::I32Load { offset: 4, align: 2, memory: 0 },
+        P::I32Const(25), P::I32ShrU, P::LocalSet(local.scratch[11])]);
+    plan_write_control(plan, local, destination, local.scratch[6], local.scratch[11])?;
     if transfer == T::CloneShared {
         if let Some(retain) = retain {
             for offset in offsets {
@@ -523,7 +629,7 @@ fn plan_rehash(plan: &mut Vec<PlanToken>, function: &Function, local: &LocalLayo
 
 fn emit_capacity_guard(body: &mut WasmFunctionEncoder, function: &Function, local: &LocalLayout, capacity: ValueId) -> Result<(), EncodeError> {
     emit_get(body, local, function.id, capacity)?;
-    body.instruction(&wasm_encoder::Instruction::I32Const(8));
+    body.instruction(&wasm_encoder::Instruction::I32Const(16));
     body.instruction(&wasm_encoder::Instruction::I32LtU);
     body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
     body.instruction(&wasm_encoder::Instruction::Unreachable);
@@ -541,7 +647,7 @@ fn emit_capacity_guard(body: &mut WasmFunctionEncoder, function: &Function, loca
 
 fn plan_capacity_guard(plan: &mut Vec<PlanToken>, local: &LocalLayout, capacity: ValueId) -> Result<(), CanonicalAdmissionError> {
     push_get(plan, local, capacity)?;
-    plan.extend([PlanToken::I32Const(8), PlanToken::I32LtU, PlanToken::If("Empty".into()), PlanToken::Unreachable, PlanToken::End]);
+    plan.extend([PlanToken::I32Const(16), PlanToken::I32LtU, PlanToken::If("Empty".into()), PlanToken::Unreachable, PlanToken::End]);
     push_get(plan, local, capacity)?;
     push_get(plan, local, capacity)?;
     plan.extend([PlanToken::I32Const(1), PlanToken::I32Sub, PlanToken::I32And, PlanToken::If("Empty".into()), PlanToken::Unreachable, PlanToken::End]);
@@ -592,6 +698,7 @@ pub(super) fn emit(
             body.instruction(&wasm_encoder::Instruction::I32Const(32));
             body.instruction(&wasm_encoder::Instruction::I32Mul);
             body.instruction(&wasm_encoder::Instruction::MemoryFill(0));
+            emit_fill_controls(body, function, local, *destination, *capacity)?;
             Ok(())
         }
         DictionaryOperation::ReadHeader { destination, dict, field } => {
@@ -600,6 +707,33 @@ pub(super) fn emit(
             body.instruction(&wasm_encoder::Instruction::I32Add);
             body.instruction(&wasm_encoder::Instruction::I32Load(memarg(4)));
             emit_set(body, local, function.id, *destination)
+        }
+        DictionaryOperation::ProbeGroup { dict, bucket, fingerprint, matching, empty, deleted } => {
+            emit_get(body, local, function.id, *bucket)?;
+            emit_get(body, local, function.id, *dict)?;
+            body.instruction(&wasm_encoder::Instruction::I32Load(wasm_encoder::MemArg { offset: 4, align: 2, memory_index: 0 }));
+            body.instruction(&wasm_encoder::Instruction::I32GeU);
+            body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
+            body.instruction(&wasm_encoder::Instruction::Unreachable);
+            body.instruction(&wasm_encoder::Instruction::End);
+            emit_control_base(body, function, local, *dict)?;
+            emit_get(body, local, function.id, *bucket)?;
+            body.instruction(&wasm_encoder::Instruction::I32Add);
+            emit_set_index(body, local.scratch[4]);
+            for (destination, marker) in [(*matching, None), (*empty, Some(0x80)), (*deleted, Some(0xFE))] {
+                emit_get_index(body, local.scratch[4]);
+                body.instruction(&wasm_encoder::Instruction::V128Load(memarg(1)));
+                if let Some(marker) = marker {
+                    body.instruction(&wasm_encoder::Instruction::I32Const(marker));
+                } else {
+                    emit_get(body, local, function.id, *fingerprint)?;
+                }
+                body.instruction(&wasm_encoder::Instruction::I8x16Splat);
+                body.instruction(&wasm_encoder::Instruction::I8x16Eq);
+                body.instruction(&wasm_encoder::Instruction::I8x16Bitmask);
+                emit_set(body, local, function.id, destination)?;
+            }
+            Ok(())
         }
         DictionaryOperation::ReadSlot { destination, dict, bucket, field, transfer } => {
             emit_slot_address(body, function, local, *dict, *bucket, *field)?;
@@ -747,6 +881,14 @@ pub(super) fn emit(
             body.instruction(&wasm_encoder::Instruction::I32Const(1));
             emit_set_index(body, local.scratch[9]);
             emit_i32_store(body, local.scratch[4], 0, local.scratch[9]);
+            emit_get(body, local, function.id, *hash)?;
+            body.instruction(&wasm_encoder::Instruction::I32WrapI64);
+            body.instruction(&wasm_encoder::Instruction::I32Const(25));
+            body.instruction(&wasm_encoder::Instruction::I32ShrU);
+            emit_set_index(body, local.scratch[9]);
+            emit_get(body, local, function.id, *bucket)?;
+            emit_set_index(body, local.scratch[11]);
+            emit_write_control(body, function, local, *dict, local.scratch[11], local.scratch[9])?;
             Ok(())
         }
         DictionaryOperation::RemoveSlot { removed_value, dict, bucket } => {
@@ -833,6 +975,11 @@ pub(super) fn emit(
             body.instruction(&wasm_encoder::Instruction::I32Const(2));
             emit_set_index(body, local.scratch[10]);
             emit_i32_store(body, local.scratch[4], 0, local.scratch[10]);
+            emit_get(body, local, function.id, *bucket)?;
+            emit_set_index(body, local.scratch[7]);
+            body.instruction(&wasm_encoder::Instruction::I32Const(0xFE));
+            emit_set_index(body, local.scratch[10]);
+            emit_write_control(body, function, local, *dict, local.scratch[7], local.scratch[10])?;
             for offset in [16, 24] {
                 emit_get_index(body, local.scratch[4]);
                 body.instruction(&wasm_encoder::Instruction::I32Const(offset));
@@ -875,6 +1022,7 @@ pub(super) fn plan(
             plan.extend([PlanToken::I32Const(20), PlanToken::I32Add, PlanToken::I32Const(0)]);
             push_get(plan, local, *capacity)?;
             plan.extend([PlanToken::I32Const(32), PlanToken::I32Mul, PlanToken::MemoryFill(0)]);
+            plan_fill_controls(plan, local, *destination, *capacity)?;
             Ok(())
         }
         DictionaryOperation::ReadHeader { destination, dict, field } => {
@@ -882,6 +1030,28 @@ pub(super) fn plan(
             plan.extend([PlanToken::I32Const(header_offset(*field)), PlanToken::I32Add,
                 PlanToken::I32Load { offset: 0, align: 2, memory: 0 }]);
             push_set(plan, local, *destination)
+        }
+        DictionaryOperation::ProbeGroup { dict, bucket, fingerprint, matching, empty, deleted } => {
+            push_get(plan, local, *bucket)?;
+            push_get(plan, local, *dict)?;
+            plan.extend([PlanToken::I32Load { offset: 4, align: 2, memory: 0 },
+                PlanToken::I32GeU, PlanToken::If("Empty".into()), PlanToken::Unreachable, PlanToken::End]);
+            plan_control_base(plan, local, *dict)?;
+            push_get(plan, local, *bucket)?;
+            plan.extend([PlanToken::I32Add, PlanToken::LocalSet(local.scratch[4])]);
+            for (destination, marker) in [(*matching, None), (*empty, Some(0x80)), (*deleted, Some(0xFE))] {
+                plan.extend([PlanToken::LocalGet(local.scratch[4]),
+                    PlanToken::V128Load { offset: 0, align: 0, memory: 0 }]);
+                if let Some(marker) = marker {
+                    plan.push(PlanToken::I32Const(marker));
+                } else {
+                    push_get(plan, local, *fingerprint)?;
+                }
+                plan.extend([PlanToken::I8x16Splat, PlanToken::I8x16Eq,
+                    PlanToken::I8x16Bitmask]);
+                push_set(plan, local, destination)?;
+            }
+            Ok(())
         }
         DictionaryOperation::ReadSlot { destination, dict, bucket, field, transfer } => {
             plan_slot_address(plan, local, *dict, *bucket, *field)?;
@@ -975,6 +1145,12 @@ pub(super) fn plan(
             plan_i32_store(plan, local.scratch[8], 16, local.scratch[11]);
             plan.extend([PlanToken::End, PlanToken::I32Const(1), PlanToken::LocalSet(local.scratch[9])]);
             plan_i32_store(plan, local.scratch[4], 0, local.scratch[9]);
+            push_get(plan, local, *hash)?;
+            plan.extend([PlanToken::I32WrapI64, PlanToken::I32Const(25), PlanToken::I32ShrU,
+                PlanToken::LocalSet(local.scratch[9])]);
+            push_get(plan, local, *bucket)?;
+            plan.push(PlanToken::LocalSet(local.scratch[11]));
+            plan_write_control(plan, local, *dict, local.scratch[11], local.scratch[9])?;
             Ok(())
         }
         DictionaryOperation::RemoveSlot { removed_value, dict, bucket } => {
@@ -1028,6 +1204,10 @@ pub(super) fn plan(
             }
             plan.extend([PlanToken::I32Const(2), PlanToken::LocalSet(local.scratch[10])]);
             plan_i32_store(plan, local.scratch[4], 0, local.scratch[10]);
+            push_get(plan, local, *bucket)?;
+            plan.extend([PlanToken::LocalSet(local.scratch[7]), PlanToken::I32Const(0xFE),
+                PlanToken::LocalSet(local.scratch[10])]);
+            plan_write_control(plan, local, *dict, local.scratch[7], local.scratch[10])?;
             for offset in [16, 24] {
                 plan.extend([PlanToken::LocalGet(local.scratch[4]), PlanToken::I32Const(offset),
                     PlanToken::I32Add, PlanToken::I64Const(0),

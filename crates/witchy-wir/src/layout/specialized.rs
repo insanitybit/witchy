@@ -2204,7 +2204,9 @@ fn build_descriptor<'a>(
             Ok(LayoutDescriptor {
                 schema_version: LAYOUT_SCHEMA_VERSION,
                 kind: kind.clone(),
-                size: LayoutSize::Dynamic { base: 20, stride: 32 },
+                // Header and 32-byte rows are followed by one control byte
+                // per bucket and a mirrored sixteen-byte control tail.
+                size: LayoutSize::Dynamic { base: 36, stride: 33 },
                 alignment: 4,
                 fields: vec![
                     LayoutField { offset: 0, kind: FieldKind::Scalar(ScalarKind::U32) },
