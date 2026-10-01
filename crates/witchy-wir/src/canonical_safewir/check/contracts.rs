@@ -877,6 +877,32 @@ fn propagate_operation_origins(
                 join_origin(origins, destination, origin);
             }
         }
+        Operation::Dictionary(dictionary) => {
+            use crate::canonical_safewir::DictionaryOperation as D;
+            for destination in dictionary.destinations() {
+                let origin = match dictionary {
+                    D::Initialize { layout, .. } => Origin::Fresh {
+                        layout: *layout, class: AllocationClass::ReferenceCounted,
+                        extent: ReturnedExtent::Counted { header_bytes: 20, stride_bytes: 32 },
+                    },
+                    D::Rehash { source, .. } => match function.value_types.get(source) {
+                        Some(ValueType::Ref(layout)) => Origin::Fresh {
+                            layout: *layout, class: AllocationClass::ReferenceCounted,
+                            extent: ReturnedExtent::Counted { header_bytes: 20, stride_bytes: 32 },
+                        },
+                        _ => Origin::Unknown,
+                    },
+                    D::ReadSlot { field: crate::canonical_safewir::DictionarySlotField::Key
+                        | crate::canonical_safewir::DictionarySlotField::Value, .. } =>
+                        match function.value_types.get(&destination) {
+                            Some(ValueType::Ref(layout)) => Origin::Shared(*layout),
+                            _ => Origin::Unknown,
+                        },
+                    _ => Origin::Unknown,
+                };
+                join_origin(origins, destination, origin);
+            }
+        }
         Operation::Alloc { destination, layout, class, extent } => {
             join_origin(origins, *destination, Origin::Fresh {
                 layout: *layout,
@@ -1038,6 +1064,40 @@ fn derive_operation(
     definitions: &CallableDefinitions<'_>,
 ) -> Result<(), InitialCheckError> {
     match operation {
+        Operation::Dictionary(dictionary) => {
+            use crate::canonical_safewir::DictionaryOperation as D;
+            let effect = match dictionary {
+                D::Initialize { .. } => None,
+                D::ReadHeader { dict, .. } | D::ReadSlot { dict, .. } => Some((*dict, MemoryEffect::Read)),
+                D::InsertSlot { dict, .. } | D::ReplaceValue { dict, .. }
+                | D::RemoveSlot { dict, .. } => Some((*dict, MemoryEffect::Write)),
+                D::Rehash { source, .. } => Some((*source, MemoryEffect::Read)),
+            };
+            if let Some((object, effect)) = effect { add_effect(summary, origin_of(origins, object), effect); }
+            for destination in dictionary.destinations() {
+                let origin = match dictionary {
+                    D::Initialize { layout, .. } => Origin::Fresh {
+                        layout: *layout, class: AllocationClass::ReferenceCounted,
+                        extent: ReturnedExtent::Counted { header_bytes: 20, stride_bytes: 32 },
+                    },
+                    D::Rehash { source, .. } => match function.value_types.get(source) {
+                        Some(ValueType::Ref(layout)) => Origin::Fresh {
+                            layout: *layout, class: AllocationClass::ReferenceCounted,
+                            extent: ReturnedExtent::Counted { header_bytes: 20, stride_bytes: 32 },
+                        },
+                        _ => Origin::Unknown,
+                    },
+                    D::ReadSlot { field: crate::canonical_safewir::DictionarySlotField::Key
+                        | crate::canonical_safewir::DictionarySlotField::Value, .. } =>
+                        match function.value_types.get(&destination) {
+                            Some(ValueType::Ref(layout)) => Origin::Shared(*layout),
+                            _ => Origin::Unknown,
+                        },
+                    _ => Origin::Unknown,
+                };
+                origins.insert(destination, origin);
+            }
+        }
         Operation::Alloc { destination, layout, class, extent } => {
             origins.insert(*destination, Origin::Fresh {
                 layout: *layout,

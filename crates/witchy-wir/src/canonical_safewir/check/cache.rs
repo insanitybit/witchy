@@ -414,11 +414,13 @@ fn nested_layouts(descriptor: &LayoutDescriptor) -> BTreeSet<LayoutId> {
         | LayoutKind::RuntimePointerValueSlot { pointee, .. } => {
             nested.insert(*pointee);
         }
-        LayoutKind::RuntimeDictionaryBody { key, value, row } => {
+        LayoutKind::RuntimeDictionaryBody { key, value, row }
+        | LayoutKind::CanonicalDictionary { key, value, row } => {
             nested.extend([*key, *value, *row]);
         }
         LayoutKind::RuntimeDictionaryRow { key, value }
-        | LayoutKind::RuntimeDictionaryIndex { key, value } => {
+        | LayoutKind::RuntimeDictionaryIndex { key, value }
+        | LayoutKind::CanonicalDictionaryRow { key, value } => {
             nested.extend([*key, *value]);
         }
         LayoutKind::RuntimeValueSlot { value } => {

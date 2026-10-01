@@ -443,6 +443,8 @@ fn scalar_storage_layout(layouts: &LayoutInterner, id: LayoutId) -> bool {
                 | LayoutKind::RuntimeDictionaryBody { .. }
             | LayoutKind::RuntimeDictionaryRow { .. }
                 | LayoutKind::RuntimeDictionaryIndex { .. }
+                | LayoutKind::CanonicalDictionary { .. }
+                | LayoutKind::CanonicalDictionaryRow { .. }
                 | LayoutKind::RuntimeValueSlot { .. }
                 | LayoutKind::RuntimePointerValueSlot { .. }
                 | LayoutKind::RuntimeClosedSum { .. }
@@ -543,9 +545,11 @@ fn children(kind: &LayoutKind) -> Vec<LayoutId> {
         LayoutKind::RuntimePointerBuffer { pointee, .. } => vec![*pointee],
         // The row travels too: decoding the body references its id, so omitting
         // it would emit a graph with an unknown child.
-        LayoutKind::RuntimeDictionaryBody { key, value, row } => vec![*key, *value, *row],
+        LayoutKind::RuntimeDictionaryBody { key, value, row }
+        | LayoutKind::CanonicalDictionary { key, value, row } => vec![*key, *value, *row],
         LayoutKind::RuntimeDictionaryRow { key, value }
-        | LayoutKind::RuntimeDictionaryIndex { key, value } => vec![*key, *value],
+        | LayoutKind::RuntimeDictionaryIndex { key, value }
+        | LayoutKind::CanonicalDictionaryRow { key, value } => vec![*key, *value],
         LayoutKind::RuntimeValueSlot { value } => vec![*value],
         LayoutKind::RuntimePointerValueSlot { pointee, .. } => vec![*pointee],
         LayoutKind::RuntimeClosedSum { variants } => {

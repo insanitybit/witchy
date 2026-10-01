@@ -107,6 +107,11 @@ pub trait CarrierLayoutQuery {
     fn owned_byte_buffer(&self, layout: Self::Layout, slot: CarrierSlot) -> bool;
     fn owned_retained_list_element(&self, layout: Self::Layout, slot: CarrierSlot) -> Option<Self::Layout>;
     fn owned_record_fields(&self, layout: Self::Layout, slot: CarrierSlot) -> Option<Vec<Self::Layout>>;
+    /// An opaque, sparse dictionary root with typed key and value slots.
+    /// The implementation must recursively clone/drop only occupied rows.
+    fn owned_dictionary_slots(&self, _layout: Self::Layout, _slot: CarrierSlot) -> Option<(Self::Layout, Self::Layout)> {
+        None
+    }
     /// Require an Int tag followed by the flattened variant field slots.
     fn owned_tagged_fields(&self, layout: Self::Layout, slot: CarrierSlot) -> Option<Vec<Self::Layout>>;
 }
@@ -612,6 +617,10 @@ impl CarrierElement {
                         });
                 }
                 Self::Dict(key, value) => {
+                    if let Some((key_slot, value_slot)) = query.owned_dictionary_slots(layout, slot) {
+                        return key.matches_layout_at(query, key_slot, CarrierSlot::Owned)
+                            && value.matches_layout_at(query, value_slot, CarrierSlot::Owned);
+                    }
                     let Some(actual) = query.owned_record_fields(layout, slot) else {
                         return false;
                     };

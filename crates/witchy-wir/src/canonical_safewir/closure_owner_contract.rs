@@ -322,7 +322,7 @@ pub(crate) fn carrier_element_layout_matches(
                 LayoutKind::Scalar(ScalarKind::Unit) => Some(CanonicalScalarKind::Unit),
                 LayoutKind::Scalar(ScalarKind::Int) => Some(CanonicalScalarKind::Int),
                 LayoutKind::Scalar(ScalarKind::Float) => Some(CanonicalScalarKind::Float),
-                LayoutKind::Scalar(ScalarKind::Bool) => Some(CanonicalScalarKind::Bool),
+                LayoutKind::Scalar(ScalarKind::Bool | ScalarKind::BoolValueSlot) => Some(CanonicalScalarKind::Bool),
                 LayoutKind::Scalar(ScalarKind::Duration) => Some(CanonicalScalarKind::Duration),
                 _ => None,
             }
@@ -349,6 +349,14 @@ pub(crate) fn carrier_element_layout_matches(
                 return None;
             };
             Some(fields.clone())
+        }
+
+        fn owned_dictionary_slots(&self, layout: LayoutId, slot: CarrierSlot) -> Option<(LayoutId, LayoutId)> {
+            let physical = self.owned_pointee(layout, slot)?;
+            let LayoutKind::CanonicalDictionary { key, value, .. } = self.0.get(physical)?.kind() else {
+                return None;
+            };
+            Some((*key, *value))
         }
 
         fn owned_tagged_fields(&self, layout: LayoutId, slot: CarrierSlot) -> Option<Vec<LayoutId>> {

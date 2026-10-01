@@ -1514,6 +1514,7 @@ fn insert_definition(
 fn operation_destinations(operation: &Operation) -> Vec<ValueId> {
     match operation {
         Operation::ClosureOwner(owner) => owner.destinations(),
+        Operation::Dictionary(dictionary) => dictionary.destinations(),
         Operation::ConstInt { destination, .. }
         | Operation::ConstFloat { destination, .. }
         | Operation::ConstUnit { destination }
@@ -1558,6 +1559,7 @@ fn operation_destinations(operation: &Operation) -> Vec<ValueId> {
 pub(crate) fn operation_uses(operation: &Operation) -> Vec<ValueId> {
     match operation {
         Operation::ClosureOwner(owner) => owner.operands(),
+        Operation::Dictionary(dictionary) => dictionary.operands(),
         Operation::ConstInt { .. }
         | Operation::ConstFloat { .. }
         | Operation::ConstUnit { .. } | Operation::ConstBool { .. }
@@ -1790,6 +1792,7 @@ fn check_operation(
         // Registry/type/token checks run independently over the complete CFG.
         // Source correspondence remains a separate authority judgment.
         Operation::ClosureOwner(_) => Ok(()),
+        Operation::Dictionary(_) => Ok(()),
         Operation::ConstInt { destination, .. } => {
             require_type(function, *destination, ValueType::Int)
         }

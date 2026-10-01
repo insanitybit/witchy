@@ -18,6 +18,8 @@ use crate::layout::{LayoutBundle, LayoutId};
 pub(crate) mod check;
 pub mod analysis;
 pub mod optimize;
+pub mod dictionary;
+pub use dictionary::{DictionaryOperation, DictionaryHeaderField, DictionarySlotField, DictionaryRehashTransfer};
 pub mod manifest;
 pub use check::{InitialCheckError, check_initial};
 pub(crate) use check::{operation_uses, terminator_uses};
@@ -1174,11 +1176,13 @@ pub enum CanonicalRuleId {
     Trap,
     Unreachable,
     ClosureOwner,
+    Dictionary,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Operation {
     ClosureOwner(closure_owner_contract::OwnerOperation),
+    Dictionary(DictionaryOperation),
     /// The sole Unit value, with no integer or Bool authority.
     ConstUnit { destination: ValueId },
     ConstInt { destination: ValueId, value: i64 },
@@ -1328,6 +1332,7 @@ impl Operation {
     pub const fn rule_id(&self) -> CanonicalRuleId {
         match self {
             Self::ClosureOwner(_) => CanonicalRuleId::ClosureOwner,
+            Self::Dictionary(_) => CanonicalRuleId::Dictionary,
             Self::ConstUnit { .. } => CanonicalRuleId::ConstUnit,
             Self::ConstInt { .. } => CanonicalRuleId::ConstInt,
             Self::ConstFloat { .. } => CanonicalRuleId::ConstFloat,

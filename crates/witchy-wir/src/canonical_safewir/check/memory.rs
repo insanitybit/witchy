@@ -24,6 +24,7 @@ mod join;
 mod calls;
 mod ranges;
 mod operations;
+mod dictionary;
 mod ownership;
 mod relations;
 

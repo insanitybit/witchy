@@ -105,6 +105,10 @@ impl<'a> MemoryChecker<'a> {
     /// Returns true when this operation belongs to the memory judgment.
     pub(crate) fn check(&mut self, operation: &Operation) -> Result<bool, InitialCheckError> {
         match operation {
+            Operation::Dictionary(dictionary) => {
+                self.check_dictionary(dictionary)?;
+                Ok(true)
+            }
             Operation::ClosureOwner(owner) => {
                 use crate::canonical_safewir::closure_owner_contract::OwnerOperation;
                 match owner {

@@ -519,6 +519,10 @@ pub enum LayoutKind {
         key: LayoutId,
         value: LayoutId,
     },
+    /// Guest-resident canonical dictionary. Sparse full rows own their exact
+    /// key/value slots; empty and tombstone rows own no child tokens.
+    CanonicalDictionary { key: LayoutId, value: LayoutId, row: LayoutId },
+    CanonicalDictionaryRow { key: LayoutId, value: LayoutId },
     /// One exact source scalar carried in the legacy eight-byte aggregate lane.
     /// The child identity distinguishes same-width values such as `Int` and
     /// `Float`; the descriptor owns the widened physical lane.
@@ -583,7 +587,8 @@ impl LayoutKind {
             // A dense body is a packed run of equal-stride rows, so it indexes
             // like any other packed sequence; the row carries the key/value
             // offsets a following `Field` step reads.
-            Self::RuntimeDictionaryBody { row, .. } => Some(*row),
+            Self::RuntimeDictionaryBody { row, .. }
+            | Self::CanonicalDictionary { row, .. } => Some(*row),
             _ => None,
         }
     }
@@ -624,6 +629,8 @@ impl LayoutKind {
             | Self::RuntimeDictionaryBody { .. }
             | Self::RuntimeDictionaryRow { .. }
             | Self::RuntimeDictionaryIndex { .. }
+            | Self::CanonicalDictionary { .. }
+            | Self::CanonicalDictionaryRow { .. }
             | Self::RuntimeValueSlot { .. }
             | Self::RuntimePointerValueSlot { .. }
             | Self::RuntimeClosedSum { .. }
@@ -1327,6 +1334,17 @@ impl LayoutInterner {
         self.intern_kind(LayoutKind::RuntimeDictionaryIndex { key, value })
     }
 
+    /// Intern the single-allocation canonical dictionary. The slot identities
+    /// are exact widened scalar or owned-pointer carriers.
+    pub fn intern_canonical_dictionary(
+        &mut self,
+        key: LayoutId,
+        value: LayoutId,
+    ) -> Result<LayoutId, LayoutError> {
+        let row = self.intern_kind(LayoutKind::CanonicalDictionaryRow { key, value })?;
+        self.intern_kind(LayoutKind::CanonicalDictionary { key, value, row })
+    }
+
     /// Intern one exact source scalar in the ordinary eight-byte value lane.
     pub fn intern_runtime_value_slot(
         &mut self,
@@ -1678,6 +1696,8 @@ fn validate_descriptor_item_counts(descriptor: &LayoutDescriptor) -> Result<(), 
         | LayoutKind::RuntimeDictionaryBody { .. }
         | LayoutKind::RuntimeDictionaryRow { .. }
         | LayoutKind::RuntimeDictionaryIndex { .. }
+        | LayoutKind::CanonicalDictionary { .. }
+        | LayoutKind::CanonicalDictionaryRow { .. }
         | LayoutKind::RuntimeValueSlot { .. }
         | LayoutKind::RuntimePointerValueSlot { .. } => {}
         LayoutKind::Tuple { fields } | LayoutKind::PackedRecord { fields } => {
@@ -2151,6 +2171,55 @@ fn build_descriptor<'a>(
                     render: OperationShape::None,
                     serialization: OperationShape::None,
                 },
+            })
+        }
+        LayoutKind::CanonicalDictionaryRow { key, value } => {
+            validate_runtime_dictionary_slot(*key, lookup(*key))?;
+            validate_runtime_dictionary_slot(*value, lookup(*value))?;
+            Ok(LayoutDescriptor {
+                schema_version: LAYOUT_SCHEMA_VERSION,
+                kind: kind.clone(),
+                size: LayoutSize::Fixed(32),
+                alignment: 4,
+                fields: vec![
+                    LayoutField { offset: 0, kind: FieldKind::Scalar(ScalarKind::U32) },
+                    LayoutField { offset: 4, kind: FieldKind::Scalar(ScalarKind::U32) },
+                    LayoutField { offset: 8, kind: FieldKind::Scalar(ScalarKind::U32) },
+                    LayoutField { offset: 12, kind: FieldKind::Scalar(ScalarKind::U32) },
+                    LayoutField { offset: 16, kind: FieldKind::Inline(*key) },
+                    LayoutField { offset: 24, kind: FieldKind::Inline(*value) },
+                ],
+                variants: Vec::new(),
+                ownership: Vec::new(),
+                header: HeaderLayout::None,
+                anchor: RootAnchor::AllocationBase,
+                operations: no_runtime_operations(),
+            })
+        }
+        LayoutKind::CanonicalDictionary { key, value, row } => {
+            validate_runtime_dictionary_slot(*key, lookup(*key))?;
+            validate_runtime_dictionary_slot(*value, lookup(*value))?;
+            if lookup(*row).is_none_or(|descriptor| descriptor.kind != LayoutKind::CanonicalDictionaryRow { key: *key, value: *value }) {
+                return Err(LayoutError::DescriptorInvariant("canonical dictionary row mismatch"));
+            }
+            Ok(LayoutDescriptor {
+                schema_version: LAYOUT_SCHEMA_VERSION,
+                kind: kind.clone(),
+                size: LayoutSize::Dynamic { base: 20, stride: 32 },
+                alignment: 4,
+                fields: vec![
+                    LayoutField { offset: 0, kind: FieldKind::Scalar(ScalarKind::U32) },
+                    LayoutField { offset: 4, kind: FieldKind::Scalar(ScalarKind::U32) },
+                    LayoutField { offset: 8, kind: FieldKind::Scalar(ScalarKind::U32) },
+                    LayoutField { offset: 12, kind: FieldKind::Scalar(ScalarKind::U32) },
+                    LayoutField { offset: 16, kind: FieldKind::Scalar(ScalarKind::U32) },
+                    LayoutField { offset: 20, kind: FieldKind::Inline(*row) },
+                ],
+                variants: Vec::new(),
+                ownership: vec![OwnershipPosition::RootBuffer],
+                header: HeaderLayout::None,
+                anchor: RootAnchor::AllocationBase,
+                operations: no_runtime_operations(),
             })
         }
         LayoutKind::RuntimeDictionaryRow { key, value } => {
@@ -2837,6 +2906,17 @@ impl Encoder {
                 self.id(*key);
                 self.id(*value);
             }
+            LayoutKind::CanonicalDictionary { key, value, row } => {
+                self.byte(17);
+                self.id(*key);
+                self.id(*value);
+                self.id(*row);
+            }
+            LayoutKind::CanonicalDictionaryRow { key, value } => {
+                self.byte(18);
+                self.id(*key);
+                self.id(*value);
+            }
             LayoutKind::ScratchBuffer { element } => {
                 self.byte(10);
                 self.id(*element);
@@ -3176,6 +3256,15 @@ impl<'a> Decoder<'a> {
                 value: self.id()?,
             }),
             9 => Ok(LayoutKind::RuntimeDictionaryIndex {
+                key: self.id()?,
+                value: self.id()?,
+            }),
+            17 => Ok(LayoutKind::CanonicalDictionary {
+                key: self.id()?,
+                value: self.id()?,
+                row: self.id()?,
+            }),
+            18 => Ok(LayoutKind::CanonicalDictionaryRow {
                 key: self.id()?,
                 value: self.id()?,
             }),

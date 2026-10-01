@@ -1203,6 +1203,33 @@ fn intern_v1_layout_fields(
             .intern_packed_list(element, RcHeader::Required)
             .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()));
     }
+    if let Type::Named(name, arguments) = ty.unqualified()
+        && name == "Dict" && arguments.len() == 2
+    {
+        let mut slots = Vec::with_capacity(2);
+        for child in arguments {
+            let storage = StoragePlan::classify(child, definitions, |_| Some(0));
+            let slot = if let Some(scalar) = scalar_kind_of(child)
+                && !matches!(storage, StoragePlan::Owned(CarrierElement::RetainedRootView(_)))
+            {
+                let scalar = if scalar == ScalarKind::Bool { ScalarKind::BoolValueSlot } else { scalar };
+                if matches!(scalar, ScalarKind::Int | ScalarKind::Float | ScalarKind::Duration | ScalarKind::BoolValueSlot) {
+                    Some(interner.intern_scalar(scalar)
+                        .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?)
+                } else { None }
+            } else if matches!(storage, StoragePlan::Owned(_)) {
+                let pointee = intern_v1_layout_checked(interner, child, definitions, recursive_types, active, closure_layouts)?;
+                Some(interner.intern_runtime_pointer_value_slot(pointee, PointerSlot::Owned)
+                    .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?)
+            } else { None };
+            let Some(slot) = slot else { break };
+            slots.push(slot);
+        }
+        if let [key, value] = slots.as_slice() {
+            return interner.intern_canonical_dictionary(*key, *value)
+                .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()));
+        }
+    }
     if let Some(tuple) = witchy_canonical_source::aggregates::dictionary_as_tuple(ty) {
         return intern_v1_layout_fields(
             interner, &tuple, definitions, recursive_types, active, closure_layouts,
