@@ -520,15 +520,12 @@ impl LayoutProjection {
         if witchy_canonical_source::capabilities::representation(ty, &self.definitions).is_some() {
             return Ok(());
         }
-        // A dictionary is laid out as its canonical tuple of the key list
-        // and the value list, before any aggregate rule sees the name.
+        // The legacy dictionary uses the ordered key/value tuple. The table
+        // representation is selected per instantiated key/value carrier by
+        // `intern_v1_layout_fields`; either way the Dict identity is a root.
         if let Some(tuple) = witchy_canonical_source::aggregates::dictionary_as_tuple(ty) {
             self.visit_type(&tuple)?;
-            if witchy_canonical_source::storage::retained_child_layout_identity(
-                ty, &self.definitions,
-            ).is_some() {
-                self.roots.push(ty.clone());
-            }
+            self.roots.push(ty.clone());
             return Ok(());
         }
         match ty {

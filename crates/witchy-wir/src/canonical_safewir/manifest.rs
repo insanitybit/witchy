@@ -551,6 +551,15 @@ pub const RULES: &[RuleEntry] = &[
         admits: &[t(OwnerBackend, "opaque_owner_cleanup_reclaims_once_and_rejects_unknown_family"), t(Launch, "admitted_closures_are_records_of_code_and_int_captures"), t(OwnerRuntime, "opaque_owner_gc_payload_and_list_hold_actual_references")],
         refuses: &[t(OwnerCheck, "opaque_owner_affine_dead_list_and_wrong_family_refuse"), t(OwnerCheck, "opaque_owner_affine_call_requires_move_and_no_leak"), t(OwnerRuntime, "opaque_owner_list_drops_all_variants_and_refuses_dead_list")],
     },
+    RuleEntry {
+        rule: CanonicalRuleId::Dictionary,
+        judgment: "check/memory/dictionary.rs::check_dictionary",
+        predicate: "an authenticated canonical dictionary layout and typed scalar or owned-reference slots; writes require a unique RC root, while bucket bounds and occupied state are enforced at runtime",
+        semantics: "a guest-resident open-addressed table mutates occupied rows atomically, clones or moves their owned children, and releases only occupied children on final drop",
+        backend: RuleBackend::Receipt(CorrespondenceRule::Dictionary),
+        admits: &[],
+        refuses: &[],
+    },
 ];
 
 /// One ownership transfer of a reference-counted storage class (B2).
