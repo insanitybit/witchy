@@ -883,12 +883,12 @@ fn propagate_operation_origins(
                 let origin = match dictionary {
                     D::Initialize { layout, .. } => Origin::Fresh {
                         layout: *layout, class: AllocationClass::ReferenceCounted,
-                        extent: ReturnedExtent::Counted { header_bytes: 20, stride_bytes: 32 },
+                        extent: ReturnedExtent::Counted { header_bytes: 36, stride_bytes: 33 },
                     },
                     D::Rehash { source, .. } | D::CloneExact { source, .. } => match function.value_types.get(source) {
                         Some(ValueType::Ref(layout)) => Origin::Fresh {
                             layout: *layout, class: AllocationClass::ReferenceCounted,
-                            extent: ReturnedExtent::Counted { header_bytes: 20, stride_bytes: 32 },
+                            extent: ReturnedExtent::Counted { header_bytes: 36, stride_bytes: 33 },
                         },
                         _ => Origin::Unknown,
                     },
@@ -1086,12 +1086,12 @@ fn derive_operation(
                 let origin = match dictionary {
                     D::Initialize { layout, .. } => Origin::Fresh {
                         layout: *layout, class: AllocationClass::ReferenceCounted,
-                        extent: ReturnedExtent::Counted { header_bytes: 20, stride_bytes: 32 },
+                        extent: ReturnedExtent::Counted { header_bytes: 36, stride_bytes: 33 },
                     },
                     D::Rehash { source, .. } | D::CloneExact { source, .. } => match function.value_types.get(source) {
                         Some(ValueType::Ref(layout)) => Origin::Fresh {
                             layout: *layout, class: AllocationClass::ReferenceCounted,
-                            extent: ReturnedExtent::Counted { header_bytes: 20, stride_bytes: 32 },
+                            extent: ReturnedExtent::Counted { header_bytes: 36, stride_bytes: 33 },
                         },
                         _ => Origin::Unknown,
                     },
