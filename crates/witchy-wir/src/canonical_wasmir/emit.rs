@@ -1437,6 +1437,16 @@ pub(super) fn emit_instruction(
             emit_init_nullable_owned(body, function, layout, layouts, place)?;
         }
         ScalarInstruction::Load { destination, place, transfer } => {
+            if is_raw_allocation_capacity_load(function.id, &function.value_types, layouts, place) {
+                emit_get(body, layout, function.id, place.object())?;
+                body.instruction(&wasm_encoder::Instruction::I32Const(4));
+                body.instruction(&wasm_encoder::Instruction::I32Sub);
+                body.instruction(&wasm_encoder::Instruction::I32Load(memarg(4)));
+                body.instruction(&wasm_encoder::Instruction::I32Const(4));
+                body.instruction(&wasm_encoder::Instruction::I32Sub);
+                emit_set(body, layout, function.id, *destination)?;
+                return Ok(());
+            }
             let access = resolve_memory_place(function, layouts, place).map_err(EncodeError::Lowering)?;
             emit_typed_load(body, function, layout, access, *destination)?;
             match transfer {

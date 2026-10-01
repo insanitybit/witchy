@@ -16426,6 +16426,28 @@ impl FunctionLowerer<'_> {
     /// Append a byte sequence to an owned buffer. The caller must have proved
     /// that `left` is its unique write-back token and that `right` does not
     /// alias it. The same counted-buffer rule applies to String and Bytes.
+    /// Recover the allocator's physical capacity when a unique byte buffer
+    /// crossed a call boundary that transported only its logical length.
+    fn recover_raw_byte_capacity(&mut self, object: ValueId) -> Result<(), CanonicalLoweringError> {
+        let Some((count, capacity)) = self.tracked_lanes(object) else { return Ok(()) };
+        if count != capacity { return Ok(()) }
+        let layout = self.string_layout_id()?;
+        let loaded = self.fresh(ValueType::Size)?;
+        self.push_operation(Operation::Load {
+            destination: loaded,
+            place: witchy_wir::canonical_safewir::Place::projected(
+                object,
+                Projection::Header(witchy_wir::canonical_safewir::HeaderField::Capacity),
+                ValueType::Size,
+                AccessMode::Read,
+            ),
+            transfer: witchy_wir::canonical_safewir::LoadTransfer::CopyScalar,
+        });
+        debug_assert_eq!(self.values.get(&object), Some(&ValueType::Ref(layout)));
+        self.string_capacities.insert(object, loaded);
+        Ok(())
+    }
+
     fn append_owned_byte_sequence(
         &mut self,
         left: ValueId,
@@ -16433,6 +16455,7 @@ impl FunctionLowerer<'_> {
     ) -> Result<ValueId, CanonicalLoweringError> {
         self.ensure_string_extent(left)?;
         self.ensure_string_extent(right)?;
+        self.recover_raw_byte_capacity(left)?;
         let (length, capacity) = self.tracked_lanes(left).ok_or(
             CanonicalLoweringError::UnsupportedExpression("byte append extent"),
         )?;
@@ -18027,6 +18050,7 @@ impl FunctionLowerer<'_> {
         byte: ValueId,
     ) -> Result<ValueId, CanonicalLoweringError> {
         self.ensure_string_extent(old)?;
+        self.recover_raw_byte_capacity(old)?;
         let (count, capacity) = self.tracked_lanes(old).ok_or(
             CanonicalLoweringError::UnsupportedExpression("byte append extent"),
         )?;

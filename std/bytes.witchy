@@ -41,7 +41,7 @@ impl From(BytesError) for String:
 // (RFC-0099). ---
 
 // The UTF-8 bytes of a string.
-pub fn from_string(s: String) -> Bytes:
+pub fn from_string(s: String) -> unique Bytes:
     __bytes_from_string(s)
 
 // Build raw bytes from integers in `0..=255`, or Err on the first invalid byte.
@@ -79,7 +79,7 @@ pub fn slice(b: Bytes, start: Int, end: Int) -> Bytes:
     __bytes_slice(b, start, end)
 
 // An empty byte buffer with pre-allocated capacity.
-pub fn with_capacity(capacity: Int) -> Bytes:
+pub fn with_capacity(capacity: Int) -> unique Bytes:
     __bytes_with_capacity(capacity)
 
 // A byte buffer of `count` identical bytes, each equal to `value` (0..=255).
@@ -87,12 +87,12 @@ pub fn repeat(value: Int, count: Int) -> Bytes:
     __bytes_repeat(value, count)
 
 // Append a single byte `value` (0..=255) to `bytes`.
-pub fn push(var bytes: Bytes, value: Int):
+pub fn push(var bytes: unique Bytes, value: Int):
     bytes = __bytes_push(bytes, value)
     return
 
 // Append all bytes from `suffix` to `bytes`.
-pub fn append(var bytes: Bytes, let suffix: Bytes):
+pub fn append(var bytes: unique Bytes, let suffix: Bytes):
     bytes = __bytes_append(bytes, suffix)
     return
 
@@ -238,11 +238,11 @@ impl Bytes:
             bytes_match_at(self, suffix, len - n)
 
     // Append a single byte `value` (0..=255) to this buffer.
-    pub fn push(var self, value: Int):
+    pub fn push(var self: unique Bytes, value: Int):
         push(self, value)
 
     // Append all bytes from `suffix` to this buffer.
-    pub fn append(var self, let suffix: Bytes):
+    pub fn append(var self: unique Bytes, let suffix: Bytes):
         append(self, suffix)
 
     // Guarantee room for at least `additional` more bytes without changing contents.

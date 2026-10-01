@@ -561,8 +561,10 @@ impl<'a> MemoryChecker<'a> {
         &self, object: ValueId, plan: &super::super::AffinePhysicalPlan,
     ) -> Result<bool, InitialCheckError> {
         let root = self.live_object(object)?;
+        let trivial_raw_leaf = matches!(plan, super::super::AffinePhysicalPlan::Leaf)
+            && self.is_raw_byte_buffer(root.layout)?;
         if root.ownership != Ownership::Unique || !self.is_sole_live_token(object, root.identity)
-            || self.state.affine_plans.get(&object) != Some(plan)
+            || (!trivial_raw_leaf && self.state.affine_plans.get(&object) != Some(plan))
         { return Ok(false); }
         match plan {
             super::super::AffinePhysicalPlan::Leaf => Ok(true),

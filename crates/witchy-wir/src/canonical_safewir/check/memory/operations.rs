@@ -716,6 +716,32 @@ impl<'a> MemoryChecker<'a> {
         if place.access() != AccessMode::Read {
             return self.unsupported("Load(access)");
         }
+        if matches!(place.projection(), Projection::Header(HeaderField::Capacity)) {
+            let object = place.object();
+            let state = self.live_object(object)?.clone();
+            if self.is_raw_byte_buffer(state.layout)? {
+                let Extent::Counted { header_bytes: 4, count, stride_bytes: 1, .. } = state.extent else {
+                    return self.unsupported("Load(raw allocation capacity without count)");
+                };
+                if transfer != LoadTransfer::CopyScalar
+                    || place.value_type() != ValueType::Size
+                    || state.ownership != Ownership::Unique
+                    || state.allocation_class != Some(AllocationClass::ReferenceCounted)
+                    || self.state.static_data_objects.contains(&object)
+                    || !self.is_sole_live_token(object, state.identity)
+                {
+                    return Err(InitialCheckError::InvalidOwnership { function: self.function.id, object });
+                }
+                self.require_ref_type(object, state.layout)?;
+                self.require_type(destination, ValueType::Size)?;
+                self.state.objects.get_mut(&object).expect("live owner exists").extent = Extent::Counted {
+                    header_bytes: 4, count, capacity: destination, stride_bytes: 1,
+                };
+                let generation = self.current_generation(object)?;
+                self.state.bound_generations.entry(destination).or_default().insert(generation);
+                return Ok(());
+            }
+        }
         self.require_supported_runtime_buffer_access(place, "Load(non-raw RuntimeBuffer)")?;
         let expected = self.check_place(place)?;
         if expected == ValueType::V128 {

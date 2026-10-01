@@ -39,7 +39,7 @@ Matchable byte-buffer conversion failures.
 
 #### `fn bytes_error_message(e: BytesError) -> String`
 
-#### `fn from_string(s: String) -> Bytes`
+#### `fn from_string(s: String) -> unique Bytes`
 
 The UTF-8 bytes of a string.
 
@@ -69,7 +69,7 @@ The two byte buffers joined.
 
 The bytes in `start..end` (clamped to the buffer; `start >= end` yields empty).
 
-#### `fn with_capacity(capacity: Int) -> Bytes`
+#### `fn with_capacity(capacity: Int) -> unique Bytes`
 
 An empty byte buffer with pre-allocated capacity.
 
@@ -77,11 +77,11 @@ An empty byte buffer with pre-allocated capacity.
 
 A byte buffer of `count` identical bytes, each equal to `value` (0..=255).
 
-#### `fn push(var bytes: Bytes, value: Int)`
+#### `fn push(var bytes: unique Bytes, value: Int)`
 
 Append a single byte `value` (0..=255) to `bytes`.
 
-#### `fn append(var bytes: Bytes, let suffix: Bytes)`
+#### `fn append(var bytes: unique Bytes, let suffix: Bytes)`
 
 Append all bytes from `suffix` to `bytes`.
 

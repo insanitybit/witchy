@@ -444,6 +444,22 @@ pub(super) fn resolve_collection_layout_for_values(
     collection_layout(function, layouts, layout)
 }
 
+pub(super) fn is_raw_allocation_capacity_load(
+    function: FunctionId,
+    value_types: &BTreeMap<ValueId, ValueType>,
+    layouts: &LayoutInterner,
+    place: &Place,
+) -> bool {
+    matches!(place.projection(), Projection::Header(HeaderField::Capacity))
+        && place.access() == AccessMode::Read
+        && place.value_type() == ValueType::Size
+        && resolve_collection_layout_for_values(function, value_types, layouts, place.object())
+            .is_ok_and(|collection| collection.scalar == ScalarKind::RawByte
+                && collection.capacity_offset.is_none()
+                && collection.data_offset == 4
+                && collection.stride == 1)
+}
+
 pub(super) fn resolve_memory_place(
     function: &Function,
     layouts: &LayoutInterner,
@@ -865,6 +881,12 @@ pub(super) fn lower_operation(
             ScalarInstruction::InitNullableOwned { place: place.clone() }
         }
         Operation::Load { destination, place, transfer } => {
+            if is_raw_allocation_capacity_load(function, value_types, layouts, place) {
+                if *transfer != LoadTransfer::CopyScalar || value_types.get(destination) != Some(&ValueType::Size) {
+                    return Err(LoweringError::UnsupportedLayout { function, operation: "raw allocation capacity" });
+                }
+                ScalarInstruction::Load { destination: *destination, place: place.clone(), transfer: *transfer }
+            } else {
             let access = resolve_memory_place_for_values(function, value_types, layouts, place)?;
             let valid_transfer = match access.pointer_layout {
                 Some(pointee) if access.pointer_slot == Some(PointerSlot::OwnedNullable) => {
@@ -881,6 +903,7 @@ pub(super) fn lower_operation(
                 return Err(LoweringError::UnsupportedLayout { function, operation: "Load" });
             }
             ScalarInstruction::Load { destination: *destination, place: place.clone(), transfer: *transfer }
+            }
         }
         Operation::Store { place, value, transfer } => {
             let access = resolve_memory_place_for_values(function, value_types, layouts, place)?;

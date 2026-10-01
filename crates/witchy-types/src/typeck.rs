@@ -5679,7 +5679,18 @@ impl Checker {
                     if decl.as_ref().is_some_and(is_unique_value_type) {
                         self.authorize_unique_value_binding(name.clone());
                     }
-                    if decl.as_ref().map_or_else(
+                    // In normal mode an inferred local of copyable storage is
+                    // an ordinary value, even when the callee declares a
+                    // unique result. The backend may retain its fresh owner
+                    // token until an actual copy occurs. An explicit unique
+                    // annotation still requests affine source semantics.
+                    let implicit_ordinary_result = !self.opt_mode
+                        && decl.is_none()
+                        && matches!(value, Expr::Call { .. } | Expr::MethodCall { .. })
+                        && matches!(self.inferred_unique_source_type(value, &binding_ty),
+                            Some(ast::Type::Qualified(ast::TypeQual::Unique, inner))
+                                if !self.declared_type_carries_unique_storage(&inner));
+                    if !implicit_ordinary_result && decl.as_ref().map_or_else(
                         || self.expression_carries_unique_storage(value, &binding_ty)
                             || self.ty_carries_unique_storage(&binding_ty),
                         |ty| {

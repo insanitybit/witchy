@@ -1388,6 +1388,16 @@ pub(super) fn expected_block_operations_plan(
                         | LoadTransfer::TakeNullableUnique
                 ) =>
             {
+                if is_raw_allocation_capacity_load(function.id, &function.value_types, layouts, place) {
+                    push_get(&mut plan, &layout, place.object())?;
+                    plan.extend([
+                        PlanToken::I32Const(4), PlanToken::I32Sub,
+                        PlanToken::I32Load { offset: 0, align: 2, memory: 0 },
+                        PlanToken::I32Const(4), PlanToken::I32Sub,
+                    ]);
+                    push_set(&mut plan, &layout, *destination)?;
+                    continue;
+                }
                 push_memory_load_plan(&mut plan, function, layouts, &layout, place, *destination)?;
                 match transfer {
                     LoadTransfer::CloneShared => push_share_plan(&mut plan, &layout, *destination, *destination)?,
