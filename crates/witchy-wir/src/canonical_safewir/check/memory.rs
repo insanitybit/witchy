@@ -561,6 +561,18 @@ fn drop_ref_layout_supported(
                     _ => return false,
                 }
             }
+            LayoutKind::CanonicalDictionary { key, value, .. } => {
+                // The dictionary destructor visits only state=Full rows. Its
+                // exact slot descriptors still have to admit recursive drop.
+                for slot in [key, value] {
+                    let Some(slot) = layouts.get(*slot) else { return false };
+                    match slot.kind() {
+                        LayoutKind::Scalar(_) => {}
+                        LayoutKind::RuntimePointerValueSlot { pointee, semantics: PointerSlot::Owned } => pending.push(*pointee),
+                        _ => return false,
+                    }
+                }
+            }
             _ => return false,
         }
     }

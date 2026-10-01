@@ -637,8 +637,8 @@ impl CanonicalWriter {
                     D::RemoveSlot { removed_value, dict, bucket } => {
                         self.u8(5); self.value_id(*removed_value); self.value_id(*dict); self.value_id(*bucket);
                     }
-                    D::CloneExact { destination, source } => {
-                        self.u8(6); self.value_id(*destination); self.value_id(*source);
+                    D::CloneExact { destination, source, capacity } => {
+                        self.u8(6); self.value_id(*destination); self.value_id(*source); self.value_id(*capacity);
                     }
                     D::Rehash { destination, source, capacity, transfer } => {
                         self.u8(7); self.value_id(*destination); self.value_id(*source); self.value_id(*capacity);

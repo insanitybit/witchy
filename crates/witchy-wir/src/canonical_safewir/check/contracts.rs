@@ -1074,6 +1074,14 @@ fn derive_operation(
                 D::Rehash { source, .. } | D::CloneExact { source, .. } => Some((*source, MemoryEffect::Read)),
             };
             if let Some((object, effect)) = effect { add_effect(summary, origin_of(origins, object), effect); }
+            match dictionary {
+                D::InsertSlot { key, value, .. } => {
+                    mark_escape(summary, origin_of(origins, *key));
+                    mark_escape(summary, origin_of(origins, *value));
+                }
+                D::ReplaceValue { value, .. } => mark_escape(summary, origin_of(origins, *value)),
+                _ => {}
+            }
             for destination in dictionary.destinations() {
                 let origin = match dictionary {
                     D::Initialize { layout, .. } => Origin::Fresh {
