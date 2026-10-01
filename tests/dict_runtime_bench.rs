@@ -1,4 +1,4 @@
-//! Run explicitly with `cargo test --test dict_runtime_bench -- --ignored --nocapture`.
+//! Run explicitly with `WITCHY_DICT_BENCH=1 cargo test --test dict_runtime_bench -- --nocapture`.
 //! Compilation and VM construction are outside each timed run.
 
 use std::time::Instant;
