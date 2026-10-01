@@ -1136,6 +1136,7 @@ pub fn lower_typed_module(
     // Clock has no guest-memory lane. Register it independently of the
     // buffer-host catalog, which requires a concrete String layout.
     let clock_needed = capability_imports.remove("clock_now");
+    let monotonic_clock_needed = capability_imports.remove("clock_now_monotonic");
     let compiler_imports = collect_compiler_imports(typed.module());
     let regex_spans = regex::is_needed(typed.module());
     // RFC-0165 Net import registration (Net track).
@@ -1516,6 +1517,28 @@ if capability_imports.contains("build_out_write_at") {
         let import = catalog.imports().into_iter().find(|import| import.name == "clock_now")
             .expect("authenticated Clock catalog contains its import");
         host_imports.capabilities.insert("clock_now", import.id);
+        imports.push(import);
+        abi_catalog = Some(catalog);
+    }
+
+    if monotonic_clock_needed {
+        let id = FunctionSignatureId::new(u32::try_from(signatures.len())
+            .map_err(|_| CanonicalLoweringError::IdOverflow)?);
+        let clock = ValueType::Capability(witchy_wir::canonical_safewir::CLOCK_CAPABILITY_KIND);
+        signatures.push(FunctionSignature {
+            id, parameters: vec![clock], results: vec![ValueType::Int],
+            contract: CallableContract {
+                parameters: vec![ParameterContract { value_type: clock, ownership: ParameterOwnership::Value }],
+                results: vec![ResultContract::Value(ValueType::Int)], parameter_effects: BTreeMap::new(),
+            },
+        });
+        let catalog = match abi_catalog.take() {
+            Some(catalog) => catalog.with_clock_monotonic_import(id),
+            None => CanonicalAbiCatalog::from_authenticated_monotonic_clock(id),
+        }.map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
+        let import = catalog.imports().into_iter().find(|import| import.name == "clock_now_monotonic")
+            .expect("authenticated monotonic Clock catalog contains its import");
+        host_imports.capabilities.insert("clock_now_monotonic", import.id);
         imports.push(import);
         abi_catalog = Some(catalog);
     }
@@ -13453,10 +13476,11 @@ impl FunctionLowerer<'_> {
             }
             return self.lower_dir_storage(name, token, &arguments[1..]);
         }
-        if name == "__capop.now" && arguments.len() == 1
+        if matches!(name, "__capop.now" | "__capop.now_monotonic") && arguments.len() == 1
             && receiver_kind == witchy_wir::canonical_safewir::CLOCK_CAPABILITY_KIND
         {
-            let import = self.capability_import("clock_now")?;
+            let import_name = if name == "__capop.now" { "clock_now" } else { "clock_now_monotonic" };
+            let import = self.capability_import(import_name)?;
             let value = self.fresh(ValueType::Int)?;
             self.push_operation(Operation::HostCall { destinations: vec![value], import,
                 arguments: vec![HostCallArgument::Capability(token)] });
@@ -20387,8 +20411,8 @@ struct HostImports {
 }
 
 /// The canonical capability imports, in catalog order.
-const CAPABILITY_IMPORTS: [&str; 37] =
-    ["dir_read_into", "dir_list_into", "dir_exists_at", "dir_write_at", "dir_subtree_at", "dir_read_file", "file_read_into", "env_has_var", "env_get_into", "build_out_write_at", "dir_is_dir_at", "build_read_at", "build_read_response_size", "build_read_response_into", "build_env_at", "build_response_is_some", "build_exec_run", "build_net_fetch", "net_fetch_at", "fetch_send_at", "fetch_response_size", "fetch_response_into", "fetch_only_at", "clock_now", "dir_make_dir_at", "secretstore_lookup_at", "crypto_sign_into", "crypto_public_key_into", "dir_create_new_at", "dir_replace_at", "dir_read_bytes_at", "dir_bytes_response_size", "dir_bytes_response_into", "dir_write_bytes_at", "dir_append_bytes_at", "dir_set_executable_at", "dir_rename_at"];
+const CAPABILITY_IMPORTS: [&str; 38] =
+    ["dir_read_into", "dir_list_into", "dir_exists_at", "dir_write_at", "dir_subtree_at", "dir_read_file", "file_read_into", "env_has_var", "env_get_into", "build_out_write_at", "dir_is_dir_at", "build_read_at", "build_read_response_size", "build_read_response_into", "build_env_at", "build_response_is_some", "build_exec_run", "build_net_fetch", "net_fetch_at", "fetch_send_at", "fetch_response_size", "fetch_response_into", "fetch_only_at", "clock_now", "clock_now_monotonic", "dir_make_dir_at", "secretstore_lookup_at", "crypto_sign_into", "crypto_public_key_into", "dir_create_new_at", "dir_replace_at", "dir_read_bytes_at", "dir_bytes_response_size", "dir_bytes_response_into", "dir_write_bytes_at", "dir_append_bytes_at", "dir_set_executable_at", "dir_rename_at"];
 
 /// The separator between the names `dir_list_into` writes; a file name never
 /// contains it.
@@ -20482,7 +20506,7 @@ fn collect_compiler_imports(module: &witchy_syntax::ast::Module) -> BTreeSet<&'s
 /// `env.get_env`).
 fn is_capability_op(name: &str) -> bool {
     if dir_storage::is_operation(name) { return true; }
-    matches!(name, "__capop.now" | "__capop.make_dir" | "__capop.only" | "__capop.fetch" | "__capop.send_raw" | "__capop.fetch_build" | "__capop.run_tool" | "__capop.get_build_env" | "__capop.read_build" | "__capop.write_out" | "__capop.read" | "__capop.list" | "__capop.exists" | "__capop.is_dir" | "__capop.write" | "__capop.subtree" | "__capop.read_file" | "__capop.get_env")
+    matches!(name, "__capop.now" | "__capop.now_monotonic" | "__capop.make_dir" | "__capop.only" | "__capop.fetch" | "__capop.send_raw" | "__capop.fetch_build" | "__capop.run_tool" | "__capop.get_build_env" | "__capop.read_build" | "__capop.write_out" | "__capop.read" | "__capop.list" | "__capop.exists" | "__capop.is_dir" | "__capop.write" | "__capop.subtree" | "__capop.read_file" | "__capop.get_env")
 }
 
 /// The imports the canonical functions' capability operations reach.
@@ -20504,6 +20528,7 @@ fn collect_capability_imports(module: &witchy_syntax::ast::Module, table: &TypeT
                 };
                 match (name.as_str(), receiver) {
                     ("__capop.now", "Clock") => { needed.insert("clock_now"); }
+                    ("__capop.now_monotonic", "Clock") => { needed.insert("clock_now_monotonic"); }
                     ("__capop.make_dir", "Dir") => { needed.insert("dir_make_dir_at"); }
                     ("__capop.create_new", "Dir") => { needed.insert("dir_create_new_at"); }
                     ("__capop.replace", "Dir") => { needed.insert("dir_replace_at"); }

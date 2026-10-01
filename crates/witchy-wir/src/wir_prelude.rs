@@ -401,6 +401,7 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
   (import "witchy" "build_env_at" (func $build_env_at_host (param externref i32 i32) (result externref)))
   (import "witchy" "build_response_is_some" (func $build_response_is_some_host (param externref) (result i32)))
   (import "witchy" "clock_now" (func $clock_now_host (param externref) (result i64)))
+  (import "witchy" "clock_now_monotonic" (func $clock_now_monotonic_host (param externref) (result i64)))
   (import "witchy" "dir_make_dir_at" (func $dir_make_dir_at_host (param externref i32 i32)))
   (import "witchy" "secretstore_lookup_at" (func $secretstore_lookup_at_host (param externref i32 i32) (result externref)))
   (import "witchy" "crypto_sign_into" (func $crypto_sign_into_host (param externref i32 i32 i32 i32) (result i32)))
@@ -601,6 +602,7 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
 
         "console_read_len"
         | "clock_now"
+        | "clock_now_monotonic"
         | "dir_make_dir_at"
         | "secretstore_lookup_at"
         | "crypto_sign_into"
@@ -796,7 +798,7 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         "net_send_slice" | "net_recv_line_size" | "net_recv_bytes_size" | "net_recv_all_size" | "net_take_received_into" => AUTH_NET_CONNECT,
         "net_listen" | "net_listen_at" | "net_accept" | "serve_pool" => AUTH_NET_LISTEN,
         "net_listen_tls" => AUTH_NET_LISTEN_SECRET,
-        "now" | "now_monotonic" | "clock_now" => AUTH_CLOCK,
+        "now" | "now_monotonic" | "clock_now" | "clock_now_monotonic" => AUTH_CLOCK,
         "rand_u64" => AUTH_RAND,
         "exec_run_at" => AUTH_EXEC_DIR,
         "mint_exec" | "exec_only" | "exec_run" => AUTH_EXEC,

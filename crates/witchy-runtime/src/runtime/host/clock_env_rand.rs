@@ -34,7 +34,15 @@ pub(in crate::runtime) fn authenticate_clock_capture(state: &VmState, data: &dyn
 
 pub(in crate::runtime) fn link_canonical_clock(linker: &mut Linker<VmState>) -> Result<()> {
     linker.func_wrap("witchy", "clock_now", host_clock_now)?;
+    linker.func_wrap("witchy", "clock_now_monotonic", host_clock_now_monotonic)?;
     Ok(())
+}
+
+fn host_clock_now_monotonic(caller: Caller<'_, VmState>, clock: Option<Rooted<ExternRef>>) -> Result<i64> {
+    let clock = clock.ok_or_else(|| Error::msg("clock_now_monotonic: null capability"))?;
+    let data = clock.data(&caller)?.ok_or_else(|| Error::msg("clock_now_monotonic: missing capability data"))?;
+    authenticate_clock_capture(caller.data(), data)?;
+    Ok(host_now_monotonic(caller))
 }
 
 fn host_clock_now(caller: Caller<'_, VmState>, clock: Option<Rooted<ExternRef>>) -> Result<i64> {

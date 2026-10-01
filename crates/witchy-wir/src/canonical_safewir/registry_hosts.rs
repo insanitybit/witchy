@@ -4,8 +4,8 @@ use super::*;
 pub const CLOCK_CAPABILITY_KIND: CapabilityKindId = CapabilityKindId::new(19);
 pub const SECRET_STORE_CAPABILITY_KIND: CapabilityKindId = CapabilityKindId::new(20);
 pub const SECRET_CAPABILITY_KIND: CapabilityKindId = CapabilityKindId::new(21);
-pub const REGISTRY_HOST_IMPORT_NAMES: [&str; 5] = [
-    "clock_now", "dir_make_dir_at", "secretstore_lookup_at", "crypto_sign_into", "crypto_public_key_into",
+pub const REGISTRY_HOST_IMPORT_NAMES: [&str; 6] = [
+    "clock_now", "dir_make_dir_at", "secretstore_lookup_at", "crypto_sign_into", "crypto_public_key_into", "clock_now_monotonic",
 ];
 
 impl CanonicalAbiCatalog {
@@ -13,9 +13,22 @@ impl CanonicalAbiCatalog {
         Self::from_imports(Vec::new()).with_clock_import(signature)
     }
 
+    pub fn from_authenticated_monotonic_clock(signature: FunctionSignatureId) -> Result<Self, String> {
+        Self::from_imports(Vec::new()).with_clock_monotonic_import(signature)
+    }
+
     pub fn with_clock_import(mut self, signature: FunctionSignatureId) -> Result<Self, String> {
         use crate::wir_prelude::{AbiImportAuthority, WasmTy::*};
         let import = authenticated_capability_import(REGISTRY_HOST_IMPORT_NAMES[0], &[ExternRef], &[I64], signature,
+            vec![HostParameterRole::Capability(CLOCK_CAPABILITY_KIND)], vec![HostResultRole::Value(ValueType::Int)],
+            HostMutation::ReadOnly, &[AbiImportAuthority::Clock])?;
+        self.imports.insert(import.id, import);
+        Ok(self)
+    }
+
+    pub fn with_clock_monotonic_import(mut self, signature: FunctionSignatureId) -> Result<Self, String> {
+        use crate::wir_prelude::{AbiImportAuthority, WasmTy::*};
+        let import = authenticated_capability_import("clock_now_monotonic", &[ExternRef], &[I64], signature,
             vec![HostParameterRole::Capability(CLOCK_CAPABILITY_KIND)], vec![HostResultRole::Value(ValueType::Int)],
             HostMutation::ReadOnly, &[AbiImportAuthority::Clock])?;
         self.imports.insert(import.id, import);
