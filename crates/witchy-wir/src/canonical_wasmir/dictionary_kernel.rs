@@ -190,7 +190,8 @@ fn emit_clone_exact(body: &mut WasmFunctionEncoder, function: &Function, local: 
     body.instruction(&wasm_encoder::Instruction::I32Const(20));
     body.instruction(&wasm_encoder::Instruction::I32Add);
     body.instruction(&wasm_encoder::Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
-    if let Some(retain) = retain {
+    if !offsets.is_empty() {
+        let retain = retain.expect("owned dictionary slots require a retain helper");
         body.instruction(&wasm_encoder::Instruction::I32Const(0));
         emit_set_index(body, local.scratch[4]);
         body.instruction(&wasm_encoder::Instruction::Block(BlockType::Empty));
@@ -254,7 +255,8 @@ fn plan_clone_exact(plan: &mut Vec<PlanToken>, function: &Function, local: &Loca
     push_get(plan, local, capacity)?;
     plan.extend([PlanToken::I32Const(32), PlanToken::I32Mul, PlanToken::I32Const(20), PlanToken::I32Add,
         PlanToken::MemoryCopy { source: 0, destination: 0 }]);
-    if let Some(retain) = retain {
+    if !offsets.is_empty() {
+        let retain = retain.expect("owned dictionary slots require a retain helper");
         plan.extend([PlanToken::I32Const(0), PlanToken::LocalSet(local.scratch[4]),
             PlanToken::Block("Empty".into()), PlanToken::Loop("Empty".into()),
             PlanToken::LocalGet(local.scratch[4])]);
