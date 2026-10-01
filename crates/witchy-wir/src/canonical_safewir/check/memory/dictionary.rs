@@ -101,11 +101,11 @@ impl MemoryChecker<'_> {
                 self.require_type(*destination, ValueType::Size)?;
                 let _ = field;
             }
-            DictionaryOperation::ProbeGroup { matching, empty, deleted, first_event, dict, bucket, fingerprint } => {
+            DictionaryOperation::ProbeGroup { matching, special, first_event, dict, bucket, fingerprint } => {
                 self.dictionary_layout(*dict)?;
                 self.require_type(*bucket, ValueType::Size)?;
                 self.require_type(*fingerprint, ValueType::Size)?;
-                for destination in [matching, empty, deleted, first_event] {
+                for destination in [matching, special, first_event] {
                     self.require_type(*destination, ValueType::Size)?;
                 }
             }

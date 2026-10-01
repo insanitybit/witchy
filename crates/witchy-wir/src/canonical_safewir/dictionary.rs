@@ -48,12 +48,12 @@ pub enum DictionaryOperation {
         transfer: LoadTransfer,
     },
     /// Scan 16 control bytes from `bucket`, wrapping at capacity. Bit zero of
-    /// each Size result describes `bucket`. A candidate still requires its
-    /// complete stored hash and key comparison before it is a match.
+    /// each Size mask describes `bucket`. `special` marks empty or deleted
+    /// controls; a candidate still requires its complete stored hash and key
+    /// comparison before it is a match.
     ProbeGroup {
         matching: ValueId,
-        empty: ValueId,
-        deleted: ValueId,
+        special: ValueId,
         /// Offset of the earliest candidate, empty, or deleted control byte;
         /// 16 means the whole group can be skipped.
         first_event: ValueId,
@@ -97,8 +97,8 @@ impl DictionaryOperation {
             | Self::ReadSlot { destination, .. }
             | Self::CloneExact { destination, .. }
             | Self::Rehash { destination, .. } => vec![*destination],
-            Self::ProbeGroup { matching, empty, deleted, first_event, .. } =>
-                vec![*matching, *empty, *deleted, *first_event],
+            Self::ProbeGroup { matching, special, first_event, .. } =>
+                vec![*matching, *special, *first_event],
             Self::ReplaceValue { displaced, .. } => vec![*displaced],
             Self::RemoveSlot { removed_value, .. } => vec![*removed_value],
             Self::InsertSlot { .. } => Vec::new(),

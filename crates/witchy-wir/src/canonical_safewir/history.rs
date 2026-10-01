@@ -644,9 +644,8 @@ impl CanonicalWriter {
                         self.u8(7); self.value_id(*destination); self.value_id(*source); self.value_id(*capacity);
                         self.u8(match transfer { R::CloneShared => 0, R::MoveUnique => 1 });
                     }
-                    D::ProbeGroup { matching, empty, deleted, first_event, dict, bucket, fingerprint } => {
-                        self.u8(8); self.value_id(*matching); self.value_id(*empty); self.value_id(*deleted);
-                        self.value_id(*first_event);
+                    D::ProbeGroup { matching, special, first_event, dict, bucket, fingerprint } => {
+                        self.u8(8); self.value_id(*matching); self.value_id(*special); self.value_id(*first_event);
                         self.value_id(*dict); self.value_id(*bucket); self.value_id(*fingerprint);
                     }
                 }
