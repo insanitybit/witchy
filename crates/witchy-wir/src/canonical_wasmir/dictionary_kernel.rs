@@ -20,8 +20,8 @@ fn slot_offset(field: crate::canonical_safewir::dictionary::DictionarySlotField)
 fn emit_slot_address(body: &mut WasmFunctionEncoder, function: &Function, local: &LocalLayout,
     dict: ValueId, bucket: ValueId, field: crate::canonical_safewir::dictionary::DictionarySlotField,
 ) -> Result<(), EncodeError> {
-    // Bounds first. The authenticated extent is 20+32*capacity, so a bucket
-    // below capacity cannot address beyond the dictionary allocation.
+    // Bounds first. The rows occupy 20+32*capacity bytes inside the larger
+    // authenticated allocation, so an in-range bucket cannot escape it.
     emit_get(body, local, function.id, bucket)?;
     emit_get(body, local, function.id, dict)?;
     body.instruction(&wasm_encoder::Instruction::I32Const(4));
