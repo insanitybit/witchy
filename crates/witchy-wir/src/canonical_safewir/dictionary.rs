@@ -37,7 +37,7 @@ pub enum DictionaryRehashTransfer {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DictionaryOperation {
     /// Allocate a fresh unique table and initialize every bucket to empty.
-    /// The requested capacity is rounded to a power of two, with minimum 8.
+    /// The requested capacity is rounded to a power of two, with minimum 16.
     Initialize { destination: ValueId, layout: crate::layout::LayoutId, capacity: ValueId },
     ReadHeader { destination: ValueId, dict: ValueId, field: DictionaryHeaderField },
     ReadSlot {
@@ -46,6 +46,17 @@ pub enum DictionaryOperation {
         bucket: ValueId,
         field: DictionarySlotField,
         transfer: LoadTransfer,
+    },
+    /// Scan 16 control bytes from `bucket`, wrapping at capacity. Bit zero of
+    /// each Size result describes `bucket`. A candidate still requires its
+    /// complete stored hash and key comparison before it is a match.
+    ProbeGroup {
+        matching: ValueId,
+        empty: ValueId,
+        deleted: ValueId,
+        dict: ValueId,
+        bucket: ValueId,
+        fingerprint: ValueId,
     },
     InsertSlot {
         dict: ValueId,
@@ -83,6 +94,8 @@ impl DictionaryOperation {
             | Self::ReadSlot { destination, .. }
             | Self::CloneExact { destination, .. }
             | Self::Rehash { destination, .. } => vec![*destination],
+            Self::ProbeGroup { matching, empty, deleted, .. } =>
+                vec![*matching, *empty, *deleted],
             Self::ReplaceValue { displaced, .. } => vec![*displaced],
             Self::RemoveSlot { removed_value, .. } => vec![*removed_value],
             Self::InsertSlot { .. } => Vec::new(),
@@ -95,6 +108,8 @@ impl DictionaryOperation {
             Self::ReadHeader { dict, .. } => vec![*dict],
             Self::ReadSlot { dict, bucket, .. }
             | Self::RemoveSlot { dict, bucket, .. } => vec![*dict, *bucket],
+            Self::ProbeGroup { dict, bucket, fingerprint, .. } =>
+                vec![*dict, *bucket, *fingerprint],
             Self::InsertSlot { dict, bucket, key, value, hash, .. } =>
                 vec![*dict, *bucket, *key, *value, *hash],
             Self::ReplaceValue { dict, bucket, value, .. } => vec![*dict, *bucket, *value],

@@ -89,7 +89,7 @@ impl MemoryChecker<'_> {
                 }
                 self.state.objects.insert(*destination, ObjectState {
                     identity: *destination, owner_generation: 0, layout: *layout,
-                    extent: Extent::Counted { header_bytes: 20, stride_bytes: 32, count: *capacity, capacity: *capacity },
+                    extent: Extent::Counted { header_bytes: 36, stride_bytes: 33, count: *capacity, capacity: *capacity },
                     ownership: Ownership::Unique,
                     allocation_class: Some(AllocationClass::ReferenceCounted),
                     shared_immutable: false, initialized_owned_slots: true,
@@ -100,6 +100,14 @@ impl MemoryChecker<'_> {
                 self.dictionary_layout(*dict)?;
                 self.require_type(*destination, ValueType::Size)?;
                 let _ = field;
+            }
+            DictionaryOperation::ProbeGroup { matching, empty, deleted, dict, bucket, fingerprint } => {
+                self.dictionary_layout(*dict)?;
+                self.require_type(*bucket, ValueType::Size)?;
+                self.require_type(*fingerprint, ValueType::Size)?;
+                for destination in [matching, empty, deleted] {
+                    self.require_type(*destination, ValueType::Size)?;
+                }
             }
             DictionaryOperation::ReadSlot { destination, dict, bucket, field, transfer } => {
                 let (_, key, value) = self.dictionary_layout(*dict)?;
@@ -158,7 +166,7 @@ impl MemoryChecker<'_> {
                 self.require_ref_type(*destination, layout)?;
                 self.state.objects.insert(*destination, ObjectState {
                     identity: *destination, owner_generation: 0, layout,
-                    extent: Extent::Counted { header_bytes: 20, stride_bytes: 32, count: *capacity, capacity: *capacity },
+                    extent: Extent::Counted { header_bytes: 36, stride_bytes: 33, count: *capacity, capacity: *capacity },
                     ownership: Ownership::Unique,
                     allocation_class: Some(AllocationClass::ReferenceCounted),
                     shared_immutable: false, initialized_owned_slots: true,
@@ -175,7 +183,7 @@ impl MemoryChecker<'_> {
                 }
                 self.state.objects.insert(*destination, ObjectState {
                     identity: *destination, owner_generation: 0, layout,
-                    extent: Extent::Counted { header_bytes: 20, stride_bytes: 32, count: *capacity, capacity: *capacity },
+                    extent: Extent::Counted { header_bytes: 36, stride_bytes: 33, count: *capacity, capacity: *capacity },
                     ownership: Ownership::Unique,
                     allocation_class: Some(AllocationClass::ReferenceCounted),
                     shared_immutable: false, initialized_owned_slots: true,
