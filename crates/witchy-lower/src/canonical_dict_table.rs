@@ -191,7 +191,7 @@ impl FunctionLowerer<'_> {
             ArithmeticOperator::Subtract,
             current[3],
             one,
-            OverflowBehavior::Trap,
+            OverflowBehavior::Wrap,
         )?;
         let element = self.fresh(element_type)?;
         self.push_operation(Operation::Dictionary(DictionaryOperation::ReadSlot {
@@ -325,6 +325,7 @@ impl FunctionLowerer<'_> {
                 })?;
                 self.current = hit;
                 let present = self.lower_dict_table_value_at(dict, bucket, &value_type)?;
+                let present = self.owned_dict_value(present, &value_type)?;
                 let lanes = self.dict_value_lanes(present, &value_type)?;
                 self.finish_current(Terminator::Branch {
                     target: join,

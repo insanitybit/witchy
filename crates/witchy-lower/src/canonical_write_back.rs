@@ -1632,12 +1632,7 @@ impl FunctionLowerer<'_> {
                     self.push_trap_unless(found)?;
                     return self.lower_dict_table_value_at(value, bucket, value_type);
                 }
-                let (shape, key_type, value_type) = self.dictionary_parts(source)?;
-                let keys = self.dict_list(value, &shape, 0)?;
-                let (found, index) = self.lower_dict_find(keys, *key, &key_type)?;
-                self.push_trap_unless(found)?;
-                let values = self.dict_list(value, &shape, 1)?;
-                self.lower_dict_value_at(values, index, &value_type)
+                Err(CanonicalLoweringError::UnsupportedType(source.clone()))
             }
             PreparedProjection::Field { source, index } => {
                 let shape = scalar_aggregate_shape(source, self.definitions)
@@ -1774,9 +1769,7 @@ impl FunctionLowerer<'_> {
                     )?;
                     return Ok(rebuilt);
                 }
-                let (shape, key_type, value_type) = self.dictionary_parts(source)?;
-                let (rebuilt, _) = self.lower_dict_insert(current, &shape, &key_type, &value_type, *key, replacement, false)?;
-                Ok(rebuilt)
+                Err(CanonicalLoweringError::UnsupportedType(source.clone()))
             }
             PreparedProjection::Index { source, index, site } => {
                 self.replace_list_value(current, *index, replacement, source.clone(), site)
