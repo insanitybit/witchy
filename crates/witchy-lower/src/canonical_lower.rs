@@ -5307,6 +5307,7 @@ impl FunctionLowerer<'_> {
                         }
                         continue;
                     }
+                    if self.try_lower_bytes_push_assignment(name, value, *place_depth)? { continue; }
                     if self.try_lower_place_assignment(name, value, *place_depth)? { continue; }
                     let value = self.lower_expr(value)?;
                     if self.values[&self.bindings[name]] != self.values[&value] {
@@ -5814,6 +5815,7 @@ impl FunctionLowerer<'_> {
                         }
                         continue;
                     }
+                    if self.try_lower_bytes_push_assignment(name, value, *place_depth)? { continue; }
                     if self.try_lower_place_assignment(name, value, *place_depth)? { continue; }
                     let value = self.lower_expr(value)?;
                     if self.values[&self.bindings[name]] != self.values[&value] {
@@ -5945,6 +5947,7 @@ impl FunctionLowerer<'_> {
                         }
                         continue;
                     }
+                    if self.try_lower_bytes_push_assignment(name, value, *place_depth)? { continue; }
                     if self.try_lower_place_assignment(name, value, *place_depth)? { continue; }
                     let value = self.lower_expr(value)?;
                     if self.values[&self.bindings[name]] != self.values[&value] {
@@ -6399,6 +6402,7 @@ impl FunctionLowerer<'_> {
                         }
                         continue;
                     }
+                    if self.try_lower_bytes_push_assignment(name, value, *place_depth)? { continue; }
                     if self.try_lower_place_assignment(name, value, *place_depth)? { continue; }
                     let value = self.lower_expr(value)?;
                     if self.values[&self.bindings[name]] != self.values[&value] {
@@ -8132,7 +8136,9 @@ impl FunctionLowerer<'_> {
             return Err(CanonicalLoweringError::UnsupportedType(list_type.clone()));
         };
         let element = self.owned_for_storage(element, &arguments[0])?;
-        let next_object = self.push_owned_element(values[0], element, list_type)?;
+        // The caller allocated exactly `count - prefix` slots for this fresh
+        // tail, so every reference element can be stored once in place.
+        let next_object = self.append_preallocated_owned_element(values[0], element, list_type)?;
         let (next_count, next_capacity) = self.tracked_lanes(next_object).ok_or(
             CanonicalLoweringError::UnsupportedExpression("list pattern appended extent"),
         )?;
@@ -14317,11 +14323,7 @@ impl FunctionLowerer<'_> {
 
         // CloneRef and shared phis demote the original token. The checker
         // independently validates the in-place store on the selected path.
-        let new_object = if !pointer_elements && !self.known_shared_value(old_object) {
-            self.push_unique_list_element(old_object, value, &list_type)?
-        } else {
-            self.push_owned_element(old_object, value, &list_type)?
-        };
+        let new_object = self.push_owned_or_reuse_scalar_element(old_object, value, &list_type)?;
         self.bindings.insert(name.clone(), new_object);
         Ok(())
     }
@@ -14371,6 +14373,26 @@ impl FunctionLowerer<'_> {
         let lanes = self.block_parameter_values(join);
         self.track_accumulator_lanes(&lanes);
         Ok(lanes[0])
+    }
+
+    /// Select the checked in-place append for a unique scalar list, leaving
+    /// shared and reference-bearing lists on the snapshot-preserving path.
+    fn push_owned_or_reuse_scalar_element(
+        &mut self,
+        object: ValueId,
+        value: ValueId,
+        list_type: &Type,
+    ) -> Result<ValueId, CanonicalLoweringError> {
+        let (_, element_type, _, _) = list_layout(
+            list_type, self.layout_bundle, self.layouts, &self.closures.layouts, self.definitions,
+        )?;
+        if !matches!(element_type, ValueType::Ref(_) | ValueType::Gc(_))
+            && !self.known_shared_value(object)
+        {
+            self.push_unique_list_element(object, value, list_type)
+        } else {
+            self.push_owned_element(object, value, list_type)
+        }
     }
 
     /// The frontend's append intrinsic returns a new list. Unlike the source
@@ -14657,7 +14679,10 @@ impl FunctionLowerer<'_> {
         };
         let element = self.load_list_element(source, body_cursor, element_type)?;
         let owned = self.owned_for_storage(element, element_source_type)?;
-        let next_object = self.push_owned_element(body_object, owned, list_type)?;
+        // Concat allocated the exact combined capacity before entering this
+        // loop. The accumulator is unique on every backedge, including for
+        // reference elements, so no prefix needs to be copied again.
+        let next_object = self.append_preallocated_owned_element(body_object, owned, list_type)?;
         let (next_count, next_capacity) = self.tracked_lanes(next_object).ok_or(
             CanonicalLoweringError::UnsupportedExpression("list.concat pushed extent"),
         )?;
@@ -16806,10 +16831,10 @@ impl FunctionLowerer<'_> {
         self.restore_snapshot(facts.clone());
         let key = if Self::dict_scalar_value(&key_type) { key }
             else { self.owned_for_storage(key, &key_type)? };
-        let grown_keys = self.push_owned_element(keys, key, &key_list)?;
+        let grown_keys = self.push_owned_or_reuse_scalar_element(keys, key, &key_list)?;
         let value = if Self::dict_scalar_value(&value_type) { value }
             else { self.owned_for_storage(value, &value_type)? };
-        let grown_values = self.push_owned_element(values, value, &value_list)?;
+        let grown_values = self.push_owned_or_reuse_scalar_element(values, value, &value_list)?;
         let rebuilt = self.lower_aggregate_moving(&dict_type, shape, 0, vec![grown_keys, grown_values])?;
         let mut lanes = vec![rebuilt];
         if let Some(option_shape) = &option_shape {
@@ -17011,7 +17036,7 @@ impl FunctionLowerer<'_> {
         let value = self.load_list_element(values, cursor, value_element)?;
         let value = self.owned_dict_value(value, value_type)?;
         let pair = self.lower_aggregate_moving(&pair_type, &pair_shape, 0, vec![key, value])?;
-        let grown = self.push_owned_element(body_values[0], pair, &list_type)?;
+        let grown = self.push_owned_or_reuse_scalar_element(body_values[0], pair, &list_type)?;
         let (folded, _) = self.accumulator_lanes(grown)?;
         let mut folded = self.split_folded_lanes(folded)?;
         let next = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, cursor, one, OverflowBehavior::Wrap)?;
@@ -18188,6 +18213,105 @@ impl FunctionLowerer<'_> {
         self.push_operation(Operation::UpdateCount { object, count: next });
         self.string_lengths.insert(object, next);
         Ok(next)
+    }
+
+    /// Rebinding `bytes = __bytes_push(bytes, value)` may reuse a unique
+    /// receiver. The value-producing intrinsic itself still copies its input.
+    fn try_lower_bytes_push_assignment(
+        &mut self,
+        target: &str,
+        expression: &Expr,
+        place_depth: u32,
+    ) -> Result<bool, CanonicalLoweringError> {
+        let Expr::Call { name, args } = expression else { return Ok(false) };
+        let [Expr::Var(receiver), value] = args.as_slice() else { return Ok(false) };
+        if name != "__bytes_push" || receiver != target || place_depth != 0 {
+            return Ok(false);
+        }
+        let old = *self.bindings.get(target)
+            .ok_or_else(|| CanonicalLoweringError::MissingBinding(target.to_owned()))?;
+        if self.known_shared_value(old) {
+            return Ok(false);
+        }
+        let value = self.lower_expr(value)?;
+        let byte = self.byte_value_checked(value)?;
+        let next = self.push_unique_byte_element(old, byte)?;
+        self.bindings.insert(target.to_owned(), next);
+        Ok(true)
+    }
+
+    fn push_unique_byte_element(
+        &mut self,
+        old: ValueId,
+        byte: ValueId,
+    ) -> Result<ValueId, CanonicalLoweringError> {
+        self.ensure_string_extent(old)?;
+        let (count, capacity) = self.tracked_lanes(old).ok_or(
+            CanonicalLoweringError::UnsupportedExpression("byte append extent"),
+        )?;
+        let layout = self.string_layout_id()?;
+        let has_room = self.push_compare(ComparisonOperator::LessUnsigned, count, capacity)?;
+        let facts = self.snapshot_facts();
+        let inplace = self.new_block(&[])?;
+        let grow = self.new_block(&[])?;
+        let join = self.new_block_owned(&[
+            (ValueType::Ref(layout), Some(Ownership::Unique)),
+            (ValueType::Size, None),
+            (ValueType::Size, None),
+        ])?;
+        self.finish_current(Terminator::BranchIf {
+            condition: has_room,
+            then_target: inplace,
+            then_arguments: Vec::new(),
+            else_target: grow,
+            else_arguments: Vec::new(),
+        })?;
+        self.current = inplace;
+        let one = self.push_const_size(1)?;
+        let _ = self.push_byte_store_and_publish(old, count, byte, one)?;
+        let (lanes, _) = self.accumulator_lanes(old)?;
+        self.finish_current(Terminator::Branch { target: join, arguments: lanes })?;
+        self.current = grow;
+        self.restore_snapshot(facts.clone());
+        let maximum = self.push_const_size(u64::from(u32::MAX - 4))?;
+        let fits = self.push_compare(ComparisonOperator::LessUnsigned, count, maximum)?;
+        self.push_guard(fits, witchy_wir::canonical_safewir::GuardKind::Arithmetic);
+        let one = self.push_const_size(1)?;
+        let next = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, count, one, OverflowBehavior::Wrap)?;
+        let half = self.push_const_size(u64::from(u32::MAX - 4) / 2)?;
+        let can_double = self.push_compare(ComparisonOperator::LessEqualUnsigned, next, half)?;
+        let doubled = self.new_block(&[])?;
+        let saturated = self.new_block(&[])?;
+        let ready = self.new_block(&[ValueType::Size])?;
+        self.finish_current(Terminator::BranchIf {
+            condition: can_double,
+            then_target: doubled,
+            then_arguments: Vec::new(),
+            else_target: saturated,
+            else_arguments: Vec::new(),
+        })?;
+        self.current = doubled;
+        let two = self.push_const_size(2)?;
+        let capacity = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Multiply, next, two, OverflowBehavior::Wrap)?;
+        self.finish_current(Terminator::Branch { target: ready, arguments: vec![capacity] })?;
+        self.current = saturated;
+        self.finish_current(Terminator::Branch { target: ready, arguments: vec![maximum] })?;
+        self.current = ready;
+        let capacity = self.block_parameter_values(ready)[0];
+        let object = self.alloc_bytes(next, capacity)?;
+        let zero = self.push_const_size(0)?;
+        let source_fits = self.push_compare(ComparisonOperator::LessEqualUnsigned, count, next)?;
+        self.push_guard(source_fits, witchy_wir::canonical_safewir::GuardKind::Bounds);
+        self.push_byte_copy(object, zero, old, zero, count, layout);
+        self.push_byte_store(object, count, byte)?;
+        self.push_operation(Operation::DropRef { object: old });
+        let (lanes, _) = self.accumulator_lanes(object)?;
+        self.finish_current(Terminator::Branch { target: join, arguments: lanes })?;
+        self.restore_facts(facts, join);
+        self.current = join;
+        let lanes = self.block_parameter_values(join);
+        self.track_accumulator_lanes(&lanes);
+        Ok(lanes[0])
     }
 
     /// `if condition: when_true else: when_false` over two `Int` values.

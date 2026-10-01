@@ -489,12 +489,20 @@ fn admitted_closures_are_records_of_code_and_int_captures() {
 }
 
 #[test]
+fn admitted_unique_scalar_builders_preserve_snapshots() {
+    let output = run_admitted(
+        "import bytes\nimport list\nimport dict\n\nfn main(console: Console):\n    var b = bytes.with_capacity(3)\n    for i in 0..64:\n        b.push(65)\n    let old = b\n    b.push(66)\n    console.print(\"${old.length()} ${b.length()} ${old.at(63)} ${b.at(64)}\")\n    let joined = list.concat([1, 2, 3], [4, 5, 6])\n    console.print(\"${joined.length()} ${joined[5]}\")\n    let words = list.concat([\"a\", \"b\"], [\"c\"])\n    let rest = match words:\n        [head, ..tail] -> tail\n        _ -> []\n    console.print(\"${list.length(words)} ${list.length(rest)} ${rest[1]}\")\n    var entries = dict.new()\n    for i in 0..32:\n        let _ = entries.insert(i, i + 1)\n    console.print(\"${entries.length()} ${entries.get_or(31, 0)}\")\n",
+    );
+    assert_eq!(output, ["64 65 65 66", "6 6", "3 2 c", "32 32"].map(str::to_string));
+}
+
+#[test]
 fn admitted_bytes_kernels_index_grow_slice_and_render() {
     // `Bytes` is the raw-byte buffer layout under its own source type. Its
     // intrinsics are byte kernels with the interpreter's rules: `at`,
     // `set_at` and `swap` abort out of range, `slice` clamps both ends and
-    // yields empty for a start past the end, `push`/`append`/`concat` copy
-    // into a fresh buffer, and a render shows only the length.
+    // yields empty for a start past the end, `push`/`append`/`concat` preserve
+    // earlier snapshots, and a render shows only the length.
     let output = run_admitted(
         "import bytes\n\nfn main(console: Console):\n    let b = bytes.from_string(\"héllo\")\n    console.print(\"${b.length()} ${b.at(1)}\")\n    var c = b\n    c.push(33)\n    console.print(bytes.to_string(c))\n    var d = c\n    d.set_at(0, 72)\n    console.print(bytes.to_string(d))\n    var e = d\n    e.swap(0, 5)\n    console.print(bytes.to_string(e))\n    console.print(\"${e.slice(-3, 2).length()} ${e.slice(2, 100).length()} ${e.slice(5, 2).length()} ${e.slice(100, 200).length()} ${bytes.to_string(e.slice(0, 1))}\")\n    let r = bytes.repeat(65, 4)\n    let w = bytes.with_capacity(16)\n    let f: Bytes = match bytes.from_list([104, 105]):\n        Ok(v) -> v\n        Err(_) -> bytes.from_string(\"\")\n    console.print(\"${bytes.to_string(r)} ${w.length()} ${bytes.to_string(f.concat(r))} ${f} ${bytes.from_string(\"\")}\")\n    var g = f\n    g.append(r)\n    g.reserve(10)\n    console.print(\"${g.length()} ${f.get(1)} ${f.get(2)} ${f.is_empty()}\")\n",
     );
