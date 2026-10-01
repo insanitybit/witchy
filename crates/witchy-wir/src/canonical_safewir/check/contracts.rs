@@ -1068,7 +1068,8 @@ fn derive_operation(
             use crate::canonical_safewir::DictionaryOperation as D;
             let effect = match dictionary {
                 D::Initialize { .. } => None,
-                D::ReadHeader { dict, .. } | D::ReadSlot { dict, .. } => Some((*dict, MemoryEffect::Read)),
+                D::ReadHeader { dict, .. } | D::ReadSlot { dict, .. }
+                | D::ProbeGroup { dict, .. } => Some((*dict, MemoryEffect::Read)),
                 D::InsertSlot { dict, .. } | D::ReplaceValue { dict, .. }
                 | D::RemoveSlot { dict, .. } => Some((*dict, MemoryEffect::Write)),
                 D::Rehash { source, .. } | D::CloneExact { source, .. } => Some((*source, MemoryEffect::Read)),
