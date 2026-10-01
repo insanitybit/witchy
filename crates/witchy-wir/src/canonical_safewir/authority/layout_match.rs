@@ -157,9 +157,12 @@ pub(crate) fn value_type_matches_source(
                 CanonicalScalarKind::Bool => super::super::ValueType::Bool,
             }
         }
+        StoragePlan::Owned(witchy_canonical_source::carrier::CarrierElement::Dict(_, _)) => {
+            matches!(actual, super::super::ValueType::Ref(layout)
+                if layout_matches_source_with_closures(layout, source, layouts, records, closure_layouts, signatures, context))
+        }
         StoragePlan::Owned(
             witchy_canonical_source::carrier::CarrierElement::Tuple(_)
-            | witchy_canonical_source::carrier::CarrierElement::Dict(_, _)
             | witchy_canonical_source::carrier::CarrierElement::Record { .. }
             | witchy_canonical_source::carrier::CarrierElement::Sum { .. }
         ) | StoragePlan::AggregateView(_, _) | StoragePlan::AuthenticatedPlace(_) => {
@@ -342,6 +345,14 @@ pub(super) fn enqueue_layout_children(
     use crate::layout::{LayoutKind, PointerSlot, RcHeader, ScalarKind};
     let Ok(layout) = layouts.resolve_nominal(layout) else { return false };
     let Some(descriptor) = layouts.get(layout) else { return false };
+    if let witchy_syntax::ast::Type::Named(name, arguments) = source.unqualified()
+        && name == "Dict"
+    {
+        let [source_key, source_value] = arguments.as_slice() else { return false };
+        let LayoutKind::CanonicalDictionary { key, value, .. } = descriptor.kind() else { return false };
+        return enqueue_dictionary_slot(*key, source_key, layouts, records, pending)
+            && enqueue_dictionary_slot(*value, source_value, layouts, records, pending);
+    }
     let storage = StoragePlan::classify(source.unqualified(), records, |_| Some(0));
     // An aggregate (record, sum, tuple, scalar Option/Result) is a fixed
     // record of its shape's slots.
@@ -479,6 +490,34 @@ pub(super) fn enqueue_layout_children(
                 && matches!(environment.kind(), LayoutKind::RuntimePointerValueSlot {
                     semantics: PointerSlot::Owned, ..
                 })
+        }
+        _ => false,
+    }
+}
+
+fn enqueue_dictionary_slot(
+    slot: crate::layout::LayoutId,
+    source: &witchy_syntax::ast::Type,
+    layouts: &crate::layout::LayoutInterner,
+    records: &ScalarRecordFields,
+    pending: &mut Vec<(crate::layout::LayoutId, witchy_syntax::ast::Type)>,
+) -> bool {
+    use crate::layout::{LayoutKind, PointerSlot, ScalarKind};
+    let Some(descriptor) = layouts.get(slot) else { return false };
+    match StoragePlan::classify(source.unqualified(), records, |_| Some(0)) {
+        StoragePlan::InlineScalar(kind) => {
+            let expected = match kind {
+                witchy_canonical_source::abi::CanonicalScalarKind::Int => ScalarKind::Int,
+                witchy_canonical_source::abi::CanonicalScalarKind::Float => ScalarKind::Float,
+                witchy_canonical_source::abi::CanonicalScalarKind::Duration => ScalarKind::Duration,
+                witchy_canonical_source::abi::CanonicalScalarKind::Bool => ScalarKind::BoolValueSlot,
+                witchy_canonical_source::abi::CanonicalScalarKind::Unit => return false,
+            };
+            matches!(descriptor.kind(), LayoutKind::Scalar(actual) if *actual == expected)
+        }
+        StoragePlan::Owned(_) | StoragePlan::RootedView(_) => {
+            matches!(descriptor.kind(), LayoutKind::RuntimePointerValueSlot { pointee, semantics: PointerSlot::Owned }
+                if { pending.push((*pointee, source.unqualified().clone())); true })
         }
         _ => false,
     }
