@@ -212,6 +212,7 @@ mod canonical_wasmir {
         #[cfg(feature = "native")]
         mod unit_storage {
             #[test] fn canonical_dictionary_scalar_insert_lookup_executes() { witchy_wir::self_checks::canonical_wasmir::unit_storage::canonical_dictionary_scalar_insert_lookup_executes() }
+            #[test] fn canonical_dictionary_owned_clone_preserves_value() { witchy_wir::self_checks::canonical_wasmir::unit_storage::canonical_dictionary_owned_clone_preserves_value() }
             #[test] fn unit_storage_construct_call_native_oracle() { witchy_wir::self_checks::canonical_wasmir::unit_storage::unit_storage_construct_call_native_oracle() }
             #[test] fn unit_storage_rejects_type_layout_initialization_and_bounds() { witchy_wir::self_checks::canonical_wasmir::unit_storage::unit_storage_rejects_type_layout_initialization_and_bounds() }
         }

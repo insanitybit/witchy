@@ -91,7 +91,6 @@ impl FunctionLowerer<'_> {
         requested: ValueId,
     ) -> Result<ValueId, CanonicalLoweringError> {
         let minimum = self.push_const_size(8)?;
-        let two = self.push_const_size(2)?;
         let header = self.new_block(&[ValueType::Size])?;
         let grow = self.new_block(&[ValueType::Size])?;
         let exit = self.new_block(&[ValueType::Size])?;
@@ -113,9 +112,9 @@ impl FunctionLowerer<'_> {
         let current = self.block_parameter_values(grow)[0];
         let doubled = self.push_arithmetic(
             ValueType::Size,
-            ArithmeticOperator::Multiply,
+            ArithmeticOperator::Add,
             current,
-            two,
+            current,
             OverflowBehavior::Trap,
         )?;
         self.finish_current(Terminator::Branch {
@@ -264,10 +263,7 @@ impl FunctionLowerer<'_> {
                 let limit = self.push_const_int(1 << 30)?;
                 let within_limit =
                     self.push_compare(ComparisonOperator::LessEqualSigned, hint, limit)?;
-                self.push_guard(
-                    within_limit,
-                    witchy_wir::canonical_safewir::GuardKind::Arithmetic,
-                );
+                self.push_trap_unless(within_limit)?;
                 let capacity = self.fresh(ValueType::Size)?;
                 self.push_operation(Operation::NarrowSize {
                     destination: capacity,
@@ -458,18 +454,14 @@ impl FunctionLowerer<'_> {
             destination: present,
             value: true,
         });
-        let has_capacity =
-            self.push_compare(ComparisonOperator::GreaterUnsigned, capacity, zero)?;
-        self.push_guard(
-            has_capacity,
-            witchy_wir::canonical_safewir::GuardKind::Bounds,
-        );
+        // Initialize and Rehash authenticate capacity >= 8, so the unsigned
+        // remainder below has a nonzero divisor on every admitted table.
         let first = self.push_arithmetic(
             ValueType::Size,
             ArithmeticOperator::RemainderUnsigned,
             low_size,
             capacity,
-            OverflowBehavior::Wrap,
+            OverflowBehavior::Trap,
         )?;
         let header = self.new_block(&[ValueType::Size, ValueType::Size, ValueType::Size])?;
         let probe = self.new_block(&[ValueType::Size, ValueType::Size, ValueType::Size])?;
@@ -618,7 +610,7 @@ impl FunctionLowerer<'_> {
             ArithmeticOperator::RemainderUnsigned,
             incremented,
             capacity,
-            OverflowBehavior::Wrap,
+            OverflowBehavior::Trap,
         )?;
         let attempts = self.push_arithmetic(
             ValueType::Size,
@@ -668,7 +660,7 @@ impl FunctionLowerer<'_> {
             ArithmeticOperator::RemainderUnsigned,
             low_size,
             capacity,
-            OverflowBehavior::Wrap,
+            OverflowBehavior::Trap,
         )?;
         let zero = self.push_const_size(0)?;
         let one = self.push_const_size(1)?;
@@ -703,7 +695,7 @@ impl FunctionLowerer<'_> {
         self.current = advance;
         let cursor = self.block_parameter_values(advance);
         let incremented = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, cursor[0], one, OverflowBehavior::Wrap)?;
-        let next = self.push_arithmetic(ValueType::Size, ArithmeticOperator::RemainderUnsigned, incremented, capacity, OverflowBehavior::Wrap)?;
+        let next = self.push_arithmetic(ValueType::Size, ArithmeticOperator::RemainderUnsigned, incremented, capacity, OverflowBehavior::Trap)?;
         let attempts = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, cursor[1], one, OverflowBehavior::Wrap)?;
         self.finish_current(Terminator::Branch { target: header, arguments: vec![next, attempts] })?;
         self.current = exit;
@@ -847,8 +839,7 @@ impl FunctionLowerer<'_> {
             field: DictionaryHeaderField::Tombstones,
         }));
         let occupied = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, count, tombstones, OverflowBehavior::Trap)?;
-        let two = self.push_const_size(2)?;
-        let twice_occupied = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Multiply, occupied, two, OverflowBehavior::Trap)?;
+        let twice_occupied = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, occupied, occupied, OverflowBehavior::Trap)?;
         let needs_growth = self.push_compare(ComparisonOperator::GreaterEqualUnsigned, twice_occupied, capacity)?;
         let grow = self.new_block(&[])?;
         let room = self.new_block(&[])?;
@@ -862,7 +853,7 @@ impl FunctionLowerer<'_> {
             else_arguments: Vec::new(),
         })?;
         self.current = grow;
-        let twice_count = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Multiply, count, two, OverflowBehavior::Trap)?;
+        let twice_count = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, count, count, OverflowBehavior::Trap)?;
         let live_needs_growth = self.push_compare(ComparisonOperator::GreaterEqualUnsigned, twice_count, capacity)?;
         let double = self.new_block(&[])?;
         let compact = self.new_block(&[])?;
@@ -875,7 +866,7 @@ impl FunctionLowerer<'_> {
             else_arguments: Vec::new(),
         })?;
         self.current = double;
-        let doubled = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Multiply, capacity, two, OverflowBehavior::Trap)?;
+        let doubled = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, capacity, capacity, OverflowBehavior::Trap)?;
         self.finish_current(Terminator::Branch { target: target_capacity, arguments: vec![doubled] })?;
         self.current = compact;
         self.finish_current(Terminator::Branch { target: target_capacity, arguments: vec![capacity] })?;

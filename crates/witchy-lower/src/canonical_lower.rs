@@ -12643,6 +12643,9 @@ impl FunctionLowerer<'_> {
             Type::Named(name, arguments) if name == "List" && arguments.len() == 1 => {
                 self.clone_list_value_for_storage(value, ty)
             }
+            Type::Named(name, arguments) if name == "Dict" && arguments.len() == 2 => {
+                self.clone_reference_token(value)
+            }
             Type::Fn(..) => {
                 // Owned slots consume a unique shell, not a CloneRef token.
                 // Keep the immutable environment shared while copying the
