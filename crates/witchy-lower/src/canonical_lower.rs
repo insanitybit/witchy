@@ -4444,6 +4444,8 @@ fn demote_shared_reference_phis(
 struct LoopRebindings {
     assigned: BTreeSet<String>,
     pushed: BTreeSet<String>,
+    self_appended: BTreeSet<String>,
+    complex_appended: BTreeSet<String>,
 }
 
 impl LoopRebindings {
@@ -4453,6 +4455,8 @@ impl LoopRebindings {
     fn without_iteration_binding(mut self, name: &str) -> Self {
         self.assigned.remove(name);
         self.pushed.remove(name);
+        self.self_appended.remove(name);
+        self.complex_appended.remove(name);
         self
     }
 }
@@ -4556,14 +4560,46 @@ fn lane_bindings(
 }
 
 fn loop_rebindings(block: &witchy_syntax::ast::Block) -> LoopRebindings {
+    fn straight_line_piece(expr: &Expr) -> bool {
+        match expr {
+            Expr::Var(_) | Expr::Str(_) => true,
+            Expr::Binary { op: BinOp::Add | BinOp::Concat, lhs, rhs } =>
+                straight_line_piece(lhs) && straight_line_piece(rhs),
+            _ => false,
+        }
+    }
     fn walk_block(block: &witchy_syntax::ast::Block, out: &mut LoopRebindings) {
         for statement in &block.stmts {
             match statement {
-                Stmt::Assign { name, value, .. } => {
+                Stmt::Assign { name, value, place_depth } => {
                     if let Expr::Call { name: call, .. } = value
                         && matches!(call.as_str(), "list.push" | "list.__push")
                     {
                         out.pushed.insert(name.clone());
+                    } else if *place_depth == 0
+                        && matches!(value, Expr::Binary {
+                            op: BinOp::Add | BinOp::Concat,
+                            lhs,
+                            ..
+                        } if matches!(lhs.as_ref(), Expr::Var(receiver) if receiver == name))
+                    {
+                        out.assigned.insert(name.clone());
+                        if matches!(value, Expr::Binary { rhs, .. } if straight_line_piece(rhs)) {
+                            out.self_appended.insert(name.clone());
+                        } else {
+                            out.complex_appended.insert(name.clone());
+                        }
+                    } else if *place_depth == 0
+                        && matches!(value, Expr::Call { name: call, args }
+                            if matches!(call.as_str(), "__bytes_append" | "__bytes_concat")
+                                && matches!(args.first(), Some(Expr::Var(receiver)) if receiver == name))
+                    {
+                        out.assigned.insert(name.clone());
+                        if matches!(value, Expr::Call { args, .. } if args.get(1).is_some_and(straight_line_piece)) {
+                            out.self_appended.insert(name.clone());
+                        } else {
+                            out.complex_appended.insert(name.clone());
+                        }
                     } else {
                         out.assigned.insert(name.clone());
                     }
@@ -4605,7 +4641,26 @@ fn loop_rebindings(block: &witchy_syntax::ast::Block) -> LoopRebindings {
     }
     let mut out = LoopRebindings::default();
     walk_block(block, &mut out);
+    out.self_appended.retain(|name| !out.complex_appended.contains(name));
     out
+}
+
+fn straight_line_buffer_loop(block: &witchy_syntax::ast::Block) -> bool {
+    fn expr_is_straight_line(expr: &Expr) -> bool {
+        match expr {
+            Expr::Int(_) | Expr::Float(_) | Expr::Duration(_) | Expr::Str(_) | Expr::Bool(_) | Expr::Var(_) => true,
+            Expr::Unary { expr, .. } => expr_is_straight_line(expr),
+            Expr::Binary { lhs, rhs, .. } => expr_is_straight_line(lhs) && expr_is_straight_line(rhs),
+            Expr::Call { name, args } if matches!(name.as_str(), "__bytes_append" | "__bytes_concat") =>
+                args.iter().all(expr_is_straight_line),
+            _ => false,
+        }
+    }
+    block.stmts.iter().all(|statement| match statement {
+        Stmt::Assign { value, .. } | Stmt::Let { value, .. } | Stmt::LetPattern { value, .. } |
+        Stmt::Expr(value) => expr_is_straight_line(value),
+        _ => false,
+    })
 }
 
 /// See `plan_binding_lanes`.
@@ -5385,7 +5440,7 @@ impl FunctionLowerer<'_> {
                         }
                         continue;
                     }
-                    if self.try_lower_bytes_push_assignment(name, value, *place_depth)? { continue; }
+                    if self.try_lower_buffer_append_assignment(name, value, *place_depth)? { continue; }
                     if self.try_lower_place_assignment(name, value, *place_depth)? { continue; }
                     let value = self.lower_expr(value)?;
                     if self.values[&self.bindings[name]] != self.values[&value] {
@@ -5893,7 +5948,7 @@ impl FunctionLowerer<'_> {
                         }
                         continue;
                     }
-                    if self.try_lower_bytes_push_assignment(name, value, *place_depth)? { continue; }
+                    if self.try_lower_buffer_append_assignment(name, value, *place_depth)? { continue; }
                     if self.try_lower_place_assignment(name, value, *place_depth)? { continue; }
                     let value = self.lower_expr(value)?;
                     if self.values[&self.bindings[name]] != self.values[&value] {
@@ -6025,7 +6080,7 @@ impl FunctionLowerer<'_> {
                         }
                         continue;
                     }
-                    if self.try_lower_bytes_push_assignment(name, value, *place_depth)? { continue; }
+                    if self.try_lower_buffer_append_assignment(name, value, *place_depth)? { continue; }
                     if self.try_lower_place_assignment(name, value, *place_depth)? { continue; }
                     let value = self.lower_expr(value)?;
                     if self.values[&self.bindings[name]] != self.values[&value] {
@@ -6480,7 +6535,7 @@ impl FunctionLowerer<'_> {
                         }
                         continue;
                     }
-                    if self.try_lower_bytes_push_assignment(name, value, *place_depth)? { continue; }
+                    if self.try_lower_buffer_append_assignment(name, value, *place_depth)? { continue; }
                     if self.try_lower_place_assignment(name, value, *place_depth)? { continue; }
                     let value = self.lower_expr(value)?;
                     if self.values[&self.bindings[name]] != self.values[&value] {
@@ -10099,6 +10154,14 @@ impl FunctionLowerer<'_> {
         body: &witchy_syntax::ast::Block,
     ) -> LoopRebindings {
         let mut rebound = loop_rebindings(body);
+        let byte_layout = self.string_layout_id().ok().map(ValueType::Ref);
+        if straight_line_buffer_loop(body) {
+            for name in &rebound.self_appended {
+                if self.bindings.get(name).and_then(|value| self.values.get(value)).copied() == byte_layout {
+                    rebound.pushed.insert(name.clone());
+                }
+            }
+        }
         let mut observe = |expression: &Expr| {
             if let Expr::Call { name, args } = expression {
                 if witchy_syntax::intrinsics::is_list_pop_extract(name)
@@ -16360,6 +16423,98 @@ impl FunctionLowerer<'_> {
         Ok(object)
     }
 
+    /// Append a byte sequence to an owned buffer. The caller must have proved
+    /// that `left` is its unique write-back token and that `right` does not
+    /// alias it. The same counted-buffer rule applies to String and Bytes.
+    fn append_owned_byte_sequence(
+        &mut self,
+        left: ValueId,
+        right: ValueId,
+    ) -> Result<ValueId, CanonicalLoweringError> {
+        self.ensure_string_extent(left)?;
+        self.ensure_string_extent(right)?;
+        let (length, capacity) = self.tracked_lanes(left).ok_or(
+            CanonicalLoweringError::UnsupportedExpression("byte append extent"),
+        )?;
+        let piece_length = self.string_length_of(right)?;
+        let maximum = self.push_const_size(u64::from(u32::MAX - 4))?;
+        let remaining = self.push_arithmetic(
+            ValueType::Size, ArithmeticOperator::Subtract, maximum, length, OverflowBehavior::Wrap,
+        )?;
+        let fits = self.push_compare(ComparisonOperator::LessEqualUnsigned, piece_length, remaining)?;
+        self.push_guard(fits, witchy_wir::canonical_safewir::GuardKind::Arithmetic);
+        let next = self.push_arithmetic(
+            ValueType::Size, ArithmeticOperator::Add, length, piece_length, OverflowBehavior::Trap,
+        )?;
+        let layout = self.string_layout_id()?;
+        let has_room = self.push_compare(ComparisonOperator::LessEqualUnsigned, next, capacity)?;
+        let facts = self.snapshot_facts();
+        let inplace = self.new_block(&[])?;
+        let grow = self.new_block(&[])?;
+        let join = self.new_block_owned(&[
+            (ValueType::Ref(layout), Some(Ownership::Unique)),
+            (ValueType::Size, None),
+            (ValueType::Size, None),
+        ])?;
+        self.finish_current(Terminator::BranchIf {
+            condition: has_room,
+            then_target: inplace,
+            then_arguments: Vec::new(),
+            else_target: grow,
+            else_arguments: Vec::new(),
+        })?;
+        self.current = inplace;
+        let append_fits = self.push_compare(ComparisonOperator::LessEqualUnsigned, next, capacity)?;
+        self.push_guard(append_fits, witchy_wir::canonical_safewir::GuardKind::Bounds);
+        let zero = self.push_const_size(0)?;
+        self.push_byte_copy(left, length, right, zero, piece_length, layout);
+        self.push_operation(Operation::UpdateCount { object: left, count: next });
+        self.string_lengths.insert(left, next);
+        let (lanes, _) = self.accumulator_lanes(left)?;
+        self.finish_current(Terminator::Branch { target: join, arguments: lanes })?;
+
+        self.current = grow;
+        self.restore_snapshot(facts.clone());
+        let half = self.push_const_size(u64::from(u32::MAX - 4) / 2)?;
+        let can_double = self.push_compare(ComparisonOperator::LessEqualUnsigned, next, half)?;
+        let double = self.new_block(&[])?;
+        let saturate = self.new_block(&[])?;
+        let ready = self.new_block(&[ValueType::Size])?;
+        self.finish_current(Terminator::BranchIf {
+            condition: can_double,
+            then_target: double,
+            then_arguments: Vec::new(),
+            else_target: saturate,
+            else_arguments: Vec::new(),
+        })?;
+        self.current = double;
+        let two = self.push_const_size(2)?;
+        let doubled = self.push_arithmetic(
+            ValueType::Size, ArithmeticOperator::Multiply, next, two, OverflowBehavior::Wrap,
+        )?;
+        self.finish_current(Terminator::Branch { target: ready, arguments: vec![doubled] })?;
+        self.current = saturate;
+        self.finish_current(Terminator::Branch { target: ready, arguments: vec![maximum] })?;
+        self.current = ready;
+        let new_capacity = self.block_parameter_values(ready)[0];
+        let zero = self.push_const_size(0)?;
+        let object = self.alloc_bytes(zero, new_capacity)?;
+        self.push_byte_copy(object, zero, left, zero, length, layout);
+        let append_fits = self.push_compare(ComparisonOperator::LessEqualUnsigned, next, new_capacity)?;
+        self.push_guard(append_fits, witchy_wir::canonical_safewir::GuardKind::Bounds);
+        self.push_byte_copy(object, length, right, zero, piece_length, layout);
+        self.push_operation(Operation::UpdateCount { object, count: next });
+        self.string_lengths.insert(object, next);
+        self.push_operation(Operation::DropRef { object: left });
+        let (lanes, _) = self.accumulator_lanes(object)?;
+        self.finish_current(Terminator::Branch { target: join, arguments: lanes })?;
+        self.restore_facts(facts, join);
+        self.current = join;
+        let lanes = self.block_parameter_values(join);
+        self.track_accumulator_lanes(&lanes);
+        Ok(lanes[0])
+    }
+
     fn push_string_copy(
         &mut self,
         destination: ValueId,
@@ -17787,6 +17942,60 @@ impl FunctionLowerer<'_> {
         Ok(next)
     }
 
+    /// A local write-back can consume its previous buffer token. Apply the
+    /// sequence append rule to any String expression of the form `x = x + y`;
+    /// the right side is unrestricted and evaluated exactly once. If it aliases
+    /// or shares the left buffer, use the ordinary snapshot-preserving concat.
+    fn try_lower_buffer_append_assignment(
+        &mut self,
+        target: &str,
+        expression: &Expr,
+        place_depth: u32,
+    ) -> Result<bool, CanonicalLoweringError> {
+        if place_depth == 0
+            && let Expr::Call { name, args } = expression
+            && matches!(name.as_str(), "__bytes_append" | "__bytes_concat")
+            && let [Expr::Var(receiver), piece] = args.as_slice()
+            && receiver == target
+        {
+            let left = self.lower_expr(&args[0])?;
+            let right = self.lower_expr(piece)?;
+            let result = if left != right
+                && self.bindings.get(target) == Some(&left)
+                && !self.known_shared_value(left)
+            {
+                self.append_owned_byte_sequence(left, right)?
+            } else {
+                self.concat_string_values(left, right)?
+            };
+            self.bindings.insert(target.to_owned(), result);
+            return Ok(true);
+        }
+        if place_depth == 0
+            && let Expr::Binary { op: BinOp::Add | BinOp::Concat, lhs, rhs } = expression
+            && matches!(lhs.as_ref(), Expr::Var(name) if name == target)
+            && matches!(
+                self.expression_type(expression)?.unqualified(),
+                Type::Named(name, args) if name == "String" && args.is_empty()
+            )
+        {
+            let left = self.lower_expr(lhs)?;
+            let before_rhs = self.current;
+            let right = self.lower_expr(rhs)?;
+            let result = if self.current == before_rhs && left != right
+                && self.bindings.get(target) == Some(&left)
+                && !self.known_shared_value(left)
+            {
+                self.append_owned_byte_sequence(left, right)?
+            } else {
+                self.concat_string_values(left, right)?
+            };
+            self.bindings.insert(target.to_owned(), result);
+            return Ok(true);
+        }
+        self.try_lower_bytes_push_assignment(target, expression, place_depth)
+    }
+
     /// Rebinding `bytes = __bytes_push(bytes, value)` may reuse a unique
     /// receiver. The value-producing intrinsic itself still copies its input.
     fn try_lower_bytes_push_assignment(
@@ -18257,6 +18466,10 @@ impl FunctionLowerer<'_> {
     /// A fresh owned copy of a string (a literal, a shared field) so it can
     /// travel an owned accumulator lane.
     fn owned_string_copy(&mut self, value: ValueId) -> Result<ValueId, CanonicalLoweringError> {
+        // The source may have crossed a branch while its cached extent lane
+        // survived locally; reload the physical header before copying it.
+        self.invalidate_dynamic_count(value);
+        self.ensure_string_extent(value)?;
         let layout = self.string_layout_id()?;
         let length = self.string_length_of(value)?;
         let zero = self.push_const_size(0)?;

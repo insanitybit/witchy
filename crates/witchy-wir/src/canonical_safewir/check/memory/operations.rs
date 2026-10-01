@@ -390,6 +390,12 @@ impl<'a> MemoryChecker<'a> {
                 self.rebase_extent_generation(*destination)?;
                 Ok(true)
             }
+            Operation::MoveValue { destination, source } => {
+                if let Some(value) = self.state.constants.get(source).copied() {
+                    self.state.constants.insert(*destination, value);
+                }
+                Ok(false)
+            }
             Operation::CloneRef { destination, source } => {
                 self.clone_ref(*destination, *source)?;
                 Ok(true)

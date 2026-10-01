@@ -91,6 +91,24 @@ use crate::{codegen, parser};
                 "fn main(console: Console):\n    console.print(\"${\"hello\".length()}\")\n",
                 vec!["5".to_string()],
             ),
+            // A growable local String keeps earlier snapshots and accepts a
+            // runtime-sized piece; self-aliasing still copies the old value.
+            (
+                r#"fn piece(n: Int) -> String:
+    if n % 2 == 0: "xy" else: "z"
+
+fn main(console: Console):
+    var text = ""
+    for i in 0..100:
+        text = text + piece(i)
+    let prior = text
+    text = text + "!"
+    console.print("${prior.length()},${text.length()}")
+    text = text + text
+    console.print("${text.length()}")
+"#,
+                vec!["150,151".to_string(), "302".to_string()],
+            ),
             // string.contains ($find_byte — a conditional br inside a loop) on
             // the binary path.
             (

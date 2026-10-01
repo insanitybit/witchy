@@ -135,6 +135,33 @@ impl<'a> MemoryChecker<'a> {
             renames.insert(*argument, parameter.value);
         }
 
+        // A counted unique owner may carry its count and capacity in two
+        // adjacent Size lanes even when both source bounds have the same SSA
+        // value (an empty buffer is the common case). A scalar rename map
+        // cannot send one source id to both destination ids. Authenticate
+        // each transported lane against the source owner's exact extent
+        // before giving the rebased owner two independent bound identities.
+        let mut counted_unique_lanes = SortedMap::new();
+        for (index, (argument, parameter)) in arguments.iter().zip(&target.parameters).enumerate() {
+            if parameter.ownership != Some(Ownership::Unique) {
+                continue;
+            }
+            let Some(state) = self.state.objects.get(argument) else { continue };
+            let Extent::Counted { count, capacity, .. } = state.extent else { continue };
+            if !self.is_raw_byte_buffer(state.layout)? || count != capacity { continue; }
+            let (Some(&carried_count), Some(&carried_capacity)) =
+                (arguments.get(index + 1), arguments.get(index + 2)) else { continue };
+            let (Some(count_parameter), Some(capacity_parameter)) =
+                (target.parameters.get(index + 1), target.parameters.get(index + 2)) else { continue };
+            if count_parameter.value_type == ValueType::Size
+                && capacity_parameter.value_type == ValueType::Size
+                && Self::same_scalar_in(&self.state, count, carried_count)
+                && Self::same_scalar_in(&self.state, capacity, carried_capacity)
+            {
+                counted_unique_lanes.insert(*argument, (count_parameter.value, capacity_parameter.value));
+            }
+        }
+
         // A checked header read can name the same logical count with a fresh
         // SSA definition. Transport that equality, not an optimizer annotation.
         // Capacity header reads are deliberately excluded: a shared meet may
@@ -223,6 +250,16 @@ impl<'a> MemoryChecker<'a> {
             let original_value = *value;
             let mut state = state.clone();
             state.extent = remap_extent(&renames, &state.extent);
+            if let Some((count, capacity)) = counted_unique_lanes.get(&original_value)
+                && let Extent::Counted { header_bytes, stride_bytes, .. } = state.extent
+            {
+                state.extent = Extent::Counted {
+                    header_bytes,
+                    count: *count,
+                    capacity: *capacity,
+                    stride_bytes,
+                };
+            }
             let value = remap_value(&renames, original_value);
             if let Some(identity) = unique_phi_rebases.get(&original_value) {
                 state.identity = *identity;
@@ -557,6 +594,19 @@ impl<'a> MemoryChecker<'a> {
                 edge.bound_generations.entry(count).or_default().insert(generation);
                 edge.bound_generations.entry(capacity).or_default().insert(generation);
             }
+        }
+        // The two scalar destinations may originate from one source SSA id.
+        // The global rename authenticates only one; bind both to the exact
+        // generation of the transferred unique raw-buffer owner.
+        for (argument, (count, capacity)) in counted_unique_lanes {
+            let Some(&owner) = unique_phi_rebases.get(&argument) else { continue };
+            let Some(state) = edge.objects.get(&owner) else { continue };
+            let generation = OwnerGeneration {
+                identity: state.identity,
+                epoch: state.owner_generation,
+            };
+            edge.bound_generations.entry(count).or_default().insert(generation);
+            edge.bound_generations.entry(capacity).or_default().insert(generation);
         }
         Ok(edge)
     }
