@@ -6,6 +6,9 @@ impl<'a> MemoryChecker<'a> {
         source: ValueId,
         parameter: ParameterOwnership,
     ) -> Result<(), InitialCheckError> {
+        if self.is_borrowed_parameter(source) {
+            return Err(InitialCheckError::InvalidOwnership { function: self.function.id, object: source });
+        }
         let state = self.live_object(source)?;
         let permitted = match parameter {
             ParameterOwnership::Unique | ParameterOwnership::UniqueWriteBack => state.ownership == Ownership::Unique,

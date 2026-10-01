@@ -119,7 +119,7 @@ mod canonical_safewir {
             #[test] fn indirect_reference_value_argument_is_refused() { witchy_wir::self_checks::canonical_safewir_check::indirect_reference_value_argument_is_refused() }
             #[test] fn integer_cannot_be_wrapped_as_capability_host_argument() { witchy_wir::self_checks::canonical_safewir_check::integer_cannot_be_wrapped_as_capability_host_argument() }
             #[test] fn logical_length_guard_is_not_satisfied_by_capacity_guard() { witchy_wir::self_checks::canonical_safewir_check::logical_length_guard_is_not_satisfied_by_capacity_guard() }
-            #[test] fn memory_value_call_is_fail_closed() { witchy_wir::self_checks::canonical_safewir_check::memory_value_call_is_fail_closed() }
+            #[test] fn memory_value_call_preserves_caller_owner() { witchy_wir::self_checks::canonical_safewir_check::memory_value_call_preserves_caller_owner() }
             #[test] fn nullable_capability_operations_are_checked() { witchy_wir::self_checks::canonical_safewir_check::nullable_capability_operations_are_checked() }
             #[test] fn nullable_owned_slot_is_refused_at_the_initial_catalog_gate() { witchy_wir::self_checks::canonical_safewir_check::nullable_owned_slot_is_refused_at_the_initial_catalog_gate() }
             #[test] fn owned_parameter_must_be_discharged_at_exit() { witchy_wir::self_checks::canonical_safewir_check::owned_parameter_must_be_discharged_at_exit() }

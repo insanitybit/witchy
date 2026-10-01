@@ -229,6 +229,14 @@ pub fn lower_typed_module(
     source: &CanonicalCheckedSource,
     layouts: LayoutBundle,
 ) -> Result<CanonicalModule<LoweredCandidate>, CanonicalLoweringError> {
+    lower_typed_module_with_borrowed_views(source, layouts, false)
+}
+
+pub(crate) fn lower_typed_module_with_borrowed_views(
+    source: &CanonicalCheckedSource,
+    layouts: LayoutBundle,
+    borrow_views: bool,
+) -> Result<CanonicalModule<LoweredCandidate>, CanonicalLoweringError> {
     let service_sites = witchy_canonical_source::service::service_sites(&source.view())
         .map_err(CanonicalLoweringError::UnsupportedCanonicalObligation)?;
     let par_map_sites = witchy_canonical_source::service::par_map_sites(&source.view())
@@ -503,7 +511,7 @@ pub fn lower_typed_module(
         .iter()
         .map(|ty| {
             let id = function_types[ty];
-            signature_from_type(id, ty, &layouts, &layout_catalog, &closure_layouts, &definitions).map_err(|error| {
+            signature_from_type(id, ty, &layouts, &layout_catalog, &closure_layouts, &definitions, borrow_views).map_err(|error| {
                 if std::env::var_os("WITCHY_CANONICAL_LOWER_DEBUG").is_some() {
                     eprintln!("canonical callable signature refused for `{ty:?}`: {error}");
                 }
@@ -1053,6 +1061,7 @@ pub fn lower_typed_module(
             &layout_catalog,
             &closure_layouts,
             &definitions,
+            borrow_views,
         );
         let mut signature = checked_signature_result?;
         if function.name.starts_with("list.push__")
@@ -2208,6 +2217,7 @@ fn checked_signature(
     layouts: &LayoutInterner,
     closure_layouts: &ClosureValueLayouts,
     definitions: &BTreeMap<String, TypeDef>,
+    borrow_views: bool,
 ) -> Result<FunctionSignature, CanonicalLoweringError> {
     let checked = source
         .callable_signature(&function.name)
@@ -2228,7 +2238,7 @@ fn checked_signature(
         return Err(CanonicalLoweringError::InvalidCheckedFunctionType(function.name.clone()));
     }
 
-    let checked_signature = signature_from_type(id, &checked, layout_bundle, layouts, closure_layouts, definitions)?;
+    let checked_signature = signature_from_type(id, &checked, layout_bundle, layouts, closure_layouts, definitions, borrow_views)?;
     let generic_shared_alias = exact_generic_shared_relay_alias(source, function, &checked)?;
     let declared_shared_alias = if generic_shared_relay_template_candidate(source, &function.name) {
         // The name is not evidence: a monomorphized forwarding carrier is
@@ -2744,6 +2754,7 @@ fn signature_from_type(
     layouts: &LayoutInterner,
     closure_layouts: &ClosureValueLayouts,
     definitions: &BTreeMap<String, TypeDef>,
+    borrow_views: bool,
 ) -> Result<FunctionSignature, CanonicalLoweringError> {
     let Type::Fn(parameters, result, conventions, _) = checked.unqualified() else {
         return Err(CanonicalLoweringError::InvalidCheckedFunctionType(format!("{checked:?}")));
@@ -2783,6 +2794,7 @@ fn signature_from_type(
     let mut value_parameters = Vec::with_capacity(parameters.len());
     let mut contract_parameters = Vec::with_capacity(parameters.len());
     let mut parameter_effects = BTreeMap::new();
+    let scalar_result = is_inline_scalar(source_value_type(result, layout_bundle, layouts, closure_layouts, definitions)?);
     for (index, (parameter, convention)) in parameters.iter().zip(conventions).enumerate() {
         // A checked aggregate layout carries the same owned token as a string
         // or closure. Deferred qualifiers were rejected above; mapping must
@@ -2804,6 +2816,11 @@ fn signature_from_type(
         let affine_owner = StoragePlan::classify(parameter.unqualified(), definitions, |_| Some(0))
             .requires_affine_owner_token();
         let ownership = match (value_type, convention) {
+            (ValueType::Ref(_), Convention::Let | Convention::Borrow)
+                if borrow_views && scalar_result && matches!(parameter, Type::Qualified(TypeQual::View, _)) =>
+            {
+                ParameterOwnership::Value
+            }
             (ValueType::Gc(_), Convention::Let | Convention::Borrow)
                 if rooted_gc_view_owner_type(parameter, closure_layouts, definitions).is_some() =>
             {
@@ -11335,6 +11352,9 @@ impl FunctionLowerer<'_> {
                         }
                         ParameterOwnership::Value if matches!(actual, ValueType::Ref(_)) => {
                             let source_type = self.expression_type(argument)?;
+                            if rooted_view_inner(&source_type).is_some() {
+                                return Ok(CallArgument::Value(value));
+                            }
                             if shared_reference_parts(&source_type).is_none()
                                 && !self.authenticated_direct_shared_alias_call(
                                     callee,

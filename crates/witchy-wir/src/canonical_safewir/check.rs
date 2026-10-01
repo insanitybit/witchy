@@ -2413,6 +2413,14 @@ fn check_tail_call(
     caller: &FunctionSignature,
     memory: Option<&mut MemoryChecker<'_>>,
 ) -> Result<(), InitialCheckError> {
+    // A tail edge destroys this frame before the callee returns. Forwarding
+    // an entry borrow is safe because its owner lives in the caller's frame;
+    // a locally owned reference cannot be borrowed across the tail edge.
+    if arguments.iter().any(|argument| matches!(argument,
+        CallArgument::Value(value) if matches!(value_type(function, *value), Ok(ValueType::Ref(_)))
+            && !memory.as_ref().is_some_and(|checker| checker.is_borrowed_parameter(*value)))) {
+        return Err(InitialCheckError::UnsupportedBorrowArgument { function: function.id });
+    }
     if callee.results != caller.results {
         return Err(InitialCheckError::ArityMismatch {
             context: "tail-call result signature",
@@ -5060,15 +5068,20 @@ pub mod self_checks {
     }
 
 
-    pub fn memory_value_call_is_fail_closed() {
+    pub fn memory_value_call_preserves_caller_owner() {
         let (layouts, layout) = dynamic_u32_layout();
-        let (values, mut operations) = allocated_list(layout);
+        let (mut values, mut operations) = allocated_list(layout);
         let object = ValueId::new(2);
+        let shared = ValueId::new(3);
+        values.insert(shared, ValueType::Ref(layout));
+        operations.push(Operation::CloneRef { destination: shared, source: object });
         operations.push(Operation::Call {
             destinations: Vec::new(),
             callee: CALLEE,
-            arguments: vec![super::super::CallArgument::Value(object)],
+            arguments: vec![super::super::CallArgument::Value(shared)],
         });
+        operations.push(Operation::DropRef { object: shared });
+        operations.push(Operation::DropRef { object });
         let value_module = call_module(
             layouts,
             values,
@@ -5093,13 +5106,37 @@ pub mod self_checks {
             }],
             Vec::new(),
         );
-        assert_eq!(
-            check_initial(value_module).unwrap_err(),
-            InitialCheckError::UnsupportedMemoryOperation {
-                function: FUNCTION,
-                operation: "Call(Value memory)",
+        let mut consumed_borrow = value_module.clone();
+        consumed_borrow.functions[1].blocks[0].operations.push(Operation::DropRef { object: ValueId::new(10) });
+        consumed_borrow.signatures[1].contract.parameter_effects.insert(0, vec![MemoryEffect::Release]);
+        assert_eq!(check_initial(consumed_borrow).unwrap_err(), InitialCheckError::InvalidOwnership {
+            function: CALLEE,
+            object: ValueId::new(10),
+        });
+        let mut unique_borrow = value_module.clone();
+        unique_borrow.functions[0].value_types.remove(&shared);
+        let operations = &mut unique_borrow.functions[0].blocks[0].operations;
+        operations.retain(|operation| !matches!(operation,
+            Operation::CloneRef { destination, .. } | Operation::DropRef { object: destination }
+                if *destination == shared));
+        for operation in operations.iter_mut() {
+            if let Operation::Call { arguments, .. } = operation {
+                arguments[0] = super::super::CallArgument::Value(object);
+            } else if matches!(operation, Operation::DropRef { object: value } if *value == object) {
+                *operation = Operation::Reclaim { object };
             }
-        );
+        }
+        assert_eq!(check_initial(unique_borrow).unwrap_err(), InitialCheckError::InvalidOwnership {
+            function: FUNCTION,
+            object,
+        });
+        let mut leaked_caller_owner = value_module.clone();
+        leaked_caller_owner.functions[0].blocks[0].operations.pop();
+        assert_eq!(check_initial(leaked_caller_owner).unwrap_err(), InitialCheckError::UnconsumedReference {
+            function: FUNCTION,
+            object,
+        });
+        assert!(check_initial(value_module).is_ok());
     }
 
     pub fn tail_call_after_release_is_rejected() {

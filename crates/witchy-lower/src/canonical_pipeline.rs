@@ -17,7 +17,7 @@ use witchy_wir::canonical_safewir::{
 use witchy_wir::{AdmittedCanonicalArtifact, CanonicalAdmissionError};
 
 use crate::canonical_layouts::{CanonicalLayoutError, derive_layout_bundle};
-use crate::canonical_lower::{CanonicalLoweringError, lower_typed_module};
+use crate::canonical_lower::{CanonicalLoweringError, lower_typed_module, lower_typed_module_with_borrowed_views};
 
 #[derive(Debug)]
 pub(crate) enum CanonicalPipelineError {
@@ -74,7 +74,7 @@ fn admit_checked_source_with_observer<R>(
         });
         match first {
             Ok(admitted) => Ok(admitted),
-            Err(_) if use_bounds_guard_pass(source) => {
+            Err(_) if use_bounds_guard_pass(source) || !source_uses_opt(source) => {
                 // A transformation has no authority to make the baseline
                 // unexecutable. Retry from checked source through every
                 // checker and Wasm admission stage, never from its output.
@@ -144,6 +144,31 @@ fn validate_checked_source_inner(
     source: &CanonicalCheckedSource,
 ) -> Result<ValidatedSafeWir, CanonicalPipelineError> {
     let layouts = derive_layout_bundle(source).map_err(CanonicalPipelineError::Layout)?;
+    // Borrowed view calls are an optional whole-module ABI choice. Keep the
+    // ordinary owned-call graph as the checked fallback when a proper-tail or
+    // another ownership obligation needs token transfer.
+    if !source_uses_opt(source) {
+        let borrowed_attempt = lower_typed_module_with_borrowed_views(source, layouts.clone(), true);
+        if let Err(error) = &borrowed_attempt {
+            if std::env::var_os("WIRDIAG").is_some() { eprintln!("WIRBAIL borrowed-view-lowering: {error:?}"); }
+        }
+        if let Ok(candidate) = borrowed_attempt {
+            let candidate = candidate.with_launch_contract_payload(source.launch_contract_payload().to_vec());
+            let checked_attempt = check_initial_with_witness(candidate, &source.view());
+            if let Err(error) = &checked_attempt {
+                if std::env::var_os("WIRDIAG").is_some() { eprintln!("WIRBAIL borrowed-view-check: {error:?}"); }
+            }
+            if let Ok(checked) = checked_attempt {
+                let final_attempt = validate_final(checked, &source.view());
+                if let Err(error) = &final_attempt {
+                    if std::env::var_os("WIRDIAG").is_some() { eprintln!("WIRBAIL borrowed-view-final: {error:?}"); }
+                }
+                if let Ok(validated) = final_attempt {
+                    return Ok(validated);
+                }
+            }
+        }
+    }
     let candidate = lower_typed_module(source, layouts)
         .map_err(CanonicalPipelineError::Lowering)?
         .with_launch_contract_payload(source.launch_contract_payload().to_vec());

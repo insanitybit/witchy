@@ -446,11 +446,11 @@ pub const RULES: &[RuleEntry] = &[
     RuleEntry {
         rule: CanonicalRuleId::Call,
         judgment: "check.rs::check_call; check/memory.rs::MemoryChecker::consume_call_move",
-        predicate: "arguments match the callee's contract by type and ownership: a moved reference is consumed, a value argument is a scalar; results follow the declared result contracts",
+        predicate: "arguments match the callee's contract by type and ownership: a moved reference is consumed; a reference value may be borrowed only for a scalar-result call and remains owned by its caller",
         semantics: "execute: a nested frame; owned arguments transfer",
         backend: RuleBackend::Receipt(CorrespondenceRule::ScalarCall),
-        admits: &[t(Launch, "admitted_scalar_var_parameters_write_back")],
-        refuses: &[t(Check, "call_move_consumes_unique_and_later_use_is_rejected"), t(Check, "memory_value_call_is_fail_closed"), t(Check, "shared_move_into_unique_parameter_is_rejected"), t(Check, "declared_callable_result_must_match_checked_signature"), t(Check, "checked_value_memory_result_is_refused")],
+        admits: &[t(Launch, "admitted_scalar_var_parameters_write_back"), t(Check, "memory_value_call_preserves_caller_owner")],
+        refuses: &[t(Check, "call_move_consumes_unique_and_later_use_is_rejected"), t(Check, "shared_move_into_unique_parameter_is_rejected"), t(Check, "declared_callable_result_must_match_checked_signature"), t(Check, "checked_value_memory_result_is_refused")],
     },
     RuleEntry {
         rule: CanonicalRuleId::VarCall,
@@ -602,15 +602,15 @@ pub struct CallEntry {
     pub evidence: &'static [TestRef],
 }
 
-/// The compact supported-call manifest. v1 has no `CallBorrow`: the `let`
-/// convention clones a token before a non-tail call and moves it at a tail
-/// edge.
+/// The compact supported-call manifest. A rooted view borrowed for a direct
+/// scalar-result call remains owned by its caller for the call's duration.
 pub const CALLS: &[CallEntry] = &[
     CallEntry { form: "direct call", convention: "scalar value", verdict: "admitted", evidence: &[t(Launch, "admitted_scalar_var_parameters_write_back")] },
+    CallEntry { form: "direct call", convention: "rooted view borrowed for a scalar result", verdict: "admitted with caller-retained root", evidence: &[t(Check, "memory_value_call_preserves_caller_owner")] },
     CallEntry { form: "direct call", convention: "`let` reference (shared token, cloned before the call)", verdict: "admitted", evidence: &[t(Check, "shared_move_into_unique_parameter_is_rejected")] },
     CallEntry { form: "direct call", convention: "`own` reference (unique token moved)", verdict: "admitted; the source is consumed", evidence: &[t(Launch, "admitted_string_literals_cross_owned_parameters_and_returns"), t(Check, "call_move_consumes_unique_and_later_use_is_rejected")] },
     CallEntry { form: "direct call", convention: "`var` scalar (write-back result lane)", verdict: "admitted", evidence: &[t(Launch, "admitted_scalar_var_parameters_write_back"), t(Memory, "affine_boundary_rejects_duplicate_owned_return_lanes")] },
-    CallEntry { form: "direct call", convention: "memory-bearing value argument", verdict: "refused", evidence: &[t(Check, "memory_value_call_is_fail_closed")] },
+    CallEntry { form: "direct call", convention: "borrowed reference without a retained caller owner", verdict: "refused", evidence: &[t(Check, "memory_value_call_preserves_caller_owner")] },
     CallEntry { form: "indirect call", convention: "scalar value through a function value", verdict: "admitted", evidence: &[t(Launch, "admitted_scalar_var_write_back_through_an_indirect_call")] },
     CallEntry { form: "indirect call", convention: "reference value argument without an owned/shared transfer convention", verdict: "refused", evidence: &[t(Check, "indirect_reference_value_argument_is_refused"), t(Backend, "variable_call_is_refused_fail_closed")] },
     CallEntry { form: "indirect call", convention: "reference under an explicit owned/shared signature convention", verdict: "admitted with checked token transfer", evidence: &[t(Launch, "admitted_lambdas_over_references_pass_through_indirect_calls_and_std_combinators")] },

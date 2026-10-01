@@ -1,6 +1,16 @@
 use super::*;
 
 impl<'a> MemoryChecker<'a> {
+    pub(crate) fn is_borrowed_parameter(&self, value: ValueId) -> bool {
+        self.signature.results.iter().all(|result| matches!(result,
+            ValueType::Int | ValueType::Float | ValueType::Bool | ValueType::Unit | ValueType::Size | ValueType::V128))
+            && self.function.blocks.iter().find(|block| block.id == self.function.entry)
+            .and_then(|entry| entry.parameters.iter().position(|parameter| parameter.value == value))
+            .and_then(|index| self.signature.contract.parameters.get(index))
+            .is_some_and(|parameter| matches!(parameter.value_type, ValueType::Ref(_))
+                && parameter.ownership == ParameterOwnership::Value)
+    }
+
     pub(super) fn initialize_parameters(
         &mut self,
         signature: &FunctionSignature,
@@ -294,6 +304,16 @@ impl<'a> MemoryChecker<'a> {
             }
             argument_states.push(Some(self.live_object(value)?.clone()));
             match argument {
+                CallArgument::Value(value) if parameter.ownership == ParameterOwnership::Value
+                    && results.iter().all(|result| matches!(result,
+                        ResultContract::Value(ValueType::Int | ValueType::Float | ValueType::Bool
+                            | ValueType::Unit | ValueType::Size | ValueType::V128))) =>
+                {
+                    self.require_complete_value_initialized(*value, "Call(uninitialized borrowed slot)")?;
+                    // The callee may retain a clone. Keep the caller's token
+                    // live, but forget exclusive authority over this storage.
+                    self.share_allocation_tokens(*value)?;
+                }
                 CallArgument::Value(_) => return self.unsupported("Call(Value memory)"),
                 CallArgument::Move(value) => {
                     self.require_complete_value_initialized(*value, "Call(uninitialized owned slot)")?;
@@ -696,6 +716,7 @@ impl<'a> MemoryChecker<'a> {
     pub(crate) fn check_exit(&self, returned: &[ValueId]) -> Result<(), InitialCheckError> {
         for (object, state) in &self.state.objects {
             if state.ownership != Ownership::Consumed
+                && !self.is_borrowed_parameter(*object)
                 && (state.allocation_class == Some(AllocationClass::ReferenceCounted)
                     || state.shared_immutable)
                 && !returned.contains(object)

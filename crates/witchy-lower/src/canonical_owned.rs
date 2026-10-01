@@ -538,7 +538,11 @@ pub(super) fn insert_releases(
     }).collect::<Values>();
     let references = References::of(function);
     let live_in = liveness(function, &references);
-    let immortal = static_data_values(function);
+    let mut immortal = static_data_values(function);
+    immortal.extend(entry.parameters.iter().zip(&signature.contract.parameters).filter_map(|(parameter, contract)| {
+        (is_reference(function, parameter.value) && contract.ownership == ParameterOwnership::Value)
+            .then_some(parameter.value)
+    }));
     let mut incoming = BTreeMap::from([(function.entry, owned)]);
     let mut pending = VecDeque::from([function.entry]);
     let mut rewritten = BTreeMap::new();

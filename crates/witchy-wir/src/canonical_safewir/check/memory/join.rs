@@ -16,6 +16,12 @@ impl<'a> MemoryChecker<'a> {
         if target.parameters.is_empty() && arguments.is_empty() {
             return Ok(self.state.clone());
         }
+        // A borrowed entry reference has no owned token to transfer through a
+        // phi. The entry value dominates its synchronous reads; callers that
+        // need an independently owned edge must CloneRef first.
+        if let Some(argument) = arguments.iter().find(|value| self.is_borrowed_parameter(**value)) {
+            return Err(InitialCheckError::InvalidOwnership { function: self.function.id, object: *argument });
+        }
         // A managed phi needs the argument's counted extent, which promotion
         // derives lazily from the header loads already in this state. Derive
         // it now from the same facts; a promotion the facts do not justify is

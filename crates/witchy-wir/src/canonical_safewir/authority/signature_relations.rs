@@ -36,6 +36,9 @@ pub(super) fn candidate_signature_matches_source_inner(
         context.finish_callable(key, false);
         return false;
     }
+    let scalar_result = actual.results.iter().all(|result| matches!(result,
+        super::super::ValueType::Int | super::super::ValueType::Float | super::super::ValueType::Bool
+            | super::super::ValueType::Unit | super::super::ValueType::Size | super::super::ValueType::V128));
     if !actual.contract.parameters.iter().zip(parameters).enumerate().all(|(index, (actual, source))| {
         let convention = convention_at(index);
         if !(matches!(convention, witchy_syntax::ast::Convention::Let | witchy_syntax::ast::Convention::Borrow | witchy_syntax::ast::Convention::Var)
@@ -73,6 +76,14 @@ pub(super) fn candidate_signature_matches_source_inner(
             } else {
                 super::super::ParameterOwnership::Value
             };
+        }
+        if matches!(source, witchy_syntax::ast::Type::Qualified(witchy_syntax::ast::TypeQual::View, _))
+            && matches!(actual.value_type, super::super::ValueType::Ref(_))
+            && scalar_result
+            && matches!(convention, witchy_syntax::ast::Convention::Let | witchy_syntax::ast::Convention::Borrow)
+        {
+            return matches!(actual.ownership,
+                super::super::ParameterOwnership::Value | super::super::ParameterOwnership::Shared);
         }
         let affine_owner = witchy_canonical_source::storage::StoragePlan::classify(
             source.unqualified(), records, |_| Some(0),

@@ -740,6 +740,9 @@ impl<'a> MemoryChecker<'a> {
     }
 
     pub(super) fn release(&mut self, object: ValueId) -> Result<(), InitialCheckError> {
+        if self.is_borrowed_parameter(object) {
+            return Err(InitialCheckError::InvalidOwnership { function: self.function.id, object });
+        }
         let state = self.live_object(object)?;
         if state.ownership != Ownership::Shared {
             return Err(InitialCheckError::InvalidOwnership {
@@ -763,6 +766,9 @@ impl<'a> MemoryChecker<'a> {
     }
 
     pub(super) fn drop_ref(&mut self, object: ValueId) -> Result<(), InitialCheckError> {
+        if self.is_borrowed_parameter(object) {
+            return Err(InitialCheckError::InvalidOwnership { function: self.function.id, object });
+        }
         let state = self.live_object(object)?;
         let shared = state.ownership == Ownership::Shared;
         let sole_owner = !shared && self.is_sole_live_token(object, state.identity);
