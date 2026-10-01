@@ -26,6 +26,7 @@ impl MemoryChecker<'_> {
     fn dictionary_unique(&self, dict: ValueId) -> Result<(), InitialCheckError> {
         let root = self.live_object(dict)?;
         if root.ownership != Ownership::Unique
+            || !self.is_sole_live_token(dict, root.identity)
             || root.allocation_class != Some(AllocationClass::ReferenceCounted)
             || root.shared_immutable
         {
