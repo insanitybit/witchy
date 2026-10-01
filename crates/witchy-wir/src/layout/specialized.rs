@@ -584,11 +584,10 @@ impl LayoutKind {
     pub fn packed_element_layout(&self) -> Option<LayoutId> {
         match self {
             Self::PackedList { element, .. } | Self::RuntimeBuffer { element } => Some(*element),
-            // A dense body is a packed run of equal-stride rows, so it indexes
-            // like any other packed sequence; the row carries the key/value
-            // offsets a following `Field` step reads.
-            Self::RuntimeDictionaryBody { row, .. }
-            | Self::CanonicalDictionary { row, .. } => Some(*row),
+            // A sparse canonical dictionary has uninitialized key/value slots
+            // outside full rows. Only typed Dictionary operations may touch
+            // those rows; an ordinary Element projection cannot prove state.
+            Self::RuntimeDictionaryBody { row, .. } => Some(*row),
             _ => None,
         }
     }
