@@ -1404,23 +1404,6 @@ fn is_heap_user_type(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> bool
         && scalar_aggregate_shape(ty, definitions).is_some_and(|shape| !shape.packed)
 }
 
-fn intern_dictionary_slot(
-    interner: &mut LayoutInterner,
-    ty: &Type,
-    definitions: &BTreeMap<String, TypeDef>,
-    recursive_types: &HashSet<Type>,
-) -> Result<witchy_wir::layout::LayoutId, CanonicalLayoutError> {
-    if is_byte_buffer_type(ty) {
-        let pointee = intern_v1_layout(interner, ty, definitions, recursive_types, &HashMap::new())?;
-        return interner
-            .intern_runtime_pointer_value_slot(pointee, PointerSlot::Owned)
-            .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()));
-    }
-    interner
-        .intern_type(ty, &V1Resolver::new(definitions, ty))
-        .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))
-}
-
 fn layout_field_is_inline(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> bool {
     matches!(StoragePlan::classify(ty, definitions, |_| Some(0)),
         StoragePlan::InlineScalar(_)

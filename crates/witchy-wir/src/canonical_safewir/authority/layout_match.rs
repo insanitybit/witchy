@@ -359,7 +359,6 @@ pub(super) fn enqueue_layout_children(
     if let Some(shape) = witchy_canonical_source::aggregates::scalar_aggregate_shape(source, records) {
         if !matches!(storage,
             StoragePlan::Owned(witchy_canonical_source::carrier::CarrierElement::Tuple(_)
-                | witchy_canonical_source::carrier::CarrierElement::Dict(_, _)
                 | witchy_canonical_source::carrier::CarrierElement::Record { .. }
                 | witchy_canonical_source::carrier::CarrierElement::Sum { .. })
                 | StoragePlan::AggregateView(_, _) | StoragePlan::AuthenticatedPlace(_)) {
@@ -384,7 +383,7 @@ pub(super) fn enqueue_layout_children(
             let witchy_syntax::ast::Type::Named(_, arguments) = source.unqualified() else { return false };
             let [source_element] = arguments.as_slice() else { return false };
             // Source List values are retained objects. An elided-header list
-            // cannot satisfy their layout, including a DictRoot child list.
+            // cannot satisfy their layout.
             let LayoutKind::PackedList { element, rc: RcHeader::Required } = descriptor.kind() else { return false };
             let element_layout = *element;
             let Some(element) = layouts.get(element_layout) else { return false };
