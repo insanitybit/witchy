@@ -74,10 +74,10 @@ pub fn canonical_dictionary_owned_clone_preserves_value() {
     let int = layouts.intern_scalar(ScalarKind::Int).unwrap();
     let record = layouts.intern_packed_record(vec![int]).unwrap();
     let owned = layouts.intern_runtime_pointer_value_slot(record, PointerSlot::Owned).unwrap();
-    let dict = layouts.intern_canonical_dictionary(int, owned).unwrap();
+    let dict = layouts.intern_canonical_dictionary(owned, owned).unwrap();
     let [capacity, bucket, hash, key, scalar, child, table, copy, loaded, observed,
-        grown_capacity, bigger_capacity, grown, moved] =
-        [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14].map(ValueId::new);
+        grown_capacity, bigger_capacity, grown, moved, key_scalar, removed] =
+        [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16].map(ValueId::new);
     let module = CanonicalModule::from_lowering(LoweredModuleParts {
         revision: Revision::new(0), checked_source: CheckedSourceIdentity::from_digest([168; 32]),
         layouts: LayoutBundle::from_interner(&layouts, [dict]).unwrap(),
@@ -89,24 +89,28 @@ pub fn canonical_dictionary_owned_clone_preserves_value() {
             entry: BlockId::new(0),
             value_types: BTreeMap::from([
                 (capacity, ValueType::Size), (bucket, ValueType::Size), (hash, ValueType::Int),
-                (key, ValueType::Int), (scalar, ValueType::Int), (child, ValueType::Ref(record)),
+                (key, ValueType::Ref(record)), (scalar, ValueType::Int), (child, ValueType::Ref(record)),
                 (table, ValueType::Ref(dict)), (copy, ValueType::Ref(dict)),
                 (loaded, ValueType::Ref(record)), (observed, ValueType::Int),
                 (grown_capacity, ValueType::Size), (bigger_capacity, ValueType::Size),
                 (grown, ValueType::Ref(dict)), (moved, ValueType::Ref(dict)),
+                (key_scalar, ValueType::Int), (removed, ValueType::Ref(record)),
             ]),
             blocks: vec![BasicBlock { id: BlockId::new(0), parameters: vec![], operations: vec![
                 Operation::ConstSize { destination: capacity, value: 8 },
                 Operation::ConstSize { destination: bucket, value: 0 },
                 Operation::ConstInt { destination: hash, value: 0 },
-                Operation::ConstInt { destination: key, value: 7 },
+                Operation::ConstInt { destination: key_scalar, value: 77 },
                 Operation::ConstInt { destination: scalar, value: 55 },
+                Operation::Alloc { destination: key, layout: record, extent: Extent::FixedBytes(8), class: AllocationClass::ReferenceCounted },
+                Operation::Store { place: Place::projected(key, Projection::Field { index: 0 }, ValueType::Int, AccessMode::Write),
+                    value: key_scalar, transfer: StoreTransfer::CopyScalar },
                 Operation::Alloc { destination: child, layout: record, extent: Extent::FixedBytes(8), class: AllocationClass::ReferenceCounted },
                 Operation::Store { place: Place::projected(child, Projection::Field { index: 0 }, ValueType::Int, AccessMode::Write),
                     value: scalar, transfer: StoreTransfer::CopyScalar },
                 Operation::Dictionary(DictionaryOperation::Initialize { destination: table, layout: dict, capacity }),
                 Operation::Dictionary(DictionaryOperation::InsertSlot { dict: table, bucket, key, value: child, hash,
-                    key_transfer: StoreTransfer::CopyScalar, value_transfer: StoreTransfer::MoveUnique }),
+                    key_transfer: StoreTransfer::MoveUnique, value_transfer: StoreTransfer::MoveUnique }),
                 Operation::Dictionary(DictionaryOperation::CloneExact { destination: copy, source: table, capacity }),
                 Operation::DropRef { object: table },
                 Operation::ConstSize { destination: grown_capacity, value: 16 },
@@ -118,10 +122,12 @@ pub fn canonical_dictionary_owned_clone_preserves_value() {
                     capacity: bigger_capacity, transfer: DictionaryRehashTransfer::MoveUnique }),
                 Operation::Dictionary(DictionaryOperation::ReadSlot { destination: loaded, dict: moved, bucket,
                     field: DictionarySlotField::Value, transfer: LoadTransfer::CloneShared }),
+                Operation::Dictionary(DictionaryOperation::RemoveSlot { removed_value: removed, dict: moved, bucket }),
                 Operation::Load { destination: observed,
                     place: Place::projected(loaded, Projection::Field { index: 0 }, ValueType::Int, AccessMode::Read),
                     transfer: LoadTransfer::CopyScalar },
                 Operation::DropRef { object: loaded },
+                Operation::DropRef { object: removed },
                 Operation::DropRef { object: moved },
             ], terminator: Terminator::Return { values: vec![observed] } }],
         }],
