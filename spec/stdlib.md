@@ -966,20 +966,6 @@ The value for `key`, or a runtime error when absent. This is the read half of th
 
 #### `fn update(var d: Dict(k, v), key: k, default: v, f: fn(v) -> v) where k: Hash`
 
-#### `fn update_str(var d: Dict(String, v), key: &str, default: v, f: fn(v) -> v)`
-
-Single-lookup upsert with a rooted string slice view key (RFC-0139). On Hit: zero allocations (in-place value update). On Miss: clones string slice to insert entry.
-
-#### `fn contains_str(let d: Dict(String, v), key: &str) -> Bool`
-
-String slice lookup without allocating an owned String (RFC-0139).
-
-#### `fn get_str_or(let d: Dict(String, v), key: &str, default: v) -> v`
-
-#### `fn at_str(let d: Dict(String, v), key: &str) -> v`
-
-#### `fn get_str(let d: Dict(String, v), key: &str) -> Option(v)`
-
 #### `fn contains_key(let d: Dict(k, v), key: k) -> Bool where k: Hash`
 
 Whether `key` is present. The `_key` suffix is deliberate: a Dict contains key/value pairs, so bare `contains` would be ambiguous between keys and values.

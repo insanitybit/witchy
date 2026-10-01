@@ -80,29 +80,6 @@ pub fn update(var d: Dict(k, v), key: k, default: v, f: fn(v) -> v) where k: Has
     d = dict.__update(d, key, default, f)
     return
 
-// Single-lookup upsert with a rooted string slice view key (RFC-0139).
-// On Hit: zero allocations (in-place value update).
-// On Miss: clones string slice to insert entry.
-pub fn update_str(var d: Dict(String, v), key: &str, default: v, f: fn(v) -> v):
-    d = dict.__update(d, key.to_string(), default, f)
-    return
-
-// String slice lookup without allocating an owned String (RFC-0139).
-pub fn contains_str(let d: Dict(String, v), key: &str) -> Bool:
-    dict.contains_key(d, key.to_string())
-
-pub fn get_str_or(let d: Dict(String, v), key: &str, default: v) -> v:
-    dict.get_or(d, key.to_string(), default)
-
-pub fn at_str(let d: Dict(String, v), key: &str) -> v:
-    dict.at(d, key.to_string())
-
-pub fn get_str(let d: Dict(String, v), key: &str) -> Option(v):
-    if dict.contains_str(d, key):
-        Some(dict.at_str(d, key))
-    else:
-        None
-
 // Whether `key` is present. The `_key` suffix is deliberate: a Dict contains
 // key/value pairs, so bare `contains` would be ambiguous between keys and values.
 pub fn contains_key(let d: Dict(k, v), key: k) -> Bool where k: Hash:

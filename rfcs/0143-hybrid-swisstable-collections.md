@@ -319,8 +319,8 @@ No phantom optimization name lands before it selects emitted code.
 #### Lookup and contains
 
 Probe the control groups, load only H2 candidate keys, and return the value from
-the matching bucket. `get_str`, `contains_str`, `at_str`, and `update_str` pass
-their borrowed pointer/length directly to the byte hash and equality helpers.
+the matching bucket. Generic borrowed-key queries pass their borrowed
+pointer/length directly to the byte hash and equality helpers.
 
 #### Replace and update
 

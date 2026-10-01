@@ -26,7 +26,7 @@ fn main(let console: Console, let clock: Clock):
     var j = 0
     while j + k <= n:
         let kmer = string.slice(seq_str, j, j + k)
-        dict.update_str(counts, kmer, 0, fn(c: Int): c + 1)
+        dict.update(counts, kmer.to_string(), 0, fn(c: Int): c + 1)
         j = j + 1
     let bench_t1 = clock.now_monotonic()
     console.print("${dict.length(counts)}")

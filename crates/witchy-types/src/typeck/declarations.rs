@@ -806,21 +806,6 @@ pub(super) fn normal_mode_item_mentions_reference_surface(item: &Item) -> bool {
                     | "str__char_count"
                     | "str__is_empty"
                     | "str__to_string"
-                    | "update_str"
-                    | "contains_str"
-                    | "get_str_or"
-                    | "at_str"
-                    | "get_str"
-                    | "dict.update_str"
-                    | "dict.contains_str"
-                    | "dict.get_str_or"
-                    | "dict.at_str"
-                    | "dict.get_str"
-                    | "Dict__update_str"
-                    | "Dict__contains_str"
-                    | "Dict__get_str_or"
-                    | "Dict__at_str"
-                    | "Dict__get_str"
             ) =>
         {
             return false;

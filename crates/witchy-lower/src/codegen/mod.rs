@@ -8698,14 +8698,7 @@ impl<'types> Codegen<'types> {
                     )?
                 }
                 None => {
-                    let lowered = match (name == "dict.update_str", i == 1, arg) {
-                        (true, true, Expr::Var(view))
-                            if self.locals.contains_key(&format!("{view}__slice_len")) =>
-                        {
-                            self.lower_borrowed_string_view_materialization(view)
-                        }
-                        _ => self.lower_expr(arg),
-                    };
+                    let lowered = self.lower_expr(arg);
                     match lowered {
                         Some(value) => value,
                         None => {
@@ -9201,33 +9194,6 @@ impl<'types> Codegen<'types> {
         access: &witchy_canonical_source::access::AccessSignature,
     ) -> Option<witchy_wir::wir::WirExpr> {
         use witchy_wir::wir::{WirExpr as W, WirNode as N};
-        // The physical `var` specialization of `dict.update_str` must retain
-        // the borrowed `(ptr, len)` ABI.  Falling through to the ordinary
-        // string specialization would interpret the pointer as an owning
-        // `[len][bytes]` object (and trap in the hash probe).
-        if name.starts_with("dict.update_str")
-            && args.len() == 4
-            && let Expr::Var(view) = &args[1]
-            && self.locals.contains_key(&format!("{view}__slice_len"))
-            && let Expr::Var(root) = &args[0]
-        {
-            let d = self.lower_expr(&args[0])?;
-            let ptr = self.lower_expr(&args[1])?;
-            let len = W::GetLocal(format!("{view}__slice_len"));
-            let default = self.lower_expr(&args[2])?;
-            let clos = self.lower_expr(&args[3])?;
-            let cap = W::GetLocal(format!("{root}__cap"));
-            let safe = assign_scratch("dict_slice_safe", self.assign_level);
-            self.locals.insert(safe.clone(), Kind::I32);
-            return Some(W::Seq(vec![
-                N::CallStoreMulti {
-                    func: "dict_update_slice_cap".into(),
-                    args: vec![d, ptr, len, default, clos, cap],
-                    dests: vec![root.clone(), format!("{root}__cap"), safe],
-                },
-                N::Push(W::ConstI32(0)),
-            ]));
-        }
         let physical_name = emitted_name.strip_suffix("$repair").unwrap_or(emitted_name);
         let ownership = if physical_name != name {
             Self::ownership_envelope_for_signature(access)
@@ -9334,15 +9300,7 @@ impl<'types> Codegen<'types> {
                     W::Seq(prelude)
                 }
             } else {
-                if name == "dict.update_str"
-                    && i == 1
-                    && let Expr::Var(view) = arg
-                    && self.locals.contains_key(&format!("{view}__slice_len"))
-                {
-                    self.lower_borrowed_string_view_materialization(view)?
-                } else {
-                    self.lower_expr(arg)?
-                }
+                self.lower_expr(arg)?
             };
             args_w.push(match param_kinds.get(i) {
                 Some(&pk) => Self::wir_convert(w, ak, pk),
