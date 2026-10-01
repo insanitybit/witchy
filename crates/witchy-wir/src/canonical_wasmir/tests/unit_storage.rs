@@ -69,6 +69,64 @@ pub fn canonical_dictionary_scalar_insert_lookup_executes() {
     assert_eq!(actual, (22, 44, 44));
 }
 
+pub fn canonical_dictionary_owned_clone_preserves_value() {
+    let mut layouts = LayoutInterner::new();
+    let int = layouts.intern_scalar(ScalarKind::Int).unwrap();
+    let record = layouts.intern_packed_record(vec![int]).unwrap();
+    let owned = layouts.intern_runtime_pointer_value_slot(record, PointerSlot::Owned).unwrap();
+    let dict = layouts.intern_canonical_dictionary(int, owned).unwrap();
+    let [capacity, bucket, hash, key, scalar, child, table, copy, loaded, observed] =
+        [1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(ValueId::new);
+    let module = CanonicalModule::from_lowering(LoweredModuleParts {
+        revision: Revision::new(0), checked_source: CheckedSourceIdentity::from_digest([168; 32]),
+        layouts: LayoutBundle::from_interner(&layouts, [dict]).unwrap(),
+        signatures: vec![FunctionSignature { id: FunctionSignatureId::new(168), parameters: vec![],
+            results: vec![ValueType::Int], contract: CallableContract { parameters: vec![],
+                results: vec![ResultContract::Value(ValueType::Int)], parameter_effects: BTreeMap::new() } }],
+        imports: vec![], proper_tail_sites: vec![],
+        functions: vec![Function { id: FunctionId::new(168), signature: FunctionSignatureId::new(168),
+            entry: BlockId::new(0),
+            value_types: BTreeMap::from([
+                (capacity, ValueType::Size), (bucket, ValueType::Size), (hash, ValueType::Int),
+                (key, ValueType::Int), (scalar, ValueType::Int), (child, ValueType::Ref(record)),
+                (table, ValueType::Ref(dict)), (copy, ValueType::Ref(dict)),
+                (loaded, ValueType::Ref(record)), (observed, ValueType::Int),
+            ]),
+            blocks: vec![BasicBlock { id: BlockId::new(0), parameters: vec![], operations: vec![
+                Operation::ConstSize { destination: capacity, value: 8 },
+                Operation::ConstSize { destination: bucket, value: 0 },
+                Operation::ConstInt { destination: hash, value: 0 },
+                Operation::ConstInt { destination: key, value: 7 },
+                Operation::ConstInt { destination: scalar, value: 55 },
+                Operation::Alloc { destination: child, layout: record, extent: Extent::FixedBytes(8), class: AllocationClass::ReferenceCounted },
+                Operation::Store { place: Place::projected(child, Projection::Field { index: 0 }, ValueType::Int, AccessMode::Write),
+                    value: scalar, transfer: StoreTransfer::CopyScalar },
+                Operation::Dictionary(DictionaryOperation::Initialize { destination: table, layout: dict, capacity }),
+                Operation::Dictionary(DictionaryOperation::InsertSlot { dict: table, bucket, key, value: child, hash,
+                    key_transfer: StoreTransfer::CopyScalar, value_transfer: StoreTransfer::MoveUnique }),
+                Operation::Dictionary(DictionaryOperation::CloneExact { destination: copy, source: table, capacity }),
+                Operation::DropRef { object: table },
+                Operation::Dictionary(DictionaryOperation::ReadSlot { destination: loaded, dict: copy, bucket,
+                    field: DictionarySlotField::Value, transfer: LoadTransfer::CloneShared }),
+                Operation::Load { destination: observed,
+                    place: Place::projected(loaded, Projection::Field { index: 0 }, ValueType::Int, AccessMode::Read),
+                    transfer: LoadTransfer::CopyScalar },
+                Operation::DropRef { object: loaded },
+                Operation::DropRef { object: copy },
+            ], terminator: Terminator::Return { values: vec![observed] } }],
+        }],
+    });
+    let checked = validate_final_for_test(check_initial_with_test_witness(module).expect("owned dictionary initial validation"))
+        .expect("owned dictionary final validation");
+    let artifact = admit_canonical_for_test(checked).expect("owned dictionary Wasm plan admission");
+    let engine = wasmtime::Engine::default();
+    let module = wasmtime::Module::new(&engine, artifact.wasm()).unwrap();
+    let mut store = wasmtime::Store::new(&engine, ());
+    let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
+    let actual = instance.get_typed_func::<(), i64>(&mut store, "f168").unwrap().call(&mut store, ()).unwrap();
+    assert_eq!(actual, 55);
+}
+
 const SENTINEL: i64 = 0x123456789abcdef;
 
 #[derive(Clone, Copy)]
