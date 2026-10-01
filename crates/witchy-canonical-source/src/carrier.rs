@@ -617,22 +617,11 @@ impl CarrierElement {
                         });
                 }
                 Self::Dict(key, value) => {
-                    if let Some((key_slot, value_slot)) = query.owned_dictionary_slots(layout, slot) {
-                        return key.matches_layout_at(query, key_slot, CarrierSlot::Owned)
-                            && value.matches_layout_at(query, value_slot, CarrierSlot::Owned);
-                    }
-                    let Some(actual) = query.owned_record_fields(layout, slot) else {
+                    let Some((key_slot, value_slot)) = query.owned_dictionary_slots(layout, slot) else {
                         return false;
                     };
-                    let [keys, values] = actual.as_slice() else { return false };
-                    let Some(key_layout) = query.owned_retained_list_element(*keys, CarrierSlot::Owned) else {
-                        return false;
-                    };
-                    let Some(value_layout) = query.owned_retained_list_element(*values, CarrierSlot::Owned) else {
-                        return false;
-                    };
-                    return key.matches_layout_at(query, key_layout, CarrierSlot::Owned)
-                        && value.matches_layout_at(query, value_layout, CarrierSlot::Owned);
+                    return key.matches_layout_at(query, key_slot, CarrierSlot::Owned)
+                        && value.matches_layout_at(query, value_slot, CarrierSlot::Owned);
                 }
                 Self::Record { fields, .. } => {
                     let Some(actual) = query.owned_record_fields(layout, slot) else { return false };

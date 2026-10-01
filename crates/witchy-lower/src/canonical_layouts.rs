@@ -520,11 +520,12 @@ impl LayoutProjection {
         if witchy_canonical_source::capabilities::representation(ty, &self.definitions).is_some() {
             return Ok(());
         }
-        // The legacy dictionary uses the ordered key/value tuple. The table
-        // representation is selected per instantiated key/value carrier by
-        // `intern_v1_layout_fields`; either way the Dict identity is a root.
-        if let Some(tuple) = witchy_canonical_source::aggregates::dictionary_as_tuple(ty) {
-            self.visit_type(&tuple)?;
+        // Every admitted dictionary has one guest-resident table root. Visit
+        // both checked child identities before interning that root.
+        if let Type::Named(name, arguments) = ty.unqualified()
+            && name == "Dict" && arguments.len() == 2
+        {
+            for child in arguments { self.visit_type(child)?; }
             self.roots.push(ty.clone());
             return Ok(());
         }
@@ -1222,15 +1223,13 @@ fn intern_v1_layout_fields(
             let Some(slot) = slot else { break };
             slots.push(slot);
         }
-        if let [key, value] = slots.as_slice() {
-            return interner.intern_canonical_dictionary(*key, *value)
-                .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()));
-        }
-    }
-    if let Some(tuple) = witchy_canonical_source::aggregates::dictionary_as_tuple(ty) {
-        return intern_v1_layout_fields(
-            interner, &tuple, definitions, recursive_types, active, closure_layouts,
-        );
+        let [key, value] = slots.as_slice() else {
+            return Err(CanonicalLayoutError::UnsupportedType(format!(
+                "Dict key or value has no canonical table slot: {ty:?}"
+            )));
+        };
+        return interner.intern_canonical_dictionary(*key, *value)
+            .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()));
     }
     if let Some(shape) = scalar_aggregate_shape(ty, definitions)
         && !shape.packed

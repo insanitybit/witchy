@@ -89,20 +89,6 @@ pub fn aggregate_field_shape_well_formed(ty: &Type, definitions: &BTreeMap<Strin
     field_type_ok(ty, definitions, &mut BTreeSet::new())
 }
 
-/// The canonical representation of `Dict(k, v)`: a tuple of the key list and
-/// the value list, kept in insertion order, so every dictionary rule is a
-/// tuple-and-list rule. `None` for any other type.
-pub fn dictionary_as_tuple(ty: &Type) -> Option<Type> {
-    let Type::Named(name, arguments) = ty.unqualified() else { return None };
-    if name != "Dict" || arguments.len() != 2 {
-        return None;
-    }
-    Some(Type::Tuple(vec![
-        Type::Named("List".into(), vec![arguments[0].clone()]),
-        Type::Named("List".into(), vec![arguments[1].clone()]),
-    ]))
-}
-
 const MAX_AGGREGATE_SHAPE_EXPANSION: usize = 64;
 /// Total instantiated AST nodes examined while recognizing one shape. This
 /// bounds changing generic recursion before it clones its next expanded field.
@@ -181,8 +167,12 @@ fn field_type_ok_at_with_dependencies(
         Some(crate::capabilities::CapabilityRepresentation::Nullable(_)) => return false,
         None => {}
     }
-    if let Some(tuple) = dictionary_as_tuple(ty) {
-        return field_type_ok_at_with_dependencies(&tuple, definitions, active, depth + 1, budget, completed, required, observed_depth);
+    if let Type::Named(name, arguments) = ty.unqualified()
+        && name == "Dict" && arguments.len() == 2
+    {
+        return arguments.iter().all(|child| field_type_ok_at_with_dependencies(
+            child, definitions, active, depth + 1, budget, completed, required, observed_depth,
+        ));
     }
     match ty.unqualified() {
         _ if is_scalar_type(ty) => true,
@@ -1501,11 +1491,6 @@ fn scalar_aggregate_shape_uncached(
     ty: &Type,
     definitions: &BTreeMap<String, TypeDef>,
 ) -> Option<ScalarAggregateShape> {
-    // A dictionary is its canonical representation: a tuple of the key list
-    // and the value list, in insertion order.
-    if let Some(tuple) = dictionary_as_tuple(ty) {
-        return scalar_aggregate_shape(&tuple, definitions);
-    }
     // A tuple is an anonymous one-variant record of its items.
     if let Type::Tuple(items) = ty.unqualified() {
         if items.is_empty() || !items.iter().all(|item| aggregate_field_shape_well_formed(item, definitions)) {
