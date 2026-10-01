@@ -153,6 +153,9 @@ impl RootedViewStorage {
             ));
         }
         if let Type::Named(name, arguments) = bare {
+            if name == "str" && arguments.is_empty() {
+                return Some(Self::RetainedRoot(RetainedRootStorage::ByteBuffer(ByteBufferKind::String)));
+            }
             if name == "Slice" {
                 let [element] = arguments.as_slice() else { return None };
                 return Some(Self::RetainedProjection(

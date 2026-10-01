@@ -34,6 +34,17 @@ pub(crate) fn value_type_matches_source(
             );
         }
         match storage {
+            Some(RootedViewStorage::RetainedRoot(RetainedRootStorage::ByteBuffer(
+                witchy_canonical_source::rooted_view::ByteBufferKind::String,
+            ))) if matches!(payload.unqualified(), witchy_syntax::ast::Type::Named(name, arguments)
+                if name == "str" && arguments.is_empty()) => {
+                let super::super::ValueType::Ref(layout) = actual else { return false };
+                return layout_matches_source_with_closures(
+                    layout,
+                    &witchy_syntax::ast::Type::Named("String".into(), Vec::new()),
+                    layouts, records, closure_layouts, signatures, context,
+                );
+            }
             Some(RootedViewStorage::RetainedRoot(RetainedRootStorage::StructuralRecord(_))) => {
                 let super::super::ValueType::Ref(layout) = actual else { return false };
                 return layout_matches_source_with_closures(

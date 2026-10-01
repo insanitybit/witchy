@@ -586,6 +586,7 @@ impl LayoutProjection {
             }
             Type::Named(name, arguments) if arguments.is_empty() =>
                 match StoragePlan::classify(ty, &self.definitions, |_| Some(0)) {
+                _ if name == "str" => Ok(()),
                 StoragePlan::InlineScalar(_) => Ok(()),
                 StoragePlan::Owned(CarrierElement::String | CarrierElement::Bytes) => {
                     self.roots.push(ty.clone());

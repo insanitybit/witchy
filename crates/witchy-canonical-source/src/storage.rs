@@ -476,6 +476,9 @@ fn snapshot_eligibility_for(
                 Ok(deferred)
             }
             Type::Named(name, arguments) => {
+                if name == "str" && arguments.is_empty() && use_kind == SnapshotUse::PersistentView {
+                    return Ok(false);
+                }
                 if arguments.is_empty() && formals.contains(name) {
                     return Ok(true);
                 }

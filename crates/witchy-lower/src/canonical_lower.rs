@@ -11553,6 +11553,40 @@ impl FunctionLowerer<'_> {
                 self.lower_list_length(args)
             }
             Expr::Call { name, args } if name == "list.concat" => self.lower_list_concat(args),
+            Expr::Call { name, args } if name == "string.as_str" => {
+                let [source] = args.as_slice() else {
+                    return Err(CanonicalLoweringError::UnsupportedExpression("string.as_str arity"));
+                };
+                self.lower_expr(source)
+            }
+            Expr::Call { name, args } if name == "string.to_string" => {
+                let [source] = args.as_slice() else {
+                    return Err(CanonicalLoweringError::UnsupportedExpression("string.to_string arity"));
+                };
+                let source = self.lower_expr(source)?;
+                self.ensure_string_extent(source)?;
+                self.owned_string_copy(source)
+            }
+            Expr::Call { name, args } if name == "string.len" => {
+                let [source] = args.as_slice() else {
+                    return Err(CanonicalLoweringError::UnsupportedExpression("string.len arity"));
+                };
+                let source = self.lower_expr(source)?;
+                self.ensure_string_extent(source)?;
+                let length = self.string_lengths[&source];
+                let result = self.fresh(ValueType::Int)?;
+                self.push_operation(Operation::WidenSize { destination: result, value: length });
+                Ok(result)
+            }
+            Expr::Call { name, args } if name == "string.slice" => {
+                let [source, start, end] = args.as_slice() else {
+                    return Err(CanonicalLoweringError::UnsupportedExpression("string.slice arity"));
+                };
+                let source = self.lower_expr(source)?;
+                let start = self.lower_expr(start)?;
+                let end = self.lower_expr(end)?;
+                self.lower_substring(source, start, end)
+            }
             Expr::Call { name, args } if name == "string.from_code" => self.lower_string_from_code(args),
             Expr::Call { name, args } if matches!(name.as_str(), "string.chars" | "string.__chars") => {
                 self.lower_string_chars(args)
@@ -19971,6 +20005,11 @@ fn source_value_type(
     closure_layouts: &ClosureValueLayouts,
     definitions: &BTreeMap<String, TypeDef>,
 ) -> Result<ValueType, CanonicalLoweringError> {
+    if let Type::Qualified(TypeQual::View, inner) = source
+        && matches!(inner.unqualified(), Type::Named(name, arguments) if name == "str" && arguments.is_empty())
+    {
+        return source_value_type(&Type::Named("String".into(), Vec::new()), layout_bundle, layouts, closure_layouts, definitions);
+    }
     // A whole structural or checked aggregate view uses its proved retained
     // root token; an inline scalar view uses the scalar lane. Other rooted
     // representation classes have distinct projection or owner ABIs below.
