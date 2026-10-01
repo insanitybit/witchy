@@ -1603,6 +1603,7 @@ if capability_imports.contains("build_out_write_at") {
         names.sort();
         eprintln!("canonical scope: {names:?}");
     }
+    let forwarded_dict_intrinsics = checked_dict_forwarders(typed.module());
     let mut functions = Vec::new();
     let mut proper_tail_locations = BTreeMap::new();
     for (item_index, item) in typed.module().items.iter().enumerate() {
@@ -1654,6 +1655,7 @@ if capability_imports.contains("build_out_write_at") {
             &lambda_names,
             signature,
             &functions_by_name,
+            &forwarded_dict_intrinsics,
             &direct_shared_alias_callees,
             &checked_parameter_conventions,
             &signatures,
@@ -1715,6 +1717,7 @@ if capability_imports.contains("build_out_write_at") {
             &lambda_names,
             signature,
             &functions_by_name,
+            &forwarded_dict_intrinsics,
             &direct_shared_alias_callees,
             &checked_parameter_conventions,
             &signatures,
@@ -3981,6 +3984,29 @@ fn tail_call_returns_fresh_write_back(
 }
 
 #[allow(clippy::too_many_arguments)]
+fn checked_dict_forwarders(module: &witchy_syntax::ast::Module) -> HashMap<String, String> {
+    module.items.iter().filter_map(|item| {
+        let Item::Function(function) = item else { return None };
+        if function.params.iter().any(|parameter| {
+            !matches!(parameter.convention, Convention::Let | Convention::Borrow) || parameter.default.is_some()
+        }) {
+            return None;
+        }
+        let [Stmt::Expr(Expr::Call { name: target, args })] = function.body.stmts.as_slice() else {
+            return None;
+        };
+        if !function.name.starts_with("dict.") || !target.starts_with("dict.")
+            || args.len() != function.params.len()
+            || !args.iter().zip(&function.params).all(|(argument, parameter)| {
+                matches!(argument, Expr::Var(name) if name == &parameter.name)
+            })
+        {
+            return None;
+        }
+        Some((function.name.clone(), target.clone()))
+    }).collect()
+}
+
 fn lower_function(
     function: &witchy_syntax::ast::Function,
     body: &witchy_syntax::ast::Block,
@@ -3991,6 +4017,7 @@ fn lower_function(
     lambda_names: &HashMap<usize, String>,
     signature: &FunctionSignature,
     functions: &HashMap<String, (FunctionId, FunctionSignatureId)>,
+    forwarded_dict_intrinsics: &HashMap<String, String>,
     direct_shared_alias_callees: &HashMap<String, FunctionSignatureId>,
     checked_parameter_conventions: &HashMap<FunctionSignatureId, Vec<Convention>>,
     signatures: &[FunctionSignature],
@@ -4074,6 +4101,7 @@ fn lower_function(
         item,
         opt_mode,
         functions,
+        forwarded_dict_intrinsics,
         direct_shared_alias_callees,
         checked_parameter_conventions,
         signatures,
@@ -4735,6 +4763,7 @@ struct FunctionLowerer<'a> {
     /// optimized functions and explicit moves transfer the existing token.
     opt_mode: bool,
     functions: &'a HashMap<String, (FunctionId, FunctionSignatureId)>,
+    forwarded_dict_intrinsics: &'a HashMap<String, String>,
     /// Declaration-specific direct shared aliases: sealed generic
     /// specializations or exact monomorphic forwarding declarations.
     direct_shared_alias_callees: &'a HashMap<String, FunctionSignatureId>,
@@ -11496,7 +11525,26 @@ impl FunctionLowerer<'_> {
         }
     }
 
+    /// A checked scalar wrapper that forwards each `let` parameter exactly once
+    /// to a dictionary intrinsic adds no observable work. Lower its call at
+    /// the caller so the intrinsic can use the caller's existing value lanes.
+    fn forwarded_dict_intrinsic(&self, expression: &Expr, name: &str, arity: usize) -> Option<String> {
+        if !name.starts_with("dict.") || scalar_type(&self.expression_type(expression).ok()?).is_err() {
+            return None;
+        }
+        let target = self.forwarded_dict_intrinsics.get(name)?;
+        if self.functions.contains_key(target.as_str()) || self.checked_parameter_conventions.get(&self.functions.get(name)?.1).map(Vec::len) != Some(arity) {
+            return None;
+        }
+        Some(target.clone())
+    }
+
     fn lower_expr(&mut self, expression: &Expr) -> Result<ValueId, CanonicalLoweringError> {
+        if let Expr::Call { name, args } = expression
+            && let Some(target) = self.forwarded_dict_intrinsic(expression, name, args.len())
+        {
+            return self.lower_dict_call(expression, &target, args);
+        }
         match expression {
             Expr::Call { name, args } if registry_hosts::is_intrinsic(name) => self.lower_registry_intrinsic(expression, name, args),
             Expr::Call { name, args } if crypto::is_intrinsic(name) => self.lower_crypto(name, args),
