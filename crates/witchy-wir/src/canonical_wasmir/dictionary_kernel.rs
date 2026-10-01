@@ -708,7 +708,7 @@ pub(super) fn emit(
             body.instruction(&wasm_encoder::Instruction::I32Load(memarg(4)));
             emit_set(body, local, function.id, *destination)
         }
-        DictionaryOperation::ProbeGroup { dict, bucket, fingerprint, matching, empty, deleted, first_event } => {
+        DictionaryOperation::ProbeGroup { dict, bucket, fingerprint, matching, special, first_event } => {
             emit_get(body, local, function.id, *dict)?;
             body.instruction(&wasm_encoder::Instruction::I32Load(wasm_encoder::MemArg { offset: 4, align: 2, memory_index: 0 }));
             emit_set_index(body, local.scratch[5]);
@@ -734,22 +734,17 @@ pub(super) fn emit(
             emit_get_index(body, local.scratch[4]);
             body.instruction(&wasm_encoder::Instruction::V128Load(memarg(1)));
             emit_set_index(body, control_vector);
-            for (destination, marker) in [(*matching, None), (*empty, Some(0x80)), (*deleted, Some(0xFE))] {
-                emit_get_index(body, control_vector);
-                if let Some(marker) = marker {
-                    body.instruction(&wasm_encoder::Instruction::I32Const(marker));
-                } else {
-                    emit_get(body, local, function.id, *fingerprint)?;
-                }
-                body.instruction(&wasm_encoder::Instruction::I8x16Splat);
-                body.instruction(&wasm_encoder::Instruction::I8x16Eq);
-                body.instruction(&wasm_encoder::Instruction::I8x16Bitmask);
-                emit_set(body, local, function.id, destination)?;
-            }
+            emit_get_index(body, control_vector);
+            emit_get(body, local, function.id, *fingerprint)?;
+            body.instruction(&wasm_encoder::Instruction::I8x16Splat);
+            body.instruction(&wasm_encoder::Instruction::I8x16Eq);
+            body.instruction(&wasm_encoder::Instruction::I8x16Bitmask);
+            emit_set(body, local, function.id, *matching)?;
+            emit_get_index(body, control_vector);
+            body.instruction(&wasm_encoder::Instruction::I8x16Bitmask);
+            emit_set(body, local, function.id, *special)?;
             emit_get(body, local, function.id, *matching)?;
-            emit_get(body, local, function.id, *empty)?;
-            body.instruction(&wasm_encoder::Instruction::I32Or);
-            emit_get(body, local, function.id, *deleted)?;
+            emit_get(body, local, function.id, *special)?;
             body.instruction(&wasm_encoder::Instruction::I32Or);
             body.instruction(&wasm_encoder::Instruction::I32Const(0x10000));
             body.instruction(&wasm_encoder::Instruction::I32Or);
@@ -1053,7 +1048,7 @@ pub(super) fn plan(
                 PlanToken::I32Load { offset: 0, align: 2, memory: 0 }]);
             push_set(plan, local, *destination)
         }
-        DictionaryOperation::ProbeGroup { dict, bucket, fingerprint, matching, empty, deleted, first_event } => {
+        DictionaryOperation::ProbeGroup { dict, bucket, fingerprint, matching, special, first_event } => {
             push_get(plan, local, *dict)?;
             plan.extend([PlanToken::I32Load { offset: 4, align: 2, memory: 0 },
                 PlanToken::LocalSet(local.scratch[5])]);
@@ -1069,21 +1064,15 @@ pub(super) fn plan(
             plan.extend([PlanToken::LocalGet(local.scratch[4]),
                 PlanToken::V128Load { offset: 0, align: 0, memory: 0 },
                 PlanToken::LocalSet(control_vector)]);
-            for (destination, marker) in [(*matching, None), (*empty, Some(0x80)), (*deleted, Some(0xFE))] {
-                plan.push(PlanToken::LocalGet(control_vector));
-                if let Some(marker) = marker {
-                    plan.push(PlanToken::I32Const(marker));
-                } else {
-                    push_get(plan, local, *fingerprint)?;
-                }
-                plan.extend([PlanToken::I8x16Splat, PlanToken::I8x16Eq,
-                    PlanToken::I8x16Bitmask]);
-                push_set(plan, local, destination)?;
-            }
+            plan.push(PlanToken::LocalGet(control_vector));
+            push_get(plan, local, *fingerprint)?;
+            plan.extend([PlanToken::I8x16Splat, PlanToken::I8x16Eq,
+                PlanToken::I8x16Bitmask]);
+            push_set(plan, local, *matching)?;
+            plan.extend([PlanToken::LocalGet(control_vector), PlanToken::I8x16Bitmask]);
+            push_set(plan, local, *special)?;
             push_get(plan, local, *matching)?;
-            push_get(plan, local, *empty)?;
-            plan.push(PlanToken::I32Or);
-            push_get(plan, local, *deleted)?;
+            push_get(plan, local, *special)?;
             plan.extend([PlanToken::I32Or, PlanToken::I32Const(0x10000),
                 PlanToken::I32Or, PlanToken::I32Ctz]);
             push_set(plan, local, *first_event)?;
