@@ -94,6 +94,7 @@ impl MemoryChecker<'_> {
                     allocation_class: Some(AllocationClass::ReferenceCounted),
                     shared_immutable: false, initialized_owned_slots: true,
                 });
+                self.attach_affine_plan(*destination, *layout);
             }
             DictionaryOperation::ReadHeader { destination, dict, field } => {
                 self.dictionary_layout(*dict)?;
@@ -162,6 +163,7 @@ impl MemoryChecker<'_> {
                     allocation_class: Some(AllocationClass::ReferenceCounted),
                     shared_immutable: false, initialized_owned_slots: true,
                 });
+                self.attach_affine_plan(*destination, layout);
             }
             DictionaryOperation::Rehash { destination, source, capacity, transfer } => {
                 let (layout, _, _) = self.dictionary_layout(*source)?;
@@ -178,6 +180,7 @@ impl MemoryChecker<'_> {
                     allocation_class: Some(AllocationClass::ReferenceCounted),
                     shared_immutable: false, initialized_owned_slots: true,
                 });
+                self.attach_affine_plan(*destination, layout);
             }
         }
         Ok(())
