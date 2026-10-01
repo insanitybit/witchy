@@ -10,6 +10,9 @@ use super::{InitialCheckError, MemoryChecker, ObjectState, value_type};
 impl MemoryChecker<'_> {
     fn dictionary_layout(&self, dict: ValueId) -> Result<(LayoutId, LayoutId, LayoutId), InitialCheckError> {
         let root = self.live_object(dict)?;
+        if !root.initialized_owned_slots {
+            return self.unsupported("Dictionary(uninitialized table root)");
+        }
         let LayoutKind::CanonicalDictionary { key, value, .. } = self.descriptor(root.layout)?.kind() else {
             return self.unsupported("Dictionary(non-dictionary root)");
         };
@@ -80,6 +83,9 @@ impl MemoryChecker<'_> {
                 self.require_ref_type(*destination, *layout)?;
                 if !matches!(self.descriptor(*layout)?.kind(), LayoutKind::CanonicalDictionary { .. }) {
                     return self.unsupported("Dictionary(Initialize layout)");
+                }
+                if !super::drop_ref_layout_supported(self.layouts, *layout, &mut super::SortedSet::new()) {
+                    return self.unsupported("Dictionary(Initialize without recursive drop proof)");
                 }
                 self.state.objects.insert(*destination, ObjectState {
                     identity: *destination, owner_generation: 0, layout: *layout,
