@@ -314,9 +314,9 @@ pub struct IntrinsicTraitBound {
     pub trait_name: &'static str,
 }
 
-const DICT_KEY_EQ_BOUND: &[IntrinsicTraitBound] = &[IntrinsicTraitBound {
+const DICT_KEY_HASH_BOUND: &[IntrinsicTraitBound] = &[IntrinsicTraitBound {
     parameter: 1,
-    trait_name: "Eq",
+    trait_name: "Hash",
 }];
 
 impl IntrinsicSignature {
@@ -435,7 +435,7 @@ impl IntrinsicSignature {
             | Self::GenericDictUpdate
             | Self::GenericDictContainsKey
             | Self::GenericDictRemove
-            | Self::GenericDictRemoveExtract => DICT_KEY_EQ_BOUND,
+            | Self::GenericDictRemoveExtract => DICT_KEY_HASH_BOUND,
             _ => &[],
         }
     }

@@ -3959,7 +3959,7 @@ fn lower_function(
     access_facts: &CheckedAccessFacts,
     loan_facts: Option<&LoanFacts>,
     view_facts: Option<&CheckedViewFacts>,
-    dictionary_comparators: &[(Type, String)],
+    dictionary_comparators: &[(Type, String, String)],
     layout_bundle: &LayoutBundle,
     layouts: &LayoutInterner,
     string_data_ids: &BTreeMap<Vec<u8>, witchy_wir::canonical_safewir::StaticDataId>,
@@ -4709,7 +4709,7 @@ struct FunctionLowerer<'a> {
     /// Exact rooted-view formation facts retained by `CanonicalCheckedSource`.
     /// `None` is valid only for a module with no canonical view carrier.
     view_facts: Option<&'a CheckedViewFacts>,
-    dictionary_comparators: &'a [(Type, String)],
+    dictionary_comparators: &'a [(Type, String, String)],
     layout_bundle: &'a LayoutBundle,
     layouts: &'a LayoutInterner,
     string_data_ids: &'a BTreeMap<Vec<u8>, witchy_wir::canonical_safewir::StaticDataId>,

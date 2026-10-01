@@ -662,8 +662,8 @@ impl FunctionLowerer<'_> {
         let comparator = self
             .dictionary_comparators
             .iter()
-            .find(|(ty, _)| ty.unqualified() == key_type.unqualified())
-            .map(|(_, name)| name.clone());
+            .find(|(ty, _, _)| ty.unqualified() == key_type.unqualified())
+            .map(|(_, name, _)| name.clone());
         let matched = if let Some(comparator) = comparator {
             self.lower_dict_key_comparison(&comparator, element, key)?
         } else if Self::is_string_type(key_type) {

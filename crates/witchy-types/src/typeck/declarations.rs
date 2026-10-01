@@ -13,7 +13,7 @@ pub(super) const BUILTIN_TYPE_NAMES: &[&str] = &[
 ];
 
 pub(super) const AMBIENT_STD_TYPE_NAMES: &[&str] = &["Ordering", "Set", "Iter"];
-pub(super) const AMBIENT_TRAIT_NAMES: &[&str] = &["PartialEq", "Eq", "PartialOrd", "Ord"];
+pub(super) const AMBIENT_TRAIT_NAMES: &[&str] = &["PartialEq", "Eq", "Hash", "PartialOrd", "Ord"];
 
 pub(super) fn builtin_type_arity(name: &str) -> Option<usize> {
     if let Some(kind) = CapabilityKind::from_name(name) {

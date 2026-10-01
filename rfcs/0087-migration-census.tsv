@@ -1,10 +1,10 @@
 path	line	category	callee	parameter	root
 benchmarks/dict_count.witchy	9	expression-position-mutator	dict.insert__Int__Int	-	-
 examples/dice/src/dice.witchy	14	expression-position-mutator	prng.Rng__next_below	-	-
-std/dict.witchy	35	auxiliary-result-discard	dict.insert	-	-
-std/dict.witchy	41	auxiliary-result-discard	dict.__insert_extract	-	-
-std/dict.witchy	111	auxiliary-result-discard	dict.remove	-	-
-std/dict.witchy	114	auxiliary-result-discard	dict.__remove_extract	-	-
+std/dict.witchy	37	auxiliary-result-discard	dict.insert	-	-
+std/dict.witchy	43	auxiliary-result-discard	dict.__insert_extract	-	-
+std/dict.witchy	113	auxiliary-result-discard	dict.remove	-	-
+std/dict.witchy	116	auxiliary-result-discard	dict.__remove_extract	-	-
 book/src/cookbook-collections.md#block-2	10	expression-position-mutator	Set__insert__String	-	-
 book/src/mutating-methods.md#block-1	7	expression-position-mutator	main.take_last	-	-
 book/src/mutating-methods.md#block-1	12	expression-position-mutator	dict.insert__String__Int	-	-

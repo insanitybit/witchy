@@ -2393,8 +2393,11 @@ admitted unoptimized Wasm:
   deep structural equality (`Dict` insertion-order-sensitive), and a custom impl
   is honored inside containers too. `==`/`!=` on function or capability types is a
   compile-time error (no meaningful, stable equality - this replaces a former
-  backend divergence). `Dict` keys and `Set` members require `Eq`, so a `Float`
-  key/member is a compile-time error (closing the NaN-key hole).
+  backend divergence). `Dict` keys and `Set` members require `Hash: Eq`.
+  Equal values must have equal, stable content hashes; collisions still use
+  equality. A `Float` key/member is a compile-time error (closing the NaN-key
+  hole). User-defined keys, including records with `derive(Eq)`, need an
+  explicit matching `Hash` implementation.
 - String operations are byte-precise across canonical executors; `trim`/case-mapping are
   ASCII-scoped by design.
 - Out-of-bounds, overflow-on-parse, and `fail` abort in every canonical executor.

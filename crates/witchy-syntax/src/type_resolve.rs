@@ -143,6 +143,7 @@ const AMBIENT_CTORS: &[&str] =
 const AMBIENT_TRAITS: &[(&str, &str)] = &[
     ("PartialEq", "cmp"),
     ("Eq", "cmp"),
+    ("Hash", "cmp"),
     ("PartialOrd", "cmp"),
     ("Ord", "cmp"),
     ("Show", "show"),

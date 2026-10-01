@@ -65,9 +65,9 @@ pub(crate) fn new(
     Ok(Self { equality, dictionaries, rendering, instances })
 }
 
-pub(crate) fn into_metadata(self) -> (Instances, Vec<(Type, String)>) {
-    let comparators = self.dictionaries.map(|dictionaries| dictionaries.into_comparators()).unwrap_or_default();
-    (self.instances, comparators)
+pub(crate) fn into_metadata(self) -> (Instances, Vec<(Type, String, String)>) {
+    let key_methods = self.dictionaries.map(|dictionaries| dictionaries.into_key_methods()).unwrap_or_default();
+    (self.instances, key_methods)
 }
 
     /// Carry specializations produced after a fallible canonical rewrite into

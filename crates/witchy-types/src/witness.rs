@@ -167,6 +167,24 @@ impl WitnessCatalog {
         )
     }
 
+    /// Resolve the checked Hash implementation for a concrete dictionary key.
+    pub(crate) fn dictionary_hash(&self, concrete: &Type) -> Result<String, String> {
+        let mut declarations = self.traits.iter().filter(|definition| {
+            crate::traits::is_standard_trait_identity(&definition.name, "cmp", "Hash")
+        });
+        let declaration = declarations.next().ok_or("dictionary Hash trait is absent")?;
+        if declarations.next().is_some() {
+            return Err("dictionary Hash trait identity is ambiguous".into());
+        }
+        let method = declaration.methods.iter().find(|method| method.name == "hash")
+            .ok_or("dictionary Hash method is absent")?;
+        let impls = self.impls.iter().collect::<Vec<_>>();
+        let (implementation, bindings) = resolve_impl(&impls, &declaration.name, &[], concrete)?;
+        monomorphic_impl_method_name(
+            &declaration.name, implementation, method, &HashMap::new(), &bindings,
+        )
+    }
+
     pub fn from_module(module: &Module) -> Self {
         let mut catalog = Self::default();
         let trait_methods = module

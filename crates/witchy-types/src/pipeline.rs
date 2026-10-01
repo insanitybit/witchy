@@ -56,7 +56,7 @@ use crate::typeck::{self, ProperTailSiteManifest, TypeError};
 #[derive(Debug, PartialEq)]
 struct CanonicalCallableWitness {
     signatures: BTreeMap<String, witchy_syntax::ast::Type>,
-    dictionary_comparators: Vec<(witchy_syntax::ast::Type, String)>,
+    dictionary_comparators: Vec<(witchy_syntax::ast::Type, String, String)>,
     generic_instances: BTreeMap<String, witchy_canonical_source::specialization::LogicalSpecializationIdentity>,
     abi_manifest: CanonicalCallableAbiManifest,
     closed_abis: BTreeMap<String, CanonicalCallableAbi>,
@@ -259,7 +259,7 @@ impl CanonicalCheckedSource {
     /// Typed comparator roots derived from this source's retained trait
     /// declarations and included in its rechecked callable inventory.
     #[doc(hidden)]
-    pub fn dictionary_key_comparators(&self) -> &[(witchy_syntax::ast::Type, String)] {
+    pub fn dictionary_key_comparators(&self) -> &[(witchy_syntax::ast::Type, String, String)] {
         &self.callable_witness.dictionary_comparators
     }
 

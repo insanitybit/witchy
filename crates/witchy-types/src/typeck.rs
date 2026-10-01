@@ -10276,8 +10276,9 @@ impl Checker {
 
     fn trait_alternatives(trait_name: &str) -> &'static [&'static str] {
         match trait_name.rsplit('.').next().unwrap_or(trait_name) {
-            "PartialEq" => &["PartialEq", "Eq", "PartialOrd", "Ord"],
-            "Eq" => &["Eq", "Ord"],
+            "PartialEq" => &["PartialEq", "Eq", "Hash", "PartialOrd", "Ord"],
+            "Eq" => &["Eq", "Hash", "Ord"],
+            "Hash" => &["Hash"],
             "PartialOrd" => &["PartialOrd", "Ord"],
             "Ord" => &["Ord"],
             "Show" => &["Show"],
@@ -10551,15 +10552,15 @@ impl Checker {
         })?;
         self.reject_all_live_must_before_return()?;
         // (BUG-395 / RFC-0047) A generic `Dict` key operation performed in this
-        // (unbounded) body must have an `Eq` key. Now that the body is fully
+        // (unbounded) body must have a `Hash` key. Now that the body is fully
         // inferred, a key type that still carries a type variable is an UNBOUNDED
-        // generic key — the function needs a `where <k>: Eq` bound (a bounded
+        // generic key — the function needs a `where <k>: Hash` bound (a bounded
         // function is checked through monomorphization instead, where the key is
-        // concrete). Concrete keys (Int/String/records that derive Eq) are already
+        // concrete). Concrete keys with Hash are already
         // fine; `Float` is caught separately by `float_key_position`.
         // The std `dict` module's own compositional helpers (`map_values`, `filter`,
         // `merge`, …) key their output dicts with keys drawn from an INPUT `Dict`
-        // parameter — whose existence already guarantees the key is `Eq` (a dict
+        // parameter — whose existence already guarantees the key is `Hash` (a dict
         // can only be built through the bounded insert wrappers). Exempting the
         // trusted std API layer keeps those helpers unbounded (bounding them makes
         // them templates that regress result inference), while USER code that does a
@@ -10573,12 +10574,12 @@ impl Checker {
                 continue;
             }
             let resolved = self.resolve(&key_ty);
-            if ty_has_var(&resolved) && !self.type_var_has_bound(&resolved, &["Eq", "Ord"]) {
+            if ty_has_var(&resolved) && !self.type_var_has_bound(&resolved, &["Hash"]) {
                 self.cur_line = line;
                 return terr(format!(
-                    "`{}`: a generic `Dict` key must be `Eq` — the key type is used to hash \
+                    "`{}`: a generic `Dict` key must be `Hash` — the key type is used to hash \
                      and compare entries, so an unbounded type parameter can't be a key. Add a \
-                     `where {}: Eq` bound (or use a concrete key type)",
+                     `where {}: Hash` bound (or use a concrete key type)",
                     func.name.rsplit('.').next().unwrap_or(&func.name),
                     self.key_var_name(&resolved)
                 ));

@@ -475,8 +475,14 @@ The result of a comparison: `a` is `Less` than, `Equal` to, or `Greater` than `b
 
 #### `trait Eq: PartialEq`
 
-Total equality: a marker refining `PartialEq` with reflexivity (no `NaN`). Types usable as `Set` / `Dict` keys are `Eq`.
+Total equality: a marker refining `PartialEq` with reflexivity (no `NaN`). Total equality is required by Hash and by ordered collections.
 
+
+#### `trait Hash: Eq`
+
+Stable content hash for dictionary keys. Equal values must have equal hashes. Implementations must depend only on the immutable value and must not use capabilities, mutable state, or a process-specific seed. Collisions are fine: Eq remains the final authority on a dictionary hit.
+
+- `fn hash(let self) -> Int`
 
 #### `trait PartialOrd: PartialEq`
 
@@ -529,11 +535,19 @@ The smallest element of `xs`, or `default` when `xs` is empty. As with `maximum`
 
 #### `impl Eq for Ordering`
 
+#### `impl Hash for Ordering`
+
+- `fn hash(let self) -> Int`
+
 #### `impl PartialEq for Int`
 
 - `fn eq(self, other: Self) -> Bool`
 
 #### `impl Eq for Int`
+
+#### `impl Hash for Int`
+
+- `fn hash(let self) -> Int`
 
 #### `impl PartialOrd for Int`
 
@@ -549,6 +563,10 @@ The smallest element of `xs`, or `default` when `xs` is empty. As with `maximum`
 
 #### `impl Eq for Bool`
 
+#### `impl Hash for Bool`
+
+- `fn hash(let self) -> Int`
+
 #### `impl PartialEq for String`
 
 Lexicographic ordering by code point - the same order `<` gives on strings, and content-correct in compiled code (both backends compare bytes, not pointers).
@@ -556,6 +574,10 @@ Lexicographic ordering by code point - the same order `<` gives on strings, and 
 - `fn eq(self, other: Self) -> Bool`
 
 #### `impl Eq for String`
+
+#### `impl Hash for String`
+
+- `fn hash(let self) -> Int`
 
 #### `impl PartialOrd for String`
 
@@ -574,11 +596,19 @@ Byte buffers compare by byte contents, matching direct `==` and String's content
 
 #### `impl Eq for Bytes`
 
+#### `impl Hash for Bytes`
+
+- `fn hash(let self) -> Int`
+
 #### `impl PartialEq for Duration`
 
 - `fn eq(self, other: Self) -> Bool`
 
 #### `impl Eq for Duration`
+
+#### `impl Hash for Duration`
+
+- `fn hash(let self) -> Int`
 
 #### `impl PartialOrd for Duration`
 
@@ -606,11 +636,19 @@ Lists compare element-by-element through the element type's `PartialEq` impl.
 
 #### `impl Eq for List(a) where a: Eq`
 
+#### `impl Hash for List(a) where a: Hash`
+
+- `fn hash(let self) -> Int`
+
 #### `impl PartialEq for Option(a) where a: PartialEq`
 
 - `fn eq(self, other: Self) -> Bool`
 
 #### `impl Eq for Option(a) where a: Eq`
+
+#### `impl Hash for Option(a) where a: Hash`
+
+- `fn hash(let self) -> Int`
 
 #### `impl PartialEq for Result(a, e) where a: PartialEq, e: PartialEq`
 
@@ -618,11 +656,15 @@ Lists compare element-by-element through the element type's `PartialEq` impl.
 
 #### `impl Eq for Result(a, e) where a: Eq, e: Eq`
 
-#### `impl PartialEq for Dict(k, v) where k: Eq, v: PartialEq`
+#### `impl Hash for Result(a, e) where a: Hash, e: Hash`
+
+- `fn hash(let self) -> Int`
+
+#### `impl PartialEq for Dict(k, v) where k: Hash, v: PartialEq`
 
 - `fn eq(self, other: Self) -> Bool`
 
-#### `impl Eq for Dict(k, v) where k: Eq, v: Eq`
+#### `impl Eq for Dict(k, v) where k: Hash, v: Eq`
 
 #### `impl PartialEq for (a, b) where a: PartialEq, b: PartialEq`
 
@@ -633,12 +675,20 @@ Tuples compare slot-by-slot through each slot's equality protocol. The tuple pro
 
 #### `impl Eq for (a, b) where a: Eq, b: Eq`
 
+#### `impl Hash for (a, b) where a: Hash, b: Hash`
+
+- `fn hash(let self) -> Int`
+
 #### `impl PartialEq for (a, b, c) where a: PartialEq, b: PartialEq, c: PartialEq`
 
 - `fn eq(self, other: Self) -> Bool`
 - `fn ne(self, other: Self) -> Bool`
 
 #### `impl Eq for (a, b, c) where a: Eq, b: Eq, c: Eq`
+
+#### `impl Hash for (a, b, c) where a: Hash, b: Hash, c: Hash`
+
+- `fn hash(let self) -> Int`
 
 #### `impl PartialEq for (a, b, c, d) where a: PartialEq, b: PartialEq, c: PartialEq, d: PartialEq`
 
@@ -647,12 +697,20 @@ Tuples compare slot-by-slot through each slot's equality protocol. The tuple pro
 
 #### `impl Eq for (a, b, c, d) where a: Eq, b: Eq, c: Eq, d: Eq`
 
+#### `impl Hash for (a, b, c, d) where a: Hash, b: Hash, c: Hash, d: Hash`
+
+- `fn hash(let self) -> Int`
+
 #### `impl PartialEq for (a, b, c, d, e) where a: PartialEq, b: PartialEq, c: PartialEq, d: PartialEq, e: PartialEq`
 
 - `fn eq(self, other: Self) -> Bool`
 - `fn ne(self, other: Self) -> Bool`
 
 #### `impl Eq for (a, b, c, d, e) where a: Eq, b: Eq, c: Eq, d: Eq, e: Eq`
+
+#### `impl Hash for (a, b, c, d, e) where a: Hash, b: Hash, c: Hash, d: Hash, e: Hash`
+
+- `fn hash(let self) -> Int`
 
 #### `impl PartialEq for (a, b, c, d, e, f) where a: PartialEq, b: PartialEq, c: PartialEq, d: PartialEq, e: PartialEq, f: PartialEq`
 
@@ -661,6 +719,10 @@ Tuples compare slot-by-slot through each slot's equality protocol. The tuple pro
 
 #### `impl Eq for (a, b, c, d, e, f) where a: Eq, b: Eq, c: Eq, d: Eq, e: Eq, f: Eq`
 
+#### `impl Hash for (a, b, c, d, e, f) where a: Hash, b: Hash, c: Hash, d: Hash, e: Hash, f: Hash`
+
+- `fn hash(let self) -> Int`
+
 #### `impl PartialEq for (a, b, c, d, e, f, g) where a: PartialEq, b: PartialEq, c: PartialEq, d: PartialEq, e: PartialEq, f: PartialEq, g: PartialEq`
 
 - `fn eq(self, other: Self) -> Bool`
@@ -668,12 +730,20 @@ Tuples compare slot-by-slot through each slot's equality protocol. The tuple pro
 
 #### `impl Eq for (a, b, c, d, e, f, g) where a: Eq, b: Eq, c: Eq, d: Eq, e: Eq, f: Eq, g: Eq`
 
+#### `impl Hash for (a, b, c, d, e, f, g) where a: Hash, b: Hash, c: Hash, d: Hash, e: Hash, f: Hash, g: Hash`
+
+- `fn hash(let self) -> Int`
+
 #### `impl PartialEq for (a, b, c, d, e, f, g, h) where a: PartialEq, b: PartialEq, c: PartialEq, d: PartialEq, e: PartialEq, f: PartialEq, g: PartialEq, h: PartialEq`
 
 - `fn eq(self, other: Self) -> Bool`
 - `fn ne(self, other: Self) -> Bool`
 
 #### `impl Eq for (a, b, c, d, e, f, g, h) where a: Eq, b: Eq, c: Eq, d: Eq, e: Eq, f: Eq, g: Eq, h: Eq`
+
+#### `impl Hash for (a, b, c, d, e, f, g, h) where a: Hash, b: Hash, c: Hash, d: Hash, e: Hash, f: Hash, g: Hash, h: Hash`
+
+- `fn hash(let self) -> Int`
 
 #### `impl Equivalent(a) for a where a: Eq`
 
@@ -878,23 +948,23 @@ An empty Dict.
 
 An empty Dict with pre-allocated capacity.
 
-#### `fn insert(var d: unique Dict(k, v), key: k, val: v) -> Option(v) where k: Eq`
+#### `fn insert(var d: unique Dict(k, v), key: k, val: v) -> Option(v) where k: Hash`
 
 Insert `key` with `val`, returning the displaced value when the key existed. The dictionary performs one semantic key search. A uniquely owned dictionary preserves its hash index and updates or grows geometrically; a shared root is copied before repair so aliases keep their old contents in normal mode. The `unique` receiver makes that cost a checked contract in `mode opt`: a call whose dictionary was aliased or loaned is rejected with the ownership reason.
 
-#### `fn get_or(let d: Dict(k, v), key: k, default: v) -> v where k: Eq`
+#### `fn get_or(let d: Dict(k, v), key: k, default: v) -> v where k: Hash`
 
 The value for `key`, or `default` when absent.
 
-#### `fn get_or_insert(var d: unique Dict(k, v), key: k, default: v) -> v where k: Eq`
+#### `fn get_or_insert(var d: unique Dict(k, v), key: k, default: v) -> v where k: Hash`
 
 The value for `key`, inserting `default` first when the key is absent. Returns the existing value on a hit and `default` on a miss, so the key is guaranteed present afterward. Like `insert`, the `unique` receiver makes the write a checked ownership contract in `mode opt`.
 
-#### `fn at(let d: Dict(k, v), key: k) -> v where k: Eq`
+#### `fn at(let d: Dict(k, v), key: k) -> v where k: Hash`
 
 The value for `key`, or a runtime error when absent. This is the read half of the `d[key]` subscript surface; use `get`/`get_or` when absence is ordinary.
 
-#### `fn update(var d: Dict(k, v), key: k, default: v, f: fn(v) -> v) where k: Eq`
+#### `fn update(var d: Dict(k, v), key: k, default: v, f: fn(v) -> v) where k: Hash`
 
 #### `fn update_str(var d: Dict(String, v), key: &str, default: v, f: fn(v) -> v)`
 
@@ -910,11 +980,11 @@ String slice lookup without allocating an owned String (RFC-0139).
 
 #### `fn get_str(let d: Dict(String, v), key: &str) -> Option(v)`
 
-#### `fn contains_key(let d: Dict(k, v), key: k) -> Bool where k: Eq`
+#### `fn contains_key(let d: Dict(k, v), key: k) -> Bool where k: Hash`
 
 Whether `key` is present. The `_key` suffix is deliberate: a Dict contains key/value pairs, so bare `contains` would be ambiguous between keys and values.
 
-#### `fn remove(var d: unique Dict(k, v), key: k) -> Option(v) where k: Eq`
+#### `fn remove(var d: unique Dict(k, v), key: k) -> Option(v) where k: Hash`
 
 Remove `key`, returning its old value when present. The dictionary performs one semantic key search. Unique storage moves the old value out and repairs insertion order in place; shared storage uses copy-on-write in normal mode. In `mode opt`, the `unique` receiver rejects a shared or loaned call site instead of silently taking that copy.
 
@@ -934,7 +1004,7 @@ The (key, value) pairs, in insertion order.
 
 The number of entries.
 
-#### `fn from_pairs(entries: List((k, v))) -> Dict(k, v) where k: Eq`
+#### `fn from_pairs(entries: List((k, v))) -> Dict(k, v) where k: Hash`
 
 Build a Dict from (key, value) pairs; a later pair overrides an earlier one.
 
@@ -1804,7 +1874,7 @@ Build an iterator from an index function: `f(0)`, `f(1)`, ... each `Some(x)` is 
 
 #### `fn collect(it: Iter(a)) -> c where c: FromIterator(a)`
 
-Collect into any FromIterator type, chosen by the call site's expected type (drives the iterator to exhaustion - don't call on an unbounded one):     let xs: List(Int) = iter.collect(it)     let joined: String = iter.collect(pieces)     let s: Set(Int) = iter.collect(it)        # de-duplicates; needs `a: Eq` Free-function-only ON PURPOSE: the polymorphic return type in an impl block causes a measured mono-pass performance explosion.
+Collect into any FromIterator type, chosen by the call site's expected type (drives the iterator to exhaustion - don't call on an unbounded one):     let xs: List(Int) = iter.collect(it)     let joined: String = iter.collect(pieces)     let s: Set(Int) = iter.collect(it)        # de-duplicates; needs `a: Hash` Free-function-only ON PURPOSE: the polymorphic return type in an impl block causes a measured mono-pass performance explosion.
 
 #### `Iter.next() -> Step(a)`
 
@@ -1916,13 +1986,13 @@ The largest element by the type's `Ord`, or None if the iterator is empty (drive
 
 - `fn from_iter(it: Iter(a)) -> List(a)`
 
-#### `impl FromIterator((k, v)) for Dict(k, v) where k: Eq`
+#### `impl FromIterator((k, v)) for Dict(k, v) where k: Hash`
 
 - `fn from_iter(it: Iter((k, v))) -> Dict(k, v)`
 
-#### `impl FromIterator(a) for Set(a) where a: Eq`
+#### `impl FromIterator(a) for Set(a) where a: Hash`
 
-A conditional impl: collecting into a `Set` needs `Eq` to deduplicate, so the `where a: Eq` rides on the impl head (the trait method itself stays bound-free).
+A conditional impl: collecting into a `Set` needs `Hash` to deduplicate, so the `where a: Hash` rides on the impl head (the trait method itself stays bound-free).
 
 - `fn from_iter(it: Iter(a)) -> Set(a)`
 
@@ -4049,7 +4119,7 @@ Serve exactly `n` HTTPS requests then return - `serve_tls`'s one-shot/test twin 
 
 ## `set`
 
-Set(a) - an unordered collection of distinct values. Members are compared by value equality (a `where a: Eq` bound on every operation that compares), so sets of Ints, Strings, tuples, or your own `Eq` types all work. Build one with `set.new()` / `set.from_list(xs)`, test membership with `s.contains(x)`, and reach for `union`/`intersection`/`difference` for the algebra. A `Set` whose members are `Show` renders as `{a, b, c}` through interpolation or `show.say`; `s.to_list()` returns the members in insertion order.
+Set(a) - an unordered collection of distinct values. Members are compared by value equality (a `where a: Hash` bound on every operation that compares), so sets of Ints, Strings, tuples, or your own `Hash` types all work. Build one with `set.new()` / `set.from_list(xs)`, test membership with `s.contains(x)`, and reach for `union`/`intersection`/`difference` for the algebra. A `Set` whose members are `Show` renders as `{a, b, c}` through interpolation or `show.say`; `s.to_list()` returns the members in insertion order.
 
 #### `sealed type Set(a)`
 
@@ -4059,7 +4129,7 @@ Set(a) - an unordered collection of distinct values. Members are compared by val
 
 The empty set.
 
-#### `fn from_list(xs: List(a)) -> Set(a) where a: Eq`
+#### `fn from_list(xs: List(a)) -> Set(a) where a: Hash`
 
 A set of the distinct values in `xs` (duplicates collapse, keeping the first occurrence of each member).
 
@@ -4121,13 +4191,13 @@ Whether the two sets share no members.
 
 ### Trait implementations
 
-#### `impl PartialEq for Set(a) where a: Eq`
+#### `impl PartialEq for Set(a) where a: Hash`
 
 Two sets are equal when they hold exactly the same members, regardless of insertion order or the backing list's layout: `from_list([1, 2, 3])` equals `from_list([3, 2, 1])`. Without this impl, `==` falls back to the derived structural equality of the backing list (order-sensitive on the interpreter, and unresolvable on the compiled backend), which is not set equality.
 
 - `fn eq(self, other: Self) -> Bool`
 
-#### `impl Eq for Set(a) where a: Eq`
+#### `impl Eq for Set(a) where a: Hash`
 
 ## `show`
 

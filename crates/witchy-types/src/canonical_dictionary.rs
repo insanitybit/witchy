@@ -8,7 +8,7 @@ use witchy_syntax::ast::visit::visit_block;
 use crate::typeck::{self, TypedModule};
 use crate::witness::WitnessCatalog;
 
-fn discover(typed: &TypedModule, known: &[(Type, String)]) -> Result<Vec<Type>, String> {
+fn discover(typed: &TypedModule, known: &[(Type, String, String)]) -> Result<Vec<Type>, String> {
     let scope = witchy_canonical_source::scope::canonical_scope(typed.module());
     let mut keys = Vec::<Type>::new();
     for item in &typed.module().items {
@@ -26,11 +26,11 @@ fn discover(typed: &TypedModule, known: &[(Type, String)]) -> Result<Vec<Type>, 
             if name != "Dict" || arguments.len() != 2 { return Ok(()) }
             let key = arguments[0].unqualified();
             if matches!(key, Type::Named(name, arguments)
-                if arguments.is_empty() && matches!(name.as_str(), "Int" | "String"))
+                if arguments.is_empty() && matches!(name.as_str(), "Int" | "String" | "Duration"))
             {
                 return Ok(());
             }
-            if !known.iter().any(|(previous, _)| previous == key) && !keys.contains(key) {
+            if !known.iter().any(|(previous, _, _)| previous == key) && !keys.contains(key) {
                 keys.push(key.clone());
             }
             Ok(())
@@ -45,7 +45,7 @@ fn discover(typed: &TypedModule, known: &[(Type, String)]) -> Result<Vec<Type>, 
 pub(crate) struct Preparation<'catalog> {
     prefix: String,
     catalog: &'catalog WitnessCatalog,
-    comparators: Vec<(Type, String)>,
+    key_methods: Vec<(Type, String, String)>,
 }
 
 impl<'catalog> Preparation<'catalog> {
@@ -56,18 +56,19 @@ impl<'catalog> Preparation<'catalog> {
         {
             return Err("canonical dictionary comparator declaration collision".into());
         }
-        Ok(Self { prefix, catalog, comparators: Vec::new() })
+        Ok(Self { prefix, catalog, key_methods: Vec::new() })
     }
 
-    pub(crate) fn into_comparators(self) -> Vec<(Type, String)> { self.comparators }
+    pub(crate) fn into_key_methods(self) -> Vec<(Type, String, String)> { self.key_methods }
 
     pub(crate) fn extend(&mut self, mut typed: TypedModule) -> Result<TypedModule, String> {
     loop {
-        let keys = discover(&typed, &self.comparators)?;
+        let keys = discover(&typed, &self.key_methods)?;
         if keys.is_empty() { return Ok(typed); }
         let mut module = typed.into_module();
         for key in keys {
         let target = self.catalog.dictionary_equality(&key)?;
+        let hash_target = self.catalog.dictionary_hash(&key)?;
         if !module.items.iter().any(|item| matches!(item,
             Item::Function(function) if function.name == target
                 && !witchy_canonical_source::scope::function_has_free_signature_variables(function)))
@@ -75,10 +76,17 @@ impl<'catalog> Preparation<'catalog> {
             return Err(format!("canonical dictionary comparator for `{}` has no concrete checked body",
                 witchy_syntax::format::type_str(&key)));
         }
+        if !module.items.iter().any(|item| matches!(item,
+            Item::Function(function) if function.name == hash_target
+                && !witchy_canonical_source::scope::function_has_free_signature_variables(function)))
+        {
+            return Err(format!("canonical dictionary hash for `{}` has no concrete checked body",
+                witchy_syntax::format::type_str(&key)));
+        }
         // The wrapper is an actual called function, not a fabricated scope
         // reference. Its checked body makes the selected implementation and
         // all its transitive callees part of ordinary canonical reachability.
-        let name = format!("{}{}", self.prefix, self.comparators.len());
+        let name = format!("{}{}", self.prefix, self.key_methods.len());
         module.items.push(Item::Function(Function {
             line: 0, public: false, pure: false, comptime_only: false,
             attributes: Vec::new(), name: name.clone(),
@@ -97,7 +105,26 @@ impl<'catalog> Preparation<'catalog> {
             },
             bounds: Vec::new(), is_gen: false, is_async: false,
         }));
-        self.comparators.push((key, name));
+        let hash_name = format!("{}hash_{}", self.prefix, self.key_methods.len());
+        module.items.push(Item::Function(Function {
+            line: 0, public: false, pure: false, comptime_only: false,
+            attributes: Vec::new(), name: hash_name.clone(),
+            type_params: Vec::new(),
+            params: vec![Param {
+                name: "key".into(), ty: Some(key.clone()),
+                convention: Convention::Let, default: None,
+            }],
+            ret: Some(Type::Named("Int".into(), Vec::new())),
+            body: Block {
+                stmts: vec![Stmt::Expr(Expr::Call {
+                    name: hash_target,
+                    args: vec![Expr::Var("key".into())],
+                })],
+                lines: vec![0], region: None,
+            },
+            bounds: Vec::new(), is_gen: false, is_async: false,
+        }));
+        self.key_methods.push((key, name, hash_name));
         }
         // Comparator bodies can themselves use dictionaries. Close over newly
         // reachable bodies, visiting each concrete key once. No pass invents

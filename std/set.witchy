@@ -1,6 +1,6 @@
 // Set(a) - an unordered collection of distinct values. Members are compared by
-// value equality (a `where a: Eq` bound on every operation that compares), so
-// sets of Ints, Strings, tuples, or your own `Eq` types all work. Build one with
+// value equality (a `where a: Hash` bound on every operation that compares), so
+// sets of Ints, Strings, tuples, or your own `Hash` types all work. Build one with
 // `set.new()` / `set.from_list(xs)`, test membership with `s.contains(x)`, and
 // reach for `union`/`intersection`/`difference` for the algebra. A `Set` whose
 // members are `Show` renders as `{a, b, c}` through interpolation or `show.say`;
@@ -17,11 +17,11 @@ sealed type Set(a):
 // `from_list([3, 2, 1])`. Without this impl, `==` falls back to the derived
 // structural equality of the backing list (order-sensitive on the interpreter,
 // and unresolvable on the compiled backend), which is not set equality.
-impl PartialEq for Set(a) where a: Eq:
+impl PartialEq for Set(a) where a: Hash:
     fn eq(self, other: Self) -> Bool:
         subset_of(self, other) && subset_of(other, self)
 
-impl Eq for Set(a) where a: Eq
+impl Eq for Set(a) where a: Hash
 
 // --- Receiver-less constructors and the compiler-referenced `to_list` stay
 // module-level; every other operation lives on the methods below (RFC-0099). ---
@@ -32,7 +32,7 @@ pub fn new() -> Set(a):
 
 // A set of the distinct values in `xs` (duplicates collapse, keeping the first
 // occurrence of each member).
-pub fn from_list(xs: List(a)) -> Set(a) where a: Eq:
+pub fn from_list(xs: List(a)) -> Set(a) where a: Hash:
     var items = []
     for x in xs:
         if !list.contains(items, x):
@@ -48,7 +48,7 @@ pub fn to_list(s: Set(a)) -> List(a):
 // `is_subset` method and set equality above (the pre-mono pass cannot resolve a
 // method call inside the generic `PartialEq` impl, so this stays a free
 // function with a non-colliding name).
-fn subset_of(s: Set(a), t: Set(a)) -> Bool where a: Eq:
+fn subset_of(s: Set(a), t: Set(a)) -> Bool where a: Hash:
     let sitems = s.items
     let titems = t.items
     var ok = true
@@ -72,7 +72,7 @@ impl Set(a):
     pub fn to_list(self) -> List(a):
         to_list(self)
 
-impl Set(a) where a: Eq:
+impl Set(a) where a: Hash:
     // Add `x`, returning whether it was newly inserted.
     pub fn insert(var self, x: a) -> Bool:
         let items = self.items

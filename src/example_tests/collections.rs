@@ -22,7 +22,7 @@ use crate::{ast, codegen, parser, typeck};
     /// path (type check + compiled-backend acceptance); supported `Eq` key
     /// shapes can.
     #[test]
-    fn dict_wrapper_key_operations_require_visible_eq_bounds() {
+    fn dict_wrapper_key_operations_require_visible_hash_bounds() {
         let resolve_fs_std = |src: &str| -> ast::Module {
             use std::collections::{HashSet, VecDeque};
             let entry = parser::parse_module(src).expect("parse");
@@ -61,15 +61,15 @@ use crate::{ast, codegen, parser, typeck};
             let linked = resolve_fs_std(src);
             match typeck::check(&linked) {
                 Err(err) => assert!(
-                    err.message.contains("Eq"),
-                    "expected visible Eq-bound error, got: {}",
+                    err.message.contains("Hash"),
+                    "expected visible Hash-bound error, got: {}",
                     err.message
                 ),
                 Ok(()) => {
                     let result = codegen::compile_module_binary(&linked);
                     assert!(
                         matches!(result, codegen::LoweringOutcome::Rejected(_)),
-                        "non-Eq dict wrapper must be a hard compiled rejection"
+                        "non-Hash dict wrapper must be a hard compiled rejection"
                     );
                 }
             }
@@ -79,14 +79,14 @@ use crate::{ast, codegen, parser, typeck};
         handles.push(scope.spawn(move || {
         let erased_wrapper = "import dict\n\npub fn wrapped(d: Dict(k, v), key: k) -> Option(v):\n    d.get(key)\n";
         let linked = resolve_fs_std(erased_wrapper);
-        let err = typeck::check(&linked).expect_err("generic wrapper must forward dict.get's Eq bound");
-        assert!(err.message.contains("requires `k: Eq`"), "expected forwarded Eq-bound error, got: {}", err.message);
+        let err = typeck::check(&linked).expect_err("generic wrapper must forward dict.get's Hash bound");
+        assert!(err.message.contains("requires `k: Hash`"), "expected forwarded Hash-bound error, got: {}", err.message);
         }));
 
         handles.push(scope.spawn(move || {
-        let bounded_wrapper = "import dict\n\npub fn wrapped(d: Dict(k, v), key: k) -> Option(v) where k: Eq:\n    d.get(key)\n";
+        let bounded_wrapper = "import dict\n\npub fn wrapped(d: Dict(k, v), key: k) -> Option(v) where k: Hash:\n    d.get(key)\n";
         let linked = resolve_fs_std(bounded_wrapper);
-        typeck::check(&linked).expect("generic wrapper can forward dict.get's Eq bound");
+        typeck::check(&linked).expect("generic wrapper can forward dict.get's Hash bound");
         }));
 
         handles.push(scope.spawn(move || {
@@ -152,14 +152,14 @@ use crate::{ast, codegen, parser, typeck};
             .expect_err("a Float-keyed dict must be rejected")
             .to_string();
         assert!(
-            e.contains("requires `Float: Eq`") && e.contains("dict.insert"),
+            e.contains("requires `Float: Hash`") && e.contains("dict.insert"),
             "teaching error naming the Eq requirement, got: {e}"
         );
         // The NaN case (the original hole) is rejected by the same type rule,
         // before any runtime lookup can silently miss.
         let nan = "fn main(console: Console):\n    var d = dict.new()\n    let _ = dict.insert(d, 0.0 / 0.0, \"nan\")\n    console.print(dict.get_or(d, 0.0 / 0.0, \"missing\"))\n";
         assert!(
-            typeck::check(&resolve_std_src(nan)).expect_err("a NaN Float key must be rejected").to_string().contains("requires `Float: Eq`"),
+            typeck::check(&resolve_std_src(nan)).expect_err("a NaN Float key must be rejected").to_string().contains("requires `Float: Hash`"),
             "the NaN-key hole is closed by the type rule"
         );
         // An Int-keyed dict (the suggested escape) still works on both backends.
@@ -168,14 +168,14 @@ use crate::{ast, codegen, parser, typeck};
     }
 
     /// (RFC-0047) A `Set` of `Float` is likewise a compile-time error — members
-    /// require `Eq`. The Set stdlib already documents this doctrine; the type rule
+    /// require `Hash`. The Set stdlib already documents this doctrine; the type rule
     /// makes it true.
     #[test]
     fn set_float_members_are_a_compile_error() {
         let src = "import set\n\nfn main(console: Console):\n    var s = set.new()\n    let _ = set.insert(s, 1.5)\n    console.print(\"${set.length(s)}\")\n";
         let linked = resolve_std_src(src);
         let e = typeck::check(&linked).expect_err("a Float-membered set must be rejected").to_string();
-        assert!(e.contains("requires `Float: Eq`") && e.contains("Set__insert"), "teaching error, got: {e}");
+        assert!(e.contains("requires `Float: Hash`") && e.contains("Set__insert"), "teaching error, got: {e}");
     }
 
     /// (RFC-0047) A CUSTOM `PartialEq` impl is honored at EVERY depth — top level
@@ -398,9 +398,9 @@ fn main(console: Console):
 
     #[test]
     fn std_set_operations_golden_output() {
-        // Set ops dispatch through Eq (cross-module: set -> eq.member, both
+        // Set ops dispatch through Hash: Eq (cross-module: set -> eq.member, both
         // bounded generics), so they are content-correct on admitted Wasm for
-        // runtime-built strings and a user Eq type (Id), and dedupe along the way.
+        // runtime-built strings and a user Hash type (Id), and dedupe along the way.
         let client = r#"
 import set
 
@@ -414,6 +414,11 @@ impl PartialEq for Id:
                 Id(b) -> (a == b)
 
 impl Eq for Id
+
+impl Hash for Id:
+    fn hash(let self) -> Int:
+        match self:
+            Id(value) -> value.hash()
 
 fn build(s: String) -> String:
     var acc = ""
@@ -478,7 +483,7 @@ fn main(console: Console):
 
     #[test]
     fn dict_undetermined_key_is_rejected() {
-        // A key with no `Eq` implementation errors clearly
+        // A key with no `Hash` implementation errors clearly
         // rather than picking a wrong comparison.
         let src = r#"
 fn main(console: Console):
@@ -487,9 +492,9 @@ fn main(console: Console):
     console.print("${dict.length(d)}")
 "#;
         let linked = resolve_std_src(src);
-        let err = typeck::check(&linked).expect_err("a capability has no Eq dictionary-key contract");
+        let err = typeck::check(&linked).expect_err("a capability has no Hash dictionary-key contract");
         assert!(
-            err.to_string().contains("requires `Console: Eq`")
+            err.to_string().contains("requires `Console: Hash`")
                 && err.to_string().contains("dict.insert"),
             "unexpected error: {err}"
         );

@@ -1004,8 +1004,12 @@ Standard-library protocols (`Show`, equality/order/hash, `Reflect`, conversions,
 `Deserialize`, and `FromIterator`) have one checked meaning for direct, method,
 generic, and indirect calls. Pure data APIs do not obtain ambient capabilities;
 equality recursively uses `PartialEq`; dictionary keys and set members require
-`Eq`. Functions and capabilities are not comparable; Float does not satisfy
-the `Eq` key contract. Display uses interpolation or `Show`, not a private
+`Hash`, which refines `Eq`. `Hash.hash(let self) -> Int` is a deterministic
+content hash: equal keys must return equal hashes, and a key's hash and equality
+must remain stable while it is stored. Collisions are resolved with `Eq`.
+User-defined keys, including records with `derive(Eq)`, need a matching explicit
+`Hash` implementation; the compiler rejects a key without one. Functions and capabilities are not comparable;
+Float does not satisfy the `Eq` or `Hash` key contract. Display uses interpolation or `Show`, not a private
 untyped rendering bypass. Collection lengths use `.length()` consistently;
 effect APIs take authority explicitly. Absence is `Option`, recoverable failure
 is a structured `Result`, and broken preconditions trap only where documented.

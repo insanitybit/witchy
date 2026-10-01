@@ -20,6 +20,7 @@
 // and the pull primitive `iter.next` (also a method; the free form drives the
 // module's own generic internals).
 
+import cmp
 import option
 import set
 
@@ -288,7 +289,7 @@ impl FromIterator(a) for List(a):
                     cur = rest
         out
 
-impl FromIterator((k, v)) for Dict(k, v) where k: Eq:
+impl FromIterator((k, v)) for Dict(k, v) where k: Hash:
     fn from_iter(it: Iter((k, v))) -> Dict(k, v):
         var out = dict.new()
         var cur = it
@@ -302,9 +303,9 @@ impl FromIterator((k, v)) for Dict(k, v) where k: Eq:
                     cur = rest
         out
 
-// A conditional impl: collecting into a `Set` needs `Eq` to deduplicate, so the
-// `where a: Eq` rides on the impl head (the trait method itself stays bound-free).
-impl FromIterator(a) for Set(a) where a: Eq:
+// A conditional impl: collecting into a `Set` needs `Hash` to deduplicate, so the
+// `where a: Hash` rides on the impl head (the trait method itself stays bound-free).
+impl FromIterator(a) for Set(a) where a: Hash:
     fn from_iter(it: Iter(a)) -> Set(a):
         var items: List(a) = []
         var cur = it
@@ -334,7 +335,7 @@ impl FromIterator(String) for String:
 // type (drives the iterator to exhaustion - don't call on an unbounded one):
 //     let xs: List(Int) = iter.collect(it)
 //     let joined: String = iter.collect(pieces)
-//     let s: Set(Int) = iter.collect(it)        # de-duplicates; needs `a: Eq`
+//     let s: Set(Int) = iter.collect(it)        # de-duplicates; needs `a: Hash`
 // Free-function-only ON PURPOSE: the polymorphic return type in an impl block
 // causes a measured mono-pass performance explosion.
 pub fn collect(it: Iter(a)) -> c where c: FromIterator(a):

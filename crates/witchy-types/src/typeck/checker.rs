@@ -341,7 +341,7 @@ pub(super) struct Checker {
     /// (`dict.insert`/`get_or`/`update`/`contains_key`/`remove`) invoked in the
     /// body currently being checked, with the source line. A dict key is hashed and
     /// compared, so it must be `Eq`; validated once the body is fully inferred so
-    /// an unbounded generic key (a type parameter with no `where k: Eq` bound)
+    /// an unbounded generic key (a type parameter with no `where k: Hash` bound)
     /// is rejected rather than silently accepted.
     pub(super) dict_key_ops: Vec<(Ty, u32)>,
     /// Source line of the statement currently being checked, attached to errors

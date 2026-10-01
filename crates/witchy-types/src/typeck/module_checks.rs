@@ -7,7 +7,7 @@ use super::*;
 /// Whether a resolved [`Ty`] has a concrete `Float` in a `Dict` KEY position or a
 /// `Set` MEMBER position, at any depth (a `Dict(k, Dict(Float, v))` counts). Value
 /// positions and list elements are fine — only the hashed/compared key set needs
-/// `Eq`. `None` when there is no such Float.
+/// `Hash`. `None` when there is no such Float.
 pub(super) fn float_key_position(t: &Ty) -> Option<FloatKeyKind> {
     match t {
         Ty::Named(n, args) if **n == *"Dict" => {
@@ -34,7 +34,7 @@ pub(super) fn float_key_position(t: &Ty) -> Option<FloatKeyKind> {
 
 /// (BUG-395) The argument index of the KEY of a generic `Dict` key operation (the
 /// ones that hash/compare the key), or `None` for a non-key-op. Key operations
-/// require an `Eq` key; the position lets the checker read the key's type after
+/// require a `Hash` key; the position lets the checker read the key's type after
 /// argument unification.
 pub(super) fn dict_key_op_index(name: &str) -> Option<usize> {
     match name {
@@ -43,7 +43,7 @@ pub(super) fn dict_key_op_index(name: &str) -> Option<usize> {
             spec.signature
                 .trait_bounds()
                 .iter()
-                .find(|bound| bound.trait_name == "Eq")
+                .find(|bound| bound.trait_name == "Hash")
                 .map(|bound| bound.parameter)
         }),
     }
@@ -64,13 +64,13 @@ pub(super) fn first_type_var(t: &Ty) -> Option<u32> {
 pub(super) fn float_key_reject_message(kind: FloatKeyKind) -> String {
     match kind {
         FloatKeyKind::DictKey =>
-            "`Float` is not a valid `Dict` key — keys require `Eq`, but `Float` is \
+            "`Float` is not a valid `Dict` key — keys require `Hash: Eq`, but `Float` is \
              only `PartialEq` (`NaN != NaN`, so a Float key can be unretrievable and \
              `0.1 + 0.2` is a precision trap). Use an `Int` key (scale to a fixed \
              precision) or a `String` rendering of the value"
                 .to_string(),
         FloatKeyKind::SetMember =>
-            "`Float` is not a valid `Set` member — members require `Eq`, but `Float` \
+            "`Float` is not a valid `Set` member — members require `Hash: Eq`, but `Float` \
              is only `PartialEq` (`NaN != NaN`). Use an `Int` (scaled) or a `String` \
              rendering"
                 .to_string(),

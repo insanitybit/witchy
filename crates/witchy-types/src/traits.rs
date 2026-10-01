@@ -2247,7 +2247,7 @@ impl Ctx<'_> {
                 return false;
             }
             if let Some(var) = type_var {
-                return self.var_bounded_by(var, &["PartialEq", "Eq", "PartialOrd", "Ord"]);
+                return self.var_bounded_by(var, &["PartialEq", "Eq", "Hash", "PartialOrd", "Ord"]);
             }
             let method = if op == BinOp::Eq { "eq" } else { "ne" };
             self.lookup_impl(method, ty).is_some()

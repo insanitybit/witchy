@@ -1,8 +1,7 @@
 //! Content hashes for canonical dictionary keys.
 //!
-//! Equality remains the authority on a probe hit. A key with only an `Eq`
-//! witness uses hash zero, so an arbitrary user-defined equivalence relation
-//! cannot make equal keys unreachable by assigning them different buckets.
+//! Equality remains the authority on a probe hit. Nonprimitive keys use their
+//! checked Hash implementation; keys without that contract cannot enter a table.
 
 use super::{
     ArithmeticOperator, CanonicalLoweringError, ComparisonOperator, FunctionLowerer, Operation,
@@ -15,17 +14,45 @@ impl FunctionLowerer<'_> {
         key: ValueId,
         key_type: &Type,
     ) -> Result<ValueId, CanonicalLoweringError> {
+        if let Some((_, _, name)) = self.dictionary_comparators.iter()
+            .find(|(ty, _, _)| ty.unqualified() == key_type.unqualified())
+        {
+            return self.lower_dict_hash_call(&name.clone(), key);
+        }
         let Type::Named(name, arguments) = key_type.unqualified() else {
-            return self.push_const_int(0);
+            return Err(CanonicalLoweringError::UnsupportedExpression("dict Hash witness"));
         };
         if !arguments.is_empty() {
-            return self.push_const_int(0);
+            return Err(CanonicalLoweringError::UnsupportedExpression("dict Hash witness"));
         }
         match name.as_str() {
             "Int" | "Duration" => self.hash_int(key),
             "String" => self.hash_string(key),
-            _ => self.push_const_int(0),
+            _ => Err(CanonicalLoweringError::UnsupportedExpression("dict Hash witness")),
         }
+    }
+
+    fn lower_dict_hash_call(&mut self, name: &str, key: ValueId) -> Result<ValueId, CanonicalLoweringError> {
+        let (callee, signature_id) = self.functions.get(name).copied()
+            .ok_or_else(|| CanonicalLoweringError::MissingBinding(name.into()))?;
+        let signature = self.signatures.get(signature_id.get() as usize).cloned()
+            .ok_or_else(|| CanonicalLoweringError::MissingCheckedFunctionType(name.into()))?;
+        if signature.parameters != vec![self.values[&key]]
+            || signature.results != vec![ValueType::Int]
+            || signature.contract.parameters.len() != 1
+            || self.checked_parameter_conventions.get(&signature_id).map(Vec::as_slice)
+                != Some(&[super::Convention::Let])
+        {
+            return Err(CanonicalLoweringError::UnsupportedExpression("dict hash signature"));
+        }
+        let argument = match signature.contract.parameters[0].ownership {
+            super::ParameterOwnership::Value => super::CallArgument::Value(key),
+            super::ParameterOwnership::Shared => super::CallArgument::Move(self.clone_reference_token(key)?),
+            _ => return Err(CanonicalLoweringError::UnsupportedExpression("dict hash ownership")),
+        };
+        let destination = self.fresh(ValueType::Int)?;
+        self.push_operation(Operation::Call { destinations: vec![destination], callee, arguments: vec![argument] });
+        Ok(destination)
     }
 
     fn hash_int(&mut self, key: ValueId) -> Result<ValueId, CanonicalLoweringError> {

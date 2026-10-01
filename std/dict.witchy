@@ -17,6 +17,8 @@
 // remain implemented but unverified pending durable admitted-Wasm and
 // zero-leak evidence.
 
+import cmp
+
 // --- native primitives ---
 
 // An empty Dict.
@@ -31,13 +33,13 @@ pub fn with_capacity(capacity: Int) -> Dict(k, v):
 // Insertion order of first appearance is preserved. The `d[key] = val` sugar
 // (RFC-0022) desugars to this: the shared `set_at` place-assign is retargeted to
 // `insert` once the receiver is known to be a Dict (RFC-0049).
-fn __insert(d: unique Dict(k, v), key: k, val: v) -> Dict(k, v) where k: Eq:
+fn __insert(d: unique Dict(k, v), key: k, val: v) -> Dict(k, v) where k: Hash:
     dict.__insert(d, key, val)
 
 // Select the displaced value and perform the upsert with one semantic key
 // search. The ordinary result and repaired dictionary use the uniform `var`
 // ABI's independent result channels.
-fn __insert_extract(var d: Dict(k, v), key: k, val: v) -> Option(v) where k: Eq:
+fn __insert_extract(var d: Dict(k, v), key: k, val: v) -> Option(v) where k: Hash:
     dict.__insert_extract(d, key, val)
 
 // Insert `key` with `val`, returning the displaced value when the key existed.
@@ -46,18 +48,18 @@ fn __insert_extract(var d: Dict(k, v), key: k, val: v) -> Option(v) where k: Eq:
 // copied before repair so aliases keep their old contents in normal mode. The
 // `unique` receiver makes that cost a checked contract in `mode opt`: a call
 // whose dictionary was aliased or loaned is rejected with the ownership reason.
-pub fn insert(var d: unique Dict(k, v), key: k, val: v) -> Option(v) where k: Eq:
+pub fn insert(var d: unique Dict(k, v), key: k, val: v) -> Option(v) where k: Hash:
     dict.__insert_extract(d, key, val)
 
 // The value for `key`, or `default` when absent.
-pub fn get_or(let d: Dict(k, v), key: k, default: v) -> v where k: Eq:
+pub fn get_or(let d: Dict(k, v), key: k, default: v) -> v where k: Hash:
     dict.get_or(d, key, default)
 
 // The value for `key`, inserting `default` first when the key is absent. Returns
 // the existing value on a hit and `default` on a miss, so the key is guaranteed
 // present afterward. Like `insert`, the `unique` receiver makes the write a
 // checked ownership contract in `mode opt`.
-pub fn get_or_insert(var d: unique Dict(k, v), key: k, default: v) -> v where k: Eq:
+pub fn get_or_insert(var d: unique Dict(k, v), key: k, default: v) -> v where k: Hash:
     if dict.contains_key(d, key):
         dict.at(d, key)
     else:
@@ -66,15 +68,15 @@ pub fn get_or_insert(var d: unique Dict(k, v), key: k, default: v) -> v where k:
 
 // The value for `key`, or a runtime error when absent. This is the read half of
 // the `d[key]` subscript surface; use `get`/`get_or` when absence is ordinary.
-pub fn at(let d: Dict(k, v), key: k) -> v where k: Eq:
+pub fn at(let d: Dict(k, v), key: k) -> v where k: Hash:
     dict.at(d, key)
 
 // Single-lookup upsert: apply `f` to the current value (or `default` when
 // `key` is absent) and store the result under `key`.
-fn __update(d: Dict(k, v), key: k, default: v, f: fn(v) -> v) -> Dict(k, v) where k: Eq:
+fn __update(d: Dict(k, v), key: k, default: v, f: fn(v) -> v) -> Dict(k, v) where k: Hash:
     dict.__update(d, key, default, f)
 
-pub fn update(var d: Dict(k, v), key: k, default: v, f: fn(v) -> v) where k: Eq:
+pub fn update(var d: Dict(k, v), key: k, default: v, f: fn(v) -> v) where k: Hash:
     d = dict.__update(d, key, default, f)
     return
 
@@ -103,14 +105,14 @@ pub fn get_str(let d: Dict(String, v), key: &str) -> Option(v):
 
 // Whether `key` is present. The `_key` suffix is deliberate: a Dict contains
 // key/value pairs, so bare `contains` would be ambiguous between keys and values.
-pub fn contains_key(let d: Dict(k, v), key: k) -> Bool where k: Eq:
+pub fn contains_key(let d: Dict(k, v), key: k) -> Bool where k: Hash:
     dict.contains_key(d, key)
 
 // A new dict with `key` (and its value) removed; unchanged when absent.
-fn __remove(d: unique Dict(k, v), key: k) -> Dict(k, v) where k: Eq:
+fn __remove(d: unique Dict(k, v), key: k) -> Dict(k, v) where k: Hash:
     dict.__remove(d, key)
 
-fn __remove_extract(var d: Dict(k, v), key: k) -> Option(v) where k: Eq:
+fn __remove_extract(var d: Dict(k, v), key: k) -> Option(v) where k: Hash:
     dict.__remove_extract(d, key)
 
 // Remove `key`, returning its old value when present. The dictionary performs
@@ -118,7 +120,7 @@ fn __remove_extract(var d: Dict(k, v), key: k) -> Option(v) where k: Eq:
 // insertion order in place; shared storage uses copy-on-write in normal mode.
 // In `mode opt`, the `unique` receiver rejects a shared or loaned call site
 // instead of silently taking that copy.
-pub fn remove(var d: unique Dict(k, v), key: k) -> Option(v) where k: Eq:
+pub fn remove(var d: unique Dict(k, v), key: k) -> Option(v) where k: Hash:
     dict.__remove_extract(d, key)
 
 // The keys, in insertion order.
@@ -170,7 +172,7 @@ impl Dict(k, v):
                 list.push(out, value)
         out
 
-impl Dict(k, v) where k: Eq:
+impl Dict(k, v) where k: Hash:
     pub fn insert(var self: unique Dict(k, v), key: k, val: v) -> Option(v):
         dict.insert(self, key, val)
 
@@ -235,7 +237,7 @@ impl Dict(k, v) where k: Eq:
             let _ = dict.insert(out, key, value)
         out
 
-impl Dict(k, v) where v: Eq:
+impl Dict(k, v) where v: Hash:
     // Swap keys and values. With duplicate values, a later entry wins.
     pub fn invert(self) -> Dict(v, k):
         var out = dict.new()
@@ -245,7 +247,7 @@ impl Dict(k, v) where v: Eq:
         out
 
 // Build a Dict from (key, value) pairs; a later pair overrides an earlier one.
-pub fn from_pairs(entries: List((k, v))) -> Dict(k, v) where k: Eq:
+pub fn from_pairs(entries: List((k, v))) -> Dict(k, v) where k: Hash:
     var d = dict.new()
     for entry in entries:
         let (key, value) = entry
