@@ -14252,8 +14252,8 @@ impl FunctionLowerer<'_> {
 
     /// Lower resolved `list.push(xs, value)` in normal mode. The operation
     /// retains source-level mutation syntax while preserving value snapshots.
-    /// A unique scalar list can reuse spare capacity; shared lists and other
-    /// element types use the fresh allocation template.
+    /// A unique list of copyable scalar elements can reuse spare capacity;
+    /// shared lists and reference-bearing elements use the fresh template.
     ///
     fn lower_list_push(&mut self, arguments: &[Expr]) -> Result<(), CanonicalLoweringError> {
         let [Expr::Var(name), value] = arguments else {
@@ -14317,7 +14317,7 @@ impl FunctionLowerer<'_> {
 
         // CloneRef and shared phis demote the original token. The checker
         // independently validates the in-place store on the selected path.
-        let new_object = if element_type == ValueType::Int && !self.known_shared_value(old_object) {
+        let new_object = if !pointer_elements && !self.known_shared_value(old_object) {
             self.push_unique_list_element(old_object, value, &list_type)?
         } else {
             self.push_owned_element(old_object, value, &list_type)?
