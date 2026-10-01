@@ -4066,6 +4066,7 @@ fn lower_function(
         values: BTreeMap::new(),
         static_data_values: HashSet::new(),
         bindings: HashMap::new(),
+        known_lambda_values: HashMap::new(),
         binding_scopes: vec![HashMap::new()],
         string_lengths: HashMap::new(),
         string_capacities: HashMap::new(),
@@ -4743,6 +4744,9 @@ struct FunctionLowerer<'a> {
     /// answered without searching every block built so far.
     static_data_values: HashSet<ValueId>,
     bindings: HashMap<String, ValueId>,
+    /// Exact closure objects created by a known lambda in this function.
+    /// A value ID never changes target, even when its source binding is rebound.
+    known_lambda_values: HashMap<ValueId, FunctionId>,
     /// Declarations in each active lexical block. A declaration may shadow
     /// an outer binding, while assignments to other outer names survive the
     /// block.
@@ -11158,7 +11162,12 @@ impl FunctionLowerer<'_> {
     ) -> Result<Vec<ValueId>, CanonicalLoweringError> {
         let signature = self.signatures.get(signature_id.get() as usize).cloned()
             .ok_or(CanonicalLoweringError::UnsupportedExpression("closure signature"))?;
-        let code = self.closure_callable(closure, signature_id)?;
+        let direct_target = self.known_lambda_values.get(&closure).copied();
+        let code = if direct_target.is_none() {
+            Some(self.closure_callable(closure, signature_id)?)
+        } else {
+            None
+        };
         let environment = self.clone_reference_token(closure)?;
         call_arguments.insert(0, CallArgument::Move(environment));
         let destinations = signature
@@ -11167,12 +11176,18 @@ impl FunctionLowerer<'_> {
             .copied()
             .map(|value_type| self.fresh(value_type))
             .collect::<Result<Vec<_>, _>>()?;
-        self.push_operation(Operation::VarCall {
-            destinations: destinations.clone(),
-            callee: code,
-            signature: signature_id,
-            arguments: call_arguments,
-        });
+        if let Some(callee) = direct_target {
+            self.push_operation(Operation::Call {
+                destinations: destinations.clone(), callee, arguments: call_arguments,
+            });
+        } else {
+            self.push_operation(Operation::VarCall {
+                destinations: destinations.clone(),
+                callee: code.expect("indirect target was loaded"),
+                signature: signature_id,
+                arguments: call_arguments,
+            });
+        }
         Ok(destinations)
     }
 
@@ -12079,7 +12094,11 @@ impl FunctionLowerer<'_> {
                 let key = crate::canonical_layouts::canonical_closure_key(&fn_type, self.definitions);
                 let family = self.closures.families.get(&key)
                     .ok_or_else(|| CanonicalLoweringError::MissingLayout(fn_type.clone()))?;
-                self.alloc_closure(layout, signature, function, family, environment.tag, values)
+                let closure = self.alloc_closure(layout, signature, function, family, environment.tag, values)?;
+                if matches!(self.values.get(&closure), Some(ValueType::Ref(_))) {
+                    self.known_lambda_values.insert(closure, function);
+                }
+                Ok(closure)
             }
             Expr::Record { name, fields, spread } => {
                 self.lower_record_literal(expression, name, fields, spread.as_deref(), None)
