@@ -4518,6 +4518,9 @@ struct LoopContext {
     names: Vec<String>,
     list_names: Vec<String>,
     advance: LoopAdvance,
+    /// A counted cursor below an invariant list's observed length. This only
+    /// suppresses the diagnostic branch; SafeWIR still checks the load.
+    bounded_list_index: Option<(String, ValueId)>,
 }
 
 enum LoopAdvance {
@@ -9230,6 +9233,7 @@ impl FunctionLowerer<'_> {
             names: names.clone(),
             list_names: list_names.clone(),
             advance: LoopAdvance::Condition,
+            bounded_list_index: None,
         });
         let lowered = self.lower_block_effect(body);
         self.loop_contexts.pop();
@@ -9474,6 +9478,7 @@ impl FunctionLowerer<'_> {
             names: names.clone(),
             list_names: list_names.clone(),
             advance: LoopAdvance::Condition,
+            bounded_list_index: None,
         });
         let lowered = self.lower_block_effect(body);
         self.loop_contexts.pop();
@@ -9560,7 +9565,21 @@ impl FunctionLowerer<'_> {
         if self.values[&start] != ValueType::Int || self.values[&bound] != ValueType::Int {
             return Err(CanonicalLoweringError::UnsupportedExpression("non-integer range bounds"));
         }
-        self.lower_counted_for(variable, start, bound, inclusive, body, None)
+        let bounded_list = if !inclusive
+            && matches!(lo, Expr::Int(value) if *value >= 0)
+            && let Expr::Call { name, args } = hi
+            && matches!(name.as_str(), "list.length" | "list.__length")
+            && let [Expr::Var(root)] = args.as_slice()
+            && let Some(&object) = self.bindings.get(root)
+            && let Some(&count) = self.list_counts.get(&object)
+            && self.blocks[self.current.get() as usize].operations.iter().any(|op| matches!(op,
+                Operation::WidenSize { destination, value } if *destination == bound && *value == count))
+        {
+            Some(root.as_str())
+        } else {
+            None
+        };
+        self.lower_counted_for(variable, start, bound, inclusive, body, None, bounded_list)
     }
 
     /// A loop over an `Int` counter from `start` to `bound`. The iteration
@@ -9574,6 +9593,7 @@ impl FunctionLowerer<'_> {
         inclusive: bool,
         body: &witchy_syntax::ast::Block,
         slice: Option<ValueId>,
+        bounded_list: Option<&str>,
     ) -> Result<(), CanonicalLoweringError> {
         let mut facts = self.snapshot_facts();
         let outer = self.bindings.clone();
@@ -9586,6 +9606,11 @@ impl FunctionLowerer<'_> {
         self.scalarized_loop_rebindings(&mut rebound);
         let mut names = loop_lane_names(&outer, &rebound);
         self.scalarized_loop_lanes(&mut names);
+        let bounded_list_index = bounded_list.and_then(|root| {
+            (!names.iter().any(|name| name == root))
+                .then(|| outer.get(root).copied().map(|object| (root.to_string(), object)))
+                .flatten()
+        });
         let outer = self.detach_shared_write_back_lanes(&names, outer)?;
         // Authenticate referenced collection roots before the loop. A root
         // that is never rebound and has independent extent lanes can keep the
@@ -9726,6 +9751,7 @@ impl FunctionLowerer<'_> {
             names: names.clone(),
             list_names: list_names.clone(),
             advance: LoopAdvance::IntCounter(body_counter),
+            bounded_list_index,
         });
         // Bounds were evaluated in the outer scope. The immutable counter has
         // its own scope around the body, just like the checker/interpreter;
@@ -9803,7 +9829,7 @@ impl FunctionLowerer<'_> {
             self.push_operation(Operation::WidenSize { destination: bound, value: length });
             let start = self.fresh(ValueType::Int)?;
             self.push_operation(Operation::ConstInt { destination: start, value: 0 });
-            return self.lower_counted_for(variable, start, bound, false, body, Some(slice));
+            return self.lower_counted_for(variable, start, bound, false, body, Some(slice), None);
         }
         let source = self.lower_expr(iterable)?;
         let opaque_family = self.owner_list_family(source).cloned();
@@ -10060,6 +10086,7 @@ impl FunctionLowerer<'_> {
             names: names.clone(),
             list_names: list_names.clone(),
             advance: LoopAdvance::ListCursor(body_index),
+            bounded_list_index: None,
         });
         // The iterable was evaluated before shadowing. This separate binder
         // scope also makes reference-valued elements read-only and restores
@@ -15983,7 +16010,21 @@ impl FunctionLowerer<'_> {
         }
         let (layout, element_type, _header_bytes, _stride_bytes) =
             list_layout(&logical_type, self.layout_bundle, self.layouts, &self.closures.layouts, self.definitions)?;
-        let object = self.lower_expr(base)?;
+        let object = if let Expr::Var(root) = base
+            && let Some(&object) = self.bindings.get(root)
+            && self.loop_contexts.iter().rev().any(|context| {
+                context.bounded_list_index.as_ref().is_some_and(|(bounded_root, original)| {
+                    bounded_root == root && *original == object
+                })
+            })
+        {
+            // The counted loop authenticated this unchanged root while
+            // evaluating its bound. A second variable read would emit the
+            // same extent guards on every iteration.
+            object
+        } else {
+            self.lower_expr(base)?
+        };
         if self.values[&object] != ValueType::Ref(layout) {
             return Err(CanonicalLoweringError::UnsupportedExpression("list object type"));
         }
@@ -15991,14 +16032,20 @@ impl FunctionLowerer<'_> {
         if self.values[&index_value] != ValueType::Int {
             return Err(CanonicalLoweringError::UnsupportedExpression("list index type"));
         }
-        self.diagnose_list_index(object, index_value, &site)?;
+        let proven_index = matches!(index, Expr::Var(name) if self.bindings.get(name) == Some(&index_value))
+            && self.loop_contexts.iter().rev().any(|context| {
+                matches!(context.advance, LoopAdvance::IntCounter(counter) if counter == index_value)
+                    && context.bounded_list_index.as_ref().is_some_and(|(root, original)| {
+                        *original == object && self.bindings.get(root) == Some(&object)
+                    })
+            });
+        if !proven_index {
+            self.diagnose_list_index(object, index_value, &site)?;
+        }
         let index_size = self.fresh(ValueType::Size)?;
         self.push_operation(Operation::NarrowSize { destination: index_size, value: index_value });
-        // `lower_expr(base)` has already authenticated the list header and
-        // recorded the exact count definition related to its capacity. Do not
-        // reload the header here: a new definition would discard that relation.
-        // An element of a nested list has no recorded extent yet; load it once.
-        self.ensure_list_extent(object)?;
+        // The diagnostic path authenticates the extent; the proven counted
+        // path retains the extent authenticated while evaluating its bound.
         self.load_list_element(object, index_size, element_type)
     }
 
