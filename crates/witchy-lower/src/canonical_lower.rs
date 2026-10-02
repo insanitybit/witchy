@@ -5753,6 +5753,11 @@ impl FunctionLowerer<'_> {
     }
 
     fn lower_effect_expr(&mut self, expression: &Expr) -> Result<(), CanonicalLoweringError> {
+        if let Expr::Call { name, args } = expression
+            && self.try_lower_forwarded_byte_writeback_call(name, args)?
+        {
+            return Ok(());
+        }
         match expression {
             Expr::Call { name, args } if name == witchy_syntax::intrinsics::REFERENCE_WRITE => {
                 self.lower_direct_exclusive_reference_write(args)
@@ -16566,8 +16571,7 @@ impl FunctionLowerer<'_> {
     /// Recover the allocator's physical capacity when a unique byte buffer
     /// crossed a call boundary that transported only its logical length.
     fn recover_raw_byte_capacity(&mut self, object: ValueId) -> Result<(), CanonicalLoweringError> {
-        let Some((count, capacity)) = self.tracked_lanes(object) else { return Ok(()) };
-        if count != capacity { return Ok(()) }
+        if self.tracked_lanes(object).is_none() { return Ok(()) }
         let layout = self.string_layout_id()?;
         let loaded = self.fresh(ValueType::Size)?;
         self.push_operation(Operation::Load {
@@ -18106,6 +18110,38 @@ impl FunctionLowerer<'_> {
     /// sequence append rule to any String expression of the form `x = x + y`;
     /// the right side is unrestricted and evaluated exactly once. If it aliases
     /// or shares the left buffer, use the ordinary snapshot-preserving concat.
+    fn try_lower_forwarded_byte_writeback_call(
+        &mut self,
+        callee: &str,
+        arguments: &[Expr],
+    ) -> Result<bool, CanonicalLoweringError> {
+        let [Expr::Var(receiver), Expr::Var(suffix)] = arguments else { return Ok(false) };
+        if !self.mutable_bindings.contains(receiver) || !self.bindings.contains_key(suffix) {
+            return Ok(false);
+        }
+        let forwards_append = self.checked_module.items.iter().any(|item| {
+            let Item::Function(function) = item else { return false };
+            let [first, second] = function.params.as_slice() else { return false };
+            let [Stmt::Assign { name, value: Expr::Call { name: target, args }, place_depth: 0 }, Stmt::Return(None)] = function.body.stmts.as_slice() else { return false };
+            function.name == callee
+                && first.convention == Convention::Var
+                && matches!(second.convention, Convention::Let | Convention::Borrow)
+                && name == &first.name
+                && target == "__bytes_append"
+                && matches!(args.as_slice(), [Expr::Var(a), Expr::Var(b)] if a == &first.name && b == &second.name)
+        });
+        if !forwards_append { return Ok(false) }
+        let left = self.lower_expr(&arguments[0])?;
+        let right = self.lower_expr(&arguments[1])?;
+        let result = if left != right && !self.known_shared_value(left) && !self.aliased_binding(receiver, left) {
+            self.append_owned_byte_sequence(left, right)?
+        } else {
+            self.concat_string_values(left, right)?
+        };
+        self.bindings.insert(receiver.clone(), result);
+        Ok(true)
+    }
+
     fn try_lower_buffer_append_assignment(
         &mut self,
         target: &str,

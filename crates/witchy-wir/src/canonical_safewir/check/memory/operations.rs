@@ -720,6 +720,8 @@ impl<'a> MemoryChecker<'a> {
             let object = place.object();
             let state = self.live_object(object)?.clone();
             if self.is_raw_byte_buffer(state.layout)? {
+                self.promote_header_extent(object)?;
+                let state = self.live_object(object)?.clone();
                 let Extent::Counted { header_bytes: 4, count, stride_bytes: 1, .. } = state.extent else {
                     return self.unsupported("Load(raw allocation capacity without count)");
                 };
@@ -737,6 +739,10 @@ impl<'a> MemoryChecker<'a> {
                 self.state.objects.get_mut(&object).expect("live owner exists").extent = Extent::Counted {
                     header_bytes: 4, count, capacity: destination, stride_bytes: 1,
                 };
+                // A prior call or loop lane may retain the conservative
+                // logical-length capacity alias. The authenticated physical
+                // capacity supersedes that alias for subsequent range checks.
+                self.state.header_values.remove(&(object, HeaderField::Capacity));
                 let generation = self.current_generation(object)?;
                 self.state.bound_generations.entry(destination).or_default().insert(generation);
                 return Ok(());
