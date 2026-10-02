@@ -1125,10 +1125,68 @@ pub(super) fn emit_copy_bytes(
         body.instruction(&wasm_encoder::Instruction::End);
     }
     body.instruction(&wasm_encoder::Instruction::Else);
+    // Inline medium copies only when the authenticated ranges are disjoint.
+    // The bulk-memory fallback retains memmove behavior for overlap and for
+    // sizes where a counted scalar loop would be counterproductive.
+    let cursor = scratch_index(layout, 5);
+    body.instruction(&wasm_encoder::Instruction::LocalGet(length_local));
+    body.instruction(&wasm_encoder::Instruction::I32Const(9));
+    body.instruction(&wasm_encoder::Instruction::I32GeU);
+    body.instruction(&wasm_encoder::Instruction::LocalGet(length_local));
+    body.instruction(&wasm_encoder::Instruction::I32Const(4096));
+    body.instruction(&wasm_encoder::Instruction::I32LeU);
+    body.instruction(&wasm_encoder::Instruction::I32And);
+    body.instruction(&wasm_encoder::Instruction::LocalGet(destination_local));
+    body.instruction(&wasm_encoder::Instruction::LocalGet(length_local));
+    body.instruction(&wasm_encoder::Instruction::I32Add);
+    body.instruction(&wasm_encoder::Instruction::LocalGet(source_local));
+    body.instruction(&wasm_encoder::Instruction::I32LeU);
+    body.instruction(&wasm_encoder::Instruction::LocalGet(source_local));
+    body.instruction(&wasm_encoder::Instruction::LocalGet(length_local));
+    body.instruction(&wasm_encoder::Instruction::I32Add);
+    body.instruction(&wasm_encoder::Instruction::LocalGet(destination_local));
+    body.instruction(&wasm_encoder::Instruction::I32LeU);
+    body.instruction(&wasm_encoder::Instruction::I32Or);
+    body.instruction(&wasm_encoder::Instruction::I32And);
+    body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
+    body.instruction(&wasm_encoder::Instruction::I32Const(0));
+    body.instruction(&wasm_encoder::Instruction::LocalSet(cursor));
+    for width in [8, 1] {
+        body.instruction(&wasm_encoder::Instruction::Block(BlockType::Empty));
+        body.instruction(&wasm_encoder::Instruction::Loop(BlockType::Empty));
+        body.instruction(&wasm_encoder::Instruction::LocalGet(cursor));
+        body.instruction(&wasm_encoder::Instruction::I32Const(width));
+        body.instruction(&wasm_encoder::Instruction::I32Add);
+        body.instruction(&wasm_encoder::Instruction::LocalGet(length_local));
+        body.instruction(&wasm_encoder::Instruction::I32GtU);
+        body.instruction(&wasm_encoder::Instruction::BrIf(1));
+        body.instruction(&wasm_encoder::Instruction::LocalGet(destination_local));
+        body.instruction(&wasm_encoder::Instruction::LocalGet(cursor));
+        body.instruction(&wasm_encoder::Instruction::I32Add);
+        body.instruction(&wasm_encoder::Instruction::LocalGet(source_local));
+        body.instruction(&wasm_encoder::Instruction::LocalGet(cursor));
+        body.instruction(&wasm_encoder::Instruction::I32Add);
+        if width == 8 {
+            body.instruction(&wasm_encoder::Instruction::I64Load(memarg(8)));
+            body.instruction(&wasm_encoder::Instruction::I64Store(memarg(8)));
+        } else {
+            body.instruction(&wasm_encoder::Instruction::I32Load8U(memarg(1)));
+            body.instruction(&wasm_encoder::Instruction::I32Store8(memarg(1)));
+        }
+        body.instruction(&wasm_encoder::Instruction::LocalGet(cursor));
+        body.instruction(&wasm_encoder::Instruction::I32Const(width));
+        body.instruction(&wasm_encoder::Instruction::I32Add);
+        body.instruction(&wasm_encoder::Instruction::LocalSet(cursor));
+        body.instruction(&wasm_encoder::Instruction::Br(0));
+        body.instruction(&wasm_encoder::Instruction::End);
+        body.instruction(&wasm_encoder::Instruction::End);
+    }
+    body.instruction(&wasm_encoder::Instruction::Else);
     body.instruction(&wasm_encoder::Instruction::LocalGet(destination_local));
     body.instruction(&wasm_encoder::Instruction::LocalGet(source_local));
     body.instruction(&wasm_encoder::Instruction::LocalGet(length_local));
     body.instruction(&wasm_encoder::Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
+    body.instruction(&wasm_encoder::Instruction::End);
     body.instruction(&wasm_encoder::Instruction::End);
     Ok(())
 }
