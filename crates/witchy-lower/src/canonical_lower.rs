@@ -4518,9 +4518,12 @@ struct LoopContext {
     names: Vec<String>,
     list_names: Vec<String>,
     advance: LoopAdvance,
-    /// A counted cursor below an invariant list's observed length. This only
-    /// suppresses the diagnostic branch; SafeWIR still checks the load.
+    /// A counted cursor below an invariant list's observed length. SafeWIR
+    /// still checks every element load against the retained count.
     bounded_list_index: Option<(String, ValueId)>,
+    /// A Size cursor equal to the source Int cursor: both start at zero and
+    /// advance together while the immutable bound is a list's u32 count.
+    size_counter: Option<ValueId>,
 }
 
 enum LoopAdvance {
@@ -9059,13 +9062,14 @@ impl FunctionLowerer<'_> {
         let Some(context) = self.loop_contexts.last() else {
             return Err(CanonicalLoweringError::UnsupportedStatement("break outside a loop"));
         };
-        let (exit, names, list_names) = (context.exit, context.names.clone(), context.list_names.clone());
+        let (exit, names, list_names, size_counter) = (context.exit, context.names.clone(), context.list_names.clone(), context.size_counter);
         let counter = match context.advance {
             LoopAdvance::IntCounter(counter) => Some(counter),
             _ => None,
         };
         let mut arguments = self.loop_edge_arguments(&names, &list_names)?;
         arguments.extend(counter);
+        arguments.extend(size_counter);
         self.finish_current(Terminator::Branch { target: exit, arguments })
     }
 
@@ -9075,7 +9079,7 @@ impl FunctionLowerer<'_> {
         let Some(context) = self.loop_contexts.last() else {
             return Err(CanonicalLoweringError::UnsupportedStatement("continue outside a loop"));
         };
-        let (header, names, list_names) = (context.header, context.names.clone(), context.list_names.clone());
+        let (header, names, list_names, size_counter) = (context.header, context.names.clone(), context.list_names.clone(), context.size_counter);
         let advance = match context.advance {
             LoopAdvance::Condition => None,
             LoopAdvance::ListCursor(cursor) => {
@@ -9089,6 +9093,11 @@ impl FunctionLowerer<'_> {
         };
         let mut arguments = self.loop_edge_arguments(&names, &list_names)?;
         arguments.extend(advance);
+        if let Some(size_counter) = size_counter {
+            let one = self.push_const_size(1)?;
+            arguments.push(self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add,
+                size_counter, one, OverflowBehavior::Wrap)?);
+        }
         self.finish_current(Terminator::Branch { target: header, arguments })
     }
 
@@ -9234,6 +9243,7 @@ impl FunctionLowerer<'_> {
             list_names: list_names.clone(),
             advance: LoopAdvance::Condition,
             bounded_list_index: None,
+            size_counter: None,
         });
         let lowered = self.lower_block_effect(body);
         self.loop_contexts.pop();
@@ -9479,6 +9489,7 @@ impl FunctionLowerer<'_> {
             list_names: list_names.clone(),
             advance: LoopAdvance::Condition,
             bounded_list_index: None,
+            size_counter: None,
         });
         let lowered = self.lower_block_effect(body);
         self.loop_contexts.pop();
@@ -9566,7 +9577,7 @@ impl FunctionLowerer<'_> {
             return Err(CanonicalLoweringError::UnsupportedExpression("non-integer range bounds"));
         }
         let bounded_list = if !inclusive
-            && matches!(lo, Expr::Int(value) if *value >= 0)
+            && matches!(lo, Expr::Int(0))
             && let Expr::Call { name, args } = hi
             && matches!(name.as_str(), "list.length" | "list.__length")
             && let [Expr::Var(root)] = args.as_slice()
@@ -9664,6 +9675,9 @@ impl FunctionLowerer<'_> {
         let mut state_types = names.iter().map(|name| self.values[&outer[name]]).collect::<Vec<_>>();
         state_types.extend(list_names.iter().flat_map(|_| [ValueType::Size, ValueType::Size]));
         state_types.push(ValueType::Int);
+        if bounded_list_index.is_some() {
+            state_types.push(ValueType::Size);
+        }
         let header = self.new_block(&state_types)?;
         let body_id = self.new_block(&state_types)?;
         let exit = self.new_block(&state_types)?;
@@ -9686,6 +9700,9 @@ impl FunctionLowerer<'_> {
             entry_state.push(capacity);
         }
         entry_state.push(start);
+        if bounded_list_index.is_some() {
+            entry_state.push(self.push_const_size(0)?);
+        }
         self.finish_current(Terminator::Branch { target: header, arguments: entry_state })?;
 
         let bind_state = |lowerer: &mut Self, values: &[ValueId]| {
@@ -9725,7 +9742,7 @@ impl FunctionLowerer<'_> {
             self.ensure_list_extent(*object)?;
             self.ensure_string_extent(*object)?;
         }
-        let counter = *header_values.last().ok_or(CanonicalLoweringError::IdOverflow)?;
+        let counter = header_values[header_values.len() - 1 - usize::from(bounded_list_index.is_some())];
         let condition = self.fresh(ValueType::Bool)?;
         self.push_operation(Operation::Compare {
             destination: condition,
@@ -9744,7 +9761,8 @@ impl FunctionLowerer<'_> {
         let body_values = self.blocks[body_id.get() as usize].parameters.iter().map(|parameter| parameter.value).collect::<Vec<_>>();
         self.current = body_id;
         bind_state(self, &body_values);
-        let body_counter = *body_values.last().ok_or(CanonicalLoweringError::IdOverflow)?;
+        let body_counter = body_values[body_values.len() - 1 - usize::from(bounded_list_index.is_some())];
+        let size_counter = bounded_list_index.as_ref().map(|_| *body_values.last().expect("size lane"));
         self.loop_contexts.push(LoopContext {
             header,
             exit,
@@ -9752,6 +9770,7 @@ impl FunctionLowerer<'_> {
             list_names: list_names.clone(),
             advance: LoopAdvance::IntCounter(body_counter),
             bounded_list_index,
+            size_counter,
         });
         // Bounds were evaluated in the outer scope. The immutable counter has
         // its own scope around the body, just like the checker/interpreter;
@@ -9779,6 +9798,11 @@ impl FunctionLowerer<'_> {
                 overflow: OverflowBehavior::Wrap,
             });
             carried.push(next);
+            if let Some(size_counter) = size_counter {
+                let one = self.push_const_size(1)?;
+                carried.push(self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add,
+                    size_counter, one, OverflowBehavior::Wrap)?);
+            }
             self.demote_unique_lanes_carrying_shared(header, exit, &carried);
             self.finish_current(Terminator::Branch { target: header, arguments: carried })?;
         }
@@ -10087,6 +10111,7 @@ impl FunctionLowerer<'_> {
             list_names: list_names.clone(),
             advance: LoopAdvance::ListCursor(body_index),
             bounded_list_index: None,
+            size_counter: None,
         });
         // The iterable was evaluated before shadowing. This separate binder
         // scope also makes reference-valued elements read-only and restores
@@ -16032,18 +16057,25 @@ impl FunctionLowerer<'_> {
         if self.values[&index_value] != ValueType::Int {
             return Err(CanonicalLoweringError::UnsupportedExpression("list index type"));
         }
-        let proven_index = matches!(index, Expr::Var(name) if self.bindings.get(name) == Some(&index_value))
-            && self.loop_contexts.iter().rev().any(|context| {
-                matches!(context.advance, LoopAdvance::IntCounter(counter) if counter == index_value)
+        let proven_size = matches!(index, Expr::Var(name) if self.bindings.get(name) == Some(&index_value))
+            .then(|| self.loop_contexts.iter().rev().find_map(|context| {
+                (matches!(context.advance, LoopAdvance::IntCounter(counter) if counter == index_value)
                     && context.bounded_list_index.as_ref().is_some_and(|(root, original)| {
                         *original == object && self.bindings.get(root) == Some(&object)
-                    })
-            });
+                    }))
+                .then_some(context.size_counter).flatten()
+            })).flatten();
+        let proven_index = proven_size.is_some();
         if !proven_index {
             self.diagnose_list_index(object, index_value, &site)?;
         }
-        let index_size = self.fresh(ValueType::Size)?;
-        self.push_operation(Operation::NarrowSize { destination: index_size, value: index_value });
+        let index_size = if let Some(size) = proven_size {
+            size
+        } else {
+            let size = self.fresh(ValueType::Size)?;
+            self.push_operation(Operation::NarrowSize { destination: size, value: index_value });
+            size
+        };
         // The diagnostic path authenticates the extent; the proven counted
         // path retains the extent authenticated while evaluating its bound.
         self.load_list_element(object, index_size, element_type)
