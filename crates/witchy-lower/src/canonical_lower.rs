@@ -9422,6 +9422,22 @@ impl FunctionLowerer<'_> {
             .without_iteration_binding(variable);
         let names = loop_lane_names(&outer, &rebound);
         let outer = self.detach_shared_write_back_lanes(&names, outer)?;
+        // Authenticate referenced String roots before the loop. A root that
+        // is never rebound and has independent extent lanes can keep the same
+        // counted evidence through every backedge.
+        let string_layout = self.string_layout_id().ok();
+        let invariant_candidates = outer
+            .iter()
+            .filter_map(|(name, object)| {
+                (!names.contains(name)
+                    && matches!(self.values[object], ValueType::Ref(layout) if Some(layout) == string_layout))
+                    .then(|| name.clone())
+            })
+            .collect::<Vec<_>>();
+        let invariant_names = crate::analysis::loop_mentions(&Expr::Bool(false), body, &invariant_candidates);
+        for name in &invariant_names {
+            self.ensure_string_extent(outer[name])?;
+        }
         let list_names = names
             .iter()
             .filter_map(|name| {
@@ -9499,7 +9515,20 @@ impl FunctionLowerer<'_> {
             .filter(|(name, object)| !names.contains(name) && self.tracked_lanes(**object).is_some())
             .map(|(_, object)| *object)
             .collect::<BTreeSet<_>>();
+        let preserved_invariant_extents = invariant_names.iter()
+            .filter_map(|name| {
+                let object = outer[name];
+                self.tracked_lanes(object)
+                    .filter(|(count, capacity)| {
+                        !carried_extents.contains(count) && !carried_extents.contains(capacity)
+                    })
+                    .map(|_| object)
+            })
+            .collect::<BTreeSet<_>>();
         for object in &invariant_extents {
+            if preserved_invariant_extents.contains(object) {
+                continue;
+            }
             self.invalidate_dynamic_count(*object);
             self.ensure_list_extent(*object)?;
             self.ensure_string_extent(*object)?;
