@@ -16610,6 +16610,7 @@ impl FunctionLowerer<'_> {
         if operator == BinOp::Coalesce {
             return self.lower_coalesce(left, right);
         }
+        let constant_divisor = match right { Expr::Int(value) => Some(*value), _ => None };
         let left = self.lower_expr(left)?;
         let right = self.lower_expr(right)?;
         let left_type = self.values[&left];
@@ -16680,15 +16681,17 @@ impl FunctionLowerer<'_> {
         }
         if matches!(operator, BinOp::Div | BinOp::Mod) {
             let site = self.diagnostic_site(expression)?;
-            let zero = self.push_const_int(0)?;
-            let divisor_is_zero = self.push_compare(ComparisonOperator::Equal, right, zero)?;
-            let template = if operator == BinOp::Div {
-                witchy_syntax::diag::DiagTemplate::DivisionByZero
-            } else {
-                witchy_syntax::diag::DiagTemplate::ModuloByZero
-            };
-            self.abort_on_condition(divisor_is_zero, &site, template)?;
-            if operator == BinOp::Div {
+            if !constant_divisor.is_some_and(|divisor| divisor != 0) {
+                let zero = self.push_const_int(0)?;
+                let divisor_is_zero = self.push_compare(ComparisonOperator::Equal, right, zero)?;
+                let template = if operator == BinOp::Div {
+                    witchy_syntax::diag::DiagTemplate::DivisionByZero
+                } else {
+                    witchy_syntax::diag::DiagTemplate::ModuloByZero
+                };
+                self.abort_on_condition(divisor_is_zero, &site, template)?;
+            }
+            if operator == BinOp::Div && !constant_divisor.is_some_and(|divisor| divisor != -1) {
                 let minimum = self.push_const_int(i64::MIN)?;
                 let left_is_minimum = self.push_compare(ComparisonOperator::Equal, left, minimum)?;
                 let overflows = self.short_circuit_and(left_is_minimum, |this| {
