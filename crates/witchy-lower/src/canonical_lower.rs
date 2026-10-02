@@ -9422,20 +9422,21 @@ impl FunctionLowerer<'_> {
             .without_iteration_binding(variable);
         let names = loop_lane_names(&outer, &rebound);
         let outer = self.detach_shared_write_back_lanes(&names, outer)?;
-        // Authenticate referenced String roots before the loop. A root that
-        // is never rebound and has independent extent lanes can keep the same
-        // counted evidence through every backedge.
-        let string_layout = self.string_layout_id().ok();
+        // Authenticate referenced collection roots before the loop. A root
+        // that is never rebound and has independent extent lanes can keep the
+        // same counted evidence through every backedge.
         let invariant_candidates = outer
             .iter()
             .filter_map(|(name, object)| {
                 (!names.contains(name)
-                    && matches!(self.values[object], ValueType::Ref(layout) if Some(layout) == string_layout))
+                    && matches!(self.values[object], ValueType::Ref(_))
+                    && self.tracked_lanes(*object).is_some())
                     .then(|| name.clone())
             })
             .collect::<Vec<_>>();
         let invariant_names = crate::analysis::loop_mentions(&Expr::Bool(false), body, &invariant_candidates);
         for name in &invariant_names {
+            self.ensure_list_extent(outer[name])?;
             self.ensure_string_extent(outer[name])?;
         }
         let list_names = names
