@@ -4085,6 +4085,8 @@ fn lower_function(
         values: BTreeMap::new(),
         static_data_values: HashSet::new(),
         bindings: HashMap::new(),
+        scalarized_records: HashMap::new(),
+        consuming_projected_field: None,
         elided_lambdas: HashMap::new(),
         elidable_lambda_names: crate::escape::only_directly_called(body).into_iter().collect(),
         reassigned_names: crate::escape::reassigned_names(body).into_iter().collect(),
@@ -4754,6 +4756,15 @@ struct SharedOperationFacts {
     direct: BTreeSet<ValueId>,
 }
 
+#[derive(Clone)]
+struct ScalarizedRecord {
+    source_type: Type,
+    name: String,
+    field_types: Vec<Type>,
+    field_names: Vec<String>,
+    lanes: Vec<String>,
+}
+
 struct FunctionLowerer<'a> {
     function: String,
     function_id: FunctionId,
@@ -4766,6 +4777,10 @@ struct FunctionLowerer<'a> {
     /// answered without searching every block built so far.
     static_data_values: HashSet<ValueId>,
     bindings: HashMap<String, ValueId>,
+    /// Confined local records represented by independently loop-carried fields.
+    scalarized_records: HashMap<String, ScalarizedRecord>,
+    /// Exact field whose generated update result immediately replaces it.
+    consuming_projected_field: Option<(String, usize)>,
     elided_lambdas: HashMap<String, ElidedScalarLambda>,
     elidable_lambda_names: HashSet<String>,
     reassigned_names: HashSet<String>,
@@ -6211,6 +6226,9 @@ impl FunctionLowerer<'_> {
     }
 
     fn lower_let_binding(&mut self, name: &str, mutable: bool, declared: Option<&Type>, value: &Expr) -> Result<(), CanonicalLoweringError> {
+        if self.try_bind_scalarized_record(name, mutable, declared, value)? {
+            return Ok(());
+        }
         if !mutable && declared.is_none() && self.elidable_lambda_names.contains(name)
             && !self.tail_manifest.sites().iter().any(|site| {
                 if site.key.callable.item != self.item
@@ -6265,6 +6283,146 @@ impl FunctionLowerer<'_> {
         self.elided_lambdas.remove(name);
         let value = self.lower_let_value(mutable, value, declared)?;
         self.bind_lexical(name, value, mutable)
+    }
+
+    fn try_bind_scalarized_record(&mut self, name: &str, mutable: bool, declared: Option<&Type>, value: &Expr) -> Result<bool, CanonicalLoweringError> {
+        let Expr::Ctor { name: constructor, args } = value else { return Ok(false) };
+        if !mutable || !self.confined_record_candidate(name, value) { return Ok(false) }
+        let source_type = declared.cloned().unwrap_or(self.expression_storage_type(value)?);
+        let Some(shape) = scalar_aggregate_shape(&source_type, self.definitions) else { return Ok(false) };
+        if shape.packed || shape.tagged || shape.fields.len() != args.len()
+            || shape.fields.iter().any(|field| witchy_canonical_source::storage::affine_storage_shape(field, self.definitions).is_some()) {
+            return Ok(false);
+        }
+        let Some(definition) = self.record_definition(constructor) else { return Ok(false) };
+        let Some(variant) = definition.variants.first() else { return Ok(false) };
+        if variant.field_names.len() != args.len() { return Ok(false) }
+        let field_names = variant.field_names.clone();
+        let mut values = Vec::with_capacity(args.len());
+        for (arg, field_type) in args.iter().zip(&shape.fields) {
+            let value = self.lower_expr(arg)?;
+            // A constructor normally creates a separate owned field edge.
+            // Preserve that boundary when an argument already names storage;
+            // only a newly created list literal can become the field lane
+            // directly without first being copied.
+            let value = if matches!(self.values[&value], ValueType::Ref(_) | ValueType::Gc(_))
+                && !matches!(arg, Expr::List(_)) {
+                self.owned_for_storage(value, field_type)?
+            } else { value };
+            values.push(value);
+        }
+        let placeholder = self.push_zero(ValueType::Unit)?;
+        self.bind_lexical(name, placeholder, true)?;
+        let mut lanes = Vec::with_capacity(values.len());
+        for (index, value) in values.into_iter().enumerate() {
+            let lane = format!("\0record:{}:{}:{}", self.function, name, index);
+            self.bind_lexical(&lane, value, true)?;
+            lanes.push(lane);
+        }
+        self.scalarized_records.insert(name.to_owned(), ScalarizedRecord {
+            source_type, name: constructor.clone(), field_types: shape.fields,
+            field_names, lanes,
+        });
+        Ok(true)
+    }
+
+    fn confined_record_candidate(&self, name: &str, initializer: &Expr) -> bool {
+        use std::cell::{Cell, RefCell};
+        let allowed = RefCell::new(HashSet::new());
+        let forbidden = Cell::new(false);
+        let saw_initializer = self.source_body.stmts.iter().any(|statement| {
+            matches!(statement, Stmt::Let { value, .. } if std::ptr::eq(value, initializer))
+        });
+        let mut inspect_block = |block: &witchy_syntax::ast::Block| {
+            for statement in &block.stmts {
+                match statement {
+                    Stmt::Let { name: bound, value, .. } if bound == name => {
+                        if !std::ptr::eq(value, initializer) { forbidden.set(true); }
+                    }
+                    Stmt::Assign { name: target, place_depth: 0, .. } if target == name => forbidden.set(true),
+                    Stmt::LetPattern { .. } => forbidden.set(true),
+                    Stmt::Return(Some(expression)) if matches!(expression, Expr::Var(root) if root == name) => {
+                        allowed.borrow_mut().insert(expression as *const Expr as usize);
+                    }
+                    _ => {}
+                }
+            }
+        };
+        inspect_block(self.source_body);
+        let _ = witchy_syntax::ast::visit::visit_block(self.source_body, &mut |expr| {
+            match expr {
+                Expr::Field { base, .. } | Expr::RecordUpdate { base, .. }
+                    if matches!(base.as_ref(), Expr::Var(root) if root == name) => {
+                    allowed.borrow_mut().insert(base.as_ref() as *const Expr as usize);
+                }
+                Expr::While { body, .. } | Expr::WhileLet { body, .. }
+                | Expr::Block(body) => inspect_block(body),
+                Expr::For { var, body, .. } => {
+                    if var == name { forbidden.set(true); }
+                    inspect_block(body);
+                }
+                Expr::If { then_block, else_block, .. } => {
+                    inspect_block(then_block);
+                    if let Some(other) = else_block { inspect_block(other); }
+                }
+                Expr::Lambda { .. } | Expr::Match { .. } => forbidden.set(true),
+                _ => {}
+            }
+            Ok::<(), ()>(())
+        });
+        if let Some(Stmt::Expr(Expr::Var(root)) | Stmt::Return(Some(Expr::Var(root)))) = self.source_body.stmts.last() {
+            if root == name {
+                let expression = match self.source_body.stmts.last().unwrap() {
+                    Stmt::Expr(expr) | Stmt::Return(Some(expr)) => expr,
+                    _ => unreachable!(),
+                };
+                allowed.borrow_mut().insert(expression as *const Expr as usize);
+            }
+        }
+        let _ = witchy_syntax::ast::visit::visit_block(self.source_body, &mut |expr| {
+            if matches!(expr, Expr::Var(root) if root == name)
+                && !allowed.borrow().contains(&(expr as *const Expr as usize)) {
+                forbidden.set(true);
+            }
+            Ok::<(), ()>(())
+        });
+        saw_initializer && !forbidden.get()
+    }
+
+    fn scalarized_loop_lanes(&self, names: &mut Vec<String>) {
+        let extra = names.iter().filter_map(|root| self.scalarized_records.get(root))
+            .flat_map(|record| record.lanes.iter().cloned()).collect::<Vec<_>>();
+        names.extend(extra);
+        names.sort();
+        names.dedup();
+    }
+
+    fn scalarized_loop_rebindings(&self, rebound: &mut LoopRebindings) {
+        let roots = rebound.assigned.iter().chain(rebound.pushed.iter())
+            .cloned().collect::<Vec<_>>();
+        for root in roots {
+            let Some(record) = self.scalarized_records.get(&root) else { continue };
+            for lane in &record.lanes {
+                let value = self.bindings[lane];
+                if matches!(self.values[&value], ValueType::Ref(_) | ValueType::Gc(_)) {
+                    rebound.pushed.insert(lane.clone());
+                } else {
+                    rebound.assigned.insert(lane.clone());
+                }
+            }
+        }
+    }
+
+    fn scalarized_field(&self, root: &str, field: &str) -> Option<(String, Type)> {
+        let record = self.scalarized_records.get(root)?;
+        let index = record.field_names.iter().position(|name| name == field)?;
+        Some((record.lanes[index].clone(), record.field_types[index].clone()))
+    }
+
+    fn materialize_scalarized_record(&mut self, root: &str) -> Result<Option<ValueId>, CanonicalLoweringError> {
+        let Some(record) = self.scalarized_records.get(root).cloned() else { return Ok(None) };
+        let fields = record.lanes.iter().map(|lane| self.bindings[lane]).collect();
+        self.lower_heap_record_for_source(&record.source_type, &record.name, &record.field_types, fields).map(Some)
     }
 
     fn lower_elided_lambda_call(&mut self, name: &str, args: &[Expr]) -> Result<Option<ValueId>, CanonicalLoweringError> {
@@ -8960,8 +9118,10 @@ impl FunctionLowerer<'_> {
         // binding keeps its value (and its token) across the loop, as in
         // `lower_for`, so an inner loop never renames what an outer loop
         // does not carry.
-        let rebound = self.loop_rebindings_with_write_backs(Some(scrutinee), body);
+        let mut rebound = self.loop_rebindings_with_write_backs(Some(scrutinee), body);
+        self.scalarized_loop_rebindings(&mut rebound);
         let mut names = loop_lane_names(&outer, &rebound);
+        self.scalarized_loop_lanes(&mut names);
         let outer = self.detach_shared_write_back_lanes(&names, outer)?;
         let list_names = names
             .iter()
@@ -9133,8 +9293,10 @@ impl FunctionLowerer<'_> {
         // `lower_for`, so an inner loop never renames what an outer loop
         // does not carry.
         // The condition's `var` write-backs are loop-carried too (BUG-635).
-        let rebound = self.loop_rebindings_with_write_backs(Some(condition), body);
+        let mut rebound = self.loop_rebindings_with_write_backs(Some(condition), body);
+        self.scalarized_loop_rebindings(&mut rebound);
         let mut names = loop_lane_names(&outer, &rebound);
+        self.scalarized_loop_lanes(&mut names);
         let outer = self.detach_shared_write_back_lanes(&names, outer)?;
         // An immutable exact-extent object crosses the loop as one
         // reference/count/capacity tuple. Mutable-capacity objects remain on
@@ -9418,9 +9580,11 @@ impl FunctionLowerer<'_> {
         // binding keeps its value (and its token) across the loop, as in
         // `lower_for`, so an inner loop never renames what an outer loop
         // does not carry.
-        let rebound = self.loop_rebindings_with_write_backs(None, body)
+        let mut rebound = self.loop_rebindings_with_write_backs(None, body)
             .without_iteration_binding(variable);
-        let names = loop_lane_names(&outer, &rebound);
+        self.scalarized_loop_rebindings(&mut rebound);
+        let mut names = loop_lane_names(&outer, &rebound);
+        self.scalarized_loop_lanes(&mut names);
         let outer = self.detach_shared_write_back_lanes(&names, outer)?;
         // Authenticate referenced collection roots before the loop. A root
         // that is never rebound and has independent extent lanes can keep the
@@ -9662,9 +9826,11 @@ impl FunctionLowerer<'_> {
         // in an `if` arm counts) is loop state; a top-level-only scan once
         // dropped a nested `n = n + 1` and the loop silently kept the entry
         // value.
-        let rebound = self.loop_rebindings_with_write_backs(None, body)
+        let mut rebound = self.loop_rebindings_with_write_backs(None, body)
             .without_iteration_binding(variable);
+        self.scalarized_loop_rebindings(&mut rebound);
         let mut names = loop_lane_names(&outer, &rebound);
+        self.scalarized_loop_lanes(&mut names);
         let outer = self.detach_shared_write_back_lanes(&names, outer)?;
         // An immutable String used by the body keeps its dominating root.
         // Only its authenticated header lanes cross the loop, so a branch
@@ -11800,6 +11966,9 @@ impl FunctionLowerer<'_> {
                 Ok(destination)
             }
             Expr::Var(name) => {
+                if let Some(value) = self.materialize_scalarized_record(name)? {
+                    return Ok(value);
+                }
                 let value = if let Some(value) = self.bindings.get(name).copied() {
                     value
                 } else if let Some((adapter, signature, fn_type)) = self.closures.adapters.get(name).cloned() {
@@ -13416,6 +13585,14 @@ impl FunctionLowerer<'_> {
     }
 
     fn lower_record_field(&mut self, base: &Expr, field: &str) -> Result<ValueId, CanonicalLoweringError> {
+        if let Expr::Var(root) = base
+            && let Some((lane, _)) = self.scalarized_field(root, field)
+        {
+            let value = self.bindings[&lane];
+            return if matches!(self.values[&value], ValueType::Ref(_) | ValueType::Gc(_)) {
+                self.clone_reference_token(value)
+            } else { Ok(value) };
+        }
         let base_type = self.expression_storage_type(base)?;
         if let Type::Tuple(items) = base_type.unqualified() {
             // `pair.1`: the item's slot.
@@ -14827,7 +15004,20 @@ impl FunctionLowerer<'_> {
         let [receiver, element] = arguments else {
             return Err(CanonicalLoweringError::UnsupportedExpression("generated list push arity"));
         };
-        let old_object = self.lower_expr(receiver)?;
+        // A generated update consumes a confined field lane. Its enclosing
+        // checked place assignment immediately installs the result. No record
+        // or retained field snapshot exists at this point.
+        let owned_lane = if let Expr::Field { base, field } = receiver
+            && let Expr::Var(root) = base.as_ref()
+            && let Some((lane, _)) = self.scalarized_field(root, field)
+            && self.scalarized_records.get(root).and_then(|record| record.field_names.iter().position(|name| name == field))
+                .is_some_and(|index| self.consuming_projected_field.as_ref() == Some(&(root.clone(), index)))
+        { Some(lane) } else { None };
+        let old_object = if let Some(lane) = &owned_lane {
+            self.bindings[lane]
+        } else {
+            self.lower_expr(receiver)?
+        };
         let list_type = self.expression_type(receiver)?;
         if matches!(StoragePlan::classify(&list_type, self.definitions, |_| Some(0)),
             StoragePlan::MoveOnlyList(_)) {
@@ -14868,8 +15058,12 @@ impl FunctionLowerer<'_> {
                 value = self.owned_for_storage(value, &parameters[0])?;
             }
         }
-        let list = self.clone_reference_token(old_object)?;
-        self.push_owned_element(list, value, &list_type)
+        if owned_lane.is_some() && !matches!(element_type, ValueType::Ref(_) | ValueType::Gc(_)) {
+            self.push_owned_or_reuse_scalar_element(old_object, value, &list_type)
+        } else {
+            let list = self.clone_reference_token(old_object)?;
+            self.push_owned_element(list, value, &list_type)
+        }
     }
 
     /// Lower `list.concat(xs, ys)` with source value semantics.  Neither input

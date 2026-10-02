@@ -1505,7 +1505,17 @@ impl FunctionLowerer<'_> {
                 AssignmentProjection::Index { base, index, expression } => self.prepare_index_projection(base, index, expression)?,
             });
         }
-        let replacement = self.lower_expr(replacement)?;
+        let consuming = if place.projections.len() == 1
+            && let PreparedProjection::Field { index, .. } = &place.projections[0]
+            && let Expr::Call { args, .. } = replacement
+            && let Some(Expr::Field { base, field }) = args.first()
+            && matches!(base.as_ref(), Expr::Var(source) if source == root)
+            && self.scalarized_records.get(root).is_some_and(|record| record.field_names.get(*index) == Some(field))
+        { Some((root.to_owned(), *index)) } else { None };
+        let previous = std::mem::replace(&mut self.consuming_projected_field, consuming);
+        let lowered = self.lower_expr(replacement);
+        self.consuming_projected_field = previous;
+        let replacement = lowered?;
         self.commit_prepared_write_back(&place, replacement)?;
         Ok(true)
     }
@@ -1588,6 +1598,18 @@ impl FunctionLowerer<'_> {
     }
 
     pub(super) fn read_prepared_write_back(&mut self, place: &PreparedWriteBack) -> Result<ValueId, CanonicalLoweringError> {
+        if let Some(record) = self.scalarized_records.get(&place.root)
+            && let Some((PreparedProjection::Field { index, .. }, rest)) = place.projections.split_first()
+        {
+            let lane = record.lanes[*index].clone();
+            let mut value = self.bindings[&lane];
+            for projection in rest {
+                value = self.read_write_back_projection(value, projection)?;
+            }
+            self.ensure_string_extent(value)?;
+            self.ensure_list_extent(value)?;
+            return Ok(value);
+        }
         let source = if place.disjunctive.is_some() {
             place.reference_alias.as_ref().ok_or(CanonicalLoweringError::UnsupportedExpression(
                 "disjunctive write-back lacks its returned handle",
@@ -1656,6 +1678,16 @@ impl FunctionLowerer<'_> {
     }
 
     pub(super) fn commit_prepared_write_back(&mut self, place: &PreparedWriteBack, replacement: ValueId) -> Result<(), CanonicalLoweringError> {
+        if let Some(record) = self.scalarized_records.get(&place.root)
+            && let Some((PreparedProjection::Field { index, .. }, rest)) = place.projections.split_first()
+        {
+            let lane = record.lanes[*index].clone();
+            let value = if rest.is_empty() { replacement } else {
+                self.rebuild_write_back(self.bindings[&lane], rest, replacement)?
+            };
+            self.bindings.insert(lane, value);
+            return Ok(());
+        }
         if let Some(disjunctive) = &place.disjunctive {
             return self.commit_disjunctive_write_back(disjunctive, place.reference_alias.as_deref(), replacement);
         }
