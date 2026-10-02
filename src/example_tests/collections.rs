@@ -37,6 +37,35 @@ fn main(let console: Console):
     console.print("${list.length(old.items) * 100 + list.length(s.items) * 10 + s.items[0]}")
 "#;
         assert_eq!(run_linked_on_wasm(&[("main", snapshot)], "main"), ["15"]);
+
+        let looped = r#"
+type Stack:
+    items: List(Int)
+    total: Int
+
+fn append(let value: Int, var xs: List(Int)):
+    list.push(xs, value)
+
+fn main(let console: Console):
+    var s = Stack([], 2)
+    s = Stack([], 3)
+    for i in 0..5:
+        append(i, s.items)
+    console.print("${s.total + list.length(s.items) + s.items[4]}")
+"#;
+        for mode in ["", "mode opt\n"] {
+            let source = format!("{mode}{looped}");
+            assert_eq!(run_linked_on_wasm(&[("main", &source)], "main"), ["12"]);
+        }
+
+        let retained = looped.replace(
+            "    for i in 0..5:",
+            "    let old = s\n    for i in 0..5:",
+        ).replace(
+            "    console.print(\"${s.total + list.length(s.items) + s.items[4]}\")",
+            "    console.print(\"${list.length(old.items) * 100 + s.total + list.length(s.items) + s.items[4]}\")",
+        );
+        assert_eq!(run_linked_on_wasm(&[("main", &retained)], "main"), ["12"]);
     }
 
     /// (BUG-535) Lists are ordinary comparison-protocol values: if their elements

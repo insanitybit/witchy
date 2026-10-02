@@ -9379,6 +9379,7 @@ impl FunctionLowerer<'_> {
         let body_id = self.new_block(&state_types)?;
         let exit = self.new_block(&state_types)?;
         self.mark_tracked_phi_parameters(header, &names, &list_names, &outer, false, &rebound);
+        self.mark_owned_record_loop_body(header, body_id, &names, &rebound);
         for block in [header, body_id, exit] {
             self.mark_affine_gc_loop_lanes(block, &names, &outer);
             self.mark_dictionary_loop_lanes(block, &names, &outer);
@@ -9642,6 +9643,7 @@ impl FunctionLowerer<'_> {
         let body_id = self.new_block(&state_types)?;
         let exit = self.new_block(&state_types)?;
         self.mark_tracked_phi_parameters(header, &names, &list_names, &outer, false, &rebound);
+        self.mark_owned_record_loop_body(header, body_id, &names, &rebound);
         for block in [header, body_id, exit] {
             self.mark_affine_gc_loop_lanes(block, &names, &outer);
             self.mark_dictionary_loop_lanes(block, &names, &outer);
@@ -9924,6 +9926,7 @@ impl FunctionLowerer<'_> {
         // allocated by a prior iteration.  Untracked/Shared references stay
         // unspecified and therefore cannot acquire phi authority.
         self.mark_tracked_phi_parameters(header, &names, &list_names, &outer, true, &rebound);
+        self.mark_owned_record_loop_body(header, body_id, &names, &rebound);
         for block in [header, body_id, exit] {
             self.mark_affine_gc_loop_lanes(block, &names, &outer);
             self.mark_dictionary_loop_lanes(block, &names, &outer);
@@ -10469,6 +10472,7 @@ impl FunctionLowerer<'_> {
         body: &witchy_syntax::ast::Block,
     ) -> LoopRebindings {
         let mut rebound = loop_rebindings(body);
+        let mut owned_field_write_backs = BTreeSet::new();
         let byte_layout = self.string_layout_id().ok().map(ValueType::Ref);
         if straight_line_buffer_loop(body) {
             for name in &rebound.self_appended {
@@ -10499,6 +10503,11 @@ impl FunctionLowerer<'_> {
                     {
                         if matches!(argument, Expr::Var(_)) {
                             rebound.pushed.insert(name.to_owned());
+                        } else if matches!(argument, Expr::Field { base, .. } if matches!(base.as_ref(), Expr::Var(_))) {
+                            // A direct record field write-back restores the
+                            // parent with a fresh unique record token. The
+                            // checker verifies that token at the backedge.
+                            owned_field_write_backs.insert(name.to_owned());
                         } else {
                             // Projected write-back rebuilds the current root;
                             // it does not mutate an old collection token.
@@ -10513,6 +10522,11 @@ impl FunctionLowerer<'_> {
             let _ = witchy_syntax::ast::visit::visit_expr::<()>(header, &mut observe);
         }
         let _ = witchy_syntax::ast::visit::visit_block::<()>(body, &mut observe);
+        for name in owned_field_write_backs {
+            if !rebound.assigned.contains(&name) {
+                rebound.pushed.insert(name);
+            }
+        }
         rebound
     }
 
@@ -10573,6 +10587,21 @@ impl FunctionLowerer<'_> {
         for (parameter, ownership) in self.blocks[header.get() as usize].parameters.iter_mut().zip(ownerships) {
             if ownership.is_some() {
                 parameter.ownership = ownership;
+            }
+        }
+    }
+
+    fn mark_owned_record_loop_body(&mut self, header: BlockId, body: BlockId, names: &[String], rebound: &LoopRebindings) {
+        let header_parameters = self.blocks[header.get() as usize].parameters.clone();
+        for (index, name) in names.iter().enumerate() {
+            if rebound.pushed.contains(name)
+                && matches!(header_parameters[index].ownership, Some(Ownership::Unique))
+                && matches!(header_parameters[index].value_type, ValueType::Ref(layout)
+                    if self.physical_descriptor(layout).is_some_and(|descriptor| matches!(descriptor.size(), witchy_wir::layout::LayoutSize::Fixed(_))))
+            {
+                // The only incoming edge is the unique header token. The
+                // checker verifies the edge before granting this body token.
+                self.blocks[body.get() as usize].parameters[index].ownership = Some(Ownership::Unique);
             }
         }
     }
