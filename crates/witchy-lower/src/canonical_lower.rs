@@ -1857,6 +1857,13 @@ struct ClosureCapture {
     field: u32,
 }
 
+#[derive(Clone)]
+struct ElidedScalarLambda {
+    params: Vec<String>,
+    body_address: usize,
+    captures: Vec<(String, ValueId)>,
+}
+
 /// A named function used as a value: its adapter forwards the closure
 /// signature to the function's own.
 struct AdapterFunction {
@@ -1925,6 +1932,18 @@ fn closure_environment_param() -> witchy_syntax::ast::Param {
 
 fn is_int_type(ty: &Type) -> bool {
     matches!(ty.unqualified(), Type::Named(name, arguments) if name == "Int" && arguments.is_empty())
+}
+
+fn scalar_inline_expression(expression: &Expr) -> bool {
+    match expression {
+        Expr::Int(_) | Expr::Float(_) | Expr::Duration(_) | Expr::Bool(_) | Expr::Var(_) => true,
+        Expr::Unary { op: UnOp::Neg | UnOp::Not | UnOp::BitNot, expr } =>
+            scalar_inline_expression(expr),
+        Expr::Binary { op, lhs, rhs }
+            if !matches!(op, BinOp::Concat | BinOp::Coalesce) =>
+            scalar_inline_expression(lhs) && scalar_inline_expression(rhs),
+        _ => false,
+    }
 }
 
 /// The closure signature of a `fn` type: the declaration signature with
@@ -4066,6 +4085,9 @@ fn lower_function(
         values: BTreeMap::new(),
         static_data_values: HashSet::new(),
         bindings: HashMap::new(),
+        elided_lambdas: HashMap::new(),
+        elidable_lambda_names: crate::escape::only_directly_called(body).into_iter().collect(),
+        reassigned_names: crate::escape::reassigned_names(body).into_iter().collect(),
         known_lambda_values: HashMap::new(),
         binding_scopes: vec![HashMap::new()],
         string_lengths: HashMap::new(),
@@ -4744,6 +4766,9 @@ struct FunctionLowerer<'a> {
     /// answered without searching every block built so far.
     static_data_values: HashSet<ValueId>,
     bindings: HashMap<String, ValueId>,
+    elided_lambdas: HashMap<String, ElidedScalarLambda>,
+    elidable_lambda_names: HashSet<String>,
+    reassigned_names: HashSet<String>,
     /// Exact closure objects created by a known lambda in this function.
     /// A value ID never changes target, even when its source binding is rebound.
     known_lambda_values: HashMap<ValueId, FunctionId>,
@@ -5426,8 +5451,7 @@ impl FunctionLowerer<'_> {
                     self.lower_effect_expr(value)?;
                 }
                 Stmt::Let { name, mutable, ty, value, .. } => {
-                    let value = self.lower_let_value(*mutable, value, ty.as_ref())?;
-                    self.bind_lexical(name, value, *mutable)?;
+                    self.lower_let_binding(name, *mutable, ty.as_ref(), value)?;
                 }
                 Stmt::Assign { name, value, place_depth } => {
                     if !self.bindings.contains_key(name) {
@@ -5773,6 +5797,10 @@ impl FunctionLowerer<'_> {
             Expr::Tuple(items) if items.is_empty() => Ok(()),
             Expr::Ctor { name, args } if name == "Nil" && args.is_empty() => Ok(()),
             Expr::Var(name) if name == "Nil" && !self.bindings.contains_key(name) => Ok(()),
+            Expr::Call { name, args } if self.elided_lambdas.contains_key(name) => {
+                self.lower_elided_lambda_call(name, args)?;
+                Ok(())
+            }
             // A call by a bound name is a call through a closure record.
             Expr::Call { name, args } if self.bindings.contains_key(name) => {
                 let callee = self.bindings[name];
@@ -5934,8 +5962,7 @@ impl FunctionLowerer<'_> {
                     self.lower_effect_expr(value)?;
                 }
                 Stmt::Let { name, mutable, ty, value, .. } => {
-                    let value = self.lower_let_value(*mutable, value, ty.as_ref())?;
-                    self.bind_lexical(name, value, *mutable)?;
+                    self.lower_let_binding(name, *mutable, ty.as_ref(), value)?;
                 }
                 Stmt::Assign { name, value, place_depth } => {
                     if !self.bindings.contains_key(name) {
@@ -6066,8 +6093,7 @@ impl FunctionLowerer<'_> {
                     self.lower_effect_expr(value)?;
                 }
                 Stmt::Let { name, mutable, ty, value, .. } => {
-                    let value = self.lower_let_value(*mutable, value, ty.as_ref())?;
-                    self.bind_lexical(name, value, *mutable)?;
+                    self.lower_let_binding(name, *mutable, ty.as_ref(), value)?;
                 }
                 Stmt::Assign { name, value, place_depth } => {
                     if !self.bindings.contains_key(name) {
@@ -6159,6 +6185,7 @@ impl FunctionLowerer<'_> {
         &mut self,
         lower: impl FnOnce(&mut Self) -> Result<T, CanonicalLoweringError>,
     ) -> Result<T, CanonicalLoweringError> {
+        let elided = self.elided_lambdas.clone();
         self.binding_scopes.push(HashMap::new());
         let result = lower(self);
         let scope = self.binding_scopes.pop().expect("a lexical scope was pushed");
@@ -6174,7 +6201,91 @@ impl FunctionLowerer<'_> {
                 self.mutable_bindings.remove(&name);
             }
         }
+        self.elided_lambdas = elided;
         result
+    }
+
+    fn lower_let_binding(&mut self, name: &str, mutable: bool, declared: Option<&Type>, value: &Expr) -> Result<(), CanonicalLoweringError> {
+        if !mutable && declared.is_none() && self.elidable_lambda_names.contains(name)
+            && !self.tail_manifest.sites().iter().any(|site| {
+                if site.key.callable.item != self.item
+                    || site.key.callable.method.is_some()
+                    || site.key.callable.lambda_path != self.lambda_path
+                {
+                    return false;
+                }
+                let Some(path) = site.key.path.strip_prefix(self.tail_prefix.as_slice()) else { return false };
+                matches!(expr_at_tail_path(self.source_body, path),
+                    Some(Expr::Call { name: callee, .. }) if callee == name)
+                    || matches!(expr_at_tail_path(self.source_body, path),
+                        Some(Expr::Apply { func, .. }) if matches!(func.as_ref(), Expr::Var(callee) if callee == name))
+            })
+            && let Expr::Lambda { params, body, .. } = value
+            && let [Stmt::Expr(expression)] = body.stmts.as_slice()
+        {
+            let address = value as *const Expr as usize;
+            if let Some(environment) = self.closures.lambda_captures.get(&address) {
+                let stable = environment.captures.iter().all(|capture| {
+                    !self.reassigned_names.contains(&capture.name)
+                        && self.bindings.get(&capture.name).is_some_and(|value| is_inline_scalar(self.values[value]))
+                });
+                let scalar_params = params.iter().all(|param| param.ty.as_ref().is_some_and(|ty| {
+                    source_value_type(ty, self.layout_bundle, self.layouts, &self.closures.layouts, self.definitions)
+                        .is_ok_and(is_inline_scalar)
+                }));
+                let scalar_result = self.expression_type(expression).ok().and_then(|ty| {
+                    source_value_type(&ty, self.layout_bundle, self.layouts, &self.closures.layouts, self.definitions).ok()
+                }).is_some_and(is_inline_scalar);
+                if stable && scalar_params && scalar_result && scalar_inline_expression(expression)
+                    && params.iter().all(|param| param.convention == Convention::Let) {
+                    let scope = self.binding_scopes.last_mut().expect("every function has a lexical scope");
+                    if scope.contains_key(name) {
+                        return Err(CanonicalLoweringError::DuplicateBinding(name.to_owned()));
+                    }
+                    scope.insert(name.to_owned(), (self.bindings.get(name).copied(), self.mutable_bindings.contains(name)));
+                    let captures = environment.captures.iter().map(|capture| {
+                        (capture.name.clone(), self.bindings[&capture.name])
+                    }).filter(|(capture, _)| !params.iter().any(|param| param.name == *capture)).collect();
+                    self.bindings.remove(name);
+                    self.mutable_bindings.remove(name);
+                    self.elided_lambdas.insert(name.to_owned(), ElidedScalarLambda {
+                        params: params.iter().map(|param| param.name.clone()).collect(),
+                        body_address: expression as *const Expr as usize,
+                        captures,
+                    });
+                    return Ok(());
+                }
+            }
+        }
+        self.elided_lambdas.remove(name);
+        let value = self.lower_let_value(mutable, value, declared)?;
+        self.bind_lexical(name, value, mutable)
+    }
+
+    fn lower_elided_lambda_call(&mut self, name: &str, args: &[Expr]) -> Result<Option<ValueId>, CanonicalLoweringError> {
+        let Some(lambda) = self.elided_lambdas.get(name).cloned() else { return Ok(None) };
+        if args.len() != lambda.params.len() {
+            return Err(CanonicalLoweringError::CallArityMismatch { callee: name.to_owned(), expected: lambda.params.len(), actual: args.len() });
+        }
+        let arguments = args.iter().map(|arg| self.lower_expr(arg)).collect::<Result<Vec<_>, _>>()?;
+        let source = self.source_body;
+        let mut body = None;
+        witchy_syntax::ast::visit::visit_block(source, &mut |expression| {
+            if expression as *const Expr as usize == lambda.body_address {
+                body = Some(expression);
+            }
+            Ok::<(), ()>(())
+        }).expect("read-only AST visit cannot fail");
+        let body = body.ok_or(CanonicalLoweringError::UnsupportedExpression("elided lambda body location"))?;
+        self.with_binding_scope(|lowerer| {
+            for (capture, value) in &lambda.captures {
+                lowerer.bind_lexical(capture, *value, false)?;
+            }
+            for (param, value) in lambda.params.iter().zip(arguments) {
+                lowerer.bind_lexical(param, value, false)?;
+            }
+            lowerer.lower_expr(body).map(Some)
+        })
     }
 
     fn bind_lexical(
@@ -6521,8 +6632,7 @@ impl FunctionLowerer<'_> {
                     self.lower_effect_expr(value)?;
                 }
                 Stmt::Let { name, mutable, ty, value, .. } => {
-                    let value = self.lower_let_value(*mutable, value, ty.as_ref())?;
-                    self.bind_lexical(name, value, *mutable)?;
+                    self.lower_let_binding(name, *mutable, ty.as_ref(), value)?;
                 }
                 Stmt::Assign { name, value, place_depth } => {
                     if !self.bindings.contains_key(name) {
@@ -11955,6 +12065,9 @@ impl FunctionLowerer<'_> {
                 self.lower_render(argument)
             }
             Expr::Call { name, args } => {
+                if let Some(value) = self.lower_elided_lambda_call(name, args)? {
+                    return Ok(value);
+                }
                 let results = if let Some(callee) = self.bindings.get(name).copied() {
                     {
                         let layout = self.closure_layout_for_value(callee)?;
@@ -12011,6 +12124,11 @@ impl FunctionLowerer<'_> {
             | Expr::LabeledMethodCall { .. }
             | Expr::MethodCall { .. } => Err(CanonicalLoweringError::UnsupportedExpression("call")),
             Expr::Apply { func, args } => {
+                if let Expr::Var(name) = func.as_ref()
+                    && let Some(value) = self.lower_elided_lambda_call(name, args)?
+                {
+                    return Ok(value);
+                }
                 let callee = self.lower_expr(func)?;
                 let layout = self.closure_layout_for_value(callee)?;
                 if !self.closures.signature_by_layout.contains_key(&layout) {
