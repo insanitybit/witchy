@@ -141,6 +141,8 @@ mod rfc0167_write_only_var_after_await;
 mod rfc0167_frozen_view_replacement;
 #[path = "misc/rfc0167_unique_root_view_cow.rs"]
 mod rfc0167_unique_root_view_cow;
+#[path = "misc/record_local_ownership.rs"]
+mod record_local_ownership;
 #[path = "misc/rfc0167_await_in_nested_expressions.rs"]
 mod rfc0167_await_in_nested_expressions;
 #[path = "misc/rfc0167_opt_async_factory_relay.rs"]
