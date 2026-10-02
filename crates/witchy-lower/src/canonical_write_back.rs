@@ -17,6 +17,7 @@ pub(super) struct PreparedWriteBack {
     /// before the replacement is moved into its owning root.
     /// This is deliberately unavailable to ordinary write-backs.
     reference_alias: Option<String>,
+    pub(super) detached_owned_field: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -409,6 +410,7 @@ impl FunctionLowerer<'_> {
             projections: Vec::new(),
             disjunctive: None,
             reference_alias: Some(view.to_owned()),
+            detached_owned_field: false,
         }))
     }
 
@@ -578,6 +580,7 @@ impl FunctionLowerer<'_> {
             projections: Vec::new(),
             disjunctive: None,
             reference_alias: Some(view.to_owned()),
+            detached_owned_field: false,
         }))
     }
 
@@ -732,6 +735,7 @@ impl FunctionLowerer<'_> {
                             projections: Vec::new(),
                             disjunctive: None,
                             reference_alias: Some(view.clone()),
+                            detached_owned_field: false,
                         });
                     }
                     if let Some(place) = self.prepare_authenticated_returned_disjunctive_exclusive_handle(
@@ -872,6 +876,7 @@ impl FunctionLowerer<'_> {
                 second: second.clone(),
             }),
             reference_alias: Some(view.to_owned()),
+            detached_owned_field: false,
         }))
     }
 
@@ -943,6 +948,7 @@ impl FunctionLowerer<'_> {
             projections: vec![projection],
             disjunctive: None,
             reference_alias: Some(view.to_owned()),
+            detached_owned_field: false,
         }))
     }
 
@@ -1027,6 +1033,7 @@ impl FunctionLowerer<'_> {
             projections: Vec::new(),
             disjunctive: None,
             reference_alias: Some(view.to_owned()),
+            detached_owned_field: false,
         }))
     }
 
@@ -1130,6 +1137,7 @@ impl FunctionLowerer<'_> {
             projections: vec![projection],
             disjunctive: None,
             reference_alias: Some(view.to_owned()),
+            detached_owned_field: false,
         }))
     }
 
@@ -1498,6 +1506,7 @@ impl FunctionLowerer<'_> {
             projections: Vec::with_capacity(path.len()),
             disjunctive: None,
             reference_alias: None,
+            detached_owned_field: false,
         };
         for projection in path {
             place.projections.push(match projection {
@@ -1531,6 +1540,7 @@ impl FunctionLowerer<'_> {
                     projections: Vec::new(),
                     disjunctive: None,
                     reference_alias: None,
+                    detached_owned_field: false,
                 })
             }
             Expr::Field { base, field } => {
@@ -1627,6 +1637,100 @@ impl FunctionLowerer<'_> {
         Ok(value)
     }
 
+    /// Transfer the field edge itself for a final `var` call argument when
+    /// the ordinary record has one sole owner. The call's hidden result must
+    /// restore the exact slot before this parent can be used or destroyed.
+    /// The checker independently proves sole ownership and the typed slot.
+    pub(super) fn take_prepared_owned_field(
+        &mut self,
+        place: &mut PreparedWriteBack,
+    ) -> Result<Option<ValueId>, CanonicalLoweringError> {
+        if place.disjunctive.is_some()
+            || place.reference_alias.is_some()
+            || self.scalarized_records.contains_key(&place.root)
+        {
+            return Ok(None);
+        }
+        let [PreparedProjection::Field { source, index }] = place.projections.as_slice() else {
+            return Ok(None);
+        };
+        let current = *self.bindings.get(&place.root)
+            .ok_or_else(|| CanonicalLoweringError::MissingBinding(place.root.clone()))?;
+        let ValueType::Ref(layout) = self.values[&current] else { return Ok(None) };
+        if !self.proven_unique_record_token(current)
+            || self.known_shared_value(current)
+            || self.aliased_binding(&place.root, current)
+        {
+            return Ok(None);
+        }
+        let shape = scalar_aggregate_shape(source, self.definitions)
+            .filter(|shape| !shape.tagged && !shape.packed)
+            .ok_or_else(|| CanonicalLoweringError::UnsupportedType(source.clone()))?;
+        let ty = self.field_value_type(&shape.fields[*index])?;
+        if !matches!(ty, ValueType::Ref(_)) {
+            return Ok(None);
+        }
+        let physical = self.layouts.resolve_nominal(layout)
+            .map_err(|_| CanonicalLoweringError::MissingLayout(source.clone()))?;
+        let Some(field) = self.layouts.get(physical).and_then(|layout| layout.fields().get(*index)) else {
+            return Ok(None);
+        };
+        let owned = match field.kind() {
+            witchy_wir::layout::FieldKind::Pointer { slot: PointerSlot::Owned, .. } => true,
+            witchy_wir::layout::FieldKind::Inline(slot) => self.layouts.get(slot).is_some_and(|slot| {
+                matches!(slot.kind(), LayoutKind::RuntimePointerValueSlot {
+                    semantics: PointerSlot::Owned, ..
+                })
+            }),
+            _ => false,
+        };
+        if !owned {
+            return Ok(None);
+        }
+        let destination = self.fresh(ty)?;
+        self.push_operation(Operation::Load {
+            destination,
+            place: witchy_wir::canonical_safewir::Place::projected(
+                current,
+                Projection::Field { index: u32::try_from(*index).map_err(|_| CanonicalLoweringError::IdOverflow)? },
+                ty,
+                AccessMode::Read,
+            ),
+            transfer: witchy_wir::canonical_safewir::LoadTransfer::TakeOwnedField,
+        });
+        place.detached_owned_field = true;
+        Ok(Some(destination))
+    }
+
+    fn proven_unique_record_token(&self, value: ValueId) -> bool {
+        self.proven_unique_record_token_via(value, &mut std::collections::BTreeSet::new())
+    }
+
+    fn proven_unique_record_token_via(
+        &self,
+        value: ValueId,
+        visited: &mut std::collections::BTreeSet<ValueId>,
+    ) -> bool {
+        if !visited.insert(value) {
+            return false;
+        }
+        for block in &self.blocks {
+            if let Some(parameter) = block.parameters.iter().find(|parameter| parameter.value == value) {
+                return parameter.ownership == Some(Ownership::Unique);
+            }
+            for operation in &block.operations {
+                match operation {
+                    Operation::Alloc { destination, .. } if *destination == value => return true,
+                    Operation::MoveValue { destination, source } if *destination == value => {
+                        return self.proven_unique_record_token_via(*source, visited);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        false
+    }
+
     fn read_write_back_field(&mut self, value: ValueId, source: &Type, index: usize, ty: ValueType) -> Result<ValueId, CanonicalLoweringError> {
         if matches!(self.values[&value], ValueType::InlineAggregate(_)) {
             let destination = self.fresh(ty)?;
@@ -1688,6 +1792,35 @@ impl FunctionLowerer<'_> {
             self.bindings.insert(lane, value);
             return Ok(());
         }
+        if place.detached_owned_field {
+            let [PreparedProjection::Field { source, index }] = place.projections.as_slice() else {
+                return Err(CanonicalLoweringError::UnsupportedExpression("detached field lost exact place"));
+            };
+            let current = *self.bindings.get(&place.root)
+                .ok_or_else(|| CanonicalLoweringError::MissingBinding(place.root.clone()))?;
+            let shape = scalar_aggregate_shape(source, self.definitions)
+                .ok_or_else(|| CanonicalLoweringError::UnsupportedType(source.clone()))?;
+            let expected = self.field_value_type(&shape.fields[*index])?;
+            if self.values[&replacement] != expected {
+                return Err(CanonicalLoweringError::UnsupportedExpression("detached field write-back type"));
+            }
+            // The hidden call result may be shared even when the lowering's
+            // local graph cannot prove it. Retain a separate field edge and
+            // leave the result token for ordinary release placement.
+            let value = self.fresh(expected)?;
+            self.push_operation(Operation::CloneRef { destination: value, source: replacement });
+            self.push_operation(Operation::Store {
+                place: witchy_wir::canonical_safewir::Place::projected(
+                    current,
+                    Projection::Field { index: u32::try_from(*index).map_err(|_| CanonicalLoweringError::IdOverflow)? },
+                    expected,
+                    AccessMode::Write,
+                ),
+                value,
+                transfer: witchy_wir::canonical_safewir::StoreTransfer::CloneShared,
+            });
+            return Ok(());
+        }
         if let Some(disjunctive) = &place.disjunctive {
             return self.commit_disjunctive_write_back(disjunctive, place.reference_alias.as_deref(), replacement);
         }
@@ -1738,6 +1871,7 @@ impl FunctionLowerer<'_> {
                 projections: Vec::new(),
                 disjunctive: None,
                 reference_alias: alias.clone(),
+                detached_owned_field: false,
             };
             this.commit_prepared_write_back(&place, replacement)?;
             Ok(None)
@@ -1747,6 +1881,7 @@ impl FunctionLowerer<'_> {
                 projections: Vec::new(),
                 disjunctive: None,
                 reference_alias: alias.clone(),
+                detached_owned_field: false,
             };
             this.commit_prepared_write_back(&place, replacement)?;
             Ok(None)

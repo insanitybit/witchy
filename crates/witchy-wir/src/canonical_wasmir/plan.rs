@@ -391,6 +391,26 @@ pub(super) fn push_init_nullable_owned_plan(
     Ok(())
 }
 
+pub(super) fn push_clear_owned_field_plan(
+    plan: &mut Vec<PlanToken>,
+    function: &Function,
+    layouts: &LayoutInterner,
+    layout: &LocalLayout,
+    place: &Place,
+) -> Result<(), CanonicalAdmissionError> {
+    let access = resolve_memory_place_for_values(function.id, &function.value_types, layouts, place)
+        .map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
+    if access.pointer_slot != Some(PointerSlot::Owned)
+        || place.access() != AccessMode::Write
+        || !matches!(place.projection(), Projection::Field { .. })
+    {
+        return Err(CanonicalAdmissionError::UnsupportedPlan);
+    }
+    push_projected_address_plan(plan, function, layout, access)?;
+    plan.extend([PlanToken::I32Const(0), PlanToken::I32Store { offset: 0, align: 2, memory: 0 }]);
+    Ok(())
+}
+
 pub(super) fn push_require_present_plan(
     plan: &mut Vec<PlanToken>,
     layout: &LocalLayout,
@@ -1507,6 +1527,7 @@ pub(super) fn expected_block_operations_plan(
                         | LoadTransfer::MoveUnique
                         | LoadTransfer::TakeLast
                         | LoadTransfer::TakeNullableUnique
+                        | LoadTransfer::TakeOwnedField
                 ) =>
             {
                 if is_raw_allocation_capacity_load(function.id, &function.value_types, layouts, place) {
@@ -1526,13 +1547,17 @@ pub(super) fn expected_block_operations_plan(
                         push_require_present_plan(&mut plan, &layout, *destination)?;
                         push_share_plan(&mut plan, &layout, *destination, *destination)?;
                     }
-                    LoadTransfer::TakeNullableUnique => {
+                    LoadTransfer::TakeNullableUnique | LoadTransfer::TakeOwnedField => {
                         push_require_present_plan(&mut plan, &layout, *destination)?;
                         let writable = crate::canonical_safewir::Place::projected(
                             place.object(), place.projection().clone(), place.value_type(),
                             crate::canonical_safewir::AccessMode::Write,
                         );
-                        push_init_nullable_owned_plan(&mut plan, function, layouts, &layout, &writable)?;
+                        if *transfer == LoadTransfer::TakeOwnedField {
+                            push_clear_owned_field_plan(&mut plan, function, layouts, &layout, &writable)?;
+                        } else {
+                            push_init_nullable_owned_plan(&mut plan, function, layouts, &layout, &writable)?;
+                        }
                     }
                     LoadTransfer::TakeLast => {
                         let Projection::Element { index } = place.projection() else { return Err(CanonicalAdmissionError::UnsupportedPlan); };

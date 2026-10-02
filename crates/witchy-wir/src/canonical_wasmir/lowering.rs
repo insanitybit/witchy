@@ -890,11 +890,11 @@ pub(super) fn lower_operation(
             let access = resolve_memory_place_for_values(function, value_types, layouts, place)?;
             let valid_transfer = match access.pointer_layout {
                 Some(pointee) if access.pointer_slot == Some(PointerSlot::OwnedNullable) => {
-                    matches!(transfer, LoadTransfer::ClonePresent | LoadTransfer::TakeNullableUnique)
+                    matches!(transfer, LoadTransfer::ClonePresent | LoadTransfer::TakeNullableUnique | LoadTransfer::TakeOwnedField)
                         && place.value_type() == ValueType::Ref(pointee)
                 }
                 Some(pointee) => {
-                    matches!(transfer, LoadTransfer::CloneShared | LoadTransfer::MoveUnique | LoadTransfer::TakeLast)
+                    matches!(transfer, LoadTransfer::CloneShared | LoadTransfer::MoveUnique | LoadTransfer::TakeLast | LoadTransfer::TakeOwnedField)
                         && place.value_type() == ValueType::Ref(pointee)
                 }
                 None => matches!(transfer, LoadTransfer::CopyScalar | LoadTransfer::TakeLast),

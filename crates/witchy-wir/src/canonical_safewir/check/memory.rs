@@ -1953,6 +1953,27 @@ pub mod self_checks {
             checker.check(&Operation::Load { destination: ValueId::new(11), place: read.clone(), transfer: LoadTransfer::ClonePresent }).unwrap();
             assert!(checker.check(&Operation::Load { destination: LOADED, place: read, transfer: LoadTransfer::TakeNullableUnique }).is_err());
         });
+        with_fixed_pointer_checker(PointerSlot::Owned, |checker, child| {
+            checker.check(&Operation::Store {
+                place: nullable_field(SOURCE, child, AccessMode::Write),
+                value: CHILD,
+                transfer: StoreTransfer::MoveUnique,
+            }).unwrap();
+            let read = nullable_field(SOURCE, child, AccessMode::Read);
+            checker.check(&Operation::Load {
+                destination: ValueId::new(11), place: read.clone(), transfer: LoadTransfer::CloneShared,
+            }).unwrap();
+            checker.check(&Operation::Load {
+                destination: LOADED, place: read.clone(), transfer: LoadTransfer::TakeOwnedField,
+            }).unwrap();
+            assert_eq!(checker.state.objects[&LOADED].ownership, Ownership::Shared);
+            assert!(checker.state.nullable_absent_slots.contains(&(SOURCE, SlotIdentity::Constant(0))));
+            assert!(checker.require_complete_value_initialized(SOURCE, "detached phi").is_err());
+            assert!(checker.check(&Operation::DropRef { object: SOURCE }).is_err());
+            assert!(checker.check(&Operation::Load {
+                destination: ValueId::new(11), place: read, transfer: LoadTransfer::TakeOwnedField,
+            }).is_err());
+        });
         with_nullable_checker(|checker, child| {
             checker.check(&Operation::Store {
                 place: nullable_field(SOURCE, child, AccessMode::Write),

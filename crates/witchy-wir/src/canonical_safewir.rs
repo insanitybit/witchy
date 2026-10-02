@@ -317,6 +317,10 @@ pub enum LoadTransfer {
     /// Take one present reference from a nullable field of a uniquely owned
     /// aggregate, then clear that field before its shell can be released.
     TakeNullableUnique,
+    /// Temporarily detach a nonnullable owned field from a sole unique
+    /// aggregate token. The child retains its recorded ownership, including
+    /// Shared. The parent must be restored before publication or destruction.
+    TakeOwnedField,
     MoveUnique,
 }
 

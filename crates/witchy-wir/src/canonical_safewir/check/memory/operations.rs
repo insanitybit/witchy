@@ -355,10 +355,10 @@ impl<'a> MemoryChecker<'a> {
                             .insert(generation);
                     }
                 }
-                if matches!(transfer, LoadTransfer::MoveUnique | LoadTransfer::TakeLast | LoadTransfer::TakeNullableUnique) {
+                if matches!(transfer, LoadTransfer::MoveUnique | LoadTransfer::TakeLast | LoadTransfer::TakeNullableUnique | LoadTransfer::TakeOwnedField) {
                     self.invalidate_full_current_prefixes(place.object());
                 }
-                if matches!(transfer, LoadTransfer::TakeLast | LoadTransfer::TakeNullableUnique) {
+                if matches!(transfer, LoadTransfer::TakeLast | LoadTransfer::TakeNullableUnique | LoadTransfer::TakeOwnedField) {
                     self.invalidate_owner_generation(place.object())?;
                 }
                 Ok(true)
@@ -794,10 +794,17 @@ impl<'a> MemoryChecker<'a> {
         self.require_ref_type(destination, layout)?;
         let key = self.reference_slot(place)?;
         let nullable = self.nullable_fixed_field(place)?.is_some();
-        if nullable != matches!(transfer, LoadTransfer::ClonePresent | LoadTransfer::TakeNullableUnique) {
+        if !nullable && self.nullable_slot_absent(key.0, key.1) {
+            return self.unsupported("Load(detached owned field)");
+        }
+        let owned_field_take = transfer == LoadTransfer::TakeOwnedField;
+        if owned_field_take && (nullable || self.owned_fixed_field(place)? != Some(layout)) {
+            return self.unsupported("Load(nonnullable owned field take)");
+        }
+        if !owned_field_take && nullable != matches!(transfer, LoadTransfer::ClonePresent | LoadTransfer::TakeNullableUnique) {
             return self.unsupported("Load(nullable transfer mismatch)");
         }
-        if transfer == LoadTransfer::TakeNullableUnique {
+        if matches!(transfer, LoadTransfer::TakeNullableUnique | LoadTransfer::TakeOwnedField) {
             let root = self.live_object(place.object())?.clone();
             if root.ownership != Ownership::Unique
                 || root.shared_immutable
@@ -817,25 +824,35 @@ impl<'a> MemoryChecker<'a> {
                 return self.unsupported("Load(take of absent nullable slot)");
             }
             let stored = self.stored_slot_by_identity(key.0, key.1).cloned();
-            if !self.nullable_unique_slot_by_identity(key.0, key.1) {
+            if transfer == LoadTransfer::TakeNullableUnique
+                && !self.nullable_unique_slot_by_identity(key.0, key.1)
+            {
                 return self.unsupported("Load(nullable take without unique child proof)");
             }
             let child = if let Some(child) = stored { child } else {
                 // Exact child identities are discarded when a complete
-                // aggregate crosses a join. Every incoming edge still proves
-                // that a present child owns one exclusive RC token.
+                // aggregate crosses a join. A unique take needs the separate
+                // unique-slot proof; an owned take conservatively gets a
+                // shared token when that proof is unavailable.
                 let extent = match self.descriptor(layout)?.size() {
                     LayoutSize::Fixed(bytes) => Extent::FixedBytes(u64::from(bytes)),
                     LayoutSize::Dynamic { base, .. } => Extent::HeaderPrefix { minimum_bytes: base },
                 };
                 ObjectState {
                     identity: destination, owner_generation: 0, layout, extent,
-                    ownership: Ownership::Unique,
+                    ownership: if transfer == LoadTransfer::TakeNullableUnique {
+                        Ownership::Unique
+                    } else {
+                        Ownership::Shared
+                    },
                     allocation_class: Some(AllocationClass::ReferenceCounted),
                     shared_immutable: false, initialized_owned_slots: true,
                 }
             };
-            if !Self::is_managed_storage(&child) || child.ownership != Ownership::Unique {
+            if !Self::is_managed_storage(&child)
+                || !matches!(child.ownership, Ownership::Unique | Ownership::Shared)
+                || (transfer == LoadTransfer::TakeNullableUnique && child.ownership != Ownership::Unique)
+            {
                 return self.unsupported("Load(nullable take of non-unique child)");
             }
             let aliases = self.state.stored_objects.keys().copied().filter(|(container, slot)| {
@@ -1012,7 +1029,7 @@ impl<'a> MemoryChecker<'a> {
             return Ok(());
         };
         match transfer {
-            LoadTransfer::ClonePresent | LoadTransfer::TakeLast | LoadTransfer::TakeNullableUnique => unreachable!("handled before ordinary reference loads"),
+            LoadTransfer::ClonePresent | LoadTransfer::TakeLast | LoadTransfer::TakeNullableUnique | LoadTransfer::TakeOwnedField => unreachable!("handled before ordinary reference loads"),
             LoadTransfer::CloneShared => {
                 if !matches!(stored.ownership, Ownership::Unique | Ownership::Shared)
                     || !Self::is_managed_storage(&stored)
@@ -1283,6 +1300,19 @@ impl<'a> MemoryChecker<'a> {
             crate::layout::FieldKind::Pointer { pointee, slot: PointerSlot::OwnedNullable } => Some(pointee),
             crate::layout::FieldKind::Inline(slot) => match self.layouts.get(slot).map(|slot| slot.kind()) {
                 Some(LayoutKind::RuntimePointerValueSlot { pointee, semantics: PointerSlot::OwnedNullable }) => Some(*pointee),
+                _ => None,
+            },
+            _ => None,
+        }))
+    }
+
+    pub(super) fn owned_fixed_field(&self, place: &Place) -> Result<Option<crate::layout::LayoutId>, InitialCheckError> {
+        let Projection::Field { index } = place.projection() else { return Ok(None) };
+        let descriptor = self.descriptor(self.live_object(place.object())?.layout)?;
+        Ok(descriptor.fields().get(*index as usize).and_then(|field| match field.kind() {
+            crate::layout::FieldKind::Pointer { pointee, slot: PointerSlot::Owned } => Some(pointee),
+            crate::layout::FieldKind::Inline(slot) => match self.layouts.get(slot).map(|slot| slot.kind()) {
+                Some(LayoutKind::RuntimePointerValueSlot { pointee, semantics: PointerSlot::Owned }) => Some(*pointee),
                 _ => None,
             },
             _ => None,

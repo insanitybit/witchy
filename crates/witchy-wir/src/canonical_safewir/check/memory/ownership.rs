@@ -658,6 +658,9 @@ impl<'a> MemoryChecker<'a> {
             return self.unsupported("CloneRef(scalar)");
         };
         self.require_ref_type(destination, layout)?;
+        if self.has_detached_owned_field(source)? {
+            return self.unsupported("CloneRef(detached owned field)");
+        }
         let source_is_static = self.state.static_data_objects.contains(&source);
         let mut state = self.live_object(source)?.clone();
         if !matches!(state.ownership, Ownership::Unique | Ownership::Shared) {

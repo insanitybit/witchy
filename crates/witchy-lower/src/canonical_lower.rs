@@ -10303,7 +10303,7 @@ impl FunctionLowerer<'_> {
                 match operation {
                     Operation::Alloc { destination, class: witchy_wir::canonical_safewir::AllocationClass::ReferenceCounted, .. }
                     | Operation::CloneRef { destination, .. }
-                    | Operation::Load { destination, transfer: witchy_wir::canonical_safewir::LoadTransfer::CloneShared | witchy_wir::canonical_safewir::LoadTransfer::ClonePresent | witchy_wir::canonical_safewir::LoadTransfer::TakeLast | witchy_wir::canonical_safewir::LoadTransfer::TakeNullableUnique, .. } => {
+                    | Operation::Load { destination, transfer: witchy_wir::canonical_safewir::LoadTransfer::CloneShared | witchy_wir::canonical_safewir::LoadTransfer::ClonePresent | witchy_wir::canonical_safewir::LoadTransfer::TakeLast | witchy_wir::canonical_safewir::LoadTransfer::TakeNullableUnique | witchy_wir::canonical_safewir::LoadTransfer::TakeOwnedField, .. } => {
                         direct.insert(*destination);
                     }
                     Operation::Call { destinations, .. } | Operation::VarCall { destinations, .. } => {
@@ -10639,7 +10639,7 @@ impl FunctionLowerer<'_> {
                     }
                     Operation::Load {
                         destination,
-                        transfer: witchy_wir::canonical_safewir::LoadTransfer::CloneShared | witchy_wir::canonical_safewir::LoadTransfer::ClonePresent | witchy_wir::canonical_safewir::LoadTransfer::TakeLast,
+                        transfer: witchy_wir::canonical_safewir::LoadTransfer::CloneShared | witchy_wir::canonical_safewir::LoadTransfer::ClonePresent | witchy_wir::canonical_safewir::LoadTransfer::TakeLast | witchy_wir::canonical_safewir::LoadTransfer::TakeOwnedField,
                         ..
                     } => { direct.insert(*destination); }
                     Operation::ClosureOwner(OwnerOperation::ReadEnvironmentField { destination, .. })
@@ -11639,8 +11639,21 @@ impl FunctionLowerer<'_> {
                     write_backs.push(place);
                     value
                 } else if conventions[parameter] == Convention::Var {
-                    let place = self.prepare_write_back(argument)?;
-                    let value = self.read_prepared_write_back(&place)?;
+                    let mut place = self.prepare_write_back(argument)?;
+                    // Only the final argument may leave its parent record
+                    // temporarily incomplete. Earlier arguments may evaluate
+                    // later source expressions before the hidden write-back.
+                    let taken = if parameter + 1 == arguments.len()
+                        && !write_backs.iter().any(|earlier: &PreparedWriteBack| earlier.root == place.root)
+                    {
+                        self.take_prepared_owned_field(&mut place)?
+                    } else {
+                        None
+                    };
+                    let value = match taken {
+                        Some(value) => value,
+                        None => self.read_prepared_write_back(&place)?,
+                    };
                     write_backs.push(place);
                     value
                 } else {
@@ -11843,7 +11856,12 @@ impl FunctionLowerer<'_> {
                         // after it); the caller's binding is rebound to the
                         // write-back result.
                         let ty = self.expression_type(argument)?;
-                        let value = if contract.ownership == ParameterOwnership::UniqueWriteBack
+                        let detached_owned_field = write_backs.last()
+                            .is_some_and(|place| place.detached_owned_field);
+                        let value = if detached_owned_field {
+                            self.owned_parameters.retain(|owned| *owned != value);
+                            value
+                        } else if contract.ownership == ParameterOwnership::UniqueWriteBack
                             && matches!(ty.unqualified(), Type::Named(name, args) if name == "Dict" && args.len() == 2)
                             && self.is_table_dictionary(&ty)?
                             && (!matches!(argument, Expr::Var(_))

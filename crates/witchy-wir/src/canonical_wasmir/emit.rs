@@ -544,6 +544,26 @@ pub(super) fn emit_init_nullable_owned(
     Ok(())
 }
 
+pub(super) fn emit_clear_owned_field(
+    body: &mut wasm_encoder::Function,
+    function: &Function,
+    layout: &LocalLayout,
+    layouts: &LayoutInterner,
+    place: &Place,
+) -> Result<(), EncodeError> {
+    let access = resolve_memory_place(function, layouts, place).map_err(EncodeError::Lowering)?;
+    if access.pointer_slot != Some(PointerSlot::Owned)
+        || place.access() != AccessMode::Write
+        || !matches!(place.projection(), Projection::Field { .. })
+    {
+        return Err(EncodeError::UnsupportedLayout { function: function.id, operation: "TakeOwnedField" });
+    }
+    emit_projected_address(body, function, layout, access)?;
+    body.instruction(&wasm_encoder::Instruction::I32Const(0));
+    body.instruction(&wasm_encoder::Instruction::I32Store(memarg(4)));
+    Ok(())
+}
+
 pub(super) fn emit_clone_present(
     body: &mut wasm_encoder::Function,
     layout: &LocalLayout,
@@ -1608,7 +1628,7 @@ pub(super) fn emit_instruction(
             match transfer {
                 LoadTransfer::CloneShared => emit_clone_ref(body, layout, *destination, *destination, function)?,
                 LoadTransfer::ClonePresent => emit_clone_present(body, layout, *destination, function)?,
-                LoadTransfer::TakeNullableUnique => {
+                LoadTransfer::TakeNullableUnique | LoadTransfer::TakeOwnedField => {
                     emit_get(body, layout, function.id, *destination)?;
                     body.instruction(&wasm_encoder::Instruction::I32Eqz);
                     body.instruction(&wasm_encoder::Instruction::If(wasm_encoder::BlockType::Empty));
@@ -1618,7 +1638,11 @@ pub(super) fn emit_instruction(
                         place.object(), place.projection().clone(), place.value_type(),
                         crate::canonical_safewir::AccessMode::Write,
                     );
-                    emit_init_nullable_owned(body, function, layout, layouts, &writable)?;
+                    if *transfer == LoadTransfer::TakeOwnedField {
+                        emit_clear_owned_field(body, function, layout, layouts, &writable)?;
+                    } else {
+                        emit_init_nullable_owned(body, function, layout, layouts, &writable)?;
+                    }
                 }
                 LoadTransfer::TakeLast => {
                     let Projection::Element { index } = place.projection() else { return Err(EncodeError::UnsupportedLayout { function: function.id, operation: "TakeLast" }); };

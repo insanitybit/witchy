@@ -328,6 +328,7 @@ impl CanonicalWriter {
             LoadTransfer::ClonePresent => 3,
             LoadTransfer::TakeLast => 4,
             LoadTransfer::TakeNullableUnique => 5,
+            LoadTransfer::TakeOwnedField => 6,
         });
     }
 

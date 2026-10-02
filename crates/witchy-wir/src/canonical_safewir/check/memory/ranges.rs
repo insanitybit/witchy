@@ -723,8 +723,28 @@ impl<'a> MemoryChecker<'a> {
         Ok(())
     }
 
-    pub(super) fn require_owned_slots_initialized(
+    pub(super) fn has_detached_owned_field(&self, object: ValueId) -> Result<bool, InitialCheckError> {
+        let state = self.live_object(object)?;
+        // A checked take may temporarily clear a nonnullable field while the
+        // parent stays local. It cannot cross any ownership or destructor
+        // boundary until the field is restored, even if the record had been
+        // summarized as complete before the take.
+        let descriptor = self.descriptor(state.layout)?;
+        for (index, field) in descriptor.fields().iter().enumerate() {
+            let owned = matches!(field.kind(), crate::layout::FieldKind::Pointer {
+                slot: crate::layout::PointerSlot::Owned, ..
+            }) || matches!(field.kind(), crate::layout::FieldKind::Inline(slot)
+                if self.descriptor(slot).is_ok_and(|slot| matches!(slot.kind(), LayoutKind::RuntimePointerValueSlot {
+                    semantics: crate::layout::PointerSlot::Owned, ..
+                })));
+            if owned && self.nullable_slot_absent(object, SlotIdentity::Constant(index as u64)) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
 
+    pub(super) fn require_owned_slots_initialized(
         &self,
         object: ValueId,
         operation: &'static str,
@@ -734,6 +754,9 @@ impl<'a> MemoryChecker<'a> {
         }
         let state = self.live_object(object)?;
         let allocation_identity = state.identity;
+        if self.has_detached_owned_field(object)? {
+            return self.unsupported(operation);
+        }
         self.require_owned_edges_within_prefix(object, state, operation)?;
         if state.initialized_owned_slots {
             return Ok(());

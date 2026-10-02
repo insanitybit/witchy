@@ -4,10 +4,10 @@ use crate::canonical_safewir::{AllocationClass, ValueType};
 const FUNCTION: FunctionId = FunctionId::new(101);
 
 fn candidate(present: bool) -> CanonicalModule<LoweredCandidate> {
-    candidate_with_transfer(present, false, true)
+    candidate_with_transfer(present, false, true, false)
 }
 
-fn candidate_with_transfer(present: bool, shared: bool, nullable: bool) -> CanonicalModule<LoweredCandidate> {
+fn candidate_with_transfer(present: bool, shared: bool, nullable: bool, take: bool) -> CanonicalModule<LoweredCandidate> {
     let mut layouts = LayoutInterner::new();
     let int = layouts.intern_scalar(ScalarKind::Int).unwrap();
     let child_layout = layouts.intern_packed_record(vec![int]).unwrap();
@@ -48,11 +48,17 @@ fn candidate_with_transfer(present: bool, shared: bool, nullable: bool) -> Canon
     }
     operations.extend([
         Operation::Load { destination: loaded, place: field(parent, ValueType::Ref(child_layout), AccessMode::Read),
-            transfer: if nullable { LoadTransfer::ClonePresent } else { LoadTransfer::CloneShared } },
+            transfer: if take { LoadTransfer::TakeOwnedField }
+                else if nullable { LoadTransfer::ClonePresent } else { LoadTransfer::CloneShared } },
         Operation::Load { destination: result, place: field(loaded, ValueType::Int, AccessMode::Read), transfer: LoadTransfer::CopyScalar },
-        Operation::DropRef { object: loaded },
-        Operation::DropRef { object: parent },
     ]);
+    if take {
+        operations.push(Operation::Store {
+            place: field(parent, ValueType::Ref(child_layout), AccessMode::Write),
+            value: loaded, transfer: StoreTransfer::CloneShared,
+        });
+    }
+    operations.extend([Operation::DropRef { object: loaded }, Operation::DropRef { object: parent }]);
     if shared {
         operations.extend([
             Operation::Load { destination: after_drop, place: field(external, ValueType::Int, AccessMode::Read), transfer: LoadTransfer::CopyScalar },
@@ -87,4 +93,11 @@ pub fn nullable_admission_rejects_valid_but_mutated_bytes() {
     bytes[literal + 1] = 43;
     wasmparser::validate(&bytes).expect("mutation is structurally valid Wasm");
     assert!(admit_canonical_with_bytes_for_test(validated(true), bytes).is_err());
+}
+
+pub fn owned_field_take_admits_shared_child() {
+    let candidate = candidate_with_transfer(true, true, false, true);
+    let initial = check_initial_with_test_witness(candidate).expect("shared child owned take checks");
+    let validated = validate_final_for_test(initial).expect("shared child owned take validates");
+    admit_canonical_for_test(validated).expect("shared child owned take admits to Wasm");
 }

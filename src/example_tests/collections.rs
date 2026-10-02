@@ -1,6 +1,44 @@
 use super::*;
 use crate::{ast, codegen, parser, typeck};
 
+    #[test]
+    fn record_field_var_call_preserves_owned_and_snapshot_values() {
+        let body = r#"
+type Stack:
+    items: List(Int)
+    total: Int
+
+fn append(let value: Int, var xs: List(Int)):
+    list.push(xs, value)
+
+fn main(let console: Console):
+    var s = Stack([], 1)
+    s = Stack([], 2)
+    append(5, s.items)
+    console.print("${s.total + list.length(s.items) + s.items[0]}")
+"#;
+        for mode in ["", "mode opt\n"] {
+            let source = format!("{mode}{body}");
+            assert_eq!(run_linked_on_wasm(&[("main", &source)], "main"), ["8"]);
+        }
+
+        let snapshot = r#"
+type Stack:
+    items: List(Int)
+    total: Int
+
+fn append(let value: Int, var xs: List(Int)):
+    list.push(xs, value)
+
+fn main(let console: Console):
+    var s = Stack([], 1)
+    let old = s
+    append(5, s.items)
+    console.print("${list.length(old.items) * 100 + list.length(s.items) * 10 + s.items[0]}")
+"#;
+        assert_eq!(run_linked_on_wasm(&[("main", snapshot)], "main"), ["15"]);
+    }
+
     /// (BUG-535) Lists are ordinary comparison-protocol values: if their elements
     /// satisfy `PartialEq`/`Eq`, the list itself satisfies the same bound instead
     /// of relying on one-off direct-operator magic.

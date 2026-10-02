@@ -48,7 +48,7 @@ impl ValueGraph {
                     let Node::Object(root) = graph.node(place.object()) else { return None };
                     let child = graph.fields.get(&(root, *index)).copied().unwrap_or(Node::Unknown);
                     graph.values.insert(*destination, child);
-                    if matches!(transfer, LoadTransfer::MoveUnique | LoadTransfer::TakeNullableUnique | LoadTransfer::TakeLast) {
+                    if matches!(transfer, LoadTransfer::MoveUnique | LoadTransfer::TakeNullableUnique | LoadTransfer::TakeOwnedField | LoadTransfer::TakeLast) {
                         graph.fields.remove(&(root, *index));
                     }
                 }

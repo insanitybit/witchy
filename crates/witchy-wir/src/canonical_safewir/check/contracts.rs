@@ -1138,7 +1138,7 @@ fn derive_operation(
         Operation::FunctionValue { .. } => {}
         Operation::Load { destination, place, transfer } => {
             add_effect(summary, origin_of(origins, place.object()), MemoryEffect::Read);
-            if matches!(transfer, LoadTransfer::TakeLast | LoadTransfer::TakeNullableUnique) {
+            if matches!(transfer, LoadTransfer::TakeLast | LoadTransfer::TakeNullableUnique | LoadTransfer::TakeOwnedField) {
                 add_effect(summary, origin_of(origins, place.object()), MemoryEffect::Write);
             }
             origins.insert(
@@ -1946,7 +1946,7 @@ fn load_result_origin(
             _ => Origin::Shared(layout),
         },
         (
-            LoadTransfer::CloneShared | LoadTransfer::TakeLast | LoadTransfer::TakeNullableUnique,
+            LoadTransfer::CloneShared | LoadTransfer::TakeLast | LoadTransfer::TakeNullableUnique | LoadTransfer::TakeOwnedField,
             ValueType::Ref(place_layout),
             Some(ValueType::Ref(destination_layout)),
         ) if place_layout == destination_layout => Origin::Shared(place_layout),

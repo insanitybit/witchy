@@ -205,6 +205,7 @@ mod canonical_wasmir {
         #[test] fn variable_call_is_refused_fail_closed() { witchy_wir::self_checks::canonical_wasmir::variable_call_is_refused_fail_closed() }
         mod nullable_admission {
             #[test] fn nullable_admission_rejects_valid_but_mutated_bytes() { witchy_wir::self_checks::canonical_wasmir::nullable_admission::nullable_admission_rejects_valid_but_mutated_bytes() }
+            #[test] fn owned_field_take_admits_shared_child() { witchy_wir::self_checks::canonical_wasmir::nullable_admission::owned_field_take_admits_shared_child() }
         }
         mod unique_pop {
             #[test] fn unique_pop_checker_refuses_shared_container_missing_bounds_and_non_tail() { witchy_wir::self_checks::canonical_wasmir::unique_pop::unique_pop_checker_refuses_shared_container_missing_bounds_and_non_tail() }
