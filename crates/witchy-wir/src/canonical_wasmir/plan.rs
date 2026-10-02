@@ -645,6 +645,9 @@ pub(super) fn push_copy_bytes_plan(
     source: &Place,
     length: ValueId,
 ) -> Result<(), CanonicalAdmissionError> {
+    let destination_local = scratch_index(layout, 0);
+    let source_local = scratch_index(layout, 1);
+    let length_local = scratch_index(layout, 2);
     push_raw_byte_slice_address_plan(
         plan,
         function,
@@ -654,6 +657,7 @@ pub(super) fn push_copy_bytes_plan(
         AccessMode::Write,
         length,
     )?;
+    plan.push(PlanToken::LocalSet(destination_local));
     push_raw_byte_slice_address_plan(
         plan,
         function,
@@ -663,8 +667,85 @@ pub(super) fn push_copy_bytes_plan(
         AccessMode::Read,
         length,
     )?;
+    plan.push(PlanToken::LocalSet(source_local));
     push_get(plan, layout, length)?;
-    plan.push(PlanToken::MemoryCopy { source: 0, destination: 0 });
+    plan.push(PlanToken::LocalSet(length_local));
+    plan.extend([
+        PlanToken::LocalGet(length_local),
+        PlanToken::I32Const(8),
+        PlanToken::I32LeU,
+        PlanToken::If("Empty".to_owned()),
+    ]);
+    for width in 1..=8 {
+        plan.extend([
+            PlanToken::LocalGet(length_local),
+            PlanToken::I32Const(width),
+            PlanToken::I32Eq,
+            PlanToken::If("Empty".to_owned()),
+        ]);
+        let (load, store) = match width {
+            1 => (
+                PlanToken::I32Load8U { offset: 0, align: 0, memory: 0 },
+                PlanToken::I32Store8 { offset: 0, align: 0, memory: 0 },
+            ),
+            2 => (
+                PlanToken::I32Load16U { offset: 0, align: 1, memory: 0 },
+                PlanToken::I32Store16 { offset: 0, align: 1, memory: 0 },
+            ),
+            4 => (
+                PlanToken::I32Load { offset: 0, align: 2, memory: 0 },
+                PlanToken::I32Store { offset: 0, align: 2, memory: 0 },
+            ),
+            8 => (
+                PlanToken::I64Load { offset: 0, align: 3, memory: 0 },
+                PlanToken::I64Store { offset: 0, align: 3, memory: 0 },
+            ),
+            3 | 5 | 6 | 7 => {
+                let chunk = if width == 3 { 2 } else { 4 };
+                let offset = width - chunk;
+                let first = scratch_index(layout, 3);
+                let last = scratch_index(layout, 4);
+                let (load, store) = if chunk == 2 {
+                    (
+                        PlanToken::I32Load16U { offset: 0, align: 1, memory: 0 },
+                        PlanToken::I32Store16 { offset: 0, align: 1, memory: 0 },
+                    )
+                } else {
+                    (
+                        PlanToken::I32Load { offset: 0, align: 2, memory: 0 },
+                        PlanToken::I32Store { offset: 0, align: 2, memory: 0 },
+                    )
+                };
+                plan.extend([
+                    PlanToken::LocalGet(source_local), load.clone(), PlanToken::LocalSet(first),
+                    PlanToken::LocalGet(source_local), PlanToken::I32Const(offset), PlanToken::I32Add,
+                    load, PlanToken::LocalSet(last),
+                    PlanToken::LocalGet(destination_local), PlanToken::LocalGet(first), store.clone(),
+                    PlanToken::LocalGet(destination_local), PlanToken::I32Const(offset), PlanToken::I32Add,
+                    PlanToken::LocalGet(last), store,
+                ]);
+                plan.push(PlanToken::Else);
+                continue;
+            }
+            _ => unreachable!(),
+        };
+        plan.extend([PlanToken::LocalGet(destination_local), PlanToken::LocalGet(source_local), load, store, PlanToken::Else]);
+    }
+    plan.extend([
+        PlanToken::LocalGet(destination_local),
+        PlanToken::LocalGet(source_local),
+        PlanToken::LocalGet(length_local),
+        PlanToken::MemoryCopy { source: 0, destination: 0 },
+    ]);
+    plan.extend(std::iter::repeat_n(PlanToken::End, 8));
+    plan.push(PlanToken::Else);
+    plan.extend([
+        PlanToken::LocalGet(destination_local),
+        PlanToken::LocalGet(source_local),
+        PlanToken::LocalGet(length_local),
+        PlanToken::MemoryCopy { source: 0, destination: 0 },
+        PlanToken::End,
+    ]);
     Ok(())
 }
 
